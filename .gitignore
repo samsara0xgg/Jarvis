@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# 日志 & 缓存
+logs/
+*.log
+.cache/
+.coverage
+.pytest_cache/
+
+# 音频
+*.wav
+*.mp3
+*.flac
+
+# 隐私数据 & 运行时数据
+data/conversations/
+data/memory/
+data/todos/
+data/reminders.json
+data/scheduler.db
+data/openclaw/
+
+# 模型文件
+data/speechbrain_model/
+
+# Claude Code 本地设置
+.claude/settings.local.json

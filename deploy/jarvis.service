@@ -1,0 +1,16 @@
+[Unit]
+Description=Jarvis AI Voice Assistant
+After=network.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/jarvis
+ExecStart=/home/pi/jarvis/.venv/bin/python jarvis.py --config config.yaml --config-overlay deploy/pi.yaml
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+# Pi 专用配置 overlay — 深度合并到 config.yaml 之上
+# 用法: python jarvis.py --config config.yaml --config-overlay deploy/pi.yaml
+
+oled:
+  enabled: true
+  emulator: false
+  driver: sh1106
+
+mqtt:
+  enabled: true
+  broker_host: localhost
+  broker_port: 1883
+
+speaker:
+  device: cpu
+
+asr:
+  model_size: base
+
+tts:
+  engine: edge-tts
+  edge_voice: zh-CN-YunxiNeural
+
+wake_word:
+  enabled: true
+
+scheduler:
+  enabled: true
+
+logging:
+  level: INFO
