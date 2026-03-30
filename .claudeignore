@@ -1,0 +1,35 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 日志文件
+logs/
+*.log
+
+# 音频文件
+*.wav
+*.mp3
+*.flac
+
+# macOS 系统文件
+.DS_Store
+
+# 隐私数据
+data/conversations/
+data/memory/
+data/todos/
+data/test_recording.wav
+
+# Git
+.git/
+
+# IDE
+.vscode/
+.idea/
+
+# 虚拟环境
+venv/
+.venv/
+env/

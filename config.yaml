@@ -1,0 +1,457 @@
+# ============================================================================
+# smart-home-voice-lock 配置文件
+# ----------------------------------------------------------------------------
+# 说明：
+# 1. `sim` 模式适合本地开发，不依赖真实设备。
+# 2. `live` 模式需要先完成 Hue Bridge 配对，并填写 `hue.bridge.ip` 和
+#    `hue.bridge.username`。
+# 3. 本文件包含项目运行时的全部核心参数：录音、ASR、声纹、权限、设备、Hue。
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# 录音参数
+# ----------------------------------------------------------------------------
+audio:
+  # 固定采样率。当前项目的录音、Whisper 和声纹模块都以 16 kHz 为基准。
+  sample_rate: 16000
+
+  # 固定声道数。当前只支持单声道。
+  channels: 1
+
+  # 默认录音时长，单位秒。用户未显式指定时使用该值。
+  default_duration: 3.0
+
+  # 录音质量检查的最小时长，单位秒。
+  min_duration: 1.0
+
+  # 录音 RMS 音量阈值。低于该值会给出“音量太低”警告。
+  low_volume_threshold: 0.02
+
+  # 音量条刷新块时长，单位秒。值越小，终端音量条更新越频繁。
+  block_duration: 0.1
+
+  # 终端 ASCII 音量条宽度。
+  volume_bar_width: 24
+
+# ----------------------------------------------------------------------------
+# 自动语音识别（ASR）
+# ----------------------------------------------------------------------------
+asr:
+  # Whisper 模型大小。常见值：tiny / base / small / medium / large。
+  model_size: base
+
+  # 识别语言。中文通常使用 `zh`。
+  language: zh
+
+# ----------------------------------------------------------------------------
+# 声纹编码模型
+# ----------------------------------------------------------------------------
+speaker:
+  # SpeechBrain 预训练说话人编码模型。
+  model_source: speechbrain/spkrec-ecapa-voxceleb
+
+  # 声纹模型输入采样率。
+  sample_rate: 16000
+
+  # ECAPA-TDNN 输出 embedding 维度。
+  embedding_dim: 192
+
+  # 模型缓存目录。
+  cache_dir: .cache/speechbrain/spkrec-ecapa-voxceleb
+
+  # 运行设备。常用值：cpu / cuda。
+  device: cpu
+
+# ----------------------------------------------------------------------------
+# 声纹验证
+# ----------------------------------------------------------------------------
+verification:
+  # 余弦相似度阈值。越高越严格。
+  threshold: 0.70
+
+# ----------------------------------------------------------------------------
+# 用户注册
+# ----------------------------------------------------------------------------
+enrollment:
+  # 注册时需要录制的语音样本数。
+  num_samples: 3
+
+  # 最大录音尝试次数。若质量不达标会重试，超过次数则失败。
+  max_attempts: 5
+
+  # 未指定角色时的默认角色。
+  default_role: resident
+
+  # 未指定权限时的默认权限列表。
+  default_permissions: []
+
+# ----------------------------------------------------------------------------
+# 用户存储
+# ----------------------------------------------------------------------------
+auth:
+  # 用户 JSON 数据文件路径。
+  user_store_path: data/users.json
+
+# ----------------------------------------------------------------------------
+# 设备管理
+# ----------------------------------------------------------------------------
+devices:
+  # 设备模式：
+  # - sim: 使用内存模拟设备
+  # - live: 使用 Hue Bridge 控制真实设备
+  mode: sim
+
+  # `sim` 模式下的模拟设备清单。
+  sim_devices:
+    - device_id: bedroom_light
+      name: 卧室灯
+      device_type: light
+      required_role: guest
+      is_available: true
+      initial_state:
+        # 灯开关状态
+        is_on: false
+        # 亮度百分比 0-100
+        brightness: 100
+        # 色温档位：warm / neutral / cool
+        color_temp: neutral
+        # 颜色名称
+        color: white
+
+    - device_id: living_room_light
+      name: 客厅灯
+      device_type: light
+      required_role: guest
+      is_available: true
+      initial_state:
+        is_on: false
+        brightness: 100
+        color_temp: neutral
+        color: white
+
+    - device_id: study_light
+      name: 书房灯
+      device_type: light
+      required_role: guest
+      is_available: true
+      initial_state:
+        is_on: false
+        brightness: 100
+        color_temp: neutral
+        color: white
+
+    - device_id: living_room_group
+      name: 客厅所有灯
+      device_type: light
+      required_role: guest
+      is_available: true
+      initial_state:
+        is_on: false
+        brightness: 100
+        color_temp: neutral
+        color: white
+
+    - device_id: front_door_lock
+      name: 入户门锁
+      device_type: door_lock
+      required_role: admin
+      is_available: true
+      initial_state:
+        # true 表示默认上锁
+        is_locked: true
+
+    - device_id: home_thermostat
+      name: 客厅空调
+      device_type: thermostat
+      required_role: member
+      is_available: true
+      initial_state:
+        is_on: false
+        # 温度范围由设备实现限制在 16-30 度
+        temperature: 24
+
+# ----------------------------------------------------------------------------
+# Philips Hue 配置
+# ----------------------------------------------------------------------------
+hue:
+  bridge:
+    # Hue Bridge IP。配对成功后会自动写入。
+    ip: ""
+
+    # Hue API username。按下 Bridge 按钮配对后获取。
+    username: ""
+
+    # 是否校验 Bridge HTTPS 证书。局域网自签证书场景通常为 false。
+    verify_ssl: false
+
+    # 请求超时时间，单位秒。
+    timeout_seconds: 5.0
+
+    # 是否自动发现 Bridge。
+    auto_discover: true
+
+    # 当 HTTPS 探测失败时，是否允许自动回退到 HTTP。
+    allow_http_fallback: true
+
+    # Hue 官方 Bridge 发现地址。
+    discovery_url: https://discovery.meethue.com/
+
+  request_limits:
+    # Hue 灯具资源请求速率上限，单位：请求/秒。
+    lights_per_second: 10
+
+    # Hue 灯组资源请求速率上限，单位：请求/秒。
+    groups_per_second: 1
+
+    # 其他通用请求速率上限，单位：请求/秒。
+    default_per_second: 10
+
+  # 激活场景时默认使用的 group id。留空时优先使用场景自带 group。
+  default_scene_group: ""
+
+  # 灯具别名映射。
+  # 左侧是项目内部 canonical device_id，右侧是语音可说出的别名列表。
+  light_aliases:
+    bedroom_light:
+      - 卧室灯
+      - 卧室的灯
+    living_room_light:
+      - 客厅灯
+      - 客厅的灯
+    study_light:
+      - 书房灯
+      - 书房的灯
+
+  # 灯组别名映射。
+  group_aliases:
+    living_room_group:
+      - 客厅所有灯
+      - 客厅全部灯
+      - 客厅所有的灯
+
+  # 场景别名映射。
+  # 左侧是场景 canonical 名称，右侧是语音可识别的别名。
+  scene_aliases:
+    阅读模式:
+      - 阅读模式
+      - 阅读场景
+
+  # 快捷语音短语。
+  # 当前会被 parser 识别为 voice_shortcut 事件，是否执行联动由业务层决定。
+  voice_shortcuts:
+    晚安:
+      - 晚安
+    我回来了:
+      - 我回来了
+
+# ----------------------------------------------------------------------------
+# 本地模型路由（F1）
+# ----------------------------------------------------------------------------
+models:
+  groq:
+    api_key: ""  # env GROQ_API_KEY
+    model: llama-3.3-70b-versatile
+  deepseek:
+    api_key: ""  # env DEEPSEEK_API_KEY
+    model: deepseek-chat
+  local:
+    provider: ollama
+    model: qwen2.5:7b
+    base_url: http://localhost:11434
+    timeout: 30
+  routing:
+    confidence_threshold: 0.7
+
+# ----------------------------------------------------------------------------
+# Jarvis AI 助手（LLM 大脑）
+# ----------------------------------------------------------------------------
+llm:
+  # LLM 提供商：anthropic 或 openai。
+  provider: openai
+
+  # 模型 ID。OpenAI: gpt-4o / gpt-4o-mini。Anthropic: claude-sonnet-4-20250514。
+  model: gpt-4o
+
+  # 单次回复最大 token 数。
+  max_tokens: 1024
+
+  # API key。留空则从环境变量读取（OPENAI_API_KEY 或 ANTHROPIC_API_KEY）。
+  api_key: ""
+
+# ----------------------------------------------------------------------------
+# TTS 语音合成
+# ----------------------------------------------------------------------------
+tts:
+  # 首选引擎：edge-tts（在线高质量）或 pyttsx3（离线）。
+  engine: edge-tts
+
+  # Edge TTS 语音。中文推荐 zh-CN-YunxiNeural（男）或 zh-CN-XiaoyiNeural（女）。
+  edge_voice: zh-CN-YunxiNeural
+
+  # Edge TTS 语速调整。如 "+10%"、"-5%"、"+0%"。
+  edge_rate: "+0%"
+
+  # Edge TTS 失败时是否回退到 pyttsx3。
+  fallback_enabled: true
+
+# ----------------------------------------------------------------------------
+# 唤醒词检测
+# ----------------------------------------------------------------------------
+wake_word:
+  # 是否启用唤醒词。false 则使用按键触发。
+  enabled: true
+
+  # Picovoice 访问密钥。在 https://console.picovoice.ai/ 免费获取。
+  picovoice_access_key: ""
+
+  # 唤醒词关键字。Porcupine 内置支持 "jarvis"。
+  keyword: jarvis
+
+  # 检测灵敏度 0.0-1.0。越高越容易触发，也越容易误触。
+  sensitivity: 0.5
+
+# ----------------------------------------------------------------------------
+# 会话管理
+# ----------------------------------------------------------------------------
+session:
+  # 静默超时（秒）。超过此时间无语音输入则结束会话。
+  silence_timeout: 30
+
+  # 单次录音时长（秒）。
+  utterance_duration: 5
+
+  # 结束会话的关键词。
+  farewell_phrases:
+    - 再见
+    - 退出
+    - bye
+    - goodbye
+    - that's all
+
+# ----------------------------------------------------------------------------
+# 记忆与对话历史
+# ----------------------------------------------------------------------------
+memory:
+  # 保留最近 N 轮对话（每轮 = 一问一答）。
+  max_conversation_turns: 20
+
+  # 对话历史持久化目录。
+  conversation_dir: data/conversations
+
+  # 用户偏好持久化目录。
+  preferences_dir: data/memory
+
+# ----------------------------------------------------------------------------
+# 技能配置
+# ----------------------------------------------------------------------------
+skills:
+  weather:
+    # 默认查询城市。
+    default_city: Vancouver
+
+  reminders:
+    # 提醒数据文件路径。
+    path: data/reminders.json
+
+  todos:
+    # 待办数据目录。
+    dir: data/todos
+
+  realtime_data:
+    enabled: true
+    mock_mode: false
+    cache:
+      dir: data/realtime_data
+      news_ttl_seconds: 1800
+      stocks_ttl_seconds: 600
+    news:
+      provider: gnews
+      api_key: ""  # env GNEWS_API_KEY
+      language: zh  # en 或 zh
+      country: cn   # us 或 cn
+      topics:
+        - world
+        - ai
+        - technology
+        - business
+      limit: 10
+    stocks:
+      provider: yahoo
+      watchlist:
+        - AAPL
+        - NVDA
+        - MSFT
+        - GOOGL
+    scheduler:
+      enabled: true
+      refresh_news_cron: "*/30 * * * *"    # 每30分钟刷新新闻
+      refresh_stocks_cron: "*/15 * * * *"  # 每15分钟刷新股票
+
+# ----------------------------------------------------------------------------
+# OLED 显示
+# ----------------------------------------------------------------------------
+oled:
+  enabled: false
+  width: 128
+  height: 64
+  i2c_address: 0x3C
+  emulator: true  # Mac 开发时用模拟器
+  fps: 10
+
+# ----------------------------------------------------------------------------
+# MQTT 设备
+# ----------------------------------------------------------------------------
+mqtt:
+  enabled: false
+  broker_host: localhost
+  broker_port: 1883
+  username: jarvis
+  password: ""
+  devices: []
+
+# ----------------------------------------------------------------------------
+# 远程电脑控制
+# ----------------------------------------------------------------------------
+remote:
+  enabled: false
+  agent_host: ""
+  agent_port: 8765
+  token: ""
+
+# ----------------------------------------------------------------------------
+# 定时调度器
+# ----------------------------------------------------------------------------
+scheduler:
+  enabled: true
+  db_path: data/scheduler.db
+  morning_briefing:
+    enabled: false        # 改为 true 启用每日晨报
+    cron: "0 8 * * *"    # 每天早 8 点
+    include:
+      - weather
+      - reminders
+      - todos
+      - realtime_data     # 加入新闻+股票
+
+# ----------------------------------------------------------------------------
+# 场景自动化
+# ----------------------------------------------------------------------------
+automations:
+  晚安:
+    - {type: device, device_id: bedroom_light, action: turn_off}
+    - {type: device, device_id: living_room_light, action: turn_off}
+    - {type: speak, text: "晚安，好梦"}
+  我回来了:
+    - {type: device, device_id: living_room_light, action: turn_on}
+    - {type: speak, text: "欢迎回家"}
+  出门:
+    - {type: device, device_id: living_room_light, action: turn_off}
+    - {type: device, device_id: bedroom_light, action: turn_off}
+    - {type: speak, text: "一路顺风"}
+
+# ----------------------------------------------------------------------------
+# 日志
+# ----------------------------------------------------------------------------
+logging:
+  # 根日志级别。常见值：DEBUG / INFO / WARNING / ERROR。
+  level: INFO

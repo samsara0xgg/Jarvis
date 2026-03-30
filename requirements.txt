@@ -1,0 +1,44 @@
+# Core audio
+sounddevice
+scipy
+
+# Speaker verification
+speechbrain
+
+# ASR
+openai-whisper
+
+# Philips Hue
+phue2
+
+# Config
+pyyaml
+
+# Web UI
+gradio
+
+# LLM brain
+anthropic
+
+# TTS
+edge-tts
+pyttsx3
+
+# Wake word
+pvporcupine
+
+# HTTP requests (weather, etc.)
+requests
+
+# Testing
+pytest
+pytest-cov
+
+# New modules
+paho-mqtt>=2.0
+apscheduler>=3.10
+websockets>=12.0
+luma.oled>=3.13
+luma.emulator>=1.5
+Pillow>=10.0
+psutil>=5.9

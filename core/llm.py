@@ -1,0 +1,478 @@
+"""Multi-provider LLM client with tool-use loop for Jarvis conversations.
+
+Supports Anthropic Claude and OpenAI GPT via config.yaml provider switch.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import time
+from typing import Any
+
+LOGGER = logging.getLogger(__name__)
+
+# Rough token estimate: 1 token ≈ 3 characters for mixed CJK/English
+_CHARS_PER_TOKEN = 3
+
+
+class LLMClient:
+    """Power Jarvis conversations via Claude or OpenAI with tool calling.
+
+    The provider is selected by ``config["llm"]["provider"]``:
+      - ``"anthropic"`` (default) — uses the Anthropic Python SDK
+      - ``"openai"`` — uses the OpenAI Python SDK
+
+    Both backends share the same ``chat()`` interface and tool-use loop.
+
+    Args:
+        config: Parsed application configuration.
+    """
+
+    def __init__(self, config: dict) -> None:
+        llm_config = config.get("llm", {})
+        self.provider = str(llm_config.get("provider", "anthropic")).strip().lower()
+        self.max_tokens = int(llm_config.get("max_tokens", 1024))
+        self.max_history_tokens = int(llm_config.get("max_history_tokens", 8000))
+        self.max_retries = int(llm_config.get("max_retries", 2))
+        self.logger = LOGGER
+        self._client: Any = None
+        self.system_prompt = self._build_system_prompt()
+
+        if self.provider == "openai":
+            self.model = str(llm_config.get("model", "gpt-4o"))
+            self._api_key = llm_config.get("api_key") or os.environ.get("OPENAI_API_KEY")
+        else:
+            self.model = str(llm_config.get("model", "claude-sonnet-4-20250514"))
+            self._api_key = llm_config.get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def chat(
+        self,
+        user_message: str,
+        *,
+        conversation_history: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_executor: Any | None = None,
+        user_name: str | None = None,
+        user_id: str | None = None,
+        user_role: str = "guest",
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Send a message and run the full tool-use loop.
+
+        Works identically regardless of the underlying provider.
+
+        Returns:
+            A tuple of (final_text_response, updated_messages_list).
+        """
+        if self.provider == "openai":
+            return self._chat_openai(
+                user_message,
+                conversation_history=conversation_history,
+                tools=tools,
+                tool_executor=tool_executor,
+                user_name=user_name,
+                user_id=user_id,
+                user_role=user_role,
+            )
+        return self._chat_anthropic(
+            user_message,
+            conversation_history=conversation_history,
+            tools=tools,
+            tool_executor=tool_executor,
+            user_name=user_name,
+            user_id=user_id,
+            user_role=user_role,
+        )
+
+    # ------------------------------------------------------------------
+    # Anthropic backend
+    # ------------------------------------------------------------------
+
+    def _chat_anthropic(
+        self,
+        user_message: str,
+        *,
+        conversation_history: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_executor: Any | None = None,
+        user_name: str | None = None,
+        user_id: str | None = None,
+        user_role: str = "guest",
+    ) -> tuple[str, list[dict[str, Any]]]:
+        client = self._get_anthropic_client()
+        system = self._personalize_system(user_name, user_role)
+        messages = self._truncate_history(list(conversation_history or []))
+        messages.append({"role": "user", "content": user_message})
+
+        for _ in range(10):
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "system": system,
+                "messages": messages,
+            }
+            if tools:
+                kwargs["tools"] = tools
+
+            self.logger.info("Sending request to Anthropic (%s)", self.model)
+            response = self._call_with_retry(lambda: client.messages.create(**kwargs))
+
+            assistant_content = self._serialize_anthropic_content(response.content)
+            messages.append({"role": "assistant", "content": assistant_content})
+
+            tool_use_blocks = [
+                block for block in response.content
+                if getattr(block, "type", None) == "tool_use"
+            ]
+
+            if not tool_use_blocks:
+                text = self._extract_anthropic_text(response.content)
+                self.logger.info("Anthropic response: %s", text[:200])
+                return text, messages
+
+            if tool_executor is None:
+                text = self._extract_anthropic_text(response.content)
+                return text or "I wanted to use a tool but no executor is available.", messages
+
+            tool_results = []
+            for block in tool_use_blocks:
+                self.logger.info("Tool call: %s(%s)", block.name, block.input)
+                result_text = tool_executor(
+                    block.name, block.input,
+                    user_id=user_id, user_role=user_role,
+                )
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": str(result_text),
+                })
+            messages.append({"role": "user", "content": tool_results})
+
+        return "I seem to be going in circles. Let me try a different approach.", messages
+
+    def _get_anthropic_client(self) -> Any:
+        if self._client is not None:
+            return self._client
+        try:
+            import anthropic
+        except ImportError as exc:
+            raise RuntimeError(
+                "The anthropic package is required. Install with: pip install anthropic"
+            ) from exc
+        self._client = anthropic.Anthropic(api_key=self._api_key)
+        return self._client
+
+    def _extract_anthropic_text(self, content: Any) -> str:
+        parts = []
+        for block in content:
+            if hasattr(block, "text"):
+                parts.append(block.text)
+        return "".join(parts).strip()
+
+    def _serialize_anthropic_content(self, content: Any) -> list[dict[str, Any]]:
+        result = []
+        for block in content:
+            if getattr(block, "type", None) == "text":
+                result.append({"type": "text", "text": block.text})
+            elif getattr(block, "type", None) == "tool_use":
+                result.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                })
+            else:
+                result.append({"type": "text", "text": str(block)})
+        return result
+
+    # ------------------------------------------------------------------
+    # OpenAI backend
+    # ------------------------------------------------------------------
+
+    def _chat_openai(
+        self,
+        user_message: str,
+        *,
+        conversation_history: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_executor: Any | None = None,
+        user_name: str | None = None,
+        user_id: str | None = None,
+        user_role: str = "guest",
+    ) -> tuple[str, list[dict[str, Any]]]:
+        client = self._get_openai_client()
+        system = self._personalize_system(user_name, user_role)
+
+        # Convert Anthropic-style history to OpenAI format
+        truncated = self._truncate_history(list(conversation_history or []))
+        messages = [{"role": "system", "content": system}]
+        messages.extend(self._history_to_openai(truncated))
+        messages.append({"role": "user", "content": user_message})
+
+        # Convert Anthropic tool schemas to OpenAI function format
+        openai_tools = self._tools_to_openai(tools) if tools else None
+
+        # Keep a parallel Anthropic-style history for storage
+        stored_messages = list(conversation_history or [])
+        stored_messages.append({"role": "user", "content": user_message})
+
+        import json as _json
+
+        for _ in range(10):
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "messages": messages,
+            }
+            if openai_tools:
+                kwargs["tools"] = openai_tools
+
+            self.logger.info("Sending request to OpenAI (%s)", self.model)
+            response = self._call_with_retry(lambda: client.chat.completions.create(**kwargs))
+            choice = response.choices[0]
+            assistant_msg = choice.message
+
+            # Store assistant message in OpenAI format for the loop
+            oai_assistant: dict[str, Any] = {
+                "role": "assistant",
+                "content": assistant_msg.content or "",
+            }
+            if assistant_msg.tool_calls:
+                oai_assistant["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in assistant_msg.tool_calls
+                ]
+            messages.append(oai_assistant)
+
+            # Store in Anthropic-compatible format for persistence
+            stored_content: list[dict[str, Any]] = []
+            if assistant_msg.content:
+                stored_content.append({"type": "text", "text": assistant_msg.content})
+            if assistant_msg.tool_calls:
+                for tc in assistant_msg.tool_calls:
+                    stored_content.append({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.function.name,
+                        "input": _json.loads(tc.function.arguments),
+                    })
+            stored_messages.append({"role": "assistant", "content": stored_content or assistant_msg.content or ""})
+
+            if not assistant_msg.tool_calls:
+                text = (assistant_msg.content or "").strip()
+                self.logger.info("OpenAI response: %s", text[:200])
+                return text, stored_messages
+
+            if tool_executor is None:
+                text = (assistant_msg.content or "").strip()
+                return text or "I wanted to use a tool but no executor is available.", stored_messages
+
+            # Execute tool calls
+            tool_results_for_stored = []
+            for tc in assistant_msg.tool_calls:
+                func_name = tc.function.name
+                func_args = _json.loads(tc.function.arguments)
+                self.logger.info("Tool call: %s(%s)", func_name, func_args)
+                result_text = tool_executor(
+                    func_name, func_args,
+                    user_id=user_id, user_role=user_role,
+                )
+                # OpenAI expects tool results as separate messages
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": str(result_text),
+                })
+                tool_results_for_stored.append({
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": str(result_text),
+                })
+
+            stored_messages.append({"role": "user", "content": tool_results_for_stored})
+
+        return "I seem to be going in circles. Let me try a different approach.", stored_messages
+
+    def _get_openai_client(self) -> Any:
+        if self._client is not None:
+            return self._client
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise RuntimeError(
+                "The openai package is required. Install with: pip install openai"
+            ) from exc
+        self._client = OpenAI(api_key=self._api_key)
+        return self._client
+
+    def _tools_to_openai(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert Anthropic-style tool definitions to OpenAI function calling format."""
+        result = []
+        for tool in tools:
+            result.append({
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+                },
+            })
+        return result
+
+    def _history_to_openai(self, history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert stored Anthropic-style history to OpenAI message format."""
+        import json as _json
+        result = []
+        for msg in history:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+
+            if isinstance(content, str):
+                result.append({"role": role, "content": content})
+                continue
+
+            if isinstance(content, list):
+                # Check if it's tool results
+                if content and isinstance(content[0], dict) and content[0].get("type") == "tool_result":
+                    for tr in content:
+                        result.append({
+                            "role": "tool",
+                            "tool_call_id": tr.get("tool_use_id", ""),
+                            "content": str(tr.get("content", "")),
+                        })
+                    continue
+
+                # Assistant content blocks
+                text_parts = []
+                tool_calls = []
+                for block in content:
+                    if not isinstance(block, dict):
+                        text_parts.append(str(block))
+                        continue
+                    if block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif block.get("type") == "tool_use":
+                        tool_calls.append({
+                            "id": block.get("id", ""),
+                            "type": "function",
+                            "function": {
+                                "name": block.get("name", ""),
+                                "arguments": _json.dumps(block.get("input", {})),
+                            },
+                        })
+
+                oai_msg: dict[str, Any] = {
+                    "role": role,
+                    "content": "".join(text_parts) or None,
+                }
+                if tool_calls:
+                    oai_msg["tool_calls"] = tool_calls
+                result.append(oai_msg)
+                continue
+
+            result.append({"role": role, "content": str(content)})
+        return result
+
+    # ------------------------------------------------------------------
+    # History truncation and retry
+    # ------------------------------------------------------------------
+
+    def _truncate_history(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Trim conversation history to fit within max_history_tokens.
+
+        Drops oldest messages first, keeping the most recent context.
+        """
+        if not messages:
+            return messages
+
+        total_chars = sum(self._estimate_message_chars(m) for m in messages)
+        max_chars = self.max_history_tokens * _CHARS_PER_TOKEN
+
+        while total_chars > max_chars and len(messages) > 2:
+            dropped = messages.pop(0)
+            total_chars -= self._estimate_message_chars(dropped)
+
+        return messages
+
+    def _estimate_message_chars(self, msg: dict[str, Any]) -> int:
+        """Rough character count for a message."""
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            return len(content)
+        if isinstance(content, list):
+            total = 0
+            for block in content:
+                if isinstance(block, dict):
+                    total += len(str(block.get("text", ""))) + len(str(block.get("content", "")))
+                else:
+                    total += len(str(block))
+            return total
+        return len(str(content))
+
+    def _call_with_retry(self, fn: Any) -> Any:
+        """Call fn() with exponential backoff on transient failures."""
+        last_exc = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return fn()
+            except Exception as exc:
+                last_exc = exc
+                exc_str = str(exc).lower()
+                is_transient = any(k in exc_str for k in [
+                    "timeout", "rate_limit", "overloaded", "529", "503", "500",
+                    "connection", "temporary",
+                ])
+                if not is_transient or attempt >= self.max_retries:
+                    raise
+                wait = 2 ** attempt
+                self.logger.warning(
+                    "LLM request failed (attempt %d/%d): %s. Retrying in %ds...",
+                    attempt + 1, self.max_retries + 1, exc, wait,
+                )
+                time.sleep(wait)
+        raise last_exc  # unreachable but satisfies type checker
+
+    # ------------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------------
+
+    def _build_system_prompt(self) -> str:
+        return (
+            "You are Jarvis, a highly intelligent personal AI assistant. "
+            "Your personality is inspired by J.A.R.V.I.S. from the Iron Man films: "
+            "witty, professional, efficient, with occasional dry humor.\n\n"
+            "Key behaviors:\n"
+            "- Be concise. No filler. Get to the point.\n"
+            "- Match the user's language — if they speak Chinese, reply in Chinese. "
+            "If English, reply in English.\n"
+            "- When controlling smart home devices, confirm the action briefly.\n"
+            "- For knowledge questions, give accurate, helpful answers.\n"
+            "- For ambiguous requests, ask a clarifying question.\n"
+            "- You know who is speaking from voiceprint identification. "
+            "Address them naturally.\n"
+            "- Respect permission levels. Do not help users bypass restrictions.\n"
+            "- Use tools when the user's request requires action. "
+            "Do NOT fabricate tool results.\n"
+            "- If a tool fails, tell the user honestly.\n"
+            "- Keep responses short enough to be spoken aloud comfortably "
+            "(under 3 sentences for simple actions)."
+        )
+
+    def _personalize_system(self, user_name: str | None, user_role: str) -> str:
+        base = self.system_prompt
+        if user_name:
+            base += f"\n\nCurrent user: {user_name} (role: {user_role})."
+        else:
+            base += "\n\nCurrent user: unidentified (guest access only)."
+        return base
