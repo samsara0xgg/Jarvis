@@ -174,6 +174,146 @@ class TestAzureTTS:
             tts.speak("test")
             mock_azure.assert_called_once_with("test", "")
 
+    def test_ssml_escapes_special_xml_characters(self):
+        """Text with <, >, &, and quotes must be escaped in the SSML body."""
+        import azure.cognitiveservices.speech as speechsdk
+
+        config = _make_config(engine="azure", azure_key="fake-key")
+        tts = TTSEngine(config)
+
+        mock_result = MagicMock()
+        mock_result.reason = speechsdk.ResultReason.SynthesizingAudioCompleted
+
+        mock_synthesizer = MagicMock()
+        mock_synthesizer.speak_ssml_async.return_value.get.return_value = mock_result
+
+        dangerous_text = 'Price is <100> & "cheap" today'
+
+        with patch("azure.cognitiveservices.speech.SpeechConfig"), \
+             patch("azure.cognitiveservices.speech.audio.AudioOutputConfig"), \
+             patch("azure.cognitiveservices.speech.SpeechSynthesizer", return_value=mock_synthesizer), \
+             patch.object(tts, "_play_audio_file"):
+            tts._speak_azure(dangerous_text, emotion="NEUTRAL")
+
+        ssml_arg = mock_synthesizer.speak_ssml_async.call_args[0][0]
+        # Raw < > & " should NOT appear unescaped in text body
+        assert "&lt;100&gt;" in ssml_arg
+        assert "&amp;" in ssml_arg
+        # The text should not contain raw angle brackets as content
+        # (they exist in the XML tags, but the text body must be escaped)
+        assert dangerous_text not in ssml_arg  # raw form should not be present
+
+    def test_azure_synthesizer_reuse_across_calls(self):
+        """Azure TTS creates a new synthesizer per call (no stale state)."""
+        import azure.cognitiveservices.speech as speechsdk
+
+        config = _make_config(engine="azure", azure_key="fake-key")
+        tts = TTSEngine(config)
+
+        mock_result = MagicMock()
+        mock_result.reason = speechsdk.ResultReason.SynthesizingAudioCompleted
+
+        mock_synth_cls = MagicMock()
+        mock_synth_instance = MagicMock()
+        mock_synth_instance.speak_ssml_async.return_value.get.return_value = mock_result
+        mock_synth_cls.return_value = mock_synth_instance
+
+        with patch("azure.cognitiveservices.speech.SpeechConfig"), \
+             patch("azure.cognitiveservices.speech.audio.AudioOutputConfig"), \
+             patch("azure.cognitiveservices.speech.SpeechSynthesizer", new=mock_synth_cls), \
+             patch.object(tts, "_play_audio_file"):
+            tts._speak_azure("First call", emotion="HAPPY")
+            tts._speak_azure("Second call", emotion="SAD")
+
+        # SpeechSynthesizer should be constructed twice (once per call)
+        assert mock_synth_cls.call_count == 2
+        # Two different SSML payloads should have been sent
+        first_ssml = mock_synth_instance.speak_ssml_async.call_args_list[0][0][0]
+        second_ssml = mock_synth_instance.speak_ssml_async.call_args_list[1][0][0]
+        assert 'style="cheerful"' in first_ssml
+        assert 'style="sad"' in second_ssml
+
+    def test_azure_config_key_priority_config_over_env(self):
+        """Config-file azure_key should take priority over AZURE_SPEECH_KEY env var."""
+        with patch.dict("os.environ", {"AZURE_SPEECH_KEY": "env-key"}):
+            config = _make_config(engine="azure", azure_key="config-key")
+            tts = TTSEngine(config)
+            assert tts.azure_key == "config-key"
+
+
+# --- Edge/pyttsx3 path coverage ---
+
+
+class TestEdgeTTSPaths:
+    def test_speak_async_empty_is_noop(self):
+        tts = TTSEngine(_make_config())
+        tts.speak_async("")  # should not raise
+        tts.speak_async("   ")
+
+    def test_speak_async_submits_to_executor(self):
+        tts = TTSEngine(_make_config())
+        with patch.object(tts, "_speak_safe") as mock_safe:
+            with patch.object(tts._executor, "submit", wraps=tts._executor.submit) as mock_submit:
+                tts.speak_async("hello")
+                mock_submit.assert_called_once()
+
+    def test_speak_safe_catches_exceptions(self):
+        tts = TTSEngine(_make_config())
+        with patch.object(tts, "speak", side_effect=RuntimeError("boom")):
+            tts._speak_safe("test")  # should not raise
+
+    def test_speak_short_empty_is_noop(self):
+        tts = TTSEngine(_make_config())
+        tts.speak_short("")
+        tts.speak_short("  ")
+
+    def test_speak_short_falls_back_to_edge(self):
+        tts = TTSEngine(_make_config())
+        with patch.object(tts, "_speak_pyttsx3", side_effect=RuntimeError("no pyttsx3")):
+            with patch.object(tts, "_speak_edge") as mock_edge:
+                tts.speak_short("test")
+                mock_edge.assert_called_once_with("test")
+
+    def test_speak_short_all_fail_no_raise(self):
+        tts = TTSEngine(_make_config())
+        with patch.object(tts, "_speak_pyttsx3", side_effect=RuntimeError("fail")):
+            with patch.object(tts, "_speak_edge", side_effect=RuntimeError("fail")):
+                tts.speak_short("test")  # should not raise
+
+    def test_play_audio_file_darwin(self):
+        tts = TTSEngine(_make_config())
+        with patch("platform.system", return_value="Darwin"):
+            with patch("subprocess.run") as mock_run:
+                tts._play_audio_file("/tmp/test.mp3")
+                mock_run.assert_called_once()
+                assert mock_run.call_args[0][0] == ["afplay", "/tmp/test.mp3"]
+
+    def test_play_audio_file_linux_mpv(self):
+        tts = TTSEngine(_make_config())
+        with patch("platform.system", return_value="Linux"):
+            with patch("subprocess.run") as mock_run:
+                tts._play_audio_file("/tmp/test.mp3")
+                assert "mpv" in mock_run.call_args[0][0][0]
+
+    def test_play_audio_file_unsupported_platform(self):
+        tts = TTSEngine(_make_config())
+        with patch("platform.system", return_value="FreeBSD"):
+            tts._play_audio_file("/tmp/test.mp3")  # should not raise, just log
+
+    def test_edge_tts_engine_fallback_when_all_fail(self):
+        tts = TTSEngine(_make_config(engine="edge-tts", fallback_enabled=False))
+        with patch.object(tts, "_speak_edge", side_effect=RuntimeError("no network")):
+            # No fallback, should silently fail (fallback disabled)
+            tts.speak("test")  # logs warning but doesn't crash
+
+    def test_azure_engine_fallback_to_edge(self):
+        """When azure fails and engine is azure, it falls through to edge-tts."""
+        tts = TTSEngine(_make_config(engine="azure", azure_key="fake"))
+        with patch.object(tts, "_speak_azure", side_effect=RuntimeError("azure fail")):
+            with patch.object(tts, "_speak_edge") as mock_edge:
+                tts.speak("fallback")
+                mock_edge.assert_called_once_with("fallback")
+
 
 # --- Emotion pipeline integration ---
 
