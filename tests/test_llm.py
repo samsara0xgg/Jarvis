@@ -188,7 +188,7 @@ def _install_fake_openai():
     fake_module = types.ModuleType("openai")
 
     class FakeOpenAI:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, base_url=None):
             self.chat = MagicMock()
             self.chat.completions = MagicMock()
 

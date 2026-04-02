@@ -2,6 +2,7 @@
 sounddevice
 scipy
 sherpa-onnx
+azure-cognitiveservices-speech
 
 # Speaker verification
 speechbrain

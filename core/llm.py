@@ -42,7 +42,13 @@ class LLMClient:
 
         if self.provider == "openai":
             self.model = str(llm_config.get("model", "gpt-4o"))
-            self._api_key = llm_config.get("api_key") or os.environ.get("OPENAI_API_KEY")
+            self._api_key = (
+                llm_config.get("api_key")
+                or os.environ.get("MOONSHOT_API_KEY")
+                or os.environ.get("DEEPSEEK_API_KEY")
+                or os.environ.get("OPENAI_API_KEY")
+            )
+            self._base_url = llm_config.get("base_url") or None
         else:
             self.model = str(llm_config.get("model", "claude-sonnet-4-20250514"))
             self._api_key = llm_config.get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
@@ -314,7 +320,7 @@ class LLMClient:
             raise RuntimeError(
                 "The openai package is required. Install with: pip install openai"
             ) from exc
-        self._client = OpenAI(api_key=self._api_key)
+        self._client = OpenAI(api_key=self._api_key, base_url=self._base_url)
         return self._client
 
     def _tools_to_openai(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

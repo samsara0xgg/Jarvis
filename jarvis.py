@@ -316,6 +316,7 @@ class JarvisApp:
         transcription = asr_future.result()
 
         text = transcription.text.strip()
+        detected_emotion = getattr(transcription, "emotion", "") or ""
         if not text:
             self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
             self.speak("I didn't catch that. Could you repeat?")
@@ -386,7 +387,7 @@ class JarvisApp:
                 streamed_sentences.append(sentence)
                 print(f"🤖 Jarvis: {sentence}")
                 self._wait_tts()
-                self._speak_nonblocking(sentence)
+                self._speak_nonblocking(sentence, emotion=detected_emotion)
 
             self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
             try:
@@ -414,7 +415,7 @@ class JarvisApp:
             if self.oled:
                 self.oled.set_speaking_text(response_text)
             print(f"🤖 Jarvis: {response_text}")
-            self._speak_nonblocking(response_text)
+            self._speak_nonblocking(response_text, emotion=detected_emotion)
 
         return response_text
 
@@ -430,7 +431,7 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("TTS failed: %s", exc)
 
-    def _speak_nonblocking(self, text: str) -> None:
+    def _speak_nonblocking(self, text: str, emotion: str = "") -> None:
         """Speak text in a background thread (non-blocking hot path)."""
         if not text:
             self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
@@ -442,7 +443,7 @@ class JarvisApp:
 
         def _do_speak() -> None:
             try:
-                tts.speak(text)
+                tts.speak(text, emotion=emotion)
             except Exception as exc:
                 self.logger.warning("TTS failed: %s", exc)
             finally:

@@ -22,11 +22,15 @@ class TranscriptionResult:
         text: The recognized text content.
         language: The detected or configured language code.
         confidence: A best-effort confidence score in the range `[0.0, 1.0]`.
+        emotion: Detected emotion (SenseVoice only), e.g. "NEUTRAL", "HAPPY".
+        event: Detected audio event (SenseVoice only), e.g. "Speech", "Laughter".
     """
 
     text: str
     language: str
     confidence: float
+    emotion: str = ""
+    event: str = ""
 
 
 class SpeechRecognizer:
@@ -126,11 +130,18 @@ class SpeechRecognizer:
         else:
             confidence = 0.9
 
+        # Parse emotion tag (e.g. "<|HAPPY|>" → "HAPPY")
+        emotion_clean = emotion.strip("<|>") if emotion else ""
+        event_clean = event.strip("<|>") if event else ""
+
         self.logger.info(
             "SenseVoice: lang=%s emotion=%s event=%s conf=%.1f text=%r",
-            language, emotion, event, confidence, text,
+            language, emotion_clean, event_clean, confidence, text,
         )
-        return TranscriptionResult(text=text, language=language, confidence=confidence)
+        return TranscriptionResult(
+            text=text, language=language, confidence=confidence,
+            emotion=emotion_clean, event=event_clean,
+        )
 
     def _load_sensevoice(self) -> Any:
         """Lazy-load the sherpa-onnx SenseVoice recognizer."""

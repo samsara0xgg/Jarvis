@@ -277,32 +277,39 @@ models:
 # Jarvis AI 助手（LLM 大脑）
 # ----------------------------------------------------------------------------
 llm:
-  # LLM 提供商：anthropic 或 openai。
+  # LLM 提供商：openai（兼容 Kimi/DeepSeek）或 anthropic。
   provider: openai
 
-  # 模型 ID。OpenAI: gpt-4o / gpt-4o-mini。Anthropic: claude-sonnet-4-20250514。
-  model: gpt-4o
+  # 模型 ID。Kimi: kimi-k2.5。DeepSeek: deepseek-chat。OpenAI: gpt-4o。
+  model: kimi-k2.5
+
+  # OpenAI 兼容 base_url（Kimi/DeepSeek 等）。留空则使用 OpenAI 官方。
+  base_url: "https://api.moonshot.ai/v1"
 
   # 单次回复最大 token 数。
   max_tokens: 1024
 
   # API key。留空则从环境变量读取（OPENAI_API_KEY 或 ANTHROPIC_API_KEY）。
+  # Kimi: env MOONSHOT_API_KEY 或填在此处。
   api_key: ""
 
 # ----------------------------------------------------------------------------
 # TTS 语音合成
 # ----------------------------------------------------------------------------
 tts:
-  # 首选引擎：edge-tts（在线高质量）或 pyttsx3（离线）。
-  engine: edge-tts
+  # 首选引擎：azure（情感语音）/ edge-tts / pyttsx3。
+  engine: azure
 
-  # Edge TTS 语音。中文推荐 zh-CN-YunxiNeural（男）或 zh-CN-XiaoyiNeural（女）。
+  # Azure Neural TTS（emotion 支持，50万字/月免费）
+  azure_key: ""          # env AZURE_SPEECH_KEY
+  azure_region: canadacentral
+  azure_voice: zh-CN-XiaoxiaoNeural  # 支持 20 种情感风格
+
+  # Edge TTS（免费备用）
   edge_voice: zh-CN-YunxiNeural
-
-  # Edge TTS 语速调整。如 "+10%"、"-5%"、"+0%"。
   edge_rate: "+0%"
 
-  # Edge TTS 失败时是否回退到 pyttsx3。
+  # 失败时回退到下一级引擎。
   fallback_enabled: true
 
 # ----------------------------------------------------------------------------

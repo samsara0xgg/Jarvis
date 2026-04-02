@@ -1,4 +1,4 @@
-"""Text-to-speech engine with Edge TTS primary and pyttsx3 offline fallback."""
+"""Text-to-speech engine with Azure Neural TTS, Edge TTS, and pyttsx3 fallback."""
 
 from __future__ import annotations
 
@@ -13,12 +13,26 @@ from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 
+# SenseVoice emotion → Azure TTS style mapping
+_EMOTION_TO_STYLE = {
+    "HAPPY": "cheerful",
+    "SAD": "sad",
+    "ANGRY": "angry",
+    "NEUTRAL": "chat",
+    "FEARFUL": "fearful",
+    "DISGUSTED": "disgruntled",
+    "SURPRISED": "excited",
+    "EMO_UNKNOWN": "chat",
+}
+
 
 class TTSEngine:
-    """Speak text aloud using Edge TTS or pyttsx3.
+    """Speak text aloud using Azure Neural TTS, Edge TTS, or pyttsx3.
 
-    Edge TTS provides high-quality neural voices but requires network.
-    pyttsx3 works offline but sounds more robotic.
+    Engines (in priority order):
+      - ``azure``: Azure Neural TTS with emotion/style control via SSML.
+      - ``edge-tts``: Free Microsoft neural voices, no emotion.
+      - ``pyttsx3``: Offline fallback, robotic.
 
     Args:
         config: Parsed application configuration.
@@ -35,10 +49,30 @@ class TTSEngine:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
 
-    def speak(self, text: str) -> None:
-        """Speak text aloud.  Tries Edge TTS first, falls back to pyttsx3."""
+        # Azure Neural TTS config
+        import os
+        self.azure_key = str(tts_config.get("azure_key", "") or os.environ.get("AZURE_SPEECH_KEY", ""))
+        self.azure_region = str(tts_config.get("azure_region", "canadacentral"))
+        self.azure_voice = str(tts_config.get("azure_voice", "zh-CN-XiaoxiaoNeural"))
+        self._azure_synthesizer: Any = None
+
+    def speak(self, text: str, emotion: str = "") -> None:
+        """Speak text aloud with optional emotion.
+
+        Args:
+            text: Text to speak.
+            emotion: SenseVoice emotion label (e.g. "HAPPY", "SAD"). Only used
+                by Azure engine; ignored by Edge TTS and pyttsx3.
+        """
         if not text.strip():
             return
+
+        if self.engine_name == "azure":
+            try:
+                self._speak_azure(text, emotion)
+                return
+            except Exception as exc:
+                self.logger.warning("Azure TTS failed: %s, trying fallback", exc)
 
         if self.engine_name == "pyttsx3":
             self._speak_pyttsx3(text)
@@ -87,6 +121,57 @@ class TTSEngine:
                 self._speak_edge(text)
             except Exception as exc:
                 self.logger.warning("All TTS engines failed for short speak: %s", exc)
+
+    def _speak_azure(self, text: str, emotion: str = "") -> None:
+        """Generate speech with Azure Neural TTS using SSML for emotion."""
+        try:
+            import azure.cognitiveservices.speech as speechsdk
+        except ImportError as exc:
+            raise RuntimeError(
+                "azure-cognitiveservices-speech is required. "
+                "Install with: pip install azure-cognitiveservices-speech"
+            ) from exc
+
+        if not self.azure_key:
+            raise RuntimeError("Azure Speech key not configured (AZURE_SPEECH_KEY)")
+
+        speech_config = speechsdk.SpeechConfig(
+            subscription=self.azure_key, region=self.azure_region,
+        )
+
+        # Output to temp file then play (same pattern as edge-tts)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        audio_config = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
+        synthesizer = speechsdk.SpeechSynthesizer(
+            speech_config=speech_config, audio_config=audio_config,
+        )
+
+        # Build SSML with emotion style
+        style = _EMOTION_TO_STYLE.get(emotion, "chat")
+        ssml = (
+            '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
+            'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="zh-CN">'
+            f'<voice name="{self.azure_voice}">'
+            f'<mstts:express-as style="{style}">'
+            f'{text}'
+            '</mstts:express-as>'
+            '</voice></speak>'
+        )
+
+        self.logger.info("Azure TTS: voice=%s style=%s text=%r", self.azure_voice, style, text[:50])
+        result = synthesizer.speak_ssml_async(ssml).get()
+
+        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+            try:
+                self._play_audio_file(tmp_path)
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
+        else:
+            Path(tmp_path).unlink(missing_ok=True)
+            cancellation = result.cancellation_details
+            raise RuntimeError(f"Azure TTS failed: {cancellation.reason} - {cancellation.error_details}")
 
     def _speak_edge(self, text: str) -> None:
         """Generate speech with edge-tts and play the resulting audio."""
