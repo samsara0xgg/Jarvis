@@ -10,6 +10,8 @@ import os
 import time
 from typing import Any
 
+from core.personality import build_personality_prompt
+
 LOGGER = logging.getLogger(__name__)
 
 # Rough token estimate: 1 token ≈ 3 characters for mixed CJK/English
@@ -37,7 +39,6 @@ class LLMClient:
         self.max_retries = int(llm_config.get("max_retries", 2))
         self.logger = LOGGER
         self._client: Any = None
-        self.system_prompt = self._build_system_prompt()
 
         if self.provider == "openai":
             self.model = str(llm_config.get("model", "gpt-4o"))
@@ -444,35 +445,268 @@ class LLMClient:
         raise last_exc  # unreachable but satisfies type checker
 
     # ------------------------------------------------------------------
+    # Streaming API
+    # ------------------------------------------------------------------
+
+    _SENTENCE_DELIMITERS = {"。", "！", "？", ".", "!", "?", "；", "\n"}
+
+    def chat_stream(
+        self,
+        user_message: str,
+        *,
+        conversation_history: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_executor: Any | None = None,
+        user_name: str | None = None,
+        user_id: str | None = None,
+        user_role: str = "guest",
+        on_sentence: Any | None = None,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Stream LLM response, calling on_sentence for each complete sentence.
+
+        Falls back to non-streaming chat() if tool calls are detected.
+
+        Args:
+            on_sentence: Callback ``fn(text: str)`` invoked per sentence.
+                If None, behaves identically to ``chat()``.
+
+        Returns:
+            Same as ``chat()`` — (full_text, updated_messages).
+        """
+        if on_sentence is None or self.provider not in ("anthropic", "openai"):
+            return self.chat(
+                user_message,
+                conversation_history=conversation_history,
+                tools=tools,
+                tool_executor=tool_executor,
+                user_name=user_name,
+                user_id=user_id,
+                user_role=user_role,
+            )
+
+        if self.provider == "openai":
+            return self._stream_openai(
+                user_message,
+                conversation_history=conversation_history,
+                tools=tools,
+                tool_executor=tool_executor,
+                user_name=user_name,
+                user_id=user_id,
+                user_role=user_role,
+                on_sentence=on_sentence,
+            )
+        return self._stream_anthropic(
+            user_message,
+            conversation_history=conversation_history,
+            tools=tools,
+            tool_executor=tool_executor,
+            user_name=user_name,
+            user_id=user_id,
+            user_role=user_role,
+            on_sentence=on_sentence,
+        )
+
+    def _flush_sentences(self, buffer: str, on_sentence: Any, force: bool = False) -> str:
+        """Extract complete sentences from buffer, call on_sentence, return remainder."""
+        while True:
+            # Find the earliest sentence delimiter
+            earliest = -1
+            for delim in self._SENTENCE_DELIMITERS:
+                pos = buffer.find(delim)
+                if pos != -1 and (earliest == -1 or pos < earliest):
+                    earliest = pos
+
+            if earliest == -1:
+                if force and buffer.strip():
+                    on_sentence(buffer.strip())
+                    return ""
+                return buffer
+
+            sentence = buffer[:earliest + 1].strip()
+            buffer = buffer[earliest + 1:]
+            if sentence:
+                on_sentence(sentence)
+
+    def _stream_anthropic(
+        self,
+        user_message: str,
+        *,
+        conversation_history: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_executor: Any | None = None,
+        user_name: str | None = None,
+        user_id: str | None = None,
+        user_role: str = "guest",
+        on_sentence: Any,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        client = self._get_anthropic_client()
+        system = self._personalize_system(user_name, user_role)
+        messages = self._truncate_history(list(conversation_history or []))
+        messages.append({"role": "user", "content": user_message})
+
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "system": system,
+            "messages": messages,
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        self.logger.info("Streaming request to Anthropic (%s)", self.model)
+
+        try:
+            with client.messages.stream(**kwargs) as stream:
+                full_text = ""
+                buffer = ""
+                has_tool_use = False
+
+                for event in stream:
+                    if hasattr(event, "type"):
+                        if event.type == "content_block_start" and getattr(
+                            getattr(event, "content_block", None), "type", None
+                        ) == "tool_use":
+                            has_tool_use = True
+                            break
+                        if event.type == "content_block_delta" and hasattr(event, "delta"):
+                            text_chunk = getattr(event.delta, "text", "")
+                            if text_chunk:
+                                full_text += text_chunk
+                                buffer += text_chunk
+                                buffer = self._flush_sentences(buffer, on_sentence)
+
+                # Flush remaining buffer
+                self._flush_sentences(buffer, on_sentence, force=True)
+
+                if has_tool_use or not full_text.strip():
+                    reason = "tool use" if has_tool_use else "empty stream"
+                    self.logger.info("%s detected, falling back to chat()", reason)
+                    messages.pop()
+                    return self._chat_anthropic(
+                        user_message,
+                        conversation_history=conversation_history,
+                        tools=tools,
+                        tool_executor=tool_executor,
+                        user_name=user_name,
+                        user_id=user_id,
+                        user_role=user_role,
+                    )
+
+                messages.append({
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": full_text}],
+                })
+                self.logger.info("Anthropic stream complete: %s", full_text[:200])
+                return full_text, messages
+
+        except Exception as exc:
+            self.logger.warning("Streaming failed: %s, falling back to chat()", exc)
+            messages.pop()
+            return self._chat_anthropic(
+                user_message,
+                conversation_history=conversation_history,
+                tools=tools,
+                tool_executor=tool_executor,
+                user_name=user_name,
+                user_id=user_id,
+                user_role=user_role,
+            )
+
+    def _stream_openai(
+        self,
+        user_message: str,
+        *,
+        conversation_history: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_executor: Any | None = None,
+        user_name: str | None = None,
+        user_id: str | None = None,
+        user_role: str = "guest",
+        on_sentence: Any,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        client = self._get_openai_client()
+        system = self._personalize_system(user_name, user_role)
+
+        truncated = self._truncate_history(list(conversation_history or []))
+        oai_messages = [{"role": "system", "content": system}]
+        oai_messages.extend(self._history_to_openai(truncated))
+        oai_messages.append({"role": "user", "content": user_message})
+
+        openai_tools = self._tools_to_openai(tools) if tools else None
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": oai_messages,
+            "stream": True,
+        }
+        if openai_tools:
+            kwargs["tools"] = openai_tools
+
+        self.logger.info("Streaming request to OpenAI (%s)", self.model)
+
+        stored_messages = list(conversation_history or [])
+        stored_messages.append({"role": "user", "content": user_message})
+
+        try:
+            response = self._call_with_retry(
+                lambda: client.chat.completions.create(**kwargs)
+            )
+            full_text = ""
+            buffer = ""
+            has_tool_calls = False
+
+            for chunk in response:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta is None:
+                    continue
+                if delta.tool_calls:
+                    has_tool_calls = True
+                    break
+                if delta.content:
+                    full_text += delta.content
+                    buffer += delta.content
+                    buffer = self._flush_sentences(buffer, on_sentence)
+
+            self._flush_sentences(buffer, on_sentence, force=True)
+
+            if has_tool_calls or not full_text.strip():
+                reason = "tool use" if has_tool_calls else "empty stream"
+                self.logger.info("%s detected, falling back to chat()", reason)
+                return self._chat_openai(
+                    user_message,
+                    conversation_history=conversation_history,
+                    tools=tools,
+                    tool_executor=tool_executor,
+                    user_name=user_name,
+                    user_id=user_id,
+                    user_role=user_role,
+                )
+
+            stored_messages.append({
+                "role": "assistant",
+                "content": [{"type": "text", "text": full_text}],
+            })
+            self.logger.info("OpenAI stream complete: %s", full_text[:200])
+            return full_text, stored_messages
+
+        except Exception as exc:
+            self.logger.warning("Streaming failed: %s, falling back to chat()", exc)
+            return self._chat_openai(
+                user_message,
+                conversation_history=conversation_history,
+                tools=tools,
+                tool_executor=tool_executor,
+                user_name=user_name,
+                user_id=user_id,
+                user_role=user_role,
+            )
+
+    # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
 
-    def _build_system_prompt(self) -> str:
-        return (
-            "You are Jarvis, a highly intelligent personal AI assistant. "
-            "Your personality is inspired by J.A.R.V.I.S. from the Iron Man films: "
-            "witty, professional, efficient, with occasional dry humor.\n\n"
-            "Key behaviors:\n"
-            "- Be concise. No filler. Get to the point.\n"
-            "- Match the user's language — if they speak Chinese, reply in Chinese. "
-            "If English, reply in English.\n"
-            "- When controlling smart home devices, confirm the action briefly.\n"
-            "- For knowledge questions, give accurate, helpful answers.\n"
-            "- For ambiguous requests, ask a clarifying question.\n"
-            "- You know who is speaking from voiceprint identification. "
-            "Address them naturally.\n"
-            "- Respect permission levels. Do not help users bypass restrictions.\n"
-            "- Use tools when the user's request requires action. "
-            "Do NOT fabricate tool results.\n"
-            "- If a tool fails, tell the user honestly.\n"
-            "- Keep responses short enough to be spoken aloud comfortably "
-            "(under 3 sentences for simple actions)."
-        )
-
     def _personalize_system(self, user_name: str | None, user_role: str) -> str:
-        base = self.system_prompt
-        if user_name:
-            base += f"\n\nCurrent user: {user_name} (role: {user_role})."
-        else:
-            base += "\n\nCurrent user: unidentified (guest access only)."
-        return base
+        return build_personality_prompt(
+            user_name=user_name,
+            user_role=user_role,
+        )

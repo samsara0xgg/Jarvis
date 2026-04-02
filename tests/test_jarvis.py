@@ -104,7 +104,7 @@ def test_jarvis_handle_utterance_end_to_end(tmp_path):
         app = JarvisApp(config, config_path=tmp_path / "config.yaml")
 
         # Mock the Claude response
-        app.llm._get_client().messages.create = MagicMock(
+        app.llm._get_anthropic_client().messages.create = MagicMock(
             return_value=_FakeResponse([_FakeTextBlock("卧室灯已打开，先生。")])
         )
 
@@ -151,7 +151,7 @@ def test_jarvis_unidentified_speaker_gets_guest_access(tmp_path):
         config = _make_config(tmp_path)
         app = JarvisApp(config, config_path=tmp_path / "config.yaml")
 
-        app.llm._get_client().messages.create = MagicMock(
+        app.llm._get_anthropic_client().messages.create = MagicMock(
             return_value=_FakeResponse([_FakeTextBlock("I don't recognize you, but I can help.")])
         )
 
@@ -183,7 +183,7 @@ def test_jarvis_skill_registry_has_all_skills(tmp_path):
         config = _make_config(tmp_path)
         app = JarvisApp(config, config_path=tmp_path / "config.yaml")
 
-        expected_skills = {"smart_home", "weather", "time", "reminders", "todos", "system_control", "memory"}
+        expected_skills = {"smart_home", "weather", "time", "reminders", "todos", "system_control", "memory", "automation"}
         actual_skills = set(app.skill_registry.skill_names)
         assert expected_skills == actual_skills
     finally:
@@ -202,7 +202,7 @@ def test_jarvis_conversation_persists_across_calls(tmp_path):
         config = _make_config(tmp_path)
         app = JarvisApp(config, config_path=tmp_path / "config.yaml")
 
-        app.llm._get_client().messages.create = MagicMock(
+        app.llm._get_anthropic_client().messages.create = MagicMock(
             return_value=_FakeResponse([_FakeTextBlock("Response 1")])
         )
 
@@ -223,7 +223,7 @@ def test_jarvis_conversation_persists_across_calls(tmp_path):
         app.handle_utterance(audio)
 
         # Second call
-        app.llm._get_client().messages.create = MagicMock(
+        app.llm._get_anthropic_client().messages.create = MagicMock(
             return_value=_FakeResponse([_FakeTextBlock("Response 2")])
         )
         fake_transcription2 = TranscriptionResult(text="follow up", language="en", confidence=0.9)

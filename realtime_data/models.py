@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+ALL_TOPICS = ("world", "ai", "technology", "business")
+
 
 @dataclass
 class NewsArticle:

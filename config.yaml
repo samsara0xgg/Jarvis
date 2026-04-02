@@ -33,14 +33,25 @@ audio:
   # 终端 ASCII 音量条宽度。
   volume_bar_width: 24
 
+  # VAD: 检测语音结束后提前停止录音（省 2-3 秒）
+  vad_enabled: true
+  vad_silence_duration: 0.5     # 语音后持续静音多久停止（秒）
+  vad_threshold: 0.02           # RMS 阈值，低于此视为静音
+
 # ----------------------------------------------------------------------------
 # 自动语音识别（ASR）
 # ----------------------------------------------------------------------------
 asr:
-  # Whisper 模型大小。常见值：tiny / base / small / medium / large。
-  model_size: base
+  # ASR 引擎: "sensevoice" (本地快，推荐) 或 "local" (Whisper 离线)
+  provider: sensevoice
 
-  # 识别语言。中文通常使用 `zh`。
+  # SenseVoice 配置 (sherpa-onnx)
+  sensevoice_model_dir: data/sensevoice-small-int8
+  sensevoice_num_threads: 4
+  fallback_to_local: true
+
+  # Whisper 配置 (回退用)
+  model_size: base
   language: zh
 
 # ----------------------------------------------------------------------------

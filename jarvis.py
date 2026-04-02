@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -108,14 +108,33 @@ class JarvisApp:
         self.skill_registry = SkillRegistry()
         self._register_skills(config)
 
-        # --- Intent router + local executor (optional) ---
+        # --- Intent router + local executor + automation rules ---
         self.intent_router = None
         self.local_executor = None
+        self.rule_manager = None
         try:
             from core.intent_router import IntentRouter
             from core.local_executor import LocalExecutor
+            from core.automation_rules import AutomationRuleManager
+
             self.intent_router = IntentRouter(config)
-            self.local_executor = LocalExecutor(self.skill_registry)
+
+            # Automation rule manager — keyword 触发 + scheduler 注册
+            def _execute_rule_actions(actions: list) -> None:
+                """Callback for scheduled/keyword rule execution."""
+                if self.local_executor:
+                    error = self.local_executor.execute_smart_home(actions, "owner")
+                    if error:
+                        self.logger.warning("Rule action failed: %s", error)
+
+            default_rules = str(Path(config_path).parent / "data" / "automation_rules.json") if config_path else "data/automation_rules.json"
+            self.rule_manager = AutomationRuleManager(
+                rules_path=config.get("automation", {}).get("rules_path", default_rules),
+                scheduler=self.scheduler,
+                action_executor=_execute_rule_actions,
+            )
+
+            self.local_executor = LocalExecutor(self.skill_registry, self.rule_manager)
         except Exception as exc:
             self.logger.warning("Intent router unavailable: %s", exc)
 
@@ -132,9 +151,12 @@ class JarvisApp:
         )
         self._running = True
         self._last_interaction = time.monotonic()
+        self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="jarvis")
+        self._tts_future: Future | None = None
 
     def shutdown(self) -> None:
         """Clean up all subsystems."""
+        self._executor.shutdown(wait=True)
         if self.scheduler and self.scheduler.available:
             self.scheduler.stop()
         if self.oled:
@@ -287,11 +309,11 @@ class JarvisApp:
         self.event_bus.emit("jarvis.state_changed", {"state": "listening"})
 
         # 1. Parallel: speaker verification + ASR
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            verify_future = executor.submit(self.speaker_verifier.verify, np.copy(audio))
-            asr_future = executor.submit(self.speech_recognizer.transcribe, np.copy(audio))
-            verification = verify_future.result()
-            transcription = asr_future.result()
+        self._wait_tts()  # 确保上一轮 TTS 播完再处理新音频
+        verify_future = self._executor.submit(self.speaker_verifier.verify, np.copy(audio))
+        asr_future = self._executor.submit(self.speech_recognizer.transcribe, np.copy(audio))
+        verification = verify_future.result()
+        transcription = asr_future.result()
 
         text = transcription.text.strip()
         if not text:
@@ -319,12 +341,21 @@ class JarvisApp:
         session_id = user_id or "_guest"
         history = self.conversation_store.get_history(session_id)
 
-        # 5. Route: local or cloud?
+        # 5. Keyword trigger check (before routing)
         self.event_bus.emit("jarvis.state_changed", {"state": "thinking"})
         response_text = None
         updated_messages = None
+        streamed_sentences: list[str] = []
 
-        if self.intent_router and self.local_executor:
+        if self.rule_manager and self.local_executor:
+            match = self.rule_manager.check_keyword(text)
+            if match:
+                keyword_actions, rule_name = match
+                error = self.local_executor.execute_smart_home(keyword_actions, user_role)
+                response_text = error or f"好的，{rule_name}已执行。"
+
+        # 6. Route: local or cloud?
+        if response_text is None and self.intent_router and self.local_executor:
             route = self.intent_router.route(text)
             if route.tier == "local":
                 if route.intent == "smart_home":
@@ -336,44 +367,93 @@ class JarvisApp:
                     )
                 elif route.intent == "time":
                     response_text = self.local_executor.execute_time(route.sub_type)
+                elif route.intent == "automation":
+                    response_text = self.local_executor.execute_automation(
+                        route.sub_type, route.rule,
+                    )
+                    # 如果 Groq 也给了 response，优先用它
+                    if response_text and route.response is not None:
+                        response_text = route.response
 
-        # 6. If local didn't handle it, fall back to cloud LLM
+        # 7. If local didn't handle it, fall back to cloud LLM (streaming)
         if response_text is None:
             tools = self.skill_registry.get_tool_definitions(user_role)
-            response_text, updated_messages = self.llm.chat(
-                user_message=text,
-                conversation_history=history,
-                tools=tools,
-                tool_executor=self.skill_registry.execute,
-                user_name=user_name,
-                user_id=user_id,
-                user_role=user_role,
-            )
 
-        # 7. Save conversation
+            # 逐句 TTS 回调：流式输出时每句话立刻播报
+            streamed_sentences: list[str] = []
+
+            def _on_sentence(sentence: str) -> None:
+                streamed_sentences.append(sentence)
+                print(f"🤖 Jarvis: {sentence}")
+                self._wait_tts()
+                self._speak_nonblocking(sentence)
+
+            self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
+            try:
+                response_text, updated_messages = self.llm.chat_stream(
+                    user_message=text,
+                    conversation_history=history,
+                    tools=tools,
+                    tool_executor=self.skill_registry.execute,
+                    user_name=user_name,
+                    user_id=user_id,
+                    user_role=user_role,
+                    on_sentence=_on_sentence,
+                )
+            except Exception as exc:
+                self.logger.error("Cloud LLM failed: %s", exc)
+                response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
+
+        # 8. Save conversation
         if updated_messages is not None:
             self.conversation_store.replace(session_id, updated_messages)
 
-        # 8. Output
-        self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
-        if self.oled:
-            self.oled.set_speaking_text(response_text)
-        print(f"🤖 Jarvis: {response_text}")
-        self.speak(response_text)
-        self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
+        # 9. Output (only for non-streamed responses)
+        if not streamed_sentences:
+            self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
+            if self.oled:
+                self.oled.set_speaking_text(response_text)
+            print(f"🤖 Jarvis: {response_text}")
+            self._speak_nonblocking(response_text)
 
         return response_text
 
     def speak(self, text: str) -> None:
-        """Speak text via TTS if available."""
+        """Speak text via TTS (blocking). Use for non-hot-path calls."""
         if not text:
             return
+        self._wait_tts()
         tts = self._get_tts()
         if tts:
             try:
                 tts.speak(text)
             except Exception as exc:
                 self.logger.warning("TTS failed: %s", exc)
+
+    def _speak_nonblocking(self, text: str) -> None:
+        """Speak text in a background thread (non-blocking hot path)."""
+        if not text:
+            self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
+            return
+        tts = self._get_tts()
+        if not tts:
+            self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
+            return
+
+        def _do_speak() -> None:
+            try:
+                tts.speak(text)
+            except Exception as exc:
+                self.logger.warning("TTS failed: %s", exc)
+            finally:
+                self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
+
+        self._tts_future = self._executor.submit(_do_speak)
+
+    def _wait_tts(self) -> None:
+        """Block until previous TTS finishes (prevents audio feedback)."""
+        if self._tts_future and not self._tts_future.done():
+            self._tts_future.result(timeout=30)
 
     def speak_short(self, text: str) -> None:
         """Speak a brief acknowledgment (low latency)."""

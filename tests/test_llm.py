@@ -51,7 +51,7 @@ def test_chat_returns_text_when_no_tools_called():
     FakeAnthropic = _install_fake_anthropic()
     try:
         client = LLMClient(_make_config())
-        mock_anthropic = client._get_client()
+        mock_anthropic = client._get_anthropic_client()
         mock_anthropic.messages.create = MagicMock(
             return_value=_FakeResponse([_FakeTextBlock("Hello, sir.")])
         )
@@ -69,7 +69,7 @@ def test_chat_executes_tool_and_returns_final_response():
     FakeAnthropic = _install_fake_anthropic()
     try:
         client = LLMClient(_make_config())
-        mock_anthropic = client._get_client()
+        mock_anthropic = client._get_anthropic_client()
 
         # First call: Claude wants to use a tool
         tool_response = _FakeResponse([
@@ -102,7 +102,7 @@ def test_chat_preserves_conversation_history():
     FakeAnthropic = _install_fake_anthropic()
     try:
         client = LLMClient(_make_config())
-        mock_anthropic = client._get_client()
+        mock_anthropic = client._get_anthropic_client()
         mock_anthropic.messages.create = MagicMock(
             return_value=_FakeResponse([_FakeTextBlock("Sure thing.")])
         )
@@ -128,7 +128,7 @@ def test_chat_caps_tool_call_rounds():
     FakeAnthropic = _install_fake_anthropic()
     try:
         client = LLMClient(_make_config())
-        mock_anthropic = client._get_client()
+        mock_anthropic = client._get_anthropic_client()
 
         # Always return a tool call — should hit the safety cap
         infinite_tool = _FakeResponse([
@@ -273,3 +273,44 @@ def test_openai_chat_caps_tool_rounds():
         assert mock_oai.chat.completions.create.call_count == 10
     finally:
         sys.modules.pop("openai", None)
+
+
+# ======================================================================
+# Streaming tests
+# ======================================================================
+
+
+def test_chat_stream_calls_on_sentence():
+    """chat_stream should call on_sentence for each complete sentence."""
+    from core.llm import LLMClient
+
+    client = LLMClient(_make_config())
+    sentences: list[str] = []
+
+    # Test _flush_sentences directly
+    buf = "你好。今天天气不错！明天"
+    remainder = client._flush_sentences(buf, sentences.append)
+    assert sentences == ["你好。", "今天天气不错！"]
+    assert remainder == "明天"
+
+    # Force flush remainder
+    sentences.clear()
+    client._flush_sentences("剩余内容", sentences.append, force=True)
+    assert sentences == ["剩余内容"]
+
+
+def test_chat_stream_no_callback_falls_back_to_chat():
+    """chat_stream with on_sentence=None should behave like chat()."""
+    FakeAnthropic = _install_fake_anthropic()
+    try:
+        client = LLMClient(_make_config())
+        mock_anthropic = client._get_anthropic_client()
+        mock_anthropic.messages.create = MagicMock(
+            return_value=_FakeResponse([_FakeTextBlock("No streaming.")])
+        )
+
+        text, messages = client.chat_stream("test", on_sentence=None)
+        assert text == "No streaming."
+        assert mock_anthropic.messages.create.called
+    finally:
+        sys.modules.pop("anthropic", None)

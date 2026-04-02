@@ -1,6 +1,7 @@
 # Core audio
 sounddevice
 scipy
+sherpa-onnx
 
 # Speaker verification
 speechbrain

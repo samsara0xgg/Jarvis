@@ -58,6 +58,12 @@ class AudioRecorder:
         self.low_volume_threshold = float(audio_config.get("low_volume_threshold", 0.02))
         self.block_duration = float(audio_config.get("block_duration", 0.1))
         self.volume_bar_width = int(audio_config.get("volume_bar_width", 24))
+
+        # VAD: 检测语音结束后提前停止录音
+        self.vad_enabled = bool(audio_config.get("vad_enabled", False))
+        self.vad_silence_duration = float(audio_config.get("vad_silence_duration", 0.5))
+        self.vad_threshold = float(audio_config.get("vad_threshold",
+                                                     self.low_volume_threshold))
         self.logger = LOGGER
         self._progress_logger = logging.getLogger(_PROGRESS_LOGGER_NAME)
         self._progress_logger.setLevel(logging.INFO)
@@ -93,11 +99,17 @@ class AudioRecorder:
             raise ValueError("Recording duration must be greater than zero.")
 
         target_frames = int(math.ceil(target_duration * self.sample_rate))
+        min_frames = int(math.ceil(self.min_duration * self.sample_rate))
         blocksize = max(1, int(self.block_duration * self.sample_rate))
         captured_frames = 0
         audio_chunks: list[np.ndarray] = []
         finished = threading.Event()
         progress_started = False
+
+        # VAD state
+        speech_detected = False
+        silence_frames = 0
+        silence_threshold_frames = int(self.vad_silence_duration * self.sample_rate)
 
         def callback(
             indata: np.ndarray,
@@ -108,7 +120,7 @@ class AudioRecorder:
             """Collect input frames and update the terminal volume meter."""
 
             del time_info
-            nonlocal captured_frames, progress_started
+            nonlocal captured_frames, progress_started, speech_detected, silence_frames
 
             if status:
                 self.logger.warning("Audio input status: %s", status)
@@ -122,11 +134,28 @@ class AudioRecorder:
             audio_chunks.append(chunk)
             captured_frames += chunk.shape[0]
             progress_started = True
+
+            level = self.get_volume_level(chunk)
             self._render_volume_bar(
-                level=self.get_volume_level(chunk),
+                level=level,
                 captured_frames=captured_frames,
                 target_frames=target_frames,
             )
+
+            # VAD: early stop when speech ends
+            if self.vad_enabled and captured_frames >= min_frames:
+                if level >= self.vad_threshold:
+                    speech_detected = True
+                    silence_frames = 0
+                elif speech_detected:
+                    silence_frames += chunk.shape[0]
+                    if silence_frames >= silence_threshold_frames:
+                        self.logger.info(
+                            "VAD: speech ended after %.2fs",
+                            captured_frames / self.sample_rate,
+                        )
+                        finished.set()
+                        raise sd.CallbackStop()
 
             if captured_frames >= target_frames:
                 finished.set()

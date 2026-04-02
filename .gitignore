@@ -39,8 +39,9 @@ data/reminders.json
 data/scheduler.db
 data/openclaw/
 
-# 模型文件
+# 模型文件（太大，不提交）
 data/speechbrain_model/
+data/sensevoice-small-int8/
 
 # Claude Code 本地设置
 .claude/settings.local.json

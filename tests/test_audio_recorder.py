@@ -1,4 +1,4 @@
-"""Tests for audio recording persistence and basic quality validation."""
+"""Tests for audio recording, quality validation, and VAD."""
 
 from __future__ import annotations
 
@@ -10,6 +10,26 @@ import yaml
 from scipy.io import wavfile
 
 from core.audio_recorder import AudioRecorder
+
+
+def _make_config(**audio_overrides) -> dict:
+    """Make a minimal config with optional audio overrides."""
+    base = {
+        "audio": {
+            "sample_rate": 16000,
+            "channels": 1,
+            "default_duration": 3.0,
+            "min_duration": 1.0,
+            "low_volume_threshold": 0.02,
+            "block_duration": 0.1,
+            "volume_bar_width": 24,
+            "vad_enabled": False,
+            "vad_silence_duration": 0.5,
+            "vad_threshold": 0.02,
+        }
+    }
+    base["audio"].update(audio_overrides)
+    return base
 
 
 def _load_config() -> dict:
@@ -62,3 +82,28 @@ def test_is_quality_ok(
 
     assert is_ok is expected_ok
     assert expected_message_fragment in message
+
+
+# --- VAD configuration tests ---
+
+
+class TestVADConfig:
+    def test_vad_disabled_by_default(self) -> None:
+        recorder = AudioRecorder(_make_config())
+        assert recorder.vad_enabled is False
+
+    def test_vad_enabled_from_config(self) -> None:
+        recorder = AudioRecorder(_make_config(vad_enabled=True, vad_silence_duration=0.8))
+        assert recorder.vad_enabled is True
+        assert recorder.vad_silence_duration == 0.8
+
+    def test_vad_threshold_defaults_to_low_volume(self) -> None:
+        """When vad_threshold is not set, it uses low_volume_threshold."""
+        config = _make_config(low_volume_threshold=0.05)
+        del config["audio"]["vad_threshold"]
+        recorder = AudioRecorder(config)
+        assert recorder.vad_threshold == 0.05
+
+    def test_vad_threshold_custom(self) -> None:
+        recorder = AudioRecorder(_make_config(vad_threshold=0.03))
+        assert recorder.vad_threshold == 0.03

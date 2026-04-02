@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
 from realtime_data.cache import Cache
-from realtime_data.models import NewsDigest, RealTimeSnapshot, StockDigest
+from realtime_data.models import ALL_TOPICS, NewsDigest, RealTimeSnapshot, StockDigest
 from realtime_data.providers.base import NewsProvider, StockProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -29,20 +30,24 @@ class RealTimeDataService:
         self.cache = cache
         self.logger = LOGGER
 
+
     def get_news(
         self,
         topic: str = "all",
-        limit: int = 5,
+        limit: int = 10,
         force_refresh: bool = False,
     ) -> NewsDigest:
-        """获取新闻."""
+        """获取新闻。topic="all" 时聚合 4 个分类."""
+        if topic == "all":
+            return self._get_all_news(limit, force_refresh)
+
         cache_key = f"news_{topic}"
         ttl = self.config.get("cache", {}).get("news_ttl_seconds", 1800)
 
         if not force_refresh and self.cache:
             cached_data, is_stale = self.cache.get(cache_key, ttl)
             if cached_data and not is_stale:
-                self.logger.info(f"News cache hit: {topic}")
+                self.logger.info("News cache hit: %s", topic)
                 return NewsDigest.from_dict(cached_data)
 
         try:
@@ -55,15 +60,24 @@ class RealTimeDataService:
             return digest
 
         except Exception as e:
-            self.logger.error(f"News fetch failed for {topic}: {e}")
+            self.logger.error("News fetch failed for %s: %s", topic, e)
 
             if self.cache:
                 cached_data, _ = self.cache.get(cache_key, ttl * 10)
                 if cached_data:
-                    self.logger.info(f"Returning stale news cache for {topic}")
+                    self.logger.info("Returning stale news cache for %s", topic)
                     return NewsDigest.from_dict(cached_data)
 
             return NewsDigest(articles=[], topic=topic)
+
+    def _get_all_news(self, limit: int, force_refresh: bool) -> NewsDigest:
+        """聚合 world/ai/technology/business 四个分类."""
+        all_articles = []
+        for t in ALL_TOPICS:
+            digest = self.get_news(t, limit, force_refresh)
+            all_articles.extend(replace(a, topic=t) for a in digest.articles)
+
+        return NewsDigest(articles=all_articles, topic="all", generated_at=datetime.now())
 
     def get_stocks(
         self,
@@ -93,7 +107,7 @@ class RealTimeDataService:
             return digest
 
         except Exception as e:
-            self.logger.error(f"Stock fetch failed: {e}")
+            self.logger.error("Stock fetch failed: %s", e)
 
             if self.cache:
                 cached_data, _ = self.cache.get(cache_key, ttl * 10)

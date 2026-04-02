@@ -1,10 +1,11 @@
-"""Tests for Whisper-backed speech recognition helpers."""
+"""Tests for speech recognition (SenseVoice + Whisper backends)."""
 
 from __future__ import annotations
 
 import builtins
 import sys
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -120,3 +121,150 @@ def test_transcribe_raises_runtime_error_when_whisper_is_missing() -> None:
 
         with pytest.raises(RuntimeError, match="openai-whisper"):
             recognizer.transcribe(np.ones(8, dtype=np.float32))
+
+
+# --- SenseVoice backend tests ---
+
+
+class _FakeSherpaResult:
+    """Fake sherpa-onnx result with lang/emotion/event attrs."""
+
+    def __init__(self, text: str, lang: str = "<|zh|>", emotion: str = "<|NEUTRAL|>", event: str = "<|Speech|>") -> None:
+        self.text = text
+        self.lang = lang
+        self.emotion = emotion
+        self.event = event
+        self.tokens = list(text)
+
+
+class _FakeSherpaStream:
+    """Fake sherpa-onnx OfflineStream."""
+
+    def __init__(self, text: str, lang: str = "<|zh|>") -> None:
+        self.result = _FakeSherpaResult(text, lang=lang)
+        self._accepted = False
+
+    def accept_waveform(self, sample_rate: int, audio: np.ndarray) -> None:
+        self._accepted = True
+
+
+class _FakeSherpaRecognizer:
+    """Fake sherpa-onnx OfflineRecognizer."""
+
+    def __init__(self, text: str = "打开卧室灯", lang: str = "<|zh|>") -> None:
+        self._text = text
+        self._lang = lang
+        self.decode_count = 0
+
+    def create_stream(self) -> _FakeSherpaStream:
+        return _FakeSherpaStream(self._text, self._lang)
+
+    def decode_stream(self, stream: _FakeSherpaStream) -> None:
+        self.decode_count += 1
+
+
+def test_sensevoice_primary_path() -> None:
+    """SenseVoice should be used when provider=sensevoice."""
+    config = {"asr": {"provider": "sensevoice", "language": "zh"}}
+    recognizer = SpeechRecognizer(config)
+    recognizer.provider = "sensevoice"
+
+    fake_recognizer = _FakeSherpaRecognizer("开灯", "<|zh|>")
+    recognizer._sherpa_recognizer = fake_recognizer
+
+    # Use audio with sufficient RMS to pass silence filter
+    audio = np.ones(16000, dtype=np.float32) * 0.5
+    result = recognizer.transcribe(audio)
+    assert result.text == "开灯"
+    assert result.language == "zh"
+    assert result.confidence == 0.9
+    assert fake_recognizer.decode_count == 1
+
+
+def test_sensevoice_detects_language() -> None:
+    """SenseVoice should extract detected language from result.lang."""
+    config = {"asr": {"provider": "sensevoice", "language": "zh"}}
+    recognizer = SpeechRecognizer(config)
+    recognizer.provider = "sensevoice"
+
+    fake_recognizer = _FakeSherpaRecognizer("hello world", "<|en|>")
+    recognizer._sherpa_recognizer = fake_recognizer
+
+    audio = np.ones(16000, dtype=np.float32) * 0.5
+    result = recognizer.transcribe(audio)
+    assert result.language == "en"
+
+
+def test_sensevoice_silence_returns_empty() -> None:
+    """Silence audio should return empty text with low confidence."""
+    config = {"asr": {"provider": "sensevoice", "language": "zh"}}
+    recognizer = SpeechRecognizer(config)
+    recognizer.provider = "sensevoice"
+
+    fake_recognizer = _FakeSherpaRecognizer("嗯")
+    recognizer._sherpa_recognizer = fake_recognizer
+
+    silence = np.zeros(16000, dtype=np.float32)
+    result = recognizer.transcribe(silence)
+    assert result.text == ""
+    assert result.confidence < 0.5
+
+
+def test_sensevoice_fallback_to_whisper() -> None:
+    """If SenseVoice fails, should fall back to Whisper when fallback_to_local=True."""
+    config = {"asr": {"provider": "sensevoice", "fallback_to_local": True, "language": "zh"}}
+    recognizer = SpeechRecognizer(config)
+    recognizer.provider = "sensevoice"
+
+    # Make SenseVoice fail
+    recognizer._sherpa_recognizer = None
+    def _fail(audio):
+        raise RuntimeError("SenseVoice crashed")
+    recognizer._transcribe_sensevoice = _fail
+
+    # Set up fake Whisper
+    fake_model = _FakeWhisperModel([{"text": "回退成功", "language": "zh", "segments": []}])
+    fake_whisper = SimpleNamespace(load_model=lambda s: fake_model)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "whisper", fake_whisper)
+        result = recognizer.transcribe(np.ones(16000, dtype=np.float32))
+
+    assert result.text == "回退成功"
+
+
+def test_sensevoice_no_fallback_raises() -> None:
+    """If fallback_to_local=False, SenseVoice failure should propagate."""
+    config = {"asr": {"provider": "sensevoice", "fallback_to_local": False}}
+    recognizer = SpeechRecognizer(config)
+    recognizer.provider = "sensevoice"
+
+    def _fail(audio):
+        raise RuntimeError("SenseVoice crashed")
+    recognizer._transcribe_sensevoice = _fail
+
+    with pytest.raises(RuntimeError, match="SenseVoice crashed"):
+        recognizer.transcribe(np.ones(16000, dtype=np.float32))
+
+
+def test_provider_local_skips_sensevoice() -> None:
+    """Provider=local should use Whisper directly, never touch SenseVoice."""
+    config = {"asr": {"provider": "local", "model_size": "tiny", "language": "zh"}}
+    recognizer = SpeechRecognizer(config)
+    assert recognizer.provider == "local"
+
+    fake_model = _FakeWhisperModel([{"text": "直接Whisper", "language": "zh", "segments": []}])
+    fake_whisper = SimpleNamespace(load_model=lambda s: fake_model)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "whisper", fake_whisper)
+        result = recognizer.transcribe(np.ones(16000, dtype=np.float32))
+
+    assert result.text == "直接Whisper"
+
+
+def test_auto_degrade_when_model_missing(tmp_path) -> None:
+    """If SenseVoice model dir doesn't exist, should auto-degrade to local."""
+    config = {"asr": {"provider": "sensevoice", "sensevoice_model_dir": str(tmp_path / "nonexistent")}}
+    recognizer = SpeechRecognizer(config)
+    assert recognizer.provider == "local"

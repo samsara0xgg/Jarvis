@@ -18,7 +18,10 @@ from core.local_llm import LocalLLM
 
 LOGGER = logging.getLogger(__name__)
 
-VALID_INTENTS = {"smart_home", "info_query", "time", "complex", "uncertain"}
+# 复用 HTTP 连接（IntentRouter 仅在主循环单线程调用，无需线程安全）
+_SESSION = requests.Session()
+
+VALID_INTENTS = {"smart_home", "info_query", "time", "complex", "uncertain", "automation"}
 
 # 设备能力描述模板，运行时从 config 动态生成
 _DEVICE_ACTIONS = {
@@ -40,44 +43,31 @@ def build_system_prompt(config: dict) -> str:
 
     device_list = "\n".join(devices_desc)
 
-    return f"""你是智能家居语音助手的意图分析器。分析用户指令并返回 JSON。
+    return f"""你是Jarvis，私人AI助手。性格简洁、略带幽默。分析用户指令，返回JSON。
+response字段用中文，语气简洁自然（如"好的，灯开了。"而不是"好的，我已经帮你把客厅的灯打开了。"）
 
-可用设备：
+设备：
 {device_list}
 
-返回 JSON 格式（不要输出其他内容）：
+JSON格式：
+smart_home: {{"intent":"smart_home","confidence":0.95,"actions":[{{"device_id":"xxx","action":"turn_on","value":null}}],"response":"好的，已开灯。"}}
+info_query: {{"intent":"info_query","confidence":0.9,"sub_type":"news|stocks|weather","query":"AI","response":null}}
+time: {{"intent":"time","confidence":0.95,"sub_type":"current_time|date|weekday","response":null}}
+automation: {{"intent":"automation","confidence":0.9,"sub_type":"create|list|delete","rule":{{"name":"晚安模式","trigger":{{"type":"keyword","keyword":"晚安"}},"actions":[{{"device_id":"xxx","action":"turn_off","value":null}}]}},"response":"好的，以后说晚安就会关灯。"}}
+complex: {{"intent":"complex","confidence":0.85,"response":null}}
+uncertain: {{"intent":"uncertain","confidence":0.3,"response":null}}
 
-smart_home 示例：
-{{"intent":"smart_home","confidence":0.95,"actions":[{{"device_id":"living_room_light","action":"turn_on","value":null}}],"response":"好的，已帮你打开客厅灯。"}}
+automation trigger类型：
+- keyword: {{"type":"keyword","keyword":"晚安"}} — 用户说这个词时触发
+- cron: {{"type":"cron","hour":7,"minute":0,"days":"everyday|weekdays|weekends"}} — 定时触发
+- once: {{"type":"once","delay_minutes":30}} — 一次性延时触发
 
-多设备示例（"开灯和空调"）：
-{{"intent":"smart_home","confidence":0.95,"actions":[{{"device_id":"living_room_light","action":"turn_on","value":null}},{{"device_id":"home_thermostat","action":"turn_on","value":null}}],"response":"好的，已帮你打开客厅灯和空调。"}}
-
-所有灯示例（"关掉所有灯"）：
-{{"intent":"smart_home","confidence":0.95,"actions":[{{"device_id":"living_room_light","action":"turn_off","value":null}},{{"device_id":"bedroom_light","action":"turn_off","value":null}},{{"device_id":"study_light","action":"turn_off","value":null}},{{"device_id":"living_room_group","action":"turn_off","value":null}}],"response":"好的，所有灯已关闭。"}}
-
-隐含意图示例（"太冷了"=调高空调）：
-{{"intent":"smart_home","confidence":0.9,"actions":[{{"device_id":"home_thermostat","action":"set_temperature","value":26}}],"response":"好的，空调已调到26度。"}}
-
-info_query 示例：
-{{"intent":"info_query","confidence":0.9,"sub_type":"stocks","query":["NVDA"],"response":null}}
-{{"intent":"info_query","confidence":0.9,"sub_type":"news","query":"AI","response":null}}
-{{"intent":"info_query","confidence":0.9,"sub_type":"weather","query":null,"response":null}}
-
-time 示例：
-{{"intent":"time","confidence":0.95,"sub_type":"current_time","response":null}}
-
-complex 示例（闲聊/写作/分析/情感表达/抽象讨论）：
-{{"intent":"complex","confidence":0.85,"response":null}}
-
-uncertain 示例（无意义输入）：
-{{"intent":"uncertain","confidence":0.3,"response":null}}
-
-关键规则：
-- "你太冷漠了""我感觉很温暖""把这个问题关闭" → complex（情感/抽象，不是设备控制）
-- "有点暗""看不清" → smart_home（开灯）
-- "好热""太冷" → smart_home（调空调）
-- 只输出 JSON，不要输出其他内容。"""
+规则：
+- 多设备用actions数组，如"开灯和空调"输出两个action
+- "所有灯"=列出全部灯的device_id
+- 隐含意图："有点暗"=开灯，"好热"/"太冷"=调空调
+- 情感/抽象表达→complex，如"你太冷漠了""把这个问题关闭"
+- 只输出JSON"""
 
 
 @dataclass
@@ -93,6 +83,7 @@ class RouteResult:
     response: str | None = None
     sub_type: str | None = None
     query: Any = None
+    rule: dict[str, Any] | None = None
 
 
 class IntentRouter:
@@ -161,7 +152,7 @@ class IntentRouter:
     ) -> RouteResult | None:
         """调用云端 API."""
         try:
-            resp = requests.post(
+            resp = _SESSION.post(
                 url,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
@@ -220,8 +211,9 @@ class IntentRouter:
         response = parsed.get("response")
         sub_type = parsed.get("sub_type")
         query = parsed.get("query")
+        rule = parsed.get("rule")
 
-        if intent in ("smart_home", "info_query", "time"):
+        if intent in ("smart_home", "info_query", "time", "automation"):
             tier = "local"
         else:
             tier = "cloud"
@@ -238,5 +230,5 @@ class IntentRouter:
             tier=tier, intent=intent, confidence=confidence,
             duration_ms=duration_ms, provider=provider,
             actions=actions, response=response,
-            sub_type=sub_type, query=query,
+            sub_type=sub_type, query=query, rule=rule,
         )

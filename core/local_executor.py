@@ -6,14 +6,17 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from core.automation_rules import AutomationRuleManager
+
 LOGGER = logging.getLogger(__name__)
 
 
 class LocalExecutor:
     """执行路由器解析好的结构化指令."""
 
-    def __init__(self, skill_registry: Any) -> None:
+    def __init__(self, skill_registry: Any, rule_manager: AutomationRuleManager | None = None) -> None:
         self.skill_registry = skill_registry
+        self.rule_manager = rule_manager
         self.logger = LOGGER
 
     def execute_smart_home(self, actions: list[dict], user_role: str = "owner") -> str | None:
@@ -99,3 +102,33 @@ class LocalExecutor:
             return f"今天是{now.year}年{now.month}月{now.day}日，{weekday}。"
 
         return f"现在是{now.hour}点{now.minute:02d}分。"
+
+    def execute_automation(self, sub_type: str | None, rule: dict[str, Any] | None) -> str | None:
+        """处理自动化规则操作.
+
+        Args:
+            sub_type: create / list / delete
+            rule: Groq 返回的 rule JSON（仅 create 时需要）
+
+        Returns:
+            操作结果文本。
+        """
+        if not self.rule_manager:
+            return "自动化功能未启用。"
+
+        if sub_type == "create":
+            if not rule:
+                return "缺少规则信息。"
+            return self.rule_manager.create_rule(rule)
+
+        if sub_type == "list":
+            return self.rule_manager.list_rules()
+
+        if sub_type == "delete":
+            name = rule.get("name", "") if rule else ""
+            if not name:
+                return "请指定要删除的规则名称。"
+            return self.rule_manager.delete_rule(name)
+
+        return None
+
