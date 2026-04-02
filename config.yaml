@@ -280,11 +280,11 @@ llm:
   # LLM 提供商：openai（兼容 Kimi/DeepSeek）或 anthropic。
   provider: openai
 
-  # 模型 ID。Kimi: kimi-k2.5。DeepSeek: deepseek-chat。OpenAI: gpt-4o。
-  model: deepseek-chat
+  # 模型 ID。gpt-4o-mini(便宜快) / gpt-4o(最强) / deepseek-chat / kimi-k2.5。
+  model: gpt-4o-mini
 
-  # OpenAI 兼容 base_url（Kimi/DeepSeek 等）。留空则使用 OpenAI 官方。
-  base_url: "https://api.deepseek.com"
+  # OpenAI 兼容 base_url。留空 = OpenAI 官方。DeepSeek: https://api.deepseek.com
+  base_url: ""
 
   # 单次回复最大 token 数。
   max_tokens: 1024
@@ -303,8 +303,8 @@ tts:
   # OpenAI TTS（gpt-4o-mini-tts，ChatGPT 同款，最像真人）
   openai_tts_key: ""     # env OPENAI_API_KEY
   openai_tts_model: gpt-4o-mini-tts
-  openai_tts_voice: alloy  # 可选: alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer, verse
-  openai_tts_instructions: "你是 Jarvis，说话像一个亲切聪明的朋友。语气自然温暖，有情感，不要像机器人。中文为主。"
+  openai_tts_voice: nova  # nova(女声温暖活泼) echo(男声沉稳) shimmer(女声柔和) ballad(感性) verse(多变)
+  openai_tts_instructions: "你是一个温暖亲切的中文AI助手。说话自然，像真人朋友聊天，语气有起伏变化，不要平淡念稿。"
 
   # MiniMax TTS（TTS Arena 第一，中文最自然，带情感）
   minimax_key: ""        # env MINIMAX_API_KEY
