@@ -81,8 +81,17 @@ class TTSEngine:
         self.fallback_enabled = bool(tts_config.get("fallback_enabled", True))
         self.logger = LOGGER
         self._pyttsx_engine: Any = None
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self._openai_client: Any = None
+        self._http_session: Any = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
+        self._platform = platform.system()
+
+        # Lazy-init reusable HTTP session
+        try:
+            import requests
+            self._http_session = requests.Session()
+        except ImportError:
+            pass
 
         # Azure Neural TTS config
         self.azure_key = str(tts_config.get("azure_key", "") or os.environ.get("AZURE_SPEECH_KEY", ""))
@@ -185,8 +194,28 @@ class TTSEngine:
             except Exception as exc:
                 self.logger.warning("All TTS engines failed for short speak: %s", exc)
 
-    def _speak_openai_tts(self, text: str, emotion: str = "") -> None:
-        """Generate speech with OpenAI gpt-4o-mini-tts — ChatGPT-level naturalness."""
+    # ------------------------------------------------------------------
+    # Synthesis-to-file methods (shared by TTSEngine.speak and TTSPipeline)
+    # ------------------------------------------------------------------
+
+    def synth_to_file(self, text: str, emotion: str = "") -> str | None:
+        """Synthesize text to a temp audio file and return its path.
+
+        Returns None if the engine plays directly (pyttsx3).
+        """
+        if self.engine_name == "openai_tts" and self.openai_tts_key:
+            return self._synth_openai(text, emotion)
+        if self.engine_name == "minimax" and self.minimax_key:
+            return self._synth_minimax(text, emotion)
+        if self.engine_name == "azure" and self.azure_key:
+            return self._synth_azure(text, emotion)
+        if self.engine_name == "pyttsx3":
+            self._speak_pyttsx3(text)
+            return None
+        return self._synth_edge(text)
+
+    def _synth_openai(self, text: str, emotion: str = "") -> str:
+        """Synthesize with OpenAI TTS, return temp file path."""
         try:
             from openai import OpenAI
         except ImportError as exc:
@@ -197,21 +226,19 @@ class TTSEngine:
         if not self.openai_tts_key:
             raise RuntimeError("OpenAI API key not configured (OPENAI_API_KEY)")
 
-        # Build emotion-aware instructions
         base_instructions = self.openai_tts_instructions
         emotion_hint = _EMOTION_TO_OPENAI_INSTRUCTION.get(emotion, "")
-        if emotion_hint:
-            instructions = f"{base_instructions} {emotion_hint}"
-        else:
-            instructions = base_instructions
+        instructions = f"{base_instructions} {emotion_hint}" if emotion_hint else base_instructions
 
         self.logger.info(
             "OpenAI TTS: voice=%s emotion=%s text=%r",
             self.openai_tts_voice, emotion or "neutral", text[:50],
         )
 
-        client = OpenAI(api_key=self.openai_tts_key)
-        response = client.audio.speech.create(
+        if self._openai_client is None:
+            self._openai_client = OpenAI(api_key=self.openai_tts_key)
+
+        response = self._openai_client.audio.speech.create(
             model=self.openai_tts_model,
             voice=self.openai_tts_voice,
             input=text,
@@ -221,17 +248,10 @@ class TTSEngine:
 
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
             tmp.write(response.content)
-            tmp_path = tmp.name
+            return tmp.name
 
-        try:
-            self._play_audio_file(tmp_path)
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
-
-    def _speak_minimax(self, text: str, emotion: str = "") -> None:
-        """Generate speech with MiniMax TTS API with emotion control."""
-        import requests
-
+    def _synth_minimax(self, text: str, emotion: str = "") -> str:
+        """Synthesize with MiniMax TTS, return temp file path."""
         if not self.minimax_key:
             raise RuntimeError("MiniMax API key not configured (MINIMAX_API_KEY)")
 
@@ -260,7 +280,7 @@ class TTSEngine:
             self.minimax_voice, minimax_emotion, text[:50],
         )
 
-        resp = requests.post(
+        resp = self._http_session.post(
             self._minimax_url,
             headers={
                 "Authorization": f"Bearer {self.minimax_key}",
@@ -276,20 +296,14 @@ class TTSEngine:
             error_msg = data.get("base_resp", {}).get("status_msg", str(data))
             raise RuntimeError(f"MiniMax TTS error: {error_msg}")
 
-        audio_hex = data["data"]["audio"]
-        audio_bytes = bytes.fromhex(audio_hex)
+        audio_bytes = bytes.fromhex(data["data"]["audio"])
 
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
             tmp.write(audio_bytes)
-            tmp_path = tmp.name
+            return tmp.name
 
-        try:
-            self._play_audio_file(tmp_path)
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
-
-    def _speak_azure(self, text: str, emotion: str = "") -> None:
-        """Generate speech with Azure Neural TTS using SSML for emotion."""
+    def _synth_azure(self, text: str, emotion: str = "") -> str:
+        """Synthesize with Azure Neural TTS, return temp file path."""
         try:
             import azure.cognitiveservices.speech as speechsdk
         except ImportError as exc:
@@ -301,20 +315,6 @@ class TTSEngine:
         if not self.azure_key:
             raise RuntimeError("Azure Speech key not configured (AZURE_SPEECH_KEY)")
 
-        speech_config = speechsdk.SpeechConfig(
-            subscription=self.azure_key, region=self.azure_region,
-        )
-
-        # Output to temp file then play (same pattern as edge-tts)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
-
-        audio_config = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
-        synthesizer = speechsdk.SpeechSynthesizer(
-            speech_config=speech_config, audio_config=audio_config,
-        )
-
-        # Build SSML with emotion style (escape text for XML safety)
         from xml.sax.saxutils import escape
         style = _EMOTION_TO_AZURE_STYLE.get(emotion, "chat")
         ssml = (
@@ -327,21 +327,27 @@ class TTSEngine:
             '</voice></speak>'
         )
 
+        speech_config = speechsdk.SpeechConfig(
+            subscription=self.azure_key, region=self.azure_region,
+        )
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+        audio_config = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
+        synthesizer = speechsdk.SpeechSynthesizer(
+            speech_config=speech_config, audio_config=audio_config,
+        )
+
         self.logger.info("Azure TTS: voice=%s style=%s text=%r", self.azure_voice, style, text[:50])
         result = synthesizer.speak_ssml_async(ssml).get()
 
         if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            try:
-                self._play_audio_file(tmp_path)
-            finally:
-                Path(tmp_path).unlink(missing_ok=True)
-        else:
-            Path(tmp_path).unlink(missing_ok=True)
-            cancellation = result.cancellation_details
-            raise RuntimeError(f"Azure TTS failed: {cancellation.reason} - {cancellation.error_details}")
+            return tmp_path
+        Path(tmp_path).unlink(missing_ok=True)
+        cancellation = result.cancellation_details
+        raise RuntimeError(f"Azure TTS failed: {cancellation.reason} - {cancellation.error_details}")
 
-    def _speak_edge(self, text: str) -> None:
-        """Generate speech with edge-tts and play the resulting audio."""
+    def _synth_edge(self, text: str) -> str:
+        """Synthesize with edge-tts, return temp file path."""
         try:
             import edge_tts
         except ImportError as exc:
@@ -349,31 +355,57 @@ class TTSEngine:
                 "edge-tts is required for Edge TTS. Install with: pip install edge-tts"
             ) from exc
 
-        async def _generate_and_play() -> None:
-            communicate = edge_tts.Communicate(
-                text, self.edge_voice, rate=self.edge_rate,
-            )
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-                tmp_path = tmp.name
-            try:
-                await communicate.save(tmp_path)
-                self._play_audio_file(tmp_path)
-            finally:
-                Path(tmp_path).unlink(missing_ok=True)
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp_path = tmp.name
 
-        # Run the async edge-tts call in a fresh or reused event loop
+        async def _save() -> None:
+            communicate = edge_tts.Communicate(text, self.edge_voice, rate=self.edge_rate)
+            await communicate.save(tmp_path)
+
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = None
 
         if loop and loop.is_running():
-            # Already inside an async context — run in a new thread
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                pool.submit(lambda: asyncio.run(_generate_and_play())).result()
+                pool.submit(lambda: asyncio.run(_save())).result()
         else:
-            asyncio.run(_generate_and_play())
+            asyncio.run(_save())
+        return tmp_path
+
+    # ------------------------------------------------------------------
+    # speak methods — thin wrappers around synth_to_file + play
+    # ------------------------------------------------------------------
+
+    def _speak_openai_tts(self, text: str, emotion: str = "") -> None:
+        tmp_path = self._synth_openai(text, emotion)
+        try:
+            self._play_audio_file(tmp_path)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    def _speak_minimax(self, text: str, emotion: str = "") -> None:
+        tmp_path = self._synth_minimax(text, emotion)
+        try:
+            self._play_audio_file(tmp_path)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    def _speak_azure(self, text: str, emotion: str = "") -> None:
+        tmp_path = self._synth_azure(text, emotion)
+        try:
+            self._play_audio_file(tmp_path)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    def _speak_edge(self, text: str) -> None:
+        tmp_path = self._synth_edge(text)
+        try:
+            self._play_audio_file(tmp_path)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
     def _speak_pyttsx3(self, text: str) -> None:
         """Speak using the offline pyttsx3 engine."""
@@ -391,7 +423,7 @@ class TTSEngine:
 
     def _play_audio_file(self, filepath: str) -> None:
         """Play an audio file using the platform's native player."""
-        system = platform.system()
+        system = self._platform
         try:
             if system == "Darwin":
                 subprocess.run(
@@ -573,92 +605,5 @@ class TTSPipeline:
                 Path(filepath).unlink(missing_ok=True)
 
     def _synthesize_to_file(self, text: str, emotion: str = "") -> str | None:
-        """Use the TTS engine to generate audio and return the temp file path."""
-        engine = self._engine
-
-        if engine.engine_name == "openai_tts" and engine.openai_tts_key:
-            return self._synth_openai(text, emotion)
-        if engine.engine_name == "minimax" and engine.minimax_key:
-            return self._synth_minimax(text, emotion)
-        if engine.engine_name == "azure" and engine.azure_key:
-            return self._synth_azure(text, emotion)
-        if engine.engine_name == "pyttsx3":
-            # pyttsx3 plays directly, can't separate synthesis from playback
-            engine._speak_pyttsx3(text)
-            return None
-        # Default: edge-tts
-        return self._synth_edge(text)
-
-    def _synth_openai(self, text: str, emotion: str = "") -> str:
-        from openai import OpenAI
-        e = self._engine
-        base_instructions = e.openai_tts_instructions
-        emotion_hint = _EMOTION_TO_OPENAI_INSTRUCTION.get(emotion, "")
-        instructions = f"{base_instructions} {emotion_hint}" if emotion_hint else base_instructions
-        client = OpenAI(api_key=e.openai_tts_key)
-        response = client.audio.speech.create(
-            model=e.openai_tts_model, voice=e.openai_tts_voice,
-            input=text, instructions=instructions, response_format="mp3",
-        )
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            tmp.write(response.content)
-            return tmp.name
-
-    def _synth_minimax(self, text: str, emotion: str = "") -> str:
-        import requests
-        e = self._engine
-        minimax_emotion = _EMOTION_TO_MINIMAX.get(emotion, "calm")
-        payload = {
-            "model": e.minimax_model, "text": text, "stream": False,
-            "voice_setting": {"voice_id": e.minimax_voice, "speed": 1.0, "vol": 5, "pitch": 0, "emotion": minimax_emotion},
-            "audio_setting": {"format": "mp3", "sample_rate": 32000, "channel": 1},
-        }
-        resp = requests.post(
-            e._minimax_url,
-            headers={"Authorization": f"Bearer {e.minimax_key}", "Content-Type": "application/json"},
-            json=payload, timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if "data" not in data or "audio" not in data.get("data", {}):
-            error_msg = data.get("base_resp", {}).get("status_msg", str(data))
-            raise RuntimeError(f"MiniMax TTS error: {error_msg}")
-        audio_bytes = bytes.fromhex(data["data"]["audio"])
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            tmp.write(audio_bytes)
-            return tmp.name
-
-    def _synth_azure(self, text: str, emotion: str = "") -> str:
-        import azure.cognitiveservices.speech as speechsdk
-        from xml.sax.saxutils import escape
-        e = self._engine
-        speech_config = speechsdk.SpeechConfig(subscription=e.azure_key, region=e.azure_region)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
-        audio_config = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
-        synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
-        style = _EMOTION_TO_AZURE_STYLE.get(emotion, "chat")
-        ssml = (
-            '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
-            'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="zh-CN">'
-            f'<voice name="{e.azure_voice}"><mstts:express-as style="{style}">'
-            f'{escape(text)}</mstts:express-as></voice></speak>'
-        )
-        result = synthesizer.speak_ssml_async(ssml).get()
-        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            return tmp_path
-        Path(tmp_path).unlink(missing_ok=True)
-        raise RuntimeError(f"Azure TTS failed: {result.cancellation_details.reason}")
-
-    def _synth_edge(self, text: str) -> str:
-        import edge_tts
-        e = self._engine
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            tmp_path = tmp.name
-
-        async def _save():
-            communicate = edge_tts.Communicate(text, e.edge_voice, rate=e.edge_rate)
-            await communicate.save(tmp_path)
-
-        asyncio.run(_save())
-        return tmp_path
+        """Delegate to TTSEngine.synth_to_file — single source of truth."""
+        return self._engine.synth_to_file(text, emotion)

@@ -298,7 +298,7 @@ llm:
 # ----------------------------------------------------------------------------
 tts:
   # 首选引擎：openai_tts（最自然）/ minimax / azure / edge-tts / pyttsx3。
-  engine: openai_tts
+  engine: minimax
 
   # OpenAI TTS（gpt-4o-mini-tts，ChatGPT 同款，最像真人）
   openai_tts_key: ""     # env OPENAI_API_KEY
@@ -309,7 +309,7 @@ tts:
   # MiniMax TTS（TTS Arena 第一，中文最自然，带情感）
   minimax_key: ""        # env MINIMAX_API_KEY
   minimax_model: speech-02-turbo
-  minimax_voice: male-qn-qingse
+  minimax_voice: "Chinese (Mandarin)_ExplorativeGirl"
 
   # Azure Neural TTS（备用，50万字/月免费）
   azure_key: ""          # env AZURE_SPEECH_KEY

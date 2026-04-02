@@ -320,3 +320,21 @@ class TestLocalExecutor:
         result = executor.execute_time(None)
         assert "点" in result.text
         assert result.action == Action.RESPONSE
+
+    def test_execute_smart_home_response_has_text(self, executor, mock_registry):
+        """ActionResponse.text should be a string, not None — for rule callbacks."""
+        from core.local_executor import Action, ActionResponse
+        actions = [{"device_id": "living_room_light", "action": "turn_on"}]
+        result = executor.execute_smart_home(actions, "owner", response="好的，灯开了。")
+        assert isinstance(result, ActionResponse)
+        assert isinstance(result.text, str)
+        assert result.action == Action.RESPONSE
+        assert result.text == "好的，灯开了。"
+
+    def test_execute_info_query_reqllm_type(self, executor, mock_registry):
+        """info_query should return REQLLM so LLM can rephrase the data."""
+        from core.local_executor import Action
+        mock_registry.execute.return_value = "AAPL: $248, +2.3%"
+        result = executor.execute_info_query("stocks", ["AAPL"], "owner")
+        assert result.action == Action.REQLLM
+        assert "248" in result.text

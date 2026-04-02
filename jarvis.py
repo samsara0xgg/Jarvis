@@ -18,6 +18,8 @@ import numpy as np
 import yaml
 
 from auth.permission_manager import PermissionManager
+from core.local_executor import Action, ActionResponse
+from core.tts import SentenceType
 from auth.user_store import UserStore
 from core.audio_recorder import AudioRecorder
 from core.automation_engine import AutomationEngine
@@ -123,9 +125,9 @@ class JarvisApp:
             def _execute_rule_actions(actions: list) -> None:
                 """Callback for scheduled/keyword rule execution."""
                 if self.local_executor:
-                    error = self.local_executor.execute_smart_home(actions, "owner")
-                    if error:
-                        self.logger.warning("Rule action failed: %s", error)
+                    ar = self.local_executor.execute_smart_home(actions, "owner")
+                    if "失败" in ar.text:
+                        self.logger.warning("Rule action failed: %s", ar.text)
 
             default_rules = str(Path(config_path).parent / "data" / "automation_rules.json") if config_path else "data/automation_rules.json"
             self.rule_manager = AutomationRuleManager(
@@ -349,7 +351,8 @@ class JarvisApp:
         self.event_bus.emit("jarvis.state_changed", {"state": "thinking"})
         response_text = None
         updated_messages = None
-        streamed_sentences: list[str] = []
+        ar: ActionResponse | None = None
+        sentence_count = 0
 
         if self.rule_manager and self.local_executor:
             match = self.rule_manager.check_keyword(text)
@@ -363,7 +366,6 @@ class JarvisApp:
         # 6. Route: local or cloud?
         use_llm_rephrase = False
         if response_text is None and self.intent_router and self.local_executor:
-            from core.local_executor import Action
             route = self.intent_router.route(text)
             if route.tier == "local":
                 if route.intent == "smart_home":
@@ -398,17 +400,13 @@ class JarvisApp:
             tools = self.skill_registry.get_tool_definitions(user_role)
 
             # 逐句 TTS：用 pipeline 异步合成+播放，消除句间停顿
-            streamed_sentences: list[str] = []
             tts_pipeline = self._create_tts_pipeline()
-            sentence_count = 0
 
             def _on_sentence(sentence: str) -> None:
                 nonlocal sentence_count
-                streamed_sentences.append(sentence)
                 sentence_count += 1
                 print(f"🤖 Jarvis: {sentence}")
                 if tts_pipeline:
-                    from core.tts import SentenceType
                     st = SentenceType.FIRST if sentence_count == 1 else SentenceType.MIDDLE
                     tts_pipeline.submit(sentence, st, emotion=detected_emotion)
                 else:
@@ -417,51 +415,56 @@ class JarvisApp:
 
             self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
 
-            # REQLLM: 让 LLM 用小贾语气转述本地数据
-            if use_llm_rephrase and ar is not None:
-                rephrase_msg = f"用你自己的话简短转述以下信息给用户：\n{ar.text}"
-                try:
-                    response_text, updated_messages = self.llm.chat_stream(
-                        user_message=rephrase_msg,
-                        conversation_history=history,
-                        user_name=user_name,
-                        user_id=user_id,
-                        user_role=user_role,
-                        on_sentence=_on_sentence,
-                        user_emotion=detected_emotion,
+            try:
+                # REQLLM: 让 LLM 用小贾语气转述本地数据
+                if use_llm_rephrase and ar is not None:
+                    rephrase_msg = (
+                        f"用户问的是：{text}\n"
+                        f"以下是查到的信息，用你自己的话简短转述给用户：\n{ar.text}"
                     )
-                except Exception as exc:
-                    self.logger.error("LLM rephrase failed: %s", exc)
-                    response_text = ar.text  # 降级：直接播报原始数据
-            else:
-                try:
-                    response_text, updated_messages = self.llm.chat_stream(
-                        user_message=text,
-                        conversation_history=history,
-                        tools=tools,
-                        tool_executor=self.skill_registry.execute,
-                        user_name=user_name,
-                        user_id=user_id,
-                        user_role=user_role,
-                        on_sentence=_on_sentence,
-                        user_emotion=detected_emotion,
-                    )
-                except Exception as exc:
-                    self.logger.error("Cloud LLM failed: %s", exc)
-                    response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
-
-            # 等 pipeline 播完
-            if tts_pipeline and streamed_sentences:
-                tts_pipeline.finish()
-                tts_pipeline.wait_done()
-                tts_pipeline.stop()
+                    try:
+                        response_text, updated_messages = self.llm.chat_stream(
+                            user_message=rephrase_msg,
+                            conversation_history=history,
+                            user_name=user_name,
+                            user_id=user_id,
+                            user_role=user_role,
+                            on_sentence=_on_sentence,
+                            user_emotion=detected_emotion,
+                        )
+                    except Exception as exc:
+                        self.logger.error("LLM rephrase failed: %s", exc)
+                        response_text = ar.text  # 降级：直接播报原始数据
+                else:
+                    try:
+                        response_text, updated_messages = self.llm.chat_stream(
+                            user_message=text,
+                            conversation_history=history,
+                            tools=tools,
+                            tool_executor=self.skill_registry.execute,
+                            user_name=user_name,
+                            user_id=user_id,
+                            user_role=user_role,
+                            on_sentence=_on_sentence,
+                            user_emotion=detected_emotion,
+                        )
+                    except Exception as exc:
+                        self.logger.error("Cloud LLM failed: %s", exc)
+                        response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
+            finally:
+                # 确保 pipeline 线程被清理，无论是否有异常
+                if tts_pipeline:
+                    if sentence_count > 0:
+                        tts_pipeline.finish()
+                        tts_pipeline.wait_done()
+                    tts_pipeline.stop()
 
         # 8. Save conversation
         if updated_messages is not None:
             self.conversation_store.replace(session_id, updated_messages)
 
         # 9. Output (only for non-streamed responses)
-        if not streamed_sentences:
+        if sentence_count == 0:
             self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
             if self.oled:
                 self.oled.set_speaking_text(response_text)

@@ -290,15 +290,15 @@ class TestEdgeTTSPaths:
 
     def test_play_audio_file_linux_mpv(self):
         tts = TTSEngine(_make_config())
-        with patch("platform.system", return_value="Linux"):
-            with patch("subprocess.run") as mock_run:
-                tts._play_audio_file("/tmp/test.mp3")
-                assert "mpv" in mock_run.call_args[0][0][0]
+        tts._platform = "Linux"
+        with patch("subprocess.run") as mock_run:
+            tts._play_audio_file("/tmp/test.mp3")
+            assert "mpv" in mock_run.call_args[0][0][0]
 
     def test_play_audio_file_unsupported_platform(self):
         tts = TTSEngine(_make_config())
-        with patch("platform.system", return_value="FreeBSD"):
-            tts._play_audio_file("/tmp/test.mp3")  # should not raise, just log
+        tts._platform = "FreeBSD"
+        tts._play_audio_file("/tmp/test.mp3")  # should not raise, just log
 
     def test_edge_tts_engine_fallback_when_all_fail(self):
         tts = TTSEngine(_make_config(engine="edge-tts", fallback_enabled=False))
