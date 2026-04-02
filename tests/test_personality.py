@@ -55,17 +55,22 @@ class TestGetTimeSlot:
 class TestBuildPersonalityPrompt:
     def test_base_personality_always_present(self):
         prompt = build_personality_prompt()
-        assert "Jarvis" in prompt
-        assert "简洁" in prompt
+        assert "小贾" in prompt
+        assert "管家" in prompt
+
+    def test_no_ai_references(self):
+        prompt = build_personality_prompt()
+        assert "AI" not in prompt
+        assert "人工智能" not in prompt
+        assert "助手" not in prompt
 
     def test_includes_user_name(self):
         prompt = build_personality_prompt(user_name="Allen", user_role="owner")
         assert "Allen" in prompt
-        assert "owner" in prompt
 
     def test_guest_user(self):
         prompt = build_personality_prompt(user_name=None, user_role="guest")
-        assert "未识别" in prompt
+        assert "不认识" in prompt
         assert "声纹注册" in prompt
 
     def test_urgent_situation(self):
@@ -84,15 +89,25 @@ class TestBuildPersonalityPrompt:
 
     def test_no_preferences(self):
         prompt = build_personality_prompt(preferences=None)
-        assert "用户偏好" not in prompt
+        assert "暖白光" not in prompt  # specific prefs should not appear
 
     def test_time_context_included(self):
         prompt = build_personality_prompt()
-        # 应该包含某个时间段的语气描述
-        time_keywords = ["清晨", "上午", "下午", "傍晚", "晚上", "深夜"]
+        time_keywords = ["清早", "上午", "下午", "傍晚", "晚上", "这会儿"]
         assert any(k in prompt for k in time_keywords)
 
     def test_tool_rules_included(self):
         prompt = build_personality_prompt()
         assert "工具" in prompt
-        assert "权限" in prompt
+
+    def test_emotion_context_injected(self):
+        prompt = build_personality_prompt(user_emotion="SAD")
+        assert "不开心" in prompt
+
+    def test_emotion_happy(self):
+        prompt = build_personality_prompt(user_emotion="HAPPY")
+        assert "高兴" in prompt
+
+    def test_emotion_angry(self):
+        prompt = build_personality_prompt(user_emotion="ANGRY")
+        assert "气头" in prompt
