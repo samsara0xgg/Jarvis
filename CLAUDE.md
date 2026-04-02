@@ -1,4 +1,26 @@
-# Jarvis — 声纹驱动的 AI 语音助手
+# 小贾 (Jarvis) — 私人语音管家
+
+## 行为准则（最重要，必须遵守）
+
+### 沟通方式
+- 用户问什么先直接回答，不要先探索一圈再说
+- 不要主动生成文件或长输出。先回答问题，再问要不要生成代码
+- 用户要做什么就帮他做，不要 push back 或建议替代方案（除非用户问你）
+- 快问快答。用户要简短回答就给简短回答
+
+### 代码修改
+- 最小化改动。不要从头重写文件
+- 用户说"简化"意味着在原代码基础上简化，不是用另一种方式重写
+- 改库/换框架前先问用户。不要自行决定把 sklearn 换成 numpy 之类的
+- 每次改完跑 `python -m pytest tests/ -q` 确认没破坏
+
+### Git 操作
+- commit 可以做，但 **push 必须等用户明确要求**
+- commit message 不要加 Co-Authored-By
+
+### Agent 使用
+- 不要随便启动大量 Agent 搜索。先用 Grep/Glob 直接找
+- 启动 Agent 前想清楚范围，不要无目标地"全面探索"
 
 ## 快速参考
 
@@ -6,42 +28,51 @@
 # 运行
 python jarvis.py --no-wake        # 开发（按键录音）
 python jarvis.py                  # 生产（唤醒词 "Hey Jarvis"）
-python main.py                    # 旧版确定性指令模式
 
 # 测试
-python -m pytest tests/ -v
-python -m pytest tests/test_<module>.py -v  # 单模块
+python -m pytest tests/ -v        # 490 tests, 82% coverage
+python -m pytest tests/test_<module>.py -v
 
 # 其他
 python ui/dashboard.py            # Gradio Web UI
 python setup_hue.py               # Hue Bridge 配对
-python -m remote.agent            # Mac 远程控制 Agent
 ```
 
 ## 技术栈
 
 Python 3.11 · venv/ · config.yaml 统一配置
-ASR: Whisper (openai-whisper) · 声纹: SpeechBrain ECAPA-TDNN · LLM: OpenAI/Anthropic
-TTS: edge-tts (备用 pyttsx3) · 唤醒词: Porcupine · UI: Gradio + OLED (luma.oled)
-设备: Philips Hue (phue2) + MQTT (paho-mqtt) + 模拟 · 远程: WebSocket
+ASR: SenseVoice-Small INT8 (sherpa-onnx) · 声纹: SpeechBrain ECAPA-TDNN
+LLM: GPT-4o-mini (主) / DeepSeek / Kimi K2.5 · 路由: Groq llama-3.3-70b
+TTS: OpenAI TTS / MiniMax / Azure Neural / edge-tts / pyttsx3
+唤醒词: Porcupine · 设备: Philips Hue + MQTT + 模拟 · 远程: WebSocket
 
 ## 架构
 
 ```
-jarvis.py 主循环:
-  麦克风 → wake_word → audio_recorder → [speaker_verifier + speech_recognizer 并行]
-  → llm (技能调用) → tts → 喇叭
+麦克风 → 唤醒词 → 录音(VAD) → [声纹验证 + SenseVoice ASR 并行]
+  → 意图路由 (Groq/DeepSeek/Ollama)
+  → 本地执行 or 云端 LLM (流式逐句)
+  → TTS (情感风格) → 喇叭
 ```
 
-- `core/` — 录音、ASR、声纹、LLM、TTS、事件总线、调度器、自动化引擎
-- `skills/` — LLM function calling 技能（继承 Skill ABC，在 SkillRegistry 注册）
-- `devices/` — SmartDevice ABC → sim/ hue/ mqtt/ 三种实现，DeviceManager 统一调度
-- `auth/` — 声纹注册 + JSON 存储 + 角色权限 (owner > family > member > guest)
+## 项目结构
+
+- `core/` — ASR、LLM、TTS、人格、意图路由、自动化规则、录音、声纹、事件总线
+- `skills/` — LLM function calling 技能（继承 Skill ABC）
+- `devices/` — SmartDevice ABC → sim/ hue/ mqtt/
+- `auth/` — 声纹注册 + 角色权限
 - `memory/` — 对话历史 + 用户偏好
-- `ui/` — Gradio 仪表盘 + OLED 显示（事件总线驱动状态切换）
-- `remote/` — WebSocket 协议控制 Mac（agent.py 被控端，client.py 控制端）
-- `esp32/` — MicroPython 固件模板（传感器节点 + 继电器节点）
-- `deploy/` — Pi 部署（install.sh + systemd + mosquitto）
+- `realtime_data/` — 新闻/股票数据服务
+- `notes/` — 调研笔记和工作记录
+
+## 关键文件
+
+- `config.yaml` — 所有可调参数
+- `core/personality.py` — "小贾" 人格系统（动态 prompt）
+- `core/speech_recognizer.py` — SenseVoice + Whisper 双引擎
+- `core/tts.py` — 5 个 TTS 引擎 + 情感映射
+- `core/llm.py` — 多 LLM 后端 + 流式输出
+- `skills/__init__.py` — Skill ABC + SkillRegistry
 
 ## 编码规范
 
@@ -49,26 +80,13 @@ jarvis.py 主循环:
 - `logging` 模块，不用 `print`
 - 配置从 config.yaml 读，不硬编码路径/阈值/API key
 - 异常处理完善：硬件不可用时优雅降级
-- 数据库操作用 context manager
 - 新技能继承 `skills.Skill`，实现 `name/description/parameters/execute`
-
-## 关键文件
-
-- `config.yaml` — 所有可调参数（音频、ASR、声纹、LLM、TTS、设备、OLED、MQTT、远程）
-- `skills/__init__.py` — Skill ABC + SkillRegistry（新技能参考此接口）
-- `devices/base_device.py` — SmartDevice ABC（新设备参考此接口）
-- `core/event_bus.py` — 全局事件总线（模块间解耦通信）
 
 ## 不要做
 
-- 不要修改 `data/speechbrain_model/` 下的模型文件
+- 不要修改 `data/speechbrain_model/` 或 `data/sensevoice-small-int8/` 下的模型文件
 - 不要在代码中硬编码 IP、API key、文件路径
 - 不要用 `print` 替代 `logging`
 - 不要绕过 `permission_manager` 直接执行设备操作
-
-## 代码修改原则
-
-- 修改代码时做最小化的定向改动，不要从头重写文件
-- 如果觉得需要换方案，先问用户，不要自行决定
-- 用户说"简化"意味着在原代码基础上简化，不是用另一种方式重写
+- 不要自动 git push
 
