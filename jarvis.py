@@ -198,6 +198,9 @@ class JarvisApp:
                     self.logger.exception("Pipeline error")
                     print(f"Error: {exc}")
                     continue
+                finally:
+                    # 清空 stdin 缓冲区，防止多按 Enter 触发连续录音
+                    self._flush_stdin()
         finally:
             self.shutdown()
 
@@ -456,6 +459,17 @@ class JarvisApp:
         """Block until previous TTS finishes (prevents audio feedback)."""
         if self._tts_future and not self._tts_future.done():
             self._tts_future.result(timeout=30)
+
+    @staticmethod
+    def _flush_stdin() -> None:
+        """Drain any buffered stdin input (extra Enter presses during recording)."""
+        import sys
+        import select
+        try:
+            while select.select([sys.stdin], [], [], 0.0)[0]:
+                sys.stdin.readline()
+        except (OSError, ValueError):
+            pass
 
     def speak_short(self, text: str) -> None:
         """Speak a brief acknowledgment (low latency)."""
