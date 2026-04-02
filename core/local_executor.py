@@ -3,12 +3,29 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from typing import Any
 
 from core.automation_rules import AutomationRuleManager
 
 LOGGER = logging.getLogger(__name__)
+
+
+class Action(Enum):
+    """执行结果的处理方式."""
+
+    RESPONSE = "response"  # 直接 TTS 播报，不过 LLM（零随机）
+    REQLLM = "reqllm"      # 把数据交给 LLM 用小贾语气转述
+
+
+@dataclass
+class ActionResponse:
+    """本地执行器的统一返回类型."""
+
+    action: Action
+    text: str
 
 
 class LocalExecutor:
@@ -19,18 +36,21 @@ class LocalExecutor:
         self.rule_manager = rule_manager
         self.logger = LOGGER
 
-    def execute_smart_home(self, actions: list[dict], user_role: str = "owner") -> str | None:
+    def execute_smart_home(
+        self, actions: list[dict], user_role: str = "owner", response: str | None = None,
+    ) -> ActionResponse:
         """执行 smart_home actions.
 
         Args:
             actions: 路由器返回的 actions 列表，每项包含 device_id/action/value。
             user_role: 用户角色。
+            response: 路由器生成的回复文本。
 
         Returns:
-            执行结果文本，全部失败返回 None。
+            ActionResponse — 直接播报。
         """
         if not actions:
-            return None
+            return ActionResponse(Action.RESPONSE, response or "没有需要执行的操作。")
 
         results = []
         for act in actions:
@@ -52,16 +72,17 @@ class LocalExecutor:
             results.append(result)
 
         if not results:
-            return None
+            return ActionResponse(Action.RESPONSE, response or "没有需要执行的操作。")
 
-        # 有任何错误就返回错误信息
         errors = [r for r in results if "Error" in r or "denied" in r or "not found" in r]
         if errors:
-            return f"部分操作失败：{'; '.join(errors)}"
+            return ActionResponse(Action.RESPONSE, f"部分操作失败：{'; '.join(errors)}")
 
-        return None  # 成功时用路由器的 response，不用这里生成
+        return ActionResponse(Action.RESPONSE, response or "好的，已执行。")
 
-    def execute_info_query(self, sub_type: str | None, query: Any, user_role: str = "owner") -> str | None:
+    def execute_info_query(
+        self, sub_type: str | None, query: Any, user_role: str = "owner",
+    ) -> ActionResponse:
         """执行信息查询.
 
         Args:
@@ -70,40 +91,47 @@ class LocalExecutor:
             user_role: 用户角色。
 
         Returns:
-            查询结果文本。
+            ActionResponse — REQLLM，让 LLM 用小贾语气转述数据。
         """
+        result: str | None = None
+
         if sub_type == "stocks":
             symbols = query if isinstance(query, list) else None
             tool_input = {"symbols": symbols} if symbols else {}
-            return self.skill_registry.execute(
+            result = self.skill_registry.execute(
                 "get_stock_watchlist", tool_input, user_role=user_role,
             )
 
-        if sub_type == "news":
+        elif sub_type == "news":
             focus = query if isinstance(query, str) else "all"
-            return self.skill_registry.execute(
+            result = self.skill_registry.execute(
                 "get_news_briefing", {"focus": focus}, user_role=user_role,
             )
 
-        if sub_type == "weather":
-            return self.skill_registry.execute(
+        elif sub_type == "weather":
+            result = self.skill_registry.execute(
                 "get_weather", {}, user_role=user_role,
             )
 
-        return None
+        if not result:
+            return ActionResponse(Action.RESPONSE, "没查到相关信息。")
 
-    def execute_time(self, sub_type: str | None) -> str:
+        return ActionResponse(Action.REQLLM, result)
+
+    def execute_time(self, sub_type: str | None) -> ActionResponse:
         """处理时间查询."""
         now = datetime.now()
         weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
         weekday = weekdays[now.weekday()]
 
         if sub_type in ("date", "weekday"):
-            return f"今天是{now.year}年{now.month}月{now.day}日，{weekday}。"
+            text = f"今天是{now.year}年{now.month}月{now.day}日，{weekday}。"
+        else:
+            text = f"现在是{now.hour}点{now.minute:02d}分。"
 
-        return f"现在是{now.hour}点{now.minute:02d}分。"
+        return ActionResponse(Action.RESPONSE, text)
 
-    def execute_automation(self, sub_type: str | None, rule: dict[str, Any] | None) -> str | None:
+    def execute_automation(self, sub_type: str | None, rule: dict[str, Any] | None) -> ActionResponse:
         """处理自动化规则操作.
 
         Args:
@@ -111,24 +139,24 @@ class LocalExecutor:
             rule: Groq 返回的 rule JSON（仅 create 时需要）
 
         Returns:
-            操作结果文本。
+            ActionResponse — 直接播报。
         """
         if not self.rule_manager:
-            return "自动化功能未启用。"
+            return ActionResponse(Action.RESPONSE, "自动化功能未启用。")
 
         if sub_type == "create":
             if not rule:
-                return "缺少规则信息。"
-            return self.rule_manager.create_rule(rule)
+                return ActionResponse(Action.RESPONSE, "缺少规则信息。")
+            return ActionResponse(Action.RESPONSE, self.rule_manager.create_rule(rule))
 
         if sub_type == "list":
-            return self.rule_manager.list_rules()
+            return ActionResponse(Action.RESPONSE, self.rule_manager.list_rules())
 
         if sub_type == "delete":
             name = rule.get("name", "") if rule else ""
             if not name:
-                return "请指定要删除的规则名称。"
-            return self.rule_manager.delete_rule(name)
+                return ActionResponse(Action.RESPONSE, "请指定要删除的规则名称。")
+            return ActionResponse(Action.RESPONSE, self.rule_manager.delete_rule(name))
 
-        return None
+        return ActionResponse(Action.RESPONSE, "不支持的自动化操作。")
 

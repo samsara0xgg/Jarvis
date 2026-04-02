@@ -228,6 +228,7 @@ class TestIntentRouter:
 
 class TestLocalExecutor:
     def test_execute_smart_home_single(self, executor, mock_registry):
+        from core.local_executor import Action
         actions = [{"device_id": "living_room_light", "action": "turn_on", "value": None}]
         result = executor.execute_smart_home(actions, "owner")
         mock_registry.execute.assert_called_once_with(
@@ -235,7 +236,7 @@ class TestLocalExecutor:
             {"device_id": "living_room_light", "action": "turn_on"},
             user_role="owner",
         )
-        assert result is None  # None = success, use router's response
+        assert result.action == Action.RESPONSE
 
     def test_execute_smart_home_with_value(self, executor, mock_registry):
         actions = [{"device_id": "home_thermostat", "action": "set_temperature", "value": 25}]
@@ -255,14 +256,16 @@ class TestLocalExecutor:
         assert mock_registry.execute.call_count == 2
 
     def test_execute_smart_home_empty(self, executor):
+        from core.local_executor import Action
         result = executor.execute_smart_home([], "owner")
-        assert result is None
+        assert result.action == Action.RESPONSE
 
     def test_execute_smart_home_error(self, executor, mock_registry):
+        from core.local_executor import Action
         mock_registry.execute.return_value = "Error: device not found"
         actions = [{"device_id": "nonexistent", "action": "turn_on", "value": None}]
         result = executor.execute_smart_home(actions, "owner")
-        assert "失败" in result
+        assert "失败" in result.text
 
     def test_execute_smart_home_skips_empty_fields(self, executor, mock_registry):
         actions = [{"device_id": "", "action": "turn_on"}, {"device_id": "x", "action": ""}]
@@ -270,12 +273,14 @@ class TestLocalExecutor:
         mock_registry.execute.assert_not_called()
 
     def test_execute_info_query_stocks(self, executor, mock_registry):
+        from core.local_executor import Action
         mock_registry.execute.return_value = "AAPL: $248"
         result = executor.execute_info_query("stocks", ["AAPL"], "owner")
         mock_registry.execute.assert_called_once_with(
             "get_stock_watchlist", {"symbols": ["AAPL"]}, user_role="owner",
         )
-        assert "248" in result
+        assert "248" in result.text
+        assert result.action == Action.REQLLM
 
     def test_execute_info_query_news(self, executor, mock_registry):
         mock_registry.execute.return_value = "AI新闻..."
@@ -291,21 +296,27 @@ class TestLocalExecutor:
         )
 
     def test_execute_info_query_unknown(self, executor):
+        from core.local_executor import Action
         result = executor.execute_info_query("unknown_type", None, "owner")
-        assert result is None
+        assert result.action == Action.RESPONSE
+        assert "没查到" in result.text
 
     def test_execute_time_current(self, executor):
+        from core.local_executor import Action
         result = executor.execute_time("current_time")
-        assert "点" in result
+        assert "点" in result.text
+        assert result.action == Action.RESPONSE
 
     def test_execute_time_date(self, executor):
         result = executor.execute_time("date")
-        assert "年" in result and "月" in result
+        assert "年" in result.text and "月" in result.text
 
     def test_execute_time_weekday(self, executor):
         result = executor.execute_time("weekday")
-        assert "周" in result or "年" in result
+        assert "周" in result.text or "年" in result.text
 
     def test_execute_time_default(self, executor):
+        from core.local_executor import Action
         result = executor.execute_time(None)
-        assert "点" in result
+        assert "点" in result.text
+        assert result.action == Action.RESPONSE

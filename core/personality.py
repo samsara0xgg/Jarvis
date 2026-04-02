@@ -97,36 +97,52 @@ def build_personality_prompt(
     Returns:
         完整的 system prompt 字符串。
     """
-    parts = [_BASE_PERSONALITY]
+    sections = []
 
-    # 时间段
+    # 人格核心（不变）
+    sections.append(f"<personality>\n{_BASE_PERSONALITY}\n</personality>")
+
+    # 输出规则
+    sections.append(
+        "<output_rules>\n"
+        "回复是给人听的，不是给人看的。不要用列表、序号、标题、markdown。所有内容用自然的口语说出来。\n"
+        "一次最多说3-4句话。内容多就先说重点，问他要不要继续听。\n"
+        "用户的话是语音识别出来的，可能有错别字或同音字，结合上下文理解他的意思。\n"
+        "需要干活就用工具干。结果别编，工具挂了就说挂了。\n"
+        "</output_rules>"
+    )
+
+    # 当前情境（动态）
+    situation_lines = []
+
     time_slot = get_time_slot()
     time_ctx = _TIME_CONTEXTS.get(time_slot, "")
     if time_ctx:
-        parts.append(time_ctx)
+        situation_lines.append(time_ctx)
 
-    # 用户情绪
     emo_ctx = _EMOTION_CONTEXT.get(user_emotion, "")
     if emo_ctx:
-        parts.append(emo_ctx)
+        situation_lines.append(emo_ctx)
 
-    # 情境
     sit_ctx = _SITUATION_CONTEXTS.get(situation, "")
     if sit_ctx:
-        parts.append(sit_ctx)
+        situation_lines.append(sit_ctx)
 
-    # 用户身份
     if user_name:
-        parts.append(f"现在是{user_name}在跟你说话。")
+        situation_lines.append(f"现在是{user_name}在跟你说话。")
     else:
-        parts.append("这个人你不认识。礼貌但保持距离，提醒他做个声纹注册你才能更好地帮他。")
+        situation_lines.append("这个人你不认识。礼貌但保持距离，提醒他做个声纹注册你才能更好地帮他。")
 
-    # 用户偏好（积累的了解）
+    if situation_lines:
+        sections.append("<situation>\n" + "\n".join(situation_lines) + "\n</situation>")
+
+    # 用户偏好
     if preferences:
         pref_lines = [f"- {k}: {v}" for k, v in preferences.items()]
-        parts.append("你了解他的一些习惯：\n" + "\n".join(pref_lines))
+        sections.append(
+            "<preferences>\n"
+            "你了解他的一些习惯：\n" + "\n".join(pref_lines) + "\n"
+            "</preferences>"
+        )
 
-    # 工具
-    parts.append("需要干活就用工具干。结果别编，工具挂了就说挂了。")
-
-    return "\n\n".join(parts)
+    return "\n\n".join(sections)

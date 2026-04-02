@@ -355,59 +355,106 @@ class JarvisApp:
             match = self.rule_manager.check_keyword(text)
             if match:
                 keyword_actions, rule_name = match
-                error = self.local_executor.execute_smart_home(keyword_actions, user_role)
-                response_text = error or f"好的，{rule_name}已执行。"
+                ar = self.local_executor.execute_smart_home(
+                    keyword_actions, user_role, response=f"好的，{rule_name}已执行。",
+                )
+                response_text = ar.text
 
         # 6. Route: local or cloud?
+        use_llm_rephrase = False
         if response_text is None and self.intent_router and self.local_executor:
+            from core.local_executor import Action
             route = self.intent_router.route(text)
             if route.tier == "local":
                 if route.intent == "smart_home":
-                    error = self.local_executor.execute_smart_home(route.actions, user_role)
-                    response_text = error or route.response
+                    ar = self.local_executor.execute_smart_home(
+                        route.actions, user_role, response=route.response,
+                    )
                 elif route.intent == "info_query":
-                    response_text = self.local_executor.execute_info_query(
+                    ar = self.local_executor.execute_info_query(
                         route.sub_type, route.query, user_role,
                     )
                 elif route.intent == "time":
-                    response_text = self.local_executor.execute_time(route.sub_type)
+                    ar = self.local_executor.execute_time(route.sub_type)
                 elif route.intent == "automation":
-                    response_text = self.local_executor.execute_automation(
+                    ar = self.local_executor.execute_automation(
                         route.sub_type, route.rule,
                     )
                     # 如果 Groq 也给了 response，优先用它
-                    if response_text and route.response is not None:
-                        response_text = route.response
+                    if route.response is not None:
+                        ar = type(ar)(ar.action, route.response)
+                else:
+                    ar = None
 
-        # 7. If local didn't handle it, fall back to cloud LLM (streaming)
+                if ar is not None:
+                    if ar.action == Action.REQLLM:
+                        use_llm_rephrase = True
+                        response_text = None  # 下面交给 LLM 转述
+                    else:
+                        response_text = ar.text
+
+        # 7. Cloud LLM — either REQLLM rephrase or full cloud fallback
         if response_text is None:
             tools = self.skill_registry.get_tool_definitions(user_role)
 
-            # 逐句 TTS 回调：流式输出时每句话立刻播报
+            # 逐句 TTS：用 pipeline 异步合成+播放，消除句间停顿
             streamed_sentences: list[str] = []
+            tts_pipeline = self._create_tts_pipeline()
+            sentence_count = 0
 
             def _on_sentence(sentence: str) -> None:
+                nonlocal sentence_count
                 streamed_sentences.append(sentence)
+                sentence_count += 1
                 print(f"🤖 Jarvis: {sentence}")
-                self._wait_tts()
-                self._speak_nonblocking(sentence, emotion=detected_emotion)
+                if tts_pipeline:
+                    from core.tts import SentenceType
+                    st = SentenceType.FIRST if sentence_count == 1 else SentenceType.MIDDLE
+                    tts_pipeline.submit(sentence, st, emotion=detected_emotion)
+                else:
+                    self._wait_tts()
+                    self._speak_nonblocking(sentence, emotion=detected_emotion)
 
             self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
-            try:
-                response_text, updated_messages = self.llm.chat_stream(
-                    user_message=text,
-                    conversation_history=history,
-                    tools=tools,
-                    tool_executor=self.skill_registry.execute,
-                    user_name=user_name,
-                    user_id=user_id,
-                    user_role=user_role,
-                    on_sentence=_on_sentence,
-                    user_emotion=detected_emotion,
-                )
-            except Exception as exc:
-                self.logger.error("Cloud LLM failed: %s", exc)
-                response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
+
+            # REQLLM: 让 LLM 用小贾语气转述本地数据
+            if use_llm_rephrase and ar is not None:
+                rephrase_msg = f"用你自己的话简短转述以下信息给用户：\n{ar.text}"
+                try:
+                    response_text, updated_messages = self.llm.chat_stream(
+                        user_message=rephrase_msg,
+                        conversation_history=history,
+                        user_name=user_name,
+                        user_id=user_id,
+                        user_role=user_role,
+                        on_sentence=_on_sentence,
+                        user_emotion=detected_emotion,
+                    )
+                except Exception as exc:
+                    self.logger.error("LLM rephrase failed: %s", exc)
+                    response_text = ar.text  # 降级：直接播报原始数据
+            else:
+                try:
+                    response_text, updated_messages = self.llm.chat_stream(
+                        user_message=text,
+                        conversation_history=history,
+                        tools=tools,
+                        tool_executor=self.skill_registry.execute,
+                        user_name=user_name,
+                        user_id=user_id,
+                        user_role=user_role,
+                        on_sentence=_on_sentence,
+                        user_emotion=detected_emotion,
+                    )
+                except Exception as exc:
+                    self.logger.error("Cloud LLM failed: %s", exc)
+                    response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
+
+            # 等 pipeline 播完
+            if tts_pipeline and streamed_sentences:
+                tts_pipeline.finish()
+                tts_pipeline.wait_done()
+                tts_pipeline.stop()
 
         # 8. Save conversation
         if updated_messages is not None:
@@ -490,6 +537,20 @@ class JarvisApp:
             return self._tts
         except Exception as exc:
             self.logger.warning("TTS unavailable: %s", exc)
+            return None
+
+    def _create_tts_pipeline(self) -> Any:
+        """Create a new TTS pipeline for streaming output."""
+        tts = self._get_tts()
+        if not tts:
+            return None
+        try:
+            from core.tts import TTSPipeline
+            pipeline = TTSPipeline(tts)
+            pipeline.start()
+            return pipeline
+        except Exception as exc:
+            self.logger.warning("TTS pipeline unavailable: %s", exc)
             return None
 
     def _register_skills(self, config: dict) -> None:

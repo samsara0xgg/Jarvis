@@ -1,4 +1,8 @@
-"""Text-to-speech engine with Azure Neural TTS, Edge TTS, and pyttsx3 fallback."""
+"""Text-to-speech engine with Azure Neural TTS, Edge TTS, and pyttsx3 fallback.
+
+Also provides TTSPipeline — a dual-thread pipeline that decouples TTS synthesis
+from audio playback, eliminating inter-sentence pauses during streaming output.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +12,11 @@ import os
 import platform
 import subprocess
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any
 
 LOGGER = logging.getLogger(__name__)
@@ -428,3 +435,230 @@ class TTSEngine:
             self.logger.warning("Audio playback timed out.")
         except subprocess.CalledProcessError as exc:
             self.logger.warning("Audio playback failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Dual-thread TTS pipeline
+# ---------------------------------------------------------------------------
+
+class SentenceType(Enum):
+    """Position marker for sentences in a response."""
+
+    FIRST = "first"
+    MIDDLE = "middle"
+    LAST = "last"
+
+
+_SENTINEL = object()  # signals worker threads to stop
+
+
+class TTSPipeline:
+    """Dual-thread pipeline: text→TTS synthesis→audio playback.
+
+    Decouples synthesis from playback so sentence N+1 can be synthesized
+    while sentence N is still playing.
+
+    Usage::
+
+        pipeline = TTSPipeline(tts_engine)
+        pipeline.start()
+        pipeline.submit("第一句话。", SentenceType.FIRST)
+        pipeline.submit("第二句话。", SentenceType.MIDDLE)
+        pipeline.submit("最后一句。", SentenceType.LAST)
+        pipeline.wait_done()
+        pipeline.stop()
+    """
+
+    def __init__(self, engine: TTSEngine) -> None:
+        self._engine = engine
+        self._text_queue: Queue = Queue()
+        self._audio_queue: Queue = Queue()
+        self._tts_thread: threading.Thread | None = None
+        self._play_thread: threading.Thread | None = None
+        self._aborted = threading.Event()
+        self._done = threading.Event()
+        self.logger = LOGGER
+
+    def start(self) -> None:
+        """Start the TTS and playback worker threads."""
+        self._aborted.clear()
+        self._done.clear()
+        self._tts_thread = threading.Thread(
+            target=self._tts_worker, name="tts-synth", daemon=True,
+        )
+        self._play_thread = threading.Thread(
+            target=self._play_worker, name="tts-play", daemon=True,
+        )
+        self._tts_thread.start()
+        self._play_thread.start()
+
+    def submit(self, text: str, sentence_type: SentenceType = SentenceType.MIDDLE,
+               emotion: str = "") -> None:
+        """Enqueue a sentence for synthesis and playback."""
+        if not text.strip():
+            return
+        self._text_queue.put((text, sentence_type, emotion))
+
+    def finish(self) -> None:
+        """Signal that no more sentences will be submitted. Non-blocking."""
+        self._text_queue.put(_SENTINEL)
+
+    def wait_done(self, timeout: float = 60) -> None:
+        """Block until all queued sentences have been played."""
+        self._done.wait(timeout=timeout)
+
+    def abort(self) -> None:
+        """Cancel all pending sentences and stop playback ASAP."""
+        self._aborted.set()
+        # Drain queues
+        for q in (self._text_queue, self._audio_queue):
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except Empty:
+                    break
+        # Unblock workers
+        self._text_queue.put(_SENTINEL)
+        self._audio_queue.put(_SENTINEL)
+
+    def stop(self) -> None:
+        """Stop worker threads (call after wait_done or abort)."""
+        # Ensure workers can exit
+        self._text_queue.put(_SENTINEL)
+        self._audio_queue.put(_SENTINEL)
+        if self._tts_thread and self._tts_thread.is_alive():
+            self._tts_thread.join(timeout=5)
+        if self._play_thread and self._play_thread.is_alive():
+            self._play_thread.join(timeout=5)
+
+    def _tts_worker(self) -> None:
+        """Consume text_queue, synthesize to temp files, push to audio_queue."""
+        while not self._aborted.is_set():
+            try:
+                item = self._text_queue.get(timeout=1)
+            except Empty:
+                continue
+
+            if item is _SENTINEL:
+                self._audio_queue.put(_SENTINEL)
+                return
+
+            text, sentence_type, emotion = item
+            try:
+                filepath = self._synthesize_to_file(text, emotion)
+                if filepath and not self._aborted.is_set():
+                    self._audio_queue.put((filepath, sentence_type))
+            except Exception as exc:
+                self.logger.warning("TTS synthesis failed: %s", exc)
+
+    def _play_worker(self) -> None:
+        """Consume audio_queue and play files sequentially."""
+        while not self._aborted.is_set():
+            try:
+                item = self._audio_queue.get(timeout=1)
+            except Empty:
+                continue
+
+            if item is _SENTINEL:
+                self._done.set()
+                return
+
+            filepath, sentence_type = item
+            try:
+                if not self._aborted.is_set():
+                    self._engine._play_audio_file(filepath)
+            except Exception as exc:
+                self.logger.warning("Audio playback failed: %s", exc)
+            finally:
+                Path(filepath).unlink(missing_ok=True)
+
+    def _synthesize_to_file(self, text: str, emotion: str = "") -> str | None:
+        """Use the TTS engine to generate audio and return the temp file path."""
+        engine = self._engine
+
+        if engine.engine_name == "openai_tts" and engine.openai_tts_key:
+            return self._synth_openai(text, emotion)
+        if engine.engine_name == "minimax" and engine.minimax_key:
+            return self._synth_minimax(text, emotion)
+        if engine.engine_name == "azure" and engine.azure_key:
+            return self._synth_azure(text, emotion)
+        if engine.engine_name == "pyttsx3":
+            # pyttsx3 plays directly, can't separate synthesis from playback
+            engine._speak_pyttsx3(text)
+            return None
+        # Default: edge-tts
+        return self._synth_edge(text)
+
+    def _synth_openai(self, text: str, emotion: str = "") -> str:
+        from openai import OpenAI
+        e = self._engine
+        base_instructions = e.openai_tts_instructions
+        emotion_hint = _EMOTION_TO_OPENAI_INSTRUCTION.get(emotion, "")
+        instructions = f"{base_instructions} {emotion_hint}" if emotion_hint else base_instructions
+        client = OpenAI(api_key=e.openai_tts_key)
+        response = client.audio.speech.create(
+            model=e.openai_tts_model, voice=e.openai_tts_voice,
+            input=text, instructions=instructions, response_format="mp3",
+        )
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp.write(response.content)
+            return tmp.name
+
+    def _synth_minimax(self, text: str, emotion: str = "") -> str:
+        import requests
+        e = self._engine
+        minimax_emotion = _EMOTION_TO_MINIMAX.get(emotion, "calm")
+        payload = {
+            "model": e.minimax_model, "text": text, "stream": False,
+            "voice_setting": {"voice_id": e.minimax_voice, "speed": 1.0, "vol": 5, "pitch": 0, "emotion": minimax_emotion},
+            "audio_setting": {"format": "mp3", "sample_rate": 32000, "channel": 1},
+        }
+        resp = requests.post(
+            e._minimax_url,
+            headers={"Authorization": f"Bearer {e.minimax_key}", "Content-Type": "application/json"},
+            json=payload, timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if "data" not in data or "audio" not in data.get("data", {}):
+            error_msg = data.get("base_resp", {}).get("status_msg", str(data))
+            raise RuntimeError(f"MiniMax TTS error: {error_msg}")
+        audio_bytes = bytes.fromhex(data["data"]["audio"])
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp.write(audio_bytes)
+            return tmp.name
+
+    def _synth_azure(self, text: str, emotion: str = "") -> str:
+        import azure.cognitiveservices.speech as speechsdk
+        from xml.sax.saxutils import escape
+        e = self._engine
+        speech_config = speechsdk.SpeechConfig(subscription=e.azure_key, region=e.azure_region)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+        audio_config = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
+        synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
+        style = _EMOTION_TO_AZURE_STYLE.get(emotion, "chat")
+        ssml = (
+            '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
+            'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="zh-CN">'
+            f'<voice name="{e.azure_voice}"><mstts:express-as style="{style}">'
+            f'{escape(text)}</mstts:express-as></voice></speak>'
+        )
+        result = synthesizer.speak_ssml_async(ssml).get()
+        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+            return tmp_path
+        Path(tmp_path).unlink(missing_ok=True)
+        raise RuntimeError(f"Azure TTS failed: {result.cancellation_details.reason}")
+
+    def _synth_edge(self, text: str) -> str:
+        import edge_tts
+        e = self._engine
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        async def _save():
+            communicate = edge_tts.Communicate(text, e.edge_voice, rate=e.edge_rate)
+            await communicate.save(tmp_path)
+
+        asyncio.run(_save())
+        return tmp_path
