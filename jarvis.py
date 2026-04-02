@@ -171,25 +171,25 @@ class JarvisApp:
             Process exit code.
         """
         self._print_banner()
-        self.speak("Jarvis online. Awaiting your command.")
+        self.speak("Jarvis 已上线，随时待命。")
 
         try:
             while self._running:
                 try:
                     user_input = input("\n[Press Enter to speak, 'quit' to exit] ").strip()
                 except (EOFError, KeyboardInterrupt):
-                    self.speak("Goodbye.")
+                    self.speak("再见。")
                     return 0
 
                 if user_input.lower() in {"quit", "exit", "退出", "q"}:
-                    self.speak("Goodbye.")
+                    self.speak("再见。")
                     return 0
 
                 try:
                     audio = self.audio_recorder.record(self.utterance_duration)
                     response = self.handle_utterance(audio)
                     if response and self._is_farewell(response):
-                        self.speak("Goodbye.")
+                        self.speak("再见。")
                         return 0
                 except KeyboardInterrupt:
                     print("\nRecording cancelled.")
@@ -229,7 +229,7 @@ class JarvisApp:
             return 1
 
         detector.start()
-        self.speak("Jarvis online. Say 'Hey Jarvis' to activate.")
+        self.speak("Jarvis 已上线，说 Hey Jarvis 唤醒我。")
 
         try:
             stream = sd.InputStream(
@@ -249,7 +249,7 @@ class JarvisApp:
                     pcm = frame[:, 0].tolist()
                     if detector.process_frame(pcm):
                         self.logger.info("Wake word detected!")
-                        self.speak_short("Sir?")
+                        self.speak_short("在的。")
                         listening_for_wake = False
                         self._last_interaction = time.monotonic()
                 else:
@@ -275,14 +275,14 @@ class JarvisApp:
                         break
                     except Exception as exc:
                         self.logger.exception("Pipeline error in active session")
-                        self.speak(f"Sorry, something went wrong: {exc}")
+                        self.speak(f"抱歉，出了点问题：{exc}")
                         stream.start()
 
         except KeyboardInterrupt:
             pass
         finally:
             detector.stop()
-            self.speak("Jarvis shutting down.")
+            self.speak("Jarvis 关机中。")
             self.shutdown()
 
         return 0
@@ -319,7 +319,7 @@ class JarvisApp:
         detected_emotion = getattr(transcription, "emotion", "") or ""
         if not text:
             self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
-            self.speak("I didn't catch that. Could you repeat?")
+            self.speak("没听清，能再说一遍吗？")
             return ""
 
         # 2. Resolve user identity
@@ -400,6 +400,7 @@ class JarvisApp:
                     user_id=user_id,
                     user_role=user_role,
                     on_sentence=_on_sentence,
+                    user_emotion=detected_emotion,
                 )
             except Exception as exc:
                 self.logger.error("Cloud LLM failed: %s", exc)

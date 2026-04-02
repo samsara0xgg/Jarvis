@@ -281,10 +281,10 @@ llm:
   provider: openai
 
   # 模型 ID。Kimi: kimi-k2.5。DeepSeek: deepseek-chat。OpenAI: gpt-4o。
-  model: kimi-k2.5
+  model: deepseek-chat
 
   # OpenAI 兼容 base_url（Kimi/DeepSeek 等）。留空则使用 OpenAI 官方。
-  base_url: "https://api.moonshot.ai/v1"
+  base_url: "https://api.deepseek.com"
 
   # 单次回复最大 token 数。
   max_tokens: 1024

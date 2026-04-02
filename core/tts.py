@@ -14,15 +14,16 @@ from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 
-# SenseVoice emotion → Azure TTS style mapping
+# User's detected emotion → Jarvis's RESPONSE style (not echo)
+# 用户开心→Jarvis也开心；用户难过→Jarvis温柔安慰；用户生气→Jarvis冷静
 _EMOTION_TO_STYLE = {
     "HAPPY": "cheerful",
-    "SAD": "sad",
-    "ANGRY": "angry",
+    "SAD": "gentle",
+    "ANGRY": "calm",
     "NEUTRAL": "chat",
-    "FEARFUL": "fearful",
-    "DISGUSTED": "disgruntled",
-    "SURPRISED": "excited",
+    "FEARFUL": "gentle",
+    "DISGUSTED": "calm",
+    "SURPRISED": "cheerful",
     "EMO_UNKNOWN": "chat",
 }
 

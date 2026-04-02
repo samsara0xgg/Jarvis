@@ -231,7 +231,7 @@ class TestAzureTTS:
         first_ssml = mock_synth_instance.speak_ssml_async.call_args_list[0][0][0]
         second_ssml = mock_synth_instance.speak_ssml_async.call_args_list[1][0][0]
         assert 'style="cheerful"' in first_ssml
-        assert 'style="sad"' in second_ssml
+        assert 'style="gentle"' in second_ssml
 
     def test_azure_config_key_priority_config_over_env(self):
         """Config-file azure_key should take priority over AZURE_SPEECH_KEY env var."""
