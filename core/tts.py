@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import platform
 import subprocess
 import tempfile
@@ -50,7 +51,6 @@ class TTSEngine:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
 
         # Azure Neural TTS config
-        import os
         self.azure_key = str(tts_config.get("azure_key", "") or os.environ.get("AZURE_SPEECH_KEY", ""))
         self.azure_region = str(tts_config.get("azure_region", "canadacentral"))
         self.azure_voice = str(tts_config.get("azure_voice", "zh-CN-XiaoxiaoNeural"))
@@ -148,14 +148,15 @@ class TTSEngine:
             speech_config=speech_config, audio_config=audio_config,
         )
 
-        # Build SSML with emotion style
+        # Build SSML with emotion style (escape text for XML safety)
+        from xml.sax.saxutils import escape
         style = _EMOTION_TO_STYLE.get(emotion, "chat")
         ssml = (
             '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
             'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="zh-CN">'
             f'<voice name="{self.azure_voice}">'
             f'<mstts:express-as style="{style}">'
-            f'{text}'
+            f'{escape(text)}'
             '</mstts:express-as>'
             '</voice></speak>'
         )
