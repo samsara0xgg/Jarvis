@@ -6,7 +6,7 @@ import sys
 import types
 from unittest.mock import MagicMock, patch
 
-from core.tts import TTSEngine, _EMOTION_TO_STYLE
+from core.tts import TTSEngine, _EMOTION_TO_AZURE_STYLE
 
 
 def _make_config(engine="edge-tts", **tts_overrides):
@@ -85,13 +85,13 @@ class TestEmotionMapping:
         """Every SenseVoice emotion should map to an Azure style."""
         sensevoice_emotions = ["HAPPY", "SAD", "ANGRY", "NEUTRAL", "FEARFUL", "DISGUSTED", "SURPRISED", "EMO_UNKNOWN"]
         for emo in sensevoice_emotions:
-            assert emo in _EMOTION_TO_STYLE, f"Missing mapping for {emo}"
+            assert emo in _EMOTION_TO_AZURE_STYLE, f"Missing mapping for {emo}"
 
     def test_happy_maps_to_cheerful(self):
-        assert _EMOTION_TO_STYLE["HAPPY"] == "cheerful"
+        assert _EMOTION_TO_AZURE_STYLE["HAPPY"] == "cheerful"
 
     def test_unknown_emotion_defaults_to_chat(self):
-        assert _EMOTION_TO_STYLE.get("NONEXISTENT", "chat") == "chat"
+        assert _EMOTION_TO_AZURE_STYLE.get("NONEXISTENT", "chat") == "chat"
 
 
 # --- Azure TTS tests ---

@@ -16,7 +16,9 @@ LOGGER = logging.getLogger(__name__)
 
 # User's detected emotion → Jarvis's RESPONSE style (not echo)
 # 用户开心→Jarvis也开心；用户难过→Jarvis温柔安慰；用户生气→Jarvis冷静
-_EMOTION_TO_STYLE = {
+
+# Azure TTS styles
+_EMOTION_TO_AZURE_STYLE = {
     "HAPPY": "cheerful",
     "SAD": "gentle",
     "ANGRY": "calm",
@@ -25,6 +27,18 @@ _EMOTION_TO_STYLE = {
     "DISGUSTED": "calm",
     "SURPRISED": "cheerful",
     "EMO_UNKNOWN": "chat",
+}
+
+# MiniMax TTS emotions (direct API parameter)
+_EMOTION_TO_MINIMAX = {
+    "HAPPY": "happy",
+    "SAD": "sad",
+    "ANGRY": "calm",
+    "NEUTRAL": "calm",
+    "FEARFUL": "calm",
+    "DISGUSTED": "calm",
+    "SURPRISED": "happy",
+    "EMO_UNKNOWN": "calm",
 }
 
 
@@ -57,6 +71,12 @@ class TTSEngine:
         self.azure_voice = str(tts_config.get("azure_voice", "zh-CN-XiaoxiaoNeural"))
         self._azure_synthesizer: Any = None
 
+        # MiniMax TTS config
+        self.minimax_key = str(tts_config.get("minimax_key", "") or os.environ.get("MINIMAX_API_KEY", ""))
+        self.minimax_model = str(tts_config.get("minimax_model", "speech-02-turbo"))
+        self.minimax_voice = str(tts_config.get("minimax_voice", "male-qn-qingse"))
+        self._minimax_url = "https://api.minimax.chat/v1/t2a_v2"
+
     def speak(self, text: str, emotion: str = "") -> None:
         """Speak text aloud with optional emotion.
 
@@ -67,6 +87,13 @@ class TTSEngine:
         """
         if not text.strip():
             return
+
+        if self.engine_name == "minimax":
+            try:
+                self._speak_minimax(text, emotion)
+                return
+            except Exception as exc:
+                self.logger.warning("MiniMax TTS failed: %s, trying fallback", exc)
 
         if self.engine_name == "azure":
             try:
@@ -123,6 +150,66 @@ class TTSEngine:
             except Exception as exc:
                 self.logger.warning("All TTS engines failed for short speak: %s", exc)
 
+    def _speak_minimax(self, text: str, emotion: str = "") -> None:
+        """Generate speech with MiniMax TTS API with emotion control."""
+        import requests
+
+        if not self.minimax_key:
+            raise RuntimeError("MiniMax API key not configured (MINIMAX_API_KEY)")
+
+        minimax_emotion = _EMOTION_TO_MINIMAX.get(emotion, "calm")
+
+        payload = {
+            "model": self.minimax_model,
+            "text": text,
+            "stream": False,
+            "voice_setting": {
+                "voice_id": self.minimax_voice,
+                "speed": 1.0,
+                "vol": 5,
+                "pitch": 0,
+                "emotion": minimax_emotion,
+            },
+            "audio_setting": {
+                "format": "mp3",
+                "sample_rate": 32000,
+                "channel": 1,
+            },
+        }
+
+        self.logger.info(
+            "MiniMax TTS: voice=%s emotion=%s text=%r",
+            self.minimax_voice, minimax_emotion, text[:50],
+        )
+
+        resp = requests.post(
+            self._minimax_url,
+            headers={
+                "Authorization": f"Bearer {self.minimax_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        if "data" not in data or "audio" not in data.get("data", {}):
+            error_msg = data.get("base_resp", {}).get("status_msg", str(data))
+            raise RuntimeError(f"MiniMax TTS error: {error_msg}")
+
+        audio_hex = data["data"]["audio"]
+        audio_bytes = bytes.fromhex(audio_hex)
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+
+        try:
+            self._play_audio_file(tmp_path)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
     def _speak_azure(self, text: str, emotion: str = "") -> None:
         """Generate speech with Azure Neural TTS using SSML for emotion."""
         try:
@@ -151,7 +238,7 @@ class TTSEngine:
 
         # Build SSML with emotion style (escape text for XML safety)
         from xml.sax.saxutils import escape
-        style = _EMOTION_TO_STYLE.get(emotion, "chat")
+        style = _EMOTION_TO_AZURE_STYLE.get(emotion, "chat")
         ssml = (
             '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
             'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="zh-CN">'
