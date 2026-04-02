@@ -29,6 +29,18 @@ _EMOTION_TO_AZURE_STYLE = {
     "EMO_UNKNOWN": "chat",
 }
 
+# OpenAI TTS emotion instructions (natural language, most expressive)
+_EMOTION_TO_OPENAI_INSTRUCTION = {
+    "HAPPY": "语气愉快轻松，像分享好消息的朋友。",
+    "SAD": "语气温柔关心，像安慰朋友一样，温暖但不夸张。",
+    "ANGRY": "语气平静沉稳，安抚对方情绪，让人感到安心。",
+    "NEUTRAL": "",
+    "FEARFUL": "语气稳重温暖，给人安全感。",
+    "DISGUSTED": "语气理解包容，不否定对方的感受。",
+    "SURPRISED": "语气有活力，带着好奇和兴趣。",
+    "EMO_UNKNOWN": "",
+}
+
 # MiniMax TTS emotions (direct API parameter)
 _EMOTION_TO_MINIMAX = {
     "HAPPY": "happy",
@@ -77,6 +89,15 @@ class TTSEngine:
         self.minimax_voice = str(tts_config.get("minimax_voice", "male-qn-qingse"))
         self._minimax_url = "https://api.minimax.chat/v1/t2a_v2"
 
+        # OpenAI TTS config (gpt-4o-mini-tts — ChatGPT 同款技术)
+        self.openai_tts_key = str(tts_config.get("openai_tts_key", "") or os.environ.get("OPENAI_API_KEY", ""))
+        self.openai_tts_voice = str(tts_config.get("openai_tts_voice", "alloy"))
+        self.openai_tts_model = str(tts_config.get("openai_tts_model", "gpt-4o-mini-tts"))
+        self.openai_tts_instructions = str(tts_config.get(
+            "openai_tts_instructions",
+            "你是 Jarvis，说话像一个亲切聪明的朋友。语气自然温暖，有情感，不要像机器人。中文为主。",
+        ))
+
     def speak(self, text: str, emotion: str = "") -> None:
         """Speak text aloud with optional emotion.
 
@@ -87,6 +108,13 @@ class TTSEngine:
         """
         if not text.strip():
             return
+
+        if self.engine_name == "openai_tts":
+            try:
+                self._speak_openai_tts(text, emotion)
+                return
+            except Exception as exc:
+                self.logger.warning("OpenAI TTS failed: %s, trying fallback", exc)
 
         if self.engine_name == "minimax":
             try:
@@ -149,6 +177,49 @@ class TTSEngine:
                 self._speak_edge(text)
             except Exception as exc:
                 self.logger.warning("All TTS engines failed for short speak: %s", exc)
+
+    def _speak_openai_tts(self, text: str, emotion: str = "") -> None:
+        """Generate speech with OpenAI gpt-4o-mini-tts — ChatGPT-level naturalness."""
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise RuntimeError(
+                "openai package is required. Install with: pip install openai"
+            ) from exc
+
+        if not self.openai_tts_key:
+            raise RuntimeError("OpenAI API key not configured (OPENAI_API_KEY)")
+
+        # Build emotion-aware instructions
+        base_instructions = self.openai_tts_instructions
+        emotion_hint = _EMOTION_TO_OPENAI_INSTRUCTION.get(emotion, "")
+        if emotion_hint:
+            instructions = f"{base_instructions} {emotion_hint}"
+        else:
+            instructions = base_instructions
+
+        self.logger.info(
+            "OpenAI TTS: voice=%s emotion=%s text=%r",
+            self.openai_tts_voice, emotion or "neutral", text[:50],
+        )
+
+        client = OpenAI(api_key=self.openai_tts_key)
+        response = client.audio.speech.create(
+            model=self.openai_tts_model,
+            voice=self.openai_tts_voice,
+            input=text,
+            instructions=instructions,
+            response_format="mp3",
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp.write(response.content)
+            tmp_path = tmp.name
+
+        try:
+            self._play_audio_file(tmp_path)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
     def _speak_minimax(self, text: str, emotion: str = "") -> None:
         """Generate speech with MiniMax TTS API with emotion control."""

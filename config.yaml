@@ -297,13 +297,19 @@ llm:
 # TTS 语音合成
 # ----------------------------------------------------------------------------
 tts:
-  # 首选引擎：minimax（最自然中文）/ azure（情感） / edge-tts / pyttsx3。
-  engine: minimax
+  # 首选引擎：openai_tts（最自然）/ minimax / azure / edge-tts / pyttsx3。
+  engine: openai_tts
+
+  # OpenAI TTS（gpt-4o-mini-tts，ChatGPT 同款，最像真人）
+  openai_tts_key: ""     # env OPENAI_API_KEY
+  openai_tts_model: gpt-4o-mini-tts
+  openai_tts_voice: alloy  # 可选: alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer, verse
+  openai_tts_instructions: "你是 Jarvis，说话像一个亲切聪明的朋友。语气自然温暖，有情感，不要像机器人。中文为主。"
 
   # MiniMax TTS（TTS Arena 第一，中文最自然，带情感）
   minimax_key: ""        # env MINIMAX_API_KEY
   minimax_model: speech-02-turbo
-  minimax_voice: male-qn-qingse  # 青涩男声。更多音色: https://platform.minimaxi.com/
+  minimax_voice: male-qn-qingse
 
   # Azure Neural TTS（备用，50万字/月免费）
   azure_key: ""          # env AZURE_SPEECH_KEY
