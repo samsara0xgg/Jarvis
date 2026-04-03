@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 
@@ -82,7 +81,6 @@ def build_personality_prompt(
     user_name: str | None = None,
     user_role: str = "guest",
     situation: str = "normal",
-    preferences: dict[str, Any] | None = None,
     user_emotion: str = "",
     memory_context: str = "",
 ) -> str:
@@ -92,8 +90,8 @@ def build_personality_prompt(
         user_name: 当前用户名（声纹识别结果）。
         user_role: 用户角色。
         situation: 当前情境（normal/urgent/error/rapid）。
-        preferences: 用户偏好（从 memory 读取）。
         user_emotion: SenseVoice 检测到的用户情绪（如 "HAPPY", "SAD"）。
+        memory_context: MemoryManager.query() 返回的记忆上下文（含用户偏好）。
 
     Returns:
         完整的 system prompt 字符串。
@@ -140,14 +138,5 @@ def build_personality_prompt(
 
     if situation_lines:
         sections.append("<situation>\n" + "\n".join(situation_lines) + "\n</situation>")
-
-    # 用户偏好
-    if preferences:
-        pref_lines = [f"- {k}: {v}" for k, v in preferences.items()]
-        sections.append(
-            "<preferences>\n"
-            "你了解他的一些习惯：\n" + "\n".join(pref_lines) + "\n"
-            "</preferences>"
-        )
 
     return "\n\n".join(sections)

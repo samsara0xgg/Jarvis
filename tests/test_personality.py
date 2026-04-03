@@ -81,15 +81,15 @@ class TestBuildPersonalityPrompt:
         prompt = build_personality_prompt(situation="error")
         assert "故障" in prompt or "诚实" in prompt
 
-    def test_preferences_included(self):
-        prefs = {"灯光偏好": "暖白光", "空调温度": "25度"}
-        prompt = build_personality_prompt(preferences=prefs)
+    def test_memory_context_injected(self):
+        ctx = "<memory>\n用户偏好：暖白光，25度\n</memory>"
+        prompt = build_personality_prompt(memory_context=ctx)
         assert "暖白光" in prompt
-        assert "25度" in prompt
+        assert "<memory>" in prompt
 
-    def test_no_preferences(self):
-        prompt = build_personality_prompt(preferences=None)
-        assert "暖白光" not in prompt  # specific prefs should not appear
+    def test_no_memory_context_no_preferences_block(self):
+        prompt = build_personality_prompt()
+        assert "<preferences>" not in prompt
 
     def test_time_context_included(self):
         prompt = build_personality_prompt()
