@@ -519,7 +519,27 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Level 1 answer failed: %s", exc)
 
-        # 4c. Learning intent detection
+        # 4c. Memory store shortcut: "记住/记下/别忘了" → 直接确认，不走 LLM
+        _REMEMBER_KEYWORDS = ("记住", "记下", "别忘了", "帮我记")
+        if any(text.startswith(kw) or kw in text[:10] for kw in _REMEMBER_KEYWORDS):
+            # 不含"每次"（那是配置型学习意图，交给 learning router）
+            if "每次" not in text:
+                reply = "好的，记住了。"
+                self.logger.info("Memory shortcut: %s", text[:60])
+                self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
+                print(f"🤖 Jarvis: {reply}")
+                self._speak_nonblocking(reply, emotion=detected_emotion)
+                history.append({"role": "user", "content": text})
+                history.append({"role": "assistant", "content": reply})
+                self.conversation_store.replace(session_id, history)
+                # 后台记忆提取会自动处理
+                if user_id:
+                    self._executor.submit(
+                        self.memory_manager.save, history, user_id, session_id,
+                    )
+                return reply
+
+        # 4d. Learning intent detection
         if hasattr(self, "learning_router"):
             learning = self.learning_router.detect(text)
             if learning and learning.mode == "create":
