@@ -454,8 +454,11 @@ class JarvisApp:
 
         # 2. Resolve user identity
         user_id = verification.user if verification.verified else None
-        user_name = self._resolve_display_name(user_id)
-        user_role = self._resolve_role(user_id)
+        # 没有注册用户时，默认当 owner 处理（开发/单用户模式）
+        if user_id is None and not self.user_store.get_all_users():
+            user_id = "default_user"
+        user_name = self._resolve_display_name(user_id) or "用户"
+        user_role = self._resolve_role(user_id) if user_id != "default_user" else "owner"
         confidence = verification.confidence
 
         # 3. Log identification
