@@ -37,7 +37,10 @@ class GNewsProvider(NewsProvider):
         }
 
         if topic == "ai":
-            params["q"] = "AI OR artificial intelligence OR LLM"
+            if self.language == "zh":
+                params["q"] = "人工智能 OR AI OR 大模型"
+            else:
+                params["q"] = "AI OR artificial intelligence OR LLM"
             endpoint = f"{self.base_url}/search"
         elif topic in ["technology", "business"]:
             params["topic"] = topic
@@ -53,18 +56,24 @@ class GNewsProvider(NewsProvider):
 
             articles = []
             for item in data.get("articles", [])[:limit]:
+                source = item.get("source") or {}
+                published = item.get("publishedAt", "")
+                try:
+                    pub_dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    pub_dt = datetime.now()
                 articles.append(NewsArticle(
-                    title=item["title"],
-                    source=item["source"]["name"],
-                    published_at=datetime.fromisoformat(item["publishedAt"].replace("Z", "+00:00")),
-                    url=item["url"],
+                    title=item.get("title", ""),
+                    source=source.get("name", "unknown"),
+                    published_at=pub_dt,
+                    url=item.get("url", ""),
                     summary=item.get("description", ""),
                     topic=topic,
                 ))
 
-            LOGGER.info(f"GNews: fetched {len(articles)} articles for {topic}")
+            LOGGER.info("GNews: fetched %d articles for %s", len(articles), topic)
             return articles
 
         except Exception as e:
-            LOGGER.error(f"GNews fetch failed for {topic}: {e}")
+            LOGGER.error("GNews fetch failed for %s: %s", topic, e)
             return []

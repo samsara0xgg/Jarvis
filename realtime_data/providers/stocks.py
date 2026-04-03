@@ -46,17 +46,20 @@ class AlphaVantageProvider(StockProvider):
                 data = resp.json()
 
                 if "Note" in data:
-                    LOGGER.warning(f"Rate limit hit: {data['Note']}")
+                    LOGGER.warning("Alpha Vantage rate limit hit")
                     break
 
                 quote_data = data.get("Global Quote", {})
                 if not quote_data:
-                    LOGGER.warning(f"No data for {symbol}")
+                    LOGGER.warning("No data for %s", symbol)
                     continue
 
-                price = float(quote_data["05. price"])
-                change = float(quote_data["09. change"])
-                change_pct = float(quote_data["10. change percent"].rstrip("%"))
+                price_str = quote_data.get("05. price", "0")
+                change_str = quote_data.get("09. change", "0")
+                pct_str = quote_data.get("10. change percent", "0%")
+                price = float(price_str)
+                change = float(change_str)
+                change_pct = float(pct_str.rstrip("%"))
 
                 quotes.append(StockQuote(
                     symbol=symbol,
@@ -68,7 +71,7 @@ class AlphaVantageProvider(StockProvider):
                 ))
 
             except Exception as e:
-                LOGGER.error(f"Alpha Vantage fetch failed for {symbol}: {e}")
+                LOGGER.error("Alpha Vantage fetch failed for %s: %s", symbol, e)
 
-        LOGGER.info(f"Alpha Vantage: fetched {len(quotes)}/{len(symbols)} quotes")
+        LOGGER.info("Alpha Vantage: fetched %d/%d quotes", len(quotes), len(symbols))
         return quotes

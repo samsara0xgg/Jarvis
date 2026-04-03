@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -98,9 +100,12 @@ class AutomationRuleManager:
         Returns:
             确认消息。
         """
-        name = rule_data.get("name", "")
+        name = rule_data.get("name", "").strip()
         if not name:
             return "规则名称不能为空。"
+
+        if name in self._rules:
+            return f"规则「{name}」已存在。如需修改请先删除旧规则。"
 
         trigger = rule_data.get("trigger", {})
         actions = rule_data.get("actions", [])
@@ -189,13 +194,20 @@ class AutomationRuleManager:
             self.logger.error("Failed to load automation rules: %s", exc)
 
     def _save(self) -> None:
-        """持久化规则到 JSON 文件."""
+        """持久化规则到 JSON 文件（原子写入，防止断电损坏）."""
+        tmp_path = None
         try:
             data = {"rules": [r.to_dict() for r in self._rules.values()]}
-            with open(self.rules_path, "w") as f:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(self.rules_path.parent), suffix=".tmp",
+            )
+            with os.fdopen(fd, "w") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, self.rules_path)
         except Exception as exc:
             self.logger.error("Failed to save automation rules: %s", exc)
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     def _register_all_scheduled(self) -> None:
         """启动时注册所有 cron/once 规则到 scheduler."""

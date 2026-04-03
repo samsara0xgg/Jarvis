@@ -10,7 +10,6 @@ from realtime_data.formatter import Formatter
 from realtime_data.providers.mock_news import MockNewsProvider
 from realtime_data.providers.mock_stocks import MockStockProvider
 from realtime_data.providers.news import GNewsProvider
-from realtime_data.providers.news_chinese import GNewsChineseProvider
 from realtime_data.providers.yahoo_stocks import YahooFinanceProvider
 from realtime_data.service import RealTimeDataService
 from skills import Skill
@@ -37,14 +36,12 @@ class RealTimeDataSkill(Skill):
             stock_cfg = self.config.get("stocks", {})
 
             language = news_cfg.get("language", "en")
-            if language == "zh":
-                news_provider = GNewsChineseProvider(api_key=news_cfg.get("api_key", ""))
-            else:
-                news_provider = GNewsProvider(
-                    api_key=news_cfg.get("api_key", ""),
-                    language=language,
-                    country=news_cfg.get("country", "us"),
-                )
+            country = news_cfg.get("country", "cn" if language == "zh" else "us")
+            news_provider = GNewsProvider(
+                api_key=news_cfg.get("api_key", ""),
+                language=language,
+                country=country,
+            )
 
             provider = stock_cfg.get("provider", "yahoo")
             if provider == "yahoo":
@@ -66,40 +63,35 @@ class RealTimeDataSkill(Skill):
         if not sched_cfg.get("enabled", False):
             return
 
-        news_cron = sched_cfg.get("refresh_news_cron", "*/30 * * * *")
-        stocks_cron = sched_cfg.get("refresh_stocks_cron", "*/15 * * * *")
+        news_minutes = int(sched_cfg.get("refresh_news_minutes", 30))
+        stocks_minutes = int(sched_cfg.get("refresh_stocks_minutes", 15))
 
         try:
-            n_parts = news_cron.split()
-            scheduler.add_cron_job(
+            scheduler.add_interval_job(
                 job_id="realtime_data_refresh_news",
                 func=self._refresh_news_job,
-                hour=n_parts[1],
-                minute=n_parts[0],
+                minutes=news_minutes,
             )
-            s_parts = stocks_cron.split()
-            scheduler.add_cron_job(
+            scheduler.add_interval_job(
                 job_id="realtime_data_refresh_stocks",
                 func=self._refresh_stocks_job,
-                hour=s_parts[1],
-                minute=s_parts[0],
+                minutes=stocks_minutes,
             )
             self.logger.info(
-                "OpenClaw: news refresh every %s min, stocks every %s min",
-                n_parts[0].replace("*/", ""),
-                s_parts[0].replace("*/", ""),
+                "RealTimeData: news refresh every %d min, stocks every %d min",
+                news_minutes, stocks_minutes,
             )
         except Exception as exc:
-            self.logger.warning("OpenClaw scheduler setup failed: %s", exc)
+            self.logger.warning("RealTimeData scheduler setup failed: %s", exc)
 
     def _refresh_news_job(self) -> None:
         """后台定时刷新新闻缓存."""
-        self.logger.info("OpenClaw: scheduled news refresh...")
+        self.logger.info("RealTimeData: scheduled news refresh...")
         self.service.get_news("all", force_refresh=True)
 
     def _refresh_stocks_job(self) -> None:
         """后台定时刷新股票缓存."""
-        self.logger.info("OpenClaw: scheduled stocks refresh...")
+        self.logger.info("RealTimeData: scheduled stocks refresh...")
         self.service.get_stocks(self._watchlist, force_refresh=True)
 
     def get_briefing_text(self) -> str:
@@ -205,5 +197,5 @@ class RealTimeDataSkill(Skill):
                 return f"Unknown tool: {tool_name}"
 
         except Exception as e:
-            self.logger.exception(f"OpenClaw tool {tool_name} failed")
+            self.logger.exception("RealTimeData tool %s failed", tool_name)
             return f"Error: {e}"

@@ -29,6 +29,8 @@ class RealTimeDataService:
         self.stock_provider = stock_provider
         self.cache = cache
         self.logger = LOGGER
+        self._last_news_stale = False
+        self._last_stocks_stale = False
 
 
     def get_news(
@@ -57,6 +59,7 @@ class RealTimeDataService:
             if self.cache:
                 self.cache.set(cache_key, digest.to_dict())
 
+            self._last_news_stale = False
             return digest
 
         except Exception as e:
@@ -66,6 +69,7 @@ class RealTimeDataService:
                 cached_data, _ = self.cache.get(cache_key, ttl * 10)
                 if cached_data:
                     self.logger.info("Returning stale news cache for %s", topic)
+                    self._last_news_stale = True
                     return NewsDigest.from_dict(cached_data)
 
             return NewsDigest(articles=[], topic=topic)
@@ -104,6 +108,7 @@ class RealTimeDataService:
             if self.cache:
                 self.cache.set(cache_key, digest.to_dict())
 
+            self._last_stocks_stale = False
             return digest
 
         except Exception as e:
@@ -113,6 +118,7 @@ class RealTimeDataService:
                 cached_data, _ = self.cache.get(cache_key, ttl * 10)
                 if cached_data:
                     self.logger.info("Returning stale stock cache")
+                    self._last_stocks_stale = True
                     return StockDigest.from_dict(cached_data)
 
             return StockDigest(quotes=[])
@@ -132,4 +138,5 @@ class RealTimeDataService:
         if include_stocks:
             snapshot.stock_digest = self.get_stocks(force_refresh=force_refresh)
 
+        snapshot.is_stale = self._last_news_stale or self._last_stocks_stale
         return snapshot

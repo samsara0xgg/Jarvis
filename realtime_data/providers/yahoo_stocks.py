@@ -39,13 +39,17 @@ class YahooFinanceProvider(StockProvider):
                 resp.raise_for_status()
                 data = resp.json()
 
-                result = data["chart"]["result"][0]
-                meta = result["meta"]
+                chart = data.get("chart", {})
+                results = chart.get("result") or []
+                if not results:
+                    LOGGER.warning("Yahoo Finance: empty result for %s", symbol)
+                    continue
+                meta = results[0].get("meta", {})
 
-                current_price = meta["regularMarketPrice"]
-                prev_close = meta["chartPreviousClose"]
+                current_price = meta.get("regularMarketPrice", 0.0)
+                prev_close = meta.get("chartPreviousClose", 0.0)
                 change = current_price - prev_close
-                change_pct = (change / prev_close) * 100
+                change_pct = (change / prev_close) * 100 if prev_close else 0.0
 
                 quotes.append(StockQuote(
                     symbol=symbol,
@@ -58,7 +62,7 @@ class YahooFinanceProvider(StockProvider):
                 ))
 
             except Exception as e:
-                LOGGER.error(f"Yahoo Finance fetch failed for {symbol}: {e}")
+                LOGGER.error("Yahoo Finance fetch failed for %s: %s", symbol, e)
 
-        LOGGER.info(f"Yahoo Finance: fetched {len(quotes)}/{len(symbols)} quotes")
+        LOGGER.info("Yahoo Finance: fetched %d/%d quotes", len(quotes), len(symbols))
         return quotes

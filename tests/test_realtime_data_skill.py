@@ -106,13 +106,13 @@ class TestScheduler:
         config = _make_config()
         config["skills"]["realtime_data"]["scheduler"] = {
             "enabled": True,
-            "refresh_news_cron": "*/30 * * * *",
-            "refresh_stocks_cron": "*/15 * * * *",
+            "refresh_news_minutes": 30,
+            "refresh_stocks_minutes": 15,
         }
         skill = RealTimeDataSkill(config)
         mock_sched = MagicMock()
         skill.set_scheduler(mock_sched)
-        assert mock_sched.add_cron_job.call_count == 2
+        assert mock_sched.add_interval_job.call_count == 2
 
     def test_refresh_jobs(self):
         skill = RealTimeDataSkill(_make_config())
