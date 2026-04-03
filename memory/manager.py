@@ -77,6 +77,12 @@ _DEDUP_PROMPT_HEADER = """判断新记忆与已有记忆的关系。
 输出 JSON（严格 JSON，无注释）：
 {"action": "ADD 或 UPDATE 或 NONE", "target_id": "xxx 或 null"}"""
 
+_MEMORY_USAGE_GUIDE = (
+    "以上是你对用户的了解。像朋友一样自然地运用这些信息，"
+    "不要像读档案一样列举。和当前话题无关的记忆不要强行提起。"
+    "待关心的事项找合适的时机自然地提起，别像闹钟一样提醒。"
+)
+
 # Cosine thresholds for dedup — lower for same-category (catches "coffee" vs "latte")
 _DEDUP_THRESHOLD_SAME_CAT = 0.55
 _DEDUP_THRESHOLD_CROSS_CAT = 0.7
@@ -561,7 +567,12 @@ class MemoryManager:
         if not sections:
             return ""
 
-        return "<memory>\n" + "\n\n".join(sections) + "\n</memory>"
+        return (
+            "<memory>\n"
+            + "\n\n".join(sections)
+            + "\n\n[使用原则] " + _MEMORY_USAGE_GUIDE
+            + "\n</memory>"
+        )
 
     def _profile_to_text(self, profile: dict) -> str:
         """Convert profile JSON to concise natural language."""

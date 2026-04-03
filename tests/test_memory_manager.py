@@ -111,7 +111,7 @@ class TestQuery:
             "pending": [{"content": "未来的事", "date": "2099-12-31"}],
         })
         result = manager.query("你好", "user1")
-        assert "待关心" not in result
+        assert "[待关心]" not in result
 
     def test_memory_context_format(self, manager: MemoryManager):
         """Verify the <memory> block structure."""
@@ -129,6 +129,15 @@ class TestQuery:
         assert "[关于用户]" in result
         assert "[最近]" in result
         assert "[记忆]" in result
+
+    def test_memory_context_includes_usage_guide(self, manager: MemoryManager):
+        """Memory context should include natural usage guidance."""
+        manager.store.set_profile("user1", {
+            "identity": {"name": "Allen"},
+        })
+        result = manager.query("你好", "user1")
+        assert "自然" in result or "朋友" in result
+        assert "<memory>" in result
 
 
 class TestSave:
