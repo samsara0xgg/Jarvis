@@ -139,6 +139,20 @@ class TestQuery:
         assert "自然" in result or "朋友" in result
         assert "<memory>" in result
 
+    def test_memory_context_length_capped(self, manager: MemoryManager):
+        """Memory context should not exceed ~800 chars of content."""
+        for i in range(50):
+            manager.store.add_memory(
+                user_id="user1",
+                content=f"这是第{i}条很长的测试记忆，包含各种信息细节。" * 3,
+                category="knowledge",
+                importance=5.0,
+                embedding=np.random.randn(512).astype(np.float32),
+            )
+        result = manager.query("测试", "user1")
+        # Total output including XML tags and guide should be bounded
+        assert len(result) < 2000
+
 
 class TestSave:
     """Memory save (write pipeline) tests with mocked LLM."""
@@ -267,6 +281,55 @@ class TestProfileToText:
     def test_empty_profile(self, manager: MemoryManager):
         text = manager._profile_to_text({})
         assert text == ""
+
+
+class TestSavePipeline:
+    """Save pipeline edge-case tests."""
+
+    def _mock_llm_response(self, manager: MemoryManager, extraction: dict):
+        """Patch the LLM call to return a fixed extraction result."""
+        manager._call_openai_json = MagicMock(return_value=extraction)
+
+    def test_save_correction_supersedes(self, manager: MemoryManager):
+        """When user corrects a memory, old one should be superseded."""
+        emb = manager.embedder.encode("Allen 喜欢拿铁")
+        manager.store.add_memory(
+            user_id="user1", content="Allen 喜欢拿铁",
+            category="preference", key="favorite_drink",
+            importance=7.0, embedding=emb,
+        )
+
+        extraction = {
+            "memories": [{
+                "content": "Allen 喜欢美式，不喜欢拿铁",
+                "category": "preference",
+                "key": "favorite_drink",
+                "importance": 8,
+                "tags": ["饮品"],
+                "time_ref": None,
+                "expires": None,
+            }],
+            "corrections": [{
+                "old_content": "喜欢拿铁",
+                "new_content": "喜欢美式，不喜欢拿铁",
+                "reason": "用户纠正",
+            }],
+            "profile_update": None,
+            "episode_summary": "Allen 纠正了饮品偏好",
+            "mood": "neutral",
+            "topics": ["偏好修正"],
+        }
+        self._mock_llm_response(manager, extraction)
+
+        manager.save(
+            [{"role": "user", "content": "不对，我喜欢美式不是拿铁"}],
+            "user1", "session1",
+        )
+
+        active = manager.store.get_active_memories("user1")
+        contents = [m["content"] for m in active]
+        assert any("美式" in c for c in contents)
+        assert not any(c == "Allen 喜欢拿铁" for c in contents)
 
 
 class TestMaintain:
