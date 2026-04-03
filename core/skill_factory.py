@@ -64,6 +64,7 @@ class SkillFactory:
         """
         def status(msg: str) -> None:
             LOGGER.info("SkillFactory: %s", msg)
+            print(f"  🔧 {msg}")
             if on_status:
                 on_status(msg)
 
@@ -71,17 +72,25 @@ class SkillFactory:
         abc_source = self._read_file("skills/__init__.py")
         example_source = self._read_file("skills/weather.py")
 
+        # 记录 CC 调用前 skills/learned/ 里已有的文件
+        existing_files = set(self._dir.glob("*.py")) - {self._dir / "__init__.py"}
+        status(f"learned 目录已有 {len(existing_files)} 个 skill 文件")
+
         prompt = self._build_prompt(description, abc_source, example_source)
         skill_id = skill_name_hint or self._slugify(description)
-        skill_path = self._dir / f"{skill_id}.py"
-        test_path = self._root / "tests" / f"test_learned_{skill_id}.py"
 
-        status("正在学习...")
+        status(f"调用 Claude Code（skill_id={skill_id}）...")
         try:
             result = subprocess.run(
                 ["claude", "-p", prompt, "--allowedTools", "Edit,Write,Bash", "--output-format", "text"],
                 capture_output=True, text=True, timeout=120, cwd=str(self._root),
             )
+            status(f"Claude Code 返回码: {result.returncode}")
+            if result.stdout:
+                # 打印 CC 输出的前 500 字符用于 debug
+                status(f"CC 输出:\n{result.stdout[:500]}")
+            if result.stderr:
+                status(f"CC stderr:\n{result.stderr[:300]}")
             if result.returncode != 0:
                 return {"success": False, "skill_name": skill_id,
                         "message": f"Claude Code 执行失败: {result.stderr[:200]}", "path": None}
@@ -92,33 +101,59 @@ class SkillFactory:
             return {"success": False, "skill_name": skill_id,
                     "message": "Claude Code 超时（120s）", "path": None}
 
-        if not skill_path.exists():
-            return {"success": False, "skill_name": skill_id,
-                    "message": f"未生成 skill 文件: {skill_path.name}", "path": None}
+        # 扫描新增文件（不依赖精确文件名）
+        current_files = set(self._dir.glob("*.py")) - {self._dir / "__init__.py"}
+        new_files = current_files - existing_files
+        status(f"新增文件: {[f.name for f in new_files] if new_files else '无'}")
+
+        if not new_files:
+            # 也检查 CC 可能用了精确文件名
+            expected_path = self._dir / f"{skill_id}.py"
+            if expected_path.exists():
+                new_files = {expected_path}
+            else:
+                return {"success": False, "skill_name": skill_id,
+                        "message": "Claude Code 未在 skills/learned/ 生成任何 .py 文件", "path": None}
+
+        # 取第一个新文件作为 skill 文件
+        skill_path = sorted(new_files)[0]
+        actual_skill_id = skill_path.stem
+        status(f"检测到 skill 文件: {skill_path.name}")
+
+        # 查找对应测试文件
+        test_path = self._root / "tests" / f"test_learned_{actual_skill_id}.py"
+        alt_test_path = self._root / "tests" / f"test_{actual_skill_id}.py"
 
         status("安全检查...")
         security_errors = self._security_scan(str(skill_path))
         if security_errors:
+            status(f"安全检查失败: {security_errors}")
             skill_path.unlink(missing_ok=True)
-            return {"success": False, "skill_name": skill_id,
+            return {"success": False, "skill_name": actual_skill_id,
                     "message": f"安全检查未通过: {'; '.join(security_errors)}", "path": None}
+        status("安全检查通过")
 
-        if test_path.exists():
-            status("运行测试...")
+        # 跑测试
+        found_test = test_path if test_path.exists() else (alt_test_path if alt_test_path.exists() else None)
+        if found_test:
+            status(f"运行测试: {found_test.name}")
             try:
                 test_result = subprocess.run(
-                    ["python", "-m", "pytest", str(test_path), "-v", "--tb=short"],
+                    ["python", "-m", "pytest", str(found_test), "-v", "--tb=short"],
                     capture_output=True, text=True, timeout=30, cwd=str(self._root),
                 )
+                status(f"测试结果:\n{test_result.stdout[-400:]}")
                 if test_result.returncode != 0:
-                    return {"success": False, "skill_name": skill_id,
+                    return {"success": False, "skill_name": actual_skill_id,
                             "message": f"测试未通过:\n{test_result.stdout[-300:]}", "path": str(skill_path)}
             except subprocess.TimeoutExpired:
-                return {"success": False, "skill_name": skill_id,
+                return {"success": False, "skill_name": actual_skill_id,
                         "message": "测试执行超时", "path": str(skill_path)}
+        else:
+            status("未找到测试文件，跳过测试")
 
         status("学会了！")
-        return {"success": True, "skill_name": skill_id, "message": "技能学习成功", "path": str(skill_path)}
+        return {"success": True, "skill_name": actual_skill_id, "message": "技能学习成功", "path": str(skill_path)}
 
     def _build_prompt(self, description: str, skill_abc_source: str, example_skill_source: str) -> str:
         return f"""你需要为 Jarvis 语音助手写一个新的 skill。
