@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -193,6 +194,7 @@ class JarvisApp:
         self._tts: Any = None
 
         # --- Session state ---
+        self._cancel = threading.Event()  # 打断信号
         session_config = config.get("session", {})
         self.silence_timeout = float(session_config.get("silence_timeout", 30))
         self.utterance_duration = float(session_config.get("utterance_duration", 5))
@@ -295,42 +297,87 @@ class JarvisApp:
     def run_interactive(self) -> int:
         """Run in press-Enter-to-talk mode (no wake word needed).
 
+        Press Enter to start recording. Press Enter again while Jarvis is
+        processing/speaking to interrupt and start a new recording.
+
         Returns:
             Process exit code.
         """
         self._print_banner()
         self.speak("Jarvis 已上线，随时待命。")
 
+        # 后台线程监听 Enter 键
+        enter_pressed = threading.Event()
+        input_value: list[str] = [""]
+        input_done = threading.Event()  # 标记整个 input 循环结束
+
+        def _input_listener() -> None:
+            while not input_done.is_set():
+                try:
+                    val = input("\n[Press Enter to speak, Enter again to interrupt] ").strip()
+                    input_value[0] = val
+                    enter_pressed.set()
+                except (EOFError, KeyboardInterrupt):
+                    input_value[0] = "quit"
+                    enter_pressed.set()
+                    break
+
+        listener = threading.Thread(target=_input_listener, daemon=True)
+        listener.start()
+
         try:
             while self._running:
-                try:
-                    user_input = input("\n[Press Enter to speak, 'quit' to exit] ").strip()
-                except (EOFError, KeyboardInterrupt):
-                    self.speak("再见。")
-                    return 0
+                # 等用户按 Enter
+                enter_pressed.wait()
+                enter_pressed.clear()
 
-                if user_input.lower() in {"quit", "exit", "退出", "q"}:
+                val = input_value[0]
+                if val.lower() in {"quit", "exit", "退出", "q"}:
                     self.speak("再见。")
                     return 0
 
                 try:
                     audio = self.audio_recorder.record(self.utterance_duration)
+                    self._cancel.clear()
+
+                    # 在后台检测打断：如果处理过程中用户再按 Enter，设置 cancel
+                    def _watch_interrupt() -> None:
+                        enter_pressed.wait()
+                        if not self._cancel.is_set():
+                            self._cancel.set()
+                            self.logger.info("User interrupted current operation")
+
+                    watcher = threading.Thread(target=_watch_interrupt, daemon=True)
+                    watcher.start()
+
                     response = self.handle_utterance(audio)
+
+                    if self._cancel.is_set():
+                        # 被打断了：停止 TTS，清理状态
+                        self._cancel_current()
+                        self._cancel.clear()
+                        print("⏹ 已打断")
+                        # enter_pressed 已经被 watcher 消费，不需要 clear
+                        continue
+
                     if response and self._is_farewell(response):
                         self._save_on_farewell()
                         self.speak("再见。")
                         return 0
+
                 except KeyboardInterrupt:
                     print("\nRecording cancelled.")
+                    self._cancel.clear()
                     continue
                 except Exception as exc:
                     self.logger.exception("Pipeline error")
                     print(f"Error: {exc}")
+                    self._cancel.clear()
                     continue
                 finally:
-                    # 清空 stdin 缓冲区，防止多按 Enter 触发连续录音
                     self._flush_stdin()
         finally:
+            input_done.set()
             self.shutdown()
 
         return 0
@@ -613,13 +660,15 @@ class JarvisApp:
                         response_text = ar.text
 
         # 7. Cloud LLM — either REQLLM rephrase or full cloud fallback
-        if response_text is None:
+        if response_text is None and not self._cancel.is_set():
             tools = self.skill_registry.get_tool_definitions(user_role)
 
             # 逐句 TTS：用 pipeline 异步合成+播放，消除句间停顿
             tts_pipeline = self._create_tts_pipeline()
 
             def _on_sentence(sentence: str) -> None:
+                if self._cancel.is_set():
+                    return  # 被打断，跳过后续句子
                 nonlocal sentence_count
                 sentence_count += 1
                 print(f"🤖 Jarvis: {sentence}")
@@ -712,7 +761,7 @@ class JarvisApp:
             })
 
         # 10. Output (only for non-streamed responses)
-        if sentence_count == 0:
+        if sentence_count == 0 and not self._cancel.is_set():
             self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
             if self.oled:
                 self.oled.set_speaking_text(response_text)
@@ -757,6 +806,20 @@ class JarvisApp:
         """Block until previous TTS finishes (prevents audio feedback)."""
         if self._tts_future and not self._tts_future.done():
             self._tts_future.result(timeout=30)
+
+    def _cancel_current(self) -> None:
+        """Cancel current TTS and reset state after user interrupt."""
+        # 取消正在播放的 TTS
+        if self._tts_future and not self._tts_future.done():
+            self._tts_future.cancel()
+        # 停止音频播放（如果 TTS 引擎支持）
+        tts = self._get_tts()
+        if tts and hasattr(tts, "stop"):
+            try:
+                tts.stop()
+            except Exception:
+                pass
+        self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
 
     @staticmethod
     def _flush_stdin() -> None:
