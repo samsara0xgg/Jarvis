@@ -229,12 +229,15 @@ class JarvisApp:
             def probe() -> bool:
                 if not key:
                     return False
-                resp = _req.get(
-                    url,
-                    headers={"Authorization": f"Bearer {key}"},
-                    timeout=5,
-                )
-                return resp.status_code < 500
+                try:
+                    resp = _req.get(
+                        url,
+                        headers={"Authorization": f"Bearer {key}"},
+                        timeout=5,
+                    )
+                    return resp.status_code < 500
+                except Exception:
+                    return False
             return probe
 
         groq_cfg = config.get("models", {}).get("groq", {})
