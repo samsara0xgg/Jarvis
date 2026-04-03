@@ -44,3 +44,6 @@ luma.oled>=3.13
 luma.emulator>=1.5
 Pillow>=10.0
 psutil>=5.9
+
+# Memory system
+fastembed>=0.7

@@ -183,7 +183,7 @@ def test_jarvis_skill_registry_has_all_skills(tmp_path):
         config = _make_config(tmp_path)
         app = JarvisApp(config, config_path=tmp_path / "config.yaml")
 
-        expected_skills = {"smart_home", "weather", "time", "reminders", "todos", "system_control", "memory", "automation"}
+        expected_skills = {"smart_home", "weather", "time", "reminders", "todos", "system_control", "memory", "automation", "health", "scheduler"}
         actual_skills = set(app.skill_registry.skill_names)
         assert expected_skills == actual_skills
     finally:

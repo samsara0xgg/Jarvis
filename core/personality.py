@@ -84,6 +84,7 @@ def build_personality_prompt(
     situation: str = "normal",
     preferences: dict[str, Any] | None = None,
     user_emotion: str = "",
+    memory_context: str = "",
 ) -> str:
     """动态组装 system prompt.
 
@@ -132,6 +133,10 @@ def build_personality_prompt(
         situation_lines.append(f"现在是{user_name}在跟你说话。")
     else:
         situation_lines.append("这个人你不认识。礼貌但保持距离，提醒他做个声纹注册你才能更好地帮他。")
+
+    # 记忆上下文（持久上下文，在即时情境之前）
+    if memory_context:
+        sections.append(memory_context)
 
     if situation_lines:
         sections.append("<situation>\n" + "\n".join(situation_lines) + "\n</situation>")

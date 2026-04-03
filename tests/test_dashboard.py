@@ -1,172 +1,224 @@
-"""Tests for the dashboard controller logic without requiring Gradio."""
-
-from __future__ import annotations
+"""TDD tests for dashboard controller — covers all user-facing scenarios."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import yaml
+import pytest
 
-from auth.permission_manager import PermissionManager
-from auth.user_store import UserStore
-from core.command_parser import CommandParser
-from core.speaker_verifier import VerificationResult
 from core.speech_recognizer import TranscriptionResult
-from devices.device_manager import DeviceManager
-from main import SmartHomeVoiceLockApp
+from jarvis import JarvisApp
 from ui.dashboard import DashboardController
 
 
-def _load_config() -> dict:
-    """Load the project config for dashboard tests."""
+# ------------------------------------------------------------------
+# Fixtures
+# ------------------------------------------------------------------
 
+@pytest.fixture
+def ctrl(tmp_path):
+    """Create a DashboardController with a real JarvisApp."""
     config_path = Path(__file__).resolve().parents[1] / "config.yaml"
-    with config_path.open("r", encoding="utf-8") as config_file:
-        return yaml.safe_load(config_file)
-
-
-def _build_config(tmp_path: Path) -> dict:
-    """Create an isolated config copy for dashboard tests."""
-
-    config = _load_config()
-    config.setdefault("auth", {})
-    config["auth"]["user_store_path"] = str(tmp_path / "users.json")
-    config.setdefault("devices", {})
+    with config_path.open() as f:
+        config = yaml.safe_load(f)
+    config.setdefault("auth", {})["user_store_path"] = str(tmp_path / "users.json")
     config["devices"]["mode"] = "sim"
-    return config
+    cp = tmp_path / "config.yaml"
+    with cp.open("w") as f:
+        yaml.safe_dump(config, f)
+    app = JarvisApp(config, config_path=cp)
+    return DashboardController(cp, app=app)
 
 
-class _FakeAudioRecorder:
-    """Fake recorder used for pipeline and enrollment tests."""
-
-    def is_quality_ok(self, audio: np.ndarray) -> tuple[bool, str]:
-        """Treat all samples as valid."""
-
-        del audio
-        return True, "ok"
+def _fake_audio(seconds=1.0, sr=16000):
+    return (sr, np.random.randn(int(sr * seconds)).astype(np.float32))
 
 
-class _FakeSpeakerEncoder:
-    """Fake speaker encoder with deterministic outputs."""
+def _mock_asr(ctrl, text):
+    ctrl.app.speech_recognizer.transcribe = MagicMock(
+        return_value=TranscriptionResult(text=text, language="zh", confidence=0.9)
+    )
 
-    def __init__(self) -> None:
-        """Initialize the encoder call counter."""
+def _mock_verify_guest(ctrl):
+    ctrl.app.speaker_verifier.verify = MagicMock(
+        return_value=MagicMock(verified=False, confidence=0.0)
+    )
 
-        self.calls = 0
-
-    def encode(self, audio: np.ndarray) -> np.ndarray:
-        """Return a simple deterministic embedding."""
-
-        del audio
-        self.calls += 1
-        return np.array([1.0, 0.0, 0.0], dtype=np.float32)
+def _mock_llm(ctrl, response="好的"):
+    ctrl.app.llm.chat = MagicMock(return_value=(response, []))
 
 
-class _FakeSpeakerVerifier:
-    """Fake verifier that always authenticates the same user."""
+# ------------------------------------------------------------------
+# 1. Voice input
+# ------------------------------------------------------------------
 
-    def verify(self, audio: np.ndarray) -> VerificationResult:
-        """Ignore the waveform and return a successful verification result."""
+class TestHandleVoice:
+    def test_none_audio_returns_empty(self, ctrl):
+        assert ctrl.handle_voice(None) == ""
 
-        del audio
-        return VerificationResult(
-            verified=True,
-            user="alice",
-            confidence=0.88,
-            all_scores={"alice": 0.88},
+    def test_valid_audio_shows_asr_and_response(self, ctrl):
+        _mock_asr(ctrl, "你好")
+        _mock_verify_guest(ctrl)
+        _mock_llm(ctrl, "你好！")
+        result = ctrl.handle_voice(_fake_audio())
+        assert "你好" in result
+        assert "🤖" in result
+
+    def test_empty_transcription(self, ctrl):
+        _mock_asr(ctrl, "")
+        assert "没听清" in ctrl.handle_voice(_fake_audio())
+
+    def test_asr_crash(self, ctrl):
+        ctrl.app.speech_recognizer.transcribe = MagicMock(side_effect=RuntimeError("boom"))
+        assert "语音识别失败" in ctrl.handle_voice(_fake_audio())
+
+    def test_llm_crash_fallback(self, ctrl):
+        _mock_asr(ctrl, "天气")
+        _mock_verify_guest(ctrl)
+        ctrl.app.llm.chat = MagicMock(side_effect=RuntimeError("timeout"))
+        ctrl.app.intent_router = None
+        assert "云端服务不可用" in ctrl.handle_voice(_fake_audio())
+
+    def test_verify_crash_falls_to_guest(self, ctrl):
+        _mock_asr(ctrl, "你好")
+        ctrl.app.speaker_verifier.verify = MagicMock(side_effect=RuntimeError("no model"))
+        _mock_llm(ctrl, "你好！")
+        assert "Guest" in ctrl.handle_voice(_fake_audio())
+
+    def test_reqllm_falls_through_to_llm(self, ctrl):
+        """When local executor returns REQLLM, should rephrase via LLM."""
+        _mock_asr(ctrl, "你知道我是谁吗")
+        _mock_verify_guest(ctrl)
+        _mock_llm(ctrl, "我还不认识你呢，要不要注册一下？")
+
+        from core.local_executor import Action, ActionResponse
+        from unittest.mock import patch
+        # Simulate intent router → info_query → REQLLM
+        fake_route = MagicMock(
+            tier="local", intent="info_query", sub_type="general",
+            query="你知道我是谁吗", actions=[], response=None, rule=None,
         )
+        ctrl.app.intent_router.route = MagicMock(return_value=fake_route)
+        ctrl.app.local_executor.execute_info_query = MagicMock(
+            return_value=ActionResponse(Action.REQLLM, "没查到相关信息。")
+        )
+        result = ctrl.handle_voice(_fake_audio())
+        # Should use LLM rephrased response, NOT "没查到"
+        assert "没查到" not in result
+        assert "认识" in result or "注册" in result
+
+    def test_garbage_local_response_falls_to_llm(self, ctrl):
+        """Even non-REQLLM garbage like '没查到' should fallback to LLM."""
+        _mock_asr(ctrl, "你知道我是谁吗")
+        _mock_verify_guest(ctrl)
+        _mock_llm(ctrl, "你好，我是小贾。")
+
+        from core.local_executor import Action, ActionResponse
+        fake_route = MagicMock(
+            tier="local", intent="info_query", sub_type="general",
+            query="你知道我是谁吗", actions=[], response=None, rule=None,
+        )
+        ctrl.app.intent_router.route = MagicMock(return_value=fake_route)
+        ctrl.app.local_executor.execute_info_query = MagicMock(
+            return_value=ActionResponse(Action.RESPONSE, "没查到相关信息。")
+        )
+        result = ctrl.handle_voice(_fake_audio())
+        # Should detect garbage and use LLM instead
+        assert "没查到" not in result
+
+    def test_int16_audio(self, ctrl):
+        _mock_asr(ctrl, "测试")
+        _mock_verify_guest(ctrl)
+        _mock_llm(ctrl, "收到")
+        audio = (16000, (np.random.randn(16000) * 32767).astype(np.int16))
+        assert "测试" in ctrl.handle_voice(audio)
+
+    def test_stereo_audio(self, ctrl):
+        _mock_asr(ctrl, "测试")
+        _mock_verify_guest(ctrl)
+        _mock_llm(ctrl, "收到")
+        assert "测试" in ctrl.handle_voice((16000, np.random.randn(16000, 2).astype(np.float32)))
+
+    def test_48khz_resampled(self, ctrl):
+        _mock_asr(ctrl, "测试")
+        _mock_verify_guest(ctrl)
+        _mock_llm(ctrl, "收到")
+        assert "测试" in ctrl.handle_voice((48000, np.random.randn(48000).astype(np.float32)))
 
 
-class _FakeSpeechRecognizer:
-    """Fake ASR recognizer returning a configured sentence."""
+# ------------------------------------------------------------------
+# 2. Scenes
+# ------------------------------------------------------------------
 
-    def __init__(self, text: str) -> None:
-        """Store the transcription text returned by the fake recognizer."""
+class TestScenes:
+    def test_trigger_existing(self, ctrl):
+        scenes = list(ctrl.config.get("automations", {}).keys())
+        if not scenes:
+            pytest.skip("No scenes")
+        assert isinstance(ctrl.trigger_scene(scenes[0]), str)
 
-        self.text = text
+    def test_trigger_nonexistent(self, ctrl):
+        assert isinstance(ctrl.trigger_scene("不存在"), str)
 
-    def transcribe(self, audio: np.ndarray) -> TranscriptionResult:
-        """Ignore the waveform and return the configured transcription."""
-
-        del audio
-        return TranscriptionResult(text=self.text, language="zh", confidence=0.95)
-
-
-def _add_user(store: UserStore, user_id: str, name: str, role: str) -> None:
-    """Add a user to the JSON store."""
-
-    store.add_user(
-        {
-            "user_id": user_id,
-            "name": name,
-            "embedding": [0.1, 0.2, 0.3],
-            "role": role,
-            "permissions": ["unlock"],
-            "enrolled_at": "2026-03-26T00:00:00+00:00",
-        }
-    )
+    def test_trigger_no_engine(self, ctrl):
+        ctrl.app.automation_engine = None
+        assert "未启用" in ctrl.trigger_scene("test")
 
 
-def test_dashboard_controller_updates_pipeline_and_device_panel(tmp_path: Path) -> None:
-    """Voice handling should update the pipeline panel and simulated device state."""
+# ------------------------------------------------------------------
+# 3. Rendering
+# ------------------------------------------------------------------
 
-    config = _build_config(tmp_path)
-    user_store = UserStore(config)
-    _add_user(user_store, "alice", "张三", "guest")
-    app = SmartHomeVoiceLockApp(
-        config,
-        audio_recorder=_FakeAudioRecorder(),
-        speaker_encoder=_FakeSpeakerEncoder(),
-        speaker_verifier=_FakeSpeakerVerifier(),
-        speech_recognizer=_FakeSpeechRecognizer("打开客厅灯"),
-        command_parser=CommandParser(config),
-        device_manager=DeviceManager(config),
-        permission_manager=PermissionManager(),
-        user_store=user_store,
-        input_func=lambda prompt: "",
-        output_func=lambda message: None,
-    )
-    controller = DashboardController(tmp_path / "config.yaml", app=app)
+class TestRendering:
+    def test_header(self, ctrl):
+        h = ctrl.render_header()
+        assert "小贾" in h
+        assert "sim" in h
 
-    pipeline_html, device_html, header_html, logs_text = controller.handle_voice_input(
-        (16000, np.ones(16000, dtype=np.float32))
-    )
+    def test_devices(self, ctrl):
+        html = ctrl.render_devices()
+        assert "灯" in html or "锁" in html
 
-    assert "客厅灯 已打开" in pipeline_html or "客厅灯已打开" in pipeline_html
-    assert "living_room_light" in device_html
-    assert "模式: sim" in header_html
-    assert "打开客厅灯" in logs_text
+    def test_health_with_tracker(self, ctrl):
+        if not ctrl.app.health_tracker:
+            pytest.skip("No tracker")
+        ctrl.app.health_tracker.record_success("tts.openai")
+        assert "正常" in ctrl.render_health()
+
+    def test_health_no_tracker(self, ctrl):
+        ctrl.app.health_tracker = None
+        assert "未启用" in ctrl.render_health()
+
+    def test_refresh_tuple(self, ctrl):
+        r = ctrl.refresh()
+        assert len(r) == 3
+        assert all(isinstance(s, str) for s in r)
 
 
-def test_dashboard_controller_registers_user_from_three_samples(tmp_path: Path) -> None:
-    """Dashboard registration should reuse enrollment flow with browser samples."""
+# ------------------------------------------------------------------
+# 4. Audio coercion
+# ------------------------------------------------------------------
 
-    config = _build_config(tmp_path)
-    user_store = UserStore(config)
-    app = SmartHomeVoiceLockApp(
-        config,
-        audio_recorder=_FakeAudioRecorder(),
-        speaker_encoder=_FakeSpeakerEncoder(),
-        speaker_verifier=_FakeSpeakerVerifier(),
-        speech_recognizer=_FakeSpeechRecognizer("打开客厅灯"),
-        command_parser=CommandParser(config),
-        device_manager=DeviceManager(config),
-        permission_manager=PermissionManager(),
-        user_store=user_store,
-        input_func=lambda prompt: "",
-        output_func=lambda message: None,
-    )
-    controller = DashboardController(tmp_path / "config.yaml", app=app)
+class TestAudioCoercion:
+    def test_invalid_raises(self, ctrl):
+        with pytest.raises(ValueError):
+            ctrl._coerce_audio("bad")
 
-    message, user_rows, _, _ = controller.register_user_from_samples(
-        "bob",
-        "李四",
-        "member",
-        "lights,unlock",
-        (16000, np.ones(16000, dtype=np.float32)),
-        (16000, np.ones(16000, dtype=np.float32)),
-        (16000, np.ones(16000, dtype=np.float32)),
-    )
+    def test_clips_range(self, ctrl):
+        result = ctrl._coerce_audio((16000, np.ones(16000, dtype=np.float32) * 5))
+        assert result.max() <= 1.0
 
-    assert "注册成功" in message
-    assert any(row[0] == "bob" and row[1] == "李四" for row in user_rows)
+
+# ------------------------------------------------------------------
+# 5. Gradio build smoke test
+# ------------------------------------------------------------------
+
+class TestBuild:
+    def test_build_ok(self, ctrl):
+        try:
+            import gradio
+        except ImportError:
+            pytest.skip("No gradio")
+        from ui.dashboard import build_dashboard
+        assert build_dashboard(controller=ctrl) is not None
