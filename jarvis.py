@@ -45,6 +45,7 @@ from skills.weather import WeatherSkill
 LOGGER = logging.getLogger(__name__)
 
 FAREWELL_DEFAULTS = ["再见", "退出", "bye", "goodbye", "that's all"]
+_REMEMBER_KEYWORDS = ("记住", "记下", "别忘了", "帮我记")
 
 # Module-level ref so APScheduler can serialize the job.
 _health_tracker_ref = None
@@ -99,6 +100,7 @@ class JarvisApp:
 
         from memory.behavior_log import BehaviorLog
         mem_db = config.get("memory", {}).get("db_path", "data/memory/jarvis_memory.db")
+        # BehaviorLog 和 MemoryManager 共用同一个 SQLite 文件（不同表），WAL 模式支持并发
         self.behavior_log = BehaviorLog(mem_db)
 
         from memory.direct_answer import DirectAnswerer
@@ -315,15 +317,7 @@ class JarvisApp:
                     audio = self.audio_recorder.record(self.utterance_duration)
                     response = self.handle_utterance(audio)
                     if response and self._is_farewell(response):
-                        # 确保告别时保存完整对话记忆
-                        user_id = self._last_user_id
-                        session_id = self._last_session_id
-                        if user_id and session_id:
-                            full_history = self.conversation_store.get_history(session_id)
-                            if full_history:
-                                self._executor.submit(
-                                    self.memory_manager.save, full_history, user_id, session_id,
-                                )
+                        self._save_on_farewell()
                         self.speak("再见。")
                         return 0
                 except KeyboardInterrupt:
@@ -408,15 +402,7 @@ class JarvisApp:
                         self._last_interaction = time.monotonic()
 
                         if response and self._is_farewell(response):
-                            # 确保告别时保存完整对话记忆
-                            user_id = self._last_user_id
-                            session_id = self._last_session_id
-                            if user_id and session_id:
-                                full_history = self.conversation_store.get_history(session_id)
-                                if full_history:
-                                    self._executor.submit(
-                                        self.memory_manager.save, full_history, user_id, session_id,
-                                    )
+                            self._save_on_farewell()
                             listening_for_wake = True
                     except KeyboardInterrupt:
                         break
@@ -509,18 +495,16 @@ class JarvisApp:
                     self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
                     print(f"🤖 Jarvis (L1): {direct}")
                     self._speak_nonblocking(direct, emotion=detected_emotion)
-                    if hasattr(self, "behavior_log"):
-                        self.behavior_log.log(user_id, "conversation", {
-                            "text": text[:100],
-                            "route": "memory_l1",
-                            "answer": direct[:100],
-                        })
+                    self.behavior_log.log(user_id, "conversation", {
+                        "text": text[:100],
+                        "route": "memory_l1",
+                        "answer": direct[:100],
+                    })
                     return direct
             except Exception as exc:
                 self.logger.warning("Level 1 answer failed: %s", exc)
 
         # 4c. Memory store shortcut: "记住/记下/别忘了" → 直接确认，不走 LLM
-        _REMEMBER_KEYWORDS = ("记住", "记下", "别忘了", "帮我记")
         if any(text.startswith(kw) or kw in text[:10] for kw in _REMEMBER_KEYWORDS):
             # 不含"每次"（那是配置型学习意图，交给 learning router）
             if "每次" not in text:
@@ -551,7 +535,7 @@ class JarvisApp:
                 history.append({"role": "user", "content": text})
                 history.append({"role": "assistant", "content": learn_response})
                 self.conversation_store.replace(session_id, history)
-                if hasattr(self, "behavior_log") and user_id:
+                if user_id:
                     self.behavior_log.log(user_id, "conversation", {
                         "text": text[:100], "route": "learn_create",
                     })
@@ -921,7 +905,7 @@ class JarvisApp:
                 self.logger.warning("Failed to hot-load new skill: %s", exc)
                 return f"技能文件生成了但加载失败：{exc}"
 
-            if user_id and hasattr(self, "behavior_log"):
+            if user_id:
                 self.behavior_log.log(user_id, "skill_learned", {
                     "skill": result["skill_name"],
                     "description": intent.description,
@@ -947,6 +931,17 @@ class JarvisApp:
         if record:
             return str(record.get("role", "guest"))
         return "guest"
+
+    def _save_on_farewell(self) -> None:
+        """Save full conversation to memory on farewell."""
+        user_id = self._last_user_id
+        session_id = self._last_session_id
+        if user_id and session_id:
+            full_history = self.conversation_store.get_history(session_id)
+            if full_history:
+                self._executor.submit(
+                    self.memory_manager.save, full_history, user_id, session_id,
+                )
 
     def _is_farewell(self, text: str) -> bool:
         """Check if text contains a farewell phrase."""
@@ -998,7 +993,7 @@ class JarvisApp:
         self.logger.info("Memory maintenance scheduled: daily 3:00am")
 
     def _run_memory_maintenance(self) -> None:
-        """Execute weekly memory maintenance — merge duplicates."""
+        """Execute daily memory maintenance — merge duplicates."""
         try:
             results = self.memory_manager.maintain_all()
             for uid, stats in results.items():

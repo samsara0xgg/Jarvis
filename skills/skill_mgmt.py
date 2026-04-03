@@ -91,4 +91,9 @@ class SkillManagementSkill(Skill):
         return f"已禁用技能 '{name}'，重启后生效。"
 
     def _is_learned(self, name: str) -> bool:
-        return bool(self._loader.get_metadata(name))
+        """Check if a skill is learned (has metadata AND file exists)."""
+        meta = self._loader.get_metadata(name)
+        if not meta:
+            return False
+        from pathlib import Path
+        return (Path(self._loader._dir) / f"{name}.py").exists() or bool(meta.get("taught_by"))

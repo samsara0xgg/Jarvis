@@ -78,7 +78,21 @@ class SkillLoader:
             return {}
 
     def _save_metadata(self, data: dict[str, Any]) -> None:
-        self._meta_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        """Atomic write: write to temp file then rename."""
+        import os
+        import tempfile
+        content = json.dumps(data, indent=2, ensure_ascii=False)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self._meta_path.parent), suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+            os.replace(tmp_path, self._meta_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
 
     def get_metadata(self, skill_id: str) -> dict[str, Any]:
         return self._load_metadata().get(skill_id, {})
