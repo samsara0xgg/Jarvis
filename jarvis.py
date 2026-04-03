@@ -547,6 +547,8 @@ class JarvisApp:
                     if ar.action == Action.REQLLM:
                         use_llm_rephrase = True
                         response_text = None  # 下面交给 LLM 转述
+                    elif any(p in ar.text for p in ("没查到", "未找到", "暂不支持")):
+                        response_text = None  # 本地无结果，fallback 到云端 LLM
                     else:
                         response_text = ar.text
 
