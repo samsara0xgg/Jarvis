@@ -231,3 +231,51 @@ class TestPersistence:
         assert "persist_test" in mgr2.list_rules()
         result = mgr2.check_keyword("hello")
         assert result is not None
+
+
+# --- Skill Alias ---
+
+class TestSkillAlias:
+    def test_create_skill_alias(self, manager):
+        mgr, _ = manager
+        result = mgr.create_rule({
+            "name": "收盘快捷",
+            "trigger": {"type": "skill_alias", "keyword": "收盘"},
+            "actions": [{"skill": "realtime_data", "tool": "get_stock_watchlist",
+                         "params": {"symbols": ["NVDA", "AAPL"]}}],
+        })
+        assert "已创建" in result
+
+    def test_skill_alias_keyword_match(self, manager):
+        mgr, _ = manager
+        mgr.create_rule({
+            "name": "收盘快捷",
+            "trigger": {"type": "skill_alias", "keyword": "收盘"},
+            "actions": [{"skill": "realtime_data", "tool": "get_stock_watchlist",
+                         "params": {"symbols": ["NVDA", "AAPL"]}}],
+        })
+        match = mgr.check_keyword("收盘")
+        assert match is not None
+        actions, name = match
+        assert name == "收盘快捷"
+        assert actions[0]["skill"] == "realtime_data"
+        assert actions[0]["tool"] == "get_stock_watchlist"
+
+    def test_skill_alias_no_false_match(self, manager):
+        mgr, _ = manager
+        mgr.create_rule({
+            "name": "收盘快捷",
+            "trigger": {"type": "skill_alias", "keyword": "收盘"},
+            "actions": [{"skill": "realtime_data", "tool": "get_stock_watchlist", "params": {}}],
+        })
+        assert mgr.check_keyword("今天天气") is None
+
+    def test_skill_alias_persists(self, tmp_rules_path, mock_scheduler):
+        mgr1 = AutomationRuleManager(rules_path=tmp_rules_path, scheduler=mock_scheduler)
+        mgr1.create_rule({
+            "name": "收盘快捷",
+            "trigger": {"type": "skill_alias", "keyword": "收盘"},
+            "actions": [{"skill": "realtime_data", "tool": "get_stock_watchlist", "params": {}}],
+        })
+        mgr2 = AutomationRuleManager(rules_path=tmp_rules_path, scheduler=mock_scheduler)
+        assert mgr2.check_keyword("收盘") is not None

@@ -160,3 +160,32 @@ class LocalExecutor:
 
         return ActionResponse(Action.RESPONSE, "不支持的自动化操作。")
 
+    def execute_skill_alias(
+        self, actions: list[dict], user_role: str = "owner",
+    ) -> ActionResponse:
+        """执行 skill_alias actions — 调用指定 skill 的指定 tool.
+
+        Args:
+            actions: 包含 skill/tool/params 的 action 列表。
+            user_role: 用户角色。
+
+        Returns:
+            ActionResponse — REQLLM，让 LLM 用小贾语气转述结果。
+        """
+        results = []
+        for act in actions:
+            tool_name = act.get("tool", "")
+            params = act.get("params", {})
+            if not tool_name:
+                continue
+            result = self.skill_registry.execute(
+                tool_name, params, user_role=user_role,
+            )
+            self.logger.info("Skill alias execute: %s(%s) → %s", tool_name, params, result[:80])
+            results.append(result)
+
+        if not results:
+            return ActionResponse(Action.RESPONSE, "没有需要执行的操作。")
+
+        return ActionResponse(Action.REQLLM, "\n".join(results))
+

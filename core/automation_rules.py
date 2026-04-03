@@ -162,7 +162,8 @@ class AutomationRuleManager:
         for rule in self._rules.values():
             if not rule.enabled:
                 continue
-            if rule.trigger.get("type") != "keyword":
+            trigger_type = rule.trigger.get("type")
+            if trigger_type not in ("keyword", "skill_alias"):
                 continue
 
             keyword = rule.trigger.get("keyword", "")
