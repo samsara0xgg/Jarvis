@@ -192,7 +192,7 @@ class TestRendering:
 
     def test_refresh_tuple(self, ctrl):
         r = ctrl.refresh()
-        assert len(r) == 3
+        assert len(r) == 4
         assert all(isinstance(s, str) for s in r)
 
 

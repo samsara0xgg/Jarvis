@@ -240,8 +240,23 @@ class DashboardController:
             )
         return "".join(chips)
 
-    def refresh(self) -> tuple[str, str, str]:
-        return self.render_header(), self.render_devices(), self.render_health()
+    def render_memory(self) -> str:
+        """Return a plain-text summary of memory stats per user."""
+        try:
+            store = self.app.memory_manager.store
+            user_ids = store.get_all_user_ids()
+            lines = []
+            for uid in user_ids:
+                count = store.count_active(uid)
+                episodes = store.get_recent_episodes(uid, days=3)
+                ep_count = len(episodes)
+                lines.append(f"{uid}: {count} 条记忆, {ep_count} 条近期经历")
+            return "\n".join(lines) if lines else "暂无记忆数据"
+        except Exception:
+            return "记忆系统未就绪"
+
+    def refresh(self) -> tuple[str, str, str, str]:
+        return self.render_header(), self.render_devices(), self.render_health(), self.render_memory()
 
     # ------------------------------------------------------------------
     # Audio
@@ -333,6 +348,13 @@ def build_dashboard(
                         scene_btns = [gr.Button(n, size="sm") for n in scenes]
                 gr.Markdown("**健康**")
                 health = gr.HTML(value=ctrl.render_health())
+                gr.Markdown("**记忆**")
+                memory = gr.Textbox(
+                    value=ctrl.render_memory(),
+                    label="",
+                    lines=4,
+                    interactive=False,
+                )
 
             # Right: voice
             with gr.Column(scale=6):
@@ -355,7 +377,7 @@ def build_dashboard(
             for name, btn in zip(scenes, scene_btns):
                 btn.click(fn=lambda n=name: ctrl.trigger_scene(n), outputs=[response])
 
-        gr.Timer(5.0).tick(fn=ctrl.refresh, outputs=[header, devices, health])
+        gr.Timer(5.0).tick(fn=ctrl.refresh, outputs=[header, devices, health, memory])
 
     return demo
 
