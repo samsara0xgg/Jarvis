@@ -553,6 +553,14 @@ class LLMClient:
             for delim in self._SENTENCE_DELIMITERS:
                 pos = buffer.find(delim)
                 if pos != -1 and (earliest == -1 or pos < earliest):
+                    # 跳过小数点：前后是数字的 "." 不是句子分隔符
+                    if delim == "." and pos > 0 and buffer[pos - 1].isdigit():
+                        # 往后看：如果后面也是数字，说明是小数（如 "3.14"）
+                        if pos + 1 < len(buffer) and buffer[pos + 1].isdigit():
+                            continue
+                        # 后面还没有字符（可能数字还在 streaming），也跳过
+                        if pos + 1 >= len(buffer) and not force:
+                            continue
                     earliest = pos
 
             if earliest == -1:
