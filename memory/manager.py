@@ -275,6 +275,14 @@ class MemoryManager:
         if not extraction:
             return
 
+        # 1b. Process corrections — deactivate contradicted memories before adding new ones
+        for correction in extraction.get("corrections", []):
+            old_kw = correction.get("old_content", "")
+            if old_kw:
+                deactivated = self.store.deactivate_memory(user_id, old_kw)
+                if deactivated:
+                    self.logger.info("Memory corrected: deactivated '%s'", old_kw)
+
         # 2. Process each extracted memory
         for mem in extraction.get("memories", []):
             content = mem.get("content", "").strip()
