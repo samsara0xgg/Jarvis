@@ -30,6 +30,7 @@ from core.speaker_verifier import SpeakerVerifier
 from core.speech_recognizer import SpeechRecognizer
 from devices.device_manager import DeviceManager
 from memory.conversation import ConversationStore
+from memory.manager import MemoryManager
 from memory.user_preferences import UserPreferenceStore
 from skills import SkillRegistry
 from skills.automation import AutomationSkill
@@ -44,6 +45,15 @@ from skills.weather import WeatherSkill
 LOGGER = logging.getLogger(__name__)
 
 FAREWELL_DEFAULTS = ["再见", "退出", "bye", "goodbye", "that's all"]
+
+# Module-level ref so APScheduler can serialize the job.
+_health_tracker_ref = None
+
+
+def _run_health_probes() -> None:
+    """Periodic health probe callback (must be module-level for APScheduler)."""
+    if _health_tracker_ref is not None:
+        _health_tracker_ref.run_all_probes()
 
 
 class JarvisApp:
@@ -61,6 +71,15 @@ class JarvisApp:
         # --- Event bus ---
         self.event_bus = EventBus()
 
+        # --- Health tracker (optional) ---
+        self.health_tracker = None
+        if config.get("health", {}).get("enabled", True):
+            try:
+                from core.health import ComponentTracker
+                self.health_tracker = ComponentTracker(config, event_bus=self.event_bus)
+            except Exception as exc:
+                self.logger.warning("Health tracker unavailable: %s", exc)
+
         # --- Reuse existing modules ---
         self.user_store = UserStore(config)
         self.audio_recorder = AudioRecorder(config)
@@ -71,9 +90,12 @@ class JarvisApp:
         self.permission_manager = PermissionManager()
 
         # --- New Jarvis modules ---
-        self.llm = LLMClient(config)
+        self.llm = LLMClient(config, tracker=self.health_tracker)
         self.conversation_store = ConversationStore(config)
         self.preference_store = UserPreferenceStore(config)
+
+        # --- Memory manager ---
+        self.memory_manager = MemoryManager(config)
 
         # --- Scheduler (optional) ---
         self.scheduler = None
@@ -83,6 +105,7 @@ class JarvisApp:
             if self.scheduler.available and config.get("scheduler", {}).get("enabled", True):
                 self.scheduler.start()
                 self._setup_morning_briefing(config)
+                self._setup_memory_maintenance()
         except Exception as exc:
             self.logger.warning("Scheduler unavailable: %s", exc)
 
@@ -119,7 +142,7 @@ class JarvisApp:
             from core.local_executor import LocalExecutor
             from core.automation_rules import AutomationRuleManager
 
-            self.intent_router = IntentRouter(config)
+            self.intent_router = IntentRouter(config, tracker=self.health_tracker)
 
             # Automation rule manager — keyword 触发 + scheduler 注册
             def _execute_rule_actions(actions: list) -> None:
@@ -155,6 +178,77 @@ class JarvisApp:
         self._last_interaction = time.monotonic()
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="jarvis")
         self._tts_future: Future | None = None
+
+        # --- Health monitoring (voice notification + proactive probes) ---
+        if self.health_tracker:
+            self.event_bus.on("health.status_changed", self._on_health_changed)
+            self._setup_health_probes(config)
+
+    def _on_health_changed(self, data: dict) -> None:
+        """Voice-notify user on first degradation only."""
+        if data.get("new_status") == "degraded" and data.get("old_status") == "healthy":
+            component = data.get("component", "unknown")
+            self.speak(f"{component} 暂时不可用，已切换备用。")
+
+    def _setup_health_probes(self, config: dict) -> None:
+        """Register health probes and schedule periodic checks."""
+        import requests as _req
+
+        tracker = self.health_tracker
+        assert tracker is not None
+
+        # API reachability probes (free — hit /models endpoint, no tokens)
+        def _make_api_probe(url: str, key: str) -> callable:
+            def probe() -> bool:
+                if not key:
+                    return False
+                resp = _req.get(
+                    url,
+                    headers={"Authorization": f"Bearer {key}"},
+                    timeout=5,
+                )
+                return resp.status_code < 500
+            return probe
+
+        groq_cfg = config.get("models", {}).get("groq", {})
+        groq_key = groq_cfg.get("api_key") or __import__("os").environ.get("GROQ_API_KEY", "")
+        if groq_key:
+            tracker.register_probe(
+                "intent.groq",
+                _make_api_probe("https://api.groq.com/openai/v1/models", groq_key),
+            )
+
+        openai_key = __import__("os").environ.get("OPENAI_API_KEY", "")
+        if openai_key:
+            tracker.register_probe(
+                "tts.openai",
+                _make_api_probe("https://api.openai.com/v1/models", openai_key),
+            )
+
+        # Local model file probe
+        asr_model = Path(config.get("asr", {}).get(
+            "sensevoice_model", "data/sensevoice-small-int8",
+        ))
+        if asr_model.exists():
+            model_file = asr_model / "model.int8.onnx"
+            tracker.register_probe("asr.sensevoice", lambda: model_file.exists())
+
+        # Schedule periodic probes
+        probe_cfg = config.get("health", {}).get("proactive_checks", {})
+        if (
+            probe_cfg.get("enabled", True)
+            and self.scheduler
+            and self.scheduler.available
+        ):
+            global _health_tracker_ref
+            _health_tracker_ref = tracker
+            interval = int(probe_cfg.get("interval_seconds", 60))
+            self.scheduler.add_interval_job(
+                job_id="health_probes",
+                func=_run_health_probes,
+                seconds=interval,
+            )
+            self.logger.info("Health probes scheduled every %ds", interval)
 
     def shutdown(self) -> None:
         """Clean up all subsystems."""
@@ -343,9 +437,15 @@ class JarvisApp:
             self.logger.info("Unidentified speaker (%.2f) said: %s", confidence, text)
             print(f"🎤 Guest ({confidence:.2f}): {text}")
 
-        # 4. Load conversation history
+        # 4. Load conversation history + memory
         session_id = user_id or "_guest"
         history = self.conversation_store.get_history(session_id)
+        memory_context = ""
+        if user_id:
+            try:
+                memory_context = self.memory_manager.query(text, user_id)
+            except Exception as exc:
+                self.logger.warning("Memory query failed: %s", exc)
 
         # 5. Keyword trigger check (before routing)
         self.event_bus.emit("jarvis.state_changed", {"state": "thinking"})
@@ -431,6 +531,7 @@ class JarvisApp:
                             user_role=user_role,
                             on_sentence=_on_sentence,
                             user_emotion=detected_emotion,
+                            memory_context=memory_context,
                         )
                     except Exception as exc:
                         self.logger.error("LLM rephrase failed: %s", exc)
@@ -447,6 +548,7 @@ class JarvisApp:
                             user_role=user_role,
                             on_sentence=_on_sentence,
                             user_emotion=detected_emotion,
+                            memory_context=memory_context,
                         )
                     except Exception as exc:
                         self.logger.error("Cloud LLM failed: %s", exc)
@@ -459,9 +561,13 @@ class JarvisApp:
                         tts_pipeline.wait_done()
                     tts_pipeline.stop()
 
-        # 8. Save conversation
+        # 8. Save conversation + async memory extraction
         if updated_messages is not None:
             self.conversation_store.replace(session_id, updated_messages)
+            if user_id:
+                self._executor.submit(
+                    self.memory_manager.save, updated_messages, user_id, session_id,
+                )
 
         # 9. Output (only for non-streamed responses)
         if sentence_count == 0:
@@ -536,7 +642,7 @@ class JarvisApp:
             return self._tts
         try:
             from core.tts import TTSEngine
-            self._tts = TTSEngine(self.config)
+            self._tts = TTSEngine(self.config, tracker=self.health_tracker)
             return self._tts
         except Exception as exc:
             self.logger.warning("TTS unavailable: %s", exc)
@@ -571,7 +677,7 @@ class JarvisApp:
         ))
         self.skill_registry.register(TodoSkill(config))
         self.skill_registry.register(SystemControlSkill(config))
-        self.skill_registry.register(MemorySkill(self.preference_store))
+        self.skill_registry.register(MemorySkill(self.memory_manager))
         self.skill_registry.register(AutomationSkill(self.automation_engine))
 
         # OpenClaw skill (optional)
@@ -600,6 +706,14 @@ class JarvisApp:
                 self.skill_registry.register(RemoteControlSkill(config))
             except Exception as exc:
                 self.logger.warning("Remote control skill unavailable: %s", exc)
+
+        # Health skill (optional)
+        if self.health_tracker:
+            try:
+                from skills.health_skill import HealthSkill
+                self.skill_registry.register(HealthSkill(self.health_tracker))
+            except Exception as exc:
+                self.logger.warning("Health skill unavailable: %s", exc)
 
         # Wire timer callbacks to TTS
         time_skill = self.skill_registry._skills.get("time")
@@ -668,6 +782,30 @@ class JarvisApp:
             day_of_week=day_of_week,
         )
         self.logger.info("Morning briefing scheduled at %s:%s", hour, minute)
+
+    def _setup_memory_maintenance(self) -> None:
+        """Register weekly memory maintenance (Sunday 3am)."""
+        self.scheduler.add_cron_job(
+            job_id="memory_maintenance",
+            func=self._run_memory_maintenance,
+            day_of_week="sun",
+            hour="3",
+            minute="0",
+        )
+        self.logger.info("Memory maintenance scheduled: Sunday 3:00am")
+
+    def _run_memory_maintenance(self) -> None:
+        """Execute weekly memory maintenance — merge duplicates."""
+        try:
+            results = self.memory_manager.maintain_all()
+            for uid, stats in results.items():
+                if isinstance(stats, dict) and not stats.get("error"):
+                    self.logger.info(
+                        "Memory maintenance [%s]: merged=%d, checked=%d",
+                        uid, stats.get("merged", 0), stats.get("checked", 0),
+                    )
+        except Exception:
+            self.logger.exception("Memory maintenance failed")
 
     def _run_morning_briefing(self) -> None:
         """Execute the morning briefing — weather + reminders + todos."""

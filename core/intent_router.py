@@ -89,10 +89,11 @@ class RouteResult:
 class IntentRouter:
     """三层 fallback 意图路由器：Groq → DeepSeek → 本地 Ollama."""
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, tracker: Any = None) -> None:
         self.config = config
         self.system_prompt = build_system_prompt(config)
         self.logger = LOGGER
+        self._tracker = tracker
 
         # Groq
         groq_cfg = config.get("models", {}).get("groq", {})
@@ -121,20 +122,28 @@ class IntentRouter:
         start = time.time()
 
         # 1. Groq
-        if self.groq_key:
+        if self.groq_key and (not self._tracker or self._tracker.is_available("intent.groq")):
             result = self._call_cloud(self.groq_url, self.groq_key, self.groq_model, text, start)
             if result:
+                if self._tracker:
+                    self._tracker.record_success("intent.groq")
                 result.provider = "groq"
                 return result
+            if self._tracker:
+                self._tracker.record_failure("intent.groq")
 
         # 2. DeepSeek
-        if self.deepseek_key:
+        if self.deepseek_key and (not self._tracker or self._tracker.is_available("intent.deepseek")):
             result = self._call_cloud(self.deepseek_url, self.deepseek_key, self.deepseek_model, text, start)
             if result:
+                if self._tracker:
+                    self._tracker.record_success("intent.deepseek")
                 result.provider = "deepseek"
                 return result
+            if self._tracker:
+                self._tracker.record_failure("intent.deepseek")
 
-        # 3. 本地 Ollama
+        # 3. 本地 Ollama (last resort — never circuit-break)
         if self.local_llm.is_available():
             raw = self.local_llm.generate(prompt=text, system=self.system_prompt)
             result = self._parse_json_response(raw, start, "local")

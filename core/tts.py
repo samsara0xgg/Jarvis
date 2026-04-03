@@ -73,13 +73,14 @@ class TTSEngine:
         config: Parsed application configuration.
     """
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, tracker: Any = None) -> None:
         tts_config = config.get("tts", {})
         self.engine_name = str(tts_config.get("engine", "edge-tts")).strip().lower()
         self.edge_voice = str(tts_config.get("edge_voice", "zh-CN-YunxiNeural"))
         self.edge_rate = str(tts_config.get("edge_rate", "+0%"))
         self.fallback_enabled = bool(tts_config.get("fallback_enabled", True))
         self.logger = LOGGER
+        self._tracker = tracker
         self._pyttsx_engine: Any = None
         self._openai_client: Any = None
         self._http_session: Any = None
@@ -126,25 +127,40 @@ class TTSEngine:
             return
 
         if self.engine_name == "openai_tts":
-            try:
-                self._speak_openai_tts(text, emotion)
-                return
-            except Exception as exc:
-                self.logger.warning("OpenAI TTS failed: %s, trying fallback", exc)
+            if not self._tracker or self._tracker.is_available("tts.openai"):
+                try:
+                    self._speak_openai_tts(text, emotion)
+                    if self._tracker:
+                        self._tracker.record_success("tts.openai")
+                    return
+                except Exception as exc:
+                    if self._tracker:
+                        self._tracker.record_failure("tts.openai", str(exc))
+                    self.logger.warning("OpenAI TTS failed: %s, trying fallback", exc)
 
         if self.engine_name == "minimax":
-            try:
-                self._speak_minimax(text, emotion)
-                return
-            except Exception as exc:
-                self.logger.warning("MiniMax TTS failed: %s, trying fallback", exc)
+            if not self._tracker or self._tracker.is_available("tts.minimax"):
+                try:
+                    self._speak_minimax(text, emotion)
+                    if self._tracker:
+                        self._tracker.record_success("tts.minimax")
+                    return
+                except Exception as exc:
+                    if self._tracker:
+                        self._tracker.record_failure("tts.minimax", str(exc))
+                    self.logger.warning("MiniMax TTS failed: %s, trying fallback", exc)
 
         if self.engine_name == "azure":
-            try:
-                self._speak_azure(text, emotion)
-                return
-            except Exception as exc:
-                self.logger.warning("Azure TTS failed: %s, trying fallback", exc)
+            if not self._tracker or self._tracker.is_available("tts.azure"):
+                try:
+                    self._speak_azure(text, emotion)
+                    if self._tracker:
+                        self._tracker.record_success("tts.azure")
+                    return
+                except Exception as exc:
+                    if self._tracker:
+                        self._tracker.record_failure("tts.azure", str(exc))
+                    self.logger.warning("Azure TTS failed: %s, trying fallback", exc)
 
         if self.engine_name == "pyttsx3":
             self._speak_pyttsx3(text)
@@ -204,11 +220,38 @@ class TTSEngine:
         Returns None if the engine plays directly (pyttsx3).
         """
         if self.engine_name == "openai_tts" and self.openai_tts_key:
-            return self._synth_openai(text, emotion)
+            if not self._tracker or self._tracker.is_available("tts.openai"):
+                try:
+                    path = self._synth_openai(text, emotion)
+                    if self._tracker:
+                        self._tracker.record_success("tts.openai")
+                    return path
+                except Exception as exc:
+                    if self._tracker:
+                        self._tracker.record_failure("tts.openai", str(exc))
+                    self.logger.warning("OpenAI TTS synth failed: %s, trying fallback", exc)
         if self.engine_name == "minimax" and self.minimax_key:
-            return self._synth_minimax(text, emotion)
+            if not self._tracker or self._tracker.is_available("tts.minimax"):
+                try:
+                    path = self._synth_minimax(text, emotion)
+                    if self._tracker:
+                        self._tracker.record_success("tts.minimax")
+                    return path
+                except Exception as exc:
+                    if self._tracker:
+                        self._tracker.record_failure("tts.minimax", str(exc))
+                    self.logger.warning("MiniMax TTS synth failed: %s, trying fallback", exc)
         if self.engine_name == "azure" and self.azure_key:
-            return self._synth_azure(text, emotion)
+            if not self._tracker or self._tracker.is_available("tts.azure"):
+                try:
+                    path = self._synth_azure(text, emotion)
+                    if self._tracker:
+                        self._tracker.record_success("tts.azure")
+                    return path
+                except Exception as exc:
+                    if self._tracker:
+                        self._tracker.record_failure("tts.azure", str(exc))
+                    self.logger.warning("Azure TTS synth failed: %s, trying fallback", exc)
         if self.engine_name == "pyttsx3":
             self._speak_pyttsx3(text)
             return None

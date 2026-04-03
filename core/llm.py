@@ -31,13 +31,14 @@ class LLMClient:
         config: Parsed application configuration.
     """
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, tracker: Any = None) -> None:
         llm_config = config.get("llm", {})
         self.provider = str(llm_config.get("provider", "anthropic")).strip().lower()
         self.max_tokens = int(llm_config.get("max_tokens", 1024))
         self.max_history_tokens = int(llm_config.get("max_history_tokens", 8000))
         self.max_retries = int(llm_config.get("max_retries", 2))
         self.logger = LOGGER
+        self._tracker = tracker
         self._client: Any = None
 
         if self.provider == "openai":
@@ -72,6 +73,7 @@ class LLMClient:
         user_id: str | None = None,
         user_role: str = "guest",
         user_emotion: str = "",
+        memory_context: str = "",
     ) -> tuple[str, list[dict[str, Any]]]:
         """Send a message and run the full tool-use loop.
 
@@ -80,27 +82,39 @@ class LLMClient:
         Returns:
             A tuple of (final_text_response, updated_messages_list).
         """
-        if self.provider == "openai":
-            return self._chat_openai(
-                user_message,
-                conversation_history=conversation_history,
-                tools=tools,
-                tool_executor=tool_executor,
-                user_name=user_name,
-                user_id=user_id,
-                user_role=user_role,
-                user_emotion=user_emotion,
-            )
-        return self._chat_anthropic(
-            user_message,
-            conversation_history=conversation_history,
-            tools=tools,
-            tool_executor=tool_executor,
-            user_name=user_name,
-            user_id=user_id,
-            user_role=user_role,
-            user_emotion=user_emotion,
-        )
+        component = f"llm.{self.provider}"
+        try:
+            if self.provider == "openai":
+                result = self._chat_openai(
+                    user_message,
+                    conversation_history=conversation_history,
+                    tools=tools,
+                    tool_executor=tool_executor,
+                    user_name=user_name,
+                    user_id=user_id,
+                    user_role=user_role,
+                    user_emotion=user_emotion,
+                    memory_context=memory_context,
+                )
+            else:
+                result = self._chat_anthropic(
+                    user_message,
+                    conversation_history=conversation_history,
+                    tools=tools,
+                    tool_executor=tool_executor,
+                    user_name=user_name,
+                    user_id=user_id,
+                    user_role=user_role,
+                    user_emotion=user_emotion,
+                    memory_context=memory_context,
+                )
+            if self._tracker:
+                self._tracker.record_success(component)
+            return result
+        except Exception:
+            if self._tracker:
+                self._tracker.record_failure(component)
+            raise
 
     # ------------------------------------------------------------------
     # Anthropic backend
@@ -117,9 +131,10 @@ class LLMClient:
         user_id: str | None = None,
         user_role: str = "guest",
         user_emotion: str = "",
+        memory_context: str = "",
     ) -> tuple[str, list[dict[str, Any]]]:
         client = self._get_anthropic_client()
-        system = self._personalize_system(user_name, user_role, user_emotion)
+        system = self._personalize_system(user_name, user_role, user_emotion, memory_context=memory_context)
         messages = self._truncate_history(list(conversation_history or []))
         messages.append({"role": "user", "content": user_message})
 
@@ -219,9 +234,10 @@ class LLMClient:
         user_id: str | None = None,
         user_role: str = "guest",
         user_emotion: str = "",
+        memory_context: str = "",
     ) -> tuple[str, list[dict[str, Any]]]:
         client = self._get_openai_client()
-        system = self._personalize_system(user_name, user_role, user_emotion)
+        system = self._personalize_system(user_name, user_role, user_emotion, memory_context=memory_context)
 
         # Convert Anthropic-style history to OpenAI format
         truncated = self._truncate_history(list(conversation_history or []))
@@ -477,6 +493,7 @@ class LLMClient:
         user_role: str = "guest",
         on_sentence: Any | None = None,
         user_emotion: str = "",
+        memory_context: str = "",
     ) -> tuple[str, list[dict[str, Any]]]:
         """Stream LLM response, calling on_sentence for each complete sentence.
 
@@ -499,6 +516,7 @@ class LLMClient:
                 user_id=user_id,
                 user_role=user_role,
                 user_emotion=user_emotion,
+                memory_context=memory_context,
             )
 
         if self.provider == "openai":
@@ -512,6 +530,7 @@ class LLMClient:
                 user_role=user_role,
                 on_sentence=on_sentence,
                 user_emotion=user_emotion,
+                memory_context=memory_context,
             )
         return self._stream_anthropic(
             user_message,
@@ -523,6 +542,7 @@ class LLMClient:
             user_role=user_role,
             on_sentence=on_sentence,
             user_emotion=user_emotion,
+            memory_context=memory_context,
         )
 
     def _flush_sentences(self, buffer: str, on_sentence: Any, force: bool = False) -> str:
@@ -558,9 +578,10 @@ class LLMClient:
         user_role: str = "guest",
         on_sentence: Any,
         user_emotion: str = "",
+        memory_context: str = "",
     ) -> tuple[str, list[dict[str, Any]]]:
         client = self._get_anthropic_client()
-        system = self._personalize_system(user_name, user_role, user_emotion)
+        system = self._personalize_system(user_name, user_role, user_emotion, memory_context=memory_context)
         messages = self._truncate_history(list(conversation_history or []))
         messages.append({"role": "user", "content": user_message})
 
@@ -611,6 +632,7 @@ class LLMClient:
                         user_id=user_id,
                         user_role=user_role,
                         user_emotion=user_emotion,
+                        memory_context=memory_context,
                     )
 
                 messages.append({
@@ -632,6 +654,7 @@ class LLMClient:
                 user_id=user_id,
                 user_role=user_role,
                 user_emotion=user_emotion,
+                memory_context=memory_context,
             )
 
     def _stream_openai(
@@ -646,9 +669,10 @@ class LLMClient:
         user_role: str = "guest",
         on_sentence: Any,
         user_emotion: str = "",
+        memory_context: str = "",
     ) -> tuple[str, list[dict[str, Any]]]:
         client = self._get_openai_client()
-        system = self._personalize_system(user_name, user_role, user_emotion)
+        system = self._personalize_system(user_name, user_role, user_emotion, memory_context=memory_context)
 
         truncated = self._truncate_history(list(conversation_history or []))
         oai_messages = [{"role": "system", "content": system}]
@@ -704,6 +728,7 @@ class LLMClient:
                     user_id=user_id,
                     user_role=user_role,
                     user_emotion=user_emotion,
+                    memory_context=memory_context,
                 )
 
             stored_messages.append({
@@ -724,6 +749,7 @@ class LLMClient:
                 user_id=user_id,
                 user_role=user_role,
                 user_emotion=user_emotion,
+                memory_context=memory_context,
             )
 
     # ------------------------------------------------------------------
@@ -732,9 +758,11 @@ class LLMClient:
 
     def _personalize_system(
         self, user_name: str | None, user_role: str, user_emotion: str = "",
+        memory_context: str = "",
     ) -> str:
         return build_personality_prompt(
             user_name=user_name,
             user_role=user_role,
             user_emotion=user_emotion,
+            memory_context=memory_context,
         )
