@@ -32,28 +32,10 @@ class MemorySkill(Skill):
         return "memory"
 
     def get_tool_definitions(self) -> list[dict[str, Any]]:
+        # 注意：remember tool 已移除。记忆存储由后台 memory_manager.save()
+        # 自动完成（从对话中提取有价值的信息）。LLM 不需要显式调 tool 来记忆。
+        # 保留 recall 和 forget 供用户主动查询和删除。
         return [
-            {
-                "name": "remember",
-                "description": (
-                    "Store a fact or preference about the current user. "
-                    "Use when the user says 'remember that...' or shares personal info worth keeping."
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "key": {
-                            "type": "string",
-                            "description": "A short descriptive key, e.g. 'favorite_drink', 'daughter_name', 'work_schedule'.",
-                        },
-                        "value": {
-                            "type": "string",
-                            "description": "The value to remember.",
-                        },
-                    },
-                    "required": ["key", "value"],
-                },
-            },
             {
                 "name": "recall",
                 "description": (

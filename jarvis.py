@@ -192,6 +192,9 @@ class JarvisApp:
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="jarvis")
         self._tts_future: Future | None = None
 
+        # 预热 embedding 模型（后台加载，不阻塞启动）
+        self._executor.submit(self.memory_manager.embedder.encode, "warmup")
+
         # --- Health monitoring (voice notification + proactive probes) ---
         if self.health_tracker:
             self.event_bus.on("health.status_changed", self._on_health_changed)
