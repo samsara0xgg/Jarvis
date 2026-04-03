@@ -176,6 +176,17 @@ class JarvisApp:
         except Exception as exc:
             self.logger.warning("Intent router unavailable: %s", exc)
 
+        # --- Learning router + skill factory ---
+        from core.learning_router import LearningRouter
+        from core.skill_factory import SkillFactory
+        self.learning_router = LearningRouter(
+            skill_names=list(self.skill_registry.skill_names),
+        )
+        self.skill_factory = SkillFactory(
+            learned_dir="skills/learned",
+            project_root=str(self.config_path.parent) if self.config_path else ".",
+        )
+
         # --- TTS (lazy loaded) ---
         self._tts: Any = None
 
@@ -505,24 +516,54 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Level 1 answer failed: %s", exc)
 
+        # 4c. Learning intent detection
+        if hasattr(self, "learning_router"):
+            learning = self.learning_router.detect(text)
+            if learning and learning.mode == "create":
+                self.logger.info("Learning intent: create — %s", learning.description[:60])
+                learn_response = self._learn_create(learning, user_id)
+                self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
+                print(f"🤖 Jarvis: {learn_response}")
+                self._speak_nonblocking(learn_response, emotion=detected_emotion)
+                history.append({"role": "user", "content": text})
+                history.append({"role": "assistant", "content": learn_response})
+                self.conversation_store.replace(session_id, history)
+                if hasattr(self, "behavior_log") and user_id:
+                    self.behavior_log.log(user_id, "conversation", {
+                        "text": text[:100], "route": "learn_create",
+                    })
+                return learn_response
+            # config and compose modes: fall through to cloud LLM
+            # (cloud LLM handles via existing automation skill)
+
         # 5. Keyword trigger check (before routing)
         self.event_bus.emit("jarvis.state_changed", {"state": "thinking"})
         response_text = None
         updated_messages = None
         ar: ActionResponse | None = None
         sentence_count = 0
+        use_llm_rephrase = False
 
         if self.rule_manager and self.local_executor:
             match = self.rule_manager.check_keyword(text)
             if match:
                 keyword_actions, rule_name = match
-                ar = self.local_executor.execute_smart_home(
-                    keyword_actions, user_role, response=f"好的，{rule_name}已执行。",
-                )
-                response_text = ar.text
+                if keyword_actions and keyword_actions[0].get("skill"):
+                    # skill_alias: call skill then let LLM rephrase
+                    ar = self.local_executor.execute_skill_alias(
+                        keyword_actions, user_role,
+                    )
+                    if ar.action == Action.REQLLM:
+                        use_llm_rephrase = True
+                    else:
+                        response_text = ar.text
+                else:
+                    ar = self.local_executor.execute_smart_home(
+                        keyword_actions, user_role, response=f"好的，{rule_name}已执行。",
+                    )
+                    response_text = ar.text
 
         # 6. Route: local or cloud?
-        use_llm_rephrase = False
         if response_text is None and self.intent_router and self.local_executor:
             route = self.intent_router.route(text)
             if route.tier == "local":
@@ -809,6 +850,19 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Health skill unavailable: %s", exc)
 
+        # --- Load learned skills ---
+        from core.skill_loader import SkillLoader
+        self.skill_loader = SkillLoader("skills/learned")
+        for skill in self.skill_loader.scan():
+            try:
+                self.skill_registry.register(skill)
+            except Exception as exc:
+                self.logger.warning("Failed to register learned skill %s: %s", skill.skill_name, exc)
+
+        # --- Skill management ---
+        from skills.skill_mgmt import SkillManagementSkill
+        self.skill_registry.register(SkillManagementSkill(self.skill_loader, self.skill_registry))
+
         # Wire timer callbacks to TTS
         time_skill = self.skill_registry._skills.get("time")
         if time_skill and hasattr(time_skill, "set_timer_callback"):
@@ -819,6 +873,39 @@ class JarvisApp:
             len(self.skill_registry.skill_names),
             ", ".join(self.skill_registry.skill_names),
         )
+
+    def _learn_create(self, intent: "LearningIntent", user_id: str | None) -> str:
+        """创造型：调用 Claude Code 技能工厂。"""
+        self.speak("好的，我去学一下，稍等。")
+
+        result = self.skill_factory.create(
+            description=intent.description,
+            on_status=lambda msg: self.logger.info("SkillFactory: %s", msg),
+        )
+
+        if result["success"]:
+            try:
+                new_skills = self.skill_loader.scan()
+                for skill in new_skills:
+                    if skill.skill_name not in self.skill_registry.skill_names:
+                        self.skill_registry.register(skill)
+                        self.skill_loader.update_metadata(skill.skill_name, {
+                            "taught_by": user_id or "unknown",
+                            "description": intent.description,
+                        })
+                self.learning_router.update_skills(list(self.skill_registry.skill_names))
+            except Exception as exc:
+                self.logger.warning("Failed to hot-load new skill: %s", exc)
+                return f"技能文件生成了但加载失败：{exc}"
+
+            if user_id and hasattr(self, "behavior_log"):
+                self.behavior_log.log(user_id, "skill_learned", {
+                    "skill": result["skill_name"],
+                    "description": intent.description,
+                })
+            return f"学会了！现在我可以{intent.description}了，要试试吗？"
+        else:
+            return f"没学会，{result['message']}"
 
     def _resolve_display_name(self, user_id: str | None) -> str | None:
         """Map user_id to display name."""
