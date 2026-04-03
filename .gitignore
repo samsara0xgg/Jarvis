@@ -38,6 +38,8 @@ data/todos/
 data/reminders.json
 data/scheduler.db
 data/openclaw/
+data/realtime_data/
+data/automation_rules.json
 
 # 模型文件（太大，不提交）
 data/speechbrain_model/
