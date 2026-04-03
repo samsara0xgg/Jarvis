@@ -63,3 +63,28 @@ class TestDirectAnswerer:
         )
         result = answerer.try_answer(content, "user1")
         assert result is None
+
+    def test_only_answerable_categories_queried(self, answerer: DirectAnswerer):
+        """get_memories_by_categories is called with _ANSWERABLE_CATEGORIES, not all memories."""
+        from unittest.mock import patch, MagicMock
+        content = "Allen 喜欢绿茶"
+        emb = answerer._embedder.encode(content)
+        answerer._store.add_memory(
+            user_id="user2", content=content,
+            category="preference", key="drink",
+            importance=8.0, embedding=emb,
+        )
+        # Also add an event that should NOT surface
+        answerer._store.add_memory(
+            user_id="user2", content="Allen 明天开会",
+            category="event", importance=9.0,
+        )
+        with patch.object(
+            answerer._store, "get_memories_by_categories",
+            wraps=answerer._store.get_memories_by_categories,
+        ) as mock_method:
+            answerer.try_answer(content, "user2")
+            mock_method.assert_called_once()
+            called_categories = mock_method.call_args[0][1]
+            assert "preference" in called_categories
+            assert "event" not in called_categories

@@ -209,6 +209,22 @@ class MemoryStore:
         ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
+    def get_memories_by_categories(
+        self, user_id: str, categories: set[str],
+    ) -> list[dict[str, Any]]:
+        """Return active memories filtered by category, with deserialized embeddings."""
+        if not categories:
+            return []
+        conn = self._get_conn()
+        placeholders = ",".join("?" for _ in categories)
+        rows = conn.execute(
+            f"SELECT * FROM memories WHERE user_id = ? AND active = 1 "
+            f"AND category IN ({placeholders}) "
+            f"ORDER BY importance DESC, created_at DESC",
+            (user_id, *categories),
+        ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
     def find_by_key(self, user_id: str, category: str, key: str) -> dict[str, Any] | None:
         """Find an active memory by category + key (deterministic dedup).
 

@@ -42,11 +42,9 @@ class DirectAnswerer:
         Returns:
             A natural language answer string, or None if no confident match.
         """
-        memories = self._store.get_active_memories(user_id)
         candidates = [
-            m for m in memories
-            if m.get("category") in _ANSWERABLE_CATEGORIES
-            and m.get("embedding") is not None
+            m for m in self._store.get_memories_by_categories(user_id, _ANSWERABLE_CATEGORIES)
+            if m.get("embedding") is not None
         ]
         if not candidates:
             return None

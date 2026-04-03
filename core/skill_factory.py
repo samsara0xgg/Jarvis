@@ -22,6 +22,15 @@ _DANGEROUS_PATTERNS = [
     (r"\b__import__\b", "__import__()"),
     (r"\bshutil\b", "shutil module"),
     (r"\bpickle\b", "pickle module"),
+    # Second-order evasion patterns
+    (r"\bimportlib\b", "importlib module"),
+    (r"\bctypes\b", "ctypes module"),
+    (r"\bsocket\b", "socket module"),
+    (r"\bcompile\s*\(", "compile()"),
+    (r"\bglobals\s*\(", "globals()"),
+    (r"\blocals\s*\(", "locals()"),
+    (r"\bsetattr\s*\(", "setattr()"),
+    (r"\bgetattr\s*\(.+(?:system|popen|exec|eval)", "getattr() with dangerous target"),
 ]
 
 
@@ -154,8 +163,15 @@ class SkillFactory:
         return f"# File not found: {rel_path}"
 
     def _slugify(self, text: str) -> str:
+        """Convert a description to a valid Python module name."""
+        import hashlib
         slug = text[:30].strip().lower()
         slug = re.sub(r"[^\w\s]", "", slug)
         slug = re.sub(r"\s+", "_", slug)
         slug = re.sub(r"[^\x00-\x7f]", "", slug)
-        return slug.strip("_") or "custom_skill"
+        slug = slug.strip("_")
+        if not slug:
+            # Pure non-ASCII input: use hash to avoid collisions
+            h = hashlib.md5(text.encode()).hexdigest()[:6]
+            slug = f"skill_{h}"
+        return slug

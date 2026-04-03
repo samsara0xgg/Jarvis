@@ -63,6 +63,24 @@ class TestSecurityScan:
         errors = factory._security_scan(str(path))
         assert any("exec" in e for e in errors)
 
+    def test_importlib_blocked(self, factory, tmp_path):
+        path = tmp_path / "imp.py"
+        path.write_text('import importlib\nimportlib.import_module("subprocess")\n')
+        errors = factory._security_scan(str(path))
+        assert any("importlib" in e for e in errors)
+
+    def test_ctypes_blocked(self, factory, tmp_path):
+        path = tmp_path / "ct.py"
+        path.write_text('import ctypes\n')
+        errors = factory._security_scan(str(path))
+        assert any("ctypes" in e for e in errors)
+
+    def test_getattr_evasion_blocked(self, factory, tmp_path):
+        path = tmp_path / "ga.py"
+        path.write_text("getattr(os, 'system')('ls')\n")
+        errors = factory._security_scan(str(path))
+        assert len(errors) > 0
+
 
 class TestSlugify:
     def test_chinese_removed(self, factory):
@@ -73,6 +91,13 @@ class TestSlugify:
     def test_spaces_to_underscores(self, factory):
         slug = factory._slugify("check flight info")
         assert slug == "check_flight_info"
+
+    def test_chinese_produces_unique_slugs(self, factory):
+        s1 = factory._slugify("查航班信息")
+        s2 = factory._slugify("查汇率")
+        assert s1 != s2  # different inputs → different slugs
+        assert s1.isascii()
+        assert s2.isascii()
 
 
 class TestCreateNoCLI:
