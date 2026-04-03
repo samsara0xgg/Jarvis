@@ -621,7 +621,7 @@ class TestMemorySkill:
     def test_tool_definitions(self, skill):
         defs = skill.get_tool_definitions()
         names = {d["name"] for d in defs}
-        assert names == {"remember", "recall", "forget"}
+        assert names == {"recall", "forget"}
 
 
 # ---------------------------------------------------------------------------
