@@ -528,9 +528,18 @@ class JarvisApp:
                         route.actions, user_role, response=route.response,
                     )
                 elif route.intent == "info_query":
-                    ar = self.local_executor.execute_info_query(
-                        route.sub_type, route.query, user_role,
-                    )
+                    # 非明确数据查询（非 news/stocks/weather）先查记忆
+                    if route.sub_type not in ("news", "stocks", "weather") and user_id:
+                        try:
+                            mem_answer = self.direct_answerer.try_answer(text, user_id)
+                            if mem_answer:
+                                ar = ActionResponse(Action.RESPONSE, mem_answer)
+                        except Exception:
+                            pass
+                    if ar is None:
+                        ar = self.local_executor.execute_info_query(
+                            route.sub_type, route.query, user_role,
+                        )
                 elif route.intent == "time":
                     ar = self.local_executor.execute_time(route.sub_type)
                 elif route.intent == "automation":
@@ -618,13 +627,21 @@ class JarvisApp:
                         tts_pipeline.wait_done()
                     tts_pipeline.stop()
 
-        # 8. Save conversation + async memory extraction
-        if updated_messages is not None:
+        # 8. Save conversation + memory extraction
+        cloud_path = updated_messages is not None
+        if cloud_path:
+            # 云端 LLM 路径：完整对话历史 + 立即提取记忆
             self.conversation_store.replace(session_id, updated_messages)
             if user_id:
                 self._executor.submit(
                     self.memory_manager.save, updated_messages, user_id, session_id,
                 )
+        elif response_text:
+            # 本地路径：更新对话历史（farewell/超时时统一提取记忆）
+            history.append({"role": "user", "content": text})
+            history.append({"role": "assistant", "content": response_text})
+            self.conversation_store.replace(session_id, history)
+            updated_messages = history  # 给后续行为日志用
 
         # 9. Log behavior events
         if user_id:
