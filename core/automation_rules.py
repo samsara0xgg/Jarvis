@@ -18,6 +18,27 @@ from typing import Any, Callable
 
 LOGGER = logging.getLogger(__name__)
 
+# 模块级引用，供 APScheduler 序列化 job 回调
+_rule_manager_ref: "AutomationRuleManager | None" = None
+
+
+def _scheduled_cron_callback(rule_name: str) -> None:
+    """APScheduler cron job 回调（模块级函数，可 pickle）."""
+    if _rule_manager_ref is None:
+        return
+    rule = _rule_manager_ref._rules.get(rule_name)
+    if rule and rule.enabled:
+        _rule_manager_ref._execute_actions(rule.actions)
+
+
+def _scheduled_once_callback(rule_name: str) -> None:
+    """APScheduler one-time job 回调（模块级函数，可 pickle）."""
+    if _rule_manager_ref is None:
+        return
+    rule = _rule_manager_ref._rules.get(rule_name)
+    if rule:
+        _rule_manager_ref._execute_once(rule.actions, rule_name)
+
 _DAYS_INFO: dict[str, tuple[str, str]] = {
     # key: (cron_expr, chinese_label)
     "everyday": ("*", "每天"),
@@ -84,6 +105,10 @@ class AutomationRuleManager:
         self.scheduler = scheduler
         self.action_executor = action_executor
         self.logger = LOGGER
+
+        # 设置模块级引用，供 APScheduler 回调使用
+        global _rule_manager_ref
+        _rule_manager_ref = self
 
         self._rules: dict[str, AutomationRule] = {}
         self._load()
@@ -233,7 +258,8 @@ class AutomationRuleManager:
 
             self.scheduler.add_cron_job(
                 job_id=f"auto_{rule.name}",
-                func=lambda actions=rule.actions: self._execute_actions(actions),
+                func=_scheduled_cron_callback,
+                args=[rule.name],
                 hour=str(hour),
                 minute=str(minute),
                 day_of_week=days,
@@ -246,7 +272,8 @@ class AutomationRuleManager:
 
             self.scheduler.add_date_job(
                 job_id=f"auto_{rule.name}",
-                func=lambda actions=rule.actions, name=rule.name: self._execute_once(actions, name),
+                func=_scheduled_once_callback,
+                args=[rule.name],
                 run_date=run_time,
             )
             self.logger.info("Scheduled once: %s in %d minutes", rule.name, delay_minutes)
