@@ -97,6 +97,19 @@ class JarvisApp:
         # --- Memory manager ---
         self.memory_manager = MemoryManager(config)
 
+        from memory.behavior_log import BehaviorLog
+        mem_db = config.get("memory", {}).get("db_path", "data/memory/jarvis_memory.db")
+        self.behavior_log = BehaviorLog(mem_db)
+
+        from memory.direct_answer import DirectAnswerer
+        self.direct_answerer = DirectAnswerer(
+            self.memory_manager.store, self.memory_manager.embedder,
+        )
+
+        # Track last user/session for farewell save
+        self._last_user_id: str | None = None
+        self._last_session_id: str | None = None
+
         # --- Scheduler (optional) ---
         self.scheduler = None
         try:
@@ -285,6 +298,15 @@ class JarvisApp:
                     audio = self.audio_recorder.record(self.utterance_duration)
                     response = self.handle_utterance(audio)
                     if response and self._is_farewell(response):
+                        # 确保告别时保存完整对话记忆
+                        user_id = self._last_user_id
+                        session_id = self._last_session_id
+                        if user_id and session_id:
+                            full_history = self.conversation_store.get_history(session_id)
+                            if full_history:
+                                self._executor.submit(
+                                    self.memory_manager.save, full_history, user_id, session_id,
+                                )
                         self.speak("再见。")
                         return 0
                 except KeyboardInterrupt:
@@ -369,6 +391,15 @@ class JarvisApp:
                         self._last_interaction = time.monotonic()
 
                         if response and self._is_farewell(response):
+                            # 确保告别时保存完整对话记忆
+                            user_id = self._last_user_id
+                            session_id = self._last_session_id
+                            if user_id and session_id:
+                                full_history = self.conversation_store.get_history(session_id)
+                                if full_history:
+                                    self._executor.submit(
+                                        self.memory_manager.save, full_history, user_id, session_id,
+                                    )
                             listening_for_wake = True
                     except KeyboardInterrupt:
                         break
@@ -439,6 +470,8 @@ class JarvisApp:
 
         # 4. Load conversation history + memory
         session_id = user_id or "_guest"
+        self._last_user_id = user_id
+        self._last_session_id = session_id
         history = self.conversation_store.get_history(session_id)
         memory_context = ""
         if user_id:
@@ -446,6 +479,25 @@ class JarvisApp:
                 memory_context = self.memory_manager.query(text, user_id)
             except Exception as exc:
                 self.logger.warning("Memory query failed: %s", exc)
+
+        # 4b. Level 1: Try direct answer from memory (< 100ms, no LLM)
+        if user_id:
+            try:
+                direct = self.direct_answerer.try_answer(text, user_id)
+                if direct:
+                    self.logger.info("Level 1 direct answer: %s", direct[:60])
+                    self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
+                    print(f"🤖 Jarvis (L1): {direct}")
+                    self._speak_nonblocking(direct, emotion=detected_emotion)
+                    if hasattr(self, "behavior_log"):
+                        self.behavior_log.log(user_id, "conversation", {
+                            "text": text[:100],
+                            "route": "memory_l1",
+                            "answer": direct[:100],
+                        })
+                    return direct
+            except Exception as exc:
+                self.logger.warning("Level 1 answer failed: %s", exc)
 
         # 5. Keyword trigger check (before routing)
         self.event_bus.emit("jarvis.state_changed", {"state": "thinking"})
@@ -569,7 +621,24 @@ class JarvisApp:
                     self.memory_manager.save, updated_messages, user_id, session_id,
                 )
 
-        # 9. Output (only for non-streamed responses)
+        # 9. Log behavior events
+        if user_id:
+            if updated_messages:
+                for msg in updated_messages:
+                    if msg.get("role") == "assistant" and isinstance(msg.get("content"), list):
+                        for block in msg["content"]:
+                            if isinstance(block, dict) and block.get("type") == "tool_use":
+                                self.behavior_log.log(user_id, "skill_call", {
+                                    "skill": block.get("name", ""),
+                                    "input": block.get("input", {}),
+                                })
+            self.behavior_log.log(user_id, "conversation", {
+                "text": text[:100],
+                "emotion": detected_emotion,
+                "route": "local" if response_text and not updated_messages else "cloud",
+            })
+
+        # 10. Output (only for non-streamed responses)
         if sentence_count == 0:
             self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
             if self.oled:
@@ -784,15 +853,14 @@ class JarvisApp:
         self.logger.info("Morning briefing scheduled at %s:%s", hour, minute)
 
     def _setup_memory_maintenance(self) -> None:
-        """Register weekly memory maintenance (Sunday 3am)."""
+        """Register daily memory maintenance (3am)."""
         self.scheduler.add_cron_job(
             job_id="memory_maintenance",
             func=self._run_memory_maintenance,
-            day_of_week="sun",
             hour="3",
             minute="0",
         )
-        self.logger.info("Memory maintenance scheduled: Sunday 3:00am")
+        self.logger.info("Memory maintenance scheduled: daily 3:00am")
 
     def _run_memory_maintenance(self) -> None:
         """Execute weekly memory maintenance — merge duplicates."""
