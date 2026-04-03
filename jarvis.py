@@ -897,7 +897,7 @@ class JarvisApp:
             ", ".join(self.skill_registry.skill_names),
         )
 
-    def _learn_create(self, intent: "LearningIntent", user_id: str | None) -> str:
+    def _learn_create(self, intent: Any, user_id: str | None) -> str:
         """创造型：调用 Claude Code 技能工厂。"""
         self.speak("好的，我去学一下，稍等。")
 

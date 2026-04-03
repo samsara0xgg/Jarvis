@@ -11,6 +11,8 @@ import json
 import logging
 import os
 from datetime import datetime
+
+import numpy as np
 import requests
 
 from memory.embedder import Embedder
@@ -175,8 +177,6 @@ class MemoryManager:
         Returns:
             {"merged": int, "checked": int, "skipped": int}
         """
-        import numpy as np
-
         ids, contents, categories, embeddings = self.store.get_embedding_index(user_id)
         if embeddings is None or len(ids) < 2:
             return {"merged": 0, "checked": 0, "skipped": 0}
