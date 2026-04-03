@@ -68,7 +68,15 @@ class SkillLoader:
         for attr_name in dir(module):
             attr = getattr(module, attr_name)
             if isinstance(attr, type) and issubclass(attr, Skill) and attr is not Skill:
-                return attr()
+                # 尝试无参实例化，失败则传空 config
+                try:
+                    return attr()
+                except TypeError:
+                    try:
+                        return attr({})
+                    except Exception:
+                        LOGGER.warning("Cannot instantiate %s", attr.__name__)
+                        return None
         return None
 
     def _load_metadata(self) -> dict[str, Any]:

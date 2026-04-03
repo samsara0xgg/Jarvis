@@ -72,9 +72,13 @@ class SkillFactory:
         abc_source = self._read_file("skills/__init__.py")
         example_source = self._read_file("skills/weather.py")
 
-        # 记录 CC 调用前 skills/learned/ 里已有的文件
-        existing_files = set(self._dir.glob("*.py")) - {self._dir / "__init__.py"}
-        status(f"learned 目录已有 {len(existing_files)} 个 skill 文件")
+        # 记录 CC 调用前 skills/learned/ 里已有文件及其修改时间
+        init_file = self._dir / "__init__.py"
+        existing_mtimes = {
+            f: f.stat().st_mtime
+            for f in self._dir.glob("*.py") if f != init_file
+        }
+        status(f"learned 目录已有 {len(existing_mtimes)} 个 skill 文件")
 
         prompt = self._build_prompt(description, abc_source, example_source)
         skill_id = skill_name_hint or self._slugify(description)
@@ -101,22 +105,23 @@ class SkillFactory:
             return {"success": False, "skill_name": skill_id,
                     "message": "Claude Code 超时（120s）", "path": None}
 
-        # 扫描新增文件（不依赖精确文件名）
-        current_files = set(self._dir.glob("*.py")) - {self._dir / "__init__.py"}
-        new_files = current_files - existing_files
-        status(f"新增文件: {[f.name for f in new_files] if new_files else '无'}")
+        # 扫描新增或修改的文件
+        changed_files: set[Path] = set()
+        for f in self._dir.glob("*.py"):
+            if f == init_file:
+                continue
+            if f not in existing_mtimes:
+                changed_files.add(f)  # 新文件
+            elif f.stat().st_mtime > existing_mtimes[f]:
+                changed_files.add(f)  # 修改过的文件
+        status(f"变更文件: {[f.name for f in changed_files] if changed_files else '无'}")
 
-        if not new_files:
-            # 也检查 CC 可能用了精确文件名
-            expected_path = self._dir / f"{skill_id}.py"
-            if expected_path.exists():
-                new_files = {expected_path}
-            else:
-                return {"success": False, "skill_name": skill_id,
-                        "message": "Claude Code 未在 skills/learned/ 生成任何 .py 文件", "path": None}
+        if not changed_files:
+            return {"success": False, "skill_name": skill_id,
+                    "message": "Claude Code 未在 skills/learned/ 生成或修改任何 .py 文件", "path": None}
 
-        # 取第一个新文件作为 skill 文件
-        skill_path = sorted(new_files)[0]
+        # 取第一个变更文件作为 skill 文件
+        skill_path = sorted(changed_files)[0]
         actual_skill_id = skill_path.stem
         status(f"检测到 skill 文件: {skill_path.name}")
 
@@ -174,14 +179,15 @@ class SkillFactory:
 ## 要求
 1. 在 skills/learned/ 目录下创建一个 .py 文件，文件名用英文下划线命名
 2. 继承 Skill ABC，实现 skill_name、get_tool_definitions、execute 三个方法
-3. 在 tests/ 目录下创建对应的测试文件 test_learned_<name>.py
-4. execute 方法接收 tool_name 和 tool_input，返回文本结果字符串
-5. 网络请求用 requests 库，设置 timeout=10
-6. 禁止使用 os.system、subprocess、eval、exec
-7. 禁止读写 core/ 目录下的文件
-8. 用 logging 模块，不用 print
-9. 加 type hints
-10. 只创建文件，不要输出其他说明文字"""
+3. __init__ 不要有必填参数（不要 config 参数），硬编码默认值即可
+4. 在 tests/ 目录下创建对应的测试文件 test_learned_<name>.py
+5. execute 方法接收 tool_name 和 tool_input，返回文本结果字符串
+6. 网络请求用 requests 库，设置 timeout=10
+7. 禁止使用 os.system、subprocess、eval、exec
+8. 禁止读写 core/ 目录下的文件
+9. 用 logging 模块，不用 print
+10. 加 type hints
+11. 只创建文件，不要输出其他说明文字"""
 
     def _security_scan(self, file_path: str) -> list[str]:
         content = Path(file_path).read_text()
