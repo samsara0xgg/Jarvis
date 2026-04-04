@@ -27,6 +27,8 @@ class Embedder:
         self._model_name = model_name
         self._model: Any = None
         self._lock = threading.Lock()
+        self._last_text: str | None = None
+        self._last_vec: np.ndarray | None = None
 
     def _load(self) -> None:
         """Load the embedding model (first call only, thread-safe)."""
@@ -50,6 +52,8 @@ class Embedder:
         Returns:
             1-D float32 numpy array (e.g. 512-dim for bge-small-zh).
         """
+        if text == self._last_text and self._last_vec is not None:
+            return self._last_vec.copy()
         self._load()
         embeddings = list(self._model.embed([text]))
         vec = np.array(embeddings[0], dtype=np.float32)
@@ -57,7 +61,9 @@ class Embedder:
         norm = np.linalg.norm(vec)
         if norm > 0:
             vec /= norm
-        return vec
+        self._last_text = text
+        self._last_vec = vec
+        return vec.copy()
 
     def encode_batch(self, texts: list[str]) -> np.ndarray:
         """Encode multiple texts into a matrix of unit-norm embeddings.
