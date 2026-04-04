@@ -1,6 +1,6 @@
 # Pipeline Latency Optimization Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Reduce Jarvis end-to-end latency via pipeline parallelization and caching — local path from ~600ms to ~120ms (cached), cloud path from ~2s to ~1.7s.
 
@@ -18,7 +18,7 @@
 - Modify: `memory/embedder.py:44-60` — add cache to `encode()`
 - Test: `tests/test_embedder_cache.py` (create)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_embedder_cache.py`:
 
@@ -77,12 +77,12 @@ class TestEmbedderCache:
         assert abs(np.linalg.norm(v2) - 1.0) < 1e-6
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_embedder_cache.py -v`
 Expected: FAIL — `Embedder` doesn't have `_last_text`/`_last_vec` attributes yet.
 
-- [ ] **Step 3: Implement the cache in Embedder.encode()**
+- [x] **Step 3: Implement the cache in Embedder.encode()**
 
 In `memory/embedder.py`, add cache fields to `__init__` and modify `encode`:
 
@@ -114,17 +114,17 @@ def encode(self, text: str) -> np.ndarray:
     return vec.copy()
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_embedder_cache.py -v`
 Expected: 4 passed
 
-- [ ] **Step 5: Run full test suite**
+- [x] **Step 5: Run full test suite**
 
 Run: `python -m pytest tests/ -q`
 Expected: all pass (720+)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add memory/embedder.py tests/test_embedder_cache.py
@@ -139,7 +139,7 @@ git commit -m "perf: add single-entry cache to Embedder.encode()"
 - Modify: `core/intent_router.py:20-22,92-120,123-161,162-180` — session + cache
 - Test: `tests/test_intent_router.py` — add cache tests
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_intent_router.py`:
 
@@ -240,12 +240,12 @@ class TestRouteCache:
         assert r2.intent == "smart_home"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_intent_router.py::TestRouteCache -v`
 Expected: FAIL — `_route_cache` attribute doesn't exist.
 
-- [ ] **Step 3: Implement session + cache changes**
+- [x] **Step 3: Implement session + cache changes**
 
 In `core/intent_router.py`:
 
@@ -305,17 +305,17 @@ def _cache_result(self, key: str, result: RouteResult) -> None:
 
 Call `self._cache_result(key, result)` before returning from Groq success and Cerebras success paths.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_intent_router.py -v`
 Expected: all pass (existing + 5 new)
 
-- [ ] **Step 5: Run full test suite**
+- [x] **Step 5: Run full test suite**
 
 Run: `python -m pytest tests/ -q`
 Expected: all pass
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add core/intent_router.py tests/test_intent_router.py
@@ -330,7 +330,7 @@ git commit -m "perf: add LRU route cache and instance-level session to IntentRou
 - Modify: `core/tts.py:76-95,296-346,432-437,647-648` — cache in synth, safe deletion
 - Test: `tests/test_tts_cache.py` (create)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_tts_cache.py`:
 
@@ -447,12 +447,12 @@ class TestTTSCache:
         assert tts_with_cache._is_cached_file("/tmp/xyz.mp3") is False
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_tts_cache.py -v`
 Expected: FAIL — `_tts_cache_key`, `_tts_cache_dir`, etc. don't exist.
 
-- [ ] **Step 3: Implement TTS cache**
+- [x] **Step 3: Implement TTS cache**
 
 In `core/tts.py`:
 
@@ -671,17 +671,17 @@ def _synthesize_to_file(self, text: str, emotion: str = "") -> tuple[str, bool] 
     return self._engine.synth_to_file(text, emotion)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_tts_cache.py -v`
 Expected: 7 passed
 
-- [ ] **Step 5: Run full test suite**
+- [x] **Step 5: Run full test suite**
 
 Run: `python -m pytest tests/ -q`
 Expected: all pass. Some existing TTS tests may need minor updates if they assert on `_synth_minimax` return type — fix any that break.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add core/tts.py tests/test_tts_cache.py
@@ -696,7 +696,7 @@ git commit -m "perf: add TTS audio disk cache for short responses"
 - Modify: `jarvis.py:524-622` — reorder steps, parallel Futures
 - Test: `tests/test_jarvis.py` — add parallel pipeline test
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/test_jarvis.py`:
 
@@ -741,12 +741,12 @@ def test_route_and_memory_run_in_parallel(jarvis_app, mock_config):
 
 Note: This test may need adjustment based on how the existing `jarvis_app` fixture is set up. The key assertion is that both `route` and `memory_query` are submitted to the thread pool.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_jarvis.py::test_route_and_memory_run_in_parallel -v`
 Expected: FAIL — currently they're called sequentially, not via executor.submit.
 
-- [ ] **Step 3: Implement pipeline parallelization**
+- [x] **Step 3: Implement pipeline parallelization**
 
 In `jarvis.py`, replace the block from step 4 through step 6 (lines ~524-622). The new flow:
 
@@ -904,17 +904,17 @@ In `jarvis.py`, replace the block from step 4 through step 6 (lines ~524-622). T
         # 6. Cloud LLM (unchanged from here) ...
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_jarvis.py -v`
 Expected: all pass
 
-- [ ] **Step 5: Run full test suite**
+- [x] **Step 5: Run full test suite**
 
 Run: `python -m pytest tests/ -q`
 Expected: all pass
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add jarvis.py tests/test_jarvis.py
@@ -928,7 +928,7 @@ git commit -m "perf: parallelize route + memory query in utterance pipeline"
 **Files:**
 - Modify: `jarvis.py:210-212` — add connection + TTS pre-warm
 
-- [ ] **Step 1: Add pre-warm after existing embedding warmup**
+- [x] **Step 1: Add pre-warm after existing embedding warmup**
 
 In `jarvis.py`, after line 211 (`self._executor.submit(self.memory_manager.embedder.encode, "warmup")`), add:
 
@@ -962,12 +962,12 @@ def _prewarm_connections(self) -> None:
             pass
 ```
 
-- [ ] **Step 2: Run full test suite**
+- [x] **Step 2: Run full test suite**
 
 Run: `python -m pytest tests/ -q`
 Expected: all pass (pre-warm runs in background, no impact)
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add jarvis.py
@@ -978,25 +978,25 @@ git commit -m "perf: pre-warm HTTP connections on startup"
 
 ### Task 6: Final verification
 
-- [ ] **Step 1: Run full test suite**
+- [x] **Step 1: Run full test suite**
 
 Run: `python -m pytest tests/ -v`
 Expected: all pass, no regressions
 
-- [ ] **Step 2: Manual smoke test**
+- [x] **Step 2: Manual smoke test**
 
 Run: `source ~/.secrets && python jarvis.py --no-wake`
 Test: say "开灯" twice. Second time should be noticeably faster (route cache + TTS cache).
 Check logs for "Route cache hit" and "TTS cache hit" messages.
 
-- [ ] **Step 3: Verify cache files created**
+- [x] **Step 3: Verify cache files created**
 
 ```bash
 ls data/cache/tts/
 ```
 Expected: `.mp3` files present after first "开灯" response.
 
-- [ ] **Step 4: Run benchmark**
+- [x] **Step 4: Run benchmark**
 
 ```bash
 source ~/.secrets && python tests/benchmark_router_latency.py
