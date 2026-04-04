@@ -7,6 +7,7 @@ from audio playback, eliminating inter-sentence pauses during streaming output.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import platform
@@ -87,6 +88,11 @@ class TTSEngine:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
         self._platform = platform.system()
 
+        # TTS audio cache for short responses
+        self._tts_cache_dir = Path(tts_config.get("cache_dir", "data/cache/tts"))
+        self._tts_cache_dir.mkdir(parents=True, exist_ok=True)
+        self._tts_cache_max = int(tts_config.get("cache_max_files", 500))
+
         # Lazy-init reusable HTTP session
         try:
             import requests
@@ -114,6 +120,29 @@ class TTSEngine:
             "openai_tts_instructions",
             "你是 Jarvis，说话像一个亲切聪明的朋友。语气自然温暖，有情感，不要像机器人。中文为主。",
         ))
+
+    # ------------------------------------------------------------------
+    # Cache helpers
+    # ------------------------------------------------------------------
+
+    def _tts_cache_key(self, text: str, emotion: str) -> str:
+        """Deterministic cache key from text + voice + emotion."""
+        raw = f"{text}|{self.minimax_voice}|{emotion}"
+        return hashlib.md5(raw.encode()).hexdigest()
+
+    def _is_cached_file(self, filepath: str) -> bool:
+        """Check if a file path is inside the TTS cache directory."""
+        try:
+            return Path(filepath).resolve().is_relative_to(self._tts_cache_dir.resolve())
+        except (ValueError, TypeError):
+            return False
+
+    def _evict_tts_cache(self) -> None:
+        """Remove oldest files when cache exceeds max size."""
+        files = sorted(self._tts_cache_dir.glob("*.mp3"), key=lambda p: p.stat().st_mtime)
+        while len(files) > self._tts_cache_max:
+            files[0].unlink(missing_ok=True)
+            files.pop(0)
 
     def speak(self, text: str, emotion: str = "") -> None:
         """Speak text aloud with optional emotion.
@@ -214,10 +243,12 @@ class TTSEngine:
     # Synthesis-to-file methods (shared by TTSEngine.speak and TTSPipeline)
     # ------------------------------------------------------------------
 
-    def synth_to_file(self, text: str, emotion: str = "") -> str | None:
-        """Synthesize text to a temp audio file and return its path.
+    def synth_to_file(self, text: str, emotion: str = "") -> tuple[str, bool] | None:
+        """Synthesize text to an audio file and return (path, deletable).
 
         Returns None if the engine plays directly (pyttsx3).
+        deletable=True means caller should delete the file after playback.
+        deletable=False means the file is cached and must NOT be deleted.
         """
         if self.engine_name == "openai_tts" and self.openai_tts_key:
             if not self._tracker or self._tracker.is_available("tts.openai"):
@@ -225,7 +256,7 @@ class TTSEngine:
                     path = self._synth_openai(text, emotion)
                     if self._tracker:
                         self._tracker.record_success("tts.openai")
-                    return path
+                    return path, True
                 except Exception as exc:
                     if self._tracker:
                         self._tracker.record_failure("tts.openai", str(exc))
@@ -233,10 +264,10 @@ class TTSEngine:
         if self.engine_name == "minimax" and self.minimax_key:
             if not self._tracker or self._tracker.is_available("tts.minimax"):
                 try:
-                    path = self._synth_minimax(text, emotion)
+                    result = self._synth_minimax(text, emotion)
                     if self._tracker:
                         self._tracker.record_success("tts.minimax")
-                    return path
+                    return result
                 except Exception as exc:
                     if self._tracker:
                         self._tracker.record_failure("tts.minimax", str(exc))
@@ -247,7 +278,7 @@ class TTSEngine:
                     path = self._synth_azure(text, emotion)
                     if self._tracker:
                         self._tracker.record_success("tts.azure")
-                    return path
+                    return path, True
                 except Exception as exc:
                     if self._tracker:
                         self._tracker.record_failure("tts.azure", str(exc))
@@ -255,7 +286,7 @@ class TTSEngine:
         if self.engine_name == "pyttsx3":
             self._speak_pyttsx3(text)
             return None
-        return self._synth_edge(text)
+        return self._synth_edge(text), True
 
     def _synth_openai(self, text: str, emotion: str = "") -> str:
         """Synthesize with OpenAI TTS, return temp file path."""
@@ -293,12 +324,25 @@ class TTSEngine:
             tmp.write(response.content)
             return tmp.name
 
-    def _synth_minimax(self, text: str, emotion: str = "") -> str:
-        """Synthesize with MiniMax TTS, return temp file path."""
+    def _synth_minimax(self, text: str, emotion: str = "") -> tuple[str, bool]:
+        """Synthesize with MiniMax TTS, return (path, deletable).
+
+        Short texts (<=50 chars) are cached to disk; deletable=False.
+        Long texts go to a temp file; deletable=True.
+        """
         if not self.minimax_key:
             raise RuntimeError("MiniMax API key not configured (MINIMAX_API_KEY)")
 
         minimax_emotion = _EMOTION_TO_MINIMAX.get(emotion, "calm")
+
+        # Cache path for short responses
+        if len(text) <= 50:
+            cache_key = self._tts_cache_key(text, minimax_emotion)
+            cache_path = self._tts_cache_dir / f"{cache_key}.mp3"
+            if cache_path.exists():
+                cache_path.touch()  # update mtime for LRU eviction
+                self.logger.info("TTS cache hit: %r", text[:50])
+                return str(cache_path), False
 
         payload = {
             "model": self.minimax_model,
@@ -341,9 +385,25 @@ class TTSEngine:
 
         audio_bytes = bytes.fromhex(data["data"]["audio"])
 
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            tmp.write(audio_bytes)
-            return tmp.name
+        if len(text) <= 50:
+            # Write atomically to cache dir
+            tmp_fd, tmp_name = tempfile.mkstemp(suffix=".mp3.tmp", dir=self._tts_cache_dir)
+            try:
+                with os.fdopen(tmp_fd, "wb") as f:
+                    f.write(audio_bytes)
+                os.rename(tmp_name, str(cache_path))
+            except Exception:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
+            self._evict_tts_cache()
+            return str(cache_path), False
+        else:
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+                tmp.write(audio_bytes)
+                return tmp.name, True
 
     def _synth_azure(self, text: str, emotion: str = "") -> str:
         """Synthesize with Azure Neural TTS, return temp file path."""
@@ -430,11 +490,12 @@ class TTSEngine:
             Path(tmp_path).unlink(missing_ok=True)
 
     def _speak_minimax(self, text: str, emotion: str = "") -> None:
-        tmp_path = self._synth_minimax(text, emotion)
+        tmp_path, deletable = self._synth_minimax(text, emotion)
         try:
             self._play_audio_file(tmp_path)
         finally:
-            Path(tmp_path).unlink(missing_ok=True)
+            if deletable:
+                Path(tmp_path).unlink(missing_ok=True)
 
     def _speak_azure(self, text: str, emotion: str = "") -> None:
         tmp_path = self._synth_azure(text, emotion)
@@ -620,9 +681,10 @@ class TTSPipeline:
 
             text, sentence_type, emotion = item
             try:
-                filepath = self._synthesize_to_file(text, emotion)
-                if filepath and not self._aborted.is_set():
-                    self._audio_queue.put((filepath, sentence_type))
+                result = self._synthesize_to_file(text, emotion)
+                if result and not self._aborted.is_set():
+                    filepath, deletable = result
+                    self._audio_queue.put((filepath, sentence_type, deletable))
             except Exception as exc:
                 self.logger.warning("TTS synthesis failed: %s", exc)
 
@@ -638,15 +700,16 @@ class TTSPipeline:
                 self._done.set()
                 return
 
-            filepath, sentence_type = item
+            filepath, sentence_type, deletable = item
             try:
                 if not self._aborted.is_set():
                     self._engine._play_audio_file(filepath)
             except Exception as exc:
                 self.logger.warning("Audio playback failed: %s", exc)
             finally:
-                Path(filepath).unlink(missing_ok=True)
+                if deletable:
+                    Path(filepath).unlink(missing_ok=True)
 
-    def _synthesize_to_file(self, text: str, emotion: str = "") -> str | None:
+    def _synthesize_to_file(self, text: str, emotion: str = "") -> tuple[str, bool] | None:
         """Delegate to TTSEngine.synth_to_file — single source of truth."""
         return self._engine.synth_to_file(text, emotion)
