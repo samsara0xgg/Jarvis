@@ -9,6 +9,7 @@ import copy
 import json
 import logging
 import os
+import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -22,6 +23,10 @@ LOGGER = logging.getLogger(__name__)
 _SESSION = requests.Session()
 
 VALID_INTENTS = {"smart_home", "info_query", "time", "complex", "uncertain", "automation"}
+
+# Strip punctuation for route cache key normalization
+_PUNCT_RE = re.compile(r'[。，！？、；：\u201c\u201d\u2018\u2019\u2026\u2014\u00b7.!?,;:\s]+')
+
 
 # 设备能力描述模板，运行时从 config 动态生成
 _DEVICE_ACTIONS = {
@@ -103,7 +108,7 @@ class IntentRouter:
         # Groq (primary)
         groq_cfg = config.get("models", {}).get("groq", {})
         self.groq_key = groq_cfg.get("api_key") or os.environ.get("GROQ_API_KEY", "")
-        self.groq_model = groq_cfg.get("router_model", "llama-3.1-8b-instant")
+        self.groq_model = groq_cfg.get("router_model", "llama-3.3-70b-versatile")
         self.groq_url = "https://api.groq.com/openai/v1/chat/completions"
 
         # Cerebras (fallback)
@@ -128,7 +133,9 @@ class IntentRouter:
 
     def route(self, text: str) -> RouteResult:
         """分析用户指令。Groq 8B → Cerebras 8B → 直接走云端 LLM."""
-        key = text.strip()
+        # TODO: 目前只做 strip 标点，未来可探索模糊匹配（embedding 相似度等），
+        #       但需注意 "开灯" vs "关灯" 语义相近却意图相反的问题。
+        key = _PUNCT_RE.sub("", text.strip())
 
         # Cache hit
         if key in self._route_cache:
