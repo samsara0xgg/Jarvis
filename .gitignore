@@ -47,3 +47,6 @@ data/sensevoice-small-int8/
 
 # Claude Code 本地设置
 .claude/settings.local.json
+ui/web/resources/
+ui/web/audio_cache/
+ui/web/__pycache__/
