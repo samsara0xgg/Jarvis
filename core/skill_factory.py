@@ -50,6 +50,14 @@ class SkillFactory:
         self._dir = Path(learned_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._root = Path(project_root)
+        self._process: subprocess.Popen | None = None  # 当前 CC 子进程
+
+    def cancel(self) -> None:
+        """Kill the running CC subprocess, if any."""
+        proc = self._process
+        if proc and proc.poll() is None:
+            LOGGER.info("Killing SkillFactory CC subprocess (pid=%d)", proc.pid)
+            proc.kill()
 
     def create(
         self,
@@ -85,25 +93,33 @@ class SkillFactory:
 
         status(f"调用 Claude Code（skill_id={skill_id}）...")
         try:
-            result = subprocess.run(
+            self._process = subprocess.Popen(
                 ["claude", "-p", prompt, "--allowedTools", "Edit,Write,Bash", "--output-format", "text"],
-                capture_output=True, text=True, timeout=120, cwd=str(self._root),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=str(self._root),
             )
-            status(f"Claude Code 返回码: {result.returncode}")
-            if result.stdout:
-                # 打印 CC 输出的前 500 字符用于 debug
-                status(f"CC 输出:\n{result.stdout[:500]}")
-            if result.stderr:
-                status(f"CC stderr:\n{result.stderr[:300]}")
-            if result.returncode != 0:
+            try:
+                stdout, stderr = self._process.communicate(timeout=120)
+                returncode = self._process.returncode
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait()
                 return {"success": False, "skill_name": skill_id,
-                        "message": f"Claude Code 执行失败: {result.stderr[:200]}", "path": None}
+                        "message": "Claude Code 超时（120s）", "path": None}
+            finally:
+                self._process = None
+
+            status(f"Claude Code 返回码: {returncode}")
+            if stdout:
+                status(f"CC 输出:\n{stdout[:500]}")
+            if stderr:
+                status(f"CC stderr:\n{stderr[:300]}")
+            if returncode != 0:
+                return {"success": False, "skill_name": skill_id,
+                        "message": f"Claude Code 执行失败: {stderr[:200]}", "path": None}
         except FileNotFoundError:
+            self._process = None
             return {"success": False, "skill_name": skill_id,
                     "message": "Claude Code CLI 未安装", "path": None}
-        except subprocess.TimeoutExpired:
-            return {"success": False, "skill_name": skill_id,
-                    "message": "Claude Code 超时（120s）", "path": None}
 
         # 扫描新增或修改的文件
         changed_files: set[Path] = set()

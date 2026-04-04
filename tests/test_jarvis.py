@@ -128,6 +128,15 @@ def test_jarvis_handle_utterance_end_to_end(tmp_path):
             "enrolled_at": "2025-01-01T00:00:00Z",
         })
 
+        # Mock the intent router to return a controlled smart_home result
+        from core.intent_router import RouteResult
+        app.intent_router.route = MagicMock(return_value=RouteResult(
+            tier="local", intent="smart_home", confidence=0.95,
+            duration_ms=10, provider="mock",
+            actions=[{"device_id": "bedroom_light", "action": "turn_on", "value": None}],
+            response="好的，卧室灯已打开。",
+        ))
+
         # Run the pipeline
         audio = np.random.randn(16000).astype(np.float32)
         response = app.handle_utterance(audio)
@@ -183,9 +192,9 @@ def test_jarvis_skill_registry_has_all_skills(tmp_path):
         config = _make_config(tmp_path)
         app = JarvisApp(config, config_path=tmp_path / "config.yaml")
 
-        expected_skills = {"smart_home", "weather", "time", "reminders", "todos", "system_control", "memory", "automation", "health", "scheduler", "skill_mgmt"}
+        expected_builtins = {"smart_home", "weather", "time", "reminders", "todos", "system_control", "memory", "automation", "health", "scheduler", "skill_mgmt"}
         actual_skills = set(app.skill_registry.skill_names)
-        assert expected_skills == actual_skills
+        assert expected_builtins.issubset(actual_skills), f"Missing: {expected_builtins - actual_skills}"
     finally:
         sys.modules.pop("anthropic", None)
         sys.modules.pop("pyttsx3", None)

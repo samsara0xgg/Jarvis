@@ -819,6 +819,12 @@ class JarvisApp:
                 tts.stop()
             except Exception:
                 pass
+        # 终止 SkillFactory 子进程
+        if hasattr(self, "skill_factory"):
+            try:
+                self.skill_factory.cancel()
+            except Exception:
+                pass
         self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
 
     @staticmethod

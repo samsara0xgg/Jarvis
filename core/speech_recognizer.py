@@ -7,11 +7,16 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import re
+
 import numpy as np
 
 LOGGER = logging.getLogger(__name__)
 
 _SAMPLE_RATE = 16000
+
+# SenseVoice 有时在语气词前插入句号，如 "学会查汇率。了" → "学会查汇率了"
+_MISPLACED_PERIOD = re.compile(r"[。，]([了吧啊呢嘛呀哦哈的吗啦噢])")
 
 
 @dataclass
@@ -112,7 +117,7 @@ class SpeechRecognizer:
         recognizer.decode_stream(stream)
 
         result = stream.result
-        text = result.text.strip()
+        text = _MISPLACED_PERIOD.sub(r"\1", result.text.strip())
 
         # Extract detected language (e.g. "<|zh|>" → "zh")
         raw_lang = getattr(result, "lang", "") or ""

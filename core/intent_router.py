@@ -1,6 +1,6 @@
 """意图路由器 — 一次云端调用完成分类+参数提取+回复生成.
 
-三层 fallback：Groq → DeepSeek → 本地 Ollama.
+两层 fallback：Groq 8B → Cerebras 8B → 直接走云端 LLM.
 """
 
 from __future__ import annotations
@@ -13,8 +13,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import requests
-
-from core.local_llm import LocalLLM
 
 LOGGER = logging.getLogger(__name__)
 
@@ -69,6 +67,7 @@ automation trigger类型：
 - 情感/抽象表达→complex，如"你太冷漠了""把这个问题关闭"
 - 记忆/个人信息→complex：含"记住""记下""别忘了""我喜欢""我要去""我的xx是"等个人信息、偏好、计划一律走complex
 - 关于用户自身的提问→complex：如"我喜欢喝什么""我最近有什么安排""我上次说了什么"
+- 需要工具调用的查询→complex：如"查汇率""换算货币""翻译""计算"等需要外部工具才能回答的问题
 - 只输出JSON"""
 
 
@@ -89,7 +88,7 @@ class RouteResult:
 
 
 class IntentRouter:
-    """三层 fallback 意图路由器：Groq → DeepSeek → 本地 Ollama."""
+    """两层 fallback 意图路由器：Groq 8B → Cerebras 8B → 直接走云端 LLM."""
 
     def __init__(self, config: dict, tracker: Any = None) -> None:
         self.config = config
@@ -97,33 +96,29 @@ class IntentRouter:
         self.logger = LOGGER
         self._tracker = tracker
 
-        # Groq
+        # Groq (primary)
         groq_cfg = config.get("models", {}).get("groq", {})
         self.groq_key = groq_cfg.get("api_key") or os.environ.get("GROQ_API_KEY", "")
-        self.groq_model = groq_cfg.get("model", "llama-3.3-70b-versatile")
+        self.groq_model = groq_cfg.get("router_model", "llama-3.1-8b-instant")
         self.groq_url = "https://api.groq.com/openai/v1/chat/completions"
 
-        # DeepSeek
-        ds_cfg = config.get("models", {}).get("deepseek", {})
-        self.deepseek_key = ds_cfg.get("api_key") or os.environ.get("DEEPSEEK_API_KEY", "")
-        self.deepseek_model = ds_cfg.get("model", "deepseek-chat")
-        self.deepseek_url = "https://api.deepseek.com/chat/completions"
-
-        # 本地 Ollama
-        self.local_llm = LocalLLM(config)
+        # Cerebras (fallback)
+        cerebras_cfg = config.get("models", {}).get("cerebras", {})
+        self.cerebras_key = cerebras_cfg.get("api_key") or os.environ.get("CEREBRAS_API_KEY", "")
+        self.cerebras_model = cerebras_cfg.get("router_model", "llama3.1-8b")
+        self.cerebras_url = "https://api.cerebras.ai/v1/chat/completions"
 
         self.logger.info(
-            "IntentRouter: groq=%s, deepseek=%s, local=%s",
+            "IntentRouter: groq=%s, cerebras=%s",
             "ready" if self.groq_key else "no key",
-            "ready" if self.deepseek_key else "no key",
-            "ready" if self.local_llm.is_available() else "unavailable",
+            "ready" if self.cerebras_key else "no key",
         )
 
     def route(self, text: str) -> RouteResult:
-        """分析用户指令。Groq → DeepSeek → 本地."""
+        """分析用户指令。Groq 8B → Cerebras 8B → 直接走云端 LLM."""
         start = time.time()
 
-        # 1. Groq
+        # 1. Groq (primary)
         if self.groq_key and (not self._tracker or self._tracker.is_available("intent.groq")):
             result = self._call_cloud(self.groq_url, self.groq_key, self.groq_model, text, start)
             if result:
@@ -134,25 +129,18 @@ class IntentRouter:
             if self._tracker:
                 self._tracker.record_failure("intent.groq")
 
-        # 2. DeepSeek
-        if self.deepseek_key and (not self._tracker or self._tracker.is_available("intent.deepseek")):
-            result = self._call_cloud(self.deepseek_url, self.deepseek_key, self.deepseek_model, text, start)
+        # 2. Cerebras (fallback)
+        if self.cerebras_key and (not self._tracker or self._tracker.is_available("intent.cerebras")):
+            result = self._call_cloud(self.cerebras_url, self.cerebras_key, self.cerebras_model, text, start)
             if result:
                 if self._tracker:
-                    self._tracker.record_success("intent.deepseek")
-                result.provider = "deepseek"
+                    self._tracker.record_success("intent.cerebras")
+                result.provider = "cerebras"
                 return result
             if self._tracker:
-                self._tracker.record_failure("intent.deepseek")
+                self._tracker.record_failure("intent.cerebras")
 
-        # 3. 本地 Ollama (last resort — never circuit-break)
-        if self.local_llm.is_available():
-            raw = self.local_llm.generate(prompt=text, system=self.system_prompt)
-            result = self._parse_json_response(raw, start, "local")
-            if result:
-                return result
-
-        # 全部失败
+        # 都失败 → 直接走云端 LLM
         return RouteResult(
             tier="cloud", intent="complex", confidence=0.0,
             duration_ms=int((time.time() - start) * 1000), provider="none",

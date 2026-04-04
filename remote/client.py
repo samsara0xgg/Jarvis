@@ -27,7 +27,7 @@ class RemoteClient:
         self.port: int = int(remote_cfg.get("agent_port", remote_cfg.get("port", 8765)))
         self.token: str = remote_cfg.get("token", "")
         self._ws: websockets.WebSocketClientProtocol | None = None
-        self._lock = asyncio.Lock()
+        self._lock: asyncio.Lock | None = None
         self._connected = False
         self.logger = LOGGER
 
@@ -94,6 +94,8 @@ class RemoteClient:
         cmd = make_command(action, params)
         request_id = cmd["request_id"]
 
+        if self._lock is None:
+            self._lock = asyncio.Lock()
         async with self._lock:
             try:
                 await self._ws.send(json.dumps(cmd))

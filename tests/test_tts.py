@@ -114,13 +114,16 @@ class TestAzureTTS:
 
     def test_azure_no_key_raises_on_speak(self):
         """Azure TTS without key should raise, then fallback to edge-tts."""
-        config = _make_config(engine="azure", azure_key="")
-        tts = TTSEngine(config)
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop("AZURE_SPEECH_KEY", None)
+            config = _make_config(engine="azure", azure_key="")
+            tts = TTSEngine(config)
 
-        # _speak_azure should raise, but speak() catches and falls through
-        with patch.object(tts, "_speak_edge") as mock_edge:
-            tts.speak("test")
-            mock_edge.assert_called_once_with("test")
+            # _speak_azure should raise, but speak() catches and falls through
+            with patch.object(tts, "_speak_edge") as mock_edge:
+                tts.speak("test")
+                mock_edge.assert_called_once_with("test")
 
     def test_azure_speak_builds_ssml_with_emotion(self):
         """Azure TTS should build SSML with the correct style from emotion."""

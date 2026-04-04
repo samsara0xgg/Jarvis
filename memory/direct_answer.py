@@ -14,7 +14,7 @@ from memory.store import MemoryStore
 
 LOGGER = logging.getLogger(__name__)
 
-_SIMILARITY_THRESHOLD = 0.85
+_SIMILARITY_THRESHOLD = 0.75
 _ANSWERABLE_CATEGORIES = {"preference", "identity", "knowledge"}
 
 _ANSWER_TEMPLATES = {

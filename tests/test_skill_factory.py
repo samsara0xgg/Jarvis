@@ -102,12 +102,10 @@ class TestSlugify:
 
 class TestCreateNoCLI:
     def test_returns_failure_without_cli(self, factory, monkeypatch):
-        original_run = subprocess.run
-
-        def mock_run(*args, **kwargs):
+        def mock_popen(*args, **kwargs):
             raise FileNotFoundError("claude not found")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr(subprocess, "Popen", mock_popen)
         result = factory.create("查航班")
         assert result["success"] is False
         assert "未安装" in result["message"]

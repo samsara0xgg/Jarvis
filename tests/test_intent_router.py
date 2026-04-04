@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -27,8 +28,8 @@ def config():
             ],
         },
         "models": {
-            "groq": {"api_key": "", "model": "llama-3.3-70b-versatile"},
-            "deepseek": {"api_key": "", "model": "deepseek-chat"},
+            "groq": {"api_key": "", "router_model": "llama-3.1-8b-instant"},
+            "cerebras": {"api_key": "", "router_model": "llama3.1-8b"},
             "local": {"provider": "ollama", "model": "qwen2.5:7b", "base_url": "http://localhost:11434"},
             "routing": {"confidence_threshold": 0.7},
         },
@@ -87,10 +88,12 @@ class TestIntentRouter:
 
     def test_init_no_keys(self, config):
         """No API keys → all providers show 'no key'."""
-        router = IntentRouter(config)
-        # Should not crash, local_llm may or may not be available
-        assert router.groq_key == ""
-        assert router.deepseek_key == ""
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("GROQ_API_KEY", None)
+            os.environ.pop("CEREBRAS_API_KEY", None)
+            router = IntentRouter(config)
+            assert router.groq_key == ""
+            assert router.cerebras_key == ""
 
     def test_route_all_providers_down(self, config):
         """All providers unavailable → returns cloud/complex."""
@@ -99,10 +102,9 @@ class TestIntentRouter:
             router.config = config
             router.system_prompt = ""
             router.groq_key = ""
-            router.deepseek_key = ""
-            router.local_llm = MagicMock()
-            router.local_llm.is_available.return_value = False
+            router.cerebras_key = ""
             router.logger = MagicMock()
+            router._tracker = None
 
             result = router.route("开灯")
             assert result.tier == "cloud"
@@ -134,30 +136,30 @@ class TestIntentRouter:
         assert result.response == "好的，已开灯。"
 
     @patch("core.intent_router._SESSION")
-    def test_groq_rate_limit_falls_to_deepseek(self, mock_session, config):
+    def test_groq_rate_limit_falls_to_cerebras(self, mock_session, config):
         config["models"]["groq"]["api_key"] = "test_key"
-        config["models"]["deepseek"]["api_key"] = "test_key"
+        config["models"]["cerebras"]["api_key"] = "test_key"
 
         # Groq returns 429
         groq_resp = MagicMock()
         groq_resp.status_code = 429
 
-        # DeepSeek returns success
-        ds_resp = MagicMock()
-        ds_resp.status_code = 200
-        ds_resp.raise_for_status.return_value = None
-        ds_resp.json.return_value = self._make_groq_response({
+        # Cerebras returns success
+        cerebras_resp = MagicMock()
+        cerebras_resp.status_code = 200
+        cerebras_resp.raise_for_status.return_value = None
+        cerebras_resp.json.return_value = self._make_groq_response({
             "intent": "complex", "confidence": 0.9, "response": None,
         })
 
-        mock_session.post.side_effect = [groq_resp, ds_resp]
+        mock_session.post.side_effect = [groq_resp, cerebras_resp]
 
         router = IntentRouter(config)
         result = router.route("帮我写封邮件")
 
         assert result.intent == "complex"
         assert result.tier == "cloud"
-        assert result.provider == "deepseek"
+        assert result.provider == "cerebras"
 
     @patch("core.intent_router._SESSION")
     def test_invalid_json_returns_none(self, mock_session, config):
