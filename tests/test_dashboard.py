@@ -1,6 +1,5 @@
 """TDD tests for dashboard controller — covers all user-facing scenarios."""
 
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -9,6 +8,7 @@ import pytest
 
 from core.speech_recognizer import TranscriptionResult
 from jarvis import JarvisApp
+from tests.helpers import load_config
 from ui.dashboard import DashboardController
 
 
@@ -19,9 +19,7 @@ from ui.dashboard import DashboardController
 @pytest.fixture
 def ctrl(tmp_path):
     """Create a DashboardController with a real JarvisApp."""
-    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
-    with config_path.open() as f:
-        config = yaml.safe_load(f)
+    config = load_config()
     config.setdefault("auth", {})["user_store_path"] = str(tmp_path / "users.json")
     config["devices"]["mode"] = "sim"
     cp = tmp_path / "config.yaml"

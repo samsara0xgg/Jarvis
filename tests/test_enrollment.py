@@ -5,24 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 from auth.enrollment import EnrollmentService
 from auth.user_store import UserStore
-
-
-def _load_config() -> dict:
-    """Load the project config for enrollment tests."""
-
-    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
-    with config_path.open("r", encoding="utf-8") as config_file:
-        return yaml.safe_load(config_file)
+from tests.helpers import load_config
 
 
 def _build_config(tmp_path: Path) -> dict:
     """Create a test config with isolated storage and small enrollment settings."""
 
-    config = _load_config()
+    config = load_config()
     config.setdefault("auth", {})
     config.setdefault("enrollment", {})
     config["auth"]["user_store_path"] = str(tmp_path / "users.json")

@@ -7,18 +7,10 @@ import sys
 import types
 
 import numpy as np
-import yaml
 from scipy.io import wavfile
 
 from core.speaker_encoder import SpeakerEncoder
-
-
-def _load_config() -> dict:
-    """Load the project config for speaker encoder tests."""
-
-    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
-    with config_path.open("r", encoding="utf-8") as config_file:
-        return yaml.safe_load(config_file)
+from tests.helpers import load_config
 
 
 class _FakeTensor:
@@ -99,7 +91,7 @@ def test_encode_returns_embedding_and_loads_model_lazily(monkeypatch) -> None:
     """The encoder should load the SpeechBrain model once and reuse it."""
 
     fake_classifier = _install_fake_speechbrain(monkeypatch)
-    encoder = SpeakerEncoder(_load_config())
+    encoder = SpeakerEncoder(load_config())
     audio = np.linspace(-0.5, 0.5, 16000, dtype=np.float32)
 
     embedding_one = encoder.encode(audio)
@@ -116,7 +108,7 @@ def test_encode_file_reads_wav_and_resamples(monkeypatch, tmp_path: Path) -> Non
     """The file-based encoder should normalize and resample WAV input."""
 
     fake_classifier = _install_fake_speechbrain(monkeypatch)
-    encoder = SpeakerEncoder(_load_config())
+    encoder = SpeakerEncoder(load_config())
     duration_seconds = 1.0
     source_sample_rate = 8000
     sample_count = int(source_sample_rate * duration_seconds)
@@ -140,7 +132,7 @@ def test_encoder_patches_missing_torchaudio_backend_helpers(monkeypatch) -> None
     torchaudio_module.__version__ = "2.11.0"
     monkeypatch.setitem(sys.modules, "torchaudio", torchaudio_module)
 
-    encoder = SpeakerEncoder(_load_config())
+    encoder = SpeakerEncoder(load_config())
     embedding = encoder.encode(np.ones(16000, dtype=np.float32))
 
     assert embedding.shape == (192,)

@@ -397,7 +397,7 @@ class TestRouteCache:
         router.cerebras_key = ""
         router.route("开灯")
         router.route("开灯")
-        assert len(router._route_cache) == 0
+        assert router.cache_size == 0
 
     @patch("core.intent_router._SESSION")
     def test_cache_lru_eviction(self, mock_session, config):
@@ -418,7 +418,7 @@ class TestRouteCache:
         for i in range(5):
             router.route(f"query_{i}")
 
-        assert len(router._route_cache) == 3
+        assert router.cache_size == 3
 
     @patch("core.intent_router._SESSION")
     def test_cached_result_is_independent_copy(self, mock_session, config):

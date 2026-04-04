@@ -4,32 +4,41 @@ Usage:
     source ~/.secrets
     python tests/benchmark_pipeline.py
 """
-from __future__ import annotations
 
+import logging
 import os
 import sys
 import time
+from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import yaml
+import yaml  # noqa: E402
+
+from tests.helpers import REPO_ROOT
 
 # Suppress verbose logs
-import logging
 logging.basicConfig(level=logging.WARNING)
 # But show cache hits
 logging.getLogger("core.intent_router").setLevel(logging.INFO)
 logging.getLogger("core.tts").setLevel(logging.INFO)
 
+log = logging.getLogger("benchmark_pipeline")
+log.setLevel(logging.INFO)
+
 
 def main() -> None:
-    with open("config.yaml") as f:
+    with open(REPO_ROOT / "config.yaml") as f:
         config = yaml.safe_load(f)
 
+    if not config:
+        log.error("config.yaml is empty or invalid")
+        return
+
     # --- Test 1: Route cache ---
-    print("\n" + "=" * 60)
-    print("  Route Cache Benchmark")
-    print("=" * 60)
+    log.info("\n" + "=" * 60)
+    log.info("  Route Cache Benchmark")
+    log.info("=" * 60)
 
     from core.intent_router import IntentRouter
     router = IntentRouter(config)
@@ -48,22 +57,22 @@ def main() -> None:
         ("开灯", "smart_home 再次缓存"),
     ]
 
-    print(f"\n  {'描述':20s}  {'耗时':>7s}  {'意图':12s}  {'provider':10s}  缓存")
-    print(f"  {'-'*70}")
+    log.info(f"\n  {'描述':20s}  {'耗时':>7s}  {'意图':12s}  {'provider':10s}  缓存")
+    log.info(f"  {'-'*70}")
 
     for text, label in cases:
         t0 = time.perf_counter()
         result = router.route(text)
         ms = (time.perf_counter() - t0) * 1000
         cached = "HIT" if ms < 1 else ""
-        print(f"  {label:20s}  {ms:6.1f}ms  {result.intent:12s}  {result.provider:10s}  {cached}")
+        log.info(f"  {label:20s}  {ms:6.1f}ms  {result.intent:12s}  {result.provider:10s}  {cached}")
 
-    print(f"\n  Cache size: {len(router._route_cache)} entries")
+    log.info(f"\n  Cache size: {router.cache_size} entries")
 
     # --- Test 2: TTS cache ---
-    print("\n" + "=" * 60)
-    print("  TTS Cache Benchmark")
-    print("=" * 60)
+    log.info("\n" + "=" * 60)
+    log.info("  TTS Cache Benchmark")
+    log.info("=" * 60)
 
     from core.tts import TTSEngine
     tts = TTSEngine(config)
@@ -77,24 +86,24 @@ def main() -> None:
     ]
 
     if tts.minimax_key:
-        print(f"\n  {'描述':16s}  {'耗时':>7s}  缓存  文件")
-        print(f"  {'-'*60}")
+        log.info(f"\n  {'描述':16s}  {'耗时':>7s}  缓存  文件")
+        log.info(f"  {'-'*60}")
 
         for text, emotion, label in tts_cases:
             t0 = time.perf_counter()
             path, deletable = tts._synth_minimax(text, emotion)
             ms = (time.perf_counter() - t0) * 1000
             cached = "HIT" if not deletable and ms < 50 else ("MISS" if deletable else "SAVED")
-            print(f"  {label:16s}  {ms:6.0f}ms  {cached:5s}  {os.path.basename(path)}")
+            log.info(f"  {label:16s}  {ms:6.0f}ms  {cached:5s}  {os.path.basename(path)}")
             if deletable:
                 os.unlink(path)
     else:
-        print("\n  SKIPPED — no MINIMAX_API_KEY")
+        log.info("\n  SKIPPED — no MINIMAX_API_KEY")
 
     # --- Test 3: Embedder cache ---
-    print("\n" + "=" * 60)
-    print("  Embedder Cache Benchmark")
-    print("=" * 60)
+    log.info("\n" + "=" * 60)
+    log.info("  Embedder Cache Benchmark")
+    log.info("=" * 60)
 
     from memory.embedder import Embedder
     embedder = Embedder()
@@ -107,18 +116,18 @@ def main() -> None:
         ("开灯", "切回首次文本"),
     ]
 
-    print(f"\n  {'描述':16s}  {'耗时':>7s}")
-    print(f"  {'-'*30}")
+    log.info(f"\n  {'描述':16s}  {'耗时':>7s}")
+    log.info(f"  {'-'*30}")
 
     for text, label in embed_cases:
         t0 = time.perf_counter()
         embedder.encode(text)
         ms = (time.perf_counter() - t0) * 1000
-        print(f"  {label:16s}  {ms:6.1f}ms")
+        log.info(f"  {label:16s}  {ms:6.1f}ms")
 
-    print("\n" + "=" * 60)
-    print("  Done!")
-    print("=" * 60 + "\n")
+    log.info("\n" + "=" * 60)
+    log.info("  Done!")
+    log.info("=" * 60 + "\n")
 
 
 if __name__ == "__main__":

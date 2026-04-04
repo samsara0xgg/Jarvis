@@ -25,7 +25,7 @@ _SESSION = requests.Session()
 VALID_INTENTS = {"smart_home", "info_query", "time", "complex", "uncertain", "automation"}
 
 # Strip punctuation for route cache key normalization
-_PUNCT_RE = re.compile(r'[。，！？、；：\u201c\u201d\u2018\u2019\u2026\u2014\u00b7.!?,;:\s]+')
+_PUNCT_RE = re.compile(r'[。，！？、；：\u201c\u201d\u2018\u2019\u2026\u2014\u00b7.!?,;:]+')
 
 
 # 设备能力描述模板，运行时从 config 动态生成
@@ -90,7 +90,7 @@ class RouteResult:
     actions: list[dict[str, Any]] = field(default_factory=list)
     response: str | None = None
     sub_type: str | None = None
-    query: Any = None
+    query: str | None = None
     rule: dict[str, Any] | None = None
 
 
@@ -123,6 +123,11 @@ class IntentRouter:
             "ready" if self.cerebras_key else "no key",
         )
 
+    @property
+    def cache_size(self) -> int:
+        """Return the number of entries in the route cache."""
+        return len(self._route_cache)
+
     def _cache_result(self, key: str, result: RouteResult) -> None:
         """Store a successful route result in LRU cache."""
         if result.provider == "none":
@@ -135,7 +140,7 @@ class IntentRouter:
         """分析用户指令。Groq 8B → Cerebras 8B → 直接走云端 LLM."""
         # TODO: 目前只做 strip 标点，未来可探索模糊匹配（embedding 相似度等），
         #       但需注意 "开灯" vs "关灯" 语义相近却意图相反的问题。
-        key = _PUNCT_RE.sub("", text.strip())
+        key = " ".join(_PUNCT_RE.sub("", text.strip()).split())
 
         # Cache hit
         if key in self._route_cache:
@@ -214,8 +219,11 @@ class IntentRouter:
 
             return self._parse_json_response(raw, start, "cloud")
 
-        except Exception as exc:
-            self.logger.warning("Cloud call failed (%s): %s", url, exc)
+        except requests.Timeout:
+            self.logger.warning("Timeout calling %s", url)
+            return None
+        except requests.RequestException as exc:
+            self.logger.warning("Request failed (%s): %s", url, exc)
             return None
 
     def _parse_json_response(self, raw: str, start: float, provider: str) -> RouteResult | None:

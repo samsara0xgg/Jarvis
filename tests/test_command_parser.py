@@ -2,27 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
-import yaml
 
 from core.command_parser import COLOR_TEMP_MAP, COLOR_XY_MAP, CommandParser
-
-
-def _load_config() -> dict:
-    """Load the project config used by parser tests."""
-
-    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
-    with config_path.open("r", encoding="utf-8") as config_file:
-        return yaml.safe_load(config_file)
+from tests.helpers import load_config
 
 
 @pytest.fixture()
 def parser() -> CommandParser:
     """Create a parser instance from the test config."""
 
-    return CommandParser(_load_config())
+    return CommandParser(load_config())
 
 
 @pytest.mark.parametrize(

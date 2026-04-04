@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
-import yaml
 
 from devices.device_manager import DeviceManager
 from devices.hue.hue_bridge import (
@@ -20,20 +18,13 @@ from devices.hue.hue_discovery import HueDiscovery
 from devices.hue.hue_group import HueGroup
 from devices.hue.hue_light import HueLight
 from devices.hue.hue_scene import HueSceneDevice
-
-
-def _load_config() -> dict:
-    """Load the project config for Hue integration tests."""
-
-    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
-    with config_path.open("r", encoding="utf-8") as config_file:
-        return yaml.safe_load(config_file)
+from tests.helpers import load_config
 
 
 def _build_live_config() -> dict:
     """Create a config copy for live Hue tests."""
 
-    config = _load_config()
+    config = load_config()
     config.setdefault("devices", {})
     config["devices"]["mode"] = "live"
     config.setdefault("hue", {}).setdefault("bridge", {})
