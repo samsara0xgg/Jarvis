@@ -770,6 +770,216 @@ class JarvisApp:
 
         return response_text
 
+    # ------------------------------------------------------------------
+    # Text-only pipeline (for web frontend — no audio, no TTS)
+    # ------------------------------------------------------------------
+    def handle_text(
+        self,
+        text: str,
+        session_id: str = "_web",
+        on_sentence: Any = None,
+        emotion: str = "",
+    ) -> str:
+        """Process a text message without audio/TTS.
+
+        Reuses steps 4-9 of ``_handle_utterance_inner`` but skips
+        recording, ASR, voiceprint verification, TTS playback, and
+        event-bus emissions.  The caller (web server) is responsible
+        for converting the response to speech separately.
+
+        Args:
+            text: User message.
+            session_id: Conversation session identifier.
+            on_sentence: Optional callback ``fn(sentence, emotion='')``.
+            emotion: Detected emotion label (passed through to callback).
+
+        Returns:
+            Full assistant response text.
+        """
+        user_id = "default_user"
+        user_name = "用户"
+        user_role = "owner"
+
+        # 4. Load conversation history + memory
+        history = self.conversation_store.get_history(session_id)
+        memory_context = ""
+        try:
+            memory_context = self.memory_manager.query(text, user_id)
+        except Exception as exc:
+            self.logger.warning("Memory query failed: %s", exc)
+
+        # 4b. Level 1: direct answer from memory
+        try:
+            direct = self.direct_answerer.try_answer(text, user_id)
+            if direct:
+                self.logger.info("Level 1 direct answer: %s", direct[:60])
+                if on_sentence:
+                    on_sentence(direct, emotion=emotion)
+                return direct
+        except Exception as exc:
+            self.logger.warning("Level 1 answer failed: %s", exc)
+
+        # 4c. Memory store shortcut
+        if any(text.startswith(kw) or kw in text[:10] for kw in _REMEMBER_KEYWORDS):
+            if "每次" not in text:
+                reply = "好的，记住了。"
+                self.logger.info("Memory shortcut: %s", text[:60])
+                history.append({"role": "user", "content": text})
+                history.append({"role": "assistant", "content": reply})
+                self.conversation_store.replace(session_id, history)
+                self._executor.submit(
+                    self.memory_manager.save, history, user_id, session_id,
+                )
+                if on_sentence:
+                    on_sentence(reply, emotion=emotion)
+                return reply
+
+        # 4d. Learning intent detection
+        if hasattr(self, "learning_router"):
+            learning = self.learning_router.detect(text)
+            if learning and learning.mode == "create":
+                self.logger.info("Learning intent: create — %s", learning.description[:60])
+                learn_response = self._learn_create(learning, user_id)
+                history.append({"role": "user", "content": text})
+                history.append({"role": "assistant", "content": learn_response})
+                self.conversation_store.replace(session_id, history)
+                if on_sentence:
+                    on_sentence(learn_response, emotion=emotion)
+                return learn_response
+
+        # 5. Keyword trigger check
+        response_text = None
+        updated_messages = None
+        ar: ActionResponse | None = None
+        sentence_count = 0
+        use_llm_rephrase = False
+
+        if self.rule_manager and self.local_executor:
+            match = self.rule_manager.check_keyword(text)
+            if match:
+                keyword_actions, rule_name = match
+                if keyword_actions and keyword_actions[0].get("skill"):
+                    ar = self.local_executor.execute_skill_alias(
+                        keyword_actions, user_role,
+                    )
+                    if ar.action == Action.REQLLM:
+                        use_llm_rephrase = True
+                    else:
+                        response_text = ar.text
+                else:
+                    ar = self.local_executor.execute_smart_home(
+                        keyword_actions, user_role, response=f"好的，{rule_name}已执行。",
+                    )
+                    response_text = ar.text
+
+        # 6. Route: local or cloud?
+        if response_text is None and self.intent_router and self.local_executor:
+            route = self.intent_router.route(text)
+            if route.tier == "local":
+                if route.intent == "smart_home":
+                    ar = self.local_executor.execute_smart_home(
+                        route.actions, user_role, response=route.response,
+                    )
+                elif route.intent == "info_query":
+                    if route.sub_type not in ("news", "stocks", "weather"):
+                        try:
+                            mem_answer = self.direct_answerer.try_answer(text, user_id)
+                            if mem_answer:
+                                ar = ActionResponse(Action.RESPONSE, mem_answer)
+                        except Exception:
+                            pass
+                    if ar is None:
+                        ar = self.local_executor.execute_info_query(
+                            route.sub_type, route.query, user_role,
+                        )
+                elif route.intent == "time":
+                    ar = self.local_executor.execute_time(route.sub_type)
+                elif route.intent == "automation":
+                    ar = self.local_executor.execute_automation(
+                        route.sub_type, route.rule,
+                    )
+                    if route.response is not None:
+                        ar = type(ar)(ar.action, route.response)
+                else:
+                    ar = None
+
+                if ar is not None:
+                    if ar.action == Action.REQLLM:
+                        use_llm_rephrase = True
+                        response_text = None
+                    elif any(p in ar.text for p in ("没查到", "未找到", "暂不支持")):
+                        response_text = None
+                    else:
+                        response_text = ar.text
+
+        # 7. Cloud LLM
+        if response_text is None:
+            tools = self.skill_registry.get_tool_definitions(user_role)
+
+            def _on_sentence(sentence: str) -> None:
+                nonlocal sentence_count
+                sentence_count += 1
+                if on_sentence:
+                    on_sentence(sentence, emotion=emotion)
+
+            try:
+                if use_llm_rephrase and ar is not None:
+                    rephrase_msg = (
+                        f"用户问的是：{text}\n"
+                        f"以下是查到的信息，用你自己的话简短转述给用户：\n{ar.text}"
+                    )
+                    try:
+                        response_text, updated_messages = self.llm.chat_stream(
+                            user_message=rephrase_msg,
+                            conversation_history=history,
+                            user_name=user_name,
+                            user_id=user_id,
+                            user_role=user_role,
+                            on_sentence=_on_sentence,
+                            user_emotion=emotion,
+                            memory_context=memory_context,
+                        )
+                    except Exception as exc:
+                        self.logger.error("LLM rephrase failed: %s", exc)
+                        response_text = ar.text
+                else:
+                    try:
+                        response_text, updated_messages = self.llm.chat_stream(
+                            user_message=text,
+                            conversation_history=history,
+                            tools=tools,
+                            tool_executor=self.skill_registry.execute,
+                            user_name=user_name,
+                            user_id=user_id,
+                            user_role=user_role,
+                            on_sentence=_on_sentence,
+                            user_emotion=emotion,
+                            memory_context=memory_context,
+                        )
+                    except Exception as exc:
+                        self.logger.error("Cloud LLM failed: %s", exc)
+                        response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
+            except Exception:
+                pass  # outer safety net
+
+        # 8. Save conversation + memory extraction
+        cloud_path = updated_messages is not None
+        if cloud_path:
+            self.conversation_store.replace(session_id, updated_messages)
+            self._executor.submit(
+                self.memory_manager.save, updated_messages, user_id, session_id,
+            )
+        elif response_text:
+            history.append({"role": "user", "content": text})
+            history.append({"role": "assistant", "content": response_text})
+            self.conversation_store.replace(session_id, history)
+
+        # 9. For non-streamed local responses, fire callback once
+        if sentence_count == 0 and on_sentence and response_text:
+            on_sentence(response_text, emotion=emotion)
+
+        return response_text
+
     def speak(self, text: str) -> None:
         """Speak text via TTS (blocking). Use for non-hot-path calls."""
         if not text:
