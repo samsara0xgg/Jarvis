@@ -210,10 +210,26 @@ class JarvisApp:
         # 预热 embedding 模型（后台加载，不阻塞启动）
         self._executor.submit(self.memory_manager.embedder.encode, "warmup")
 
+        # 预热 HTTP 连接（建立 keep-alive，首次真实调用省 ~100ms TCP+TLS）
+        self._executor.submit(self._prewarm_connections)
+
         # --- Health monitoring (voice notification + proactive probes) ---
         if self.health_tracker:
             self.event_bus.on("health.status_changed", self._on_health_changed)
             self._setup_health_probes(config)
+
+    def _prewarm_connections(self) -> None:
+        """Pre-warm HTTP connections to reduce first-call latency."""
+        import requests as _req
+        if self.intent_router and self.intent_router.groq_key:
+            try:
+                _req.get(
+                    "https://api.groq.com/openai/v1/models",
+                    headers={"Authorization": f"Bearer {self.intent_router.groq_key}"},
+                    timeout=5,
+                )
+            except Exception:
+                pass
 
     def _on_health_changed(self, data: dict) -> None:
         """Voice-notify user on first degradation only."""
