@@ -61,7 +61,7 @@ def create_app(jarvis_app: Any) -> FastAPI:
         if req.session_id not in sessions:
             raise HTTPException(404, "Session not found — dial first")
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         tts = jarvis_app._get_tts()
 
@@ -146,7 +146,7 @@ def create_app(jarvis_app: Any) -> FastAPI:
         return FileResponse(path, media_type="audio/mpeg")
 
     web_dir = Path(__file__).parent
-    app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="static")
+    app.mount("/", StaticFiles(directory=str(web_dir), html=True, follow_symlink=True), name="static")
 
     return app
 
