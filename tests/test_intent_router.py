@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import OrderedDict
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -105,6 +106,8 @@ class TestIntentRouter:
             router.cerebras_key = ""
             router.logger = MagicMock()
             router._tracker = None
+            router._route_cache = OrderedDict()
+            router._cache_max = 256
 
             result = router.route("开灯")
             assert result.tier == "cloud"
@@ -340,3 +343,101 @@ class TestLocalExecutor:
         result = executor.execute_info_query("stocks", ["AAPL"], "owner")
         assert result.action == Action.REQLLM
         assert "248" in result.text
+
+
+class TestRouteCache:
+    """Tests for the LRU route cache in IntentRouter."""
+
+    @patch("core.intent_router._SESSION")
+    def test_cache_hit_skips_api_call(self, mock_session, config):
+        config["models"]["groq"]["api_key"] = "test_key"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": json.dumps({
+                "intent": "smart_home", "confidence": 0.95,
+                "actions": [{"device_id": "living_room_light", "action": "turn_on", "value": None}],
+                "response": "好的",
+            })}}]
+        }
+        mock_session.post.return_value = mock_resp
+
+        router = IntentRouter(config)
+        r1 = router.route("开灯")
+        r2 = router.route("开灯")
+
+        assert mock_session.post.call_count == 1
+        assert r2.intent == "smart_home"
+        assert r2.provider == "groq"
+
+    @patch("core.intent_router._SESSION")
+    def test_cache_miss_on_different_text(self, mock_session, config):
+        config["models"]["groq"]["api_key"] = "test_key"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": json.dumps({
+                "intent": "smart_home", "confidence": 0.95,
+                "actions": [], "response": "好的",
+            })}}]
+        }
+        mock_session.post.return_value = mock_resp
+
+        router = IntentRouter(config)
+        router.route("开灯")
+        router.route("关灯")
+        assert mock_session.post.call_count == 2
+
+    def test_failed_route_not_cached(self, config):
+        """provider='none' results should NOT be cached."""
+        router = IntentRouter(config)
+        router.groq_key = ""
+        router.cerebras_key = ""
+        router.route("开灯")
+        router.route("开灯")
+        assert len(router._route_cache) == 0
+
+    @patch("core.intent_router._SESSION")
+    def test_cache_lru_eviction(self, mock_session, config):
+        config["models"]["groq"]["api_key"] = "test_key"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": json.dumps({
+                "intent": "complex", "confidence": 0.9, "response": None,
+            })}}]
+        }
+        mock_session.post.return_value = mock_resp
+
+        router = IntentRouter(config)
+        router._cache_max = 3
+
+        for i in range(5):
+            router.route(f"query_{i}")
+
+        assert len(router._route_cache) == 3
+
+    @patch("core.intent_router._SESSION")
+    def test_cached_result_is_independent_copy(self, mock_session, config):
+        """Mutating a returned RouteResult should not affect cache."""
+        config["models"]["groq"]["api_key"] = "test_key"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": json.dumps({
+                "intent": "smart_home", "confidence": 0.95,
+                "actions": [{"device_id": "x", "action": "turn_on", "value": None}],
+                "response": "OK",
+            })}}]
+        }
+        mock_session.post.return_value = mock_resp
+
+        router = IntentRouter(config)
+        r1 = router.route("开灯")
+        r1.intent = "MUTATED"
+        r2 = router.route("开灯")
+        assert r2.intent == "smart_home"

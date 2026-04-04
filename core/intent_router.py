@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -95,6 +97,8 @@ class IntentRouter:
         self.system_prompt = build_system_prompt(config)
         self.logger = LOGGER
         self._tracker = tracker
+        self._route_cache: OrderedDict = OrderedDict()
+        self._cache_max = 256
 
         # Groq (primary)
         groq_cfg = config.get("models", {}).get("groq", {})
@@ -114,8 +118,25 @@ class IntentRouter:
             "ready" if self.cerebras_key else "no key",
         )
 
+    def _cache_result(self, key: str, result: RouteResult) -> None:
+        """Store a successful route result in LRU cache."""
+        if result.provider == "none":
+            return
+        self._route_cache[key] = copy.copy(result)
+        if len(self._route_cache) > self._cache_max:
+            self._route_cache.popitem(last=False)
+
     def route(self, text: str) -> RouteResult:
         """分析用户指令。Groq 8B → Cerebras 8B → 直接走云端 LLM."""
+        key = text.strip()
+
+        # Cache hit
+        if key in self._route_cache:
+            self._route_cache.move_to_end(key)
+            cached = self._route_cache[key]
+            self.logger.info("Route cache hit: '%s' → %s/%s", key[:20], cached.tier, cached.intent)
+            return copy.copy(cached)
+
         start = time.time()
 
         # 1. Groq (primary)
@@ -125,6 +146,7 @@ class IntentRouter:
                 if self._tracker:
                     self._tracker.record_success("intent.groq")
                 result.provider = "groq"
+                self._cache_result(key, result)
                 return result
             if self._tracker:
                 self._tracker.record_failure("intent.groq")
@@ -136,11 +158,12 @@ class IntentRouter:
                 if self._tracker:
                     self._tracker.record_success("intent.cerebras")
                 result.provider = "cerebras"
+                self._cache_result(key, result)
                 return result
             if self._tracker:
                 self._tracker.record_failure("intent.cerebras")
 
-        # 都失败 → 直接走云端 LLM
+        # 都失败 → 直接走云端 LLM (don't cache)
         return RouteResult(
             tier="cloud", intent="complex", confidence=0.0,
             duration_ms=int((time.time() - start) * 1000), provider="none",
