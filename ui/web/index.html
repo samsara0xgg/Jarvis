@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>小贾 | Jarvis</title>
-    <link rel="stylesheet" href="css/test_page.css?v=0205">
+    <link rel="stylesheet" href="css/test_page.css?v=0403">
     <script>
         if (window.location.protocol === 'file:') {
             document.addEventListener('DOMContentLoaded', function () {
@@ -149,21 +149,60 @@
         </div>
     </div>
 
+    <!-- Log 面板 -->
+    <div id="logPanel" style="
+        position: fixed; bottom: 0; right: 0; width: 360px; max-height: 40px;
+        background: rgba(0,0,0,0.85); color: #ccc; font-size: 11px;
+        font-family: monospace; z-index: 9999; border-radius: 8px 0 0 0;
+        transition: max-height 0.3s; overflow: hidden;
+    ">
+        <div id="logHeader" style="
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 4px 10px; cursor: pointer; user-select: none;
+            border-bottom: 1px solid #333; background: rgba(0,0,0,0.95);
+        ">
+            <span>Log</span>
+            <div>
+                <button id="logCopyBtn" style="
+                    background: #444; color: #fff; border: none; border-radius: 3px;
+                    padding: 2px 8px; font-size: 10px; cursor: pointer; margin-right: 4px;
+                " onclick="event.stopPropagation();
+                    const t=document.getElementById('logContainer').innerText;
+                    navigator.clipboard.writeText(t).then(()=>this.textContent='Copied!');
+                    setTimeout(()=>this.textContent='Copy',1500);">Copy</button>
+                <button id="logClearBtn" style="
+                    background: #444; color: #fff; border: none; border-radius: 3px;
+                    padding: 2px 8px; font-size: 10px; cursor: pointer;
+                " onclick="event.stopPropagation();document.getElementById('logContainer').innerHTML='';">Clear</button>
+            </div>
+        </div>
+        <div id="logContainer" style="
+            overflow-y: auto; max-height: calc(50vh - 30px); padding: 4px 8px;
+        "></div>
+    </div>
+    <script>
+        document.getElementById('logHeader').addEventListener('click', function() {
+            const panel = document.getElementById('logPanel');
+            const expanded = panel.style.maxHeight !== '40px';
+            panel.style.maxHeight = expanded ? '40px' : '50vh';
+        });
+    </script>
+
     <!-- 背景加载 -->
-    <script src="js/ui/background-load.js?v=0205"></script>
+    <script src="js/ui/background-load.js?v=0403"></script>
 
     <!-- PIXI.js 2D渲染引擎 -->
-    <script src="js/live2d/pixi.js?v=0205"></script>
+    <script src="js/live2d/pixi.js?v=0403"></script>
 
     <!-- Live2D Cubism 4.0 SDK -->
-    <script src="js/live2d/live2dcubismcore.min.js?v=0205"></script>
-    <script src="js/live2d/cubism4.min.js?v=0205"></script>
+    <script src="js/live2d/live2dcubismcore.min.js?v=0403"></script>
+    <script src="js/live2d/cubism4.min.js?v=0403"></script>
 
     <!-- Live2D 管理器 -->
-    <script src="js/live2d/live2d.js?v=0205"></script>
+    <script src="js/live2d/live2d.js?v=0403"></script>
 
     <!-- 主应用入口 -->
-    <script type="module" src="js/app.js?v=0205"></script>
+    <script type="module" src="js/app.js?v=0403"></script>
 
     <!-- 全局错误处理 -->
     <script>

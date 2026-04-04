@@ -14,6 +14,7 @@ class AudioRecorder {
         this.recordingTimer = null;
         this.onRecordingStart = null;
         this.onRecordingStop = null;
+        this._workletRegistered = false;
     }
 
     getAudioContext() {
@@ -55,10 +56,13 @@ class AudioRecorder {
             this.audioContext = this.getAudioContext();
             if (this.audioContext.state === 'suspended') await this.audioContext.resume();
 
-            const blob = new Blob([this._workletCode()], { type: 'application/javascript' });
-            const url = URL.createObjectURL(blob);
-            await this.audioContext.audioWorklet.addModule(url);
-            URL.revokeObjectURL(url);
+            if (!this._workletRegistered) {
+                const blob = new Blob([this._workletCode()], { type: 'application/javascript' });
+                const url = URL.createObjectURL(blob);
+                await this.audioContext.audioWorklet.addModule(url);
+                URL.revokeObjectURL(url);
+                this._workletRegistered = true;
+            }
 
             this.workletNode = new AudioWorkletNode(this.audioContext, 'jarvis-recorder');
             this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
@@ -69,6 +73,8 @@ class AudioRecorder {
             silent.connect(this.audioContext.destination);
 
             this.pcmChunks = [];
+            this.actualSampleRate = this.audioContext.sampleRate;
+            log(`实际采样率: ${this.actualSampleRate}Hz`, 'info');
             this.workletNode.port.onmessage = (e) => {
                 if (e.data.pcm) this.pcmChunks.push(e.data.pcm);
             };
@@ -130,7 +136,7 @@ class AudioRecorder {
         }
         this.pcmChunks = [];
 
-        const sr = 16000;
+        const sr = this.actualSampleRate || 16000;
         const dataBytes = merged.length * 2;
         const buffer = new ArrayBuffer(44 + dataBytes);
         const view = new DataView(buffer);

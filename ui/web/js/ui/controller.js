@@ -114,21 +114,25 @@ class UIController {
             });
         }
 
-        // Chat input
-        const chatIpt = document.getElementById('chatIpt');
-        if (chatIpt) {
-            chatIpt.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' && e.target.value.trim()) {
-                    const text = e.target.value.trim();
-                    e.target.value = '';
-                    const apiClient = getApiClient();
-                    if (!apiClient.isConnected()) {
-                        this.addChatMessage('请先点击拨号连接', false);
-                        return;
-                    }
-                    this.addChatMessage(text, true);
-                    apiClient.sendTextMessage(text);
+        // Chat input (composing guard for CJK IME)
+        const messageInput = document.getElementById('messageInput');
+        if (messageInput) {
+            let composing = false;
+            messageInput.addEventListener('compositionstart', () => { composing = true; });
+            messageInput.addEventListener('compositionend', () => { composing = false; });
+            messageInput.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter' || composing || e.isComposing) return;
+                const text = e.target.value.trim();
+                if (!text) return;
+                e.preventDefault();
+                e.target.value = '';
+                const apiClient = getApiClient();
+                if (!apiClient.isConnected()) {
+                    this.addChatMessage('请先点击拨号连接', false);
+                    return;
                 }
+                this.addChatMessage(text, true);
+                apiClient.sendTextMessage(text);
             });
         }
 

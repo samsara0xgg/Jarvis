@@ -93,7 +93,23 @@ def create_app(jarvis_app: Any) -> FastAPI:
             }
             asyncio.run_coroutine_threadsafe(queue.put(event), loop)
 
+        # Inject a logging handler to stream backend logs to SSE
+        class SSELogHandler(logging.Handler):
+            def emit(self, record):
+                try:
+                    msg = self.format(record)
+                    log_event = {"_log": True, "level": record.levelname, "msg": msg}
+                    asyncio.run_coroutine_threadsafe(queue.put(log_event), loop)
+                except Exception:
+                    pass
+
+        sse_handler = SSELogHandler()
+        sse_handler.setFormatter(logging.Formatter("%(levelname)s [%(name)s] %(message)s"))
+        sse_handler.setLevel(logging.INFO)
+
         def _run():
+            root = logging.getLogger()
+            root.addHandler(sse_handler)
             try:
                 jarvis_app.handle_text(
                     req.text,
@@ -103,6 +119,7 @@ def create_app(jarvis_app: Any) -> FastAPI:
             except Exception as exc:
                 LOGGER.error("handle_text failed: %s", exc)
             finally:
+                root.removeHandler(sse_handler)
                 asyncio.run_coroutine_threadsafe(queue.put(None), loop)
 
         loop.run_in_executor(None, _run)
@@ -113,7 +130,10 @@ def create_app(jarvis_app: Any) -> FastAPI:
                 if event is None:
                     yield f"event: done\ndata: {{}}\n\n"
                     break
-                yield f"event: sentence\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if isinstance(event, dict) and event.get("_log"):
+                    yield f"event: log\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                else:
+                    yield f"event: sentence\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(
             event_stream(),
@@ -131,7 +151,12 @@ def create_app(jarvis_app: Any) -> FastAPI:
         audio_bytes = await audio.read()
         data, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32")
         if sr != 16000:
-            LOGGER.warning("ASR received %dHz audio, expected 16000Hz", sr)
+            LOGGER.info("ASR resampling %dHz → 16000Hz", sr)
+            # Linear interpolation resample
+            duration = len(data) / sr
+            target_len = int(duration * 16000)
+            indices = np.linspace(0, len(data) - 1, target_len)
+            data = np.interp(indices, np.arange(len(data)), data).astype(np.float32)
         result = jarvis_app.speech_recognizer.transcribe(data)
         return {
             "text": result.text,
@@ -168,7 +193,15 @@ def main():
     parser.add_argument("--config", default="config.yaml")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO)
+    # Logging: console + file (same format as jarvis.py)
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    log_fmt = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    logging.basicConfig(level=logging.INFO, format=log_fmt)
+    file_handler = logging.FileHandler(log_dir / "web_server.log", encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter(log_fmt))
+    logging.getLogger().addHandler(file_handler)
+    LOGGER.info("Log file: %s", log_dir / "web_server.log")
 
     if AUDIO_DIR.exists():
         shutil.rmtree(AUDIO_DIR)

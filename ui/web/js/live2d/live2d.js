@@ -418,12 +418,6 @@ class Live2DManager {
             return false;
         }
     }
-            return true;
-        } catch (error) {
-            console.error('连接到音频播放器失败:', error);
-            return false;
-        }
-    }
 
     /**
      * 嘴部动画循环

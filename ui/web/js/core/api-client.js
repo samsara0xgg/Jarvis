@@ -100,6 +100,15 @@ class ApiClient {
                             } catch (e) {
                                 log(`SSE parse error: ${e.message}`, 'error');
                             }
+                        } else if (eventType === 'log') {
+                            try {
+                                const parsed = JSON.parse(eventData);
+                                const level = (parsed.level || 'INFO').toLowerCase();
+                                const logType = level === 'error' ? 'error'
+                                    : level === 'warning' ? 'warning'
+                                    : level === 'info' ? 'info' : 'debug';
+                                log(`[Server] ${parsed.msg}`, logType);
+                            } catch { /* ignore */ }
                         }
                         eventType = '';
                         eventData = '';
