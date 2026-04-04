@@ -10,7 +10,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+import io
+
+from fastapi import FastAPI, Form, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -118,6 +120,23 @@ def create_app(jarvis_app: Any) -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    # --- ASR ---
+    @app.post("/api/asr")
+    async def asr(session_id: str = Form(...), audio: UploadFile = File(...)):
+        if session_id not in sessions:
+            raise HTTPException(404, "Session not found")
+        import soundfile as sf
+        import numpy as np
+        audio_bytes = await audio.read()
+        data, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32")
+        if sr != 16000:
+            LOGGER.warning("ASR received %dHz audio, expected 16000Hz", sr)
+        result = jarvis_app.speech_recognizer.transcribe(data)
+        return {
+            "text": result.text,
+            "emotion": getattr(result, "emotion", "") or "",
+        }
 
     @app.get("/api/audio/{filename}")
     def get_audio(filename: str):

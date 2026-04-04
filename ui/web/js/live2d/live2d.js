@@ -384,25 +384,17 @@ class Live2DManager {
      */
     initializeAudioAnalyzer() {
         try {
-            // 获取音频播放器实例
             const audioPlayer = window.chatApp?.audioPlayer;
             if (!audioPlayer) {
-                console.warn('音频播放器未初始化，无法获取分析器节点');
+                console.warn('音频播放器未初始化');
                 return false;
             }
-
-            // 获取音频播放器的音频上下文
-            this.audioContext = audioPlayer.getAudioContext();
-            if (!this.audioContext) {
-                console.warn('无法获取音频播放器的音频上下文');
+            this.analyser = audioPlayer.getAnalyser();
+            if (!this.analyser) {
+                console.warn('无法获取分析器节点');
                 return false;
             }
-
-            // 创建分析器节点
-            this.analyser = this.audioContext.createAnalyser();
-            this.analyser.fftSize = 256;
             this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
-
             return true;
         } catch (error) {
             console.error('初始化音频分析器失败:', error);
@@ -415,26 +407,17 @@ class Live2DManager {
      */
     connectToAudioPlayer() {
         try {
-            // 获取音频播放器的流上下文
             const audioPlayer = window.chatApp?.audioPlayer;
-            if (!audioPlayer || !audioPlayer.streamingContext) {
-                console.warn('音频播放器或流上下文未初始化');
-                return false;
-            }
-
-            // 获取音频播放器的流上下文
-            const streamingContext = audioPlayer.streamingContext;
-
-            // 获取分析器节点
-            const analyser = streamingContext.getAnalyser();
-            if (!analyser) {
-                console.warn('音频播放器尚未创建分析器节点，无法连接');
-                return false;
-            }
-
-            // 使用音频播放器的分析器节点
-            this.analyser = analyser;
+            if (!audioPlayer) return false;
+            this.analyser = audioPlayer.getAnalyser();
+            if (!this.analyser) return false;
             this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+            return true;
+        } catch (error) {
+            console.error('连接到音频播放器失败:', error);
+            return false;
+        }
+    }
             return true;
         } catch (error) {
             console.error('连接到音频播放器失败:', error);
