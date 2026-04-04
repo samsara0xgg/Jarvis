@@ -521,37 +521,15 @@ class JarvisApp:
             self.logger.info("Unidentified speaker (%.2f) said: %s", confidence, text)
             print(f"🎤 Guest ({confidence:.2f}): {text}")
 
-        # 4. Load conversation history + memory
+        # 4. Load conversation history
         session_id = user_id or "_guest"
         self._last_user_id = user_id
         self._last_session_id = session_id
         history = self.conversation_store.get_history(session_id)
-        memory_context = ""
-        if user_id:
-            try:
-                memory_context = self.memory_manager.query(text, user_id)
-            except Exception as exc:
-                self.logger.warning("Memory query failed: %s", exc)
 
-        # 4b. Level 1: Try direct answer from memory (< 100ms, no LLM)
-        if user_id:
-            try:
-                direct = self.direct_answerer.try_answer(text, user_id)
-                if direct:
-                    self.logger.info("Level 1 direct answer: %s", direct[:60])
-                    self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
-                    print(f"🤖 Jarvis (L1): {direct}")
-                    self._speak_nonblocking(direct, emotion=detected_emotion)
-                    self.behavior_log.log(user_id, "conversation", {
-                        "text": text[:100],
-                        "route": "memory_l1",
-                        "answer": direct[:100],
-                    })
-                    return direct
-            except Exception as exc:
-                self.logger.warning("Level 1 answer failed: %s", exc)
+        # 4b. Fast local checks first (avoid wasted API calls)
 
-        # 4c. Memory store shortcut: "记住/记下/别忘了" → 直接确认，不走 LLM
+        # Memory store shortcut: "记住/记下/别忘了" → 直接确认，不走 LLM
         if any(text.startswith(kw) or kw in text[:10] for kw in _REMEMBER_KEYWORDS):
             # 不含"每次"（那是配置型学习意图，交给 learning router）
             if "每次" not in text:
@@ -570,7 +548,7 @@ class JarvisApp:
                     )
                 return reply
 
-        # 4d. Learning intent detection
+        # Learning intent detection
         if hasattr(self, "learning_router"):
             learning = self.learning_router.detect(text)
             if learning and learning.mode == "create":
@@ -590,7 +568,7 @@ class JarvisApp:
             # config and compose modes: fall through to cloud LLM
             # (cloud LLM handles via existing automation skill)
 
-        # 5. Keyword trigger check (before routing)
+        # Keyword trigger check
         self.event_bus.emit("jarvis.state_changed", {"state": "thinking"})
         response_text = None
         updated_messages = None
@@ -617,9 +595,54 @@ class JarvisApp:
                     )
                     response_text = ar.text
 
-        # 6. Route: local or cloud?
+        # 4c. Launch parallel futures for route + memory (saves ~150ms)
+        memory_context = ""
+        route_future = None
+        memory_future = None
+
         if response_text is None and self.intent_router and self.local_executor:
-            route = self.intent_router.route(text)
+            route_future = self._executor.submit(self.intent_router.route, text)
+            if user_id:
+                memory_future = self._executor.submit(
+                    self.memory_manager.query, text, user_id,
+                )
+
+        # Level 1: Try direct answer from memory while futures run
+        if user_id and response_text is None:
+            try:
+                direct = self.direct_answerer.try_answer(text, user_id)
+                if direct:
+                    self.logger.info("Level 1 direct answer: %s", direct[:60])
+                    self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
+                    print(f"🤖 Jarvis (L1): {direct}")
+                    self._speak_nonblocking(direct, emotion=detected_emotion)
+                    self.behavior_log.log(user_id, "conversation", {
+                        "text": text[:100],
+                        "route": "memory_l1",
+                        "answer": direct[:100],
+                    })
+                    return direct
+            except Exception as exc:
+                self.logger.warning("Level 1 answer failed: %s", exc)
+
+        # 4d. Collect parallel results
+        if memory_future:
+            try:
+                memory_context = memory_future.result(timeout=5)
+            except Exception as exc:
+                self.logger.warning("Memory query failed: %s", exc)
+
+        # 5-6. Route: local or cloud?
+        if route_future:
+            try:
+                route = route_future.result(timeout=8)
+            except Exception as exc:
+                self.logger.warning("Intent route failed: %s", exc)
+                route = None
+        else:
+            route = None
+
+        if response_text is None and route is not None:
             if route.tier == "local":
                 if route.intent == "smart_home":
                     ar = self.local_executor.execute_smart_home(
