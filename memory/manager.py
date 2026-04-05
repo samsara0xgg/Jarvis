@@ -23,8 +23,10 @@ from memory.store import MemoryStore
 
 LOGGER = logging.getLogger(__name__)
 
-_EXTRACT_PROMPT_HEADER = """从以下对话中提取值得长期记住的信息。只提取用户说的内容。
+_EXTRACT_PROMPT_HEADER = """从以下对话中提取值得长期记住的**新**信息。只提取用户说的内容。
 忽略打招呼、设备操作指令（开灯/关灯/几点了）、纯闲聊。
+
+重要：下方"已有记忆"列表中的内容已经存储，不要重复提取。只提取对话中出现的、不在已有记忆中的新信息。
 
 记忆粒度：
 - event/task：输出自含的完整描述，包含时间和上下文
@@ -441,7 +443,13 @@ class MemoryManager:
                 existing_by_key = self.store.find_by_key(user_id, category, key)
 
             if existing_by_key:
-                # Same category+key → deterministic UPDATE
+                # Same category+key — check if content actually changed
+                old_content = existing_by_key.get("content", "")
+                if old_content.strip() == content.strip():
+                    # Identical content → skip (LLM re-extracted existing memory)
+                    self.logger.debug("Skipping identical re-extraction: %s", content[:40])
+                    continue
+                # Content changed → UPDATE (supersede old with new)
                 new_id = self._add_extracted_memory(
                     user_id, content, category, key, mem, mem_embedding,
                 )
@@ -671,28 +679,39 @@ class MemoryManager:
         self, user_id: str, content: str, key: str | None,
     ) -> None:
         """Extract entity pair from relationship memory and store in relations table."""
+        source = relation = target = None
+
         # Pattern: "X 的 Y 叫/是 Z"
         match = re.search(r'(\S+)\s*的\s*(\S+?)\s*[叫是]\s*(\S+)', content)
         if match:
-            self.store.add_relation(
-                user_id, match.group(1), match.group(2), match.group(3),
-            )
-            return
+            source, relation, target = match.group(1), match.group(2), match.group(3)
 
         # Pattern: "X 有个/有一个 Y 叫 Z"
-        match = re.search(r'(\S+)\s*有[个一][个]?\s*(\S+?)\s*叫\s*(\S+)', content)
-        if match:
-            self.store.add_relation(
-                user_id, match.group(1), match.group(2), match.group(3),
-            )
-            return
+        if not source:
+            match = re.search(r'(\S+)\s*有[个一][个]?\s*(\S+?)\s*叫\s*(\S+)', content)
+            if match:
+                source, relation, target = match.group(1), match.group(2), match.group(3)
 
-        # Fallback: use key as relation, content[:20] as target
-        if key:
+        # Fallback: use key as relation
+        if not source and key:
             parts = content.split(None, 1)
             if len(parts) >= 2:
+                source = parts[0]
+                relation = key
                 target = parts[1][:20].rstrip("，。、")
-                self.store.add_relation(user_id, parts[0], key, target)
+
+        if not source or not target:
+            return
+
+        # Dedup: check if this exact relation already exists
+        existing = self.store.get_relations(user_id, entity=source)
+        for rel in existing:
+            if rel["relation"] == relation and rel["target_entity"] == target:
+                self.logger.debug("Relation already exists: %s -[%s]-> %s", source, relation, target)
+                return
+
+        self.store.add_relation(user_id, source, relation, target)
+        self.logger.info("Relation extracted: %s -[%s]-> %s", source, relation, target)
 
     # ------------------------------------------------------------------
     # LLM calls

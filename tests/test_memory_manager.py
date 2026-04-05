@@ -759,6 +759,67 @@ class TestRelationExtraction:
         rels = manager.store.get_relations("u1")
         assert len(rels) == 0
 
+    def test_relation_dedup_no_duplicate(self, manager: MemoryManager):
+        """Same relation extracted twice should only store once."""
+        extraction = {
+            "memories": [{
+                "content": "Allen 的妹妹叫小美",
+                "category": "relationship",
+                "key": "sister",
+                "importance": 7,
+            }],
+            "corrections": [],
+            "episode_summary": "test",
+            "mood": "neutral",
+            "topics": [],
+        }
+        manager._call_llm_extract = MagicMock(return_value=extraction)
+        manager.save([{"role": "user", "content": "我妹妹叫小美"}], "u1", "s1")
+        manager._call_llm_extract = MagicMock(return_value=extraction)
+        manager.save([{"role": "user", "content": "我妹妹叫小美"}], "u1", "s2")
+
+        rels = manager.store.get_relations("u1")
+        sister_rels = [r for r in rels if r["target_entity"] == "小美"]
+        assert len(sister_rels) == 1  # should NOT have duplicate
+
+    def test_identical_content_skips_supersede(self, manager: MemoryManager):
+        """Re-extracting identical content should not supersede."""
+        # First save
+        manager._call_llm_extract = MagicMock(return_value={
+            "memories": [{
+                "content": "Allen 住在多伦多",
+                "category": "identity",
+                "key": "location",
+                "importance": 8,
+            }],
+            "corrections": [],
+            "episode_summary": "test",
+            "mood": "neutral",
+            "topics": [],
+        })
+        manager.save([{"role": "user", "content": "我住在多伦多"}], "u1", "s1")
+        mems_after_first = manager.store.get_active_memories("u1")
+        first_id = mems_after_first[0]["id"]
+
+        # Second save with identical content (LLM re-extracted)
+        manager._call_llm_extract = MagicMock(return_value={
+            "memories": [{
+                "content": "Allen 住在多伦多",
+                "category": "identity",
+                "key": "location",
+                "importance": 8,
+            }],
+            "corrections": [],
+            "episode_summary": "test2",
+            "mood": "neutral",
+            "topics": [],
+        })
+        manager.save([{"role": "user", "content": "聊别的"}], "u1", "s2")
+        mems_after_second = manager.store.get_active_memories("u1")
+
+        # Same memory ID should survive (not superseded)
+        assert any(m["id"] == first_id for m in mems_after_second)
+
 
 class TestSaveWithEmotion:
     """C12: Detected emotion signal passthrough."""
