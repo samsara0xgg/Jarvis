@@ -270,13 +270,17 @@ class TestColdStart:
         store.touch_many([id_b])
 
         results = retriever.retrieve(query_emb, "user1", top_k=2)
-        # With normal weights (cosine=0.40), Memory A should still rank first
-        # because cosine=1.0 vs ~0.0 is still decisive, but the key point is
-        # normal weights are used (not cold-start boosted)
         assert len(results) == 2
-        # Verify that the score gap is smaller with normal weights vs cold-start
         score_a = results[0]["_score"]
         score_b = results[1]["_score"]
-        # In cold-start: gap would be ~0.60 (cosine dominance)
-        # In normal: gap should be smaller because access+importance matter more
         assert score_a > score_b  # A still wins on cosine
+
+        # Key verification: B's score should be meaningfully higher than in
+        # cold-start mode because importance(10) + access(1) contribute more
+        # with normal weights (0.20+0.15=0.35) vs cold-start (0.25+0.05=0.30).
+        # B's importance component alone: normal = 0.20*1.0 = 0.20, cold = 0.25*1.0 = 0.25
+        # B's access component: normal = 0.15*0.1 = 0.015, cold = 0.05*0.1 = 0.005
+        # B's recency component: normal = 0.25*1.0 = 0.25, cold = 0.10*1.0 = 0.10
+        # Normal B total ≈ 0.20+0.015+0.25 = 0.465; Cold B total ≈ 0.25+0.005+0.10 = 0.355
+        # So B's score should be > 0.35 in normal mode (vs < 0.36 in cold mode)
+        assert score_b > 0.30, f"B's score {score_b} too low for normal weights"

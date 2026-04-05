@@ -216,12 +216,15 @@ class MemoryManager:
 
         # Gradual retrieval: always sorted by relevance
         if active_count <= 20:
-            # Very few memories: inject all (sorting overhead negligible)
+            # Very few memories: inject all, sorted by importance (desc)
             relevant = self.store.get_active_memories(user_id)
+            relevant.sort(key=lambda m: m.get("importance", 5), reverse=True)
         else:
             # >20: embedding retrieval with dynamic top_k
             query_emb = self.embedder.encode(text)
-            avg_mem_len = 25  # Chinese memories average ~25 chars
+            # "- " prefix (2) + average Chinese memory content (~20 chars) + newline (1)
+            avg_mem_len = 23
+            # Reserve ~600 chars for profile + episodes; rest for memories
             budget_for_memories = max(200, _MAX_MEMORY_CHARS - 600)
             top_k = min(active_count, max(5, budget_for_memories // avg_mem_len))
             relevant = self.retriever.retrieve(

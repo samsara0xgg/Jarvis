@@ -54,6 +54,12 @@ class MemoryRetriever:
     W_IMPORTANCE = 0.20
     W_ACCESS = 0.15
 
+    # Cold-start weights: when all access_count == 0, cosine dominates
+    W_COLD_COSINE = 0.60
+    W_COLD_RECENCY = 0.10
+    W_COLD_IMPORTANCE = 0.25
+    W_COLD_ACCESS = 0.05
+
     def __init__(self, store: MemoryStore) -> None:
         self.store = store
 
@@ -136,10 +142,10 @@ class MemoryRetriever:
         if all_cold:
             # Cold start: cosine dominates, importance secondary
             scores = (
-                0.60 * cos_scores
-                + 0.10 * recency_scores
-                + 0.25 * importance_scores
-                + 0.05 * access_scores
+                self.W_COLD_COSINE * cos_scores
+                + self.W_COLD_RECENCY * recency_scores
+                + self.W_COLD_IMPORTANCE * importance_scores
+                + self.W_COLD_ACCESS * access_scores
             ) * expiry_factor
             LOGGER.debug("Cold-start weights applied (cosine=0.60)")
         else:
