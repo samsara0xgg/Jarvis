@@ -203,11 +203,11 @@ class TestEpisodes:
 
     def test_episode_dedup_skips_similar(self, store: MemoryStore):
         """Same-day episode with substantially similar summary should be skipped."""
-        ep1 = store.add_episode("user1", "s1", "聊了咖啡偏好和拿铁", "2026-04-02")
+        ep1 = store.add_episode("user1", "s1", "用户聊了咖啡偏好，特别喜欢拿铁", "2026-04-02")
         assert ep1 is not None
 
         # Very similar summary on the same day
-        ep2 = store.add_episode("user1", "s2", "聊了咖啡偏好和拿铁咖啡", "2026-04-02")
+        ep2 = store.add_episode("user1", "s2", "用户聊了咖啡偏好，特别喜欢拿铁咖啡", "2026-04-02")
         assert ep2 is None  # should be skipped
 
         episodes = store.get_recent_episodes("user1", days=3)

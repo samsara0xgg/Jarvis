@@ -427,7 +427,10 @@ class MemoryStore:
         """Check if two episode summaries are substantially similar.
 
         Uses character-level Jaccard similarity (cheap, no embedding needed).
+        Skips very short summaries where Jaccard is unreliable.
         """
+        if len(a) < 10 or len(b) < 10:
+            return False
         set_a = set(a)
         set_b = set(b)
         if not set_a or not set_b:

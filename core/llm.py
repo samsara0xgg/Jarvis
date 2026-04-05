@@ -414,7 +414,24 @@ class LLMClient:
                 continue
 
             result.append({"role": role, "content": str(content)})
-        return result
+
+        # Sanitize: remove orphaned tool messages that lack a preceding
+        # assistant message with tool_calls (OpenAI rejects these with 400).
+        sanitized = []
+        for i, msg in enumerate(result):
+            if msg.get("role") == "tool":
+                # Check if previous message is assistant with tool_calls
+                if sanitized and sanitized[-1].get("role") == "assistant" and sanitized[-1].get("tool_calls"):
+                    sanitized.append(msg)
+                else:
+                    # Orphaned tool result — convert to user context
+                    sanitized.append({
+                        "role": "user",
+                        "content": f"[Tool result: {msg.get('content', '')}]",
+                    })
+            else:
+                sanitized.append(msg)
+        return sanitized
 
     # ------------------------------------------------------------------
     # History truncation and retry

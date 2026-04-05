@@ -59,7 +59,11 @@ class DirectAnswerer:
             "什么", "哪", "几", "多少", "怎么", "为什么", "谁",
             "是不是", "有没有", "能不能", "可不可以",
         )
-        return any(w in text for w in question_words)
+        if any(w in text for w in question_words):
+            return True
+        # Imperative queries (not commands): "告诉我X", "X来着", "说一下X"
+        query_patterns = ("告诉我", "来着", "说一下", "想知道", "记得我的")
+        return any(w in text for w in query_patterns)
 
     def try_answer(self, query: str, user_id: str) -> str | None:
         """Attempt to answer a query using stored memories.
@@ -120,7 +124,8 @@ class DirectAnswerer:
                 return None
 
         category = best.get("category", "knowledge")
-        content = best["content"]
+        # Clean up content: replace third-person "用户" with natural "你"
+        content = best["content"].replace("用户 ", "你").replace("用户", "你")
         template = _ANSWER_TEMPLATES.get(category, "我记得，{content}")
 
         # Touch only on successful answer (not during failed probes)

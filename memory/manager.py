@@ -501,11 +501,19 @@ class MemoryManager:
                     # NONE → skip
 
         # 2b. Extract relations from relationship memories
+        #      Also check identity memories with relationship keywords
+        _RELATION_KEYWORDS = ("妹妹", "弟弟", "姐姐", "哥哥", "爸爸", "妈妈",
+                              "女朋友", "男朋友", "老婆", "老公", "女友", "男友",
+                              "儿子", "女儿", "朋友", "同事", "同学")
         for mem in memories:
-            if mem.get("category") == "relationship":
-                content = mem.get("content", "")
-                if content:
-                    self._extract_and_store_relation(user_id, content, mem.get("key"))
+            content = mem.get("content", "")
+            if not content:
+                continue
+            cat = mem.get("category", "")
+            if cat == "relationship":
+                self._extract_and_store_relation(user_id, content, mem.get("key"))
+            elif cat == "identity" and any(kw in content for kw in _RELATION_KEYWORDS):
+                self._extract_and_store_relation(user_id, content, mem.get("key"))
 
         # 3. Update profile
         #    Use LLM's profile_update if provided, otherwise auto-build from memories
@@ -648,10 +656,11 @@ class MemoryManager:
             key = mem.get("key")
             content = mem.get("content", "")
 
-            # 1. key missing — derive from content hash
+            # 1. key missing — try pattern matching, fallback to hash
             if category in ("identity", "preference", "relationship", "knowledge") and not key:
-                short = content[:30].strip()
-                mem["key"] = hashlib.md5(short.encode()).hexdigest()[:8]
+                mem["key"] = self._derive_key(content)
+
+
 
             # 2. expires missing — back-fill from time_ref + 1 day
             if category in ("event", "task"):
@@ -674,6 +683,35 @@ class MemoryManager:
                 mem["importance"] = 7
 
         return memories
+
+    # Common Chinese content → semantic key mappings
+    _KEY_PATTERNS: list[tuple[str, str]] = [
+        ("住在", "location"), ("住", "location"),
+        ("叫", "name"), ("名字", "name"),
+        ("工作", "company"), ("上班", "company"), ("在.*公司", "company"),
+        ("喜欢喝", "favorite_drink"), ("爱喝", "favorite_drink"),
+        ("喜欢吃", "favorite_food"), ("爱吃", "favorite_food"),
+        ("不喜欢吃", "dislike_food"), ("讨厌吃", "dislike_food"),
+        ("不喜欢", "dislike"), ("讨厌", "dislike"),
+        ("喜欢", "preference"), ("爱好", "hobby"),
+        ("过敏", "allergy"),
+        ("密码", "password"),
+        ("生日", "birthday"),
+        ("妹妹", "sister"), ("姐姐", "sister"),
+        ("弟弟", "brother"), ("哥哥", "brother"),
+        ("女朋友", "girlfriend"), ("男朋友", "boyfriend"),
+        ("老婆", "wife"), ("老公", "husband"),
+        ("爸爸", "father"), ("妈妈", "mother"),
+        ("车", "car"), ("开", "car"),
+    ]
+
+    def _derive_key(self, content: str) -> str:
+        """Derive a semantic key from memory content via pattern matching."""
+        for pattern, key in self._KEY_PATTERNS:
+            if re.search(pattern, content):
+                return key
+        # Fallback: hash
+        return hashlib.md5(content[:30].encode()).hexdigest()[:8]
 
     def _extract_and_store_relation(
         self, user_id: str, content: str, key: str | None,
