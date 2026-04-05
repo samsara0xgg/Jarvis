@@ -214,15 +214,18 @@ class MemoryManager:
         if active_count == 0 and not profile and not episodes:
             return ""
 
-        # Decide retrieval strategy
-        if active_count < self._full_inject_threshold:
-            # Small memory: inject everything
+        # Gradual retrieval: always sorted by relevance
+        if active_count <= 20:
+            # Very few memories: inject all (sorting overhead negligible)
             relevant = self.store.get_active_memories(user_id)
         else:
-            # Large memory: embedding retrieval
+            # >20: embedding retrieval with dynamic top_k
             query_emb = self.embedder.encode(text)
+            avg_mem_len = 25  # Chinese memories average ~25 chars
+            budget_for_memories = max(200, _MAX_MEMORY_CHARS - 600)
+            top_k = min(active_count, max(5, budget_for_memories // avg_mem_len))
             relevant = self.retriever.retrieve(
-                query_emb, user_id, top_k=5,
+                query_emb, user_id, top_k=top_k,
             )
 
         return self._format_memory_context(profile, episodes, relevant)
