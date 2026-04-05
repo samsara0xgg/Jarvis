@@ -65,8 +65,10 @@ class SmartHomeSkill(Skill):
                         },
                         "value": {
                             "description": (
-                                "Action parameter: brightness 0-100, color name (red/blue/warm/cool), "
-                                "temperature 16-30, scene name, etc. Omit for on/off/lock/unlock."
+                                "Action parameter: brightness 0-100, "
+                                "color MUST be hex '#RRGGBB' (e.g. '#FF0000' for red, '#ADD8E6' for light blue, '#0ABAB5' for Tiffany blue) — NEVER use color names, ALWAYS convert to precise hex, "
+                                "color_temp warm/neutral/cool, "
+                                "temperature 16-30, scene name. Omit for on/off/lock/unlock."
                             ),
                         },
                     },

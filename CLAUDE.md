@@ -1,4 +1,4 @@
-# 小贾 (Jarvis) — 私人语音管家
+# 小月 — 私人语音管家
 
 ## 行为准则（最重要，必须遵守）
 
@@ -42,7 +42,7 @@ python setup_hue.py               # Hue Bridge 配对
 
 Python 3.11 · venv/ · config.yaml 统一配置
 ASR: SenseVoice-Small INT8 (sherpa-onnx) · 声纹: SpeechBrain ECAPA-TDNN
-LLM: GPT-4o-mini (主) / DeepSeek · 路由: Groq 70B → Cerebras 8B fallback
+LLM: GPT-4o-mini (主) / DeepSeek · 路由: Groq 70B → Cerebras 70B fallback
 TTS: OpenAI TTS / MiniMax / Azure Neural / edge-tts / pyttsx3
 记忆: SQLite + FastEmbed (bge-small-zh) + GPT-4o-mini 提取
 唤醒词: Porcupine · 设备: Philips Hue + MQTT + 模拟 · 远程: WebSocket
@@ -75,7 +75,7 @@ TTS: OpenAI TTS / MiniMax / Azure Neural / edge-tts / pyttsx3
 - `core/intent_router.py` — 意图路由，Groq→Cerebras 两层 fallback + LRU 256 缓存
 - `core/llm.py` — 多 LLM 后端 + 流式逐句 + tool-use 循环 + 重试
 - `core/tts.py` — 5 引擎降级链 + TTSPipeline 双线程 + 磁盘缓存 + 情感映射
-- `core/personality.py` — "小贾" 人格系统（时段+情绪+记忆动态 prompt）
+- `core/personality.py` — "小月" 人格系统（时段+情绪+记忆动态 prompt）
 - `core/speech_recognizer.py` — SenseVoice INT8 + Whisper fallback
 - `core/health.py` — 熔断器 (HEALTHY→DEGRADED→UNAVAILABLE) + 探针
 - `core/local_executor.py` — 5种意图分发到对应 skill

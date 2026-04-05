@@ -10,9 +10,17 @@ from tests.helpers import load_config
 
 @pytest.fixture()
 def parser() -> CommandParser:
-    """Create a parser instance from the test config."""
+    """Create a parser instance with sim-compatible aliases."""
 
-    return CommandParser(load_config())
+    config = load_config()
+    config.setdefault("hue", {})
+    config["hue"]["light_aliases"] = {
+        "bedroom_light": ["卧室灯", "卧室的灯"],
+        "living_room_light": ["客厅灯", "客厅的灯"],
+        "study_light": ["书房灯", "书房的灯"],
+    }
+    config["hue"]["group_aliases"] = {"living_room_group": ["客厅所有灯"]}
+    return CommandParser(config)
 
 
 @pytest.mark.parametrize(

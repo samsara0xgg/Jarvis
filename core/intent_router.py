@@ -1,6 +1,6 @@
 """意图路由器 — 一次云端调用完成分类+参数提取+回复生成.
 
-两层 fallback：Groq 8B → Cerebras 8B → 直接走云端 LLM.
+两层 fallback：Groq 70B → Cerebras 70B → 直接走云端 LLM.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ _PUNCT_RE = re.compile(r'[。，！？、；：\u201c\u201d\u2018\u2019\u2026\u2
 # 设备能力描述模板，运行时从 config 动态生成
 _DEVICE_ACTIONS = {
     "light": "turn_on / turn_off / set_brightness(0-100)",
+    "color_light": "turn_on / turn_off / set_brightness(0-100) / set_color(red/blue/green/purple/yellow/orange/pink/white/暖白) / set_color_temp(warm/neutral/cool) / set_effect(colorloop/none)",
     "door_lock": "lock / unlock",
     "thermostat": "turn_on / turn_off / set_temperature(16-30)",
 }
@@ -39,12 +40,30 @@ _DEVICE_ACTIONS = {
 def build_system_prompt(config: dict) -> str:
     """从 config 动态生成 system prompt，包含设备列表."""
     devices_desc = []
-    for dev in config.get("devices", {}).get("sim_devices", []):
-        did = dev["device_id"]
-        name = dev.get("name", did)
-        dtype = dev.get("device_type", "unknown")
-        actions = _DEVICE_ACTIONS.get(dtype, "unknown")
-        devices_desc.append(f"- {did}（{name}）: {actions}")
+    mode = config.get("devices", {}).get("mode", "sim")
+
+    if mode == "live":
+        hue_config = config.get("hue", {})
+        color_devices = set(hue_config.get("color_capable", []))
+        for did, aliases in hue_config.get("light_aliases", {}).items():
+            alias_list = aliases if isinstance(aliases, list) else [aliases]
+            chinese_aliases = [a for a in alias_list if not a.startswith("Hue ")]
+            name = chinese_aliases[0] if chinese_aliases else did
+            actions = _DEVICE_ACTIONS["color_light"] if did in color_devices else _DEVICE_ACTIONS["light"]
+            devices_desc.append(f"- {did}（{name}）: {actions}")
+        for did, aliases in hue_config.get("group_aliases", {}).items():
+            alias_list = aliases if isinstance(aliases, list) else [aliases]
+            chinese_aliases = [a for a in alias_list if not a.startswith(("Hue ", "5 AM", "Gaming"))]
+            name = chinese_aliases[0] if chinese_aliases else did
+            actions = _DEVICE_ACTIONS["color_light"] if did in color_devices else _DEVICE_ACTIONS["light"]
+            devices_desc.append(f"- {did}（{name}，灯组）: {actions}")
+    else:
+        for dev in config.get("devices", {}).get("sim_devices", []):
+            did = dev["device_id"]
+            name = dev.get("name", did)
+            dtype = dev.get("device_type", "unknown")
+            actions = _DEVICE_ACTIONS.get(dtype, "unknown")
+            devices_desc.append(f"- {did}（{name}）: {actions}")
 
     device_list = "\n".join(devices_desc)
 
@@ -95,7 +114,7 @@ class RouteResult:
 
 
 class IntentRouter:
-    """两层 fallback 意图路由器：Groq 8B → Cerebras 8B → 直接走云端 LLM."""
+    """两层 fallback 意图路由器：Groq 70B → Cerebras 70B → 直接走云端 LLM."""
 
     def __init__(self, config: dict, tracker: Any = None) -> None:
         self.config = config
@@ -136,14 +155,17 @@ class IntentRouter:
         if len(self._route_cache) > self._cache_max:
             self._route_cache.popitem(last=False)
 
-    def route(self, text: str) -> RouteResult:
-        """分析用户指令。Groq 8B → Cerebras 8B → 直接走云端 LLM."""
+    def route(self, text: str, conversation_history: list[dict] | None = None) -> RouteResult:
+        """分析用户指令。Groq 70B → Cerebras 70B → 直接走云端 LLM."""
         # TODO: 目前只做 strip 标点，未来可探索模糊匹配（embedding 相似度等），
         #       但需注意 "开灯" vs "关灯" 语义相近却意图相反的问题。
         key = " ".join(_PUNCT_RE.sub("", text.strip()).split())
 
-        # Cache hit
-        if key in self._route_cache:
+        # Build recent context for ambiguous commands (e.g., "关了" after "灯带调黄色")
+        recent_context = self._build_context(conversation_history) if conversation_history else []
+
+        # Cache hit — only use cache when no conversation context (ambiguous commands need context)
+        if not recent_context and key in self._route_cache:
             self._route_cache.move_to_end(key)
             cached = self._route_cache[key]
             self.logger.info("Route cache hit: '%s' → %s/%s", key[:20], cached.tier, cached.intent)
@@ -153,24 +175,26 @@ class IntentRouter:
 
         # 1. Groq (primary)
         if self.groq_key and (not self._tracker or self._tracker.is_available("intent.groq")):
-            result = self._call_cloud(self.groq_url, self.groq_key, self.groq_model, text, start)
+            result = self._call_cloud(self.groq_url, self.groq_key, self.groq_model, text, start, recent_context)
             if result:
                 if self._tracker:
                     self._tracker.record_success("intent.groq")
                 result.provider = "groq"
-                self._cache_result(key, result)
+                if not recent_context:
+                    self._cache_result(key, result)
                 return result
             if self._tracker:
                 self._tracker.record_failure("intent.groq")
 
         # 2. Cerebras (fallback)
         if self.cerebras_key and (not self._tracker or self._tracker.is_available("intent.cerebras")):
-            result = self._call_cloud(self.cerebras_url, self.cerebras_key, self.cerebras_model, text, start)
+            result = self._call_cloud(self.cerebras_url, self.cerebras_key, self.cerebras_model, text, start, recent_context)
             if result:
                 if self._tracker:
                     self._tracker.record_success("intent.cerebras")
                 result.provider = "cerebras"
-                self._cache_result(key, result)
+                if not recent_context:
+                    self._cache_result(key, result)
                 return result
             if self._tracker:
                 self._tracker.record_failure("intent.cerebras")
@@ -181,20 +205,37 @@ class IntentRouter:
             duration_ms=int((time.time() - start) * 1000), provider="none",
         )
 
+    def _build_context(self, history: list[dict]) -> list[dict]:
+        """Extract last 2 turns of user/assistant messages for context."""
+        relevant = []
+        for m in history:
+            if m.get("role") not in ("user", "assistant"):
+                continue
+            # Skip messages with tool_calls or non-string content
+            content = m.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if "tool_calls" in m:
+                continue
+            relevant.append({"role": m["role"], "content": content})
+        return relevant[-4:]  # last 2 turns = 4 messages
+
     def _call_cloud(
         self, url: str, api_key: str, model: str, text: str, start: float,
+        recent_context: list[dict] | None = None,
     ) -> RouteResult | None:
         """调用云端 API."""
         try:
+            messages = [{"role": "system", "content": self.system_prompt}]
+            if recent_context:
+                messages.extend(recent_context)
+            messages.append({"role": "user", "content": text})
             resp = _SESSION.post(
                 url,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
                     "model": model,
-                    "messages": [
-                        {"role": "system", "content": self.system_prompt},
-                        {"role": "user", "content": text},
-                    ],
+                    "messages": messages,
                     "temperature": 0,
                     "max_tokens": 200,
                     "response_format": {"type": "json_object"},
@@ -250,7 +291,7 @@ class IntentRouter:
         query = parsed.get("query")
         rule = parsed.get("rule")
 
-        if intent in ("smart_home", "info_query", "time", "automation"):
+        if intent in ("smart_home", "info_query", "time", "automation") and confidence >= 0.95:
             tier = "local"
         else:
             tier = "cloud"

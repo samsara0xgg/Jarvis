@@ -1,19 +1,16 @@
-"""Porcupine-based wake word detector for 'Hey Jarvis' activation."""
+"""Wake word detector using openwakeword (free, no API key needed)."""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+
+import numpy as np
 
 LOGGER = logging.getLogger(__name__)
 
 
 class WakeWordDetector:
-    """Detect the 'Hey Jarvis' wake word using Picovoice Porcupine.
-
-    Runs on raw PCM audio frames from a continuous microphone stream.
-    When the wake word is detected, the main loop transitions from
-    passive listening to active conversation mode.
+    """Detect wake words using openwakeword.
 
     Args:
         config: Parsed application configuration.
@@ -21,79 +18,60 @@ class WakeWordDetector:
 
     def __init__(self, config: dict) -> None:
         wake_config = config.get("wake_word", {})
-        self.access_key = str(wake_config.get("picovoice_access_key", "")).strip()
         self.keyword = str(wake_config.get("keyword", "jarvis")).strip().lower()
-        self.sensitivity = float(wake_config.get("sensitivity", 0.5))
+        self.threshold = float(wake_config.get("sensitivity", 0.5))
         self.logger = LOGGER
-        self._porcupine: Any = None
+        self._model = None
 
     def start(self) -> None:
-        """Initialize the Porcupine engine.
+        """Initialize the openwakeword engine."""
+        from openwakeword.model import Model
 
-        Raises:
-            RuntimeError: If pvporcupine is not installed or the access key is invalid.
-        """
-        try:
-            import pvporcupine
-        except ImportError as exc:
-            raise RuntimeError(
-                "pvporcupine is required for wake word detection. "
-                "Install with: pip install pvporcupine"
-            ) from exc
-
-        if not self.access_key:
-            raise RuntimeError(
-                "Picovoice access key is required. "
-                "Get one at https://console.picovoice.ai/ and set "
-                "wake_word.picovoice_access_key in config.yaml."
-            )
-
-        self._porcupine = pvporcupine.create(
-            access_key=self.access_key,
-            keywords=[self.keyword],
-            sensitivities=[self.sensitivity],
+        model_map = {
+            "jarvis": "hey_jarvis_v0.1",
+            "hey jarvis": "hey_jarvis_v0.1",
+            "hey_jarvis": "hey_jarvis_v0.1",
+        }
+        model_name = model_map.get(self.keyword, "hey_jarvis_v0.1")
+        self._model = Model(
+            wakeword_models=[model_name],
+            inference_framework="onnx",
         )
         self.logger.info(
-            "Porcupine wake word detector started (keyword=%s, sensitivity=%.2f)",
-            self.keyword,
-            self.sensitivity,
+            "openwakeword detector started (model=%s, threshold=%.2f)",
+            model_name, self.threshold,
         )
 
     def process_frame(self, pcm_frame: list[int]) -> bool:
         """Process one audio frame and check for the wake word.
 
         Args:
-            pcm_frame: A list of 16-bit PCM samples.  The length must
-                match ``frame_length``.
+            pcm_frame: A list of 16-bit PCM samples.
 
         Returns:
-            True if the wake word was detected in this frame.
-
-        Raises:
-            RuntimeError: If the detector has not been started.
+            True if the wake word was detected.
         """
-        if self._porcupine is None:
+        if self._model is None:
             raise RuntimeError("WakeWordDetector has not been started.")
-        result = self._porcupine.process(pcm_frame)
-        return result >= 0
+        audio = np.array(pcm_frame, dtype=np.int16)
+        predictions = self._model.predict(audio)
+        for score in predictions.values():
+            if score > self.threshold:
+                self._model.reset()
+                return True
+        return False
 
     @property
     def frame_length(self) -> int:
-        """Number of samples per frame expected by Porcupine."""
-        if self._porcupine is not None:
-            return self._porcupine.frame_length
-        return 512
+        """Number of samples per frame (80ms at 16kHz)."""
+        return 1280
 
     @property
     def sample_rate(self) -> int:
-        """Sample rate expected by Porcupine (always 16000 Hz)."""
-        if self._porcupine is not None:
-            return self._porcupine.sample_rate
+        """Sample rate (always 16000 Hz)."""
         return 16000
 
     def stop(self) -> None:
-        """Release Porcupine resources."""
-        if self._porcupine is not None:
-            self._porcupine.delete()
-            self._porcupine = None
-            self.logger.info("Porcupine wake word detector stopped.")
+        """Release resources."""
+        self._model = None
+        self.logger.info("Wake word detector stopped.")

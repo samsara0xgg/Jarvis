@@ -24,7 +24,8 @@ from memory.store import MemoryStore
 LOGGER = logging.getLogger(__name__)
 
 _EXTRACT_PROMPT_HEADER = """从以下对话中提取值得长期记住的**新**信息。只提取用户说的内容。
-忽略打招呼、设备操作指令（开灯/关灯/几点了）、纯闲聊。
+忽略打招呼、简单设备开关指令（"开灯"/"关灯"/"几点了"）、纯闲聊。
+但要记住：颜色/色温偏好（如"我喜欢暖光"、"Tiffany蓝=#0ABAB5"）、使用习惯、设备昵称等。
 
 重要：下方"已有记忆"列表中的内容已经存储，不要重复提取。只提取对话中出现的、不在已有记忆中的新信息。
 
@@ -1064,7 +1065,7 @@ class MemoryManager:
                 text = str(content)
 
             if text.strip():
-                prefix = "用户" if role == "user" else "小贾"
+                prefix = "用户" if role == "user" else "小月"
                 lines.append(f"{prefix}：{text.strip()}")
 
         return "\n".join(lines)

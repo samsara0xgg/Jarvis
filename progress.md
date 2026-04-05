@@ -11,7 +11,7 @@
 ### 关键发现
 1. bge-small-zh 原版异常分布 → 升级 v1.5
 2. Mem0 DELETE 操作是核心差距 → C6
-3. Letta: 简单工具 > 复杂架构 → 验证小贾方向
+3. Letta: 简单工具 > 复杂架构 → 验证小月方向
 4. function calling > JSON → C5
 
 ### 方案确定
@@ -54,4 +54,34 @@
 - C12: save() accepts detected_emotion, ASR overrides LLM mood
 - C13: memory_relations 表 + regex 提取 (X的Y叫Z等3模式) + 6 tests
 - 手动 merge C13 (cherry-pick 冲突太复杂，直接编辑)
-### 全部 13 项改进完成 🎉
+### 全部 13 项改进完成
+---
+## Session 6 — 2026-04-05
+### Phase 5 完成 ✅ (811 passed)
+- C14: DA 改用 retriever 多信号评分 → 60%→85%
+- C15: 真实 LLM 提取测试脚本（98% checks passed）
+- 深度验证发现：relationship 不在 _ANSWERABLE_CATEGORIES → 85%→**95%**
+- 剩余 2 miss 是语义边界（"运动"↔"跑步" cos=0.445）
+### 最终基线: DA=95%, Retriever=100%, 负面拒绝=100% 🎉
+---
+## Session 7 — 2026-04-05
+### 任务 1: Hue 真实设备对接 ✅
+- Bridge 配对 (IP 192.168.1.79, curl 手动配对)
+- `pip install phue`, mode: sim → live
+- 5 灯 + 2 灯组别名映射 (desk_lightstrip/bedroom_lamp_1,2/desk_play_1,2/all_lights/desk_lights)
+- Live2D 资源 symlink 修复 (xiaozhi 项目)
+- CORS 中间件 + TTS tuple 解包修复
+- 意图路由支持 live 设备列表 + color_capable 区分
+- 821 tests passed
+
+### 智能家居路由重构 (进行中)
+- set_color/set_color_temp/set_effect → 强制走 LLM + tool calling（避免 Groq 丢信息）
+- turn_on/turn_off/set_brightness → 本地快速执行 + Groq 自然回复
+- confidence >= 0.95 阈值，低于走 LLM
+- HueLight 支持 hex RGB → CIE xy 转换
+- tool description 强制 hex 颜色
+- 本地执行后也触发记忆提取
+- 意图路由加对话上下文（最近 2 轮）
+- 颜色/色温操作时注入当前设备状态
+- 记忆提取 prompt 不再跳过颜色偏好
+- **待改进**: 相对指令（"淡一点"）需要更好的状态感知; 记忆学习颜色后复用

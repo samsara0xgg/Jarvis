@@ -125,15 +125,16 @@ class DeviceManager:
         default_scene_group = str(hue_config.get("default_scene_group", "")).strip() or None
 
         for light_id, light in bridge.get_all_lights().items():
-            name = str(light.get("name", f"Hue Light {light_id}"))
-            device_id = self._resolve_hue_device_id(name, light_aliases, f"hue_light_{light_id}")
+            hue_name = str(light.get("name", f"Hue Light {light_id}"))
+            device_id = self._resolve_hue_device_id(hue_name, light_aliases, f"hue_light_{light_id}")
+            display_name = self._resolve_display_name(device_id, light_aliases, hue_name)
             required_role = self._resolve_required_role(hue_config, device_id, default_role="guest")
             state = light.get("state", {})
             device = HueLight(
                 bridge=bridge,
                 light_id=str(light_id),
                 device_id=device_id,
-                name=name,
+                name=display_name,
                 required_role=required_role,
                 is_available=bool(state.get("reachable", True)),
             )
@@ -143,14 +144,15 @@ class DeviceManager:
         for group_id, group in bridge.get_all_groups().items():
             if str(group_id) == "0":
                 continue
-            name = str(group.get("name", f"Hue Group {group_id}"))
-            device_id = self._resolve_hue_device_id(name, group_aliases, f"hue_group_{group_id}")
+            hue_name = str(group.get("name", f"Hue Group {group_id}"))
+            device_id = self._resolve_hue_device_id(hue_name, group_aliases, f"hue_group_{group_id}")
+            display_name = self._resolve_display_name(device_id, group_aliases, hue_name)
             required_role = self._resolve_required_role(hue_config, device_id, default_role="guest")
             device = HueGroup(
                 bridge=bridge,
                 group_id=str(group_id),
                 device_id=device_id,
-                name=name,
+                name=display_name,
                 required_role=required_role,
                 is_available=True,
             )
@@ -194,6 +196,22 @@ class DeviceManager:
 
         required_roles = hue_config.get("required_roles", {})
         return str(required_roles.get(device_id, default_role))
+
+    def _resolve_display_name(
+        self,
+        device_id: str,
+        alias_mapping: dict[str, list[str] | str],
+        fallback: str,
+    ) -> str:
+        """Pick the first Chinese alias as display name for TTS responses."""
+
+        aliases = alias_mapping.get(device_id, [])
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        for alias in aliases:
+            if not alias.startswith(("Hue ", "5 AM", "Gaming")):
+                return alias
+        return fallback
 
     def _normalize_text(self, text: str) -> str:
         """Normalize text for alias matching."""

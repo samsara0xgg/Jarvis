@@ -35,7 +35,7 @@ audio:
 
   # VAD: 检测语音结束后提前停止录音（省 2-3 秒）
   vad_enabled: true
-  vad_silence_duration: 0.5     # 语音后持续静音多久停止（秒）
+  vad_silence_duration: 0.8     # 语音后持续静音多久停止（秒）
   vad_threshold: 0.02           # RMS 阈值，低于此视为静音
 
 # ----------------------------------------------------------------------------
@@ -110,7 +110,7 @@ devices:
   # 设备模式：
   # - sim: 使用内存模拟设备
   # - live: 使用 Hue Bridge 控制真实设备
-  mode: sim
+  mode: live
 
   # `sim` 模式下的模拟设备清单。
   sim_devices:
@@ -187,10 +187,10 @@ devices:
 hue:
   bridge:
     # Hue Bridge IP。配对成功后会自动写入。
-    ip: ""
+    ip: "192.168.1.79"
 
     # Hue API username。按下 Bridge 按钮配对后获取。
-    username: ""
+    username: "Yl7SJNLldlGn7BzQYCLSR1cYjPLRn-Rq6zEvDUJR"
 
     # 是否校验 Bridge HTTPS 证书。局域网自签证书场景通常为 false。
     verify_ssl: false
@@ -220,23 +220,48 @@ hue:
   # 激活场景时默认使用的 group id。留空时优先使用场景自带 group。
   default_scene_group: ""
 
+  # 支持颜色控制的设备（Extended color light）。
+  color_capable:
+    - desk_lightstrip
+    - desk_play_1
+    - desk_play_2
+    - desk_lights
+
   # 灯具别名映射。
   # 左侧是项目内部 canonical device_id，右侧是语音可说出的别名列表。
   light_aliases:
-    bedroom_light:
+    desk_lightstrip:
+      - Hue lightstrip plus
+      - 灯带
+      - 桌面灯带
+    bedroom_lamp_1:
+      - Hue white Lamp 1
+      - 大灯
+      - 房间灯
       - 卧室灯
-      - 卧室的灯
-    living_room_light:
-      - 客厅灯
-      - 客厅的灯
-    study_light:
-      - 书房灯
-      - 书房的灯
+    bedroom_lamp_2:
+      - Hue white Lamp 2
+      - 大灯2
+    desk_play_1:
+      - Hue Play 1
+      - 桌灯1
+      - play灯1
+    desk_play_2:
+      - Hue Play 2
+      - 桌灯2
+      - play灯2
 
   # 灯组别名映射。
   group_aliases:
-    living_room_group:
-      - 客厅所有灯
+    all_lights:
+      - 5 AM.
+      - 所有灯
+      - 全部灯
+    desk_lights:
+      - Gaming desk
+      - 桌灯
+      - 办公桌灯
+      - 桌面灯
       - 客厅全部灯
       - 客厅所有的灯
 
@@ -274,7 +299,7 @@ models:
     confidence_threshold: 0.7
 
 # ----------------------------------------------------------------------------
-# Jarvis AI 助手（LLM 大脑）
+# 小月 AI 助手（LLM 大脑）
 # ----------------------------------------------------------------------------
 llm:
   # LLM 提供商：openai（兼容 Kimi/DeepSeek）或 anthropic。
@@ -300,11 +325,14 @@ tts:
   # 首选引擎：openai_tts（最自然）/ minimax / azure / edge-tts / pyttsx3。
   engine: minimax
 
+  # 全局语速 0.25-4.0（1.0=正常，1.2=稍快，0.8=稍慢）
+  speed: 1.0
+
   # OpenAI TTS（gpt-4o-mini-tts，ChatGPT 同款，最像真人）
   openai_tts_key: ""     # env OPENAI_API_KEY
   openai_tts_model: gpt-4o-mini-tts
   openai_tts_voice: nova  # nova(女声温暖活泼) echo(男声沉稳) shimmer(女声柔和) ballad(感性) verse(多变)
-  openai_tts_instructions: "你叫小贾，是一个中文私人管家。说话像跟认识很久的朋友聊天——自然、有温度、有个性。语气随内容变化，该轻快就轻快，该认真就认真。不要播音腔，不要客服腔。"
+  openai_tts_instructions: "你叫小月，是一个中文私人管家。说话像跟认识很久的朋友聊天——自然、有温度、有个性。语气随内容变化，该轻快就轻快，该认真就认真。不要播音腔，不要客服腔。"
 
   # MiniMax TTS（TTS Arena 第一，中文最自然，带情感）
   minimax_key: ""        # env MINIMAX_API_KEY
@@ -330,10 +358,8 @@ wake_word:
   # 是否启用唤醒词。false 则使用按键触发。
   enabled: true
 
-  # Picovoice 访问密钥。在 https://console.picovoice.ai/ 免费获取。
-  picovoice_access_key: ""
-
-  # 唤醒词关键字。Porcupine 内置支持 "jarvis"。
+  # 唤醒词关键字。openwakeword 内置支持 "hey_jarvis"。
+  # TODO: 训练自定义唤醒词 "小月"
   keyword: jarvis
 
   # 检测灵敏度 0.0-1.0。越高越容易触发，也越容易误触。

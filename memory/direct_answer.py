@@ -17,7 +17,7 @@ LOGGER = logging.getLogger(__name__)
 # Multi-signal combined score threshold (retriever score range ~0.2-0.9)
 _SIMILARITY_THRESHOLD = 0.35
 # Minimum raw cosine — prevents recency/importance from dominating
-_MIN_COSINE = 0.35
+_MIN_COSINE = 0.55
 # Margin between top-1 and top-2 multi-signal scores
 _MARGIN_THRESHOLD = 0.05
 _ANSWERABLE_CATEGORIES = {"preference", "identity", "knowledge", "relationship"}

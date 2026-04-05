@@ -217,7 +217,7 @@ class TestIntentRouter:
         mock_resp.status_code = 200
         mock_resp.raise_for_status.return_value = None
         mock_resp.json.return_value = self._make_groq_response({
-            "intent": "info_query", "confidence": 0.9,
+            "intent": "info_query", "confidence": 0.95,
             "sub_type": "stocks", "query": ["NVDA"], "response": None,
         })
         mock_session.post.return_value = mock_resp

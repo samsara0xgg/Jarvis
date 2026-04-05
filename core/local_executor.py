@@ -17,7 +17,7 @@ class Action(Enum):
     """执行结果的处理方式."""
 
     RESPONSE = "response"  # 直接 TTS 播报，不过 LLM（零随机）
-    REQLLM = "reqllm"      # 把数据交给 LLM 用小贾语气转述
+    REQLLM = "reqllm"      # 把数据交给 LLM 用小月语气转述
 
 
 @dataclass
@@ -72,13 +72,45 @@ class LocalExecutor:
             results.append(result)
 
         if not results:
-            return ActionResponse(Action.RESPONSE, response or "没有需要执行的操作。")
+            return ActionResponse(Action.RESPONSE, "没有需要执行的操作。")
 
         errors = [r for r in results if "Error" in r or "denied" in r or "not found" in r]
         if errors:
             return ActionResponse(Action.RESPONSE, f"部分操作失败：{'; '.join(errors)}")
 
-        return ActionResponse(Action.RESPONSE, response or "好的，已执行。")
+        # For simple actions (on/off/brightness), Groq's response is reliable
+        return ActionResponse(Action.RESPONSE, response or self._build_smart_home_reply(actions))
+
+    @staticmethod
+    def _build_smart_home_reply(actions: list[dict]) -> str:
+        """Build a natural Chinese reply based on actually executed actions."""
+        _ACTION_TEMPLATES = {
+            "turn_on": "开了",
+            "turn_off": "关了",
+            "set_brightness": "亮度调到{value}%了",
+            "set_color": "颜色调成{value}了",
+            "set_color_temp": "色温调成{value}了",
+            "set_effect": "特效设为{value}了",
+            "lock": "已上锁",
+            "unlock": "已解锁",
+            "set_temperature": "温度设为{value}度了",
+            "activate": "已激活",
+        }
+        parts = []
+        device_names = set()
+        for act in actions:
+            action = act.get("action", "")
+            value = act.get("value")
+            device_id = act.get("device_id", "")
+            if device_id:
+                device_names.add(device_id.replace("_", ""))
+            tmpl = _ACTION_TEMPLATES.get(action, "已执行")
+            if value is not None and "{value}" in tmpl:
+                parts.append(tmpl.format(value=value))
+            else:
+                parts.append(tmpl)
+        action_text = "，".join(parts)
+        return f"好的，{action_text}。"
 
     def execute_info_query(
         self, sub_type: str | None, query: Any, user_role: str = "owner",
@@ -91,7 +123,7 @@ class LocalExecutor:
             user_role: 用户角色。
 
         Returns:
-            ActionResponse — REQLLM，让 LLM 用小贾语气转述数据。
+            ActionResponse — REQLLM，让 LLM 用小月语气转述数据。
         """
         result: str | None = None
 
@@ -170,7 +202,7 @@ class LocalExecutor:
             user_role: 用户角色。
 
         Returns:
-            ActionResponse — REQLLM，让 LLM 用小贾语气转述结果。
+            ActionResponse — REQLLM，让 LLM 用小月语气转述结果。
         """
         results = []
         for act in actions:

@@ -15,11 +15,28 @@ from devices.hue.hue_light import HueLight
 from devices.hue.hue_scene import HueSceneDevice
 from tests.helpers import load_config
 
+_SIM_LIGHT_ALIASES = {
+    "bedroom_light": ["卧室灯", "卧室的灯"],
+    "living_room_light": ["客厅灯", "客厅的灯"],
+    "study_light": ["书房灯", "书房的灯"],
+}
+_SIM_GROUP_ALIASES = {"living_room_group": ["客厅所有灯"]}
+
+
+def _sim_config() -> dict:
+    """Load config forced to sim mode with sim-compatible aliases."""
+    config = load_config()
+    config["devices"]["mode"] = "sim"
+    config.setdefault("hue", {})
+    config["hue"]["light_aliases"] = _SIM_LIGHT_ALIASES
+    config["hue"]["group_aliases"] = _SIM_GROUP_ALIASES
+    return config
+
 
 def test_sim_mode_end_to_end_with_command_parser_and_permissions() -> None:
     """Sim mode should support parse, lookup, permission check, and execution."""
 
-    config = load_config()
+    config = _sim_config()
     parser = CommandParser(config)
     device_manager = DeviceManager(config)
     permission_manager = PermissionManager()
@@ -50,7 +67,7 @@ def test_sim_mode_end_to_end_with_command_parser_and_permissions() -> None:
 def test_group_light_command_executes_in_sim_mode() -> None:
     """Configured simulated group-like light IDs should execute parser output."""
 
-    config = load_config()
+    config = _sim_config()
     parser = CommandParser(config)
     device_manager = DeviceManager(config)
 
@@ -69,7 +86,7 @@ def test_group_light_command_executes_in_sim_mode() -> None:
 def test_permission_manager_blocks_member_from_unlocking_door_lock() -> None:
     """Door lock access should require admin-level permissions."""
 
-    config = load_config()
+    config = _sim_config()
     device_manager = DeviceManager(config)
     permission_manager = PermissionManager()
     door_lock = device_manager.get_device("front_door_lock")
@@ -81,7 +98,7 @@ def test_permission_manager_blocks_member_from_unlocking_door_lock() -> None:
 def test_get_all_status_contains_configured_sim_devices() -> None:
     """Device manager should return status for all configured simulated devices."""
 
-    config = load_config()
+    config = _sim_config()
     device_manager = DeviceManager(config)
 
     statuses = device_manager.get_all_status()
@@ -107,10 +124,10 @@ def test_live_mode_initializes_hue_devices_when_bridge_is_available() -> None:
         {
             "connect": lambda self: None,
             "get_all_lights": lambda self: {
-                "1": {"name": "卧室灯", "state": {"reachable": True}},
+                "1": {"name": "Hue white Lamp 1", "state": {"reachable": True}},
             },
             "get_all_groups": lambda self: {
-                "1": {"name": "客厅所有灯"},
+                "1": {"name": "5 AM."},
             },
             "get_all_scenes": lambda self: {
                 "scene-1": {"name": "阅读模式", "group": "1"},
@@ -121,8 +138,8 @@ def test_live_mode_initializes_hue_devices_when_bridge_is_available() -> None:
     with patch("devices.device_manager.HueBridge", return_value=fake_bridge_instance):
         manager = DeviceManager(config)
 
-    assert isinstance(manager.get_device("bedroom_light"), HueLight)
-    assert isinstance(manager.get_device("living_room_group"), HueGroup)
+    assert isinstance(manager.get_device("bedroom_lamp_1"), HueLight)
+    assert isinstance(manager.get_device("all_lights"), HueGroup)
     assert isinstance(manager.get_device("scene"), HueSceneDevice)
 
 

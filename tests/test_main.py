@@ -17,13 +17,22 @@ from tests.helpers import load_config
 
 
 def _build_config(tmp_path: Path) -> dict:
-    """Create a config copy with isolated user storage."""
+    """Create a config copy with isolated user storage and sim-compatible aliases."""
 
     config = load_config()
     config.setdefault("auth", {})
     config["auth"]["user_store_path"] = str(tmp_path / "users.json")
     config.setdefault("devices", {})
     config["devices"]["mode"] = "sim"
+    config.setdefault("hue", {})
+    config["hue"]["light_aliases"] = {
+        "bedroom_light": ["卧室灯", "卧室的灯"],
+        "living_room_light": ["客厅灯", "客厅的灯"],
+        "study_light": ["书房灯", "书房的灯"],
+    }
+    config["hue"]["group_aliases"] = {
+        "living_room_group": ["客厅所有灯"],
+    }
     return config
 
 

@@ -48,6 +48,9 @@ LOGGER = logging.getLogger(__name__)
 FAREWELL_DEFAULTS = ["再见", "退出", "bye", "goodbye", "that's all"]
 _REMEMBER_KEYWORDS = ("记住", "记下", "别忘了", "帮我记")
 
+# Actions that need LLM interpretation — Groq can lose precision (e.g. "Tiffany蓝" → "blue")
+_NEEDS_LLM_ACTIONS = {"set_color", "set_color_temp", "set_effect"}
+
 # Module-level ref so APScheduler can serialize the job.
 _health_tracker_ref = None
 
@@ -406,14 +409,6 @@ class JarvisApp:
         """
         from core.wake_word import WakeWordDetector
 
-        wake_config = self.config.get("wake_word", {})
-        if not wake_config.get("picovoice_access_key"):
-            self.logger.error("Picovoice access key not configured. Use --no-wake or set wake_word.picovoice_access_key.")
-            print("Error: Picovoice access key not set. Get one at https://console.picovoice.ai/")
-            print("Set it in config.yaml under wake_word.picovoice_access_key")
-            print("Or run with --no-wake for press-Enter mode.")
-            return 1
-
         detector = WakeWordDetector(self.config)
         self._print_banner()
 
@@ -662,9 +657,21 @@ class JarvisApp:
         if response_text is None and route is not None:
             if route.tier == "local":
                 if route.intent == "smart_home":
-                    ar = self.local_executor.execute_smart_home(
-                        route.actions, user_role, response=route.response,
-                    )
+                    if any(a.get("action") in _NEEDS_LLM_ACTIONS for a in route.actions):
+                        device_ids = {a.get("device_id") for a in route.actions if a.get("device_id")}
+                        status_parts = []
+                        for did in device_ids:
+                            try:
+                                status = self.device_manager.get_device(did).get_status()
+                                status_parts.append(f"{did}: {status}")
+                            except Exception:
+                                pass
+                        if status_parts:
+                            memory_context += f"\n[当前设备状态] {'; '.join(status_parts)}"
+                    else:
+                        ar = self.local_executor.execute_smart_home(
+                            route.actions, user_role, response=route.response,
+                        )
                 elif route.intent == "info_query":
                     # 非明确数据查询（非 news/stocks/weather）先查记忆
                     if route.sub_type not in ("news", "stocks", "weather") and user_id:
@@ -694,8 +701,8 @@ class JarvisApp:
                     if ar.action == Action.REQLLM:
                         use_llm_rephrase = True
                         response_text = None  # 下面交给 LLM 转述
-                    elif any(p in ar.text for p in ("没查到", "未找到", "暂不支持")):
-                        response_text = None  # 本地无结果，fallback 到云端 LLM
+                    elif any(p in ar.text for p in ("没查到", "未找到", "暂不支持", "Failed to execute", "Unsupported", "部分操作失败")):
+                        response_text = None  # fallback to LLM + tool calling  # 本地无结果，fallback 到云端 LLM
                     else:
                         response_text = ar.text
 
@@ -722,7 +729,7 @@ class JarvisApp:
             self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
 
             try:
-                # REQLLM: 让 LLM 用小贾语气转述本地数据
+                # REQLLM: 让 LLM 用小月语气转述本地数据
                 if use_llm_rephrase and ar is not None:
                     rephrase_msg = (
                         f"用户问的是：{text}\n"
@@ -916,12 +923,26 @@ class JarvisApp:
 
         # 6. Route: local or cloud?
         if response_text is None and self.intent_router and self.local_executor:
-            route = self.intent_router.route(text)
+            route = self.intent_router.route(text, conversation_history=history)
             if route.tier == "local":
                 if route.intent == "smart_home":
-                    ar = self.local_executor.execute_smart_home(
-                        route.actions, user_role, response=route.response,
-                    )
+                    # Color/effect actions need LLM to interpret precisely (e.g. "Tiffany蓝" → #81D8D0)
+                    if any(a.get("action") in _NEEDS_LLM_ACTIONS for a in route.actions):
+                        # Inject current device status so LLM can handle relative commands ("淡一点")
+                        device_ids = {a.get("device_id") for a in route.actions if a.get("device_id")}
+                        status_parts = []
+                        for did in device_ids:
+                            try:
+                                status = self.device_manager.get_device(did).get_status()
+                                status_parts.append(f"{did}: {status}")
+                            except Exception:
+                                pass
+                        if status_parts:
+                            memory_context += f"\n[当前设备状态] {'; '.join(status_parts)}"
+                    else:
+                        ar = self.local_executor.execute_smart_home(
+                            route.actions, user_role, response=route.response,
+                        )
                 elif route.intent == "info_query":
                     if route.sub_type not in ("news", "stocks", "weather"):
                         try:
@@ -949,8 +970,8 @@ class JarvisApp:
                     if ar.action == Action.REQLLM:
                         use_llm_rephrase = True
                         response_text = None
-                    elif any(p in ar.text for p in ("没查到", "未找到", "暂不支持")):
-                        response_text = None
+                    elif any(p in ar.text for p in ("没查到", "未找到", "暂不支持", "Failed to execute", "Unsupported", "部分操作失败")):
+                        response_text = None  # fallback to LLM + tool calling
                     else:
                         response_text = ar.text
 
@@ -1016,6 +1037,10 @@ class JarvisApp:
             history.append({"role": "user", "content": text})
             history.append({"role": "assistant", "content": response_text})
             self.conversation_store.replace(session_id, history)
+            self._executor.submit(
+                self.memory_manager.save, history, user_id, session_id,
+                emotion,
+            )
 
         # 9. For non-streamed local responses, fire callback once
         if sentence_count == 0 and on_sentence and response_text:

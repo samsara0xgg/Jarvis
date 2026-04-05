@@ -213,7 +213,7 @@ def test_hue_light_translates_brightness_and_color_commands() -> None:
     result_color = light.execute("set_color", "blue")
 
     assert "50%" in result_brightness
-    assert "blue" in result_color
+    assert "蓝色" in result_color
     first_call = bridge.request.call_args_list[0]
     assert first_call.args[0] == "PUT"
     assert first_call.args[1].endswith("/lights/1/state")
@@ -316,11 +316,11 @@ def test_device_manager_initializes_live_hue_devices_from_aliases() -> None:
     config = _build_live_config()
     fake_bridge_instance = MagicMock()
     fake_bridge_instance.get_all_lights.return_value = {
-        "1": {"name": "卧室灯", "state": {"reachable": True}},
-        "2": {"name": "客厅灯", "state": {"reachable": True}},
+        "1": {"name": "Hue white Lamp 1", "state": {"reachable": True}},
+        "2": {"name": "Hue Play 1", "state": {"reachable": True}},
     }
     fake_bridge_instance.get_all_groups.return_value = {
-        "1": {"name": "客厅所有灯"},
+        "1": {"name": "5 AM."},
         "0": {"name": "All lights"},
     }
     fake_bridge_instance.get_all_scenes.return_value = {
@@ -331,6 +331,6 @@ def test_device_manager_initializes_live_hue_devices_from_aliases() -> None:
         manager = DeviceManager(config)
 
     assert fake_bridge_instance.connect.called
-    assert isinstance(manager.get_device("bedroom_light"), HueLight)
-    assert isinstance(manager.get_device("living_room_group"), HueGroup)
+    assert isinstance(manager.get_device("bedroom_lamp_1"), HueLight)
+    assert isinstance(manager.get_device("all_lights"), HueGroup)
     assert isinstance(manager.get_device("scene"), HueSceneDevice)

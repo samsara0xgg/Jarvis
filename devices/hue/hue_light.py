@@ -71,7 +71,8 @@ class HueLight(SmartDevice):
             if not self._supports_color():
                 return f"{self.name} 不支持颜色控制。"
             self._put_state({"on": True, "xy": xy})
-            return f"{self.name} 颜色已设置为 {str(value).strip().lower()}。"
+            display_color = self._color_display_name(value)
+            return f"{self.name} 颜色已设置为{display_color}。"
         if normalized_action == "set_effect":
             effect = str(value).strip().lower()
             if effect not in {"colorloop", "none"}:
@@ -150,14 +151,75 @@ class HueLight(SmartDevice):
             raise ValueError(f"Unsupported color temperature value: {value}")
         return int(value)
 
+    _EN_TO_ZH = {
+        "red": "红色", "orange": "橙色", "yellow": "黄色", "green": "绿色",
+        "cyan": "青色", "blue": "蓝色", "purple": "紫色", "pink": "粉色", "white": "白色",
+    }
+
+    def _color_display_name(self, value: Any) -> str:
+        """Return a Chinese display name for the color value."""
+        s = str(value).strip().lower()
+        return self._EN_TO_ZH.get(s, s)
+
     def _resolve_color_xy(self, value: Any) -> list[float] | None:
-        """Resolve a color name to a Hue-compatible CIE xy pair."""
+        """Resolve a color name, hex (#RRGGBB), RGB tuple, or xy pair to CIE xy."""
+
+        # Already an xy pair: [0.26, 0.35]
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            try:
+                return [float(value[0]), float(value[1])]
+            except (ValueError, TypeError):
+                pass
 
         normalized = str(value).strip().lower()
+
+        # Named color lookup
         xy = COLOR_XY_MAP.get(normalized)
-        if xy is None:
-            return None
-        return [float(xy[0]), float(xy[1])]
+        if xy is not None:
+            return [float(xy[0]), float(xy[1])]
+
+        # Hex color: #81D8D0 or 81D8D0
+        hex_str = normalized.lstrip("#")
+        if len(hex_str) == 6:
+            try:
+                r = int(hex_str[0:2], 16) / 255.0
+                g = int(hex_str[2:4], 16) / 255.0
+                b = int(hex_str[4:6], 16) / 255.0
+                return self._rgb_to_xy(r, g, b)
+            except ValueError:
+                pass
+
+        # RGB string: "129,216,208"
+        parts = normalized.replace(" ", "").split(",")
+        if len(parts) == 3:
+            try:
+                r = int(parts[0]) / 255.0
+                g = int(parts[1]) / 255.0
+                b = int(parts[2]) / 255.0
+                return self._rgb_to_xy(r, g, b)
+            except ValueError:
+                pass
+
+        return None
+
+    @staticmethod
+    def _rgb_to_xy(r: float, g: float, b: float) -> list[float]:
+        """Convert linear RGB (0-1) to CIE xy using wide gamut transform."""
+
+        # Apply gamma correction
+        r = ((r + 0.055) / 1.055) ** 2.4 if r > 0.04045 else r / 12.92
+        g = ((g + 0.055) / 1.055) ** 2.4 if g > 0.04045 else g / 12.92
+        b = ((b + 0.055) / 1.055) ** 2.4 if b > 0.04045 else b / 12.92
+
+        # Wide RGB D65 conversion
+        x = r * 0.664511 + g * 0.154324 + b * 0.162028
+        y = r * 0.283881 + g * 0.668433 + b * 0.047685
+        z = r * 0.000088 + g * 0.072310 + b * 0.986039
+
+        total = x + y + z
+        if total == 0:
+            return [0.313, 0.329]  # white point
+        return [round(x / total, 4), round(y / total, 4)]
 
     def _percent_to_hue_brightness(self, brightness: int) -> int:
         """Convert user brightness percent into Hue's 1-254 brightness scale."""

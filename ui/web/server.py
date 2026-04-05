@@ -13,6 +13,7 @@ from typing import Any
 import io
 
 from fastapi import FastAPI, Form, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -33,6 +34,12 @@ AUDIO_DIR = Path(__file__).parent / "audio_cache"
 def create_app(jarvis_app: Any) -> FastAPI:
     """Create FastAPI app wrapping a JarvisApp instance."""
     app = FastAPI(title="Jarvis Live2D Web")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     sessions: dict[str, dict] = {}
 
     AUDIO_DIR.mkdir(exist_ok=True)
@@ -75,12 +82,14 @@ def create_app(jarvis_app: Any) -> FastAPI:
             audio_url = ""
             if tts:
                 try:
-                    audio_path = tts.synth_to_file(sentence, emotion)
-                    if audio_path:
+                    result = tts.synth_to_file(sentence, emotion)
+                    if result:
+                        audio_path, deletable = result
                         audio_name = f"{uuid.uuid4().hex}.mp3"
                         dest = AUDIO_DIR / audio_name
                         shutil.copy2(audio_path, dest)
-                        Path(audio_path).unlink(missing_ok=True)
+                        if deletable:
+                            Path(audio_path).unlink(missing_ok=True)
                         audio_url = f"/api/audio/{audio_name}"
                 except Exception as exc:
                     LOGGER.warning("TTS synth failed: %s", exc)
