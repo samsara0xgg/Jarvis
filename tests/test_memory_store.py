@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -140,9 +141,8 @@ class TestEpisodes:
     """Conversation episode storage."""
 
     def test_add_and_get_episodes(self, store: MemoryStore):
-        from datetime import datetime as dt, timedelta
-        today = dt.now().strftime("%Y-%m-%d")
-        yesterday = (dt.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         store.add_episode("user1", "sess1", "聊了股票", today, mood="neutral", topics=["股票"])
         store.add_episode("user1", "sess2", "聊了天气", yesterday, mood="happy", topics=["天气"])
 
@@ -165,3 +165,73 @@ class TestEpisodes:
 
         assert len(store.get_recent_episodes("user1", days=3)) == 1
         assert len(store.get_recent_episodes("user2", days=3)) == 1
+
+    def test_episode_dedup_skips_similar(self, store: MemoryStore):
+        """Same-day episode with substantially similar summary should be skipped."""
+        ep1 = store.add_episode("user1", "s1", "聊了咖啡偏好和拿铁", "2026-04-02")
+        assert ep1 is not None
+
+        # Very similar summary on the same day
+        ep2 = store.add_episode("user1", "s2", "聊了咖啡偏好和拿铁咖啡", "2026-04-02")
+        assert ep2 is None  # should be skipped
+
+        episodes = store.get_recent_episodes("user1", days=3)
+        assert len(episodes) == 1
+
+    def test_episode_dedup_allows_different(self, store: MemoryStore):
+        """Different content on the same day should NOT be skipped."""
+        ep1 = store.add_episode("user1", "s1", "聊了咖啡偏好", "2026-04-02")
+        assert ep1 is not None
+
+        ep2 = store.add_episode("user1", "s2", "讨论了周末爬山计划", "2026-04-02")
+        assert ep2 is not None
+
+        episodes = store.get_recent_episodes("user1", days=3)
+        assert len(episodes) == 2
+
+    def test_episode_dedup_different_day_allowed(self, store: MemoryStore):
+        """Same summary on different days should NOT be skipped."""
+        ep1 = store.add_episode("user1", "s1", "聊了咖啡偏好", "2026-04-01")
+        ep2 = store.add_episode("user1", "s2", "聊了咖啡偏好", "2026-04-02")
+        assert ep1 is not None
+        assert ep2 is not None
+
+
+class TestEpisodeDigests:
+    """Episode digest storage."""
+
+    def test_add_and_get_digest(self, store: MemoryStore):
+        d_id = store.add_digest("user1", "2026-03-01", "2026-03-07", "聊了工作；聊了爬山")
+        assert d_id is not None
+
+        digests = store.get_recent_digests("user1", limit=4)
+        assert len(digests) == 1
+        assert digests[0]["digest"] == "聊了工作；聊了爬山"
+        assert digests[0]["period_start"] == "2026-03-01"
+        assert digests[0]["period_end"] == "2026-03-07"
+
+    def test_digest_ordering(self, store: MemoryStore):
+        """Digests should be returned newest first."""
+        store.add_digest("user1", "2026-02-01", "2026-02-07", "二月第一周")
+        store.add_digest("user1", "2026-03-01", "2026-03-07", "三月第一周")
+        store.add_digest("user1", "2026-01-01", "2026-01-07", "一月第一周")
+
+        digests = store.get_recent_digests("user1", limit=4)
+        assert len(digests) == 3
+        assert digests[0]["digest"] == "三月第一周"
+        assert digests[1]["digest"] == "二月第一周"
+        assert digests[2]["digest"] == "一月第一周"
+
+    def test_digest_user_isolated(self, store: MemoryStore):
+        store.add_digest("user1", "2026-03-01", "2026-03-07", "user1的周")
+        store.add_digest("user2", "2026-03-01", "2026-03-07", "user2的周")
+
+        assert len(store.get_recent_digests("user1")) == 1
+        assert len(store.get_recent_digests("user2")) == 1
+
+    def test_digest_limit(self, store: MemoryStore):
+        for i in range(6):
+            store.add_digest("user1", f"2026-0{i+1}-01", f"2026-0{i+1}-07", f"week {i}")
+
+        digests = store.get_recent_digests("user1", limit=3)
+        assert len(digests) == 3

@@ -4,7 +4,7 @@
 基于 Mem0/MemGPT/ChatGPT/Gemini/Zep 等系统的 deep research（31篇来源），对小贾记忆系统进行 13 项改进，涵盖 bug 修复、提取质量、检索智能、情景记忆四个阶段。
 
 ## Current Phase
-Phase 2 (Phase 1 complete ✅)
+Phase 4 (Phase 1 ✅, Phase 2 ✅, Phase 3 ✅)
 
 ## Phases
 
@@ -22,16 +22,16 @@ Phase 2 (Phase 1 complete ✅)
 - [ ] **C6** 去重增加 DELETE + top-10 候选 [M1][M2][M3]
 - [ ] **C7** 去重阈值实测校准（calibrate_dedup.py）
 - [ ] 跑 `python -m pytest tests/ -q` 验证
-- **Status:** pending
-- **验收**: key 缺失率 <10%; DELETE 操作可用; 阈值有实测数据
+- **Status:** complete ✅
+- **结果**: 767 passed (+13); FC提取+fallback; DELETE操作; top-10; 阈值0.55→0.65(校准)
 
 ### Phase 3: 检索智能 + 评估框架（~2天）
 - [ ] **C8** 消除 100 记忆硬切换 → 渐进式检索
 - [ ] **C9** 检索权重数据驱动调优
 - [ ] **C10** 构建评估框架 eval_memory.py [M4]
 - [ ] 跑评估建立基线
-- **Status:** pending
-- **验收**: 硬切换消除; 评估框架就绪; 基线 MRR@5 >0.6
+- **Status:** complete ✅
+- **结果**: 785 passed; 硬切换100→20; 冷启动cosine 0.60; eval基线 MRR@5=1.00, DA=5%
 
 ### Phase 4: 情景 + 关系增强（~2天）
 - [ ] **C11** Episode 去重 + 层级压缩（episode_digests 表）

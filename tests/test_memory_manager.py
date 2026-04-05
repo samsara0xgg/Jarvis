@@ -658,3 +658,122 @@ class TestExtractFallback:
         assert result is not None
         assert result["episode_summary"] == "ok"
         manager._call_llm_extract_json.assert_not_called()
+
+
+class TestMaintainEpisodeCompression:
+    """C11: Episode compression in maintain."""
+
+    def test_maintain_compresses_old_episodes(self, manager: MemoryManager):
+        """Episodes older than 7 days should be compressed into digests."""
+        # Add episodes from 2 weeks ago (same week)
+        manager.store.add_episode("user1", "s1", "聊了股票", "2026-03-16")
+        manager.store.add_episode("user1", "s2", "聊了天气", "2026-03-17")
+        manager.store.add_episode("user1", "s3", "聊了健身", "2026-03-18")
+
+        manager.maintain("user1")
+
+        digests = manager.store.get_recent_digests("user1")
+        assert len(digests) == 1
+        assert "股票" in digests[0]["digest"]
+        assert "天气" in digests[0]["digest"]
+        assert "健身" in digests[0]["digest"]
+
+    def test_maintain_does_not_compress_recent(self, manager: MemoryManager):
+        """Episodes within the last 7 days should NOT be compressed."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        manager.store.add_episode("user1", "s1", "今天的对话", today)
+
+        manager.maintain("user1")
+
+        digests = manager.store.get_recent_digests("user1")
+        assert len(digests) == 0
+
+    def test_maintain_no_double_digest(self, manager: MemoryManager):
+        """Running maintain twice should not create duplicate digests."""
+        manager.store.add_episode("user1", "s1", "聊了A", "2026-03-16")
+        manager.store.add_episode("user1", "s2", "聊了B", "2026-03-17")
+
+        manager.maintain("user1")
+        manager.maintain("user1")
+
+        digests = manager.store.get_recent_digests("user1")
+        assert len(digests) == 1
+
+
+class TestFormatMemoryContextDigests:
+    """Verify digests appear in the formatted memory context."""
+
+    def test_format_memory_context_with_digests(self, manager: MemoryManager):
+        """Digests should appear in the [更早] section."""
+        manager.store.add_digest("user1", "2026-03-01", "2026-03-07", "三月第一周的对话")
+        manager.store.set_profile("user1", {"identity": {"name": "Allen"}})
+
+        result = manager.query("你好", "user1")
+        assert "[更早]" in result
+        assert "三月第一周的对话" in result
+
+    def test_format_memory_context_no_digests(self, manager: MemoryManager):
+        """No digests → no [更早] section."""
+        manager.store.set_profile("user1", {"identity": {"name": "Allen"}})
+        result = manager.query("你好", "user1")
+        assert "[更早]" not in result
+
+
+class TestSaveWithEmotion:
+    """C12: Detected emotion signal passthrough."""
+
+    def _mock_llm_response(self, manager: MemoryManager, extraction: dict):
+        manager._call_llm_extract = MagicMock(return_value=extraction)
+
+    def test_save_with_detected_emotion(self, manager: MemoryManager):
+        """ASR emotion should override LLM mood in episode."""
+        self._mock_llm_response(manager, {
+            "memories": [],
+            "episode_summary": "用户很开心地打了招呼",
+            "mood": "neutral",
+            "topics": ["闲聊"],
+        })
+        manager.save(
+            [{"role": "user", "content": "嘿！今天真开心"}],
+            "user1", "s1",
+            detected_emotion="happy",
+        )
+
+        episodes = manager.store.get_recent_episodes("user1")
+        assert len(episodes) == 1
+        assert episodes[0]["mood"] == "happy"  # ASR emotion, not "neutral"
+
+    def test_save_without_emotion_uses_llm_mood(self, manager: MemoryManager):
+        """Without detected_emotion, LLM mood should be used."""
+        self._mock_llm_response(manager, {
+            "memories": [],
+            "episode_summary": "聊了天气",
+            "mood": "sad",
+            "topics": ["天气"],
+        })
+        manager.save(
+            [{"role": "user", "content": "今天天气不好"}],
+            "user1", "s1",
+        )
+
+        episodes = manager.store.get_recent_episodes("user1")
+        assert len(episodes) == 1
+        assert episodes[0]["mood"] == "sad"
+
+    def test_save_empty_emotion_uses_llm_mood(self, manager: MemoryManager):
+        """Empty string emotion should fall back to LLM mood."""
+        self._mock_llm_response(manager, {
+            "memories": [],
+            "episode_summary": "聊了咖啡",
+            "mood": "happy",
+            "topics": ["咖啡"],
+        })
+        manager.save(
+            [{"role": "user", "content": "我喜欢咖啡"}],
+            "user1", "s1",
+            detected_emotion="",
+        )
+
+        episodes = manager.store.get_recent_episodes("user1")
+        assert len(episodes) == 1
+        assert episodes[0]["mood"] == "happy"

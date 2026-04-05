@@ -97,6 +97,18 @@ class MemoryStore:
 
             CREATE INDEX IF NOT EXISTS idx_episodes_user_date
                 ON episodes(user_id, date);
+
+            CREATE TABLE IF NOT EXISTS episode_digests (
+                id          TEXT PRIMARY KEY,
+                user_id     TEXT NOT NULL,
+                period_start TEXT NOT NULL,
+                period_end  TEXT NOT NULL,
+                digest      TEXT NOT NULL,
+                created_at  TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_digests_user_period
+                ON episode_digests(user_id, period_end DESC);
         """)
         conn.commit()
         self._migrate(conn)
@@ -356,15 +368,29 @@ class MemoryStore:
         date: str,
         mood: str | None = None,
         topics: list[str] | None = None,
-    ) -> str:
+    ) -> str | None:
         """Insert a conversation episode summary.
 
+        Skips insertion if a substantially similar episode already exists
+        for the same user on the same date (character-level Jaccard > 0.70).
+
         Returns:
-            The generated episode ID.
+            The generated episode ID, or None if skipped as duplicate.
         """
+        conn = self._get_conn()
+
+        # Dedup: check last episode for same user on same date
+        last = conn.execute(
+            "SELECT summary FROM episodes WHERE user_id = ? AND date = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (user_id, date),
+        ).fetchone()
+        if last and self._episode_similar(last["summary"], summary):
+            LOGGER.debug("Episode skipped (duplicate): %s", summary[:40])
+            return None
+
         ep_id = str(uuid.uuid4())[:12]
         now = datetime.now().isoformat()
-        conn = self._get_conn()
         conn.execute(
             """INSERT INTO episodes
                (id, user_id, session_id, summary, date, mood, topics, created_at)
@@ -378,6 +404,18 @@ class MemoryStore:
         )
         conn.commit()
         return ep_id
+
+    def _episode_similar(self, a: str, b: str) -> bool:
+        """Check if two episode summaries are substantially similar.
+
+        Uses character-level Jaccard similarity (cheap, no embedding needed).
+        """
+        set_a = set(a)
+        set_b = set(b)
+        if not set_a or not set_b:
+            return False
+        jaccard = len(set_a & set_b) / len(set_a | set_b)
+        return jaccard > 0.70
 
     def get_recent_episodes(self, user_id: str, days: int = 3) -> list[dict[str, Any]]:
         """Return episodes from the last N days, newest first."""
@@ -415,6 +453,40 @@ class MemoryStore:
         )
         conn.commit()
         return cursor.rowcount
+
+    # ------------------------------------------------------------------
+    # Episode Digests
+    # ------------------------------------------------------------------
+
+    def add_digest(
+        self,
+        user_id: str,
+        period_start: str,
+        period_end: str,
+        digest: str,
+    ) -> str:
+        """Store a weekly episode digest."""
+        digest_id = str(uuid.uuid4())[:12]
+        now = datetime.now().isoformat()
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT INTO episode_digests
+               (id, user_id, period_start, period_end, digest, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (digest_id, user_id, period_start, period_end, digest, now),
+        )
+        conn.commit()
+        return digest_id
+
+    def get_recent_digests(self, user_id: str, limit: int = 4) -> list[dict]:
+        """Return recent episode digests, newest first."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM episode_digests WHERE user_id = ? "
+            "ORDER BY period_end DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
     # Helpers
