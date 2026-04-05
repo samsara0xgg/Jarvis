@@ -687,10 +687,11 @@ class MemoryManager:
         return memories
 
     # Common Chinese content → semantic key mappings
-    _KEY_PATTERNS: list[tuple[str, str]] = [
+    # Literal substring → key (checked with `in`, order matters: specific before general)
+    _KEY_LITERALS: list[tuple[str, str]] = [
         ("住在", "location"), ("住", "location"),
         ("叫", "name"), ("名字", "name"),
-        ("工作", "company"), ("上班", "company"), ("在.*公司", "company"),
+        ("工作", "company"), ("上班", "company"),
         ("喜欢喝", "favorite_drink"), ("爱喝", "favorite_drink"),
         ("喜欢吃", "favorite_food"), ("爱吃", "favorite_food"),
         ("不喜欢吃", "dislike_food"), ("讨厌吃", "dislike_food"),
@@ -704,15 +705,24 @@ class MemoryManager:
         ("女朋友", "girlfriend"), ("男朋友", "boyfriend"),
         ("老婆", "wife"), ("老公", "husband"),
         ("爸爸", "father"), ("妈妈", "mother"),
-        ("车", "car"), ("开.*车", "car"),
+        ("车", "car"),
+    ]
+    # Regex patterns (only for patterns that need regex metacharacters)
+    _KEY_REGEX: list[tuple["re.Pattern[str]", str]] = [
+        (re.compile(r"在.*公司"), "company"),
+        (re.compile(r"开.*车"), "car"),
     ]
 
     def _derive_key(self, content: str) -> str:
         """Derive a semantic key from memory content via pattern matching."""
-        for pattern, key in self._KEY_PATTERNS:
-            if re.search(pattern, content):
+        for substring, key in self._KEY_LITERALS:
+            if substring in content:
+                return key
+        for pattern, key in self._KEY_REGEX:
+            if pattern.search(content):
                 return key
         # Fallback: hash
+        LOGGER.debug("No key pattern matched: %s — using hash", content[:40])
         return hashlib.md5(content[:30].encode()).hexdigest()[:8]
 
     def _extract_and_store_relation(
