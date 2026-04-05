@@ -259,3 +259,97 @@ class TestExpiresHandling:
         # Just verify both are returned and we get valid scores
         assert len(results) == 2
         assert all(r["_score"] > 0 for r in results)
+
+
+# ---------------------------------------------------------------
+# Sweep expired & backfill
+# ---------------------------------------------------------------
+
+class TestSweepExpired:
+    def test_expired_event_swept(self, store: MemoryStore):
+        """Expired event should be deactivated by sweep."""
+        store.add_memory(
+            user_id="u1", content="昨天的会议",
+            category="event", importance=7.0,
+            expires="2020-01-01", embedding=_encode("昨天的会议"),
+        )
+        assert store.count_active("u1") == 1
+        swept = store.sweep_expired()
+        assert swept == 1
+        assert store.count_active("u1") == 0
+
+    def test_unexpired_event_not_swept(self, store: MemoryStore):
+        """Future-expiry event should stay active."""
+        store.add_memory(
+            user_id="u1", content="下周的会议",
+            category="event", importance=7.0,
+            expires="2099-12-31", embedding=_encode("下周的会议"),
+        )
+        swept = store.sweep_expired()
+        assert swept == 0
+        assert store.count_active("u1") == 1
+
+    def test_preference_not_swept(self, store: MemoryStore):
+        """Preferences should not be swept even if expired."""
+        store.add_memory(
+            user_id="u1", content="喜欢咖啡",
+            category="preference", importance=5.0,
+            expires="2020-01-01", embedding=_encode("喜欢咖啡"),
+        )
+        swept = store.sweep_expired()
+        assert swept == 0
+        assert store.count_active("u1") == 1
+
+    def test_backfill_sets_expires(self, store: MemoryStore):
+        """Event with time_ref but no expires should get expires backfilled."""
+        store.add_memory(
+            user_id="u1", content="周五面试",
+            category="event", importance=7.0,
+            time_ref="2026-04-10", embedding=_encode("周五面试"),
+        )
+        backfilled = store.backfill_expires()
+        assert backfilled == 1
+        mems = store.get_active_memories("u1")
+        assert mems[0]["expires"] == "2026-04-13"  # +3 days
+
+    def test_backfill_skips_with_existing_expires(self, store: MemoryStore):
+        """Event that already has expires should not be touched."""
+        store.add_memory(
+            user_id="u1", content="周五面试",
+            category="event", importance=7.0,
+            time_ref="2026-04-10", expires="2026-04-15",
+            embedding=_encode("周五面试"),
+        )
+        backfilled = store.backfill_expires()
+        assert backfilled == 0
+
+
+class TestRebuildProfilePendingCleanup:
+    def test_expired_pending_filtered(self, mgr: MemoryManager):
+        """Expired pending items should be removed during profile rebuild."""
+        mgr.store.add_memory(
+            user_id="u1", content="已经过期的面试",
+            category="task", importance=8.0,
+            time_ref="2020-01-01", expires="2020-01-02",
+            embedding=_encode("已经过期的面试"),
+        )
+        mgr._rebuild_profile("u1")
+        profile = mgr.store.get_profile("u1")
+        pending = profile.get("pending", [])
+        assert len(pending) == 0
+
+    def test_today_pending_kept(self, mgr: MemoryManager):
+        """Today's pending items should be kept."""
+        from datetime import datetime as dt
+        today = dt.now().strftime("%Y-%m-%d")
+        mgr.store.add_memory(
+            user_id="u1", content="今天的面试",
+            category="task", importance=8.0,
+            time_ref=today, expires=today,
+            embedding=_encode("今天的面试"),
+        )
+        mgr._rebuild_profile("u1")
+        profile = mgr.store.get_profile("u1")
+        pending = profile.get("pending", [])
+        assert len(pending) == 1
+        assert "今天的面试" in pending[0]["content"]

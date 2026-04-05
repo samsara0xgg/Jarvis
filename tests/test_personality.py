@@ -111,3 +111,15 @@ class TestBuildPersonalityPrompt:
     def test_emotion_angry(self):
         prompt = build_personality_prompt(user_emotion="ANGRY")
         assert "气头" in prompt
+
+    def test_memory_usage_guide_appended(self):
+        """When memory context is present, usage guide should follow it."""
+        ctx = "<memory>\n用户偏好：暖白光\n</memory>"
+        prompt = build_personality_prompt(memory_context=ctx)
+        assert "像朋友一样自然地运用" in prompt
+        assert "别像闹钟一样提醒" in prompt
+
+    def test_no_memory_no_usage_guide(self):
+        """No memory context → no usage guide either."""
+        prompt = build_personality_prompt(memory_context="")
+        assert "像朋友一样自然地运用" not in prompt

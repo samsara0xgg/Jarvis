@@ -136,7 +136,12 @@ def build_personality_prompt(
 
     # 记忆上下文（持久上下文，在即时情境之前）
     if memory_context:
-        sections.append(memory_context)
+        sections.append(
+            memory_context
+            + "\n以上是你对用户的了解。像朋友一样自然地运用这些信息，"
+            "不要像读档案一样列举。和当前话题无关的记忆不要强行提起。"
+            "待关心的事项找合适的时机自然地提起，别像闹钟一样提醒。"
+        )
 
     if situation_lines:
         sections.append("<situation>\n" + "\n".join(situation_lines) + "\n</situation>")

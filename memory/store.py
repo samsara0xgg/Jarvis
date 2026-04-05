@@ -374,10 +374,37 @@ class MemoryStore:
         conn = self._get_conn()
         rows = conn.execute(
             "SELECT * FROM episodes WHERE user_id = ? "
-            "AND date >= date('now', ?) ORDER BY date DESC, created_at DESC",
+            "AND date >= date('now', 'localtime', ?) ORDER BY date DESC, created_at DESC",
             (user_id, f"-{days} days"),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Expiry maintenance
+    # ------------------------------------------------------------------
+
+    def sweep_expired(self) -> int:
+        """Deactivate expired event/task memories. Returns count affected."""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE memories SET active = 0 "
+            "WHERE active = 1 AND expires IS NOT NULL "
+            "AND expires < date('now', 'localtime') "
+            "AND category IN ('event', 'task')"
+        )
+        conn.commit()
+        return cursor.rowcount
+
+    def backfill_expires(self) -> int:
+        """Set expires = time_ref + 3 days for event/task without expires. Returns count."""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE memories SET expires = date(time_ref, '+3 days') "
+            "WHERE active = 1 AND expires IS NULL AND time_ref IS NOT NULL "
+            "AND category IN ('event', 'task')"
+        )
+        conn.commit()
+        return cursor.rowcount
 
     # ------------------------------------------------------------------
     # Helpers

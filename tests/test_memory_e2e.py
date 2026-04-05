@@ -182,11 +182,12 @@ class TestMemoryE2E:
                 embedding=emb,
             )
         context = mgr.query("测试", "allen")
-        assert len(context) < 2000
+        # Budget is 2000 chars content + XML tags overhead
+        assert len(context) < 2500
 
-    def test_usage_guide_in_context(self, setup):
-        """Memory context should include usage guidance."""
+    def test_usage_guide_not_in_memory_context(self, setup):
+        """Usage guide moved to personality.py — should NOT appear in memory context."""
         mgr, answerer, blog = setup
         mgr.store.set_profile("allen", {"identity": {"name": "Allen"}})
         context = mgr.query("你好", "allen")
-        assert "自然" in context or "朋友" in context
+        assert "[使用原则]" not in context
