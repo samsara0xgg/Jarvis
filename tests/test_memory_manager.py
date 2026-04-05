@@ -158,8 +158,8 @@ class TestSave:
     """Memory save (write pipeline) tests with mocked LLM."""
 
     def _mock_llm_response(self, manager: MemoryManager, extraction: dict):
-        """Patch the LLM call to return a fixed extraction result."""
-        manager._call_openai_json = MagicMock(return_value=extraction)
+        """Patch the extraction call to return a fixed result."""
+        manager._call_llm_extract = MagicMock(return_value=extraction)
 
     def test_save_extracts_and_stores(self, manager: MemoryManager):
         self._mock_llm_response(manager, {
@@ -213,7 +213,7 @@ class TestSave:
 
     def test_save_llm_failure_graceful(self, manager: MemoryManager):
         """LLM failure should not crash."""
-        manager._call_openai_json = MagicMock(side_effect=Exception("API down"))
+        manager._call_llm_extract = MagicMock(side_effect=Exception("API down"))
         manager.save(
             [{"role": "user", "content": "test"}], "user1", "s1",
         )
@@ -287,8 +287,8 @@ class TestSavePipeline:
     """Save pipeline edge-case tests."""
 
     def _mock_llm_response(self, manager: MemoryManager, extraction: dict):
-        """Patch the LLM call to return a fixed extraction result."""
-        manager._call_openai_json = MagicMock(return_value=extraction)
+        """Patch the extraction call to return a fixed result."""
+        manager._call_llm_extract = MagicMock(return_value=extraction)
 
     def test_save_correction_supersedes(self, manager: MemoryManager):
         """When user corrects a memory, old one should be superseded."""
@@ -413,3 +413,120 @@ class TestMaintain:
         results = manager.maintain_all()
         assert "user1" in results
         assert "user2" in results
+
+
+class TestPostprocessExtraction:
+    """Tests for _postprocess_extraction validation and fix logic."""
+
+    def test_key_missing_gets_derived(self, manager: MemoryManager):
+        """identity/preference/relationship/knowledge without key gets a derived key."""
+        for cat in ("identity", "preference", "relationship", "knowledge"):
+            memories = [{"content": "Allen 住温哥华", "category": cat, "importance": 5}]
+            result = manager._postprocess_extraction(memories)
+            assert result[0]["key"], f"key should be derived for category={cat}"
+            assert len(result[0]["key"]) == 8
+
+    def test_expires_backfilled_from_time_ref(self, manager: MemoryManager):
+        """event with time_ref but no expires -> expires = time_ref + 1 day."""
+        memories = [{
+            "content": "Allen 要去面试",
+            "category": "event",
+            "importance": 7,
+            "time_ref": "2026-04-07",
+        }]
+        result = manager._postprocess_extraction(memories)
+        assert result[0]["expires"] == "2026-04-08"
+
+    def test_importance_clamped(self, manager: MemoryManager):
+        """importance outside [1,10] gets clamped."""
+        memories = [
+            {"content": "fact A", "category": "event", "importance": 15},
+            {"content": "fact B", "category": "event", "importance": -3},
+        ]
+        result = manager._postprocess_extraction(memories)
+        assert result[0]["importance"] == 10
+        assert result[1]["importance"] == 1
+
+    def test_identity_importance_minimum_7(self, manager: MemoryManager):
+        """identity importance < 7 gets bumped to 7."""
+        memories = [{"content": "Allen 叫 Allen", "category": "identity", "importance": 3}]
+        result = manager._postprocess_extraction(memories)
+        assert result[0]["importance"] == 7
+
+    def test_event_without_time_ref_no_expires_added(self, manager: MemoryManager):
+        """event without time_ref -> expires should NOT be back-filled."""
+        memories = [{"content": "Allen 提到了面试", "category": "event", "importance": 5}]
+        result = manager._postprocess_extraction(memories)
+        assert result[0].get("expires") is None
+
+    def test_event_key_not_derived(self, manager: MemoryManager):
+        """event/task categories should NOT get a derived key."""
+        memories = [{"content": "Allen 要面试", "category": "event", "importance": 5}]
+        result = manager._postprocess_extraction(memories)
+        assert result[0].get("key") is None
+
+    def test_task_expires_backfilled(self, manager: MemoryManager):
+        """task with time_ref also gets expires back-filled."""
+        memories = [{
+            "content": "Allen 周一交报告",
+            "category": "task",
+            "importance": 6,
+            "time_ref": "2026-04-07",
+        }]
+        result = manager._postprocess_extraction(memories)
+        assert result[0]["expires"] == "2026-04-08"
+
+
+class TestExtractFallback:
+    """Test that function calling falls back to JSON mode on error."""
+
+    def test_fc_failure_falls_back_to_json(self, manager: MemoryManager):
+        """When FC request raises, should fall back to _call_llm_extract_json."""
+        expected = {
+            "memories": [{"content": "test", "category": "fact", "importance": 5}],
+            "corrections": [],
+            "episode_summary": "test",
+            "mood": "neutral",
+            "topics": [],
+        }
+        # Mock the JSON fallback to return a known value
+        manager._call_llm_extract_json = MagicMock(return_value=expected)
+
+        # Make requests.post raise so FC path fails
+        with patch("memory.manager.requests.post", side_effect=Exception("FC error")):
+            result = manager._call_llm_extract("对话", None, [], "用户")
+
+        assert result == expected
+        manager._call_llm_extract_json.assert_called_once()
+
+    def test_fc_success_does_not_fallback(self, manager: MemoryManager):
+        """When FC succeeds, should NOT call _call_llm_extract_json."""
+        fc_response = {
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "arguments": json.dumps({
+                                "memories": [],
+                                "corrections": [],
+                                "episode_summary": "ok",
+                                "mood": "neutral",
+                                "topics": [],
+                            }),
+                        },
+                    }],
+                },
+            }],
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = fc_response
+        mock_resp.raise_for_status = MagicMock()
+
+        manager._call_llm_extract_json = MagicMock()
+
+        with patch("memory.manager.requests.post", return_value=mock_resp):
+            result = manager._call_llm_extract("对话", None, [], "用户")
+
+        assert result is not None
+        assert result["episode_summary"] == "ok"
+        manager._call_llm_extract_json.assert_not_called()
