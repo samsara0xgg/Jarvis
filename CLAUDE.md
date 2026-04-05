@@ -30,7 +30,7 @@ python jarvis.py --no-wake        # 开发（按键录音）
 python jarvis.py                  # 生产（唤醒词 "Hey Jarvis"）
 
 # 测试
-python -m pytest tests/ -v        # 742 tests
+python -m pytest tests/ -v        # 806 tests
 python -m pytest tests/test_<module>.py -v
 
 # 其他
@@ -51,7 +51,7 @@ TTS: OpenAI TTS / MiniMax / Azure Neural / edge-tts / pyttsx3
 
 ```
 麦克风 ��� 唤醒词 → 录音(VAD) → [声纹验证 + SenseVoice ASR 并行]
-  → DirectAnswer 快路径 (cosine>0.75? 直接回答，不走 LLM)
+  → DirectAnswer 快路径 (cosine>0.55+margin? 直接回答，不走 LLM)
   → [意图路由 (Groq→Cerebras→云端) + 记忆查询] 并行
   → 本地执行 or 云端 LLM (流式逐句，注入记忆≤500tokens)
   → TTS 双线程管道 (5引擎降级 + 情感风格) → 喇叭
@@ -64,7 +64,7 @@ TTS: OpenAI TTS / MiniMax / Azure Neural / edge-tts / pyttsx3
 - `skills/` — LLM function calling 技能（继承 Skill ABC），14个内置 + `learned/` 动态加载
 - `devices/` — SmartDevice ABC → sim/ hue/ mqtt/ 三种后端
 - `auth/` — 声纹注册(3样本平均) + 角色权限(guest→owner 4级)
-- `memory/` — MemoryManager(编排) + MemoryStore(SQLite) + Embedder(bge-small-zh) + Retriever(4信号评分) + DirectAnswerer(快路径) + BehaviorLog(行为日志) + ConversationStore(滑动窗口) + UserPreferences(KV)
+- `memory/` — MemoryManager(编排,function calling提取) + MemoryStore(SQLite,含relations表) + Embedder(bge-small-zh-v1.5) + Retriever(4信号+冷启动自适应) + DirectAnswerer(快路径) + BehaviorLog(行为日志) + ConversationStore(滑动窗口) + UserPreferences(KV)
 - `ui/` — Gradio Dashboard(5面板) + OLED 显示控制
 - `notes/` — 调研笔记和工作记录(14篇)
 
@@ -84,7 +84,7 @@ TTS: OpenAI TTS / MiniMax / Azure Neural / edge-tts / pyttsx3
 - `memory/manager.py` — 记忆编排：save(LLM提取→去重→存储) / query(三层注入) / maintain
 - `memory/store.py` — SQLite 持久化，3表 (memories/profiles/episodes)
 - `memory/retriever.py` — 4信号加权评分 (cosine 0.4 + recency 0.25 + importance 0.2 + access 0.15)
-- `memory/direct_answer.py` — 快路径：cosine>0.75 直接回答不走 LLM
+- `memory/direct_answer.py` — 快路径：cosine>0.55 + margin>0.08 直接回答不走 LLM
 - `skills/__init__.py` — Skill ABC + SkillRegistry（角色过滤）
 
 ## 编码规范
