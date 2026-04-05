@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 import requests
@@ -170,16 +170,19 @@ class MemoryManager:
                 query_emb, user_id, top_k=5,
             )
 
-        return self._format_memory_context(profile, episodes, relevant)
+        return self._format_memory_context(profile, episodes, relevant, user_id)
 
     def maintain(self, user_id: str) -> dict:
-        """Run periodic maintenance: find and merge semantic duplicates.
+        """Run periodic maintenance: compress old episodes and merge semantic duplicates.
 
         Designed to run in a background scheduler (e.g. weekly).
 
         Returns:
             {"merged": int, "checked": int, "skipped": int}
         """
+        # Compress old episodes into weekly digests
+        self._compress_episodes(user_id)
+
         ids, contents, categories, embeddings = self.store.get_embedding_index(user_id)
         if embeddings is None or len(ids) < 2:
             return {"merged": 0, "checked": 0, "skipped": 0}
@@ -237,7 +240,70 @@ class MemoryManager:
                 results[uid] = {"error": True}
         return results
 
-    def save(self, messages: list[dict], user_id: str, session_id: str) -> None:
+    def _compress_episodes(self, user_id: str) -> None:
+        """Compress episodes older than 7 days into weekly digests.
+
+        Groups old episodes by ISO week and creates a simple concatenated
+        digest per week. Does not use LLM (maintenance should not depend
+        on API keys).
+        """
+        cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        conn = self.store._get_conn()
+        rows = conn.execute(
+            "SELECT date, summary FROM episodes WHERE user_id = ? AND date < ? "
+            "ORDER BY date",
+            (user_id, cutoff),
+        ).fetchall()
+
+        if not rows:
+            return
+
+        # Group by ISO week
+        weeks: dict[str, list[dict]] = {}
+        for row in rows:
+            dt = datetime.strptime(row["date"], "%Y-%m-%d")
+            week_key = dt.strftime("%Y-W%W")
+            weeks.setdefault(week_key, []).append(
+                {"date": row["date"], "summary": row["summary"]}
+            )
+
+        created = 0
+        for week_key, entries in weeks.items():
+            if len(entries) <= 1:
+                continue  # single episode — no need to compress
+
+            # Check if digest already exists for this week
+            dates = [e["date"] for e in entries]
+            period_start, period_end = min(dates), max(dates)
+            existing = conn.execute(
+                "SELECT id FROM episode_digests WHERE user_id = ? "
+                "AND period_start = ? AND period_end = ?",
+                (user_id, period_start, period_end),
+            ).fetchone()
+            if existing:
+                continue
+
+            # Build digest: simple concatenation (no LLM dependency)
+            summaries = [e["summary"] for e in entries]
+            digest = "；".join(summaries[:5])
+            if len(summaries) > 5:
+                digest += f"（共 {len(summaries)} 条对话）"
+
+            self.store.add_digest(user_id, period_start, period_end, digest)
+            created += 1
+
+        if created:
+            self.logger.info(
+                "Compressed %d weeks of episodes for user %s", created, user_id,
+            )
+
+    def save(
+        self,
+        messages: list[dict],
+        user_id: str,
+        session_id: str,
+        detected_emotion: str = "",
+    ) -> None:
         """Extract memories from a completed conversation and persist.
 
         Designed to run asynchronously (in a background thread).
@@ -246,9 +312,11 @@ class MemoryManager:
             messages: Full conversation message list.
             user_id: Authenticated user ID.
             session_id: Conversation session identifier.
+            detected_emotion: ASR-detected emotion label (e.g. "happy", "sad").
+                Overrides LLM-guessed mood when present.
         """
         try:
-            self._save_inner(messages, user_id, session_id)
+            self._save_inner(messages, user_id, session_id, detected_emotion)
         except Exception:
             self.logger.exception("Memory save failed for user %s", user_id)
 
@@ -256,7 +324,13 @@ class MemoryManager:
     # Save pipeline
     # ------------------------------------------------------------------
 
-    def _save_inner(self, messages: list[dict], user_id: str, session_id: str) -> None:
+    def _save_inner(
+        self,
+        messages: list[dict],
+        user_id: str,
+        session_id: str,
+        detected_emotion: str = "",
+    ) -> None:
         """Inner save logic — extract, dedup, store."""
         conversation_text = self._messages_to_text(messages)
         if not conversation_text.strip():
@@ -358,12 +432,14 @@ class MemoryManager:
         # 4. Store episode summary
         episode_summary = extraction.get("episode_summary", "").strip()
         if episode_summary:
+            # ASR emotion overrides LLM-guessed mood (acoustic signal more reliable)
+            mood = detected_emotion if detected_emotion else extraction.get("mood")
             self.store.add_episode(
                 user_id=user_id,
                 session_id=session_id,
                 summary=episode_summary,
                 date=datetime.now().strftime("%Y-%m-%d"),
-                mood=extraction.get("mood"),
+                mood=mood,
                 topics=extraction.get("topics"),
             )
 
@@ -547,6 +623,7 @@ class MemoryManager:
         profile: dict | None,
         episodes: list[dict],
         memories: list[dict],
+        user_id: str = "",
     ) -> str:
         """Format the three tiers into a ``<memory>`` prompt block."""
         sections: list[str] = []
@@ -570,6 +647,20 @@ class MemoryManager:
                 char_budget -= len(line)
             if ep_lines:
                 sections.append("[最近]\n" + "\n".join(ep_lines))
+
+        # Tier 2b: Recent digests (older context)
+        if user_id and char_budget > 0:
+            digests = self.store.get_recent_digests(user_id, limit=4)
+            if digests:
+                digest_lines = []
+                for d in digests:
+                    line = f"{d['period_start']}~{d['period_end']}：{d['digest']}"
+                    if char_budget - len(line) < 0:
+                        break
+                    digest_lines.append(line)
+                    char_budget -= len(line)
+                if digest_lines:
+                    sections.append("[更早]\n" + "\n".join(digest_lines))
 
         # Tier 3: Memories (remaining budget)
         if memories and char_budget > 0:

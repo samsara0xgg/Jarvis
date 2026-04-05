@@ -561,6 +561,7 @@ class JarvisApp:
                 if user_id:
                     self._executor.submit(
                         self.memory_manager.save, history, user_id, session_id,
+                        detected_emotion,
                     )
                 return reply
 
@@ -774,6 +775,7 @@ class JarvisApp:
             if user_id:
                 self._executor.submit(
                     self.memory_manager.save, updated_messages, user_id, session_id,
+                    detected_emotion,
                 )
         elif response_text:
             # 本地路径：更新对话历史（farewell/超时时统一提取记忆）
@@ -868,6 +870,7 @@ class JarvisApp:
                 self.conversation_store.replace(session_id, history)
                 self._executor.submit(
                     self.memory_manager.save, history, user_id, session_id,
+                    emotion,
                 )
                 if on_sentence:
                     on_sentence(reply, emotion=emotion)
@@ -1007,6 +1010,7 @@ class JarvisApp:
             self.conversation_store.replace(session_id, updated_messages)
             self._executor.submit(
                 self.memory_manager.save, updated_messages, user_id, session_id,
+                emotion,
             )
         elif response_text:
             history.append({"role": "user", "content": text})
