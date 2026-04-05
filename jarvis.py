@@ -454,9 +454,11 @@ class JarvisApp:
                         # Pause the wake-word stream, record via AudioRecorder
                         stream.stop()
                         audio = self.audio_recorder.record(self.utterance_duration)
-                        stream.start()
 
                         response = self.handle_utterance(audio)
+                        # Wait for TTS to finish before resuming mic to prevent echo
+                        self._wait_tts()
+                        stream.start()
                         self._last_interaction = time.monotonic()
 
                         if response and self._is_farewell(response):
