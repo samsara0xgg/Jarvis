@@ -124,8 +124,14 @@ class DirectAnswerer:
                 return None
 
         category = best.get("category", "knowledge")
-        # Clean up content: replace third-person "用户" with natural "你"
-        content = best["content"].replace("用户 ", "你").replace("用户", "你")
+        # Clean up content: replace sentence-initial "用户" with "你"
+        # Only replace when "用户" is a standalone subject (followed by space
+        # or at start), not part of compound words like "用户界面"
+        content = best["content"]
+        if content.startswith("用户 "):
+            content = "你" + content[3:]
+        elif content.startswith("用户"):
+            content = "你" + content[2:]
         template = _ANSWER_TEMPLATES.get(category, "我记得，{content}")
 
         # Touch only on successful answer (not during failed probes)

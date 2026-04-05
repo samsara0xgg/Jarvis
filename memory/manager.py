@@ -179,6 +179,12 @@ class MemoryManager:
         config: Parsed application configuration.
     """
 
+    _RELATION_KEYWORDS = frozenset((
+        "妹妹", "弟弟", "姐姐", "哥哥", "爸爸", "妈妈",
+        "女朋友", "男朋友", "老婆", "老公", "女友", "男友",
+        "儿子", "女儿", "朋友", "同事", "同学",
+    ))
+
     def __init__(self, config: dict) -> None:
         mem_config = config.get("memory", {})
         db_path = mem_config.get("db_path", "data/memory/jarvis_memory.db")
@@ -502,9 +508,6 @@ class MemoryManager:
 
         # 2b. Extract relations from relationship memories
         #      Also check identity memories with relationship keywords
-        _RELATION_KEYWORDS = ("妹妹", "弟弟", "姐姐", "哥哥", "爸爸", "妈妈",
-                              "女朋友", "男朋友", "老婆", "老公", "女友", "男友",
-                              "儿子", "女儿", "朋友", "同事", "同学")
         for mem in memories:
             content = mem.get("content", "")
             if not content:
@@ -512,7 +515,7 @@ class MemoryManager:
             cat = mem.get("category", "")
             if cat == "relationship":
                 self._extract_and_store_relation(user_id, content, mem.get("key"))
-            elif cat == "identity" and any(kw in content for kw in _RELATION_KEYWORDS):
+            elif cat == "identity" and any(kw in content for kw in self._RELATION_KEYWORDS):
                 self._extract_and_store_relation(user_id, content, mem.get("key"))
 
         # 3. Update profile
@@ -661,7 +664,6 @@ class MemoryManager:
                 mem["key"] = self._derive_key(content)
 
 
-
             # 2. expires missing — back-fill from time_ref + 1 day
             if category in ("event", "task"):
                 time_ref = mem.get("time_ref")
@@ -702,7 +704,7 @@ class MemoryManager:
         ("女朋友", "girlfriend"), ("男朋友", "boyfriend"),
         ("老婆", "wife"), ("老公", "husband"),
         ("爸爸", "father"), ("妈妈", "mother"),
-        ("车", "car"), ("开", "car"),
+        ("车", "car"), ("开.*车", "car"),
     ]
 
     def _derive_key(self, content: str) -> str:
