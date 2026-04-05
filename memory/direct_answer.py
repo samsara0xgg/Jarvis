@@ -1,7 +1,7 @@
 """Level 1 direct answer engine — answer from memory without LLM.
 
 Only triggers for high-confidence factual queries (preference, identity,
-knowledge) with cosine similarity > 0.85.
+knowledge) with cosine similarity > 0.55.
 """
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ from memory.store import MemoryStore
 
 LOGGER = logging.getLogger(__name__)
 
-_SIMILARITY_THRESHOLD = 0.75
+_SIMILARITY_THRESHOLD = 0.55
+_MARGIN_THRESHOLD = 0.08
 _ANSWERABLE_CATEGORIES = {"preference", "identity", "knowledge"}
 
 _ANSWER_TEMPLATES = {
@@ -58,6 +59,17 @@ class DirectAnswerer:
 
         if best_score < _SIMILARITY_THRESHOLD:
             return None
+
+        # Margin check: ensure top-1 is sufficiently ahead of top-2
+        if len(scores) >= 2:
+            sorted_scores = np.sort(scores)[::-1]
+            margin = float(sorted_scores[0] - sorted_scores[1])
+            if margin < _MARGIN_THRESHOLD:
+                LOGGER.info(
+                    "Level 1 skipped: margin too small (%.3f < %.3f)",
+                    margin, _MARGIN_THRESHOLD,
+                )
+                return None
 
         best = candidates[best_idx]
         category = best.get("category", "knowledge")

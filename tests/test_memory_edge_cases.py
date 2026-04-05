@@ -50,8 +50,8 @@ def mgr(tmp_path):
 # ---------------------------------------------------------------
 
 class TestL1Threshold:
-    def test_threshold_is_0_75(self):
-        assert _SIMILARITY_THRESHOLD == 0.75
+    def test_threshold_is_0_55(self):
+        assert _SIMILARITY_THRESHOLD == 0.55
 
     def test_exact_match_returns_answer(self, answerer: DirectAnswerer):
         """Same text → cosine=1.0 → should always hit."""
