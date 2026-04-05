@@ -89,12 +89,6 @@ _DEDUP_PROMPT_HEADER = """判断新记忆与已有记忆的关系。
 输出 JSON（严格 JSON，无注释）：
 {"action": "ADD 或 UPDATE 或 NONE", "target_id": "xxx 或 null"}"""
 
-_MEMORY_USAGE_GUIDE = (
-    "以上是你对用户的了解。像朋友一样自然地运用这些信息，"
-    "不要像读档案一样列举。和当前话题无关的记忆不要强行提起。"
-    "待关心的事项找合适的时机自然地提起，别像闹钟一样提醒。"
-)
-
 # Cosine thresholds for dedup — lower for same-category (catches "coffee" vs "latte")
 _DEDUP_THRESHOLD_SAME_CAT = 0.55
 _DEDUP_THRESHOLD_CROSS_CAT = 0.7
@@ -107,7 +101,7 @@ _MERGE_PROMPT_HEADER = """以下两条记忆语义相似，判断是否应该合
 输出 JSON（严格 JSON，无注释）：
 {"action": "MERGE 或 KEEP_BOTH", "keep_id": "xxx 或 null"}"""
 
-_MAX_MEMORY_CHARS = 1200  # ~500 tokens Chinese
+_MAX_MEMORY_CHARS = 2000  # ~800 tokens Chinese
 
 # Maintenance: max pairs to check per run, max LLM calls per run
 _MAINTAIN_MAX_PAIRS = 10
@@ -173,13 +167,19 @@ class MemoryManager:
         return self._format_memory_context(profile, episodes, relevant)
 
     def maintain(self, user_id: str) -> dict:
-        """Run periodic maintenance: find and merge semantic duplicates.
+        """Run periodic maintenance: sweep expired, backfill expires, merge duplicates.
 
         Designed to run in a background scheduler (e.g. weekly).
 
         Returns:
-            {"merged": int, "checked": int, "skipped": int}
+            {"merged": int, "checked": int, "skipped": int,
+             "swept": int, "backfilled": int}
         """
+        swept = self.store.sweep_expired()
+        backfilled = self.store.backfill_expires()
+        if swept or backfilled:
+            self.logger.info("Maintenance: swept %d expired, backfilled %d expires", swept, backfilled)
+
         ids, contents, categories, embeddings = self.store.get_embedding_index(user_id)
         if embeddings is None or len(ids) < 2:
             return {"merged": 0, "checked": 0, "skipped": 0}
@@ -223,7 +223,8 @@ class MemoryManager:
             "Maintenance for %s: checked=%d, merged=%d, skipped=%d",
             user_id, len(pairs), merged, skipped,
         )
-        return {"merged": merged, "checked": len(pairs), "skipped": skipped}
+        return {"merged": merged, "checked": len(pairs), "skipped": skipped,
+                "swept": swept, "backfilled": backfilled}
 
     def maintain_all(self) -> dict:
         """Run maintenance for all users. Returns per-user stats."""
@@ -427,6 +428,14 @@ class MemoryManager:
                     if content not in existing_topics:
                         pending.append({"content": content, "date": expires})
 
+        # Filter out expired pending items (date < today, unless today)
+        today = datetime.now().strftime("%Y-%m-%d")
+        if profile.get("pending"):
+            profile["pending"] = [
+                p for p in profile["pending"]
+                if not isinstance(p, dict) or p.get("date", "9999") >= today
+            ]
+
         self.store.set_profile(user_id, profile)
         self.logger.info("Profile auto-rebuilt for user %s", user_id)
 
@@ -600,7 +609,6 @@ class MemoryManager:
         return (
             "<memory>\n"
             + "\n\n".join(sections)
-            + "\n\n[使用原则] " + _MEMORY_USAGE_GUIDE
             + "\n</memory>"
         )
 

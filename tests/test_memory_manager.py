@@ -130,17 +130,17 @@ class TestQuery:
         assert "[最近]" in result
         assert "[记忆]" in result
 
-    def test_memory_context_includes_usage_guide(self, manager: MemoryManager):
-        """Memory context should include natural usage guidance."""
+    def test_memory_context_no_usage_guide(self, manager: MemoryManager):
+        """Usage guide moved to personality.py — should NOT appear in memory context."""
         manager.store.set_profile("user1", {
             "identity": {"name": "Allen"},
         })
         result = manager.query("你好", "user1")
-        assert "自然" in result or "朋友" in result
         assert "<memory>" in result
+        assert "[使用原则]" not in result
 
     def test_memory_context_length_capped(self, manager: MemoryManager):
-        """Memory context should not exceed ~800 chars of content."""
+        """Memory context should not exceed budget + XML overhead."""
         for i in range(50):
             manager.store.add_memory(
                 user_id="user1",
@@ -150,8 +150,8 @@ class TestQuery:
                 embedding=np.random.randn(512).astype(np.float32),
             )
         result = manager.query("测试", "user1")
-        # Total output including XML tags and guide should be bounded
-        assert len(result) < 2000
+        # Budget is 2000 chars content + XML tags overhead
+        assert len(result) < 2500
 
 
 class TestSave:
