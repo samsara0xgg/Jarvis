@@ -140,8 +140,11 @@ class TestEpisodes:
     """Conversation episode storage."""
 
     def test_add_and_get_episodes(self, store: MemoryStore):
-        store.add_episode("user1", "sess1", "聊了股票", "2026-04-02", mood="neutral", topics=["股票"])
-        store.add_episode("user1", "sess2", "聊了天气", "2026-04-01", mood="happy", topics=["天气"])
+        from datetime import datetime as dt, timedelta
+        today = dt.now().strftime("%Y-%m-%d")
+        yesterday = (dt.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        store.add_episode("user1", "sess1", "聊了股票", today, mood="neutral", topics=["股票"])
+        store.add_episode("user1", "sess2", "聊了天气", yesterday, mood="happy", topics=["天气"])
 
         episodes = store.get_recent_episodes("user1", days=3)
         assert len(episodes) == 2

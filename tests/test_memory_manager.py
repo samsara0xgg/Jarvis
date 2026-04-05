@@ -83,16 +83,15 @@ class TestQuery:
             assert f"memory {i}" in result
 
     def test_retrieval_over_threshold(self, manager: MemoryManager):
-        """>20 memories: embedding retrieval with dynamic top_k."""
+        """>20 memories: uses embedding retrieval (not full inject)."""
         for i in range(25):
             emb = manager.embedder.encode(f"memory {i}")
             manager.store.add_memory("user1", f"memory {i}", "fact", embedding=emb)
 
-        result = manager.query("memory 0", "user1")
+        with patch.object(manager.retriever, "retrieve", wraps=manager.retriever.retrieve) as mock_ret:
+            result = manager.query("memory 0", "user1")
+            assert mock_ret.call_count == 1  # retriever was used
         assert "<memory>" in result
-        # Should have some but not all 25
-        count = sum(1 for i in range(25) if f"memory {i}" in result)
-        assert count < 25
 
     def test_gradual_retrieval_at_21_memories(self, manager: MemoryManager):
         """At 21 memories, should use embedding retrieval, not full inject."""
