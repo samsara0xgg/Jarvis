@@ -392,6 +392,9 @@ class MemoryStore:
         Returns:
             The generated episode ID, or None if skipped as duplicate.
         """
+        if not summary or not summary.strip():
+            return None
+
         conn = self._get_conn()
 
         # Dedup: check last episode for same user on same date

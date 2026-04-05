@@ -61,9 +61,10 @@ class DirectAnswerer:
         if not candidates:
             return None
 
-        # Use retriever for multi-signal scoring (fetches all active memories)
+        # Use retriever for multi-signal scoring — touch=False to avoid
+        # inflating access_count for memories that DA ultimately rejects
         query_emb = self._embedder.encode(query)
-        results = self._retriever.retrieve(query_emb, user_id, top_k=5)
+        results = self._retriever.retrieve(query_emb, user_id, top_k=5, touch=False)
 
         # Filter to answerable categories only
         answerable = [
@@ -103,6 +104,9 @@ class DirectAnswerer:
         category = best.get("category", "knowledge")
         content = best["content"]
         template = _ANSWER_TEMPLATES.get(category, "我记得，{content}")
+
+        # Touch only on successful answer (not during failed probes)
+        self._store.touch_memory(best["id"])
 
         LOGGER.info(
             "Level 1 direct answer: score=%.3f category=%s content=%s",

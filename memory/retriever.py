@@ -69,10 +69,14 @@ class MemoryRetriever:
         user_id: str,
         top_k: int = 5,
         exclude_ids: set[str] | None = None,
+        touch: bool = True,
     ) -> list[dict[str, Any]]:
         """Return the top-k most relevant active memories for a query.
 
-        Automatically updates access_count/last_accessed on returned memories.
+        Args:
+            touch: If True (default), update access_count/last_accessed on
+                returned memories. Set False for speculative lookups (e.g.
+                DirectAnswer probing) that should not inflate access counts.
 
         Args:
             query_embedding: Unit-norm query vector.
@@ -165,8 +169,9 @@ class MemoryRetriever:
             mem["_score"] = float(scores[idx])
             results.append(mem)
 
-        # Batch-touch retrieved memories
-        self.store.touch_many([m["id"] for m in results])
+        # Batch-touch retrieved memories (skip for speculative lookups)
+        if touch:
+            self.store.touch_many([m["id"] for m in results])
 
         LOGGER.info(
             "Retrieved %d memories for user %s (from %d candidates)",
