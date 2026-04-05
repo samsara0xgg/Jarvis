@@ -50,3 +50,4 @@ data/sensevoice-small-int8/
 ui/web/resources/
 ui/web/audio_cache/
 ui/web/__pycache__/
+.claude/worktrees/
