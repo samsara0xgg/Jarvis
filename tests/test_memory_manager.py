@@ -335,10 +335,6 @@ class TestSavePipeline:
 class TestDedupDelete:
     """Dedup DELETE action and top_k expansion tests."""
 
-    def _mock_llm_response(self, manager: MemoryManager, extraction: dict):
-        """Patch the LLM call to return a fixed extraction result."""
-        manager._call_openai_json = MagicMock(return_value=extraction)
-
     def test_dedup_delete_deactivates_old_and_adds_new(self, manager: MemoryManager):
         """DELETE action should deactivate the old memory and add the new one."""
         # Use a fixed embedding so old and new share the same vector (cosine=1.0),

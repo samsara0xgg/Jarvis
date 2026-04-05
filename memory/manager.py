@@ -7,10 +7,11 @@ Provides two public methods:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 import requests
@@ -108,7 +109,10 @@ _EXTRACT_TOOL = {
                         "required": ["old_content", "new_content"],
                     },
                 },
-                "profile_update": {},
+                "profile_update": {
+                    "type": "object",
+                    "description": "更新后的用户画像，无变化时为空对象",
+                },
                 "episode_summary": {
                     "type": "string",
                     "description": "一句话概括对话",
@@ -404,7 +408,11 @@ class MemoryManager:
                         if target_id:
                             self.store.deactivate_memory_by_id(target_id)
                             self.logger.info("Memory conflict resolved: deactivated '%s'", target_id)
-                        # 矛盾的旧记忆已删除，添加新记忆
+                        else:
+                            self.logger.warning(
+                                "DELETE without target_id for: %s", content[:60],
+                            )
+                        # 无论是否成功删除旧记忆，都添加新记忆（新信息优先）
                         self._add_extracted_memory(
                             user_id, content, category, key, mem, mem_embedding,
                         )
@@ -551,7 +559,6 @@ class MemoryManager:
 
             # 1. key missing — derive from content hash
             if category in ("identity", "preference", "relationship", "knowledge") and not key:
-                import hashlib
                 short = content[:30].strip()
                 mem["key"] = hashlib.md5(short.encode()).hexdigest()[:8]
 
@@ -560,7 +567,6 @@ class MemoryManager:
                 time_ref = mem.get("time_ref")
                 if time_ref and not mem.get("expires"):
                     try:
-                        from datetime import timedelta
                         dt = datetime.strptime(time_ref, "%Y-%m-%d")
                         mem["expires"] = (dt + timedelta(days=1)).strftime("%Y-%m-%d")
                     except ValueError:
@@ -657,8 +663,17 @@ class MemoryManager:
         existing_str = "\n".join(f"- {e}" for e in existing[-30:]) if existing else "(无)"
         today = datetime.now().strftime("%Y-%m-%d")
 
+        json_format_guide = (
+            '\n\n输出 JSON：'
+            '{"memories": [{"content": "...", "category": "identity|preference|'
+            'relationship|event|task|knowledge", "key": "或null", "importance": 1-10, '
+            '"tags": [], "time_ref": "2026-04-07或null", "expires": "2026-04-08或null"}], '
+            '"corrections": [], "profile_update": null, '
+            '"episode_summary": "一句话", "mood": "neutral", "topics": []}'
+        )
         prompt = (
             _EXTRACT_PROMPT_HEADER.format(today=today)
+            + json_format_guide
             + "\n\n当前用户名：" + user_name
             + "\n\n当前用户画像：\n" + profile_str
             + "\n\n已有记忆（避免重复）：\n" + existing_str
@@ -669,7 +684,7 @@ class MemoryManager:
     def _call_llm_dedup(
         self, new_content: str, similar: list[dict],
     ) -> dict:
-        """Call LLM to decide ADD/UPDATE/NONE for a potentially duplicate memory."""
+        """Call LLM to decide ADD/UPDATE/DELETE/NONE for a potentially duplicate memory."""
         similar_str = "\n".join(
             f'{i+1}. [id: {m["id"]}] {m["content"]}'
             for i, m in enumerate(similar)
