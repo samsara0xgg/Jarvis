@@ -332,6 +332,108 @@ class TestSavePipeline:
         assert not any(c == "Allen 喜欢拿铁" for c in contents)
 
 
+class TestDedupDelete:
+    """Dedup DELETE action and top_k expansion tests."""
+
+    def _mock_llm_response(self, manager: MemoryManager, extraction: dict):
+        """Patch the LLM call to return a fixed extraction result."""
+        manager._call_openai_json = MagicMock(return_value=extraction)
+
+    def test_dedup_delete_deactivates_old_and_adds_new(self, manager: MemoryManager):
+        """DELETE action should deactivate the old memory and add the new one."""
+        # Use a fixed embedding so old and new share the same vector (cosine=1.0),
+        # which guarantees the LLM dedup path is reached.
+        fixed_emb = np.random.RandomState(42).randn(512).astype(np.float32)
+        fixed_emb /= np.linalg.norm(fixed_emb)
+
+        old_id = manager.store.add_memory(
+            user_id="user1", content="Allen 喜欢拿铁",
+            category="preference", importance=7.0, embedding=fixed_emb.copy(),
+        )
+
+        # Override embedder to always return the same vector
+        manager.embedder.encode = lambda text: fixed_emb.copy()
+
+        # Mock: extraction returns a contradicting memory,
+        # and dedup LLM returns DELETE pointing to the old one
+        call_count = {"n": 0}
+        def mock_llm(prompt):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # First call: extraction
+                return {
+                    "memories": [{
+                        "content": "Allen 不喜欢拿铁，改喝美式了",
+                        "category": "preference",
+                        "importance": 8,
+                        "tags": [],
+                    }],
+                    "episode_summary": "Allen 改了饮品偏好",
+                }
+            else:
+                # Second call: dedup decision
+                return {"action": "DELETE", "target_id": old_id}
+
+        manager._call_openai_json = MagicMock(side_effect=mock_llm)
+
+        manager.save(
+            [{"role": "user", "content": "我不喜欢拿铁了，改喝美式"}],
+            "user1", "session1",
+        )
+
+        active = manager.store.get_active_memories("user1")
+        contents = [m["content"] for m in active]
+        # Old memory should be deactivated
+        assert "Allen 喜欢拿铁" not in contents
+        # New memory should be added
+        assert any("美式" in c for c in contents)
+
+    def test_dedup_top_k_is_10(self, manager: MemoryManager):
+        """find_similar should be called with top_k=10."""
+        # Add an existing memory so embedding path is triggered
+        emb = manager.embedder.encode("existing memory")
+        manager.store.add_memory(
+            user_id="user1", content="existing memory",
+            category="fact", importance=5.0, embedding=emb,
+        )
+
+        # Mock extraction to return a new memory
+        call_count = {"n": 0}
+        def mock_llm(prompt):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {
+                    "memories": [{
+                        "content": "new memory content",
+                        "category": "fact",
+                        "importance": 5,
+                        "tags": [],
+                    }],
+                    "episode_summary": "test",
+                }
+            else:
+                return {"action": "ADD", "target_id": None}
+
+        manager._call_openai_json = MagicMock(side_effect=mock_llm)
+
+        # Spy on find_similar
+        original_find_similar = manager.retriever.find_similar
+        find_similar_calls = []
+        def spy_find_similar(*args, **kwargs):
+            find_similar_calls.append(kwargs)
+            return original_find_similar(*args, **kwargs)
+
+        manager.retriever.find_similar = spy_find_similar
+
+        manager.save(
+            [{"role": "user", "content": "something"}],
+            "user1", "session1",
+        )
+
+        assert len(find_similar_calls) >= 1
+        assert find_similar_calls[0].get("top_k") == 10
+
+
 class TestMaintain:
     """Weekly maintenance — duplicate merging."""
 

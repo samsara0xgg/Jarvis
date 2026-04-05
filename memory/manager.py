@@ -84,10 +84,11 @@ _DEDUP_PROMPT_HEADER = """判断新记忆与已有记忆的关系。
 判断：
 - ADD：全新信息，与已有记忆不重复
 - UPDATE：已有记忆的更新版本（指明 target_id，保留信息量更大的版本）
-- NONE：已存在，无需操作
+- DELETE：新信息与旧记忆矛盾，旧记忆已过时（指明 target_id，将被删除）
+- NONE：已存在完全相同的信息，无需操作
 
 输出 JSON（严格 JSON，无注释）：
-{"action": "ADD 或 UPDATE 或 NONE", "target_id": "xxx 或 null"}"""
+{"action": "ADD 或 UPDATE 或 DELETE 或 NONE", "target_id": "xxx 或 null"}"""
 
 _MEMORY_USAGE_GUIDE = (
     "以上是你对用户的了解。像朋友一样自然地运用这些信息，"
@@ -95,8 +96,11 @@ _MEMORY_USAGE_GUIDE = (
     "待关心的事项找合适的时机自然地提起，别像闹钟一样提醒。"
 )
 
-# Cosine thresholds for dedup — lower for same-category (catches "coffee" vs "latte")
-_DEDUP_THRESHOLD_SAME_CAT = 0.55
+# Cosine thresholds for dedup — gateway to LLM dedup call.
+# Calibrated via scripts/calibrate_dedup.py on 45 Chinese memory pairs:
+#   duplicates min=0.78, related-different max=0.79, unrelated max=0.38
+# 0.65 same-cat catches all true duplicates while filtering most unrelated pairs.
+_DEDUP_THRESHOLD_SAME_CAT = 0.65
 _DEDUP_THRESHOLD_CROSS_CAT = 0.7
 
 _MERGE_PROMPT_HEADER = """以下两条记忆语义相似，判断是否应该合并。
@@ -309,7 +313,7 @@ class MemoryManager:
                 self.store.supersede_memory(existing_by_key["id"], new_id)
             else:
                 # No key match → fall back to embedding similarity
-                similar = self.retriever.find_similar(mem_embedding, user_id, top_k=5)
+                similar = self.retriever.find_similar(mem_embedding, user_id, top_k=10)
 
                 if similar:
                     top_score = similar[0]["_score"]
@@ -338,6 +342,15 @@ class MemoryManager:
                                 user_id, content, category, key, mem, mem_embedding,
                             )
                             self.store.supersede_memory(target_id, new_id)
+                    elif decision.get("action") == "DELETE":
+                        target_id = decision.get("target_id")
+                        if target_id:
+                            self.store.deactivate_memory_by_id(target_id)
+                            self.logger.info("Memory conflict resolved: deactivated '%s'", target_id)
+                        # 矛盾的旧记忆已删除，添加新记忆
+                        self._add_extracted_memory(
+                            user_id, content, category, key, mem, mem_embedding,
+                        )
                     # NONE → skip
 
         # 3. Update profile

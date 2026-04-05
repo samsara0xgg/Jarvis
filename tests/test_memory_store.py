@@ -101,6 +101,19 @@ class TestSupersede:
         assert result is False
         assert store.count_active("user1") == 1
 
+    def test_deactivate_memory_by_id(self, store: MemoryStore):
+        mem_id = store.add_memory("user1", "Allen 喜欢拿铁", "preference")
+        assert store.count_active("user1") == 1
+        result = store.deactivate_memory_by_id(mem_id)
+        assert result is True
+        assert store.count_active("user1") == 0
+
+    def test_deactivate_memory_by_id_not_found(self, store: MemoryStore):
+        store.add_memory("user1", "Allen 喜欢拿铁", "preference")
+        result = store.deactivate_memory_by_id("nonexistent-id")
+        assert result is False
+        assert store.count_active("user1") == 1
+
 
 class TestUserProfiles:
     """User profile CRUD."""
