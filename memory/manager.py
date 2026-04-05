@@ -24,60 +24,113 @@ LOGGER = logging.getLogger(__name__)
 _EXTRACT_PROMPT_HEADER = """从以下对话中提取值得长期记住的信息。只提取用户说的内容。
 忽略打招呼、设备操作指令（开灯/关灯/几点了）、纯闲聊。
 
-记忆类型（category）：
-- identity：身份信息（姓名、职业、住址等）
-- preference：偏好（喜欢/不喜欢）
-- relationship：人际关系（家人、朋友、同事）
-- event：事件（发生过或即将发生的事，自含完整描述含时间）
-- task：待办/承诺（要做的事，有截止时间）
-- knowledge：用户教的知识（密码、技术知识等）
-
 记忆粒度：
 - event/task：输出自含的完整描述，包含时间和上下文
   例："用户 于2026年4月说下周一要去深圳参加技术峰会"
 - 其他类型：输出原子事实
   例："用户 喜欢拿铁"
 
-每条记忆必须：
-- 自含（不依赖上下文就能理解）
-- 包含主语（用用户名，不用"我"或"他"）
-- event/task 包含时间信息
+每条记忆必须自含（不依赖上下文就能理解），包含主语（用用户名，不用"我"或"他"）。
 
-字段说明：
-- key：简短语义标识，同类型同key的记忆视为同一件事的更新。
-  identity/preference/relationship/knowledge 类型必须提供 key（不能为 null）。
-  event/task 类型 key 为 null。
-  例：name, location, favorite_drink, favorite_sport, sister, wifi_password
-- expires：过期日期。event/task 类型必须提供 expires（事件日期+1天）。
-  其他类型 expires 为 null。
-  例：面试在4月7日 → expires = "2026-04-08"；周末爬山 → expires = 下周一日期
-
-输出 JSON（严格 JSON，无注释）：
-{
-  "memories": [
-    {"content": "...", "category": "identity|preference|relationship|event|task|knowledge",
-     "key": "location 或 null", "importance": 1-10,
-     "tags": ["标签1"], "time_ref": "2026-04-07 或 null",
-     "expires": "2026-04-08 或 null"}
-  ],
-  "corrections": [],
-  "profile_update": null,
-  "episode_summary": "一句话概括这次对话",
-  "mood": "neutral",
-  "topics": ["主题1"]
-}
+如果用户提到相对时间（如"下周一"），必须转为绝对日期填入 time_ref。今天是 {today}。
 
 profile_update 规则：如果提取到了 identity/preference/relationship 类的新信息，
 输出更新后的完整画像 JSON（结构：identity/preferences/routines/relationships/pending/status）。
 否则输出 null。
 
 如果用户纠正了之前的信息（如"不对，我喜欢美式不是拿铁"），
-在 corrections 数组中记录。这会帮助系统更新旧记忆。
-corrections 格式：
-  {"old_content": "被纠正的内容关键词", "new_content": "正确内容", "reason": "纠正原因"}
+在 corrections 数组中记录。
 如果没有纠正，corrections 为空数组。
 
 如果对话中没有值得记住的内容，memories 数组留空。"""
+
+_EXTRACT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "extract_memories",
+        "description": "从对话中提取值得长期记住的信息",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "memories": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": {
+                                "type": "string",
+                                "description": "自含的记忆描述，包含主语",
+                            },
+                            "category": {
+                                "type": "string",
+                                "enum": [
+                                    "identity", "preference", "relationship",
+                                    "event", "task", "knowledge",
+                                ],
+                            },
+                            "key": {
+                                "type": "string",
+                                "description": (
+                                    "语义标识，如 name/location/favorite_drink。"
+                                    "identity/preference/relationship/knowledge 必填"
+                                ),
+                            },
+                            "importance": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 10,
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "time_ref": {
+                                "type": "string",
+                                "description": "绝对日期如 2026-04-07，相对时间必须转为绝对日期",
+                            },
+                            "expires": {
+                                "type": "string",
+                                "description": "过期日期。event/task 必填，为 time_ref+1天",
+                            },
+                        },
+                        "required": ["content", "category", "importance"],
+                    },
+                },
+                "corrections": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_content": {"type": "string"},
+                            "new_content": {"type": "string"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["old_content", "new_content"],
+                    },
+                },
+                "profile_update": {},
+                "episode_summary": {
+                    "type": "string",
+                    "description": "一句话概括对话",
+                },
+                "mood": {
+                    "type": "string",
+                    "enum": [
+                        "neutral", "happy", "sad", "angry",
+                        "anxious", "excited", "tired",
+                    ],
+                },
+                "topics": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": [
+                "memories", "corrections", "episode_summary", "mood", "topics",
+            ],
+        },
+    },
+}
 
 _DEDUP_PROMPT_HEADER = """判断新记忆与已有记忆的关系。
 
@@ -286,8 +339,11 @@ class MemoryManager:
                 if deactivated:
                     self.logger.info("Memory corrected: deactivated '%s'", old_kw)
 
+        # 1c. Post-process: validate and fix extracted memories
+        memories = self._postprocess_extraction(extraction.get("memories", []))
+
         # 2. Process each extracted memory
-        for mem in extraction.get("memories", []):
+        for mem in memories:
             content = mem.get("content", "").strip()
             if not content:
                 continue
@@ -454,6 +510,53 @@ class MemoryManager:
         )
 
     # ------------------------------------------------------------------
+    # Post-processing
+    # ------------------------------------------------------------------
+
+    def _postprocess_extraction(self, memories: list[dict]) -> list[dict]:
+        """Validate and fix extracted memories.
+
+        Fixes:
+          - Derive ``key`` for identity/preference/relationship/knowledge
+            when missing.
+          - Back-fill ``expires`` from ``time_ref`` for event/task.
+          - Clamp ``importance`` to [1, 10]; enforce minimum 7 for identity.
+        """
+        for mem in memories:
+            category = mem.get("category", "")
+            key = mem.get("key")
+            content = mem.get("content", "")
+
+            # 1. key missing — derive from content hash
+            if category in ("identity", "preference", "relationship", "knowledge") and not key:
+                import hashlib
+                short = content[:30].strip()
+                mem["key"] = hashlib.md5(short.encode()).hexdigest()[:8]
+
+            # 2. expires missing — back-fill from time_ref + 1 day
+            if category in ("event", "task"):
+                time_ref = mem.get("time_ref")
+                if time_ref and not mem.get("expires"):
+                    try:
+                        from datetime import timedelta
+                        dt = datetime.strptime(time_ref, "%Y-%m-%d")
+                        mem["expires"] = (dt + timedelta(days=1)).strftime("%Y-%m-%d")
+                    except ValueError:
+                        pass
+
+            # 3. importance — clamp to [1, 10]
+            imp = mem.get("importance", 5)
+            try:
+                imp = int(imp)
+            except (TypeError, ValueError):
+                imp = 5
+            mem["importance"] = max(1, min(10, imp))
+            if category == "identity" and mem["importance"] < 7:
+                mem["importance"] = 7
+
+        return memories
+
+    # ------------------------------------------------------------------
     # LLM calls
     # ------------------------------------------------------------------
 
@@ -464,12 +567,76 @@ class MemoryManager:
         existing: list[str],
         user_name: str,
     ) -> dict | None:
-        """Call LLM to extract memories from a conversation."""
+        """Call LLM to extract memories via function calling, with JSON fallback."""
         profile_str = json.dumps(profile, ensure_ascii=False, indent=2) if profile else "{}"
         existing_str = "\n".join(f"- {e}" for e in existing[-30:]) if existing else "(无)"
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        system_msg = (
+            _EXTRACT_PROMPT_HEADER.format(today=today)
+            + "\n\n当前用户名：" + user_name
+            + "\n\n当前用户画像：\n" + profile_str
+            + "\n\n已有记忆（避免重复）：\n" + existing_str
+        )
+
+        if not self._llm_api_key:
+            self.logger.warning("No LLM API key for memory extraction")
+            return None
+
+        try:
+            resp = requests.post(
+                f"{self._llm_base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self._llm_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self._llm_model,
+                    "messages": [
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": conversation},
+                    ],
+                    "temperature": 0,
+                    "max_tokens": 1000,
+                    "tools": [_EXTRACT_TOOL],
+                    "tool_choice": {
+                        "type": "function",
+                        "function": {"name": "extract_memories"},
+                    },
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            raw_args = (
+                resp.json()["choices"][0]["message"]["tool_calls"][0]
+                ["function"]["arguments"]
+            )
+            result = json.loads(raw_args)
+            self.logger.info("Memory extraction via function calling succeeded")
+            return result
+        except Exception as exc:
+            self.logger.warning(
+                "Function calling extraction failed (%s), falling back to JSON mode",
+                exc,
+            )
+            return self._call_llm_extract_json(
+                conversation, profile, existing, user_name,
+            )
+
+    def _call_llm_extract_json(
+        self,
+        conversation: str,
+        profile: dict | None,
+        existing: list[str],
+        user_name: str,
+    ) -> dict | None:
+        """Fallback: extract memories via free-text JSON output."""
+        profile_str = json.dumps(profile, ensure_ascii=False, indent=2) if profile else "{}"
+        existing_str = "\n".join(f"- {e}" for e in existing[-30:]) if existing else "(无)"
+        today = datetime.now().strftime("%Y-%m-%d")
 
         prompt = (
-            _EXTRACT_PROMPT_HEADER
+            _EXTRACT_PROMPT_HEADER.format(today=today)
             + "\n\n当前用户名：" + user_name
             + "\n\n当前用户画像：\n" + profile_str
             + "\n\n已有记忆（避免重复）：\n" + existing_str
