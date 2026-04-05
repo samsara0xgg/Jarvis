@@ -353,3 +353,211 @@ class TestRebuildProfilePendingCleanup:
         pending = profile.get("pending", [])
         assert len(pending) == 1
         assert "今天的面试" in pending[0]["content"]
+
+    def test_pending_with_non_dict_items_survives(self, mgr: MemoryManager):
+        """Profile with non-dict pending items should not crash rebuild."""
+        # Pre-seed a profile with corrupted pending (string instead of dict)
+        mgr.store.set_profile("u1", {
+            "identity": {}, "preferences": {}, "relationships": {},
+            "routines": {}, "pending": ["stale string item", 42], "status": "",
+        })
+        mgr.store.add_memory(
+            user_id="u1", content="新的任务",
+            category="task", importance=7.0,
+            time_ref="2099-12-31", expires="2099-12-31",
+            embedding=_encode("新的任务"),
+        )
+        # Should not crash
+        mgr._rebuild_profile("u1")
+        profile = mgr.store.get_profile("u1")
+        # Old non-dict items should be filtered out, new task kept
+        pending = profile.get("pending", [])
+        assert all(isinstance(p, dict) for p in pending)
+
+
+# ---------------------------------------------------------------
+# Phase 1 deep verification — additional edge cases
+# ---------------------------------------------------------------
+
+class TestTimezoneEdgeCases:
+    """C1: Verify timezone handling in episode queries."""
+
+    def test_today_episode_always_found(self, store: MemoryStore):
+        """Episode from today should always be within any days window."""
+        from datetime import datetime as dt
+        today = dt.now().strftime("%Y-%m-%d")
+        store.add_episode("u1", "s1", "今天的对话", today)
+        episodes = store.get_recent_episodes("u1", days=1)
+        assert len(episodes) == 1
+
+    def test_episode_boundary_exactly_n_days(self, store: MemoryStore):
+        """Episode from exactly N days ago should be included (>= boundary)."""
+        from datetime import datetime as dt, timedelta
+        boundary_date = (dt.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+        store.add_episode("u1", "s1", "三天前的对话", boundary_date)
+        episodes = store.get_recent_episodes("u1", days=3)
+        assert len(episodes) == 1, f"Episode on boundary date {boundary_date} should be included"
+
+    def test_episode_just_outside_window(self, store: MemoryStore):
+        """Episode from N+1 days ago should be excluded."""
+        from datetime import datetime as dt, timedelta
+        old_date = (dt.now() - timedelta(days=4)).strftime("%Y-%m-%d")
+        store.add_episode("u1", "s1", "四天前的对话", old_date)
+        episodes = store.get_recent_episodes("u1", days=3)
+        assert len(episodes) == 0
+
+
+class TestSweepExpiredAdditional:
+    """C3: Additional sweep edge cases."""
+
+    def test_already_inactive_not_double_swept(self, store: MemoryStore):
+        """Already inactive memories should not be counted in sweep."""
+        mem_id = store.add_memory(
+            user_id="u1", content="旧事件",
+            category="event", importance=5.0,
+            expires="2020-01-01", embedding=_encode("旧事件"),
+        )
+        # Manually deactivate first
+        store.deactivate_memory_by_id(mem_id)
+        assert store.count_active("u1") == 0
+        # Sweep should find nothing
+        swept = store.sweep_expired()
+        assert swept == 0
+
+    def test_backfill_ignores_non_event_task(self, store: MemoryStore):
+        """Backfill should not touch identity/preference even with time_ref."""
+        store.add_memory(
+            user_id="u1", content="Allen 2026年搬到温哥华",
+            category="identity", importance=8.0,
+            time_ref="2026-01-15", embedding=_encode("搬家"),
+        )
+        backfilled = store.backfill_expires()
+        assert backfilled == 0
+        mems = store.get_active_memories("u1")
+        assert mems[0].get("expires") is None
+
+    def test_backfill_with_invalid_time_ref(self, store: MemoryStore):
+        """Backfill with non-date time_ref should not crash (SQLite date() returns null)."""
+        store.add_memory(
+            user_id="u1", content="模糊时间的事件",
+            category="event", importance=5.0,
+            time_ref="下周某天", embedding=_encode("模糊事件"),
+        )
+        # Should not crash, but may or may not backfill depending on SQLite behavior
+        backfilled = store.backfill_expires()
+        # Just verify no crash — the result depends on SQLite's date() handling
+        assert isinstance(backfilled, int)
+
+    def test_maintain_returns_swept_and_backfilled(self, mgr: MemoryManager):
+        """maintain() should include swept and backfilled in return dict."""
+        # Add an expired event
+        mgr.store.add_memory(
+            user_id="u1", content="过期事件",
+            category="event", importance=5.0,
+            expires="2020-01-01", embedding=_encode("过期事件"),
+        )
+        # Add an event with time_ref but no expires
+        mgr.store.add_memory(
+            user_id="u1", content="需要 backfill 的事件",
+            category="event", importance=5.0,
+            time_ref="2099-06-01", embedding=_encode("backfill事件"),
+        )
+        result = mgr.maintain("u1")
+        assert "swept" in result
+        assert "backfilled" in result
+        assert result["swept"] == 1
+        assert result["backfilled"] == 1
+
+
+class TestDirectAnswerBoundary:
+    """C2: DirectAnswer threshold boundary and edge cases."""
+
+    def test_score_just_below_threshold_returns_none(self, answerer, store: MemoryStore):
+        """Score at 0.549 should not trigger (< 0.55)."""
+        # Create controlled vectors with known cosine similarity
+        v_mem = np.zeros(512, dtype=np.float32)
+        v_mem[0] = 1.0
+
+        store.add_memory(
+            user_id="u_b", content="Allen 喜欢拿铁",
+            category="preference", key="drink",
+            importance=8.0, embedding=v_mem,
+        )
+
+        # Craft query vector with cosine = 0.549 to v_mem
+        # cos(theta) = 0.549 → v_query = [0.549, sqrt(1 - 0.549^2), 0, 0, ...]
+        import math
+        cos_target = 0.549
+        v_query = np.zeros(512, dtype=np.float32)
+        v_query[0] = cos_target
+        v_query[1] = math.sqrt(1 - cos_target ** 2)
+
+        answerer._embedder.encode = lambda _text: v_query
+        result = answerer.try_answer("咖啡", "u_b")
+        assert result is None
+
+    def test_score_just_above_threshold_returns_answer(self, answerer, store: MemoryStore):
+        """Score at 0.56 should trigger (> 0.55), assuming margin is sufficient."""
+        v_mem = np.zeros(512, dtype=np.float32)
+        v_mem[0] = 1.0
+
+        store.add_memory(
+            user_id="u_a", content="Allen 喜欢拿铁",
+            category="preference", key="drink",
+            importance=8.0, embedding=v_mem,
+        )
+
+        import math
+        cos_target = 0.56
+        v_query = np.zeros(512, dtype=np.float32)
+        v_query[0] = cos_target
+        v_query[1] = math.sqrt(1 - cos_target ** 2)
+
+        answerer._embedder.encode = lambda _text: v_query
+        # Only 1 candidate → no margin check
+        result = answerer.try_answer("咖啡", "u_a")
+        assert result is not None
+        assert "拿铁" in result
+
+    def test_empty_content_memory_skipped(self, answerer, store: MemoryStore):
+        """Memory with no embedding should be silently skipped."""
+        store.add_memory(
+            user_id="u_e", content="no embedding memory",
+            category="preference", key="test",
+            importance=5.0,
+            # No embedding!
+        )
+        result = answerer.try_answer("anything", "u_e")
+        assert result is None
+
+
+class TestBudgetAndUsageGuide:
+    """C4: Verify budget cap and usage guide relocation."""
+
+    def test_memory_context_under_new_budget(self, mgr: MemoryManager):
+        """With 2000 char budget, more memories fit than with old 1200."""
+        profile = {"identity": {"name": "Allen"}, "preferences": {"likes": ["拿铁"]}}
+        mgr.store.set_profile("u1", profile)
+        # Add 15 memories — would exceed 1200 but fit in 2000
+        for i in range(15):
+            mgr.store.add_memory(
+                user_id="u1", content=f"Allen 的记忆条目 {i} — 包含一些内容来填充字符",
+                category="preference", importance=5.0,
+                embedding=_encode(f"memory_{i}"),
+            )
+        result = mgr.query("test", "u1")
+        # Should have content (not truncated to nothing)
+        assert "[记忆]" in result
+        # Should be under budget
+        assert len(result) <= 2500  # 2000 + XML tags overhead
+
+    def test_usage_guide_not_in_memory_block(self, mgr: MemoryManager):
+        """Usage guide should NOT appear in the <memory> block anymore."""
+        mgr.store.add_memory(
+            user_id="u1", content="Allen 喜欢拿铁",
+            category="preference", importance=5.0,
+            embedding=_encode("拿铁"),
+        )
+        result = mgr.query("test", "u1")
+        assert "使用原则" not in result
+        assert "像朋友一样" not in result

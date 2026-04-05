@@ -429,7 +429,11 @@ class TestMaintain:
     def test_maintain_empty(self, manager: MemoryManager):
         """No memories → no-op."""
         result = manager.maintain("user1")
-        assert result == {"merged": 0, "checked": 0, "skipped": 0}
+        assert result["merged"] == 0
+        assert result["checked"] == 0
+        assert result["skipped"] == 0
+        assert "swept" in result
+        assert "backfilled" in result
 
     def test_maintain_no_duplicates(self, manager: MemoryManager):
         """Unrelated memories → nothing to merge."""

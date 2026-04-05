@@ -241,9 +241,12 @@ class MemoryManager:
         if swept or backfilled:
             self.logger.info("Maintenance: swept %d expired, backfilled %d expires", swept, backfilled)
 
+        base_result = {"merged": 0, "checked": 0, "skipped": 0,
+                       "swept": swept, "backfilled": backfilled}
+
         ids, contents, categories, embeddings = self.store.get_embedding_index(user_id)
         if embeddings is None or len(ids) < 2:
-            return {"merged": 0, "checked": 0, "skipped": 0}
+            return base_result
 
         # All-pairs cosine similarity (embeddings are unit-norm)
         sim_matrix = embeddings @ embeddings.T
@@ -505,12 +508,12 @@ class MemoryManager:
                     if content not in existing_topics:
                         pending.append({"content": content, "date": expires})
 
-        # Filter out expired pending items (date < today, unless today)
+        # Filter out expired and corrupted pending items
         today = datetime.now().strftime("%Y-%m-%d")
         if profile.get("pending"):
             profile["pending"] = [
                 p for p in profile["pending"]
-                if not isinstance(p, dict) or p.get("date", "9999") >= today
+                if isinstance(p, dict) and p.get("date", "9999") >= today
             ]
 
         self.store.set_profile(user_id, profile)
