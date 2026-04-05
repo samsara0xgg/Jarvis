@@ -20,12 +20,13 @@ _SIMILARITY_THRESHOLD = 0.35
 _MIN_COSINE = 0.35
 # Margin between top-1 and top-2 multi-signal scores
 _MARGIN_THRESHOLD = 0.05
-_ANSWERABLE_CATEGORIES = {"preference", "identity", "knowledge"}
+_ANSWERABLE_CATEGORIES = {"preference", "identity", "knowledge", "relationship"}
 
 _ANSWER_TEMPLATES = {
     "preference": "你跟我说过，{content}",
     "identity": "我记得，{content}",
     "knowledge": "你之前告诉过我，{content}",
+    "relationship": "我记得，{content}",
 }
 
 
