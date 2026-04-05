@@ -114,7 +114,7 @@ class IntentRouter:
         # Cerebras (fallback)
         cerebras_cfg = config.get("models", {}).get("cerebras", {})
         self.cerebras_key = cerebras_cfg.get("api_key") or os.environ.get("CEREBRAS_API_KEY", "")
-        self.cerebras_model = cerebras_cfg.get("router_model", "llama3.1-8b")
+        self.cerebras_model = cerebras_cfg.get("router_model", "llama-3.3-70b")
         self.cerebras_url = "https://api.cerebras.ai/v1/chat/completions"
 
         self.logger.info(

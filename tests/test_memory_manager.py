@@ -332,6 +332,101 @@ class TestSavePipeline:
         assert not any(c == "Allen 喜欢拿铁" for c in contents)
 
 
+class TestDedupDelete:
+    """Dedup DELETE action and top_k expansion tests."""
+
+    def _mock_llm_response(self, manager: MemoryManager, extraction: dict):
+        """Patch the LLM call to return a fixed extraction result."""
+        manager._call_openai_json = MagicMock(return_value=extraction)
+
+    def test_dedup_delete_deactivates_old_and_adds_new(self, manager: MemoryManager):
+        """DELETE action should deactivate the old memory and add the new one."""
+        # Use a fixed embedding so old and new share the same vector (cosine=1.0),
+        # which guarantees the LLM dedup path is reached.
+        fixed_emb = np.random.RandomState(42).randn(512).astype(np.float32)
+        fixed_emb /= np.linalg.norm(fixed_emb)
+
+        old_id = manager.store.add_memory(
+            user_id="user1", content="Allen 喜欢拿铁",
+            category="preference", importance=7.0, embedding=fixed_emb.copy(),
+        )
+
+        # Override embedder to always return the same vector
+        manager.embedder.encode = lambda text: fixed_emb.copy()
+
+        # Mock extraction (via _call_llm_extract) and dedup (via _call_openai_json)
+        manager._call_llm_extract = MagicMock(return_value={
+            "memories": [{
+                "content": "Allen 不喜欢拿铁，改喝美式了",
+                "category": "preference",
+                "importance": 8,
+                "tags": [],
+            }],
+            "corrections": [],
+            "episode_summary": "Allen 改了饮品偏好",
+            "mood": "neutral",
+            "topics": [],
+        })
+        manager._call_openai_json = MagicMock(
+            return_value={"action": "DELETE", "target_id": old_id},
+        )
+
+        manager.save(
+            [{"role": "user", "content": "我不喜欢拿铁了，改喝美式"}],
+            "user1", "session1",
+        )
+
+        active = manager.store.get_active_memories("user1")
+        contents = [m["content"] for m in active]
+        # Old memory should be deactivated
+        assert "Allen 喜欢拿铁" not in contents
+        # New memory should be added
+        assert any("美式" in c for c in contents)
+
+    def test_dedup_top_k_is_10(self, manager: MemoryManager):
+        """find_similar should be called with top_k=10."""
+        # Add an existing memory so embedding path is triggered
+        emb = manager.embedder.encode("existing memory")
+        manager.store.add_memory(
+            user_id="user1", content="existing memory",
+            category="fact", importance=5.0, embedding=emb,
+        )
+
+        # Mock extraction and dedup separately
+        manager._call_llm_extract = MagicMock(return_value={
+            "memories": [{
+                "content": "new memory content",
+                "category": "fact",
+                "importance": 5,
+                "tags": [],
+            }],
+            "corrections": [],
+            "episode_summary": "test",
+            "mood": "neutral",
+            "topics": [],
+        })
+        manager._call_openai_json = MagicMock(
+            return_value={"action": "ADD", "target_id": None},
+        )
+
+        # Spy on find_similar
+        original_find_similar = manager.retriever.find_similar
+        find_similar_calls = []
+        def spy_find_similar(*args, **kwargs):
+            find_similar_calls.append(kwargs)
+            return original_find_similar(*args, **kwargs)
+
+        manager.retriever.find_similar = spy_find_similar
+
+        manager.save(
+            [{"role": "user", "content": "something"}],
+            "user1", "session1",
+        )
+
+        assert len(find_similar_calls) >= 1
+        assert find_similar_calls[0].get("top_k") == 10
+
+
 class TestMaintain:
     """Weekly maintenance — duplicate merging."""
 

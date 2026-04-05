@@ -184,6 +184,16 @@ class MemoryStore:
         conn.commit()
         LOGGER.info("Memory superseded: %s → %s", old_id, new_id)
 
+    def deactivate_memory_by_id(self, memory_id: str) -> bool:
+        """Deactivate a specific memory by ID. Returns True if found."""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE memories SET active = 0, updated_at = ? WHERE id = ? AND active = 1",
+            (datetime.now().isoformat(), memory_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
     def deactivate_memory(self, user_id: str, content_match: str) -> bool:
         """Deactivate a memory matching user_id and content substring.
 
