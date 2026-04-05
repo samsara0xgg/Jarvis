@@ -320,12 +320,7 @@ class MemoryManager:
         on API keys).
         """
         cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-        conn = self.store._get_conn()
-        rows = conn.execute(
-            "SELECT date, summary FROM episodes WHERE user_id = ? AND date < ? "
-            "ORDER BY date",
-            (user_id, cutoff),
-        ).fetchall()
+        rows = self.store.get_episodes_before(user_id, cutoff)
 
         if not rows:
             return
@@ -347,12 +342,7 @@ class MemoryManager:
             # Check if digest already exists for this week
             dates = [e["date"] for e in entries]
             period_start, period_end = min(dates), max(dates)
-            existing = conn.execute(
-                "SELECT id FROM episode_digests WHERE user_id = ? "
-                "AND period_start = ? AND period_end = ?",
-                (user_id, period_start, period_end),
-            ).fetchone()
-            if existing:
+            if self.store.digest_exists(user_id, period_start, period_end):
                 continue
 
             # Build digest: simple concatenation (no LLM dependency)
@@ -697,11 +687,12 @@ class MemoryManager:
             )
             return
 
-        # Fallback: use key as relation
+        # Fallback: use key as relation, content[:20] as target
         if key:
             parts = content.split(None, 1)
             if len(parts) >= 2:
-                self.store.add_relation(user_id, parts[0], key, content)
+                target = parts[1][:20].rstrip("，。、")
+                self.store.add_relation(user_id, parts[0], key, target)
 
     # ------------------------------------------------------------------
     # LLM calls

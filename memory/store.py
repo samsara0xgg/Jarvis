@@ -442,6 +442,26 @@ class MemoryStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_episodes_before(self, user_id: str, before_date: str) -> list[dict[str, Any]]:
+        """Return episodes with date < before_date, oldest first."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT date, summary FROM episodes WHERE user_id = ? AND date < ? "
+            "ORDER BY date",
+            (user_id, before_date),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def digest_exists(self, user_id: str, period_start: str, period_end: str) -> bool:
+        """Check if a digest already exists for the given period."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id FROM episode_digests WHERE user_id = ? "
+            "AND period_start = ? AND period_end = ?",
+            (user_id, period_start, period_end),
+        ).fetchone()
+        return row is not None
+
     # ------------------------------------------------------------------
     # Expiry maintenance
     # ------------------------------------------------------------------
