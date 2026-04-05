@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -501,6 +502,13 @@ class MemoryManager:
                         )
                     # NONE → skip
 
+        # 2b. Extract relations from relationship memories
+        for mem in memories:
+            if mem.get("category") == "relationship":
+                content = mem.get("content", "")
+                if content:
+                    self._extract_and_store_relation(user_id, content, mem.get("key"))
+
         # 3. Update profile
         #    Use LLM's profile_update if provided, otherwise auto-build from memories
         profile_update = extraction.get("profile_update")
@@ -668,6 +676,32 @@ class MemoryManager:
                 mem["importance"] = 7
 
         return memories
+
+    def _extract_and_store_relation(
+        self, user_id: str, content: str, key: str | None,
+    ) -> None:
+        """Extract entity pair from relationship memory and store in relations table."""
+        # Pattern: "X 的 Y 叫/是 Z"
+        match = re.search(r'(\S+)\s*的\s*(\S+?)\s*[叫是]\s*(\S+)', content)
+        if match:
+            self.store.add_relation(
+                user_id, match.group(1), match.group(2), match.group(3),
+            )
+            return
+
+        # Pattern: "X 有个/有一个 Y 叫 Z"
+        match = re.search(r'(\S+)\s*有[个一][个]?\s*(\S+?)\s*叫\s*(\S+)', content)
+        if match:
+            self.store.add_relation(
+                user_id, match.group(1), match.group(2), match.group(3),
+            )
+            return
+
+        # Fallback: use key as relation
+        if key:
+            parts = content.split(None, 1)
+            if len(parts) >= 2:
+                self.store.add_relation(user_id, parts[0], key, content)
 
     # ------------------------------------------------------------------
     # LLM calls

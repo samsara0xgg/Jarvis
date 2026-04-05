@@ -137,6 +137,41 @@ class TestUserProfiles:
         assert result["location"] == "温哥华"
 
 
+class TestRelations:
+    """Entity relationship storage."""
+
+    def test_add_and_get_relation(self, store: MemoryStore):
+        rel_id = store.add_relation("u1", "Allen", "妹妹", "小美", "mem1")
+        assert rel_id
+        rels = store.get_relations("u1")
+        assert len(rels) == 1
+        assert rels[0]["source_entity"] == "Allen"
+        assert rels[0]["target_entity"] == "小美"
+
+    def test_get_relations_by_entity(self, store: MemoryStore):
+        store.add_relation("u1", "Allen", "妹妹", "小美")
+        store.add_relation("u1", "Allen", "女朋友", "Sarah")
+        store.add_relation("u1", "Allen", "同事", "Tom")
+        rels = store.get_relations("u1", entity="Allen")
+        assert len(rels) == 3
+        rels = store.get_relations("u1", entity="小美")
+        assert len(rels) == 1
+
+    def test_get_all_entities(self, store: MemoryStore):
+        store.add_relation("u1", "Allen", "妹妹", "小美")
+        store.add_relation("u1", "Allen", "女朋友", "Sarah")
+        entities = store.get_all_entities("u1")
+        assert "Allen" in entities
+        assert "小美" in entities
+        assert "Sarah" in entities
+
+    def test_user_isolation(self, store: MemoryStore):
+        store.add_relation("u1", "Allen", "妹妹", "小美")
+        store.add_relation("u2", "Bob", "弟弟", "Tom")
+        assert len(store.get_relations("u1")) == 1
+        assert len(store.get_relations("u2")) == 1
+
+
 class TestEpisodes:
     """Conversation episode storage."""
 

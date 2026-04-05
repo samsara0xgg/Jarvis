@@ -719,6 +719,47 @@ class TestFormatMemoryContextDigests:
         assert "[更早]" not in result
 
 
+class TestRelationExtraction:
+    """C13: Relation auto-extraction from relationship memories."""
+
+    def test_relationship_memory_extracts_relation(self, manager: MemoryManager):
+        """Saving a relationship memory should auto-extract entity pair."""
+        manager._call_llm_extract = MagicMock(return_value={
+            "memories": [{
+                "content": "Allen 的妹妹叫小美",
+                "category": "relationship",
+                "key": "sister",
+                "importance": 7,
+            }],
+            "corrections": [],
+            "episode_summary": "test",
+            "mood": "neutral",
+            "topics": [],
+        })
+        manager.save([{"role": "user", "content": "我妹妹叫小美"}], "u1", "s1")
+        rels = manager.store.get_relations("u1")
+        assert len(rels) >= 1
+        assert any(r["target_entity"] == "小美" for r in rels)
+
+    def test_non_relationship_memory_no_relation(self, manager: MemoryManager):
+        """Non-relationship memories should not create relations."""
+        manager._call_llm_extract = MagicMock(return_value={
+            "memories": [{
+                "content": "Allen 喜欢拿铁",
+                "category": "preference",
+                "key": "drink",
+                "importance": 6,
+            }],
+            "corrections": [],
+            "episode_summary": "test",
+            "mood": "neutral",
+            "topics": [],
+        })
+        manager.save([{"role": "user", "content": "我喜欢拿铁"}], "u1", "s1")
+        rels = manager.store.get_relations("u1")
+        assert len(rels) == 0
+
+
 class TestSaveWithEmotion:
     """C12: Detected emotion signal passthrough."""
 

@@ -98,6 +98,21 @@ class MemoryStore:
             CREATE INDEX IF NOT EXISTS idx_episodes_user_date
                 ON episodes(user_id, date);
 
+            CREATE TABLE IF NOT EXISTS memory_relations (
+                id              TEXT PRIMARY KEY,
+                user_id         TEXT NOT NULL,
+                source_entity   TEXT NOT NULL,
+                relation        TEXT NOT NULL,
+                target_entity   TEXT NOT NULL,
+                memory_id       TEXT,
+                created_at      TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_relations_user
+                ON memory_relations(user_id);
+            CREATE INDEX IF NOT EXISTS idx_relations_entities
+                ON memory_relations(user_id, source_entity);
+
             CREATE TABLE IF NOT EXISTS episode_digests (
                 id          TEXT PRIMARY KEY,
                 user_id     TEXT NOT NULL,
@@ -487,6 +502,57 @@ class MemoryStore:
             (user_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Relations
+    # ------------------------------------------------------------------
+
+    def add_relation(
+        self,
+        user_id: str,
+        source_entity: str,
+        relation: str,
+        target_entity: str,
+        memory_id: str | None = None,
+    ) -> str:
+        """Store an entity relationship. Returns relation ID."""
+        rel_id = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO memory_relations (id, user_id, source_entity, relation, "
+            "target_entity, memory_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (rel_id, user_id, source_entity, relation, target_entity, memory_id, now),
+        )
+        conn.commit()
+        return rel_id
+
+    def get_relations(self, user_id: str, entity: str | None = None) -> list[dict]:
+        """Get relations for a user, optionally filtered by entity name."""
+        conn = self._get_conn()
+        if entity:
+            rows = conn.execute(
+                "SELECT * FROM memory_relations WHERE user_id = ? "
+                "AND (source_entity = ? OR target_entity = ?)",
+                (user_id, entity, entity),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM memory_relations WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_all_entities(self, user_id: str) -> list[str]:
+        """Get all unique entity names mentioned by a user."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT DISTINCT source_entity FROM memory_relations WHERE user_id = ? "
+            "UNION "
+            "SELECT DISTINCT target_entity FROM memory_relations WHERE user_id = ?",
+            (user_id, user_id),
+        ).fetchall()
+        return [r[0] for r in rows]
 
     # ------------------------------------------------------------------
     # Helpers
