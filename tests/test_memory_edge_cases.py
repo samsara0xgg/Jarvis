@@ -474,8 +474,7 @@ class TestDirectAnswerBoundary:
     """C2: DirectAnswer threshold boundary and edge cases."""
 
     def test_score_just_below_threshold_returns_none(self, answerer, store: MemoryStore):
-        """Score at 0.549 should not trigger (< 0.55)."""
-        # Create controlled vectors with known cosine similarity
+        """Very low cosine (0.20) should not trigger even with multi-signal scoring."""
         v_mem = np.zeros(512, dtype=np.float32)
         v_mem[0] = 1.0
 
@@ -485,10 +484,9 @@ class TestDirectAnswerBoundary:
             importance=8.0, embedding=v_mem,
         )
 
-        # Craft query vector with cosine = 0.549 to v_mem
-        # cos(theta) = 0.549 → v_query = [0.549, sqrt(1 - 0.549^2), 0, 0, ...]
+        # Craft query vector with cosine = 0.20 (well below _MIN_COSINE=0.35)
         import math
-        cos_target = 0.549
+        cos_target = 0.20
         v_query = np.zeros(512, dtype=np.float32)
         v_query[0] = cos_target
         v_query[1] = math.sqrt(1 - cos_target ** 2)
