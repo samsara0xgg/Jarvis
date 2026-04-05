@@ -4,7 +4,7 @@
 基于 Mem0/MemGPT/ChatGPT/Gemini/Zep 等系统的 deep research（31篇来源），对小贾记忆系统进行 13 项改进，涵盖 bug 修复、提取质量、检索智能、情景记忆四个阶段。
 
 ## Current Phase
-Phase 4 (Phase 1 ✅, Phase 2 ✅, Phase 3 ✅)
+ALL COMPLETE ✅ (Phase 1-4 done)
 
 ## Phases
 
@@ -38,8 +38,8 @@ Phase 4 (Phase 1 ✅, Phase 2 ✅, Phase 3 ✅)
 - [ ] **C12** 情绪信号传导（ASR → memory save）
 - [ ] **C13** 简化版关系索引（memory_relations 表，替代 Neo4j）
 - [ ] 跑 `python -m pytest tests/ -q` 验证
-- **Status:** pending
-- **验收**: episode 3天后可查; mood 不再全是 neutral
+- **Status:** complete ✅
+- **结果**: 806 passed; episode dedup+digest; emotion passthrough; relation index 3 patterns
 
 ## Key Questions
 1. bge-small-zh 当前版本的 cosine 分布是否确认集中在 [0.6, 1.0]？→ C2 校准脚本回答

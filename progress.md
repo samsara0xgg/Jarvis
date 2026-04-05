@@ -47,4 +47,11 @@
 - 重新测评基线: DA=60%(非5%), Retriever=100%, 负面=100%
 - DA 未命中集中在人名/实体查询(cosine ~0.50 < 0.55)
 - 785 passed
-### Next: Phase 4 (C11+C12+C13)
+---
+## Session 5 — 2026-04-05
+### Phase 4 完成 ✅ (806 passed, +49 tests from Phase 0)
+- C11: episode Jaccard dedup + episode_digests 表 + weekly compression
+- C12: save() accepts detected_emotion, ASR overrides LLM mood
+- C13: memory_relations 表 + regex 提取 (X的Y叫Z等3模式) + 6 tests
+- 手动 merge C13 (cherry-pick 冲突太复杂，直接编辑)
+### 全部 13 项改进完成 🎉

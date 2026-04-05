@@ -1,9 +1,15 @@
 """Tests for memory.direct_answer — Level 1 memory-based direct answers."""
 from __future__ import annotations
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
-from memory.direct_answer import DirectAnswerer
+from memory.direct_answer import (
+    DirectAnswerer,
+    _ANSWERABLE_CATEGORIES,
+    _MARGIN_THRESHOLD,
+    _MIN_COSINE,
+    _SIMILARITY_THRESHOLD,
+)
 
 
 @pytest.fixture()
@@ -47,7 +53,7 @@ class TestDirectAnswerer:
             category="preference", key="favorite_drink",
             importance=8.0, embedding=emb,
         )
-        # Same text → same mock vector → cosine = 1.0
+        # Same text -> same mock vector -> cosine = 1.0
         result = answerer.try_answer(content, "user1")
         assert result is not None
         assert "拿铁" in result
@@ -131,8 +137,7 @@ class TestDirectAnswerer:
         assert "花生" in result
 
     def test_only_answerable_categories_queried(self, answerer: DirectAnswerer):
-        """get_memories_by_categories is called with _ANSWERABLE_CATEGORIES, not all memories."""
-        from unittest.mock import patch, MagicMock
+        """get_memories_by_categories is called with _ANSWERABLE_CATEGORIES."""
         content = "Allen 喜欢绿茶"
         emb = answerer._embedder.encode(content)
         answerer._store.add_memory(
@@ -154,3 +159,100 @@ class TestDirectAnswerer:
             called_categories = mock_method.call_args[0][1]
             assert "preference" in called_categories
             assert "event" not in called_categories
+
+    def test_retriever_scoring_used(self, answerer: DirectAnswerer):
+        """Verify DA delegates to retriever for multi-signal scoring."""
+        content = "Allen 的生日是 5 月 1 日"
+        emb = answerer._embedder.encode(content)
+        answerer._store.add_memory(
+            user_id="user1", content=content,
+            category="identity", key="birthday",
+            importance=9.0, embedding=emb,
+        )
+        with patch.object(
+            answerer._retriever, "retrieve",
+            wraps=answerer._retriever.retrieve,
+        ) as mock_retrieve:
+            result = answerer.try_answer(content, "user1")
+            mock_retrieve.assert_called_once()
+            assert result is not None
+            assert "5 月 1 日" in result
+
+    def test_cosine_safety_net_blocks_low_cosine(self, answerer: DirectAnswerer):
+        """Even with high multi-signal score, low raw cosine should block."""
+        content = "Allen 住在温哥华"
+        emb = answerer._embedder.encode(content)
+        answerer._store.add_memory(
+            user_id="user1", content=content,
+            category="identity", key="location",
+            importance=9.0, embedding=emb,
+        )
+        # Mock retriever to return high _score but memory has low cosine
+        fake_result = {
+            "id": "fake-id",
+            "content": content,
+            "category": "identity",
+            "embedding": emb,
+            "_score": 0.80,  # High combined score
+        }
+        # Use a query vector nearly orthogonal to the memory embedding
+        orthogonal_emb = np.zeros(512, dtype=np.float32)
+        orthogonal_emb[0] = 1.0  # arbitrary unit vector
+        # Ensure cosine is very low
+        raw_cos = float(orthogonal_emb @ emb)
+        assert abs(raw_cos) < _MIN_COSINE
+
+        with patch.object(
+            answerer._retriever, "retrieve", return_value=[fake_result],
+        ):
+            with patch.object(
+                answerer._embedder, "encode", return_value=orthogonal_emb,
+            ):
+                result = answerer.try_answer("完全不相关的查询", "user1")
+                assert result is None
+
+    def test_margin_check_blocks_ambiguous(self, answerer: DirectAnswerer):
+        """Two memories with very close scores should be rejected."""
+        for text in ("Allen 喜欢拿铁", "Allen 喜欢绿茶"):
+            emb = answerer._embedder.encode(text)
+            answerer._store.add_memory(
+                user_id="user1", content=text,
+                category="preference",
+                importance=8.0, embedding=emb,
+            )
+        # Mock retriever to return two results with tiny margin
+        fake_results = [
+            {"id": "a", "content": "Allen 喜欢拿铁", "category": "preference",
+             "embedding": answerer._embedder.encode("Allen 喜欢拿铁"),
+             "_score": 0.60},
+            {"id": "b", "content": "Allen 喜欢绿茶", "category": "preference",
+             "embedding": answerer._embedder.encode("Allen 喜欢绿茶"),
+             "_score": 0.58},  # margin = 0.02 < 0.05
+        ]
+        with patch.object(answerer._retriever, "retrieve", return_value=fake_results):
+            # Need cosine to pass too — use matching embedding
+            query_emb = fake_results[0]["embedding"]
+            with patch.object(answerer._embedder, "encode", return_value=query_emb):
+                result = answerer.try_answer("Allen 喜欢什么", "user1")
+                assert result is None
+
+    def test_margin_check_passes_single_result(self, answerer: DirectAnswerer):
+        """Single answerable result skips margin check."""
+        content = "Allen 住在温哥华"
+        emb = answerer._embedder.encode(content)
+        answerer._store.add_memory(
+            user_id="user1", content=content,
+            category="identity", key="location",
+            importance=8.0, embedding=emb,
+        )
+        # Same text -> cosine 1.0 -> high combined score -> no margin issue
+        result = answerer.try_answer(content, "user1")
+        assert result is not None
+        assert "温哥华" in result
+
+    def test_threshold_constants_are_sane(self):
+        """Sanity check: thresholds are in valid ranges."""
+        assert 0 < _SIMILARITY_THRESHOLD < 1
+        assert 0 < _MIN_COSINE < 1
+        assert 0 < _MARGIN_THRESHOLD < 0.5
+        assert _MIN_COSINE <= _SIMILARITY_THRESHOLD + 0.5
