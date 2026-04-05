@@ -91,7 +91,8 @@ class TestMemoryE2E:
             category="preference", key="favorite_drink",
             importance=8.0, embedding=emb,
         )
-        result = answerer.try_answer(content, "allen")
+        answerer._embedder.encode = lambda _text: _deterministic_encode(content)
+        result = answerer.try_answer("喜欢喝什么？", "allen")
         assert result is not None
         assert "拿铁" in result
 

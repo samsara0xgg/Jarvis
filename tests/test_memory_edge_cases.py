@@ -55,14 +55,15 @@ class TestL1Threshold:
         assert _SIMILARITY_THRESHOLD == 0.35
 
     def test_exact_match_returns_answer(self, answerer: DirectAnswerer):
-        """Same text → cosine=1.0 → should always hit."""
+        """Question with matching embedding → should hit."""
         content = "Allen 喜欢拿铁"
         answerer._store.add_memory(
             user_id="u1", content=content,
             category="preference", key="drink",
             importance=8.0, embedding=_encode(content),
         )
-        result = answerer.try_answer(content, "u1")
+        answerer._embedder.encode = lambda _text: _encode(content)
+        result = answerer.try_answer("喜欢喝什么？", "u1")
         assert result is not None
         assert "拿铁" in result
 
@@ -74,7 +75,8 @@ class TestL1Threshold:
             category="identity", key="location",
             importance=8.0, embedding=_encode(content),
         )
-        answerer.try_answer(content, "u1")
+        answerer._embedder.encode = lambda _text: _encode(content)
+        answerer.try_answer("住在哪里？", "u1")
         mems = answerer._store.get_active_memories("u1")
         assert mems[0]["access_count"] == 1
 
@@ -94,7 +96,8 @@ class TestL1Threshold:
             category="knowledge", key="wifi",
             importance=9.0, embedding=_encode(content),
         )
-        result = answerer.try_answer(content, "u1")
+        answerer._embedder.encode = lambda _text: _encode(content)
+        result = answerer.try_answer("WiFi密码是什么？", "u1")
         assert result is not None
         assert "abc123" in result
 
@@ -513,8 +516,8 @@ class TestDirectAnswerBoundary:
         v_query[1] = math.sqrt(1 - cos_target ** 2)
 
         answerer._embedder.encode = lambda _text: v_query
-        # Only 1 candidate → no margin check
-        result = answerer.try_answer("咖啡", "u_a")
+        # Only 1 candidate → no margin check (question form required)
+        result = answerer.try_answer("喜欢喝什么咖啡？", "u_a")
         assert result is not None
         assert "拿铁" in result
 

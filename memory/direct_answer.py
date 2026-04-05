@@ -47,12 +47,30 @@ class DirectAnswerer:
         from memory.retriever import MemoryRetriever
         self._retriever = MemoryRetriever(store)
 
+    @staticmethod
+    def _is_question(text: str) -> bool:
+        """Check if text looks like a question (not a statement)."""
+        text = text.strip().rstrip("。.！!")
+        # Explicit question markers
+        if text.endswith(("？", "?", "吗", "呢", "吧", "啊")):
+            return True
+        # Common question patterns
+        question_words = (
+            "什么", "哪", "几", "多少", "怎么", "为什么", "谁",
+            "是不是", "有没有", "能不能", "可不可以",
+        )
+        return any(w in text for w in question_words)
+
     def try_answer(self, query: str, user_id: str) -> str | None:
         """Attempt to answer a query using stored memories.
 
         Returns:
             A natural language answer string, or None if no confident match.
         """
+        # Gate 0: only answer questions, not statements
+        if not self._is_question(query):
+            return None
+
         # Quick check: any answerable memories at all?
         candidates = [
             m for m in self._store.get_memories_by_categories(user_id, _ANSWERABLE_CATEGORIES)
