@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 import numpy as np
 import pytest
@@ -73,7 +73,7 @@ class TestQuery:
         assert "跑步" in result
 
     def test_full_inject_under_threshold(self, manager: MemoryManager):
-        """Under 100 memories: all injected without embedding retrieval."""
+        """<=20 memories: all injected without embedding retrieval."""
         for i in range(5):
             emb = manager.embedder.encode(f"memory {i}")
             manager.store.add_memory("user1", f"memory {i}", "fact", embedding=emb)
@@ -83,17 +83,51 @@ class TestQuery:
             assert f"memory {i}" in result
 
     def test_retrieval_over_threshold(self, manager: MemoryManager):
-        """Over threshold: only top-k returned."""
-        manager._full_inject_threshold = 5  # lower for testing
-        for i in range(10):
+        """>20 memories: embedding retrieval with dynamic top_k."""
+        for i in range(25):
             emb = manager.embedder.encode(f"memory {i}")
             manager.store.add_memory("user1", f"memory {i}", "fact", embedding=emb)
 
         result = manager.query("memory 0", "user1")
         assert "<memory>" in result
-        # Should have some but not all 10
-        count = sum(1 for i in range(10) if f"memory {i}" in result)
-        assert count <= 5  # top_k = 5
+        # Should have some but not all 25
+        count = sum(1 for i in range(25) if f"memory {i}" in result)
+        assert count < 25
+
+    def test_gradual_retrieval_at_21_memories(self, manager: MemoryManager):
+        """At 21 memories, should use embedding retrieval, not full inject."""
+        for i in range(21):
+            emb = manager.embedder.encode(f"memory {i}")
+            manager.store.add_memory("user1", f"memory {i}", "fact", embedding=emb)
+
+        with patch.object(manager.retriever, "retrieve", wraps=manager.retriever.retrieve) as mock_ret:
+            manager.query("memory 0", "user1")
+            assert mock_ret.call_count == 1
+
+    def test_full_inject_at_20_memories(self, manager: MemoryManager):
+        """At exactly 20 memories, should full-inject without retriever."""
+        for i in range(20):
+            emb = manager.embedder.encode(f"memory {i}")
+            manager.store.add_memory("user1", f"memory {i}", "fact", embedding=emb)
+
+        with patch.object(manager.retriever, "retrieve") as mock_ret:
+            result = manager.query("anything", "user1")
+            mock_ret.assert_not_called()
+        for i in range(20):
+            assert f"memory {i}" in result
+
+    def test_top_k_dynamic_calculation(self, manager: MemoryManager):
+        """top_k should grow with budget: at least 5, bounded by active_count."""
+        for i in range(30):
+            emb = manager.embedder.encode(f"mem {i}")
+            manager.store.add_memory("user1", f"mem {i}", "fact", embedding=emb)
+
+        with patch.object(manager.retriever, "retrieve", wraps=manager.retriever.retrieve) as mock_ret:
+            manager.query("test", "user1")
+            _, kwargs = mock_ret.call_args
+            top_k = kwargs["top_k"]
+            assert top_k >= 5
+            assert top_k <= 30
 
     def test_pending_items_shown(self, manager: MemoryManager):
         today = datetime.now().strftime("%Y-%m-%d")

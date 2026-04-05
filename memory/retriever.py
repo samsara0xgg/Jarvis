@@ -131,13 +131,25 @@ class MemoryRetriever:
             for m in candidates
         ])
 
-        # Combined score
-        scores = (
-            self.W_COSINE * cos_scores
-            + self.W_RECENCY * recency_scores
-            + self.W_IMPORTANCE * importance_scores
-            + self.W_ACCESS * access_scores
-        ) * expiry_factor
+        # Cold-start detection: if all access counts are 0, boost cosine weight
+        all_cold = bool(np.all(access_scores == 0))
+        if all_cold:
+            # Cold start: cosine dominates, importance secondary
+            scores = (
+                0.60 * cos_scores
+                + 0.10 * recency_scores
+                + 0.25 * importance_scores
+                + 0.05 * access_scores
+            ) * expiry_factor
+            LOGGER.debug("Cold-start weights applied (cosine=0.60)")
+        else:
+            # Normal mode
+            scores = (
+                self.W_COSINE * cos_scores
+                + self.W_RECENCY * recency_scores
+                + self.W_IMPORTANCE * importance_scores
+                + self.W_ACCESS * access_scores
+            ) * expiry_factor
 
         # Sort descending, take top_k
         top_indices = np.argsort(scores)[::-1][:top_k]
