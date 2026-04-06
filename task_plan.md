@@ -1,7 +1,7 @@
-# Task Plan: 小贾记忆系统优化（基于 Deep Research）
+# Task Plan: 小月记忆系统优化（基于 Deep Research）
 
 ## Goal
-基于 Mem0/MemGPT/ChatGPT/Gemini/Zep 等系统的 deep research（31篇来源），对小贾记忆系统进行 13 项改进，涵盖 bug 修复、提取质量、检索智能、情景记忆四个阶段。
+基于 Mem0/MemGPT/ChatGPT/Gemini/Zep 等系统的 deep research（31篇来源），对小月记忆系统进行 13 项改进，涵盖 bug 修复、提取质量、检索智能、情景记忆四个阶段。
 
 ## Current Phase
 ALL COMPLETE ✅ (Phase 1-4 done)
@@ -54,7 +54,7 @@ ALL COMPLETE ✅ (Phase 1-4 done)
 | SQLite 关系表替代 Neo4j | RPi5 4GB 跑不动 Neo4j |
 | function calling 替代 few-shot | Mem0 论文数据表明结构化输出更可靠 |
 | 升级 bge-small-zh-v1.5 | 学术确认原版分布异常，调阈值治标不治本 |
-| 自建中文评估集 | LOCOMO 是英文，小贾需要中文评估 |
+| 自建中文评估集 | LOCOMO 是英文，小月需要中文评估 |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

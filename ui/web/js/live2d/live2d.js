@@ -160,9 +160,9 @@ class Live2DManager {
             }
 
             // 设置模型属性
-            this.live2dModel.scale.set(0.33);
+            this.live2dModel.scale.set(0.28);
             this.live2dModel.x = (window.innerWidth - this.live2dModel.width) * 0.5;
-            this.live2dModel.y = -50;
+            this.live2dModel.y = 20;
 
             // 启用交互并监听点击命中（头部/身体等）
 
@@ -243,6 +243,7 @@ class Live2DManager {
                     const relX = (global.x - bounds.x) / (bounds.width || 1);
                     const relY = (global.y - bounds.y) / (bounds.height || 1);
                     let area = '';
+
                     // 经验阈值：模型可见矩形的上部 20% 视为"头部"区域
                     if (relX >= 0.4 && relX <= 0.6) {
                         if (relY <= 0.15) {
@@ -786,9 +787,9 @@ class Live2DManager {
             this.live2dApp.stage.addChild(this.live2dModel);
 
             // 设置模型属性
-            this.live2dModel.scale.set(0.33);
+            this.live2dModel.scale.set(0.28);
             this.live2dModel.x = (window.innerWidth - this.live2dModel.width) * 0.5;
-            this.live2dModel.y = -50;
+            this.live2dModel.y = 20;
 
             // 重新绑定交互事件
             this.setupModelInteractions();

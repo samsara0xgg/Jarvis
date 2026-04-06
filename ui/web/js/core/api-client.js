@@ -1,4 +1,4 @@
-// Jarvis HTTP + SSE API client (replaces WebSocket handler)
+// 小月 HTTP + SSE API client (replaces WebSocket handler)
 import { log } from '../utils/logger.js';
 
 class ApiClient {
@@ -10,6 +10,9 @@ class ApiClient {
         this.onChatMessage = null;
         this.onSentence = null;
         this.onSessionStateChange = null;
+        // Serial queue: process one chat request at a time
+        this._chatQueue = [];
+        this._chatProcessing = false;
     }
 
     setServerUrl(url) {
@@ -58,9 +61,34 @@ class ApiClient {
         if (this.onConnectionStateChange) this.onConnectionStateChange(false);
     }
 
+    async setHiddenMode(enabled) {
+        try {
+            await fetch(`${this.serverUrl}/api/hidden-mode`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: this.sessionId || '', enabled }),
+            });
+        } catch { /* ignore */ }
+    }
+
     async sendTextMessage(text) {
         if (!this.connected || !this.sessionId) return false;
         if (!text.trim()) return false;
+
+        // Queue and serialize: server can't handle concurrent handle_text calls
+        return new Promise((resolve) => {
+            this._chatQueue.push({ text, resolve });
+            if (!this._chatProcessing) this._processNextChat();
+        });
+    }
+
+    async _processNextChat() {
+        if (this._chatQueue.length === 0) {
+            this._chatProcessing = false;
+            return;
+        }
+        this._chatProcessing = true;
+        const { text, resolve } = this._chatQueue.shift();
 
         if (this.onSessionStateChange) this.onSessionStateChange(true);
 
@@ -120,8 +148,9 @@ class ApiClient {
             if (this.onChatMessage) this.onChatMessage(`请求失败: ${err.message}`, false);
         } finally {
             if (this.onSessionStateChange) this.onSessionStateChange(false);
+            resolve(true);
+            this._processNextChat();
         }
-        return true;
     }
 
     async sendAudio(wavBlob) {

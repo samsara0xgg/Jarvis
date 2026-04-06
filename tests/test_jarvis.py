@@ -141,7 +141,7 @@ def test_jarvis_handle_utterance_end_to_end(tmp_path):
         audio = np.random.randn(16000).astype(np.float32)
         response = app.handle_utterance(audio)
 
-        assert "卧室灯" in response
+        assert "开了" in response
         app.speaker_verifier.verify.assert_called_once()
         app.speech_recognizer.transcribe.assert_called_once()
     finally:

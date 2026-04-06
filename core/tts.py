@@ -79,6 +79,8 @@ class TTSEngine:
         self.engine_name = str(tts_config.get("engine", "edge-tts")).strip().lower()
         self.edge_voice = str(tts_config.get("edge_voice", "zh-CN-YunxiNeural"))
         self.edge_rate = str(tts_config.get("edge_rate", "+0%"))
+        self.speed = float(tts_config.get("speed", 1.0))
+        self.speed = max(0.25, min(4.0, self.speed))
         self.fallback_enabled = bool(tts_config.get("fallback_enabled", True))
         self.logger = LOGGER
         self._tracker = tracker
@@ -318,6 +320,7 @@ class TTSEngine:
             input=text,
             instructions=instructions,
             response_format="mp3",
+            speed=self.speed,
         )
 
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
@@ -350,7 +353,7 @@ class TTSEngine:
             "stream": False,
             "voice_setting": {
                 "voice_id": self.minimax_voice,
-                "speed": 1.0,
+                "speed": self.speed,
                 "vol": 5,
                 "pitch": 0,
                 "emotion": minimax_emotion,
@@ -420,12 +423,16 @@ class TTSEngine:
 
         from xml.sax.saxutils import escape
         style = _EMOTION_TO_AZURE_STYLE.get(emotion, "chat")
+        rate_pct = round((self.speed - 1.0) * 100)
+        rate_attr = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"
         ssml = (
             '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
             'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="zh-CN">'
             f'<voice name="{self.azure_voice}">'
             f'<mstts:express-as style="{style}">'
+            f'<prosody rate="{rate_attr}">'
             f'{escape(text)}'
+            '</prosody>'
             '</mstts:express-as>'
             '</voice></speak>'
         )

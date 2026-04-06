@@ -10,8 +10,8 @@
 | Letta(文件工具) | 74.0% | — | — |
 | OpenAI Memory | 52.9% | — | — |
 
-## 小贾 vs Mem0 核心差距
-| 维度 | 小贾 | Mem0 | 改进项 |
+## 小月 vs Mem0 核心差距
+| 维度 | 小月 | Mem0 | 改进项 |
 |---|---|---|---|
 | 操作 | ADD/UPDATE/NONE | ADD/UPDATE/DELETE/NOOP | C6 |
 | 去重候选 | top-5 | top-10 | C6 |

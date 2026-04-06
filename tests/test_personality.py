@@ -55,7 +55,7 @@ class TestGetTimeSlot:
 class TestBuildPersonalityPrompt:
     def test_base_personality_always_present(self):
         prompt = build_personality_prompt()
-        assert "小贾" in prompt
+        assert "小月" in prompt
         assert "管家" in prompt
 
     def test_no_ai_references(self):

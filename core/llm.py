@@ -48,6 +48,8 @@ class LLMClient:
             # 根据 base_url 选对应的 API key，避免用错 key 调错服务
             if llm_config.get("api_key"):
                 self._api_key = llm_config["api_key"]
+            elif "x.ai" in base_url:
+                self._api_key = os.environ.get("XAI_API_KEY")
             elif "deepseek" in base_url:
                 self._api_key = os.environ.get("DEEPSEEK_API_KEY")
             elif "moonshot" in base_url:

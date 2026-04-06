@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
-**Goal:** Reduce Jarvis end-to-end latency via pipeline parallelization and caching — local path from ~600ms to ~120ms (cached), cloud path from ~2s to ~1.7s.
+**Goal:** Reduce 小月 end-to-end latency via pipeline parallelization and caching — local path from ~600ms to ~120ms (cached), cloud path from ~2s to ~1.7s.
 
 **Architecture:** Three independent changes: (1) Embedder single-entry cache eliminates duplicate encode calls, (2) IntentRouter gets LRU route cache + instance-level HTTP session, (3) TTSEngine gets disk-based audio cache for short responses. Then jarvis.py pipeline reordered to run route + memory in parallel.
 
@@ -764,7 +764,7 @@ In `jarvis.py`, replace the block from step 4 through step 6 (lines ~524-622). T
                 reply = "好的，记住了。"
                 self.logger.info("Memory shortcut: %s", text[:60])
                 self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
-                print(f"🤖 Jarvis: {reply}")
+                print(f"🤖 小月: {reply}")
                 self._speak_nonblocking(reply, emotion=detected_emotion)
                 history.append({"role": "user", "content": text})
                 history.append({"role": "assistant", "content": reply})
@@ -782,7 +782,7 @@ In `jarvis.py`, replace the block from step 4 through step 6 (lines ~524-622). T
                 self.logger.info("Learning intent: create — %s", learning.description[:60])
                 learn_response = self._learn_create(learning, user_id)
                 self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
-                print(f"🤖 Jarvis: {learn_response}")
+                print(f"🤖 小月: {learn_response}")
                 self._speak_nonblocking(learn_response, emotion=detected_emotion)
                 history.append({"role": "user", "content": text})
                 history.append({"role": "assistant", "content": learn_response})
@@ -838,7 +838,7 @@ In `jarvis.py`, replace the block from step 4 through step 6 (lines ~524-622). T
                 if direct:
                     self.logger.info("Level 1 direct answer: %s", direct[:60])
                     self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
-                    print(f"🤖 Jarvis (L1): {direct}")
+                    print(f"🤖 小月 (L1): {direct}")
                     self._speak_nonblocking(direct, emotion=detected_emotion)
                     self.behavior_log.log(user_id, "conversation", {
                         "text": text[:100],

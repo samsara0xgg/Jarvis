@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 让小贾能通过对话学习新技能——配置现有 skill 快捷方式、组合多个 skill、或调用 Claude Code 创造全新 skill。
+**Goal:** 让小月能通过对话学习新技能——配置现有 skill 快捷方式、组合多个 skill、或调用 Claude Code 创造全新 skill。
 
 **Architecture:** 三种学习模式共用一个学习意图检测层（`LearningRouter`），分流到不同处理器。配置型和组合型扩展现有 `AutomationRuleManager`（新增 `skill_alias` 触发类型），创造型通过 subprocess 调用 Claude Code CLI 生成 skill 文件。所有 learned skills 放在 `skills/learned/` 目录，由 `SkillLoader` 在启动时扫描加载。
 
@@ -145,7 +145,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'core.learning_router'
 
 ```python
 # core/learning_router.py
-"""学习意图检测 — 判断用户是否在教小贾新技能。
+"""学习意图检测 — 判断用户是否在教小月新技能。
 
 分类为三种模式：
 - config: 给现有 skill 设快捷方式（"以后说xxx就查xxx"）
@@ -358,7 +358,7 @@ Append to `core/local_executor.py` before the closing of the class (after `execu
             user_role: 用户角色。
 
         Returns:
-            ActionResponse — REQLLM，让 LLM 用小贾语气转述结果。
+            ActionResponse — REQLLM，让 LLM 用小月语气转述结果。
         """
         results = []
         for act in actions:
@@ -917,7 +917,7 @@ class SkillFactory:
         self, description: str, skill_abc_source: str, example_skill_source: str,
     ) -> str:
         """Build the Claude Code prompt for skill generation."""
-        return f"""你需要为 Jarvis 语音助手写一个新的 skill。
+        return f"""你需要为小月语音助手写一个新的 skill。
 
 ## 需求
 {description}
@@ -1096,7 +1096,7 @@ class SkillManagementSkill(Skill):
             {
                 "name": "list_skills",
                 "description": (
-                    "List all skills Jarvis can use (built-in and learned). "
+                    "List all skills 小月 can use (built-in and learned). "
                     "Use when user asks 'what can you do' or 'what skills do you have'."
                 ),
                 "input_schema": {"type": "object", "properties": {}},
@@ -1227,7 +1227,7 @@ After Level 1 direct answer (step 4b) and before keyword check (step 5), insert:
                 learn_response = self._handle_learning(learning, user_id, user_role)
                 if learn_response:
                     self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
-                    print(f"🤖 Jarvis: {learn_response}")
+                    print(f"🤖 小月: {learn_response}")
                     self._speak_nonblocking(learn_response, emotion=detected_emotion)
                     # 存对话历史
                     history.append({"role": "user", "content": text})

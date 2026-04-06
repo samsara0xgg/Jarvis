@@ -276,7 +276,7 @@ class TestMessagesToText:
         ]
         text = manager._messages_to_text(messages)
         assert "用户：你好" in text
-        assert "小贾：你好啊" in text
+        assert "小月：你好啊" in text
 
     def test_content_blocks(self, manager: MemoryManager):
         messages = [

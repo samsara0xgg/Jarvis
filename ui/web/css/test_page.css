@@ -374,6 +374,8 @@ body {
     border: 1px solid rgba(255, 255, 255, 0.1);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     z-index: 1000;
+    cursor: grab;
+    user-select: none;
     /* 确保控制栏在最上层 */
 }
 
@@ -442,6 +444,26 @@ body {
 
 .control-btn.recording:hover {
     background: rgba(237, 66, 69, 1);
+}
+
+/* 连续对话模式 — 粉色呼吸灯 */
+.control-btn.continuous-active {
+    background: rgba(219, 39, 119, 0.85);
+    animation: breathe-pink 2.5s ease-in-out infinite;
+}
+
+.control-btn.continuous-active:hover {
+    background: rgba(219, 39, 119, 1);
+}
+
+.control-btn.continuous-active.recording {
+    background: rgba(239, 68, 68, 0.95);
+    animation: pulse 1s infinite, breathe-pink 2.5s ease-in-out infinite;
+}
+
+@keyframes breathe-pink {
+    0%, 100% { box-shadow: 0 0 8px rgba(219, 39, 119, 0.3); }
+    50% { box-shadow: 0 0 24px rgba(219, 39, 119, 0.7); }
 }
 
 /* 摄像头按钮特殊样式 */

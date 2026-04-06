@@ -52,6 +52,11 @@ class UIController {
     }
 
     initEventListeners() {
+        this._continuousMode = false;
+
+        // Make control bar draggable
+        this._initDraggableControlBar();
+
         const settingsBtn = document.getElementById('settingsBtn');
         if (settingsBtn) {
             settingsBtn.addEventListener('click', () => this.showModal('settingsModal'));
@@ -76,6 +81,8 @@ class UIController {
 
                 const apiClient = getApiClient();
                 if (apiClient.isConnected()) {
+                    // Stop continuous mode on disconnect
+                    if (this._continuousMode) this._toggleContinuousMode();
                     apiClient.disconnect();
                     this.updateDialButton(false);
                     this.updateConnectionUI(false);
@@ -93,24 +100,45 @@ class UIController {
             });
         }
 
-        // Record button
+        // Record button — click: normal record toggle; long-press 3s: continuous mode
         const recordBtn = document.getElementById('recordBtn');
         if (recordBtn) {
-            let recordTimer = null;
+            let longPressTimer = null;
+            let didLongPress = false;
+
+            recordBtn.addEventListener('pointerdown', () => {
+                didLongPress = false;
+                longPressTimer = setTimeout(() => {
+                    didLongPress = true;
+                    longPressTimer = null;
+                    this._toggleContinuousMode();
+                }, 3000);
+            });
+
+            const cancelLongPress = () => {
+                if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+            };
+            recordBtn.addEventListener('pointerup', cancelLongPress);
+            recordBtn.addEventListener('pointercancel', cancelLongPress);
+            recordBtn.addEventListener('pointerleave', cancelLongPress);
+
             recordBtn.addEventListener('click', () => {
-                if (recordTimer) { clearTimeout(recordTimer); recordTimer = null; }
-                recordTimer = setTimeout(() => {
-                    const audioRecorder = getAudioRecorder();
-                    if (audioRecorder.isRecording) {
-                        audioRecorder.stop();
-                        recordBtn.classList.remove('recording');
-                        recordBtn.querySelector('.btn-text').textContent = '录音';
-                    } else {
-                        recordBtn.classList.add('recording');
-                        recordBtn.querySelector('.btn-text').textContent = '录音中';
-                        setTimeout(() => audioRecorder.start(), 100);
-                    }
-                }, 300);
+                if (didLongPress) return; // long-press already handled
+                // In continuous mode, click toggles it off
+                if (this._continuousMode) {
+                    this._toggleContinuousMode();
+                    return;
+                }
+                const audioRecorder = getAudioRecorder();
+                if (audioRecorder.isRecording) {
+                    audioRecorder.stop();
+                    recordBtn.classList.remove('recording');
+                    recordBtn.querySelector('.btn-text').textContent = '录音';
+                } else {
+                    recordBtn.classList.add('recording');
+                    recordBtn.querySelector('.btn-text').textContent = '录音中';
+                    setTimeout(() => audioRecorder.start(), 100);
+                }
             });
         }
 
@@ -285,7 +313,7 @@ class UIController {
     async handleConnect() {
         const apiClient = getApiClient();
         apiClient.setServerUrl(getServerUrl());
-        this.addChatMessage('正在连接 Jarvis...', false);
+        this.addChatMessage('正在连接小月...', false);
 
         const dialBtn = document.getElementById('dialBtn');
         if (dialBtn) {
@@ -302,6 +330,7 @@ class UIController {
             this.updateConnectionUI(true);
             this.addChatMessage('已连接，随时待命~', false);
             this.hideModal('settingsModal');
+
             if (window.microphoneAvailable) {
                 const recordBtn = document.getElementById('recordBtn');
                 if (recordBtn) recordBtn.click();
@@ -329,6 +358,88 @@ class UIController {
         if (live2d && typeof live2d.triggerEmotionAction === 'function') {
             live2d.triggerEmotionAction(emotion);
         }
+    }
+
+    _toggleContinuousMode() {
+        const apiClient = getApiClient();
+        if (!apiClient.isConnected()) {
+            this.addChatMessage('请先连接服务器', false);
+            return;
+        }
+        const recorder = getAudioRecorder();
+        this._continuousMode = !this._continuousMode;
+
+        const recordBtn = document.getElementById('recordBtn');
+
+        if (this._continuousMode) {
+            // Stop manual recording if active
+            if (recorder.isRecording && !recorder.continuousMode) {
+                recorder.stop();
+            }
+            recorder.onContinuousStatus = (status) => {
+                if (!recordBtn) return;
+                const text = recordBtn.querySelector('.btn-text');
+                if (status === 'listening') {
+                    recordBtn.classList.remove('recording');
+                    recordBtn.classList.add('continuous-active');
+                    text.textContent = '性奴';
+                } else if (status === 'speaking') {
+                    recordBtn.classList.add('recording');
+                    text.textContent = '性奴';
+                } else if (status === 'processing') {
+                    recordBtn.classList.remove('recording');
+                    text.textContent = '性奴';
+                } else {
+                    recordBtn.classList.remove('recording', 'continuous-active');
+                    text.textContent = '录音';
+                }
+            };
+            recorder.startContinuous();
+            apiClient.setHiddenMode(true);
+        } else {
+            recorder.stopContinuous();
+            apiClient.setHiddenMode(false);
+            if (recordBtn) {
+                recordBtn.classList.remove('recording', 'continuous-active');
+                recordBtn.querySelector('.btn-text').textContent = '录音';
+            }
+        }
+    }
+
+    _initDraggableControlBar() {
+        const bar = document.querySelector('.control-bar');
+        if (!bar) return;
+        let dragging = false, startX, startY, origX, origY;
+
+        bar.addEventListener('pointerdown', (e) => {
+            // Don't drag when clicking buttons
+            if (e.target.closest('button, input, select')) return;
+            dragging = true;
+            bar.style.cursor = 'grabbing';
+            const rect = bar.getBoundingClientRect();
+            startX = e.clientX;
+            startY = e.clientY;
+            origX = rect.left + rect.width / 2;
+            origY = rect.top;
+            bar.setPointerCapture(e.pointerId);
+        });
+
+        bar.addEventListener('pointermove', (e) => {
+            if (!dragging) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            bar.style.left = (origX + dx) + 'px';
+            bar.style.top = (origY + dy) + 'px';
+            bar.style.bottom = 'auto';
+            bar.style.transform = 'translateX(-50%)';
+        });
+
+        const stopDrag = () => {
+            dragging = false;
+            bar.style.cursor = 'grab';
+        };
+        bar.addEventListener('pointerup', stopDrag);
+        bar.addEventListener('pointercancel', stopDrag);
     }
 }
 

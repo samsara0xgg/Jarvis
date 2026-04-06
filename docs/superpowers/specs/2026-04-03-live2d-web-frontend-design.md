@@ -2,12 +2,12 @@
 
 ## 概述
 
-将小智 ESP32 项目的 Live2D 虚拟角色聊天前端迁移到 Jarvis，用 HTTP API + SSE 替代原有的 WebSocket + Opus 方案。复用 Jarvis 现有的意图路由、LLM 流式输出、TTS 合成、ASR 识别等全部核心模块。
+将小智 ESP32 项目的 Live2D 虚拟角色聊天前端迁移到小月，用 HTTP API + SSE 替代原有的 WebSocket + Opus 方案。复用小月现有的意图路由、LLM 流式输出、TTS 合成、ASR 识别等全部核心模块。
 
 ## 架构
 
 ```
-浏览器                              Jarvis 后端 (FastAPI)
+浏览器                              小月后端 (FastAPI)
 ──────                              ────────────────────
 文字输入 ─── POST /api/chat ──────→ IntentRouter.route()
                                       ├─ 本地: LocalExecutor → 技能结果
@@ -218,10 +218,10 @@ python -m ui.web.server --port 8006 --host 0.0.0.0
 
 **修改（5 个文件）：**
 - `index.html`（已从 test_page.html 重命名）
-  - 标题：`小智服务器测试页面` → `小贾 | Jarvis`
+  - 标题：`小智服务器测试页面` → `小月` (已更名)
   - 删除 Opus 脚本标签：`<script src="js/utils/libopus.js">`
   - 删除 MCP 工具编辑模态框（#mcpToolModal、#mcpPropertyModal）
-  - 设置面板：删除 MCP 工具 tab，删除 OTA 地址输入，改为 Jarvis 服务器地址
+  - 设置面板：删除 MCP 工具 tab，删除 OTA 地址输入，改为小月服务器地址
   - file:// 警告文字更新
 - `js/app.js`
   - 删除 Opus/MCP 初始化
@@ -278,7 +278,7 @@ python -m ui.web.server --port 8006 --host 0.0.0.0
 
 | Key | 说明 |
 |-----|------|
-| `jarvis_serverUrl` | Jarvis 服务器地址（默认 http://localhost:8006） |
+| `jarvis_serverUrl` | 小月服务器地址（默认 http://localhost:8006） |
 | `jarvis_sessionId` | 当前会话 ID |
 | `backgroundIndex` | 当前背景图索引 |
 | `live2dModel` | 当前 Live2D 模型名称 |
@@ -292,7 +292,7 @@ python -m ui.web.server --port 8006 --host 0.0.0.0
 ## 不做的
 
 - Opus 编解码 — 用 WAV/MP3 替代
-- MCP 工具系统 — Jarvis 有自己的 skill 体系
+- MCP 工具系统 — 小月有自己的 skill 体系
 - 摄像头/视觉分析 — 暂不需要
 - 声纹验证 — Web 端不实用
 - WebSocket 长连接 — HTTP + SSE 足够

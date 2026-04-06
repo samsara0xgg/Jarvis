@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Integrate the Live2D virtual character chat frontend with Jarvis backend via HTTP API + SSE, enabling text chat, voice input, TTS playback with lip-sync, and skill execution.
+**Goal:** Integrate the Live2D virtual character chat frontend with the backend via HTTP API + SSE, enabling text chat, voice input, TTS playback with lip-sync, and skill execution.
 
 **Architecture:** FastAPI server wraps JarvisApp, exposing REST + SSE endpoints. Frontend replaces WebSocket/Opus with HTTP fetch + EventSource + Web Audio `<audio>` playback. JarvisApp gets a new `handle_text()` method that reuses the full pipeline (memory → routing → skills → LLM → conversation save) without audio/voiceprint steps.
 
@@ -238,7 +238,7 @@ Expected: FAIL — `ui.web.server` not found
 - [ ] **Step 3: Implement ui/web/server.py**
 
 ```python
-"""Jarvis Live2D Web Server — FastAPI + SSE."""
+"""小月 Live2D Web Server — FastAPI + SSE."""
 from __future__ import annotations
 
 import argparse
@@ -280,7 +280,7 @@ AUDIO_DIR = Path(__file__).parent / "audio_cache"
 
 def create_app(jarvis_app: Any) -> FastAPI:
     """Create FastAPI app wrapping a JarvisApp instance."""
-    app = FastAPI(title="Jarvis Live2D Web")
+    app = FastAPI(title="小月 Live2D Web")
     sessions: dict[str, dict] = {}
 
     # Ensure audio cache dir
@@ -401,7 +401,7 @@ def create_jarvis_app(config_path: str = "config.yaml") -> Any:
 
 def main():
     import uvicorn
-    parser = argparse.ArgumentParser(description="Jarvis Live2D Web Server")
+    parser = argparse.ArgumentParser(description="小月 Live2D Web Server")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8006)
     parser.add_argument("--config", default="config.yaml")
@@ -560,7 +560,7 @@ rm ui/web/js/utils/blocking-queue.js
 
 Changes to make in `ui/web/index.html`:
 
-1. Line 7: Title `小智服务器测试页面` → `小贾 | Jarvis`
+1. Line 7: Title `小智服务器测试页面` → `小月`
 2. Lines 21-32: Update file:// warning text — change `xiaozhi-server/test` to `jarvis` directory, change URL to `http://localhost:8006/`
 3. Lines 48-59: Delete entire camera container div (`<div class="camera-container" ...>...</div>`)
 4. Lines 104-110: Delete camera button from control bar
@@ -574,7 +574,7 @@ Changes to make in `ui/web/index.html`:
    <div class="tab-content active" id="deviceTab">
        <div class="connection-controls">
            <div class="input-group">
-               <label for="serverUrl">Jarvis 服务器地址:</label>
+               <label for="serverUrl">小月服务器地址:</label>
                <input type="text" id="serverUrl" value="http://localhost:8006"
                    placeholder="http://localhost:8006" />
            </div>
@@ -600,7 +600,7 @@ python -c "from ui.web.server import create_app; print('server imports ok')"
 
 ```bash
 git add -A ui/web/
-git commit -m "refactor: remove OTA/MCP/Opus/camera, rebrand to Jarvis"
+git commit -m "refactor: remove OTA/MCP/Opus/camera, rebrand to 小月"
 ```
 
 ---
@@ -613,7 +613,7 @@ git commit -m "refactor: remove OTA/MCP/Opus/camera, rebrand to Jarvis"
 - [ ] **Step 1: Create api-client.js**
 
 ```javascript
-// Jarvis HTTP + SSE API client (replaces WebSocket handler)
+// 小月 HTTP + SSE API client (replaces WebSocket handler)
 import { log } from '../utils/logger.js';
 
 class ApiClient {
@@ -1204,7 +1204,7 @@ New `handleConnect()`:
 async handleConnect() {
     const apiClient = getApiClient();
     apiClient.setServerUrl(getServerUrl());
-    this.addChatMessage('正在连接 Jarvis...', false);
+    this.addChatMessage('正在连接小月...', false);
     const ok = await apiClient.connect();
     if (ok) {
         this.updateDialButton(true);

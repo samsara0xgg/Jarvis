@@ -25,6 +25,7 @@ def tts_with_cache(tmp_path):
         engine._tracker = None
         engine._tts_cache_dir = tmp_path
         engine._tts_cache_max = 5
+        engine.speed = 1.0
         engine.logger = MagicMock()
         engine._platform = "Darwin"
     return engine

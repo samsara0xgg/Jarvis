@@ -28,6 +28,10 @@ class SessionResponse(BaseModel):
     session_id: str
     status: str
 
+class HiddenModeRequest(BaseModel):
+    session_id: str = ""
+    enabled: bool = False
+
 AUDIO_DIR = Path(__file__).parent / "audio_cache"
 
 
@@ -62,6 +66,19 @@ def create_app(jarvis_app: Any) -> FastAPI:
         del sessions[session_id]
         LOGGER.info("Session deleted: %s", session_id)
         return SessionResponse(session_id=session_id, status="disconnected")
+
+    @app.post("/api/hidden-mode")
+    async def toggle_hidden_mode(req: HiddenModeRequest):
+        from core.personality import set_nsfw_mode
+        session_id = req.session_id
+        enabled = req.enabled
+        set_nsfw_mode(enabled)
+        # Clear conversation history on mode switch to prevent context bleed in both directions
+        if session_id:
+            jarvis_app.conversation_store.clear(session_id)
+        LOGGER.info("Hidden mode %s — conversation history cleared for %s",
+                     "ON" if enabled else "OFF", session_id)
+        return {"status": "ok", "enabled": enabled}
 
     @app.post("/api/chat")
     async def chat(req: ChatRequest):
@@ -167,8 +184,14 @@ def create_app(jarvis_app: Any) -> FastAPI:
             indices = np.linspace(0, len(data) - 1, target_len)
             data = np.interp(indices, np.arange(len(data)), data).astype(np.float32)
         result = jarvis_app.speech_recognizer.transcribe(data)
+        text = result.text or ""
+        lang = getattr(result, "language", "") or ""
+        # Drop non-Chinese short fragments (likely noise/echo misdetected as ja/en)
+        if lang != "zh" and len(text) <= 5:
+            LOGGER.info("ASR dropped non-zh fragment: lang=%s text='%s'", lang, text)
+            text = ""
         return {
-            "text": result.text,
+            "text": text,
             "emotion": getattr(result, "emotion", "") or "",
         }
 

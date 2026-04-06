@@ -2,7 +2,7 @@
 
 ## 背景
 
-Jarvis 端到端延迟 ~10-25s，ASR（本地 Whisper base）是最大瓶颈之一（3-7s）。
+小月端到端延迟 ~10-25s，ASR（本地 Whisper base）是最大瓶颈之一（3-7s）。
 目标：找到中文 ASR 最优解，需要在 RPi5 4GB 上运行。
 
 ## 结论
@@ -108,5 +108,5 @@ sherpa-onnx 自带 VAD + ASR 集成示例：`vad-with-non-streaming-asr.py`
 
 1. 推理快 3 倍（75ms vs 220ms）
 2. 支持中英粤日韩（Paraformer 仅中文）
-3. 自带情绪识别 — Jarvis 人格系统可用
+3. 自带情绪识别 — 小月人格系统可用
 4. 2.96% vs 1.95% 的差距对语音指令场景影响极小

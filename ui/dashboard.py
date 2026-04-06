@@ -188,7 +188,7 @@ class DashboardController:
         return (
             '<div style="display:flex;gap:10px;align-items:center;padding:10px 14px;'
             'background:#141414;border-radius:12px;color:#aaa;font-size:13px;">'
-            '<b style="color:#e0e0e0;font-size:16px;">小贾</b>'
+            '<b style="color:#e0e0e0;font-size:16px;">小月</b>'
             f'<span style="padding:2px 8px;border-radius:99px;background:#1e3a1e;color:#6fcf6f;font-size:12px;">{mode}</span>'
             f'<span>设备 {devices}</span><span>技能 {skills}</span>'
             '</div>'
@@ -333,7 +333,7 @@ def build_dashboard(
     ctrl = controller or DashboardController(config_path)
     scenes = list(ctrl.config.get("automations", {}).keys())
 
-    with gr.Blocks(title="小贾 Jarvis", css=CSS, theme=gr.themes.Default()) as demo:
+    with gr.Blocks(title="小月", css=CSS, theme=gr.themes.Default()) as demo:
 
         header = gr.HTML(value=ctrl.render_header())
 

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 让小贾的记忆系统从"代码存在"变成"端到端可信赖"——存的对、取的准、用的好、改得了。
+**Goal:** 让小月的记忆系统从"代码存在"变成"端到端可信赖"——存的对、取的准、用的好、改得了。
 
 **Architecture:** 四个子任务顺序推进：(1) 修复已知架构问题 + 管线验证 (2) 记忆质量保证 + 自然修正 (3) prompt 注入优化 + Level 1 快路径 (4) 运维保障。所有改动在现有 MemoryManager / personality.py / jarvis.py 基础上修改，不引入新依赖。
 
@@ -924,7 +924,7 @@ self.direct_answerer = DirectAnswerer(
                 if direct:
                     self.logger.info("Level 1 direct answer: %s", direct[:60])
                     self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
-                    print(f"🤖 Jarvis (L1): {direct}")
+                    print(f"🤖 小月 (L1): {direct}")
                     self._speak_nonblocking(direct, emotion=detected_emotion)
                     # 记录行为日志
                     if hasattr(self, "behavior_log"):

@@ -29,14 +29,15 @@ class WeatherSkill(Skill):
                 "name": "get_weather",
                 "description": (
                     "Get current weather for a city. "
-                    "Returns temperature, conditions, humidity, and wind."
+                    "Returns temperature, conditions, humidity, and wind. "
+                    "Use the user's known location from memory/conversation if available."
                 ),
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "city": {
                             "type": "string",
-                            "description": f"City name in English. Defaults to '{self.default_city}' if omitted.",
+                            "description": f"City name in English. Use user's known location if available, otherwise defaults to '{self.default_city}'.",
                         },
                     },
                 },

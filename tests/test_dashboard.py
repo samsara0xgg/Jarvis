@@ -26,6 +26,11 @@ def ctrl(tmp_path):
     with cp.open("w") as f:
         yaml.safe_dump(config, f)
     app = JarvisApp(config, config_path=cp)
+    # Prevent real TTS calls (automation scenes contain speak steps)
+    app.speak = MagicMock()
+    app.speak_short = MagicMock()
+    if app.automation_engine:
+        app.automation_engine.tts_callback = MagicMock()
     return DashboardController(cp, app=app)
 
 
@@ -110,7 +115,7 @@ class TestHandleVoice:
         """Even non-REQLLM garbage like '没查到' should fallback to LLM."""
         _mock_asr(ctrl, "你知道我是谁吗")
         _mock_verify_guest(ctrl)
-        _mock_llm(ctrl, "你好，我是小贾。")
+        _mock_llm(ctrl, "你好，我是小月。")
 
         from core.local_executor import Action, ActionResponse
         fake_route = MagicMock(
@@ -171,7 +176,7 @@ class TestScenes:
 class TestRendering:
     def test_header(self, ctrl):
         h = ctrl.render_header()
-        assert "小贾" in h
+        assert "小月" in h
         assert "sim" in h
 
     def test_devices(self, ctrl):

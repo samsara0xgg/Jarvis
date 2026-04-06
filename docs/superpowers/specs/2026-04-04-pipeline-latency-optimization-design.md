@@ -6,7 +6,7 @@
 
 ## Context
 
-Jarvis voice pipeline stages and measured latencies (from Mac benchmark, RPi5 will be slower for local compute but same for network):
+小月 voice pipeline stages and measured latencies (from Mac benchmark, RPi5 will be slower for local compute but same for network):
 
 | Stage | Latency | Type |
 |-------|---------|------|

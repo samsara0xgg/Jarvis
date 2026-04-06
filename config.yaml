@@ -305,11 +305,11 @@ llm:
   # LLM 提供商：openai（兼容 Kimi/DeepSeek）或 anthropic。
   provider: openai
 
-  # 模型 ID。gpt-4o-mini(便宜快) / gpt-4o(最强) / deepseek-chat / kimi-k2.5。
-  model: gpt-4o-mini
+  # 模型 ID。gpt-4o-mini / grok-4.20-0309-non-reasoning / grok-4.1-fast-non-reasoning。
+  model: grok-4-1-fast-non-reasoning
 
-  # OpenAI 兼容 base_url。留空 = OpenAI 官方。DeepSeek: https://api.deepseek.com
-  base_url: ""
+  # OpenAI 兼容 base_url。留空 = OpenAI 官方。xAI: https://api.x.ai/v1
+  base_url: "https://api.x.ai/v1"
 
   # 单次回复最大 token 数。
   max_tokens: 1024
@@ -390,6 +390,12 @@ memory:
   # 保留最近 N 轮对话（每轮 = 一问一答）。
   max_conversation_turns: 20
 
+  # 记忆提取专用 LLM（不填则跟主 llm 一样）。
+  # 建议固定用 GPT-4o-mini — 支持 function calling，便宜稳定。
+  llm:
+    model: gpt-4o-mini
+    base_url: ""  # 空 = OpenAI 官方
+
   # 对话历史持久化目录。
   conversation_dir: data/conversations
 
@@ -402,7 +408,7 @@ memory:
 skills:
   weather:
     # 默认查询城市。
-    default_city: Vancouver
+    default_city: Victoria
 
   reminders:
     # 提醒数据文件路径。

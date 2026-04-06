@@ -334,7 +334,7 @@ class TestLocalExecutor:
         assert isinstance(result, ActionResponse)
         assert isinstance(result.text, str)
         assert result.action == Action.RESPONSE
-        assert result.text == "好的，灯开了。"
+        assert result.text == "好的，开了。"
 
     def test_execute_info_query_reqllm_type(self, executor, mock_registry):
         """info_query should return REQLLM so LLM can rephrase the data."""

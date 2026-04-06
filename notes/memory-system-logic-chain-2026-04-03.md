@@ -67,7 +67,7 @@
 对话完成 → _executor.submit(memory_manager.save, messages, user_id, session_id)
            │
            ├─ [1] _messages_to_text(messages)
-           │       "用户：记住，我喜欢拿铁\n小贾：好的，记住了。"
+           │       "用户：记住，我喜欢拿铁\n小月：好的，记住了。"
            │
            ├─ [2] _call_llm_extract()  ← GPT-4o-mini
            │       │

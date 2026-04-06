@@ -78,8 +78,8 @@ class LocalExecutor:
         if errors:
             return ActionResponse(Action.RESPONSE, f"部分操作失败：{'; '.join(errors)}")
 
-        # For simple actions (on/off/brightness), Groq's response is reliable
-        return ActionResponse(Action.RESPONSE, response or self._build_smart_home_reply(actions))
+        # Always use template — Groq response can contain ASR garbage or hallucinations
+        return ActionResponse(Action.RESPONSE, self._build_smart_home_reply(actions))
 
     @staticmethod
     def _build_smart_home_reply(actions: list[dict]) -> str:
@@ -97,13 +97,9 @@ class LocalExecutor:
             "activate": "已激活",
         }
         parts = []
-        device_names = set()
         for act in actions:
             action = act.get("action", "")
             value = act.get("value")
-            device_id = act.get("device_id", "")
-            if device_id:
-                device_names.add(device_id.replace("_", ""))
             tmpl = _ACTION_TEMPLATES.get(action, "已执行")
             if value is not None and "{value}" in tmpl:
                 parts.append(tmpl.format(value=value))

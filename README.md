@@ -1,17 +1,17 @@
-# 小贾 (J.A.R.V.I.S.) — 私人语音管家
+# 小月 — 私人语音管家
 
 声纹驱动的中文语音助手，支持智能家居控制、实时信息查询、情感感知对话和多层模型路由。
 
 ## 功能
 
-- **唤醒词** — Porcupine "Hey Jarvis"，免提激活
+- **唤醒词** — Porcupine（暂用 "Hey Jarvis"，计划训练自定义唤醒词），免提激活
 - **声纹验证** — SpeechBrain ECAPA-TDNN，5 级权限（guest → owner）
 - **语音识别** — SenseVoice-Small INT8（75ms 推理，CER 2.96%），Whisper 离线备用
 - **VAD 录音** — 语音结束自动停止，短指令 ~1.5s
 - **意图路由** — Groq（~300ms）→ DeepSeek → 本地 Ollama 三级回退
 - **LLM 对话** — GPT-4o-mini / DeepSeek / Kimi K2.5，流式逐句播报
 - **情感感知** — SenseVoice 检测 7 种情绪 → LLM 调整语气 → TTS 匹配风格
-- **人格系统** — "小贾"人设，时段语气 + 用户情绪 + 动态 prompt
+- **人格系统** — "小月"人设，时段语气 + 用户情绪 + 动态 prompt
 - **TTS 语音合成** — 多引擎：OpenAI TTS / MiniMax / Azure Neural / Edge TTS / pyttsx3
 - **智能家居** — Philips Hue + 模拟设备 + MQTT
 - **自动化规则** — 自然语言创建：keyword / cron / 延时触发
@@ -77,7 +77,7 @@ Jarvis/
 ├── config.yaml              # 统一配置
 ├── core/                    # 核心模块
 │   ├── speech_recognizer.py # SenseVoice + Whisper 双引擎 ASR
-│   ├── personality.py       # "小贾" 人格系统（动态 prompt）
+│   ├── personality.py       # "小月" 人格系统（动态 prompt）
 │   ├── intent_router.py     # 三层意图路由
 │   ├── local_executor.py    # 本地指令执行
 │   ├── llm.py               # 多 LLM 后端 (OpenAI/Anthropic/DeepSeek/Kimi)
@@ -127,7 +127,7 @@ python -m pytest tests/test_tts.py -v         # 单模块
 |:---:|------|:---:|
 | F0 | 新闻/股票数据 | ✅ |
 | F1 | 意图路由 + 延迟优化 | ✅ |
-| F2 | 人格系统 ("小贾") | ✅ |
+| F2 | 人格系统 ("小月") | ✅ |
 | F3 | 情境感知 (ESP32) | ⏸️ 等硬件 |
 | F4 | 主动通知 | ⏸️ 等 F3 |
 | F5 | Telegram 多渠道 | 🔲 |

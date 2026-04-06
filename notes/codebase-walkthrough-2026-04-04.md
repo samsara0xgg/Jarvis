@@ -1,4 +1,4 @@
-# Jarvis 代码全解 — 逐模块走读
+# 小月代码全解 — 逐模块走读
 
 > 2026-04-04 · 按数据流顺序，一块一块理解整个项目
 
@@ -142,7 +142,7 @@ text (来自输入层)
 给 LLM 的 system prompt，由 4 层叠加组成：
 
 ```
-<personality>    ← 核心人设："小贾"，克制的老朋友
+<personality>    ← 核心人设："小月"，克制的老朋友
 <output_rules>   ← 口语化、不用 markdown、最多 3-4 句
 <memory>         ← MemoryManager.query() 注入的记忆（≤500 tokens）
 <situation>      ← 动态拼接：
@@ -183,7 +183,7 @@ text (来自输入层)
 1. **并行**启动 `route_future` + `memory_future`
 2. 等两个 future 回来
 3. `route.tier == "local"` → `LocalExecutor` 处理（模块 4 的事）
-4. 本地处理返回 `REQLLM` → 让 LLM 用"小贾语气"转述数据
+4. 本地处理返回 `REQLLM` → 让 LLM 用"小月语气"转述数据
 5. `response_text` 还是 None → 走 `chat_stream()`，全权交给 LLM
 
 ---
@@ -439,7 +439,7 @@ LocalExecutor — 根据 intent 分发
 | 方法 | intent | 返回类型 | 说明 |
 |------|--------|---------|------|
 | `execute_smart_home` | smart_home | RESPONSE | 遍历 actions[]，逐个调 skill，失败则报错 |
-| `execute_info_query` | info_query | REQLLM | 数据丢给 LLM 用小贾语气转述 |
+| `execute_info_query` | info_query | REQLLM | 数据丢给 LLM 用小月语气转述 |
 | `execute_time` | time | RESPONSE | 本地 datetime，零延迟 |
 | `execute_automation` | automation | RESPONSE | CRUD 自动化规则 |
 | `execute_skill_alias` | skill_alias | REQLLM | 关键词触发的 skill 快捷方式 |
@@ -541,7 +541,7 @@ PermissionManager.check_permission(user_role, device, action)
 
 ### 学习系统（LearningRouter + SkillFactory）
 
-用户可以通过语音教小贾新技能，3 级复杂度：
+用户可以通过语音教小月新技能，3 级复杂度：
 
 | 模式 | 关键词 | 说明 | 实现 |
 |------|--------|------|------|
@@ -680,7 +680,7 @@ Gradio Dashboard，5 个面板：
 
 #### 情感映射（3 套）
 
-SenseVoice 检测到的用户情绪 → 转化为 Jarvis 的**回应风格**（不是复读用户情绪）：
+SenseVoice 检测到的用户情绪 → 转化为小月的**回应风格**（不是复读用户情绪）：
 
 | 用户情绪 | OpenAI instruction | Azure SSML style | MiniMax |
 |---------|-------------------|-------------------|---------|

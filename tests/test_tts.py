@@ -333,3 +333,49 @@ class TestEmotionPipeline:
         r = TranscriptionResult(text="hello", language="en", confidence=0.8)
         assert r.emotion == ""
         assert r.event == ""
+
+
+# --- TTS Speed control tests ---
+
+
+class TestTTSSpeed:
+    def test_speed_default_is_1(self):
+        """Without speed in config, default should be 1.0."""
+        tts = TTSEngine(_make_config())
+        assert tts.speed == 1.0
+
+    def test_speed_reads_from_config(self):
+        """Speed should be read from config."""
+        tts = TTSEngine(_make_config(speed=1.5))
+        assert tts.speed == 1.5
+
+    def test_speed_clamps_low(self):
+        """Speed below 0.25 should clamp to 0.25."""
+        tts = TTSEngine(_make_config(speed=0.1))
+        assert tts.speed == 0.25
+
+    def test_speed_clamps_high(self):
+        """Speed above 4.0 should clamp to 4.0."""
+        tts = TTSEngine(_make_config(speed=10.0))
+        assert tts.speed == 4.0
+
+    def test_minimax_uses_speed(self):
+        """MiniMax payload should use configured speed."""
+        tts = TTSEngine(_make_config(engine="minimax", minimax_key="fake", speed=1.3))
+        assert tts.speed == 1.3
+
+    def test_openai_tts_passes_speed(self):
+        """OpenAI TTS create() should receive speed parameter."""
+        config = _make_config(engine="openai_tts", openai_tts_key="fake", speed=1.2)
+        tts = TTSEngine(config)
+
+        mock_response = MagicMock()
+        mock_response.content = b"fake audio"
+        mock_client = MagicMock()
+        mock_client.audio.speech.create.return_value = mock_response
+        tts._openai_client = mock_client
+
+        tts._synth_openai("test text", "NEUTRAL")
+
+        call_kwargs = mock_client.audio.speech.create.call_args
+        assert call_kwargs.kwargs.get("speed") == 1.2
