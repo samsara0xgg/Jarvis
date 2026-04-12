@@ -1,139 +1,152 @@
-# 小月 — 私人语音管家
+# XIAOYUE
 
-声纹驱动的中文语音助手，支持智能家居控制、实时信息查询、情感感知对话和多层模型路由。
+A voice-first personal assistant built for Raspberry Pi 5, featuring voiceprint authentication, emotion-aware conversation, persistent memory, smart home control, and multi-model routing with graceful degradation.
 
-## 功能
+> **Status:** 812 tests passing | 14 built-in skills | 5 TTS engines | Runs on RPi5 4GB
 
-- **唤醒词** — Porcupine（暂用 "Hey Jarvis"，计划训练自定义唤醒词），免提激活
-- **声纹验证** — SpeechBrain ECAPA-TDNN，5 级权限（guest → owner）
-- **语音识别** — SenseVoice-Small INT8（75ms 推理，CER 2.96%），Whisper 离线备用
-- **VAD 录音** — 语音结束自动停止，短指令 ~1.5s
-- **意图路由** — Groq（~300ms）→ DeepSeek → 本地 Ollama 三级回退
-- **LLM 对话** — GPT-4o-mini / DeepSeek / Kimi K2.5，流式逐句播报
-- **情感感知** — SenseVoice 检测 7 种情绪 → LLM 调整语气 → TTS 匹配风格
-- **人格系统** — "小月"人设，时段语气 + 用户情绪 + 动态 prompt
-- **TTS 语音合成** — 多引擎：OpenAI TTS / MiniMax / Azure Neural / Edge TTS / pyttsx3
-- **智能家居** — Philips Hue + 模拟设备 + MQTT
-- **自动化规则** — 自然语言创建：keyword / cron / 延时触发
-- **技能系统** — 天气、提醒、待办、新闻、股票、记忆、系统控制、远程控制
-- **远程控制** — WebSocket 控制 Mac
+## Features
 
-## 架构
+- **Wake Word** — OpenWakeWord for hands-free activation
+- **Voiceprint Auth** — SpeechBrain ECAPA-TDNN speaker verification with 4-tier role-based permissions (guest → owner)
+- **Speech Recognition** — SenseVoice-Small INT8 via sherpa-onnx (75ms inference, CER 2.96%), Whisper fallback
+- **VAD Recording** — Auto-stop on speech end, ~1.5s for short commands
+- **Intent Routing** — Groq (~300ms) → Cerebras fallback, LRU-256 cache
+- **LLM Backend** — GPT-4o-mini / DeepSeek, streaming sentence-by-sentence with tool-use loop
+- **Emotion Pipeline** — SenseVoice detects 7 emotions → LLM adjusts tone → TTS matches vocal style
+- **Personality** — Custom persona with time-of-day tone, user mood tracking, dynamic prompt injection
+- **TTS** — 5-engine degradation chain: OpenAI TTS → MiniMax → Azure Neural → edge-tts → pyttsx3, with disk cache and emotion-style mapping
+- **Memory System** — SQLite + FastEmbed (bge-small-zh-v1.5), 6 memory types, relation index, direct-answer fast path (cosine + multi-signal scoring), episode digests, contradiction detection
+- **Smart Home** — Philips Hue live control + simulated devices + MQTT
+- **Automation** — Natural language rules: keyword / cron / delay triggers
+- **Skills** — 14 built-in (weather, reminders, todos, news, stocks, memory, smart home, system control, etc.) + runtime skill learning via Claude Code CLI
+- **Remote Control** — WebSocket bridge to Mac
+- **Web UI** — Gradio dashboard with 5 panels
+
+## Architecture
 
 ```
-麦克风 → 唤醒词 → 录音(VAD) → [声纹验证 + SenseVoice ASR 并行]
-                                          ↓
-                              意图路由 (Groq/DeepSeek/Ollama)
-                                          ↓
-                  ┌───────────┬───────────┼───────────┬──────────┐
-                  ↓           ↓           ↓           ↓          ↓
-             smart_home   info_query    time    automation    complex
-             本地执行      技能调用    本地生成   规则管理    云端 LLM (流式)
-                  └───────────┴───────────┼───────────┴──────────┘
-                                          ↓
-                              TTS (情感风格) → 喇叭
+Mic → Wake Word → Record (VAD) → [Voiceprint + SenseVoice ASR in parallel]
+         → DirectAnswer fast path (cosine > threshold? answer without LLM)
+         → [Intent Routing (Groq → Cerebras) + Memory Query] in parallel
+         → Local Execution or Cloud LLM (streaming, memory injected ≤500 tokens)
+         → TTS dual-thread pipeline (5-engine fallback + emotion style) → Speaker
+         → Background: memory extraction + dedup + storage, conversation history, behavior log
 ```
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 安装
+# Install
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# 下载 SenseVoice 模型 (~228MB)
+# Download SenseVoice model (~228MB)
 cd data && wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2
 tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2
 mv sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17 sensevoice-small-int8 && cd ..
 
-# 配置 API keys
-export GROQ_API_KEY="..."        # 意图路由（免费）
-export OPENAI_API_KEY="..."      # 云端 LLM + TTS
-# 可选:
+# Configure API keys
+export GROQ_API_KEY="..."        # Intent routing (free tier)
+export OPENAI_API_KEY="..."      # Cloud LLM + TTS
+# Optional:
 export DEEPSEEK_API_KEY="..."    # DeepSeek LLM
 export AZURE_SPEECH_KEY="..."    # Azure TTS
 export MINIMAX_API_KEY="..."     # MiniMax TTS
 
-# 运行
-python jarvis.py --no-wake    # 开发模式（按键录音）
-python jarvis.py              # 生产模式（唤醒词 "Hey Jarvis"）
+# Run
+python jarvis.py --no-wake    # Dev mode (push-to-talk)
+python jarvis.py              # Production (wake word activated)
 ```
 
-## 延迟性能
+## Latency
 
-| 环节 | 之前 | 现在 |
-|------|:---:|:---:|
-| 录音 | 3-5s (固定) | **1-2s** (VAD) |
+| Stage | Before | After |
+|-------|:------:|:-----:|
+| Recording | 3-5s (fixed) | **1-2s** (VAD) |
 | ASR | 3-7s (Whisper) | **75ms** (SenseVoice) |
-| 路由 | 200-1500ms | 200-500ms |
-| TTS | 0.5-2s (阻塞) | **非阻塞** |
-| **总计** | **~10-25s** | **~2-3s** |
+| Routing | 200-1500ms | **200-500ms** (cached) |
+| TTS | 0.5-2s (blocking) | **non-blocking** (pipelined) |
+| **End-to-end** | **~10-25s** | **~2-3s** |
 
-## 项目结构
+## Project Structure
 
 ```
-Jarvis/
-├── jarvis.py                # 主入口
-├── config.yaml              # 统一配置
-├── core/                    # 核心模块
-│   ├── speech_recognizer.py # SenseVoice + Whisper 双引擎 ASR
-│   ├── personality.py       # "小月" 人格系统（动态 prompt）
-│   ├── intent_router.py     # 三层意图路由
-│   ├── local_executor.py    # 本地指令执行
-│   ├── llm.py               # 多 LLM 后端 (OpenAI/Anthropic/DeepSeek/Kimi)
-│   ├── tts.py               # 多 TTS 引擎 (OpenAI/MiniMax/Azure/Edge/pyttsx3)
-│   ├── automation_rules.py  # 自动化规则引擎
-│   ├── audio_recorder.py    # 录音 + VAD
-│   ├── speaker_verifier.py  # 声纹验证
-│   ├── event_bus.py         # 事件总线
-│   └── scheduler.py         # 定时任务
-├── skills/                  # LLM function calling 技能 (10+)
-├── devices/                 # 智能家居 (sim / hue / mqtt)
-├── auth/                    # 声纹注册 + 角色权限
-├── memory/                  # 对话历史 + 用户偏好
-├── realtime_data/           # 新闻/股票数据服务
-├── notes/                   # 调研笔记和工作记录
-├── tests/                   # 490 tests, 82% coverage
-├── remote/                  # WebSocket 远程控制
-├── ui/                      # Gradio 仪表盘 + OLED
-├── esp32/                   # MicroPython 固件模板
-└── deploy/                  # RPi 部署脚本
+jarvis/
+├── jarvis.py                 # Entry point — initializes all subsystems
+├── config.yaml               # Unified config (500+ params)
+├── core/                     # Core modules
+│   ├── speech_recognizer.py  #   SenseVoice + Whisper dual-engine ASR
+│   ├── personality.py        #   Persona system (dynamic prompt)
+│   ├── intent_router.py      #   Intent routing with LRU cache + 2-tier fallback
+│   ├── local_executor.py     #   Local command dispatch
+│   ├── llm.py                #   Multi-LLM backend (streaming + tool-use loop)
+│   ├── tts.py                #   5-engine TTS pipeline (dual-thread + disk cache)
+│   ├── automation_engine.py  #   Rule engine (keyword/cron/delay)
+│   ├── audio_recorder.py     #   Recording with VAD
+│   ├── speaker_verifier.py   #   Voiceprint verification
+│   ├── health.py             #   Circuit breaker (HEALTHY → DEGRADED → UNAVAILABLE)
+│   ├── wake_word.py          #   OpenWakeWord integration
+│   ├── learning_router.py    #   Detect user teaching intent
+│   ├── skill_factory.py      #   Runtime skill generation via Claude Code CLI
+│   ├── event_bus.py          #   Pub/sub event bus
+│   └── scheduler.py          #   Cron scheduler
+├── skills/                   # 14 built-in + learned/ dynamic skills
+├── memory/                   # Memory subsystem
+│   ├── manager.py            #   Orchestrator: save → extract → dedup → store → query
+│   ├── store.py              #   SQLite (memories / profiles / episodes)
+│   ├── retriever.py          #   4-signal scoring (cosine + recency + importance + access)
+│   ├── direct_answer.py      #   Fast path: skip LLM for high-confidence factual recall
+│   ├── embedder.py           #   FastEmbed bge-small-zh-v1.5
+│   ├── behavior_log.py       #   Action logging for behavioral learning
+│   └── conversation.py       #   Sliding window conversation history
+├── devices/                  # Smart home (sim / hue / mqtt backends)
+├── auth/                     # Voiceprint enrollment + role-based permissions
+├── realtime_data/            # News & stock data services
+├── remote/                   # WebSocket remote control
+├── ui/                       # Gradio dashboard + OLED display
+├── esp32/                    # MicroPython firmware template
+├── deploy/                   # RPi deployment scripts
+└── tests/                    # 812 tests
 ```
 
-## 配置
+## Configuration
 
-所有参数在 `config.yaml` 统一管理，API key 通过环境变量传入。
+All parameters live in `config.yaml`. API keys are passed via environment variables.
 
-| 配置项 | 说明 | 可选值 |
-|--------|------|--------|
-| `asr.provider` | ASR 引擎 | `sensevoice` / `local` (Whisper) |
-| `llm.provider` | LLM 后端 | `openai` (兼容 DeepSeek/Kimi) / `anthropic` |
-| `llm.base_url` | LLM API 地址 | 留空=OpenAI / DeepSeek / Moonshot URL |
-| `tts.engine` | TTS 引擎 | `openai_tts` / `minimax` / `azure` / `edge-tts` / `pyttsx3` |
-| `devices.mode` | 设备模式 | `sim` / `live` (Hue) |
-| `audio.vad_enabled` | VAD 提前终止 | `true` / `false` |
+| Key | Description | Options |
+|-----|-------------|---------|
+| `asr.provider` | ASR engine | `sensevoice` / `local` (Whisper) |
+| `llm.provider` | LLM backend | `openai` (compatible with DeepSeek) / `anthropic` |
+| `llm.base_url` | LLM API endpoint | empty = OpenAI / DeepSeek URL |
+| `tts.engine` | TTS engine | `openai_tts` / `minimax` / `azure` / `edge-tts` / `pyttsx3` |
+| `devices.mode` | Device mode | `sim` / `live` (Hue) |
+| `audio.vad_enabled` | VAD early stop | `true` / `false` |
 
-## 测试
+## Testing
 
 ```bash
-python -m pytest tests/ -v                    # 全部测试
-python -m pytest tests/ --cov=core            # 覆盖率报告
-python -m pytest tests/test_tts.py -v         # 单模块
+python -m pytest tests/ -v                    # All tests
+python -m pytest tests/ --cov=core            # Coverage report
+python -m pytest tests/test_tts.py -v         # Single module
 ```
 
-## 路线图
+## Roadmap
 
-| # | 功能 | 状态 |
-|:---:|------|:---:|
-| F0 | 新闻/股票数据 | ✅ |
-| F1 | 意图路由 + 延迟优化 | ✅ |
-| F2 | 人格系统 ("小月") | ✅ |
-| F3 | 情境感知 (ESP32) | ⏸️ 等硬件 |
-| F4 | 主动通知 | ⏸️ 等 F3 |
-| F5 | Telegram 多渠道 | 🔲 |
-| F6 | 自然语言自动化 | ✅ |
-| F7 | OLED Ambient | ⏸️ 等硬件 |
-| F8 | 自诊断自修复 | 🔲 |
-| F9-F17 | 行为学习/渐进信任/自编程/... | 🔲 |
-
-详见 `notes/` 目录下的调研笔记和工作记录。
+| Feature | Status |
+|---------|:------:|
+| Real-time data (news/stocks) | Done |
+| Intent routing + latency optimization | Done |
+| Persona system | Done |
+| Natural language automation | Done |
+| Memory system (13 optimizations, eval framework) | Done |
+| Skill learning (3-tier + code generation) | Done |
+| Performance tuning (cache, parallelism, preload) | Done |
+| Hue smart home live control | Done |
+| Hidden mode (continuous voice) | Done |
+| Context awareness (mmWave + sensors) | Waiting for hardware |
+| Display (ST7789 / GC9A01) | Waiting for hardware |
+| ESP32 sensor node | Waiting for hardware |
+| Behavioral learning (T2) | Planned |
+| Proactive notifications | Planned |
+| Multi-channel (Telegram) | Planned |
+| Self-diagnosis & self-repair | Planned |
