@@ -94,10 +94,12 @@ class ScenarioResult:
 
     @property
     def status(self) -> str:
-        if any(not s.passed for s in self.steps):
-            return "fail"
+        has_failures = any(not s.passed for s in self.steps)
+        # review: true 的场景始终进评审，即使有断言失败
         if self.review:
             return "review"
+        if has_failures:
+            return "fail"
         return "pass"
 
 

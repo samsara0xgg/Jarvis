@@ -1,0 +1,143 @@
+{
+  "timestamp": "2026-04-13T15:14:52",
+  "duration_s": 1.1,
+  "api_calls": {
+    "groq": 3,
+    "gpt4o_mini": 2
+  },
+  "cost_estimate_usd": 0.0044,
+  "summary": {
+    "pass": 5,
+    "fail": 0,
+    "review": 0,
+    "total": 5
+  },
+  "suites": [
+    {
+      "name": "路由准确性",
+      "scenarios": [
+        {
+          "name": "智能家居路由",
+          "status": "pass",
+          "steps": [
+            {
+              "input": "打开卧室灯",
+              "response": "好的，开了。",
+              "latency_ms": 306,
+              "api_calls": {
+                "groq": 1
+              },
+              "route": {
+                "intent": "smart_home",
+                "tier": "local",
+                "confidence": 0.95,
+                "provider": "groq"
+              },
+              "device_changes": [
+                {
+                  "device_id": "bedroom_light",
+                  "field": "is_on",
+                  "before": false,
+                  "after": true
+                }
+              ],
+              "assertions": {
+                "no_crash": "pass",
+                "route": "pass",
+                "tier": "pass"
+              }
+            }
+          ]
+        },
+        {
+          "name": "时间路由",
+          "status": "pass",
+          "steps": [
+            {
+              "input": "现在几点了",
+              "response": "现在是15点14分。",
+              "latency_ms": 189,
+              "api_calls": {
+                "groq": 1
+              },
+              "route": {
+                "intent": "time",
+                "tier": "local",
+                "confidence": 0.95,
+                "provider": "groq"
+              },
+              "assertions": {
+                "no_crash": "pass",
+                "route": "pass",
+                "tier": "pass"
+              }
+            }
+          ]
+        },
+        {
+          "name": "闲聊路由",
+          "status": "pass",
+          "steps": [
+            {
+              "input": "你觉得人生的意义是什么",
+              "response": "人生的意义这个问题太深刻了，我只是小月，管家的职责就是让Allen生活舒适方便，不太敢妄谈人生的意义。不过，我觉得人生的意义可能就是找到自己喜欢做的事情，然后做好它，最后能让自己和周围的人都感到开心和满足。",
+              "latency_ms": 631,
+              "api_calls": {
+                "groq": 1
+              },
+              "route": {
+                "intent": "chat",
+                "tier": "cloud",
+                "confidence": 1.0,
+                "provider": "groq"
+              },
+              "assertions": {
+                "no_crash": "pass",
+                "tier": "pass"
+              }
+            }
+          ]
+        },
+        {
+          "name": "告别快捷路径",
+          "status": "pass",
+          "steps": [
+            {
+              "input": "再见",
+              "response": "farewell",
+              "latency_ms": 0,
+              "api_calls": {
+                "gpt4o_mini": 1
+              },
+              "assertions": {
+                "no_crash": "pass",
+                "path": "pass"
+              }
+            }
+          ]
+        },
+        {
+          "name": "记忆快捷路径",
+          "status": "pass",
+          "steps": [
+            {
+              "input": "记住我喜欢红色",
+              "response": "好的，记住了。",
+              "latency_ms": 1,
+              "api_calls": {
+                "gpt4o_mini": 1
+              },
+              "assertions": {
+                "no_crash": "pass",
+                "path": "pass"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "failures": [],
+  "needs_review": [],
+  "regressions": []
+}

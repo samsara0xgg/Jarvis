@@ -154,6 +154,11 @@ def run_human_review(run: RunResult) -> list[dict]:
         for sc in suite.scenarios:
             if sc.status == "review":
                 for i, step in enumerate(sc.steps):
+                    # Collect assertion failures for context
+                    failures = {
+                        k: f"expected={v.expected}, actual={v.actual}"
+                        for k, v in step.assertions.items() if v.status == "fail"
+                    }
                     review_items.append({
                         "suite": suite.name,
                         "scenario": sc.name,
@@ -162,6 +167,7 @@ def run_human_review(run: RunResult) -> list[dict]:
                         "response": step.response,
                         "device_changes": [c.display() for c in step.device_changes],
                         "review_hint": sc.review_hint,
+                        "failures": failures,
                     })
 
     if not review_items:
@@ -193,6 +199,8 @@ def main() -> int:
     parser.add_argument("--suite", help="Suite name or comma-separated list (e.g. smart_home,memory)")
     parser.add_argument("--free", action="store_true", help="Free chat mode")
     parser.add_argument("--no-interactive", action="store_true")
+    parser.add_argument("--live", action="store_true", help="Use real devices (Hue bridge) instead of sim")
+    parser.add_argument("--tts", action="store_true", help="Play TTS audio for each response")
     args = parser.parse_args()
 
     # Load scenarios
@@ -202,9 +210,14 @@ def main() -> int:
         return 1
 
     # Initialize harness
-    print("⚙️  初始化 JarvisApp (sim)...")
+    mode_label = "live" if args.live else "sim"
+    extras = []
+    if args.tts:
+        extras.append("TTS")
+    extra_str = f" + {', '.join(extras)}" if extras else ""
+    print(f"⚙️  初始化 JarvisApp ({mode_label}{extra_str})...")
     t0 = time.monotonic()
-    harness = TestHarness()
+    harness = TestHarness(live=args.live, tts=args.tts)
     print(f"  就绪 ({time.monotonic() - t0:.1f}s)")
 
     if args.free:

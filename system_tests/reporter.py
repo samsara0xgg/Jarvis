@@ -122,6 +122,9 @@ class TerminalReporter:
         if item.get("device_changes"):
             for c in item["device_changes"]:
                 print(f"  设备: {c}")
+        if item.get("failures"):
+            for name, detail in item["failures"].items():
+                print(f"  {_RED}❌ {name}: {detail}{_RESET}")
         if item.get("review_hint"):
             print(f"  → {item['review_hint']}")
 
