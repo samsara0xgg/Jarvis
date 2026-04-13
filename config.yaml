@@ -35,7 +35,7 @@ audio:
 
   # VAD: 检测语音结束后提前停止录音（省 2-3 秒）
   vad_enabled: true
-  vad_silence_duration: 0.8     # 语音后持续静音多久停止（秒）
+  vad_silence_duration: 1.5     # 语音后持续静音多久停止（秒）
   vad_threshold: 0.02           # RMS 阈值，低于此视为静音
 
 # ----------------------------------------------------------------------------
@@ -305,6 +305,22 @@ llm:
   # LLM 提供商：openai（兼容 Kimi/DeepSeek）或 anthropic。
   provider: openai
 
+  # 运行时可切换的模型预设（"小月，快速模式" / "小月，深度模式"）
+  default_preset: fast
+
+  presets:
+    fast:
+      model: llama-3.3-70b-versatile
+      base_url: "https://api.groq.com/openai/v1"
+      api_key_env: GROQ_API_KEY
+      max_tokens: 1024
+    deep:
+      model: grok-4-1-fast-non-reasoning
+      base_url: "https://api.x.ai/v1"
+      api_key_env: XAI_API_KEY
+      max_tokens: 1024
+
+  # 后备配置（无 presets 时使用）
   # 模型 ID。gpt-4o-mini / grok-4.20-0309-non-reasoning / grok-4.1-fast-non-reasoning。
   model: grok-4-1-fast-non-reasoning
 

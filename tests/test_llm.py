@@ -11,8 +11,10 @@ from unittest.mock import MagicMock
 from core.llm import LLMClient
 
 
-def _make_config(provider="anthropic"):
-    return {"llm": {"provider": provider, "model": "test-model", "max_tokens": 256, "api_key": "test-key"}}
+def _make_config(provider="anthropic", **overrides):
+    cfg: dict[str, Any] = {"provider": provider, "model": "test-model", "max_tokens": 256, "api_key": "test-key"}
+    cfg.update(overrides)
+    return {"llm": cfg}
 
 
 class _FakeTextBlock:
@@ -314,3 +316,113 @@ def test_chat_stream_no_callback_falls_back_to_chat():
         assert mock_anthropic.messages.create.called
     finally:
         sys.modules.pop("anthropic", None)
+
+
+# ======================================================================
+# Model preset / switch tests
+# ======================================================================
+
+_PRESET_CONFIG = {
+    "fast": {
+        "model": "llama-3.3-70b-versatile",
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key_env": "GROQ_API_KEY",
+        "max_tokens": 1024,
+    },
+    "deep": {
+        "model": "grok-4-1-fast-non-reasoning",
+        "base_url": "https://api.x.ai/v1",
+        "api_key_env": "XAI_API_KEY",
+        "max_tokens": 2048,
+    },
+}
+
+
+class TestModelSwitch:
+    """Tests for LLM model presets and runtime switching."""
+
+    def test_default_preset_applied(self) -> None:
+        """Init with default_preset='fast' applies the fast preset model."""
+        _install_fake_openai()
+        try:
+            client = LLMClient(_make_config(
+                provider="openai",
+                default_preset="fast",
+                presets=_PRESET_CONFIG,
+                api_key="",
+            ))
+            assert client.model == "llama-3.3-70b-versatile"
+            assert client.active_preset == "fast"
+            assert client._base_url == "https://api.groq.com/openai/v1"
+        finally:
+            sys.modules.pop("openai", None)
+
+    def test_switch_model_changes_active_preset(self) -> None:
+        """switch_model from fast to deep updates model and preset."""
+        _install_fake_openai()
+        try:
+            client = LLMClient(_make_config(
+                provider="openai",
+                default_preset="fast",
+                presets=_PRESET_CONFIG,
+                api_key="",
+            ))
+            assert client.model == "llama-3.3-70b-versatile"
+
+            msg = client.switch_model("deep")
+            assert client.model == "grok-4-1-fast-non-reasoning"
+            assert client.active_preset == "deep"
+            assert client._client is None  # client reset for re-init
+            assert "deep" in msg
+        finally:
+            sys.modules.pop("openai", None)
+
+    def test_switch_model_unknown_raises(self) -> None:
+        """switch_model with unknown preset raises ValueError."""
+        _install_fake_openai()
+        try:
+            client = LLMClient(_make_config(
+                provider="openai",
+                default_preset="fast",
+                presets=_PRESET_CONFIG,
+                api_key="",
+            ))
+            import pytest
+            with pytest.raises(ValueError, match="Unknown preset"):
+                client.switch_model("nonexistent")
+        finally:
+            sys.modules.pop("openai", None)
+
+    def test_get_presets(self) -> None:
+        """get_presets returns the correct preset dict."""
+        _install_fake_openai()
+        try:
+            client = LLMClient(_make_config(
+                provider="openai",
+                default_preset="fast",
+                presets=_PRESET_CONFIG,
+                api_key="",
+            ))
+            presets = client.get_presets()
+            assert set(presets.keys()) == {"fast", "deep"}
+            assert presets["fast"]["model"] == "llama-3.3-70b-versatile"
+            assert presets["deep"]["model"] == "grok-4-1-fast-non-reasoning"
+        finally:
+            sys.modules.pop("openai", None)
+
+    def test_backward_compat_no_presets(self) -> None:
+        """Config without presets section still works with flat fields."""
+        _install_fake_openai()
+        try:
+            client = LLMClient(_make_config(
+                provider="openai",
+                model="gpt-4o",
+                base_url="https://api.openai.com/v1",
+                api_key="sk-test-key",
+            ))
+            assert client.model == "gpt-4o"
+            assert client.active_preset is None
+            assert client._api_key == "sk-test-key"
+            assert client.get_presets() == {}
+        finally:
+            sys.modules.pop("openai", None)

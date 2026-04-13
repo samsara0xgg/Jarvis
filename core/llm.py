@@ -41,24 +41,108 @@ class LLMClient:
         self._tracker = tracker
         self._client: Any = None
 
+        # Store presets (OpenAI-only for now)
+        self._presets: dict[str, dict[str, Any]] = dict(llm_config.get("presets") or {})
+        self.active_preset: str | None = None
+
+        # Defaults — may be overwritten by preset or flat config below
+        self.model: str = str(llm_config.get("model", "gpt-4o"))
+        self._base_url: str | None = None
+        self._api_key: str | None = None
+
         if self.provider == "openai":
-            self.model = str(llm_config.get("model", "gpt-4o"))
-            base_url = llm_config.get("base_url") or ""
-            self._base_url = base_url or None
-            # 根据 base_url 选对应的 API key，避免用错 key 调错服务
-            if llm_config.get("api_key"):
-                self._api_key = llm_config["api_key"]
-            elif "x.ai" in base_url:
-                self._api_key = os.environ.get("XAI_API_KEY")
-            elif "deepseek" in base_url:
-                self._api_key = os.environ.get("DEEPSEEK_API_KEY")
-            elif "moonshot" in base_url:
-                self._api_key = os.environ.get("MOONSHOT_API_KEY")
+            default_preset = llm_config.get("default_preset", "")
+            if default_preset and default_preset in self._presets:
+                self._apply_preset(default_preset)
             else:
-                self._api_key = os.environ.get("OPENAI_API_KEY")
+                # Backward compat: use flat config fields
+                self.model = str(llm_config.get("model", "gpt-4o"))
+                base_url = llm_config.get("base_url") or ""
+                self._base_url = base_url or None
+                self._api_key = self._resolve_api_key(llm_config.get("api_key", ""), base_url)
         else:
             self.model = str(llm_config.get("model", "claude-sonnet-4-20250514"))
             self._api_key = llm_config.get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
+
+    # ------------------------------------------------------------------
+    # Preset / model switching helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_api_key(explicit_key: str, base_url: str) -> str | None:
+        """Resolve the API key from an explicit value or environment variable.
+
+        Args:
+            explicit_key: Key provided directly in config (may be empty).
+            base_url: The base URL, used to infer the correct env var.
+
+        Returns:
+            The resolved API key, or ``None`` if unavailable.
+        """
+        if explicit_key:
+            return explicit_key
+        if "x.ai" in base_url:
+            return os.environ.get("XAI_API_KEY")
+        if "deepseek" in base_url:
+            return os.environ.get("DEEPSEEK_API_KEY")
+        if "moonshot" in base_url:
+            return os.environ.get("MOONSHOT_API_KEY")
+        if "groq" in base_url:
+            return os.environ.get("GROQ_API_KEY")
+        return os.environ.get("OPENAI_API_KEY")
+
+    def _apply_preset(self, name: str) -> None:
+        """Apply a named model preset. Resets ``_client`` to force re-init.
+
+        Args:
+            name: Key in the ``presets`` dict from config.
+
+        Raises:
+            ValueError: If *name* is not found in available presets.
+        """
+        if name not in self._presets:
+            raise ValueError(
+                f"Unknown preset '{name}'. Available: {list(self._presets)}"
+            )
+        preset = self._presets[name]
+        self.model = str(preset.get("model", self.model))
+        base_url = preset.get("base_url") or ""
+        self._base_url = base_url or None
+        self.max_tokens = int(preset.get("max_tokens", self.max_tokens))
+
+        # Resolve API key: prefer api_key_env, then fallback heuristic
+        api_key_env = preset.get("api_key_env", "")
+        if api_key_env:
+            self._api_key = os.environ.get(api_key_env)
+        else:
+            self._api_key = self._resolve_api_key("", base_url)
+
+        self._client = None  # force OpenAI client re-init
+        self.active_preset = name
+        self.logger.info("Applied preset '%s': model=%s base_url=%s", name, self.model, self._base_url)
+
+    def switch_model(self, preset_name: str) -> str:
+        """Switch to a named preset at runtime.
+
+        Args:
+            preset_name: Key in the ``presets`` dict from config.
+
+        Returns:
+            Human-readable confirmation message.
+
+        Raises:
+            ValueError: If *preset_name* is not found in available presets.
+        """
+        self._apply_preset(preset_name)
+        return f"已切换到 {preset_name} 模式 (model={self.model})"
+
+    def get_presets(self) -> dict[str, dict[str, Any]]:
+        """Return available model presets.
+
+        Returns:
+            A dict mapping preset names to their configuration.
+        """
+        return dict(self._presets)
 
     # ------------------------------------------------------------------
     # Public API
