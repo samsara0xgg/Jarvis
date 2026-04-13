@@ -1403,6 +1403,9 @@ class JarvisApp:
 
     def _learn_create(self, intent: Any, user_id: str | None) -> str:
         """创造型：后台调用 Claude Code 技能工厂，不阻塞对话。"""
+        skill_id = self.skill_factory._slugify(intent.description)
+        if self.skill_factory.has_skill(skill_id):
+            return f"我已经会{intent.description}了。要重新学一个不同版本吗？说'重新学{intent.description}'。"
         self._executor.submit(self._learn_create_bg, intent, user_id)
         return "好的，我在后台学，你继续说。"
 

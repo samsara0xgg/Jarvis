@@ -1,6 +1,6 @@
 """Claude Code 技能工厂 — 调用 CC CLI 生成新 skill 文件。
 
-流程：准备上下文 → 调 claude CLI → 安全扫描 → pytest → 返回结果
+流程：检查已有 → 清理残留 → 调 CC → 安全扫描 → pytest → 成功/全部清理
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -22,7 +23,6 @@ _DANGEROUS_PATTERNS = [
     (r"\b__import__\b", "__import__()"),
     (r"\bshutil\b", "shutil module"),
     (r"\bpickle\b", "pickle module"),
-    # Second-order evasion patterns
     (r"\bimportlib\b", "importlib module"),
     (r"\bctypes\b", "ctypes module"),
     (r"\bsocket\b", "socket module"),
@@ -50,7 +50,7 @@ class SkillFactory:
         self._dir = Path(learned_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._root = Path(project_root)
-        self._process: subprocess.Popen | None = None  # 当前 CC 子进程
+        self._process: subprocess.Popen | None = None
 
     def cancel(self) -> None:
         """Kill the running CC subprocess, if any."""
@@ -58,6 +58,13 @@ class SkillFactory:
         if proc and proc.poll() is None:
             LOGGER.info("Killing SkillFactory CC subprocess (pid=%d)", proc.pid)
             proc.kill()
+
+    def has_skill(self, skill_id: str) -> bool:
+        """Check if a working skill file exists for this skill_id."""
+        for f in self._dir.glob("*.py"):
+            if f.stem == skill_id and f.name != "__init__.py":
+                return True
+        return False
 
     def create(
         self,
@@ -72,49 +79,49 @@ class SkillFactory:
         """
         def status(msg: str) -> None:
             LOGGER.info("SkillFactory: %s", msg)
-            print(f"  🔧 {msg}")
             if on_status:
                 on_status(msg)
 
-        status("准备上下文...")
         abc_source = self._read_file("skills/__init__.py")
         example_source = self._read_file("skills/weather.py")
-
-        # 记录 CC 调用前 skills/learned/ 里已有文件及其修改时间
+        prompt = self._build_prompt(description, abc_source, example_source)
+        skill_id = skill_name_hint or self._slugify(description)
         init_file = self._dir / "__init__.py"
+
+        status(f"Prompt: {description[:80]}")
+
+        # --- 清理所有残留文件（之前失败/超时留下的） ---
+        self._cleanup_files(skill_id, init_file)
+
+        # --- 记录 CC 调用前的文件快照 ---
         existing_mtimes = {
             f: f.stat().st_mtime
             for f in self._dir.glob("*.py") if f != init_file
         }
-        status(f"learned 目录已有 {len(existing_mtimes)} 个 skill 文件")
 
-        prompt = self._build_prompt(description, abc_source, example_source)
-        skill_id = skill_name_hint or self._slugify(description)
+        # --- 调用 CC ---
+        import shutil
+        claude_bin = shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude")
+        status(f"调用 CC（skill_id={skill_id}, bin={claude_bin}）")
 
-        status(f"Prompt 摘要: {description[:80]}")
         try:
-            import shutil
-            import threading
-            claude_bin = shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude")
-            status(f"调用 Claude Code（skill_id={skill_id}, bin={claude_bin}）...")
             self._process = subprocess.Popen(
                 [claude_bin, "-p", prompt, "--allowedTools", "Edit,Write,Bash", "--output-format", "text"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=str(self._root),
             )
 
-            # 实时流式打印 CC 输出
             stdout_lines: list[str] = []
             stderr_lines: list[str] = []
 
-            def _stream_pipe(pipe, lines, label):
+            def _stream(pipe: Any, lines: list[str], label: str) -> None:
                 for line in pipe:
                     line = line.rstrip()
                     if line:
                         lines.append(line)
                         LOGGER.info("CC[%s]: %s", label, line)
 
-            t_out = threading.Thread(target=_stream_pipe, args=(self._process.stdout, stdout_lines, "out"), daemon=True)
-            t_err = threading.Thread(target=_stream_pipe, args=(self._process.stderr, stderr_lines, "err"), daemon=True)
+            t_out = threading.Thread(target=_stream, args=(self._process.stdout, stdout_lines, "out"), daemon=True)
+            t_err = threading.Thread(target=_stream, args=(self._process.stderr, stderr_lines, "err"), daemon=True)
             t_out.start()
             t_err.start()
 
@@ -124,60 +131,54 @@ class SkillFactory:
             except subprocess.TimeoutExpired:
                 self._process.kill()
                 self._process.wait()
-                return {"success": False, "skill_name": skill_id,
-                        "message": "Claude Code 超时（180s）", "path": None}
+                self._cleanup_new_files(existing_mtimes, init_file)
+                return self._fail(skill_id, "Claude Code 超时（180s）")
             finally:
                 t_out.join(timeout=5)
                 t_err.join(timeout=5)
                 self._process = None
 
-            stdout = "\n".join(stdout_lines)
-            stderr = "\n".join(stderr_lines)
-
-            status(f"Claude Code 返回码: {returncode}")
+            status(f"CC 返回码: {returncode}")
             if returncode != 0:
-                return {"success": False, "skill_name": skill_id,
-                        "message": f"Claude Code 执行失败: {stderr[:200]}", "path": None}
+                self._cleanup_new_files(existing_mtimes, init_file)
+                stderr = "\n".join(stderr_lines)
+                return self._fail(skill_id, f"CC 执行失败: {stderr[:200]}")
+
         except FileNotFoundError:
             self._process = None
-            return {"success": False, "skill_name": skill_id,
-                    "message": "Claude Code CLI 未安装", "path": None}
+            return self._fail(skill_id, "Claude Code CLI 未安装")
 
-        # 扫描新增或修改的文件
+        # --- 扫描新增/修改的文件 ---
         changed_files: set[Path] = set()
         for f in self._dir.glob("*.py"):
             if f == init_file:
                 continue
             if f not in existing_mtimes:
-                changed_files.add(f)  # 新文件
+                changed_files.add(f)
             elif f.stat().st_mtime > existing_mtimes[f]:
-                changed_files.add(f)  # 修改过的文件
-        status(f"变更文件: {[f.name for f in changed_files] if changed_files else '无'}")
+                changed_files.add(f)
 
         if not changed_files:
-            return {"success": False, "skill_name": skill_id,
-                    "message": "Claude Code 未在 skills/learned/ 生成或修改任何 .py 文件", "path": None}
+            return self._fail(skill_id, "CC 未生成任何 .py 文件")
 
-        # 取第一个变更文件作为 skill 文件
         skill_path = sorted(changed_files)[0]
         actual_skill_id = skill_path.stem
-        status(f"检测到 skill 文件: {skill_path.name}")
+        status(f"生成文件: {skill_path.name}")
 
-        # 查找对应测试文件
-        test_path = self._root / "tests" / f"test_learned_{actual_skill_id}.py"
-        alt_test_path = self._root / "tests" / f"test_{actual_skill_id}.py"
-
+        # --- 安全扫描 ---
         status("安全检查...")
         security_errors = self._security_scan(str(skill_path))
         if security_errors:
             status(f"安全检查失败: {security_errors}")
-            skill_path.unlink(missing_ok=True)
-            return {"success": False, "skill_name": actual_skill_id,
-                    "message": f"安全检查未通过: {'; '.join(security_errors)}", "path": None}
+            self._cleanup_new_files(existing_mtimes, init_file)
+            return self._fail(actual_skill_id, f"安全检查未通过: {'; '.join(security_errors)}")
         status("安全检查通过")
 
-        # 跑测试
+        # --- 跑测试 ---
+        test_path = self._root / "tests" / f"test_learned_{actual_skill_id}.py"
+        alt_test_path = self._root / "tests" / f"test_{actual_skill_id}.py"
         found_test = test_path if test_path.exists() else (alt_test_path if alt_test_path.exists() else None)
+
         if found_test:
             status(f"运行测试: {found_test.name}")
             try:
@@ -187,16 +188,66 @@ class SkillFactory:
                 )
                 status(f"测试结果:\n{test_result.stdout[-400:]}")
                 if test_result.returncode != 0:
-                    return {"success": False, "skill_name": actual_skill_id,
-                            "message": f"测试未通过:\n{test_result.stdout[-300:]}", "path": str(skill_path)}
+                    self._cleanup_new_files(existing_mtimes, init_file)
+                    return self._fail(actual_skill_id, f"测试未通过:\n{test_result.stdout[-300:]}")
             except subprocess.TimeoutExpired:
-                return {"success": False, "skill_name": actual_skill_id,
-                        "message": "测试执行超时", "path": str(skill_path)}
+                self._cleanup_new_files(existing_mtimes, init_file)
+                return self._fail(actual_skill_id, "测试执行超时")
         else:
             status("未找到测试文件，跳过测试")
 
         status("学会了！")
         return {"success": True, "skill_name": actual_skill_id, "message": "技能学习成功", "path": str(skill_path)}
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _fail(self, skill_id: str, message: str) -> dict[str, Any]:
+        """Return a standardized failure result."""
+        LOGGER.warning("SkillFactory failed (%s): %s", skill_id, message)
+        return {"success": False, "skill_name": skill_id, "message": message, "path": None}
+
+    def _cleanup_files(self, skill_id: str, init_file: Path) -> None:
+        """Remove stale files from previous failed attempts for this skill_id."""
+        for old in self._dir.glob(f"{skill_id}*.py"):
+            if old != init_file:
+                LOGGER.info("Cleaning stale: %s", old.name)
+                old.unlink(missing_ok=True)
+        for old in (self._root / "tests").glob(f"test_learned_{skill_id}*.py"):
+            LOGGER.info("Cleaning stale test: %s", old.name)
+            old.unlink(missing_ok=True)
+        # Also clean files CC might have named differently
+        for old in self._dir.glob("*.py"):
+            if old == init_file:
+                continue
+            # If file was created recently (within last 5 min) and is empty or tiny, remove
+            try:
+                if old.stat().st_size < 50:
+                    LOGGER.info("Cleaning empty stub: %s", old.name)
+                    old.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _cleanup_new_files(self, before_mtimes: dict[Path, float], init_file: Path) -> None:
+        """Remove ALL files created/modified since the snapshot. Called on any failure."""
+        for f in self._dir.glob("*.py"):
+            if f == init_file:
+                continue
+            if f not in before_mtimes:
+                LOGGER.info("Cleanup (new file): %s", f.name)
+                f.unlink(missing_ok=True)
+            elif f.stat().st_mtime > before_mtimes[f]:
+                LOGGER.info("Cleanup (modified): %s", f.name)
+                f.unlink(missing_ok=True)
+        # Clean test files too
+        for f in (self._root / "tests").glob("test_learned_*.py"):
+            try:
+                if f not in before_mtimes and f.stat().st_mtime > min(before_mtimes.values(), default=0):
+                    LOGGER.info("Cleanup test: %s", f.name)
+                    f.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _build_prompt(self, description: str, skill_abc_source: str, example_skill_source: str) -> str:
         return f"""你需要为 Jarvis 语音助手写一个新的 skill。
@@ -250,7 +301,6 @@ class SkillFactory:
         slug = re.sub(r"[^\x00-\x7f]", "", slug)
         slug = slug.strip("_")
         if not slug:
-            # Pure non-ASCII input: use hash to avoid collisions
             h = hashlib.md5(text.encode()).hexdigest()[:6]
             slug = f"skill_{h}"
         return slug
