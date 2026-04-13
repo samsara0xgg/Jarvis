@@ -144,7 +144,7 @@ class LocalExecutor:
         if not result:
             return ActionResponse(Action.RESPONSE, "没查到相关信息。")
 
-        return ActionResponse(Action.REQLLM, result)
+        return ActionResponse(Action.RESPONSE, result)
 
     def execute_time(self, sub_type: str | None) -> ActionResponse:
         """处理时间查询."""

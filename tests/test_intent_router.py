@@ -285,7 +285,7 @@ class TestLocalExecutor:
             "get_stock_watchlist", {"symbols": ["AAPL"]}, user_role="owner",
         )
         assert "248" in result.text
-        assert result.action == Action.REQLLM
+        assert result.action == Action.RESPONSE
 
     def test_execute_info_query_news(self, executor, mock_registry):
         mock_registry.execute.return_value = "AI新闻..."
@@ -336,12 +336,12 @@ class TestLocalExecutor:
         assert result.action == Action.RESPONSE
         assert result.text == "好的，开了。"
 
-    def test_execute_info_query_reqllm_type(self, executor, mock_registry):
-        """info_query should return REQLLM so LLM can rephrase the data."""
+    def test_execute_info_query_response_type(self, executor, mock_registry):
+        """info_query should return RESPONSE directly — no LLM rephrase needed."""
         from core.local_executor import Action
         mock_registry.execute.return_value = "AAPL: $248, +2.3%"
         result = executor.execute_info_query("stocks", ["AAPL"], "owner")
-        assert result.action == Action.REQLLM
+        assert result.action == Action.RESPONSE
         assert "248" in result.text
 
 
