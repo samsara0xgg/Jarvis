@@ -1,0 +1,35 @@
+# Core audio
+sounddevice
+scipy
+sherpa-onnx
+
+# Speaker verification
+speechbrain
+
+# Config
+pyyaml
+
+# LLM
+openai
+requests
+
+# TTS
+edge-tts
+pyttsx3
+
+# Philips Hue
+phue2
+
+# Scheduler & MQTT
+apscheduler>=3.10
+paho-mqtt>=2.0
+websockets>=12.0
+
+# Memory system
+fastembed>=0.7
+
+# Display (RPi SPI screens, replaces luma.oled)
+Pillow>=10.0
+
+# System
+psutil>=5.9

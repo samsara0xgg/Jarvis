@@ -18,6 +18,9 @@ import numpy as np
 import requests
 
 from memory.embedder import Embedder
+
+# 复用 HTTP 连接，避免每次 LLM 调用重建 TCP/TLS
+_SESSION = requests.Session()
 from memory.retriever import MemoryRetriever
 from memory.store import MemoryStore
 
@@ -817,7 +820,7 @@ class MemoryManager:
             return None
 
         try:
-            resp = requests.post(
+            resp = _SESSION.post(
                 f"{self._llm_base_url}/chat/completions",
                 headers={
                     "Authorization": f"Bearer {self._llm_api_key}",
@@ -925,7 +928,7 @@ class MemoryManager:
             return None
 
         try:
-            resp = requests.post(
+            resp = _SESSION.post(
                 f"{self._llm_base_url}/chat/completions",
                 headers={
                     "Authorization": f"Bearer {self._llm_api_key}",
