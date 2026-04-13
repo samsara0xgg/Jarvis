@@ -160,7 +160,8 @@ def build_unified_prompt(
 你同时负责意图路由和回复生成。根据用户消息：
 
 1. 设备控制 → 输出JSON：{{"intent":"smart_home","confidence":0.95,"actions":[{{"device_id":"xxx","action":"turn_on","value":null}}],"response":"好的，已开灯。"}}
-2. 信息查询 → 输出JSON：{{"intent":"info_query","confidence":0.9,"sub_type":"news|stocks|weather","query":"AI","response":null}}
+2. 信息查询（仅限天气/股票/新闻这三种）→ 输出JSON：{{"intent":"info_query","confidence":0.9,"sub_type":"news|stocks|weather","query":"AI","response":null}}
+   其他查询（门票、翻译、百科等）→ 直接自然语言回复，不要输出info_query JSON
 3. 时间查询 → 输出JSON：{{"intent":"time","confidence":0.95,"sub_type":"current_time|date|weekday","response":null}}
 4. 自动化规则 → 输出JSON：{{"intent":"automation","confidence":0.9,"sub_type":"create|list|delete","rule":{{"name":"晚安模式","trigger":{{"type":"keyword","keyword":"晚安"}},"actions":[{{"device_id":"xxx","action":"turn_off","value":null}}]}},"response":"好的，以后说晚安就会关灯。"}}
 5. 其他所有情况 → 直接用自然语言回复，不要输出JSON

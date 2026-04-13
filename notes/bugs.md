@@ -82,6 +82,11 @@
 - ❌ LearningRouter — config/compose 模式落 LLM
 - 🚫 自定义唤醒词 "小月" — 需 openwakeword 训练
 
+## 技能系统
+
+- ❌ SkillFactory 生成的技能加 pending_review 状态追踪（可用但待审查）
+- ❌ 加 WebSearchSkill（DuckDuckGo，零配置）
+
 ## 行为学习 (T2 方向)
 
 - ❌ 消费 behavior_log — 技能成功率、常用指令、使用模式

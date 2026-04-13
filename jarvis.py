@@ -770,25 +770,30 @@ class JarvisApp:
                             route.actions, user_role, response=route.response,
                         )
                 elif route.intent == "info_query":
-                    # 非明确数据查询（非 news/stocks/weather）先查记忆
-                    if route.sub_type not in ("news", "stocks", "weather") and user_id:
-                        try:
-                            mem_answer = self.direct_answerer.try_answer(text, user_id)
-                            if mem_answer:
-                                ar = ActionResponse(Action.RESPONSE, mem_answer)
-                        except Exception:
-                            pass
-                    if ar is None:
+                    if route.sub_type in ("news", "stocks", "weather"):
                         ar = self.local_executor.execute_info_query(
                             route.sub_type, route.query, user_role,
                         )
+                    else:
+                        # 没有对应技能 — 查记忆，否则提示学习
+                        if user_id:
+                            try:
+                                mem_answer = self.direct_answerer.try_answer(text, user_id)
+                                if mem_answer:
+                                    ar = ActionResponse(Action.RESPONSE, mem_answer)
+                            except Exception:
+                                pass
+                        if ar is None:
+                            ar = ActionResponse(
+                                Action.RESPONSE,
+                                "这个我暂时没有对应的技能。你可以说'小月，学会查这个'来教我。",
+                            )
                 elif route.intent == "time":
                     ar = self.local_executor.execute_time(route.sub_type)
                 elif route.intent == "automation":
                     ar = self.local_executor.execute_automation(
                         route.sub_type, route.rule,
                     )
-                    # 如果 Groq 也给了 response，优先用它
                     if route.response is not None:
                         ar = type(ar)(ar.action, route.response)
                 else:
@@ -797,9 +802,7 @@ class JarvisApp:
                 if ar is not None:
                     if ar.action == Action.REQLLM:
                         use_llm_rephrase = True
-                        response_text = None  # 下面交给 LLM 转述
-                    elif any(p in ar.text for p in ("没查到", "未找到", "暂不支持", "Failed to execute", "Unsupported", "部分操作失败")):
-                        response_text = None  # fallback to LLM + tool calling  # 本地无结果，fallback 到云端 LLM
+                        response_text = None
                     else:
                         response_text = ar.text
 
@@ -1100,17 +1103,22 @@ class JarvisApp:
                             route.actions, user_role, response=route.response,
                         )
                 elif route.intent == "info_query":
-                    if route.sub_type not in ("news", "stocks", "weather"):
+                    if route.sub_type in ("news", "stocks", "weather"):
+                        ar = self.local_executor.execute_info_query(
+                            route.sub_type, route.query, user_role,
+                        )
+                    else:
                         try:
                             mem_answer = self.direct_answerer.try_answer(text, user_id)
                             if mem_answer:
                                 ar = ActionResponse(Action.RESPONSE, mem_answer)
                         except Exception:
                             pass
-                    if ar is None:
-                        ar = self.local_executor.execute_info_query(
-                            route.sub_type, route.query, user_role,
-                        )
+                        if ar is None:
+                            ar = ActionResponse(
+                                Action.RESPONSE,
+                                "这个我暂时没有对应的技能。你可以说'小月，学会查这个'来教我。",
+                            )
                 elif route.intent == "time":
                     ar = self.local_executor.execute_time(route.sub_type)
                 elif route.intent == "automation":
@@ -1126,8 +1134,6 @@ class JarvisApp:
                     if ar.action == Action.REQLLM:
                         use_llm_rephrase = True
                         response_text = None
-                    elif any(p in ar.text for p in ("没查到", "未找到", "暂不支持", "Failed to execute", "Unsupported", "部分操作失败")):
-                        response_text = None  # fallback to LLM + tool calling
                     else:
                         response_text = ar.text
 
