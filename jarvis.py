@@ -254,6 +254,9 @@ class JarvisApp:
         _PRECACHE_PHRASES = ["好的", "嗯，让我想想", "好的，灯开了", "好的，灯关了", "再见", "在的"]
         self._executor.submit(lambda: self._get_tts() and self._get_tts().precache(_PRECACHE_PHRASES))
 
+        # 预热 ASR 模型（首次加载 SenseVoice 需要 ~2s）
+        self._executor.submit(self.speech_recognizer.transcribe, np.zeros(16000, dtype=np.float32))
+
         # --- Health monitoring (voice notification + proactive probes) ---
         if self.health_tracker:
             self.event_bus.on("health.status_changed", self._on_health_changed)
