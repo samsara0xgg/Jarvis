@@ -91,30 +91,50 @@ class SkillFactory:
         prompt = self._build_prompt(description, abc_source, example_source)
         skill_id = skill_name_hint or self._slugify(description)
 
+        status(f"Prompt 摘要: {description[:80]}")
         try:
             import shutil
+            import threading
             claude_bin = shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude")
             status(f"调用 Claude Code（skill_id={skill_id}, bin={claude_bin}）...")
             self._process = subprocess.Popen(
                 [claude_bin, "-p", prompt, "--allowedTools", "Edit,Write,Bash", "--output-format", "text"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=str(self._root),
             )
+
+            # 实时流式打印 CC 输出
+            stdout_lines: list[str] = []
+            stderr_lines: list[str] = []
+
+            def _stream_pipe(pipe, lines, label):
+                for line in pipe:
+                    line = line.rstrip()
+                    if line:
+                        lines.append(line)
+                        LOGGER.info("CC[%s]: %s", label, line)
+
+            t_out = threading.Thread(target=_stream_pipe, args=(self._process.stdout, stdout_lines, "out"), daemon=True)
+            t_err = threading.Thread(target=_stream_pipe, args=(self._process.stderr, stderr_lines, "err"), daemon=True)
+            t_out.start()
+            t_err.start()
+
             try:
-                stdout, stderr = self._process.communicate(timeout=120)
+                self._process.wait(timeout=180)
                 returncode = self._process.returncode
             except subprocess.TimeoutExpired:
                 self._process.kill()
                 self._process.wait()
                 return {"success": False, "skill_name": skill_id,
-                        "message": "Claude Code 超时（120s）", "path": None}
+                        "message": "Claude Code 超时（180s）", "path": None}
             finally:
+                t_out.join(timeout=5)
+                t_err.join(timeout=5)
                 self._process = None
 
+            stdout = "\n".join(stdout_lines)
+            stderr = "\n".join(stderr_lines)
+
             status(f"Claude Code 返回码: {returncode}")
-            if stdout:
-                status(f"CC 输出:\n{stdout[:500]}")
-            if stderr:
-                status(f"CC stderr:\n{stderr[:300]}")
             if returncode != 0:
                 return {"success": False, "skill_name": skill_id,
                         "message": f"Claude Code 执行失败: {stderr[:200]}", "path": None}
