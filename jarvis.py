@@ -676,19 +676,15 @@ class JarvisApp:
                     )
                     response_text = ar.text
 
-        # 4c. Launch parallel futures for route + memory (saves ~150ms)
+        # 4c. Memory query (sync, fast ~50-100ms)
         memory_context = ""
-        route_future = None
-        memory_future = None
+        if user_id:
+            try:
+                memory_context = self.memory_manager.query(text, user_id)
+            except Exception as exc:
+                self.logger.warning("Memory query failed: %s", exc)
 
-        if response_text is None and self.intent_router and self.local_executor:
-            route_future = self._executor.submit(self.intent_router.route, text)
-            if user_id:
-                memory_future = self._executor.submit(
-                    self.memory_manager.query, text, user_id,
-                )
-
-        # Level 1: Try direct answer from memory while futures run
+        # Level 1: Try direct answer from memory
         if user_id and response_text is None:
             try:
                 direct = self.direct_answerer.try_answer(text, user_id)
@@ -708,22 +704,18 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Level 1 answer failed: %s", exc)
 
-        # 4d. Collect parallel results
-        if memory_future:
+        # 5-6. Unified route+respond: single Groq call for routing AND response
+        route = None
+        if response_text is None and self.intent_router and self.local_executor:
             try:
-                memory_context = memory_future.result(timeout=5)
+                route = self.intent_router.route_and_respond(
+                    text,
+                    conversation_history=history,
+                    memory_context=memory_context,
+                    user_emotion=detected_emotion,
+                )
             except Exception as exc:
-                self.logger.warning("Memory query failed: %s", exc)
-
-        # 5-6. Route: local or cloud?
-        if route_future:
-            try:
-                route = route_future.result(timeout=8)
-            except Exception as exc:
-                self.logger.warning("Intent route failed: %s", exc)
-                route = None
-        else:
-            route = None
+                self.logger.warning("Unified route failed: %s", exc)
 
         _t_route = time.monotonic()
         if route:
@@ -732,7 +724,10 @@ class JarvisApp:
             print(f"⏱ 意图路由: {(_t_route - _t_think)*1000:.0f}ms → 无路由")
 
         if response_text is None and route is not None:
-            if route.tier == "local":
+            # Unified text response — skip cloud LLM entirely
+            if route.text_response:
+                response_text = route.text_response
+            elif route.tier == "local":
                 if route.intent == "smart_home":
                     needs_llm = (
                         any(a.get("action") in _NEEDS_LLM_ACTIONS for a in route.actions)
@@ -1017,10 +1012,24 @@ class JarvisApp:
                     )
                     response_text = ar.text
 
-        # 6. Route: local or cloud?
+        # 6. Unified route+respond: single Groq call for routing AND response
+        route = None
         if response_text is None and self.intent_router and self.local_executor:
-            route = self.intent_router.route(text, conversation_history=history)
-            if route.tier == "local":
+            try:
+                route = self.intent_router.route_and_respond(
+                    text,
+                    conversation_history=history,
+                    memory_context=memory_context,
+                    user_emotion=emotion,
+                )
+            except Exception as exc:
+                self.logger.warning("Unified route failed: %s", exc)
+
+        if response_text is None and route is not None:
+            # Unified text response — skip cloud LLM entirely
+            if route.text_response:
+                response_text = route.text_response
+            elif route.tier == "local":
                 if route.intent == "smart_home":
                     needs_llm = (
                         any(a.get("action") in _NEEDS_LLM_ACTIONS for a in route.actions)

@@ -130,12 +130,14 @@ def test_jarvis_handle_utterance_end_to_end(tmp_path):
 
         # Mock the intent router to return a controlled smart_home result
         from core.intent_router import RouteResult
-        app.intent_router.route = MagicMock(return_value=RouteResult(
+        mock_route = RouteResult(
             tier="local", intent="smart_home", confidence=0.95,
             duration_ms=10, provider="mock",
             actions=[{"device_id": "bedroom_light", "action": "turn_on", "value": None}],
             response="好的，卧室灯已打开。",
-        ))
+        )
+        app.intent_router.route = MagicMock(return_value=mock_route)
+        app.intent_router.route_and_respond = MagicMock(return_value=mock_route)
 
         # Run the pipeline
         audio = np.random.randn(16000).astype(np.float32)

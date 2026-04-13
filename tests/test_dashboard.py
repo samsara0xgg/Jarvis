@@ -101,8 +101,10 @@ class TestHandleVoice:
         fake_route = MagicMock(
             tier="local", intent="info_query", sub_type="general",
             query="你知道我是谁吗", actions=[], response=None, rule=None,
+            text_response=None,
         )
         ctrl.app.intent_router.route = MagicMock(return_value=fake_route)
+        ctrl.app.intent_router.route_and_respond = MagicMock(return_value=fake_route)
         ctrl.app.local_executor.execute_info_query = MagicMock(
             return_value=ActionResponse(Action.REQLLM, "没查到相关信息。")
         )
@@ -121,8 +123,10 @@ class TestHandleVoice:
         fake_route = MagicMock(
             tier="local", intent="info_query", sub_type="general",
             query="你知道我是谁吗", actions=[], response=None, rule=None,
+            text_response=None,
         )
         ctrl.app.intent_router.route = MagicMock(return_value=fake_route)
+        ctrl.app.intent_router.route_and_respond = MagicMock(return_value=fake_route)
         ctrl.app.local_executor.execute_info_query = MagicMock(
             return_value=ActionResponse(Action.RESPONSE, "没查到相关信息。")
         )

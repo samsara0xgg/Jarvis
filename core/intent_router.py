@@ -22,7 +22,7 @@ LOGGER = logging.getLogger(__name__)
 # 复用 HTTP 连接（IntentRouter 仅在主循环单线程调用，无需线程安全）
 _SESSION = requests.Session()
 
-VALID_INTENTS = {"smart_home", "info_query", "time", "complex", "uncertain", "automation"}
+VALID_INTENTS = {"smart_home", "info_query", "time", "complex", "uncertain", "automation", "chat"}
 
 # Strip punctuation for route cache key normalization
 _PUNCT_RE = re.compile(r'[。，！？、；：\u201c\u201d\u2018\u2019\u2026\u2014\u00b7.!?,;:]+')
@@ -31,7 +31,7 @@ _PUNCT_RE = re.compile(r'[。，！？、；：\u201c\u201d\u2018\u2019\u2026\u2
 # 设备能力描述模板，运行时从 config 动态生成
 _DEVICE_ACTIONS = {
     "light": "turn_on / turn_off / set_brightness(0-100)",
-    "color_light": "turn_on / turn_off / set_brightness(0-100) / set_color(red/blue/green/purple/yellow/orange/pink/white/暖白) / set_color_temp(warm/neutral/cool) / set_effect(colorloop/none)",
+    "color_light": "turn_on / turn_off / set_brightness(0-100) / set_color(用户原话传入，如red/蓝色/Tiffany蓝/珊瑚色/暖白) / set_color_temp(warm/neutral/cool) / set_effect(colorloop/none)",
     "door_lock": "lock / unlock",
     "thermostat": "turn_on / turn_off / set_temperature(16-30)",
 }
@@ -98,6 +98,85 @@ automation trigger类型：
 - 只输出JSON"""
 
 
+def build_unified_prompt(
+    config: dict,
+    memory_context: str = "",
+    user_emotion: str = "",
+) -> str:
+    """Build a system prompt for unified route+respond (single Groq call).
+
+    For device/info/time/automation intents the model outputs JSON (same schema
+    as ``build_system_prompt``).  For everything else it outputs a natural
+    language response directly, avoiding the second LLM round-trip.
+
+    Args:
+        config: Application config dict.
+        memory_context: Optional memory context from MemoryManager.query().
+        user_emotion: Optional detected emotion label (e.g. "HAPPY").
+    """
+    from core.personality import get_short_personality
+
+    # Reuse device enumeration logic from build_system_prompt
+    devices_desc: list[str] = []
+    mode = config.get("devices", {}).get("mode", "sim")
+
+    if mode == "live":
+        hue_config = config.get("hue", {})
+        color_devices = set(hue_config.get("color_capable", []))
+        for did, aliases in hue_config.get("light_aliases", {}).items():
+            alias_list = aliases if isinstance(aliases, list) else [aliases]
+            chinese_aliases = [a for a in alias_list if not a.startswith("Hue ")]
+            name = chinese_aliases[0] if chinese_aliases else did
+            actions = _DEVICE_ACTIONS["color_light"] if did in color_devices else _DEVICE_ACTIONS["light"]
+            devices_desc.append(f"- {did}（{name}）: {actions}")
+        for did, aliases in hue_config.get("group_aliases", {}).items():
+            alias_list = aliases if isinstance(aliases, list) else [aliases]
+            chinese_aliases = [a for a in alias_list if not a.startswith(("Hue ", "5 AM", "Gaming"))]
+            name = chinese_aliases[0] if chinese_aliases else did
+            actions = _DEVICE_ACTIONS["color_light"] if did in color_devices else _DEVICE_ACTIONS["light"]
+            devices_desc.append(f"- {did}（{name}，灯组）: {actions}")
+    else:
+        for dev in config.get("devices", {}).get("sim_devices", []):
+            did = dev["device_id"]
+            name = dev.get("name", did)
+            dtype = dev.get("device_type", "unknown")
+            actions = _DEVICE_ACTIONS.get(dtype, "unknown")
+            devices_desc.append(f"- {did}（{name}）: {actions}")
+
+    device_list = "\n".join(devices_desc)
+    personality = get_short_personality()
+
+    # Optional sections
+    memory_section = ""
+    if memory_context:
+        memory_section = f"\n\n你对用户的了解：\n{memory_context}"
+
+    emotion_section = ""
+    if user_emotion:
+        emotion_section = f"\n用户当前情绪：{user_emotion}"
+
+    return f"""{personality}{memory_section}{emotion_section}
+
+你同时负责意图路由和回复生成。根据用户消息：
+
+1. 设备控制 → 输出JSON：{{"intent":"smart_home","confidence":0.95,"actions":[{{"device_id":"xxx","action":"turn_on","value":null}}],"response":"好的，已开灯。"}}
+2. 信息查询 → 输出JSON：{{"intent":"info_query","confidence":0.9,"sub_type":"news|stocks|weather","query":"AI","response":null}}
+3. 时间查询 → 输出JSON：{{"intent":"time","confidence":0.95,"sub_type":"current_time|date|weekday","response":null}}
+4. 自动化规则 → 输出JSON：{{"intent":"automation","confidence":0.9,"sub_type":"create|list|delete","rule":{{"name":"晚安模式","trigger":{{"type":"keyword","keyword":"晚安"}},"actions":[{{"device_id":"xxx","action":"turn_off","value":null}}]}},"response":"好的，以后说晚安就会关灯。"}}
+5. 其他所有情况 → 直接用自然语言回复，不要输出JSON
+
+设备：
+{device_list}
+
+规则：
+- 多设备用actions数组
+- "所有灯"=列出全部灯的device_id
+- 上下文设备推断：如果用户没指定设备名，根据对话上下文推断是哪个设备
+- 隐含意图："有点暗"=开灯，"好热"=调空调
+- 记忆/个人信息相关问题→直接回复
+- 只有1-4类输出JSON，其他一律自然语言回复"""
+
+
 @dataclass
 class RouteResult:
     """路由结果."""
@@ -112,6 +191,7 @@ class RouteResult:
     sub_type: str | None = None
     query: str | None = None
     rule: dict[str, Any] | None = None
+    text_response: str | None = None
 
 
 class IntentRouter:
@@ -292,7 +372,7 @@ class IntentRouter:
         query = parsed.get("query")
         rule = parsed.get("rule")
 
-        if intent in ("smart_home", "info_query", "time", "automation") and confidence >= 0.95:
+        if intent in ("smart_home", "info_query", "time", "automation") and confidence >= 0.90:
             tier = "local"
         else:
             tier = "cloud"
@@ -310,4 +390,177 @@ class IntentRouter:
             duration_ms=duration_ms, provider=provider,
             actions=actions, response=response,
             sub_type=sub_type, query=query, rule=rule,
+        )
+
+    # ------------------------------------------------------------------
+    # Unified route + respond (single Groq call)
+    # ------------------------------------------------------------------
+
+    def route_and_respond(
+        self,
+        text: str,
+        conversation_history: list[dict] | None = None,
+        memory_context: str = "",
+        user_emotion: str = "",
+    ) -> RouteResult:
+        """Single Groq call that routes AND generates a response.
+
+        For device/info/time/automation intents the output is JSON (same as
+        ``route()``).  For everything else the model responds in natural
+        language, stored in ``RouteResult.text_response``, eliminating the
+        need for a second LLM call.
+
+        Falls back: Groq → Cerebras → empty result (provider="none").
+        """
+        key = " ".join(_PUNCT_RE.sub("", text.strip()).split())
+        recent_context = self._build_context(conversation_history) if conversation_history else []
+
+        # Cache hit — only for structured routes (not free-text), no conversation context
+        if not recent_context and key in self._route_cache:
+            self._route_cache.move_to_end(key)
+            cached = self._route_cache[key]
+            self.logger.info("Unified cache hit: '%s' → %s/%s", key[:20], cached.tier, cached.intent)
+            return copy.copy(cached)
+
+        system_prompt = build_unified_prompt(self.config, memory_context, user_emotion)
+        start = time.time()
+
+        # 1. Groq (primary)
+        if self.groq_key and (not self._tracker or self._tracker.is_available("intent.groq")):
+            result = self._call_unified(
+                self.groq_url, self.groq_key, self.groq_model, text, start, recent_context, system_prompt,
+            )
+            if result:
+                if self._tracker:
+                    self._tracker.record_success("intent.groq")
+                result.provider = "groq"
+                # Only cache structured routes (JSON), not free-text responses
+                if not recent_context and result.text_response is None:
+                    self._cache_result(key, result)
+                return result
+            if self._tracker:
+                self._tracker.record_failure("intent.groq")
+
+        # 2. Cerebras (fallback)
+        if self.cerebras_key and (not self._tracker or self._tracker.is_available("intent.cerebras")):
+            result = self._call_unified(
+                self.cerebras_url, self.cerebras_key, self.cerebras_model, text, start, recent_context, system_prompt,
+            )
+            if result:
+                if self._tracker:
+                    self._tracker.record_success("intent.cerebras")
+                result.provider = "cerebras"
+                if not recent_context and result.text_response is None:
+                    self._cache_result(key, result)
+                return result
+            if self._tracker:
+                self._tracker.record_failure("intent.cerebras")
+
+        # All providers failed
+        return RouteResult(
+            tier="cloud", intent="complex", confidence=0.0,
+            duration_ms=int((time.time() - start) * 1000), provider="none",
+        )
+
+    def _call_unified(
+        self,
+        url: str,
+        api_key: str,
+        model: str,
+        text: str,
+        start: float,
+        recent_context: list[dict],
+        system_prompt: str,
+    ) -> RouteResult | None:
+        """Call cloud API with unified route+respond prompt (no JSON mode)."""
+        try:
+            messages = [{"role": "system", "content": system_prompt}]
+            if recent_context:
+                messages.extend(recent_context)
+            messages.append({"role": "user", "content": text})
+            resp = _SESSION.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": 500,
+                },
+                timeout=5,
+            )
+
+            if resp.status_code == 429:
+                self.logger.warning("Rate limited by %s", url)
+                return None
+
+            resp.raise_for_status()
+            data = resp.json()
+            raw = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                .strip()
+            )
+            if not raw:
+                return None
+
+            return self._parse_unified_response(raw, start)
+
+        except requests.Timeout:
+            self.logger.warning("Timeout calling %s", url)
+            return None
+        except requests.RequestException as exc:
+            self.logger.warning("Request failed (%s): %s", url, exc)
+            return None
+
+    def _parse_unified_response(self, raw: str, start: float) -> RouteResult | None:
+        """Parse unified response: JSON for structured intents, text for chat."""
+        duration_ms = int((time.time() - start) * 1000)
+
+        # Try JSON parse if output looks like JSON
+        cleaned = raw.strip()
+        if cleaned.startswith("{"):
+            # Strip markdown fences if present
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            try:
+                parsed = json.loads(cleaned)
+                intent = parsed.get("intent", "uncertain")
+                if intent not in VALID_INTENTS:
+                    intent = "uncertain"
+
+                confidence = float(parsed.get("confidence", 0.5))
+                actions = parsed.get("actions", [])
+                response = parsed.get("response")
+                sub_type = parsed.get("sub_type")
+                query = parsed.get("query")
+                rule = parsed.get("rule")
+
+                if intent in ("smart_home", "info_query", "time", "automation") and confidence >= 0.90:
+                    tier = "local"
+                else:
+                    tier = "cloud"
+
+                self.logger.info(
+                    "Unified(json): '%s' → %s/%s (%.2f, %dms, %d actions)",
+                    cleaned[:30], tier, intent, confidence, duration_ms, len(actions),
+                )
+                return RouteResult(
+                    tier=tier, intent=intent, confidence=confidence,
+                    duration_ms=duration_ms, provider="",
+                    actions=actions, response=response,
+                    sub_type=sub_type, query=query, rule=rule,
+                )
+            except json.JSONDecodeError:
+                pass  # Fall through to text response
+
+        # Natural language response
+        self.logger.info(
+            "Unified(text): '%s' → chat (%dms)", raw[:40], duration_ms,
+        )
+        return RouteResult(
+            tier="cloud", intent="chat", confidence=1.0,
+            duration_ms=duration_ms, provider="",
+            text_response=raw,
         )

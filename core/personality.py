@@ -49,6 +49,15 @@ _NSFW_ADDON = """
 _nsfw_mode = False
 
 
+def get_short_personality() -> str:
+    """Return a compact personality for unified route+respond prompts."""
+    return (
+        "你叫小月，Allen的私人管家。说话干脆、略带幽默、中文为主。"
+        "能一句话说清楚的绝不说两句。不说'您'，不用emoji。"
+        "别人开心你就跟着笑，别人难过你就陪着。你是小月，不是客服。"
+    )
+
+
 def set_nsfw_mode(enabled: bool) -> None:
     """Toggle NSFW personality addon (hidden mode)."""
     global _nsfw_mode

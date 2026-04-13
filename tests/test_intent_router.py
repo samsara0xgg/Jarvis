@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.intent_router import IntentRouter, RouteResult, build_system_prompt, VALID_INTENTS
+from core.intent_router import IntentRouter, RouteResult, build_system_prompt, build_unified_prompt, VALID_INTENTS
 from core.local_executor import LocalExecutor
 
 
@@ -441,3 +441,134 @@ class TestRouteCache:
         r1.intent = "MUTATED"
         r2 = router.route("开灯")
         assert r2.intent == "smart_home"
+
+
+class TestRouteAndRespond:
+    """Tests for the unified route_and_respond method."""
+
+    @patch("core.intent_router._SESSION")
+    def test_smart_home_json_parsed(self, mock_session, config):
+        """JSON smart_home response is parsed into RouteResult with actions."""
+        config["models"]["groq"]["api_key"] = "test_key"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": json.dumps({
+                "intent": "smart_home", "confidence": 0.95,
+                "actions": [{"device_id": "living_room_light", "action": "turn_on", "value": None}],
+                "response": "好的，灯开了。",
+            })}}]
+        }
+        mock_session.post.return_value = mock_resp
+
+        router = IntentRouter(config)
+        result = router.route_and_respond("开灯")
+
+        assert result.intent == "smart_home"
+        assert result.tier == "local"
+        assert result.provider == "groq"
+        assert len(result.actions) == 1
+        assert result.actions[0]["device_id"] == "living_room_light"
+        assert result.text_response is None
+
+    @patch("core.intent_router._SESSION")
+    def test_natural_language_sets_text_response(self, mock_session, config):
+        """Non-JSON response sets text_response for direct use."""
+        config["models"]["groq"]["api_key"] = "test_key"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "今天天气不错，适合出门走走。"}}]
+        }
+        mock_session.post.return_value = mock_resp
+
+        router = IntentRouter(config)
+        result = router.route_and_respond("今天天气怎么样")
+
+        assert result.intent == "chat"
+        assert result.text_response == "今天天气不错，适合出门走走。"
+        assert result.provider == "groq"
+
+    @patch("core.intent_router._SESSION")
+    def test_cache_hit_skips_api_call(self, mock_session, config):
+        """Structured route cache hit skips the API call on second request."""
+        config["models"]["groq"]["api_key"] = "test_key"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": json.dumps({
+                "intent": "smart_home", "confidence": 0.95,
+                "actions": [{"device_id": "living_room_light", "action": "turn_on", "value": None}],
+                "response": "好的",
+            })}}]
+        }
+        mock_session.post.return_value = mock_resp
+
+        router = IntentRouter(config)
+        r1 = router.route_and_respond("开灯")
+        r2 = router.route_and_respond("开灯")
+
+        assert mock_session.post.call_count == 1
+        assert r2.intent == "smart_home"
+
+    @patch("core.intent_router._SESSION")
+    def test_text_response_not_cached(self, mock_session, config):
+        """Natural language responses should NOT be cached."""
+        config["models"]["groq"]["api_key"] = "test_key"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "你好呀！"}}]
+        }
+        mock_session.post.return_value = mock_resp
+
+        router = IntentRouter(config)
+        router.route_and_respond("你好")
+        router.route_and_respond("你好")
+
+        # Should call API twice since text responses are not cached
+        assert mock_session.post.call_count == 2
+
+    @patch("core.intent_router._SESSION")
+    def test_no_json_mode_in_request(self, mock_session, config):
+        """Unified call should NOT use response_format: json_object."""
+        config["models"]["groq"]["api_key"] = "test_key"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "好的"}}]
+        }
+        mock_session.post.return_value = mock_resp
+
+        router = IntentRouter(config)
+        router.route_and_respond("你好")
+
+        call_kwargs = mock_session.post.call_args
+        request_json = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert "response_format" not in request_json
+
+
+class TestBuildUnifiedPrompt:
+    """Tests for the build_unified_prompt function."""
+
+    def test_includes_device_list(self, config):
+        prompt = build_unified_prompt(config)
+        assert "living_room_light" in prompt
+        assert "bedroom_light" in prompt
+
+    def test_includes_personality(self, config):
+        prompt = build_unified_prompt(config)
+        assert "小月" in prompt
+
+    def test_includes_memory_context(self, config):
+        prompt = build_unified_prompt(config, memory_context="用户喜欢喝咖啡")
+        assert "用户喜欢喝咖啡" in prompt
+
+    def test_includes_emotion(self, config):
+        prompt = build_unified_prompt(config, user_emotion="HAPPY")
+        assert "HAPPY" in prompt
