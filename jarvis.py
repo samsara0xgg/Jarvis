@@ -1402,9 +1402,12 @@ class JarvisApp:
         )
 
     def _learn_create(self, intent: Any, user_id: str | None) -> str:
-        """创造型：调用 Claude Code 技能工厂。"""
-        self.speak("好的，我去学一下，稍等。")
+        """创造型：后台调用 Claude Code 技能工厂，不阻塞对话。"""
+        self._executor.submit(self._learn_create_bg, intent, user_id)
+        return "好的，我在后台学，你继续说。"
 
+    def _learn_create_bg(self, intent: Any, user_id: str | None) -> None:
+        """后台技能学习 — 完成后语音通知。"""
         result = self.skill_factory.create(
             description=intent.description,
             on_status=lambda msg: self.logger.info("SkillFactory: %s", msg),
@@ -1419,20 +1422,22 @@ class JarvisApp:
                         self.skill_loader.update_metadata(skill.skill_name, {
                             "taught_by": user_id or "unknown",
                             "description": intent.description,
+                            "status": "pending_review",
                         })
                 self.learning_router.update_skills(list(self.skill_registry.skill_names))
             except Exception as exc:
                 self.logger.warning("Failed to hot-load new skill: %s", exc)
-                return f"技能文件生成了但加载失败：{exc}"
+                self.speak(f"技能文件生成了但加载失败：{exc}")
+                return
 
             if user_id:
                 self.behavior_log.log(user_id, "skill_learned", {
                     "skill": result["skill_name"],
                     "description": intent.description,
                 })
-            return f"学会了！现在我可以{intent.description}了，要试试吗？"
+            self.speak(f"学会了！现在可以{intent.description}了。")
         else:
-            return f"没学会，{result['message']}"
+            self.speak(f"没学会，{result['message']}")
 
     def _resolve_display_name(self, user_id: str | None) -> str | None:
         """Map user_id to display name."""
