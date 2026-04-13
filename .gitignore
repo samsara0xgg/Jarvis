@@ -44,6 +44,7 @@ data/automation_rules.json
 # 模型文件（太大，不提交）
 data/speechbrain_model/
 data/sensevoice-small-int8/
+data/sherpa-onnx-streaming-*
 
 # 本地工具
 .mise.toml

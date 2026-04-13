@@ -551,3 +551,16 @@ health:
 logging:
   # 根日志级别。常见值：DEBUG / INFO / WARNING / ERROR。
   level: INFO
+
+# ----------------------------------------------------------------------------
+# 全双工打断检测
+# ----------------------------------------------------------------------------
+interrupt:
+  enabled: true
+  keywords: ["等一下", "停", "打住", "暂停", "等等", "你听我说",
+             "不对", "你理解错了", "不是这样", "说错了"]
+  resume_keywords: ["继续说", "接着说", "你继续", "继续"]
+  streaming_asr:
+    model_dir: data/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16
+    num_threads: 2
+  vad_threshold_during_tts: 0.8
