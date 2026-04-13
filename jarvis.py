@@ -1088,18 +1088,34 @@ class JarvisApp:
         self._cancel_current()
 
     def _on_voice_resume(self) -> None:
-        """Called by InterruptMonitor when a resume keyword is detected."""
+        """Called by InterruptMonitor when a resume keyword is detected.
+
+        Stops TTS playback so control returns to _process_turn, but does NOT
+        clear _interrupted_response — the resume check in _process_turn needs it.
+        """
         self.logger.info("Voice resume detected")
         self._cancel.set()
-        self._cancel_current()
+        # Stop playback but preserve _interrupted_response for replay
+        pipeline: Any = None
+        with self._pipeline_lock:
+            pipeline = self._active_pipeline
+        if pipeline:
+            pipeline.abort()  # kills playback, don't save remaining
+        tts = self._get_tts()
+        if tts:
+            tts.stop()
 
     def _cancel_current(self) -> None:
         """Cancel current TTS and reset state after user interrupt."""
+        # Read pipeline ref under lock, call abort() outside to avoid blocking
+        pipeline: Any = None
         with self._pipeline_lock:
             self._interrupted_response = None  # clear stale buffer first
-            if self._active_pipeline:
-                remaining = self._active_pipeline.abort()
-                if remaining:
+            pipeline = self._active_pipeline
+        if pipeline:
+            remaining = pipeline.abort()
+            if remaining:
+                with self._pipeline_lock:
                     self._interrupted_response = remaining
         # Kill non-pipeline TTS (local shortcuts)
         if self._tts_future and not self._tts_future.done():
