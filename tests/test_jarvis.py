@@ -194,7 +194,7 @@ def test_jarvis_skill_registry_has_all_skills(tmp_path):
         config = _make_config(tmp_path)
         app = JarvisApp(config, config_path=tmp_path / "config.yaml")
 
-        expected_builtins = {"smart_home", "weather", "time", "reminders", "todos", "system_control", "memory", "automation", "health", "scheduler", "skill_mgmt"}
+        expected_builtins = {"smart_home", "weather", "time", "reminders", "todos", "system_control", "memory", "automation", "health", "scheduler", "skill_mgmt", "model_switch"}
         actual_skills = set(app.skill_registry.skill_names)
         assert expected_builtins.issubset(actual_skills), f"Missing: {expected_builtins - actual_skills}"
     finally:

@@ -56,6 +56,8 @@ LOGGER = logging.getLogger(__name__)
 FAREWELL_DEFAULTS = ["再见", "退出", "bye", "goodbye", "that's all"]
 _REMEMBER_KEYWORDS = ("记住", "记下", "别忘了", "帮我记")
 
+_ESCALATION_KEYWORDS = ("仔细想想", "详细分析", "认真想", "好好想")
+
 # Actions that always need LLM interpretation
 _NEEDS_LLM_ACTIONS = {"set_effect"}
 
@@ -608,6 +610,21 @@ class JarvisApp:
                 )
             return "farewell"
 
+        # Per-turn escalation: "仔细想想" etc → deep preset for this turn
+        _escalated = False
+        _original_preset: str | None = None
+        for _esc_kw in _ESCALATION_KEYWORDS:
+            if text.startswith(_esc_kw):
+                _original_preset = self.llm.active_preset
+                text = text[len(_esc_kw):].lstrip(" ，,、:：")
+                try:
+                    self.llm.switch_model("deep")
+                    _escalated = True
+                    self.logger.info("Escalated to deep preset for this turn")
+                except (ValueError, Exception) as exc:
+                    self.logger.warning("Escalation switch failed: %s", exc)
+                break
+
         # Memory store shortcut: "记住/记下/别忘了" → 直接确认，不走 LLM
         if any(text.startswith(kw) or kw in text[:10] for kw in _REMEMBER_KEYWORDS):
             # 不含"每次"（那是配置型学习意图，交给 learning router）
@@ -907,6 +924,14 @@ class JarvisApp:
         _route_name = f"{route.tier}/{route.intent}" if route else "cloud"
         print(f"⏱ 总耗时: {(_t_end - _t0)*1000:.0f}ms [{_route_name}]")
 
+        # Restore original preset after escalation
+        if _escalated and _original_preset is not None:
+            try:
+                self.llm.switch_model(_original_preset)
+                self.logger.info("Restored preset to '%s' after escalation", _original_preset)
+            except Exception as exc:
+                self.logger.warning("Failed to restore preset: %s", exc)
+
         return response_text
 
     # ------------------------------------------------------------------
@@ -947,6 +972,21 @@ class JarvisApp:
         except Exception as exc:
             self.logger.warning("Memory query failed: %s", exc)
 
+        # Per-turn escalation: "仔细想想" etc → deep preset for this turn
+        _escalated = False
+        _original_preset: str | None = None
+        for _esc_kw in _ESCALATION_KEYWORDS:
+            if text.startswith(_esc_kw):
+                _original_preset = self.llm.active_preset
+                text = text[len(_esc_kw):].lstrip(" ，,、:：")
+                try:
+                    self.llm.switch_model("deep")
+                    _escalated = True
+                    self.logger.info("Escalated to deep preset for this turn (text)")
+                except (ValueError, Exception) as exc:
+                    self.logger.warning("Escalation switch failed: %s", exc)
+                break
+
         # 4b. Level 1: direct answer from memory
         try:
             direct = self.direct_answerer.try_answer(text, user_id)
@@ -954,6 +994,11 @@ class JarvisApp:
                 self.logger.info("Level 1 direct answer: %s", direct[:60])
                 if on_sentence:
                     on_sentence(direct, emotion=emotion)
+                if _escalated and _original_preset is not None:
+                    try:
+                        self.llm.switch_model(_original_preset)
+                    except Exception:
+                        pass
                 return direct
         except Exception as exc:
             self.logger.warning("Level 1 answer failed: %s", exc)
@@ -1153,6 +1198,14 @@ class JarvisApp:
         if sentence_count == 0 and on_sentence and response_text:
             on_sentence(response_text, emotion=emotion)
 
+        # Restore original preset after escalation
+        if _escalated and _original_preset is not None:
+            try:
+                self.llm.switch_model(_original_preset)
+                self.logger.info("Restored preset to '%s' after escalation (text)", _original_preset)
+            except Exception as exc:
+                self.logger.warning("Failed to restore preset: %s", exc)
+
         return response_text
 
     def speak(self, text: str) -> None:
@@ -1275,6 +1328,9 @@ class JarvisApp:
         self.skill_registry.register(SystemControlSkill(config))
         self.skill_registry.register(MemorySkill(self.memory_manager))
         self.skill_registry.register(AutomationSkill(self.automation_engine))
+
+        from skills.model_switch import ModelSwitchSkill
+        self.skill_registry.register(ModelSwitchSkill(self.llm))
 
         # OpenClaw skill (optional)
         if config.get("skills", {}).get("realtime_data", {}).get("enabled", False):
