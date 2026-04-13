@@ -67,7 +67,7 @@ class WeatherSkill(Skill):
         wind_kmph = current.get("windspeedKmph", "?")
 
         return (
-            f"Weather in {city}: {desc}, "
-            f"temperature {temp_c}°C (feels like {feels_like}°C), "
-            f"humidity {humidity}%, wind {wind_kmph} km/h."
+            f"{city}天气：{desc}，"
+            f"温度{temp_c}°C（体感{feels_like}°C），"
+            f"湿度{humidity}%，风速{wind_kmph}公里/时。"
         )
