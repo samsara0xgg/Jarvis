@@ -89,6 +89,8 @@ class TTSEngine:
         self._http_session: Any = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
         self._platform = platform.system()
+        self._play_proc: subprocess.Popen | None = None
+        self._play_lock = threading.Lock()
 
         # TTS audio cache for short responses
         self._tts_cache_dir = Path(tts_config.get("cache_dir", "data/cache/tts"))
@@ -560,49 +562,62 @@ class TTSEngine:
     def _play_audio_file(self, filepath: str) -> None:
         """Play an audio file using the platform's native player."""
         system = self._platform
-        try:
-            if system == "Darwin":
-                subprocess.run(
-                    ["afplay", filepath],
-                    check=True,
-                    capture_output=True,
-                    timeout=30,
-                )
-            elif system == "Linux":
-                # Try common Linux audio players in order
-                for player_cmd in (
-                    ["mpv", "--no-video", filepath],
-                    ["ffplay", "-nodisp", "-autoexit", filepath],
-                    ["aplay", filepath],
-                ):
-                    try:
-                        subprocess.run(
-                            player_cmd,
-                            check=True,
-                            capture_output=True,
-                            timeout=30,
-                        )
-                        return
-                    except FileNotFoundError:
-                        continue
+        cmd: list[str] | None = None
+        if system == "Darwin":
+            cmd = ["afplay", filepath]
+        elif system == "Linux":
+            for candidate in (
+                ["mpv", "--no-video", filepath],
+                ["ffplay", "-nodisp", "-autoexit", filepath],
+                ["aplay", filepath],
+            ):
+                import shutil
+                if shutil.which(candidate[0]):
+                    cmd = candidate
+                    break
+            if cmd is None:
                 self.logger.warning("No audio player found on Linux.")
-            elif system == "Windows":
-                # Windows — use PowerShell to play
-                ps_cmd = (
-                    f'(New-Object Media.SoundPlayer "{filepath}").PlaySync()'
-                )
+                return
+        elif system == "Windows":
+            # PowerShell — no Popen kill support, keep subprocess.run
+            ps_cmd = (
+                f'(New-Object Media.SoundPlayer "{filepath}").PlaySync()'
+            )
+            try:
                 subprocess.run(
                     ["powershell", "-Command", ps_cmd],
-                    check=True,
-                    capture_output=True,
-                    timeout=30,
+                    check=True, capture_output=True, timeout=30,
                 )
-            else:
-                self.logger.warning("Unsupported platform for audio playback: %s", system)
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+                self.logger.warning("Audio playback failed: %s", exc)
+            return
+        else:
+            self.logger.warning("Unsupported platform for audio playback: %s", system)
+            return
+
+        try:
+            with self._play_lock:
+                self._play_proc = subprocess.Popen(
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            self._play_proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             self.logger.warning("Audio playback timed out.")
-        except subprocess.CalledProcessError as exc:
+            with self._play_lock:
+                if self._play_proc:
+                    self._play_proc.kill()
+        except Exception as exc:
             self.logger.warning("Audio playback failed: %s", exc)
+        finally:
+            with self._play_lock:
+                self._play_proc = None
+
+    def stop(self) -> None:
+        """Kill current audio playback immediately."""
+        with self._play_lock:
+            proc = self._play_proc
+            if proc and proc.poll() is None:
+                proc.terminate()
 
 
 # ---------------------------------------------------------------------------

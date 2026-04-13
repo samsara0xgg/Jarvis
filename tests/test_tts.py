@@ -285,18 +285,23 @@ class TestEdgeTTSPaths:
 
     def test_play_audio_file_darwin(self):
         tts = TTSEngine(_make_config())
-        with patch("platform.system", return_value="Darwin"):
-            with patch("subprocess.run") as mock_run:
-                tts._play_audio_file("/tmp/test.mp3")
-                mock_run.assert_called_once()
-                assert mock_run.call_args[0][0] == ["afplay", "/tmp/test.mp3"]
+        tts._platform = "Darwin"
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = 0
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            tts._play_audio_file("/tmp/test.mp3")
+            mock_popen.assert_called_once()
+            assert mock_popen.call_args[0][0] == ["afplay", "/tmp/test.mp3"]
 
     def test_play_audio_file_linux_mpv(self):
         tts = TTSEngine(_make_config())
         tts._platform = "Linux"
-        with patch("subprocess.run") as mock_run:
-            tts._play_audio_file("/tmp/test.mp3")
-            assert "mpv" in mock_run.call_args[0][0][0]
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = 0
+        with patch("shutil.which", return_value="/usr/bin/mpv"):
+            with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+                tts._play_audio_file("/tmp/test.mp3")
+                assert "mpv" in mock_popen.call_args[0][0][0]
 
     def test_play_audio_file_unsupported_platform(self):
         tts = TTSEngine(_make_config())
