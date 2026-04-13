@@ -19,8 +19,24 @@
 ```bash
 python jarvis.py --no-wake        # dev (press Enter to record)
 python jarvis.py                  # prod (wake word "Hey Jarvis")
-python -m pytest tests/ -q        # 812 tests
+python -m pytest tests/ -q        # unit tests (~900)
+python system_tests/runner.py --mode cc --suite <name>  # system test (CC mode)
+python system_tests/runner.py     # system test (human interactive)
 ```
+
+## System Tests
+
+After implementing or fixing a **feature that touches the pipeline** (routing, device control, memory, skills, LLM response), run the relevant system test suite in CC mode:
+
+```bash
+python system_tests/runner.py --mode cc --suite <relevant_suite>
+```
+
+Suites: `smart_home`, `memory`, `routing`, `multi_turn`, `error_handling`, `skill_learning`, `cloud_chat`
+
+- Parse the JSON output. Fix any `failures` automatically.
+- Collect all `needs_review` items and present to user in one batch for feedback.
+- Do NOT run system tests for changes that only affect unit-test-level code (utils, refactors with no behavior change).
 
 ## Stack
 
