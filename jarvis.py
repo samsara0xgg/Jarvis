@@ -900,6 +900,7 @@ class JarvisApp:
 
             # Start interrupt monitoring during TTS playback
             self.interrupt_monitor.start()
+            self.interrupt_monitor.start_mic_listener()
 
             _t_first_sentence = [None]  # mutable for closure
 
@@ -960,6 +961,7 @@ class JarvisApp:
                         response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
             finally:
                 # Stop interrupt monitor, get accumulated audio
+                self.interrupt_monitor.stop_mic_listener()
                 interrupt_audio = self.interrupt_monitor.stop()
                 if tts_pipeline:
                     if sentence_count > 0:

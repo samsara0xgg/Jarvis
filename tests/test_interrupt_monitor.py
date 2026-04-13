@@ -94,3 +94,22 @@ class TestInterruptMonitorAudio:
         )
         monitor._check_partial("停")
         assert len(detected) == 0
+
+
+class TestMicListener:
+    def test_start_stop_mic_listener(self):
+        """Mic listener should start/stop without errors (mocked sounddevice)."""
+        monitor = InterruptMonitor(
+            config={"interrupt": {"enabled": True}},
+            on_interrupt=lambda: None,
+        )
+        mock_stream = MagicMock()
+        mock_stream.read.return_value = (np.zeros((1600, 1), dtype="float32"), None)
+        with patch("sounddevice.InputStream", return_value=mock_stream):
+            monitor.start()
+            monitor.start_mic_listener()
+            time.sleep(0.2)
+            monitor.stop_mic_listener()
+            monitor.stop()
+            mock_stream.start.assert_called_once()
+            mock_stream.stop.assert_called_once()

@@ -162,6 +162,53 @@ class InterruptMonitor:
         if callback:
             callback()
 
+    def start_mic_listener(self, sample_rate: int = 16000, block_size: int = 1600) -> None:
+        """Open a microphone stream and feed audio to the monitor.
+
+        The stream runs in a background thread until ``stop_mic_listener``
+        is called.  Designed for use during TTS playback when the main
+        recording pipeline is idle.
+        """
+        if not self.enabled:
+            return
+        import sounddevice as sd
+        self._mic_stop = threading.Event()
+        self._mic_stream = sd.InputStream(
+            samplerate=sample_rate,
+            channels=1,
+            dtype="float32",
+            blocksize=block_size,
+        )
+        self._mic_stream.start()
+
+        def _reader() -> None:
+            while not self._mic_stop.is_set():
+                try:
+                    data, _ = self._mic_stream.read(block_size)
+                    self.feed_audio(data[:, 0], sample_rate)
+                except Exception:
+                    break
+
+        self._mic_thread = threading.Thread(target=_reader, daemon=True, name="interrupt-mic")
+        self._mic_thread.start()
+        LOGGER.debug("Interrupt mic listener started")
+
+    def stop_mic_listener(self) -> None:
+        """Stop the background microphone stream."""
+        if hasattr(self, "_mic_stop"):
+            self._mic_stop.set()
+        if hasattr(self, "_mic_stream") and self._mic_stream:
+            try:
+                self._mic_stream.stop()
+                self._mic_stream.close()
+            except Exception:
+                pass
+            self._mic_stream = None
+        if hasattr(self, "_mic_thread") and self._mic_thread:
+            self._mic_thread.join(timeout=2)
+            self._mic_thread = None
+        LOGGER.debug("Interrupt mic listener stopped")
+
     def _load_recognizer(self) -> None:
         """Lazy-load the sherpa-onnx streaming recognizer."""
         if self._recognizer is not None:
