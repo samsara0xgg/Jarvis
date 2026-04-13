@@ -105,8 +105,11 @@ class LocalExecutor:
                 parts.append(tmpl.format(value=value))
             else:
                 parts.append(tmpl)
-        action_text = "，".join(parts)
-        return f"好的，{action_text}。"
+        # Deduplicate identical actions: "开了，开了，开了" → "全部开了"
+        unique = list(dict.fromkeys(parts))
+        if len(parts) > 1 and len(unique) == 1:
+            return f"好的，全部{unique[0]}。"
+        return f"好的，{'，'.join(unique)}。"
 
     def execute_info_query(
         self, sub_type: str | None, query: Any, user_role: str = "owner",
@@ -137,8 +140,9 @@ class LocalExecutor:
             )
 
         elif sub_type == "weather":
+            tool_input = {"city": query} if isinstance(query, str) and query.strip() else {}
             result = self.skill_registry.execute(
-                "get_weather", {}, user_role=user_role,
+                "get_weather", tool_input, user_role=user_role,
             )
 
         if not result:

@@ -499,7 +499,7 @@ class JarvisApp:
                         self._wait_tts()
 
                         if response == "farewell":
-                            time.sleep(1.5)
+                            time.sleep(2.5)
                             detector.reset()
                             stream.start()
                             # Drain buffered frames so residual audio doesn't trigger wake word

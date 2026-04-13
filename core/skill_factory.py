@@ -93,8 +93,10 @@ class SkillFactory:
 
         status(f"调用 Claude Code（skill_id={skill_id}）...")
         try:
+            import shutil
+            claude_bin = shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude")
             self._process = subprocess.Popen(
-                ["claude", "-p", prompt, "--allowedTools", "Edit,Write,Bash", "--output-format", "text"],
+                [claude_bin, "-p", prompt, "--allowedTools", "Edit,Write,Bash", "--output-format", "text"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=str(self._root),
             )
             try:
