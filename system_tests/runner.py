@@ -9,6 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+# Allow running as `python system_tests/runner.py` from project root
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import yaml
 
 from system_tests.baseline import compare_runs, load_latest, save_run
