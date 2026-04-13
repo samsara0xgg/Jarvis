@@ -596,11 +596,12 @@ class TTSEngine:
             return
 
         try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
             with self._play_lock:
-                self._play_proc = subprocess.Popen(
-                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-            self._play_proc.wait(timeout=30)
+                self._play_proc = proc
+            proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             self.logger.warning("Audio playback timed out.")
             with self._play_lock:
@@ -618,6 +619,12 @@ class TTSEngine:
             proc = self._play_proc
             if proc and proc.poll() is None:
                 proc.terminate()
+        if proc is not None:
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
 
 
 # ---------------------------------------------------------------------------
