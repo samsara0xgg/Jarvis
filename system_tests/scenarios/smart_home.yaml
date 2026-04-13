@@ -1,0 +1,85 @@
+name: 智能家居控制
+description: 灯光、恒温器、门锁的语音控制
+
+setup:
+  devices:
+    bedroom_light: {is_on: false, brightness: 100, color_temp: neutral}
+    living_room_light: {is_on: false, brightness: 100, color_temp: neutral}
+    home_thermostat: {is_on: false, temperature: 24}
+    front_door_lock: {is_locked: true}
+  user: {id: allen, name: Allen, role: owner}
+
+scenarios:
+  - name: 单灯开关
+    steps:
+      - user: "打开卧室灯"
+        expect:
+          route: smart_home
+          tier: local
+          device_state:
+            bedroom_light: {is_on: true}
+          response_contains: ["灯"]
+      - user: "再关掉"
+        expect:
+          route: smart_home
+          device_state:
+            bedroom_light: {is_on: false}
+
+  - name: 亮度调节
+    steps:
+      - user: "把卧室灯调到50%亮度"
+        expect:
+          route: smart_home
+          device_state:
+            bedroom_light: {is_on: true, brightness: 50}
+
+  - name: 色温调节
+    steps:
+      - user: "把卧室灯调成暖光"
+        expect:
+          route: smart_home
+          device_state:
+            bedroom_light: {color_temp: warm}
+
+  - name: 恒温器控制
+    steps:
+      - user: "把空调温度调到22度"
+        expect:
+          route: smart_home
+          device_state:
+            home_thermostat: {is_on: true, temperature: 22}
+
+  - name: 门锁控制
+    steps:
+      - user: "把门锁打开"
+        expect:
+          route: smart_home
+          device_state:
+            front_door_lock: {is_locked: false}
+      - user: "再锁上"
+        expect:
+          device_state:
+            front_door_lock: {is_locked: true}
+
+  - name: 多灯控制
+    steps:
+      - user: "把所有灯都打开"
+        expect:
+          device_state:
+            bedroom_light: {is_on: true}
+            living_room_light: {is_on: true}
+      - user: "全部关掉"
+        expect:
+          device_state:
+            bedroom_light: {is_on: false}
+            living_room_light: {is_on: false}
+
+  - name: 自然语言控灯
+    review: true
+    steps:
+      - user: "帮我把卧室弄暗一点"
+        expect:
+          route: smart_home
+          device_state:
+            bedroom_light: {is_on: true}
+        review_hint: "回复是否说明了调整结果和具体数值"

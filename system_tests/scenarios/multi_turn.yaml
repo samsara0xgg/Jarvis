@@ -1,0 +1,32 @@
+name: 多轮对话
+description: 多轮上下文连贯性
+
+setup:
+  devices:
+    bedroom_light: {is_on: false, brightness: 100}
+  user: {id: allen, name: Allen, role: owner}
+
+scenarios:
+  - name: 设备多轮
+    steps:
+      - user: "打开卧室灯"
+        expect:
+          device_state:
+            bedroom_light: {is_on: true}
+      - user: "调暗一点"
+        expect:
+          device_state:
+            bedroom_light: {is_on: true}
+        review_hint: "是否正确理解了'调暗'指的是上一轮提到的卧室灯"
+    review: true
+
+  - name: 闲聊多轮
+    review: true
+    steps:
+      - user: "给我讲个笑话"
+        expect:
+          tier: cloud
+      - user: "再讲一个"
+        expect:
+          tier: cloud
+        review_hint: "是否理解'再讲一个'指的是再讲一个笑话，而不是其他东西"

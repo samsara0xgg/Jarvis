@@ -1,0 +1,36 @@
+name: 记忆系统
+description: 记忆存储、检索、直答、偏好
+
+setup:
+  memory: []
+  user: {id: allen, name: Allen, role: owner}
+
+scenarios:
+  - name: 偏好存储与检索
+    steps:
+      - user: "记住我喜欢喝咖啡"
+        expect:
+          path: memory_shortcut
+          response_contains: ["记住"]
+          memory_contains:
+            content_matches: "咖啡"
+      - user: "我喜欢喝什么"
+        expect:
+          response_contains: ["咖啡"]
+
+  - name: 身份记忆
+    steps:
+      - user: "记住我叫Allen"
+        expect:
+          path: memory_shortcut
+          memory_contains:
+            content_matches: "Allen"
+      - user: "我叫什么名字"
+        expect:
+          response_contains: ["Allen"]
+
+  - name: 记忆不污染
+    steps:
+      - user: "现在几点了"
+        expect:
+          route: time

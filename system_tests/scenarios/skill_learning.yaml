@@ -1,0 +1,23 @@
+name: 技能学习
+description: 教 Jarvis 新技能并验证调用
+
+setup:
+  user: {id: allen, name: Allen, role: owner}
+
+scenarios:
+  - name: 学习意图检测
+    review: true
+    steps:
+      - user: "学会查汇率"
+        expect:
+          path: learn_create
+          response_contains: ["后台", "学"]
+        review_hint: "是否正确识别为学习意图并启动后台学习"
+
+  - name: 已有技能不重复学
+    review: true
+    steps:
+      - user: "学会查天气"
+        expect:
+          response_contains: ["已经会"]
+        review_hint: "是否正确识别 weather 技能已存在"

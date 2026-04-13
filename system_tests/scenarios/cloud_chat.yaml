@@ -1,0 +1,33 @@
+name: 云端对话
+description: 需要 LLM 处理的对话
+
+setup:
+  user: {id: allen, name: Allen, role: owner}
+
+scenarios:
+  - name: 简单问答
+    review: true
+    steps:
+      - user: "加拿大的首都是哪里"
+        expect:
+          response_contains: ["渥太华"]
+          tier: cloud
+        review_hint: "回复是否简洁准确"
+
+  - name: 创作
+    review: true
+    steps:
+      - user: "用一句话描述春天"
+        expect:
+          tier: cloud
+          latency_max_ms: 10000
+        review_hint: "回复是否自然有文采"
+
+  - name: 复杂推理
+    review: true
+    steps:
+      - user: "如果今天是星期三，三天后是星期几"
+        expect:
+          tier: cloud
+          response_contains: ["六"]
+        review_hint: "推理是否正确"

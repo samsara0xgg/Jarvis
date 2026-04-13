@@ -1,0 +1,38 @@
+name: 路由准确性
+description: 验证不同类型输入走正确的 intent 路由
+
+setup:
+  user: {id: allen, name: Allen, role: owner}
+
+scenarios:
+  - name: 智能家居路由
+    steps:
+      - user: "打开卧室灯"
+        expect:
+          route: smart_home
+          tier: local
+
+  - name: 时间路由
+    steps:
+      - user: "现在几点了"
+        expect:
+          route: time
+          tier: local
+
+  - name: 闲聊路由
+    steps:
+      - user: "你觉得人生的意义是什么"
+        expect:
+          tier: cloud
+
+  - name: 告别快捷路径
+    steps:
+      - user: "再见"
+        expect:
+          path: farewell
+
+  - name: 记忆快捷路径
+    steps:
+      - user: "记住我喜欢红色"
+        expect:
+          path: memory_shortcut

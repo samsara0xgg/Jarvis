@@ -1,0 +1,30 @@
+name: 容错测试
+description: 异常输入不崩溃
+
+setup:
+  user: {id: allen, name: Allen, role: owner}
+
+scenarios:
+  - name: 空输入
+    steps:
+      - user: ""
+        expect:
+          latency_max_ms: 5000
+
+  - name: 超长输入
+    steps:
+      - user: "你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好"
+        expect:
+          latency_max_ms: 10000
+
+  - name: 乱码输入
+    steps:
+      - user: "asdf!@#$%^&*()_+{}|:<>?"
+        expect:
+          latency_max_ms: 5000
+
+  - name: 不存在的设备
+    steps:
+      - user: "打开厨房灯"
+        expect:
+          response_not_contains: ["Error", "Traceback"]
