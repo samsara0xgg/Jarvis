@@ -379,3 +379,70 @@ class TestTTSSpeed:
 
         call_kwargs = mock_client.audio.speech.create.call_args
         assert call_kwargs.kwargs.get("speed") == 1.2
+
+
+# --- TTS Precache tests ---
+
+
+class TestTTSPrecache:
+    def test_precache_calls_synth_for_uncached_phrases(self, tmp_path):
+        """precache() should call synth_to_file for phrases not yet in cache."""
+        config = _make_config(engine="minimax", minimax_key="fake", cache_dir=str(tmp_path))
+        tts = TTSEngine(config)
+
+        phrases = ["好的", "再见"]
+        with patch.object(tts, "synth_to_file", return_value=(str(tmp_path / "out.mp3"), True)) as mock_synth:
+            tts.precache(phrases)
+
+        assert mock_synth.call_count == len(phrases)
+        mock_synth.assert_any_call("好的", emotion="")
+        mock_synth.assert_any_call("再见", emotion="")
+
+    def test_precache_skips_existing_cache_files(self, tmp_path):
+        """precache() should not re-synthesize phrases already in the cache."""
+        config = _make_config(engine="minimax", minimax_key="fake", cache_dir=str(tmp_path))
+        tts = TTSEngine(config)
+
+        phrase = "好的"
+        # Pre-create the expected cache file
+        cache_key = tts._tts_cache_key(phrase, "calm")
+        cache_file = tmp_path / f"{cache_key}.mp3"
+        cache_file.write_bytes(b"fake audio")
+
+        with patch.object(tts, "synth_to_file") as mock_synth:
+            tts.precache([phrase])
+
+        mock_synth.assert_not_called()
+
+    def test_precache_skips_long_phrases(self, tmp_path):
+        """precache() should skip phrases longer than 50 characters."""
+        config = _make_config(engine="minimax", minimax_key="fake", cache_dir=str(tmp_path))
+        tts = TTSEngine(config)
+
+        long_phrase = "这是一个超过五十个字符的非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常长的句子"
+        assert len(long_phrase) > 50
+
+        with patch.object(tts, "synth_to_file") as mock_synth:
+            tts.precache([long_phrase])
+
+        mock_synth.assert_not_called()
+
+    def test_precache_continues_on_synth_failure(self, tmp_path):
+        """precache() should not raise if synth_to_file fails for a phrase."""
+        config = _make_config(engine="minimax", minimax_key="fake", cache_dir=str(tmp_path))
+        tts = TTSEngine(config)
+
+        phrases = ["好的", "再见"]
+        call_count = 0
+
+        def _fail_first(text: str, emotion: str = "") -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("synth failed")
+            return (str(tmp_path / "ok.mp3"), True)
+
+        with patch.object(tts, "synth_to_file", side_effect=_fail_first):
+            tts.precache(phrases)  # must not raise
+
+        assert call_count == 2  # both phrases attempted

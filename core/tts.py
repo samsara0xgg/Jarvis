@@ -146,6 +146,27 @@ class TTSEngine:
             files[0].unlink(missing_ok=True)
             files.pop(0)
 
+    def precache(self, phrases: list[str]) -> None:
+        """Pre-synthesize common phrases into cache at startup.
+
+        Args:
+            phrases: List of short phrases to pre-warm the TTS cache with.
+                Phrases longer than 50 characters are skipped.
+        """
+        for text in phrases:
+            if len(text) > 50:
+                continue
+            cache_key = self._tts_cache_key(text, "calm")
+            cache_path = self._tts_cache_dir / f"{cache_key}.mp3"
+            if cache_path.exists():
+                self.logger.debug("TTS precache already exists: %r", text)
+                continue
+            try:
+                self.synth_to_file(text, emotion="")
+                self.logger.info("TTS precached: %r", text)
+            except Exception as exc:
+                self.logger.warning("TTS precache failed for %r: %s", text, exc)
+
     def speak(self, text: str, emotion: str = "") -> None:
         """Speak text aloud with optional emotion.
 

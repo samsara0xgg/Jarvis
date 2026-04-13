@@ -16,7 +16,15 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import urllib3
 import yaml
+
+# Suppress noisy warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import os
+import warnings
+warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")
+os.environ["ONNXRUNTIME_LOG_SEVERITY_LEVEL"] = "3"  # suppress onnxruntime GPU warnings
 
 from auth.permission_manager import PermissionManager
 from core.local_executor import Action, ActionResponse
@@ -48,8 +56,32 @@ LOGGER = logging.getLogger(__name__)
 FAREWELL_DEFAULTS = ["再见", "退出", "bye", "goodbye", "that's all"]
 _REMEMBER_KEYWORDS = ("记住", "记下", "别忘了", "帮我记")
 
-# Actions that need LLM interpretation — Groq can lose precision (e.g. "Tiffany蓝" → "blue")
-_NEEDS_LLM_ACTIONS = {"set_color", "set_color_temp", "set_effect"}
+# Actions that always need LLM interpretation
+_NEEDS_LLM_ACTIONS = {"set_effect"}
+
+
+def _color_needs_llm(actions: list[dict]) -> bool:
+    """Check if any set_color/set_color_temp value is unresolvable locally."""
+    from core.command_parser import COLOR_XY_MAP, COLOR_TEMP_MAP
+    for a in actions:
+        act = a.get("action", "")
+        val = str(a.get("value", "")).strip().lower()
+        if act == "set_color":
+            if val in COLOR_XY_MAP:
+                continue
+            hex_str = val.lstrip("#")
+            if len(hex_str) == 6:
+                try:
+                    int(hex_str, 16)
+                    continue
+                except ValueError:
+                    pass
+            return True
+        if act == "set_color_temp":
+            if val in COLOR_TEMP_MAP:
+                continue
+            return True
+    return False
 
 # Module-level ref so APScheduler can serialize the job.
 _health_tracker_ref = None
@@ -216,6 +248,10 @@ class JarvisApp:
         # 预热 HTTP 连接（建立 keep-alive，首次真实调用省 ~100ms TCP+TLS）
         self._executor.submit(self._prewarm_connections)
 
+        # 预热 TTS 缓存（常用短句提前合成，首次播报零延迟）
+        _PRECACHE_PHRASES = ["好的", "嗯，让我想想", "好的，灯开了", "好的，灯关了", "再见", "在的"]
+        self._executor.submit(lambda: self._get_tts() and self._get_tts().precache(_PRECACHE_PHRASES))
+
         # --- Health monitoring (voice notification + proactive probes) ---
         if self.health_tracker:
             self.event_bus.on("health.status_changed", self._on_health_changed)
@@ -379,9 +415,7 @@ class JarvisApp:
                         # enter_pressed 已经被 watcher 消费，不需要 clear
                         continue
 
-                    if response and self._is_farewell(response):
-                        self._save_on_farewell()
-                        self.speak("再见。")
+                    if response == "farewell":
                         return 0
 
                 except KeyboardInterrupt:
@@ -439,7 +473,7 @@ class JarvisApp:
                     pcm = frame[:, 0].tolist()
                     if detector.process_frame(pcm):
                         self.logger.info("Wake word detected!")
-                        self.speak_short("在的。")
+                        self.speak("在的。")
                         listening_for_wake = False
                         self._last_interaction = time.monotonic()
                 else:
@@ -458,12 +492,21 @@ class JarvisApp:
                         response = self.handle_utterance(audio)
                         # Wait for TTS to finish before resuming mic to prevent echo
                         self._wait_tts()
-                        stream.start()
-                        self._last_interaction = time.monotonic()
 
-                        if response and self._is_farewell(response):
-                            self._save_on_farewell()
+                        if response == "farewell":
+                            time.sleep(1.5)
+                            detector.reset()
+                            stream.start()
+                            # Drain buffered frames so residual audio doesn't trigger wake word
+                            try:
+                                while stream.read_available > 0:
+                                    stream.read(stream.read_available)
+                            except Exception:
+                                pass
                             listening_for_wake = True
+                        else:
+                            stream.start()
+                            self._last_interaction = time.monotonic()
                     except KeyboardInterrupt:
                         break
                     except Exception as exc:
@@ -498,6 +541,8 @@ class JarvisApp:
 
     def _handle_utterance_inner(self, audio: np.ndarray) -> str:
         """Inner utterance handler — wrapped by handle_utterance for safety."""
+        _t0 = time.monotonic()
+
         # 0. Signal listening
         self.event_bus.emit("jarvis.state_changed", {"state": "listening"})
 
@@ -507,6 +552,7 @@ class JarvisApp:
         asr_future = self._executor.submit(self.speech_recognizer.transcribe, np.copy(audio))
         verification = verify_future.result()
         transcription = asr_future.result()
+        _t_asr = time.monotonic()
 
         text = transcription.text.strip()
         detected_emotion = getattr(transcription, "emotion", "") or ""
@@ -514,6 +560,8 @@ class JarvisApp:
             self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
             self.speak("没听清，能再说一遍吗？")
             return ""
+
+        print(f"⏱ ASR+声纹: {(_t_asr - _t0)*1000:.0f}ms")
 
         # 2. Resolve user identity
         user_id = verification.user if verification.verified else None
@@ -541,6 +589,24 @@ class JarvisApp:
         history = self.conversation_store.get_history(session_id)
 
         # 4b. Fast local checks first (avoid wasted API calls)
+
+        # Farewell shortcut: 直接本地回复，不走路由和 LLM
+        if self._is_farewell(text):
+            reply = "再见。"
+            self.logger.info("Farewell shortcut: %s", text[:60])
+            self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
+            print(f"🤖 Jarvis: {reply}")
+            print(f"⏱ 总耗时: {(time.monotonic() - _t0)*1000:.0f}ms [farewell]")
+            self._speak_nonblocking(reply, emotion=detected_emotion)
+            history.append({"role": "user", "content": text})
+            history.append({"role": "assistant", "content": reply})
+            self.conversation_store.replace(session_id, history)
+            if user_id:
+                self._executor.submit(
+                    self.memory_manager.save, history, user_id, session_id,
+                    detected_emotion,
+                )
+            return "farewell"
 
         # Memory store shortcut: "记住/记下/别忘了" → 直接确认，不走 LLM
         if any(text.startswith(kw) or kw in text[:10] for kw in _REMEMBER_KEYWORDS):
@@ -583,6 +649,7 @@ class JarvisApp:
             # (cloud LLM handles via existing automation skill)
 
         # Keyword trigger check
+        _t_think = time.monotonic()
         self.event_bus.emit("jarvis.state_changed", {"state": "thinking"})
         response_text = None
         updated_messages = None
@@ -626,6 +693,8 @@ class JarvisApp:
             try:
                 direct = self.direct_answerer.try_answer(text, user_id)
                 if direct:
+                    _t_da = time.monotonic()
+                    print(f"⏱ DA直答: {(_t_da - _t_think)*1000:.0f}ms")
                     self.logger.info("Level 1 direct answer: %s", direct[:60])
                     self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
                     print(f"🤖 Jarvis (L1): {direct}")
@@ -656,10 +725,20 @@ class JarvisApp:
         else:
             route = None
 
+        _t_route = time.monotonic()
+        if route:
+            print(f"⏱ 意图路由: {(_t_route - _t_think)*1000:.0f}ms → {route.tier}/{route.intent} ({route.provider})")
+        else:
+            print(f"⏱ 意图路由: {(_t_route - _t_think)*1000:.0f}ms → 无路由")
+
         if response_text is None and route is not None:
             if route.tier == "local":
                 if route.intent == "smart_home":
-                    if any(a.get("action") in _NEEDS_LLM_ACTIONS for a in route.actions):
+                    needs_llm = (
+                        any(a.get("action") in _NEEDS_LLM_ACTIONS for a in route.actions)
+                        or _color_needs_llm(route.actions)
+                    )
+                    if needs_llm:
                         device_ids = {a.get("device_id") for a in route.actions if a.get("device_id")}
                         status_parts = []
                         for did in device_ids:
@@ -708,18 +787,29 @@ class JarvisApp:
                     else:
                         response_text = ar.text
 
+        # Local execution timing
+        if response_text is not None:
+            _t_local = time.monotonic()
+            print(f"⏱ 本地执行: {(_t_local - _t_route)*1000:.0f}ms")
+
         # 7. Cloud LLM — either REQLLM rephrase or full cloud fallback
+        _t_llm_start = time.monotonic()
         if response_text is None and not self._cancel.is_set():
             tools = self.skill_registry.get_tool_definitions(user_role)
 
             # 逐句 TTS：用 pipeline 异步合成+播放，消除句间停顿
             tts_pipeline = self._create_tts_pipeline()
 
+            _t_first_sentence = [None]  # mutable for closure
+
             def _on_sentence(sentence: str) -> None:
                 if self._cancel.is_set():
                     return  # 被打断，跳过后续句子
                 nonlocal sentence_count
                 sentence_count += 1
+                if sentence_count == 1:
+                    _t_first_sentence[0] = time.monotonic()
+                    print(f"⏱ LLM首句: {(_t_first_sentence[0] - _t_llm_start)*1000:.0f}ms")
                 print(f"🤖 Jarvis: {sentence}")
                 if tts_pipeline:
                     st = SentenceType.FIRST if sentence_count == 1 else SentenceType.MIDDLE
@@ -817,6 +907,10 @@ class JarvisApp:
                 self.oled.set_speaking_text(response_text)
             print(f"🤖 Jarvis: {response_text}")
             self._speak_nonblocking(response_text, emotion=detected_emotion)
+
+        _t_end = time.monotonic()
+        _route_name = f"{route.tier}/{route.intent}" if route else "cloud"
+        print(f"⏱ 总耗时: {(_t_end - _t0)*1000:.0f}ms [{_route_name}]")
 
         return response_text
 
@@ -928,9 +1022,11 @@ class JarvisApp:
             route = self.intent_router.route(text, conversation_history=history)
             if route.tier == "local":
                 if route.intent == "smart_home":
-                    # Color/effect actions need LLM to interpret precisely (e.g. "Tiffany蓝" → #81D8D0)
-                    if any(a.get("action") in _NEEDS_LLM_ACTIONS for a in route.actions):
-                        # Inject current device status so LLM can handle relative commands ("淡一点")
+                    needs_llm = (
+                        any(a.get("action") in _NEEDS_LLM_ACTIONS for a in route.actions)
+                        or _color_needs_llm(route.actions)
+                    )
+                    if needs_llm:
                         device_ids = {a.get("device_id") for a in route.actions if a.get("device_id")}
                         status_parts = []
                         for did in device_ids:
