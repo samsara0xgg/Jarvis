@@ -85,7 +85,10 @@
 ## 技能系统
 
 - ❌ SkillFactory 生成的技能加 pending_review 状态追踪（可用但待审查）
+- ❌ RPi ~/.claude/CLAUDE.md 写专用 skill 生成指令（代码风格/安全/测试/接口规范）
 - ❌ 加 WebSearchSkill（DuckDuckGo，零配置）
+- ❌ RemoteDevSkill — 小月通过 SSH 控制 Mac 端 CC/开发环境（跑测试/改代码/git 操作/rsync 同步）
+- ❌ ClaudeSkill — 通用语音→CC 接口（"帮我问Claude..."）
 
 ## 行为学习 (T2 方向)
 

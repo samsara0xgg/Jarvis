@@ -563,7 +563,7 @@ class JarvisApp:
         detected_emotion = getattr(transcription, "emotion", "") or ""
         if not text:
             self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
-            self.speak("没听清，能再说一遍吗？")
+            self.logger.info("Empty ASR result, staying silent")
             return ""
 
         print(f"⏱ ASR+声纹: {(_t_asr - _t0)*1000:.0f}ms")
