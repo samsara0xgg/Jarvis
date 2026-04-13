@@ -82,6 +82,11 @@ class InterruptMonitor:
         self._audio_chunks: list[np.ndarray] = []
         self._recording = False
 
+        # Mic listener state (initialized here for type-safety)
+        self._mic_stop: threading.Event | None = None
+        self._mic_stream: Any = None
+        self._mic_thread: threading.Thread | None = None
+
     def start(self) -> None:
         """Begin a monitoring session. Call before TTS playback starts."""
         if not self.enabled:
@@ -171,6 +176,9 @@ class InterruptMonitor:
         """
         if not self.enabled:
             return
+        if self._mic_stream is not None:
+            LOGGER.warning("start_mic_listener called while already running; ignoring")
+            return
         import sounddevice as sd
         self._mic_stop = threading.Event()
         self._mic_stream = sd.InputStream(
@@ -181,12 +189,18 @@ class InterruptMonitor:
         )
         self._mic_stream.start()
 
+        # Capture stream in closure so reader never dereferences self._mic_stream
+        _stream = self._mic_stream
+        _stop = self._mic_stop
+
         def _reader() -> None:
-            while not self._mic_stop.is_set():
+            while not _stop.is_set():
                 try:
-                    data, _ = self._mic_stream.read(block_size)
+                    data, _ = _stream.read(block_size)
                     self.feed_audio(data[:, 0], sample_rate)
-                except Exception:
+                except Exception as exc:
+                    if not _stop.is_set():
+                        LOGGER.warning("Mic listener reader exited: %s", exc)
                     break
 
         self._mic_thread = threading.Thread(target=_reader, daemon=True, name="interrupt-mic")
@@ -195,18 +209,21 @@ class InterruptMonitor:
 
     def stop_mic_listener(self) -> None:
         """Stop the background microphone stream."""
-        if hasattr(self, "_mic_stop"):
+        if self._mic_stop is not None:
             self._mic_stop.set()
-        if hasattr(self, "_mic_stream") and self._mic_stream:
+        if self._mic_stream is not None:
             try:
                 self._mic_stream.stop()
                 self._mic_stream.close()
             except Exception:
                 pass
             self._mic_stream = None
-        if hasattr(self, "_mic_thread") and self._mic_thread:
+        if self._mic_thread is not None:
             self._mic_thread.join(timeout=2)
+            if self._mic_thread.is_alive():
+                LOGGER.warning("interrupt-mic thread did not exit within 2s")
             self._mic_thread = None
+        self._mic_stop = None
         LOGGER.debug("Interrupt mic listener stopped")
 
     def _load_recognizer(self) -> None:
