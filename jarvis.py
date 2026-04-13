@@ -665,6 +665,12 @@ class JarvisApp:
         # 加载对话历史（用于多轮上下文）
         history = self.conversation_store.get_history(session_id)
 
+        # ── Trace attributes (for system test harness) ──
+        self._last_route = None
+        self._last_path = "unknown"
+        self._last_device_ops = []
+        self._last_memory_hits = ""
+
         # Resume from interruption: "继续说" etc
         from core.interrupt_monitor import RESUME_KEYWORDS
         _resume_sentences: list[str] | None = None
@@ -679,12 +685,16 @@ class JarvisApp:
             history.append({"role": "user", "content": text})
             history.append({"role": "assistant", "content": full_text})
             self.conversation_store.replace(session_id, history)
+            self._last_path = "resume"
+            print(f"📍 路径: {self._last_path}")
             return full_text
 
         # ── 快捷路径 1：告别 ── 直接本地回复，不走任何 API，~120ms
         if self._is_farewell(text):
             reply = "再见。"
             self.logger.info("Farewell shortcut: %s", text[:60])
+            self._last_path = "farewell"
+            print(f"📍 路径: {self._last_path}")
             output_fn(reply)
             history.append({"role": "user", "content": text})
             history.append({"role": "assistant", "content": reply})
@@ -718,6 +728,8 @@ class JarvisApp:
             if "每次" not in text:
                 reply = "好的，记住了。"
                 self.logger.info("Memory shortcut: %s", text[:60])
+                self._last_path = "memory_shortcut"
+                print(f"📍 路径: {self._last_path}")
                 output_fn(reply)
                 history.append({"role": "user", "content": text})
                 history.append({"role": "assistant", "content": reply})
@@ -735,6 +747,8 @@ class JarvisApp:
             if learning and learning.mode == "create":
                 self.logger.info("Learning intent: create — %s", learning.description[:60])
                 learn_response = self._learn_create(learning, user_id)
+                self._last_path = "learn_create"
+                print(f"📍 路径: {self._last_path}")
                 output_fn(learn_response)
                 history.append({"role": "user", "content": text})
                 history.append({"role": "assistant", "content": learn_response})
@@ -767,17 +781,23 @@ class JarvisApp:
                         use_llm_rephrase = True
                     else:
                         response_text = ar.text
+                        self._last_path = "keyword_rule"
                 else:
                     ar = self.local_executor.execute_smart_home(
                         keyword_actions, user_role, response=f"好的，{rule_name}已执行。",
                     )
                     response_text = ar.text
+                    self._last_path = "keyword_rule"
 
         # ── 记忆检索 ── 向量搜索相关记忆，作为 context 传给后续 LLM（~50-100ms）
         memory_context = ""
         if user_id:
             try:
                 memory_context = self.memory_manager.query(text, user_id)
+                self._last_memory_hits = memory_context
+                if memory_context:
+                    _mem_count = memory_context.count("\n- ")
+                    print(f"🧠 记忆检索: {_mem_count} 条相关记忆")
             except Exception as exc:
                 self.logger.warning("Memory query failed: %s", exc)
 
@@ -789,6 +809,8 @@ class JarvisApp:
                     _t_da = time.monotonic()
                     print(f"⏱ DA直答: {(_t_da - _t_think)*1000:.0f}ms")
                     self.logger.info("Level 1 direct answer: %s", direct[:60])
+                    self._last_path = "memory_l1"
+                    print(f"📍 路径: {self._last_path}")
                     output_fn(direct)
                     self.behavior_log.log(user_id, "conversation", {
                         "text": text[:100],
@@ -818,14 +840,20 @@ class JarvisApp:
                 self.logger.warning("Unified route failed: %s", exc)
 
         _t_route = time.monotonic()
+        self._last_route = route
         if route:
-            print(f"⏱ 意图路由: {(_t_route - _t_think)*1000:.0f}ms → {route.tier}/{route.intent} ({route.provider})")
+            print(f"⏱ 路由: {(_t_route - _t_think)*1000:.0f}ms → {route.tier}/{route.intent} ({route.provider}, {route.confidence:.2f})")
+            if route.actions:
+                for a in route.actions:
+                    val_str = f" ({a['value']})" if a.get("value") else ""
+                    print(f"   📋 {a.get('device_id', '?')} → {a.get('action', '?')}{val_str}")
         else:
-            print(f"⏱ 意图路由: {(_t_route - _t_think)*1000:.0f}ms → 无路由")
+            print(f"⏱ 路由: {(_t_route - _t_think)*1000:.0f}ms → 无路由")
 
         if response_text is None and route is not None:
             if route.text_response:
                 response_text = route.text_response
+                self._last_path = "local"
             elif route.tier == "local":
                 if route.intent == "smart_home":
                     needs_llm = (
@@ -847,6 +875,28 @@ class JarvisApp:
                         ar = self.local_executor.execute_smart_home(
                             route.actions, user_role, response=route.response,
                         )
+                        self._last_device_ops = route.actions
+                        for a in route.actions:
+                            did = a.get("device_id")
+                            if did:
+                                try:
+                                    st = self.device_manager.get_device(did).get_status()
+                                    on_str = "ON" if st.get("is_on") else "OFF"
+                                    extras = []
+                                    if "brightness" in st:
+                                        extras.append(f"brightness={st['brightness']}")
+                                    if "color_temp" in st:
+                                        extras.append(f"color_temp={st['color_temp']}")
+                                    if "color" in st and st["color"] != "white":
+                                        extras.append(f"color={st['color']}")
+                                    if "temperature" in st:
+                                        extras.append(f"temp={st['temperature']}°C")
+                                    if "is_locked" in st:
+                                        extras.append("locked" if st["is_locked"] else "unlocked")
+                                    extra_str = f"  {' '.join(extras)}" if extras else ""
+                                    print(f"   💡 {did}: {on_str}{extra_str}")
+                                except Exception:
+                                    pass
                 elif route.intent == "info_query":
                     if route.sub_type in ("news", "stocks", "weather"):
                         ar = self.local_executor.execute_info_query(
@@ -882,6 +932,7 @@ class JarvisApp:
                         response_text = None
                     else:
                         response_text = ar.text
+                        self._last_path = "local"
 
         # 本地执行计时
         if response_text is not None:
@@ -893,6 +944,7 @@ class JarvisApp:
         #   - 完整 cloud：直接让 LLM 回答（支持 streaming + tool-use 循环）
         _t_llm_start = time.monotonic()
         if response_text is None and not self._cancel.is_set():
+            self._last_path = "cloud"
             tools = self.skill_registry.get_tool_definitions(user_role)
             tts_pipeline = create_tts_pipeline() if create_tts_pipeline else None
             with self._pipeline_lock:
@@ -1019,6 +1071,7 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Failed to restore preset: %s", exc)
 
+        print(f"📍 路径: {self._last_path}")
         return response_text
 
     # ══════════════════════════════════════════════════════════════
@@ -1031,6 +1084,10 @@ class JarvisApp:
         session_id: str = "_web",
         on_sentence: Any = None,
         emotion: str = "",
+        *,
+        user_id: str = "default_user",
+        user_name: str = "用户",
+        user_role: str = "owner",
     ) -> str:
         """Process a text message without audio/TTS.
 
@@ -1044,6 +1101,9 @@ class JarvisApp:
             text,
             emotion=emotion,
             session_id=session_id,
+            user_id=user_id,
+            user_name=user_name,
+            user_role=user_role,
             output_fn=_text_output,
         )
 
