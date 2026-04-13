@@ -163,9 +163,9 @@ def build_unified_prompt(
 2. 信息查询（仅限天气/股票/新闻这三种）→ 输出JSON：{{"intent":"info_query","confidence":0.9,"sub_type":"news|stocks|weather","query":"AI","response":null}}
    其他查询（门票、翻译、百科等）→ 直接自然语言回复，不要输出info_query JSON
 3. 时间查询 → 输出JSON：{{"intent":"time","confidence":0.95,"sub_type":"current_time|date|weekday","response":null}}
-4. 自动化规则（"以后每次…""每天…"等持久规则）→ 输出JSON：{{"intent":"automation","confidence":0.9,"sub_type":"create|list|delete","rule":{{"name":"晚安模式","trigger":{{"type":"keyword","keyword":"晚安"}},"actions":[{{"device_id":"xxx","action":"turn_off","value":null}}]}},"response":"好的，以后说晚安就会关灯。"}}
-   一次性延时操作（"过3秒再开灯""先关灯然后开灯"）→ 输出automation + once触发：{{"intent":"automation","confidence":0.9,"sub_type":"create","rule":{{"name":"延时操作","trigger":{{"type":"once","delay_minutes":0.05}},"actions":[{{"device_id":"all_lights","action":"turn_on"}}]}},"response":"好的，3秒后开灯。"}}
-   注意：如果用户说"先X再Y"，先立即执行X（smart_home），延时部分用once触发
+4. 自动化规则 → 输出一个JSON（永远只输出一个JSON，不要输出多个）：
+   持久规则（"以后每次…""每天…"）：{{"intent":"automation","confidence":0.9,"sub_type":"create","rule":{{"name":"晚安模式","trigger":{{"type":"keyword","keyword":"晚安"}},"actions":[{{"device_id":"xxx","action":"turn_off"}}]}},"response":"好的，以后说晚安就会关灯。"}}
+   一次性延时（"关灯过3秒再开灯"）：{{"intent":"automation","confidence":0.9,"sub_type":"create","rule":{{"name":"延时操作","trigger":{{"type":"once","delay_minutes":0.05}},"actions":[{{"device_id":"all_lights","action":"turn_off"}},{{"device_id":"all_lights","action":"turn_on","delay_seconds":3}}]}},"response":"好的，先关灯，3秒后开灯。"}}
 5. 其他所有情况 → 直接用自然语言回复，不要输出JSON
 
 设备：
@@ -526,8 +526,16 @@ class IntentRouter:
         if cleaned.startswith("```"):
             cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         if cleaned.startswith("{"):
+            # Multiple JSON objects → take only the first one
+            first_json = cleaned
             try:
-                parsed = json.loads(cleaned)
+                decoder = json.JSONDecoder()
+                _, end_idx = decoder.raw_decode(cleaned)
+                first_json = cleaned[:end_idx]
+            except (json.JSONDecodeError, ValueError):
+                pass
+            try:
+                parsed = json.loads(first_json)
                 intent = parsed.get("intent", "uncertain")
                 if intent not in VALID_INTENTS:
                     intent = "uncertain"
