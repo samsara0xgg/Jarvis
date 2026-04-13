@@ -1470,6 +1470,8 @@ class JarvisApp:
 
     def _print_banner(self) -> None:
         """Print startup information."""
+        import os as _os
+        _os.system("clear" if _os.name != "nt" else "cls")
         mode = self.config.get("devices", {}).get("mode", "sim")
         user_count = len(self.user_store.get_all_users())
         skill_count = len(self.skill_registry.skill_names)
