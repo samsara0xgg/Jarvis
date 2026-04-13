@@ -543,8 +543,9 @@ class IntentRouter:
                     tier = "cloud"
 
                 self.logger.info(
-                    "Unified(json): '%s' → %s/%s (%.2f, %dms, %d actions)",
-                    cleaned[:30], tier, intent, confidence, duration_ms, len(actions),
+                    "Unified(json): %s/%s (%.2f, %dms) sub_type=%s query=%r actions=%d",
+                    tier, intent, confidence, duration_ms,
+                    sub_type, query, len(actions),
                 )
                 return RouteResult(
                     tier=tier, intent=intent, confidence=confidence,

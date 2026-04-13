@@ -141,6 +141,7 @@ class LocalExecutor:
 
         elif sub_type == "weather":
             tool_input = {"city": query} if isinstance(query, str) and query.strip() else {}
+            self.logger.info("Weather query: raw=%r → tool_input=%s", query, tool_input)
             result = self.skill_registry.execute(
                 "get_weather", tool_input, user_role=user_role,
             )
