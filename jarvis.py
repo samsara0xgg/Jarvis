@@ -246,6 +246,7 @@ class JarvisApp:
         self._tts_future: Future | None = None
         self._active_pipeline: Any = None  # current TTSPipeline for interrupt abort
         self._interrupted_response: list[str] | None = None
+        self._pipeline_lock = threading.Lock()
 
         # 预热 embedding 模型（后台加载，不阻塞启动）
         self._executor.submit(self.memory_manager.embedder.encode, "warmup")
@@ -657,13 +658,16 @@ class JarvisApp:
         history = self.conversation_store.get_history(session_id)
 
         # Resume from interruption: "继续说" etc
-        _RESUME_KEYWORDS = {"继续说", "接着说", "你继续", "继续"}
-        if self._interrupted_response and any(kw in text for kw in _RESUME_KEYWORDS):
-            sentences = self._interrupted_response
-            self._interrupted_response = None
-            for s in sentences:
+        from core.interrupt_monitor import RESUME_KEYWORDS
+        _resume_sentences: list[str] | None = None
+        with self._pipeline_lock:
+            if self._interrupted_response and any(kw in text for kw in RESUME_KEYWORDS):
+                _resume_sentences = self._interrupted_response
+                self._interrupted_response = None
+        if _resume_sentences is not None:
+            for s in _resume_sentences:
                 output_fn(s)
-            full_text = "".join(sentences)
+            full_text = "".join(_resume_sentences)
             history.append({"role": "user", "content": text})
             history.append({"role": "assistant", "content": full_text})
             self.conversation_store.replace(session_id, history)
@@ -883,7 +887,8 @@ class JarvisApp:
         if response_text is None and not self._cancel.is_set():
             tools = self.skill_registry.get_tool_definitions(user_role)
             tts_pipeline = create_tts_pipeline() if create_tts_pipeline else None
-            self._active_pipeline = tts_pipeline
+            with self._pipeline_lock:
+                self._active_pipeline = tts_pipeline
 
             _t_first_sentence = [None]  # mutable for closure
 
@@ -943,12 +948,13 @@ class JarvisApp:
                         self.logger.error("Cloud LLM failed: %s", exc)
                         response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
             finally:
-                self._active_pipeline = None
                 if tts_pipeline:
                     if sentence_count > 0:
                         tts_pipeline.finish()
                         tts_pipeline.wait_done()
                     tts_pipeline.stop()
+                with self._pipeline_lock:
+                    self._active_pipeline = None
 
         # ── 持久化 ── 保存对话历史 + 后台异步提取记忆（GPT-4o-mini）
         cloud_path = updated_messages is not None
@@ -1064,11 +1070,12 @@ class JarvisApp:
 
     def _cancel_current(self) -> None:
         """Cancel current TTS and reset state after user interrupt."""
-        # Abort active pipeline — kills playback, returns unplayed sentences
-        if self._active_pipeline:
-            remaining = self._active_pipeline.abort()
-            if remaining:
-                self._interrupted_response = remaining
+        with self._pipeline_lock:
+            self._interrupted_response = None  # clear stale buffer first
+            if self._active_pipeline:
+                remaining = self._active_pipeline.abort()
+                if remaining:
+                    self._interrupted_response = remaining
         # Kill non-pipeline TTS (local shortcuts)
         if self._tts_future and not self._tts_future.done():
             self._tts_future.cancel()
