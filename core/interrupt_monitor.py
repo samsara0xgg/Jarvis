@@ -103,7 +103,9 @@ class InterruptMonitor:
                 pass
             self._stream = None
         if self._audio_chunks:
-            return np.concatenate(self._audio_chunks)
+            result = np.concatenate(self._audio_chunks)
+            self._audio_chunks = []
+            return result
         return None
 
     def reset(self) -> None:
@@ -123,7 +125,9 @@ class InterruptMonitor:
         if not self.enabled or not self._recording:
             return
 
-        self._audio_chunks.append(audio.copy())
+        # Accumulate for post-interrupt re-transcription (stop after fired)
+        if not self._fired:
+            self._audio_chunks.append(audio.copy())
 
         if self._stream and self._recognizer:
             try:
@@ -140,21 +144,23 @@ class InterruptMonitor:
         """Check a partial ASR result against keyword sets."""
         if not self.enabled:
             return
+        callback = None
         with self._lock:
             if self._fired:
                 return
             for kw in self._interrupt_kw:
                 if kw in text:
                     self._fired = True
-                    if self._on_interrupt:
-                        self._on_interrupt()
-                    return
-            for kw in self._resume_kw:
-                if kw in text:
-                    self._fired = True
-                    if self._on_resume:
-                        self._on_resume()
-                    return
+                    callback = self._on_interrupt
+                    break
+            if callback is None:
+                for kw in self._resume_kw:
+                    if kw in text:
+                        self._fired = True
+                        callback = self._on_resume
+                        break
+        if callback:
+            callback()
 
     def _load_recognizer(self) -> None:
         """Lazy-load the sherpa-onnx streaming recognizer."""

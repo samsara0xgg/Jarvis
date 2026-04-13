@@ -14,8 +14,9 @@ from core.personality import build_personality_prompt
 
 LOGGER = logging.getLogger(__name__)
 
-# Rough token estimate: 1 token ≈ 3 characters for mixed CJK/English
-_CHARS_PER_TOKEN = 3
+# Rough token estimate: Chinese ≈ 1.5 chars/token, English ≈ 4 chars/token.
+# Use 1.5 (conservative) to avoid sending more context than max_history_tokens.
+_CHARS_PER_TOKEN = 1.5
 
 
 class LLMClient:
@@ -730,8 +731,11 @@ class LLMClient:
                                 buffer += text_chunk
                                 buffer = self._flush_sentences(buffer, on_sentence)
 
-                # Flush remaining buffer
-                self._flush_sentences(buffer, on_sentence, force=True)
+                # 只在纯文本响应时 flush 剩余 buffer；
+                # 如果检测到 tool_use，跳过——fallback 会重新生成完整回复，
+                # 否则用户会听到重复内容（流式播了一遍，fallback 又播一遍）
+                if not has_tool_use:
+                    self._flush_sentences(buffer, on_sentence, force=True)
 
                 if has_tool_use or not full_text.strip():
                     reason = "tool use" if has_tool_use else "empty stream"

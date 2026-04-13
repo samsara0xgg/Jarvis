@@ -39,8 +39,9 @@
 
 ## core/llm.py
 
-- ❌ _CHARS_PER_TOKEN = 3 对中文偏低（应 1.5-2），history 过度截断
+- ✅ _CHARS_PER_TOKEN = 3 对中文偏低 → 已改为 1.5
 - ❌ 流式模式检测 tool_use 后 fallback 非流式，双倍 API 调用
+- ❌ REQLLM rephrase 路径发完整 history+tools 只为转述本地数据，应精简 context
 
 ## core/tts.py
 
