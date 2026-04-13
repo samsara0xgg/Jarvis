@@ -534,8 +534,25 @@ class IntentRouter:
                 first_json = cleaned[:end_idx]
             except (json.JSONDecodeError, ValueError):
                 pass
-            try:
-                parsed = json.loads(first_json)
+            # Try parsing; if fail, attempt common fixes
+            parsed = None
+            for attempt in (first_json, first_json + "}", first_json + "]}"):
+                try:
+                    parsed = json.loads(attempt)
+                    break
+                except json.JSONDecodeError:
+                    continue
+            if parsed is None:
+                # Extract response from malformed JSON as fallback
+                resp_match = re.search(r'"response"\s*:\s*"([^"]+)"', first_json)
+                if resp_match:
+                    self.logger.warning("Malformed JSON, extracted response: %s", resp_match.group(1))
+                    return RouteResult(
+                        tier="cloud", intent="chat", confidence=0.9,
+                        duration_ms=duration_ms, provider="",
+                        text_response=resp_match.group(1),
+                    )
+            if parsed:
                 intent = parsed.get("intent", "uncertain")
                 if intent not in VALID_INTENTS:
                     intent = "uncertain"
@@ -563,9 +580,6 @@ class IntentRouter:
                     actions=actions, response=response,
                     sub_type=sub_type, query=query, rule=rule,
                 )
-            except json.JSONDecodeError:
-                pass  # Fall through to text response
-
         # Natural language response
         self.logger.info(
             "Unified(text): '%s' → chat (%dms)", raw[:40], duration_ms,
