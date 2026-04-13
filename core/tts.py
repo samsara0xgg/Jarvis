@@ -697,19 +697,34 @@ class TTSPipeline:
         """Block until all queued sentences have been played."""
         self._done.wait(timeout=timeout)
 
-    def abort(self) -> None:
-        """Cancel all pending sentences and stop playback ASAP."""
+    def abort(self) -> list[str]:
+        """Cancel all pending sentences, stop playback, return unplayed text.
+
+        Returns:
+            List of sentence texts that were queued but not yet played.
+        """
         self._aborted.set()
-        # Drain queues
-        for q in (self._text_queue, self._audio_queue):
-            while not q.empty():
-                try:
-                    q.get_nowait()
-                except Empty:
-                    break
+        # Collect remaining text from text_queue
+        remaining: list[str] = []
+        while not self._text_queue.empty():
+            try:
+                item = self._text_queue.get_nowait()
+                if item is not _SENTINEL and isinstance(item, tuple):
+                    remaining.append(item[0])  # (text, sentence_type, emotion)
+            except Empty:
+                break
+        # Drain audio queue
+        while not self._audio_queue.empty():
+            try:
+                self._audio_queue.get_nowait()
+            except Empty:
+                break
+        # Kill currently playing audio
+        self._engine.stop()
         # Unblock workers
         self._text_queue.put(_SENTINEL)
         self._audio_queue.put(_SENTINEL)
+        return remaining
 
     def stop(self) -> None:
         """Stop worker threads (call after wait_done or abort)."""

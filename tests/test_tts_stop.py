@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
-from core.tts import TTSEngine
+from core.tts import TTSEngine, TTSPipeline, SentenceType
 
 
 def _make_config(**overrides):
@@ -64,3 +64,37 @@ class TestTTSEngineStop:
             t.start()
         for t in threads:
             t.join(timeout=2)
+
+
+class TestTTSPipelineAbort:
+    def test_abort_calls_engine_stop(self):
+        engine = MagicMock()
+        engine.stop = MagicMock()
+        pipeline = TTSPipeline(engine)
+        pipeline.start()
+        pipeline.abort()
+        engine.stop.assert_called_once()
+        pipeline.stop()
+
+    def test_abort_returns_remaining_sentences(self):
+        engine = MagicMock()
+        engine.stop = MagicMock()
+        engine.synth_to_file = MagicMock(return_value=None)  # block synthesis
+        pipeline = TTSPipeline(engine)
+        pipeline.start()
+        pipeline.submit("句子一", SentenceType.FIRST)
+        pipeline.submit("句子二", SentenceType.MIDDLE)
+        pipeline.submit("句子三", SentenceType.MIDDLE)
+        time.sleep(0.1)  # let worker pick up first item
+        remaining = pipeline.abort()
+        pipeline.stop()
+        assert isinstance(remaining, list)
+
+    def test_abort_returns_empty_when_nothing_queued(self):
+        engine = MagicMock()
+        engine.stop = MagicMock()
+        pipeline = TTSPipeline(engine)
+        pipeline.start()
+        remaining = pipeline.abort()
+        pipeline.stop()
+        assert remaining == []
