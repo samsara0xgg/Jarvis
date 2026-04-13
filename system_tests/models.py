@@ -65,6 +65,14 @@ class StepExpect:
 
 
 @dataclass
+class TtsInfo:
+    """TTS synthesis details for a step."""
+    engine: str              # minimax / openai_tts / edge-tts / pyttsx3
+    emotion: str             # neutral / happy / sad / ...
+    synth_ms: int            # synthesis time (0 if not measured)
+    played: bool             # whether audio was actually played
+
+@dataclass
 class StepResult:
     """Full result of one test step."""
     input_text: str
@@ -78,6 +86,7 @@ class StepResult:
     api_calls: dict[str, int]
     assertions: dict[str, AssertionResult]
     error: str | None
+    tts_info: TtsInfo | None = None
 
     @property
     def passed(self) -> bool:

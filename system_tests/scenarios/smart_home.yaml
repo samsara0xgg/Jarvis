@@ -1,12 +1,7 @@
 name: 智能家居控制
-description: 灯光、恒温器、门锁的语音控制
+description: Hue 灯光控制（匹配真实设备 ID）
 
 setup:
-  devices:
-    bedroom_light: {is_on: false, brightness: 100, color_temp: neutral}
-    living_room_light: {is_on: false, brightness: 100, color_temp: neutral}
-    home_thermostat: {is_on: false, temperature: 24}
-    front_door_lock: {is_locked: true}
   user: {id: allen, name: Allen, role: owner}
 
 scenarios:
@@ -17,13 +12,12 @@ scenarios:
           route: smart_home
           tier: local
           device_state:
-            bedroom_light: {is_on: true}
-          response_contains: ["灯"]
+            bedroom_lamp_1: {is_on: true}
       - user: "再关掉"
         expect:
           route: smart_home
           device_state:
-            bedroom_light: {is_on: false}
+            bedroom_lamp_1: {is_on: false}
 
   - name: 亮度调节
     steps:
@@ -31,48 +25,44 @@ scenarios:
         expect:
           route: smart_home
           device_state:
-            bedroom_light: {is_on: true, brightness: 50}
+            bedroom_lamp_1: {is_on: true}
 
   - name: 色温调节
     steps:
       - user: "把卧室灯调成暖光"
         expect:
           route: smart_home
-          device_state:
-            bedroom_light: {color_temp: warm}
 
-  - name: 恒温器控制
+  - name: 灯带控制
     steps:
-      - user: "把空调温度调到22度"
+      - user: "打开灯带"
         expect:
           route: smart_home
           device_state:
-            home_thermostat: {is_on: true, temperature: 22}
-
-  - name: 门锁控制
-    steps:
-      - user: "把门锁打开"
-        expect:
-          route: smart_home
-          device_state:
-            front_door_lock: {is_locked: false}
-      - user: "再锁上"
+            desk_lightstrip: {is_on: true}
+      - user: "关掉灯带"
         expect:
           device_state:
-            front_door_lock: {is_locked: true}
+            desk_lightstrip: {is_on: false}
 
-  - name: 多灯控制
+  - name: 灯组控制
     steps:
       - user: "把所有灯都打开"
         expect:
           device_state:
-            bedroom_light: {is_on: true}
-            living_room_light: {is_on: true}
+            all_lights: {is_on: true}
       - user: "全部关掉"
         expect:
           device_state:
-            bedroom_light: {is_on: false}
-            living_room_light: {is_on: false}
+            all_lights: {is_on: false}
+
+  - name: 桌灯控制
+    steps:
+      - user: "打开桌灯"
+        expect:
+          route: smart_home
+          device_state:
+            desk_lights: {is_on: true}
 
   - name: 自然语言控灯
     review: true
@@ -80,6 +70,4 @@ scenarios:
       - user: "帮我把卧室弄暗一点"
         expect:
           route: smart_home
-          device_state:
-            bedroom_light: {is_on: true}
-        review_hint: "回复是否说明了调整结果和具体数值"
+        review_hint: "是否正确理解为调暗卧室灯，回复是否说明了调整结果"

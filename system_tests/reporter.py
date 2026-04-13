@@ -44,17 +44,26 @@ class TerminalReporter:
         print(f"\n┌─ Step {step_num}: \"{step.input_text}\" {'─' * max(1, 38 - len(step.input_text))}")
         print(f"│ 👤 {user_name} ({user_role}): {step.input_text}")
 
+        # Response — prominent display
+        if step.response and step.response != "farewell":
+            print(f"│ 🤖 小月: {step.response}")
+        elif step.response == "farewell":
+            print(f"│ 🤖 小月: 再见。 (farewell)")
+
+        # Route details
+        if step.route:
+            r = step.route
+            print(f"│ 🔀 路由: {r.tier}/{r.intent} (conf={r.confidence:.2f}, {r.provider})")
+        print(f"│ 📍 路径: {step.path or 'unknown'}")
+
         # Device changes
         if step.device_changes:
-            print(f"│")
             print(f"│ 💡 设备变化:")
             for c in step.device_changes:
                 print(f"│   {c.display()}")
 
         # Memory changes
-        if step.memory_diff.is_empty:
-            print(f"│ 🧠 记忆: 无变化")
-        else:
+        if not step.memory_diff.is_empty:
             print(f"│ 🧠 记忆变化:")
             for m in step.memory_diff.added:
                 cat = f" ({m.category})" if m.category else ""
@@ -62,16 +71,21 @@ class TerminalReporter:
             for m in step.memory_diff.removed:
                 print(f"│   - {m.content[:60]}")
 
-        # API calls
-        if step.api_calls:
-            parts = [f"{k} ×{v}" for k, v in step.api_calls.items()]
-            print(f"│ 💰 API: {', '.join(parts)}")
+        # TTS info
+        if step.tts_info:
+            t = step.tts_info
+            played_str = f", {t.synth_ms}ms" if t.played else ""
+            print(f"│ 🔊 TTS: {t.engine}{played_str}{' (已播放)' if t.played else ''}")
 
-        print(f"│ ⏱ 总: {step.latency_ms}ms")
+        # API calls + latency
+        parts = []
+        if step.api_calls:
+            parts = [f"{k}×{v}" for k, v in step.api_calls.items()]
+        print(f"│ 💰 API: {', '.join(parts) if parts else '无'}  ⏱ {step.latency_ms}ms")
 
         # Assertions
         if step.assertions:
-            print(f"│")
+            print(f"│ ──────")
             for name, result in step.assertions.items():
                 if result.status == "pass":
                     print(f"│ {_GREEN}✅ {name}{_RESET}")

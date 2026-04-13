@@ -18,6 +18,7 @@ from system_tests.models import (
     ScenarioResult,
     StepExpect,
     StepResult,
+    TtsInfo,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -371,13 +372,31 @@ class TestHarness:
         if expect:
             step.assertions = evaluate(step, expect, current_device_state=after_devices)
 
-        # TTS playback in live+tts mode
-        if self._tts and response and response != "farewell":
-            try:
-                self.app.speak(response)
-            except Exception:
-                pass
+        # TTS: capture info and optionally play
+        tts_info = None
+        if response and response != "farewell":
+            tts = self.app._get_tts()
+            engine_name = "none"
+            if tts:
+                engine_name = getattr(tts, '_current_engine', None) or tts.config.get("engine", "unknown")
+            emotion_label = getattr(self.app, "_last_route", None)
+            emotion_str = ""
+            if emotion_label and hasattr(emotion_label, "response"):
+                emotion_str = ""  # emotion comes from ASR, not available in text mode
 
+            if self._tts and tts:
+                t_tts = time.monotonic()
+                try:
+                    tts.speak(response)
+                except Exception:
+                    pass
+                synth_ms = int((time.monotonic() - t_tts) * 1000)
+                tts_info = TtsInfo(engine=engine_name, emotion="", synth_ms=synth_ms, played=True)
+            else:
+                # Just report what TTS would be used, no playback
+                tts_info = TtsInfo(engine=engine_name, emotion="", synth_ms=0, played=False)
+
+        step.tts_info = tts_info
         return step
 
     def shutdown(self) -> None:
