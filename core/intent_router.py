@@ -518,12 +518,11 @@ class IntentRouter:
         """Parse unified response: JSON for structured intents, text for chat."""
         duration_ms = int((time.time() - start) * 1000)
 
-        # Try JSON parse if output looks like JSON
+        # Strip markdown fences if present, then try JSON parse
         cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         if cleaned.startswith("{"):
-            # Strip markdown fences if present
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             try:
                 parsed = json.loads(cleaned)
                 intent = parsed.get("intent", "uncertain")
