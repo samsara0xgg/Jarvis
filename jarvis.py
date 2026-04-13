@@ -621,6 +621,7 @@ class JarvisApp:
                     self.llm.switch_model("deep")
                     _escalated = True
                     self.logger.info("Escalated to deep preset for this turn")
+                    self._speak_nonblocking("嗯，让我想想", emotion="")
                 except (ValueError, Exception) as exc:
                     self.logger.warning("Escalation switch failed: %s", exc)
                 break
