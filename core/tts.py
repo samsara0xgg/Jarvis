@@ -153,19 +153,23 @@ class TTSEngine:
             phrases: List of short phrases to pre-warm the TTS cache with.
                 Phrases longer than 50 characters are skipped.
         """
-        for text in phrases:
-            if len(text) > 50:
-                continue
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _synth_one(text: str) -> None:
             cache_key = self._tts_cache_key(text, "calm")
             cache_path = self._tts_cache_dir / f"{cache_key}.mp3"
             if cache_path.exists():
                 self.logger.debug("TTS precache already exists: %r", text)
-                continue
+                return
             try:
                 self.synth_to_file(text, emotion="")
                 self.logger.info("TTS precached: %r", text)
             except Exception as exc:
                 self.logger.warning("TTS precache failed for %r: %s", text, exc)
+
+        to_cache = [t for t in phrases if len(t) <= 50]
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="tts-precache") as pool:
+            list(pool.map(_synth_one, to_cache))
 
     def speak(self, text: str, emotion: str = "") -> None:
         """Speak text aloud with optional emotion.
