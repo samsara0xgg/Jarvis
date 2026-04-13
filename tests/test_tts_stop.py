@@ -79,16 +79,19 @@ class TestTTSPipelineAbort:
     def test_abort_returns_remaining_sentences(self):
         engine = MagicMock()
         engine.stop = MagicMock()
-        engine.synth_to_file = MagicMock(return_value=None)  # block synthesis
+        # Make synthesis block so items stay queued
+        engine.synth_to_file = MagicMock(
+            side_effect=lambda *a, **kw: time.sleep(10) or None,
+        )
         pipeline = TTSPipeline(engine)
         pipeline.start()
         pipeline.submit("句子一", SentenceType.FIRST)
         pipeline.submit("句子二", SentenceType.MIDDLE)
         pipeline.submit("句子三", SentenceType.MIDDLE)
-        time.sleep(0.1)  # let worker pick up first item
+        # Abort immediately — at most one item dequeued by worker
         remaining = pipeline.abort()
         pipeline.stop()
-        assert isinstance(remaining, list)
+        assert len(remaining) >= 2
 
     def test_abort_returns_empty_when_nothing_queued(self):
         engine = MagicMock()
