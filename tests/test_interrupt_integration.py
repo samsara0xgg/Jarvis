@@ -43,3 +43,25 @@ class TestKeywordStripping:
         assert strip_interrupt_prefix("停 改成多伦多") == "改成多伦多"
         assert strip_interrupt_prefix("等一下，查下天气") == "查下天气"
         assert strip_interrupt_prefix("打住。我要说的是") == "我要说的是"
+
+
+class TestInterruptDuringTTS:
+    def _make_app(self, tmp_path):
+        from tests.test_jarvis import _make_config
+        config = _make_config(tmp_path)
+        config["interrupt"] = {"enabled": True}
+        with patch("core.speaker_encoder.SpeakerEncoder"), \
+             patch("core.speaker_verifier.SpeakerVerifier"), \
+             patch("core.speech_recognizer.SpeechRecognizer"), \
+             patch("core.audio_recorder.AudioRecorder"), \
+             patch("core.llm.LLMClient"), \
+             patch("devices.device_manager.DeviceManager"):
+            from jarvis import JarvisApp
+            app = JarvisApp(config, config_path=tmp_path / "config.yaml")
+            return app
+
+    def test_app_has_interrupt_monitor(self, tmp_path):
+        app = self._make_app(tmp_path)
+        assert hasattr(app, "interrupt_monitor")
+        from core.interrupt_monitor import InterruptMonitor
+        assert isinstance(app.interrupt_monitor, InterruptMonitor)

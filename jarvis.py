@@ -228,6 +228,14 @@ class JarvisApp:
             project_root=str(self.config_path.parent) if self.config_path else ".",
         )
 
+        # --- Interrupt monitor (full-duplex) ---
+        from core.interrupt_monitor import InterruptMonitor
+        self.interrupt_monitor = InterruptMonitor(
+            config=config,
+            on_interrupt=self._on_voice_interrupt,
+            on_resume=self._on_voice_resume,
+        )
+
         # ── TTS 语音合成（懒加载）── 首次调用时才初始化，避免拖慢启动
         self._tts: Any = None
 
@@ -890,6 +898,9 @@ class JarvisApp:
             with self._pipeline_lock:
                 self._active_pipeline = tts_pipeline
 
+            # Start interrupt monitoring during TTS playback
+            self.interrupt_monitor.start()
+
             _t_first_sentence = [None]  # mutable for closure
 
             def _on_sentence(sentence: str) -> None:
@@ -948,6 +959,8 @@ class JarvisApp:
                         self.logger.error("Cloud LLM failed: %s", exc)
                         response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
             finally:
+                # Stop interrupt monitor, get accumulated audio
+                interrupt_audio = self.interrupt_monitor.stop()
                 if tts_pipeline:
                     if sentence_count > 0:
                         tts_pipeline.finish()
@@ -1067,6 +1080,18 @@ class JarvisApp:
         """Block until previous TTS finishes (prevents audio feedback)."""
         if self._tts_future and not self._tts_future.done():
             self._tts_future.result(timeout=30)
+
+    def _on_voice_interrupt(self) -> None:
+        """Called by InterruptMonitor when an interrupt keyword is detected."""
+        self.logger.info("Voice interrupt detected")
+        self._cancel.set()
+        self._cancel_current()
+
+    def _on_voice_resume(self) -> None:
+        """Called by InterruptMonitor when a resume keyword is detected."""
+        self.logger.info("Voice resume detected")
+        self._cancel.set()
+        self._cancel_current()
 
     def _cancel_current(self) -> None:
         """Cancel current TTS and reset state after user interrupt."""
