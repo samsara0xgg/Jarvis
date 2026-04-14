@@ -45,6 +45,7 @@ data/automation_rules.json
 data/speechbrain_model/
 data/sensevoice-small-int8/
 data/sherpa-onnx-streaming-*
+data/silero_vad.onnx
 
 # 本地工具
 .mise.toml

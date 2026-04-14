@@ -22,9 +22,9 @@ audio:
   default_duration: 3.0
 
   # 录音质量检查的最小时长，单位秒。
-  min_duration: 1.0
+  min_duration: 0.3
 
-  # 录音 RMS 音量阈值。低于该值会给出“音量太低”警告。
+  # 录音 RMS 音量阈值（仅用于质量警告，不用于 VAD）。
   low_volume_threshold: 0.02
 
   # 音量条刷新块时长，单位秒。值越小，终端音量条更新越频繁。
@@ -33,10 +33,13 @@ audio:
   # 终端 ASCII 音量条宽度。
   volume_bar_width: 24
 
-  # VAD: 检测语音结束后提前停止录音（省 2-3 秒）
+  # VAD: Silero 语音活动检测（sherpa-onnx 内置）
   vad_enabled: true
-  vad_silence_duration: 1.5     # 语音后持续静音多久停止（秒）
-  vad_threshold: 0.02           # RMS 阈值，低于此视为静音
+  vad_model_path: data/silero_vad.onnx
+  vad_threshold: 0.5              # 语音概率阈值 (0.0-1.0)
+  vad_silence_duration: 0.5       # 语音后静音多久判结束（秒）
+  vad_min_speech_duration: 0.25   # 最短语音段（秒，更短视为噪声）
+  vad_max_speech_duration: 20.0   # 最长语音段（秒，超过强制切分）
 
 # ----------------------------------------------------------------------------
 # 自动语音识别（ASR）
@@ -565,4 +568,9 @@ interrupt:
   streaming_asr:
     model_dir: data/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16
     num_threads: 2
-  vad_threshold_during_tts: 0.8
+  # Silero VAD 门控（TTS 播放期间过滤非语音帧）
+  vad_model_path: data/silero_vad.onnx
+  vad_threshold_during_tts: 0.8      # 高阈值，避免 AEC 残余误触发
+  vad_min_speech_duration: 0.15      # 低，捕获"停"(~200ms)
+  vad_min_silence_duration: 0.2
+  vad_max_speech_duration: 10.0
