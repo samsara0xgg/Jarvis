@@ -269,6 +269,15 @@ class JarvisApp:
         # 预热 ASR 模型（首次加载 SenseVoice 需要 ~2s）
         self._executor.submit(self.speech_recognizer.transcribe, np.zeros(16000, dtype=np.float32))
 
+        # 预热 Silero VAD（录音 + 打断各一个实例）
+        if getattr(self.audio_recorder, "_vad", None) is not None:
+            self._executor.submit(
+                self.audio_recorder._vad.accept_waveform,
+                np.zeros(512, dtype=np.float32),
+            )
+        if hasattr(self, "interrupt_monitor"):
+            self._executor.submit(self._warmup_interrupt_vad)
+
         # ── 健康监控启动 ── 状态变化时语音通知 + 定期主动探测 API 可用性
         if self.health_tracker:
             self.event_bus.on("health.status_changed", self._on_health_changed)
@@ -1284,6 +1293,17 @@ class JarvisApp:
         except Exception as exc:
             self.logger.warning("TTS pipeline unavailable: %s", exc)
             return None
+
+    def _warmup_interrupt_vad(self) -> None:
+        """Warm up the interrupt monitor's VAD by triggering lazy load."""
+        try:
+            self.interrupt_monitor._load_vad()
+            if self.interrupt_monitor._vad is not None:
+                self.interrupt_monitor._vad.accept_waveform(
+                    np.zeros(512, dtype=np.float32)
+                )
+        except Exception as exc:
+            self.logger.warning("Interrupt VAD warmup failed: %s", exc)
 
     def _register_skills(self, config: dict) -> None:
         """Register all available skills."""
