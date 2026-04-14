@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import copy
+import io
 import logging
 import sys
 import time
 import types
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -231,7 +233,7 @@ class TestHarness:
         return app
 
     def _wrap_api_counter(self, app: Any) -> None:
-        """Wrap API-calling methods to count calls per provider."""
+        """Wrap API-calling methods to count calls + capture debug trace."""
         if app.intent_router:
             orig_route = app.intent_router.route_and_respond
             def _counted_route(*a: Any, **kw: Any) -> Any:
@@ -239,10 +241,32 @@ class TestHarness:
                 return orig_route(*a, **kw)
             app.intent_router.route_and_respond = _counted_route
 
+        # LLM chat_stream wrapper — wraps tool_executor to capture tool calls
         orig_chat = app.llm.chat_stream
-        def _counted_chat(*a: Any, **kw: Any) -> Any:
+        def _counted_chat(*args: Any, **kwargs: Any) -> Any:
             self._api_counter["xai"] = self._api_counter.get("xai", 0) + 1
-            return orig_chat(*a, **kw)
+            # Wrap tool_executor if provided
+            orig_tool_exec = kwargs.get("tool_executor")
+            if orig_tool_exec:
+                def _hooked_tool_exec(tool_name: str, tool_input: dict, user_role: str = "owner") -> Any:
+                    t0 = time.monotonic()
+                    result = orig_tool_exec(tool_name, tool_input, user_role)
+                    ms = int((time.monotonic() - t0) * 1000)
+                    try:
+                        if not hasattr(app, "_last_tool_calls"):
+                            app._last_tool_calls = []
+                        app._last_tool_calls.append({
+                            "name": tool_name,
+                            "input": tool_input,
+                            "result_preview": str(result)[:100],
+                            "ms": ms,
+                        })
+                        app._last_tool_iterations = getattr(app, "_last_tool_iterations", 0) + 1
+                    except Exception:
+                        pass
+                    return result
+                kwargs["tool_executor"] = _hooked_tool_exec
+            return orig_chat(*args, **kwargs)
         app.llm.chat_stream = _counted_chat
 
         orig_save = app.memory_manager.save
@@ -250,6 +274,30 @@ class TestHarness:
             self._api_counter["gpt4o_mini"] = self._api_counter.get("gpt4o_mini", 0) + 1
             return orig_save(*a, **kw)
         app.memory_manager.save = _counted_save
+
+        # Memory retriever — capture per-hit scores
+        retriever = getattr(app.memory_manager, "retriever", None)
+        if retriever:
+            orig_retrieve = retriever.retrieve
+            def _hooked_retrieve(*a: Any, **kw: Any) -> Any:
+                results = orig_retrieve(*a, **kw)
+                try:
+                    app._last_memory_retrieval = {
+                        "count": len(results),
+                        "hits": [
+                            {
+                                "id": m["id"][:8],
+                                "content": m["content"][:80],
+                                "category": m.get("category"),
+                                "score": round(float(m.get("_score", 0)), 3),
+                            }
+                            for m in results[:5]
+                        ],
+                    }
+                except Exception:
+                    pass
+                return results
+            retriever.retrieve = _hooked_retrieve
 
     def snapshot_devices(self) -> dict[str, dict[str, Any]]:
         return copy.deepcopy(self.app.device_manager.get_all_status())
@@ -326,10 +374,19 @@ class TestHarness:
         user_role: str = "owner",
         expect: StepExpect | None = None,
     ) -> StepResult:
-        """Execute one step: snapshot -> handle_text -> flush -> diff -> assert."""
+        """Execute one step: snapshot -> handle_text -> flush -> diff -> assert.
+
+        stdout during handle_text is captured into raw_log (not printed live)
+        so that reporter's structured output isn't mixed with prod diagnostic prints.
+        """
         before_devices = self.snapshot_devices()
         before_memory = self.snapshot_memory(user_id)
         self.reset_api_counter()
+        # Track new skill files appearing (Phase B3)
+        skills_learned_dir = Path("skills/learned")
+        before_skill_files: set[str] = set()
+        if skills_learned_dir.exists():
+            before_skill_files = {f.name for f in skills_learned_dir.glob("*.py")}
 
         sentences: list[str] = []
 
@@ -339,15 +396,17 @@ class TestHarness:
         t0 = time.monotonic()
         error = None
         response = ""
+        captured = io.StringIO()
         try:
-            response = self.app.handle_text(
-                text,
-                session_id=session_id,
-                on_sentence=_on_sentence,
-                user_id=user_id,
-                user_name=user_name,
-                user_role=user_role,
-            )
+            with redirect_stdout(captured):
+                response = self.app.handle_text(
+                    text,
+                    session_id=session_id,
+                    on_sentence=_on_sentence,
+                    user_id=user_id,
+                    user_name=user_name,
+                    user_role=user_role,
+                )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             LOGGER.exception("Step failed: %s", text)
@@ -367,6 +426,22 @@ class TestHarness:
 
         _mem_hits = getattr(self.app, "_last_memory_hits", "")
         _mem_count = _mem_hits.count("\n- ") if _mem_hits else 0
+
+        # Phase B3: check for new learned skill files
+        skill_factory_status = None
+        if skills_learned_dir.exists():
+            after_skill_files = {f.name for f in skills_learned_dir.glob("*.py")}
+            new_files = after_skill_files - before_skill_files
+            if new_files or getattr(self.app, "_last_learning_intent", None):
+                sf = getattr(self.app, "skill_factory", None)
+                proc = getattr(sf, "_process", None) if sf else None
+                skill_factory_status = {
+                    "new_files": sorted(new_files),
+                    "subprocess_pid": proc.pid if proc else None,
+                    "subprocess_running": (proc.poll() is None) if proc else False,
+                    "subprocess_returncode": proc.returncode if proc and proc.poll() is not None else None,
+                }
+
         step = StepResult(
             input_text=text,
             response=response or "",
@@ -393,6 +468,11 @@ class TestHarness:
             reqllm=getattr(self.app, "_last_reqllm", False),
             device_ops=list(getattr(self.app, "_last_device_ops", [])),
             memory_hits_count=_mem_count,
+            raw_log=captured.getvalue(),
+            memory_retrieval=dict(getattr(self.app, "_last_memory_retrieval", {})),
+            tool_calls=list(getattr(self.app, "_last_tool_calls", [])),
+            tool_iterations=getattr(self.app, "_last_tool_iterations", 0),
+            skill_factory_status=skill_factory_status,
         )
 
         # Evaluate assertions

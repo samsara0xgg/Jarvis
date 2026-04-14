@@ -190,11 +190,46 @@ class TerminalReporter:
         if step.history_turns > 0:
             print(f"          {_label('history')} {step.history_turns} turns loaded")
 
+        # Memory retrieval hits (top-k with scores)
+        if step.memory_retrieval and step.memory_retrieval.get("hits"):
+            hits = step.memory_retrieval["hits"]
+            first = True
+            for h in hits:
+                lbl = _label('mem_hit') if first else _label('')
+                cat = f"[{h['category']}] " if h.get("category") else ""
+                print(f"          {lbl} score={h['score']:.3f}  {cat}\"{h['content']}\"")
+                first = False
+
+        # Tool calls (LLM tool_use)
+        if step.tool_calls:
+            first = True
+            for tc in step.tool_calls:
+                lbl = _label('tool') if first else _label('')
+                input_preview = str(tc['input'])[:50]
+                print(f"          {lbl} {tc['name']}({input_preview})  {tc['ms']}ms")
+                first = False
+            if step.tool_iterations > 1:
+                print(f"          {_label('')} -> {step.tool_iterations} iterations")
+
+        # Skill factory status
+        if step.skill_factory_status:
+            sfs = step.skill_factory_status
+            parts = []
+            if sfs.get("subprocess_pid"):
+                state = "running" if sfs.get("subprocess_running") else f"done(rc={sfs.get('subprocess_returncode')})"
+                parts.append(f"pid={sfs['subprocess_pid']} {state}")
+            if sfs.get("new_files"):
+                parts.append(f"new_files={sfs['new_files']}")
+            if parts:
+                print(f"          {_label('skill_bg')} {'  '.join(parts)}")
+
         # ── Tier 3: verbose only ──
         if verbose:
-            # Could dump full memory context, full prompt etc. — for now just note
-            if step.memory_hits_count > 0:
-                print(f"          {_label('memhits')} {step.memory_hits_count} entries retrieved")
+            if step.raw_log:
+                print(f"          {_label('raw_log')} (stdout captured from _process_turn)")
+                for line in step.raw_log.rstrip().split("\n"):
+                    if line.strip():
+                        print(f"                  | {line}")
 
         # Assertions
         if step.assertions:
@@ -378,6 +413,16 @@ class JsonReporter:
                         step_d["reqllm"] = True
                     if step.error:
                         step_d["error"] = step.error
+                    # Phase B: extended trace
+                    if step.memory_retrieval:
+                        step_d["memory_retrieval"] = step.memory_retrieval
+                    if step.tool_calls:
+                        step_d["tool_calls"] = step.tool_calls
+                        step_d["tool_iterations"] = step.tool_iterations
+                    if step.skill_factory_status:
+                        step_d["skill_factory_status"] = step.skill_factory_status
+                    if step.raw_log:
+                        step_d["raw_log"] = step.raw_log
 
                     # Assertions
                     assertions_d = {}

@@ -102,6 +102,12 @@ class StepResult:
     reqllm: bool = False
     device_ops: list = field(default_factory=list)
     memory_hits_count: int = 0
+    # Phase B
+    raw_log: str = ""                   # stdout captured during handle_text (_process_turn prints)
+    memory_retrieval: dict = field(default_factory=dict)   # per-hit scores
+    tool_calls: list = field(default_factory=list)          # LLM tool_use calls
+    tool_iterations: int = 0
+    skill_factory_status: dict | None = None
 
     @property
     def passed(self) -> bool:
