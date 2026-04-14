@@ -1,109 +1,153 @@
 name: 智能家居控制
-description: Hue 灯光控制（按设备能力分组）
+description: 贴近真实使用的复合场景
 
-# 设备能力参考：
-# - bedroom_lamp_1/2 (Hue White) — 只有 on/off + brightness
-# - desk_play_1/2 (Hue Play)    — on/off + brightness + color + color_temp
-# - desk_lightstrip (Lightstrip) — on/off + brightness + color + color_temp
+# 设备能力:
+#   bedroom_lamp_1/2 (Hue White)   — on/off + brightness
+#   desk_play_1/2 (Hue Play)       — on/off + brightness + color + color_temp
+#   desk_lightstrip (Lightstrip)   — on/off + brightness + color + color_temp
+# 灯组:
+#   all_lights  — 所有灯
+#   desk_lights — 桌面灯组（desk_play_1/2 + desk_lightstrip）
 
 setup:
   user: {id: allen, name: Allen, role: owner}
 
 scenarios:
-  # ── 基础开关（白光灯）──
-  - name: 卧室灯开关
+
+  # ────────────────────────────────────────
+  # 场景 1：一句话多设备指令（测路由拆解能力）
+  # ────────────────────────────────────────
+  - name: 复合指令_工作模式
+    review: true
+    review_hint: "一句话里两个设备操作，是否都被识别并执行"
     steps:
-      - user: "打开卧室灯"
-        expect:
-          route: smart_home
-          tier: local
-          device_state:
-            bedroom_lamp_1: {is_on: true}
-      - user: "再关掉"
+      - user: "把卧室灯关了，桌面灯带调成蓝色开到60%"
         expect:
           route: smart_home
           device_state:
             bedroom_lamp_1: {is_on: false}
+            desk_lightstrip: {is_on: true}
 
-  # ── 亮度调节（白光灯）──
-  - name: 卧室灯亮度
+      - user: "桌灯1和桌灯2也打开，调成暖光30%"
+        expect:
+          device_state:
+            desk_play_1: {is_on: true}
+            desk_play_2: {is_on: true}
+
+  # ────────────────────────────────────────
+  # 场景 2：多轮上下文代词（测对话连贯性）
+  # ────────────────────────────────────────
+  - name: 多轮调整_卧室灯
+    review: true
+    review_hint: "'再亮一点'、'调暗'、'关了'是否都指向上一轮提到的卧室灯"
     steps:
-      - user: "把卧室灯调到50%亮度"
+      - user: "打开卧室灯，50%亮度"
         expect:
           route: smart_home
           device_state:
             bedroom_lamp_1: {is_on: true}
 
-  # ── 色温调节（彩光灯）──
-  - name: 桌灯色温
-    steps:
-      - user: "把桌灯1调成暖光"
+      - user: "再亮一点"
         expect:
-          route: smart_home
           device_state:
-            desk_play_1: {is_on: true}
+            bedroom_lamp_1: {is_on: true}
+
+      - user: "不行，太亮了，调暗一些"
+        expect:
+          device_state:
+            bedroom_lamp_1: {is_on: true}
+
+      - user: "算了关掉吧"
+        expect:
+          device_state:
+            bedroom_lamp_1: {is_on: false}
+
+  # ────────────────────────────────────────
+  # 场景 3：选择性/排除操作（测理解力）
+  # ────────────────────────────────────────
+  - name: 选择性关灯
     review: true
-    review_hint: "桌灯色温是否正确调成暖光"
-
-  # ── 颜色控制（彩光灯）──
-  - name: 灯带颜色
-    steps:
-      - user: "把灯带调成蓝色"
-        expect:
-          route: smart_home
-          device_state:
-            desk_lightstrip: {is_on: true}
-    review: true
-    review_hint: "灯带颜色是否正确调成蓝色"
-
-  # ── 灯带基础控制 ──
-  - name: 灯带开关
-    steps:
-      - user: "打开灯带"
-        expect:
-          route: smart_home
-          device_state:
-            desk_lightstrip: {is_on: true}
-      - user: "关掉灯带"
-        expect:
-          device_state:
-            desk_lightstrip: {is_on: false}
-
-  # ── 灯组控制 ──
-  - name: 所有灯控制
+    review_hint: "'除了灯带以外的关掉'是否只关了灯带以外的灯"
     steps:
       - user: "把所有灯都打开"
         expect:
           device_state:
             all_lights: {is_on: true}
-      - user: "全部关掉"
+
+      - user: "除了灯带以外的都关掉"
         expect:
           device_state:
-            all_lights: {is_on: false}
+            desk_lightstrip: {is_on: true}
 
-  - name: 桌灯组控制
+      - user: "灯带也关了"
+        expect:
+          device_state:
+            desk_lightstrip: {is_on: false}
+
+  # ────────────────────────────────────────
+  # 场景 4：纠正/改口（测自然对话）
+  # ────────────────────────────────────────
+  - name: 改口纠正
+    review: true
+    review_hint: "先误解然后纠正，小月能否正确响应第二句、关掉错开的那个"
     steps:
       - user: "打开桌灯"
         expect:
           route: smart_home
           device_state:
             desk_lights: {is_on: true}
-      - user: "关掉桌灯"
+
+      - user: "不对 我说的是灯带 桌灯关了"
         expect:
           device_state:
-            desk_lights: {is_on: false}
+            desk_lightstrip: {is_on: true}
 
-  # ── 自然语言理解 ──
-  - name: 自然语言控灯
+  # ────────────────────────────────────────
+  # 场景 5：颜色与色温混合（测彩光灯功能）
+  # ────────────────────────────────────────
+  - name: 彩光控制
     review: true
+    review_hint: "颜色和色温控制是否都生效，最终状态是否对"
     steps:
-      - user: "帮我把卧室弄暗一点"
+      - user: "打开桌上所有灯"
         expect:
           route: smart_home
-        review_hint: "是否正确理解为调暗卧室灯，回复是否说明了调整结果"
+          device_state:
+            desk_lights: {is_on: true}
 
+      - user: "灯带调成红色，桌灯2调成冷白光"
+        expect:
+          device_state:
+            desk_lightstrip: {is_on: true}
+            desk_play_2: {is_on: true}
+
+      - user: "桌灯1调到80%亮度"
+        expect:
+          device_state:
+            desk_play_1: {is_on: true}
+
+  # ────────────────────────────────────────
+  # 场景 6：白光灯不支持颜色（测边界处理）
+  # ────────────────────────────────────────
   - name: 不支持的操作
     review: true
+    review_hint: "bedroom_lamp 是白光灯不支持颜色，小月应该说明限制而不是假装执行"
     steps:
-      - user: "把卧室灯调成蓝色"
-        review_hint: "bedroom_lamp 是白光灯不支持颜色，小月应该说明这个限制，而不是假装执行"
+      - user: "把卧室灯调成紫色"
+        expect:
+          route: smart_home
+
+  # ────────────────────────────────────────
+  # 场景 7：场景式语音（测意图理解）
+  # ────────────────────────────────────────
+  - name: 场景化指令
+    review: true
+    review_hint: "这种'我要工作了'、'睡觉模式'是否能转换成合理的设备状态"
+    steps:
+      - user: "我要开始工作了"
+        expect:
+          route: smart_home
+
+      - user: "好了，现在要睡觉了"
+        expect:
+          route: smart_home
