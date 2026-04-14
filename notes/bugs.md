@@ -43,9 +43,9 @@ Claude 独立修完、全部带单元测试、跑完 `python -m pytest tests/ -q
 
 ## jarvis.py
 
-- ❌ handle_text() 和 _handle_utterance_inner() ~300 行重复路由逻辑，应抽取共用方法
+- ✅ handle_text() 和 _handle_utterance_inner() 重复路由逻辑 → 抽取 _process_turn 共用方法（两个入口都已瘦身为薄 wrapper）
 - ❌ _NEEDS_LLM_ACTIONS fallback 逻辑复杂，设备状态注入写死在主循环
-- ❌ _cancel_current() 只能 cancel Future，无法 kill afplay 子进程实现真正打断
+- ✅ _cancel_current() → 全双工打断系统已接入（TTSEngine.stop + Popen kill + TTSPipeline.abort）
 
 ## core/llm.py
 
