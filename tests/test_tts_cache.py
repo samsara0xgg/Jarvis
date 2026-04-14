@@ -42,6 +42,19 @@ class TestTTSCache:
         k2 = tts_with_cache._tts_cache_key("好的", "happy")
         assert k1 != k2
 
+    def test_cache_key_differs_by_engine(self, tts_with_cache):
+        """Switching engines must invalidate cache — different engines produce
+        different audio for the same text, so the key must include engine name."""
+        tts_with_cache.engine_name = "minimax"
+        k_minimax = tts_with_cache._tts_cache_key("好的", "calm")
+        tts_with_cache.engine_name = "openai_tts"
+        k_openai = tts_with_cache._tts_cache_key("好的", "calm")
+        tts_with_cache.engine_name = "azure"
+        k_azure = tts_with_cache._tts_cache_key("好的", "calm")
+        assert k_minimax != k_openai
+        assert k_minimax != k_azure
+        assert k_openai != k_azure
+
     def test_cache_hit_returns_existing_file(self, tts_with_cache, tmp_path):
         key = tts_with_cache._tts_cache_key("好的", "calm")
         cache_path = tmp_path / f"{key}.mp3"

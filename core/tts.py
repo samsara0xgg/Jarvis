@@ -131,8 +131,13 @@ class TTSEngine:
     # ------------------------------------------------------------------
 
     def _tts_cache_key(self, text: str, emotion: str) -> str:
-        """Deterministic cache key from text + voice + emotion."""
-        raw = f"{text}|{self.minimax_voice}|{emotion}"
+        """Deterministic cache key from engine + text + voice + emotion.
+
+        Engine name is part of the key: different engines produce audibly
+        different output for the same text, so sharing cache entries across
+        engines would read the wrong voice after a switch.
+        """
+        raw = f"{self.engine_name}|{text}|{self.minimax_voice}|{emotion}"
         return hashlib.md5(raw.encode()).hexdigest()
 
     def _is_cached_file(self, filepath: str) -> bool:
@@ -440,6 +445,30 @@ class TTSEngine:
                 tmp.write(audio_bytes)
                 return tmp.name, True
 
+    @staticmethod
+    def _build_azure_ssml(text: str, voice: str, style: str, rate_attr: str) -> str:
+        """Build Azure TTS SSML with full escaping for both text and attributes.
+
+        Attribute values escape `<`, `>`, `&`, and `"` so an unexpected quote
+        in voice/style (e.g. from user config) can't break the SSML document.
+        """
+        from xml.sax.saxutils import escape
+        attr_entities = {'"': "&quot;"}
+        v = escape(voice, attr_entities)
+        s = escape(style, attr_entities)
+        r = escape(rate_attr, attr_entities)
+        return (
+            '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
+            'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="zh-CN">'
+            f'<voice name="{v}">'
+            f'<mstts:express-as style="{s}">'
+            f'<prosody rate="{r}">'
+            f'{escape(text)}'
+            '</prosody>'
+            '</mstts:express-as>'
+            '</voice></speak>'
+        )
+
     def _synth_azure(self, text: str, emotion: str = "") -> str:
         """Synthesize with Azure Neural TTS, return temp file path."""
         try:
@@ -453,21 +482,10 @@ class TTSEngine:
         if not self.azure_key:
             raise RuntimeError("Azure Speech key not configured (AZURE_SPEECH_KEY)")
 
-        from xml.sax.saxutils import escape
         style = _EMOTION_TO_AZURE_STYLE.get(emotion, "chat")
         rate_pct = round((self.speed - 1.0) * 100)
         rate_attr = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"
-        ssml = (
-            '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
-            'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="zh-CN">'
-            f'<voice name="{self.azure_voice}">'
-            f'<mstts:express-as style="{style}">'
-            f'<prosody rate="{rate_attr}">'
-            f'{escape(text)}'
-            '</prosody>'
-            '</mstts:express-as>'
-            '</voice></speak>'
-        )
+        ssml = self._build_azure_ssml(text, self.azure_voice, style, rate_attr)
 
         speech_config = speechsdk.SpeechConfig(
             subscription=self.azure_key, region=self.azure_region,

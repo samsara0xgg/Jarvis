@@ -25,6 +25,9 @@ apscheduler>=3.10
 paho-mqtt>=2.0
 websockets>=12.0
 
+# Wake word
+openwakeword
+
 # Memory system
 fastembed>=0.7
 

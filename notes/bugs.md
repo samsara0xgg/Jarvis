@@ -1,6 +1,16 @@
 # 小月 Bug / 优化修复表
 
-> ✅ = 已修复  ⏳ = 进行中  ❌ = 未开始  🚫 = 等硬件/不做
+> ✅ = 已修复  ⏳ = 进行中  ⏳ (待审查) = 已写代码+测试，等 Allen 复核  ❌ = 未开始  🚫 = 等硬件/不做
+
+## 2026-04-13 批次（7 项 ⏳ 待审查）
+
+Claude 独立修完、全部带单元测试、跑完 `python -m pytest tests/ -q` 942 passed（12 个 failure 都是 pre-existing 环境依赖，不是本批引入）。Allen 审查完把 ⏳ (待审查) 改 ✅ 即可。涉及：
+
+- `core/tts.py` — TTS cache key + Azure SSML escape
+- `core/intent_router.py` — cache-key normalize + provider-fallback cache
+- `memory/manager.py` — _RELATION_KEYWORDS 英文 + word-boundary
+- `memory/direct_answer.py` — _is_question 补英文 + memory-ref
+- `requirements-pi.txt` — openwakeword
 
 ---
 
@@ -48,8 +58,9 @@
 ## core/tts.py
 
 - ❌ _play_audio_file() 用 subprocess 调 afplay/ffplay，无法优雅中断
+- ⏳ (待审查) TTS 缓存 key 加 engine_name 前缀，防止引擎切换读到错的音频（core/tts.py:_tts_cache_key）
 - ❌ 缓存只对 MiniMax 生效，最贵的 OpenAI TTS 反而没缓存
-- ❌ Azure SSML escape 只用 xml.sax.saxutils.escape，特殊字符边界情况
+- ⏳ (待审查) Azure SSML 属性值转义（quot/amp），提取 _build_azure_ssml 静态方法（core/tts.py:_synth_azure）
 
 ## core/speech_recognizer.py
 
@@ -58,22 +69,22 @@
 
 ## core/intent_router.py
 
-- ❌ 缓存 key 只做标点 strip，"开灯"/"开一下灯" 不命中
-- ❌ Groq/Cerebras 都 down 时返回 confidence=0.0，无任何缓存
+- ⏳ (待审查) 缓存 key NFKC normalize（全角→半角）+ 常用繁简映射；"开灯"/"开一下灯" 语义层问题仍未处理（core/intent_router.py:_normalize_cache_key）
+- ⏳ (待审查) provider 全挂时若有 last-good cache 返回 provider="cache_fallback"，否则落 cloud 并改进 log（core/intent_router.py:_all_providers_failed）
 
 ## memory/manager.py
 
 - ✅ _call_openai_json() 和 _call_llm_extract() 复用 requests.Session
 - ✅ 偏好分类 "不" in content 误判双重否定 → 改用完整否定短语匹配
 - ❌ Profile 重建遍历所有 active memories，O(n) 无缓存
-- ❌ _RELATION_KEYWORDS 只覆盖中文亲属关系，英文关系词缺失
+- ⏳ (待审查) _RELATION_KEYWORDS 补英文亲属/关系词，加 _has_relation_keyword() 用 regex + \b word-boundary 防止 "reason"→"son" 误匹配（memory/manager.py）
 - ❌ Episode digest 简单拼接，无 LLM 摘要
 
 ## memory/direct_answer.py
 
 - ✅ _is_question() "啊"/"哪"/"几" 误判 → 去掉"啊"，改完整词组匹配
-- ❌ _is_question() 规则匹配，"我昨天说的那件事" 漏判
-- ❌ 只有中文问题标志词，英文问句漏
+- ⏳ (待审查) _is_question() 补 memory-reference 模式（"我昨天说的那件事"/"还记得"/"上次说过的"）（memory/direct_answer.py）
+- ⏳ (待审查) _is_question() 补英文问句（what/why/how/tell me/do you 等 startswith + 末尾 "?"），"whatever" 不误判（memory/direct_answer.py）
 
 ## 测试 (9 failed)
 

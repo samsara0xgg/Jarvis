@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
@@ -26,6 +27,33 @@ VALID_INTENTS = {"smart_home", "info_query", "time", "complex", "uncertain", "au
 
 # Strip punctuation for route cache key normalization
 _PUNCT_RE = re.compile(r'[。，！？、；：\u201c\u201d\u2018\u2019\u2026\u2014\u00b7.!?,;:]+')
+
+# Minimal traditional→simplified map for common command vocabulary.
+# Goal: "開燈" and "开灯" hit the same cache entry without pulling in
+# opencc/zhconv. Not a full converter — extend when real misses show up.
+_TRAD_TO_SIMP = str.maketrans({
+    "開": "开", "關": "关", "燈": "灯", "溫": "温", "設": "设", "調": "调",
+    "亮": "亮", "暗": "暗", "暖": "暖", "涼": "凉", "風": "风", "電": "电",
+    "幾": "几", "點": "点", "時": "时", "鐘": "钟", "間": "间", "秒": "秒",
+    "過": "过", "後": "后", "來": "来", "這": "这", "個": "个", "誰": "谁",
+    "麼": "么", "嗎": "吗", "還": "还", "會": "会", "對": "对", "請": "请",
+    "說": "说", "話": "话", "問": "问", "記": "记", "聽": "听", "讀": "读",
+    "寫": "写", "門": "门", "車": "车", "長": "长", "給": "给", "應": "应",
+    "響": "响", "調": "调", "濕": "湿", "氣": "气",
+})
+
+
+def _normalize_cache_key(text: str) -> str:
+    """Normalize text into a stable cache key.
+
+    Applies NFKC (folds full-width → half-width, canonical compositions),
+    maps common traditional Chinese chars to simplified, strips punctuation,
+    and collapses whitespace. Semantically-different phrasings ('开灯' vs
+    '开一下灯') are intentionally NOT collapsed — that needs embeddings.
+    """
+    normalized = unicodedata.normalize("NFKC", text.strip())
+    simplified = normalized.translate(_TRAD_TO_SIMP)
+    return " ".join(_PUNCT_RE.sub("", simplified).split())
 
 
 # 设备能力描述模板，运行时从 config 动态生成
@@ -244,11 +272,32 @@ class IntentRouter:
         if len(self._route_cache) > self._cache_max:
             self._route_cache.popitem(last=False)
 
+    def _all_providers_failed(self, key: str, start: float) -> RouteResult:
+        """All intent providers failed. Prefer a stale cached result over
+        dumping the request onto the cloud LLM — offline/partial outages
+        shouldn't kill routine commands like '开灯'."""
+        if key in self._route_cache:
+            cached = copy.copy(self._route_cache[key])
+            cached.provider = "cache_fallback"
+            self.logger.warning(
+                "All intent providers down — returning stale cache for '%s' → %s/%s",
+                key[:20], cached.tier, cached.intent,
+            )
+            return cached
+        self.logger.warning(
+            "All intent providers down and no cached match for '%s' — "
+            "falling through to cloud LLM", key[:20],
+        )
+        return RouteResult(
+            tier="cloud", intent="complex", confidence=0.0,
+            duration_ms=int((time.time() - start) * 1000), provider="none",
+        )
+
     def route(self, text: str, conversation_history: list[dict] | None = None) -> RouteResult:
         """分析用户指令。Groq 70B → Cerebras 70B → 直接走云端 LLM."""
-        # TODO: 目前只做 strip 标点，未来可探索模糊匹配（embedding 相似度等），
-        #       但需注意 "开灯" vs "关灯" 语义相近却意图相反的问题。
-        key = " ".join(_PUNCT_RE.sub("", text.strip()).split())
+        # 未来可探索模糊匹配（embedding 相似度等），但需注意 "开灯" vs "关灯"
+        # 语义相近却意图相反的问题。
+        key = _normalize_cache_key(text)
 
         # Build recent context for ambiguous commands (e.g., "关了" after "灯带调黄色")
         recent_context = self._build_context(conversation_history) if conversation_history else []
@@ -288,11 +337,7 @@ class IntentRouter:
             if self._tracker:
                 self._tracker.record_failure("intent.cerebras")
 
-        # 都失败 → 直接走云端 LLM (don't cache)
-        return RouteResult(
-            tier="cloud", intent="complex", confidence=0.0,
-            duration_ms=int((time.time() - start) * 1000), provider="none",
-        )
+        return self._all_providers_failed(key, start)
 
     def _build_context(self, history: list[dict]) -> list[dict]:
         """Extract last 2 turns of user/assistant messages for context."""
@@ -425,7 +470,7 @@ class IntentRouter:
         self._last_provider_attempts = []
         self._last_raw_response = ""
 
-        key = " ".join(_PUNCT_RE.sub("", text.strip()).split())
+        key = _normalize_cache_key(text)
         recent_context = self._build_context(conversation_history) if conversation_history else []
 
         # Cache hit — only for structured routes (not free-text), no conversation context
@@ -478,11 +523,7 @@ class IntentRouter:
             if self._tracker:
                 self._tracker.record_failure("intent.cerebras")
 
-        # All providers failed
-        return RouteResult(
-            tier="cloud", intent="complex", confidence=0.0,
-            duration_ms=int((time.time() - start) * 1000), provider="none",
-        )
+        return self._all_providers_failed(key, start)
 
     def _call_unified(
         self,

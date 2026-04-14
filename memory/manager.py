@@ -206,6 +206,24 @@ class MemoryManager:
         "儿子", "女儿", "朋友", "同事", "同学",
     ))
 
+    # English uses \b so "reason" doesn't match "son" and "momentum" doesn't
+    # match "mom". Chinese tokens match as plain substrings (words aren't
+    # space-delimited).
+    _RELATION_REGEX = re.compile(
+        "|".join(re.escape(kw) for kw in _RELATION_KEYWORDS) + "|" +
+        r"\b(?:mom|mother|mum|mommy|dad|father|daddy|papa|"
+        r"brother|sister|son|daughter|"
+        r"wife|husband|spouse|partner|girlfriend|boyfriend|fiance|fiancee|"
+        r"friend|bestie|roommate|colleague|classmate|coworker|"
+        r"aunt|uncle|cousin|nephew|niece|"
+        r"grandma|grandpa|granny|grandfather|grandmother|grandson|granddaughter)\b",
+        re.IGNORECASE,
+    )
+
+    def _has_relation_keyword(self, content: str) -> bool:
+        """Return True if content mentions a family/relationship keyword."""
+        return bool(self._RELATION_REGEX.search(content))
+
     def __init__(self, config: dict) -> None:
         mem_config = config.get("memory", {})
         db_path = mem_config.get("db_path", "data/memory/jarvis_memory.db")
@@ -546,7 +564,7 @@ class MemoryManager:
             cat = mem.get("category", "")
             if cat == "relationship":
                 self._extract_and_store_relation(user_id, content, mem.get("key"))
-            elif cat == "identity" and any(kw in content for kw in self._RELATION_KEYWORDS):
+            elif cat == "identity" and self._has_relation_keyword(content):
                 self._extract_and_store_relation(user_id, content, mem.get("key"))
 
         # 3. Update profile

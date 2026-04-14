@@ -345,6 +345,35 @@ class TestLocalExecutor:
         assert "248" in result.text
 
 
+class TestCacheKeyNormalize:
+    """Tests for cache-key normalization (full-width/simplified Chinese)."""
+
+    def test_full_width_digits_normalized(self):
+        """全角数字 '3' should normalize to half-width '3'."""
+        from core.intent_router import _normalize_cache_key
+        assert _normalize_cache_key("开灯3秒") == _normalize_cache_key("开灯3秒")
+
+    def test_full_width_punctuation_stripped(self):
+        """Existing full-width punctuation stripping still works."""
+        from core.intent_router import _normalize_cache_key
+        assert _normalize_cache_key("开灯！") == _normalize_cache_key("开灯")
+
+    def test_traditional_to_simplified_basic(self):
+        """Common traditional chars should fold to simplified."""
+        from core.intent_router import _normalize_cache_key
+        assert _normalize_cache_key("開燈") == _normalize_cache_key("开灯")
+        assert _normalize_cache_key("關燈") == _normalize_cache_key("关灯")
+
+    def test_traditional_to_simplified_longer(self):
+        from core.intent_router import _normalize_cache_key
+        assert _normalize_cache_key("調整溫度") == _normalize_cache_key("调整温度")
+
+    def test_unrelated_text_unchanged(self):
+        """Non-affected text passes through without mangling."""
+        from core.intent_router import _normalize_cache_key
+        assert _normalize_cache_key("hello world") == "hello world"
+
+
 class TestRouteCache:
     """Tests for the LRU route cache in IntentRouter."""
 
@@ -398,6 +427,52 @@ class TestRouteCache:
         router.route("开灯")
         router.route("开灯")
         assert router.cache_size == 0
+
+    @patch("core.intent_router._SESSION")
+    def test_both_providers_down_falls_back_to_cache(self, mock_session, config):
+        """When providers fail AND context bypassed cache, last-good cached
+        result should still be returned instead of giving up."""
+        config["models"]["groq"]["api_key"] = "test_key"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": json.dumps({
+                "intent": "smart_home", "confidence": 0.95,
+                "actions": [{"device_id": "light", "action": "turn_on", "value": None}],
+                "response": "好",
+            })}}]
+        }
+        mock_session.post.return_value = mock_resp
+
+        router = IntentRouter(config)
+        # 1. Warm cache with a successful call.
+        router.route("开灯")
+        assert router.cache_size == 1
+
+        # 2. Both providers go down.
+        router.groq_key = ""
+        router.cerebras_key = ""
+
+        # 3. Calling with conversation_history bypasses the normal cache-hit
+        #    path (line 257 of intent_router.py), so this hits the fallback.
+        result = router.route("开灯", conversation_history=[
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "嗨"},
+        ])
+
+        assert result.intent == "smart_home"
+        assert result.provider == "cache_fallback"
+
+    def test_both_providers_down_no_cache_returns_none_provider(self, config):
+        """When providers fail AND nothing cached, still fall through
+        to cloud-LLM path (provider='none', intent='complex')."""
+        router = IntentRouter(config)
+        router.groq_key = ""
+        router.cerebras_key = ""
+        result = router.route("unseen query")
+        assert result.provider == "none"
+        assert result.intent == "complex"
 
     @patch("core.intent_router._SESSION")
     def test_cache_lru_eviction(self, mock_session, config):

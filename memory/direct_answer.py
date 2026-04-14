@@ -49,7 +49,12 @@ class DirectAnswerer:
 
     @staticmethod
     def _is_question(text: str) -> bool:
-        """Check if text looks like a question (not a statement)."""
+        """Check if text looks like a question (not a statement).
+
+        Over-triggering is safe: a false positive only costs a retrieval
+        attempt that will get filtered by similarity gates. Under-triggering
+        sends legitimate memory queries to the full LLM.
+        """
         text = text.strip().rstrip("。.！!")
         # Explicit question markers
         # 去掉 "啊" — "好热啊" 是感叹不是问题，误判率高
@@ -66,8 +71,27 @@ class DirectAnswerer:
         if any(w in text for w in question_words):
             return True
         # Imperative queries (not commands): "告诉我X", "X来着", "说一下X"
-        query_patterns = ("告诉我", "来着", "说一下", "想知道", "记得我的")
-        return any(w in text for w in query_patterns)
+        # Plus memory-reference patterns ("我昨天说的那件事", "还记得").
+        query_patterns = (
+            "告诉我", "来着", "说一下", "想知道", "记得我的",
+            "还记得", "记不记得", "想不起",
+            "昨天说", "前天说", "上次说", "之前说",
+            "昨天的事", "上次的事", "那件事", "那个事",
+        )
+        if any(w in text for w in query_patterns):
+            return True
+        # English question starters — trailing space enforces word boundary
+        # so "whatever happens" doesn't match "what ".
+        lowered = text.lower() + " "
+        en_starters = (
+            "what ", "why ", "how ", "when ", "where ", "who ",
+            "which ", "whose ",
+            "is ", "are ", "was ", "were ", "am ",
+            "do ", "does ", "did ",
+            "can ", "could ", "should ", "would ", "will ", "may ", "might ",
+            "tell me ", "do you ",
+        )
+        return any(lowered.startswith(s) for s in en_starters)
 
     def try_answer(self, query: str, user_id: str) -> str | None:
         """Attempt to answer a query using stored memories.

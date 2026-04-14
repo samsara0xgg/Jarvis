@@ -296,3 +296,36 @@ class TestDirectAnswerer:
         assert not DirectAnswerer._is_question("我喜欢喝拿铁")
         assert not DirectAnswerer._is_question("我住在温哥华")
         assert not DirectAnswerer._is_question("帮我开灯")
+
+
+class TestIsQuestionExtended:
+    """English questions and Chinese memory-reference patterns."""
+
+    def test_english_what(self):
+        assert DirectAnswerer._is_question("what is my name")
+
+    def test_english_how_case_insensitive(self):
+        assert DirectAnswerer._is_question("How old am I")
+
+    def test_english_tell_me(self):
+        assert DirectAnswerer._is_question("tell me about my job")
+
+    def test_english_do_you(self):
+        assert DirectAnswerer._is_question("do you remember my favorite color")
+
+    def test_english_with_question_mark(self):
+        """Already handled by endswith '?', guard against regression."""
+        assert DirectAnswerer._is_question("am I there yet?")
+
+    def test_whatever_not_a_question(self):
+        """'whatever' must NOT be treated as 'what' startswith match."""
+        assert not DirectAnswerer._is_question("whatever happens is fine")
+
+    def test_chinese_memory_ref_yesterday(self):
+        assert DirectAnswerer._is_question("我昨天说的那件事")
+
+    def test_chinese_memory_ref_still_remember(self):
+        assert DirectAnswerer._is_question("还记得我的生日")
+
+    def test_chinese_last_time(self):
+        assert DirectAnswerer._is_question("上次说过的那个")

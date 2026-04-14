@@ -159,6 +159,36 @@ class TestAzureTTS:
                 tts.speak("fallback test", emotion="HAPPY")
                 mock_edge.assert_called_once_with("fallback test")
 
+    def test_azure_ssml_escapes_text_special_chars(self):
+        """SSML text content must escape <, >, & to prevent parse errors."""
+        config = _make_config(engine="azure", azure_key="fake-key")
+        tts = TTSEngine(config)
+        ssml = tts._build_azure_ssml("a < b & c > d", "zh-CN-XiaoxiaoNeural", "chat", "+0%")
+        assert "&lt;" in ssml
+        assert "&gt;" in ssml
+        assert "&amp;" in ssml
+        # Raw chars must not appear as part of the text content
+        assert "a < b" not in ssml
+        assert " > d" not in ssml
+
+    def test_azure_ssml_escapes_attribute_quotes(self):
+        """Attribute values with `\"` must be escaped so SSML stays well-formed."""
+        config = _make_config(engine="azure", azure_key="fake-key")
+        tts = TTSEngine(config)
+        # Simulate a voice name that unexpectedly contains a quote
+        ssml = tts._build_azure_ssml("hi", 'evil"voice', "chat", "+0%")
+        # The raw, unescaped form must not appear — it would break SSML
+        assert 'name="evil"voice"' not in ssml
+        assert "&quot;" in ssml
+
+    def test_azure_ssml_escapes_attribute_ampersand(self):
+        """Attribute values with & must be escaped."""
+        config = _make_config(engine="azure", azure_key="fake-key")
+        tts = TTSEngine(config)
+        ssml = tts._build_azure_ssml("hi", "voice&co", "chat&happy", "+0%")
+        # Two ampersands (one in voice, one in style) should both become &amp;
+        assert ssml.count("&amp;") >= 2
+
     def test_speak_passes_emotion_to_azure(self):
         """speak(text, emotion=...) should forward emotion to _speak_azure."""
         config = _make_config(engine="azure", azure_key="fake-key")

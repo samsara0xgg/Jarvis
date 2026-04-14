@@ -879,3 +879,34 @@ class TestSaveWithEmotion:
         episodes = manager.store.get_recent_episodes("user1")
         assert len(episodes) == 1
         assert episodes[0]["mood"] == "happy"
+
+
+class TestRelationKeywordDetection:
+    """Detection of relation-indicating words in identity content.
+
+    Triggers extraction of relations from identity memories (e.g. 'my mother is X'
+    should be treated as relationship-like).
+    """
+
+    def test_detects_chinese_relation(self, manager: MemoryManager):
+        assert manager._has_relation_keyword("Allen 的妹妹叫小美")
+        assert manager._has_relation_keyword("我男朋友在多伦多")
+
+    def test_detects_english_mother(self, manager: MemoryManager):
+        assert manager._has_relation_keyword("Allen's mother is a teacher")
+
+    def test_detects_english_case_insensitive(self, manager: MemoryManager):
+        assert manager._has_relation_keyword("My Brother lives in Toronto")
+
+    def test_detects_english_girlfriend(self, manager: MemoryManager):
+        assert manager._has_relation_keyword("my girlfriend likes coffee")
+
+    def test_word_boundary_reason_not_son(self, manager: MemoryManager):
+        """'reason' contains 'son' as a substring but should NOT match."""
+        assert not manager._has_relation_keyword("for this reason I study coding")
+
+    def test_word_boundary_momentum_not_mom(self, manager: MemoryManager):
+        assert not manager._has_relation_keyword("I work on the momentum strategy")
+
+    def test_no_relation_keyword(self, manager: MemoryManager):
+        assert not manager._has_relation_keyword("Allen likes coffee")
