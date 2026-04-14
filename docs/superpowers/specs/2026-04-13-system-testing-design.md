@@ -1,0 +1,529 @@
+# Jarvis 系统测试框架设计
+
+## 目标
+
+构建一个全方位的端到端系统测试框架，等价于手动启动 Jarvis 逐条对话测试，但可自动化、可复现、可追踪。
+
+**不测**：唤醒词检测、ASR 识别、TTS 发音质量、音频录制。这些由人工测试覆盖。
+
+**测**：通过 `handle_text()` 入口，走真实 Groq 路由、真实 LLM、真实记忆系统、sim 设备，验证整条 `_process_turn` 管线的行为。
+
+## 三种运行模式
+
+### 人工模式（交互式）
+
+```bash
+python system_test.py
+```
+
+彩色终端输出，交互式场景选择菜单，逐条人工评审。面向开发者手动跑。
+
+### CC 模式（程序式）
+
+```bash
+python system_test.py --mode cc --suite smart_home
+```
+
+JSON stdout，CLI 参数指定场景，CC 自动解析结果 debug 失败项，攒一批 review 项问用户。面向 Claude Code 开发循环。
+
+### 自由对话模式
+
+```bash
+python system_test.py --free
+```
+
+手动输入语句，每条带增强日志（设备 diff、记忆 diff、路由详情）。面向探索性测试。
+
+## 架构
+
+```
+system_tests/
+  runner.py              入口：模式选择、场景加载、执行循环
+  harness.py             JarvisApp 包装：初始化、state snapshot/diff/reset
+  reporter.py            输出：终端格式化(人工) / JSON(CC) / markdown(存档)
+  baseline.py            历史对比：加载上次结果、检测回归、延迟趋势
+  scenarios/
+    smart_home.yaml      智能家居（灯/恒温器/门锁/场景）
+    memory.yaml          记忆存取、直答、偏好检索
+    multi_turn.yaml      多轮上下文连贯性
+    routing.yaml         路由准确性（local vs cloud 分流）
+    skill_learning.yaml  技能教学与调用
+    error_handling.yaml  容错（乱码/空输入/超长/无权限）
+    cloud_chat.yaml      云端对话（闲聊/创作/复杂问答）
+  runs/                  自动生成
+    YYYY-MM-DD_HHMM.json   结构化结果（基线对比用）
+    YYYY-MM-DD_HHMM.md     人可读报告（含人工评审）
+```
+
+## 核心组件
+
+### 1. Harness — JarvisApp 包装
+
+职责：初始化一个真实的 JarvisApp（sim 模式，mock 音频硬件），提供 state snapshot / diff / reset。
+
+```python
+class TestHarness:
+    def __init__(self):
+        config = self._build_test_config()
+        self.app = JarvisApp(config, config_path=...)
+        # 暴露 trace 属性供断言使用
+        # (在 _process_turn 中加 3 行: self._last_route, _last_device_ops, _last_memory_hits)
+
+    def snapshot_devices(self) -> dict[str, dict]:
+        """所有 sim 设备的当前状态。"""
+        return self.app.device_manager.get_all_status()
+
+    def snapshot_memory(self, user_id: str) -> list[dict]:
+        """用户的所有活跃记忆。"""
+        return self.app.memory_manager.store.get_active_memories(user_id)
+
+    def diff_devices(self, before: dict, after: dict) -> list[DeviceChange]:
+        """对比两次设备快照，返回变化列表。"""
+        ...
+
+    def diff_memory(self, before: list, after: list) -> MemoryDiff:
+        """对比两次记忆快照，返回新增/删除/修改。"""
+        ...
+
+    def reset_scenario(self, setup: ScenarioSetup):
+        """重置设备到 setup 指定状态，清空记忆和对话。"""
+        ...
+
+    def flush_background(self):
+        """等待所有后台任务完成（记忆提取等）。"""
+        sentinel = self.app._executor.submit(lambda: None)
+        sentinel.result(timeout=30)
+
+    def run_step(self, text: str, user: UserConfig) -> StepResult:
+        """执行一步：snapshot → handle_text → flush → snapshot → diff → 返回。"""
+        ...
+```
+
+初始化时 mock 的组件（仅音频硬件）：
+- `SpeakerEncoder`, `SpeakerVerifier`, `SpeechRecognizer`, `AudioRecorder`
+
+**不 mock** 的组件（全部真实）：
+- `IntentRouter` (真实 Groq API)
+- `LLMClient` (真实 xAI API)
+- `MemoryManager` (真实 SQLite + FastEmbed)
+- `DeviceManager` (sim 模式，真实设备逻辑)
+- `SkillRegistry` (所有技能注册)
+- `LocalExecutor`, `AutomationRuleManager`
+- `ConversationStore`
+
+### 2. prod 代码改动 — 增强日志 + 3 个 trace 属性
+
+#### 增强 `_process_turn` 日志
+
+现有 print 保留，增加以下信息（对手动测试也有用）：
+
+```python
+# 路由详情 — 增加 confidence 和 actions
+print(f"⏱ 路由: {ms}ms → {route.tier}/{route.intent} ({route.provider}, {route.confidence:.2f})")
+if route.actions:
+    for a in route.actions:
+        print(f"   📋 {a['device_id']} → {a['action']}" + (f" ({a['value']})" if a.get('value') else ""))
+
+# 设备操作结果 — 在 execute_smart_home 返回后
+# (从 LocalExecutor 或 _process_turn 内部打印)
+for device_id in affected_device_ids:
+    status = self.device_manager.get_device(device_id).get_status()
+    print(f"   💡 {device_id}: {self._format_device_status(status)}")
+
+# 记忆检索命中 — 在 memory_manager.query 返回后
+if memory_context:
+    print(f"🧠 记忆检索: {hit_count} hits")
+
+# 记忆直答 — 已有，保持
+
+# LLM tool_call — 在 streaming 回调中
+# print(f"   [tool_call: {name}({args})]")  已在 on_sentence 中可见
+
+# 最终路径标记
+print(f"📍 路径: {path_label}")  # farewell / memory_shortcut / memory_l1 / local / cloud / learn_create
+```
+
+#### 3 个 trace 属性
+
+在 `_process_turn` 中，仅加 3 行赋值：
+
+```python
+# 路由结果（在 route = self.intent_router.route_and_respond(...) 之后）
+self._last_route = route  # RouteResult | None
+
+# 设备操作列表（在 execute_smart_home 返回后）
+self._last_device_ops = [{"device_id": ..., "action": ..., "value": ...}]
+
+# 记忆检索命中（在 memory_manager.query 返回后）
+self._last_memory_hits = memory_context  # str
+
+# 管线路径标记（每个出口处赋值）
+self._last_path = "local"  # farewell / memory_shortcut / memory_l1 / local / cloud / learn_create
+```
+
+harness 读这 4 个属性做结构化断言，不解析 print 文本。
+
+### 3. YAML 场景格式
+
+```yaml
+name: 智能家居控制
+description: 灯光、恒温器、门锁的语音控制
+
+setup:
+  devices:                          # 可选，指定初始设备状态
+    bedroom_light: {is_on: false, brightness: 100, color_temp: neutral}
+    living_room_light: {is_on: false}
+  memory: []                        # 可选，预置记忆列表
+  user:                             # 可选，默认 allen/owner
+    id: allen
+    name: Allen
+    role: owner
+
+scenarios:
+  - name: 单灯开关
+    steps:
+      - user: "打开卧室灯"
+        expect:
+          route: smart_home           # intent 断言
+          tier: local                 # tier 断言
+          device_state:               # 设备状态断言
+            bedroom_light:
+              is_on: true
+          response_contains: ["灯"]   # 回复包含
+          response_not_contains: []   # 回复不包含
+          latency_max_ms: 2000        # 延迟上限
+
+      - user: "再关掉"
+        expect:
+          device_state:
+            bedroom_light:
+              is_on: false
+
+  - name: 亮度调节
+    steps:
+      - user: "把卧室灯调到50%"
+        expect:
+          route: smart_home
+          device_state:
+            bedroom_light:
+              is_on: true
+              brightness: 50
+
+  - name: 颜色设置
+    steps:
+      - user: "把卧室灯调成蓝色"
+        expect:
+          tier: local
+          device_state:
+            bedroom_light:
+              color: blue
+
+  - name: 恒温器控制
+    steps:
+      - user: "把温度调到24度"
+        expect:
+          route: smart_home
+          device_state:
+            thermostat:
+              is_on: true
+              temperature: 24
+
+  - name: 门锁控制
+    steps:
+      - user: "把门锁上"
+        expect:
+          route: smart_home
+          device_state:
+            door_lock:
+              is_locked: true
+
+  - name: 多灯控制
+    steps:
+      - user: "把所有灯都打开"
+        expect:
+          device_state:
+            bedroom_light: {is_on: true}
+            living_room_light: {is_on: true}
+      - user: "全部关掉"
+        expect:
+          device_state:
+            bedroom_light: {is_on: false}
+            living_room_light: {is_on: false}
+
+  - name: 自然语言控灯
+    review: true                      # 标记需人工评审
+    steps:
+      - user: "帮我把卧室弄暗一点"
+        expect:
+          route: smart_home
+          device_state:
+            bedroom_light:
+              is_on: true
+        review_hint: "回复是否说明了调整结果"
+
+  - name: 场景执行
+    steps:
+      - user: "执行回家模式"
+        expect:
+          route: automation
+          response_contains: ["执行"]
+```
+
+```yaml
+# memory.yaml
+name: 记忆系统
+description: 记忆存储、检索、直答
+
+setup:
+  memory: []
+  user: {id: allen, name: Allen, role: owner}
+
+scenarios:
+  - name: 偏好存储与检索
+    steps:
+      - user: "记住我喜欢咖啡"
+        expect:
+          path: memory_shortcut        # 走记忆快捷路径
+          response_contains: ["记住"]
+          memory_contains:
+            content_matches: "咖啡"    # 后台提取后，记忆中包含
+
+      - user: "我喜欢喝什么"
+        expect:
+          path: memory_l1              # 走直答路径
+          response_contains: ["咖啡"]
+
+  - name: 记忆不污染
+    steps:
+      - user: "今天天气怎么样"
+        expect:
+          route: info_query
+          memory_not_contains:
+            content_matches: "天气"    # 普通问答不应存为记忆
+```
+
+### 4. 断言系统
+
+分两层：
+
+#### 硬断言（自动判定 ✅/❌）
+
+| 断言 | 数据来源 | 说明 |
+|------|---------|------|
+| `route` | `app._last_route.intent` | 意图分类 |
+| `tier` | `app._last_route.tier` | local / cloud |
+| `path` | pipeline 路径标记 | farewell / memory_shortcut / memory_l1 / local / cloud |
+| `device_state` | `harness.diff_devices()` | 设备属性精确匹配 |
+| `response_contains` | `handle_text()` 返回值 | 回复包含指定关键词 |
+| `response_not_contains` | 同上 | 回复不包含指定内容 |
+| `memory_contains` | `harness.diff_memory()` | 新增记忆 content 子串匹配 |
+| `memory_not_contains` | 同上 | 所有活跃记忆中不应出现该子串 |
+| `latency_max_ms` | 计时 | 总耗时不超过阈值 |
+| `no_crash` | 隐含 | 所有 step 默认断言 |
+
+#### 软信号（人工评审 ⚠️）
+
+场景标记 `review: true` 或 step 标记 `review_hint`，自动检查全部通过后，标记为待评审。人工模式逐条问；CC 模式攒一批问。
+
+### 5. Reporter — 输出格式
+
+#### 人工模式终端输出
+
+每个 step 输出一个 box：
+
+```
+┌─ Step 1: "打开卧室灯" ─────────────────────
+│ 👤 Allen (owner): 打开卧室灯
+│ ⏱ 路由: 187ms → local/smart_home (groq, 0.97)
+│   📋 bedroom_light → turn_on
+│ ⏱ 本地执行: 8ms
+│ 🤖 好的，卧室灯已打开。
+│
+│ 💡 设备变化:
+│   bedroom_light: OFF→ON  brightness=100 color_temp=warm
+│ 🧠 记忆: 无变化
+│ 💰 API: groq ×1
+│ ⏱ 总: 203ms
+│
+│ ✅ route == smart_home
+│ ✅ bedroom_light.is_on == True
+│ ✅ response ⊃ "灯"
+└────────────────────────────────────────────
+```
+
+`_process_turn` 的增强 print 自然输出在 box 内部（路由、执行、响应行）。harness 在前后补充设备 diff、记忆 diff、断言结果。
+
+#### CC 模式 JSON 输出
+
+```json
+{
+  "timestamp": "2026-04-13T14:30:00",
+  "duration_s": 112,
+  "api_calls": {"groq": 16, "xai": 5, "gpt4o_mini": 3},
+  "cost_estimate_usd": 0.04,
+
+  "summary": {"pass": 6, "fail": 1, "review": 1, "total": 8},
+
+  "suites": [
+    {
+      "name": "智能家居控制",
+      "scenarios": [
+        {
+          "name": "单灯开关",
+          "status": "pass",
+          "steps": [
+            {
+              "input": "打开卧室灯",
+              "response": "好的，卧室灯已打开。",
+              "route": {"intent": "smart_home", "tier": "local", "confidence": 0.97, "provider": "groq"},
+              "latency_ms": 203,
+              "device_changes": [
+                {"device_id": "bedroom_light", "field": "is_on", "before": false, "after": true}
+              ],
+              "memory_changes": [],
+              "assertions": {"route": "pass", "device_state": "pass", "response_contains": "pass"}
+            }
+          ]
+        },
+        {
+          "name": "颜色设置",
+          "status": "fail",
+          "steps": [
+            {
+              "input": "把卧室灯调成蓝色",
+              "response": "好的，我来帮你把卧室灯调成蓝色。",
+              "route": {"intent": "smart_home", "tier": "cloud", "confidence": 0.72, "provider": "groq"},
+              "latency_ms": 2847,
+              "assertions": {
+                "tier": {"status": "fail", "expected": "local", "actual": "cloud"}
+              },
+              "debug_context": "confidence 0.72 < 0.90 threshold; color '蓝色' may not be in COLOR_XY_MAP"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+
+  "needs_review": [
+    {
+      "id": 1,
+      "suite": "智能家居控制",
+      "scenario": "自然语言控灯",
+      "step_index": 0,
+      "input": "帮我把卧室弄暗一点",
+      "response": "我来调整一下卧室的灯光。",
+      "device_changes": [{"device_id": "bedroom_light", "field": "brightness", "before": 100, "after": 70}],
+      "auto_checks_passed": true,
+      "review_hint": "回复是否说明了调整结果"
+    }
+  ],
+
+  "regressions": [
+    {
+      "scenario": "智能家居控制/颜色设置",
+      "field": "status",
+      "before": "pass",
+      "after": "fail",
+      "previous_run": "2026-04-12_2315"
+    }
+  ]
+}
+```
+
+`debug_context` 字段是给 CC 的：harness 从 `_last_route` 等 trace 属性自动生成（如 `confidence < threshold`、`color not in COLOR_XY_MAP`），不只说"什么断言失败"，还说"为什么失败"，让 CC 能直接定位代码修改点。生成逻辑写在 `harness.py` 的断言方法中，每种断言类型有对应的 debug 模板。
+
+#### Markdown 报告（存档）
+
+每次运行自动写入 `system_tests/runs/YYYY-MM-DD_HHMM.md`，内容包含：
+- 运行摘要（时间、通过率、API 消耗）
+- 每个场景的详细结果
+- 基线对比
+- 人工评审记录
+
+### 6. Baseline — 历史对比
+
+每次运行保存 JSON 结果到 `system_tests/runs/`。下次运行时加载最近一次结果，对比：
+
+| 对比项 | 检测逻辑 | 严重度 |
+|--------|---------|--------|
+| 状态变化 | pass→fail | 🔴 回归 |
+| 路由变化 | 同一 input，intent/tier 改变 | 🟡 警告 |
+| 延迟飙升 | 同一 step，latency 增加 >50% | 🟡 警告 |
+| 新增场景 | 无历史基线 | 🔵 信息 |
+| 状态改善 | fail→pass | 🟢 改善 |
+
+汇总报告末尾显示对比结果，人工模式彩色输出，CC 模式放在 `regressions` 字段。
+
+### 7. API 费用追踪
+
+harness 在每次 `handle_text` 前后计数 API 调用（通过 wrap `IntentRouter` 和 `LLMClient` 的调用方法）。
+
+每个 step 记录 `{groq: N, xai: N, gpt4o_mini: N}`。汇总时按定价估算总费用。
+
+费率（可配置，写在 runner 顶部常量）：
+- Groq: ~$0.0008/call (llama-70b routing)
+- xAI: ~$0.005/call (grok streaming)
+- GPT-4o-mini: ~$0.001/call (memory extraction)
+
+## 执行流程细节
+
+### 初始化（一次）
+
+1. 构建 test config（sim 设备、临时 SQLite、mock 音频硬件）
+2. `JarvisApp(config)` — 加载 embedder、注册技能、预热连接
+3. 加载上次运行结果（基线对比用）
+4. 如果人工模式：显示菜单，等待选择
+
+### 每个场景
+
+1. `harness.reset_scenario(setup)` — 重置设备到 setup 状态，清空对应 session 的对话历史，按需清空/预置记忆
+2. 为场景生成唯一 `session_id`（如 `test_smart_home_单灯开关`）
+3. 逐步执行 steps
+
+### 每个 step
+
+1. `before_devices = harness.snapshot_devices()`
+2. `before_memory = harness.snapshot_memory(user_id)`
+3. `response = app.handle_text(text, session_id=session_id, on_sentence=collector, emotion=emotion)`
+4. `harness.flush_background()` — 等记忆提取完成
+5. `after_devices = harness.snapshot_devices()`
+6. `after_memory = harness.snapshot_memory(user_id)`
+7. 计算 diff、运行断言、记录结果
+8. 输出（人工模式打印 box，CC 模式 append 到结果）
+
+### 收尾
+
+1. 汇总所有场景结果
+2. 加载基线对比
+3. 输出报告（终端 + 存档文件）
+4. 人工评审循环（如果有待审项）
+5. `app.shutdown()`
+
+## _process_turn 改动清单
+
+只改 `jarvis.py` 的 `_process_turn` 方法，不改其他文件：
+
+| 行号附近 | 改动 | 内容 |
+|---------|------|------|
+| ~810 | 增强 print | 路由行加 confidence，打印 actions 列表 |
+| ~848 | 新增 print | 设备执行后打印每个设备的实际状态 |
+| ~780 | 新增 print | 记忆检索命中数 + 最高分 |
+| ~790 | 保留现有 | DA 直答计时已有 |
+| ~665 | 新增 print | step 起始标记 `📍 路径: xxx` |
+| ~810 | trace 属性 | `self._last_route = route` |
+| ~848 | trace 属性 | `self._last_device_ops = [...]` |
+| ~780 | trace 属性 | `self._last_memory_hits = memory_context` |
+| 各出口 | trace 属性 | `self._last_path = "farewell"` / `"local"` / `"cloud"` 等 |
+
+总计 ~25 行改动，全部是 print 或单行赋值。不改控制流。
+
+## 不在 v1 范围
+
+以下功能有价值但不影响核心架构，后续按需添加：
+
+- LLM-as-judge 自动评分（v2：用 GPT-4o-mini 给回复打分）
+- TTS 情感验证（需要实际调 TTS API，v1 跳过）
+- 并行场景执行（需要多 app 实例或锁管理）
+- CI 集成（需要 API key 管理和超时策略）
+- 场景自动生成（从对话日志提取高频场景）

@@ -1,0 +1,61 @@
+name: 技能学习
+description: 只测 intent detect 阶段，不触发真实 create（太慢太贵）
+
+# 可行性限制：
+# - create 模式真调 Claude Code API，每次几分钟 + $0.10+
+# - 自动化测试不应该每跑一次就生成一个新技能
+# - 只验证"路径分类对不对"，实际代码生成放手动测试
+
+setup:
+  user: {id: allen, name: Allen, role: owner}
+
+scenarios:
+
+  # ────────────────────────────────────────
+  # 场景 1：明确的学习意图 → learn_create 路径
+  # 只验证路径识别，后台 create 会异步启动但不等它完成
+  # ────────────────────────────────────────
+  - name: 学习意图识别
+    review: true
+    review_hint: "'学会查...'是否被识别为 learn_create 路径，回复是否合理"
+    steps:
+      - user: "学会查一下黄金价格"
+        expect:
+          path: learn_create
+          response_contains: ["好的", "学"]
+
+      - user: "帮我学会查汇率"
+        expect:
+          path: learn_create
+
+  # ────────────────────────────────────────
+  # 场景 2：已有技能去重
+  # "学会X" 但 X 已经存在，应该拒绝而不是重新学
+  # ────────────────────────────────────────
+  - name: 已有技能去重
+    review: true
+    review_hint: "weather 已存在，是否正确识别并拒绝重新学习"
+    steps:
+      - user: "学会查天气"
+        expect:
+          response_contains: ["已经", "会"]
+
+      - user: "学会查时间"
+        expect:
+          response_contains: ["已经", "会"]
+
+  # ────────────────────────────────────────
+  # 场景 3：容易混淆的非学习意图
+  # "查XX" vs "学会查XX"，第一个应该走正常路由
+  # ────────────────────────────────────────
+  - name: 非学习意图不误判
+    steps:
+      - user: "查一下天气"
+        expect:
+          route: info_query
+          path: local
+
+      - user: "告诉我现在几点"
+        expect:
+          route: time
+          path: local

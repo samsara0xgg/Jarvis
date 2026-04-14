@@ -13,18 +13,18 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import urllib3
 import yaml
 
-# Suppress noisy warnings
+# 压制第三方库的无用警告，保持日志干净
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import os
 import warnings
 warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")
-os.environ["ONNXRUNTIME_LOG_SEVERITY_LEVEL"] = "3"  # suppress onnxruntime GPU warnings
+os.environ["ONNXRUNTIME_LOG_SEVERITY_LEVEL"] = "3"  # onnxruntime 在没有 GPU 时会刷屏警告
 
 from auth.permission_manager import PermissionManager
 from core.local_executor import Action, ActionResponse
@@ -53,12 +53,13 @@ from skills.weather import WeatherSkill
 
 LOGGER = logging.getLogger(__name__)
 
+# 用户说这些词就结束对话，回到待命/唤醒词监听
 FAREWELL_DEFAULTS = ["再见", "退出", "bye", "goodbye", "that's all"]
+# 用户说这些词就跳过 LLM，直接确认"记住了"，后台异步提取记忆
 _REMEMBER_KEYWORDS = ("记住", "记下", "别忘了", "帮我记")
-
+# 用户说这些前缀词，本轮临时切换到更强的 LLM 模型（deep preset）
 _ESCALATION_KEYWORDS = ("仔细想想", "详细分析", "认真想", "好好想")
-
-# Actions that always need LLM interpretation
+# 这些智能家居动作无法本地解析参数，必须交给 LLM 理解
 _NEEDS_LLM_ACTIONS = {"set_effect"}
 
 
@@ -85,7 +86,7 @@ def _color_needs_llm(actions: list[dict]) -> bool:
             return True
     return False
 
-# Module-level ref so APScheduler can serialize the job.
+# APScheduler 序列化 job 时需要模块级引用，不能用实例方法
 _health_tracker_ref = None
 
 
@@ -107,10 +108,10 @@ class JarvisApp:
         self.config_path = Path(config_path) if config_path else Path("config.yaml")
         self.logger = LOGGER
 
-        # --- Event bus ---
+        # ── 事件总线 ── 组件间解耦通信，比如健康状态变化、state 切换
         self.event_bus = EventBus()
 
-        # --- Health tracker (optional) ---
+        # ── 健康监控（可选）── 追踪各 API/模型的可用性，降级时语音通知
         self.health_tracker = None
         if config.get("health", {}).get("enabled", True):
             try:
@@ -119,7 +120,7 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Health tracker unavailable: %s", exc)
 
-        # --- Reuse existing modules ---
+        # ── 音频 + 身份认证 ── 录音、ASR、声纹编码/验证、用户库、权限
         self.user_store = UserStore(config)
         self.audio_recorder = AudioRecorder(config)
         self.speaker_encoder = SpeakerEncoder(config)
@@ -128,17 +129,17 @@ class JarvisApp:
         self.device_manager = DeviceManager(config, event_bus=self.event_bus)
         self.permission_manager = PermissionManager()
 
-        # --- New Jarvis modules ---
+        # ── LLM + 对话 ── 云端大模型、对话历史持久化、用户偏好
         self.llm = LLMClient(config, tracker=self.health_tracker)
         self.conversation_store = ConversationStore(config)
         self.preference_store = UserPreferenceStore(config)
 
-        # --- Memory manager ---
+        # ── 长期记忆 ── SQLite + 向量嵌入，支持记忆存储/检索/直答
         self.memory_manager = MemoryManager(config)
 
         from memory.behavior_log import BehaviorLog
         mem_db = config.get("memory", {}).get("db_path", "data/memory/jarvis_memory.db")
-        # BehaviorLog 和 MemoryManager 共用同一个 SQLite 文件（不同表），WAL 模式支持并发
+        # BehaviorLog 和 MemoryManager 共用同一个 SQLite（不同表），WAL 模式支持并发读写
         self.behavior_log = BehaviorLog(mem_db)
 
         from memory.direct_answer import DirectAnswerer
@@ -146,11 +147,11 @@ class JarvisApp:
             self.memory_manager.store, self.memory_manager.embedder,
         )
 
-        # Track last user/session for farewell save
+        # 记录最近一次交互的用户，farewell 时用来触发记忆保存
         self._last_user_id: str | None = None
         self._last_session_id: str | None = None
 
-        # --- Scheduler (optional) ---
+        # ── 定时任务（可选）── 早报、记忆维护等 cron 任务
         self.scheduler = None
         try:
             from core.scheduler import JarvisScheduler
@@ -162,7 +163,7 @@ class JarvisApp:
         except Exception as exc:
             self.logger.warning("Scheduler unavailable: %s", exc)
 
-        # --- Automation engine ---
+        # ── 自动化引擎 ── 场景执行（如"回家模式"触发一系列设备动作）
         self.automation_engine = AutomationEngine(
             device_manager=self.device_manager,
             event_bus=self.event_bus,
@@ -172,7 +173,7 @@ class JarvisApp:
             if isinstance(steps, list):
                 self.automation_engine.register_scene(scene_name, steps)
 
-        # --- OLED display (optional) ---
+        # ── OLED 显示屏（可选）── RPi 上的小屏幕，显示状态/正在说的话
         self.oled = None
         if config.get("oled", {}).get("enabled", False):
             try:
@@ -182,11 +183,11 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("OLED display unavailable: %s", exc)
 
-        # --- Skill registry ---
+        # ── 技能注册中心 ── 所有 skill（天气、灯控、提醒等）在这里统一管理
         self.skill_registry = SkillRegistry()
         self._register_skills(config)
 
-        # --- Intent router + local executor + automation rules ---
+        # ── 意图路由 + 本地执行器 + 自动化规则 ──
         self.intent_router = None
         self.local_executor = None
         self.rule_manager = None
@@ -197,7 +198,7 @@ class JarvisApp:
 
             self.intent_router = IntentRouter(config, tracker=self.health_tracker)
 
-            # Automation rule manager — keyword 触发 + scheduler 注册
+            # 自动化规则管理器：支持关键词触发（如"晚安"→关灯）和定时触发
             def _execute_rule_actions(actions: list) -> None:
                 """Callback for scheduled/keyword rule execution."""
                 if self.local_executor:
@@ -216,7 +217,7 @@ class JarvisApp:
         except Exception as exc:
             self.logger.warning("Intent router unavailable: %s", exc)
 
-        # --- Learning router + skill factory ---
+        # ── 学习系统 ── 运行时教 Jarvis 新技能（调 Claude Code 生成 Python 代码）
         from core.learning_router import LearningRouter
         from core.skill_factory import SkillFactory
         self.learning_router = LearningRouter(
@@ -227,11 +228,19 @@ class JarvisApp:
             project_root=str(self.config_path.parent) if self.config_path else ".",
         )
 
-        # --- TTS (lazy loaded) ---
+        # --- Interrupt monitor (full-duplex) ---
+        from core.interrupt_monitor import InterruptMonitor
+        self.interrupt_monitor = InterruptMonitor(
+            config=config,
+            on_interrupt=self._on_voice_interrupt,
+            on_resume=self._on_voice_resume,
+        )
+
+        # ── TTS 语音合成（懒加载）── 首次调用时才初始化，避免拖慢启动
         self._tts: Any = None
 
-        # --- Session state ---
-        self._cancel = threading.Event()  # 打断信号
+        # ── 会话状态 ──
+        self._cancel = threading.Event()  # 用户按 Enter 打断时设置此信号
         session_config = config.get("session", {})
         self.silence_timeout = float(session_config.get("silence_timeout", 30))
         self.utterance_duration = float(session_config.get("utterance_duration", 5))
@@ -243,6 +252,9 @@ class JarvisApp:
         self._last_interaction = time.monotonic()
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="jarvis")
         self._tts_future: Future | None = None
+        self._active_pipeline: Any = None  # current TTSPipeline for interrupt abort
+        self._interrupted_response: list[str] | None = None
+        self._pipeline_lock = threading.Lock()
 
         # 预热 embedding 模型（后台加载，不阻塞启动）
         self._executor.submit(self.memory_manager.embedder.encode, "warmup")
@@ -257,7 +269,7 @@ class JarvisApp:
         # 预热 ASR 模型（首次加载 SenseVoice 需要 ~2s）
         self._executor.submit(self.speech_recognizer.transcribe, np.zeros(16000, dtype=np.float32))
 
-        # --- Health monitoring (voice notification + proactive probes) ---
+        # ── 健康监控启动 ── 状态变化时语音通知 + 定期主动探测 API 可用性
         if self.health_tracker:
             self.event_bus.on("health.status_changed", self._on_health_changed)
             self._setup_health_probes(config)
@@ -288,7 +300,7 @@ class JarvisApp:
         tracker = self.health_tracker
         assert tracker is not None
 
-        # API reachability probes (free — hit /models endpoint, no tokens)
+        # API 可达性探测：只请求 /models 端点，不消耗 token，免费
         def _make_api_probe(url: str, key: str) -> callable:
             def probe() -> bool:
                 if not key:
@@ -319,7 +331,7 @@ class JarvisApp:
                 _make_api_probe("https://api.openai.com/v1/models", openai_key),
             )
 
-        # Local model file probe
+        # 本地模型文件探测：检查 ASR 模型文件是否存在
         asr_model = Path(config.get("asr", {}).get(
             "sensevoice_model", "data/sensevoice-small-int8",
         ))
@@ -327,7 +339,7 @@ class JarvisApp:
             model_file = asr_model / "model.int8.onnx"
             tracker.register_probe("asr.sensevoice", lambda: model_file.exists())
 
-        # Schedule periodic probes
+        # 定期执行所有探测（默认 60s 一次）
         probe_cfg = config.get("health", {}).get("proactive_checks", {})
         if (
             probe_cfg.get("enabled", True)
@@ -482,7 +494,7 @@ class JarvisApp:
                         listening_for_wake = False
                         self._last_interaction = time.monotonic()
                 else:
-                    # Active conversation mode
+                    # 对话模式：唤醒词触发后进入，超时无交互自动回到监听
                     elapsed = time.monotonic() - self._last_interaction
                     if elapsed > self.silence_timeout:
                         self.logger.info("Session timeout after %.0fs silence.", elapsed)
@@ -490,19 +502,19 @@ class JarvisApp:
                         continue
 
                     try:
-                        # Pause the wake-word stream, record via AudioRecorder
+                        # 暂停唤醒词音频流，改用 AudioRecorder 录音（避免两个流抢麦克风）
                         stream.stop()
                         audio = self.audio_recorder.record(self.utterance_duration)
 
                         response = self.handle_utterance(audio)
-                        # Wait for TTS to finish before resuming mic to prevent echo
+                        # 等 TTS 播完再恢复麦克风，否则自己的声音会被录进去
                         self._wait_tts()
 
                         if response == "farewell":
                             time.sleep(2.5)
                             detector.reset()
                             stream.start()
-                            # Drain buffered frames so residual audio doesn't trigger wake word
+                            # 清空麦克风缓冲区，防止 TTS 残留音频误触发唤醒词
                             try:
                                 while stream.read_available > 0:
                                     stream.read(stream.read_available)
@@ -548,11 +560,11 @@ class JarvisApp:
         """Inner utterance handler — wrapped by handle_utterance for safety."""
         _t0 = time.monotonic()
 
-        # 0. Signal listening
+        # ① 通知 UI 进入"聆听"状态
         self.event_bus.emit("jarvis.state_changed", {"state": "listening"})
 
-        # 1. Parallel: speaker verification + ASR
-        self._wait_tts()  # 确保上一轮 TTS 播完再处理新音频
+        # ② 并行：声纹验证 + 语音识别（两个都是 CPU 密集，互不依赖）
+        self._wait_tts()  # 先确保上一轮 TTS 播完，否则会把自己的声音录进去
         verify_future = self._executor.submit(self.speaker_verifier.verify, np.copy(audio))
         asr_future = self._executor.submit(self.speech_recognizer.transcribe, np.copy(audio))
         verification = verify_future.result()
@@ -568,16 +580,16 @@ class JarvisApp:
 
         print(f"⏱ ASR+声纹: {(_t_asr - _t0)*1000:.0f}ms")
 
-        # 2. Resolve user identity
+        # ③ 解析用户身份：声纹匹配 → user_id → 查角色和显示名
         user_id = verification.user if verification.verified else None
-        # 没有注册用户时，默认当 owner 处理（开发/单用户模式）
+        # 没有注册用户时默认当 owner（单用户开发模式）
         if user_id is None and not self.user_store.get_all_users():
             user_id = "default_user"
         user_name = self._resolve_display_name(user_id) or "用户"
         user_role = self._resolve_role(user_id) if user_id != "default_user" else "owner"
         confidence = verification.confidence
 
-        # 3. Log identification
+        # ④ 打印识别结果（终端调试用）
         if user_id:
             self.logger.info(
                 "Identified: %s (%.2f) said: %s", user_name, confidence, text,
@@ -587,33 +599,132 @@ class JarvisApp:
             self.logger.info("Unidentified speaker (%.2f) said: %s", confidence, text)
             print(f"🎤 Guest ({confidence:.2f}): {text}")
 
-        # 4. Load conversation history
         session_id = user_id or "_guest"
         self._last_user_id = user_id
         self._last_session_id = session_id
+
+        # ⑤ 进入共享处理流水线（语音/文本两条路径共用 _process_turn）
+        def _voice_output(sentence: str) -> None:
+            self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
+            print(f"🤖 Jarvis: {sentence}")
+            self._speak_nonblocking(sentence, emotion=detected_emotion)
+
+        response_text = self._process_turn(
+            text,
+            emotion=detected_emotion,
+            session_id=session_id,
+            user_id=user_id or "default_user",
+            user_name=user_name,
+            user_role=user_role,
+            output_fn=_voice_output,
+            create_tts_pipeline=self._create_tts_pipeline,
+        )
+
+        _t_end = time.monotonic()
+        print(f"⏱ 总耗时: {(_t_end - _t0)*1000:.0f}ms")
+
+        return response_text
+
+    # ══════════════════════════════════════════════════════════════
+    # 核心处理流水线（语音和文本两条入口共用）
+    # ══════════════════════════════════════════════════════════════
+
+    def _process_turn(  # noqa: C901 — intentionally long; single pipeline
+        self,
+        text: str,
+        *,
+        emotion: str = "",
+        session_id: str,
+        user_id: str = "default_user",
+        user_name: str = "用户",
+        user_role: str = "owner",
+        output_fn: Callable[[str], None],
+        create_tts_pipeline: Callable[[], Any] | None = None,
+    ) -> str:
+        """Process a text turn through the full pipeline.
+
+        Handles: farewell → escalation → memory shortcut → learning →
+        keyword trigger → memory query → direct answer → intent route →
+        route dispatch → cloud LLM → save → behavior log.
+
+        Args:
+            text: User message.
+            emotion: Detected emotion label.
+            session_id: Conversation session identifier.
+            user_id: Resolved user identifier.
+            user_name: Display name for LLM context.
+            user_role: Permission role (owner/guest/etc).
+            output_fn: Called with each output sentence (TTS or callback).
+            create_tts_pipeline: Factory for TTS streaming pipeline (voice
+                path only).  When *None*, streaming sentences are delivered
+                via *output_fn* directly.
+
+        Returns:
+            Full assistant response text.
+        """
+        # 加载对话历史（用于多轮上下文）
         history = self.conversation_store.get_history(session_id)
 
-        # 4b. Fast local checks first (avoid wasted API calls)
+        # ── Trace attributes (for system test harness) ──
+        self._last_route = None
+        self._last_path = "unknown"
+        self._last_device_ops = []
+        self._last_memory_hits = ""
+        self._last_timings: dict[str, int] = {}
+        self._last_farewell_match: str | None = None
+        self._last_memory_keyword: str | None = None
+        self._last_escalation: dict | None = None
+        self._last_learning_intent: dict | None = None
+        self._last_keyword_rule: dict | None = None
+        self._last_direct_answer: dict | None = None
+        self._last_reqllm = False
+        self._last_history_turns = len(history)
+        # Phase B placeholders (populated by hooks when available)
+        self._last_tool_calls: list = []
+        self._last_tool_iterations = 0
+        self._last_llm_tokens: dict = {}
+        self._last_route_cache_hit: bool | None = None
+        self._last_provider_chain: list = []
+        self._last_memory_retrieval: dict = {}
+        self._last_memory_extraction: dict = {}
 
-        # Farewell shortcut: 直接本地回复，不走路由和 LLM
+        # Resume from interruption: "继续说" etc
+        from core.interrupt_monitor import RESUME_KEYWORDS
+        _resume_sentences: list[str] | None = None
+        with self._pipeline_lock:
+            if self._interrupted_response and any(kw in text for kw in RESUME_KEYWORDS):
+                _resume_sentences = self._interrupted_response
+                self._interrupted_response = None
+        if _resume_sentences is not None:
+            for s in _resume_sentences:
+                output_fn(s)
+            full_text = "".join(_resume_sentences)
+            history.append({"role": "user", "content": text})
+            history.append({"role": "assistant", "content": full_text})
+            self.conversation_store.replace(session_id, history)
+            self._last_path = "resume"
+            print(f"path={self._last_path}")
+            return full_text
+
+        # ── 快捷路径 1：告别 ── 直接本地回复，不走任何 API，~120ms
         if self._is_farewell(text):
             reply = "再见。"
             self.logger.info("Farewell shortcut: %s", text[:60])
-            self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
-            print(f"🤖 Jarvis: {reply}")
-            print(f"⏱ 总耗时: {(time.monotonic() - _t0)*1000:.0f}ms [farewell]")
-            self._speak_nonblocking(reply, emotion=detected_emotion)
+            self._last_path = "farewell"
+            self._last_farewell_match = text.strip().lower()
+            print(f"path={self._last_path}")
+            output_fn(reply)
             history.append({"role": "user", "content": text})
             history.append({"role": "assistant", "content": reply})
             self.conversation_store.replace(session_id, history)
             if user_id:
                 self._executor.submit(
                     self.memory_manager.save, history, user_id, session_id,
-                    detected_emotion,
+                    emotion,
                 )
             return "farewell"
 
-        # Per-turn escalation: "仔细想想" etc → deep preset for this turn
+        # ── 升级模式 ── 用户说"仔细想想"等前缀词，本轮临时切换到更强的 LLM
         _escalated = False
         _original_preset: str | None = None
         for _esc_kw in _ESCALATION_KEYWORDS:
@@ -623,41 +734,51 @@ class JarvisApp:
                 try:
                     self.llm.switch_model("deep")
                     _escalated = True
+                    self._last_escalation = {
+                        "keyword": _esc_kw,
+                        "from": _original_preset,
+                        "to": "deep",
+                    }
                     self.logger.info("Escalated to deep preset for this turn")
-                    self._speak_nonblocking("嗯，让我想想", emotion="")
+                    if create_tts_pipeline:
+                        output_fn("嗯，让我想想")
                 except (ValueError, Exception) as exc:
                     self.logger.warning("Escalation switch failed: %s", exc)
                 break
 
-        # Memory store shortcut: "记住/记下/别忘了" → 直接确认，不走 LLM
-        if any(text.startswith(kw) or kw in text[:10] for kw in _REMEMBER_KEYWORDS):
-            # 不含"每次"（那是配置型学习意图，交给 learning router）
+        # ── 快捷路径 2：记忆存储 ── "记住/记下/别忘了" → 直接确认，后台异步提取
+        _matched_kw = next((kw for kw in _REMEMBER_KEYWORDS if text.startswith(kw) or kw in text[:10]), None)
+        if _matched_kw:
             if "每次" not in text:
                 reply = "好的，记住了。"
                 self.logger.info("Memory shortcut: %s", text[:60])
-                self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
-                print(f"🤖 Jarvis: {reply}")
-                self._speak_nonblocking(reply, emotion=detected_emotion)
+                self._last_path = "memory_shortcut"
+                self._last_memory_keyword = _matched_kw
+                print(f"path={self._last_path}")
+                output_fn(reply)
                 history.append({"role": "user", "content": text})
                 history.append({"role": "assistant", "content": reply})
                 self.conversation_store.replace(session_id, history)
-                # 后台记忆提取会自动处理
                 if user_id:
                     self._executor.submit(
                         self.memory_manager.save, history, user_id, session_id,
-                        detected_emotion,
+                        emotion,
                     )
                 return reply
 
-        # Learning intent detection
+        # ── 快捷路径 3：学习意图 ── "学会查XX" → 后台调 Claude Code 生成新技能
         if hasattr(self, "learning_router"):
             learning = self.learning_router.detect(text)
             if learning and learning.mode == "create":
                 self.logger.info("Learning intent: create — %s", learning.description[:60])
                 learn_response = self._learn_create(learning, user_id)
-                self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
-                print(f"🤖 Jarvis: {learn_response}")
-                self._speak_nonblocking(learn_response, emotion=detected_emotion)
+                self._last_path = "learn_create"
+                self._last_learning_intent = {
+                    "mode": learning.mode,
+                    "description": learning.description,
+                }
+                print(f"path={self._last_path}")
+                output_fn(learn_response)
                 history.append({"role": "user", "content": text})
                 history.append({"role": "assistant", "content": learn_response})
                 self.conversation_store.replace(session_id, history)
@@ -666,10 +787,9 @@ class JarvisApp:
                         "text": text[:100], "route": "learn_create",
                     })
                 return learn_response
-            # config and compose modes: fall through to cloud LLM
-            # (cloud LLM handles via existing automation skill)
+            # config/compose 模式交给后面的云端 LLM 处理
 
-        # Keyword trigger check
+        # ── 关键词规则匹配 ── 用户定义的触发词（如"晚安"→关灯+关窗帘）
         _t_think = time.monotonic()
         self.event_bus.emit("jarvis.state_changed", {"state": "thinking"})
         response_text = None
@@ -682,50 +802,68 @@ class JarvisApp:
             match = self.rule_manager.check_keyword(text)
             if match:
                 keyword_actions, rule_name = match
+                self._last_keyword_rule = {"rule_name": rule_name, "actions": keyword_actions}
                 if keyword_actions and keyword_actions[0].get("skill"):
-                    # skill_alias: call skill then let LLM rephrase
                     ar = self.local_executor.execute_skill_alias(
                         keyword_actions, user_role,
                     )
                     if ar.action == Action.REQLLM:
                         use_llm_rephrase = True
+                        self._last_reqllm = True
                     else:
                         response_text = ar.text
+                        self._last_path = "keyword_rule"
                 else:
                     ar = self.local_executor.execute_smart_home(
                         keyword_actions, user_role, response=f"好的，{rule_name}已执行。",
                     )
                     response_text = ar.text
+                    self._last_path = "keyword_rule"
 
-        # 4c. Memory query (sync, fast ~50-100ms)
+        # ── 记忆检索 ── 向量搜索相关记忆，作为 context 传给后续 LLM（~50-100ms）
         memory_context = ""
         if user_id:
+            _t_mem_start = time.monotonic()
             try:
                 memory_context = self.memory_manager.query(text, user_id)
+                _mem_ms = int((time.monotonic() - _t_mem_start) * 1000)
+                self._last_memory_hits = memory_context
+                self._last_timings["memory_query_ms"] = _mem_ms
+                if memory_context:
+                    _mem_count = memory_context.count("\n- ")
+                    print(f"🧠 记忆检索: {_mem_count} 条相关记忆 ({_mem_ms}ms)")
             except Exception as exc:
                 self.logger.warning("Memory query failed: %s", exc)
 
-        # Level 1: Try direct answer from memory
+        # ── 记忆直答（L1）── 如果记忆里有确切答案就直接回复，完全跳过 LLM
         if user_id and response_text is None:
             try:
                 direct = self.direct_answerer.try_answer(text, user_id)
                 if direct:
                     _t_da = time.monotonic()
-                    print(f"⏱ DA直答: {(_t_da - _t_think)*1000:.0f}ms")
+                    _da_ms = int((_t_da - _t_think)*1000)
+                    print(f"⏱ DA直答: {_da_ms}ms")
+                    self._last_timings["direct_answer_ms"] = _da_ms
+                    self._last_direct_answer = {"answer": direct, "latency_ms": _da_ms}
                     self.logger.info("Level 1 direct answer: %s", direct[:60])
-                    self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
-                    print(f"🤖 Jarvis (L1): {direct}")
-                    self._speak_nonblocking(direct, emotion=detected_emotion)
+                    self._last_path = "memory_l1"
+                    print(f"path={self._last_path}")
+                    output_fn(direct)
                     self.behavior_log.log(user_id, "conversation", {
                         "text": text[:100],
                         "route": "memory_l1",
                         "answer": direct[:100],
                     })
+                    if _escalated and _original_preset is not None:
+                        try:
+                            self.llm.switch_model(_original_preset)
+                        except Exception:
+                            pass
                     return direct
             except Exception as exc:
                 self.logger.warning("Level 1 answer failed: %s", exc)
 
-        # 5-6. Unified route+respond: single Groq call for routing AND response
+        # ── 意图路由 ── 单次 Groq 调用，同时完成意图分类 + 简单回答
         route = None
         if response_text is None and self.intent_router and self.local_executor:
             try:
@@ -733,21 +871,28 @@ class JarvisApp:
                     text,
                     conversation_history=history,
                     memory_context=memory_context,
-                    user_emotion=detected_emotion,
+                    user_emotion=emotion,
                 )
             except Exception as exc:
                 self.logger.warning("Unified route failed: %s", exc)
 
         _t_route = time.monotonic()
+        _route_ms = int((_t_route - _t_think)*1000)
+        self._last_route = route
+        self._last_timings["route_ms"] = _route_ms
         if route:
-            print(f"⏱ 意图路由: {(_t_route - _t_think)*1000:.0f}ms → {route.tier}/{route.intent} ({route.provider})")
+            print(f"⏱ 路由: {_route_ms}ms → {route.tier}/{route.intent} ({route.provider}, {route.confidence:.2f})")
+            if route.actions:
+                for a in route.actions:
+                    val_str = f" ({a['value']})" if a.get("value") else ""
+                    print(f"   📋 {a.get('device_id', '?')} → {a.get('action', '?')}{val_str}")
         else:
-            print(f"⏱ 意图路由: {(_t_route - _t_think)*1000:.0f}ms → 无路由")
+            print(f"⏱ 路由: {_route_ms}ms → 无路由")
 
         if response_text is None and route is not None:
-            # Unified text response — skip cloud LLM entirely
             if route.text_response:
                 response_text = route.text_response
+                self._last_path = "local"
             elif route.tier == "local":
                 if route.intent == "smart_home":
                     needs_llm = (
@@ -769,13 +914,34 @@ class JarvisApp:
                         ar = self.local_executor.execute_smart_home(
                             route.actions, user_role, response=route.response,
                         )
+                        self._last_device_ops = route.actions
+                        for a in route.actions:
+                            did = a.get("device_id")
+                            if did:
+                                try:
+                                    st = self.device_manager.get_device(did).get_status()
+                                    on_str = "ON" if st.get("is_on") else "OFF"
+                                    extras = []
+                                    if "brightness" in st:
+                                        extras.append(f"brightness={st['brightness']}")
+                                    if "color_temp" in st:
+                                        extras.append(f"color_temp={st['color_temp']}")
+                                    if "color" in st and st["color"] != "white":
+                                        extras.append(f"color={st['color']}")
+                                    if "temperature" in st:
+                                        extras.append(f"temp={st['temperature']}°C")
+                                    if "is_locked" in st:
+                                        extras.append("locked" if st["is_locked"] else "unlocked")
+                                    extra_str = f"  {' '.join(extras)}" if extras else ""
+                                    print(f"   💡 {did}: {on_str}{extra_str}")
+                                except Exception:
+                                    pass
                 elif route.intent == "info_query":
                     if route.sub_type in ("news", "stocks", "weather"):
                         ar = self.local_executor.execute_info_query(
                             route.sub_type, route.query, user_role,
                         )
                     else:
-                        # 没有对应技能 — 查记忆，否则提示学习
                         if user_id:
                             try:
                                 mem_answer = self.direct_answerer.try_answer(text, user_id)
@@ -802,45 +968,58 @@ class JarvisApp:
                 if ar is not None:
                     if ar.action == Action.REQLLM:
                         use_llm_rephrase = True
+                        self._last_reqllm = True
                         response_text = None
                     else:
                         response_text = ar.text
+                        self._last_path = "local"
 
-        # Local execution timing
+        # 本地执行计时
         if response_text is not None:
             _t_local = time.monotonic()
-            print(f"⏱ 本地执行: {(_t_local - _t_route)*1000:.0f}ms")
+            _local_ms = int((_t_local - _t_route)*1000)
+            print(f"⏱ 本地执行: {_local_ms}ms")
+            self._last_timings["local_exec_ms"] = _local_ms
 
-        # 7. Cloud LLM — either REQLLM rephrase or full cloud fallback
+        # ── 云端 LLM ── 前面都没处理掉才到这里。两种模式：
+        #   - REQLLM 转述：本地查到了数据，让 LLM 用小月语气润色
+        #   - 完整 cloud：直接让 LLM 回答（支持 streaming + tool-use 循环）
         _t_llm_start = time.monotonic()
         if response_text is None and not self._cancel.is_set():
+            self._last_path = "cloud"
             tools = self.skill_registry.get_tool_definitions(user_role)
+            tts_pipeline = create_tts_pipeline() if create_tts_pipeline else None
+            with self._pipeline_lock:
+                self._active_pipeline = tts_pipeline
 
-            # 逐句 TTS：用 pipeline 异步合成+播放，消除句间停顿
-            tts_pipeline = self._create_tts_pipeline()
+            # Start interrupt monitoring during TTS playback (voice path only)
+            if tts_pipeline:
+                self.interrupt_monitor.start()
+                self.interrupt_monitor.start_mic_listener()
 
             _t_first_sentence = [None]  # mutable for closure
 
             def _on_sentence(sentence: str) -> None:
                 if self._cancel.is_set():
-                    return  # 被打断，跳过后续句子
+                    return
                 nonlocal sentence_count
                 sentence_count += 1
                 if sentence_count == 1:
                     _t_first_sentence[0] = time.monotonic()
-                    print(f"⏱ LLM首句: {(_t_first_sentence[0] - _t_llm_start)*1000:.0f}ms")
+                    _llm_first_ms = int((_t_first_sentence[0] - _t_llm_start)*1000)
+                    print(f"⏱ LLM首句: {_llm_first_ms}ms")
+                    self._last_timings["llm_first_ms"] = _llm_first_ms
                 print(f"🤖 Jarvis: {sentence}")
                 if tts_pipeline:
                     st = SentenceType.FIRST if sentence_count == 1 else SentenceType.MIDDLE
-                    tts_pipeline.submit(sentence, st, emotion=detected_emotion)
+                    tts_pipeline.submit(sentence, st, emotion=emotion)
                 else:
                     self._wait_tts()
-                    self._speak_nonblocking(sentence, emotion=detected_emotion)
+                    output_fn(sentence)
 
             self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
 
             try:
-                # REQLLM: 让 LLM 用小月语气转述本地数据
                 if use_llm_rephrase and ar is not None:
                     rephrase_msg = (
                         f"用户问的是：{text}\n"
@@ -854,12 +1033,12 @@ class JarvisApp:
                             user_id=user_id,
                             user_role=user_role,
                             on_sentence=_on_sentence,
-                            user_emotion=detected_emotion,
+                            user_emotion=emotion,
                             memory_context=memory_context,
                         )
                     except Exception as exc:
                         self.logger.error("LLM rephrase failed: %s", exc)
-                        response_text = ar.text  # 降级：直接播报原始数据
+                        response_text = ar.text
                 else:
                     try:
                         response_text, updated_messages = self.llm.chat_stream(
@@ -871,38 +1050,41 @@ class JarvisApp:
                             user_id=user_id,
                             user_role=user_role,
                             on_sentence=_on_sentence,
-                            user_emotion=detected_emotion,
+                            user_emotion=emotion,
                             memory_context=memory_context,
                         )
                     except Exception as exc:
                         self.logger.error("Cloud LLM failed: %s", exc)
                         response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
             finally:
-                # 确保 pipeline 线程被清理，无论是否有异常
+                # Stop interrupt monitor, get accumulated audio
+                if tts_pipeline:
+                    self.interrupt_monitor.stop_mic_listener()
+                    interrupt_audio = self.interrupt_monitor.stop()
                 if tts_pipeline:
                     if sentence_count > 0:
                         tts_pipeline.finish()
                         tts_pipeline.wait_done()
                     tts_pipeline.stop()
+                with self._pipeline_lock:
+                    self._active_pipeline = None
 
-        # 8. Save conversation + memory extraction
+        # ── 持久化 ── 保存对话历史 + 后台异步提取记忆（GPT-4o-mini）
         cloud_path = updated_messages is not None
         if cloud_path:
-            # 云端 LLM 路径：完整对话历史 + 立即提取记忆
             self.conversation_store.replace(session_id, updated_messages)
             if user_id:
                 self._executor.submit(
                     self.memory_manager.save, updated_messages, user_id, session_id,
-                    detected_emotion,
+                    emotion,
                 )
         elif response_text:
-            # 本地路径：更新对话历史（farewell/超时时统一提取记忆）
             history.append({"role": "user", "content": text})
             history.append({"role": "assistant", "content": response_text})
             self.conversation_store.replace(session_id, history)
-            updated_messages = history  # 给后续行为日志用
+            updated_messages = history
 
-        # 9. Log behavior events
+        # ── 行为日志 ── 记录技能调用、情绪、路由路径，用于后续分析
         if user_id:
             if updated_messages:
                 for msg in updated_messages:
@@ -915,23 +1097,17 @@ class JarvisApp:
                                 })
             self.behavior_log.log(user_id, "conversation", {
                 "text": text[:100],
-                "emotion": detected_emotion,
-                "route": "local" if response_text and not updated_messages else "cloud",
+                "emotion": emotion,
+                "route": "local" if response_text and not cloud_path else "cloud",
             })
 
-        # 10. Output (only for non-streamed responses)
-        if sentence_count == 0 and not self._cancel.is_set():
-            self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
+        # ── 非流式输出 ── 本地路径的响应在这里一次性播报（流式的已经在上面逐句播了）
+        if sentence_count == 0 and not self._cancel.is_set() and response_text:
             if self.oled:
                 self.oled.set_speaking_text(response_text)
-            print(f"🤖 Jarvis: {response_text}")
-            self._speak_nonblocking(response_text, emotion=detected_emotion)
+            output_fn(response_text)
 
-        _t_end = time.monotonic()
-        _route_name = f"{route.tier}/{route.intent}" if route else "cloud"
-        print(f"⏱ 总耗时: {(_t_end - _t0)*1000:.0f}ms [{_route_name}]")
-
-        # Restore original preset after escalation
+        # 如果本轮升级了模型，恢复原来的 preset
         if _escalated and _original_preset is not None:
             try:
                 self.llm.switch_model(_original_preset)
@@ -939,284 +1115,42 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Failed to restore preset: %s", exc)
 
+        print(f"path={self._last_path}")
         return response_text
 
-    # ------------------------------------------------------------------
-    # Text-only pipeline (for web frontend — no audio, no TTS)
-    # ------------------------------------------------------------------
+    # ══════════════════════════════════════════════════════════════
+    # 纯文本入口（Web 前端用，不走录音/TTS）
+    # ══════════════════════════════════════════════════════════════
+
     def handle_text(
         self,
         text: str,
         session_id: str = "_web",
         on_sentence: Any = None,
         emotion: str = "",
+        *,
+        user_id: str = "default_user",
+        user_name: str = "用户",
+        user_role: str = "owner",
     ) -> str:
         """Process a text message without audio/TTS.
 
-        Reuses steps 4-9 of ``_handle_utterance_inner`` but skips
-        recording, ASR, voiceprint verification, TTS playback, and
-        event-bus emissions.  The caller (web server) is responsible
-        for converting the response to speech separately.
-
-        Args:
-            text: User message.
-            session_id: Conversation session identifier.
-            on_sentence: Optional callback ``fn(sentence, emotion='')``.
-            emotion: Detected emotion label (passed through to callback).
-
-        Returns:
-            Full assistant response text.
+        Thin wrapper around :meth:`_process_turn` for the web frontend.
         """
-        user_id = "default_user"
-        user_name = "用户"
-        user_role = "owner"
+        def _text_output(sentence: str) -> None:
+            if on_sentence:
+                on_sentence(sentence, emotion=emotion)
 
-        # 4. Load conversation history + memory
-        history = self.conversation_store.get_history(session_id)
-        memory_context = ""
-        try:
-            memory_context = self.memory_manager.query(text, user_id)
-        except Exception as exc:
-            self.logger.warning("Memory query failed: %s", exc)
+        return self._process_turn(
+            text,
+            emotion=emotion,
+            session_id=session_id,
+            user_id=user_id,
+            user_name=user_name,
+            user_role=user_role,
+            output_fn=_text_output,
+        )
 
-        # Per-turn escalation: "仔细想想" etc → deep preset for this turn
-        _escalated = False
-        _original_preset: str | None = None
-        for _esc_kw in _ESCALATION_KEYWORDS:
-            if text.startswith(_esc_kw):
-                _original_preset = self.llm.active_preset
-                text = text[len(_esc_kw):].lstrip(" ，,、:：")
-                try:
-                    self.llm.switch_model("deep")
-                    _escalated = True
-                    self.logger.info("Escalated to deep preset for this turn (text)")
-                except (ValueError, Exception) as exc:
-                    self.logger.warning("Escalation switch failed: %s", exc)
-                break
-
-        # 4b. Level 1: direct answer from memory
-        try:
-            direct = self.direct_answerer.try_answer(text, user_id)
-            if direct:
-                self.logger.info("Level 1 direct answer: %s", direct[:60])
-                if on_sentence:
-                    on_sentence(direct, emotion=emotion)
-                if _escalated and _original_preset is not None:
-                    try:
-                        self.llm.switch_model(_original_preset)
-                    except Exception:
-                        pass
-                return direct
-        except Exception as exc:
-            self.logger.warning("Level 1 answer failed: %s", exc)
-
-        # 4c. Memory store shortcut
-        if any(text.startswith(kw) or kw in text[:10] for kw in _REMEMBER_KEYWORDS):
-            if "每次" not in text:
-                reply = "好的，记住了。"
-                self.logger.info("Memory shortcut: %s", text[:60])
-                history.append({"role": "user", "content": text})
-                history.append({"role": "assistant", "content": reply})
-                self.conversation_store.replace(session_id, history)
-                self._executor.submit(
-                    self.memory_manager.save, history, user_id, session_id,
-                    emotion,
-                )
-                if on_sentence:
-                    on_sentence(reply, emotion=emotion)
-                return reply
-
-        # 4d. Learning intent detection
-        if hasattr(self, "learning_router"):
-            learning = self.learning_router.detect(text)
-            if learning and learning.mode == "create":
-                self.logger.info("Learning intent: create — %s", learning.description[:60])
-                learn_response = self._learn_create(learning, user_id)
-                history.append({"role": "user", "content": text})
-                history.append({"role": "assistant", "content": learn_response})
-                self.conversation_store.replace(session_id, history)
-                if on_sentence:
-                    on_sentence(learn_response, emotion=emotion)
-                return learn_response
-
-        # 5. Keyword trigger check
-        response_text = None
-        updated_messages = None
-        ar: ActionResponse | None = None
-        sentence_count = 0
-        use_llm_rephrase = False
-
-        if self.rule_manager and self.local_executor:
-            match = self.rule_manager.check_keyword(text)
-            if match:
-                keyword_actions, rule_name = match
-                if keyword_actions and keyword_actions[0].get("skill"):
-                    ar = self.local_executor.execute_skill_alias(
-                        keyword_actions, user_role,
-                    )
-                    if ar.action == Action.REQLLM:
-                        use_llm_rephrase = True
-                    else:
-                        response_text = ar.text
-                else:
-                    ar = self.local_executor.execute_smart_home(
-                        keyword_actions, user_role, response=f"好的，{rule_name}已执行。",
-                    )
-                    response_text = ar.text
-
-        # 6. Unified route+respond: single Groq call for routing AND response
-        route = None
-        if response_text is None and self.intent_router and self.local_executor:
-            try:
-                route = self.intent_router.route_and_respond(
-                    text,
-                    conversation_history=history,
-                    memory_context=memory_context,
-                    user_emotion=emotion,
-                )
-            except Exception as exc:
-                self.logger.warning("Unified route failed: %s", exc)
-
-        if response_text is None and route is not None:
-            # Unified text response — skip cloud LLM entirely
-            if route.text_response:
-                response_text = route.text_response
-            elif route.tier == "local":
-                if route.intent == "smart_home":
-                    needs_llm = (
-                        any(a.get("action") in _NEEDS_LLM_ACTIONS for a in route.actions)
-                        or _color_needs_llm(route.actions)
-                    )
-                    if needs_llm:
-                        device_ids = {a.get("device_id") for a in route.actions if a.get("device_id")}
-                        status_parts = []
-                        for did in device_ids:
-                            try:
-                                status = self.device_manager.get_device(did).get_status()
-                                status_parts.append(f"{did}: {status}")
-                            except Exception:
-                                pass
-                        if status_parts:
-                            memory_context += f"\n[当前设备状态] {'; '.join(status_parts)}"
-                    else:
-                        ar = self.local_executor.execute_smart_home(
-                            route.actions, user_role, response=route.response,
-                        )
-                elif route.intent == "info_query":
-                    if route.sub_type in ("news", "stocks", "weather"):
-                        ar = self.local_executor.execute_info_query(
-                            route.sub_type, route.query, user_role,
-                        )
-                    else:
-                        try:
-                            mem_answer = self.direct_answerer.try_answer(text, user_id)
-                            if mem_answer:
-                                ar = ActionResponse(Action.RESPONSE, mem_answer)
-                        except Exception:
-                            pass
-                        if ar is None:
-                            ar = ActionResponse(
-                                Action.RESPONSE,
-                                "这个我暂时没有对应的技能。你可以说'小月，学会查这个'来教我。",
-                            )
-                elif route.intent == "time":
-                    ar = self.local_executor.execute_time(route.sub_type)
-                elif route.intent == "automation":
-                    ar = self.local_executor.execute_automation(
-                        route.sub_type, route.rule,
-                    )
-                    if route.response is not None:
-                        ar = type(ar)(ar.action, route.response)
-                else:
-                    ar = None
-
-                if ar is not None:
-                    if ar.action == Action.REQLLM:
-                        use_llm_rephrase = True
-                        response_text = None
-                    else:
-                        response_text = ar.text
-
-        # 7. Cloud LLM
-        if response_text is None:
-            tools = self.skill_registry.get_tool_definitions(user_role)
-
-            def _on_sentence(sentence: str) -> None:
-                nonlocal sentence_count
-                sentence_count += 1
-                if on_sentence:
-                    on_sentence(sentence, emotion=emotion)
-
-            try:
-                if use_llm_rephrase and ar is not None:
-                    rephrase_msg = (
-                        f"用户问的是：{text}\n"
-                        f"以下是查到的信息，用你自己的话简短转述给用户：\n{ar.text}"
-                    )
-                    try:
-                        response_text, updated_messages = self.llm.chat_stream(
-                            user_message=rephrase_msg,
-                            conversation_history=history,
-                            user_name=user_name,
-                            user_id=user_id,
-                            user_role=user_role,
-                            on_sentence=_on_sentence,
-                            user_emotion=emotion,
-                            memory_context=memory_context,
-                        )
-                    except Exception as exc:
-                        self.logger.error("LLM rephrase failed: %s", exc)
-                        response_text = ar.text
-                else:
-                    try:
-                        response_text, updated_messages = self.llm.chat_stream(
-                            user_message=text,
-                            conversation_history=history,
-                            tools=tools,
-                            tool_executor=self.skill_registry.execute,
-                            user_name=user_name,
-                            user_id=user_id,
-                            user_role=user_role,
-                            on_sentence=_on_sentence,
-                            user_emotion=emotion,
-                            memory_context=memory_context,
-                        )
-                    except Exception as exc:
-                        self.logger.error("Cloud LLM failed: %s", exc)
-                        response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
-            except Exception:
-                pass  # outer safety net
-
-        # 8. Save conversation + memory extraction
-        cloud_path = updated_messages is not None
-        if cloud_path:
-            self.conversation_store.replace(session_id, updated_messages)
-            self._executor.submit(
-                self.memory_manager.save, updated_messages, user_id, session_id,
-                emotion,
-            )
-        elif response_text:
-            history.append({"role": "user", "content": text})
-            history.append({"role": "assistant", "content": response_text})
-            self.conversation_store.replace(session_id, history)
-            self._executor.submit(
-                self.memory_manager.save, history, user_id, session_id,
-                emotion,
-            )
-
-        # 9. For non-streamed local responses, fire callback once
-        if sentence_count == 0 and on_sentence and response_text:
-            on_sentence(response_text, emotion=emotion)
-
-        # Restore original preset after escalation
-        if _escalated and _original_preset is not None:
-            try:
-                self.llm.switch_model(_original_preset)
-                self.logger.info("Restored preset to '%s' after escalation (text)", _original_preset)
-            except Exception as exc:
-                self.logger.warning("Failed to restore preset: %s", exc)
-
-        return response_text
 
     def speak(self, text: str) -> None:
         """Speak text via TTS (blocking). Use for non-hot-path calls."""
@@ -1255,19 +1189,49 @@ class JarvisApp:
         if self._tts_future and not self._tts_future.done():
             self._tts_future.result(timeout=30)
 
+    def _on_voice_interrupt(self) -> None:
+        """Called by InterruptMonitor when an interrupt keyword is detected."""
+        self.logger.info("Voice interrupt detected")
+        self._cancel.set()
+        self._cancel_current()
+
+    def _on_voice_resume(self) -> None:
+        """Called by InterruptMonitor when a resume keyword is detected.
+
+        Stops TTS playback so control returns to _process_turn, but does NOT
+        clear _interrupted_response — the resume check in _process_turn needs it.
+        """
+        self.logger.info("Voice resume detected")
+        self._cancel.set()
+        # Stop playback but preserve _interrupted_response for replay
+        pipeline: Any = None
+        with self._pipeline_lock:
+            pipeline = self._active_pipeline
+        if pipeline:
+            pipeline.abort()  # kills playback, don't save remaining
+        tts = self._get_tts()
+        if tts:
+            tts.stop()
+
     def _cancel_current(self) -> None:
         """Cancel current TTS and reset state after user interrupt."""
-        # 取消正在播放的 TTS
+        # Read pipeline ref under lock, call abort() outside to avoid blocking
+        pipeline: Any = None
+        with self._pipeline_lock:
+            self._interrupted_response = None  # clear stale buffer first
+            pipeline = self._active_pipeline
+        if pipeline:
+            remaining = pipeline.abort()
+            if remaining:
+                with self._pipeline_lock:
+                    self._interrupted_response = remaining
+        # Kill non-pipeline TTS (local shortcuts)
         if self._tts_future and not self._tts_future.done():
             self._tts_future.cancel()
-        # 停止音频播放（如果 TTS 引擎支持）
         tts = self._get_tts()
-        if tts and hasattr(tts, "stop"):
-            try:
-                tts.stop()
-            except Exception:
-                pass
-        # 终止 SkillFactory 子进程
+        if tts:
+            tts.stop()
+        # Cancel learning subprocess
         if hasattr(self, "skill_factory"):
             try:
                 self.skill_factory.cancel()
@@ -1342,7 +1306,7 @@ class JarvisApp:
         from skills.model_switch import ModelSwitchSkill
         self.skill_registry.register(ModelSwitchSkill(self.llm))
 
-        # OpenClaw skill (optional)
+        # 实时数据技能（可选）：新闻、股票等需要联网查询的数据
         if config.get("skills", {}).get("realtime_data", {}).get("enabled", False):
             try:
                 from skills.realtime_data import RealTimeDataSkill
@@ -1353,7 +1317,7 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("RealTimeData skill unavailable: %s", exc)
 
-        # Scheduler skill (optional)
+        # 定时任务技能（可选）：让 LLM 能创建/管理 cron 任务
         if self.scheduler and self.scheduler.available:
             try:
                 from skills.scheduler_skill import SchedulerSkill
@@ -1361,7 +1325,7 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Scheduler skill unavailable: %s", exc)
 
-        # Remote control skill (optional)
+        # 远程控制技能（可选）：通过网络控制其他设备
         if config.get("remote", {}).get("enabled", False):
             try:
                 from skills.remote_control import RemoteControlSkill
@@ -1369,7 +1333,7 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Remote control skill unavailable: %s", exc)
 
-        # Health skill (optional)
+        # 健康状态技能（可选）：让用户能语音询问"系统状态怎么样"
         if self.health_tracker:
             try:
                 from skills.health_skill import HealthSkill
@@ -1377,7 +1341,7 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Health skill unavailable: %s", exc)
 
-        # --- Load learned skills ---
+        # ── 加载用户教会的技能 ── 从 skills/learned/ 目录动态扫描
         from core.skill_loader import SkillLoader
         self.skill_loader = SkillLoader("skills/learned")
         for skill in self.skill_loader.scan():
@@ -1386,11 +1350,11 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Failed to register learned skill %s: %s", skill.skill_name, exc)
 
-        # --- Skill management ---
+        # ── 技能管理 ── 让 LLM 能列出/删除/禁用已有技能
         from skills.skill_mgmt import SkillManagementSkill
         self.skill_registry.register(SkillManagementSkill(self.skill_loader, self.skill_registry))
 
-        # Wire timer callbacks to TTS
+        # 把 TTS 回调注入 TimeSkill，这样计时器到期时能语音播报
         time_skill = self.skill_registry._skills.get("time")
         if time_skill and hasattr(time_skill, "set_timer_callback"):
             time_skill.set_timer_callback(self.speak)
