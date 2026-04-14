@@ -1,0 +1,317 @@
+{
+  "timestamp": "2026-04-13T21:26:54",
+  "duration_s": 68.2,
+  "api_calls": {
+    "groq": 4,
+    "gpt4o_mini": 1
+  },
+  "cost_estimate_usd": 0.0042,
+  "summary": {
+    "pass": 0,
+    "fail": 0,
+    "review": 1,
+    "total": 1
+  },
+  "suites": [
+    {
+      "name": "通用对话",
+      "scenarios": [
+        {
+          "name": "完整对话流程",
+          "status": "review",
+          "review": true,
+          "review_hint": "整段对话是否自然、路由是否正确、设备操作是否完成",
+          "steps": [
+            {
+              "input": "最近怎么样",
+              "response": "还不错，Allen最近比较忙，我也忙着照顾他，没什么时间休息。",
+              "path": "local",
+              "latency_ms": 538,
+              "timings": {
+                "memory_query_ms": 0,
+                "route_ms": 537,
+                "local_exec_ms": 0
+              },
+              "api_calls": {
+                "groq": 1
+              },
+              "history_turns": 0,
+              "user": {
+                "id": "allen",
+                "name": "Allen",
+                "role": "owner"
+              },
+              "route": {
+                "intent": "chat",
+                "tier": "cloud",
+                "confidence": 1.0,
+                "provider": "groq",
+                "duration_ms": 537,
+                "actions": [],
+                "sub_type": null
+              },
+              "tts": {
+                "engine": "minimax",
+                "played": true,
+                "synth_ms": 10495
+              },
+              "raw_log": "⏱ 路由: 537ms → cloud/chat (groq, 1.00)\n⏱ 本地执行: 0ms\npath=local\n",
+              "assertions": {
+                "no_crash": "pass",
+                "tier": "pass"
+              }
+            },
+            {
+              "input": "今天天气怎么样",
+              "response": "Victoria天气：阴天，温度18°C（体感18°C），湿度49%，风速12公里/时。",
+              "path": "local",
+              "latency_ms": 1107,
+              "timings": {
+                "memory_query_ms": 0,
+                "route_ms": 335,
+                "local_exec_ms": 769
+              },
+              "api_calls": {
+                "groq": 1
+              },
+              "history_turns": 2,
+              "user": {
+                "id": "allen",
+                "name": "Allen",
+                "role": "owner"
+              },
+              "route": {
+                "intent": "info_query",
+                "tier": "local",
+                "confidence": 0.9,
+                "provider": "groq",
+                "duration_ms": 334,
+                "actions": [],
+                "sub_type": "weather"
+              },
+              "tts": {
+                "engine": "minimax",
+                "played": true,
+                "synth_ms": 11618
+              },
+              "raw_log": "⏱ 路由: 335ms → local/info_query (groq, 0.90)\n⏱ 本地执行: 769ms\npath=local\n",
+              "assertions": {
+                "no_crash": "pass",
+                "route": "pass"
+              }
+            },
+            {
+              "input": "多伦多呢",
+              "response": "多伦多天气天气：阴天，温度18°C（体感18°C），湿度32%，风速10公里/时。",
+              "path": "local",
+              "latency_ms": 954,
+              "timings": {
+                "memory_query_ms": 0,
+                "route_ms": 168,
+                "local_exec_ms": 783
+              },
+              "api_calls": {
+                "groq": 1
+              },
+              "history_turns": 4,
+              "user": {
+                "id": "allen",
+                "name": "Allen",
+                "role": "owner"
+              },
+              "route": {
+                "intent": "info_query",
+                "tier": "local",
+                "confidence": 0.9,
+                "provider": "groq",
+                "duration_ms": 167,
+                "actions": [],
+                "sub_type": "weather"
+              },
+              "tts": {
+                "engine": "minimax",
+                "played": true,
+                "synth_ms": 12126
+              },
+              "raw_log": "⏱ 路由: 168ms → local/info_query (groq, 0.90)\n⏱ 本地执行: 783ms\npath=local\n",
+              "assertions": {
+                "no_crash": "pass",
+                "route": "pass"
+              }
+            },
+            {
+              "input": "学会查fifa世界杯门票",
+              "response": "好的，我在后台学，你继续说。",
+              "path": "learn_create",
+              "latency_ms": 1,
+              "timings": {},
+              "api_calls": {},
+              "history_turns": 6,
+              "user": {
+                "id": "allen",
+                "name": "Allen",
+                "role": "owner"
+              },
+              "tts": {
+                "engine": "minimax",
+                "played": true,
+                "synth_ms": 4233
+              },
+              "learning_intent": {
+                "mode": "create",
+                "description": "查fifa世界杯门票"
+              },
+              "skill_factory_status": {
+                "new_files": [],
+                "subprocess_pid": 69337,
+                "subprocess_running": true,
+                "subprocess_returncode": null
+              },
+              "raw_log": "path=learn_create\n",
+              "assertions": {
+                "no_crash": "pass",
+                "path": "pass"
+              }
+            },
+            {
+              "input": "把我书桌的灯变为tiffany蓝然后过三秒变回白色的",
+              "response": "好的，先变成Tiffany蓝，然后3秒后变回白色。",
+              "path": "local",
+              "latency_ms": 453,
+              "timings": {
+                "memory_query_ms": 0,
+                "route_ms": 450,
+                "local_exec_ms": 1
+              },
+              "api_calls": {
+                "groq": 1
+              },
+              "history_turns": 8,
+              "user": {
+                "id": "allen",
+                "name": "Allen",
+                "role": "owner"
+              },
+              "route": {
+                "intent": "automation",
+                "tier": "local",
+                "confidence": 0.9,
+                "provider": "groq",
+                "duration_ms": 449,
+                "actions": [],
+                "sub_type": "create"
+              },
+              "tts": {
+                "engine": "minimax",
+                "played": true,
+                "synth_ms": 7324
+              },
+              "raw_log": "⏱ 路由: 450ms → local/automation (groq, 0.90)\n⏱ 本地执行: 1ms\npath=local\n",
+              "assertions": {
+                "no_crash": "pass",
+                "route": {
+                  "status": "fail",
+                  "expected": "smart_home",
+                  "actual": "automation",
+                  "debug_context": "confidence=0.90, provider=groq"
+                }
+              }
+            },
+            {
+              "input": "再见",
+              "response": "farewell",
+              "path": "farewell",
+              "latency_ms": 0,
+              "timings": {},
+              "api_calls": {
+                "gpt4o_mini": 1
+              },
+              "history_turns": 10,
+              "user": {
+                "id": "allen",
+                "name": "Allen",
+                "role": "owner"
+              },
+              "farewell_match": "再见",
+              "raw_log": "path=farewell\n",
+              "assertions": {
+                "no_crash": "pass",
+                "path": "pass"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "failures": [],
+  "needs_review": [
+    {
+      "id": 1,
+      "suite": "通用对话",
+      "scenario": "完整对话流程",
+      "step_index": 0,
+      "input": "最近怎么样",
+      "response": "还不错，Allen最近比较忙，我也忙着照顾他，没什么时间休息。",
+      "device_changes": [],
+      "auto_checks_passed": true,
+      "review_hint": "整段对话是否自然、路由是否正确、设备操作是否完成"
+    },
+    {
+      "id": 2,
+      "suite": "通用对话",
+      "scenario": "完整对话流程",
+      "step_index": 1,
+      "input": "今天天气怎么样",
+      "response": "Victoria天气：阴天，温度18°C（体感18°C），湿度49%，风速12公里/时。",
+      "device_changes": [],
+      "auto_checks_passed": true,
+      "review_hint": "整段对话是否自然、路由是否正确、设备操作是否完成"
+    },
+    {
+      "id": 3,
+      "suite": "通用对话",
+      "scenario": "完整对话流程",
+      "step_index": 2,
+      "input": "多伦多呢",
+      "response": "多伦多天气天气：阴天，温度18°C（体感18°C），湿度32%，风速10公里/时。",
+      "device_changes": [],
+      "auto_checks_passed": true,
+      "review_hint": "整段对话是否自然、路由是否正确、设备操作是否完成"
+    },
+    {
+      "id": 4,
+      "suite": "通用对话",
+      "scenario": "完整对话流程",
+      "step_index": 3,
+      "input": "学会查fifa世界杯门票",
+      "response": "好的，我在后台学，你继续说。",
+      "device_changes": [],
+      "auto_checks_passed": true,
+      "review_hint": "整段对话是否自然、路由是否正确、设备操作是否完成"
+    },
+    {
+      "id": 5,
+      "suite": "通用对话",
+      "scenario": "完整对话流程",
+      "step_index": 4,
+      "input": "把我书桌的灯变为tiffany蓝然后过三秒变回白色的",
+      "response": "好的，先变成Tiffany蓝，然后3秒后变回白色。",
+      "device_changes": [],
+      "auto_checks_passed": false,
+      "review_hint": "整段对话是否自然、路由是否正确、设备操作是否完成"
+    },
+    {
+      "id": 6,
+      "suite": "通用对话",
+      "scenario": "完整对话流程",
+      "step_index": 5,
+      "input": "再见",
+      "response": "farewell",
+      "device_changes": [],
+      "auto_checks_passed": true,
+      "review_hint": "整段对话是否自然、路由是否正确、设备操作是否完成"
+    }
+  ],
+  "regressions": []
+}

@@ -96,6 +96,7 @@ class TTSEngine:
         self._tts_cache_dir = Path(tts_config.get("cache_dir", "data/cache/tts"))
         self._tts_cache_dir.mkdir(parents=True, exist_ok=True)
         self._tts_cache_max = int(tts_config.get("cache_max_files", 500))
+        self._last_cache_hit: bool | None = None  # trace for system tests
 
         # Lazy-init reusable HTTP session
         try:
@@ -372,7 +373,11 @@ class TTSEngine:
             if cache_path.exists():
                 cache_path.touch()  # update mtime for LRU eviction
                 self.logger.info("TTS cache hit: %r", text[:50])
+                self._last_cache_hit = True
                 return str(cache_path), False
+            self._last_cache_hit = False
+        else:
+            self._last_cache_hit = None
 
         payload = {
             "model": self.minimax_model,

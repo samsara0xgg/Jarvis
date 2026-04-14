@@ -223,8 +223,57 @@ class TerminalReporter:
             if parts:
                 print(f"          {_label('skill_bg')} {'  '.join(parts)}")
 
+        # Phase C Tier 2
+        if step.router_trace:
+            rt = step.router_trace
+            if rt.get("cache_hit"):
+                print(f"          {_label('cache')} HIT (route cache)")
+            attempts = rt.get("provider_attempts", [])
+            if len(attempts) > 1 or (attempts and attempts[0].get("status") == "fail"):
+                chain = " -> ".join(
+                    f"{a['provider']}={a['status']}({a['ms']}ms)" for a in attempts
+                )
+                print(f"          {_label('fallback')} {chain}")
+
+        if step.llm_tokens and (step.llm_tokens.get("input") or step.llm_tokens.get("output")):
+            t = step.llm_tokens
+            print(f"          {_label('tokens')} input={t.get('input', 0)}  output={t.get('output', 0)}")
+
+        if step.tts_cache_hit is True:
+            print(f"          {_label('tts_cache')} HIT")
+        elif step.tts_cache_hit is False:
+            print(f"          {_label('tts_cache')} MISS")
+
+        if step.memory_extraction and step.memory_extraction.get("memory_count"):
+            me = step.memory_extraction
+            cats = ",".join(c for c in me.get("categories", []) if c) or "?"
+            parts = [f"count={me['memory_count']}", f"cat=[{cats}]"]
+            if me.get("corrections"):
+                parts.append(f"corrections={me['corrections']}")
+            if me.get("profile_updated"):
+                parts.append("profile=updated")
+            if me.get("episode_summary"):
+                parts.append(f'episode="{me["episode_summary"][:40]}"')
+            print(f"          {_label('mem_ext')} {'  '.join(parts)}")
+
+        if step.health_status:
+            unhealthy = {k: v for k, v in step.health_status.items()
+                         if str(v).lower() not in ("healthy", "status.healthy")}
+            if unhealthy:
+                parts = [f"{k}={v}" for k, v in unhealthy.items()]
+                print(f"          {_label('health')} {'  '.join(parts)}")
+
         # ── Tier 3: verbose only ──
         if verbose:
+            if step.router_trace and step.router_trace.get("prompt"):
+                rt = step.router_trace
+                print(f"          {_label('r_prompt')} (router system prompt, {rt['prompt_len']} chars)")
+                for line in rt["prompt"].split("\n"):
+                    if line.strip():
+                        print(f"                  | {line}")
+            if step.router_trace and step.router_trace.get("raw_response"):
+                print(f"          {_label('r_raw')} (raw JSON from router)")
+                print(f"                  | {step.router_trace['raw_response']}")
             if step.raw_log:
                 print(f"          {_label('raw_log')} (stdout captured from _process_turn)")
                 for line in step.raw_log.rstrip().split("\n"):
@@ -423,6 +472,17 @@ class JsonReporter:
                         step_d["skill_factory_status"] = step.skill_factory_status
                     if step.raw_log:
                         step_d["raw_log"] = step.raw_log
+                    # Phase C
+                    if step.router_trace:
+                        step_d["router_trace"] = step.router_trace
+                    if step.llm_tokens:
+                        step_d["llm_tokens"] = step.llm_tokens
+                    if step.tts_cache_hit is not None:
+                        step_d["tts_cache_hit"] = step.tts_cache_hit
+                    if step.memory_extraction:
+                        step_d["memory_extraction"] = step.memory_extraction
+                    if step.health_status:
+                        step_d["health_status"] = step.health_status
 
                     # Assertions
                     assertions_d = {}

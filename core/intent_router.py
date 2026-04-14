@@ -207,6 +207,11 @@ class IntentRouter:
         self._tracker = tracker
         self._route_cache: OrderedDict = OrderedDict()
         self._cache_max = 256
+        # Trace attributes for system testing
+        self._last_cache_hit: bool = False
+        self._last_provider_attempts: list[dict] = []
+        self._last_raw_response: str = ""
+        self._last_prompt: str = ""
 
         # Groq (primary)
         groq_cfg = config.get("models", {}).get("groq", {})
@@ -415,6 +420,11 @@ class IntentRouter:
 
         Falls back: Groq → Cerebras → empty result (provider="none").
         """
+        # Reset trace
+        self._last_cache_hit = False
+        self._last_provider_attempts = []
+        self._last_raw_response = ""
+
         key = " ".join(_PUNCT_RE.sub("", text.strip()).split())
         recent_context = self._build_context(conversation_history) if conversation_history else []
 
@@ -422,40 +432,49 @@ class IntentRouter:
         if not recent_context and key in self._route_cache:
             self._route_cache.move_to_end(key)
             cached = self._route_cache[key]
+            self._last_cache_hit = True
             self.logger.info("Unified cache hit: '%s' → %s/%s", key[:20], cached.tier, cached.intent)
             return copy.copy(cached)
 
         system_prompt = build_unified_prompt(self.config, memory_context, user_emotion)
+        self._last_prompt = system_prompt
         start = time.time()
 
         # 1. Groq (primary)
         if self.groq_key and (not self._tracker or self._tracker.is_available("intent.groq")):
+            t_attempt = time.time()
             result = self._call_unified(
                 self.groq_url, self.groq_key, self.groq_model, text, start, recent_context, system_prompt,
             )
+            attempt_ms = int((time.time() - t_attempt) * 1000)
             if result:
+                self._last_provider_attempts.append({"provider": "groq", "status": "ok", "ms": attempt_ms})
                 if self._tracker:
                     self._tracker.record_success("intent.groq")
                 result.provider = "groq"
-                # Only cache structured routes (JSON), not free-text responses
                 if not recent_context and result.text_response is None:
                     self._cache_result(key, result)
                 return result
+            self._last_provider_attempts.append({"provider": "groq", "status": "fail", "ms": attempt_ms})
             if self._tracker:
                 self._tracker.record_failure("intent.groq")
 
         # 2. Cerebras (fallback)
         if self.cerebras_key and (not self._tracker or self._tracker.is_available("intent.cerebras")):
+            t_attempt = time.time()
             result = self._call_unified(
                 self.cerebras_url, self.cerebras_key, self.cerebras_model, text, start, recent_context, system_prompt,
             )
+            attempt_ms = int((time.time() - t_attempt) * 1000)
             if result:
+                self._last_provider_attempts.append({"provider": "cerebras", "status": "ok", "ms": attempt_ms})
                 if self._tracker:
                     self._tracker.record_success("intent.cerebras")
                 result.provider = "cerebras"
                 if not recent_context and result.text_response is None:
                     self._cache_result(key, result)
                 return result
+            self._last_provider_attempts.append({"provider": "cerebras", "status": "fail", "ms": attempt_ms})
             if self._tracker:
                 self._tracker.record_failure("intent.cerebras")
 
@@ -508,6 +527,7 @@ class IntentRouter:
             if not raw:
                 return None
 
+            self._last_raw_response = raw
             return self._parse_unified_response(raw, start)
 
         except requests.Timeout:

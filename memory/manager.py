@@ -229,6 +229,8 @@ class MemoryManager:
             self._llm_base_url = llm_config.get("base_url") or "https://api.openai.com/v1"
 
         self.logger = LOGGER
+        # Trace for system testing
+        self._last_extraction: dict = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -576,9 +578,18 @@ class MemoryManager:
                 topics=extraction.get("topics"),
             )
 
+        mem_list = extraction.get("memories", [])
+        self._last_extraction = {
+            "memory_count": len(mem_list),
+            "categories": [m.get("category") for m in mem_list],
+            "corrections": len(extraction.get("corrections", [])),
+            "profile_updated": profile_update is not None,
+            "episode_summary": episode_summary[:80] if episode_summary else None,
+        }
+
         self.logger.info(
             "Memory save complete: %d memories, profile_updated=%s, episode=%s",
-            len(extraction.get("memories", [])),
+            len(mem_list),
             profile_update is not None,
             bool(episode_summary),
         )

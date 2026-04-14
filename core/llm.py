@@ -45,6 +45,8 @@ class LLMClient:
         # Store presets (OpenAI-only for now)
         self._presets: dict[str, dict[str, Any]] = dict(llm_config.get("presets") or {})
         self.active_preset: str | None = None
+        # Trace for system testing
+        self._last_tokens: dict = {}
 
         # Defaults — may be overwritten by preset or flat config below
         self.model: str = str(llm_config.get("model", "gpt-4o"))
@@ -803,6 +805,7 @@ class LLMClient:
             "max_tokens": self.max_tokens,
             "messages": oai_messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if openai_tools:
             kwargs["tools"] = openai_tools
@@ -811,6 +814,9 @@ class LLMClient:
 
         stored_messages = list(conversation_history or [])
         stored_messages.append({"role": "user", "content": user_message})
+
+        # Reset token trace
+        self._last_tokens = {"input": 0, "output": 0}
 
         try:
             response = self._call_with_retry(
@@ -821,6 +827,9 @@ class LLMClient:
             has_tool_calls = False
 
             for chunk in response:
+                if getattr(chunk, "usage", None):
+                    self._last_tokens["input"] += getattr(chunk.usage, "prompt_tokens", 0) or 0
+                    self._last_tokens["output"] += getattr(chunk.usage, "completion_tokens", 0) or 0
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta is None:
                     continue
