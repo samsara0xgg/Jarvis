@@ -201,10 +201,10 @@ class TerminalReporter:
             print()
             for name, result in step.assertions.items():
                 if result.status == "pass":
-                    print(f"          {_GREEN}PASS{_RESET}    {name}")
+                    print(f"          {_GREEN}[PASS]{_RESET}  {name}")
                 else:
                     ctx = f"   [{result.debug_context}]" if result.debug_context else ""
-                    print(f"          {_RED}FAIL{_RESET}    {name}")
+                    print(f"          {_RED}[FAIL]{_RESET}  {name}")
                     print(f"                  expected  {result.expected}")
                     print(f"                  actual    {result.actual}{ctx}")
 
@@ -217,11 +217,12 @@ class TerminalReporter:
     def print_scenario_result(scenario: ScenarioResult) -> None:
         passed = sum(1 for s in scenario.steps if s.passed)
         total = len(scenario.steps)
-        status = scenario.status.upper()
+        tag_map = {"pass": "[PASS]", "fail": "[FAIL]", "review": "[REV ]"}
+        tag = tag_map.get(scenario.status, "[????]")
         color = {"pass": _GREEN, "fail": _RED, "review": _YELLOW}.get(scenario.status, "")
         total_ms = sum(s.latency_ms for s in scenario.steps)
         print()
-        print(f"  result  {color}{status}{_RESET}  {passed}/{total} steps   {total_ms}ms total")
+        print(f"  result  {color}{tag}{_RESET}  {passed}/{total} steps   {total_ms}ms total")
 
     @staticmethod
     def format_summary(run: RunResult, regressions: list[dict] | None = None) -> list[str]:
@@ -236,17 +237,18 @@ class TerminalReporter:
         out.append(f"  {'scenario':<38s}  {'result':<7s}  {'pass/total':<11s}  time")
         out.append(f"  {'-'*38}  {'-'*7}  {'-'*11}  {'-'*6}")
 
+        tag_map = {"pass": "[PASS]", "fail": "[FAIL]", "review": "[REV ]"}
         for suite in run.suites:
             for sc in suite.scenarios:
                 passed = sum(1 for s in sc.steps if s.passed)
                 total = len(sc.steps)
                 avg_ms = sum(s.latency_ms for s in sc.steps) // max(total, 1)
-                status = sc.status.upper()
+                tag = tag_map.get(sc.status, "[????]")
                 color = {"pass": _GREEN, "fail": _RED, "review": _YELLOW}.get(sc.status, "")
                 label = f"{suite.name}/{sc.name}"
                 if len(label) > 38:
                     label = label[:35] + "..."
-                out.append(f"  {label:<38s}  {color}{status:<7s}{_RESET}  "
+                out.append(f"  {label:<38s}  {color}{tag:<7s}{_RESET}  "
                            f"{passed}/{total:<9d}  {avg_ms}ms")
 
         s = run.summary
@@ -288,7 +290,7 @@ class TerminalReporter:
                 first = False
         if item.get("failures"):
             for name, detail in item["failures"].items():
-                print(f"         {_RED}FAIL{_RESET}     {name}  ({detail})")
+                print(f"         {_RED}[FAIL]{_RESET}   {name}  ({detail})")
         if item.get("review_hint"):
             print(f"         hint     {item['review_hint']}")
 
@@ -478,12 +480,13 @@ class MarkdownReporter:
             lines.append(f"**api**: {', '.join(parts)} ~${run.estimate_cost():.4f}")
         lines.append("")
 
+        md_tag = {"pass": "[PASS]", "fail": "[FAIL]", "review": "[REV ]"}
         for suite in run.suites:
             lines.append(f"## {suite.name}")
             lines.append("")
             for sc in suite.scenarios:
-                status = sc.status.upper()
-                lines.append(f"### [{status}] {sc.name}")
+                tag = md_tag.get(sc.status, "[????]")
+                lines.append(f"### {tag} {sc.name}")
                 lines.append("")
                 for i, step in enumerate(sc.steps):
                     lines.append(f"**step {i + 1}**: \"{step.input_text}\"")

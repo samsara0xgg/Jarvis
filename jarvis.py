@@ -703,7 +703,7 @@ class JarvisApp:
             history.append({"role": "assistant", "content": full_text})
             self.conversation_store.replace(session_id, history)
             self._last_path = "resume"
-            print(f"📍 路径: {self._last_path}")
+            print(f"path={self._last_path}")
             return full_text
 
         # ── 快捷路径 1：告别 ── 直接本地回复，不走任何 API，~120ms
@@ -712,7 +712,7 @@ class JarvisApp:
             self.logger.info("Farewell shortcut: %s", text[:60])
             self._last_path = "farewell"
             self._last_farewell_match = text.strip().lower()
-            print(f"📍 路径: {self._last_path}")
+            print(f"path={self._last_path}")
             output_fn(reply)
             history.append({"role": "user", "content": text})
             history.append({"role": "assistant", "content": reply})
@@ -754,7 +754,7 @@ class JarvisApp:
                 self.logger.info("Memory shortcut: %s", text[:60])
                 self._last_path = "memory_shortcut"
                 self._last_memory_keyword = _matched_kw
-                print(f"📍 路径: {self._last_path}")
+                print(f"path={self._last_path}")
                 output_fn(reply)
                 history.append({"role": "user", "content": text})
                 history.append({"role": "assistant", "content": reply})
@@ -777,7 +777,7 @@ class JarvisApp:
                     "mode": learning.mode,
                     "description": learning.description,
                 }
-                print(f"📍 路径: {self._last_path}")
+                print(f"path={self._last_path}")
                 output_fn(learn_response)
                 history.append({"role": "user", "content": text})
                 history.append({"role": "assistant", "content": learn_response})
@@ -847,7 +847,7 @@ class JarvisApp:
                     self._last_direct_answer = {"answer": direct, "latency_ms": _da_ms}
                     self.logger.info("Level 1 direct answer: %s", direct[:60])
                     self._last_path = "memory_l1"
-                    print(f"📍 路径: {self._last_path}")
+                    print(f"path={self._last_path}")
                     output_fn(direct)
                     self.behavior_log.log(user_id, "conversation", {
                         "text": text[:100],
@@ -1115,7 +1115,7 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Failed to restore preset: %s", exc)
 
-        print(f"📍 路径: {self._last_path}")
+        print(f"path={self._last_path}")
         return response_text
 
     # ══════════════════════════════════════════════════════════════
