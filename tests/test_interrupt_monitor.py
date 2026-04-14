@@ -113,3 +113,88 @@ class TestMicListener:
             monitor.stop()
             mock_stream.start.assert_called_once()
             mock_stream.stop.assert_called_once()
+
+
+class TestInterruptMonitorVADGate:
+    def _make_config(self, **overrides):
+        base = {
+            "interrupt": {
+                "enabled": True,
+                "vad_model_path": "data/silero_vad.onnx",
+                "vad_threshold_during_tts": 0.8,
+                "vad_min_speech_duration": 0.15,
+                "vad_min_silence_duration": 0.2,
+                "vad_max_speech_duration": 10.0,
+            }
+        }
+        base["interrupt"].update(overrides)
+        return base
+
+    def test_vad_loaded_when_enabled(self):
+        with patch("sherpa_onnx.VoiceActivityDetector") as mock_vad_cls, \
+             patch("sherpa_onnx.VadModelConfig") as mock_cfg_cls:
+            mock_cfg = MagicMock()
+            mock_cfg.silero_vad = MagicMock()
+            mock_cfg_cls.return_value = mock_cfg
+
+            monitor = InterruptMonitor(
+                config=self._make_config(),
+                on_interrupt=lambda: None,
+            )
+            monitor.start()
+
+            assert mock_vad_cls.called
+            assert mock_cfg.silero_vad.model == "data/silero_vad.onnx"
+            assert mock_cfg.silero_vad.threshold == 0.8
+            assert mock_cfg.silero_vad.min_speech_duration == 0.15
+            assert mock_cfg.silero_vad.min_silence_duration == 0.2
+
+    def test_feed_audio_skips_asr_when_not_speech(self):
+        """When VAD says no speech, streaming ASR stream should not receive audio."""
+        with patch("sherpa_onnx.VoiceActivityDetector") as mock_vad_cls, \
+             patch("sherpa_onnx.VadModelConfig"):
+            mock_vad = MagicMock()
+            mock_vad.is_speech_detected.return_value = False
+            mock_vad_cls.return_value = mock_vad
+
+            monitor = InterruptMonitor(
+                config=self._make_config(),
+                on_interrupt=lambda: None,
+            )
+            mock_stream = MagicMock()
+            monitor._stream = mock_stream
+            monitor._recognizer = MagicMock()
+            monitor._recording = True
+            monitor._vad = mock_vad
+
+            audio = np.zeros(1600, dtype=np.float32)
+            monitor.feed_audio(audio)
+
+            mock_vad.accept_waveform.assert_called()
+            mock_stream.accept_waveform.assert_not_called()
+
+    def test_feed_audio_passes_to_asr_when_speech_detected(self):
+        """When VAD says speech active, audio is forwarded to streaming ASR."""
+        with patch("sherpa_onnx.VoiceActivityDetector") as mock_vad_cls, \
+             patch("sherpa_onnx.VadModelConfig"):
+            mock_vad = MagicMock()
+            mock_vad.is_speech_detected.return_value = True
+            mock_vad_cls.return_value = mock_vad
+
+            monitor = InterruptMonitor(
+                config=self._make_config(),
+                on_interrupt=lambda: None,
+            )
+            mock_stream = MagicMock()
+            mock_recognizer = MagicMock()
+            mock_recognizer.is_ready.return_value = False
+            mock_recognizer.get_result.return_value = MagicMock(text="")
+            monitor._stream = mock_stream
+            monitor._recognizer = mock_recognizer
+            monitor._recording = True
+            monitor._vad = mock_vad
+
+            audio = np.zeros(1600, dtype=np.float32)
+            monitor.feed_audio(audio)
+
+            mock_stream.accept_waveform.assert_called_once()
