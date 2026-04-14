@@ -267,19 +267,30 @@ class TestHarness:
         sentinel.result(timeout=60)
 
     def reset_devices(self, setup: dict[str, dict[str, Any]] | None = None) -> None:
-        """Reset all sim devices to initial or specified state."""
+        """Reset devices.
+
+        Sim mode: turn everything off first, then apply setup overrides.
+        Live mode: DO NOT touch real devices unless setup explicitly specifies
+                   them — just apply overrides for listed devices.
+        """
         for device_id, device in self.app.device_manager._devices.items():
+            # In live mode, only touch devices explicitly mentioned in setup
+            if self._live and (not setup or device_id not in setup):
+                continue
+
             status = device.get_status()
-            # Turn off everything first
-            if status.get("is_on"):
-                device.execute("turn_off")
-            if status.get("is_locked") is False:
-                device.execute("lock")
+            if not self._live:
+                # Sim: full reset
+                if status.get("is_on"):
+                    device.execute("turn_off")
+                if status.get("is_locked") is False:
+                    device.execute("lock")
+
             # Apply setup overrides
             if setup and device_id in setup:
                 for field_name, val in setup[device_id].items():
-                    if field_name == "is_on" and val:
-                        device.execute("turn_on")
+                    if field_name == "is_on":
+                        device.execute("turn_on" if val else "turn_off")
                     elif field_name == "brightness":
                         device.execute("set_brightness", val)
                     elif field_name == "color_temp":
@@ -288,8 +299,8 @@ class TestHarness:
                         device.execute("set_color", val)
                     elif field_name == "temperature":
                         device.execute("set_temperature", val)
-                    elif field_name == "is_locked" and not val:
-                        device.execute("unlock")
+                    elif field_name == "is_locked":
+                        device.execute("lock" if val else "unlock")
 
     def reset_memory(self, user_id: str) -> None:
         """Clear all memories for a user."""
