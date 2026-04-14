@@ -57,7 +57,7 @@ Claude 独立修完、全部带单元测试、跑完 `python -m pytest tests/ -q
 
 ## core/tts.py
 
-- ❌ _play_audio_file() 用 subprocess 调 afplay/ffplay，无法优雅中断
+- ✅ _play_audio_file() subprocess 无法中断 → 改用 subprocess.Popen + TTSEngine.stop() 加 terminate/kill handle（全双工 feat 的一部分）
 - ⏳ (待审查) TTS 缓存 key 加 engine_name 前缀，防止引擎切换读到错的音频（core/tts.py:_tts_cache_key）
 - ❌ 缓存只对 MiniMax 生效，最贵的 OpenAI TTS 反而没缓存
 - ⏳ (待审查) Azure SSML 属性值转义（quot/amp），提取 _build_azure_ssml 静态方法（core/tts.py:_synth_azure）
