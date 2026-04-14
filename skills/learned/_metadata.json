@@ -1,1 +1,7 @@
-{}
+{
+  "fifa_tickets": {
+    "taught_by": "allen",
+    "description": "查fifa世界杯门票",
+    "status": "pending_review"
+  }
+}

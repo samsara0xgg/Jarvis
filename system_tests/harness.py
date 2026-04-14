@@ -442,6 +442,35 @@ class TestHarness:
                     "subprocess_returncode": proc.returncode if proc and proc.poll() is not None else None,
                 }
 
+        # Phase C: capture router/llm/tts/memory extended trace
+        router = self.app.intent_router
+        llm = self.app.llm
+        tts = getattr(self.app, "_tts", None)
+        mm = self.app.memory_manager
+
+        router_trace = {}
+        if router is not None:
+            router_trace = {
+                "cache_hit": getattr(router, "_last_cache_hit", False),
+                "provider_attempts": list(getattr(router, "_last_provider_attempts", [])),
+                "raw_response": (getattr(router, "_last_raw_response", "") or "")[:500],
+                "prompt_len": len(getattr(router, "_last_prompt", "") or ""),
+                "prompt": getattr(router, "_last_prompt", "") or "",
+            }
+
+        llm_tokens = dict(getattr(llm, "_last_tokens", {})) if llm else {}
+        tts_cache_hit = getattr(tts, "_last_cache_hit", None) if tts else None
+        memory_extraction = dict(getattr(mm, "_last_extraction", {})) if mm else {}
+
+        health_status = {}
+        ht = getattr(self.app, "health_tracker", None)
+        if ht:
+            try:
+                statuses = ht.get_statuses() if hasattr(ht, "get_statuses") else {}
+                health_status = {k: v for k, v in statuses.items()}
+            except Exception:
+                pass
+
         step = StepResult(
             input_text=text,
             response=response or "",
@@ -473,6 +502,12 @@ class TestHarness:
             tool_calls=list(getattr(self.app, "_last_tool_calls", [])),
             tool_iterations=getattr(self.app, "_last_tool_iterations", 0),
             skill_factory_status=skill_factory_status,
+            # Phase C
+            router_trace=router_trace,
+            llm_tokens=llm_tokens,
+            tts_cache_hit=tts_cache_hit,
+            memory_extraction=memory_extraction,
+            health_status=health_status,
         )
 
         # Evaluate assertions

@@ -186,11 +186,13 @@ devices:
 # ----------------------------------------------------------------------------
 hue:
   bridge:
-    # Hue Bridge IP。配对成功后会自动写入。
-    ip: "192.168.1.79"
+    # Hue Bridge IP。优先从 env HUE_BRIDGE_IP 读取。
+    # setup_hue.py 会自动写入这里，但建议用 env 避免提交 git。
+    ip: ""
 
-    # Hue API username。按下 Bridge 按钮配对后获取。
-    username: "Yl7SJNLldlGn7BzQYCLSR1cYjPLRn-Rq6zEvDUJR"
+    # Hue API username。优先从 env HUE_BRIDGE_USERNAME 读取。
+    # 按下 Bridge 按钮配对后获取。不要提交真实值到 git。
+    username: ""
 
     # 是否校验 Bridge HTTPS 证书。局域网自签证书场景通常为 false。
     verify_ssl: false

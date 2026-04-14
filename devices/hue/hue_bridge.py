@@ -37,8 +37,12 @@ class HueBridge:
         bridge_config = hue_config.get("bridge", {})
         request_limit_config = hue_config.get("request_limits", {})
 
-        self.ip = str(bridge_config.get("ip", "")).strip() or None
-        self.username = str(bridge_config.get("username", "")).strip() or None
+        # Prefer environment variables for credentials (avoid committing to git)
+        import os as _os
+        env_ip = _os.environ.get("HUE_BRIDGE_IP", "").strip()
+        env_user = _os.environ.get("HUE_BRIDGE_USERNAME", "").strip()
+        self.ip = env_ip or (str(bridge_config.get("ip", "")).strip() or None)
+        self.username = env_user or (str(bridge_config.get("username", "")).strip() or None)
         self.verify_ssl = bool(bridge_config.get("verify_ssl", False))
         self.timeout_seconds = float(bridge_config.get("timeout_seconds", 5.0))
         self.auto_discover = bool(bridge_config.get("auto_discover", True))

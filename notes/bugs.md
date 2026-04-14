@@ -208,3 +208,39 @@
 
 - 🚫 F3 情境感知 — LD2450 + DHT22 + BH1750
 - 🚫 F7 显示屏 — ST7789/GC9A01
+- 🚫 **Silero VAD vs XVF3800 冲突验证** — XVF3800 内部 DSP 可能有自己的 VAD/AGC 逻辑。等硬件到位后实测：
+  - 检查 USB Audio Class 是否传 VAD 元数据（大概率不传）
+  - 如果不传，软件 Silero VAD 直接用 XVF3800 输出的处理后音频
+  - 注意 AGC 对概率阈值的影响（音量被拉齐后 RMS 不可靠，Silero 概率也可能偏移）
+  - 阈值可能需要重调（不一定是 0.5）
+
+## Silero VAD 替换 RMS（待实现，等硬件到位后一起调参）
+
+### 已定方案
+- 用 sherpa-onnx 内置 Silero VAD，零新依赖
+- 模型 629KB（`silero_vad.onnx`）
+- 准确率 87% vs RMS ~50%（噪声环境）
+- 每轮省 ~1 秒（silence_duration 1.5s→0.5s）
+
+### 实现时必须处理的 8 个点
+1. 下载模型（629KB k2-fsa 导出）
+2. 加入启动预热队列（`jarvis.py:247-257`）
+3. 短命令（"停"≈200ms）需要更敏感的 VAD 实例或共享配置
+4. `min_duration` 从 1.0 降到 0.3
+5. `max_speech_duration` 设成 20s（跟 utterance_duration 对齐）
+6. 模型缺失时 fallback 到 RMS，不崩溃
+7. 外层 `target_duration` 硬限制保留，不能完全依赖 VAD
+8. config 字段语义变化（`vad_threshold` 从音量阈值变成概率阈值）
+
+### 配置模板
+```yaml
+audio:
+  vad_enabled: true
+  vad_engine: silero          # 新增，回退 "rms"
+  vad_model_path: data/silero_vad.onnx
+  vad_threshold: 0.5           # 概率阈值
+  vad_silence_duration: 0.5    # 从 1.5 降
+  vad_min_speech_duration: 0.25
+  vad_max_speech_duration: 20
+  min_duration: 0.3            # 从 1.0 降
+```

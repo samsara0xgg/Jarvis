@@ -52,11 +52,15 @@ class DirectAnswerer:
         """Check if text looks like a question (not a statement)."""
         text = text.strip().rstrip("。.！!")
         # Explicit question markers
-        if text.endswith(("？", "?", "吗", "呢", "吧", "啊")):
+        # 去掉 "啊" — "好热啊" 是感叹不是问题，误判率高
+        if text.endswith(("？", "?", "吗", "呢", "吧")):
             return True
         # Common question patterns
+        # "哪" / "几" 改成完整词组，避免 "哪怕" / "几何" 误判
         question_words = (
-            "什么", "哪", "几", "多少", "怎么", "为什么", "谁",
+            "什么", "哪里", "哪个", "哪些", "哪天", "哪种", "哪位",
+            "几点", "几个", "几天", "几岁", "几次",
+            "多少", "怎么", "为什么", "谁",
             "是不是", "有没有", "能不能", "可不可以",
         )
         if any(w in text for w in question_words):

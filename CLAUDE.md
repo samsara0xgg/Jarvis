@@ -32,7 +32,7 @@ After implementing or fixing a **feature that touches the pipeline** (routing, d
 python system_tests/runner.py --mode cc --suite <relevant_suite>
 ```
 
-Suites: `smart_home`, `memory`, `routing`, `multi_turn`, `error_handling`, `skill_learning`, `cloud_chat`
+Suites: `general` (日常对话烟雾测试), `smart_home`, `memory`, `routing`, `multi_turn`, `error_handling`, `skill_learning`, `cloud_chat`
 
 - Parse the JSON output. Fix any `failures` automatically.
 - Collect all `needs_review` items and present to user in one batch for feedback.

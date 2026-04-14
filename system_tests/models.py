@@ -108,6 +108,12 @@ class StepResult:
     tool_calls: list = field(default_factory=list)          # LLM tool_use calls
     tool_iterations: int = 0
     skill_factory_status: dict | None = None
+    # Phase C
+    router_trace: dict = field(default_factory=dict)        # cache_hit, provider_attempts, raw_response, prompt
+    llm_tokens: dict = field(default_factory=dict)          # input/output/rounds
+    tts_cache_hit: bool | None = None                       # None=ineligible, True/False=hit/miss
+    memory_extraction: dict = field(default_factory=dict)   # async save result: count, categories, corrections
+    health_status: dict = field(default_factory=dict)       # component states
 
     @property
     def passed(self) -> bool:
