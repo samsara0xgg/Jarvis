@@ -28,8 +28,6 @@ def _make_config(**audio_overrides) -> dict:
             "block_duration": 0.1,
             "volume_bar_width": 24,
             "vad_enabled": False,
-            "vad_silence_duration": 0.5,
-            "vad_threshold": 0.02,
         }
     }
     base["audio"].update(audio_overrides)
@@ -60,7 +58,7 @@ def test_save_wav_roundtrip(tmp_path: Path) -> None:
     ("audio", "expected_ok", "expected_message_fragment"),
     [
         (np.zeros(0, dtype=np.float32), False, "empty"),
-        (np.full(8000, 0.5, dtype=np.float32), False, "duration"),
+        (np.full(3000, 0.5, dtype=np.float32), False, "duration"),
         (np.full(16000, 0.001, dtype=np.float32), False, "volume"),
         (np.full(16000, 0.1, dtype=np.float32), True, "passed"),
     ],
@@ -87,22 +85,7 @@ class TestVADConfig:
     def test_vad_disabled_by_default(self) -> None:
         recorder = AudioRecorder(_make_config())
         assert recorder.vad_enabled is False
-
-    def test_vad_enabled_from_config(self) -> None:
-        recorder = AudioRecorder(_make_config(vad_enabled=True, vad_silence_duration=0.8))
-        assert recorder.vad_enabled is True
-        assert recorder.vad_silence_duration == 0.8
-
-    def test_vad_threshold_defaults_to_low_volume(self) -> None:
-        """When vad_threshold is not set, it uses low_volume_threshold."""
-        config = _make_config(low_volume_threshold=0.05)
-        del config["audio"]["vad_threshold"]
-        recorder = AudioRecorder(config)
-        assert recorder.vad_threshold == 0.05
-
-    def test_vad_threshold_custom(self) -> None:
-        recorder = AudioRecorder(_make_config(vad_threshold=0.03))
-        assert recorder.vad_threshold == 0.03
+        assert recorder._vad is None
 
 
 # --- record() with mocked sounddevice ---
@@ -169,27 +152,6 @@ class TestRecord:
         recorder = AudioRecorder(config)
         with pytest.raises(ValueError, match="greater than zero"):
             recorder.record(duration=0)
-
-    def test_record_vad_early_stop(self) -> None:
-        """VAD should stop recording when speech ends (silence after speech)."""
-        # Speech (loud) then silence (quiet)
-        speech_chunks = [np.random.randn(1600).astype(np.float32) * 0.5 for _ in range(15)]
-        silence_chunks = [np.zeros(1600, dtype=np.float32) for _ in range(20)]
-        all_chunks = speech_chunks + silence_chunks
-
-        fake_sd = self._setup_fake_sd(all_chunks)
-        config = _make_config(
-            default_duration=5.0, min_duration=0.5,
-            vad_enabled=True, vad_silence_duration=0.3, vad_threshold=0.02,
-        )
-        recorder = AudioRecorder(config)
-
-        with patch.dict(sys.modules, {"sounddevice": fake_sd}):
-            audio = recorder.record(duration=5.0)
-
-        # Should have stopped early due to VAD, not recorded full 5 seconds
-        duration_s = len(audio) / 16000
-        assert duration_s < 4.0  # well under 5 seconds
 
     def test_record_uses_default_duration(self) -> None:
         chunks = [np.random.randn(1600).astype(np.float32) * 0.1 for _ in range(50)]

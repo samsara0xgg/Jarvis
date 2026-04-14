@@ -59,16 +59,39 @@ class AudioRecorder:
         self.block_duration = float(audio_config.get("block_duration", 0.1))
         self.volume_bar_width = int(audio_config.get("volume_bar_width", 24))
 
-        # VAD: 检测语音结束后提前停止录音
+        # VAD: Silero (sherpa-onnx) 语音活动检测
         self.vad_enabled = bool(audio_config.get("vad_enabled", False))
-        self.vad_silence_duration = float(audio_config.get("vad_silence_duration", 0.5))
-        self.vad_threshold = float(audio_config.get("vad_threshold",
-                                                     self.low_volume_threshold))
         self.logger = LOGGER
+        self._vad: Any = None
+        if self.vad_enabled:
+            self._vad = self._build_vad(audio_config)
         self._progress_logger = logging.getLogger(_PROGRESS_LOGGER_NAME)
         self._progress_logger.setLevel(logging.INFO)
         self._progress_logger.propagate = False
         self._ensure_progress_handler()
+
+    def _build_vad(self, cfg: dict) -> Any:
+        """Construct sherpa-onnx VoiceActivityDetector from config.
+
+        Fail fast on load errors — no RMS fallback.
+        """
+        import sherpa_onnx
+        vad_config = sherpa_onnx.VadModelConfig()
+        vad_config.silero_vad.model = str(cfg["vad_model_path"])
+        vad_config.silero_vad.threshold = float(cfg.get("vad_threshold", 0.5))
+        vad_config.silero_vad.min_silence_duration = float(
+            cfg.get("vad_silence_duration", 0.5)
+        )
+        vad_config.silero_vad.min_speech_duration = float(
+            cfg.get("vad_min_speech_duration", 0.25)
+        )
+        vad_config.silero_vad.max_speech_duration = float(
+            cfg.get("vad_max_speech_duration", 20.0)
+        )
+        vad_config.sample_rate = self.sample_rate
+        return sherpa_onnx.VoiceActivityDetector(
+            vad_config, buffer_size_in_seconds=30,
+        )
 
     def record(self, duration: float | None = None) -> np.ndarray:
         """Record audio for the requested duration and return normalized samples.
@@ -106,10 +129,11 @@ class AudioRecorder:
         finished = threading.Event()
         progress_started = False
 
-        # VAD state
-        speech_detected = False
-        silence_frames = 0
-        silence_threshold_frames = int(self.vad_silence_duration * self.sample_rate)
+        # Reset VAD state for this recording session
+        if self._vad is not None:
+            self._vad.reset()
+
+        # VAD state (Silero tracks segments internally)
 
         def callback(
             indata: np.ndarray,
@@ -120,7 +144,7 @@ class AudioRecorder:
             """Collect input frames and update the terminal volume meter."""
 
             del time_info
-            nonlocal captured_frames, progress_started, speech_detected, silence_frames
+            nonlocal captured_frames, progress_started
 
             if status:
                 self.logger.warning("Audio input status: %s", status)
@@ -142,20 +166,16 @@ class AudioRecorder:
                 target_frames=target_frames,
             )
 
-            # VAD: early stop when speech ends
-            if self.vad_enabled and captured_frames >= min_frames:
-                if level >= self.vad_threshold:
-                    speech_detected = True
-                    silence_frames = 0
-                elif speech_detected:
-                    silence_frames += chunk.shape[0]
-                    if silence_frames >= silence_threshold_frames:
-                        self.logger.info(
-                            "VAD: speech ended after %.2fs",
-                            captured_frames / self.sample_rate,
-                        )
-                        finished.set()
-                        raise sd.CallbackStop()
+            # Silero VAD: stop when a complete speech segment is detected
+            if self._vad is not None and captured_frames >= min_frames:
+                self._vad.accept_waveform(chunk)
+                if not self._vad.empty():
+                    self.logger.info(
+                        "VAD: speech ended after %.2fs",
+                        captured_frames / self.sample_rate,
+                    )
+                    finished.set()
+                    raise sd.CallbackStop()
 
             if captured_frames >= target_frames:
                 finished.set()
