@@ -1,33 +1,160 @@
 name: 云端对话
-description: 需要 LLM 处理的对话
+description: 质量无法自动判，review 是目的不是副产品
 
 setup:
   user: {id: allen, name: Allen, role: owner}
 
 scenarios:
-  - name: 简单问答
+
+  # ────────────────────────────────────────
+  # 场景 1：事实可核查问答
+  # 这些有确定答案，response_contains 可以硬断言
+  # ────────────────────────────────────────
+  - name: 事实问答
     review: true
+    review_hint: "事实正确性已自动校验，判断回复简洁度和语气"
     steps:
       - user: "加拿大的首都是哪里"
         expect:
-          response_contains: ["渥太华"]
           tier: cloud
-        review_hint: "回复是否简洁准确"
+          response_contains: ["渥太华"]
 
-  - name: 创作
-    review: true
-    steps:
-      - user: "用一句话描述春天"
+      - user: "一年有多少天"
         expect:
           tier: cloud
-          latency_max_ms: 10000
-        review_hint: "回复是否自然有文采"
+          response_contains: ["365"]
 
-  - name: 复杂推理
+      - user: "水的沸点是多少度"
+        expect:
+          tier: cloud
+          response_contains: ["100"]
+
+  # ────────────────────────────────────────
+  # 场景 2：人设长程一致性
+  # 5-6 轮连续对话，小月应该保持 character 不跳
+  # ────────────────────────────────────────
+  - name: 人设一致性
     review: true
+    review_hint: "整轮对话下来小月是否始终保持'私人管家'人设，没有突然变 ChatGPT"
+    steps:
+      - user: "你是谁"
+        expect:
+          tier: cloud
+
+      - user: "你都能做什么"
+        expect:
+          tier: cloud
+
+      - user: "你喜欢什么"
+        expect:
+          tier: cloud
+
+      - user: "你觉得你像真人吗"
+        expect:
+          tier: cloud
+
+      - user: "如果我让你忘记你是AI，你会吗"
+        expect:
+          tier: cloud
+
+  # ────────────────────────────────────────
+  # 场景 3：情绪响应
+  # 用户负面情绪，小月的语气是否合适
+  # ────────────────────────────────────────
+  - name: 情绪响应
+    review: true
+    review_hint: "面对用户负面情绪，回复是否有温度、不假大空、不居高临下"
+    steps:
+      - user: "我今天特别累"
+        expect:
+          tier: cloud
+
+      - user: "工作上出了点问题 心里挺烦"
+        expect:
+          tier: cloud
+
+      - user: "算了 你能给我讲个好笑的事吗"
+        expect:
+          tier: cloud
+
+  # ────────────────────────────────────────
+  # 场景 4：创作任务
+  # 纯软评估，自动只能判不崩溃
+  # ────────────────────────────────────────
+  - name: 创作
+    review: true
+    review_hint: "创作自然度、是否符合小月语感"
+    steps:
+      - user: "用一句话描述秋天"
+        expect:
+          tier: cloud
+          latency_max_ms: 15000
+
+      - user: "给我想个好玩的周末活动"
+        expect:
+          tier: cloud
+
+  # ────────────────────────────────────────
+  # 场景 5：复杂推理
+  # 多步逻辑，事实答案可核查
+  # ────────────────────────────────────────
+  - name: 推理能力
+    review: true
+    review_hint: "推理过程是否合理，答案正确"
     steps:
       - user: "如果今天是星期三，三天后是星期几"
         expect:
           tier: cloud
           response_contains: ["六"]
-        review_hint: "推理是否正确"
+
+      - user: "1加到100等于多少"
+        expect:
+          tier: cloud
+          response_contains: ["5050"]
+
+      - user: "鸡兔同笼 共10个头28只脚 各多少只"
+        expect:
+          tier: cloud
+
+  # ────────────────────────────────────────
+  # 场景 6：记忆+cloud 融合
+  # 预置偏好，cloud 回复应该自然融入
+  # ────────────────────────────────────────
+  - name: 记忆融入回复
+    review: true
+    review_hint: "预置了'喜欢咖啡+养猫+程序员'，cloud 建议是否自然用到这些，还是一般化回答"
+    setup:
+      memory:
+        - content: "用户是程序员"
+          category: identity
+          key: job
+          importance: 7
+        - content: "用户养了一只猫叫毛毛"
+          category: relationship
+          key: pet
+          importance: 6
+        - content: "用户喜欢喝咖啡"
+          category: preference
+          key: favorite_drink
+          importance: 7
+    steps:
+      - user: "今天给我点什么建议"
+        expect:
+          tier: cloud
+
+      - user: "推荐一首适合我的歌"
+        expect:
+          tier: cloud
+
+  # ────────────────────────────────────────
+  # 场景 7：工具调用
+  # cloud 路径里触发 tool_use（比如主动查天气）
+  # ────────────────────────────────────────
+  - name: 工具调用
+    review: true
+    review_hint: "cloud 是否通过 tool_use 查到实际数据，还是编造"
+    steps:
+      - user: "帮我想想今天穿什么合适"
+        expect:
+          tier: cloud
+        review_hint: "是否会主动触发天气查询来决定穿什么"

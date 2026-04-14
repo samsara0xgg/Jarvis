@@ -354,6 +354,8 @@ class TestHarness:
         device_changes = diff_devices(before_devices, after_devices)
         memory_diff_result = diff_memory(before_memory, after_memory)
 
+        _mem_hits = getattr(self.app, "_last_memory_hits", "")
+        _mem_count = _mem_hits.count("\n- ") if _mem_hits else 0
         step = StepResult(
             input_text=text,
             response=response or "",
@@ -367,6 +369,19 @@ class TestHarness:
             assertions={},
             error=error,
             timings=dict(getattr(self.app, "_last_timings", {})),
+            user_id=user_id,
+            user_name=user_name,
+            user_role=user_role,
+            history_turns=getattr(self.app, "_last_history_turns", 0),
+            farewell_match=getattr(self.app, "_last_farewell_match", None),
+            memory_keyword=getattr(self.app, "_last_memory_keyword", None),
+            escalation=getattr(self.app, "_last_escalation", None),
+            learning_intent=getattr(self.app, "_last_learning_intent", None),
+            keyword_rule=getattr(self.app, "_last_keyword_rule", None),
+            direct_answer=getattr(self.app, "_last_direct_answer", None),
+            reqllm=getattr(self.app, "_last_reqllm", False),
+            device_ops=list(getattr(self.app, "_last_device_ops", [])),
+            memory_hits_count=_mem_count,
         )
 
         # Evaluate assertions

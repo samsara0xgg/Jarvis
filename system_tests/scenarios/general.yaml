@@ -1,0 +1,34 @@
+name: 通用对话
+description: 一段完整的日常对话流程
+
+setup:
+  user: {id: allen, name: Allen, role: owner}
+
+scenarios:
+  - name: 完整对话流程
+    review: true
+    review_hint: "整段对话是否自然、路由是否正确、设备操作是否完成"
+    steps:
+      - user: "最近怎么样"
+        expect:
+          tier: cloud
+
+      - user: "今天天气怎么样"
+        expect:
+          route: info_query
+
+      - user: "多伦多呢"
+        expect:
+          route: info_query
+
+      - user: "学会查fifa世界杯门票"
+        expect:
+          path: learn_create
+
+      - user: "把我书桌的灯变为tiffany蓝然后过三秒变回白色的"
+        expect:
+          route: smart_home
+
+      - user: "再见"
+        expect:
+          path: farewell

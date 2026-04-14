@@ -88,6 +88,20 @@ class StepResult:
     error: str | None
     tts_info: TtsInfo | None = None
     timings: dict[str, int] = field(default_factory=dict)
+    # Extended trace (for debug)
+    user_id: str | None = None
+    user_name: str | None = None
+    user_role: str | None = None
+    history_turns: int = 0
+    farewell_match: str | None = None
+    memory_keyword: str | None = None
+    escalation: dict | None = None
+    learning_intent: dict | None = None
+    keyword_rule: dict | None = None
+    direct_answer: dict | None = None
+    reqllm: bool = False
+    device_ops: list = field(default_factory=list)
+    memory_hits_count: int = 0
 
     @property
     def passed(self) -> bool:

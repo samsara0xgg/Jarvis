@@ -1,38 +1,129 @@
 name: 路由准确性
-description: 验证不同类型输入走正确的 intent 路由
+description: Groq 路由器的分类和阈值判断 — 分流 fast-local vs slow-cloud
 
 setup:
   user: {id: allen, name: Allen, role: owner}
 
 scenarios:
-  - name: 智能家居路由
+
+  # ────────────────────────────────────────
+  # 场景 1：明确本地意图 — 批量验证 local tier
+  # 这些是典型的、置信度应该高（>0.9）的本地指令
+  # ────────────────────────────────────────
+  - name: 明确本地意图
     steps:
       - user: "打开卧室灯"
         expect:
           route: smart_home
           tier: local
 
-  - name: 时间路由
-    steps:
       - user: "现在几点了"
         expect:
           route: time
           tier: local
 
-  - name: 闲聊路由
+      - user: "今天星期几"
+        expect:
+          route: time
+          tier: local
+
+      - user: "查一下多伦多的天气"
+        expect:
+          route: info_query
+          tier: local
+
+      - user: "把卧室灯关了"
+        expect:
+          route: smart_home
+          tier: local
+
+  # ────────────────────────────────────────
+  # 场景 2：明确云端意图
+  # 闲聊、创作、复杂问题必须走 cloud
+  # ────────────────────────────────────────
+  - name: 明确云端意图
     steps:
       - user: "你觉得人生的意义是什么"
         expect:
           tier: cloud
 
-  - name: 告别快捷路径
+      - user: "给我写一首关于秋天的诗"
+        expect:
+          tier: cloud
+
+      - user: "解释一下量子纠缠"
+        expect:
+          tier: cloud
+
+      - user: "你今天怎么样"
+        expect:
+          tier: cloud
+
+  # ────────────────────────────────────────
+  # 场景 3：快捷路径触发
+  # 这些应该绕过路由器，直接走 path
+  # ────────────────────────────────────────
+  - name: 快捷路径
     steps:
       - user: "再见"
         expect:
           path: farewell
 
-  - name: 记忆快捷路径
-    steps:
+      - user: "bye"
+        expect:
+          path: farewell
+
       - user: "记住我喜欢红色"
         expect:
           path: memory_shortcut
+
+      - user: "别忘了周五要交报告"
+        expect:
+          path: memory_shortcut
+
+  # ────────────────────────────────────────
+  # 场景 4：模糊边界
+  # 这些可能两边都合理，不强制 tier，看小月回复是否合适
+  # ────────────────────────────────────────
+  - name: 模糊边界
+    review: true
+    review_hint: "这些输入是 local 还是 cloud 都合理，判断小月回答是否恰当"
+    steps:
+      - user: "我想知道最近有什么新闻"
+        expect:
+          route: info_query
+
+      - user: "帮我看看卧室灯开着没"
+        expect:
+          route: smart_home
+
+      - user: "帮我想想我忘了什么事"
+
+  # ────────────────────────────────────────
+  # 场景 5：低置信度应走 cloud
+  # 非典型措辞，router 如果 confidence<0.9 应回退到 cloud
+  # ────────────────────────────────────────
+  - name: 低置信度回退
+    review: true
+    review_hint: "非典型措辞，不强制 tier，但 confidence 不应该虚高"
+    steps:
+      - user: "那个东西弄一下"
+
+      - user: "不知道怎么说，你懂的"
+
+  # ────────────────────────────────────────
+  # 场景 6：缓存命中（同一输入第二次更快）
+  # route cache 应该让同一指令第二次显著更快
+  # ────────────────────────────────────────
+  - name: 路由缓存
+    steps:
+      - user: "打开卧室灯"
+        expect:
+          route: smart_home
+          tier: local
+
+      - user: "打开卧室灯"
+        expect:
+          route: smart_home
+          tier: local
+          latency_max_ms: 500

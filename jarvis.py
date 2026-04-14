@@ -671,6 +671,22 @@ class JarvisApp:
         self._last_device_ops = []
         self._last_memory_hits = ""
         self._last_timings: dict[str, int] = {}
+        self._last_farewell_match: str | None = None
+        self._last_memory_keyword: str | None = None
+        self._last_escalation: dict | None = None
+        self._last_learning_intent: dict | None = None
+        self._last_keyword_rule: dict | None = None
+        self._last_direct_answer: dict | None = None
+        self._last_reqllm = False
+        self._last_history_turns = len(history)
+        # Phase B placeholders (populated by hooks when available)
+        self._last_tool_calls: list = []
+        self._last_tool_iterations = 0
+        self._last_llm_tokens: dict = {}
+        self._last_route_cache_hit: bool | None = None
+        self._last_provider_chain: list = []
+        self._last_memory_retrieval: dict = {}
+        self._last_memory_extraction: dict = {}
 
         # Resume from interruption: "继续说" etc
         from core.interrupt_monitor import RESUME_KEYWORDS
@@ -695,6 +711,7 @@ class JarvisApp:
             reply = "再见。"
             self.logger.info("Farewell shortcut: %s", text[:60])
             self._last_path = "farewell"
+            self._last_farewell_match = text.strip().lower()
             print(f"📍 路径: {self._last_path}")
             output_fn(reply)
             history.append({"role": "user", "content": text})
@@ -717,6 +734,11 @@ class JarvisApp:
                 try:
                     self.llm.switch_model("deep")
                     _escalated = True
+                    self._last_escalation = {
+                        "keyword": _esc_kw,
+                        "from": _original_preset,
+                        "to": "deep",
+                    }
                     self.logger.info("Escalated to deep preset for this turn")
                     if create_tts_pipeline:
                         output_fn("嗯，让我想想")
@@ -725,11 +747,13 @@ class JarvisApp:
                 break
 
         # ── 快捷路径 2：记忆存储 ── "记住/记下/别忘了" → 直接确认，后台异步提取
-        if any(text.startswith(kw) or kw in text[:10] for kw in _REMEMBER_KEYWORDS):
+        _matched_kw = next((kw for kw in _REMEMBER_KEYWORDS if text.startswith(kw) or kw in text[:10]), None)
+        if _matched_kw:
             if "每次" not in text:
                 reply = "好的，记住了。"
                 self.logger.info("Memory shortcut: %s", text[:60])
                 self._last_path = "memory_shortcut"
+                self._last_memory_keyword = _matched_kw
                 print(f"📍 路径: {self._last_path}")
                 output_fn(reply)
                 history.append({"role": "user", "content": text})
@@ -749,6 +773,10 @@ class JarvisApp:
                 self.logger.info("Learning intent: create — %s", learning.description[:60])
                 learn_response = self._learn_create(learning, user_id)
                 self._last_path = "learn_create"
+                self._last_learning_intent = {
+                    "mode": learning.mode,
+                    "description": learning.description,
+                }
                 print(f"📍 路径: {self._last_path}")
                 output_fn(learn_response)
                 history.append({"role": "user", "content": text})
@@ -774,12 +802,14 @@ class JarvisApp:
             match = self.rule_manager.check_keyword(text)
             if match:
                 keyword_actions, rule_name = match
+                self._last_keyword_rule = {"rule_name": rule_name, "actions": keyword_actions}
                 if keyword_actions and keyword_actions[0].get("skill"):
                     ar = self.local_executor.execute_skill_alias(
                         keyword_actions, user_role,
                     )
                     if ar.action == Action.REQLLM:
                         use_llm_rephrase = True
+                        self._last_reqllm = True
                     else:
                         response_text = ar.text
                         self._last_path = "keyword_rule"
@@ -814,6 +844,7 @@ class JarvisApp:
                     _da_ms = int((_t_da - _t_think)*1000)
                     print(f"⏱ DA直答: {_da_ms}ms")
                     self._last_timings["direct_answer_ms"] = _da_ms
+                    self._last_direct_answer = {"answer": direct, "latency_ms": _da_ms}
                     self.logger.info("Level 1 direct answer: %s", direct[:60])
                     self._last_path = "memory_l1"
                     print(f"📍 路径: {self._last_path}")
@@ -937,6 +968,7 @@ class JarvisApp:
                 if ar is not None:
                     if ar.action == Action.REQLLM:
                         use_llm_rephrase = True
+                        self._last_reqllm = True
                         response_text = None
                     else:
                         response_text = ar.text

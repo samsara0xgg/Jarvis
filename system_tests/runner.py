@@ -62,6 +62,7 @@ def run_suite(
     harness: TestHarness,
     suite_data: dict[str, Any],
     mode: str = "human",
+    verbose: bool = False,
 ) -> SuiteResult:
     """Execute all scenarios in a suite."""
     suite_name = suite_data["name"]
@@ -81,7 +82,7 @@ def run_suite(
         session_id = f"test_{suite_data.get('_file', 'suite')}_{sc_name}"
 
         if mode == "human":
-            print(f"\n── Scenario {sc_idx + 1}/{len(scenarios)}: {sc_name} ──")
+            TerminalReporter.print_scenario_header(sc_name, sc_idx + 1, len(scenarios))
 
         # Reset state
         harness.reset_devices(setup.get("devices"))
@@ -89,7 +90,7 @@ def run_suite(
         harness.reset_conversation(session_id)
 
         if mode == "human":
-            print("🔄 重置: 设备✓ 记忆✓ 对话✓")
+            TerminalReporter.print_reset()
 
         # Pre-seed memories if specified
         for mem in setup.get("memory", []):
@@ -120,7 +121,7 @@ def run_suite(
             step_results.append(result)
 
             if mode == "human":
-                TerminalReporter.print_step(result, step_idx + 1, user_name, user_role)
+                TerminalReporter.print_step(result, step_idx + 1, verbose=verbose)
 
         sc_result = ScenarioResult(sc_name, step_results, sc_review, sc_review_hint)
         scenario_results.append(sc_result)
@@ -131,20 +132,23 @@ def run_suite(
     return SuiteResult(suite_name, scenario_results)
 
 
-def run_free_chat(harness: TestHarness) -> None:
+def run_free_chat(harness: TestHarness, verbose: bool = False) -> None:
     """Interactive free-form chat with enhanced logging."""
-    print(f"\n🧪 自由对话模式 (输入 q 退出)")
-    print("━" * 40)
+    print()
+    print("jarvis-system-test / free chat  (q to quit)")
+    print()
     session_id = f"free_{int(time.time())}"
+    step_num = 0
     while True:
         try:
-            text = input("\n> ").strip()
+            text = input("> ").strip()
         except (EOFError, KeyboardInterrupt):
             break
         if not text or text.lower() in ("q", "quit", "exit"):
             break
+        step_num += 1
         result = harness.run_step(text, session_id=session_id)
-        TerminalReporter.print_step(result, 0, "Allen", "owner")
+        TerminalReporter.print_step(result, step_num, verbose=verbose)
 
 
 def run_human_review(run: RunResult) -> list[dict]:
@@ -154,7 +158,6 @@ def run_human_review(run: RunResult) -> list[dict]:
         for sc in suite.scenarios:
             if sc.status == "review":
                 for i, step in enumerate(sc.steps):
-                    # Collect assertion failures for context
                     failures = {
                         k: f"expected={v.expected}, actual={v.actual}"
                         for k, v in step.assertions.items() if v.status == "fail"
@@ -173,15 +176,16 @@ def run_human_review(run: RunResult) -> list[dict]:
     if not review_items:
         return []
 
-    print(f"\n{'═' * 45}")
-    print(f"👤 人工评审 ({len(review_items)} 项)")
-    print(f"{'═' * 45}")
+    print()
+    print("---")
+    print()
+    print(f"review ({len(review_items)})")
 
     reviews = []
-    for item in review_items:
-        TerminalReporter.print_review_item(item)
+    for idx, item in enumerate(review_items):
+        TerminalReporter.print_review_item(item, idx + 1, len(review_items))
         try:
-            feedback = input("\n评价 (Enter跳过, q结束): ").strip()
+            feedback = input("         feedback > ").strip()
         except (EOFError, KeyboardInterrupt):
             break
         if feedback.lower() == "q":
@@ -189,7 +193,6 @@ def run_human_review(run: RunResult) -> list[dict]:
         if feedback:
             item["feedback"] = feedback
             reviews.append(item)
-            print("✅ 已记录")
     return reviews
 
 
@@ -201,7 +204,13 @@ def main() -> int:
     parser.add_argument("--no-interactive", action="store_true")
     parser.add_argument("--live", action="store_true", help="Use real devices (Hue bridge) instead of sim")
     parser.add_argument("--tts", action="store_true", help="Play TTS audio for each response")
+    parser.add_argument("--verbose", action="store_true", help="Show tier-3 debug details per step")
+    parser.add_argument("--color", action="store_true", help="Enable ANSI color output")
     args = parser.parse_args()
+
+    if args.color:
+        from system_tests.reporter import enable_color
+        enable_color()
 
     # Load scenarios
     all_suites = load_suites(SCENARIOS_DIR)
@@ -213,15 +222,15 @@ def main() -> int:
     mode_label = "live" if args.live else "sim"
     extras = []
     if args.tts:
-        extras.append("TTS")
-    extra_str = f" + {', '.join(extras)}" if extras else ""
-    print(f"⚙️  初始化 JarvisApp ({mode_label}{extra_str})...")
+        extras.append("tts")
+    extra_str = f"+{','.join(extras)}" if extras else ""
+    print(f"init  jarvis-app  mode={mode_label}  {extra_str}")
     t0 = time.monotonic()
     harness = TestHarness(live=args.live, tts=args.tts)
-    print(f"  就绪 ({time.monotonic() - t0:.1f}s)")
+    print(f"      ready ({time.monotonic() - t0:.1f}s)")
 
     if args.free:
-        run_free_chat(harness)
+        run_free_chat(harness, verbose=args.verbose)
         harness.shutdown()
         return 0
 
@@ -239,20 +248,21 @@ def main() -> int:
         if previous:
             s = previous.get("summary", {})
             last_summary = (
-                f"{previous.get('timestamp', '?')} "
-                f"({s.get('total', '?')} scenarios, {s.get('pass', 0)}✅ {s.get('fail', 0)}❌)"
+                f"{previous.get('timestamp', '?')}   "
+                f"{s.get('pass', 0)} pass, {s.get('fail', 0)} fail, "
+                f"{s.get('review', 0)} review"
             )
-        suite_info = [(s["name"], len(s.get("scenarios", []))) for s in all_suites]
+        suite_info = [(s.get("_file", s["name"]), len(s.get("scenarios", []))) for s in all_suites]
         TerminalReporter.print_menu(last_summary, suite_info)
 
         try:
-            choice = input("\n选择 (逗号分隔, A=全部, F=自由对话): ").strip()
+            choice = input().strip()
         except (EOFError, KeyboardInterrupt):
             harness.shutdown()
             return 0
 
         if choice.upper() == "F":
-            run_free_chat(harness)
+            run_free_chat(harness, verbose=args.verbose)
             harness.shutdown()
             return 0
         elif choice.upper() == "A":
@@ -270,16 +280,19 @@ def main() -> int:
     # Execute
     run_start = time.monotonic()
     suite_results: list[SuiteResult] = []
+    timestamp_str = datetime.now().isoformat(timespec="seconds")
+    if args.mode == "human":
+        mode_label = "live" if args.live else "sim"
+        TerminalReporter.print_run_header(mode_label, timestamp_str)
+
     for suite_data in selected:
         if args.mode == "human":
-            print(f"\n{'═' * 45}")
-            print(f"📋 {suite_data['name']}")
-            print(f"{'═' * 45}")
-        result = run_suite(harness, suite_data, mode=args.mode)
+            TerminalReporter.print_suite_header(suite_data.get("_file", suite_data["name"]))
+        result = run_suite(harness, suite_data, mode=args.mode, verbose=args.verbose)
         suite_results.append(result)
 
     run_result = RunResult(
-        timestamp=datetime.now().isoformat(timespec="seconds"),
+        timestamp=timestamp_str,
         duration_s=time.monotonic() - run_start,
         suites=suite_results,
     )
@@ -292,15 +305,8 @@ def main() -> int:
     if args.mode == "cc":
         print(JsonReporter.format(run_result, regressions=regressions))
     else:
-        for line in TerminalReporter.format_summary(run_result):
+        for line in TerminalReporter.format_summary(run_result, regressions):
             print(line)
-        if regressions:
-            print(f"\n📈 对比上次:")
-            for r in regressions:
-                severity_sym = {"regression": "🔴", "warning": "🟡",
-                                "improvement": "🟢", "info": "🔵"}
-                sym = severity_sym.get(r.get("severity", ""), "  ")
-                print(f"  {sym} {r['scenario']}: {r['change']}")
 
     # Save results
     save_path = save_run(run_result, RUNS_DIR)
@@ -316,7 +322,7 @@ def main() -> int:
     md_path.write_text(md, encoding="utf-8")
 
     if args.mode == "human":
-        print(f"\n报告: {md_path}")
+        TerminalReporter.print_report_path(str(md_path))
 
     harness.shutdown()
     return 1 if run_result.summary["fail"] > 0 else 0
