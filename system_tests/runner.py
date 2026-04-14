@@ -196,10 +196,37 @@ def run_human_review(run: RunResult) -> list[dict]:
     return reviews
 
 
+def build_adhoc_suite(prompts: list[str], name: str = "adhoc") -> dict[str, Any]:
+    """Build an ephemeral suite from a list of prompts.
+
+    No assertions — just captures full trace for CC to inspect.
+    Each prompt becomes a step in a single scenario (multi-turn within one session).
+    """
+    steps = [{"user": p.strip()} for p in prompts if p.strip()]
+    return {
+        "_file": name,
+        "name": f"ad-hoc ({name})",
+        "setup": {"user": {"id": "allen", "name": "Allen", "role": "owner"}},
+        "scenarios": [
+            {
+                "name": name,
+                "review": True,
+                "review_hint": "ad-hoc test — inspect trace for behavior correctness",
+                "steps": steps,
+            }
+        ],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Jarvis 系统测试")
     parser.add_argument("--mode", choices=["human", "cc"], default="human")
     parser.add_argument("--suite", help="Suite name or comma-separated list (e.g. smart_home,memory)")
+    parser.add_argument("--prompts",
+                        help="Ad-hoc prompts separated by | (multi-turn session). "
+                             "Takes precedence over --suite. Example: --prompts '开灯|关掉'")
+    parser.add_argument("--adhoc-name", default="adhoc",
+                        help="Scenario name label when using --prompts")
     parser.add_argument("--free", action="store_true", help="Free chat mode")
     parser.add_argument("--no-interactive", action="store_true")
     parser.add_argument("--live", action="store_true", help="Use real devices (Hue bridge) instead of sim")
@@ -212,17 +239,26 @@ def main() -> int:
         from system_tests.reporter import enable_color
         enable_color()
 
-    # Load scenarios
-    all_suites = load_suites(SCENARIOS_DIR)
-    if not all_suites and not args.free:
-        print("No scenario files found in", SCENARIOS_DIR)
-        return 1
+    # Build scenario list
+    if args.prompts:
+        prompts = [p for p in args.prompts.split("|") if p.strip()]
+        if not prompts:
+            print("--prompts is empty", file=sys.stderr)
+            return 1
+        all_suites = [build_adhoc_suite(prompts, args.adhoc_name)]
+    else:
+        all_suites = load_suites(SCENARIOS_DIR)
+        if not all_suites and not args.free:
+            print("No scenario files found in", SCENARIOS_DIR)
+            return 1
 
     # Initialize harness
     mode_label = "live" if args.live else "sim"
     extras = []
     if args.tts:
         extras.append("tts")
+    if args.prompts:
+        extras.append("adhoc")
     extra_str = f"+{','.join(extras)}" if extras else ""
     print(f"init  jarvis-app  mode={mode_label}  {extra_str}")
     t0 = time.monotonic()
@@ -236,7 +272,9 @@ def main() -> int:
 
     # Select suites
     selected: list[dict]
-    if args.suite:
+    if args.prompts:
+        selected = all_suites  # ad-hoc suite, just run it
+    elif args.suite:
         names = [n.strip() for n in args.suite.split(",")]
         selected = [s for s in all_suites if s.get("_file") in names or s.get("name") in names]
     elif args.no_interactive or args.mode == "cc":
