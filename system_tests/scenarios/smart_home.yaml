@@ -1,11 +1,17 @@
 name: 智能家居控制
-description: Hue 灯光控制（匹配真实设备 ID）
+description: Hue 灯光控制（按设备能力分组）
+
+# 设备能力参考：
+# - bedroom_lamp_1/2 (Hue White) — 只有 on/off + brightness
+# - desk_play_1/2 (Hue Play)    — on/off + brightness + color + color_temp
+# - desk_lightstrip (Lightstrip) — on/off + brightness + color + color_temp
 
 setup:
   user: {id: allen, name: Allen, role: owner}
 
 scenarios:
-  - name: 单灯开关
+  # ── 基础开关（白光灯）──
+  - name: 卧室灯开关
     steps:
       - user: "打开卧室灯"
         expect:
@@ -19,7 +25,8 @@ scenarios:
           device_state:
             bedroom_lamp_1: {is_on: false}
 
-  - name: 亮度调节
+  # ── 亮度调节（白光灯）──
+  - name: 卧室灯亮度
     steps:
       - user: "把卧室灯调到50%亮度"
         expect:
@@ -27,13 +34,30 @@ scenarios:
           device_state:
             bedroom_lamp_1: {is_on: true}
 
-  - name: 色温调节
+  # ── 色温调节（彩光灯）──
+  - name: 桌灯色温
     steps:
-      - user: "把卧室灯调成暖光"
+      - user: "把桌灯1调成暖光"
         expect:
           route: smart_home
+          device_state:
+            desk_play_1: {is_on: true}
+    review: true
+    review_hint: "桌灯色温是否正确调成暖光"
 
-  - name: 灯带控制
+  # ── 颜色控制（彩光灯）──
+  - name: 灯带颜色
+    steps:
+      - user: "把灯带调成蓝色"
+        expect:
+          route: smart_home
+          device_state:
+            desk_lightstrip: {is_on: true}
+    review: true
+    review_hint: "灯带颜色是否正确调成蓝色"
+
+  # ── 灯带基础控制 ──
+  - name: 灯带开关
     steps:
       - user: "打开灯带"
         expect:
@@ -45,7 +69,8 @@ scenarios:
           device_state:
             desk_lightstrip: {is_on: false}
 
-  - name: 灯组控制
+  # ── 灯组控制 ──
+  - name: 所有灯控制
     steps:
       - user: "把所有灯都打开"
         expect:
@@ -56,14 +81,19 @@ scenarios:
           device_state:
             all_lights: {is_on: false}
 
-  - name: 桌灯控制
+  - name: 桌灯组控制
     steps:
       - user: "打开桌灯"
         expect:
           route: smart_home
           device_state:
             desk_lights: {is_on: true}
+      - user: "关掉桌灯"
+        expect:
+          device_state:
+            desk_lights: {is_on: false}
 
+  # ── 自然语言理解 ──
   - name: 自然语言控灯
     review: true
     steps:
@@ -71,3 +101,9 @@ scenarios:
         expect:
           route: smart_home
         review_hint: "是否正确理解为调暗卧室灯，回复是否说明了调整结果"
+
+  - name: 不支持的操作
+    review: true
+    steps:
+      - user: "把卧室灯调成蓝色"
+        review_hint: "bedroom_lamp 是白光灯不支持颜色，小月应该说明这个限制，而不是假装执行"
