@@ -82,6 +82,10 @@ class InterruptMonitor:
         self._audio_chunks: list[np.ndarray] = []
         self._recording = False
 
+        # Silero VAD gate (loaded lazily in start() for symmetry with recognizer)
+        self._vad: Any = None
+        self._vad_config = icfg
+
         # Mic listener state (initialized here for type-safety)
         self._mic_stop: threading.Event | None = None
         self._mic_stream: Any = None
@@ -95,8 +99,11 @@ class InterruptMonitor:
         self._audio_chunks = []
         self._recording = True
         self._load_recognizer()
+        self._load_vad()
         if self._recognizer:
             self._stream = self._recognizer.create_stream()
+        if self._vad is not None:
+            self._vad.reset()
 
     def stop(self) -> np.ndarray | None:
         """End monitoring session. Returns accumulated audio or None."""
@@ -123,9 +130,10 @@ class InterruptMonitor:
     def feed_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> None:
         """Feed an audio chunk for analysis.
 
-        Args:
-            audio: Float32 mono audio samples.
-            sample_rate: Sample rate (must be 16000).
+        Silero VAD gates the stream: non-speech chunks are accumulated for
+        post-interrupt re-transcription but NOT forwarded to streaming ASR.
+        This avoids wasting CPU on AEC residual noise and reduces false
+        keyword triggers.
         """
         if not self.enabled or not self._recording:
             return
@@ -133,6 +141,16 @@ class InterruptMonitor:
         # Accumulate for post-interrupt re-transcription (stop after fired)
         if not self._fired:
             self._audio_chunks.append(audio.copy())
+
+        # VAD gate: skip ASR when no speech detected
+        if self._vad is not None:
+            try:
+                self._vad.accept_waveform(audio)
+                if not self._vad.is_speech_detected():
+                    return
+            except Exception as exc:
+                LOGGER.debug("VAD gate error: %s", exc)
+                return
 
         if self._stream and self._recognizer:
             try:
@@ -267,3 +285,35 @@ class InterruptMonitor:
             )
         except Exception as exc:
             LOGGER.warning("Failed to load streaming ASR: %s", exc)
+
+    def _load_vad(self) -> None:
+        """Lazy-load the Silero VAD gate.
+
+        Fail fast on load errors — no fallback path.
+        """
+        if self._vad is not None:
+            return
+        model_path = self._vad_config.get("vad_model_path", "")
+        if not model_path:
+            LOGGER.info("No VAD model configured; interrupt gate disabled")
+            return
+        import sherpa_onnx
+        cfg = sherpa_onnx.VadModelConfig()
+        cfg.silero_vad.model = str(model_path)
+        cfg.silero_vad.threshold = float(
+            self._vad_config.get("vad_threshold_during_tts", 0.8)
+        )
+        cfg.silero_vad.min_speech_duration = float(
+            self._vad_config.get("vad_min_speech_duration", 0.15)
+        )
+        cfg.silero_vad.min_silence_duration = float(
+            self._vad_config.get("vad_min_silence_duration", 0.2)
+        )
+        cfg.silero_vad.max_speech_duration = float(
+            self._vad_config.get("vad_max_speech_duration", 10.0)
+        )
+        cfg.sample_rate = 16000
+        self._vad = sherpa_onnx.VoiceActivityDetector(
+            cfg, buffer_size_in_seconds=10,
+        )
+        LOGGER.info("Silero VAD gate loaded from %s", model_path)
