@@ -360,7 +360,13 @@ def main() -> int:
     md_path.write_text(md, encoding="utf-8")
 
     if args.mode == "human":
-        TerminalReporter.print_report_path(str(md_path))
+        # Clear terminal then dump full markdown report for easy copy
+        import os as _os
+        _os.system("clear" if _os.name != "nt" else "cls")
+        print(md)
+        print()
+        print(f"---")
+        print(f"saved: {md_path}")
 
     harness.shutdown()
     return 1 if run_result.summary["fail"] > 0 else 0
