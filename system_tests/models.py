@@ -87,6 +87,7 @@ class StepResult:
     assertions: dict[str, AssertionResult]
     error: str | None
     tts_info: TtsInfo | None = None
+    timings: dict[str, int] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:

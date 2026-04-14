@@ -366,6 +366,7 @@ class TestHarness:
             api_calls=dict(self._api_counter),
             assertions={},
             error=error,
+            timings=dict(getattr(self.app, "_last_timings", {})),
         )
 
         # Evaluate assertions

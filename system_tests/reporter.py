@@ -77,11 +77,31 @@ class TerminalReporter:
             played_str = f", {t.synth_ms}ms" if t.played else ""
             print(f"│ 🔊 TTS: {t.engine}{played_str}{' (已播放)' if t.played else ''}")
 
-        # API calls + latency
+        # API calls
         parts = []
         if step.api_calls:
             parts = [f"{k}×{v}" for k, v in step.api_calls.items()]
-        print(f"│ 💰 API: {', '.join(parts) if parts else '无'}  ⏱ {step.latency_ms}ms")
+        print(f"│ 💰 API: {', '.join(parts) if parts else '无'}")
+
+        # Latency breakdown
+        if step.timings:
+            t = step.timings
+            seg_parts = []
+            if "route_ms" in t:
+                seg_parts.append(f"路由 {t['route_ms']}ms")
+            if "memory_query_ms" in t:
+                seg_parts.append(f"记忆 {t['memory_query_ms']}ms")
+            if "direct_answer_ms" in t:
+                seg_parts.append(f"直答 {t['direct_answer_ms']}ms")
+            if "local_exec_ms" in t:
+                seg_parts.append(f"本地 {t['local_exec_ms']}ms")
+            if "llm_first_ms" in t:
+                seg_parts.append(f"LLM首句 {t['llm_first_ms']}ms")
+            if seg_parts:
+                print(f"│ ⏱ 分段: {' + '.join(seg_parts)}")
+        if step.tts_info and step.tts_info.synth_ms > 0:
+            print(f"│ ⏱ TTS: {step.tts_info.synth_ms}ms")
+        print(f"│ ⏱ 总: {step.latency_ms}ms")
 
         # Assertions
         if step.assertions:

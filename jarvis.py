@@ -670,6 +670,7 @@ class JarvisApp:
         self._last_path = "unknown"
         self._last_device_ops = []
         self._last_memory_hits = ""
+        self._last_timings: dict[str, int] = {}
 
         # Resume from interruption: "继续说" etc
         from core.interrupt_monitor import RESUME_KEYWORDS
@@ -792,12 +793,15 @@ class JarvisApp:
         # ── 记忆检索 ── 向量搜索相关记忆，作为 context 传给后续 LLM（~50-100ms）
         memory_context = ""
         if user_id:
+            _t_mem_start = time.monotonic()
             try:
                 memory_context = self.memory_manager.query(text, user_id)
+                _mem_ms = int((time.monotonic() - _t_mem_start) * 1000)
                 self._last_memory_hits = memory_context
+                self._last_timings["memory_query_ms"] = _mem_ms
                 if memory_context:
                     _mem_count = memory_context.count("\n- ")
-                    print(f"🧠 记忆检索: {_mem_count} 条相关记忆")
+                    print(f"🧠 记忆检索: {_mem_count} 条相关记忆 ({_mem_ms}ms)")
             except Exception as exc:
                 self.logger.warning("Memory query failed: %s", exc)
 
@@ -807,7 +811,9 @@ class JarvisApp:
                 direct = self.direct_answerer.try_answer(text, user_id)
                 if direct:
                     _t_da = time.monotonic()
-                    print(f"⏱ DA直答: {(_t_da - _t_think)*1000:.0f}ms")
+                    _da_ms = int((_t_da - _t_think)*1000)
+                    print(f"⏱ DA直答: {_da_ms}ms")
+                    self._last_timings["direct_answer_ms"] = _da_ms
                     self.logger.info("Level 1 direct answer: %s", direct[:60])
                     self._last_path = "memory_l1"
                     print(f"📍 路径: {self._last_path}")
@@ -840,15 +846,17 @@ class JarvisApp:
                 self.logger.warning("Unified route failed: %s", exc)
 
         _t_route = time.monotonic()
+        _route_ms = int((_t_route - _t_think)*1000)
         self._last_route = route
+        self._last_timings["route_ms"] = _route_ms
         if route:
-            print(f"⏱ 路由: {(_t_route - _t_think)*1000:.0f}ms → {route.tier}/{route.intent} ({route.provider}, {route.confidence:.2f})")
+            print(f"⏱ 路由: {_route_ms}ms → {route.tier}/{route.intent} ({route.provider}, {route.confidence:.2f})")
             if route.actions:
                 for a in route.actions:
                     val_str = f" ({a['value']})" if a.get("value") else ""
                     print(f"   📋 {a.get('device_id', '?')} → {a.get('action', '?')}{val_str}")
         else:
-            print(f"⏱ 路由: {(_t_route - _t_think)*1000:.0f}ms → 无路由")
+            print(f"⏱ 路由: {_route_ms}ms → 无路由")
 
         if response_text is None and route is not None:
             if route.text_response:
@@ -937,7 +945,9 @@ class JarvisApp:
         # 本地执行计时
         if response_text is not None:
             _t_local = time.monotonic()
-            print(f"⏱ 本地执行: {(_t_local - _t_route)*1000:.0f}ms")
+            _local_ms = int((_t_local - _t_route)*1000)
+            print(f"⏱ 本地执行: {_local_ms}ms")
+            self._last_timings["local_exec_ms"] = _local_ms
 
         # ── 云端 LLM ── 前面都没处理掉才到这里。两种模式：
         #   - REQLLM 转述：本地查到了数据，让 LLM 用小月语气润色
@@ -964,7 +974,9 @@ class JarvisApp:
                 sentence_count += 1
                 if sentence_count == 1:
                     _t_first_sentence[0] = time.monotonic()
-                    print(f"⏱ LLM首句: {(_t_first_sentence[0] - _t_llm_start)*1000:.0f}ms")
+                    _llm_first_ms = int((_t_first_sentence[0] - _t_llm_start)*1000)
+                    print(f"⏱ LLM首句: {_llm_first_ms}ms")
+                    self._last_timings["llm_first_ms"] = _llm_first_ms
                 print(f"🤖 Jarvis: {sentence}")
                 if tts_pipeline:
                     st = SentenceType.FIRST if sentence_count == 1 else SentenceType.MIDDLE
