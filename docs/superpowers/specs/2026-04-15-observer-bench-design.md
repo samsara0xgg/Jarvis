@@ -35,7 +35,7 @@ Observer 读一段对话（user + assistant + tool_calls），输出 structured 
 
 ### 2.1 目标
 - 输出一张可直接拍板的表：**哪个模型做中文 Observer 的 F1 最高 / 延迟可接受 / 成本最低**
-- 覆盖 7 个候选 Observer 模型（fast/cheap 档位）
+- 覆盖 8 个候选 Observer 模型（fast/cheap 档位）
 - 使用统一 Tool Use 调用路径，消除 API feature gap 带来的不公平
 - 总耗时 <30 min 总成本 <$6
 
@@ -451,20 +451,7 @@ def build_tool_call_kwargs(provider: str) -> dict:
         }
 ```
 
-### 6.5 Observer call 复用 v3
-
-```python
-def call_observer(spec: v3.ModelSpec, fixture: Fixture) -> ObserverCall:
-    """Single call to Observer. Returns raw response + parsed observations."""
-    system, user_msg = build_observer_prompt(fixture)
-    tool_kwargs = build_tool_call_kwargs(spec.provider)
-    
-    # 调 v3 的 provider-specific call 函数, 但注入 tool 参数
-    # 需要小改 v3 的 call_* 函数签名, 接受可选 extra_kwargs
-    #
-    # Alternatively: 在 observer_bench.py 里重写一个 call_with_tools(...)
-    # 复用 v3 的 extract_cache_metrics + retry 逻辑
-```
+### 6.5 Observer call — 零侵入 v3
 
 **零侵入 v3**: v3 完全不修改（签名、行为都不动）。observer_bench.py 实现**自己的** tool-call 版本 `call_with_tools_*`，与 v3 的 `call_*` 并存但独立。
 
@@ -662,7 +649,7 @@ uv run python scripts/observer_bench.py --observer-generate
   # 生成 fx_XXX.draft.json 文件到 bench_fixtures/observer_cn/
   # Allen 编辑 → mv fx_001.draft.json fx_001.json 批准
 
-# Pilot: 只跑 fx_001~fx_005 × 7 models = 35 calls
+# Pilot: 只跑 fx_001~fx_005 × 8 models = 40 calls
 uv run python scripts/observer_bench.py --observer-pilot
 
 # 全量: 跑所有 observer_cn/fx_*.json 文件
@@ -756,7 +743,7 @@ CSV_FIELDS = [
 ```
 
 **字段语义**:
-- `fixture_category`: 从 `seeds.yaml` 的 scene 字段映射而来，供 Table 3 按类别 breakdown 用
+- `fixture_category`: 从 `seeds.yaml` 的 `category` 枚举字段直读（preference/state_change/temporal/emotion/smart_home/correction/multi_entity/completion），供 Table 3a 按类别 breakdown 用
 - `actual_input_tokens_api`: 保持与 v3 CSV 同名，方便跨实验分析
 - `model_output_raw`: 失败排查用，人眼看模型输出了啥
 ```
