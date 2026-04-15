@@ -306,12 +306,42 @@ def extract_cache_metrics(provider: str, response: Any) -> dict[str, int]:
     prompt_total = _get(response, "usage.prompt_tokens", 0)
     cached = _get(response, "usage.prompt_tokens_details.cached_tokens", 0)
     output = _get(response, "usage.completion_tokens", 0)
+    # xAI cache support is undocumented as of 2026-04; warn once if we never see the field
+    if provider == "xai":
+        _maybe_warn_xai_cache_shape(response)
     return {
         "cache_write_tokens": 0,
         "cache_read_tokens": cached,
         "prompt_total_tokens": prompt_total,
         "output_tokens": output,
     }
+
+
+_XAI_CACHE_SHAPE_CHECKED = False
+
+
+def _maybe_warn_xai_cache_shape(response: Any) -> None:
+    """Print once on first xAI response whether prompt_tokens_details.cached_tokens is present.
+
+    xAI docs don't explicitly confirm OpenAI-compat cache fields. This banner makes
+    the actual behavior visible in the first call output, symmetric with the
+    Anthropic cache_control debug print.
+    """
+    global _XAI_CACHE_SHAPE_CHECKED
+    if _XAI_CACHE_SHAPE_CHECKED:
+        return
+    _XAI_CACHE_SHAPE_CHECKED = True
+    details = _get(response, "usage.prompt_tokens_details", None)
+    cached = _get(response, "usage.prompt_tokens_details.cached_tokens", None)
+    print("=" * 78)
+    print("XAI FIRST CALL RESPONSE (DEBUG) — checking cache field availability")
+    print(f"  usage.prompt_tokens_details present:       {details is not None}")
+    print(f"  usage.prompt_tokens_details.cached_tokens: {cached}")
+    if details is None or cached is None:
+        print("  ⚠️  xAI does NOT expose OpenAI-compat cache metrics. Treating as no cache.")
+    else:
+        print(f"  ✓ xAI exposes cache_read_tokens = {cached}. OpenAI-compat confirmed.")
+    print("=" * 78, flush=True)
 
 # ===== PROVIDERS =====
 
@@ -756,12 +786,17 @@ async def run_one_mc_block(
     ctx_size: int,
     notes: str,
     sem: asyncio.Semaphore,
+    task_names: tuple[str, ...] = ("simple", "recall", "synthesis"),
     progress_cb: Callable[[CallResult], None] | None = None,
 ) -> list[CallResult]:
-    """Run 3 tasks × (1 cold + 2 warm) = 9 calls for one (model, context)."""
+    """Run len(task_names) tasks × (1 cold + 2 warm) calls for one (model, context).
+
+    Full mode: 3 tasks × 3 calls = 9 calls.
+    --decision mode: 1 task × 3 calls = 3 calls (saves 3× cost).
+    """
     all_results: list[CallResult] = []
     async with sem:  # per-provider serialize
-        for task_name in ("simple", "recall", "synthesis"):
+        for task_name in task_names:
             bust_prefix = make_bust_prefix()
             cs = CallSpec(
                 model_spec=active.model_spec,
@@ -798,6 +833,7 @@ async def run_all_mc_blocks(
     active_specs: list[ActiveSpec],
     context_sizes: list[int],
     fixtures_dir: Path,
+    task_names: tuple[str, ...] = ("simple", "recall", "synthesis"),
     progress_cb: Callable[[CallResult], None] | None = None,
 ) -> list[CallResult]:
     """Cross-provider concurrent; per-provider Semaphore(1) for atomicity."""
@@ -815,7 +851,8 @@ async def run_all_mc_blocks(
                 ctx_size,
                 notes_cache[ctx_size],
                 provider_sems[active.model_spec.provider],
-                progress_cb,
+                task_names=task_names,
+                progress_cb=progress_cb,
             ))
     lists = await asyncio.gather(*coros, return_exceptions=False)
     flat: list[CallResult] = []
@@ -1122,13 +1159,14 @@ def check_smoke_gate(mode: str, bench_results_root: Path, force: bool) -> None:
     for meta in bench_results_root.glob("*/run_meta.json"):
         try:
             m = json.loads(meta.read_text(encoding="utf-8"))
-            if m.get("mode") == "quick" and m.get("errors_total", 99) <= 2:
+            # Threshold 5: 36 calls with 3-4 transient network failures is normal
+            if m.get("mode") == "quick" and m.get("errors_total", 99) <= 5:
                 return
         except Exception:
             continue
     raise SystemExit(
         "\n❌ Smoke gate: no successful --quick in bench_results/ "
-        "(need errors_total ≤ 2).\n"
+        "(need errors_total ≤ 5).\n"
         "Run `uv run python scripts/bench_llm_v3.py --quick` first,\n"
         "or pass --force-standard to override.\n"
     )
@@ -1212,8 +1250,9 @@ async def _main_async(args: argparse.Namespace) -> None:
           f"{len(active_specs) * len(plan.context_sizes) * len(plan.tasks) * 3} total calls")
 
     from tqdm.asyncio import tqdm as async_tqdm  # local import for --dry-run speed
-    pbar = async_tqdm(total=len(active_specs) * len(plan.context_sizes) * 3 * 3,
-                      desc="calls", unit="call")
+    # total = specs × contexts × tasks × 3 (cold + 2 warm per task)
+    expected_calls = len(active_specs) * len(plan.context_sizes) * len(plan.tasks) * 3
+    pbar = async_tqdm(total=expected_calls, desc="calls", unit="call")
     running_cost = [0.0]
     error_count = [0]
 
@@ -1229,14 +1268,11 @@ async def _main_async(args: argparse.Namespace) -> None:
         active_specs,
         plan.context_sizes,
         fixtures_dir,
+        task_names=plan.tasks,
         progress_cb=progress_cb,
     )
     pbar.close()
     elapsed = time.monotonic() - t0
-
-    # Post-filter: for --decision, keep only recall tasks
-    if plan.mode == "decision":
-        results = [r for r in results if r.task == "recall"]
 
     # Output
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
