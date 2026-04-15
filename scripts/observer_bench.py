@@ -347,7 +347,61 @@ def save_draft_fixture(fx: Fixture, dir_path: Path) -> Path:
         encoding="utf-8",
     )
     return path
-# ===== §4 PROMPT + TOOL BUILDERS (Task 5) =====
+# ===== §4 PROMPT + TOOL BUILDERS =====
+
+def build_observer_prompt(fixture: Fixture) -> tuple[str, str]:
+    """Returns (system_prompt, user_message) for Observer call."""
+    system = OBSERVER_SYSTEM_PROMPT
+
+    lines = ["以下是一段对话，抽取 observation 并调用 record_observations：\n"]
+    for turn in fixture.dialogue:
+        role = turn.get("role")
+        if role == "user":
+            emo = turn.get("emotion", "")
+            emo_suffix = f" [情绪: {emo}]" if emo else ""
+            lines.append(f"USER ({turn.get('time', '??:??')}){emo_suffix}: {turn.get('content', '')}")
+        elif role == "assistant":
+            lines.append(f"ASSISTANT ({turn.get('time', '??:??')}): {turn.get('content', '')}")
+        elif role == "tool":
+            args_str = json.dumps(turn.get("args", {}), ensure_ascii=False)
+            name = turn.get("name", "?")
+            result = turn.get("result", "")
+            lines.append(f"TOOL_CALL {name}({args_str}) → {result}")
+        else:
+            lines.append(f"[unknown role={role}] {turn.get('content', '')}")
+
+    lines.append("\n请调用 record_observations 工具。")
+    return system, "\n".join(lines)
+
+
+def build_tool_call_kwargs(provider: str) -> dict[str, Any]:
+    """Return provider-specific tool + tool_choice kwargs (spec §6.4)."""
+    if provider == "anthropic":
+        return {
+            "tools": [{
+                "name": OBSERVER_TOOL_DEF["name"],
+                "description": OBSERVER_TOOL_DEF["description"],
+                "input_schema": OBSERVER_TOOL_DEF["parameters"],
+            }],
+            "tool_choice": {"type": "tool", "name": "record_observations"},
+        }
+    if provider == "google":
+        return {
+            "tools": [{"function_declarations": [{
+                "name": OBSERVER_TOOL_DEF["name"],
+                "description": OBSERVER_TOOL_DEF["description"],
+                "parameters": OBSERVER_TOOL_DEF["parameters"],
+            }]}],
+            "tool_config": {"function_calling_config": {
+                "mode": "ANY",
+                "allowed_function_names": ["record_observations"],
+            }},
+        }
+    # openai / xai / groq / deepseek (all OpenAI-compat)
+    return {
+        "tools": [{"type": "function", "function": OBSERVER_TOOL_DEF}],
+        "tool_choice": {"type": "function", "function": {"name": "record_observations"}},
+    }
 # ===== §5 PROVIDER CALLERS (Tasks 6-8) =====
 # ===== §6 RETRY + ASSEMBLY (Task 9) =====
 # ===== §7 WARMUP (Task 11) =====

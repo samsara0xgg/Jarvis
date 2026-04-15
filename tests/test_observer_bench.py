@@ -185,3 +185,48 @@ def test_save_draft_fixture_writes_draft_suffix(tmp_path):
     assert path.exists()
     data = _json.loads(path.read_text(encoding="utf-8"))
     assert data["id"] == "fx_003"
+
+
+def test_build_observer_prompt_renders_all_roles():
+    fx = ob.Fixture(
+        id="fx_001", category="smart_home", seed_id="fx_001",
+        generated_by="claude-opus-4-6",
+        dialogue=[
+            {"role": "user", "time": "14:28", "emotion": "tired", "content": "调灯"},
+            {"role": "assistant", "time": "14:28", "content": "好的"},
+            {"role": "tool", "name": "hue.set_color",
+             "args": {"room": "living"}, "result": "ok"},
+        ],
+        expected_observations=[], must_not_contain_globally=[],
+    )
+    system, user_msg = ob.build_observer_prompt(fx)
+    assert "record_observations" in system   # part of OBSERVER_SYSTEM_PROMPT
+    assert "USER (14:28)" in user_msg
+    assert "[情绪: tired]" in user_msg
+    assert "ASSISTANT (14:28): 好的" in user_msg
+    assert "TOOL_CALL hue.set_color" in user_msg
+    assert "room" in user_msg and "living" in user_msg
+
+
+def test_build_tool_call_kwargs_anthropic():
+    kw = ob.build_tool_call_kwargs("anthropic")
+    assert kw["tool_choice"] == {"type": "tool", "name": "record_observations"}
+    assert kw["tools"][0]["name"] == "record_observations"
+    assert "input_schema" in kw["tools"][0]
+
+
+def test_build_tool_call_kwargs_openai_compat():
+    for provider in ("openai", "xai", "groq", "deepseek"):
+        kw = ob.build_tool_call_kwargs(provider)
+        assert kw["tool_choice"]["type"] == "function"
+        assert kw["tool_choice"]["function"]["name"] == "record_observations"
+        assert kw["tools"][0]["type"] == "function"
+
+
+def test_build_tool_call_kwargs_gemini():
+    kw = ob.build_tool_call_kwargs("google")
+    assert "function_declarations" in kw["tools"][0]
+    assert kw["tool_config"]["function_calling_config"]["mode"] == "ANY"
+    assert kw["tool_config"]["function_calling_config"]["allowed_function_names"] == [
+        "record_observations"
+    ]
