@@ -748,6 +748,82 @@ async def resolve_active_specs() -> list[ActiveSpec]:
     return active
 
 
+CACHE_WINDOW_RISK_SEC = 100.0  # 3× Anthropic's 300s TTL, very defensive
+
+
+async def run_one_mc_block(
+    active: ActiveSpec,
+    ctx_size: int,
+    notes: str,
+    sem: asyncio.Semaphore,
+    progress_cb: Callable[[CallResult], None] | None = None,
+) -> list[CallResult]:
+    """Run 3 tasks × (1 cold + 2 warm) = 9 calls for one (model, context)."""
+    all_results: list[CallResult] = []
+    async with sem:  # per-provider serialize
+        for task_name in ("simple", "recall", "synthesis"):
+            bust_prefix = make_bust_prefix()
+            cs = CallSpec(
+                model_spec=active.model_spec,
+                active_model_id=active.active_model_id,
+                bust_prefix=bust_prefix,
+                notes=notes,
+                task_name=task_name,
+            )
+            t_start = time.monotonic()
+            task_results: list[CallResult] = []
+            for run_idx in range(3):
+                cache_state = "cold" if run_idx == 0 else "warm"
+                r = await call_api_with_retry(
+                    cs, cache_state, run_idx, ctx_size, active.is_fallback
+                )
+                task_results.append(r)
+                if progress_cb:
+                    progress_cb(r)
+            t_elapsed = time.monotonic() - t_start
+            cache_window_risk = t_elapsed > CACHE_WINDOW_RISK_SEC
+            if cache_window_risk:
+                LOGGER.warning(
+                    "%s ctx=%d task=%s took %.1fs (>%.0fs) — warm cache may have expired",
+                    active.active_model_id, ctx_size, task_name, t_elapsed,
+                    CACHE_WINDOW_RISK_SEC,
+                )
+            for r in task_results:
+                r.cache_window_risk = cache_window_risk
+            all_results.extend(task_results)
+    return all_results
+
+
+async def run_all_mc_blocks(
+    active_specs: list[ActiveSpec],
+    context_sizes: list[int],
+    fixtures_dir: Path,
+    progress_cb: Callable[[CallResult], None] | None = None,
+) -> list[CallResult]:
+    """Cross-provider concurrent; per-provider Semaphore(1) for atomicity."""
+    provider_sems: dict[str, asyncio.Semaphore] = {
+        p: asyncio.Semaphore(1) for p in {a.model_spec.provider for a in active_specs}
+    }
+    # Pre-load all fixtures (avoids race on first-time generation across coroutines)
+    notes_cache = {c: load_notes(c, fixtures_dir) for c in context_sizes}
+
+    coros = []
+    for active in active_specs:
+        for ctx_size in context_sizes:
+            coros.append(run_one_mc_block(
+                active,
+                ctx_size,
+                notes_cache[ctx_size],
+                provider_sems[active.model_spec.provider],
+                progress_cb,
+            ))
+    lists = await asyncio.gather(*coros, return_exceptions=False)
+    flat: list[CallResult] = []
+    for sub in lists:
+        flat.extend(sub)
+    return flat
+
+
 # ===== (sections below added in later tasks) =====
 
 def main() -> None:
