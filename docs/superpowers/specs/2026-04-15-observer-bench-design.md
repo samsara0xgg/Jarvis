@@ -140,6 +140,7 @@ observer_bench.py
 # · 任务完成信号 ✅: 1 条
 
 - id: fx_001
+  category: smart_home    # ★ 枚举字段 (必填), 用于 Table 3 breakdown
   scene: "智能家居 + 疲惫语气"
   user_emotion_hint: tired
   tone_hint: "口语化·带抱怨·短句·允许粗口"
@@ -154,6 +155,7 @@ observer_bench.py
     - "卧室"
 
 - id: fx_002
+  category: preference
   scene: "食物过敏声明"
   user_emotion_hint: neutral
   tone_hint: "平静陈述·可能伴随上下文（菜谱、点餐）"
@@ -164,6 +166,9 @@ observer_bench.py
     - "喜欢虾"
     - "不喜欢"  # 过敏≠不喜欢, 语义必须准
     - "鸡蛋"  # 不相关的过敏
+
+# category 枚举值:
+#   preference | state_change | temporal | emotion | smart_home | correction | multi_entity | completion
 
 # ... fx_003 ~ fx_020
 ```
@@ -252,22 +257,32 @@ Step 1 · Allen 写 seeds.yaml (pilot 阶段 5 条)          [30 min]
 Step 2 · uv run python scripts/observer_bench.py --observer-generate
          → 对每条 seed 调 claude-opus-4-6
          → 生成 dialogue + draft expected_observations
-         → stdout 打印 JSON, Allen 复制审核                 [5 min 生成 + 30 min review]
-Step 3 · Allen 改完 dialogue/ground truth, 手动写入
-         bench_fixtures/observer_cn/fx_XXX.json          [上一步内]
+         → **直接写到** bench_fixtures/observer_cn/fx_XXX.draft.json   [5 min]
+Step 3 · Allen 打开 fx_XXX.draft.json 编辑 → 改完后
+         **rename 去掉 .draft 后缀** 表示批准:
+         mv fx_001.draft.json fx_001.json                 [30 min]
+         (脚本只读无 .draft 后缀的文件 → 自动忽略未批准的草稿)
 Step 4 · uv run python scripts/observer_bench.py --observer-pilot
-         → 跑 7 models × 5 fixtures = 35 calls
+         → 跑 8 models × 5 fixtures = 40 calls
          → 看 summary.md 评测口径                         [5 min run + 15 min review]
-         → 不对 → 改评测算法 → 回 step 4
+         → ★ **Early-exit**: 若某模型 tool_success<80% 或 F1<0.3·
+            从全量 candidates 移除 (写进 run_meta.json)
+         → 评测口径不对 → 改评测算法 → 回 step 4
          → 对 → step 5
 Step 5 · Allen 扩 seeds.yaml 到 20 条                    [1 hr]
-Step 6 · 重复 step 2-3 生成 fx_006~fx_020                [10 min + 1 hr review]
+Step 6 · 重复 step 2-3 生成 fx_006~fx_020.draft.json → rename [10 min + 1 hr review]
 Step 7 · uv run python scripts/observer_bench.py --observer
-         → 7 × 20 = 140 calls, ~$1.50                    [15 min]
+         → 幸存 candidates × 20 = ≤160 calls, ~$1.50-2  [15 min]
 Step 8 · Allen 分析 summary.md, 拍板 Observer 模型        [30 min]
 
 Allen 时间总计: ~3.25 hr (分两天完成)
 ```
+
+**Draft 工作流好处**:
+- Allen 改文件 (VS Code / vim 友好) 而不是 stdout copy-paste
+- `.draft` 后缀让 git diff 清晰区分 "AI 生成" vs "人批准"
+- 批准用 `mv` 一条命令, 没有 "忘了保存" 的失误空间
+- 可以保留 `fx_001.draft.json` 当作 review 痕迹对比查 diff
 
 ---
 
@@ -310,6 +325,20 @@ If user indicates change, frame as state change that supersedes:
 ## PRESERVE UNUSUAL PHRASING
 - 用户说 "累死了" → observation 写 "用户说累死了" 或 "用户疲惫 (原话: 累死了)"
 - 不要"洗成"教科书普通话
+
+## PRECISE VERBS — 动词保真
+动词必须忠于原意·不弱化·不强化·不推断。
+- "我买了 X" → "用户买了 X" ✓（不要写"用户考虑 X"或"用户提到 X"）
+- "我讨厌 Y" → "用户讨厌 Y" ✓（不要写"用户提到 Y"或"用户不太喜欢 Y"）
+- "我不在 Acme 了" → "用户不在 Acme" ✓（不要写"用户可能不在 Acme"）
+- 对 state change / correction 尤其关键：动词决定信息是否还有效
+
+## DETAILS IN ASSISTANT CONTENT — 保留具体信息
+assistant 生成的具体数值·名称·参数·代码片段·必须保留进 observation·
+不要压缩为概述。
+- assistant "已调为暖黄 2700K" → observation 应记 "2700K 暖黄"·不是只记"暖黄"
+- assistant "已设 4 个闹钟·6:30 6:45 7:00 7:15" → observation 应记 4 个时间点
+- 原则：能让未来 assistant 重放执行的细节不能丢
 
 ## EMOTION DETECTION
 If user message has emotion hint (tired/angry/happy/...) → add 🟡 observation
@@ -437,19 +466,32 @@ def call_observer(spec: v3.ModelSpec, fixture: Fixture) -> ObserverCall:
     # 复用 v3 的 extract_cache_metrics + retry 逻辑
 ```
 
-**v3 侵入改动**: v3 的 `call_anthropic` / `call_openai_compat` / `call_gemini` 签名加可选 `extra_kwargs: dict | None = None`，当前默认 `None` 不改行为。Observer bench 通过此参数注入 `tools` + `tool_choice`。
+**零侵入 v3**: v3 完全不修改（签名、行为都不动）。observer_bench.py 实现**自己的** tool-call 版本 `call_with_tools_*`，与 v3 的 `call_*` 并存但独立。
 
 ```python
-# v3 signature 变动 (反向兼容)
-async def call_anthropic(cs: CallSpec, extra_kwargs: dict | None = None) -> dict: ...
-async def call_openai_compat(cs: CallSpec, base_url: str, api_key: str,
-                             extra_kwargs: dict | None = None) -> dict: ...
-async def call_gemini(cs: CallSpec, extra_kwargs: dict | None = None) -> dict: ...
+# observer_bench.py 里重写（参考 v3 call_* 但加 tools + tool_choice + tool_call 解析）
+async def call_with_tools_anthropic(cs, tool_kwargs) -> ObserverCall: ...
+async def call_with_tools_openai_compat(cs, base_url, api_key, tool_kwargs) -> ObserverCall: ...
+async def call_with_tools_gemini(cs, tool_kwargs) -> ObserverCall: ...
+
+PROVIDER_DISPATCH_TOOLS = {
+    "anthropic": call_with_tools_anthropic,
+    "openai":    lambda cs, tk: call_with_tools_openai_compat(cs, "https://api.openai.com/v1", os.environ["OPENAI_API_KEY"], tk),
+    "xai":       lambda cs, tk: call_with_tools_openai_compat(cs, "https://api.x.ai/v1",    os.environ["XAI_API_KEY"],    tk),
+    "groq":      lambda cs, tk: call_with_tools_openai_compat(cs, "https://api.groq.com/openai/v1", os.environ["GROQ_API_KEY"], tk),
+    "google":    call_with_tools_gemini,
+    "deepseek":  lambda cs, tk: call_with_tools_openai_compat(cs, "https://api.deepseek.com/v1", os.environ["DEEPSEEK_API_KEY"], tk),
+}
 ```
 
-v3 的现有测试不受影响（默认参数）。observer_bench 调用时传入 `build_tool_call_kwargs(provider)`。
+**复用 v3 的部分**（import, 不修改）:
+- `ModelSpec` dataclass + `MODEL_CATALOG`（只对 catalog **追加**新条目，不改现有）
+- `extract_cache_metrics()` for 三段计价
+- `calc_cost()`
+- `make_bust_prefix()` (Observer 用新的 bust prefix 防缓存污染)
+- Warmup 模式（复制到 observer_bench 改个名，不复用 v3 函数本体）
 
-**响应解析**: tool_call 参数提取也在 observer_bench.py 里做（不进 v3）。
+**响应解析**: `tool_call.function.arguments` 解析在 observer_bench.py 里做，跨 provider 差异封装成一个函数。
 
 ---
 
@@ -468,8 +510,17 @@ class Scores:
     hallucination: bool          # 任意 obs.text 含 must_not_contain_globally
     extra_count: int             # len(model_obs) - len(expected_obs), 负数记 0
 
-def evaluate(model_obs: list[dict], fixture: Fixture) -> Scores:
-    # 1. Tool call 成功率
+def evaluate(model_obs: list[dict] | None, fixture: Fixture) -> Scores:
+    # 0. tool_success=False 保护: 模型没发 tool_call / arguments 解析失败
+    #    → model_obs=None, 所有指标置 0, halluc=False, extra=0
+    if model_obs is None:
+        return Scores(
+            tool_success=False,
+            precision=0.0, recall=0.0, f1=0.0, priority_accuracy=0.0,
+            hallucination=False, extra_count=0,
+        )
+
+    # 1. Tool call 字段合法性
     tool_success = (
         isinstance(model_obs, list)
         and all(
@@ -527,9 +578,12 @@ across 20 fixtures:
   Priority accuracy = macro avg (skip fixtures with 0 matched)
   Hallucination rate = count(halluc=True) / 20
   Tool success rate = count(tool_success=True) / 20
-  Avg observer_latency_ms = median across 20
+  Latency_p50 = p50 of observer_latency_ms  (跟 v3 同口径)
+  Latency_p95 = p95 of observer_latency_ms
   Cost per 100 = avg cost × 100
 ```
+
+**latency 口径**: 跟 v3 一致用 p50/p95 (percentile)。`observer_latency_ms` CSV 列记每次 call·summary 表格同时列 p50 / p95 两列。
 
 ### 7.3 评测口径的已知边界
 
@@ -541,16 +595,26 @@ across 20 fixtures:
 
 ## 8. Model Catalog 增补
 
-**新加 Gemini 2.5 Flash**（Mastra 默认 Observer）到 v3 的 `MODEL_CATALOG`:
+**加 2 个模型到 v3 的 `MODEL_CATALOG`**:
 
 ```python
-# 追加到 MODEL_CATALOG (v3)
+# 追加到 MODEL_CATALOG (v3) — 注意: 仅追加, 不改现有条目
 ModelSpec("google", "gemini-2.5-flash",
           ("models/gemini-2.5-flash", "gemini-flash-latest"),
           0.30, 2.50,      # $0.30/1M in, $2.50/1M out (2026-04)
           1.00, 0.25,      # 无 write 费, 0.25x read
           4096)
+
+# DeepSeek V3.2 — Pack 06 数据: 中文 ReLE 70.1%, 仅次 Gemini-3-Pro
+# API OpenAI-compat, base_url: https://api.deepseek.com/v1
+ModelSpec("deepseek", "deepseek-chat",
+          ("deepseek-v3.2", "deepseek-v3"),
+          0.27, 1.10,      # $0.27/1M in, $1.10/1M out (2026-03 官方, 上线前核对)
+          1.00, 0.10,      # 无 write, 0.10x read (官方文档)
+          1024)
 ```
+
+**需要新加 API key**: `DEEPSEEK_API_KEY` 环境变量。
 
 **Observer 候选过滤**（observer_bench.py 里的常量，从 MODEL_CATALOG 筛选）:
 
@@ -563,11 +627,12 @@ OBSERVER_CANDIDATES: tuple[str, ...] = (
     "grok-4.20-0309-non-reasoning",       # 新版空白
     "llama-3.3-70b-versatile",
     "claude-haiku-4-5-20251001",
+    "deepseek-chat",                      # ★ 国产, Pack 06 中文 70.1%
 )
 # 全量运行时: active_specs = [s for s in MODEL_CATALOG if s.primary_id in OBSERVER_CANDIDATES]
 ```
 
-**候选 Observer 模型详细（7 个）**:
+**候选 Observer 模型详细（8 个）**:
 
 | # | Model ID | Provider | 理由 |
 |---|---|---|---|
@@ -578,6 +643,7 @@ OBSERVER_CANDIDATES: tuple[str, ...] = (
 | 5 | `grok-4.20-0309-non-reasoning` | xai | **新版，空白区，要填** |
 | 6 | `llama-3.3-70b-versatile` | groq | 零 cache 但 TTFT 低 |
 | 7 | `claude-haiku-4-5-20251001` | anthropic | 验证 Mastra "Claude 不行" 声明 |
+| 8 | `deepseek-chat` (v3.2) | deepseek | **国产首选**，中文 ReLE 70.1%（仅次 Gemini-3-Pro）|
 
 **不测**:
 - Opus / Sonnet（Observer 是 cold path 不值）
@@ -593,7 +659,8 @@ OBSERVER_CANDIDATES: tuple[str, ...] = (
 ```bash
 # 生成 fixture (对 seeds.yaml 里还没对应 fx_*.json 的 seed 调 Opus 生成)
 uv run python scripts/observer_bench.py --observer-generate
-  # stdout 打印 draft JSON, Allen 手动 review + 写入 fx_XXX.json
+  # 生成 fx_XXX.draft.json 文件到 bench_fixtures/observer_cn/
+  # Allen 编辑 → mv fx_001.draft.json fx_001.json 批准
 
 # Pilot: 只跑 fx_001~fx_005 × 7 models = 35 calls
 uv run python scripts/observer_bench.py --observer-pilot
@@ -630,6 +697,31 @@ parser.add_argument("--with-chart", action="store_true")
 - 缺 API key 的 provider 自动 skip
 
 **不继承**: v3 的 smoke gate（`--quick` → `--standard` 强制流程不适用 Observer，因为 Observer pilot 就是 smoke gate）。
+
+### 9.4 Pilot early-exit 规则（省钱 + 专注）
+
+`--observer-pilot` 跑完后自动评估每个候选模型，写入 `run_meta.json`:
+
+```python
+def compute_pilot_pass(model_scores) -> bool:
+    tool_success_rate = sum(s.tool_success for s in model_scores) / len(model_scores)
+    mean_f1 = sum(s.f1 for s in model_scores) / len(model_scores)
+    return tool_success_rate >= 0.80 and mean_f1 >= 0.30
+
+# run_meta.json 新增字段:
+{
+    "pilot_pass": {"gemini-2.5-flash": true, "claude-haiku-4-5": false, ...},
+    "pilot_exit_reason": {"claude-haiku-4-5": "tool_success=60% < 80%"}
+}
+```
+
+**`--observer` 全量启动时**: 读最近一次 pilot 的 `run_meta.json`，**自动 skip pilot_pass=false 的模型**，打印告知 Allen。可用 `--include-failed-pilot` 强制重跑全部。
+
+**阈值设定依据**:
+- tool_success < 80%: 模型连 tool-call 都不稳，跑全量意义不大
+- F1 < 0.30: 基本抽取能力不合格，没必要花钱看更糟的数据
+
+**节约估算**: 若 Haiku + 旧 Grok 两个都被裁，省 40 calls × $0.03 avg = $1.2, 节约 ~20%。
 
 ---
 
@@ -676,6 +768,7 @@ CSV_FIELDS = [
 | Model | F1 | Precision | Recall | Priority Acc | Halluc Rate | Tool Success |
 |---|---|---|---|---|---|---|
 | google/gemini-2.5-flash | 0.85 | 0.88 | 0.82 | 0.75 | 5% | 100% |
+| deepseek/deepseek-chat | 0.83 | 0.86 | 0.80 | 0.78 | 5% | 100% |
 | google/gemini-3-pro-preview | 0.82 | 0.85 | 0.79 | 0.78 | 10% | 100% |
 | openai/gpt-5-mini | 0.79 | 0.85 | 0.74 | 0.70 | 5% | 100% |
 | xai/grok-4.20-non-reasoning | 0.75 | 0.78 | 0.72 | 0.65 | 10% | 100% |
@@ -684,34 +777,47 @@ CSV_FIELDS = [
 | groq/llama-3.3-70b | ? | ? | ? | ? | ? | ? |
 ```
 
-**Table 2 — 成本延迟表**:
+**Table 2 — 成本延迟表**（latency 用 v3 同口径 p50/p95）:
 ```markdown
-| Model | $/100 fixtures | Avg latency | P95 latency | Tokens out avg |
+| Model | $/100 fixtures | Latency p50 | Latency p95 | Tokens out avg |
 |---|---|---|---|---|
 | gemini-2.5-flash | $0.04 | 1200ms | 2100ms | 180 |
+| deepseek-chat | $0.03 | 1800ms | 3500ms | 175 |
 ...
 ```
 
-**Table 3 — 按 fixture 类别分解** (F1 by scene 类型):
+**Table 3a — 按 fixture category 分解 F1**:
 ```markdown
-| Model | 偏好 | 状态 | 时间 | 情感 | 家居 | 纠正 | 多实体 | ✅ |
+| Model | preference | state_change | temporal | emotion | smart_home | correction | multi_entity | completion |
 |---|---|---|---|---|---|---|---|---|
 | gemini-2.5-flash | 0.92 | 0.85 | 0.78 | 0.80 | 0.90 | 0.75 | 0.80 | 1.0 |
 ...
 ```
 
-**Table 4 — Hallucination 样例**（halluc=True 的具体行文对比）:
+**Table 3b — 按 priority 分解 F1**（揭示模型对 🔴/🟡/🟢/✅ 各档的敏感度）:
 ```markdown
-### fx_001 · gemini-3-pro · halluc=True
-
-**禁用词**: 蓝光, 冷白, 卧室
-
-**模型输出中触发的 observation**:
-* 🟡 (14:28) 用户要求调节卧室灯为暖黄  ← 触发 "卧室"
-
-**expected 对应 observation**:
-* 🔴 (14:28) 用户偏好客厅灯暖黄色
+| Model | 🔴 F1 | 🟡 F1 | 🟢 F1 | ✅ F1 |
+|---|---|---|---|---|
+| gemini-2.5-flash | 0.92 | 0.60 | N/A | 0.95 |
+| grok-4-1-fast | 0.75 | 0.20 | N/A | 0.80 |  ← 🟡 F1 低 = 该模型情感/次要细节麻木
+...
 ```
+
+解读用途: 如果某模型 🔴 好但 🟡 差→ observer prompt 对情感/次要观察不敏感, 可通过 prompt 强化。N/A 表示该 priority 在 fixture 集中未出现（🟢 可能全 20 条都没有）。
+
+**Table 4 — Hallucination 样例分类**（halluc=True 的具体行文对比 + 手动标注 type）:
+```markdown
+| fixture_id | model | halluc_type | 触发 observation | expected |
+|---|---|---|---|---|
+| fx_001 | gemini-3-pro | (a) 凭空造事实 | 用户要求调节卧室灯 (触发"卧室") | 客厅灯暖黄 |
+| fx_005 | grok-4-1 | (b) 过度推断 | 用户长期睡眠不足 (原文只说"我累") | 用户疲惫 |
+| fx_011 | llama | (c) 格式污染 | 🟢 用户对 X 过敏 (应为 🔴 assertion) | 🔴 对 X 过敏 |
+```
+
+**halluc_type 枚举** (Allen pilot 后人工标注):
+- `(a) 凭空造事实`: 模型虚构不存在的实体/地点/事实（如"卧室"）
+- `(b) 过度推断`: 从短陈述扩张成长期/因果判断（如"累" → "长期睡眠不足"）
+- `(c) 格式污染`: emoji / priority 误用（如 🔴 assertion 被打成 🟢）
 
 **Table 5 — 推荐表**:
 ```markdown
@@ -725,6 +831,10 @@ CSV_FIELDS = [
 ### 🥈 Fallback: gpt-5-mini
 - F1 0.79 (第三), 但 cost $0.29/100 (7× 更贵于 gemini)
 - 选它做 fallback 因为 OpenAI API 通常比 Google 稳定
+
+### 🌶️ 黑马: deepseek-chat
+- F1 0.83 (第二), cost $0.03 (最低), 国产
+- 若数据中文 F1 碾压 Gemini 则切主
 ```
 
 ### 10.3 run_meta.json
@@ -756,10 +866,13 @@ CSV_FIELDS = [
 | 阶段 | Calls | Cost | 时长 |
 |---|---|---|---|
 | Opus 生成 5 pilot fixture | 5 (Opus) | ~$1.00 | 3 min |
-| Pilot 运行 7×5 | 35 | ~$0.30 | 3 min |
+| Pilot 运行 8×5 | 40 | ~$0.35 | 3 min |
 | Opus 生成 15 full fixture | 15 (Opus) | ~$3.00 | 10 min |
-| 全量运行 7×20 | 140 | ~$1.50 | 15 min |
-| **合计** | **195** | **~$5.80** | **~30 min** (不含 Allen review) |
+| 全量运行 ≤8×20 (含 early-exit 裁) | ≤160 | ~$1.50-1.80 | 15 min |
+| **合计** | **≤220** | **~$6.00-6.30** | **~30 min** (不含 Allen review) |
+
+**加 deepseek 后成本**: 本预算已含 deepseek 20 条 × ~$0.005 = +$0.10
+**Early-exit 节省**: 若 Haiku + 旧 Grok 被裁，省 40 × ~$0.03 = -$1.20, 实际可能 ~$5.00-5.10
 
 **Allen 时间**: ~3.25 hr，分两天:
 - Day 1: seeds 5 条 (30 min) + review pilot fixture (30 min) + 看 pilot 结果 (15 min)
@@ -769,12 +882,17 @@ CSV_FIELDS = [
 
 ## 12. 已知限制
 
-1. **20 条 fixture 统计显著性弱**: 7 模型各 20 数据点，模型间差 ~5 pp F1 可能不显著。**缓解**: 看 F1 + Halluc + Tool success 三个维度的一致性，而非 single-point p 值判定
+1. **20 条 fixture 统计显著性弱**: 8 模型各 20 数据点，模型间差 ~5 pp F1 可能不显著。**缓解**: 看 F1 + Halluc + Tool success 三个维度的一致性，而非 single-point p 值判定
 2. **Allen review 引入 bias**: Allen 的中文观感主观性影响 ground truth。**缓解**: 写清楚 `semantic_description`，future Allen 能 diff 之前 Allen 的决定
 3. **Mastra prose vs 我们 function call 的能力差异**: 不测（非目标），接受此偏差
-4. **`must_contain_any_of` 关键词穷举风险**: pilot 5 条跑完 review 哪些 miss，扩充 synonym
-5. **Opus 当 fixture 作家可能泄漏训练分布偏好**: `tone_hint` 字段缓解但不根除，Allen review 是最终防线
-6. **Gemini 2.5 Flash 定价可能过时**: 2026-03 数据为 $0.30/$2.50，上线前在 console 核对
+4. **Plain text dialogue rendering vs Mastra 的 role-based messages**: 我们把 fixture dialogue 渲染成 `USER (14:28): ...` 纯文本块送进 user message, 而 Mastra 实际 Observer 接收真实 chat messages history (role=user/assistant)。这意味着:
+   - 我们可能低估某些模型 (那些更擅长解析 message role 的) ~5-10 pp
+   - 但**对 8 个模型一视同仁**, 相对排名仍然有效
+   - Jarvis 生产应该考虑实现 role-based 版本并用同一 fixture 再跑一次做对照
+5. **`must_contain_any_of` 关键词穷举风险**: pilot 5 条跑完 review 哪些 miss，扩充到现有 list 的内层 AND 子 list
+6. **Opus 当 fixture 作家可能泄漏训练分布偏好**: `tone_hint` 字段缓解但不根除，Allen review 是最终防线
+7. **Gemini 2.5 Flash / DeepSeek 定价可能过时**: 2026-03/04 数据，上线前在 console 核对
+8. **halluc_type 手动标注引入主观性**: Table 4 的 (a)(b)(c) 分类依赖 Allen 判断，不同 reviewer 可能分类不同。**缓解**: pilot 后定义清晰 decision tree，写进 Allen 的 review 指南
 
 ---
 
@@ -828,13 +946,16 @@ CSV_FIELDS = [
 ## 16. 设计确认清单
 
 - [x] Output format: Tool Use / Function Call（B 方案，统一路径）
-- [x] Fixture 生成: Allen seeds → Opus 扩写 → Allen review（B 方案）+ `tone_hint` 防污染 + pilot 5 条优先
-- [x] Fixture 分布: 20 条按 8 类加权（偏好 4 / 状态 3 / 时间 3 / 情感 3 / 家居 3 / 纠正 2 / 多实体 1 / ✅ 1）
-- [x] 评测算法: pure rule-based, `must_contain_any_of` (OR of AND), `must_not_contain_globally` 触发 halluc
-- [x] Model catalog: 加 Gemini 2.5 Flash, 共 7 个候选 Observer
+- [x] Fixture 生成: Allen seeds → Opus 生成 `.draft.json` → Allen 编辑 → rename 去 `.draft` 批准
+- [x] Fixture 分布: 20 条按 8 类加权（seeds.yaml 加 `category` 枚举字段强制分类）
+- [x] 评测算法: pure rule-based, `must_contain_any_of` (OR of AND), `must_not_contain_globally` 触发 halluc, **tool_success=False 时所有指标置 0**
+- [x] Prompt 覆盖: Mastra 9 章节的 8 条 + Jarvis 独有 EMOTION（缺 TEMPORAL ANCHORING，可接受）
+- [x] Model catalog: 加 Gemini 2.5 Flash + **DeepSeek V3.2**, 共 **8 个**候选 Observer
+- [x] Pilot early-exit: tool_success<80% 或 F1<0.3 → 从全量 candidates 移除
 - [x] CLI: `--observer` / `--observer-pilot` / `--observer-generate` 三主模式
-- [x] 输出: CSV 20 字段 + summary.md 5 张表 + run_meta.json
-- [x] 成本预算: $6 总，分 Opus 生成 $4 + 7×20 跑 $2
-- [x] 代码复用: import v3，通过小改 v3 的 call_* 加 `extra_kwargs` 参数（侵入 1 行）
+- [x] 输出: CSV 21 字段 (含 fixture_category) + summary.md **5+1 张表** (Table 3b priority, Table 4 halluc_type) + run_meta.json
+- [x] Latency 口径: 跟 v3 一致用 p50/p95 (不是 avg/median)
+- [x] 成本预算: $6 总，含 DeepSeek + early-exit 后实际可能 $5-5.5
+- [x] 代码复用: **零侵入 v3**。observer_bench.py 重写 tool-call 版本 `call_with_tools_*`，复用 v3 的 `ModelSpec` / `extract_cache_metrics` / `calc_cost` / `make_bust_prefix` 等纯数据/计算函数，但不调用 v3 的 `call_*` 网络函数
 
 **下一步**: 交棒给 `writing-plans` 生成实施计划。
