@@ -252,3 +252,37 @@ def test_openai_token_param_other_providers_use_max_tokens():
     assert ob._openai_token_param_for_model("xai", "grok-4") == "max_tokens"
     assert ob._openai_token_param_for_model("groq", "llama-3.3-70b-versatile") == "max_tokens"
     assert ob._openai_token_param_for_model("deepseek", "deepseek-chat") == "max_tokens"
+
+
+def test_api_key_env_obs_covers_all_providers():
+    """All providers in OBSERVER_CANDIDATES have API key env vars."""
+    provider_envs = ob.API_KEY_ENV_OBS
+    assert set(provider_envs.keys()) >= {"anthropic", "openai", "google", "groq", "xai", "deepseek"}
+    assert provider_envs["deepseek"] == "DEEPSEEK_API_KEY"
+
+
+def test_openai_compat_base_urls():
+    """All OpenAI-compat providers have base URLs registered."""
+    urls = ob.OPENAI_COMPAT_BASE_URLS
+    assert urls["openai"] == "https://api.openai.com/v1"
+    assert urls["xai"] == "https://api.x.ai/v1"
+    assert urls["groq"] == "https://api.groq.com/openai/v1"
+    assert urls["deepseek"] == "https://api.deepseek.com/v1"
+
+
+def test_is_rate_limit_obs():
+    assert ob._is_rate_limit_obs(Exception("429 Too Many Requests")) is True
+    assert ob._is_rate_limit_obs(Exception("Rate limit exceeded")) is True
+    assert ob._is_rate_limit_obs(Exception("quota exceeded")) is True
+    assert ob._is_rate_limit_obs(Exception("server overloaded")) is True
+    assert ob._is_rate_limit_obs(Exception("401 unauthorized")) is False
+    assert ob._is_rate_limit_obs(Exception("500 internal")) is False
+
+
+def test_is_fatal_obs():
+    assert ob._is_fatal_obs(Exception("401 unauthorized")) is True
+    assert ob._is_fatal_obs(Exception("403 Forbidden")) is True
+    assert ob._is_fatal_obs(Exception("invalid api key")) is True
+    assert ob._is_fatal_obs(Exception("400 Bad Request")) is True
+    assert ob._is_fatal_obs(Exception("429 rate limit")) is False
+    assert ob._is_fatal_obs(Exception("500 error")) is False

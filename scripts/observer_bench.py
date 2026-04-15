@@ -577,7 +577,138 @@ async def call_with_tools_gemini(system: str, user_msg: str, model_id: str) -> O
         raw_arguments=raw_args,
         raw_response=resp,
     )
-# ===== §6 RETRY + ASSEMBLY (Task 9) =====
+# ===== §6 RETRY + ASSEMBLY =====
+
+API_KEY_ENV_OBS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai":    "OPENAI_API_KEY",
+    "google":    "GEMINI_API_KEY",
+    "groq":      "GROQ_API_KEY",
+    "xai":       "XAI_API_KEY",
+    "deepseek":  "DEEPSEEK_API_KEY",
+}
+
+OPENAI_COMPAT_BASE_URLS = {
+    "openai":   "https://api.openai.com/v1",
+    "xai":      "https://api.x.ai/v1",
+    "groq":     "https://api.groq.com/openai/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+}
+
+
+def _is_rate_limit_obs(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "rate limit" in msg or "429" in msg or "quota" in msg or "overloaded" in msg
+
+
+def _is_fatal_obs(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "401" in msg or "403" in msg or "invalid api key" in msg or "400" in msg
+
+
+async def _dispatch_by_provider(provider: str, model_id: str, system: str, user_msg: str) -> ObserverCall:
+    """Route to the right caller by provider."""
+    if provider == "anthropic":
+        return await call_with_tools_anthropic(system, user_msg, model_id)
+    if provider == "google":
+        return await call_with_tools_gemini(system, user_msg, model_id)
+    if provider in OPENAI_COMPAT_BASE_URLS:
+        base_url = OPENAI_COMPAT_BASE_URLS[provider]
+        api_key = os.environ[API_KEY_ENV_OBS[provider]]
+        return await call_with_tools_openai_compat(
+            system, user_msg, model_id, provider, base_url, api_key,
+        )
+    raise ValueError(f"Unknown provider: {provider}")
+
+
+async def call_observer_with_retry(
+    spec: v3.ModelSpec,
+    active_model_id: str,
+    model_is_fallback: bool,
+    fixture: Fixture,
+) -> ObserverResult:
+    """Run Observer once with exponential backoff on rate limits; build ObserverResult."""
+    system, user_msg = build_observer_prompt(fixture)
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    last_err = ""
+    for attempt in range(4):
+        try:
+            call = await asyncio.wait_for(
+                _dispatch_by_provider(spec.provider, active_model_id, system, user_msg),
+                timeout=CALL_TIMEOUT_SEC,
+            )
+            # Evaluate + assemble
+            scores = evaluate(call.model_obs, fixture)
+            metrics = v3.extract_cache_metrics(spec.provider, call.raw_response)
+            cost = v3.calc_cost(
+                cache_write_tokens=metrics["cache_write_tokens"],
+                cache_read_tokens=metrics["cache_read_tokens"],
+                prompt_total_tokens=metrics["prompt_total_tokens"],
+                output_tokens=metrics["output_tokens"],
+                spec=spec,
+            )
+            matched = int(scores.recall * len(fixture.expected_observations)) if fixture.expected_observations else 0
+            return ObserverResult(
+                timestamp=timestamp,
+                model=active_model_id,
+                model_is_fallback=model_is_fallback,
+                provider=spec.provider,
+                fixture_id=fixture.id,
+                fixture_category=fixture.category,
+                tool_success=scores.tool_success,
+                precision=scores.precision,
+                recall=scores.recall,
+                f1=scores.f1,
+                priority_accuracy=scores.priority_accuracy,
+                hallucination=scores.hallucination,
+                extra_count=scores.extra_count,
+                expected_count=len(fixture.expected_observations),
+                matched_count=matched,
+                observer_latency_ms=call.observer_latency_ms,
+                actual_input_tokens_api=metrics["prompt_total_tokens"],
+                output_tokens=metrics["output_tokens"],
+                cost_usd=cost,
+                model_output_raw=call.raw_arguments,
+                error="",
+            )
+        except asyncio.TimeoutError:
+            last_err = "timeout"
+            break
+        except Exception as e:  # noqa: BLE001
+            if _is_fatal_obs(e):
+                last_err = f"fatal: {type(e).__name__}: {str(e)[:200]}"
+                break
+            if _is_rate_limit_obs(e):
+                wait = 2 ** attempt
+                LOGGER.warning("Rate limit on %s (%s), wait %ds, attempt %d",
+                               active_model_id, fixture.id, wait, attempt + 1)
+                await asyncio.sleep(wait)
+                last_err = f"ratelimit: {str(e)[:200]}"
+                continue
+            await asyncio.sleep(2 ** attempt)
+            last_err = f"{type(e).__name__}: {str(e)[:200]}"
+
+    # Error path
+    return ObserverResult(
+        timestamp=timestamp,
+        model=active_model_id,
+        model_is_fallback=model_is_fallback,
+        provider=spec.provider,
+        fixture_id=fixture.id,
+        fixture_category=fixture.category,
+        tool_success=False,
+        precision=0.0, recall=0.0, f1=0.0, priority_accuracy=0.0,
+        hallucination=False, extra_count=0,
+        expected_count=len(fixture.expected_observations),
+        matched_count=0,
+        observer_latency_ms=-1.0,
+        actual_input_tokens_api=0,
+        output_tokens=0,
+        cost_usd=0.0,
+        model_output_raw="",
+        error=last_err or "unknown",
+    )
 # ===== §7 WARMUP (Task 11) =====
 # ===== §8 EVALUATOR (Task 10) =====
 # ===== §9 FIXTURE GENERATOR (Task 12) =====
