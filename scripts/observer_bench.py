@@ -1003,7 +1003,215 @@ async def run_fixture_generation(
             print(f"  ✗ {seed.id} — generation failed: {e}")
 
     return written
-# ===== §10 OUTPUT (Task 13) =====
+# ===== §10 OUTPUT =====
+
+CSV_FIELDS_OBS = [
+    "timestamp", "model", "model_is_fallback", "provider",
+    "fixture_id", "fixture_category",
+    "tool_success",
+    "precision", "recall", "f1", "priority_accuracy",
+    "hallucination", "extra_count",
+    "expected_count", "matched_count",
+    "observer_latency_ms",
+    "actual_input_tokens_api", "output_tokens", "cost_usd",
+    "model_output_raw", "error",
+]
+
+
+def write_observer_csv(results: list[ObserverResult], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "results.csv"
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS_OBS)
+        w.writeheader()
+        for r in results:
+            row = asdict(r)
+            # Truncate raw + strip newlines
+            row["model_output_raw"] = row["model_output_raw"].replace("\n", " ")[:1000]
+            w.writerow(row)
+    return path
+
+
+def compute_pilot_pass(scores: list[Scores]) -> bool:
+    """Spec §9.4: pass iff tool_success_rate >= 0.80 AND mean_f1 >= 0.30."""
+    if not scores:
+        return False
+    tool_rate = sum(1 for s in scores if s.tool_success) / len(scores)
+    mean_f1 = sum(s.f1 for s in scores) / len(scores)
+    return tool_rate >= PILOT_TOOL_SUCCESS_THRESHOLD and mean_f1 >= PILOT_F1_THRESHOLD
+
+
+def _group_by_model(results: list[ObserverResult]) -> dict[tuple[str, str], list[ObserverResult]]:
+    groups: dict[tuple[str, str], list[ObserverResult]] = {}
+    for r in results:
+        groups.setdefault((r.provider, r.model), []).append(r)
+    return groups
+
+
+def _aggregate_model_metrics(rows: list[ObserverResult]) -> dict[str, Any]:
+    """Macro-avg per-model metrics from per-fixture rows."""
+    if not rows:
+        return {}
+    ok_rows = [r for r in rows if not r.error]
+    if not ok_rows:
+        ok_rows = rows
+    n = len(ok_rows)
+    tool_rate = sum(1 for r in ok_rows if r.tool_success) / n
+    precision = sum(r.precision for r in ok_rows) / n
+    recall = sum(r.recall for r in ok_rows) / n
+    f1 = sum(r.f1 for r in ok_rows) / n
+    prio = sum(r.priority_accuracy for r in ok_rows) / n
+    halluc_rate = sum(1 for r in ok_rows if r.hallucination) / n
+    latencies = [r.observer_latency_ms for r in ok_rows if r.observer_latency_ms > 0]
+    latencies_sorted = sorted(latencies)
+    p50 = latencies_sorted[len(latencies_sorted) // 2] if latencies_sorted else -1.0
+    p95_idx = int(len(latencies_sorted) * 0.95)
+    p95 = latencies_sorted[min(p95_idx, len(latencies_sorted) - 1)] if latencies_sorted else -1.0
+    cost_per_100 = (sum(r.cost_usd for r in ok_rows) / n) * 100 if n else 0.0
+    return dict(
+        n=n, tool_rate=tool_rate, precision=precision, recall=recall, f1=f1,
+        priority_accuracy=prio, halluc_rate=halluc_rate,
+        latency_p50=p50, latency_p95=p95, cost_per_100=cost_per_100,
+    )
+
+
+def render_observer_summary(results: list[ObserverResult], output_dir: Path,
+                            run_args: dict[str, Any]) -> Path:
+    """Render summary.md with 5+1 tables per spec §10.2."""
+    path = output_dir / "summary.md"
+    groups = _group_by_model(results)
+    model_keys_sorted = sorted(groups.keys(), key=lambda k: (
+        -_aggregate_model_metrics(groups[k]).get("f1", 0.0)  # desc F1
+    ))
+
+    lines = [
+        f"# Observer Bench — {run_args.get('timestamp', '?')}",
+        "",
+        f"**Mode:** `{run_args.get('mode', '?')}` · "
+        f"**Total calls:** {len(results)} · "
+        f"**Errors:** {sum(1 for r in results if r.error)} · "
+        f"**Total cost:** ${sum(r.cost_usd for r in results):.2f}",
+        "",
+    ]
+
+    # Table 1: Main ranking
+    lines += [
+        "## Table 1 — 主排名 (按 F1 降序)",
+        "",
+        "| Model | F1 | Precision | Recall | Priority Acc | Halluc Rate | Tool Success |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for prov, model in model_keys_sorted:
+        m = _aggregate_model_metrics(groups[(prov, model)])
+        lines.append(
+            f"| {prov}/{model} | {m['f1']:.2f} | {m['precision']:.2f} | {m['recall']:.2f} "
+            f"| {m['priority_accuracy']:.2f} | {m['halluc_rate']*100:.0f}% | {m['tool_rate']*100:.0f}% |"
+        )
+    lines.append("")
+
+    # Table 2: Cost + latency
+    lines += [
+        "## Table 2 — 成本延迟",
+        "",
+        "| Model | $/100 calls | Latency p50 | Latency p95 |",
+        "|---|---|---|---|",
+    ]
+    for prov, model in model_keys_sorted:
+        m = _aggregate_model_metrics(groups[(prov, model)])
+        lines.append(
+            f"| {prov}/{model} | ${m['cost_per_100']:.3f} | "
+            f"{m['latency_p50']:.0f}ms | {m['latency_p95']:.0f}ms |"
+        )
+    lines.append("")
+
+    # Table 3a: F1 by category
+    lines += [
+        "## Table 3a — F1 按 fixture category 分解",
+        "",
+        "| Model | " + " | ".join(FIXTURE_CATEGORIES) + " |",
+        "|---|" + "|".join(["---"] * len(FIXTURE_CATEGORIES)) + "|",
+    ]
+    for prov, model in model_keys_sorted:
+        row = [f"{prov}/{model}"]
+        for cat in FIXTURE_CATEGORIES:
+            cat_rows = [r for r in groups[(prov, model)] if r.fixture_category == cat and not r.error]
+            if not cat_rows:
+                row.append("—")
+            else:
+                f1 = sum(r.f1 for r in cat_rows) / len(cat_rows)
+                row.append(f"{f1:.2f}")
+        lines.append("| " + " | ".join(row) + " |")
+    lines.append("")
+
+    # Table 3b: F1 by priority — placeholder (per-priority breakdown requires CSV v1.1)
+    lines += [
+        "## Table 3b — F1 按 priority 分解 (placeholder)",
+        "",
+        "| Model | 🔴 F1 | 🟡 F1 | 🟢 F1 | ✅ F1 |",
+        "|---|---|---|---|---|",
+    ]
+    for prov, model in model_keys_sorted:
+        row = [f"{prov}/{model}", "TBD", "TBD", "TBD", "TBD"]
+        lines.append("| " + " | ".join(row) + " |")
+    lines.append("")
+    lines.append("_Note: per-priority F1 requires per-observation tracking not in CSV v1. "
+                 "Table 3b is a placeholder; see `priority_accuracy` column for now._")
+    lines.append("")
+
+    # Table 4: Hallucination samples (manual halluc_type left blank)
+    lines += [
+        "## Table 4 — Hallucination 样例 (halluc_type 由 Allen 审核标注)",
+        "",
+        "| fixture_id | model | halluc_type | 触发的 observation 文本 |",
+        "|---|---|---|---|",
+    ]
+    halluc_rows = [r for r in results if r.hallucination]
+    for r in halluc_rows[:20]:   # cap to 20 rows
+        text = r.model_output_raw[:200].replace("|", "\\|")
+        lines.append(f"| {r.fixture_id} | {r.provider}/{r.model} | _TBD_ | {text} |")
+    if not halluc_rows:
+        lines.append("| (无 hallucination 记录) | | | |")
+    lines.append("")
+
+    # Table 5: Recommendation (Allen fills in)
+    lines += [
+        "## Table 5 — 推荐 (由 Allen 基于上方数据填写)",
+        "",
+        "### 🥇 主 Observer: _(按 Table 1 F1 最高 + Halluc 最低选)_",
+        "",
+        "### 🥈 Fallback: _(按不同 provider 选一个 F1 接近的)_",
+        "",
+    ]
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def write_run_meta_observer(
+    results: list[ObserverResult],
+    output_dir: Path,
+    run_args: dict[str, Any],
+    pilot_pass_map: dict[str, bool] | None = None,
+    pilot_exit_reason: dict[str, str] | None = None,
+) -> Path:
+    """Write run_meta.json. In pilot mode, include pilot_pass per model."""
+    path = output_dir / "run_meta.json"
+    meta = {
+        "mode": run_args.get("mode"),
+        "timestamp": run_args.get("timestamp"),
+        "total_calls": len(results),
+        "errors_total": sum(1 for r in results if r.error),
+        "cost_usd_total": round(sum(r.cost_usd for r in results), 4),
+        "elapsed_sec": run_args.get("elapsed_sec", -1),
+        "pricing_snapshot_date": v3.PRICING_SNAPSHOT_DATE,
+        "fixtures_used": sorted(set(r.fixture_id for r in results)),
+        "active_models": run_args.get("active_models", []),
+        "pilot_pass": pilot_pass_map or {},
+        "pilot_exit_reason": pilot_exit_reason or {},
+        "args": run_args.get("raw_args", {}),
+    }
+    path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
 # ===== §11 CLI (Task 14) =====
 
 

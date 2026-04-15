@@ -409,3 +409,54 @@ def test_evaluate_tool_success_invalid_priority():
     ]
     s = ob.evaluate(model_obs, fx)
     assert s.tool_success is False
+
+
+def test_write_observer_csv(tmp_path):
+    r = ob.ObserverResult(
+        timestamp="2026-04-15T14:30:00+00:00",
+        model="gemini-2.5-flash", model_is_fallback=False,
+        provider="google", fixture_id="fx_001",
+        fixture_category="smart_home",
+        tool_success=True,
+        precision=0.9, recall=0.8, f1=0.85,
+        priority_accuracy=0.75,
+        hallucination=False, extra_count=0,
+        expected_count=3, matched_count=2,
+        observer_latency_ms=1200.0,
+        actual_input_tokens_api=500, output_tokens=80,
+        cost_usd=0.0005,
+        model_output_raw='{"observations":[...]}',
+    )
+    path = ob.write_observer_csv([r], tmp_path)
+    assert path.name == "results.csv"
+    content = path.read_text(encoding="utf-8")
+    assert "gemini-2.5-flash" in content
+    assert "fx_001" in content
+    assert "smart_home" in content
+    assert "0.85" in content   # f1
+
+
+def test_compute_pilot_pass_rules():
+    """Spec §9.4: pass iff tool_success_rate >= 0.80 AND mean_f1 >= 0.30."""
+    scores_pass = [
+        ob.Scores(tool_success=True, precision=0.5, recall=0.5, f1=0.5,
+                  priority_accuracy=0.5, hallucination=False, extra_count=0)
+        for _ in range(5)
+    ]
+    assert ob.compute_pilot_pass(scores_pass) is True
+
+    # 60% tool success → fail
+    scores_low_tool = scores_pass[:3] + [
+        ob.Scores(tool_success=False, precision=0.0, recall=0.0, f1=0.0,
+                  priority_accuracy=0.0, hallucination=False, extra_count=0)
+        for _ in range(2)
+    ]
+    assert ob.compute_pilot_pass(scores_low_tool) is False
+
+    # F1 avg 0.2 → fail
+    scores_low_f1 = [
+        ob.Scores(tool_success=True, precision=0.2, recall=0.2, f1=0.2,
+                  priority_accuracy=0.5, hallucination=False, extra_count=0)
+        for _ in range(5)
+    ]
+    assert ob.compute_pilot_pass(scores_low_f1) is False
