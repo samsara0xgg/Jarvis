@@ -215,6 +215,35 @@ def verify_recall(answer: str) -> bool:
     false_positive = "美式" in answer and not has_needle
     return has_needle and not false_positive
 
+# ===== COST =====
+
+def calc_cost(
+    cache_write_tokens: int,
+    cache_read_tokens: int,
+    prompt_total_tokens: int,
+    output_tokens: int,
+    spec: ModelSpec,
+) -> float:
+    """Three-segment pricing: regular + cache_write + cache_read + output.
+
+    Anthropic's cache_creation is 1.25× base price (cold write premium),
+    cache_read is 0.10× (90% discount). OpenAI has no write premium but
+    applies 0.50× cache_read. Groq has no cache (multipliers == 1.0 means
+    'no discount' — and cache tokens are always 0 there anyway).
+    """
+    regular_input = prompt_total_tokens - cache_write_tokens - cache_read_tokens
+    if regular_input < 0:
+        LOGGER.warning(
+            "calc_cost: regular_input < 0 (total=%d write=%d read=%d) — clamp 0",
+            prompt_total_tokens, cache_write_tokens, cache_read_tokens,
+        )
+        regular_input = 0
+    cost = regular_input      * spec.input_price_per_1m /  1e6
+    cost += cache_write_tokens * spec.input_price_per_1m * spec.cache_write_multiplier / 1e6
+    cost += cache_read_tokens  * spec.input_price_per_1m * spec.cache_read_multiplier  / 1e6
+    cost += output_tokens      * spec.output_price_per_1m / 1e6
+    return cost
+
 # ===== (sections below added in later tasks) =====
 
 def main() -> None:

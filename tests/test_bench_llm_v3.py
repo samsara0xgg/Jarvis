@@ -74,3 +74,61 @@ def test_verify_recall_needs_both_keywords():
     assert b.verify_recall("Allen 喜欢喝 Revolver 咖啡") is False # brand only
     assert b.verify_recall("Allen 喜欢喝美式咖啡") is False       # distractor
     assert b.verify_recall("Allen 喝拿铁，用耶加雪菲豆") is True   # 拿铁 + 耶加
+
+
+def _get_spec(provider: str, primary: str) -> b.ModelSpec:
+    for s in b.MODEL_CATALOG:
+        if s.provider == provider and s.primary_id == primary:
+            return s
+    raise LookupError(primary)
+
+
+def test_cost_anthropic_three_segment():
+    """Sonnet 4.6 @ 30k prompt with 5k cache_write + 25k cache_read, 200 output."""
+    spec = _get_spec("anthropic", "claude-sonnet-4-6")
+    cost = b.calc_cost(
+        cache_write_tokens=5000,
+        cache_read_tokens=25000,
+        prompt_total_tokens=30000,
+        output_tokens=200,
+        spec=spec,
+    )
+    # regular input = 30000 - 5000 - 25000 = 0
+    # cache_write: 5000 * 3.00 * 1.25 / 1e6 = 0.01875
+    # cache_read:  25000 * 3.00 * 0.10 / 1e6 = 0.0075
+    # output:      200 * 15.00 / 1e6 = 0.003
+    # total: 0.02925
+    assert abs(cost - 0.02925) < 1e-6
+
+
+def test_cost_groq_no_cache():
+    """Groq never hits cache; all tokens count as regular input."""
+    spec = _get_spec("groq", "llama-3.3-70b-versatile")
+    cost = b.calc_cost(
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        prompt_total_tokens=30000,
+        output_tokens=200,
+        spec=spec,
+    )
+    # regular: 30000 * 0.59 / 1e6 = 0.0177
+    # output:  200 * 0.79 / 1e6 = 0.000158
+    # total: 0.017858
+    assert abs(cost - 0.017858) < 1e-6
+
+
+def test_cost_openai_cache_read_only():
+    """OpenAI has cache_read but not cache_write fee."""
+    spec = _get_spec("openai", "gpt-5")
+    cost = b.calc_cost(
+        cache_write_tokens=0,
+        cache_read_tokens=10000,
+        prompt_total_tokens=30000,
+        output_tokens=100,
+        spec=spec,
+    )
+    # regular: 20000 * 2.50 / 1e6 = 0.05
+    # cache_read: 10000 * 2.50 * 0.50 / 1e6 = 0.0125
+    # output: 100 * 10.00 / 1e6 = 0.001
+    # total: 0.0635
+    assert abs(cost - 0.0635) < 1e-6
