@@ -709,7 +709,93 @@ async def call_observer_with_retry(
         model_output_raw="",
         error=last_err or "unknown",
     )
-# ===== §7 WARMUP (Task 11) =====
+# ===== §7 WARMUP =====
+
+@dataclass
+class ActiveObserver:
+    spec: v3.ModelSpec
+    active_model_id: str
+    is_fallback: bool
+
+
+def _provider_has_key_obs(provider: str) -> bool:
+    primary = os.environ.get(API_KEY_ENV_OBS[provider])
+    fallback = os.environ.get("GOOGLE_API_KEY") if provider == "google" else None
+    return bool(primary or fallback)
+
+
+async def warmup_observer_one(spec: v3.ModelSpec) -> tuple[str, bool] | None:
+    """Return (active_id, is_fallback) if any candidate works, else None.
+
+    Isolated payload: pure user message "Just say: OK", no system prompt,
+    no tools. Zero byte overlap with Observer test prefixes.
+    """
+    candidates: list[tuple[str, bool]] = [(spec.primary_id, False)]
+    candidates.extend((fid, True) for fid in spec.fallback_ids)
+
+    for mid, is_fb in candidates:
+        try:
+            if spec.provider == "anthropic":
+                from anthropic import AsyncAnthropic
+                client = AsyncAnthropic()
+                await client.messages.create(
+                    model=mid, max_tokens=5,
+                    messages=[{"role": "user", "content": "Just say: OK"}],
+                )
+            elif spec.provider == "google":
+                if not os.environ.get("GEMINI_API_KEY") and os.environ.get("GOOGLE_API_KEY"):
+                    os.environ["GEMINI_API_KEY"] = os.environ["GOOGLE_API_KEY"]
+                import google.generativeai as genai
+                genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+                await asyncio.to_thread(
+                    lambda: genai.GenerativeModel(mid).generate_content(
+                        "Just say: OK",
+                        generation_config={"max_output_tokens": 5},
+                    )
+                )
+            else:  # openai / xai / groq / deepseek
+                from openai import AsyncOpenAI
+                client = AsyncOpenAI(
+                    base_url=OPENAI_COMPAT_BASE_URLS[spec.provider],
+                    api_key=os.environ[API_KEY_ENV_OBS[spec.provider]],
+                )
+                token_param = _openai_token_param_for_model(spec.provider, mid)
+                await client.chat.completions.create(
+                    model=mid,
+                    messages=[{"role": "user", "content": "Just say: OK"}],
+                    **{token_param: 5},
+                )
+            return (mid, is_fb)
+        except Exception as e:  # noqa: BLE001
+            LOGGER.warning("warmup failed for %s/%s: %s", spec.provider, mid, str(e)[:120])
+            continue
+    return None
+
+
+async def resolve_active_observers(candidate_ids: tuple[str, ...]) -> list[ActiveObserver]:
+    """Filter MODEL_CATALOG down to candidate_ids with working keys + warmup passes."""
+    active: list[ActiveObserver] = []
+    specs_to_try = [s for s in v3.MODEL_CATALOG
+                    if s.primary_id in candidate_ids and _provider_has_key_obs(s.provider)]
+    skipped_no_key = [s for s in v3.MODEL_CATALOG
+                      if s.primary_id in candidate_ids and not _provider_has_key_obs(s.provider)]
+
+    for s in skipped_no_key:
+        print(f"  ✗ {s.provider}/{s.primary_id} — missing {API_KEY_ENV_OBS[s.provider]}")
+
+    results = await asyncio.gather(*(warmup_observer_one(s) for s in specs_to_try))
+    for spec, result in zip(specs_to_try, results):
+        if result is None:
+            print(f"  ✗ {spec.provider}/{spec.primary_id} — warmup exhausted fallbacks")
+            continue
+        mid, is_fb = result
+        marker = "↪" if is_fb else "✓"
+        suffix = " (fallback)" if is_fb else ""
+        print(f"  {marker} {spec.provider}/{mid}{suffix}")
+        active.append(ActiveObserver(spec, mid, is_fb))
+    return active
+
+
 # ===== §8 EVALUATOR =====
 
 _TIME_RE = re.compile(r"^[0-2]\d:[0-5]\d$")
