@@ -223,3 +223,20 @@ def test_extract_groq_always_zero_cache():
     assert m["cache_read_tokens"] == 0
     assert m["prompt_total_tokens"] == 5000
     assert m["output_tokens"] == 40
+
+
+def test_make_bust_prefix_unique_per_call():
+    p1 = b.make_bust_prefix()
+    p2 = b.make_bust_prefix()
+    assert p1 != p2
+    assert p1.startswith("# Session: ")
+    assert "\n# Timestamp: " in p1
+    assert p1.endswith("\n\n")
+
+
+def test_make_bust_prefix_token_size_small():
+    """Prefix should be tiny — sub-30 tokens so context_size accuracy stays high."""
+    import tiktoken
+    enc = tiktoken.get_encoding("cl100k_base")
+    p = b.make_bust_prefix()
+    assert len(enc.encode(p)) < 30

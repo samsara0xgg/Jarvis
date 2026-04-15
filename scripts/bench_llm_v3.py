@@ -313,6 +313,39 @@ def extract_cache_metrics(provider: str, response: Any) -> dict[str, int]:
         "output_tokens": output,
     }
 
+# ===== PROVIDERS =====
+
+MAX_OUTPUT_TOKENS = 512   # Keep small — we measure TTFT, not generation depth
+CALL_TIMEOUT_SEC = 90.0
+
+
+def make_bust_prefix() -> str:
+    """Per-task prefix that defeats auto-caching (OpenAI/xAI) across test boundaries.
+
+    Uses 16-hex-char session id (64 bits — collision-free in practice) plus a
+    nanosecond timestamp so two calls in the same process always differ. Kept
+    deliberately short (<30 cl100k tokens) so it doesn't skew context_size.
+    """
+    return f"# Session: {uuid4().hex[:16]}\n# Timestamp: {time.time_ns()}\n\n"
+
+
+@dataclass
+class CallSpec:
+    """Immutable input to a single API call."""
+    model_spec: ModelSpec
+    active_model_id: str          # primary_id or a fallback
+    bust_prefix: str
+    notes: str
+    task_name: str
+
+    @property
+    def query(self) -> str:
+        return TASKS[self.task_name]
+
+    @property
+    def system_content(self) -> str:
+        return self.bust_prefix + self.notes
+
 # ===== (sections below added in later tasks) =====
 
 def main() -> None:
