@@ -496,15 +496,15 @@ async def call_gemini(cs: CallSpec) -> dict[str, Any]:
             stream=True,
             generation_config={"max_output_tokens": MAX_OUTPUT_TOKENS},
         )
-        last_response = None
         for chunk in stream:
-            last_response = chunk
             text = getattr(chunk, "text", "") or ""
             if text:
                 if ttft_ms is None:
                     ttft_ms = (time.perf_counter() - t0) * 1000.0
                 answer_parts.append(text)
-        # Resolve final usage_metadata by consuming the iterator
+        # `stream` itself exposes the merged GenerateContentResponse after iteration.
+        # usage_metadata lives on the stream object (NOT on individual chunks).
+        # resolve() is idempotent and safe to call after iteration completes.
         try:
             stream.resolve()
         except Exception:
@@ -515,7 +515,7 @@ async def call_gemini(cs: CallSpec) -> dict[str, Any]:
             "ttft_ms": ttft_ms if ttft_ms is not None else total_ms,
             "total_ms": total_ms,
             "answer": "".join(answer_parts),
-            "raw_response": last_response,
+            "raw_response": stream,  # has .usage_metadata after resolve
         }
 
     return await asyncio.to_thread(_run)
