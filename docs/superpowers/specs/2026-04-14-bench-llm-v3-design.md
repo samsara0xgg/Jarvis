@@ -1,0 +1,461 @@
+# bench_llm_v3.py — 设计规格
+
+**日期**: 2026-04-14
+**作者**: Allen + Claude (brainstorm)
+**目的**: 为 Jarvis 语音助手做主 LLM 选型决策，通过对 8 个候选模型在中文长笔记场景下的 TTFT / recall 准确率 / cache 命中率 / 成本进行系统对照测试。
+**位置**: `~/Projects/jarvis/bench_llm_v3.py`（与 v1 `bench_llm.py` 同级）
+
+---
+
+## 1 背景
+
+v1 `bench_llm.py` 只测了单 prompt "加拿大首都是哪里" 的 TTFB，信号太弱。**Research Pack 4** (2026-04-14) 揭示各厂商都**不公开中文长上下文具体数据**，xAI 官方 model card 甚至零 benchmark。决策必须靠自测。
+
+v3 的核心改进：
+- 真实 Jarvis 工作流对标：中文笔记（OM 观察流格式）+ recall 任务
+- Cache 行为诚实报告（揭露 OpenAI/xAI 自动 cache 的黑箱行为）
+- 多运行模式，让"5 分钟做决定" 和 "过夜全量" 都能跑
+
+## 2 目标 & 非目标
+
+**目标**：
+- 一个脚本覆盖 `--quick` / `--standard` / `--deep` / `--decision` / `--model <X>` 五种运行粒度
+- 输出对 "主 LLM 选谁" 可直接决策的 Markdown 表格
+- CSV 保留所有原始数据供后续分析
+- 揭露各 provider 真实 cache 命中行为（而非厂商声明）
+
+**非目标**：
+- 不做 agent/tool-use benchmarking（另外脚本）
+- 不做多轮对话评测（只测单轮长上下文）
+- 不替代厂商官方 benchmark（MMLU / C-Eval 等）
+
+## 3 运行模式矩阵
+
+测量单元是 **MCT 三元组** `(model, context, task)`。每个 MCT 跑 **1 cold + 2 warm = 3 次 API call**。
+总 calls = MCTs × 3。
+
+| 模式 | 模型 | Context 分桶 | Tasks | MCT 数 | 总 calls | 耗时 | 成本 |
+|---|---|---|---|---|---|---|---|
+| `--quick` | Sonnet, Haiku | 2k, 10k | 全 3 | 2×2×3 = 12 | 36 | 3-5 min | <$0.30 |
+| `--standard` | 全 8 | 2k, 10k, 30k, 100k | 全 3 | 8×4×3 = 96 | **288** | 15-20 min | $5-7 |
+| `--deep` | 全 8 | 上 + 200k, + stale(6min) | 全 3 | ~160 | ~500 | 2-4 hr | $12-18 |
+| `--decision` | Sonnet, Opus, Haiku, Grok-4.1-fast, GPT-5 | 30k only | recall only | 5×1×1 = 5 | 15 | 5-8 min | <$1 |
+| `--model <name>` | 单模型 | 全 4 | 全 3 | 1×4×3 = 12 | 36 | 3-5 min | 依模型 |
+
+**CLI 签名**：
+```bash
+uv run python bench_llm_v3.py [--quick | --standard | --deep | --decision | --model <name>]
+                              [--with-chart]           # 生成 plotly chart.html
+                              [--output-dir <path>]    # 默认 bench_results/{timestamp}/
+                              [--no-confirm]           # 跳过 --deep 的确认提示
+                              [--fixtures-dir <path>]  # 默认 bench_fixtures/
+```
+
+## 4 文件布局
+
+```
+~/Projects/jarvis/
+├── bench_llm_v3.py               # 主脚本 ~600 行
+├── bench_fixtures/               # 笔记固件（进 .gitignore）
+│   ├── fake_notes_2k.txt         # cl100k 2000 tokens
+│   ├── fake_notes_10k.txt
+│   ├── fake_notes_30k.txt
+│   ├── fake_notes_100k.txt
+│   └── fake_notes_200k.txt       # 仅 --deep 用
+└── bench_results/
+    └── 2026-04-14_1530/          # timestamp 分目录
+        ├── results.csv
+        ├── summary.md
+        ├── chart.html            # --with-chart 才生成
+        └── run_meta.json         # 运行参数 + 环境信息（SDK 版本、模型 ID fallback 记录等）
+```
+
+## 5 Notes Fixture 生成
+
+### 5.1 文件格式
+
+每行一条观察：
+```
+* {emoji} ({HH:MM}) Allen {动词}: {内容}. (meaning 2026-04-{DD})
+```
+
+- `emoji` ∈ { 🟢 🟡 🟠 🔵 🟣 } (随机)
+- 动词 ∈ { 观察, 提到, 记录, 体验到, 反馈 } (随机)
+- 内容：从 **50 条中文观察模板池** 随机（例："早上喝了第一杯咖啡，今天 Standard Brew", "昨晚睡眠 7h 20min, Oura ring 评分 82"）
+- 日期：2026-04-01 到 2026-04-13 循环
+
+### 5.2 针 & 干扰项
+
+**针**（必须在每个 context size 文件中出现，位置 50% ± 5%）：
+```
+* 🟠 (14:28) Allen 最喜欢喝拿铁，尤其是 Revolver 咖啡馆的日晒耶加雪菲豆. (meaning 2026-04-09)
+```
+
+**干扰项**（针之前 10-20 行的随机位置）：
+```
+* 🟢 (HH:MM) Allen 提到过同事喜欢美式咖啡. (meaning 2026-04-DD)
+```
+
+### 5.3 生成算法
+
+```python
+def generate_fake_notes(target_tokens: int, seed: int = 42) -> str:
+    rng = random.Random(seed + target_tokens)  # seed + size 保证每个 size 不同但可复现
+    enc = tiktoken.get_encoding("cl100k_base")
+    lines: list[str] = []
+    while len(enc.encode("\n".join(lines))) < target_tokens - 50:
+        lines.append(_random_observation(rng))
+        if len(lines) == target_tokens // 50:  # 大约 1 行 ≈ 50 tokens，预估针位置
+            pass  # 留位
+    # 插入针
+    needle_pos = int(len(lines) * (0.5 + rng.uniform(-0.05, 0.05)))
+    distractor_pos = needle_pos - rng.randint(10, 20)
+    lines.insert(distractor_pos, DISTRACTOR_LINE)
+    lines.insert(needle_pos + 1, NEEDLE_LINE)  # +1 因为 distractor 已 insert
+    return "\n".join(lines)
+```
+
+**关键约束**：
+- Seed 固定 → 每次运行生成相同文件 → Anthropic cache 可跨进程命中
+- 文件已存在则**跳过生成**，直接读 → 保证多次 run 完全字节一致
+- 只允许通过手动 `rm bench_fixtures/*.txt` 强制重生
+
+### 5.4 Recall 验证
+
+```python
+def verify_recall(answer: str) -> bool:
+    has_needle = any(k in answer for k in ["拿铁", "Revolver", "耶加"])
+    false_positive = "美式" in answer and not has_needle
+    return has_needle and not false_positive
+```
+
+## 6 Cache-bust 前缀（关键设计）
+
+### 6.1 目的
+
+OpenAI / xAI 自动 prefix cache，光靠"换 UUID"不一定能让 cold 真 cold。解决方案：**每 (provider, model, context) 生成一次 bust_prefix，3 个 task 共享**。
+
+```python
+bust_prefix = f"# Session: {uuid4().hex}\n# Timestamp: {time.time_ns()}\n\n"
+```
+
+- UUID 保证跨进程唯一
+- 纳秒时间戳保证即使 UUID 冲突也不重复
+- 两者组合 → 任何 provider 的自动 cache 都无法把两次不同 run 的内容识别为同一 prefix
+
+### 6.2 用法
+
+```python
+full_prompt_prefix = bust_prefix + notes  # 构造一次
+# Call 1 (task_simple, cold):    first API call，这个 prefix 从未出现 → cache miss
+# Call 2 (task_recall, warm):    prefix 相同 → cache hit
+# Call 3 (task_synthesis, warm): prefix 相同 → cache hit
+```
+
+### 6.3 Provider-specific 放置
+
+| Provider | 结构 |
+|---|---|
+| Anthropic | `system=[{"type":"text","text":full_prompt_prefix,"cache_control":{"type":"ephemeral"}}]`, messages=`[{"role":"user","content":task}]` |
+| OpenAI / xAI / Groq | `messages=[{"role":"system","content":full_prompt_prefix},{"role":"user","content":task}]`（自动前缀 cache） |
+| Gemini | 如 `len(notes) ≥ provider_min_cache_tokens`, 用 `CachedContent.create(system_instruction=full_prompt_prefix)` 然后 `model.generate_content(task, cached_content=cache)`；否则 inline 送，不尝试 cache |
+
+## 7 任务定义
+
+```python
+TASKS = {
+    "simple":     "今天温哥华天气怎么样？",  # 不依赖 notes，测纯 TTFT
+    "recall":     "根据以上观察，Allen 最喜欢喝的咖啡是什么？请用一句话回答。",
+    "synthesis":  "根据以上观察，Allen 最近一个月的生活状态如何？给出 3 点简短建议。",
+}
+```
+
+- `simple`: recall 不需要 notes，但我们照样送 notes 进 context → 测的是"大 context 下的小问题 TTFT"，贴近 Jarvis 真实场景
+- `recall`: 唯一做答案正确性判定的任务
+- `synthesis`: 开放式生成，只记录 TTFT/tokens，不判对错
+
+## 8 执行引擎
+
+### 8.1 并发结构
+
+```python
+# 跨 provider 并发；per-provider Semaphore(1) 保证一个 provider 同时只跑一个 MC 块
+# （避免同 provider 内 rate limit + 保证每 task 的 3 次 cold/warm 背靠背不被打断）
+provider_sems: dict[str, asyncio.Semaphore] = {
+    p.name: asyncio.Semaphore(1) for p in PROVIDERS
+}
+
+async def run_all_mc_blocks():
+    tasks = []
+    for provider in PROVIDERS:
+        for model in provider.models:
+            for ctx_size in active_context_sizes:
+                tasks.append(run_one_mc_block(provider, model, ctx_size, provider_sems[provider.name]))
+    return await asyncio.gather(*tasks, return_exceptions=True)
+```
+
+### 8.2 单 MCT 三元组的 1 cold + 2 warm 采样
+
+原子单位：每个 task 独立生成自己的 `bust_prefix`，3 个 task 各跑 1 cold + 2 warm = 3 次 API call。
+per-provider Semaphore(1) 保证同一 provider 的 (model, context) 顺序跑（不同 provider 并发）。
+单 MC 块: 3 tasks × 3 calls = **9 calls**。全量 --standard = 32 MC × 9 = **288 calls**。
+
+```python
+async def run_one_mc_block(provider, model, ctx_size, sem):
+    """Run 3 tasks × (1 cold + 2 warm) for one (model, context) pair."""
+    async with sem:  # per-provider 互斥
+        notes = load_notes(ctx_size)
+        all_results = []
+
+        for task_name in ["simple", "recall", "synthesis"]:
+            bust_prefix = make_bust_prefix()  # 每 task 一个新 prefix → 保证 cold 真 cold
+            full_prefix = bust_prefix + notes
+            task_start = time.monotonic()
+
+            task_results = []
+            for run_idx in range(3):
+                cache_state = "cold" if run_idx == 0 else "warm"
+                r = await call_api_with_retry(
+                    provider, model, full_prefix, task_name, cache_state
+                )
+                r.update({
+                    "model": model.id,
+                    "provider": provider.name,
+                    "nominal_tokens_cl100k": ctx_size,
+                    "task": task_name,
+                    "cache_state": cache_state,
+                    "run_idx": run_idx,
+                })
+                task_results.append(r)
+
+            task_elapsed = time.monotonic() - task_start
+            cache_window_risk = task_elapsed > 60.0
+            if cache_window_risk:
+                LOGGER.warning(
+                    f"{model.id} ctx={ctx_size} task={task_name}: "
+                    f"block took {task_elapsed:.1f}s, warm cache may have expired "
+                    f"(Anthropic 5min TTL)"
+                )
+            for r in task_results:
+                r["cache_window_risk"] = cache_window_risk
+            all_results.extend(task_results)
+
+        return all_results
+```
+
+**为什么每 task 新 prefix**：
+- 若 3 个 task 共享一个 prefix，`task_recall` 的 cold call 实际上会命中 `task_simple` 留下的 cache → 数据污染
+- 每 task 新 prefix 隔离三个 task 的 cold/warm 对比
+- 代价：生成 prefix 几乎免费（仅增加约 30 tokens / task 的输入量）
+
+### 8.3 API 调用 & 重试
+
+```python
+async def call_api_with_retry(provider, model, full_prefix, task_name, cache_state):
+    query = TASKS[task_name]
+    for attempt in range(4):  # 1 原始 + 3 重试
+        try:
+            return await call_api(provider, model, full_prefix, query, cache_state)
+        except RateLimitError:
+            wait = 2 ** attempt  # 1s, 2s, 4s, 8s
+            LOGGER.warning(f"Rate limited {model.id}, wait {wait}s")
+            await asyncio.sleep(wait)
+        except (InternalServerError, ServiceUnavailableError):
+            await asyncio.sleep(2 ** attempt)
+        except (AuthenticationError, BadRequestError) as e:
+            return {"error": str(e)[:200], "ttft_ms": -1, ...}
+        except asyncio.TimeoutError:
+            return {"error": "timeout", "ttft_ms": -1, ...}
+    return {"error": "max retries exceeded", "ttft_ms": -1, ...}
+```
+
+单调用超时：90 秒（长 context 100k 场景预留）。
+
+### 8.4 Warmup
+
+启动时对每个 model 发 1 次 "Hi" 小 prompt。目的：触发 cold-start / 验证 API key / 探测 model ID 存活。失败则按 `MODEL_CATALOG` 中的 fallback 列表依次尝试。全部失败 → 记录 warning 并从 active list 移除。
+
+## 9 CSV Schema
+
+```python
+CSV_FIELDS = [
+    "timestamp",                  # ISO 8601
+    "model",                      # primary_id or fallback_id
+    "model_is_fallback",          # bool
+    "provider",
+    "nominal_tokens_cl100k",      # 2000/10000/30000/100000
+    "actual_input_tokens_api",    # provider 自报
+    "task",                       # simple/recall/synthesis
+    "cache_state",                # cold/warm/stale
+    "ttft_ms",
+    "total_ms",
+    "output_tokens",
+    "tokens_per_second",
+    "answer",                     # 截断到 500 字
+    "answer_correct",             # bool；非 recall 任务填 None
+    "cache_actually_hit",         # bool
+    "cache_hit_tokens",           # int
+    "cache_hit_ratio",            # float, cache_hit_tokens / actual_input_tokens_api
+    "cost_usd",                   # float, 基于 actual_input_tokens_api + pricing table
+    "cache_window_risk",          # bool
+    "error",                      # str or empty
+]
+```
+
+**Cache 指标抓取**（每 provider response 里的字段）：
+
+| Provider | cache_read 字段 |
+|---|---|
+| Anthropic | `response.usage.cache_read_input_tokens` |
+| OpenAI | `response.usage.prompt_tokens_details.cached_tokens` |
+| xAI Grok | `response.usage.prompt_tokens_details.cached_tokens` (OpenAI 兼容) |
+| Gemini | `response.usage_metadata.cached_content_token_count` |
+| Groq | 永远 0（硬编码） |
+
+`cache_actually_hit = cache_hit_tokens > 0`。
+
+## 10 Model Catalog
+
+```python
+@dataclass
+class ModelSpec:
+    provider: str
+    primary_id: str
+    fallback_ids: list[str]
+    input_price_per_1m: float    # USD
+    output_price_per_1m: float
+    cache_read_multiplier: float  # 0.10 = cache read 是 input 价格的 10%
+    min_cache_tokens: int         # 0 = 无下限
+
+MODEL_CATALOG = [
+    ModelSpec("anthropic", "claude-sonnet-4-6",                  ["claude-sonnet-4-5"],        3.00,  15.00, 0.10, 1024),
+    ModelSpec("anthropic", "claude-opus-4-6",                    ["claude-opus-4-5"],         15.00,  75.00, 0.10, 1024),
+    ModelSpec("anthropic", "claude-haiku-4-5-20251001",          ["claude-haiku-4-5"],         1.00,   5.00, 0.10, 1024),
+    ModelSpec("openai",    "gpt-5",                              ["gpt-4o"],                   2.50,  10.00, 0.50, 1024),
+    ModelSpec("openai",    "gpt-5-mini",                         ["gpt-4o-mini"],              0.15,   0.60, 0.50, 1024),
+    ModelSpec("google",    "gemini-3-pro-preview",               ["gemini-2.5-pro"],           1.25,   5.00, 0.25, 4096),
+    ModelSpec("xai",       "grok-4-1-fast-non-reasoning",        ["grok-4"],                   0.20,   0.50, 0.25, 1024),
+    ModelSpec("groq",      "llama-3.3-70b-versatile",            [],                           0.59,   0.79, 1.00, 999_999),  # no cache
+]
+```
+
+`cost_usd` 计算：
+```python
+cost = (actual_input_tokens - cache_hit_tokens) * input_price_per_1m / 1e6
+cost += cache_hit_tokens * input_price_per_1m * cache_read_multiplier / 1e6
+cost += output_tokens * output_price_per_1m / 1e6
+```
+
+## 11 Summary.md 输出
+
+固定 5 张表：
+
+1. **TTFT × Context (warm cache, median ms)** — 主要日常响应速度指标
+2. **Recall 准确率 × Context** — OM 硬指标
+3. **Cold vs Warm TTFT (100k)** — cache 加速比
+4. **真实 Cache 命中率** — 揭露黑箱
+5. **成本对比 ($/100 次 30k 对话)** — 月预算估算
+
+表以 `nominal_tokens_cl100k` 分桶（而非 actual）以保持跨 provider 列对齐。正文注解列出各 provider 的 `actual / nominal` 比例（Gemini 典型 ~1.3，Claude ~1.2）。
+
+## 12 chart.html（可选）
+
+`--with-chart` 触发。Plotly 生成单个 HTML：
+- 分面网格：行 = cache_state (cold/warm)，列 = context size
+- 每格：分组柱状图，x = model, y = TTFT ms
+- 颜色：provider
+- Hover: 显示 cost / recall_correct / cache_hit_ratio
+
+## 13 环境 & 依赖
+
+### 13.1 自举依赖（PEP 723 inline script metadata）
+
+```python
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "anthropic>=0.42",
+#   "openai>=1.50",
+#   "google-generativeai>=0.8",
+#   "groq>=0.11",
+#   "tiktoken>=0.8",
+#   "tqdm>=4.66",
+#   "plotly>=5.18",
+#   "pandas>=2.0",
+# ]
+# ///
+```
+
+用户 `uv run bench_llm_v3.py` 自动解析 + 装依赖，无需额外 `pyproject.toml`。
+
+### 13.2 API Key 加载
+
+```python
+KEYS = {
+    "anthropic": os.environ.get("ANTHROPIC_API_KEY"),
+    "openai":    os.environ.get("OPENAI_API_KEY"),
+    "google":    os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"),
+    "groq":      os.environ.get("GROQ_API_KEY"),
+    "xai":       os.environ.get("XAI_API_KEY"),
+}
+```
+
+启动时打印：
+```
+✓ anthropic  ✗ openai (missing ANTHROPIC_API_KEY)  ✓ groq  ✓ xai  ✓ google
+```
+
+缺 key 的 provider 的所有模型自动从 active list 移除。
+
+## 14 实时进度输出
+
+tqdm + 简短分模型行：
+```
+[15:30:12] ▸ Loading fixtures... (4 files, 144 KB total)
+[15:30:13] ▸ Warmup: ✓ Sonnet ✓ Opus ✓ Haiku ✓ gpt-5 ✓ gpt-5-mini
+                     ✗ gemini-3-pro-preview → fallback gemini-2.5-pro ✓
+                     ✓ Grok ✓ Llama
+[15:30:45] Running --standard: 96 MCTs × 3 calls = 288 API calls, 8 providers parallel
+Progress: ████████░░ 78% | Elapsed: 14m 22s | ETA: 3m 12s | Errors: 2 | Cost: $4.13
+  ↳ [anthropic/opus @ 100k / recall]  cold 2847ms → warm 1182/1201ms ✓ recall ✓
+  ↳ [groq/llama @ 30k / recall]       cold  187ms → warm  189/192ms (no cache) ✗ recall
+  ↳ [xai/grok @ 30k / recall]         cold 2100ms → warm 2080/2075ms (cache=0%!) ✓ recall
+```
+
+## 15 测试
+
+**Unit tests**（新建 `tests/test_bench_llm_v3.py`，纳入项目 pytest）：
+- `test_generate_fake_notes_deterministic`: 同 seed 生成结果 byte-equal
+- `test_needle_position_within_tolerance`: 针位置在 45%-55% 之间
+- `test_distractor_precedes_needle`: 干扰项在针之前
+- `test_verify_recall`: 针对 5 个合成 answer 测正确性判定
+- `test_cost_calculation`: 构造假 response，验算 cost_usd
+- `test_cache_metrics_extraction`: 对 5 个 provider 的假 response 字典，验证正确提取 cache_hit_tokens
+
+**集成测试**（不在 pytest suite，手动）：
+- `--quick` 必须在 5 分钟内完成且 CSV 有 36 行
+- `--decision` 必须能决策（至少 2 个 Anthropic 模型有有效数据）
+
+## 16 开放问题 / 运行时决策
+
+1. **Model ID 时效性**：`MODEL_CATALOG` 中的 primary_id 可能过时。依赖 warmup 阶段的 fallback 机制。如有新模型 ID 发布，更新 catalog 即可。
+2. **Pricing 时效性**：价格表内嵌。上线时校准一次，每季度复查。写明 `PRICING_SNAPSHOT_DATE = "2026-04-14"` 在代码顶部。
+3. **Gemini CachedContent 最小 token**：官方文档 Flash=32k, Pro=4k（可能随版本变）。若 API 返回 400 cache-too-small，自动降级为 inline 送（标记 `cache_actually_hit=False`）。
+4. **xAI Grok 是否支持 prompt cache**：v1 bench 里能跑但无 cache 信号。代码对 xAI 假设自动 cache（OpenAI 兼容），若 response 无 `cached_tokens` 字段则报 0。
+
+## 17 与 v1 的关系
+
+v1 `bench_llm.py` **保留不删**，作为"跨 9 个 Llama-3.3-70B 部署商的 TTFB-only 快速对比"工具。v3 是新的更完整的测试，不覆盖 v1 的场景。
+
+---
+
+**设计确认**：
+- [x] C + D 运行模式（quick / standard / deep / decision + single-model）
+- [x] A 诚实 cache 报告 + cache_hit_tokens / cache_hit_ratio / cache_actually_hit
+- [x] 1 cold + 2 warm 采样（288 calls for --standard）
+- [x] UUID + 纳秒时间戳 cache-bust prefix
+- [x] 跨 provider 并发 + per-provider Semaphore(1) + 60s elapsed assertion + cache_window_risk 列
+- [x] token 策略 C（cl100k 名义分桶 + actual_input_tokens_api 真值 + 成本用 actual）
+- [x] 单干扰项过滤关键词假命中
+
+**下一步**：交棒给 `writing-plans` 生成详细实施计划。
