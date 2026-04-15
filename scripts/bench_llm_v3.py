@@ -529,6 +529,121 @@ PROVIDER_DISPATCH: dict[str, Callable[[CallSpec], Awaitable[dict[str, Any]]]] = 
     "google": call_gemini,
 }
 
+# ===== EXECUTION =====
+
+class RateLimited(Exception): ...
+class FatalAPIError(Exception): ...
+
+
+def _is_rate_limit(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "rate limit" in msg or "429" in msg or "quota" in msg or "overloaded" in msg
+
+
+def _is_fatal(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "401" in msg or "403" in msg or "invalid api key" in msg or "400" in msg
+
+
+async def call_api_with_retry(
+    cs: CallSpec,
+    cache_state: str,
+    run_idx: int,
+    nominal_tokens: int,
+    model_is_fallback: bool,
+) -> CallResult:
+    """Run one API call with exponential backoff on rate limits; build CallResult."""
+    dispatch = PROVIDER_DISPATCH[cs.model_spec.provider]
+
+    last_err: str = ""
+    for attempt in range(4):  # 1 + 3 retries
+        try:
+            raw = await asyncio.wait_for(dispatch(cs), timeout=CALL_TIMEOUT_SEC)
+            metrics = extract_cache_metrics(cs.model_spec.provider, raw["raw_response"])
+            cost = calc_cost(
+                cache_write_tokens=metrics["cache_write_tokens"],
+                cache_read_tokens=metrics["cache_read_tokens"],
+                prompt_total_tokens=metrics["prompt_total_tokens"],
+                output_tokens=metrics["output_tokens"],
+                spec=cs.model_spec,
+            )
+            hit_ratio = (
+                metrics["cache_read_tokens"] / metrics["prompt_total_tokens"]
+                if metrics["prompt_total_tokens"] > 0 else 0.0
+            )
+            answer = raw["answer"][:500]
+            answer_correct = verify_recall(raw["answer"]) if cs.task_name == "recall" else None
+            tps = (
+                metrics["output_tokens"] / (raw["total_ms"] / 1000.0)
+                if raw["total_ms"] > 0 else 0.0
+            )
+            return CallResult(
+                timestamp=_utcnow_iso(),
+                model=cs.active_model_id,
+                model_is_fallback=model_is_fallback,
+                provider=cs.model_spec.provider,
+                nominal_tokens_cl100k=nominal_tokens,
+                actual_input_tokens_api=metrics["prompt_total_tokens"],
+                task=cs.task_name,
+                cache_state=cache_state,
+                run_idx=run_idx,
+                ttft_ms=raw["ttft_ms"],
+                total_ms=raw["total_ms"],
+                output_tokens=metrics["output_tokens"],
+                tokens_per_second=tps,
+                answer=answer,
+                answer_correct=answer_correct,
+                cache_actually_hit=metrics["cache_read_tokens"] > 0,
+                cache_write_tokens=metrics["cache_write_tokens"],
+                cache_read_tokens=metrics["cache_read_tokens"],
+                cache_hit_ratio=hit_ratio,
+                cost_usd=cost,
+            )
+        except asyncio.TimeoutError:
+            last_err = "timeout"
+            break  # don't retry timeouts
+        except Exception as e:  # noqa: BLE001
+            if _is_fatal(e):
+                last_err = f"fatal: {type(e).__name__}: {str(e)[:200]}"
+                break
+            if _is_rate_limit(e):
+                wait = 2 ** attempt
+                LOGGER.warning(
+                    "Rate limit on %s (%s), wait %ds, attempt %d",
+                    cs.active_model_id, cs.task_name, wait, attempt + 1,
+                )
+                await asyncio.sleep(wait)
+                last_err = f"ratelimit: {str(e)[:200]}"
+                continue
+            # transient 5xx
+            await asyncio.sleep(2 ** attempt)
+            last_err = f"{type(e).__name__}: {str(e)[:200]}"
+
+    return CallResult(
+        timestamp=_utcnow_iso(),
+        model=cs.active_model_id,
+        model_is_fallback=model_is_fallback,
+        provider=cs.model_spec.provider,
+        nominal_tokens_cl100k=nominal_tokens,
+        actual_input_tokens_api=0,
+        task=cs.task_name,
+        cache_state=cache_state,
+        run_idx=run_idx,
+        ttft_ms=-1.0,
+        total_ms=-1.0,
+        output_tokens=0,
+        tokens_per_second=0.0,
+        answer="",
+        answer_correct=None,
+        cache_actually_hit=False,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        cache_hit_ratio=0.0,
+        cost_usd=0.0,
+        error=last_err or "unknown",
+    )
+
+
 # ===== (sections below added in later tasks) =====
 
 def main() -> None:
