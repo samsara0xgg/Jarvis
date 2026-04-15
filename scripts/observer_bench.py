@@ -1212,11 +1212,220 @@ def write_run_meta_observer(
     }
     path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
-# ===== §11 CLI (Task 14) =====
+# ===== §11 CLI =====
+
+DEFAULT_SEEDS_PATH = Path("bench_fixtures/observer_cn/seeds.yaml")
+DEFAULT_FIXTURES_DIR = Path("bench_fixtures/observer_cn")
+
+
+async def _observer_generate(seeds_path: Path, fixtures_dir: Path) -> None:
+    print(f"▸ Reading seeds from {seeds_path}")
+    if not seeds_path.exists():
+        raise SystemExit(f"seeds.yaml not found at {seeds_path}. Create it first.")
+    written = await run_fixture_generation(seeds_path, fixtures_dir)
+    print()
+    print(f"▸ Generated {len(written)} .draft.json files in {fixtures_dir}")
+    print("  Next step: open each fx_XXX.draft.json, edit,")
+    print(f"             then rename: mv {fixtures_dir}/fx_XXX.draft.json {fixtures_dir}/fx_XXX.json")
+
+
+def _load_pilot_pass(results_root: Path) -> tuple[dict[str, bool], dict[str, str]]:
+    """Find the most recent observer-pilot run_meta.json, extract pilot_pass map."""
+    if not results_root.exists():
+        return {}, {}
+    candidates = sorted(results_root.glob("observer_*/run_meta.json"), reverse=True)
+    for meta_path in candidates:
+        try:
+            m = json.loads(meta_path.read_text(encoding="utf-8"))
+            if m.get("mode") == "observer-pilot" and m.get("pilot_pass"):
+                return m["pilot_pass"], m.get("pilot_exit_reason", {})
+        except (json.JSONDecodeError, OSError):
+            continue
+    return {}, {}
+
+
+async def _run_observer_matrix(
+    active: list[ActiveObserver],
+    fixtures: list[Fixture],
+) -> list[ObserverResult]:
+    """For each (model, fixture), run call_observer_with_retry."""
+    from tqdm.asyncio import tqdm as async_tqdm
+
+    total = len(active) * len(fixtures)
+    pbar = async_tqdm(total=total, desc="observer", unit="call")
+    running_cost = [0.0]
+    error_count = [0]
+
+    async def _one(a: ActiveObserver, fx: Fixture) -> ObserverResult:
+        r = await call_observer_with_retry(a.spec, a.active_model_id, a.is_fallback, fx)
+        pbar.update(1)
+        running_cost[0] += r.cost_usd
+        if r.error:
+            error_count[0] += 1
+        pbar.set_postfix(cost=f"${running_cost[0]:.2f}", errors=error_count[0])
+        return r
+
+    # per-provider Semaphore(1) to serialize same-provider calls
+    provider_sems: dict[str, asyncio.Semaphore] = {
+        a.spec.provider: asyncio.Semaphore(1) for a in active
+    }
+
+    async def _with_sem(a: ActiveObserver, fx: Fixture) -> ObserverResult:
+        async with provider_sems[a.spec.provider]:
+            return await _one(a, fx)
+
+    tasks = [_with_sem(a, fx) for a in active for fx in fixtures]
+    results = await asyncio.gather(*tasks)
+    pbar.close()
+    return results
+
+
+async def _main_async(args: argparse.Namespace) -> None:
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
+
+    seeds_path = Path(args.seeds or DEFAULT_SEEDS_PATH)
+    fixtures_dir = Path(args.fixtures_dir)
+
+    # Sub-command: --observer-generate
+    if args.observer_generate:
+        await _observer_generate(seeds_path, fixtures_dir)
+        return
+
+    # Resolve plan
+    if args.model:
+        target = [s for s in v3.MODEL_CATALOG
+                  if s.primary_id == args.model or args.model in s.fallback_ids]
+        if not target:
+            raise SystemExit(f"Model '{args.model}' not in catalog.")
+        candidate_ids = (target[0].primary_id,)
+        mode = "model"
+    elif args.observer_pilot:
+        candidate_ids = OBSERVER_CANDIDATES
+        mode = "observer-pilot"
+    elif args.observer:
+        candidate_ids = OBSERVER_CANDIDATES
+        mode = "observer"
+    else:
+        raise SystemExit("Specify one of: --observer / --observer-pilot / --observer-generate / --model <id>")
+
+    # Load fixtures
+    all_fixtures = load_approved_fixtures(fixtures_dir)
+    if mode == "observer-pilot":
+        # Take fx_001 ~ fx_005 only
+        pilot_ids = {f"fx_{i:03d}" for i in range(1, 6)}
+        fixtures = [f for f in all_fixtures if f.id in pilot_ids]
+    else:
+        fixtures = all_fixtures
+
+    if not fixtures:
+        raise SystemExit(
+            f"No approved fixtures in {fixtures_dir}. "
+            f"Run --observer-generate first, then rename .draft.json → .json to approve."
+        )
+
+    # --observer (full): apply pilot early-exit
+    pilot_pass_map: dict[str, bool] = {}
+    pilot_exit_reason: dict[str, str] = {}
+    if mode == "observer" and not args.include_failed_pilot:
+        pass_map, exit_reason = _load_pilot_pass(Path("bench_results"))
+        if pass_map:
+            candidate_ids = tuple(cid for cid in candidate_ids if pass_map.get(cid, True))
+            excluded = set(OBSERVER_CANDIDATES) - set(candidate_ids)
+            if excluded:
+                print(f"▸ Pilot early-exit: skipping {len(excluded)} models")
+                for cid in sorted(excluded):
+                    print(f"  ✗ {cid} — {exit_reason.get(cid, 'failed pilot')}")
+                print(f"  (use --include-failed-pilot to override)")
+
+    # Dry run
+    if args.dry_run:
+        n_calls = len(candidate_ids) * len(fixtures)
+        est_cost = n_calls * 0.012   # rough ballpark
+        print(f"[DRY RUN] mode: --{mode}")
+        print(f"[DRY RUN] candidates: {candidate_ids}")
+        print(f"[DRY RUN] fixtures: {len(fixtures)} ({[f.id for f in fixtures]})")
+        print(f"[DRY RUN] total calls: {n_calls}")
+        print(f"[DRY RUN] estimated cost: ~${est_cost:.2f}")
+        return
+
+    # Warmup
+    print(f"\n▸ Warmup for {len(candidate_ids)} candidates (isolated payload):")
+    active = await resolve_active_observers(candidate_ids)
+    if not active:
+        raise SystemExit("No models survived warmup. Aborting.")
+
+    # Run matrix
+    print(f"\n▸ Running --{mode}: {len(active)} models × {len(fixtures)} fixtures = "
+          f"{len(active) * len(fixtures)} calls")
+    t0 = time.monotonic()
+    results = await _run_observer_matrix(active, fixtures)
+    elapsed = time.monotonic() - t0
+
+    # Compute pilot_pass map (only in observer-pilot mode)
+    if mode == "observer-pilot":
+        for a in active:
+            model_rows = [r for r in results if r.model == a.active_model_id]
+            scores = [
+                Scores(
+                    tool_success=r.tool_success, precision=r.precision, recall=r.recall,
+                    f1=r.f1, priority_accuracy=r.priority_accuracy,
+                    hallucination=r.hallucination, extra_count=r.extra_count,
+                ) for r in model_rows
+            ]
+            ok = compute_pilot_pass(scores)
+            pilot_pass_map[a.active_model_id] = ok
+            if not ok:
+                tool_rate = sum(1 for s in scores if s.tool_success) / len(scores) if scores else 0.0
+                mean_f1 = sum(s.f1 for s in scores) / len(scores) if scores else 0.0
+                pilot_exit_reason[a.active_model_id] = (
+                    f"tool_success={tool_rate:.0%} (need ≥{PILOT_TOOL_SUCCESS_THRESHOLD:.0%}), "
+                    f"F1={mean_f1:.2f} (need ≥{PILOT_F1_THRESHOLD:.2f})"
+                )
+
+    # Output
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    output_dir = Path(args.output_dir) if args.output_dir else Path(f"bench_results/observer_{timestamp}")
+    csv_path = write_observer_csv(results, output_dir)
+    summary_path = render_observer_summary(results, output_dir, run_args={
+        "mode": mode, "timestamp": timestamp, "elapsed_sec": elapsed,
+    })
+    meta_path = write_run_meta_observer(results, output_dir, run_args={
+        "mode": mode, "timestamp": timestamp, "elapsed_sec": elapsed,
+        "active_models": [a.active_model_id for a in active],
+        "raw_args": {k: v for k, v in vars(args).items() if not callable(v)},
+    }, pilot_pass_map=pilot_pass_map, pilot_exit_reason=pilot_exit_reason)
+
+    errors = sum(1 for r in results if r.error)
+    print(f"\n▸ Done in {elapsed/60:.1f} min "
+          f"({len(results)} calls, {errors} errors, "
+          f"${sum(r.cost_usd for r in results):.2f})")
+    print(f"  CSV:     {csv_path}")
+    print(f"  Summary: {summary_path}")
+    print(f"  Meta:    {meta_path}")
+    if mode == "observer-pilot":
+        passed = sum(1 for v in pilot_pass_map.values() if v)
+        print(f"  Pilot pass: {passed}/{len(pilot_pass_map)}")
+        for mid, reason in pilot_exit_reason.items():
+            print(f"    ✗ {mid}: {reason}")
 
 
 def main() -> None:
-    raise NotImplementedError("Built in Task 14")
+    parser = argparse.ArgumentParser(prog="observer_bench", description="Chinese Observer benchmark")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--observer", action="store_true", help="Run full observer bench")
+    mode_group.add_argument("--observer-pilot", action="store_true", help="Run pilot (fx_001~fx_005)")
+    mode_group.add_argument("--observer-generate", action="store_true",
+                             help="Generate draft fixtures from seeds.yaml via Opus")
+    mode_group.add_argument("--model", type=str, help="Single model override")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument("--fixtures-dir", type=str, default=str(DEFAULT_FIXTURES_DIR))
+    parser.add_argument("--seeds", type=str, default=None)
+    parser.add_argument("--include-failed-pilot", action="store_true",
+                        help="Don't skip models that failed pilot")
+    args = parser.parse_args()
+
+    asyncio.run(_main_async(args))
 
 
 if __name__ == "__main__":
