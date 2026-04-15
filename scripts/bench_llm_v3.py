@@ -644,6 +644,110 @@ async def call_api_with_retry(
     )
 
 
+# ===== WARMUP / ACTIVE SPEC RESOLUTION =====
+
+API_KEY_ENV = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai":    "OPENAI_API_KEY",
+    "google":    "GEMINI_API_KEY",
+    "groq":      "GROQ_API_KEY",
+    "xai":       "XAI_API_KEY",
+}
+
+
+def _provider_has_key(provider: str) -> bool:
+    primary = os.environ.get(API_KEY_ENV[provider])
+    fallback = os.environ.get("GOOGLE_API_KEY") if provider == "google" else None
+    return bool(primary or fallback)
+
+
+def _ensure_google_key_env():
+    """google-generativeai reads GEMINI_API_KEY by default; accept GOOGLE_API_KEY too."""
+    if not os.environ.get("GEMINI_API_KEY") and os.environ.get("GOOGLE_API_KEY"):
+        os.environ["GEMINI_API_KEY"] = os.environ["GOOGLE_API_KEY"]
+
+
+async def warmup_one(spec: ModelSpec) -> tuple[str, bool] | None:
+    """Return (active_model_id, is_fallback) if any ID works, else None.
+
+    Uses a minimal isolated payload — pure user message, NO system prompt —
+    to guarantee zero-byte overlap with real test prefixes. This prevents
+    OpenAI/xAI auto-prefix cache from polluting the first cold call.
+    """
+    candidates: list[tuple[str, bool]] = [(spec.primary_id, False)]
+    candidates.extend((fid, True) for fid in spec.fallback_ids)
+
+    for mid, is_fb in candidates:
+        try:
+            if spec.provider == "anthropic":
+                from anthropic import AsyncAnthropic
+                client = AsyncAnthropic()
+                await client.messages.create(
+                    model=mid,
+                    max_tokens=5,
+                    messages=[{"role": "user", "content": "Just say: OK"}],
+                )
+            elif spec.provider == "google":
+                _ensure_google_key_env()
+                import google.generativeai as genai
+                genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+                await asyncio.to_thread(
+                    lambda: genai.GenerativeModel(mid).generate_content(
+                        "Just say: OK",
+                        generation_config={"max_output_tokens": 5},
+                    )
+                )
+            else:  # openai-compat: openai, xai, groq
+                from openai import AsyncOpenAI
+                base_urls = {
+                    "openai": "https://api.openai.com/v1",
+                    "xai":    "https://api.x.ai/v1",
+                    "groq":   "https://api.groq.com/openai/v1",
+                }
+                client = AsyncOpenAI(
+                    base_url=base_urls[spec.provider],
+                    api_key=os.environ[API_KEY_ENV[spec.provider]],
+                )
+                await client.chat.completions.create(
+                    model=mid,
+                    max_tokens=5,
+                    messages=[{"role": "user", "content": "Just say: OK"}],
+                )
+            return (mid, is_fb)
+        except Exception as e:  # noqa: BLE001
+            LOGGER.warning("warmup failed for %s/%s: %s", spec.provider, mid, str(e)[:120])
+            continue
+    return None
+
+
+@dataclass
+class ActiveSpec:
+    model_spec: ModelSpec
+    active_model_id: str
+    is_fallback: bool
+
+
+async def resolve_active_specs() -> list[ActiveSpec]:
+    """Check keys, warmup each model, return the list with working IDs."""
+    _ensure_google_key_env()
+    specs_to_try = [s for s in MODEL_CATALOG if _provider_has_key(s.provider)]
+    skipped = [s for s in MODEL_CATALOG if not _provider_has_key(s.provider)]
+    for s in skipped:
+        print(f"✗ {s.provider}/{s.primary_id} — missing {API_KEY_ENV[s.provider]}")
+
+    active: list[ActiveSpec] = []
+    results = await asyncio.gather(*(warmup_one(s) for s in specs_to_try))
+    for spec, result in zip(specs_to_try, results):
+        if result is None:
+            print(f"✗ {spec.provider}/{spec.primary_id} — warmup exhausted all fallbacks")
+            continue
+        mid, is_fb = result
+        marker = "↪" if is_fb else "✓"
+        print(f"{marker} {spec.provider}/{mid}" + (" (fallback)" if is_fb else ""))
+        active.append(ActiveSpec(spec, mid, is_fb))
+    return active
+
+
 # ===== (sections below added in later tasks) =====
 
 def main() -> None:
