@@ -230,3 +230,25 @@ def test_build_tool_call_kwargs_gemini():
     assert kw["tool_config"]["function_calling_config"]["allowed_function_names"] == [
         "record_observations"
     ]
+
+
+def test_openai_token_param_gpt5_uses_max_completion_tokens():
+    assert ob._openai_token_param_for_model("openai", "gpt-5") == "max_completion_tokens"
+    assert ob._openai_token_param_for_model("openai", "gpt-5-mini") == "max_completion_tokens"
+
+
+def test_openai_token_param_o1_o3_uses_max_completion_tokens():
+    assert ob._openai_token_param_for_model("openai", "o1-preview") == "max_completion_tokens"
+    assert ob._openai_token_param_for_model("openai", "o3-mini") == "max_completion_tokens"
+
+
+def test_openai_token_param_gpt4_uses_max_tokens():
+    assert ob._openai_token_param_for_model("openai", "gpt-4o") == "max_tokens"
+    assert ob._openai_token_param_for_model("openai", "gpt-4o-mini") == "max_tokens"
+
+
+def test_openai_token_param_other_providers_use_max_tokens():
+    """xAI / Groq / DeepSeek use max_tokens even for GPT-5-like names."""
+    assert ob._openai_token_param_for_model("xai", "grok-4") == "max_tokens"
+    assert ob._openai_token_param_for_model("groq", "llama-3.3-70b-versatile") == "max_tokens"
+    assert ob._openai_token_param_for_model("deepseek", "deepseek-chat") == "max_tokens"

@@ -443,6 +443,76 @@ async def call_with_tools_anthropic(system: str, user_msg: str, model_id: str) -
         raw_arguments=raw_args,
         raw_response=final_message,
     )
+
+
+def _parse_openai_tool_call(final_chunk: Any) -> tuple[list[dict] | None, str]:
+    """Parse first tool_call from OpenAI-compat streaming/non-streaming response."""
+    if final_chunk is None:
+        return None, ""
+    choices = getattr(final_chunk, "choices", None)
+    if not choices:
+        return None, ""
+    msg = getattr(choices[0], "message", None) or getattr(choices[0], "delta", None)
+    if msg is None:
+        return None, ""
+    tool_calls = getattr(msg, "tool_calls", None)
+    if not tool_calls:
+        return None, ""
+    tc = tool_calls[0]
+    fn = getattr(tc, "function", None)
+    if fn is None or getattr(fn, "name", "") != "record_observations":
+        return None, ""
+    args_str = getattr(fn, "arguments", "") or ""
+    try:
+        parsed = json.loads(args_str)
+    except json.JSONDecodeError:
+        return None, args_str[:1000]
+    obs = parsed.get("observations") if isinstance(parsed, dict) else None
+    return obs if isinstance(obs, list) else None, args_str[:1000]
+
+
+def _openai_token_param_for_model(provider: str, model_id: str) -> str:
+    """GPT-5 / o1 / o3 require max_completion_tokens; others use max_tokens."""
+    if provider == "openai" and (
+        model_id.startswith("gpt-5") or model_id.startswith("o1") or model_id.startswith("o3")
+    ):
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
+async def call_with_tools_openai_compat(
+    system: str, user_msg: str, model_id: str, provider: str, base_url: str, api_key: str,
+) -> ObserverCall:
+    """Shared caller for OpenAI, xAI, Groq, DeepSeek (all OpenAI wire protocol)."""
+    from openai import AsyncOpenAI
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    tool_kwargs = build_tool_call_kwargs(provider)
+    token_param = _openai_token_param_for_model(provider, model_id)
+
+    bust = v3.make_bust_prefix()
+    messages = [
+        {"role": "system", "content": bust + system},
+        {"role": "user", "content": user_msg},
+    ]
+
+    t0 = time.perf_counter()
+    resp = await client.chat.completions.create(
+        model=model_id,
+        messages=messages,
+        **{token_param: MAX_OUTPUT_TOKENS},
+        stream=False,  # non-stream: tool_calls fully assembled in response
+        **tool_kwargs,
+    )
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    obs, raw_args = _parse_openai_tool_call(resp)
+    return ObserverCall(
+        observer_latency_ms=elapsed_ms,
+        total_ms=elapsed_ms,
+        model_obs=obs,
+        raw_arguments=raw_args,
+        raw_response=resp,
+    )
 # ===== §6 RETRY + ASSEMBLY (Task 9) =====
 # ===== §7 WARMUP (Task 11) =====
 # ===== §8 EVALUATOR (Task 10) =====
