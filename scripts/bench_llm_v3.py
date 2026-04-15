@@ -346,6 +346,65 @@ class CallSpec:
     def system_content(self) -> str:
         return self.bust_prefix + self.notes
 
+
+_ANTHROPIC_DEBUG_PRINTED = False
+
+
+async def call_anthropic(cs: CallSpec) -> dict[str, Any]:
+    """Anthropic with cache_control on system prompt prefix.
+
+    On first call of the whole process, prints raw usage to stdout for
+    cache_control validation (v2 died silently with cache_control syntax errors).
+    """
+    global _ANTHROPIC_DEBUG_PRINTED
+    from anthropic import AsyncAnthropic
+
+    client = AsyncAnthropic()
+    system_blocks = [{
+        "type": "text",
+        "text": cs.system_content,
+        "cache_control": {"type": "ephemeral"},
+    }]
+
+    t0 = time.perf_counter()
+    ttft_ms: float | None = None
+    answer_parts: list[str] = []
+    final_message = None
+
+    async with client.messages.stream(
+        model=cs.active_model_id,
+        system=system_blocks,
+        messages=[{"role": "user", "content": cs.query}],
+        max_tokens=MAX_OUTPUT_TOKENS,
+    ) as stream:
+        async for chunk in stream.text_stream:
+            if ttft_ms is None:
+                ttft_ms = (time.perf_counter() - t0) * 1000.0
+            answer_parts.append(chunk)
+        final_message = await stream.get_final_message()
+
+    total_ms = (time.perf_counter() - t0) * 1000.0
+
+    if not _ANTHROPIC_DEBUG_PRINTED:
+        _ANTHROPIC_DEBUG_PRINTED = True
+        print("=" * 78)
+        print(f"ANTHROPIC FIRST CALL RESPONSE (DEBUG) — {cs.active_model_id} / {cs.task_name}")
+        print(f"  usage.input_tokens:                 {final_message.usage.input_tokens}")
+        print(f"  usage.cache_creation_input_tokens:  "
+              f"{getattr(final_message.usage, 'cache_creation_input_tokens', 0)}")
+        print(f"  usage.cache_read_input_tokens:      "
+              f"{getattr(final_message.usage, 'cache_read_input_tokens', 0)}")
+        print(f"  usage.output_tokens:                {final_message.usage.output_tokens}")
+        print("  ^ cache_creation > 0 on FIRST cold call means cache_control is working.")
+        print("=" * 78, flush=True)
+
+    return {
+        "ttft_ms": ttft_ms if ttft_ms is not None else total_ms,
+        "total_ms": total_ms,
+        "answer": "".join(answer_parts),
+        "raw_response": final_message,
+    }
+
 # ===== (sections below added in later tasks) =====
 
 def main() -> None:
