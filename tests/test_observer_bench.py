@@ -110,3 +110,78 @@ def test_scores_dataclass_defaults():
     )
     assert s.tool_success is False
     assert s.f1 == 0.0
+
+
+import tempfile
+import json as _json
+from pathlib import Path as _Path
+
+
+def test_load_seeds_parses_yaml(tmp_path):
+    seeds_yaml = tmp_path / "seeds.yaml"
+    seeds_yaml.write_text("""
+- id: fx_001
+  category: smart_home
+  scene: "智能家居 + 疲惫语气"
+  user_emotion_hint: tired
+  tone_hint: "口语化"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "偏好: 暖黄"
+  must_not_hallucinate:
+    - "蓝光"
+""", encoding="utf-8")
+    seeds = ob.load_seeds(seeds_yaml)
+    assert len(seeds) == 1
+    assert seeds[0].id == "fx_001"
+    assert seeds[0].category == "smart_home"
+    assert seeds[0].must_capture == ["偏好: 暖黄"]
+
+
+def test_load_seeds_rejects_unknown_category(tmp_path):
+    seeds_yaml = tmp_path / "seeds.yaml"
+    seeds_yaml.write_text("""
+- id: fx_001
+  category: BOGUS
+  scene: x
+  user_emotion_hint: x
+  tone_hint: x
+  dialogue_length_hint: x
+  must_capture: []
+  must_not_hallucinate: []
+""", encoding="utf-8")
+    import pytest
+    with pytest.raises(ValueError, match="unknown category"):
+        ob.load_seeds(seeds_yaml)
+
+
+def test_load_approved_fixtures_ignores_draft(tmp_path):
+    """.draft.json files must be skipped (Allen hasn't approved them)."""
+    approved = tmp_path / "fx_001.json"
+    draft = tmp_path / "fx_002.draft.json"
+    approved.write_text(_json.dumps({
+        "id": "fx_001", "category": "smart_home", "seed_id": "fx_001",
+        "generated_by": "claude-opus-4-6",
+        "dialogue": [{"role": "user", "time": "14:28", "content": "hi"}],
+        "expected_observations": [
+            {"priority": "🔴", "must_contain_any_of": [["hi"]], "semantic_description": "x"}
+        ],
+        "must_not_contain_globally": [],
+    }), encoding="utf-8")
+    draft.write_text('{"id": "fx_002"}', encoding="utf-8")
+    fxs = ob.load_approved_fixtures(tmp_path)
+    assert len(fxs) == 1
+    assert fxs[0].id == "fx_001"
+
+
+def test_save_draft_fixture_writes_draft_suffix(tmp_path):
+    fx = ob.Fixture(
+        id="fx_003", category="preference", seed_id="fx_003",
+        generated_by="claude-opus-4-6",
+        dialogue=[], expected_observations=[], must_not_contain_globally=[],
+    )
+    path = ob.save_draft_fixture(fx, tmp_path)
+    assert path.name == "fx_003.draft.json"
+    assert path.exists()
+    data = _json.loads(path.read_text(encoding="utf-8"))
+    assert data["id"] == "fx_003"

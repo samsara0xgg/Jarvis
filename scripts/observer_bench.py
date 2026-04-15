@@ -250,7 +250,103 @@ class ObserverResult:
     cost_usd: float
     model_output_raw: str                   # tool_call arguments, truncated 1000 chars
     error: str = ""
-# ===== §3 FIXTURE I/O (Task 4) =====
+# ===== §3 FIXTURE I/O =====
+
+import yaml
+
+
+def load_seeds(path: Path) -> list[Seed]:
+    """Load seeds.yaml → list[Seed]. Validates category enum."""
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise ValueError(f"seeds.yaml must be a list, got {type(raw)}")
+    seeds = []
+    for entry in raw:
+        if entry.get("category") not in FIXTURE_CATEGORIES:
+            raise ValueError(
+                f"seeds.yaml id={entry.get('id')}: unknown category "
+                f"{entry.get('category')!r} (allowed: {FIXTURE_CATEGORIES})"
+            )
+        seeds.append(Seed(
+            id=entry["id"],
+            category=entry["category"],
+            scene=entry.get("scene", ""),
+            user_emotion_hint=entry.get("user_emotion_hint", "neutral"),
+            tone_hint=entry.get("tone_hint", ""),
+            dialogue_length_hint=entry.get("dialogue_length_hint", "3-4 turns"),
+            must_capture=list(entry.get("must_capture", [])),
+            must_not_hallucinate=list(entry.get("must_not_hallucinate", [])),
+        ))
+    return seeds
+
+
+def _fixture_from_dict(d: dict[str, Any]) -> Fixture:
+    """Parse fx_XXX.json dict → Fixture."""
+    exps = [
+        ExpectedObservation(
+            priority=e["priority"],
+            must_contain_any_of=[list(x) for x in e["must_contain_any_of"]],
+            semantic_description=e.get("semantic_description", ""),
+        )
+        for e in d["expected_observations"]
+    ]
+    return Fixture(
+        id=d["id"],
+        category=d["category"],
+        seed_id=d["seed_id"],
+        generated_by=d["generated_by"],
+        dialogue=list(d["dialogue"]),
+        expected_observations=exps,
+        must_not_contain_globally=list(d.get("must_not_contain_globally", [])),
+        generated_at=d.get("generated_at", ""),
+        approved_by=d.get("approved_by", ""),
+        approved_at=d.get("approved_at", ""),
+    )
+
+
+def load_approved_fixtures(dir_path: Path) -> list[Fixture]:
+    """Load fx_*.json (NOT .draft.json) from observer_cn/."""
+    fxs = []
+    for p in sorted(dir_path.glob("fx_*.json")):
+        if p.name.endswith(".draft.json"):
+            continue
+        data = json.loads(p.read_text(encoding="utf-8"))
+        fxs.append(_fixture_from_dict(data))
+    return fxs
+
+
+def _fixture_to_dict(fx: Fixture) -> dict[str, Any]:
+    """Serialize Fixture → dict for JSON output."""
+    return {
+        "id": fx.id,
+        "category": fx.category,
+        "seed_id": fx.seed_id,
+        "generated_by": fx.generated_by,
+        "generated_at": fx.generated_at,
+        "approved_by": fx.approved_by,
+        "approved_at": fx.approved_at,
+        "dialogue": fx.dialogue,
+        "expected_observations": [
+            {
+                "priority": e.priority,
+                "must_contain_any_of": e.must_contain_any_of,
+                "semantic_description": e.semantic_description,
+            }
+            for e in fx.expected_observations
+        ],
+        "must_not_contain_globally": fx.must_not_contain_globally,
+    }
+
+
+def save_draft_fixture(fx: Fixture, dir_path: Path) -> Path:
+    """Write fixture as fx_XXX.draft.json (Allen renames to approve)."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    path = dir_path / f"{fx.id}.draft.json"
+    path.write_text(
+        json.dumps(_fixture_to_dict(fx), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
 # ===== §4 PROMPT + TOOL BUILDERS (Task 5) =====
 # ===== §5 PROVIDER CALLERS (Tasks 6-8) =====
 # ===== §6 RETRY + ASSEMBLY (Task 9) =====
