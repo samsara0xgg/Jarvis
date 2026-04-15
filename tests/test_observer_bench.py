@@ -286,3 +286,126 @@ def test_is_fatal_obs():
     assert ob._is_fatal_obs(Exception("400 Bad Request")) is True
     assert ob._is_fatal_obs(Exception("429 rate limit")) is False
     assert ob._is_fatal_obs(Exception("500 error")) is False
+
+
+def _make_fx_one_expected():
+    """Helper: fixture with 2 expected observations + 2 hallucination words."""
+    return ob.Fixture(
+        id="fx_test", category="smart_home", seed_id="fx_test",
+        generated_by="test",
+        dialogue=[],
+        expected_observations=[
+            ob.ExpectedObservation(
+                priority="🔴",
+                must_contain_any_of=[["拿铁", "客厅"], ["暖黄"]],  # OR of AND
+                semantic_description="x",
+            ),
+            ob.ExpectedObservation(
+                priority="🟡",
+                must_contain_any_of=[["累"], ["疲惫"]],
+                semantic_description="y",
+            ),
+        ],
+        must_not_contain_globally=["蓝光", "卧室"],
+    )
+
+
+def test_evaluate_tool_success_false_when_none():
+    """model_obs=None → all scores 0, halluc False (spec §7.1 guard)."""
+    fx = _make_fx_one_expected()
+    s = ob.evaluate(None, fx)
+    assert s.tool_success is False
+    assert s.precision == 0.0
+    assert s.recall == 0.0
+    assert s.f1 == 0.0
+    assert s.priority_accuracy == 0.0
+    assert s.hallucination is False
+    assert s.extra_count == 0
+
+
+def test_evaluate_perfect_match():
+    """Both expected observations matched by correct keywords + priority."""
+    fx = _make_fx_one_expected()
+    model_obs = [
+        {"priority": "🔴", "time": "14:28", "text": "用户偏好客厅灯暖黄色"},
+        {"priority": "🟡", "time": "14:28", "text": "用户表达疲惫"},
+    ]
+    s = ob.evaluate(model_obs, fx)
+    assert s.tool_success is True
+    assert s.precision == 1.0
+    assert s.recall == 1.0
+    assert s.f1 == 1.0
+    assert s.priority_accuracy == 1.0
+    assert s.hallucination is False
+    assert s.extra_count == 0
+
+
+def test_evaluate_keyword_or_semantics():
+    """must_contain_any_of OR: matching any one sub-list is enough."""
+    fx = _make_fx_one_expected()
+    # First expected: matches "暖黄" only (second sub-list)
+    model_obs = [
+        {"priority": "🔴", "time": "14:28", "text": "暖黄色灯光设置"},
+        {"priority": "🟡", "time": "14:28", "text": "用户累"},
+    ]
+    s = ob.evaluate(model_obs, fx)
+    assert s.recall == 1.0
+
+
+def test_evaluate_hallucination_triggered():
+    """must_not_contain_globally word in any obs → halluc=True."""
+    fx = _make_fx_one_expected()
+    model_obs = [
+        {"priority": "🔴", "time": "14:28", "text": "用户在卧室想要暖黄"},  # "卧室" triggers
+    ]
+    s = ob.evaluate(model_obs, fx)
+    assert s.hallucination is True
+
+
+def test_evaluate_partial_recall_no_halluc():
+    """Only 1 of 2 matched, no halluc words."""
+    fx = _make_fx_one_expected()
+    model_obs = [
+        {"priority": "🔴", "time": "14:28", "text": "用户偏好客厅拿铁"},
+    ]
+    s = ob.evaluate(model_obs, fx)
+    assert s.recall == 0.5
+    assert s.precision == 1.0
+    assert abs(s.f1 - 2/3) < 0.01
+    assert s.hallucination is False
+
+
+def test_evaluate_priority_wrong_still_counts_recall():
+    """Model hit keywords but wrong priority → recall OK, priority_acc reduced."""
+    fx = _make_fx_one_expected()
+    model_obs = [
+        {"priority": "🟡", "time": "14:28", "text": "客厅暖黄"},  # should be 🔴
+        {"priority": "🟡", "time": "14:28", "text": "用户累"},
+    ]
+    s = ob.evaluate(model_obs, fx)
+    assert s.recall == 1.0
+    assert s.priority_accuracy == 0.5  # 1 of 2 priorities matched
+
+
+def test_evaluate_extra_observations():
+    """Extra observations boost total but do not block recall."""
+    fx = _make_fx_one_expected()
+    model_obs = [
+        {"priority": "🔴", "time": "14:28", "text": "客厅暖黄"},
+        {"priority": "🟡", "time": "14:28", "text": "用户累"},
+        {"priority": "🟢", "time": "14:28", "text": "用户住在温哥华"},  # extra
+    ]
+    s = ob.evaluate(model_obs, fx)
+    assert s.recall == 1.0
+    assert abs(s.precision - 2/3) < 0.01
+    assert s.extra_count == 1
+
+
+def test_evaluate_tool_success_invalid_priority():
+    """Invalid priority emoji → tool_success=False."""
+    fx = _make_fx_one_expected()
+    model_obs = [
+        {"priority": "❓", "time": "14:28", "text": "bogus priority"},
+    ]
+    s = ob.evaluate(model_obs, fx)
+    assert s.tool_success is False

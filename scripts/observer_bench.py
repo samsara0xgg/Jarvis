@@ -710,7 +710,80 @@ async def call_observer_with_retry(
         error=last_err or "unknown",
     )
 # ===== §7 WARMUP (Task 11) =====
-# ===== §8 EVALUATOR (Task 10) =====
+# ===== §8 EVALUATOR =====
+
+_TIME_RE = re.compile(r"^[0-2]\d:[0-5]\d$")
+_VALID_PRIORITIES = {"🔴", "🟡", "🟢", "✅"}
+
+
+def evaluate(model_obs: list[dict] | None, fixture: Fixture) -> Scores:
+    """Pure rule-based evaluation per spec §7.
+
+    Matching rule: for each expected_observation, greedily find first model_obs
+    whose text satisfies any one sub-list of must_contain_any_of (AND within list).
+    """
+    # Guard: tool_call failed → all scores 0
+    if model_obs is None:
+        return Scores(
+            tool_success=False,
+            precision=0.0, recall=0.0, f1=0.0,
+            priority_accuracy=0.0, hallucination=False, extra_count=0,
+        )
+
+    # Tool call field validity
+    tool_success = (
+        isinstance(model_obs, list)
+        and all(
+            isinstance(o, dict)
+            and o.get("priority") in _VALID_PRIORITIES
+            and isinstance(o.get("time"), str) and _TIME_RE.match(o["time"])
+            and isinstance(o.get("text"), str) and len(o["text"]) >= 4
+            for o in model_obs
+        )
+    )
+
+    # Greedy matching (expected → model_obs)
+    matched_model: set[int] = set()
+    matched_expected: set[int] = set()
+    priority_correct = 0
+    for ei, exp in enumerate(fixture.expected_observations):
+        for mi, obs in enumerate(model_obs):
+            if mi in matched_model:
+                continue
+            text = obs.get("text", "") if isinstance(obs, dict) else ""
+            # must_contain_any_of: OR of AND
+            if any(
+                all(kw in text for kw in keyword_list)
+                for keyword_list in exp.must_contain_any_of
+            ):
+                matched_expected.add(ei)
+                matched_model.add(mi)
+                if obs.get("priority") == exp.priority:
+                    priority_correct += 1
+                break  # one expected → at most one model_obs
+
+    recall = len(matched_expected) / len(fixture.expected_observations) if fixture.expected_observations else 0.0
+    precision = len(matched_model) / len(model_obs) if model_obs else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    priority_acc = priority_correct / len(matched_expected) if matched_expected else 0.0
+
+    halluc = any(
+        any(bad in obs.get("text", "") for bad in fixture.must_not_contain_globally)
+        for obs in model_obs
+        if isinstance(obs, dict)
+    )
+
+    extra = max(0, len(model_obs) - len(fixture.expected_observations))
+
+    return Scores(
+        tool_success=tool_success,
+        precision=precision,
+        recall=recall,
+        f1=f1,
+        priority_accuracy=priority_acc,
+        hallucination=halluc,
+        extra_count=extra,
+    )
 # ===== §9 FIXTURE GENERATOR (Task 12) =====
 # ===== §10 OUTPUT (Task 13) =====
 # ===== §11 CLI (Task 14) =====
