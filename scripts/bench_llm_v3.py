@@ -103,7 +103,12 @@ MODEL_CATALOG: tuple[ModelSpec, ...] = (
     ModelSpec("google",    "gemini-3-pro-preview",        ("models/gemini-3-pro-preview",
                                                            "gemini-2.5-pro",
                                                            "models/gemini-2.5-pro"),              1.25,   5.00, 1.00, 0.25, 4096),
-    ModelSpec("xai",       "grok-4-1-fast-non-reasoning", ("grok-4",),                           0.20,   0.50, 1.00, 0.25, 1024),
+    ModelSpec("xai",       "grok-4-1-fast-non-reasoning", ("grok-4-0709",),                      0.20,   0.50, 1.00, 0.25, 1024),
+    # xAI 新增变体（定价估算，需在 x.ai/pricing 核对）
+    ModelSpec("xai",       "grok-4-1-fast-reasoning",     ("grok-4-1-fast-non-reasoning",),      0.20,   0.50, 1.00, 0.25, 1024),
+    ModelSpec("xai",       "grok-4.20-0309-non-reasoning",("grok-4-1-fast-non-reasoning",),      0.20,   0.50, 1.00, 0.25, 1024),
+    ModelSpec("xai",       "grok-4.20-0309-reasoning",    ("grok-4.20-0309-non-reasoning",),     0.20,   0.50, 1.00, 0.25, 1024),
+    ModelSpec("xai",       "grok-4-0709",                 (),                                    3.00,  15.00, 1.00, 0.25, 1024),  # 旗舰, 定价预估
     ModelSpec("groq",      "llama-3.3-70b-versatile",     (),                                    0.59,   0.79, 1.00, 1.00, 999_999),
 )
 
