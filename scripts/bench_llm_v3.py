@@ -470,6 +470,65 @@ async def call_groq(cs: CallSpec) -> dict[str, Any]:
         api_key=os.environ["GROQ_API_KEY"],
     )
 
+
+async def call_gemini(cs: CallSpec) -> dict[str, Any]:
+    """Gemini with inline notes (CachedContent storage fees out-of-scope).
+
+    Google's google-generativeai SDK is sync. We wrap in a thread.
+    TTFT via iterating stream chunks.
+    """
+    import google.generativeai as genai
+
+    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+    model = genai.GenerativeModel(cs.active_model_id)
+
+    def _run() -> dict[str, Any]:
+        t0 = time.perf_counter()
+        ttft_ms: float | None = None
+        answer_parts: list[str] = []
+
+        # Single combined prompt (Gemini treats system + user as content list)
+        # Using inline send — CachedContent adds per-cache storage cost + management
+        # that's out-of-scope for this benchmark.
+        combined = cs.system_content + "\n\n" + cs.query
+        stream = model.generate_content(
+            combined,
+            stream=True,
+            generation_config={"max_output_tokens": MAX_OUTPUT_TOKENS},
+        )
+        last_response = None
+        for chunk in stream:
+            last_response = chunk
+            text = getattr(chunk, "text", "") or ""
+            if text:
+                if ttft_ms is None:
+                    ttft_ms = (time.perf_counter() - t0) * 1000.0
+                answer_parts.append(text)
+        # Resolve final usage_metadata by consuming the iterator
+        try:
+            stream.resolve()
+        except Exception:
+            pass
+
+        total_ms = (time.perf_counter() - t0) * 1000.0
+        return {
+            "ttft_ms": ttft_ms if ttft_ms is not None else total_ms,
+            "total_ms": total_ms,
+            "answer": "".join(answer_parts),
+            "raw_response": last_response,
+        }
+
+    return await asyncio.to_thread(_run)
+
+
+PROVIDER_DISPATCH: dict[str, Callable[[CallSpec], Awaitable[dict[str, Any]]]] = {
+    "anthropic": call_anthropic,
+    "openai": call_openai,
+    "xai": call_xai,
+    "groq": call_groq,
+    "google": call_gemini,
+}
+
 # ===== (sections below added in later tasks) =====
 
 def main() -> None:
