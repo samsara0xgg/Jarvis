@@ -1145,25 +1145,46 @@ class RunPlan:
     tasks: tuple[str, ...]
 
 
+def _parse_contexts_override(arg: str | None) -> list[int] | None:
+    """Parse --contexts arg like '2000,10000,30000' or '2k,10k,30k'."""
+    if not arg:
+        return None
+    out = []
+    for tok in arg.split(","):
+        t = tok.strip().lower().replace("k", "000")
+        try:
+            out.append(int(t))
+        except ValueError:
+            raise SystemExit(f"--contexts: invalid size '{tok}', expected ints or Nk")
+    return out
+
+
 def resolve_run_plan(args: argparse.Namespace) -> RunPlan:
     """Translate CLI args into the effective matrix."""
     all_models = list(MODEL_CATALOG)
+    override_ctx = _parse_contexts_override(getattr(args, "contexts", None))
+
     if args.model:
         target = [s for s in all_models if s.primary_id == args.model
                   or args.model in s.fallback_ids]
         if not target:
             raise SystemExit(f"Model '{args.model}' not in catalog.")
-        return RunPlan("model", target, CONTEXT_SIZES_FULL, ("simple", "recall", "synthesis"))
+        ctx = override_ctx if override_ctx else CONTEXT_SIZES_FULL
+        return RunPlan("model", target, ctx, ("simple", "recall", "synthesis"))
     if args.quick:
         models = [s for s in all_models if s.primary_id in QUICK_MODELS]
-        return RunPlan("quick", models, CONTEXT_SIZES_QUICK, ("simple", "recall", "synthesis"))
+        ctx = override_ctx if override_ctx else CONTEXT_SIZES_QUICK
+        return RunPlan("quick", models, ctx, ("simple", "recall", "synthesis"))
     if args.decision:
         models = [s for s in all_models if s.primary_id in DECISION_MODELS]
-        return RunPlan("decision", models, [30000], ("recall",))
+        ctx = override_ctx if override_ctx else [30000]
+        return RunPlan("decision", models, ctx, ("recall",))
     if args.deep:
-        return RunPlan("deep", all_models, CONTEXT_SIZES_DEEP, ("simple", "recall", "synthesis"))
+        ctx = override_ctx if override_ctx else CONTEXT_SIZES_DEEP
+        return RunPlan("deep", all_models, ctx, ("simple", "recall", "synthesis"))
     # default / --standard
-    return RunPlan("standard", all_models, CONTEXT_SIZES_FULL, ("simple", "recall", "synthesis"))
+    ctx = override_ctx if override_ctx else CONTEXT_SIZES_FULL
+    return RunPlan("standard", all_models, ctx, ("simple", "recall", "synthesis"))
 
 
 def check_smoke_gate(mode: str, bench_results_root: Path, force: bool) -> None:
@@ -1353,6 +1374,8 @@ def main() -> None:
                         help="Skip --deep cost confirmation")
     parser.add_argument("--force-standard", action="store_true",
                         help="Skip smoke gate check (use with care)")
+    parser.add_argument("--contexts", type=str, default=None,
+                        help="Override context sizes (e.g. '2000,10000,30000' or '2k,10k,30k')")
     args = parser.parse_args()
 
     if args.deep and not args.no_confirm and not args.dry_run:
