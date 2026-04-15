@@ -921,11 +921,54 @@ Return a JSON object with this exact shape:
 ## RULES
 - Dialogue must feel NATURAL CHINESE, not textbook. Follow seed's tone_hint precisely.
 - Times HH:MM format, 24-hour. Stay consistent within the dialogue (usually same minute).
-- `must_contain_any_of`: provide 2-3 sub-lists per expected observation for robust matching.
 - `semantic_description` in Chinese, for human review only (not used in evaluation).
 - `must_not_contain_globally`: 2-5 words that SHOULD NOT appear in any observation
   (hallucinations the Observer might produce).
 - Use seed.must_capture as a strict checklist — produce one expected_observation per item.
+  If seed.must_capture has multiple items, write multiple expected_observations.
+
+## CRITICAL: must_contain_any_of SEMANTICS
+`must_contain_any_of` is **list of list** with these EXACT semantics:
+- OUTER list: OR (any sub-list matching is enough)
+- INNER list: AND (ALL keywords in that sub-list must appear in observation text)
+
+Each INNER list should have **1-2 keywords MAX** that almost always co-occur in a real observation.
+Multi-synonym OR groups MUST be expressed as separate INNER lists, not packed into one list.
+
+### CORRECT pattern (synonyms = separate sub-lists):
+```json
+"must_contain_any_of": [
+  ["拿铁", "Revolver"],     // sub-list 1: text contains both "拿铁" AND "Revolver"
+  ["拿铁", "耶加"],          // sub-list 2: alternate match
+  ["latte"]                  // sub-list 3: English fallback
+]
+```
+Meaning: matches if (拿铁 AND Revolver) OR (拿铁 AND 耶加) OR (latte)
+
+### WRONG pattern (multi-word AND groups):
+```json
+"must_contain_any_of": [
+  ["愤怒", "不满", "气愤", "生气"]     // ❌ WRONG: requires text to contain ALL 4 words
+]
+```
+This forces text to contain ALL FOUR words simultaneously — almost impossible. Real Observer
+output "用户对领导很愤怒" would FAIL this rule.
+
+### CORRECT version of the synonym case:
+```json
+"must_contain_any_of": [
+  ["愤怒"],      // sub-list 1: text contains 愤怒
+  ["不满"],      // sub-list 2: text contains 不满
+  ["气愤"],      // sub-list 3: text contains 气愤
+  ["生气"]       // sub-list 4: text contains 生气
+]
+```
+Meaning: matches if text contains ANY of these synonyms. Each sub-list is a separate option.
+
+### When to use 2-keyword AND (rare but useful):
+Only when both keywords ALMOST ALWAYS co-occur to form the meaning, e.g.:
+- `["客厅", "暖"]` — observation about light prefs SHOULD mention both "客厅" location and "暖" temperature
+- `["Acme", "离职"]` — observation about job change SHOULD mention "Acme" company and "离职" action
 
 ## OUTPUT FORMAT
 JSON only. No markdown fences. No commentary. No prose.
