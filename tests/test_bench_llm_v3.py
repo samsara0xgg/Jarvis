@@ -240,3 +240,35 @@ def test_make_bust_prefix_token_size_small():
     enc = tiktoken.get_encoding("cl100k_base")
     p = b.make_bust_prefix()
     assert len(enc.encode(p)) < 30
+
+
+def test_write_csv_all_fields(tmp_path):
+    spec = _get_spec("anthropic", "claude-sonnet-4-6")
+    r = b.CallResult(
+        timestamp="2026-04-14T15:30:00+00:00",
+        model="claude-sonnet-4-6",
+        model_is_fallback=False,
+        provider="anthropic",
+        nominal_tokens_cl100k=30000,
+        actual_input_tokens_api=31200,
+        task="recall",
+        cache_state="warm",
+        run_idx=1,
+        ttft_ms=452.3,
+        total_ms=1240.0,
+        output_tokens=85,
+        tokens_per_second=68.5,
+        answer="Allen 最喜欢拿铁和 Revolver 的耶加",
+        answer_correct=True,
+        cache_actually_hit=True,
+        cache_write_tokens=5000,
+        cache_read_tokens=25000,
+        cache_hit_ratio=0.801,
+        cost_usd=0.0293,
+    )
+    path = b.write_csv([r], tmp_path)
+    assert path.name == "results.csv"
+    content = path.read_text(encoding="utf-8")
+    assert "claude-sonnet-4-6" in content
+    assert "25000" in content    # cache_read_tokens
+    assert "Allen" in content

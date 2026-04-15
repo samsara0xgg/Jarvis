@@ -824,6 +824,252 @@ async def run_all_mc_blocks(
     return flat
 
 
+# ===== OUTPUT =====
+
+CSV_FIELDS = [
+    "timestamp", "model", "model_is_fallback", "provider",
+    "nominal_tokens_cl100k", "actual_input_tokens_api",
+    "task", "cache_state", "run_idx",
+    "ttft_ms", "total_ms", "output_tokens", "tokens_per_second",
+    "answer", "answer_correct",
+    "cache_actually_hit", "cache_write_tokens", "cache_read_tokens", "cache_hit_ratio",
+    "cost_usd", "cache_window_risk", "error",
+]
+
+
+def write_csv(results: list[CallResult], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "results.csv"
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        w.writeheader()
+        for r in results:
+            row = asdict(r)
+            row["answer"] = row["answer"].replace("\n", " ")[:500]
+            w.writerow(row)
+    return path
+
+
+def _fmt_ms(x: float) -> str:
+    return f"{x:.0f}" if x >= 0 else "ERR"
+
+
+def render_summary_md(
+    results: list[CallResult],
+    output_dir: Path,
+    run_args: dict[str, Any],
+) -> Path:
+    """Five-table markdown report. Tables pivot by nominal_tokens_cl100k."""
+    path = output_dir / "summary.md"
+    # Group by (provider, model)
+    model_keys: list[tuple[str, str]] = []
+    for r in results:
+        k = (r.provider, r.model)
+        if k not in model_keys:
+            model_keys.append(k)
+
+    context_sizes = sorted({r.nominal_tokens_cl100k for r in results})
+
+    def model_label(provider: str, model: str) -> str:
+        return f"{provider}/{model}"
+
+    lines = [
+        f"# Bench LLM v3 — {run_args['timestamp']}",
+        "",
+        f"**Mode:** `{run_args['mode']}` · **Total calls:** {len(results)} · "
+        f"**Errors:** {sum(1 for r in results if r.error)} · "
+        f"**Total cost:** ${sum(r.cost_usd for r in results):.2f}",
+        "",
+        f"**Context buckets** (nominal cl100k tokens): {context_sizes}",
+        "",
+    ]
+
+    # ===== Table 1: Warm TTFT by Context =====
+    lines += [
+        "## Table 1 — TTFT × Context (warm cache, avg ms, n=2)",
+        "",
+        "| Model | " + " | ".join(f"{c//1000}k" for c in context_sizes) + " |",
+        "|-------|" + "|".join(["---"] * len(context_sizes)) + "|",
+    ]
+    for provider, model in model_keys:
+        row = [model_label(provider, model)]
+        for c in context_sizes:
+            subset = [r for r in results
+                      if r.provider == provider and r.model == model and r.nominal_tokens_cl100k == c]
+            warm_ttfts = [r.ttft_ms for r in subset if r.cache_state == "warm" and r.ttft_ms >= 0]
+            if not warm_ttfts:
+                row.append("—")
+            else:
+                avg = sum(warm_ttfts) / len(warm_ttfts)
+                # stability check
+                unstable = len(warm_ttfts) >= 2 and (max(warm_ttfts) - min(warm_ttfts)) / avg > 0.3
+                marker = " *unstable*" if unstable else ""
+                row.append(f"{avg:.0f}{marker}")
+        lines.append("| " + " | ".join(row) + " |")
+    lines.append("")
+
+    # ===== Table 2: Recall accuracy =====
+    lines += [
+        "## Table 2 — Recall 准确率 × Context (strict double-keyword)",
+        "",
+        "| Model | " + " | ".join(f"{c//1000}k" for c in context_sizes) + " | Overall |",
+        "|-------|" + "|".join(["---"] * (len(context_sizes) + 1)) + "|",
+    ]
+    for provider, model in model_keys:
+        row = [model_label(provider, model)]
+        total_correct = total_attempts = 0
+        for c in context_sizes:
+            subset = [r for r in results
+                      if r.provider == provider and r.model == model
+                      and r.nominal_tokens_cl100k == c and r.task == "recall"
+                      and r.answer_correct is not None]
+            if not subset:
+                row.append("—")
+                continue
+            correct = sum(1 for r in subset if r.answer_correct)
+            total_correct += correct
+            total_attempts += len(subset)
+            row.append(f"{correct}/{len(subset)}")
+        overall = f"{total_correct}/{total_attempts}" if total_attempts else "—"
+        row.append(overall)
+        lines.append("| " + " | ".join(row) + " |")
+    lines.append("")
+
+    # ===== Table 3: Cold vs Warm TTFT at largest context =====
+    largest = max(context_sizes)
+    lines += [
+        f"## Table 3 — Cold vs Warm TTFT @ {largest//1000}k (ms)",
+        "",
+        "| Model | Cold | Warm (avg, n=2) | Speedup |",
+        "|-------|------|------|------|",
+    ]
+    for provider, model in model_keys:
+        subset = [r for r in results
+                  if r.provider == provider and r.model == model and r.nominal_tokens_cl100k == largest]
+        cold = next((r.ttft_ms for r in subset if r.cache_state == "cold" and r.ttft_ms >= 0), -1.0)
+        warms = [r.ttft_ms for r in subset if r.cache_state == "warm" and r.ttft_ms >= 0]
+        warm = sum(warms) / len(warms) if warms else -1.0
+        speedup = f"{cold/warm:.2f}×" if cold > 0 and warm > 0 else "—"
+        lines.append(f"| {model_label(provider, model)} | {_fmt_ms(cold)} | {_fmt_ms(warm)} | {speedup} |")
+    lines.append("")
+
+    # ===== Table 4: Real cache hit rate =====
+    lines += [
+        "## Table 4 — 真实 Cache 命中率 (揭露黑箱)",
+        "",
+        "| Model | 官方声明 | 实测 read ratio (warm) | write_tokens (cold) | read_tokens (warm avg) |",
+        "|-------|---------|----------------------|---------------------|----------------------|",
+    ]
+    for provider, model in model_keys:
+        subset = [r for r in results
+                  if r.provider == provider and r.model == model and r.nominal_tokens_cl100k == largest]
+        warm_rows = [r for r in subset if r.cache_state == "warm" and not r.error]
+        cold_rows = [r for r in subset if r.cache_state == "cold" and not r.error]
+        if not warm_rows:
+            declared = "—"
+            ratio = "—"
+            w_tok = "—"
+            r_tok = "—"
+        else:
+            declared = {
+                "anthropic": "显式",
+                "openai": "自动",
+                "xai": "自动",
+                "google": "显式",
+                "groq": "无",
+            }.get(provider, "?")
+            avg_ratio = sum(r.cache_hit_ratio for r in warm_rows) / len(warm_rows)
+            ratio = f"{avg_ratio*100:.1f}%"
+            w_tok = str(sum(r.cache_write_tokens for r in cold_rows) // max(len(cold_rows), 1))
+            r_tok = str(sum(r.cache_read_tokens for r in warm_rows) // max(len(warm_rows), 1))
+        lines.append(f"| {model_label(provider, model)} | {declared} | {ratio} | {w_tok} | {r_tok} |")
+    lines.append("")
+
+    # ===== Table 5: Cost comparison =====
+    lines += [
+        "## Table 5 — 成本对比 ($/100 × 30k 对话, 含 1 cold + 2 warm)",
+        "",
+        "| Model | $/100 calls @ 30k | 含 cache 节省估 |",
+        "|-------|------|------|",
+    ]
+    target_ctx = 30000 if 30000 in context_sizes else largest
+    for provider, model in model_keys:
+        subset = [r for r in results
+                  if r.provider == provider and r.model == model
+                  and r.nominal_tokens_cl100k == target_ctx and not r.error]
+        if not subset:
+            lines.append(f"| {model_label(provider, model)} | — | — |")
+            continue
+        avg_cost_per_call = sum(r.cost_usd for r in subset) / len(subset)
+        cost_per_100 = avg_cost_per_call * 100
+        saving_note = "有 cache" if any(r.cache_read_tokens > 0 for r in subset) else "无 cache"
+        lines.append(f"| {model_label(provider, model)} | ${cost_per_100:.2f} | {saving_note} |")
+    lines.append("")
+
+    # ===== Footnotes =====
+    risky = [r for r in results if r.cache_window_risk]
+    if risky:
+        lines += [
+            "## Notes",
+            "",
+            f"- `cache_window_risk=True` fired for {len(risky)} rows "
+            f"(task block > {CACHE_WINDOW_RISK_SEC:.0f}s). Filter in analysis.",
+            "",
+        ]
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def write_run_meta(
+    results: list[CallResult],
+    output_dir: Path,
+    run_args: dict[str, Any],
+) -> Path:
+    path = output_dir / "run_meta.json"
+    meta = {
+        "mode": run_args["mode"],
+        "timestamp": run_args["timestamp"],
+        "total_calls": len(results),
+        "errors_total": sum(1 for r in results if r.error),
+        "cost_usd_total": round(sum(r.cost_usd for r in results), 4),
+        "cache_window_risk_count": sum(1 for r in results if r.cache_window_risk),
+        "elapsed_sec": run_args.get("elapsed_sec", -1),
+        "pricing_snapshot_date": PRICING_SNAPSHOT_DATE,
+        "active_models": run_args.get("active_models", []),
+        "args": run_args.get("raw_args", {}),
+    }
+    path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return path
+
+
+def render_chart_html(results: list[CallResult], output_dir: Path) -> Path | None:
+    """Optional plotly bar chart: TTFT × context × model, faceted by cache_state."""
+    try:
+        import plotly.express as px
+        import pandas as pd
+    except ImportError:
+        LOGGER.warning("plotly/pandas missing, skipping chart.html")
+        return None
+    df = pd.DataFrame([asdict(r) for r in results if r.ttft_ms > 0])
+    if df.empty:
+        return None
+    df["model_label"] = df["provider"] + "/" + df["model"]
+    df["ctx_k"] = (df["nominal_tokens_cl100k"] / 1000).astype(int).astype(str) + "k"
+    fig = px.bar(
+        df,
+        x="ctx_k",
+        y="ttft_ms",
+        color="model_label",
+        facet_col="cache_state",
+        barmode="group",
+        title="TTFT (ms) — faceted by cache_state, grouped by model",
+    )
+    path = output_dir / "chart.html"
+    fig.write_html(path)
+    return path
+
+
 # ===== (sections below added in later tasks) =====
 
 def main() -> None:
