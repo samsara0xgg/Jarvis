@@ -405,6 +405,71 @@ async def call_anthropic(cs: CallSpec) -> dict[str, Any]:
         "raw_response": final_message,
     }
 
+
+async def call_openai_compat(cs: CallSpec, base_url: str, api_key: str) -> dict[str, Any]:
+    """Shared entrypoint for OpenAI, xAI (Grok), and Groq (all use OpenAI wire protocol)."""
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    t0 = time.perf_counter()
+    ttft_ms: float | None = None
+    answer_parts: list[str] = []
+
+    stream = await client.chat.completions.create(
+        model=cs.active_model_id,
+        messages=[
+            {"role": "system", "content": cs.system_content},
+            {"role": "user", "content": cs.query},
+        ],
+        max_tokens=MAX_OUTPUT_TOKENS,
+        stream=True,
+        stream_options={"include_usage": True},  # critical for cache metrics
+    )
+
+    final_chunk = None
+    async for chunk in stream:
+        final_chunk = chunk
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        content = getattr(delta, "content", None)
+        if content:
+            if ttft_ms is None:
+                ttft_ms = (time.perf_counter() - t0) * 1000.0
+            answer_parts.append(content)
+
+    total_ms = (time.perf_counter() - t0) * 1000.0
+    return {
+        "ttft_ms": ttft_ms if ttft_ms is not None else total_ms,
+        "total_ms": total_ms,
+        "answer": "".join(answer_parts),
+        "raw_response": final_chunk,
+    }
+
+
+async def call_openai(cs: CallSpec) -> dict[str, Any]:
+    return await call_openai_compat(
+        cs,
+        base_url="https://api.openai.com/v1",
+        api_key=os.environ["OPENAI_API_KEY"],
+    )
+
+
+async def call_xai(cs: CallSpec) -> dict[str, Any]:
+    return await call_openai_compat(
+        cs,
+        base_url="https://api.x.ai/v1",
+        api_key=os.environ["XAI_API_KEY"],
+    )
+
+
+async def call_groq(cs: CallSpec) -> dict[str, Any]:
+    return await call_openai_compat(
+        cs,
+        base_url="https://api.groq.com/openai/v1",
+        api_key=os.environ["GROQ_API_KEY"],
+    )
+
 # ===== (sections below added in later tasks) =====
 
 def main() -> None:
