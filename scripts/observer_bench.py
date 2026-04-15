@@ -870,7 +870,139 @@ def evaluate(model_obs: list[dict] | None, fixture: Fixture) -> Scores:
         hallucination=halluc,
         extra_count=extra,
     )
-# ===== §9 FIXTURE GENERATOR (Task 12) =====
+# ===== §9 FIXTURE GENERATOR =====
+
+FIXTURE_GEN_SYSTEM_PROMPT = """You are a fixture writer for a Chinese Observer benchmark.
+Your job: given a seed spec, produce a realistic Chinese dialogue + ground-truth
+`expected_observations` for the Observer model to extract.
+
+## OUTPUT
+Return a JSON object with this exact shape:
+{
+  "dialogue": [
+    {"role": "user", "time": "HH:MM", "emotion": "tired|happy|angry|neutral|...", "content": "..."},
+    {"role": "assistant", "time": "HH:MM", "content": "..."},
+    {"role": "tool", "name": "...", "args": {...}, "result": "..."}     // optional, only if seed scene needs it
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴|🟡|🟢|✅",
+      "must_contain_any_of": [["keyword1", "keyword2"], ["synonym"]],
+      "semantic_description": "一句中文描述"
+    }
+  ],
+  "must_not_contain_globally": ["hallucination1", "hallucination2"]
+}
+
+## RULES
+- Dialogue must feel NATURAL CHINESE, not textbook. Follow seed's tone_hint precisely.
+- Times HH:MM format, 24-hour. Stay consistent within the dialogue (usually same minute).
+- `must_contain_any_of`: provide 2-3 sub-lists per expected observation for robust matching.
+- `semantic_description` in Chinese, for human review only (not used in evaluation).
+- `must_not_contain_globally`: 2-5 words that SHOULD NOT appear in any observation
+  (hallucinations the Observer might produce).
+- Use seed.must_capture as a strict checklist — produce one expected_observation per item.
+
+## OUTPUT FORMAT
+JSON only. No markdown fences. No commentary. No prose.
+"""
+
+
+def _seed_to_user_prompt(seed: Seed) -> str:
+    return json.dumps({
+        "id": seed.id,
+        "category": seed.category,
+        "scene": seed.scene,
+        "user_emotion_hint": seed.user_emotion_hint,
+        "tone_hint": seed.tone_hint,
+        "dialogue_length_hint": seed.dialogue_length_hint,
+        "must_capture": seed.must_capture,
+        "must_not_hallucinate": seed.must_not_hallucinate,
+    }, ensure_ascii=False, indent=2)
+
+
+async def generate_fixture_draft(seed: Seed, generator_model: str = FIXTURE_GENERATOR_MODEL) -> Fixture:
+    """Call Opus with the seed, return Fixture parsed from Opus JSON."""
+    from anthropic import AsyncAnthropic
+    client = AsyncAnthropic()
+
+    msg = await client.messages.create(
+        model=generator_model,
+        max_tokens=4096,
+        system=FIXTURE_GEN_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": _seed_to_user_prompt(seed)}],
+    )
+
+    # Extract text from content blocks
+    text = ""
+    for block in msg.content:
+        if getattr(block, "type", None) == "text":
+            text += getattr(block, "text", "")
+
+    # Strip markdown fences if Opus added them despite instructions
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\n", "", text)
+        text = re.sub(r"\n```\s*$", "", text)
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Opus returned invalid JSON for seed {seed.id}: {e}\n{text[:500]}")
+
+    # Assemble Fixture
+    exps = [
+        ExpectedObservation(
+            priority=e["priority"],
+            must_contain_any_of=[list(x) for x in e["must_contain_any_of"]],
+            semantic_description=e.get("semantic_description", ""),
+        )
+        for e in data["expected_observations"]
+    ]
+    return Fixture(
+        id=seed.id,
+        category=seed.category,
+        seed_id=seed.id,
+        generated_by=generator_model,
+        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        dialogue=data["dialogue"],
+        expected_observations=exps,
+        must_not_contain_globally=list(data.get("must_not_contain_globally", [])),
+    )
+
+
+async def run_fixture_generation(
+    seeds_path: Path,
+    fixtures_dir: Path,
+    generator_model: str = FIXTURE_GENERATOR_MODEL,
+) -> list[Path]:
+    """For each seed without an existing fx_XXX.json (approved) OR .draft.json (in-progress),
+    call Opus to generate .draft.json. Return paths written.
+    """
+    seeds = load_seeds(seeds_path)
+    fixtures_dir.mkdir(parents=True, exist_ok=True)
+
+    written: list[Path] = []
+    for seed in seeds:
+        approved = fixtures_dir / f"{seed.id}.json"
+        draft = fixtures_dir / f"{seed.id}.draft.json"
+        if approved.exists():
+            print(f"  ⏭  {seed.id} — already approved, skip")
+            continue
+        if draft.exists():
+            print(f"  ⏭  {seed.id} — draft exists, skip (delete to regenerate)")
+            continue
+
+        print(f"  ⚙  {seed.id} — generating via {generator_model}...")
+        try:
+            fx = await generate_fixture_draft(seed, generator_model)
+            path = save_draft_fixture(fx, fixtures_dir)
+            print(f"  ✓ {seed.id} → {path.name}")
+            written.append(path)
+        except Exception as e:  # noqa: BLE001
+            print(f"  ✗ {seed.id} — generation failed: {e}")
+
+    return written
 # ===== §10 OUTPUT (Task 13) =====
 # ===== §11 CLI (Task 14) =====
 
