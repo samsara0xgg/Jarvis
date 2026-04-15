@@ -244,6 +244,75 @@ def calc_cost(
     cost += output_tokens      * spec.output_price_per_1m / 1e6
     return cost
 
+# ===== CACHE METRICS =====
+
+def _get(obj: Any, path: str, default: Any = 0) -> Any:
+    """Safe attribute/key chain fetch (e.g., 'usage.prompt_tokens_details.cached_tokens')."""
+    for part in path.split("."):
+        if obj is None:
+            return default
+        if hasattr(obj, part):
+            obj = getattr(obj, part)
+        elif isinstance(obj, dict):
+            obj = obj.get(part, default)
+        else:
+            return default
+    return obj if obj is not None else default
+
+
+def extract_cache_metrics(provider: str, response: Any) -> dict[str, int]:
+    """Normalize per-provider cache usage into a uniform dict.
+
+    Returns keys:
+        cache_write_tokens:   Anthropic only (cache_creation); else 0.
+        cache_read_tokens:    provider-specific cache-hit count; 0 if none.
+        prompt_total_tokens:  total input tokens (sum of regular + write + read).
+        output_tokens:        generated tokens.
+    """
+    if provider == "anthropic":
+        input_tokens = _get(response, "usage.input_tokens", 0)
+        write = _get(response, "usage.cache_creation_input_tokens", 0)
+        read = _get(response, "usage.cache_read_input_tokens", 0)
+        output = _get(response, "usage.output_tokens", 0)
+        return {
+            "cache_write_tokens": write,
+            "cache_read_tokens": read,
+            "prompt_total_tokens": input_tokens + write + read,
+            "output_tokens": output,
+        }
+
+    if provider == "google":
+        prompt_total = _get(response, "usage_metadata.prompt_token_count", 0)
+        cached = _get(response, "usage_metadata.cached_content_token_count", 0)
+        output = _get(response, "usage_metadata.candidates_token_count", 0)
+        return {
+            "cache_write_tokens": 0,
+            "cache_read_tokens": cached,
+            "prompt_total_tokens": prompt_total,
+            "output_tokens": output,
+        }
+
+    if provider == "groq":
+        prompt_total = _get(response, "usage.prompt_tokens", 0)
+        output = _get(response, "usage.completion_tokens", 0)
+        return {
+            "cache_write_tokens": 0,
+            "cache_read_tokens": 0,
+            "prompt_total_tokens": prompt_total,
+            "output_tokens": output,
+        }
+
+    # openai / xai use OpenAI-compat response shape
+    prompt_total = _get(response, "usage.prompt_tokens", 0)
+    cached = _get(response, "usage.prompt_tokens_details.cached_tokens", 0)
+    output = _get(response, "usage.completion_tokens", 0)
+    return {
+        "cache_write_tokens": 0,
+        "cache_read_tokens": cached,
+        "prompt_total_tokens": prompt_total,
+        "output_tokens": output,
+    }
+
 # ===== (sections below added in later tasks) =====
 
 def main() -> None:

@@ -132,3 +132,94 @@ def test_cost_openai_cache_read_only():
     # output: 100 * 10.00 / 1e6 = 0.001
     # total: 0.0635
     assert abs(cost - 0.0635) < 1e-6
+
+
+from types import SimpleNamespace
+
+
+def _ns(d):
+    """Recursively convert dict → SimpleNamespace to mimic SDK response shape."""
+    if isinstance(d, dict):
+        return SimpleNamespace(**{k: _ns(v) for k, v in d.items()})
+    return d
+
+
+def test_extract_anthropic_cache_metrics():
+    resp = _ns({"usage": {
+        "input_tokens": 1200,
+        "cache_creation_input_tokens": 5000,
+        "cache_read_input_tokens": 25000,
+        "output_tokens": 200,
+    }})
+    m = b.extract_cache_metrics("anthropic", resp)
+    assert m == {
+        "cache_write_tokens": 5000,
+        "cache_read_tokens":  25000,
+        "prompt_total_tokens": 31200,  # input + write + read
+        "output_tokens": 200,
+    }
+
+
+def test_extract_openai_cache_metrics():
+    resp = _ns({"usage": {
+        "prompt_tokens": 30000,
+        "prompt_tokens_details": {"cached_tokens": 10000},
+        "completion_tokens": 100,
+    }})
+    m = b.extract_cache_metrics("openai", resp)
+    assert m == {
+        "cache_write_tokens": 0,
+        "cache_read_tokens":  10000,
+        "prompt_total_tokens": 30000,
+        "output_tokens": 100,
+    }
+
+
+def test_extract_xai_uses_openai_shape():
+    resp = _ns({"usage": {
+        "prompt_tokens": 20000,
+        "prompt_tokens_details": {"cached_tokens": 0},
+        "completion_tokens": 50,
+    }})
+    m = b.extract_cache_metrics("xai", resp)
+    assert m["cache_read_tokens"] == 0
+    assert m["prompt_total_tokens"] == 20000
+
+
+def test_extract_xai_missing_details_fields_returns_zero():
+    """If xAI response omits prompt_tokens_details, report read=0 (not error)."""
+    resp = _ns({"usage": {
+        "prompt_tokens": 20000,
+        "completion_tokens": 50,
+    }})
+    m = b.extract_cache_metrics("xai", resp)
+    assert m["cache_read_tokens"] == 0
+
+
+def test_extract_gemini_cache_metrics():
+    resp = _ns({
+        "usage_metadata": {
+            "prompt_token_count": 15000,
+            "cached_content_token_count": 12000,
+            "candidates_token_count": 80,
+        }
+    })
+    m = b.extract_cache_metrics("google", resp)
+    assert m == {
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 12000,
+        "prompt_total_tokens": 15000,
+        "output_tokens": 80,
+    }
+
+
+def test_extract_groq_always_zero_cache():
+    resp = _ns({"usage": {
+        "prompt_tokens": 5000,
+        "completion_tokens": 40,
+    }})
+    m = b.extract_cache_metrics("groq", resp)
+    assert m["cache_write_tokens"] == 0
+    assert m["cache_read_tokens"] == 0
+    assert m["prompt_total_tokens"] == 5000
+    assert m["output_tokens"] == 40
