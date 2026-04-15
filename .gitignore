@@ -58,3 +58,7 @@ ui/web/resources/
 ui/web/audio_cache/
 ui/web/__pycache__/
 .claude/worktrees/
+
+# bench_llm_v3 artifacts
+bench_fixtures/
+bench_results/
