@@ -436,6 +436,19 @@ async def call_anthropic(cs: CallSpec) -> dict[str, Any]:
     }
 
 
+def _openai_token_param(provider: str, model_id: str) -> str:
+    """Return the correct output-token-limit parameter name for this provider/model.
+
+    OpenAI's gpt-5 family + reasoning models (o1/o3) require `max_completion_tokens`.
+    Classic chat models and OpenAI-compat providers (xAI, Groq) use `max_tokens`.
+    """
+    if provider == "openai" and (
+        model_id.startswith("gpt-5") or model_id.startswith("o1") or model_id.startswith("o3")
+    ):
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
 async def call_openai_compat(cs: CallSpec, base_url: str, api_key: str) -> dict[str, Any]:
     """Shared entrypoint for OpenAI, xAI (Grok), and Groq (all use OpenAI wire protocol)."""
     from openai import AsyncOpenAI
@@ -445,15 +458,16 @@ async def call_openai_compat(cs: CallSpec, base_url: str, api_key: str) -> dict[
     ttft_ms: float | None = None
     answer_parts: list[str] = []
 
+    token_kwarg = {_openai_token_param(cs.model_spec.provider, cs.active_model_id): MAX_OUTPUT_TOKENS}
     stream = await client.chat.completions.create(
         model=cs.active_model_id,
         messages=[
             {"role": "system", "content": cs.system_content},
             {"role": "user", "content": cs.query},
         ],
-        max_tokens=MAX_OUTPUT_TOKENS,
         stream=True,
         stream_options={"include_usage": True},  # critical for cache metrics
+        **token_kwarg,
     )
 
     final_chunk = None
@@ -738,10 +752,11 @@ async def warmup_one(spec: ModelSpec) -> tuple[str, bool] | None:
                     base_url=base_urls[spec.provider],
                     api_key=os.environ[API_KEY_ENV[spec.provider]],
                 )
+                token_kwarg = {_openai_token_param(spec.provider, mid): 5}
                 await client.chat.completions.create(
                     model=mid,
-                    max_tokens=5,
                     messages=[{"role": "user", "content": "Just say: OK"}],
+                    **token_kwarg,
                 )
             return (mid, is_fb)
         except Exception as e:  # noqa: BLE001
