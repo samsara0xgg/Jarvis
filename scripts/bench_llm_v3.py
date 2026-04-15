@@ -1070,10 +1070,242 @@ def render_chart_html(results: list[CallResult], output_dir: Path) -> Path | Non
     return path
 
 
-# ===== (sections below added in later tasks) =====
+# ===== CLI =====
+
+CONTEXT_SIZES_FULL = [2000, 10000, 30000, 100000]
+CONTEXT_SIZES_QUICK = [2000, 10000]
+CONTEXT_SIZES_DEEP = [2000, 10000, 30000, 100000, 200000]
+DECISION_MODELS = {"claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5-20251001",
+                   "grok-4-1-fast-non-reasoning", "gpt-5"}
+QUICK_MODELS = {"claude-sonnet-4-6", "claude-haiku-4-5-20251001"}
+
+
+@dataclass
+class RunPlan:
+    mode: str
+    models: list[ModelSpec]
+    context_sizes: list[int]
+    tasks: tuple[str, ...]
+
+
+def resolve_run_plan(args: argparse.Namespace) -> RunPlan:
+    """Translate CLI args into the effective matrix."""
+    all_models = list(MODEL_CATALOG)
+    if args.model:
+        target = [s for s in all_models if s.primary_id == args.model
+                  or args.model in s.fallback_ids]
+        if not target:
+            raise SystemExit(f"Model '{args.model}' not in catalog.")
+        return RunPlan("model", target, CONTEXT_SIZES_FULL, ("simple", "recall", "synthesis"))
+    if args.quick:
+        models = [s for s in all_models if s.primary_id in QUICK_MODELS]
+        return RunPlan("quick", models, CONTEXT_SIZES_QUICK, ("simple", "recall", "synthesis"))
+    if args.decision:
+        models = [s for s in all_models if s.primary_id in DECISION_MODELS]
+        return RunPlan("decision", models, [30000], ("recall",))
+    if args.deep:
+        return RunPlan("deep", all_models, CONTEXT_SIZES_DEEP, ("simple", "recall", "synthesis"))
+    # default / --standard
+    return RunPlan("standard", all_models, CONTEXT_SIZES_FULL, ("simple", "recall", "synthesis"))
+
+
+def check_smoke_gate(mode: str, bench_results_root: Path, force: bool) -> None:
+    """For --standard and --deep: refuse if no prior successful --quick recorded."""
+    if mode in ("quick", "decision", "model") or force:
+        return
+    if not bench_results_root.exists():
+        raise SystemExit(
+            "\n❌ Smoke gate: no prior --quick found. Run:\n"
+            "   uv run python scripts/bench_llm_v3.py --quick\n"
+            "first, or pass --force-standard to override.\n"
+        )
+    for meta in bench_results_root.glob("*/run_meta.json"):
+        try:
+            m = json.loads(meta.read_text(encoding="utf-8"))
+            if m.get("mode") == "quick" and m.get("errors_total", 99) <= 2:
+                return
+        except Exception:
+            continue
+    raise SystemExit(
+        "\n❌ Smoke gate: no successful --quick in bench_results/ "
+        "(need errors_total ≤ 2).\n"
+        "Run `uv run python scripts/bench_llm_v3.py --quick` first,\n"
+        "or pass --force-standard to override.\n"
+    )
+
+
+def _estimate_cost(plan: RunPlan, n_active: int) -> float:
+    """Rough ballpark: avg 35k tokens/call, 3-segment cache, avg price $2/1M."""
+    n_calls = n_active * len(plan.context_sizes) * len(plan.tasks) * 3
+    # 1 cold @ ~35k full price + 2 warm @ ~35k × 0.2 (mixed cache behavior)
+    avg_cost_per_call = (35_000 * 2.0 / 1e6) * 0.5  # 50% effective price with caching
+    return n_calls * avg_cost_per_call
+
+
+async def _main_async(args: argparse.Namespace) -> None:
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+    plan = resolve_run_plan(args)
+    fixtures_dir = Path(args.fixtures_dir)
+    results_root = Path("bench_results")
+
+    if not args.dry_run:
+        check_smoke_gate(plan.mode, results_root, args.force_standard)
+
+    # Pre-generate fixtures so --dry-run can verify them
+    for c in plan.context_sizes:
+        load_notes(c, fixtures_dir)
+    print(f"▸ Fixtures ready: {fixtures_dir} ({len(plan.context_sizes)} files)")
+
+    # Detect active providers (by env key)
+    active_providers = {s.provider for s in plan.models if _provider_has_key(s.provider)}
+    active_specs_candidates = [s for s in plan.models if s.provider in active_providers]
+
+    # In dry-run mode: print plan + skip warmup + skip API calls
+    if args.dry_run:
+        n_active = len(active_specs_candidates)
+        n_calls = n_active * len(plan.context_sizes) * len(plan.tasks) * 3
+        print()
+        print(f"[DRY RUN] Mode: --{plan.mode}")
+        print(f"[DRY RUN] Active providers: "
+              f"{sorted(active_providers)}")
+        print(f"[DRY RUN] Skipped (no key): "
+              f"{sorted({s.provider for s in plan.models} - active_providers)}")
+        print(f"[DRY RUN] Context sizes: {plan.context_sizes}")
+        print(f"[DRY RUN] Tasks: {plan.tasks}")
+        print(f"[DRY RUN] Active MCTs: "
+              f"{n_active}×{len(plan.context_sizes)}×{len(plan.tasks)} = "
+              f"{n_active * len(plan.context_sizes) * len(plan.tasks)}")
+        print(f"[DRY RUN] Total API calls: {n_calls}")
+        print(f"[DRY RUN] Estimated cost: ~${_estimate_cost(plan, n_active):.2f}")
+        print(f"[DRY RUN] Wall-clock estimate: "
+              f"{max(5, n_calls * 3 // 60)}-{max(10, n_calls * 6 // 60)} min")
+        print(f"[DRY RUN] cache_window_risk threshold: {CACHE_WINDOW_RISK_SEC:.0f}s per task block")
+        return
+
+    # Warmup
+    print()
+    print("▸ Warmup (isolated payload, zero prefix pollution):")
+    active_specs = []
+    # Filter MODEL_CATALOG to the plan.models list but only for providers with keys
+    specs_to_warmup = [s for s in plan.models if s.provider in active_providers]
+    _ensure_google_key_env()
+    warmup_results = await asyncio.gather(*(warmup_one(s) for s in specs_to_warmup))
+    for spec, result in zip(specs_to_warmup, warmup_results):
+        if result is None:
+            print(f"  ✗ {spec.provider}/{spec.primary_id} — exhausted fallbacks")
+            continue
+        mid, is_fb = result
+        marker = "↪" if is_fb else "✓"
+        print(f"  {marker} {spec.provider}/{mid}" + (" (fallback)" if is_fb else ""))
+        active_specs.append(ActiveSpec(spec, mid, is_fb))
+
+    if not active_specs:
+        raise SystemExit("No models survived warmup. Aborting.")
+
+    print()
+    print(f"▸ Running --{plan.mode}: "
+          f"{len(active_specs)} × {len(plan.context_sizes)} × {len(plan.tasks)} "
+          f"= {len(active_specs) * len(plan.context_sizes) * len(plan.tasks)} MCTs, "
+          f"{len(active_specs) * len(plan.context_sizes) * len(plan.tasks) * 3} total calls")
+
+    from tqdm.asyncio import tqdm as async_tqdm  # local import for --dry-run speed
+    pbar = async_tqdm(total=len(active_specs) * len(plan.context_sizes) * 3 * 3,
+                      desc="calls", unit="call")
+    running_cost = [0.0]
+    error_count = [0]
+
+    def progress_cb(r: CallResult) -> None:
+        pbar.update(1)
+        running_cost[0] += r.cost_usd
+        if r.error:
+            error_count[0] += 1
+        pbar.set_postfix(cost=f"${running_cost[0]:.2f}", errors=error_count[0])
+
+    t0 = time.monotonic()
+    results = await run_all_mc_blocks(
+        active_specs,
+        plan.context_sizes,
+        fixtures_dir,
+        progress_cb=progress_cb,
+    )
+    pbar.close()
+    elapsed = time.monotonic() - t0
+
+    # Post-filter: for --decision, keep only recall tasks
+    if plan.mode == "decision":
+        results = [r for r in results if r.task == "recall"]
+
+    # Output
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    output_dir = Path(args.output_dir) if args.output_dir else (results_root / timestamp)
+
+    csv_path = write_csv(results, output_dir)
+    summary_path = render_summary_md(
+        results, output_dir,
+        run_args={
+            "mode": plan.mode,
+            "timestamp": timestamp,
+            "elapsed_sec": elapsed,
+            "active_models": [a.active_model_id for a in active_specs],
+            "raw_args": vars(args),
+        },
+    )
+    meta_path = write_run_meta(
+        results, output_dir,
+        run_args={
+            "mode": plan.mode,
+            "timestamp": timestamp,
+            "elapsed_sec": elapsed,
+            "active_models": [a.active_model_id for a in active_specs],
+            "raw_args": {k: v for k, v in vars(args).items() if not callable(v)},
+        },
+    )
+    chart_path = render_chart_html(results, output_dir) if args.with_chart else None
+
+    errors = sum(1 for r in results if r.error)
+    print()
+    print(f"▸ Done in {elapsed/60:.1f} min "
+          f"({len(results)} calls, {errors} errors, "
+          f"${sum(r.cost_usd for r in results):.2f})")
+    print(f"  CSV:     {csv_path}")
+    print(f"  Summary: {summary_path}")
+    print(f"  Meta:    {meta_path}")
+    if chart_path:
+        print(f"  Chart:   {chart_path}")
+
 
 def main() -> None:
-    raise NotImplementedError("Built in Task 14")
+    parser = argparse.ArgumentParser(
+        prog="bench_llm_v3",
+        description="Jarvis LLM selection benchmark.",
+    )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--quick", action="store_true")
+    mode_group.add_argument("--standard", action="store_true")
+    mode_group.add_argument("--deep", action="store_true")
+    mode_group.add_argument("--decision", action="store_true")
+    mode_group.add_argument("--model", type=str, help="Run a single model by id")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Generate fixtures + print plan, no API calls")
+    parser.add_argument("--with-chart", action="store_true")
+    parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument("--fixtures-dir", type=str, default="bench_fixtures")
+    parser.add_argument("--no-confirm", action="store_true",
+                        help="Skip --deep cost confirmation")
+    parser.add_argument("--force-standard", action="store_true",
+                        help="Skip smoke gate check (use with care)")
+    args = parser.parse_args()
+
+    if args.deep and not args.no_confirm and not args.dry_run:
+        print("--deep will cost ~$12-18 and take 2-4 hours. Continue? [y/N] ", end="")
+        if input().strip().lower() != "y":
+            raise SystemExit("Cancelled.")
+
+    asyncio.run(_main_async(args))
+
 
 if __name__ == "__main__":
     main()
