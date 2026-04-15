@@ -45,10 +45,29 @@ v3 的核心改进：
 **CLI 签名**：
 ```bash
 uv run python bench_llm_v3.py [--quick | --standard | --deep | --decision | --model <name>]
+                              [--dry-run]              # 仅生成 fixture + 打印 plan + 估算成本, 不调 API
                               [--with-chart]           # 生成 plotly chart.html
                               [--output-dir <path>]    # 默认 bench_results/{timestamp}/
                               [--no-confirm]           # 跳过 --deep 的确认提示
                               [--fixtures-dir <path>]  # 默认 bench_fixtures/
+```
+
+**`--dry-run` 输出示例**：
+```
+[DRY RUN] Would generate fixtures: 2k, 10k, 30k, 100k
+[DRY RUN] Mode: --standard
+[DRY RUN] Active providers (key check): ✓ anthropic ✗ openai ✓ groq ✓ xai ✓ google
+[DRY RUN] Active MCT count: 7 models × 4 contexts × 3 tasks = 84 MCTs
+[DRY RUN] Total API calls: 252 (minus openai since no key)
+[DRY RUN] Estimated cost breakdown:
+    anthropic/sonnet:  $1.82 (4 contexts × 3 tasks × 3 calls @ avg 35.5k input)
+    anthropic/opus:    $4.50
+    anthropic/haiku:   $0.61
+    ...
+    Total: $4.97 ± $1
+[DRY RUN] Provider concurrency: 4 (Semaphore(1) each)
+[DRY RUN] Wall-clock estimate: 12-18 min
+[DRY RUN] cache_window_risk threshold: 100s per task block
 ```
 
 ## 4 文件布局
@@ -124,7 +143,12 @@ def generate_fake_notes(target_tokens: int, seed: int = 42) -> str:
 
 ```python
 def verify_recall(answer: str) -> bool:
-    has_needle = any(k in answer for k in ["拿铁", "Revolver", "耶加"])
+    # 要求两个关键词同时命中: "拿铁" (咖啡类型) + 品牌词之一
+    # 防止模型瞎猜 "可能是拿铁" 就算命中
+    has_type = "拿铁" in answer
+    has_brand = "Revolver" in answer or "耶加" in answer
+    has_needle = has_type and has_brand
+    # 只提干扰项 (美式咖啡) 不算命中
     false_positive = "美式" in answer and not has_needle
     return has_needle and not false_positive
 ```
@@ -229,12 +253,14 @@ async def run_one_mc_block(provider, model, ctx_size, sem):
                 task_results.append(r)
 
             task_elapsed = time.monotonic() - task_start
-            cache_window_risk = task_elapsed > 60.0
+            # 阈值 100s: Anthropic 真实 TTL 是 300s (5 min), 用 3x margin
+            # 理论上 cold+warm+warm 三次 back-to-back 不该超 ~90s 即便 100k Opus
+            cache_window_risk = task_elapsed > 100.0
             if cache_window_risk:
                 LOGGER.warning(
                     f"{model.id} ctx={ctx_size} task={task_name}: "
-                    f"block took {task_elapsed:.1f}s, warm cache may have expired "
-                    f"(Anthropic 5min TTL)"
+                    f"block took {task_elapsed:.1f}s (>100s), warm cache may have "
+                    f"started expiring (Anthropic 5min TTL)"
                 )
             for r in task_results:
                 r["cache_window_risk"] = cache_window_risk
@@ -273,7 +299,26 @@ async def call_api_with_retry(provider, model, full_prefix, task_name, cache_sta
 
 ### 8.4 Warmup
 
-启动时对每个 model 发 1 次 "Hi" 小 prompt。目的：触发 cold-start / 验证 API key / 探测 model ID 存活。失败则按 `MODEL_CATALOG` 中的 fallback 列表依次尝试。全部失败 → 记录 warning 并从 active list 移除。
+启动时对每个 model 发 1 次小 prompt：**完全独立的 payload，零字节与正式测试共享**，防止污染后续 cold 测量（OpenAI/xAI 自动 prefix cache 会把 warmup 的 system prompt 当作 prefix 缓存住）。
+
+**Warmup payload 标准**：
+```python
+async def warmup(provider, model):
+    # 纯 user message, 无 system prompt, 无 notes 相关内容
+    return await call_api_simple(
+        provider, model,
+        system=None,       # ← 关键：不设 system, 避免前缀污染
+        user="Just say: OK",
+        max_tokens=5,
+    )
+```
+
+目的：
+1. 验证 API key + model ID 存活
+2. 触发 provider 端 cold-start (网络握手, TLS 复用)
+3. 测量结果不计入 CSV
+
+失败则按 `MODEL_CATALOG` 中的 fallback 列表依次尝试。全部失败 → 记录 warning 并从 active list 移除。
 
 ## 9 CSV Schema
 
@@ -284,9 +329,10 @@ CSV_FIELDS = [
     "model_is_fallback",          # bool
     "provider",
     "nominal_tokens_cl100k",      # 2000/10000/30000/100000
-    "actual_input_tokens_api",    # provider 自报
+    "actual_input_tokens_api",    # provider 自报 (不含 cache, 见下方分段)
     "task",                       # simple/recall/synthesis
     "cache_state",                # cold/warm/stale
+    "run_idx",                    # 0 (cold), 1 (warm1), 2 (warm2)
     "ttft_ms",
     "total_ms",
     "output_tokens",
@@ -294,9 +340,10 @@ CSV_FIELDS = [
     "answer",                     # 截断到 500 字
     "answer_correct",             # bool；非 recall 任务填 None
     "cache_actually_hit",         # bool
-    "cache_hit_tokens",           # int
-    "cache_hit_ratio",            # float, cache_hit_tokens / actual_input_tokens_api
-    "cost_usd",                   # float, 基于 actual_input_tokens_api + pricing table
+    "cache_write_tokens",         # int - Anthropic cache_creation_input_tokens, 其他 provider 为 0
+    "cache_read_tokens",          # int - provider 返回的命中 tokens (原 cache_hit_tokens)
+    "cache_hit_ratio",            # float, cache_read_tokens / total_prompt_tokens
+    "cost_usd",                   # float, 基于三段计价 (regular + write + read)
     "cache_window_risk",          # bool
     "error",                      # str or empty
 ]
@@ -304,15 +351,17 @@ CSV_FIELDS = [
 
 **Cache 指标抓取**（每 provider response 里的字段）：
 
-| Provider | cache_read 字段 |
-|---|---|
-| Anthropic | `response.usage.cache_read_input_tokens` |
-| OpenAI | `response.usage.prompt_tokens_details.cached_tokens` |
-| xAI Grok | `response.usage.prompt_tokens_details.cached_tokens` (OpenAI 兼容) |
-| Gemini | `response.usage_metadata.cached_content_token_count` |
-| Groq | 永远 0（硬编码） |
+| Provider | cache_write (1.25x) | cache_read (0.1-0.5x) |
+|---|---|---|
+| Anthropic | `response.usage.cache_creation_input_tokens` | `response.usage.cache_read_input_tokens` |
+| OpenAI | 无 (自动 cache, 不额外收 write 费) | `response.usage.prompt_tokens_details.cached_tokens` |
+| xAI Grok | 无 | `response.usage.prompt_tokens_details.cached_tokens` |
+| Gemini | 无 (CachedContent 有独立创建费, 但按次 + 存储时长, 此脚本不算) | `response.usage_metadata.cached_content_token_count` |
+| Groq | 无 cache | 永远 0 |
 
-`cache_actually_hit = cache_hit_tokens > 0`。
+`cache_actually_hit = cache_read_tokens > 0`。
+
+**注意**：Anthropic 的 `actual_input_tokens_api` 是三段相加 (input + cache_creation + cache_read)，CSV 里的 `actual_input_tokens_api` 记录的是 total prompt tokens（即总送进去的 token 数），`cache_write_tokens` 和 `cache_read_tokens` 分别从 response 对应字段拿。OpenAI/xAI/Gemini 的 `prompt_tokens` 已经是 total, cache_read_tokens 是 total 的子集（cached_tokens 属于 prompt_tokens 的一部分）。
 
 ## 10 Model Catalog
 
@@ -322,39 +371,59 @@ class ModelSpec:
     provider: str
     primary_id: str
     fallback_ids: list[str]
-    input_price_per_1m: float    # USD
+    input_price_per_1m: float     # USD, base input price
     output_price_per_1m: float
-    cache_read_multiplier: float  # 0.10 = cache read 是 input 价格的 10%
-    min_cache_tokens: int         # 0 = 无下限
+    cache_write_multiplier: float  # Anthropic = 1.25, 其他 = 1.00 (无独立 write 费)
+    cache_read_multiplier: float   # 0.10 = cache hit 是 base 的 10%
+    min_cache_tokens: int          # 触发 cache 的最小 token 阈值
 
 MODEL_CATALOG = [
-    ModelSpec("anthropic", "claude-sonnet-4-6",                  ["claude-sonnet-4-5"],        3.00,  15.00, 0.10, 1024),
-    ModelSpec("anthropic", "claude-opus-4-6",                    ["claude-opus-4-5"],         15.00,  75.00, 0.10, 1024),
-    ModelSpec("anthropic", "claude-haiku-4-5-20251001",          ["claude-haiku-4-5"],         1.00,   5.00, 0.10, 1024),
-    ModelSpec("openai",    "gpt-5",                              ["gpt-4o"],                   2.50,  10.00, 0.50, 1024),
-    ModelSpec("openai",    "gpt-5-mini",                         ["gpt-4o-mini"],              0.15,   0.60, 0.50, 1024),
-    ModelSpec("google",    "gemini-3-pro-preview",               ["gemini-2.5-pro"],           1.25,   5.00, 0.25, 4096),
-    ModelSpec("xai",       "grok-4-1-fast-non-reasoning",        ["grok-4"],                   0.20,   0.50, 0.25, 1024),
-    ModelSpec("groq",      "llama-3.3-70b-versatile",            [],                           0.59,   0.79, 1.00, 999_999),  # no cache
+    # Anthropic: 显式 cache, write 1.25x, read 0.10x
+    ModelSpec("anthropic", "claude-sonnet-4-6",           ["claude-sonnet-4-5"],       3.00,  15.00, 1.25, 0.10, 1024),
+    ModelSpec("anthropic", "claude-opus-4-6",             ["claude-opus-4-5"],        15.00,  75.00, 1.25, 0.10, 1024),
+    ModelSpec("anthropic", "claude-haiku-4-5-20251001",   ["claude-haiku-4-5"],        1.00,   5.00, 1.25, 0.10, 1024),
+    # OpenAI: 自动 cache, 无独立 write 费, read 0.50x
+    ModelSpec("openai",    "gpt-5",                       ["gpt-4o"],                  2.50,  10.00, 1.00, 0.50, 1024),
+    ModelSpec("openai",    "gpt-5-mini",                  ["gpt-4o-mini"],             0.15,   0.60, 1.00, 0.50, 1024),
+    # Gemini: CachedContent 的 storage 费本脚本不算, read 0.25x
+    ModelSpec("google",    "gemini-3-pro-preview",        ["models/gemini-3-pro-preview", "gemini-2.5-pro", "models/gemini-2.5-pro"],
+                                                                                       1.25,   5.00, 1.00, 0.25, 4096),
+    # xAI: 自动 cache, 无独立 write 费, read 0.25x (2025 推测)
+    ModelSpec("xai",       "grok-4-1-fast-non-reasoning", ["grok-4"],                  0.20,   0.50, 1.00, 0.25, 1024),
+    # Groq: 不支持 cache (永远按 regular 价计)
+    ModelSpec("groq",      "llama-3.3-70b-versatile",     [],                          0.59,   0.79, 1.00, 1.00, 999_999),
 ]
 ```
 
-`cost_usd` 计算：
+`cost_usd` 三段计价：
 ```python
-cost = (actual_input_tokens - cache_hit_tokens) * input_price_per_1m / 1e6
-cost += cache_hit_tokens * input_price_per_1m * cache_read_multiplier / 1e6
-cost += output_tokens * output_price_per_1m / 1e6
+def calc_cost(
+    cache_write_tokens: int,
+    cache_read_tokens: int,
+    prompt_total_tokens: int,  # 含 cache 部分
+    output_tokens: int,
+    spec: ModelSpec,
+) -> float:
+    # 非 cache 部分 = total - write - read (write 和 read 互斥)
+    regular_input = prompt_total_tokens - cache_write_tokens - cache_read_tokens
+    cost  = regular_input      * spec.input_price_per_1m /  1e6
+    cost += cache_write_tokens * spec.input_price_per_1m * spec.cache_write_multiplier / 1e6
+    cost += cache_read_tokens  * spec.input_price_per_1m * spec.cache_read_multiplier  / 1e6
+    cost += output_tokens      * spec.output_price_per_1m / 1e6
+    return cost
 ```
+
+**关键**：Anthropic 的 **cache_creation 首次写入贵 1.25x**，必须单列计算。不然 cold 调用（真·建 cache 的那一次）会被低估 ~12.5%。
 
 ## 11 Summary.md 输出
 
 固定 5 张表：
 
-1. **TTFT × Context (warm cache, median ms)** — 主要日常响应速度指标
-2. **Recall 准确率 × Context** — OM 硬指标
-3. **Cold vs Warm TTFT (100k)** — cache 加速比
-4. **真实 Cache 命中率** — 揭露黑箱
-5. **成本对比 ($/100 次 30k 对话)** — 月预算估算
+1. **TTFT × Context (warm cache, avg ms, n=2)** — 主要日常响应速度指标。注：warm 只有 2 个样本（run 1 + 2），用 avg 而非 median；如果 2 个样本差 >30%，额外标注 `(unstable)`
+2. **Recall 准确率 × Context** — OM 硬指标（用 §5.4 的严格双关键词判定）
+3. **Cold vs Warm TTFT (100k)** — cache 加速比；warm 用 2 样本 avg
+4. **真实 Cache 命中率** — 揭露黑箱；分 write/read 两栏（Anthropic 独有 write）
+5. **成本对比 ($/100 次 30k 对话)** — 月预算估算；cold 和 warm 分列展示
 
 表以 `nominal_tokens_cl100k` 分桶（而非 actual）以保持跨 provider 列对齐。正文注解列出各 provider 的 `actual / nominal` 比例（Gemini 典型 ~1.3，Claude ~1.2）。
 
@@ -450,12 +519,16 @@ v1 `bench_llm.py` **保留不删**，作为"跨 9 个 Llama-3.3-70B 部署商的
 ---
 
 **设计确认**：
-- [x] C + D 运行模式（quick / standard / deep / decision + single-model）
-- [x] A 诚实 cache 报告 + cache_hit_tokens / cache_hit_ratio / cache_actually_hit
+- [x] C + D 运行模式（quick / standard / deep / decision + single-model）+ `--dry-run`
+- [x] A 诚实 cache 报告：`cache_write_tokens` + `cache_read_tokens` + `cache_hit_ratio` + `cache_actually_hit` 四列
+- [x] **三段计价**（regular + cache_write 1.25x + cache_read 0.1-0.5x），修复 Anthropic cold 低估
 - [x] 1 cold + 2 warm 采样（288 calls for --standard）
-- [x] UUID + 纳秒时间戳 cache-bust prefix
-- [x] 跨 provider 并发 + per-provider Semaphore(1) + 60s elapsed assertion + cache_window_risk 列
-- [x] token 策略 C（cl100k 名义分桶 + actual_input_tokens_api 真值 + 成本用 actual）
-- [x] 单干扰项过滤关键词假命中
+- [x] UUID + 纳秒时间戳 cache-bust prefix，**每 task 独立**
+- [x] 跨 provider 并发 + per-provider Semaphore(1) + **100s cache_window_risk 断言**（Anthropic 300s TTL 的 3x margin）
+- [x] token 策略 C（cl100k 名义分桶 + actual_input_tokens_api 真值 + 成本用真值 +各 provider 三段 tokens）
+- [x] Warmup **独立 payload**（零前缀共享），防止 OpenAI/xAI 自动 cache 污染首次 cold
+- [x] Recall 严格双关键词（"拿铁" AND "Revolver/耶加"）
+- [x] Summary 标注 warm n=2 avg（非 median）
+- [x] Gemini 多级 fallback (`primary` → `models/primary` → `gemini-2.5-pro` → `models/gemini-2.5-pro`)
 
 **下一步**：交棒给 `writing-plans` 生成详细实施计划。
