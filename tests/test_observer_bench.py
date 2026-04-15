@@ -58,3 +58,55 @@ def test_tool_def_schema_shape():
     assert set(item["required"]) == {"priority", "time", "text"}
     assert set(item["properties"]["priority"]["enum"]) == {"🔴", "🟡", "🟢", "✅"}
     assert item["properties"]["time"]["pattern"] == r"^[0-2][0-9]:[0-5][0-9]$"
+
+
+def test_seed_dataclass_fields():
+    seed = ob.Seed(
+        id="fx_001",
+        category="smart_home",
+        scene="test",
+        user_emotion_hint="tired",
+        tone_hint="casual",
+        dialogue_length_hint="3-4 turns",
+        must_capture=["a", "b"],
+        must_not_hallucinate=["x"],
+    )
+    assert seed.id == "fx_001"
+    assert seed.category == "smart_home"
+
+
+def test_expected_observation_dataclass():
+    exp = ob.ExpectedObservation(
+        priority="🔴",
+        must_contain_any_of=[["拿铁", "客厅"], ["偏好"]],
+        semantic_description="用户偏好客厅灯暖黄",
+    )
+    assert exp.priority == "🔴"
+    assert len(exp.must_contain_any_of) == 2
+
+
+def test_fixture_dataclass():
+    fx = ob.Fixture(
+        id="fx_001",
+        category="smart_home",
+        seed_id="fx_001",
+        generated_by="claude-opus-4-6",
+        dialogue=[{"role": "user", "time": "14:28", "content": "hi"}],
+        expected_observations=[
+            ob.ExpectedObservation("🔴", [["hi"]], "greeting")
+        ],
+        must_not_contain_globally=["bad"],
+    )
+    assert fx.id == "fx_001"
+    assert len(fx.dialogue) == 1
+    assert len(fx.expected_observations) == 1
+
+
+def test_scores_dataclass_defaults():
+    s = ob.Scores(
+        tool_success=False,
+        precision=0.0, recall=0.0, f1=0.0,
+        priority_accuracy=0.0, hallucination=False, extra_count=0,
+    )
+    assert s.tool_success is False
+    assert s.f1 == 0.0

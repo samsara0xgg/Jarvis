@@ -165,7 +165,91 @@ PILOT_F1_THRESHOLD = 0.30
 
 # Generator model
 FIXTURE_GENERATOR_MODEL = "claude-opus-4-6"
-# ===== §2 DATACLASSES (Task 3) =====
+# ===== §2 DATACLASSES =====
+
+@dataclass
+class Seed:
+    """Entry from seeds.yaml — Allen writes these."""
+    id: str
+    category: str                           # must be in FIXTURE_CATEGORIES
+    scene: str
+    user_emotion_hint: str
+    tone_hint: str
+    dialogue_length_hint: str
+    must_capture: list[str]
+    must_not_hallucinate: list[str]
+
+
+@dataclass
+class ExpectedObservation:
+    """One expected observation in a fixture.ground_truth."""
+    priority: str                           # 🔴/🟡/🟢/✅
+    must_contain_any_of: list[list[str]]    # OR of (AND of keywords)
+    semantic_description: str               # For human review only, not used by code
+
+
+@dataclass
+class Fixture:
+    """Approved fx_XXX.json — dialogue + ground truth."""
+    id: str
+    category: str                           # mirrored from Seed.category
+    seed_id: str
+    generated_by: str                       # model ID that drafted this
+    dialogue: list[dict[str, Any]]          # [{role, time, content, ...}]
+    expected_observations: list[ExpectedObservation]
+    must_not_contain_globally: list[str]
+    generated_at: str = ""
+    approved_by: str = ""
+    approved_at: str = ""
+
+
+@dataclass
+class ObserverCall:
+    """Raw result of one Observer API call."""
+    observer_latency_ms: float
+    total_ms: float
+    model_obs: list[dict[str, Any]] | None  # None = tool_call failed
+    raw_arguments: str                      # tool_call.function.arguments text (truncated)
+    raw_response: Any                       # for extract_cache_metrics
+    error: str = ""
+
+
+@dataclass
+class Scores:
+    """Per-(model, fixture) evaluation result."""
+    tool_success: bool
+    precision: float
+    recall: float
+    f1: float
+    priority_accuracy: float
+    hallucination: bool
+    extra_count: int
+
+
+@dataclass
+class ObserverResult:
+    """CSV row — one per (model, fixture)."""
+    timestamp: str
+    model: str
+    model_is_fallback: bool
+    provider: str
+    fixture_id: str
+    fixture_category: str
+    tool_success: bool
+    precision: float
+    recall: float
+    f1: float
+    priority_accuracy: float
+    hallucination: bool
+    extra_count: int
+    expected_count: int
+    matched_count: int
+    observer_latency_ms: float
+    actual_input_tokens_api: int
+    output_tokens: int
+    cost_usd: float
+    model_output_raw: str                   # tool_call arguments, truncated 1000 chars
+    error: str = ""
 # ===== §3 FIXTURE I/O (Task 4) =====
 # ===== §4 PROMPT + TOOL BUILDERS (Task 5) =====
 # ===== §5 PROVIDER CALLERS (Tasks 6-8) =====
