@@ -62,3 +62,6 @@ ui/web/__pycache__/
 # bench_llm_v3 artifacts
 bench_fixtures/
 bench_results/
+
+# Observer bench: draft fixtures before Allen approval
+bench_fixtures/observer_cn/*.draft.json

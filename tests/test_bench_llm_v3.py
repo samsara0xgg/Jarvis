@@ -14,7 +14,7 @@ def test_module_imports():
     assert set(b.TASKS.keys()) == {"simple", "recall", "synthesis"}
     assert "拿铁" in b.NEEDLE_LINE and "Revolver" in b.NEEDLE_LINE
     assert "美式" in b.DISTRACTOR_LINE
-    assert len(b.MODEL_CATALOG) == 12  # 8 core + 4 xAI 变体扩展
+    assert len(b.MODEL_CATALOG) == 14  # 8 core + 4 xAI variants + 2 observer bench adds
 
 
 import tempfile
