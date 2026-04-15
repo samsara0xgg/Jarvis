@@ -402,7 +402,47 @@ def build_tool_call_kwargs(provider: str) -> dict[str, Any]:
         "tools": [{"type": "function", "function": OBSERVER_TOOL_DEF}],
         "tool_choice": {"type": "function", "function": {"name": "record_observations"}},
     }
-# ===== §5 PROVIDER CALLERS (Tasks 6-8) =====
+# ===== §5 PROVIDER CALLERS =====
+
+def _parse_anthropic_tool_call(final_message: Any) -> tuple[list[dict] | None, str]:
+    """Extract record_observations arguments from Anthropic response."""
+    for block in getattr(final_message, "content", []):
+        if getattr(block, "type", None) == "tool_use" and getattr(block, "name", "") == "record_observations":
+            args = getattr(block, "input", None)
+            if isinstance(args, dict):
+                obs = args.get("observations", [])
+                return obs if isinstance(obs, list) else None, json.dumps(args, ensure_ascii=False)[:1000]
+    return None, ""
+
+
+async def call_with_tools_anthropic(system: str, user_msg: str, model_id: str) -> ObserverCall:
+    """Anthropic messages API with forced tool_choice record_observations."""
+    from anthropic import AsyncAnthropic
+    client = AsyncAnthropic()
+    tool_kwargs = build_tool_call_kwargs("anthropic")
+
+    # Bust prefix reused from v3 (v3 still unchanged; we just call it)
+    bust = v3.make_bust_prefix()
+    sys_with_bust = bust + system
+
+    t0 = time.perf_counter()
+    final_message = await client.messages.create(
+        model=model_id,
+        max_tokens=MAX_OUTPUT_TOKENS,
+        system=sys_with_bust,
+        messages=[{"role": "user", "content": user_msg}],
+        **tool_kwargs,
+    )
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    obs, raw_args = _parse_anthropic_tool_call(final_message)
+    return ObserverCall(
+        observer_latency_ms=elapsed_ms,
+        total_ms=elapsed_ms,
+        model_obs=obs,
+        raw_arguments=raw_args,
+        raw_response=final_message,
+    )
 # ===== §6 RETRY + ASSEMBLY (Task 9) =====
 # ===== §7 WARMUP (Task 11) =====
 # ===== §8 EVALUATOR (Task 10) =====
