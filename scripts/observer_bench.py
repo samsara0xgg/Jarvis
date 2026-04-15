@@ -55,6 +55,22 @@ OBSERVER_CANDIDATES: tuple[str, ...] = (
     "deepseek-chat",
 )
 
+# Observer-only model catalog extensions (zero invasion of v3.MODEL_CATALOG).
+# These models exist only for Observer benchmarking; if Jarvis main LLM selection
+# (v3) needs them too, they should be added there separately.
+OBSERVER_EXTRA_MODELS: tuple[v3.ModelSpec, ...] = (
+    v3.ModelSpec("google", "gemini-2.5-flash",
+                 ("models/gemini-2.5-flash", "gemini-flash-latest"),
+                 0.30, 2.50, 1.00, 0.25, 4096),
+    v3.ModelSpec("deepseek", "deepseek-chat",
+                 ("deepseek-v3.2", "deepseek-v3"),
+                 0.27, 1.10, 1.00, 0.10, 1024),
+)
+
+# Combined catalog: v3 entries + observer extras. Use this everywhere observer_bench
+# needs to look up ModelSpec by primary_id (NOT v3.MODEL_CATALOG).
+OBSERVER_CATALOG: tuple[v3.ModelSpec, ...] = v3.MODEL_CATALOG + OBSERVER_EXTRA_MODELS
+
 OBSERVER_SYSTEM_PROMPT = """You are the memory consciousness of an AI assistant.
 Your observations will be the ONLY information the assistant has about past interactions.
 
@@ -224,6 +240,7 @@ class Scores:
     priority_accuracy: float
     hallucination: bool
     extra_count: int
+    matched_count: int = 0   # Number of expected_observations matched (avoid float→int reverse-derivation bug)
 
 
 @dataclass
@@ -528,11 +545,18 @@ def _parse_gemini_tool_call(response: Any) -> tuple[list[dict] | None, str]:
             obs_proto = args.get("observations")
             if obs_proto is None:
                 return None, json.dumps(args, ensure_ascii=False, default=str)[:1000]
-            # Each observation is a proto.Struct — convert recursively
+            # Each observation is a proto.Struct — convert to dict + coerce scalars to Python str.
+            # Defense: proto Scalar values (priority/time/text) might not be Python str,
+            # which would fail evaluate()'s `o.get("priority") in _VALID_PRIORITIES` check.
             obs_list = []
             for item in obs_proto:
                 if hasattr(item, "items"):
-                    obs_list.append(dict(item))
+                    raw = dict(item)
+                    coerced = {
+                        k: (str(v) if not isinstance(v, (dict, list)) else v)
+                        for k, v in raw.items()
+                    }
+                    obs_list.append(coerced)
                 else:
                     obs_list.append(item)
             return obs_list, json.dumps(args, ensure_ascii=False, default=str)[:1000]
@@ -648,7 +672,6 @@ async def call_observer_with_retry(
                 output_tokens=metrics["output_tokens"],
                 spec=spec,
             )
-            matched = int(scores.recall * len(fixture.expected_observations)) if fixture.expected_observations else 0
             return ObserverResult(
                 timestamp=timestamp,
                 model=active_model_id,
@@ -664,7 +687,7 @@ async def call_observer_with_retry(
                 hallucination=scores.hallucination,
                 extra_count=scores.extra_count,
                 expected_count=len(fixture.expected_observations),
-                matched_count=matched,
+                matched_count=scores.matched_count,
                 observer_latency_ms=call.observer_latency_ms,
                 actual_input_tokens_api=metrics["prompt_total_tokens"],
                 output_tokens=metrics["output_tokens"],
@@ -773,11 +796,11 @@ async def warmup_observer_one(spec: v3.ModelSpec) -> tuple[str, bool] | None:
 
 
 async def resolve_active_observers(candidate_ids: tuple[str, ...]) -> list[ActiveObserver]:
-    """Filter MODEL_CATALOG down to candidate_ids with working keys + warmup passes."""
+    """Filter OBSERVER_CATALOG down to candidate_ids with working keys + warmup passes."""
     active: list[ActiveObserver] = []
-    specs_to_try = [s for s in v3.MODEL_CATALOG
+    specs_to_try = [s for s in OBSERVER_CATALOG
                     if s.primary_id in candidate_ids and _provider_has_key_obs(s.provider)]
-    skipped_no_key = [s for s in v3.MODEL_CATALOG
+    skipped_no_key = [s for s in OBSERVER_CATALOG
                       if s.primary_id in candidate_ids and not _provider_has_key_obs(s.provider)]
 
     for s in skipped_no_key:
@@ -869,6 +892,7 @@ def evaluate(model_obs: list[dict] | None, fixture: Fixture) -> Scores:
         priority_accuracy=priority_acc,
         hallucination=halluc,
         extra_count=extra,
+        matched_count=len(matched_expected),
     )
 # ===== §9 FIXTURE GENERATOR =====
 
@@ -1293,7 +1317,7 @@ async def _main_async(args: argparse.Namespace) -> None:
 
     # Resolve plan
     if args.model:
-        target = [s for s in v3.MODEL_CATALOG
+        target = [s for s in OBSERVER_CATALOG
                   if s.primary_id == args.model or args.model in s.fallback_ids]
         if not target:
             raise SystemExit(f"Model '{args.model}' not in catalog.")

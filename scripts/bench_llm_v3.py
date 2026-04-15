@@ -109,13 +109,6 @@ MODEL_CATALOG: tuple[ModelSpec, ...] = (
     ModelSpec("xai",       "grok-4.20-0309-non-reasoning",("grok-4-1-fast-non-reasoning",),      0.20,   0.50, 1.00, 0.25, 1024),
     ModelSpec("xai",       "grok-4.20-0309-reasoning",    ("grok-4.20-0309-non-reasoning",),     0.20,   0.50, 1.00, 0.25, 1024),
     ModelSpec("xai",       "grok-4-0709",                 (),                                    3.00,  15.00, 1.00, 0.25, 1024),  # 旗舰, 定价预估
-    # --- Observer bench additions (2026-04-15) ---
-    ModelSpec("google",   "gemini-2.5-flash",
-              ("models/gemini-2.5-flash", "gemini-flash-latest"),
-              0.30,  2.50, 1.00, 0.25, 4096),
-    ModelSpec("deepseek", "deepseek-chat",
-              ("deepseek-v3.2", "deepseek-v3"),
-              0.27,  1.10, 1.00, 0.10, 1024),
     ModelSpec("groq",      "llama-3.3-70b-versatile",     (),                                    0.59,   0.79, 1.00, 1.00, 999_999),
 )
 
