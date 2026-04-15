@@ -59,9 +59,10 @@ ui/web/audio_cache/
 ui/web/__pycache__/
 .claude/worktrees/
 
-# bench_llm_v3 artifacts
-bench_fixtures/
+# bench_llm_v3 artifacts (fake notes, gitignored — regenerated from seed)
+bench_fixtures/fake_notes_*.txt
 bench_results/
 
-# Observer bench: draft fixtures before Allen approval
+# Observer bench: observer_cn/ is git-tracked (seeds.yaml + approved fx_*.json)
+# but draft .json (Opus output, awaiting Allen review) is NOT
 bench_fixtures/observer_cn/*.draft.json

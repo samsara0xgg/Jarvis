@@ -172,7 +172,7 @@ FIXTURE_CATEGORIES: tuple[str, ...] = (
     "smart_home", "correction", "multi_entity", "completion",
 )
 
-MAX_OUTPUT_TOKENS = 1024       # observation output can be longer than v3's 512
+MAX_OUTPUT_TOKENS = 2048       # observation output + GPT-5 reasoning headroom (v3 was 512)
 CALL_TIMEOUT_SEC = 60.0
 
 # Pilot early-exit thresholds (per spec §9.4)
@@ -403,11 +403,22 @@ def build_tool_call_kwargs(provider: str) -> dict[str, Any]:
             "tool_choice": {"type": "tool", "name": "record_observations"},
         }
     if provider == "google":
+        # Gemini's function-calling schema is stricter than JSON Schema:
+        # it rejects minItems/maxItems/minLength/maxLength fields.
+        # Strip them recursively to avoid "Unknown field for Schema" errors.
+        def _strip_unsupported(node):
+            if isinstance(node, dict):
+                return {k: _strip_unsupported(v) for k, v in node.items()
+                        if k not in ("minItems", "maxItems", "minLength", "maxLength", "pattern")}
+            if isinstance(node, list):
+                return [_strip_unsupported(x) for x in node]
+            return node
+        gemini_params = _strip_unsupported(OBSERVER_TOOL_DEF["parameters"])
         return {
             "tools": [{"function_declarations": [{
                 "name": OBSERVER_TOOL_DEF["name"],
                 "description": OBSERVER_TOOL_DEF["description"],
-                "parameters": OBSERVER_TOOL_DEF["parameters"],
+                "parameters": gemini_params,
             }]}],
             "tool_config": {"function_calling_config": {
                 "mode": "ANY",

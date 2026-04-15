@@ -1,0 +1,302 @@
+# Observer Bench — 20 fixture seeds (full benchmark set)
+#
+# 顺序: 前 5 (fx_001~fx_005) 覆盖 5 个不同 category, 用于 pilot 多样性.
+# 后 15 是其他 category 的扩展.
+#
+# 分布 (per spec §5.1):
+#   smart_home   3 (home/light/music/temp)
+#   preference   4 (food/coffee/music/comm)
+#   state_change 3 (job/move/fitness)
+#   temporal     3 (reminder/appointment/deadline)
+#   emotion      3 (tired/angry/anxious)
+#   correction   2 (time/person)
+#   multi_entity 1
+#   completion   1
+#
+# Workflow:
+#   1. uv run python scripts/observer_bench.py --observer-generate
+#   2. 逐个 review fx_XXX.draft.json
+#   3. mv fx_XXX.draft.json fx_XXX.json 表示批准
+
+# ============================================================================
+# PILOT SET (fx_001~fx_005): 5 个不同 category, 验证评测口径
+# ============================================================================
+
+- id: fx_001
+  category: smart_home
+  scene: "晚上让 Jarvis 调灯, 顺便抱怨工作"
+  user_emotion_hint: tired
+  tone_hint: "短句, 带抱怨, 像瘫在沙发上, 用'卧槽''草'之类口语"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "偏好: 客厅灯偏暖色调 (🔴)"
+    - "情绪: 用户疲惫不想动 (🟡)"
+    - "完成: 灯调成功 (✅)"
+  must_not_hallucinate:
+    - "蓝光"
+    - "冷白"
+    - "卧室"
+
+- id: fx_002
+  category: preference
+  scene: "咖啡偏好: 推荐 Revolver 的耶加雪菲拿铁"
+  user_emotion_hint: happy
+  tone_hint: "聊天式, 安利朋友的语气, 中英夹杂自然 (用 'flat white' 'order' 等)"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "偏好: 用户最喜欢拿铁, 特别是 Revolver 的耶加雪菲 (🔴, 具体品牌+豆子)"
+  must_not_hallucinate:
+    - "美式"
+    - "Standard Brew"
+    - "不喝咖啡"
+
+- id: fx_003
+  category: state_change
+  scene: "聊起最近从 Acme 跳槽到 Stripe"
+  user_emotion_hint: neutral
+  tone_hint: "随口一提, 中间夹杂对前公司的吐槽, 中英夹杂"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "状态变更: 用户从 Acme 换到 Stripe (🔴, 替换关系, 不再在 Acme)"
+  must_not_hallucinate:
+    - "在 Acme 工作"
+    - "同时在两家"
+    - "被解雇"
+    - "兼职"
+
+- id: fx_004
+  category: temporal
+  scene: "设提醒: 明早 7 点出门跑 Stanley Park"
+  user_emotion_hint: neutral
+  tone_hint: "事务性指令, 简短"
+  dialogue_length_hint: "2-3 turns"
+  must_capture:
+    - "提醒: 明早 7 点出门跑 Stanley Park (🔴, 具体时间+地点)"
+    - "完成: Jarvis 已设提醒 (✅)"
+  must_not_hallucinate:
+    - "今天"
+    - "下午"
+    - "Kitsilano"
+
+- id: fx_005
+  category: emotion
+  scene: "客户/合作方扯皮, 跟 Jarvis 倒苦水"
+  user_emotion_hint: angry
+  tone_hint: "情绪化, 长短句混合, 反复念叨同一件事, 可能爆粗"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "情绪: 用户对合作方/客户感到愤怒不满 (🟡)"
+    - "实体: 合作方/客户 (🟡, 工作场合关系)"
+  must_not_hallucinate:
+    - "辞职"
+    - "想杀人"
+    - "心理疾病"
+    - "上司"
+
+# ============================================================================
+# FULL SET (fx_006~fx_020): 余下 15 条扩到 20 完整覆盖
+# ============================================================================
+
+- id: fx_006
+  category: preference
+  scene: "饮食限制声明: 不吃香菜 (强烈反感)"
+  user_emotion_hint: neutral
+  tone_hint: "强调语气, 短句, 像在补一条重要信息"
+  dialogue_length_hint: "2-3 turns"
+  must_capture:
+    - "偏好/限制: 用户讨厌香菜, 不吃 (🔴, 长期偏好)"
+  must_not_hallucinate:
+    - "喜欢香菜"
+    - "对香菜过敏"
+    - "偶尔吃"
+
+- id: fx_007
+  category: preference
+  scene: "工作时只听无歌词音乐, 让 Jarvis 记住"
+  user_emotion_hint: neutral
+  tone_hint: "事务性指令, 解释一下原因"
+  dialogue_length_hint: "2-3 turns"
+  must_capture:
+    - "偏好: 工作时只听无歌词音乐 (lo-fi/instrumental) (🔴, 工作场景规则)"
+  must_not_hallucinate:
+    - "喜欢流行歌"
+    - "随机播放"
+    - "睡觉时"
+
+- id: fx_008
+  category: preference
+  scene: "通讯偏好: 重要事用 iMessage, 别用电话"
+  user_emotion_hint: neutral
+  tone_hint: "解释规则, 略带不耐烦因为之前被电话打扰"
+  dialogue_length_hint: "2-3 turns"
+  must_capture:
+    - "偏好: 重要事走 iMessage, 不要用电话 (🔴, 通讯渠道规则)"
+  must_not_hallucinate:
+    - "喜欢电话"
+    - "微信"
+    - "邮件优先"
+
+- id: fx_009
+  category: state_change
+  scene: "提到搬家了, 从 Kitsilano 搬到 Mount Pleasant"
+  user_emotion_hint: neutral
+  tone_hint: "顺嘴提的, 解释一下为什么搬"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "状态变更: 用户从 Kitsilano 搬到 Mount Pleasant (🔴, 居住地址替换)"
+  must_not_hallucinate:
+    - "还在 Kitsilano"
+    - "Vancouver 之外"
+    - "买了新房"
+
+- id: fx_010
+  category: state_change
+  scene: "锻炼计划改了: 跑步换成力量训练"
+  user_emotion_hint: neutral
+  tone_hint: "解释决定的原因, 比较反思的语气"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "状态变更: 用户从跑步切换到力量训练 (🔴, 锻炼方式替换)"
+  must_not_hallucinate:
+    - "继续跑步"
+    - "全部停了"
+    - "受伤"
+
+- id: fx_011
+  category: temporal
+  scene: "约朋友: 周六晚和 Ryan 看 Bard on the Beach"
+  user_emotion_hint: happy
+  tone_hint: "兴奋一点, 带计划感"
+  dialogue_length_hint: "2-3 turns"
+  must_capture:
+    - "约定: 周六晚和 Ryan 一起看 Bard on the Beach (🔴, 具体时间+人物+活动)"
+  must_not_hallucinate:
+    - "周日"
+    - "Kevin"
+    - "Lulu"
+    - "看电影"
+
+- id: fx_012
+  category: temporal
+  scene: "Deadline: 周三前给妈妈寄生日礼物"
+  user_emotion_hint: anxious
+  tone_hint: "略焦虑, 怕忘了, 短句"
+  dialogue_length_hint: "2-3 turns"
+  must_capture:
+    - "Deadline: 周三前给妈妈寄生日礼物 (🔴, 时间限制+对象+任务)"
+  must_not_hallucinate:
+    - "周末"
+    - "下周"
+    - "爸爸"
+    - "已寄"
+
+- id: fx_013
+  category: emotion
+  scene: "周五晚 deadline 之后瘫沙发, 跟 Jarvis 聊几句"
+  user_emotion_hint: tired
+  tone_hint: "短句, 一根手指都不想动那种, '草''卧槽'之类口语"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "情绪: 用户极度疲惫, 不想动 (🟡)"
+  must_not_hallucinate:
+    - "开心"
+    - "精力充沛"
+    - "想出门"
+
+- id: fx_014
+  category: emotion
+  scene: "Jarvis 上线 RPi 前夜, 焦虑要不要 deploy"
+  user_emotion_hint: anxious
+  tone_hint: "犹豫, 反复说同一意思, 像在自言自语"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "情绪: 用户对部署 Jarvis 到 RPi 感到焦虑 (🟡)"
+    - "决定中: 用户在犹豫是否今晚 deploy (🟡)"
+  must_not_hallucinate:
+    - "已部署"
+    - "决定不部署"
+    - "兴奋"
+
+- id: fx_015
+  category: smart_home
+  scene: "改 alarm: 早 7 点改播 lo-fi 不是默认 ringtone"
+  user_emotion_hint: neutral
+  tone_hint: "事务性, 略带'终于受不了默认铃声了'的小不耐烦"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "偏好: 早晨 alarm 用 lo-fi 替代默认 ringtone (🔴, 时间+音乐类型)"
+    - "完成: alarm 已改 (✅)"
+  must_not_hallucinate:
+    - "流行歌"
+    - "下午"
+    - "关闭 alarm"
+
+- id: fx_016
+  category: smart_home
+  scene: "卧室空调晚上调到 22°C 准备睡觉"
+  user_emotion_hint: neutral
+  tone_hint: "事务性, 略困"
+  dialogue_length_hint: "2-3 turns"
+  must_capture:
+    - "偏好: 卧室睡觉时空调 22°C (🔴, 房间+温度+场景)"
+    - "完成: 空调已调 (✅)"
+  must_not_hallucinate:
+    - "客厅"
+    - "白天"
+    - "暖气"
+
+- id: fx_017
+  category: correction
+  scene: "刚说约后天, 立刻纠正是大后天"
+  user_emotion_hint: neutral
+  tone_hint: "中间打断自己, '不对'/'等等'之类口语"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "纠正: 约定改到大后天 (不是后天) (🔴, 时间替换)"
+  must_not_hallucinate:
+    - "后天"
+    - "今天"
+    - "明天"
+
+- id: fx_018
+  category: correction
+  scene: "提了 Lulu, 立刻说错了应该是 Kevin"
+  user_emotion_hint: neutral
+  tone_hint: "自然口误, 自我纠正"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "纠正: 计划是和 Kevin (不是 Lulu) (🔴, 人物替换)"
+  must_not_hallucinate:
+    - "和 Lulu"
+    - "Ryan"
+    - "两个人"
+
+- id: fx_019
+  category: multi_entity
+  scene: "Ryan 在 Stripe 推荐用 Linear, 提到 Kevin 也在用"
+  user_emotion_hint: neutral
+  tone_hint: "聊天式, 信息密集, 中英夹杂"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "实体: Ryan 在 Stripe 工作 (🔴, 人物+公司)"
+    - "推荐: Ryan 推荐用 Linear (🟡, 工具)"
+    - "实体: Kevin 也在用 Linear (🟡, 第二个人物使用同工具)"
+  must_not_hallucinate:
+    - "用户在 Stripe"
+    - "Acme"
+    - "Lulu"
+
+- id: fx_020
+  category: completion
+  scene: "Jarvis 完成多步任务 (订咖啡 + 设提醒 + 调灯), 用户确认"
+  user_emotion_hint: happy
+  tone_hint: "满意, 简短确认, 中英夹杂 'thanks man'"
+  dialogue_length_hint: "3-4 turns"
+  must_capture:
+    - "完成: Jarvis 完成订咖啡任务 (✅)"
+    - "完成: Jarvis 完成设提醒任务 (✅)"
+    - "完成: Jarvis 完成调灯任务 (✅)"
+  must_not_hallucinate:
+    - "失败"
+    - "用户不满意"
+    - "需要重做"
