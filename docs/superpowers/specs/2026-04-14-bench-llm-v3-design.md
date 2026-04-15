@@ -1,9 +1,9 @@
-# bench_llm_v3.py — 设计规格
+# scripts/bench_llm_v3.py — 设计规格
 
 **日期**: 2026-04-14
 **作者**: Allen + Claude (brainstorm)
 **目的**: 为 Jarvis 语音助手做主 LLM 选型决策，通过对 8 个候选模型在中文长笔记场景下的 TTFT / recall 准确率 / cache 命中率 / 成本进行系统对照测试。
-**位置**: `~/Projects/jarvis/bench_llm_v3.py`（与 v1 `bench_llm.py` 同级）
+**位置**: `~/Projects/jarvis/scripts/bench_llm_v3.py`（与 v1 `bench_llm.py` 同级）
 
 ---
 
@@ -44,7 +44,7 @@ v3 的核心改进：
 
 **CLI 签名**：
 ```bash
-uv run python bench_llm_v3.py [--quick | --standard | --deep | --decision | --model <name>]
+uv run python scripts/bench_llm_v3.py [--quick | --standard | --deep | --decision | --model <name>]
                               [--dry-run]              # 仅生成 fixture + 打印 plan + 估算成本, 不调 API
                               [--with-chart]           # 生成 plotly chart.html
                               [--output-dir <path>]    # 默认 bench_results/{timestamp}/
@@ -74,7 +74,8 @@ uv run python bench_llm_v3.py [--quick | --standard | --deep | --decision | --mo
 
 ```
 ~/Projects/jarvis/
-├── bench_llm_v3.py               # 主脚本 ~600 行
+├── scripts/
+│   └── bench_llm_v3.py           # 主脚本 ~600 行
 ├── bench_fixtures/               # 笔记固件（进 .gitignore）
 │   ├── fake_notes_2k.txt         # cl100k 2000 tokens
 │   ├── fake_notes_10k.txt
@@ -455,7 +456,7 @@ def calc_cost(
 # ///
 ```
 
-用户 `uv run bench_llm_v3.py` 自动解析 + 装依赖，无需额外 `pyproject.toml`。
+用户 `uv run scripts/bench_llm_v3.py` 自动解析 + 装依赖，无需额外 `pyproject.toml`。
 
 ### 13.2 API Key 加载
 
@@ -491,19 +492,78 @@ Progress: ████████░░ 78% | Elapsed: 14m 22s | ETA: 3m 12s | 
   ↳ [xai/grok @ 30k / recall]         cold 2100ms → warm 2080/2075ms (cache=0%!) ✓ recall
 ```
 
-## 15 测试
+## 15 测试 & 上线流程
 
-**Unit tests**（新建 `tests/test_bench_llm_v3.py`，纳入项目 pytest）：
+### 15.1 Unit tests（新建 `tests/test_bench_llm_v3.py`，纳入项目 pytest）
+
 - `test_generate_fake_notes_deterministic`: 同 seed 生成结果 byte-equal
 - `test_needle_position_within_tolerance`: 针位置在 45%-55% 之间
 - `test_distractor_precedes_needle`: 干扰项在针之前
-- `test_verify_recall`: 针对 5 个合成 answer 测正确性判定
-- `test_cost_calculation`: 构造假 response，验算 cost_usd
-- `test_cache_metrics_extraction`: 对 5 个 provider 的假 response 字典，验证正确提取 cache_hit_tokens
+- `test_verify_recall`: 针对 5 个合成 answer 测正确性判定（必测: "拿铁" 单独命中不算、"美式" 干扰项不干扰、双关键词才算真命中）
+- `test_cost_calculation_anthropic`: 构造含 `cache_creation_input_tokens=5000` + `cache_read_input_tokens=25000` 的假 response，验算三段计价公式
+- `test_cost_calculation_groq_nocache`: Groq response cache_read=0, 验证全 regular 价
+- `test_cache_metrics_extraction`: 对 5 个 provider 的假 response 字典，验证正确提取 cache_write/cache_read tokens
 
-**集成测试**（不在 pytest suite，手动）：
-- `--quick` 必须在 5 分钟内完成且 CSV 有 36 行
-- `--decision` 必须能决策（至少 2 个 Anthropic 模型有有效数据）
+### 15.2 上线强制流程（不可跳步）
+
+**v2 教训**：没做 smoke test 直接跑全量 → 36/72 Anthropic 全 400 失败，浪费 API quota。v3 强制分三阶段：
+
+#### Stage 1: `--dry-run --quick`
+```bash
+uv run python scripts/bench_llm_v3.py --dry-run --quick
+```
+验收：
+- [ ] `bench_fixtures/fake_notes_{2k,10k}.txt` 已生成 + 针位置 45-55% + 干扰项在针前 10-20 行
+- [ ] API key 检测报告正确（缺的 ✗, 有的 ✓）
+- [ ] 估算成本 < $0.30
+- [ ] Plan 里 MCT 数 = 12（2 × 2 × 3），total calls = 36
+
+#### Stage 2: `--quick` 真跑（36 calls, <$0.30）
+```bash
+uv run python scripts/bench_llm_v3.py --quick
+```
+
+**强制调试点 — Anthropic cache_control 验证**：
+脚本必须在**第一次 Anthropic 调用后立即**打印原始 usage 字段（每次 run 只打一次）：
+
+```python
+# 在 call_api_anthropic 里，首次调用时:
+if not ANTHROPIC_DEBUG_PRINTED_ONCE:
+    print("=" * 78)
+    print(f"ANTHROPIC FIRST CALL RESPONSE (DEBUG) — {model_id}")
+    print(f"  usage.input_tokens:                 {resp.usage.input_tokens}")
+    print(f"  usage.cache_creation_input_tokens:  {resp.usage.cache_creation_input_tokens}")
+    print(f"  usage.cache_read_input_tokens:      {resp.usage.cache_read_input_tokens}")
+    print(f"  usage.output_tokens:                {resp.usage.output_tokens}")
+    print("=" * 78)
+    ANTHROPIC_DEBUG_PRINTED_ONCE = True
+```
+
+**验收**：
+- [ ] 首次 cold call: `cache_creation_input_tokens > 0` 且 `cache_read_input_tokens == 0`（cache 写成功）
+- [ ] 随后同 prefix warm call: `cache_read_input_tokens > 0`（cache 读取成功）
+
+**如果 `cache_creation_input_tokens == 0`**：
+→ `cache_control` 语法错了（v2 就是这样死的），**停止上 --standard**，先修 bug
+
+**`--quick` 成功条件**：
+- [ ] 36 calls 全部返回（容忍 ≤2 个 rate limit skip）
+- [ ] CSV 有 36 行
+- [ ] 至少 1 个模型 recall 正确
+- [ ] 总耗时 < 5 分钟
+- [ ] 总成本 < $0.50
+
+#### Stage 3: `--standard` 全量（仅 Stage 2 全绿后允许）
+```bash
+uv run python scripts/bench_llm_v3.py --standard
+```
+
+**强制前置检查**：启动时扫描 `bench_results/*/run_meta.json`，若找不到 `mode=quick` 且 `errors_total ≤ 2` 的记录，**拒绝启动**并打印 "请先跑 --quick 验证"。可用 `--force-standard` 覆盖（自担风险）。
+
+### 15.3 --decision 验收
+
+- 至少 2 个 Anthropic 模型有有效数据
+- recall 准确率给出可区分的分数（不全 100% 也不全 0%）
 
 ## 16 开放问题 / 运行时决策
 
