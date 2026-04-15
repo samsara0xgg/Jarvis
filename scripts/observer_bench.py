@@ -513,6 +513,70 @@ async def call_with_tools_openai_compat(
         raw_arguments=raw_args,
         raw_response=resp,
     )
+
+
+def _parse_gemini_tool_call(response: Any) -> tuple[list[dict] | None, str]:
+    """Extract record_observations from Gemini response candidates[0].content.parts."""
+    try:
+        cand = response.candidates[0]
+        for part in cand.content.parts:
+            fn = getattr(part, "function_call", None)
+            if fn is None or getattr(fn, "name", "") != "record_observations":
+                continue
+            # fn.args is a proto.MapComposite — convert to dict
+            args = dict(fn.args) if hasattr(fn, "args") else {}
+            obs_proto = args.get("observations")
+            if obs_proto is None:
+                return None, json.dumps(args, ensure_ascii=False, default=str)[:1000]
+            # Each observation is a proto.Struct — convert recursively
+            obs_list = []
+            for item in obs_proto:
+                if hasattr(item, "items"):
+                    obs_list.append(dict(item))
+                else:
+                    obs_list.append(item)
+            return obs_list, json.dumps(args, ensure_ascii=False, default=str)[:1000]
+    except (AttributeError, IndexError, TypeError):
+        pass
+    return None, ""
+
+
+async def call_with_tools_gemini(system: str, user_msg: str, model_id: str) -> ObserverCall:
+    """Google Gemini via google-generativeai SDK (sync, wrapped in to_thread)."""
+    import google.generativeai as genai
+
+    if not os.environ.get("GEMINI_API_KEY") and os.environ.get("GOOGLE_API_KEY"):
+        os.environ["GEMINI_API_KEY"] = os.environ["GOOGLE_API_KEY"]
+    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+
+    tool_kwargs = build_tool_call_kwargs("google")
+    # Gemini accepts system_instruction separately
+    model = genai.GenerativeModel(
+        model_id,
+        system_instruction=system,
+        tools=tool_kwargs["tools"],
+        tool_config=tool_kwargs["tool_config"],
+    )
+    bust = v3.make_bust_prefix()
+    combined_user = bust + user_msg
+
+    def _run() -> tuple[Any, float]:
+        t0 = time.perf_counter()
+        resp = model.generate_content(
+            combined_user,
+            generation_config={"max_output_tokens": MAX_OUTPUT_TOKENS},
+        )
+        return resp, (time.perf_counter() - t0) * 1000.0
+
+    resp, elapsed_ms = await asyncio.to_thread(_run)
+    obs, raw_args = _parse_gemini_tool_call(resp)
+    return ObserverCall(
+        observer_latency_ms=elapsed_ms,
+        total_ms=elapsed_ms,
+        model_obs=obs,
+        raw_arguments=raw_args,
+        raw_response=resp,
+    )
 # ===== §6 RETRY + ASSEMBLY (Task 9) =====
 # ===== §7 WARMUP (Task 11) =====
 # ===== §8 EVALUATOR (Task 10) =====
