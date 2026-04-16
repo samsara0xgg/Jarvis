@@ -49,6 +49,18 @@ class UIController {
         audioRecorder.onRecordingStart = (seconds) => {
             this.updateRecordButtonState(true, seconds);
         };
+
+        // Electron Pet Mode IPC integration — no-op when loaded in plain browser
+        if (window.jarvis) {
+            window.jarvis.onModeChange((mode) => {
+                document.body.classList.toggle('pet-mode', mode === 'pet');
+            });
+            window.jarvis.onCursorUpdate(({ x, y }) => {
+                const live2d = window.chatApp?.live2dManager;
+                const hit = live2d?.isHitOnModel?.(x, y) ?? false;
+                window.jarvis.sendHover(hit);
+            });
+        }
     }
 
     initEventListeners() {

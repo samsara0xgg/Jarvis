@@ -585,7 +585,20 @@ class Live2DManager {
         this.lastEmotionActionTime = now;
     }
 
-
+    /**
+     * Check if a window-relative coordinate hits the Live2D model's bounding rect.
+     * Used by Electron Pet Mode for click-through hit-testing. Loose rectangular
+     * test — acceptable for MVP.
+     * @param {number} x — window-relative X
+     * @param {number} y — window-relative Y
+     * @returns {boolean}
+     */
+    isHitOnModel(x, y) {
+        if (!this.live2dModel) return false;
+        const b = this.live2dModel.getBounds();
+        if (!b) return false;
+        return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
+    }
 
     /**
      * 触发模型动作（Motion）

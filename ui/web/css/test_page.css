@@ -1486,3 +1486,19 @@ body {
         height: 80px;
     }
 }
+
+/* ==================== Pet Mode (Electron desktop) ==================== */
+body.pet-mode {
+  background: transparent !important;
+}
+body.pet-mode .background-container,
+body.pet-mode .background-overlay,
+body.pet-mode .chat-container,
+body.pet-mode .control-bar,
+body.pet-mode .connection-status-top,
+body.pet-mode #logPanel {
+  display: none !important;
+}
+body.pet-mode #live2d-stage {
+  background: transparent !important;
+}

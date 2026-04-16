@@ -1,0 +1,17 @@
+appId: com.jarvis.xiaoyue
+productName: 小月
+directories:
+  output: dist
+  buildResources: build
+files:
+  - main.js
+  - preload.js
+  - menu.js
+  - package.json
+  - build/**/*
+mac:
+  target: dmg
+  category: public.app-category.utilities
+  identity: null
+  hardenedRuntime: false
+  icon: build/icon.png
