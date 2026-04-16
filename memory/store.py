@@ -125,6 +125,18 @@ class MemoryStore:
             CREATE INDEX IF NOT EXISTS idx_digests_user_period
                 ON episode_digests(user_id, period_end DESC);
         """)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS observations (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                chunk_id        INTEGER,
+                created_at      TEXT NOT NULL,
+                content         TEXT,
+                source_turn_id  INTEGER,
+                superseded_by   INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_obs_created
+                ON observations(created_at);
+        """)
         conn.commit()
         self._migrate(conn)
 
@@ -579,6 +591,90 @@ class MemoryStore:
             (user_id, user_id),
         ).fetchall()
         return [r[0] for r in rows]
+
+    # ------------------------------------------------------------------
+    # Observations (v2 OM)
+    # ------------------------------------------------------------------
+
+    def add_observation(
+        self,
+        chunk_id: int,
+        content: str,
+        source_turn_id: int | None = None,
+    ) -> int:
+        """Insert an observation.
+
+        Args:
+            chunk_id: The chunk this observation belongs to.
+            content: Markdown line (e.g. "* 🔴 用户偏好暖黄灯光").
+            source_turn_id: Optional conversation turn that produced this.
+
+        Returns:
+            The observation row id.
+        """
+        conn = self._get_conn()
+        now = datetime.now().isoformat()
+        cursor = conn.execute(
+            "INSERT INTO observations (chunk_id, created_at, content, source_turn_id) "
+            "VALUES (?, ?, ?, ?)",
+            (chunk_id, now, content, source_turn_id),
+        )
+        conn.commit()
+        LOGGER.info("Observation added: id=%d chunk=%d", cursor.lastrowid, chunk_id)
+        return cursor.lastrowid
+
+    def supersede_observation(self, old_id: int, new_id: int) -> None:
+        """Mark an old observation as superseded.
+
+        Args:
+            old_id: The observation to mark superseded.
+            new_id: The replacement observation id.
+        """
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE observations SET superseded_by = ? WHERE id = ?",
+            (new_id, old_id),
+        )
+        conn.commit()
+        LOGGER.info("Observation superseded: %d → %d", old_id, new_id)
+
+    def get_all_observations(self) -> list[dict[str, Any]]:
+        """Return all non-superseded observations, oldest first.
+
+        Returns:
+            List of observation dicts ordered by created_at ASC.
+        """
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM observations WHERE superseded_by IS NULL "
+            "ORDER BY created_at ASC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_observations_char_count(self) -> int:
+        """Return total character count of all active observations.
+
+        Returns:
+            Sum of content lengths for non-superseded observations.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COALESCE(SUM(LENGTH(content)), 0) AS total "
+            "FROM observations WHERE superseded_by IS NULL"
+        ).fetchone()
+        return row["total"]
+
+    def get_next_chunk_id(self) -> int:
+        """Return the next chunk_id (max + 1).
+
+        Returns:
+            Next available chunk_id, starting from 1 if table is empty.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COALESCE(MAX(chunk_id), 0) + 1 AS next_id FROM observations"
+        ).fetchone()
+        return row["next_id"]
 
     # ------------------------------------------------------------------
     # Helpers
