@@ -287,7 +287,7 @@ class TraceLog:
         rows = conn.execute(
             "SELECT * FROM trace "
             "WHERE path_taken = 'cloud' "
-            "AND outcome_signal IS NULL OR outcome_signal >= 0 "
+            "AND (outcome_signal IS NULL OR outcome_signal >= 0) "
             "AND created_at > datetime('now', 'localtime', ?) "
             "ORDER BY created_at DESC",
             (f"-{days} days",),
@@ -1328,7 +1328,7 @@ if user_id:
         latency_ms=self._last_timings.get("total_ms"),
     )
 
-    # v2: async Observer extraction
+    # v2: async Observer extraction (writes to observations table)
     self._executor.submit(
         self.memory_manager.write_observation,
         {
@@ -1339,6 +1339,14 @@ if user_id:
         },
         _trace_id,
     )
+
+    # v1: preserve GPT-4o-mini extraction (writes to memories table)
+    # DirectAnswerer still reads from the old memories table, so we keep
+    # both pipelines running in parallel until DA is migrated to observations.
+    if updated_messages:
+        self._executor.submit(
+            self.memory_manager.save, updated_messages, user_id, session_id, emotion,
+        )
 ```
 
 - [ ] **Step 5: Run full test suite**
