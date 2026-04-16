@@ -1,0 +1,49 @@
+name: get_exchange_rate
+description: "Get current exchange rate or convert between currencies. Uses ISO 4217 codes (USD, CNY, EUR, JPY, CAD)."
+version: 1
+status: live
+created_by: migrated
+
+parameters:
+  - name: base
+    type: string
+    description: "Source currency code (e.g. USD, CNY, EUR). Defaults to USD."
+    required: false
+    default: USD
+  - name: target
+    type: string
+    description: "Target currency code (e.g. CNY, CAD, JPY)."
+    required: true
+  - name: amount
+    type: number
+    description: "Amount to convert. Defaults to 1."
+    required: false
+    default: 1
+
+annotations:
+  read_only: true
+  destructive: false
+  idempotent: true
+
+action:
+  type: http_get
+  url: "https://open.er-api.com/v6/latest/{{ base }}"
+  headers: {}
+  timeout_ms: 10000
+  retry:
+    max: 3
+    delay_ms: 1000
+    backoff: exponential
+
+response:
+  extract:
+    rate: "{{ result.rates[target] }}"
+  compute:
+    converted: "{{ amount * rate | round(4) }}"
+  template: "{{ amount }} {{ base }} = {{ converted }} {{ target }}"
+  error_template: "汇率查询失败，请稍后再试。"
+
+security:
+  allowed_domains:
+    - open.er-api.com
+  requires_auth: false

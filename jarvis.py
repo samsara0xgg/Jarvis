@@ -41,15 +41,7 @@ from devices.device_manager import DeviceManager
 from memory.conversation import ConversationStore
 from memory.manager import MemoryManager
 from memory.user_preferences import UserPreferenceStore
-from skills import SkillRegistry
-from skills.automation import AutomationSkill
-from skills.memory_skill import MemorySkill
-from skills.reminders import ReminderSkill
-from skills.smart_home import SmartHomeSkill
-from skills.system_control import SystemControlSkill
-from skills.time_skill import TimeSkill
-from skills.todos import TodoSkill
-from skills.weather import WeatherSkill
+from core.tool_registry import ToolRegistry
 
 LOGGER = logging.getLogger(__name__)
 
@@ -142,6 +134,10 @@ class JarvisApp:
         # BehaviorLog 和 MemoryManager 共用同一个 SQLite（不同表），WAL 模式支持并发读写
         self.behavior_log = BehaviorLog(mem_db)
 
+        from memory.trace import TraceLog
+        self.trace_log = TraceLog(mem_db)
+        self._turn_counter: dict[str, int] = {}  # session_id → turn count
+
         from memory.direct_answer import DirectAnswerer
         self.direct_answerer = DirectAnswerer(
             self.memory_manager.store, self.memory_manager.embedder,
@@ -183,9 +179,24 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("OLED display unavailable: %s", exc)
 
-        # ── 技能注册中心 ── 所有 skill（天气、灯控、提醒等）在这里统一管理
-        self.skill_registry = SkillRegistry()
-        self._register_skills(config)
+        # ── 工具注册中心 (v2) ── @jarvis_tool 函数 + YAML skills 统一管理
+        import tools.smart_home
+        tools.smart_home.init(self.device_manager, self.permission_manager)
+        import tools.time_utils
+        tools.time_utils.init(tts_callback=self.speak)
+        import tools.reminders
+        tools.reminders.init(
+            filepath=config.get("skills", {}).get("reminders", {}).get("path", "data/reminders.json"),
+            scheduler=self.scheduler,
+            tts_callback=self.speak,
+            event_bus=self.event_bus,
+        )
+        import tools.todos
+        tools.todos.init(
+            persist_dir=config.get("skills", {}).get("todos", {}).get("dir", "data/todos"),
+        )
+
+        self.tool_registry = ToolRegistry(config)
 
         # ── 意图路由 + 本地执行器 + 自动化规则 ──
         self.intent_router = None
@@ -213,20 +224,9 @@ class JarvisApp:
                 action_executor=_execute_rule_actions,
             )
 
-            self.local_executor = LocalExecutor(self.skill_registry, self.rule_manager)
+            self.local_executor = LocalExecutor(self.tool_registry, self.rule_manager)
         except Exception as exc:
             self.logger.warning("Intent router unavailable: %s", exc)
-
-        # ── 学习系统 ── 运行时教 Jarvis 新技能（调 Claude Code 生成 Python 代码）
-        from core.learning_router import LearningRouter
-        from core.skill_factory import SkillFactory
-        self.learning_router = LearningRouter(
-            skill_names=list(self.skill_registry.skill_names),
-        )
-        self.skill_factory = SkillFactory(
-            learned_dir="skills/learned",
-            project_root=str(self.config_path.parent) if self.config_path else ".",
-        )
 
         # --- Interrupt monitor (full-duplex) ---
         from core.interrupt_monitor import InterruptMonitor
@@ -775,29 +775,6 @@ class JarvisApp:
                     )
                 return reply
 
-        # ── 快捷路径 3：学习意图 ── "学会查XX" → 后台调 Claude Code 生成新技能
-        if hasattr(self, "learning_router"):
-            learning = self.learning_router.detect(text)
-            if learning and learning.mode == "create":
-                self.logger.info("Learning intent: create — %s", learning.description[:60])
-                learn_response = self._learn_create(learning, user_id)
-                self._last_path = "learn_create"
-                self._last_learning_intent = {
-                    "mode": learning.mode,
-                    "description": learning.description,
-                }
-                print(f"path={self._last_path}")
-                output_fn(learn_response)
-                history.append({"role": "user", "content": text})
-                history.append({"role": "assistant", "content": learn_response})
-                self.conversation_store.replace(session_id, history)
-                if user_id:
-                    self.behavior_log.log(user_id, "conversation", {
-                        "text": text[:100], "route": "learn_create",
-                    })
-                return learn_response
-            # config/compose 模式交给后面的云端 LLM 处理
-
         # ── 关键词规则匹配 ── 用户定义的触发词（如"晚安"→关灯+关窗帘）
         _t_think = time.monotonic()
         self.event_bus.emit("jarvis.state_changed", {"state": "thinking"})
@@ -834,7 +811,10 @@ class JarvisApp:
         if user_id:
             _t_mem_start = time.monotonic()
             try:
-                memory_context = self.memory_manager.query(text, user_id)
+                memory_context = self.memory_manager.build_stable_prefix(
+                    recent_turns=history,
+                    current_input=text,
+                )
                 _mem_ms = int((time.monotonic() - _t_mem_start) * 1000)
                 self._last_memory_hits = memory_context
                 self._last_timings["memory_query_ms"] = _mem_ms
@@ -996,7 +976,7 @@ class JarvisApp:
         _t_llm_start = time.monotonic()
         if response_text is None and not self._cancel.is_set():
             self._last_path = "cloud"
-            tools = self.skill_registry.get_tool_definitions(user_role)
+            tools = self.tool_registry.get_tool_definitions(user_role)
             tts_pipeline = create_tts_pipeline() if create_tts_pipeline else None
             with self._pipeline_lock:
                 self._active_pipeline = tts_pipeline
@@ -1054,7 +1034,7 @@ class JarvisApp:
                             user_message=text,
                             conversation_history=history,
                             tools=tools,
-                            tool_executor=self.skill_registry.execute,
+                            tool_executor=self.tool_registry.execute,
                             user_name=user_name,
                             user_id=user_id,
                             user_role=user_role,
@@ -1109,6 +1089,45 @@ class JarvisApp:
                 "emotion": emotion,
                 "route": "local" if response_text and not cloud_path else "cloud",
             })
+
+        # ── Trace (v2) ── structured per-turn log + async Observer extraction
+        if user_id:
+            session_turn = self._turn_counter.get(session_id, 0) + 1
+            self._turn_counter[session_id] = session_turn
+            _trace_tool_calls = []
+            if updated_messages:
+                for msg in updated_messages:
+                    if msg.get("role") == "assistant" and isinstance(msg.get("content"), list):
+                        for block in msg["content"]:
+                            if isinstance(block, dict) and block.get("type") == "tool_use":
+                                _trace_tool_calls.append({
+                                    "name": block.get("name", ""),
+                                    "args": block.get("input", {}),
+                                    "result": "",
+                                    "ms": 0,
+                                })
+            _trace_id = self.trace_log.log_turn(
+                session_id=session_id,
+                turn_id=session_turn,
+                user_text=text,
+                assistant_text=response_text or "",
+                user_emotion=emotion,
+                path_taken=self._last_path,
+                tool_calls=_trace_tool_calls or None,
+                latency_ms=self._last_timings.get("total_ms"),
+            )
+
+            # v2: async Observer extraction (writes to observations table)
+            self._executor.submit(
+                self.memory_manager.write_observation,
+                {
+                    "user_text": text,
+                    "assistant_text": response_text or "",
+                    "tool_calls": _trace_tool_calls,
+                    "user_emotion": emotion,
+                },
+                _trace_id,
+            )
 
         # ── 非流式输出 ── 本地路径的响应在这里一次性播报（流式的已经在上面逐句播了）
         if sentence_count == 0 and not self._cancel.is_set() and response_text:
@@ -1305,127 +1324,6 @@ class JarvisApp:
         except Exception as exc:
             self.logger.warning("Interrupt VAD warmup failed: %s", exc)
 
-    def _register_skills(self, config: dict) -> None:
-        """Register all available skills."""
-        self.skill_registry.register(
-            SmartHomeSkill(self.device_manager, self.permission_manager)
-        )
-        self.skill_registry.register(WeatherSkill(config))
-        self.skill_registry.register(TimeSkill(config))
-        self.skill_registry.register(ReminderSkill(
-            config,
-            scheduler=self.scheduler,
-            tts_callback=self.speak,
-            event_bus=self.event_bus,
-        ))
-        self.skill_registry.register(TodoSkill(config))
-        self.skill_registry.register(SystemControlSkill(config))
-        self.skill_registry.register(MemorySkill(self.memory_manager))
-        self.skill_registry.register(AutomationSkill(self.automation_engine))
-
-        from skills.model_switch import ModelSwitchSkill
-        self.skill_registry.register(ModelSwitchSkill(self.llm))
-
-        # 实时数据技能（可选）：新闻、股票等需要联网查询的数据
-        if config.get("skills", {}).get("realtime_data", {}).get("enabled", False):
-            try:
-                from skills.realtime_data import RealTimeDataSkill
-                rt_skill = RealTimeDataSkill(config)
-                self.skill_registry.register(rt_skill)
-                if self.scheduler and self.scheduler.available:
-                    rt_skill.set_scheduler(self.scheduler)
-            except Exception as exc:
-                self.logger.warning("RealTimeData skill unavailable: %s", exc)
-
-        # 定时任务技能（可选）：让 LLM 能创建/管理 cron 任务
-        if self.scheduler and self.scheduler.available:
-            try:
-                from skills.scheduler_skill import SchedulerSkill
-                self.skill_registry.register(SchedulerSkill(config, self.scheduler))
-            except Exception as exc:
-                self.logger.warning("Scheduler skill unavailable: %s", exc)
-
-        # 远程控制技能（可选）：通过网络控制其他设备
-        if config.get("remote", {}).get("enabled", False):
-            try:
-                from skills.remote_control import RemoteControlSkill
-                self.skill_registry.register(RemoteControlSkill(config))
-            except Exception as exc:
-                self.logger.warning("Remote control skill unavailable: %s", exc)
-
-        # 健康状态技能（可选）：让用户能语音询问"系统状态怎么样"
-        if self.health_tracker:
-            try:
-                from skills.health_skill import HealthSkill
-                self.skill_registry.register(HealthSkill(self.health_tracker))
-            except Exception as exc:
-                self.logger.warning("Health skill unavailable: %s", exc)
-
-        # ── 加载用户教会的技能 ── 从 skills/learned/ 目录动态扫描
-        from core.skill_loader import SkillLoader
-        self.skill_loader = SkillLoader("skills/learned")
-        for skill in self.skill_loader.scan():
-            try:
-                self.skill_registry.register(skill)
-            except Exception as exc:
-                self.logger.warning("Failed to register learned skill %s: %s", skill.skill_name, exc)
-
-        # ── 技能管理 ── 让 LLM 能列出/删除/禁用已有技能
-        from skills.skill_mgmt import SkillManagementSkill
-        self.skill_registry.register(SkillManagementSkill(self.skill_loader, self.skill_registry))
-
-        # 把 TTS 回调注入 TimeSkill，这样计时器到期时能语音播报
-        time_skill = self.skill_registry._skills.get("time")
-        if time_skill and hasattr(time_skill, "set_timer_callback"):
-            time_skill.set_timer_callback(self.speak)
-
-        self.logger.info(
-            "Registered %d skills: %s",
-            len(self.skill_registry.skill_names),
-            ", ".join(self.skill_registry.skill_names),
-        )
-
-    def _learn_create(self, intent: Any, user_id: str | None) -> str:
-        """创造型：后台调用 Claude Code 技能工厂，不阻塞对话。"""
-        skill_id = self.skill_factory._slugify(intent.description)
-        if self.skill_factory.has_skill(skill_id):
-            return f"我已经会{intent.description}了。要重新学一个不同版本吗？说'重新学{intent.description}'。"
-        self._executor.submit(self._learn_create_bg, intent, user_id)
-        return "好的，我在后台学，你继续说。"
-
-    def _learn_create_bg(self, intent: Any, user_id: str | None) -> None:
-        """后台技能学习 — 完成后语音通知。"""
-        result = self.skill_factory.create(
-            description=intent.description,
-            on_status=lambda msg: self.logger.info("SkillFactory: %s", msg),
-        )
-
-        if result["success"]:
-            try:
-                new_skills = self.skill_loader.scan()
-                for skill in new_skills:
-                    if skill.skill_name not in self.skill_registry.skill_names:
-                        self.skill_registry.register(skill)
-                        self.skill_loader.update_metadata(skill.skill_name, {
-                            "taught_by": user_id or "unknown",
-                            "description": intent.description,
-                            "status": "pending_review",
-                        })
-                self.learning_router.update_skills(list(self.skill_registry.skill_names))
-            except Exception as exc:
-                self.logger.warning("Failed to hot-load new skill: %s", exc)
-                self.speak(f"技能文件生成了但加载失败：{exc}")
-                return
-
-            if user_id:
-                self.behavior_log.log(user_id, "skill_learned", {
-                    "skill": result["skill_name"],
-                    "description": intent.description,
-                })
-            self.speak(f"学会了！现在可以{intent.description}了。")
-        else:
-            self.speak(f"没学会，{result['message']}")
-
     def _resolve_display_name(self, user_id: str | None) -> str | None:
         """Map user_id to display name."""
         if not user_id:
@@ -1466,13 +1364,13 @@ class JarvisApp:
         _os.system("clear" if _os.name != "nt" else "cls")
         mode = self.config.get("devices", {}).get("mode", "sim")
         user_count = len(self.user_store.get_all_users())
-        skill_count = len(self.skill_registry.skill_names)
+        tool_count = self.tool_registry.count()
         print("=" * 60)
         print("  J.A.R.V.I.S. — Personal AI Voice Assistant")
         print("=" * 60)
         print(f"  Device mode : {mode}")
         print(f"  Users       : {user_count} registered")
-        print(f"  Skills      : {skill_count} ({', '.join(self.skill_registry.skill_names)})")
+        print(f"  Tools       : {tool_count}")
         print(f"  LLM         : {self.llm.model}")
         print("=" * 60)
 
@@ -1525,42 +1423,28 @@ class JarvisApp:
         parts = ["Good morning. Here's your briefing."]
 
         if "weather" in include:
-            weather_skill = self.skill_registry._skills.get("weather")
-            if weather_skill:
-                try:
-                    result = weather_skill.execute("get_weather", {})
+            try:
+                result = self.tool_registry.execute("get_weather", {}, user_role="owner")
+                if result and "unknown tool" not in result.lower():
                     parts.append(result)
-                except Exception as exc:
-                    self.logger.warning("Briefing weather failed: %s", exc)
+            except Exception as exc:
+                self.logger.warning("Briefing weather failed: %s", exc)
 
         if "reminders" in include:
-            reminder_skill = self.skill_registry._skills.get("reminders")
-            if reminder_skill:
-                try:
-                    result = reminder_skill.execute("list_reminders", {}, user_id="_briefing")
-                    if "No active" not in result:
-                        parts.append(result)
-                except Exception as exc:
-                    self.logger.warning("Briefing reminders failed: %s", exc)
+            try:
+                result = self.tool_registry.execute("list_reminders", {}, user_role="owner")
+                if result and "No active" not in result and "unknown tool" not in result.lower():
+                    parts.append(result)
+            except Exception as exc:
+                self.logger.warning("Briefing reminders failed: %s", exc)
 
         if "todos" in include:
-            todo_skill = self.skill_registry._skills.get("todos")
-            if todo_skill:
-                try:
-                    result = todo_skill.execute("list_todos", {}, user_id="_briefing")
-                    if "No " not in result:
-                        parts.append(result)
-                except Exception as exc:
-                    self.logger.warning("Briefing todos failed: %s", exc)
-
-        if "realtime_data" in include:
-            rt_skill = self.skill_registry._skills.get("realtime_data")
-            if rt_skill:
-                try:
-                    result = rt_skill.get_briefing_text()
+            try:
+                result = self.tool_registry.execute("list_todos", {}, user_role="owner")
+                if result and "No " not in result and "unknown tool" not in result.lower():
                     parts.append(result)
-                except Exception as exc:
-                    self.logger.warning("Briefing realtime_data failed: %s", exc)
+            except Exception as exc:
+                self.logger.warning("Briefing todos failed: %s", exc)
 
         briefing_text = " ".join(parts)
         self.logger.info("Morning briefing: %s", briefing_text)

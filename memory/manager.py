@@ -21,7 +21,9 @@ from memory.embedder import Embedder
 
 # 复用 HTTP 连接，避免每次 LLM 调用重建 TCP/TLS
 _SESSION = requests.Session()
+from memory.observer import Observer
 from memory.retriever import MemoryRetriever
+from memory.stable_prefix import StablePrefixBuilder
 from memory.store import MemoryStore
 
 LOGGER = logging.getLogger(__name__)
@@ -250,6 +252,16 @@ class MemoryManager:
         # Trace for system testing
         self._last_extraction: dict = {}
 
+        # v2: Observer + StablePrefixBuilder
+        self._observer = Observer(config)
+        personality_text = ""
+        try:
+            from core.personality import get_system_prompt
+            personality_text = get_system_prompt()
+        except Exception:
+            personality_text = "You are Jarvis, a helpful voice assistant."
+        self._prefix_builder = StablePrefixBuilder(self.store, personality_text)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -290,6 +302,57 @@ class MemoryManager:
             )
 
         return self._format_memory_context(profile, episodes, relevant, user_id)
+
+    def build_stable_prefix(
+        self,
+        recent_turns: list[dict] | None = None,
+        current_input: str = "",
+    ) -> str:
+        """Build the v2 stable prefix for LLM prompt injection.
+
+        Args:
+            recent_turns: Recent conversation history.
+            current_input: Current user utterance.
+
+        Returns:
+            Formatted stable prefix string.
+        """
+        return self._prefix_builder.build(
+            recent_turns=recent_turns or [],
+            current_input=current_input,
+        )
+
+    def write_observation(
+        self,
+        turn_data: dict,
+        source_turn_id: int | None = None,
+    ) -> int:
+        """Extract and store observations from a conversation turn.
+
+        Args:
+            turn_data: Dict with user_text, assistant_text, tool_calls, user_emotion.
+            source_turn_id: The trace table row ID for this turn.
+
+        Returns:
+            Number of observations stored.
+        """
+        observations = self._observer.extract(turn_data)
+        if not observations:
+            return 0
+
+        markdown = self._observer.format_markdown(observations)
+        chunk_id = self.store.get_next_chunk_id()
+        self.store.add_observation(
+            chunk_id=chunk_id,
+            content=markdown,
+            source_turn_id=source_turn_id,
+        )
+
+        self.logger.info(
+            "Stored %d observations (chunk %d) from turn %s",
+            len(observations), chunk_id, source_turn_id,
+        )
+        return len(observations)
 
     def maintain(self, user_id: str) -> dict:
         """Run periodic maintenance: sweep expired, compress episodes, merge duplicates.
