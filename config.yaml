@@ -423,6 +423,14 @@ memory:
   # 用户偏好持久化目录。
   preferences_dir: data/memory
 
+  # v2: Observer 记忆抽取配置
+  observer:
+    primary_model: "grok-4.20-0309-non-reasoning"
+    fallback_model: "gemini-2.5-flash"
+    enabled: true
+  stable_prefix:
+    max_tokens: 25000
+
 # ----------------------------------------------------------------------------
 # 技能配置
 # ----------------------------------------------------------------------------

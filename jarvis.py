@@ -142,6 +142,10 @@ class JarvisApp:
         # BehaviorLog 和 MemoryManager 共用同一个 SQLite（不同表），WAL 模式支持并发读写
         self.behavior_log = BehaviorLog(mem_db)
 
+        from memory.trace import TraceLog
+        self.trace_log = TraceLog(mem_db)
+        self._turn_counter: dict[str, int] = {}  # session_id → turn count
+
         from memory.direct_answer import DirectAnswerer
         self.direct_answerer = DirectAnswerer(
             self.memory_manager.store, self.memory_manager.embedder,
@@ -834,7 +838,10 @@ class JarvisApp:
         if user_id:
             _t_mem_start = time.monotonic()
             try:
-                memory_context = self.memory_manager.query(text, user_id)
+                memory_context = self.memory_manager.build_stable_prefix(
+                    recent_turns=history,
+                    current_input=text,
+                )
                 _mem_ms = int((time.monotonic() - _t_mem_start) * 1000)
                 self._last_memory_hits = memory_context
                 self._last_timings["memory_query_ms"] = _mem_ms
@@ -1109,6 +1116,45 @@ class JarvisApp:
                 "emotion": emotion,
                 "route": "local" if response_text and not cloud_path else "cloud",
             })
+
+        # ── Trace (v2) ── structured per-turn log + async Observer extraction
+        if user_id:
+            session_turn = self._turn_counter.get(session_id, 0) + 1
+            self._turn_counter[session_id] = session_turn
+            _trace_tool_calls = []
+            if updated_messages:
+                for msg in updated_messages:
+                    if msg.get("role") == "assistant" and isinstance(msg.get("content"), list):
+                        for block in msg["content"]:
+                            if isinstance(block, dict) and block.get("type") == "tool_use":
+                                _trace_tool_calls.append({
+                                    "name": block.get("name", ""),
+                                    "args": block.get("input", {}),
+                                    "result": "",
+                                    "ms": 0,
+                                })
+            _trace_id = self.trace_log.log_turn(
+                session_id=session_id,
+                turn_id=session_turn,
+                user_text=text,
+                assistant_text=response_text or "",
+                user_emotion=emotion,
+                path_taken=self._last_path,
+                tool_calls=_trace_tool_calls or None,
+                latency_ms=self._last_timings.get("total_ms"),
+            )
+
+            # v2: async Observer extraction (writes to observations table)
+            self._executor.submit(
+                self.memory_manager.write_observation,
+                {
+                    "user_text": text,
+                    "assistant_text": response_text or "",
+                    "tool_calls": _trace_tool_calls,
+                    "user_emotion": emotion,
+                },
+                _trace_id,
+            )
 
         # ── 非流式输出 ── 本地路径的响应在这里一次性播报（流式的已经在上面逐句播了）
         if sentence_count == 0 and not self._cancel.is_set() and response_text:
