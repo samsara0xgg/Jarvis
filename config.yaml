@@ -320,14 +320,14 @@ llm:
       api_key_env: GROQ_API_KEY
       max_tokens: 1024
     deep:
-      model: grok-4-1-fast-non-reasoning
+      model: grok-4.20-0309-non-reasoning
       base_url: "https://api.x.ai/v1"
       api_key_env: XAI_API_KEY
       max_tokens: 1024
 
   # 后备配置（无 presets 时使用）
   # 模型 ID。gpt-4o-mini / grok-4.20-0309-non-reasoning / grok-4.1-fast-non-reasoning。
-  model: grok-4-1-fast-non-reasoning
+  model: grok-4.20-0309-non-reasoning
 
   # OpenAI 兼容 base_url。留空 = OpenAI 官方。xAI: https://api.x.ai/v1
   base_url: "https://api.x.ai/v1"
