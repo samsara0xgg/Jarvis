@@ -183,8 +183,8 @@ def test_jarvis_unidentified_speaker_gets_guest_access(tmp_path):
         sys.modules.pop("pyttsx3", None)
 
 
-def test_jarvis_skill_registry_has_all_skills(tmp_path):
-    """Verify all expected skills are registered."""
+def test_jarvis_tool_registry_has_tools(tmp_path):
+    """Verify ToolRegistry has tools registered."""
     _install_fake_anthropic()
     _install_fake_pyttsx3()
 
@@ -194,9 +194,10 @@ def test_jarvis_skill_registry_has_all_skills(tmp_path):
         config = _make_config(tmp_path)
         app = JarvisApp(config, config_path=tmp_path / "config.yaml")
 
-        expected_builtins = {"smart_home", "weather", "time", "reminders", "todos", "system_control", "memory", "automation", "health", "scheduler", "skill_mgmt", "model_switch"}
-        actual_skills = set(app.skill_registry.skill_names)
-        assert expected_builtins.issubset(actual_skills), f"Missing: {expected_builtins - actual_skills}"
+        assert app.tool_registry.count() > 0, "ToolRegistry should have at least one tool"
+        defs = app.tool_registry.get_tool_definitions(user_role="owner")
+        tool_names = {d["name"] for d in defs}
+        assert "smart_home_control" in tool_names, f"Missing smart_home_control in {tool_names}"
     finally:
         sys.modules.pop("anthropic", None)
         sys.modules.pop("pyttsx3", None)

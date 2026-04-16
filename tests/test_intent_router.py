@@ -39,7 +39,7 @@ def config():
 
 @pytest.fixture
 def mock_registry():
-    """Mock SkillRegistry that records calls."""
+    """Mock ToolRegistry that records calls."""
     registry = MagicMock()
     registry.execute.return_value = "OK"
     return registry
