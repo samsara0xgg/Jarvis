@@ -1,0 +1,43 @@
+name: get_weather
+description: "Get current weather for a city. Returns temperature, conditions, humidity, and wind."
+version: 1
+status: live
+created_by: migrated
+
+parameters:
+  - name: city
+    type: string
+    description: "City name in English. Defaults to Victoria."
+    required: false
+    default: Victoria
+
+annotations:
+  read_only: true
+  destructive: false
+  idempotent: true
+
+action:
+  type: http_get
+  url: "https://wttr.in/{{ city }}?format=j1"
+  headers:
+    Accept-Language: zh
+  timeout_ms: 10000
+  retry:
+    max: 3
+    delay_ms: 1000
+    backoff: exponential
+
+response:
+  extract:
+    temp_c: "{{ result.current_condition[0].temp_C }}"
+    feels_like: "{{ result.current_condition[0].FeelsLikeC }}"
+    desc: "{{ result.current_condition[0].lang_zh[0].value }}"
+    humidity: "{{ result.current_condition[0].humidity }}"
+    wind: "{{ result.current_condition[0].windspeedKmph }}"
+  template: "{{ city }}天气：{{ desc }}，温度{{ temp_c }}°C（体感{{ feels_like }}°C），湿度{{ humidity }}%，风速{{ wind }}公里/时。"
+  error_template: "天气查询失败，请稍后再试。"
+
+security:
+  allowed_domains:
+    - wttr.in
+  requires_auth: false
