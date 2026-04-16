@@ -448,7 +448,7 @@ skills:
     dir: data/todos
 
   realtime_data:
-    enabled: true
+    enabled: false
     mock_mode: false
     cache:
       dir: data/realtime_data

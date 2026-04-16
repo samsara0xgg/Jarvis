@@ -132,12 +132,16 @@ class LocalExecutor:
             result = self.skill_registry.execute(
                 "get_stock_watchlist", tool_input, user_role=user_role,
             )
+            if result and "unknown tool" in result.lower():
+                result = "实时股票功能暂不可用。"
 
         elif sub_type == "news":
             focus = query if isinstance(query, str) else "all"
             result = self.skill_registry.execute(
                 "get_news_briefing", {"focus": focus}, user_role=user_role,
             )
+            if result and "unknown tool" in result.lower():
+                result = "新闻功能暂不可用。"
 
         elif sub_type == "weather":
             tool_input = {"city": query} if isinstance(query, str) and query.strip() else {}
