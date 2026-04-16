@@ -363,7 +363,7 @@ def test_evaluate_hallucination_triggered():
 
 
 def test_evaluate_partial_recall_no_halluc():
-    """Only 1 of 2 matched, no halluc words."""
+    """1 of 2 expected matched, no halluc → P=1.0 (matched output was correct)."""
     fx = _make_fx_one_expected()
     model_obs = [
         {"priority": "🔴", "time": "14:28", "text": "用户偏好客厅拿铁"},
@@ -387,18 +387,33 @@ def test_evaluate_priority_wrong_still_counts_recall():
     assert s.priority_accuracy == 0.5  # 1 of 2 priorities matched
 
 
-def test_evaluate_extra_observations():
-    """Extra observations boost total but do not block recall."""
+def test_evaluate_extra_observations_neutral():
+    """Halluc-aware (spec §7.3): chatty but neutral extras don't hurt P."""
     fx = _make_fx_one_expected()
     model_obs = [
         {"priority": "🔴", "time": "14:28", "text": "客厅暖黄"},
         {"priority": "🟡", "time": "14:28", "text": "用户累"},
-        {"priority": "🟢", "time": "14:28", "text": "用户住在温哥华"},  # extra
+        {"priority": "🟢", "time": "14:28", "text": "用户喝拿铁"},  # neutral extra (no banned word)
     ]
     s = ob.evaluate(model_obs, fx)
     assert s.recall == 1.0
-    assert abs(s.precision - 2/3) < 0.01
+    assert s.precision == 1.0
+    assert s.f1 == 1.0
     assert s.extra_count == 1
+
+
+def test_evaluate_extra_observations_with_halluc_penalty():
+    """Halluc-aware: extras containing must_not_contain_globally word DO penalize P."""
+    fx = _make_fx_one_expected()  # banned: ["蓝光", "卧室"]
+    model_obs = [
+        {"priority": "🔴", "time": "14:28", "text": "客厅暖黄"},
+        {"priority": "🟡", "time": "14:28", "text": "用户累"},
+        {"priority": "🟢", "time": "14:28", "text": "用户在卧室也想要暖黄"},  # halluc extra
+    ]
+    s = ob.evaluate(model_obs, fx)
+    assert s.recall == 1.0
+    assert abs(s.precision - 2/3) < 0.01   # 2 matched / (2 matched + 1 halluc_extra)
+    assert s.hallucination is True
 
 
 def test_evaluate_tool_success_invalid_priority():

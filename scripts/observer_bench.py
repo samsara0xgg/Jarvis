@@ -232,7 +232,11 @@ class ObserverCall:
 
 @dataclass
 class Scores:
-    """Per-(model, fixture) evaluation result."""
+    """Per-(model, fixture) evaluation result.
+
+    precision = matched / (matched + halluc_extras) — halluc-aware per spec §7.3.
+    Neutral chatter is free; only extras containing must_not_contain_globally hurt.
+    """
     tool_success: bool
     precision: float
     recall: float
@@ -544,7 +548,11 @@ async def call_with_tools_openai_compat(
 
 
 def _parse_gemini_tool_call(response: Any) -> tuple[list[dict] | None, str]:
-    """Extract record_observations from Gemini response candidates[0].content.parts."""
+    """Extract record_observations from Gemini response candidates[0].content.parts.
+
+    raw_args返回 JSON 序列化的 obs_list (已转 dict, 可读), 不返回原始 proto.MapComposite —
+    后者经 json.dumps(default=str) 会输出 `<proto.MapComposite at 0x...>` 这种调试无用字符串。
+    """
     try:
         cand = response.candidates[0]
         for part in cand.content.parts:
@@ -555,7 +563,7 @@ def _parse_gemini_tool_call(response: Any) -> tuple[list[dict] | None, str]:
             args = dict(fn.args) if hasattr(fn, "args") else {}
             obs_proto = args.get("observations")
             if obs_proto is None:
-                return None, json.dumps(args, ensure_ascii=False, default=str)[:1000]
+                return None, json.dumps({"observations": []}, ensure_ascii=False)[:1000]
             # Each observation is a proto.Struct — convert to dict + coerce scalars to Python str.
             # Defense: proto Scalar values (priority/time/text) might not be Python str,
             # which would fail evaluate()'s `o.get("priority") in _VALID_PRIORITIES` check.
@@ -570,7 +578,7 @@ def _parse_gemini_tool_call(response: Any) -> tuple[list[dict] | None, str]:
                     obs_list.append(coerced)
                 else:
                     obs_list.append(item)
-            return obs_list, json.dumps(args, ensure_ascii=False, default=str)[:1000]
+            return obs_list, json.dumps({"observations": obs_list}, ensure_ascii=False)[:1000]
     except (AttributeError, IndexError, TypeError):
         pass
     return None, ""
@@ -883,15 +891,22 @@ def evaluate(model_obs: list[dict] | None, fixture: Fixture) -> Scores:
                 break  # one expected → at most one model_obs
 
     recall = len(matched_expected) / len(fixture.expected_observations) if fixture.expected_observations else 0.0
-    precision = len(matched_model) / len(model_obs) if model_obs else 0.0
+
+    # Halluc-aware precision per spec §7.3: 中性 extras 不扣 F1, 含 banned word 的 extras 才扣.
+    halluc = False
+    halluc_extras = 0
+    for mi, obs in enumerate(model_obs):
+        if not isinstance(obs, dict):
+            continue
+        if any(bad in obs.get("text", "") for bad in fixture.must_not_contain_globally):
+            halluc = True
+            if mi not in matched_model:
+                halluc_extras += 1
+
+    denom = len(matched_model) + halluc_extras
+    precision = len(matched_model) / denom if denom > 0 else 0.0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
     priority_acc = priority_correct / len(matched_expected) if matched_expected else 0.0
-
-    halluc = any(
-        any(bad in obs.get("text", "") for bad in fixture.must_not_contain_globally)
-        for obs in model_obs
-        if isinstance(obs, dict)
-    )
 
     extra = max(0, len(model_obs) - len(fixture.expected_observations))
 
@@ -1265,6 +1280,47 @@ def render_observer_summary(results: list[ObserverResult], output_dir: Path,
     return path
 
 
+def render_observer_chart_html(results: list[ObserverResult],
+                               output_dir: Path) -> Path | None:
+    """Plotly scatter: F1 vs latency_p50, colored by provider; hover reveals P/R/halluc/cost."""
+    try:
+        import plotly.express as px
+        import pandas as pd
+    except ImportError:
+        LOGGER.warning("plotly/pandas missing, skipping chart.html")
+        return None
+
+    rows = []
+    for (prov, model), grp_rows in _group_by_model(results).items():
+        m = _aggregate_model_metrics(grp_rows)
+        if m.get("latency_p50", -1) <= 0:
+            continue
+        rows.append({
+            "provider": prov, "model": model,
+            "f1": round(m["f1"], 3),
+            "precision": round(m["precision"], 3),
+            "recall": round(m["recall"], 3),
+            "latency_p50": m["latency_p50"],
+            "halluc_rate": round(m["halluc_rate"], 3),
+            "cost_per_100": round(m["cost_per_100"], 4),
+        })
+    if not rows:
+        return None
+
+    df = pd.DataFrame(rows)
+    fig = px.scatter(
+        df, x="latency_p50", y="f1", color="provider", text="model",
+        hover_data=["precision", "recall", "halluc_rate", "cost_per_100"],
+        title="Observer F1 vs Latency p50 (per model) — top-left = good",
+        labels={"latency_p50": "Latency p50 (ms)", "f1": "F1 (halluc-aware)"},
+    )
+    fig.update_traces(textposition="top center")
+    fig.update_layout(showlegend=True, height=600)
+    path = output_dir / "chart.html"
+    fig.write_html(path)
+    return path
+
+
 def write_run_meta_observer(
     results: list[ObserverResult],
     output_dir: Path,
@@ -1467,6 +1523,7 @@ async def _main_async(args: argparse.Namespace) -> None:
     summary_path = render_observer_summary(results, output_dir, run_args={
         "mode": mode, "timestamp": timestamp, "elapsed_sec": elapsed,
     })
+    chart_path = render_observer_chart_html(results, output_dir)
     meta_path = write_run_meta_observer(results, output_dir, run_args={
         "mode": mode, "timestamp": timestamp, "elapsed_sec": elapsed,
         "active_models": [a.active_model_id for a in active],
@@ -1479,6 +1536,8 @@ async def _main_async(args: argparse.Namespace) -> None:
           f"${sum(r.cost_usd for r in results):.2f})")
     print(f"  CSV:     {csv_path}")
     print(f"  Summary: {summary_path}")
+    if chart_path:
+        print(f"  Chart:   {chart_path}")
     print(f"  Meta:    {meta_path}")
     if mode == "observer-pilot":
         passed = sum(1 for v in pilot_pass_map.values() if v)

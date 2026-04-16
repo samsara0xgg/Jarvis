@@ -490,7 +490,7 @@ PROVIDER_DISPATCH_TOOLS = {
 @dataclass
 class Scores:
     tool_success: bool           # tool_call 成功且字段合法
-    precision: float             # matched / len(model_obs)
+    precision: float             # matched / (matched + halluc_extras) — halluc-aware, see §7.3
     recall: float                # matched / len(expected_obs)
     f1: float                    # 2PR/(P+R)
     priority_accuracy: float     # matched 中 priority 对的比例
@@ -539,7 +539,14 @@ def evaluate(model_obs: list[dict] | None, fixture: Fixture) -> Scores:
                 break  # 一个 expected 最多匹配一个 model obs
     
     recall = len(matched_expected) / len(fixture.expected_observations) if fixture.expected_observations else 0.0
-    precision = len(matched_model) / len(model_obs) if model_obs else 0.0
+    # Halluc-aware precision per §7.3
+    halluc_extras = sum(
+        1 for mi, obs in enumerate(model_obs)
+        if mi not in matched_model
+        and any(bad in obs.get("text", "") for bad in fixture.must_not_contain_globally)
+    )
+    denom = len(matched_model) + halluc_extras
+    precision = len(matched_model) / denom if denom > 0 else 0.0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
     priority_acc = priority_correct / len(matched_expected) if matched_expected else 0.0
     
@@ -576,7 +583,9 @@ across 20 fixtures:
 
 - **Priority 严格匹配**: 🔴 vs 🟡 的判定本身有 subjective 成分，扣 priority_accuracy 分但不影响 recall/precision（这是对的，语义抓对优先于 priority 分级）
 - **关键词穷举风险**: fixture schema 里 `must_contain_any_of` 的穷举可能漏掉合理表达。**缓解**: pilot 5 条跑完 Allen 看哪些 "语义对但关键词没覆盖" 的情况，补充进 fixture
-- **Extra noise 不扣分**: 模型输出多余 observation（如 `🟢 用户住在温哥华`，fixture 里没标）不影响 F1，但记录在 CSV（`extra_count` 列）供分析
+- **Extra noise 不扣分, halluc extras 扣**: 中性多余 observation（如 `🟢 用户住在温哥华`）不影响 F1，但若 extras 含 `must_not_contain_globally` 的禁词则计入 halluc_extras 并扣 precision。
+  - 实现: `precision = matched / (matched + halluc_extras)`。完全没 halluc 的 chatty 模型 P=1.0；matched=0 且无 halluc extras → P=0/0=0。
+  - `extra_count` 列继续记录全部 extras 数（含中性 + halluc）供分析。
 
 ---
 
