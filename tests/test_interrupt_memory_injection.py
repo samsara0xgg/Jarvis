@@ -170,3 +170,57 @@ class TestTruncateAssistantForInterrupt:
         )
         assert result[1]["content"] == "a1"  # earlier turn untouched
         assert result[3]["content"] == "a2 part...."
+
+
+# ---------------------------------------------------------------------------
+# P0-B: stale _interrupt_played_texts must not pollute later turns
+# ---------------------------------------------------------------------------
+
+class TestStaleStateReset:
+    """A non-cloud_path return (resume / farewell / direct_answer / etc.) leaves
+    _interrupt_played_texts populated. Without an entry-time reset, the NEXT
+    turn that does go cloud_path would mis-truncate its own (uninterrupted)
+    assistant response. The reset at _process_turn entry guards against this.
+    """
+
+    def test_process_turn_clears_stale_played_at_entry(self, jarvis_stub):
+        # Simulate stale value left from a prior interrupted turn that
+        # returned via a non-cloud_path branch.
+        jarvis_stub._interrupt_played_texts = ["残留 from prior turn"]
+
+        # Bail out of _process_turn right after the reset by raising in the
+        # very next line (conversation_store.get_history). We don't care
+        # what the rest of the function does — only the entry-time reset.
+        jarvis_stub.conversation_store = MagicMock()
+        jarvis_stub.conversation_store.get_history.side_effect = RuntimeError(
+            "intentional bail — reset must have happened by now",
+        )
+
+        with pytest.raises(RuntimeError, match="intentional bail"):
+            jarvis_stub._process_turn(
+                text="新一轮",
+                session_id="sess",
+                output_fn=lambda _s: None,
+            )
+
+        # The stale value MUST have been cleared before get_history raised.
+        assert jarvis_stub._interrupt_played_texts is None
+
+    def test_consumer_clears_after_apply(self, jarvis_stub):
+        # The consumer in the cloud_path block sets it back to None after
+        # applying. Verify by simulating that block in isolation.
+        jarvis_stub._interrupt_played_texts = ["heard."]
+        messages = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "full reply"},
+        ]
+        # Mirror jarvis.py:1081-1085 pattern
+        if jarvis_stub._interrupt_played_texts is not None:
+            messages = jarvis_stub._truncate_assistant_for_interrupt(
+                messages, jarvis_stub._interrupt_played_texts,
+            )
+            jarvis_stub._interrupt_played_texts = None
+
+        assert jarvis_stub._interrupt_played_texts is None
+        assert messages[1]["content"] == "heard...."
+        assert messages[-1]["content"] == "[Interrupted by user]"

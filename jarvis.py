@@ -685,6 +685,15 @@ class JarvisApp:
         Returns:
             Full assistant response text.
         """
+        # P0-B: clear stale interrupt-played state from any prior turn.
+        # Non-cloud_path returns (resume / farewell / direct_answer / etc.)
+        # don't consume _interrupt_played_texts, so without this reset a
+        # later cloud_path turn would mis-truncate its assistant response
+        # against the previous interrupt's played sentences.
+        # _cancel_current re-populates this attribute mid-turn if the user
+        # interrupts during streaming, and the consumer below clears it again.
+        self._interrupt_played_texts = None
+
         # 加载对话历史（用于多轮上下文）
         history = self.conversation_store.get_history(session_id)
 
