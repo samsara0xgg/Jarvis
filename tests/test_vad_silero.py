@@ -349,4 +349,9 @@ class TestProductionDefaults:
         with patch("platform.system", return_value="Darwin"):
             inst = build_vad(interrupt_cfg, mode="tts")
         assert inst._db_threshold < 0
-        assert inst._prob_threshold > 0.0
+        # Value read from interrupt.vad_prob_threshold_during_tts (config.yaml = 0.5).
+        # Use approx() to tolerate minor future config-yaml tuning around this band.
+        expected_prob = float(
+            production_config.get("interrupt", {}).get("vad_prob_threshold_during_tts", 0.5)
+        )
+        assert inst._prob_threshold == pytest.approx(expected_prob)
