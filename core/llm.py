@@ -42,6 +42,12 @@ class LLMClient:
         self._tracker = tracker
         self._client: Any = None
 
+        # Sentence divider tweaks (WP4): abbreviation guard + faster first response.
+        sd_cfg = llm_config.get("sentence_divider", {}) or {}
+        self._abbrev_protect = bool(sd_cfg.get("abbreviation_protect", True))
+        self._faster_first_response = bool(sd_cfg.get("faster_first_response", True))
+        self._is_first_sentence = True  # reset at start of each stream
+
         # Store presets (OpenAI-only for now)
         self._presets: dict[str, dict[str, Any]] = dict(llm_config.get("presets") or {})
         self.active_preset: str | None = None
@@ -589,6 +595,17 @@ class LLMClient:
     # ------------------------------------------------------------------
 
     _SENTENCE_DELIMITERS = {"。", "！", "？", ".", "!", "?", "；", "\n"}
+    # Faster-first-response: also break on commas for the first sentence only
+    # (perceived TTS latency drops because shorter first segment ships earlier).
+    _FIRST_RESPONSE_DELIMITERS = _SENTENCE_DELIMITERS | {",", "，"}
+    # English abbreviations whose trailing "." should NOT trigger a split.
+    # Keep ordered by length-desc so longer matches (e.g. "Mrs.") win over short
+    # prefixes — endswith() doesn't care, but it's a useful invariant.
+    _ABBREVIATIONS: tuple[str, ...] = (
+        "Mrs.", "Prof.", "e.g.", "i.e.",
+        "Mr.", "Ms.", "Dr.", "Jr.", "Sr.", "St.", "Rd.",
+        "Inc.", "Ltd.", "vs.",
+    )
 
     def chat_stream(
         self,
@@ -628,6 +645,10 @@ class LLMClient:
                 memory_context=memory_context,
             )
 
+        # Reset first-sentence flag at the start of each streaming turn so
+        # faster_first_response only fires on the very first sentence emitted.
+        self._is_first_sentence = True
+
         if self.provider == "openai":
             return self._stream_openai(
                 user_message,
@@ -655,33 +676,111 @@ class LLMClient:
         )
 
     def _flush_sentences(self, buffer: str, on_sentence: Any, force: bool = False) -> str:
-        """Extract complete sentences from buffer, call on_sentence, return remainder."""
-        while True:
-            # Find the earliest sentence delimiter
-            earliest = -1
-            for delim in self._SENTENCE_DELIMITERS:
-                pos = buffer.find(delim)
-                if pos != -1 and (earliest == -1 or pos < earliest):
-                    # 跳过小数点：前后是数字的 "." 不是句子分隔符
-                    if delim == "." and pos > 0 and buffer[pos - 1].isdigit():
-                        # 往后看：如果后面也是数字，说明是小数（如 "3.14"）
-                        if pos + 1 < len(buffer) and buffer[pos + 1].isdigit():
-                            continue
-                        # 后面还没有字符（可能数字还在 streaming），也跳过
-                        if pos + 1 >= len(buffer) and not force:
-                            continue
-                    earliest = pos
+        """Extract complete sentences from buffer, call on_sentence, return remainder.
 
-            if earliest == -1:
+        Honors:
+          - decimal-point guard (``3.14`` not split)
+          - abbreviation guard (``Dr.`` ``e.g.`` etc., toggleable via config)
+          - faster-first-response (commas count as splits for sentence #1)
+        """
+        while True:
+            delimiters = self._SENTENCE_DELIMITERS
+            if self._faster_first_response and self._is_first_sentence:
+                delimiters = self._FIRST_RESPONSE_DELIMITERS
+
+            protected_dots = self._protected_dot_positions(buffer)
+            split_at = self._find_split_point(
+                buffer, delimiters, force, protected_dots,
+            )
+            if split_at == -1:
                 if force and buffer.strip():
                     on_sentence(buffer.strip())
+                    self._is_first_sentence = False
                     return ""
                 return buffer
 
-            sentence = buffer[:earliest + 1].strip()
-            buffer = buffer[earliest + 1:]
+            sentence = buffer[:split_at + 1].strip()
+            buffer = buffer[split_at + 1:]
             if sentence:
                 on_sentence(sentence)
+                self._is_first_sentence = False
+
+    def _protected_dot_positions(self, buffer: str) -> set[int]:
+        """Indices of every '.' inside an abbreviation match within *buffer*.
+
+        Multi-dot abbreviations like ``e.g.`` need every internal dot
+        protected — endswith() alone only catches the final one.
+        """
+        if not self._abbrev_protect:
+            return set()
+        bad: set[int] = set()
+        for abbr in self._ABBREVIATIONS:
+            start = 0
+            while True:
+                idx = buffer.find(abbr, start)
+                if idx == -1:
+                    break
+                for k, ch in enumerate(abbr):
+                    if ch == ".":
+                        bad.add(idx + k)
+                start = idx + 1
+        return bad
+
+    def _find_split_point(
+        self,
+        buffer: str,
+        delimiters: set[str],
+        force: bool,
+        protected_dots: set[int],
+    ) -> int:
+        """Return the earliest index in *buffer* eligible to end a sentence.
+
+        Walks char-by-char so the abbreviation/decimal guards can advance
+        past a vetoed delimiter and find a later valid split point.
+        Returns -1 if no eligible split point exists.
+        """
+        n = len(buffer)
+        for i in range(n):
+            ch = buffer[i]
+            if ch not in delimiters:
+                continue
+            if ch == ".":
+                # Decimal point: 3.14 — skip when surrounded by digits (or
+                # when next char hasn't streamed in yet and we can wait).
+                if i > 0 and buffer[i - 1].isdigit():
+                    if i + 1 < n and buffer[i + 1].isdigit():
+                        continue
+                    if i + 1 >= n and not force:
+                        continue
+                if i in protected_dots:
+                    continue
+                # Streaming edge case: the dot might be the first char of an
+                # abbreviation that hasn't fully arrived yet (e.g., buffer
+                # ends in "Dr" then "." comes next chunk; or "e." waiting
+                # for "g."). If we're at end-of-buffer and not forced, hold.
+                if not force and i + 1 >= n and self._abbrev_protect:
+                    if self._possible_abbreviation_prefix(buffer, i):
+                        continue
+            return i
+        return -1
+
+    def _possible_abbreviation_prefix(self, buffer: str, dot_idx: int) -> bool:
+        """True if buffer[:dot_idx+1] could be the start of an abbreviation.
+
+        Used at end-of-stream-buffer to defer splitting on a trailing dot
+        when more chars might still arrive. Example: buffer ends in "e."
+        and "g." would land in the next delta — splitting now would emit
+        a partial sentence; waiting one delta lets "e.g." form properly.
+        """
+        for abbr in self._ABBREVIATIONS:
+            # Look for abbreviations that start somewhere at/before dot_idx
+            # and extend past dot_idx (i.e., not yet fully present).
+            for offset in range(min(len(abbr), dot_idx + 1)):
+                head = abbr[: offset + 1]
+                if head and head[-1] == "." and buffer[dot_idx + 1 - len(head): dot_idx + 1] == head:
+                    if offset + 1 < len(abbr):
+                        return True
+        return False
 
     def _stream_anthropic(
         self,
