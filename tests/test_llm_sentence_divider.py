@@ -121,3 +121,107 @@ class TestCompositeBehavior:
         c = _make_client(faster_first=True, is_first=True)
         sents, _ = _flush_all(c, "圆周率是 3.14，你知道吗？")
         assert sents == ["圆周率是 3.14，", "你知道吗？"]
+
+
+class TestPossibleAbbreviationPrefix:
+    """WP4 T1.3: `_possible_abbreviation_prefix` must require word boundary.
+
+    Without the word-boundary guard, any text ending in ".e" + "." (like
+    "Welcome.") was deferred one extra delta because "e." is a valid prefix
+    of the abbreviation "e.g.". That adds perceivable first-sentence latency.
+    """
+
+    def test_welcome_not_deferred(self):
+        # "Welcome." at dot_idx=7: head "e." would match the last 2 chars,
+        # but the char before "e" (at idx 5) is alpha ("m") — NOT a word
+        # boundary. Must return False.
+        c = _make_client(faster_first=False, is_first=False)
+        assert c._possible_abbreviation_prefix("Welcome.", 7) is False
+
+    def test_use_eg_at_end_is_deferred(self):
+        # "use e." at dot_idx=5: head "e." matches positions 4-5; char at
+        # idx 3 is space — valid word boundary. Must return True.
+        c = _make_client(faster_first=False, is_first=False)
+        assert c._possible_abbreviation_prefix("use e.", 5) is True
+
+    def test_eg_at_buffer_start(self):
+        # "e." at dot_idx=1: head "e." at positions 0-1; no char before —
+        # buffer start counts as word boundary. Must return True.
+        c = _make_client(faster_first=False, is_first=False)
+        assert c._possible_abbreviation_prefix("e.", 1) is True
+
+    def test_streaming_welcome_splits_not_deferred(self):
+        # End-to-end: feeding "Welcome." with force=False should NOT defer.
+        c = _make_client(faster_first=False, is_first=False)
+        out: list[str] = []
+        leftover = c._flush_sentences("Welcome.", on_sentence=out.append, force=False)
+        assert out == ["Welcome."]
+        assert leftover == ""
+
+    def test_streaming_use_eg_still_deferred(self):
+        # Still correct behavior: "use e." streams → hold for next delta.
+        c = _make_client(faster_first=False, is_first=False)
+        out: list[str] = []
+        leftover = c._flush_sentences("use e.", on_sentence=out.append, force=False)
+        assert out == []
+        assert leftover == "use e."
+
+    def test_disabled_guard_does_not_defer(self):
+        c = _make_client(abbrev_protect=False, faster_first=False, is_first=False)
+        # With guard off, "Welcome." splits immediately.
+        out: list[str] = []
+        c._flush_sentences("Welcome.", on_sentence=out.append, force=False)
+        assert out == ["Welcome."]
+
+
+class TestAllAbbreviationsProtected:
+    """WP4 T3.2: every abbreviation in the canonical list must be protected."""
+
+    @pytest.mark.parametrize("abbr", [
+        "Mrs.", "Prof.", "e.g.", "i.e.",
+        "Mr.", "Ms.", "Dr.", "Jr.", "Sr.", "St.", "Rd.",
+        "Inc.", "Ltd.", "vs.",
+    ])
+    def test_abbreviation_not_split_mid_sentence(self, abbr):
+        c = _make_client(faster_first=False, is_first=False)
+        text = f"Meet {abbr} Smith today."
+        out: list[str] = []
+        c._flush_sentences(text, on_sentence=out.append, force=True)
+        assert out == [f"Meet {abbr} Smith today."], f"split incorrectly at {abbr}"
+
+
+class TestFirstSentenceFlagReset:
+    """WP4 T3.2: `chat_stream` must reset `_is_first_sentence=True`
+    at entry so that a second turn also fires faster_first_response on its
+    own first sentence.
+    """
+
+    def test_reset_happens_at_entry(self):
+        # We don't need a real LLM — just check the attribute flip after
+        # the generator is entered. Stub the inner `_stream_openai` so we
+        # can exit immediately after the reset.
+        with patch.object(LLMClient, "__init__", lambda self, cfg, **kw: None):
+            c = LLMClient.__new__(LLMClient)
+            c._abbrev_protect = True
+            c._faster_first_response = True
+            c._is_first_sentence = False  # stale from prior turn
+            c.provider = "openai"
+            saw = {}
+
+            def _stub(*args, **kwargs):
+                saw["flag"] = c._is_first_sentence
+                return ("ok", [])
+
+            c._stream_openai = _stub
+            c.chat_stream(
+                user_message="hi",
+                conversation_history=[],
+                tools=[],
+                tool_executor=lambda *a, **k: "",
+                user_name="", user_id="", user_role="",
+                on_sentence=lambda s: None,
+                user_emotion="", memory_context="",
+            )
+            assert saw.get("flag") is True, (
+                "chat_stream must reset _is_first_sentence=True"
+            )

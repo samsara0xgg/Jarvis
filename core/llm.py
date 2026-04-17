@@ -771,15 +771,31 @@ class LLMClient:
         when more chars might still arrive. Example: buffer ends in "e."
         and "g." would land in the next delta — splitting now would emit
         a partial sentence; waiting one delta lets "e.g." form properly.
+
+        T1.3 fix: requires a word boundary before the head match. Without it,
+        "Welcome." matches head "e." (prefix of "e.g.") because the last 2
+        chars ARE "e." — but the "e" is the tail of the word "Welcome", not
+        an abbreviation start. The guard: char at `start - 1` must be
+        non-alpha (or `start == 0`, i.e., buffer beginning).
         """
         for abbr in self._ABBREVIATIONS:
             # Look for abbreviations that start somewhere at/before dot_idx
             # and extend past dot_idx (i.e., not yet fully present).
             for offset in range(min(len(abbr), dot_idx + 1)):
                 head = abbr[: offset + 1]
-                if head and head[-1] == "." and buffer[dot_idx + 1 - len(head): dot_idx + 1] == head:
-                    if offset + 1 < len(abbr):
-                        return True
+                if not head or head[-1] != ".":
+                    continue
+                start = dot_idx + 1 - len(head)
+                if start < 0:
+                    continue
+                if buffer[start: start + len(head)] != head:
+                    continue
+                # Word-boundary guard: the char just before `start` must NOT
+                # be alphabetic. `start == 0` counts as valid boundary too.
+                if start > 0 and buffer[start - 1].isalpha():
+                    continue
+                if offset + 1 < len(abbr):
+                    return True
         return False
 
     def _stream_anthropic(
