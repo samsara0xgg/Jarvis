@@ -23,6 +23,11 @@ LOGGER = logging.getLogger(__name__)
 def clean(text: str, config: Mapping[str, bool] | None = None) -> str:
     """Apply enabled TTS filters to ``text``.
 
+    NFKC-normalizes at entry so downstream filters see a consistent form
+    (WP3 T1.6 fix). ``_collapse_whitespace`` intentionally folds newlines
+    into single spaces — TTS engines don't use newlines for prosody
+    (WP3 T2.5 decision).
+
     Args:
         text: Raw text from LLM (may contain emoji, markdown, etc.).
         config: Dict with the five toggles. Missing keys default to True
@@ -36,6 +41,8 @@ def clean(text: str, config: Mapping[str, bool] | None = None) -> str:
     """
     if not text:
         return text
+    # Normalize once at entry — all downstream filters see consistent chars.
+    text = unicodedata.normalize("NFKC", text)
     cfg = dict(config) if config else {}
     if cfg.get("ignore_asterisks", True):
         text = _safely(filter_asterisks, text, "asterisks")
@@ -63,18 +70,26 @@ def _collapse_whitespace(text: str) -> str:
 
 
 def remove_special_characters(text: str) -> str:
-    """Drop emoji and other non-letter/number/punctuation glyphs.
+    """Drop emoji/modifier/math symbols; keep letters/numbers/punctuation/currency.
 
-    Lets letters (L*), numbers (N*), punctuation (P*), and whitespace
-    pass through. Emoji land in S* (Symbol) categories and are dropped.
+    Categories whitelisted:
+      L* (letters), N* (numbers), P* (punctuation), Sc (currency)
+      + whitespace.
+
+    Dropped: Sm (math), Sk (modifier), So (other — emoji).
+
+    NFKC normalization is applied at ``clean()`` entry (see T1.6), so this
+    function sees already-normalized text.
     """
-    normalized = unicodedata.normalize("NFKC", text)
-
     def keep(char: str) -> bool:
         cat = unicodedata.category(char)
-        return cat[0] in ("L", "N", "P") or char.isspace()
+        if cat[0] in ("L", "N", "P"):
+            return True
+        if cat == "Sc":  # currency: ¥ $ € £ ￥
+            return True
+        return char.isspace()
 
-    return "".join(c for c in normalized if keep(c))
+    return "".join(c for c in text if keep(c))
 
 
 def _filter_nested(text: str, pairs: list[tuple[str, str]]) -> str:
@@ -111,18 +126,22 @@ def _filter_nested(text: str, pairs: list[tuple[str, str]]) -> str:
 
 
 def filter_brackets(text: str) -> str:
-    """Strip content within ASCII square brackets ``[ ]``."""
-    return _filter_nested(text, [("[", "]")])
+    """Strip content within ASCII ``[ ]`` and Chinese tortoise brackets ``【 】``."""
+    return _filter_nested(text, [("[", "]"), ("【", "】")])
 
 
 def filter_parentheses(text: str) -> str:
-    """Strip content within both ASCII ``( )`` and full-width ``（ ）`` parens."""
+    """Strip content within ASCII ``( )`` and full-width ``（ ）`` parens."""
     return _filter_nested(text, [("(", ")"), ("（", "）")])
 
 
 def filter_angle_brackets(text: str) -> str:
-    """Strip content within angle brackets ``< >`` (e.g. XML/SSML tags)."""
-    return _filter_nested(text, [("<", ">")])
+    """Strip content within angle brackets.
+
+    Handles ASCII ``< >`` (XML/SSML tags), Chinese ``〈 〉`` (book-title marks),
+    and mathematical ``⟨ ⟩`` (U+27E8/U+27E9 — NFKC leaves them unchanged).
+    """
+    return _filter_nested(text, [("<", ">"), ("〈", "〉"), ("⟨", "⟩")])
 
 
 def filter_asterisks(text: str) -> str:

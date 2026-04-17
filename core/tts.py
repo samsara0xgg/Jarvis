@@ -122,8 +122,14 @@ class TTSEngine:
         self.minimax_key = str(tts_config.get("minimax_key", "") or os.environ.get("MINIMAX_API_KEY", ""))
         self.minimax_model = str(tts_config.get("minimax_model", "speech-02-turbo"))
         self.minimax_voice = str(tts_config.get("minimax_voice", "male-qn-qingse"))
-        # Volume 1.0 default — was 5 (loud, caused clipping). MiniMax range 0-10.
-        self.minimax_volume = float(tts_config.get("minimax_volume", 1.0))
+        # Volume default 1 (int). MiniMax API expects int 0-10; floats may 422
+        # against strict OpenAPI integer validators. Clamp to [1, 10].
+        raw_vol = tts_config.get("minimax_volume", 1)
+        try:
+            _vol = int(round(float(raw_vol)))
+        except (TypeError, ValueError):
+            _vol = 1
+        self.minimax_volume = max(1, min(10, _vol))
         self._minimax_url = "https://api.minimax.chat/v1/t2a_v2"
 
         # TTS text preprocessor config (strips emoji/brackets/asterisks/etc.).

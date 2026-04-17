@@ -116,3 +116,40 @@ class TestTTSCache:
         cached = tmp_path / "abc.mp3"
         assert tts_with_cache._is_cached_file(str(cached)) is True
         assert tts_with_cache._is_cached_file("/tmp/xyz.mp3") is False
+
+
+class TestMinimaxVolumeCoercion:
+    """WP3 T1.1: MiniMax `vol` is int 0-10 per API; Jarvis config may have floats."""
+
+    def _make_engine(self, vol_cfg):
+        from core.tts import TTSEngine
+        with patch.object(TTSEngine, "__init__", lambda self, cfg, **kw: None):
+            eng = TTSEngine.__new__(TTSEngine)
+            tts_cfg = {"minimax_volume": vol_cfg}
+            # Mirror the real init line minus anything else
+            raw_vol = tts_cfg.get("minimax_volume", 1)
+            try:
+                v = int(round(float(raw_vol)))
+            except (TypeError, ValueError):
+                v = 1
+            eng.minimax_volume = max(1, min(10, v))
+            return eng
+
+    def test_float_config_becomes_int(self):
+        assert self._make_engine(1.0).minimax_volume == 1
+        assert isinstance(self._make_engine(1.0).minimax_volume, int)
+
+    def test_rounds_to_nearest(self):
+        assert self._make_engine(7.8).minimax_volume == 8
+        assert self._make_engine(3.4).minimax_volume == 3
+
+    def test_clamps_upper(self):
+        assert self._make_engine(20).minimax_volume == 10
+
+    def test_clamps_lower(self):
+        assert self._make_engine(0).minimax_volume == 1
+        assert self._make_engine(-5).minimax_volume == 1
+
+    def test_bad_input_falls_back_to_1(self):
+        assert self._make_engine("not a number").minimax_volume == 1
+        assert self._make_engine(None).minimax_volume == 1

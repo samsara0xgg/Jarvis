@@ -36,6 +36,10 @@ class TestBrackets:
         out = tts_preprocessor.clean("好的] 收到")
         assert "]" in out and "好的" in out and "收到" in out
 
+    def test_strips_chinese_tortoise_brackets(self):
+        # 【xxx】 should be stripped when ignore_brackets is on.
+        assert tts_preprocessor.clean("【开心】正文") == "正文"
+
 
 class TestParentheses:
     def test_strips_ascii_parens(self):
@@ -62,6 +66,43 @@ class TestAsterisks:
 class TestAngleBrackets:
     def test_strips_tags(self):
         assert tts_preprocessor.clean("好的 <break time='1s'/> 收到") == "好的 收到"
+
+    def test_strips_chinese_angle_brackets(self):
+        # 〈xxx〉 (U+3008/U+3009) — chinese book title marks — stripped.
+        assert tts_preprocessor.clean("〈标签〉正文") == "正文"
+
+    def test_strips_math_angle_brackets_after_nfkc(self):
+        # ⟨xxx⟩ (U+27E8/U+27E9) — math angle brackets. NFKC normalizes
+        # them to ⟨⟩ — keep as-is, filter must list this pair explicitly.
+        # (NFKC at entry does NOT change these to ASCII <>.)
+        assert tts_preprocessor.clean("⟨标签⟩正文") == "正文"
+
+
+class TestCurrencyAndDigits:
+    """WP3 T1.2 + T3.1: Sc (currency) whitelist + digit/latin preservation."""
+
+    def test_preserves_currency_symbols(self):
+        # ¥ $ € £ ￥ are Unicode category Sc — must survive the filter.
+        out = tts_preprocessor.clean("¥100 花了 $5 换 €3")
+        assert "¥" in out and "$" in out and "€" in out
+        assert "100" in out and "5" in out and "3" in out
+
+    def test_drops_emoji_but_keeps_currency(self):
+        # Emoji (So) dropped, currency (Sc) kept.
+        out = tts_preprocessor.clean("😊 ¥100")
+        assert "😊" not in out
+        assert "¥" in out and "100" in out
+
+    def test_preserves_digits_and_latin(self):
+        out = tts_preprocessor.clean("ABC 123 abc")
+        assert out == "ABC 123 abc"
+
+    def test_drops_math_symbols(self):
+        # Sm (math) stays dropped by design (the whitelist only adds Sc).
+        # Input "1+2" — `+` is Sm, should drop.
+        out = tts_preprocessor.clean("1+2=3")
+        assert "+" not in out and "=" not in out
+        assert "1" in out and "2" in out and "3" in out
 
 
 class TestComposite:
