@@ -82,6 +82,11 @@ class InterruptMonitor:
         self._audio_chunks: list[np.ndarray] = []
         self._recording = False
 
+        # Streaming ASR buffer — accumulate small chunks to avoid
+        # sherpa-onnx feature-extraction crash on too-short frames.
+        self._asr_buffer = np.array([], dtype=np.float32)
+        self._min_chunk_samples = int(icfg.get("streaming_asr_chunk_samples", 3200))
+
         # Silero VAD gate (loaded lazily in start() for symmetry with recognizer)
         self._vad: Any = None
         self._vad_config = icfg
@@ -100,6 +105,7 @@ class InterruptMonitor:
         self._recording = True
         self._load_recognizer()
         self._load_vad()
+        self._asr_buffer = np.array([], dtype=np.float32)
         if self._recognizer:
             self._stream = self._recognizer.create_stream()
         if self._vad is not None:
@@ -154,12 +160,19 @@ class InterruptMonitor:
 
         if self._stream and self._recognizer:
             try:
-                self._stream.accept_waveform(sample_rate, audio)
+                with self._lock:
+                    self._asr_buffer = np.concatenate([self._asr_buffer, audio])
+                    if len(self._asr_buffer) < self._min_chunk_samples:
+                        return
+                    chunk = self._asr_buffer
+                    self._asr_buffer = np.array([], dtype=np.float32)
+                self._stream.accept_waveform(sample_rate, chunk)
                 while self._recognizer.is_ready(self._stream):
                     self._recognizer.decode_stream(self._stream)
                 result = self._recognizer.get_result(self._stream)
-                if result.text.strip():
-                    self._check_partial(result.text.strip())
+                text = result.text.strip() if hasattr(result, 'text') else str(result).strip()
+                if text:
+                    self._check_partial(text)
             except Exception as exc:
                 LOGGER.debug("Streaming ASR error: %s", exc)
 
@@ -259,9 +272,12 @@ class InterruptMonitor:
             from pathlib import Path
 
             p = Path(model_dir)
-            encoder = str(p / "encoder-epoch-99-avg-1.onnx")
-            decoder = str(p / "decoder-epoch-99-avg-1.onnx")
-            joiner = str(p / "joiner-epoch-99-avg-1.onnx")
+            encoder = str(p / self._asr_config.get(
+                "encoder", "encoder-epoch-99-avg-1.int8.onnx"))
+            decoder = str(p / self._asr_config.get(
+                "decoder", "decoder-epoch-99-avg-1.int8.onnx"))
+            joiner = str(p / self._asr_config.get(
+                "joiner", "joiner-epoch-99-avg-1.int8.onnx"))
             tokens = str(p / "tokens.txt")
             if not Path(encoder).exists():
                 LOGGER.warning(

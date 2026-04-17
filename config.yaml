@@ -576,6 +576,9 @@ interrupt:
   streaming_asr:
     model_dir: data/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16
     num_threads: 2
+  # 流式 ASR chunk 累积阈值（samples @ 16kHz）
+  # 旧值 8000 = 500ms（打断响应慢），WP1 调到 3200 = 200ms
+  streaming_asr_chunk_samples: 3200
   # Silero VAD 门控（TTS 播放期间过滤非语音帧）
   vad_model_path: data/silero_vad.onnx
   vad_threshold_during_tts: 0.8      # 高阈值，避免 AEC 残余误触发

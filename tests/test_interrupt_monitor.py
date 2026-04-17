@@ -125,6 +125,8 @@ class TestInterruptMonitorVADGate:
                 "vad_min_speech_duration": 0.15,
                 "vad_min_silence_duration": 0.2,
                 "vad_max_speech_duration": 10.0,
+                # Force buffer threshold low so 1600-sample feeds exercise the ASR path.
+                "streaming_asr_chunk_samples": 100,
             }
         }
         base["interrupt"].update(overrides)
