@@ -21,6 +21,10 @@ def _make_config(**overrides):
             "block_duration": 0.1,
             "vad_enabled": True,
             "vad_model_path": "data/silero_vad.onnx",
+            # These tests mock the sherpa_onnx wrapper directly, so pin the
+            # provider here. The silero_direct path has its own coverage in
+            # tests/test_vad_silero.py.
+            "vad_provider": "sherpa_onnx",
             "vad_threshold": 0.5,
             "vad_silence_duration": 0.5,
             "vad_min_speech_duration": 0.25,
