@@ -105,6 +105,10 @@ def jarvis_stub():
     with patch.object(JarvisApp, "__init__", lambda self, cfg, **kw: None):
         j = JarvisApp.__new__(JarvisApp)
         j.logger = MagicMock()
+        # Task 4 regression fix: _process_turn now calls asr_normalizer.normalize
+        # at entry; stub with a pass-through so existing assertions hold.
+        j.asr_normalizer = MagicMock()
+        j.asr_normalizer.normalize = MagicMock(side_effect=lambda t: t)
     return j
 
 
