@@ -359,6 +359,16 @@ tts:
   minimax_key: ""        # env MINIMAX_API_KEY
   minimax_model: speech-02-turbo
   minimax_voice: "Chinese (Mandarin)_ExplorativeGirl"
+  minimax_volume: 1.0    # 0-10, 1.0=正常；之前 5 偏大有爆音
+
+  # TTS 文本预处理：剥离 emoji / 括号 / 星号等不该朗读的内容
+  # 每个开关独立可关；默认全开
+  tts_preprocessor:
+    remove_special_char: true     # emoji / 控制字符
+    ignore_brackets: true         # [开心] [叹气]
+    ignore_parentheses: true      # (旁白) （旁白）
+    ignore_asterisks: true        # *强调* **粗体**
+    ignore_angle_brackets: true   # <break/> <emotion>x</emotion>
 
   # Azure Neural TTS（备用，50万字/月免费）
   azure_key: ""          # env AZURE_SPEECH_KEY

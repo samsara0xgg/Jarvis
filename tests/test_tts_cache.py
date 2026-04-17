@@ -20,6 +20,7 @@ def tts_with_cache(tmp_path):
         engine.minimax_key = "test_key"
         engine.minimax_model = "speech-02-turbo"
         engine.minimax_voice = "male-qn-qingse"
+        engine.minimax_volume = 1.0
         engine._minimax_url = "https://api.minimax.chat/v1/t2a_v2"
         engine._http_session = MagicMock()
         engine._tracker = None
@@ -28,6 +29,7 @@ def tts_with_cache(tmp_path):
         engine.speed = 1.0
         engine.logger = MagicMock()
         engine._platform = "Darwin"
+        engine._preprocessor_config = {}
     return engine
 
 

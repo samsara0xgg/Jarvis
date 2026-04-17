@@ -20,6 +20,8 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
 
+from core import tts_preprocessor
+
 LOGGER = logging.getLogger(__name__)
 
 # User's detected emotion → Jarvis's RESPONSE style (not echo)
@@ -115,7 +117,13 @@ class TTSEngine:
         self.minimax_key = str(tts_config.get("minimax_key", "") or os.environ.get("MINIMAX_API_KEY", ""))
         self.minimax_model = str(tts_config.get("minimax_model", "speech-02-turbo"))
         self.minimax_voice = str(tts_config.get("minimax_voice", "male-qn-qingse"))
+        # Volume 1.0 default — was 5 (loud, caused clipping). MiniMax range 0-10.
+        self.minimax_volume = float(tts_config.get("minimax_volume", 1.0))
         self._minimax_url = "https://api.minimax.chat/v1/t2a_v2"
+
+        # TTS text preprocessor config (strips emoji/brackets/asterisks/etc.).
+        # All filters default-on; can be disabled per-key in config.yaml.
+        self._preprocessor_config = tts_config.get("tts_preprocessor", {})
 
         # OpenAI TTS config (gpt-4o-mini-tts — ChatGPT 同款技术)
         self.openai_tts_key = str(tts_config.get("openai_tts_key", "") or os.environ.get("OPENAI_API_KEY", ""))
@@ -187,6 +195,9 @@ class TTSEngine:
             emotion: SenseVoice emotion label (e.g. "HAPPY", "SAD"). Only used
                 by Azure engine; ignored by Edge TTS and pyttsx3.
         """
+        if not text.strip():
+            return
+        text = tts_preprocessor.clean(text, self._preprocessor_config)
         if not text.strip():
             return
 
@@ -281,10 +292,14 @@ class TTSEngine:
     def synth_to_file(self, text: str, emotion: str = "") -> tuple[str, bool] | None:
         """Synthesize text to an audio file and return (path, deletable).
 
-        Returns None if the engine plays directly (pyttsx3).
+        Returns None if the engine plays directly (pyttsx3) or if
+        preprocessing leaves nothing to speak.
         deletable=True means caller should delete the file after playback.
         deletable=False means the file is cached and must NOT be deleted.
         """
+        text = tts_preprocessor.clean(text, self._preprocessor_config)
+        if not text.strip():
+            return None
         if self.engine_name == "openai_tts" and self.openai_tts_key:
             if not self._tracker or self._tracker.is_available("tts.openai"):
                 try:
@@ -391,7 +406,7 @@ class TTSEngine:
             "voice_setting": {
                 "voice_id": self.minimax_voice,
                 "speed": self.speed,
-                "vol": 5,
+                "vol": self.minimax_volume,
                 "pitch": 0,
                 "emotion": minimax_emotion,
             },
