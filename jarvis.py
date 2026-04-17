@@ -259,6 +259,10 @@ class JarvisApp:
         self._active_pipeline: Any = None  # current TTSPipeline for interrupt abort
         self._interrupted_response: list[str] | None = None
         self._pipeline_lock = threading.Lock()
+        # WP5: snapshot of sentences fully played before the most recent interrupt.
+        # Set in _cancel_current; consumed (and cleared) in _process_turn before
+        # writing history. None means no pending interrupt to inject.
+        self._interrupt_played_texts: list[str] | None = None
 
         # 预热 embedding 模型（后台加载，不阻塞启动）
         self._executor.submit(self.memory_manager.embedder.encode, "warmup")
@@ -1071,6 +1075,14 @@ class JarvisApp:
         # ── 持久化 ── 保存对话历史 + 后台异步提取记忆（GPT-4o-mini）
         cloud_path = updated_messages is not None
         if cloud_path:
+            # WP5: if an interrupt landed during this turn, rewrite the last
+            # assistant message to the played-only content + append marker, so
+            # the LLM's next turn knows what the user actually heard.
+            if self._interrupt_played_texts is not None:
+                updated_messages = self._truncate_assistant_for_interrupt(
+                    updated_messages, self._interrupt_played_texts,
+                )
+                self._interrupt_played_texts = None
             self.conversation_store.replace(session_id, updated_messages)
             if user_id:
                 self._executor.submit(
@@ -1233,6 +1245,50 @@ class JarvisApp:
         self._cancel.set()
         self._cancel_current()
 
+    def _truncate_assistant_for_interrupt(
+        self, messages: list[dict], played: list[str],
+    ) -> list[dict]:
+        """WP5 方案 b: shrink the last assistant message to only the heard
+        sentences and append a [Interrupted by user] marker.
+
+        Handles both OpenAI-style ``content: str`` and Anthropic-style
+        ``content: list[block]`` shapes (provider differences are flattened
+        elsewhere; we just preserve whichever shape is present).
+
+        Args:
+            messages: The full message list returned by ``llm.chat_stream``.
+            played:   Sentences whose audio finished playing before abort —
+                      i.e. what the user actually heard.
+
+        Returns:
+            New message list with the last assistant turn truncated and a
+            trailing user marker appended.
+        """
+        if not messages:
+            return messages
+        truncated = list(messages)
+        heard = "".join(played)
+        new_content_str = (heard + "...") if heard else "..."
+        for i in range(len(truncated) - 1, -1, -1):
+            entry = truncated[i]
+            if entry.get("role") != "assistant":
+                continue
+            existing = entry.get("content")
+            if isinstance(existing, list):
+                truncated[i] = {
+                    **entry,
+                    "content": [{"type": "text", "text": new_content_str}],
+                }
+            else:
+                truncated[i] = {**entry, "content": new_content_str}
+            break
+        truncated.append({"role": "user", "content": "[Interrupted by user]"})
+        self.logger.info(
+            "WP5: history truncated to %d played sentence(s) + interrupted marker",
+            len(played),
+        )
+        return truncated
+
     def _on_voice_resume(self) -> None:
         """Called by InterruptMonitor when a resume keyword is detected.
 
@@ -1280,6 +1336,9 @@ class JarvisApp:
             pipeline = self._active_pipeline
         if pipeline:
             remaining = pipeline.abort()
+            # WP5: snapshot played sentences for the surrounding _process_turn
+            # to fold into the conversation history (see _truncate_assistant_for_interrupt).
+            self._interrupt_played_texts = pipeline.played_texts
             if remaining:
                 with self._pipeline_lock:
                     self._interrupted_response = remaining

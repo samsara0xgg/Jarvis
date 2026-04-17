@@ -769,11 +769,19 @@ class TTSPipeline:
         self._aborted = threading.Event()
         self._done = threading.Event()
         self.logger = LOGGER
+        # WP5: track playback progress so callers can reconstruct what the
+        # user actually heard before an interrupt arrived.
+        self._played_texts: list[str] = []
+        self._currently_playing: str | None = None
+        self._progress_lock = threading.Lock()
 
     def start(self) -> None:
         """Start the TTS and playback worker threads."""
         self._aborted.clear()
         self._done.clear()
+        with self._progress_lock:
+            self._played_texts = []
+            self._currently_playing = None
         self._tts_thread = threading.Thread(
             target=self._tts_worker, name="tts-synth", daemon=True,
         )
@@ -803,21 +811,33 @@ class TTSPipeline:
 
         Returns:
             List of sentence texts that were queued but not yet played.
+            Per "方案 b" in WP5: includes the sentence currently mid-playback
+            (it counts as unplayed for memory injection).
+
+        After this call, :attr:`played_texts` exposes the sentences that
+        finished playback in full before the abort landed — caller can use
+        that to reconstruct what the user heard.
         """
         self._aborted.set()
-        # Collect remaining text from text_queue
-        remaining: list[str] = []
+        with self._progress_lock:
+            currently_playing = self._currently_playing
+
+        # Drain text_queue
+        text_remaining: list[str] = []
         while not self._text_queue.empty():
             try:
                 item = self._text_queue.get_nowait()
                 if item is not _SENTINEL and isinstance(item, tuple):
-                    remaining.append(item[0])  # (text, sentence_type, emotion)
+                    text_remaining.append(item[0])  # (text, ...)
             except Empty:
                 break
-        # Drain audio queue
+        # Drain audio_queue (text is the 4th element, see _tts_worker)
+        audio_remaining: list[str] = []
         while not self._audio_queue.empty():
             try:
-                self._audio_queue.get_nowait()
+                item = self._audio_queue.get_nowait()
+                if item is not _SENTINEL and isinstance(item, tuple) and len(item) >= 4:
+                    audio_remaining.append(item[3])
             except Empty:
                 break
         # Kill currently playing audio
@@ -825,7 +845,19 @@ class TTSPipeline:
         # Unblock workers
         self._text_queue.put(_SENTINEL)
         self._audio_queue.put(_SENTINEL)
-        return remaining
+
+        unplayed: list[str] = []
+        if currently_playing:
+            unplayed.append(currently_playing)
+        unplayed.extend(audio_remaining)
+        unplayed.extend(text_remaining)
+        return unplayed
+
+    @property
+    def played_texts(self) -> list[str]:
+        """Sentences that finished playback in full before abort()/wait_done()."""
+        with self._progress_lock:
+            return list(self._played_texts)
 
     def stop(self) -> None:
         """Stop worker threads (call after wait_done or abort)."""
@@ -854,7 +886,9 @@ class TTSPipeline:
                 result = self._synthesize_to_file(text, emotion)
                 if result and not self._aborted.is_set():
                     filepath, deletable = result
-                    self._audio_queue.put((filepath, sentence_type, deletable))
+                    # WP5: carry text alongside the audio so abort() can list
+                    # the unplayed text from this queue too.
+                    self._audio_queue.put((filepath, sentence_type, deletable, text))
             except Exception as exc:
                 self.logger.warning("TTS synthesis failed: %s", exc)
 
@@ -870,13 +904,23 @@ class TTSPipeline:
                 self._done.set()
                 return
 
-            filepath, sentence_type, deletable = item
+            # WP5: audio_queue items carry text (4th elem) so we can
+            # track currently_playing + played_texts.
+            filepath, sentence_type, deletable, text = item
+            with self._progress_lock:
+                self._currently_playing = text
+            played_to_completion = False
             try:
                 if not self._aborted.is_set():
                     self._engine._play_audio_file(filepath)
+                    played_to_completion = not self._aborted.is_set()
             except Exception as exc:
                 self.logger.warning("Audio playback failed: %s", exc)
             finally:
+                with self._progress_lock:
+                    self._currently_playing = None
+                    if played_to_completion:
+                        self._played_texts.append(text)
                 if deletable:
                     Path(filepath).unlink(missing_ok=True)
 
