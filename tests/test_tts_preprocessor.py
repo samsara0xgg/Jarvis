@@ -72,9 +72,9 @@ class TestAngleBrackets:
         assert tts_preprocessor.clean("〈标签〉正文") == "正文"
 
     def test_strips_math_angle_brackets_after_nfkc(self):
-        # ⟨xxx⟩ (U+27E8/U+27E9) — math angle brackets. NFKC normalizes
-        # them to ⟨⟩ — keep as-is, filter must list this pair explicitly.
-        # (NFKC at entry does NOT change these to ASCII <>.)
+        # ⟨xxx⟩ (U+27E8/U+27E9) — math angle brackets. NFKC leaves these
+        # unchanged (they do NOT collapse to ASCII <>), so filter must list
+        # this pair explicitly to strip them.
         assert tts_preprocessor.clean("⟨标签⟩正文") == "正文"
 
 
