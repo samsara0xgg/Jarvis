@@ -380,7 +380,7 @@ tts:
   minimax_key: ""        # env MINIMAX_API_KEY
   minimax_model: speech-02-turbo
   minimax_voice: "Chinese (Mandarin)_ExplorativeGirl"
-  minimax_volume: 1.0    # 0-10, 1.0=正常；之前 5 偏大有爆音
+  minimax_volume: 1    # int 1-10, 1=正常；之前 5 偏大有爆音（float 会被 round+clamp，见 core/tts.py:127）
 
   # TTS 文本预处理：剥离 emoji / 括号 / 星号等不该朗读的内容
   # 每个开关独立可关；默认全开
@@ -609,7 +609,7 @@ interrupt:
     num_threads: 2
   # 流式 ASR chunk 累积阈值（samples @ 16kHz）
   # 旧值 8000 = 500ms（打断响应慢），WP1 调到 3200 = 200ms
-  streaming_asr_chunk_samples: 3200
+  streaming_asr_chunk_samples: 8000
   # Silero VAD 门控（TTS 播放期间过滤非语音帧）
   vad_model_path: data/silero_vad.onnx
   # WP6: provider 选择（同 audio.vad_provider，但播放期间是独立实例）
