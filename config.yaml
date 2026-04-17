@@ -42,7 +42,9 @@ audio:
 
   # silero_direct 专用参数（sherpa_onnx 时下面 4 个忽略，用 vad_threshold 等）
   vad_prob_threshold: 0.4         # 帧级 prob 触发阈值
-  vad_db_threshold: 60.0          # 帧级 dB 门控（过滤背景静音误触发）
+  # 帧级 dBFS 门控（mic float32 范围 [-1,1]，dBFS 上限 0；静音 ~-100，
+  # 普通说话 ~-26，大声 ~-10）。原 plan 写 60.0 是 SPL 思路，不可达。
+  vad_db_threshold: -45.0
   vad_smoothing_window: 5         # 平滑窗口帧数
   vad_required_hits: 3            # 连续 N 帧 prob+dB 双过 → START
   vad_required_misses: 24         # 连续 N 帧低于阈值 → END
@@ -615,8 +617,12 @@ interrupt:
 
   # silero_direct 专用 — TTS 播放期间阈值（比录音模式更严，抗 AEC 残余）
   vad_prob_threshold_during_tts: 0.5
-  vad_db_threshold_during_tts_mac: 72.0   # Mac 本地扬声器 dB 偏高
-  vad_db_threshold_during_tts_rpi: 62.0   # RPi5 + ReSpeaker dB 偏低
+  # dBFS 门控（同 audio.vad_db_threshold 注释）。TTS 播放时 mic 会录到
+  # 自己输出 + AEC 残余，需要更高（更接近 0）的阈值过滤。
+  # Mac 本地扬声器无 AEC → 残余大，阈值需高（接近正常说话）
+  # RPi+ReSpeaker XVF3800 有硬件 AEC → 残余小，阈值可低
+  vad_db_threshold_during_tts_mac: -22.0   # 需明显大于平均说话音量
+  vad_db_threshold_during_tts_rpi: -32.0   # AEC 后残余约 -40
   vad_smoothing_window: 5
   vad_required_hits: 3
   vad_required_misses: 24
