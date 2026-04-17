@@ -193,10 +193,11 @@ class InterruptMonitor:
         with self._lock:
             if not self._recording:
                 return
-
-        # Accumulate for post-interrupt re-transcription (stop after fired)
-        if not self._fired:
-            self._audio_chunks.append(audio.copy())
+            # Accumulate for post-interrupt re-transcription (stop after fired).
+            # Kept inside the lock so stop() cannot race in between the
+            # _recording check and the append.
+            if not self._fired:
+                self._audio_chunks.append(audio.copy())
 
         # VAD gate: skip ASR when no speech detected
         if self._vad is not None:

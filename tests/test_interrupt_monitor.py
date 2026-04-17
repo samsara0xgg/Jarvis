@@ -224,6 +224,8 @@ class TestStopPreventsFurtherCallbacks:
         # but feed_audio gates on `_recording`. We verify by checking no audio
         # was accumulated AFTER stop.
         assert monitor._audio_chunks == []
+        # Title invariant: no callbacks fired after stop()
+        assert fires == []
 
     def test_start_clears_fired_under_lock(self):
         monitor = InterruptMonitor(
