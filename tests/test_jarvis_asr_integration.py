@@ -38,3 +38,17 @@ class TestNormalizeCalledByProcessTurn:
                 output_fn=lambda _s: None,
             )
         jarvis_stub.asr_normalizer.normalize.assert_called_once_with("开客厅大蛋")
+
+    def test_text_path_normalizes_via_handle_text(self, jarvis_stub):
+        """Text entry (`handle_text` → `_process_turn`) runs normalize too.
+
+        Before T1.5, only the voice path (handle_utterance) called normalize.
+        Moving the call to the shared `_process_turn` entry means text-path
+        (MQTT/web/CC harness) also benefits. This test locks that in.
+        """
+        with pytest.raises(RuntimeError, match="stop here"):
+            jarvis_stub.handle_text(
+                text="开客厅大蛋",
+                session_id="s",
+            )
+        jarvis_stub.asr_normalizer.normalize.assert_called_once_with("开客厅大蛋")
