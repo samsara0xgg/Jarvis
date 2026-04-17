@@ -118,6 +118,8 @@ class JarvisApp:
         self.speaker_encoder = SpeakerEncoder(config)
         self.speaker_verifier = SpeakerVerifier(config, self.speaker_encoder, self.user_store)
         self.speech_recognizer = SpeechRecognizer(config)
+        from core.asr_normalizer import ASRNormalizer
+        self.asr_normalizer = ASRNormalizer(config)
         self.device_manager = DeviceManager(config, event_bus=self.event_bus)
         self.permission_manager = PermissionManager()
 
@@ -586,6 +588,12 @@ class JarvisApp:
             self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
             self.logger.info("Empty ASR result, staying silent")
             return ""
+
+        # WP2: normalize misheard device/scene names before downstream routing.
+        normalized = self.asr_normalizer.normalize(text)
+        if normalized != text:
+            self.logger.info("ASR normalized: %r -> %r", text, normalized)
+            text = normalized
 
         print(f"⏱ ASR+声纹: {(_t_asr - _t0)*1000:.0f}ms")
 

@@ -602,3 +602,32 @@ interrupt:
   vad_min_speech_duration: 0.15      # 低，捕获"停"(~200ms)
   vad_min_silence_duration: 0.2
   vad_max_speech_duration: 10.0
+
+# ----------------------------------------------------------------------------
+# ASR 文本归一化（WP2 三层）
+# ----------------------------------------------------------------------------
+
+# Layer 1：手动 override + require_context 守卫（防误改）
+# 每条都必须带 require_context（一个或多个上下文词），命中时才替换
+# Allen 翻 behavior_log 找设备执行失败的 ASR 原文，把高频误识别加进来
+asr_corrections:
+  - pattern: 客厅大蛋
+    replace: 客厅大灯
+    require_context: [开, 关, 调, 亮, 暗, 灯, 模式]
+  - pattern: 放送模式
+    replace: 放松模式
+    require_context: [模式, 开, 启动, 切换]
+
+# Layer 2：结构化别名 alias→canonical（无需 context，alias 已是明确语义）
+# 格式：canonical_name: [alias1, alias2, ...]
+# 与 hue.light_aliases 是不同抽象层（这里用于 ASR 文本归一化，不是设备 id 解析）
+# 主要由 Allen 根据自己叫法填充；执行 agent 留 1-2 个示例占位
+asr_aliases:
+  # 示例（可删，让 Allen 自己填）
+  客厅大灯: [客厅主灯, 客厅顶灯]
+  放松模式: [休闲模式]
+
+# Layer 3：Levenshtein 兜底，默认关闭（误判率高）
+asr_normalizer_fuzzy:
+  enabled: false
+  max_distance: 2
