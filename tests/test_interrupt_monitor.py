@@ -235,3 +235,88 @@ class TestStopPreventsFurtherCallbacks:
         monitor._fired = True  # stale
         monitor.start()
         assert monitor._fired is False
+
+
+class TestStreamingBufferBatching:
+    """WP1 T3.4: `streaming_asr_chunk_samples` should gate when audio is
+    forwarded to the recognizer — small chunks accumulate, threshold triggers
+    one decode."""
+
+    def _make_config(self, chunk_samples: int) -> dict:
+        return {
+            "interrupt": {
+                "enabled": True,
+                "streaming_asr_chunk_samples": chunk_samples,
+            }
+        }
+
+    def test_small_chunk_does_not_trigger_decode(self):
+        monitor = InterruptMonitor(
+            config=self._make_config(3200),
+            on_interrupt=lambda: None,
+        )
+        mock_stream = MagicMock()
+        mock_recognizer = MagicMock()
+        mock_recognizer.is_ready.return_value = False
+        mock_recognizer.get_result.return_value = MagicMock(text="")
+        monitor._stream = mock_stream
+        monitor._recognizer = mock_recognizer
+        monitor._vad = None
+        # Flip _recording under lock (simulates start()'s invariant)
+        with monitor._lock:
+            monitor._recording = True
+
+        # Feed 1000 samples (below 3200 threshold)
+        monitor.feed_audio(np.zeros(1000, dtype=np.float32))
+        mock_stream.accept_waveform.assert_not_called()
+
+        # Feed another 1000 — still 2000 total, below threshold
+        monitor.feed_audio(np.zeros(1000, dtype=np.float32))
+        mock_stream.accept_waveform.assert_not_called()
+
+    def test_threshold_crossing_triggers_one_decode(self):
+        monitor = InterruptMonitor(
+            config=self._make_config(3200),
+            on_interrupt=lambda: None,
+        )
+        mock_stream = MagicMock()
+        mock_recognizer = MagicMock()
+        mock_recognizer.is_ready.return_value = False
+        mock_recognizer.get_result.return_value = MagicMock(text="")
+        monitor._stream = mock_stream
+        monitor._recognizer = mock_recognizer
+        monitor._vad = None
+        with monitor._lock:
+            monitor._recording = True
+
+        # Feed 2000 + 2500 → 4500 > 3200 threshold after the second feed
+        monitor.feed_audio(np.zeros(2000, dtype=np.float32))
+        monitor.feed_audio(np.zeros(2500, dtype=np.float32))
+        assert mock_stream.accept_waveform.call_count == 1
+        # Arg shape check — the accumulated chunk fed to the recognizer
+        # should be 4500 samples.
+        args, _ = mock_stream.accept_waveform.call_args
+        assert len(args[1]) == 4500
+
+    def test_buffer_cleared_after_decode(self):
+        monitor = InterruptMonitor(
+            config=self._make_config(3200),
+            on_interrupt=lambda: None,
+        )
+        mock_stream = MagicMock()
+        mock_recognizer = MagicMock()
+        mock_recognizer.is_ready.return_value = False
+        mock_recognizer.get_result.return_value = MagicMock(text="")
+        monitor._stream = mock_stream
+        monitor._recognizer = mock_recognizer
+        monitor._vad = None
+        with monitor._lock:
+            monitor._recording = True
+
+        # Cross threshold once
+        monitor.feed_audio(np.zeros(4000, dtype=np.float32))
+        assert mock_stream.accept_waveform.call_count == 1
+        # Feed another sub-threshold chunk — buffer was cleared, below
+        # threshold again: no second decode.
+        monitor.feed_audio(np.zeros(1000, dtype=np.float32))
+        assert mock_stream.accept_waveform.call_count == 1

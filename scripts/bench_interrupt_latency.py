@@ -1,11 +1,24 @@
 #!/usr/bin/env python3
-"""Interrupt latency benchmark — measures speech-onset → keyword detection.
+"""Interrupt latency benchmark — VAD-confirmed-start → keyword detection.
 
 Half-automated: this script plays a long TTS clip; you say "停" while it
 plays. Latency is computed using the SileroVADDirect START timestamp as
 ``t_speech_start`` and the on_interrupt callback fire time as
-``t_detected``, so the number reflects the actual mic→VAD→ASR→keyword
-pipeline latency (no human reaction time included).
+``t_detected``.
+
+**What `speech_to_detect_ms` really measures**: the time from
+``vad.last_start_perf`` (the moment the VAD state machine transitioned
+IDLE→ACTIVE, i.e., ``required_hits`` frames of 32ms each after true
+speech onset — typically ~96ms of the onset is baked into the value)
+to the ASR keyword callback fire. This captures
+``smoothing_window+decoder+keyword-match`` latency; it does NOT
+include the first ~96ms of real speech. True speech-onset → detect
+would be `speech_to_detect_ms + required_hits * 32ms` in the worst case.
+
+Also: the mic listener is started RIGHT BEFORE playback (not during
+the countdown), so VAD sees a clean IDLE→ACTIVE transition when you
+speak. Pre-playback ambient noise no longer contaminates the
+``last_start_perf`` timestamp.
 
 Usage:
     python scripts/bench_interrupt_latency.py --runs 10
@@ -89,13 +102,23 @@ def _run_once(label: str, run_index: int) -> dict | None:
         print("ERROR: interrupt monitor not enabled in config.yaml")
         return None
 
+    # B1 fix: DO NOT start the mic listener yet — it would run during the
+    # 3-second countdown and potentially cache a spurious VAD START from
+    # ambient noise, polluting the speech→detect measurement later.
     monitor.start()
-    monitor.start_mic_listener()
     pipeline.start()
 
     print(f"\n[run {run_index}] 准备好了说 '停' 来打断 TTS（label={label}）")
     print(f"[run {run_index}] 3 秒后开始播放，听到声音后随时说'停' ↓")
     time.sleep(3)
+
+    # Start the mic listener RIGHT BEFORE playback so VAD sees a clean
+    # IDLE→ACTIVE transition when you actually speak. Also reset VAD state
+    # defensively in case any other path touched it.
+    from core.vad_silero import SileroVADDirect
+    if isinstance(monitor._vad, SileroVADDirect):
+        monitor._vad.reset()
+    monitor.start_mic_listener()
 
     play_started = time.perf_counter()
     pipeline.submit(LONG_TEXT, SentenceType.FIRST)
@@ -145,7 +168,9 @@ def _run_once(label: str, run_index: int) -> dict | None:
         "detect_to_cancel_ms": round(detect_to_cancel_ms, 1),
         "total_ms": round(total_speech_to_cancel_ms, 1),
         "chunk_samples": cfg.get("interrupt", {}).get(
-            "streaming_asr_chunk_samples", 8000),
+            # Default aligned to WP1 production value; fallback to the
+            # pre-WP1 value would obscure whether the live config opted out.
+            "streaming_asr_chunk_samples", 3200),
         "vad_provider": cfg.get("interrupt", {}).get("vad_provider", "?"),
     }
 
