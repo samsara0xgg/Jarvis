@@ -142,3 +142,102 @@ class TestLevenshtein:
 
     def test_insertion(self):
         assert _levenshtein("abc", "abcd") == 1
+
+
+class TestActionWordsTightening:
+    """WP2 T2.1: `_ACTION_WORDS` must not include bare "灯" — too broad for L3 fuzzy."""
+
+    def test_fuzzy_does_not_fire_on_ambient_light_talk(self):
+        cfg = {
+            "asr_aliases": {"客厅大灯": ["大灯"]},
+            "asr_normalizer_fuzzy": {"enabled": True, "max_distance": 1},
+        }
+        n = ASRNormalizer(cfg)
+        # "我喜欢小灯泡" has no real action word — fuzzy must not fire.
+        assert n.normalize("我喜欢小灯泡") == "我喜欢小灯泡"
+        assert n.normalize("路灯真漂亮") == "路灯真漂亮"
+
+    def test_fuzzy_fires_with_strict_action_word(self):
+        cfg = {
+            "asr_aliases": {"客厅大灯": ["大灯"]},
+            "asr_normalizer_fuzzy": {"enabled": True, "max_distance": 1},
+        }
+        n = ASRNormalizer(cfg)
+        # "打开" is a clear action verb — fuzzy should fire.
+        out = n.normalize("打开大蛋")
+        assert "客厅大灯" in out
+
+
+class TestLayer3LengthGuard:
+    """WP2 T2.2: fuzzy window must equal alias length to avoid text-length drift."""
+
+    def test_window_must_equal_alias_length(self):
+        # alias "大灯" is 2 chars. A 3-char window must NOT match it.
+        cfg = {
+            "asr_aliases": {"客厅大灯": ["大灯"]},
+            "asr_normalizer_fuzzy": {"enabled": True, "max_distance": 2},
+        }
+        n = ASRNormalizer(cfg)
+        # "打开大蛋灯" has a 2-char window "大蛋" that should match "大灯"
+        # (distance 1). The trailing "灯" stays as-is.
+        out = n.normalize("打开大蛋灯")
+        # After T2.2 fix: "大蛋" (2 chars) → "客厅大灯" (canonical), trailing "灯" stays.
+        # Result: "打开客厅大灯灯" (awkward but length-predictable).
+        # Without T2.2 fix the 3-char window "大蛋灯" could match and fully replace.
+        assert out == "打开客厅大灯灯"
+
+    def test_canonical_can_be_longer_than_alias(self):
+        # alias "大灯" (2) → canonical "客厅大灯" (4). Still works.
+        cfg = {
+            "asr_aliases": {"客厅大灯": ["大灯"]},
+            "asr_normalizer_fuzzy": {"enabled": True, "max_distance": 1},
+        }
+        n = ASRNormalizer(cfg)
+        out = n.normalize("打开大蛋")
+        assert out == "打开客厅大灯"
+
+
+class TestPerformance:
+    """WP2 T3.5: normalize() must run < 10ms even with realistic config size."""
+
+    def _realistic_config(self) -> dict:
+        corrections = [
+            {"pattern": f"pattern_{i}", "replace": f"canon_{i}",
+             "require_context": ["开", "关"]}
+            for i in range(20)
+        ]
+        aliases = {
+            f"canonical_{i}": [f"alias_{i}_a", f"alias_{i}_b"]
+            for i in range(30)
+        }
+        return {
+            "asr_corrections": corrections,
+            "asr_aliases": aliases,
+            "asr_normalizer_fuzzy": {"enabled": False, "max_distance": 2},
+        }
+
+    def test_layer1_and_2_cold_path_under_10ms(self):
+        import time
+        n = ASRNormalizer(self._realistic_config())
+        text = "帮我看看今天日历"
+        for _ in range(10):
+            n.normalize(text)
+        start = time.perf_counter()
+        for _ in range(1000):
+            n.normalize(text)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        assert elapsed_ms < 5000, f"cold path took {elapsed_ms:.0f} ms / 1000 iters"
+
+    def test_layer3_enabled_still_reasonable(self):
+        import time
+        cfg = self._realistic_config()
+        cfg["asr_normalizer_fuzzy"] = {"enabled": True, "max_distance": 2}
+        n = ASRNormalizer(cfg)
+        text = "打开客厅大蛋灯好吗"
+        for _ in range(5):
+            n.normalize(text)
+        start = time.perf_counter()
+        for _ in range(100):
+            n.normalize(text)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        assert elapsed_ms < 5000, f"L3 path took {elapsed_ms:.0f} ms / 100 iters"

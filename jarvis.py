@@ -595,12 +595,6 @@ class JarvisApp:
             self.logger.info("Empty ASR result, staying silent")
             return ""
 
-        # WP2: normalize misheard device/scene names before downstream routing.
-        normalized = self.asr_normalizer.normalize(text)
-        if normalized != text:
-            self.logger.info("ASR normalized: %r -> %r", text, normalized)
-            text = normalized
-
         print(f"⏱ ASR+声纹: {(_t_asr - _t0)*1000:.0f}ms")
 
         # ③ 解析用户身份：声纹匹配 → user_id → 查角色和显示名
@@ -693,6 +687,14 @@ class JarvisApp:
         # _cancel_current re-populates this attribute mid-turn if the user
         # interrupts during streaming, and the consumer below clears it again.
         self._interrupt_played_texts = None
+
+        # T1.5: normalize on shared pipeline so text-path (handle_text/web/MQTT)
+        # also benefits. Corrections have require_context guards → safe for
+        # non-voice input.
+        _raw_text = text
+        text = self.asr_normalizer.normalize(text)
+        if text != _raw_text:
+            self.logger.info("ASR normalized: %r -> %r", _raw_text, text)
 
         # 加载对话历史（用于多轮上下文）
         history = self.conversation_store.get_history(session_id)

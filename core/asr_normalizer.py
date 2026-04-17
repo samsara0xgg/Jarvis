@@ -24,8 +24,12 @@ from typing import Iterable, Mapping
 
 LOGGER = logging.getLogger(__name__)
 
+# WP2 T2.1: tightened — bare "灯" was too broad (路灯/灯笼/灯泡 all trigger).
+# "暗"/"亮" removed (暗恋/暗号/漂亮 false positives). "打开"/"关闭" added so real
+# verbs survive after removing the single-char variants.
 _ACTION_WORDS: tuple[str, ...] = (
-    "开", "关", "调", "亮", "暗", "模式", "灯", "切换", "启动",
+    "开", "关", "打开", "关闭", "调", "模式",
+    "切换", "启动", "场景",
 )
 
 
@@ -144,6 +148,26 @@ class ASRNormalizer:
             targets[canonical] = canonical
         return targets
 
+    @staticmethod
+    def _action_word_positions(text: str) -> set[int]:
+        """Return all character positions covered by an action word in *text*.
+
+        This lets the fuzzy loop skip windows that overlap with action verb
+        spans, preventing e.g. the suffix "大" in "打开大蛋灯" from being
+        included in the fuzzy candidate window "开大".
+        """
+        covered: set[int] = set()
+        for w in _ACTION_WORDS:
+            start = 0
+            while True:
+                idx = text.find(w, start)
+                if idx == -1:
+                    break
+                for k in range(idx, idx + len(w)):
+                    covered.add(k)
+                start = idx + 1
+        return covered
+
     def _apply_fuzzy(self, text: str) -> str:
         # Only fire when an action word is present — without one, a 2-char
         # window matching "客厅" by accident would corrupt unrelated text.
@@ -152,16 +176,29 @@ class ASRNormalizer:
         if not self._fuzzy_targets:
             return text
 
+        # T2.1 guard: precompute positions covered by action words so we can
+        # skip windows that overlap with them (action verbs must not be
+        # fuzzy-replaced with device names).
+        action_positions = self._action_word_positions(text)
+
         n = len(text)
         for window_size in range(2, min(6, n + 1)):
             for i in range(n - window_size + 1):
+                # Skip if window overlaps any action-word position.
+                if action_positions.intersection(range(i, i + window_size)):
+                    continue
                 window = text[i: i + window_size]
                 # Skip windows that already match exactly — Layer 2 should
                 # have caught those already; redoing here just wastes work.
                 if window in self._fuzzy_targets:
                     continue
                 for cand, canonical in self._fuzzy_targets.items():
-                    if abs(len(cand) - len(window)) > self._fuzzy_max_distance:
+                    # T2.2: strict length match — window must equal alias length.
+                    # This avoids 2-char windows matching 4-char aliases and
+                    # corrupting text by expanding position-wise. Canonical CAN
+                    # be longer than alias (that's the point: users say short,
+                    # system fills in the full name).
+                    if len(cand) != window_size:
                         continue
                     d = _levenshtein(window, cand)
                     if d <= self._fuzzy_max_distance:
