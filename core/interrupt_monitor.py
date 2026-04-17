@@ -111,38 +111,50 @@ class InterruptMonitor:
         self._mic_thread: threading.Thread | None = None
 
     def start(self) -> None:
-        """Begin a monitoring session. Call before TTS playback starts."""
+        """Begin a monitoring session. Call before TTS playback starts.
+
+        T2.3: All mutable-state writes go under `self._lock` so mic-thread
+        readers see consistent values (no torn reads; also clearer intent).
+        """
         if not self.enabled:
             return
-        self._fired = False
-        self._audio_chunks = []
-        self._recording = True
         self._load_recognizer()
         self._load_vad()
-        self._asr_buffer = np.array([], dtype=np.float32)
+        with self._lock:
+            self._fired = False
+            self._audio_chunks = []
+            self._recording = True
+            self._asr_buffer = np.array([], dtype=np.float32)
+            # Reset soft-stop state for the new session
+            self._soft_state = "NORMAL"
+            self._was_speech_detected = False
+            self._cancel_soft_timer_locked()
         if self._recognizer:
             self._stream = self._recognizer.create_stream()
         if self._vad is not None:
             self._vad.reset()
-        # Reset soft-stop state for the new session
-        self._soft_state = "NORMAL"
-        self._was_speech_detected = False
-        self._cancel_soft_timer()
 
     def stop(self) -> np.ndarray | None:
-        """End monitoring session. Returns accumulated audio or None."""
-        self._recording = False
-        self._cancel_soft_timer()
-        # If we exited mid-DUCKED without a keyword, ensure the caller's
-        # playback state isn't left frozen.
+        """End monitoring session. Returns accumulated audio or None.
+
+        T2.3 + T2.4: single critical section covers _recording flip, timer
+        cancel, and soft-state read/clear. This prevents a timer callback
+        from racing state inspection — whichever thread wins the lock
+        decides whether on_soft_resume fires (and `resume_playback` is
+        idempotent so a duplicate from the other thread is harmless).
+        """
         with self._lock:
+            self._recording = False
+            self._cancel_soft_timer_locked()
             should_resume = (
                 self._soft_stop_enabled
                 and self._soft_state == "DUCKED"
                 and self._on_soft_resume is not None
             )
             self._soft_state = "NORMAL"
-        if should_resume:
+            audio_chunks_snapshot = self._audio_chunks
+            self._audio_chunks = []
+        if should_resume and self._on_soft_resume is not None:
             try:
                 self._on_soft_resume()
             except Exception as exc:
@@ -153,10 +165,8 @@ class InterruptMonitor:
             except Exception:
                 pass
             self._stream = None
-        if self._audio_chunks:
-            result = np.concatenate(self._audio_chunks)
-            self._audio_chunks = []
-            return result
+        if audio_chunks_snapshot:
+            return np.concatenate(audio_chunks_snapshot)
         return None
 
     def reset(self) -> None:
@@ -173,9 +183,16 @@ class InterruptMonitor:
         post-interrupt re-transcription but NOT forwarded to streaming ASR.
         This avoids wasting CPU on AEC residual noise and reduces false
         keyword triggers.
+
+        T2.3: `_recording` is read under the lock so callers see the flip
+        atomically. The heavy work (VAD + ASR decode) stays outside the
+        lock to avoid serializing the mic thread.
         """
-        if not self.enabled or not self._recording:
+        if not self.enabled:
             return
+        with self._lock:
+            if not self._recording:
+                return
 
         # Accumulate for post-interrupt re-transcription (stop after fired)
         if not self._fired:

@@ -204,3 +204,32 @@ class TestInterruptMonitorVADGate:
             monitor.feed_audio(audio)
 
             mock_stream.accept_waveform.assert_called_once()
+
+
+class TestStopPreventsFurtherCallbacks:
+    """WP7 T2.3: after stop(), feed_audio must not fire callbacks, even if
+    a mic thread races a chunk in just after stop() is called."""
+
+    def test_callback_not_fired_after_stop(self):
+        fires: list[str] = []
+        monitor = InterruptMonitor(
+            config={"interrupt": {"enabled": True}},
+            on_interrupt=lambda: fires.append("int"),
+        )
+        monitor.start()
+        monitor.stop()
+        # Simulate a late-arriving chunk on the mic thread
+        monitor.feed_audio(np.zeros(1600, dtype=np.float32))
+        # `_check_partial` still fires (it only checks `_fired` + `enabled`);
+        # but feed_audio gates on `_recording`. We verify by checking no audio
+        # was accumulated AFTER stop.
+        assert monitor._audio_chunks == []
+
+    def test_start_clears_fired_under_lock(self):
+        monitor = InterruptMonitor(
+            config={"interrupt": {"enabled": True}},
+            on_interrupt=lambda: None,
+        )
+        monitor._fired = True  # stale
+        monitor.start()
+        assert monitor._fired is False

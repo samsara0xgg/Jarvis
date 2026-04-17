@@ -156,3 +156,80 @@ class TestSoftStopStateMachine:
         assert m._soft_state == "DUCKED"
         m.stop()
         assert resume_calls == [True]
+
+
+class TestTimerStopRace:
+    """WP7 T2.4: when stop() and the soft-resume timer race, on_soft_resume
+    should still be called at most once (the resume op is idempotent, but
+    we don't want duplicate log noise either).
+
+    Synchronized — no wall-clock sleeps. We reach into the monitor's
+    `_soft_resume_timer` and invoke `_on_soft_timeout` directly to simulate
+    the timer firing at a chosen moment.
+    """
+
+    def _make_monitor(self, on_soft_resume, on_soft_pause=None):
+        return InterruptMonitor(
+            config={
+                "interrupt": {
+                    "enabled": True,
+                    "soft_stop_enabled": True,
+                    "soft_stop_timeout_ms": 100,
+                }
+            },
+            on_soft_pause=on_soft_pause or (lambda: None),
+            on_soft_resume=on_soft_resume,
+        )
+
+    def test_stop_wins_race_timer_callback_noops(self):
+        resume_calls: list[int] = []
+
+        monitor = self._make_monitor(
+            on_soft_resume=lambda: resume_calls.append(1),
+            on_soft_pause=lambda: None,
+        )
+        monitor.start()
+
+        # Force state into DUCKED by simulating a VAD start edge.
+        monitor._update_soft_state(is_speech=True)
+        timer_obj = monitor._soft_resume_timer
+        assert timer_obj is not None
+
+        # Main thread wins the race: stop() called first.
+        monitor.stop()
+        # After stop(), state is NORMAL; on_soft_resume fired once (by stop).
+        assert len(resume_calls) == 1
+
+        # Now simulate the timer actually firing (as if it was already
+        # queued when we called stop). _on_soft_timeout must see NORMAL
+        # and NOT call on_soft_resume again.
+        monitor._on_soft_timeout()
+        assert len(resume_calls) == 1, (
+            f"timer callback must no-op after stop() already resumed; "
+            f"got {len(resume_calls)} calls"
+        )
+
+    def test_timer_wins_race_stop_noops_further(self):
+        resume_calls: list[int] = []
+
+        monitor = self._make_monitor(
+            on_soft_resume=lambda: resume_calls.append(1),
+            on_soft_pause=lambda: None,
+        )
+        monitor.start()
+
+        # Force DUCKED
+        monitor._update_soft_state(is_speech=True)
+        assert monitor._soft_state == "DUCKED"
+
+        # Timer wins: simulate its callback firing first.
+        monitor._on_soft_timeout()
+        assert len(resume_calls) == 1
+        assert monitor._soft_state == "NORMAL"
+
+        # stop() now runs; state is already NORMAL so it must NOT
+        # call on_soft_resume again.
+        monitor.stop()
+        assert len(resume_calls) == 1, (
+            "stop() must no-op on_soft_resume when state is NORMAL"
+        )
