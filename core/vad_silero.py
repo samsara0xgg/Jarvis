@@ -28,6 +28,7 @@ Compatibility shim with the previous wrapper:
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from typing import Any
 
@@ -102,6 +103,10 @@ class SileroVADDirect:
         self._hits = 0
         self._misses = 0
         self._segment_completed = False
+        # perf_counter timestamp of the most recent IDLE→ACTIVE transition.
+        # Used by bench harnesses to measure "speech-onset → callback-fire"
+        # latency end-to-end. None until the first START event.
+        self._last_start_perf: float | None = None
 
     # ------------------------------------------------------------------
     # Public API (compatible with previous sherpa-onnx wrapper)
@@ -130,6 +135,11 @@ class SileroVADDirect:
     def is_speech_detected(self) -> bool:
         """True while currently in ACTIVE state (mirrors sherpa-onnx wrapper)."""
         return self._state == "ACTIVE"
+
+    @property
+    def last_start_perf(self) -> float | None:
+        """``time.perf_counter()`` at the last IDLE→ACTIVE transition (None if never)."""
+        return self._last_start_perf
 
     def empty(self) -> bool:
         """False when at least one complete speech segment has been observed.
@@ -174,6 +184,7 @@ class SileroVADDirect:
                 if self._hits >= self._required_hits:
                     self._state = "ACTIVE"
                     self._misses = 0
+                    self._last_start_perf = time.perf_counter()
             else:
                 self._hits = 0
         else:  # ACTIVE

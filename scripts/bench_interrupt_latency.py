@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Interrupt latency benchmark.
+"""Interrupt latency benchmark — measures speech-onset → keyword detection.
 
-Measures the time from when the user says an interrupt keyword until
-TTS playback actually stops. Half-automated: this script plays a long
-TTS clip and records the timestamps; the human says "停" at the right
-moment, and the script logs the delta.
+Half-automated: this script plays a long TTS clip; you say "停" while it
+plays. Latency is computed using the SileroVADDirect START timestamp as
+``t_speech_start`` and the on_interrupt callback fire time as
+``t_detected``, so the number reflects the actual mic→VAD→ASR→keyword
+pipeline latency (no human reaction time included).
 
 Usage:
     python scripts/bench_interrupt_latency.py --runs 10
-    python scripts/bench_interrupt_latency.py --runs 1 --label "after-WP6"
+    python scripts/bench_interrupt_latency.py --runs 5 --label after-WP6
 
-Output: appends one JSON line per run to scripts/bench_results/interrupt_latency.jsonl
-and prints the median over all runs in this batch.
+Output: appends one JSON line per run to
+``scripts/bench_results/interrupt_latency.jsonl`` and prints the median
+``speech_to_detect_ms`` over the batch.
+
+Requires ``interrupt.vad_provider: silero_direct`` in config.yaml — the
+sherpa_onnx wrapper does not expose START timestamps.
 """
 
 from __future__ import annotations
@@ -21,7 +26,6 @@ import json
 import logging
 import statistics
 import sys
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,54 +49,65 @@ LONG_TEXT = (
 
 def _load_config() -> dict:
     import yaml
-    cfg_path = ROOT / "config.yaml"
-    with cfg_path.open("r", encoding="utf-8") as f:
+    with (ROOT / "config.yaml").open("r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 def _run_once(label: str, run_index: int) -> dict | None:
-    """Play one long TTS clip and time interrupt detection."""
+    """Play one long TTS clip and time the interrupt detection."""
     from core.interrupt_monitor import InterruptMonitor
     from core.tts import TTSEngine, TTSPipeline, SentenceType
+    from core.vad_silero import SileroVADDirect
 
     cfg = _load_config()
+    if cfg.get("interrupt", {}).get("vad_provider") != "silero_direct":
+        print("ERROR: interrupt.vad_provider must be 'silero_direct' for B-mode bench")
+        return None
+
     engine = TTSEngine(cfg)
     pipeline = TTSPipeline(engine)
 
-    detected_at: list[float] = []
-    play_started_at: list[float] = []
-    cancelled_at: list[float] = []
+    detected_perf: list[float] = []
+    cancelled_perf: list[float] = []
+    vad_start_perf_at_detect: list[float | None] = []
 
     def on_interrupt() -> None:
-        detected_at.append(time.perf_counter())
+        t = time.perf_counter()
+        detected_perf.append(t)
+        # Capture the VAD start timestamp at the exact moment we detect —
+        # the same _vad instance is in use across both threads.
+        vad = monitor._vad  # noqa: SLF001 — bench harness, intentional
+        if isinstance(vad, SileroVADDirect):
+            vad_start_perf_at_detect.append(vad.last_start_perf)
+        else:
+            vad_start_perf_at_detect.append(None)
         pipeline.abort()
-        cancelled_at.append(time.perf_counter())
+        cancelled_perf.append(time.perf_counter())
 
     monitor = InterruptMonitor(cfg, on_interrupt=on_interrupt)
     if not monitor.enabled:
-        LOGGER.error(
-            "Interrupt monitor not enabled in config.yaml — cannot benchmark.",
-        )
+        print("ERROR: interrupt monitor not enabled in config.yaml")
         return None
 
     monitor.start()
     monitor.start_mic_listener()
     pipeline.start()
 
-    print(f"[run {run_index}] 准备好了说 '停' 来打断 TTS（label={label}）...")
-    print(f"[run {run_index}] 3 秒后开始播放 ↓")
+    print(f"\n[run {run_index}] 准备好了说 '停' 来打断 TTS（label={label}）")
+    print(f"[run {run_index}] 3 秒后开始播放，听到声音后随时说'停' ↓")
     time.sleep(3)
 
-    play_started_at.append(time.perf_counter())
+    play_started = time.perf_counter()
     pipeline.submit(LONG_TEXT, SentenceType.FIRST)
     pipeline.finish()
 
-    # Wait for either pipeline to finish or user to interrupt.
-    deadline = time.perf_counter() + 60
+    # Wait for either an interrupt or playback completion (60s safety cap).
+    deadline = play_started + 60
     while time.perf_counter() < deadline:
-        if cancelled_at:
+        if cancelled_perf:
             break
-        if pipeline._done.is_set():
+        # pipeline._done is set when finish() drains; private but stable in this codebase
+        if pipeline._done.is_set():  # noqa: SLF001
             break
         time.sleep(0.05)
 
@@ -100,24 +115,38 @@ def _run_once(label: str, run_index: int) -> dict | None:
     monitor.stop()
     pipeline.stop()
 
-    if not detected_at:
-        print(f"[run {run_index}] 未检测到打断（也许没说 '停' 或时间不够），跳过这次")
+    if not detected_perf:
+        print(f"[run {run_index}] 没听到打断（可能没说出'停' / 太晚 / 太小声），跳过")
         return None
 
-    # Best signal we have on the bench harness side: detected→cancelled
-    # (does not include pre-detect mic→ASR latency, which is the main
-    # thing we want — see "limitations" in module docstring).
-    detect_to_cancel_ms = (cancelled_at[0] - detected_at[0]) * 1000
-    play_to_detect_ms = (detected_at[0] - play_started_at[0]) * 1000
+    t_detect = detected_perf[0]
+    t_cancel = cancelled_perf[0]
+    t_speech_start = vad_start_perf_at_detect[0]
+
+    if t_speech_start is None:
+        print(f"[run {run_index}] VAD 未捕获 START 事件（异常），跳过")
+        return None
+
+    speech_to_detect_ms = (t_detect - t_speech_start) * 1000
+    detect_to_cancel_ms = (t_cancel - t_detect) * 1000
+    total_speech_to_cancel_ms = (t_cancel - t_speech_start) * 1000
+
+    print(
+        f"[run {run_index}] speech→detect: {speech_to_detect_ms:.0f}ms  "
+        f"detect→cancel: {detect_to_cancel_ms:.0f}ms  "
+        f"total: {total_speech_to_cancel_ms:.0f}ms"
+    )
 
     return {
         "ts": datetime.now(timezone.utc).isoformat(),
         "label": label,
         "run_index": run_index,
-        "play_to_detect_ms": round(play_to_detect_ms, 1),
+        "speech_to_detect_ms": round(speech_to_detect_ms, 1),
         "detect_to_cancel_ms": round(detect_to_cancel_ms, 1),
+        "total_ms": round(total_speech_to_cancel_ms, 1),
         "chunk_samples": cfg.get("interrupt", {}).get(
             "streaming_asr_chunk_samples", 8000),
+        "vad_provider": cfg.get("interrupt", {}).get("vad_provider", "?"),
     }
 
 
@@ -139,31 +168,28 @@ def main() -> int:
     args = parser.parse_args()
 
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s | %(message)s",
     )
 
-    detect_to_cancel_samples: list[float] = []
+    samples: list[float] = []
     for i in range(args.runs):
         result = _run_once(args.label, i + 1)
         if result is None:
             continue
         _append_result(result)
-        detect_to_cancel_samples.append(result["detect_to_cancel_ms"])
-        print(
-            f"[run {i + 1}/{args.runs}] detect→cancel={result['detect_to_cancel_ms']}ms "
-            f"play→detect={result['play_to_detect_ms']}ms"
-        )
+        samples.append(result["speech_to_detect_ms"])
 
-    if not detect_to_cancel_samples:
-        print("没有有效样本")
+    if not samples:
+        print("\n没有有效样本")
         return 1
 
-    median_ms = statistics.median(detect_to_cancel_samples)
     print()
-    print(f"label={args.label}  runs={len(detect_to_cancel_samples)}")
-    print(f"  detect→cancel median: {median_ms:.1f} ms")
-    print(f"  raw: {detect_to_cancel_samples}")
+    print(f"=== batch summary  label={args.label}  runs={len(samples)}/{args.runs} ===")
+    print(f"  speech→detect median: {statistics.median(samples):.0f} ms")
+    if len(samples) >= 2:
+        print(f"  speech→detect min/max: {min(samples):.0f} / {max(samples):.0f} ms")
+    print(f"  raw: {[round(s) for s in samples]}")
     print(f"  full log: {RESULTS_FILE}")
     return 0
 
