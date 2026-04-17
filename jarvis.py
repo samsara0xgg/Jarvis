@@ -236,6 +236,8 @@ class JarvisApp:
             config=config,
             on_interrupt=self._on_voice_interrupt,
             on_resume=self._on_voice_resume,
+            on_soft_pause=self._on_soft_pause,
+            on_soft_resume=self._on_soft_resume,
         )
 
         # ── TTS 语音合成（懒加载）── 首次调用时才初始化，避免拖慢启动
@@ -1248,6 +1250,26 @@ class JarvisApp:
         tts = self._get_tts()
         if tts:
             tts.stop()
+
+    # ------------------------------------------------------------------
+    # WP7 soft-stop callbacks (VAD-driven pause/resume of TTS playback)
+    # ------------------------------------------------------------------
+
+    def _on_soft_pause(self) -> None:
+        """Pause active TTS playback when VAD detects user speech."""
+        tts = self._get_tts()
+        if tts is None:
+            return
+        if tts.suspend_playback():
+            self.logger.debug("Soft-pause: TTS suspended on VAD start")
+
+    def _on_soft_resume(self) -> None:
+        """Resume TTS playback when VAD ends or no-keyword timeout fires."""
+        tts = self._get_tts()
+        if tts is None:
+            return
+        if tts.resume_playback():
+            self.logger.debug("Soft-resume: TTS resumed (no keyword in window)")
 
     def _cancel_current(self) -> None:
         """Cancel current TTS and reset state after user interrupt."""

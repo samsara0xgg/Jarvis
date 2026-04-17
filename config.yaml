@@ -627,6 +627,13 @@ interrupt:
   vad_min_silence_duration: 0.2
   vad_max_speech_duration: 10.0
 
+  # WP7 软停（VAD 检测到说话 → TTS 暂停 + ASR 保留 3s 关键词窗口）
+  # 默认 false：SIGSTOP 在 macOS afplay 上 audio buffer 行为未充分验证，
+  # Allen 手测确认无副作用后再开启
+  soft_stop_enabled: false
+  soft_stop_timeout_ms: 3000         # 无关键词命中 3s 后自动恢复播放
+  soft_stop_method: suspend          # "suspend" (SIGSTOP/SIGCONT) 当前唯一实现
+
 # ----------------------------------------------------------------------------
 # ASR 文本归一化（WP2 三层）
 # ----------------------------------------------------------------------------

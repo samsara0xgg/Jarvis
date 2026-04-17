@@ -59,13 +59,27 @@ class InterruptMonitor:
         config: dict,
         on_interrupt: Callable[[], None] | None = None,
         on_resume: Callable[[], None] | None = None,
+        on_soft_pause: Callable[[], None] | None = None,
+        on_soft_resume: Callable[[], None] | None = None,
     ) -> None:
         icfg = config.get("interrupt", {})
         self.enabled = bool(icfg.get("enabled", False))
         self._on_interrupt = on_interrupt
         self._on_resume = on_resume
+        self._on_soft_pause = on_soft_pause
+        self._on_soft_resume = on_soft_resume
         self._fired = False
         self._lock = threading.Lock()
+
+        # WP7 soft-stop: pause TTS playback as soon as VAD detects user
+        # speech, and resume on either VAD-end OR a no-keyword timeout.
+        # Off by default — flip on after Allen verifies SIGSTOP+afplay
+        # behavior on the target machine.
+        self._soft_stop_enabled = bool(icfg.get("soft_stop_enabled", False))
+        self._soft_stop_timeout_s = float(icfg.get("soft_stop_timeout_ms", 3000)) / 1000.0
+        self._soft_state = "NORMAL"  # NORMAL | DUCKED | CANCELLED
+        self._was_speech_detected = False
+        self._soft_resume_timer: threading.Timer | None = None
 
         # Custom keyword sets from config (fallback to defaults)
         kw_list = icfg.get("keywords")
@@ -110,10 +124,29 @@ class InterruptMonitor:
             self._stream = self._recognizer.create_stream()
         if self._vad is not None:
             self._vad.reset()
+        # Reset soft-stop state for the new session
+        self._soft_state = "NORMAL"
+        self._was_speech_detected = False
+        self._cancel_soft_timer()
 
     def stop(self) -> np.ndarray | None:
         """End monitoring session. Returns accumulated audio or None."""
         self._recording = False
+        self._cancel_soft_timer()
+        # If we exited mid-DUCKED without a keyword, ensure the caller's
+        # playback state isn't left frozen.
+        with self._lock:
+            should_resume = (
+                self._soft_stop_enabled
+                and self._soft_state == "DUCKED"
+                and self._on_soft_resume is not None
+            )
+            self._soft_state = "NORMAL"
+        if should_resume:
+            try:
+                self._on_soft_resume()
+            except Exception as exc:
+                LOGGER.warning("on_soft_resume on stop() failed: %s", exc)
         if self._stream and self._recognizer:
             try:
                 self._recognizer.decode_stream(self._stream)
@@ -152,7 +185,10 @@ class InterruptMonitor:
         if self._vad is not None:
             try:
                 self._vad.accept_waveform(audio)
-                if not self._vad.is_speech_detected():
+                is_speech = self._vad.is_speech_detected()
+                if self._soft_stop_enabled:
+                    self._update_soft_state(is_speech)
+                if not is_speech:
                     return
             except Exception as exc:
                 LOGGER.debug("VAD gate error: %s", exc)
@@ -188,6 +224,10 @@ class InterruptMonitor:
                 if kw in text:
                     self._fired = True
                     callback = self._on_interrupt
+                    # Hard interrupt path: cancel any pending soft resume
+                    # so we don't accidentally SIGCONT after stop() killed it.
+                    self._soft_state = "CANCELLED"
+                    self._cancel_soft_timer_locked()
                     break
             if callback is None:
                 for kw in self._resume_kw:
@@ -197,6 +237,72 @@ class InterruptMonitor:
                         break
         if callback:
             callback()
+
+    # ------------------------------------------------------------------
+    # WP7 soft-stop helpers
+    # ------------------------------------------------------------------
+
+    def _update_soft_state(self, is_speech: bool) -> None:
+        """Drive the NORMAL → DUCKED → NORMAL transitions on VAD edges."""
+        callback: Callable[[], None] | None = None
+        with self._lock:
+            prev = self._was_speech_detected
+            self._was_speech_detected = is_speech
+
+            if (
+                not prev and is_speech
+                and self._soft_state == "NORMAL"
+                and self._on_soft_pause is not None
+            ):
+                self._soft_state = "DUCKED"
+                self._start_soft_timer_locked()
+                callback = self._on_soft_pause
+            elif (
+                prev and not is_speech
+                and self._soft_state == "DUCKED"
+            ):
+                # VAD ended without a keyword landing — resume playback now
+                # rather than waiting for the timer (faster recovery).
+                self._soft_state = "NORMAL"
+                self._cancel_soft_timer_locked()
+                callback = self._on_soft_resume
+        if callback is not None:
+            try:
+                callback()
+            except Exception as exc:
+                LOGGER.warning("soft-stop callback failed: %s", exc)
+
+    def _start_soft_timer_locked(self) -> None:
+        """Schedule the no-keyword timeout. Caller must hold ``self._lock``."""
+        if self._soft_resume_timer is not None:
+            self._soft_resume_timer.cancel()
+        timer = threading.Timer(self._soft_stop_timeout_s, self._on_soft_timeout)
+        timer.daemon = True
+        self._soft_resume_timer = timer
+        timer.start()
+
+    def _on_soft_timeout(self) -> None:
+        """Fired by the timer: if still DUCKED, resume playback."""
+        callback: Callable[[], None] | None = None
+        with self._lock:
+            if self._soft_state == "DUCKED":
+                self._soft_state = "NORMAL"
+                callback = self._on_soft_resume
+            self._soft_resume_timer = None
+        if callback is not None:
+            try:
+                callback()
+            except Exception as exc:
+                LOGGER.warning("soft-stop timeout callback failed: %s", exc)
+
+    def _cancel_soft_timer(self) -> None:
+        with self._lock:
+            self._cancel_soft_timer_locked()
+
+    def _cancel_soft_timer_locked(self) -> None:
+        if self._soft_resume_timer is not None:
+            self._soft_resume_timer.cancel()
+            self._soft_resume_timer = None
 
     def start_mic_listener(self, sample_rate: int = 16000, block_size: int = 1600) -> None:
         """Open a microphone stream and feed audio to the monitor.

@@ -11,6 +11,7 @@ import hashlib
 import logging
 import os
 import platform
+import signal
 import subprocess
 import tempfile
 import threading
@@ -93,6 +94,10 @@ class TTSEngine:
         self._platform = platform.system()
         self._play_proc: subprocess.Popen | None = None
         self._play_lock = threading.Lock()
+        # WP7 soft-stop state: True while _play_proc is paused via SIGSTOP.
+        # Tracked separately from process liveness so we can no-op idempotent
+        # resume calls.
+        self._paused = False
 
         # TTS audio cache for short responses
         self._tts_cache_dir = Path(tts_config.get("cache_dir", "data/cache/tts"))
@@ -656,6 +661,13 @@ class TTSEngine:
         with self._play_lock:
             proc = self._play_proc
             if proc and proc.poll() is None:
+                # If suspended, wake it first so terminate can deliver cleanly.
+                if self._paused:
+                    try:
+                        os.kill(proc.pid, signal.SIGCONT)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                    self._paused = False
                 proc.terminate()
         if proc is not None:
             try:
@@ -663,6 +675,57 @@ class TTSEngine:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
+
+    # ------------------------------------------------------------------
+    # WP7 soft-stop: pause/resume the active playback process
+    # ------------------------------------------------------------------
+
+    def suspend_playback(self) -> bool:
+        """Pause the active playback process via SIGSTOP. Unix only.
+
+        Returns True if a live process was paused. Idempotent — calling
+        again while already paused is a no-op (returns False).
+
+        macOS afplay caveat: SIGSTOP freezes the process but the kernel
+        audio driver may continue to drain its buffer (~100-300ms) before
+        going silent. Acceptable for the soft-stop use case; real cancel
+        still goes through ``stop()`` which terminates instead.
+        """
+        if self._platform not in ("Darwin", "Linux"):
+            return False
+        with self._play_lock:
+            proc = self._play_proc
+            if not proc or proc.poll() is not None:
+                return False
+            if self._paused:
+                return False
+            try:
+                os.kill(proc.pid, signal.SIGSTOP)
+                self._paused = True
+                return True
+            except (ProcessLookupError, PermissionError) as exc:
+                self.logger.warning("suspend_playback failed: %s", exc)
+                return False
+
+    def resume_playback(self) -> bool:
+        """Resume a previously suspended playback process via SIGCONT."""
+        if self._platform not in ("Darwin", "Linux"):
+            return False
+        with self._play_lock:
+            proc = self._play_proc
+            if not proc or proc.poll() is not None or not self._paused:
+                return False
+            try:
+                os.kill(proc.pid, signal.SIGCONT)
+                self._paused = False
+                return True
+            except (ProcessLookupError, PermissionError) as exc:
+                self.logger.warning("resume_playback failed: %s", exc)
+                return False
+
+    def is_paused(self) -> bool:
+        """True while the playback process is suspended."""
+        return self._paused
 
 
 # ---------------------------------------------------------------------------
