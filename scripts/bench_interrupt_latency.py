@@ -115,7 +115,6 @@ def _run_once(label: str, run_index: int) -> dict | None:
     # Start the mic listener RIGHT BEFORE playback so VAD sees a clean
     # IDLE→ACTIVE transition when you actually speak. Also reset VAD state
     # defensively in case any other path touched it.
-    from core.vad_silero import SileroVADDirect
     if isinstance(monitor._vad, SileroVADDirect):
         monitor._vad.reset()
     monitor.start_mic_listener()
