@@ -33,9 +33,21 @@ audio:
   # 终端 ASCII 音量条宽度。
   volume_bar_width: 24
 
-  # VAD: Silero 语音活动检测（sherpa-onnx 内置）
+  # VAD: Silero 语音活动检测
   vad_enabled: true
   vad_model_path: data/silero_vad.onnx
+  # WP6: provider 选择 — silero_direct (onnxruntime 直调，帧级 prob+dB)
+  # 或 sherpa_onnx (旧版封装 fallback)。切换不需重启硬件，仅 reload。
+  vad_provider: silero_direct
+
+  # silero_direct 专用参数（sherpa_onnx 时下面 4 个忽略，用 vad_threshold 等）
+  vad_prob_threshold: 0.4         # 帧级 prob 触发阈值
+  vad_db_threshold: 60.0          # 帧级 dB 门控（过滤背景静音误触发）
+  vad_smoothing_window: 5         # 平滑窗口帧数
+  vad_required_hits: 3            # 连续 N 帧 prob+dB 双过 → START
+  vad_required_misses: 24         # 连续 N 帧低于阈值 → END
+
+  # sherpa_onnx fallback 参数（vad_provider=sherpa_onnx 时使用）
   vad_threshold: 0.5              # 语音概率阈值 (0.0-1.0)
   vad_silence_duration: 0.5       # 语音后静音多久判结束（秒）
   vad_min_speech_duration: 0.25   # 最短语音段（秒，更短视为噪声）
@@ -598,6 +610,18 @@ interrupt:
   streaming_asr_chunk_samples: 3200
   # Silero VAD 门控（TTS 播放期间过滤非语音帧）
   vad_model_path: data/silero_vad.onnx
+  # WP6: provider 选择（同 audio.vad_provider，但播放期间是独立实例）
+  vad_provider: silero_direct
+
+  # silero_direct 专用 — TTS 播放期间阈值（比录音模式更严，抗 AEC 残余）
+  vad_prob_threshold_during_tts: 0.5
+  vad_db_threshold_during_tts_mac: 72.0   # Mac 本地扬声器 dB 偏高
+  vad_db_threshold_during_tts_rpi: 62.0   # RPi5 + ReSpeaker dB 偏低
+  vad_smoothing_window: 5
+  vad_required_hits: 3
+  vad_required_misses: 24
+
+  # sherpa_onnx fallback 参数
   vad_threshold_during_tts: 0.8      # 高阈值，避免 AEC 残余误触发
   vad_min_speech_duration: 0.15      # 低，捕获"停"(~200ms)
   vad_min_silence_duration: 0.2

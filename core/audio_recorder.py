@@ -71,27 +71,14 @@ class AudioRecorder:
         self._ensure_progress_handler()
 
     def _build_vad(self, cfg: dict) -> Any:
-        """Construct sherpa-onnx VoiceActivityDetector from config.
+        """Construct the configured VAD provider.
 
+        WP6: dispatches to ``vad_silero.build_vad`` which honors
+        ``vad_provider: silero_direct | sherpa_onnx`` from config.
         Fail fast on load errors — no RMS fallback.
         """
-        import sherpa_onnx
-        vad_config = sherpa_onnx.VadModelConfig()
-        vad_config.silero_vad.model = str(cfg["vad_model_path"])
-        vad_config.silero_vad.threshold = float(cfg.get("vad_threshold", 0.5))
-        vad_config.silero_vad.min_silence_duration = float(
-            cfg.get("vad_silence_duration", 0.5)
-        )
-        vad_config.silero_vad.min_speech_duration = float(
-            cfg.get("vad_min_speech_duration", 0.25)
-        )
-        vad_config.silero_vad.max_speech_duration = float(
-            cfg.get("vad_max_speech_duration", 20.0)
-        )
-        vad_config.sample_rate = self.sample_rate
-        return sherpa_onnx.VoiceActivityDetector(
-            vad_config, buffer_size_in_seconds=30,
-        )
+        from core.vad_silero import build_vad
+        return build_vad(cfg, mode="record")
 
     def record(self, duration: float | None = None) -> np.ndarray:
         """Record audio for the requested duration and return normalized samples.

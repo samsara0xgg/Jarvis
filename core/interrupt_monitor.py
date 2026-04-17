@@ -303,8 +303,10 @@ class InterruptMonitor:
             LOGGER.warning("Failed to load streaming ASR: %s", exc)
 
     def _load_vad(self) -> None:
-        """Lazy-load the Silero VAD gate.
+        """Lazy-load the VAD gate (provider chosen via config).
 
+        WP6: dispatches to ``vad_silero.build_vad`` in ``mode='tts'`` so
+        we get the during-TTS thresholds (Mac vs RPi dB defaults baked in).
         Fail fast on load errors — no fallback path.
         """
         if self._vad is not None:
@@ -313,23 +315,9 @@ class InterruptMonitor:
         if not model_path:
             LOGGER.info("No VAD model configured; interrupt gate disabled")
             return
-        import sherpa_onnx
-        cfg = sherpa_onnx.VadModelConfig()
-        cfg.silero_vad.model = str(model_path)
-        cfg.silero_vad.threshold = float(
-            self._vad_config.get("vad_threshold_during_tts", 0.8)
+        from core.vad_silero import build_vad
+        self._vad = build_vad(self._vad_config, mode="tts")
+        provider = self._vad_config.get("vad_provider", "silero_direct")
+        LOGGER.info(
+            "Interrupt VAD loaded (provider=%s, model=%s)", provider, model_path,
         )
-        cfg.silero_vad.min_speech_duration = float(
-            self._vad_config.get("vad_min_speech_duration", 0.15)
-        )
-        cfg.silero_vad.min_silence_duration = float(
-            self._vad_config.get("vad_min_silence_duration", 0.2)
-        )
-        cfg.silero_vad.max_speech_duration = float(
-            self._vad_config.get("vad_max_speech_duration", 10.0)
-        )
-        cfg.sample_rate = 16000
-        self._vad = sherpa_onnx.VoiceActivityDetector(
-            cfg, buffer_size_in_seconds=10,
-        )
-        LOGGER.info("Silero VAD gate loaded from %s", model_path)
