@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+import yaml as _yaml
 
 from core.vad_silero import SileroVADDirect, _CHUNK_SAMPLES, build_vad
 
@@ -174,20 +175,71 @@ class TestProviderFactory:
             assert isinstance(inst, SileroVADDirect)
 
     def test_factory_tts_mode_uses_tts_thresholds(self, mock_session_factory):
+        # Use dBFS values (negative) to match the production unit convention.
         cfg = {
             "vad_provider": "silero_direct",
             "vad_model_path": "/dev/null",
             "vad_prob_threshold_during_tts": 0.7,
-            "vad_db_threshold_during_tts_mac": 80.0,
-            "vad_db_threshold_during_tts_rpi": 65.0,
+            "vad_db_threshold_during_tts_mac": -22.0,
+            "vad_db_threshold_during_tts_rpi": -32.0,
         }
         with patch("onnxruntime.InferenceSession", return_value=mock_session_factory([0.1])):
             with patch("platform.system", return_value="Darwin"):
                 inst = build_vad(cfg, mode="tts")
-                assert inst._db_threshold == 80.0
+                assert inst._db_threshold == -22.0
             with patch("platform.system", return_value="Linux"):
                 inst2 = build_vad(cfg, mode="tts")
-                assert inst2._db_threshold == 65.0
+                assert inst2._db_threshold == -32.0
+
+
+class TestDefaultsAreDBFS:
+    """WP6 T1.4: code defaults must match dBFS scale (negative), not SPL (positive)."""
+
+    def test_silero_default_db_threshold_is_dbfs(self, mock_session_factory):
+        sess = mock_session_factory([0.1])
+        with patch("onnxruntime.InferenceSession", return_value=sess):
+            vad = SileroVADDirect(model_path="/dev/null")
+        assert vad._db_threshold < 0, (
+            f"Default must be dBFS (negative), got {vad._db_threshold}"
+        )
+
+    def test_build_vad_record_mode_default_dbfs(self, mock_session_factory):
+        sess = mock_session_factory([0.1])
+        cfg = {
+            "vad_provider": "silero_direct",
+            "vad_model_path": "/dev/null",
+        }
+        with patch("onnxruntime.InferenceSession", return_value=sess):
+            inst = build_vad(cfg, mode="record")
+        assert inst._db_threshold < 0, (
+            f"build_vad record default must be dBFS, got {inst._db_threshold}"
+        )
+
+    def test_build_vad_tts_mode_mac_default_dbfs(self, mock_session_factory):
+        sess = mock_session_factory([0.1])
+        cfg = {
+            "vad_provider": "silero_direct",
+            "vad_model_path": "/dev/null",
+        }
+        with patch("onnxruntime.InferenceSession", return_value=sess), \
+             patch("platform.system", return_value="Darwin"):
+            inst = build_vad(cfg, mode="tts")
+        assert inst._db_threshold < 0, (
+            f"build_vad tts Mac default must be dBFS, got {inst._db_threshold}"
+        )
+
+    def test_build_vad_tts_mode_rpi_default_dbfs(self, mock_session_factory):
+        sess = mock_session_factory([0.1])
+        cfg = {
+            "vad_provider": "silero_direct",
+            "vad_model_path": "/dev/null",
+        }
+        with patch("onnxruntime.InferenceSession", return_value=sess), \
+             patch("platform.system", return_value="Linux"):
+            inst = build_vad(cfg, mode="tts")
+        assert inst._db_threshold < 0, (
+            f"build_vad tts RPi default must be dBFS, got {inst._db_threshold}"
+        )
 
 
 class TestRealModel:
@@ -216,3 +268,85 @@ class TestRealModel:
             vad.accept_waveform(np.zeros(_CHUNK_SAMPLES, dtype=np.float32))
         # Pure zeros must not look like speech to silero.
         assert vad.is_speech_detected() is False
+
+
+class TestProductionDefaults:
+    """WP6 T3.3: load actual config.yaml + real ONNX model, verify sanity.
+
+    Skips when the real model isn't on disk (CI / fresh clones without
+    data/). The goal is to catch regressions where config and code drift
+    apart after the SPL→dBFS fix.
+    """
+
+    @pytest.fixture
+    def production_config(self) -> dict:
+        config_path = Path(__file__).resolve().parent.parent / "config.yaml"
+        if not config_path.exists():
+            pytest.skip("config.yaml not present")
+        return _yaml.safe_load(config_path.read_text())
+
+    @pytest.fixture
+    def real_model_path(self) -> Path:
+        p = Path(__file__).resolve().parent.parent / "data" / "silero_vad.onnx"
+        if not p.exists():
+            pytest.skip("data/silero_vad.onnx not present")
+        return p
+
+    def test_audio_section_defaults_load_ok(self, production_config, real_model_path):
+        audio_cfg = dict(production_config.get("audio", {}))
+        audio_cfg["vad_model_path"] = str(real_model_path)
+        audio_cfg["vad_provider"] = "silero_direct"
+        inst = build_vad(audio_cfg, mode="record")
+        assert inst is not None
+        assert inst._db_threshold < 0, "production config must be dBFS"
+
+    def test_silence_does_not_trigger_with_production_defaults(
+        self, production_config, real_model_path,
+    ):
+        audio_cfg = dict(production_config.get("audio", {}))
+        audio_cfg["vad_model_path"] = str(real_model_path)
+        audio_cfg["vad_provider"] = "silero_direct"
+        inst = build_vad(audio_cfg, mode="record")
+        silence = np.zeros(16000, dtype=np.float32)
+        inst.accept_waveform(silence)
+        assert inst.is_speech_detected() is False
+        assert inst.empty() is True, "no segment should be completed on silence"
+
+    def test_synthetic_speech_triggers_with_production_defaults(
+        self, production_config, real_model_path,
+    ):
+        audio_cfg = dict(production_config.get("audio", {}))
+        audio_cfg["vad_model_path"] = str(real_model_path)
+        audio_cfg["vad_provider"] = "silero_direct"
+        audio_cfg["vad_required_hits"] = 3
+        audio_cfg["vad_required_misses"] = 5
+        inst = build_vad(audio_cfg, mode="record")
+        # Voiced-vowel-like signal: F0=120Hz with 14 harmonics (< 4kHz),
+        # amplitude 0.2 (≈ -14 dBFS) gives Silero prob ~0.5-0.7.
+        # A pure sine at 150Hz only scores ~0.08 so we use a richer
+        # harmonic stack that better resembles voiced speech formants.
+        t = np.arange(16000) / 16000.0
+        rng = np.random.RandomState(42)
+        f0 = 120.0
+        amp = 0.2
+        speech_like = np.zeros(16000, dtype=np.float32)
+        for k in range(1, 15):
+            if f0 * k >= 4000:
+                break
+            speech_like += (amp / k) * np.sin(2 * np.pi * f0 * k * t).astype(np.float32)
+        speech_like += 0.01 * rng.randn(16000).astype(np.float32)
+        speech_like = np.clip(speech_like, -1.0, 1.0).astype(np.float32)
+        for start in range(0, 16000, 512):
+            inst.accept_waveform(speech_like[start: start + 512])
+        assert not inst.empty() or inst.is_speech_detected(), (
+            "synthetic speech should trigger VAD with production defaults"
+        )
+
+    def test_tts_mode_mac_default_passthrough(self, production_config, real_model_path):
+        interrupt_cfg = dict(production_config.get("interrupt", {}))
+        interrupt_cfg["vad_model_path"] = str(real_model_path)
+        interrupt_cfg["vad_provider"] = "silero_direct"
+        with patch("platform.system", return_value="Darwin"):
+            inst = build_vad(interrupt_cfg, mode="tts")
+        assert inst._db_threshold < 0
+        assert inst._prob_threshold > 0.0

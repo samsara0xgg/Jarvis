@@ -48,7 +48,7 @@ class SileroVADDirect:
         model_path: str,
         sample_rate: int = 16000,
         prob_threshold: float = 0.4,
-        db_threshold: float = 60.0,
+        db_threshold: float = -45.0,  # dBFS; silence is typically < -50, speech ~ -30
         smoothing_window: int = 5,
         required_hits: int = 3,
         required_misses: int = 24,
@@ -224,10 +224,13 @@ def build_vad(cfg: dict, *, mode: str = "record") -> Any:
     if provider == "silero_direct":
         if mode == "tts":
             import platform
+            # During-TTS dBFS defaults tuned per-platform: Mac CoreAudio
+            # returns higher energy (near-field mic + louder speaker),
+            # RPi ReSpeaker post-AEC is quieter. Both are dBFS (negative).
             if platform.system() == "Darwin":
-                db_default = float(cfg.get("vad_db_threshold_during_tts_mac", 72.0))
+                db_default = float(cfg.get("vad_db_threshold_during_tts_mac", -22.0))
             else:
-                db_default = float(cfg.get("vad_db_threshold_during_tts_rpi", 62.0))
+                db_default = float(cfg.get("vad_db_threshold_during_tts_rpi", -32.0))
             return SileroVADDirect(
                 model_path=str(cfg["vad_model_path"]),
                 prob_threshold=float(cfg.get("vad_prob_threshold_during_tts", 0.5)),
@@ -236,10 +239,12 @@ def build_vad(cfg: dict, *, mode: str = "record") -> Any:
                 required_hits=int(cfg.get("vad_required_hits", 3)),
                 required_misses=int(cfg.get("vad_required_misses", 24)),
             )
+        # Record-mode dBFS default: -45 clears typical silence (~-60)
+        # but is well below normal speech (~-30).
         return SileroVADDirect(
             model_path=str(cfg["vad_model_path"]),
             prob_threshold=float(cfg.get("vad_prob_threshold", 0.4)),
-            db_threshold=float(cfg.get("vad_db_threshold", 60.0)),
+            db_threshold=float(cfg.get("vad_db_threshold", -45.0)),
             smoothing_window=int(cfg.get("vad_smoothing_window", 5)),
             required_hits=int(cfg.get("vad_required_hits", 3)),
             required_misses=int(cfg.get("vad_required_misses", 24)),
