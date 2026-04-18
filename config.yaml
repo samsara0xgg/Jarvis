@@ -385,6 +385,8 @@ tts:
   openai_tts_instructions: "你叫小月，是一个中文私人管家。说话像跟认识很久的朋友聊天——自然、有温度、有个性。语气随内容变化，该轻快就轻快，该认真就认真。不要播音腔，不要客服腔。"
 
   # MiniMax TTS（TTS Arena 第一，中文最自然，带情感）
+  # 国内: https://api.minimax.chat ; 国际: https://api.minimax.io 或 https://api-uw.minimax.io
+  minimax_base_url: "https://api.minimax.chat"
   minimax_key: ""        # env MINIMAX_API_KEY
   minimax_model: speech-02-turbo
   minimax_voice: "Chinese (Mandarin)_ExplorativeGirl"

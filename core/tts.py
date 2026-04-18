@@ -146,7 +146,12 @@ class TTSEngine:
         except (TypeError, ValueError):
             _vol = 1
         self.minimax_volume = max(1, min(10, _vol))
-        self._minimax_url = "https://api.minimax.chat/v1/t2a_v2"
+        # Base URL is region-scoped: `.chat` domestic, `.io` / `-uw.io` international.
+        # Path `/v1/t2a_v2` is the same across regions; WS variant reuses this base.
+        self._minimax_base_url = str(
+            tts_config.get("minimax_base_url", "https://api.minimax.chat")
+        ).rstrip("/")
+        self._minimax_url = f"{self._minimax_base_url}/v1/t2a_v2"
 
         # TTS text preprocessor config (strips emoji/brackets/asterisks/etc.).
         # All filters default-on; can be disabled per-key in config.yaml.
