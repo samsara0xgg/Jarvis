@@ -1,152 +1,177 @@
-# XIAOYUE
+# Yue
 
-A voice-first personal assistant built for Raspberry Pi 5, featuring voiceprint authentication, emotion-aware conversation, persistent memory, smart home control, and multi-model routing with graceful degradation.
+**A personal voice AI that grows with you.**
 
-> **Status:** 812 tests passing | 14 built-in skills | 5 TTS engines | Runs on RPi5 4GB
+*Compounding memory, room-aware perception, and a self-improving skill loop.*
 
-## Features
+<!-- TODO: add Pet Mode demo GIF here -->
 
-- **Wake Word** — OpenWakeWord for hands-free activation
-- **Voiceprint Auth** — SpeechBrain ECAPA-TDNN speaker verification with 4-tier role-based permissions (guest → owner)
-- **Speech Recognition** — SenseVoice-Small INT8 via sherpa-onnx (75ms inference, CER 2.96%), Whisper fallback
-- **VAD Recording** — Auto-stop on speech end, ~1.5s for short commands
-- **Intent Routing** — Groq (~300ms) → Cerebras fallback, LRU-256 cache
-- **LLM Backend** — GPT-4o-mini / DeepSeek, streaming sentence-by-sentence with tool-use loop
-- **Emotion Pipeline** — SenseVoice detects 7 emotions → LLM adjusts tone → TTS matches vocal style
-- **Personality** — Custom persona with time-of-day tone, user mood tracking, dynamic prompt injection
-- **TTS** — 5-engine degradation chain: OpenAI TTS → MiniMax → Azure Neural → edge-tts → pyttsx3, with disk cache and emotion-style mapping
-- **Memory System** — SQLite + FastEmbed (bge-small-zh-v1.5), 6 memory types, relation index, direct-answer fast path (cosine + multi-signal scoring), episode digests, contradiction detection
-- **Smart Home** — Philips Hue live control + simulated devices + MQTT
-- **Automation** — Natural language rules: keyword / cron / delay triggers
-- **Skills** — 14 built-in (weather, reminders, todos, news, stocks, memory, smart home, system control, etc.) + runtime skill learning via Claude Code CLI
-- **Remote Control** — WebSocket bridge to Mac
-- **Web UI** — Gradio dashboard with 5 panels
+## Overview
+
+Yue is an end-to-end voice assistant designed around a single thesis: assistant utility compounds. Most voice AIs today — Alexa, Siri, ChatGPT — treat each interaction as stateless. Yue inverts this: an observer extracts context from each conversation, a memory subsystem dedupes and resolves contradictions in the background, a behavior log surfaces patterns for skill self-discovery. The longer it runs, the less you have to repeat yourself.
+
+Built end-to-end without LangChain or any agent framework. ~25 core modules, 1060 unit tests, designed to run continuously on Mac (development) and Raspberry Pi 5 (production), with an Electron desktop pet on the side.
+
+## Capabilities
+
+### Full-duplex interrupt
+
+A separate VAD-gated audio path runs during TTS playback. Mid-sentence "停" or "等等" stops speech via the same SenseVoice ASR model used for the main loop — no second model, no streaming partial-results gymnastics. An earlier design used a streaming Zipformer transducer; benchmarking showed it could not commit single-character Chinese keywords reliably, so the architecture was unified around one ASR stack. Soft-stop applies sample-accurate gain ducking inside a PortAudio callback, eliminating the macOS CoreAudio underrun artifacts that SIGSTOP-based pause introduces.
+
+### Compounding memory
+
+Storage is SQLite + FastEmbed (`bge-small-zh-v1.5`). On top sits a four-stage pipeline: an **observer** runs in the background after each conversation, extracting memories, episodes, and entity relations via GPT-4o-mini function calling; a **reflector** dedupes and resolves contradictions; episodic digests compress weekly history into summaries; a **direct-answer** path skips the LLM entirely for high-confidence recall (cosine + recency + importance + access frequency). The store stays small while the value of each retrieval grows.
+
+### Self-improving skill loop
+
+Skills are defined in YAML for simple cases (`skills/weather.yaml`), backed by Python tool modules for the more complex ones (`tools/reminders.py`, `tools/smart_home.py`, etc.), and generated at runtime via Claude Code CLI for the missing ones. A behavior log surfaces patterns from conversation history and proposes new skills before they're explicitly requested. The `skills/learned/` directory is where these emerge.
+
+### Multi-tier LLM resilience
+
+xAI Grok-4.1-fast handles main response generation; Gemini is the streaming fallback when Grok degrades. Intent routing runs on Groq Llama-3.3-70B (~300ms, LRU-256 cache), with Cerebras Llama 3.1-8B as the routing backup. Every external call sits behind a circuit breaker (HEALTHY → DEGRADED → UNAVAILABLE) and falls through deterministically.
+
+### Voiceprint authentication
+
+SpeechBrain ECAPA-TDNN backs a four-tier permission model: guest → family → trusted → owner. Memory queries are scoped to the speaker's identity; device control and sensitive skills require trusted-or-above. Different users see different memories and unlock different actions.
 
 ## Architecture
 
 ```
-Mic → Wake Word → Record (VAD) → [Voiceprint + SenseVoice ASR in parallel]
-         → DirectAnswer fast path (cosine > threshold? answer without LLM)
-         → [Intent Routing (Groq → Cerebras) + Memory Query] in parallel
-         → Local Execution or Cloud LLM (streaming, memory injected ≤500 tokens)
-         → TTS dual-thread pipeline (5-engine fallback + emotion style) → Speaker
-         → Background: memory extraction + dedup + storage, conversation history, behavior log
+   Mic ─→ Wake Word ─→ Record (VAD-gated)
+                          │
+                          ↓
+            [Voiceprint  ║  SenseVoice ASR]    parallel
+                          │
+                          ↓
+            DirectAnswer  (high-confidence recall, skips LLM)
+                          │
+                          ↓
+            [Intent route  ║  Memory query]    parallel
+                          │
+                          ↓
+            Local executor   OR   Cloud LLM (streaming + tool-use loop)
+                          │
+                          ↓
+            TTS pipeline (MiniMax → edge-tts → pyttsx3)
+                          │
+                          ↓
+            AudioStreamPlayer (sample-accurate gain ducking)
+                          │
+                          ↓
+                       Speaker
+
+   Background:    Observer extracts memories → SQLite + FastEmbed
+                  Reflector dedupes and resolves contradictions
+                  Behavior log feeds skill self-discovery
+
+   During TTS:    Mic → VAD-gated segments → shared SenseVoice path
+                       → keyword match → soft duck (30ms) or hard stop
 ```
 
-## Quick Start
+## Hardware roadmap — spatial intelligence
+
+The next iteration replaces the off-the-shelf USB microphone with an [XMOS XVF3800](https://www.xmos.com/xvf3800/) reference board. The chip provides direction-of-arrival, beamforming, distance estimation, and reverberation fingerprinting in hardware — turning Yue from an audio device into a spatial agent.
+
+Concretely, this enables:
+
+- **Room-aware control.** "Open the lights" without specifying which room — direction-of-arrival + acoustic fingerprint identify the space.
+- **Zone-based personas.** Different tone, wake-word policy, and TTS volume by location (desk / sofa / bedroom / kitchen).
+- **Distance-adaptive TTS.** Whisper at 0.5m, project at 3m, automatic.
+- **Follow mode.** No-wake-word continuous conversation, gated by direction + voiceprint to suppress false triggers from TV or other people.
+- **Family voiceprint atlas.** Passive presence map (who's home, where, when) for proactive routines and habit learning.
+- **Cross-room handoff.** With multiple devices, the conversation follows you between rooms.
+
+Full design analysis in [`notes/hardware-xvf3800-fulltest-2026-04-16.md`](notes/hardware-xvf3800-fulltest-2026-04-16.md). Hardware in transit.
+
+## Tech stack
+
+| Layer | Stack |
+|-------|-------|
+| Wake word | openwakeword (`hey_jarvis_v0.1`) |
+| ASR | SenseVoice-Small INT8 via sherpa-onnx · Whisper fallback |
+| Voiceprint | SpeechBrain ECAPA-TDNN |
+| VAD | Silero VAD (ONNX), `headphones` / `speakers` mode-based thresholds |
+| Intent router | Groq Llama-3.3-70B · Cerebras Llama 3.1-8B (backup) |
+| LLM | xAI Grok-4.1-fast (primary) · Gemini (fallback) · Anthropic Claude (skill generation) |
+| Memory | SQLite + FastEmbed `bge-small-zh-v1.5` · GPT-4o-mini extraction |
+| TTS | MiniMax → edge-tts → pyttsx3 (3-engine fallback) |
+| Audio I/O | sounddevice + custom `AudioStreamPlayer` (PortAudio callback + ring buffer) |
+| Devices | Philips Hue (live) · MQTT · in-memory sim |
+| Desktop | Electron Pet Mode + ⌘Space command panel |
+| Spatial (next) | XMOS XVF3800 |
+
+## Getting started
 
 ```bash
-# Install
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+git clone https://github.com/samsara0xgg/Jarvis.git && cd Jarvis
+uv pip install -r requirements.txt
 
-# Download SenseVoice model (~228MB)
-cd data && wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2
+# SenseVoice INT8 model (~228MB)
+cd data
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2
 tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2
-mv sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17 sensevoice-small-int8 && cd ..
+mv sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17 sensevoice-small-int8
+cd ..
 
-# Configure API keys
-export GROQ_API_KEY="..."        # Intent routing (free tier)
-export OPENAI_API_KEY="..."      # Cloud LLM + TTS
-# Optional:
-export DEEPSEEK_API_KEY="..."    # DeepSeek LLM
-export AZURE_SPEECH_KEY="..."    # Azure TTS
-export MINIMAX_API_KEY="..."     # MiniMax TTS
+# Minimum required env vars (config.yaml holds no secrets)
+export XAI_API_KEY=...     # Primary cloud LLM
+export GROQ_API_KEY=...    # Intent routing
 
-# Run
-python jarvis.py --no-wake    # Dev mode (push-to-talk)
-python jarvis.py              # Production (wake word activated)
+python jarvis.py --no-wake     # Development: press Enter to talk
+python jarvis.py               # Production: wake word "Hey Jarvis"
 ```
 
-## Latency
+Optional secondary keys for fallback engines: `GEMINI_API_KEY` (LLM fallback), `CEREBRAS_API_KEY` (router backup), `MINIMAX_API_KEY` (primary TTS).
 
-| Stage | Before | After |
-|-------|:------:|:-----:|
-| Recording | 3-5s (fixed) | **1-2s** (VAD) |
-| ASR | 3-7s (Whisper) | **75ms** (SenseVoice) |
-| Routing | 200-1500ms | **200-500ms** (cached) |
-| TTS | 0.5-2s (blocking) | **non-blocking** (pipelined) |
-| **End-to-end** | **~10-25s** | **~2-3s** |
-
-## Project Structure
-
-```
-jarvis/
-├── jarvis.py                 # Entry point — initializes all subsystems
-├── config.yaml               # Unified config (500+ params)
-├── core/                     # Core modules
-│   ├── speech_recognizer.py  #   SenseVoice + Whisper dual-engine ASR
-│   ├── personality.py        #   Persona system (dynamic prompt)
-│   ├── intent_router.py      #   Intent routing with LRU cache + 2-tier fallback
-│   ├── local_executor.py     #   Local command dispatch
-│   ├── llm.py                #   Multi-LLM backend (streaming + tool-use loop)
-│   ├── tts.py                #   5-engine TTS pipeline (dual-thread + disk cache)
-│   ├── automation_engine.py  #   Rule engine (keyword/cron/delay)
-│   ├── audio_recorder.py     #   Recording with VAD
-│   ├── speaker_verifier.py   #   Voiceprint verification
-│   ├── health.py             #   Circuit breaker (HEALTHY → DEGRADED → UNAVAILABLE)
-│   ├── wake_word.py          #   OpenWakeWord integration
-│   ├── learning_router.py    #   Detect user teaching intent
-│   ├── skill_factory.py      #   Runtime skill generation via Claude Code CLI
-│   ├── event_bus.py          #   Pub/sub event bus
-│   └── scheduler.py          #   Cron scheduler
-├── skills/                   # 14 built-in + learned/ dynamic skills
-├── memory/                   # Memory subsystem
-│   ├── manager.py            #   Orchestrator: save → extract → dedup → store → query
-│   ├── store.py              #   SQLite (memories / profiles / episodes)
-│   ├── retriever.py          #   4-signal scoring (cosine + recency + importance + access)
-│   ├── direct_answer.py      #   Fast path: skip LLM for high-confidence factual recall
-│   ├── embedder.py           #   FastEmbed bge-small-zh-v1.5
-│   ├── behavior_log.py       #   Action logging for behavioral learning
-│   └── conversation.py       #   Sliding window conversation history
-├── devices/                  # Smart home (sim / hue / mqtt backends)
-├── auth/                     # Voiceprint enrollment + role-based permissions
-├── realtime_data/            # News & stock data services
-├── remote/                   # WebSocket remote control
-├── ui/                       # Gradio dashboard + OLED display
-├── esp32/                    # MicroPython firmware template
-├── deploy/                   # RPi deployment scripts
-└── tests/                    # 812 tests
-```
-
-## Configuration
-
-All parameters live in `config.yaml`. API keys are passed via environment variables.
-
-| Key | Description | Options |
-|-----|-------------|---------|
-| `asr.provider` | ASR engine | `sensevoice` / `local` (Whisper) |
-| `llm.provider` | LLM backend | `openai` (compatible with DeepSeek) / `anthropic` |
-| `llm.base_url` | LLM API endpoint | empty = OpenAI / DeepSeek URL |
-| `tts.engine` | TTS engine | `openai_tts` / `minimax` / `azure` / `edge-tts` / `pyttsx3` |
-| `devices.mode` | Device mode | `sim` / `live` (Hue) |
-| `audio.vad_enabled` | VAD early stop | `true` / `false` |
-
-## Testing
+For the desktop pet:
 
 ```bash
-python -m pytest tests/ -v                    # All tests
-python -m pytest tests/ --cov=core            # Coverage report
-python -m pytest tests/test_tts.py -v         # Single module
+python -m ui.web.server         # Terminal 1 — backend
+cd desktop && npm start          # Terminal 2 — Electron
 ```
 
-## Roadmap
+## Project structure
 
-| Feature | Status |
-|---------|:------:|
-| Real-time data (news/stocks) | Done |
-| Intent routing + latency optimization | Done |
-| Persona system | Done |
-| Natural language automation | Done |
-| Memory system (13 optimizations, eval framework) | Done |
-| Skill learning (3-tier + code generation) | Done |
-| Performance tuning (cache, parallelism, preload) | Done |
-| Hue smart home live control | Done |
-| Hidden mode (continuous voice) | Done |
-| Context awareness (mmWave + sensors) | Waiting for hardware |
-| Display (ST7789 / GC9A01) | Waiting for hardware |
-| ESP32 sensor node | Waiting for hardware |
-| Behavioral learning (T2) | Planned |
-| Proactive notifications | Planned |
-| Multi-channel (Telegram) | Planned |
-| Self-diagnosis & self-repair | Planned |
+```
+yue/
+├── jarvis.py                   # Entry point — initializes all subsystems
+├── config.yaml                 # Unified config (no secrets — env vars only)
+├── core/                       # 25 modules — voice, ASR, LLM, TTS, interrupt, VAD
+├── memory/                     # 11 modules — observer, reflector, store, retriever
+├── auth/                       # Voiceprint enrollment + 4-tier permission model
+├── devices/                    # Smart home backends (Hue / MQTT / sim)
+├── desktop/                    # Electron Pet Mode + ⌘Space command panel
+├── ui/                         # Live2D web server + OLED display
+├── skills/                     # YAML skills + learned/ runtime-generated skills
+├── tools/                      # Built-in tool modules (reminders, smart-home, etc.)
+├── realtime_data/              # News / stock data services
+├── system_tests/               # End-to-end runner (interactive + Claude Code mode)
+├── tests/                      # 1060 unit tests
+├── deploy/                     # Raspberry Pi systemd + install scripts
+├── esp32/                      # MicroPython firmware (sensor + relay nodes)
+├── notes/                      # Research, plans, session logs
+└── docs/                       # Design specs + git workflow
+```
+
+## Documentation
+
+| Topic | File |
+|-------|------|
+| Git workflow + commit conventions | [`docs/git-guide.md`](docs/git-guide.md) |
+| Voice pipeline optimization plan | [`notes/plans/voice-pipeline-optimization-2026-04-16.md`](notes/plans/voice-pipeline-optimization-2026-04-16.md) |
+| Interrupt ASR migration design | [`notes/interrupt-asr-migration-2026-04-17.md`](notes/interrupt-asr-migration-2026-04-17.md) |
+| XVF3800 spatial intelligence research | [`notes/hardware-xvf3800-fulltest-2026-04-16.md`](notes/hardware-xvf3800-fulltest-2026-04-16.md) |
+| Open-LLM-VTuber architecture analysis | [`notes/olv-deep-dive-2026-04-16.md`](notes/olv-deep-dive-2026-04-16.md) |
+| AudioStreamPlayer + bench design | [`notes/self-player-and-bench-2026-04-17.md`](notes/self-player-and-bench-2026-04-17.md) |
+
+## Tests
+
+```bash
+python -m pytest tests/ -q                     # Unit (1060)
+python system_tests/runner.py --mode cc        # End-to-end (Claude Code)
+python system_tests/runner.py                  # End-to-end (interactive)
+```
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
