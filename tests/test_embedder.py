@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+from unittest.mock import MagicMock
+
 import numpy as np
 import pytest
 
@@ -65,3 +68,59 @@ class TestEmbedder:
 
     def test_dimension_property(self, embedder: Embedder):
         assert embedder.dimension == 512
+
+
+@pytest.fixture
+def mock_embedder():
+    """Bare Embedder with a mock model, for cache-behavior tests."""
+    e = Embedder.__new__(Embedder)
+    e._model_name = "test"
+    e._model = MagicMock()
+    e._lock = threading.Lock()
+    e._last_text = None
+    e._last_vec = None
+    e._model.embed = MagicMock(
+        return_value=iter([np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)])
+    )
+    return e
+
+
+class TestCache:
+    """Single-entry cache behavior."""
+
+    def test_same_text_hits_cache(self, mock_embedder):
+        """Encoding the same text twice should only call model.embed once."""
+        mock_embedder.encode("开灯")
+        mock_embedder._model.embed = MagicMock(
+            return_value=iter([np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)])
+        )
+        mock_embedder.encode("开灯")
+        mock_embedder._model.embed.assert_not_called()
+
+    def test_different_text_misses_cache(self, mock_embedder):
+        """Encoding different texts should call model.embed twice."""
+        mock_embedder.encode("开灯")
+        mock_embedder._model.embed = MagicMock(
+            return_value=iter([np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)])
+        )
+        mock_embedder.encode("关灯")
+        mock_embedder._model.embed.assert_called_once()
+
+    def test_cache_returns_copy(self, mock_embedder):
+        """Two calls with the same text should return different objects."""
+        v1 = mock_embedder.encode("开灯")
+        v2 = mock_embedder.encode("开灯")
+        assert v1 is not v2
+
+    def test_cache_does_not_break_normalization(self, mock_embedder):
+        """Cached vector should still be unit-norm."""
+        mock_embedder._model.embed = MagicMock(
+            return_value=iter([np.array([3.0, 4.0, 0.0, 0.0], dtype=np.float32)])
+        )
+        mock_embedder._last_text = None
+        mock_embedder._last_vec = None
+        v = mock_embedder.encode("测试文本")
+        assert abs(np.linalg.norm(v) - 1.0) < 1e-6
+
+        v2 = mock_embedder.encode("测试文本")
+        assert abs(np.linalg.norm(v2) - 1.0) < 1e-6

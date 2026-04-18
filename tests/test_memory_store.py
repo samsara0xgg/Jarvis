@@ -195,19 +195,21 @@ class TestEpisodes:
         assert "很久以前" not in summaries
 
     def test_episodes_user_isolated(self, store: MemoryStore):
-        store.add_episode("user1", "s1", "user1的", "2026-04-02")
-        store.add_episode("user2", "s2", "user2的", "2026-04-02")
+        today = datetime.now().strftime("%Y-%m-%d")
+        store.add_episode("user1", "s1", "user1的", today)
+        store.add_episode("user2", "s2", "user2的", today)
 
         assert len(store.get_recent_episodes("user1", days=3)) == 1
         assert len(store.get_recent_episodes("user2", days=3)) == 1
 
     def test_episode_dedup_skips_similar(self, store: MemoryStore):
         """Same-day episode with substantially similar summary should be skipped."""
-        ep1 = store.add_episode("user1", "s1", "用户聊了咖啡偏好，特别喜欢拿铁", "2026-04-02")
+        today = datetime.now().strftime("%Y-%m-%d")
+        ep1 = store.add_episode("user1", "s1", "用户聊了咖啡偏好，特别喜欢拿铁", today)
         assert ep1 is not None
 
         # Very similar summary on the same day
-        ep2 = store.add_episode("user1", "s2", "用户聊了咖啡偏好，特别喜欢拿铁咖啡", "2026-04-02")
+        ep2 = store.add_episode("user1", "s2", "用户聊了咖啡偏好，特别喜欢拿铁咖啡", today)
         assert ep2 is None  # should be skipped
 
         episodes = store.get_recent_episodes("user1", days=3)
@@ -215,10 +217,11 @@ class TestEpisodes:
 
     def test_episode_dedup_allows_different(self, store: MemoryStore):
         """Different content on the same day should NOT be skipped."""
-        ep1 = store.add_episode("user1", "s1", "聊了咖啡偏好", "2026-04-02")
+        today = datetime.now().strftime("%Y-%m-%d")
+        ep1 = store.add_episode("user1", "s1", "聊了咖啡偏好", today)
         assert ep1 is not None
 
-        ep2 = store.add_episode("user1", "s2", "讨论了周末爬山计划", "2026-04-02")
+        ep2 = store.add_episode("user1", "s2", "讨论了周末爬山计划", today)
         assert ep2 is not None
 
         episodes = store.get_recent_episodes("user1", days=3)
@@ -270,3 +273,50 @@ class TestEpisodeDigests:
 
         digests = store.get_recent_digests("user1", limit=3)
         assert len(digests) == 3
+
+
+class TestObservationStore:
+    """v2 OM format: CRUD operations for the observations table."""
+
+    def test_add_observation(self, store: MemoryStore):
+        row_id = store.add_observation(chunk_id=1, content="* 🔴 用户偏好暖黄灯光")
+        assert isinstance(row_id, int)
+        assert row_id > 0
+
+    def test_get_all_observations_ordered(self, store: MemoryStore):
+        store.add_observation(chunk_id=1, content="first")
+        store.add_observation(chunk_id=1, content="second")
+        store.add_observation(chunk_id=2, content="third")
+        obs = store.get_all_observations()
+        assert len(obs) == 3
+        assert obs[0]["content"] == "first"
+        assert obs[1]["content"] == "second"
+        assert obs[2]["content"] == "third"
+
+    def test_get_observations_excludes_superseded(self, store: MemoryStore):
+        id1 = store.add_observation(chunk_id=1, content="old fact")
+        id2 = store.add_observation(chunk_id=1, content="new fact")
+        store.supersede_observation(old_id=id1, new_id=id2)
+        obs = store.get_all_observations()
+        assert len(obs) == 1
+        assert obs[0]["id"] == id2
+        assert obs[0]["content"] == "new fact"
+
+    def test_get_observations_char_count(self, store: MemoryStore):
+        store.add_observation(chunk_id=1, content="hello")
+        store.add_observation(chunk_id=1, content="world!!")
+        assert store.get_observations_char_count() == 12
+
+    def test_get_next_chunk_id_empty(self, store: MemoryStore):
+        assert store.get_next_chunk_id() == 1
+
+    def test_get_next_chunk_id_increments(self, store: MemoryStore):
+        store.add_observation(chunk_id=3, content="chunk 3")
+        assert store.get_next_chunk_id() == 4
+
+    def test_source_turn_id_stored(self, store: MemoryStore):
+        store.add_observation(
+            chunk_id=1, content="with turn", source_turn_id=42,
+        )
+        obs = store.get_all_observations()
+        assert obs[0]["source_turn_id"] == 42
