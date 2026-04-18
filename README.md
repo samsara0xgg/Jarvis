@@ -53,7 +53,56 @@ A parallel LOCOMO-style comparison ruled out alternatives: Mem0 lost six accurac
 
 ### Self-improving skill loop
 
-Skills are defined in YAML for simple cases (`skills/weather.yaml`), backed by Python tool modules for the more complex ones (`tools/reminders.py`, `tools/smart_home.py`, etc.), and generated at runtime via Claude Code CLI for the missing ones. A behavior log surfaces patterns from conversation history and proposes new skills before they're explicitly requested. The `skills/learned/` directory is where these emerge.
+Skills sit at the boundary between fixed tools and learned behavior. Yue runs a hybrid: a small set of hand-authored Python functions for things that need code, a declarative YAML format for the API-wrapping majority, and a planned discovery pipeline that mines the trace table for new skill candidates.
+
+**Two-tier registration.** `core/tool_registry.py` (195 lines) unifies both formats behind a single dispatch table:
+
+| Tier | Defined as | Currently live |
+|------|------------|----------------|
+| Python | `@jarvis_tool` decorator on a function in `tools/` | 11 functions across `reminders.py`, `smart_home.py`, `time_utils.py`, `todos.py` |
+| YAML | declarative spec under `skills/` or `skills/learned/` | `skills/weather.yaml` (production), `skills/learned/exchange_rate.yaml` (migrated) |
+
+Each tool carries an annotation set (`read_only`, `destructive`, `idempotent`, `required_role`) and is filtered through a four-tier RBAC hierarchy (`guest` < `member`/`resident` < `family`/`admin` < `owner`) before being exposed to the LLM as a function-calling schema.
+
+**YAML skill schema.** Production example (`skills/weather.yaml`):
+
+```yaml
+name: get_weather
+description: "Get current weather for a city."
+version: 1
+status: live
+parameters:
+  - {name: city, type: string, required: false, default: Victoria}
+annotations: {read_only: true, idempotent: true}
+action:
+  type: http_get
+  url: "https://wttr.in/{{ city }}?format=j1"
+  timeout_ms: 10000
+  retry: {max: 3, delay_ms: 1000, backoff: exponential}
+response:
+  extract:
+    temp_c: "{{ result.current_condition[0].temp_C }}"
+    desc:   "{{ result.current_condition[0].lang_zh[0].value }}"
+  template: "{{ city }} weather: {{ desc }}, {{ temp_c }}C..."
+  error_template: "Weather query failed."
+security:
+  allowed_domains: [wttr.in]
+```
+
+The interpreter (`core/yaml_interpreter.py`, 249 lines) executes the action against a Jinja2 `ImmutableSandboxedEnvironment` and enforces both a per-skill `allowed_domains` whitelist and a hardcoded private-IP block (RFC1918 + loopback) to prevent SSRF. The `to_tool_definition()` method emits an OpenAI-compatible function-calling schema, so YAML skills are indistinguishable from native Python tools at the LLM call site.
+
+**Why YAML for the majority.** The bet is that roughly half of useful skills are HTTP wrappers plus JSON shaping — a class where Python adds bug surface but no expressiveness. Forcing a canonical declarative form (single `http_get` keyword, named extracts, explicit retry semantics) eliminates the failure modes that show up when an LLM picks Python idioms freely. Side-by-side research on equivalent multi-step tasks showed a constrained DSL substantially outperforming open-ended Python generation, which informed the choice to default new auto-generated skills to YAML.
+
+**The discovery pipeline (designed, not yet wired).** The `trace` table makes the loop possible: every conversation turn records `path_taken`, `tool_calls` (JSON), `outcome_signal`, `latency_ms`, and detected emotion. A planned nightly batch will:
+
+1. Cluster the last 24h of `(intent, skill_match, success, user_correction)` tuples.
+2. Detect hotspots via mixed signal — frequency (≥3 occurrences with embedding cosine > 0.85), importance weighting (vocal emphasis, repeated requests), and failure-driven triggers (user correction on an existing skill).
+3. Compile candidates: an LLM (Grok 4.20 for spec generation, Claude reserved for the rare novel-Python case) drafts a YAML skill from 3-5 representative trace examples.
+4. Validate through three gates: schema correctness, replay against the original trace examples (≥80% match), and embedding similarity check vs the existing library (<0.9 to avoid duplicates).
+
+**Shadow then canary.** Promotion design follows a 7-day shadow period where the candidate runs in parallel with the existing path, output recorded but not returned. Output similarity is judged in three layers — structural matching (free, exact name and parameter match), embedding similarity on natural language outputs (free, ~10ms), LLM-as-judge on the gray zone (~$0.003 per turn, ~2s) — with promotion gated at ≥85% alignment overall and ≥95% for safety-critical categories. After promotion, a 48h canary monitors for >20% drop in expected trigger rate and auto-rolls back on regression. Skill execution failures fall through to raw LLM dispatch rather than surfacing a hard error to the user.
+
+**Status.** The static layer is fully live: 11 Python tools, 2 YAML skills (production + learned), unified registry, RBAC, sandboxed execution. The discovery loop is designed but not yet wired — the trace table is in place, but the nightly batch, hotspot detector, compilation prompt, and shadow framework are pending implementation. The pending learned-skill queue currently holds one candidate (`fifa_tickets`, status `pending_review`) awaiting manual approval.
 
 ### Multi-tier LLM resilience
 
