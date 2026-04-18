@@ -8,7 +8,7 @@
 
 ## Overview
 
-Yue is an end-to-end voice assistant designed around a single thesis: assistant utility compounds. Most voice AIs today — Alexa, Siri, ChatGPT — treat each interaction as stateless. Yue inverts this: an observer extracts context from each conversation, a memory subsystem dedupes and resolves contradictions in the background, a behavior log surfaces patterns for skill self-discovery. The longer it runs, the less you have to repeat yourself.
+Yue is an end-to-end voice assistant designed around a single thesis: assistant utility compounds. Most voice AIs today — Alexa, Siri, ChatGPT — treat each interaction as stateless. Yue inverts this: an observer extracts priority-tagged observations from each conversation, a stable-prefix builder injects them into the next session's prompt context, a trace table records every tool call for the skill-discovery loop. The longer it runs, the less you have to repeat yourself.
 
 Built end-to-end without LangChain or any agent framework. ~25 core modules, 1060 unit tests, designed to run continuously on Mac (development) and Raspberry Pi 5 (production), with an Electron desktop pet on the side.
 
@@ -20,7 +20,18 @@ A separate VAD-gated audio path runs during TTS playback. Mid-sentence "停" or 
 
 ### Compounding memory
 
-Storage is SQLite + FastEmbed (`bge-small-zh-v1.5`). On top sits a four-stage pipeline: an **observer** runs in the background after each conversation, extracting memories, episodes, and entity relations via GPT-4o-mini function calling; a **reflector** dedupes and resolves contradictions; episodic digests compress weekly history into summaries; a **direct-answer** path skips the LLM entirely for high-confidence recall (cosine + recency + importance + access frequency). The store stays small while the value of each retrieval grows.
+The memory subsystem is built on **observational memory** — a pattern adapted from Mastra's OM (Observational Memory) design where recollection is a stream of LLM-authored observations, not a vector index. After each conversation, an **observer** runs async on the cold path and uses function calling to extract priority-tagged Chinese text bullets, grouped by date:
+
+```
+Date: 2026-04-17
+* [HIGH] (14:30) 用户偏好直接回答，不要寒暄
+* [MED]  (15:12) 用户提到周末要去温哥华见朋友
+* [DONE] (15:45) 完成订咖啡机的提醒任务
+```
+
+Four priority tiers — `HIGH` (explicit user facts and unresolved goals), `MED` (learned context and tool results), `LOW` (uncertain or speculative), `DONE` (completed tasks) — determine what surfaces in the next conversation's prompt prefix. A **stable-prefix builder** assembles relevant observations into the LLM's system context: prompt-cache-friendly, deterministic, no per-query retrieval. A **trace table** logs every conversation turn (path, latency, tool calls, emotions, outcomes) for the skill-discovery loop to mine. A **direct-answer** fast path still handles high-confidence factual recall without invoking the LLM, retained as a bypass for repeated queries.
+
+The legacy FastEmbed (`bge-small-zh-v1.5`) vector pipeline is being phased out as the OM pattern matures — embeddings are kept only for the direct-answer bypass. Storage is SQLite throughout.
 
 ### Self-improving skill loop
 
@@ -93,11 +104,11 @@ Full design analysis in [`notes/hardware-xvf3800-fulltest-2026-04-16.md`](notes/
 | VAD | Silero VAD (ONNX), `headphones` / `speakers` mode-based thresholds |
 | Intent router | Groq Llama-3.3-70B · Cerebras Llama 3.1-8B (backup) |
 | LLM | xAI Grok-4.1-fast (primary) · Gemini (fallback) · Anthropic Claude (skill generation) |
-| Memory | SQLite + FastEmbed `bge-small-zh-v1.5` · GPT-4o-mini extraction |
+| Memory | Observational memory (Mastra-style) on SQLite · function-calling extraction · stable-prefix injection |
 | TTS | MiniMax → edge-tts → pyttsx3 (3-engine fallback) |
 | Audio I/O | sounddevice + custom `AudioStreamPlayer` (PortAudio callback + ring buffer) |
 | Devices | Philips Hue (live) · MQTT · in-memory sim |
-| Desktop | Electron Pet Mode + ⌘Space command panel |
+| Desktop | Electron Pet Mode + Cmd+Space command panel |
 | Spatial (next) | XMOS XVF3800 |
 
 ## Getting started
@@ -137,10 +148,10 @@ yue/
 ├── jarvis.py                   # Entry point — initializes all subsystems
 ├── config.yaml                 # Unified config (no secrets — env vars only)
 ├── core/                       # 25 modules — voice, ASR, LLM, TTS, interrupt, VAD
-├── memory/                     # 11 modules — observer, reflector, store, retriever
+├── memory/                     # 11 modules — observer, stable_prefix, trace, store, retriever, direct_answer
 ├── auth/                       # Voiceprint enrollment + 4-tier permission model
 ├── devices/                    # Smart home backends (Hue / MQTT / sim)
-├── desktop/                    # Electron Pet Mode + ⌘Space command panel
+├── desktop/                    # Electron Pet Mode + Cmd+Space command panel
 ├── ui/                         # Live2D web server + OLED display
 ├── skills/                     # YAML skills + learned/ runtime-generated skills
 ├── tools/                      # Built-in tool modules (reminders, smart-home, etc.)
