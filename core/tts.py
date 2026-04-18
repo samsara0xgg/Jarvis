@@ -23,6 +23,22 @@ from typing import Any
 
 from core import tts_preprocessor
 
+# Optional — persistent-stream player stack. If any of these imports
+# fail, ``_ensure_stream_player`` returns None and we fall back to the
+# legacy subprocess path. This keeps the engine usable in environments
+# where numpy/miniaudio/soxr aren't installed (minimal test envs etc.).
+try:
+    import miniaudio
+    import numpy as np
+    import soxr
+
+    from core.audio_stream_player import AudioStreamPlayer as _StreamPlayerCls
+
+    _STREAM_PLAYER_IMPORTS_OK = True
+except ImportError as _exc:  # pragma: no cover — probed at runtime
+    _STREAM_PLAYER_IMPORTS_OK = False
+    _STREAM_PLAYER_IMPORT_ERROR = str(_exc)
+
 LOGGER = logging.getLogger(__name__)
 
 # User's detected emotion → Jarvis's RESPONSE style (not echo)
@@ -135,6 +151,19 @@ class TTSEngine:
         # TTS text preprocessor config (strips emoji/brackets/asterisks/etc.).
         # All filters default-on; can be disabled per-key in config.yaml.
         self._preprocessor_config = tts_config.get("tts_preprocessor", {})
+
+        # Persistent-stream player (replaces subprocess afplay/mpv/ffplay for
+        # soft-stop + zero inter-sentence gap). Lazy-initialized on first
+        # playback; falls back to subprocess if import or init fails.
+        sp_cfg = tts_config.get("stream_player", {}) if tts_config else {}
+        self._stream_player_enabled = bool(sp_cfg.get("enabled", True))
+        self._stream_player_sample_rate = int(sp_cfg.get("sample_rate", 48000))
+        self._stream_player_ring_seconds = float(sp_cfg.get("ring_seconds", 2.0))
+        self._duck_volume = float(sp_cfg.get("duck_volume", 0.3))
+        self._duck_ramp_ms = float(sp_cfg.get("duck_ramp_ms", 30.0))
+        self._unduck_ramp_ms = float(sp_cfg.get("unduck_ramp_ms", 10.0))
+        self._stream_player: Any = None
+        self._stream_player_init_failed = False  # sticky: don't retry init spam
 
         # OpenAI TTS config (gpt-4o-mini-tts — ChatGPT 同款技术)
         self.openai_tts_key = str(tts_config.get("openai_tts_key", "") or os.environ.get("OPENAI_API_KEY", ""))
@@ -608,8 +637,105 @@ class TTSEngine:
         self._pyttsx_engine.say(text)
         self._pyttsx_engine.runAndWait()
 
+    # ------------------------------------------------------------------
+    # Stream-player path (miniaudio → soxr → sd.OutputStream)
+    # ------------------------------------------------------------------
+
+    def _ensure_stream_player(self) -> Any | None:
+        """Lazy-init AudioStreamPlayer. Returns None if disabled/failed.
+
+        Sticky-fails: once init errors once we don't retry (avoids log
+        spam on systems without working audio output).
+        """
+        if not self._stream_player_enabled:
+            return None
+        if not _STREAM_PLAYER_IMPORTS_OK:
+            if not self._stream_player_init_failed:
+                self.logger.warning(
+                    "stream player deps missing (%s) — falling back to subprocess",
+                    _STREAM_PLAYER_IMPORT_ERROR,
+                )
+                self._stream_player_init_failed = True
+            return None
+        if self._stream_player_init_failed:
+            return None
+        if self._stream_player is not None:
+            return self._stream_player
+        try:
+            p = _StreamPlayerCls(
+                sample_rate=self._stream_player_sample_rate,
+                channels=1,
+                ring_seconds=self._stream_player_ring_seconds,
+            )
+            p.start()
+            self._stream_player = p
+            self.logger.info(
+                "AudioStreamPlayer started at %dHz (ring=%.1fs)",
+                self._stream_player_sample_rate, self._stream_player_ring_seconds,
+            )
+            return p
+        except Exception as exc:
+            self.logger.warning(
+                "AudioStreamPlayer init failed (%s) — falling back to subprocess", exc,
+            )
+            self._stream_player_init_failed = True
+            return None
+
+    def _decode_file_to_pcm(self, filepath: str, target_sr: int) -> "np.ndarray":
+        """Decode any supported audio file → mono float32 PCM at target_sr.
+
+        Handles MP3 / WAV / FLAC / Vorbis via miniaudio's generic decoder
+        (format detection from content, not extension). Stereo is
+        downmixed to mono by channel-averaging. Source rate ≠ target
+        triggers a soxr HQ resample (~1-2ms for a 3s sentence).
+        """
+        dsf = miniaudio.decode_file(filepath)
+        pcm = np.asarray(dsf.samples, dtype=np.int16)
+        if dsf.nchannels > 1:
+            # Interleaved → (N, channels) → mono mean
+            pcm = pcm.reshape(-1, dsf.nchannels).mean(axis=1).astype(np.int16)
+        # int16 → float32 normalized to [-1, 1]
+        pcm_f32 = pcm.astype(np.float32) / 32768.0
+        if dsf.sample_rate != target_sr:
+            pcm_f32 = soxr.resample(pcm_f32, dsf.sample_rate, target_sr, quality="HQ")
+        return pcm_f32.astype(np.float32, copy=False)
+
+    def close_stream_player(self) -> None:
+        """Close the persistent OutputStream. Safe to call multiple times."""
+        if self._stream_player is not None:
+            try:
+                self._stream_player.stop()
+            except Exception as exc:
+                self.logger.warning("stream player stop error (ignored): %s", exc)
+            self._stream_player = None
+
+    # ------------------------------------------------------------------
+    # Playback
+    # ------------------------------------------------------------------
+
     def _play_audio_file(self, filepath: str) -> None:
-        """Play an audio file using the platform's native player."""
+        """Play an audio file. Uses AudioStreamPlayer if available,
+        falls back to subprocess on init failure or decode error."""
+        # ---- New path: persistent stream player ----
+        player = self._ensure_stream_player()
+        if player is not None:
+            try:
+                pcm = self._decode_file_to_pcm(
+                    filepath, self._stream_player_sample_rate,
+                )
+                player.write(pcm)
+                player.drain()
+                return
+            except Exception as exc:
+                # Don't stick-fail the player on a single bad file —
+                # could be a malformed MP3 from an API hiccup. Log and
+                # retry via subprocess this one time.
+                self.logger.warning(
+                    "stream player play failed for %s (%s) — subprocess fallback",
+                    filepath, exc,
+                )
+
+        # ---- Fallback path: subprocess (legacy behavior) ----
         system = self._platform
         cmd: list[str] | None = None
         if system == "Darwin":
@@ -663,7 +789,22 @@ class TTSEngine:
                 self._play_proc = None
 
     def stop(self) -> None:
-        """Kill current audio playback immediately."""
+        """Kill current audio playback immediately.
+
+        For the stream-player path, flush the ring buffer so any pending
+        PCM is dropped and the drain() in _play_audio_file returns
+        immediately. For the subprocess fallback, terminate afplay.
+        Both paths are exercised so abort works regardless of which
+        playback mode is active.
+        """
+        if self._stream_player is not None:
+            try:
+                self._stream_player.flush()
+                # Snap gain back to 1.0 so next sentence isn't stuck ducked
+                self._stream_player.set_gain(1.0, ramp_ms=0.0)
+            except Exception as exc:
+                self.logger.warning("stream player flush error (ignored): %s", exc)
+            self._paused = False
         with self._play_lock:
             proc = self._play_proc
             if proc and proc.poll() is None:
@@ -687,16 +828,28 @@ class TTSEngine:
     # ------------------------------------------------------------------
 
     def suspend_playback(self) -> bool:
-        """Pause the active playback process via SIGSTOP. Unix only.
+        """Soft-stop playback: duck volume (preferred) or SIGSTOP subprocess.
 
-        Returns True if a live process was paused. Idempotent — calling
-        again while already paused is a no-op (returns False).
+        Returns True if a duck or SIGSTOP was actually issued; False if
+        nothing was playing or already suspended.
 
-        macOS afplay caveat: SIGSTOP freezes the process but the kernel
-        audio driver may continue to drain its buffer (~100-300ms) before
-        going silent. Acceptable for the soft-stop use case; real cancel
-        still goes through ``stop()`` which terminates instead.
+        Preferred path: if the persistent AudioStreamPlayer is running,
+        ramp gain down to ``self._duck_volume`` over ``self._duck_ramp_ms``.
+        This is sample-accurate, click-free, and resume is a clean ramp
+        instead of SIGCONT.
+
+        Fallback: SIGSTOP on the subprocess (Unix only). On macOS afplay,
+        the kernel audio driver drains its buffer for ~100-300ms before
+        silencing — this produces an audible glitch/loop-tail that the
+        stream-player path avoids entirely.
         """
+        if self._stream_player is not None and self._stream_player.is_running:
+            if self._paused:
+                return False
+            self._stream_player.duck(self._duck_volume, self._duck_ramp_ms)
+            self._paused = True
+            return True
+
         if self._platform not in ("Darwin", "Linux"):
             return False
         with self._play_lock:
@@ -714,7 +867,18 @@ class TTSEngine:
                 return False
 
     def resume_playback(self) -> bool:
-        """Resume a previously suspended playback process via SIGCONT."""
+        """Resume previously soft-stopped playback: unduck or SIGCONT.
+
+        Mirrors ``suspend_playback`` — prefers the stream-player gain
+        ramp (clean), falls back to SIGCONT on the subprocess.
+        """
+        if self._stream_player is not None and self._stream_player.is_running:
+            if not self._paused:
+                return False
+            self._stream_player.unduck(self._unduck_ramp_ms)
+            self._paused = False
+            return True
+
         if self._platform not in ("Darwin", "Linux"):
             return False
         with self._play_lock:

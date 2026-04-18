@@ -390,6 +390,19 @@ tts:
   minimax_voice: "Chinese (Mandarin)_ExplorativeGirl"
   minimax_volume: 1    # int 1-10, 1=正常；之前 5 偏大有爆音（float 会被 round+clamp，见 core/tts.py:127）
 
+  # 持续流播放器(替代 afplay/mpv/ffplay subprocess)。
+  # 保持单个 sd.OutputStream 跨会话打开,PCM 经 ring buffer 喂 callback,
+  # 消除每句 subprocess spawn 的 ~30-150ms 开销,实现句间零 gap。
+  # 软停走 gain ducking(~30ms ramp 到 30% 音量),sample-accurate
+  # 且无 loop 尾巴 —— 根治 SIGSTOP + afplay 的 CoreAudio underrun artifact。
+  stream_player:
+    enabled: true              # false 则退回老 subprocess afplay 路径
+    sample_rate: 48000         # Mac CoreAudio 原生率,不经 HAL 重采样
+    ring_seconds: 2.0          # 环形缓冲大小(秒),控制最大预缓冲
+    duck_volume: 0.3           # 软停时的音量倍率(30% = 能听到但不抢戏)
+    duck_ramp_ms: 30.0         # duck 渐变时长(10-50ms 是 click-free 甜点)
+    unduck_ramp_ms: 10.0       # unduck 渐变时长(快恢复,不需要那么平滑)
+
   # TTS 文本预处理：剥离 emoji / 括号 / 星号等不该朗读的内容
   # 每个开关独立可关；默认全开
   tts_preprocessor:
@@ -647,12 +660,13 @@ interrupt:
   vad_min_silence_duration: 0.2
   vad_max_speech_duration: 10.0
 
-  # WP7 软停（VAD 检测到说话 → TTS 暂停 + ASR 保留 3s 关键词窗口）
-  # 默认 false：SIGSTOP 在 macOS afplay 上 audio buffer 行为未充分验证，
-  # Allen 手测确认无副作用后再开启
-  soft_stop_enabled: false
+  # WP7 软停（VAD 检测到说话 → TTS 降音量 + ASR 保留 3s 关键词窗口）
+  # 2026-04-17: 开启。SIGSTOP+afplay 的 loop 尾巴问题已被 AudioStreamPlayer
+  # 的 gain ducking 路径根治（live_stream_player_probe 验证 duck+unduck 干净、
+  # 0 underflow/10k callbacks）。stream_player 未启用时仍退回 SIGSTOP 路径。
+  soft_stop_enabled: true
   soft_stop_timeout_ms: 3000         # 无关键词命中 3s 后自动恢复播放
-  soft_stop_method: suspend          # "suspend" (SIGSTOP/SIGCONT) 当前唯一实现
+  soft_stop_method: suspend          # 字段保留；实际走 stream_player.duck() 优先
 
 # ----------------------------------------------------------------------------
 # ASR 文本归一化（WP2 三层）
