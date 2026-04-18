@@ -1,38 +1,40 @@
 # Yue
 
-**A personal voice AI that grows with you.**
+**简体中文** · [English](README.en.md)
 
-*Compounding memory, room-aware perception, and a self-improving skill loop.*
+**一款会越用越懂你的个人语音 AI。**
 
-<!-- TODO: add Pet Mode demo GIF here -->
+*累积型记忆、空间感知、可自演化的技能闭环。*
 
-## Overview
+<!-- TODO: 这里加 Pet Mode 演示 GIF -->
 
-Yue is an end-to-end voice assistant designed around a single thesis: assistant utility compounds. Most voice AIs today — Alexa, Siri, ChatGPT — treat each interaction as stateless. Yue inverts this: an observer extracts priority-tagged observations from each conversation, a stable-prefix builder injects them into the next session's prompt context, a trace table records every tool call for the skill-discovery loop. The longer it runs, the less you have to repeat yourself.
+## 项目概述
 
-Built end-to-end without LangChain or any agent framework. ~25 core modules, 1060 unit tests, designed to run continuously on Mac (development) and Raspberry Pi 5 (production), with an Electron desktop pet on the side.
+Yue 是一款端到端的语音助手，围绕一个核心命题设计：**助手的价值会复利**。今天主流的语音 AI——Alexa、Siri、ChatGPT——都把每轮对话当作无状态事件。Yue 反其道而行：observer 模块从每段对话里抽取带优先级的观察记录，stable-prefix builder 把它们注入下一轮对话的 prompt 前缀，trace 表记录每次工具调用喂给技能发现循环。它跑得越久，你越不用重复自己。
 
-## Capabilities
+完全自建，不依赖 LangChain 或任何 agent 框架。约 25 个核心模块、1060 个单元测试，设计目标是在 Mac（开发）和 Raspberry Pi 5（生产）上长期常驻运行，附带一个 Electron 桌宠应用。
 
-### Full-duplex interrupt
+## 核心能力
 
-A separate VAD-gated audio path runs during TTS playback. Mid-sentence "停" or "等等" stops speech via the same SenseVoice ASR model used for the main loop — no second model, no streaming partial-results gymnastics. An earlier design used a streaming Zipformer transducer; benchmarking showed it could not commit single-character Chinese keywords reliably, so the architecture was unified around one ASR stack. Soft-stop applies sample-accurate gain ducking inside a PortAudio callback, eliminating the macOS CoreAudio underrun artifacts that SIGSTOP-based pause introduces.
+### 全双工打断
 
-### Compounding memory
+TTS 播放期间有一条独立的 VAD 门控音频通路。说一句"停"或"等等"能在大约 700ms 内中断当前发声，走的是与主对话同一个 SenseVoice ASR 模型——没有第二个模型，也没有流式 partial-results 的特殊处理。早期方案用过 streaming Zipformer 转录器，benchmark 显示它无法稳定 commit 中文单字关键词，所以架构最终统一到一个 ASR 栈。软停采用 PortAudio callback 内的 sample-accurate 增益 ducking，根治了 SIGSTOP 路径在 macOS 上引发的 CoreAudio underrun loop-tail 假象。
 
-The memory subsystem is the project's main bet: instead of stateful LLM context windows or vector retrieval per query, observations are captured as structured text bullets and injected wholesale into every conversation's system prompt — leveraging LLM prompt caching for sub-cent reads and letting the model do its own ranking across temporal context.
+### 累积型记忆
 
-**Components.** Eleven modules organized as a write/read split:
+记忆子系统是这个项目最大的赌注：不依赖 LLM 的 stateful context window，也不走 per-query 向量检索，而是把观察记录捕获成结构化文本 bullets，整段塞进每轮对话的 system prompt——靠 LLM prompt cache 拿到 sub-cent 级别的读取成本，让模型自己跨时间排序。
 
-| Path | Modules |
-|------|---------|
-| Write (cold) | `observer.py` extracts structured bullets from each completed turn via LLM function calling; `trace.py` records per-turn analytics (path, tool calls, emotions, latency, outcome signal) |
-| Read (hot) | `stable_prefix.py` assembles personality + observations + last ten turns + current input into a cache-friendly prompt prefix; `direct_answer.py` skips the LLM entirely for high-confidence factual recall |
-| Storage | `store.py` manages six SQLite tables: `memories`, `user_profiles`, `episodes`, `episode_digests`, `memory_relations`, `observations` |
-| Ranking | `retriever.py` uses a multi-signal weighted score: 40% cosine + 25% recency + 20% importance + 15% access frequency, with cold-start weights for new users |
-| Orchestration | `manager.py` exposes the public API: `query`, `save`, `build_stable_prefix`, `write_observation`, `maintain` |
+**模块构成。** 11 个模块，按 write/read 分工：
 
-**Observation format.** Each completed turn produces zero or more bullets:
+| 路径 | 模块 |
+|------|------|
+| 写入（cold path） | `observer.py` 通过 LLM function calling 从每个完成的 turn 抽取结构化 bullets；`trace.py` 记录每轮的全量分析数据（path、tool calls、emotion、latency、outcome signal） |
+| 读取（hot path） | `stable_prefix.py` 把 personality + observations + 最近 10 轮对话 + 当前输入拼成 cache 友好的 prompt 前缀；`direct_answer.py` 跳过 LLM 直接回答高置信度的事实查询 |
+| 存储 | `store.py` 管理 6 张 SQLite 表：`memories`、`user_profiles`、`episodes`、`episode_digests`、`memory_relations`、`observations` |
+| 排序 | `retriever.py` 多信号加权评分：40% cosine + 25% recency + 20% importance + 15% access frequency，新用户走 cold-start 权重 |
+| 编排 | `manager.py` 暴露公开 API：`query`、`save`、`build_stable_prefix`、`write_observation`、`maintain` |
+
+**Observation 格式。** 每个完成的 turn 产出零到多条 bullet：
 
 ```
 Date: 2026-04-17
@@ -41,30 +43,30 @@ Date: 2026-04-17
 * [DONE] (15:45) Reminder set for coffee machine descaling
 ```
 
-Four priority tiers — `HIGH` (explicit user facts, unresolved goals), `MED` (learned context, tool results), `LOW` (uncertain), `DONE` (completed tasks) — determine what surfaces in the next conversation's prefix. The full bullet stream goes in; the LLM handles cross-temporal reasoning natively, no separate retrieval module on the read path.
+四档优先级——`HIGH`（用户明确事实、未完成目标）、`MED`（学习到的上下文、工具结果）、`LOW`（不确定）、`DONE`（已完成任务）——决定下一轮 prefix 里浮上来什么。整段 bullet 流直接塞进 prompt，跨时序推理交给 LLM 原生处理，read 路径上没有单独的检索模块。
 
-**Extraction model.** Primary is xAI Grok-4.20-0309 (non-reasoning) for cost and p95 latency stability; fallback is Gemini 2.5 Flash for its observed zero-hallucination rate. Each provider has its own `base_url` and `api_key_env` — a prior bug routed all Gemini fallback calls to xAI's endpoint and silently masked an outage for thirteen days.
+**抽取模型。** 主路 xAI Grok-4.20-0309（non-reasoning），选它是因为成本低、p95 延迟稳；fallback Gemini 2.5 Flash，选它是因为基准测试里 0% 幻觉率。每个模型独立的 `base_url` 和 `api_key_env`——之前一个 bug 把所有 Gemini fallback 调用都路由到 xAI 端点，悄无声息地遮掉了 13 天的故障。
 
-**Benchmark experiments (April 2026).** Eight extraction models compared across twenty Chinese home-dialogue fixtures spanning smart-home, preference, state-change, temporal, emotion, correction, multi-entity, and completion patterns. Metric: hallucination-aware F1 = matched / (matched + hallucinated extras), plus priority accuracy and p50/p95 latency. Grok 4.20 won on price/performance ($0.031 per 100 turns, p95 4.8s, F1 0.88); DeepSeek hit p95 9.4s and was dropped; Gemini 2.5 Flash held zero hallucination at twice the cost and was kept as fallback. Total spend: $5.20 for 160 calls.
+**Benchmark 实验（2026 年 4 月）。** 8 个抽取模型在 20 条中文家庭场景 fixture 上对比，覆盖 smart-home、preference、state-change、temporal、emotion、correction、multi-entity、completion 8 类模式。指标：幻觉感知 F1= matched / (matched + 幻觉额外项)，加优先级准确率和 p50/p95 延迟。Grok 4.20 在性价比上胜出（每 100 turn 0.031 美元，p95 4.8s，F1 0.88）；DeepSeek 因 p95 9.4s 被淘汰；Gemini 2.5 Flash 0% 幻觉但成本翻倍，留作 fallback。总开销 5.20 美元跑了 160 次调用。
 
-A parallel LOCOMO-style comparison ruled out alternatives: Mem0 lost six accuracy points versus full-context (66.9% vs 72.9%); Zep reached 76.6% but at 600k tokens per query — prohibitive for sub-2-second voice loops. The direct-injection approach was chosen as the best fit for the latency budget on Mac and Raspberry Pi.
+并行做了 LOCOMO 风格的对比研究，排除了几个备选：Mem0 比 full-context 准确率掉了 6 个百分点（66.9% vs 72.9%）；Zep 准确率到 76.6% 但单次查询要 600k token——对 sub-2-second 的语音回路完全不可接受。直接注入方案是 Mac 和 Raspberry Pi 上延迟预算的最优解。
 
-**Status.** Storage, extraction, and injection are live. The FastEmbed `bge-small-zh-v1.5` vector pipeline remains for the `direct_answer` bypass (cosine > 0.5 gates the multi-signal score) while the structured observation stream takes over the main read path. The legacy `behavior_log.py` is being replaced module-by-module with `trace.py`.
+**当前状态。** 存储、抽取、注入三层已上线；FastEmbed `bge-small-zh-v1.5` 向量管线作为 `direct_answer` bypass 保留（cosine > 0.5 闸门 + 多信号评分），同时结构化 observation 流逐步接管主 read 路径。老的 `behavior_log.py` 模块逐个被 `trace.py` 替换中。
 
-### Self-improving skill loop
+### 自演化技能闭环
 
-Skills sit at the boundary between fixed tools and learned behavior. Yue runs a hybrid: a small set of hand-authored Python functions for things that need code, a declarative YAML format for the API-wrapping majority, and a planned discovery pipeline that mines the trace table for new skill candidates.
+技能位于"固定工具"和"学习行为"之间。Yue 走混合路线：少量手写的 Python 函数处理需要代码的事，YAML 声明式格式覆盖大多数 API wrapper，再加一条规划中的 discovery pipeline——从 trace 表里挖掘新技能候选。
 
-**Two-tier registration.** `core/tool_registry.py` (195 lines) unifies both formats behind a single dispatch table:
+**两层注册。** `core/tool_registry.py`（195 行）把两种格式统一到同一个 dispatch table：
 
-| Tier | Defined as | Currently live |
-|------|------------|----------------|
-| Python | `@jarvis_tool` decorator on a function in `tools/` | 11 functions across `reminders.py`, `smart_home.py`, `time_utils.py`, `todos.py` |
-| YAML | declarative spec under `skills/` or `skills/learned/` | `skills/weather.yaml` (production), `skills/learned/exchange_rate.yaml` (migrated) |
+| 层 | 定义方式 | 当前在线 |
+|------|----------|----------|
+| Python | `@jarvis_tool` 装饰器作用在 `tools/` 下的函数 | 11 个函数，分散在 `reminders.py`、`smart_home.py`、`time_utils.py`、`todos.py` |
+| YAML | 声明式 spec，放在 `skills/` 或 `skills/learned/` | `skills/weather.yaml`（生产）、`skills/learned/exchange_rate.yaml`（迁移自学习目录） |
 
-Each tool carries an annotation set (`read_only`, `destructive`, `idempotent`, `required_role`) and is filtered through a four-tier RBAC hierarchy (`guest` < `member`/`resident` < `family`/`admin` < `owner`) before being exposed to the LLM as a function-calling schema.
+每个工具携带一组 annotation（`read_only`、`destructive`、`idempotent`、`required_role`），并通过四级 RBAC（`guest` < `member`/`resident` < `family`/`admin` < `owner`）过滤后才会暴露给 LLM 作为 function-calling schema。
 
-**YAML skill schema.** Production example (`skills/weather.yaml`):
+**YAML 技能 schema。** 生产示例（`skills/weather.yaml`）：
 
 ```yaml
 name: get_weather
@@ -89,30 +91,30 @@ security:
   allowed_domains: [wttr.in]
 ```
 
-The interpreter (`core/yaml_interpreter.py`, 249 lines) executes the action against a Jinja2 `ImmutableSandboxedEnvironment` and enforces both a per-skill `allowed_domains` whitelist and a hardcoded private-IP block (RFC1918 + loopback) to prevent SSRF. The `to_tool_definition()` method emits an OpenAI-compatible function-calling schema, so YAML skills are indistinguishable from native Python tools at the LLM call site.
+解释器（`core/yaml_interpreter.py`，249 行）在 Jinja2 `ImmutableSandboxedEnvironment` 里执行 action，强制每个技能的 `allowed_domains` 白名单加上硬编码的私网 IP 段拦截（RFC1918 + loopback），防 SSRF。`to_tool_definition()` 方法生成 OpenAI 兼容的 function-calling schema——LLM 调用时 YAML 技能和 Python 工具完全无差别。
 
-**Why YAML for the majority.** The bet is that roughly half of useful skills are HTTP wrappers plus JSON shaping — a class where Python adds bug surface but no expressiveness. Forcing a canonical declarative form (single `http_get` keyword, named extracts, explicit retry semantics) eliminates the failure modes that show up when an LLM picks Python idioms freely. Side-by-side research on equivalent multi-step tasks showed a constrained DSL substantially outperforming open-ended Python generation, which informed the choice to default new auto-generated skills to YAML.
+**为什么大多数技能用 YAML。** 设计上的赌注是：大约一半的有用技能本质上是 HTTP wrapper + JSON 整形——这一类用 Python 写只会增加 bug 面积，没有表达力收益。强制走规范化的声明式格式（单一 `http_get` 关键字、命名抽取、明确的 retry 语义）能消除 LLM 自由选择 Python 写法时引入的失败模式。多步任务上的对比研究显示，约束 DSL 的准确率明显高于开放式 Python 生成，所以新自动生成的技能默认走 YAML。
 
-**The discovery pipeline (designed, not yet wired).** The `trace` table makes the loop possible: every conversation turn records `path_taken`, `tool_calls` (JSON), `outcome_signal`, `latency_ms`, and detected emotion. A planned nightly batch will:
+**Discovery pipeline（已设计，未实装）。** trace 表让闭环可行：每轮对话都记录 `path_taken`、`tool_calls`（JSON）、`outcome_signal`、`latency_ms` 和检测到的 emotion。规划中的 nightly batch 会：
 
-1. Cluster the last 24h of `(intent, skill_match, success, user_correction)` tuples.
-2. Detect hotspots via mixed signal — frequency (≥3 occurrences with embedding cosine > 0.85), importance weighting (vocal emphasis, repeated requests), and failure-driven triggers (user correction on an existing skill).
-3. Compile candidates: an LLM (Grok 4.20 for spec generation, Claude reserved for the rare novel-Python case) drafts a YAML skill from 3-5 representative trace examples.
-4. Validate through three gates: schema correctness, replay against the original trace examples (≥80% match), and embedding similarity check vs the existing library (<0.9 to avoid duplicates).
+1. 聚类过去 24 小时的 `(intent, skill_match, success, user_correction)` 元组。
+2. 通过混合信号检测热点——频率（≥3 次出现且 embedding cosine > 0.85）、重要性加权（语调强调、重复请求）、失败驱动触发（用户对现有技能做出修正）。
+3. 编译候选：LLM（Grok 4.20 生成 spec，Claude 留给少见的 novel-Python 场景）从 3-5 个代表性 trace 样本生成 YAML 技能。
+4. 三道验证 gate：schema 正确性、对原 trace 样本回放（≥80% 命中）、与现有库的 embedding 相似度（< 0.9 防重复）。
 
-**Shadow then canary.** Promotion design follows a 7-day shadow period where the candidate runs in parallel with the existing path, output recorded but not returned. Output similarity is judged in three layers — structural matching (free, exact name and parameter match), embedding similarity on natural language outputs (free, ~10ms), LLM-as-judge on the gray zone (~$0.003 per turn, ~2s) — with promotion gated at ≥85% alignment overall and ≥95% for safety-critical categories. After promotion, a 48h canary monitors for >20% drop in expected trigger rate and auto-rolls back on regression. Skill execution failures fall through to raw LLM dispatch rather than surfacing a hard error to the user.
+**Shadow + canary 上线流程。** 候选技能先经过 7 天 shadow 期，与现有路径并行执行，输出记录但不返回给用户。输出相似度走三层判断——结构匹配（免费，name 和参数严格匹配）、自然语言输出的 embedding 相似度（免费，约 10ms）、灰区交给 LLM-as-judge（约每轮 0.003 美元，约 2 秒）——总体对齐率 ≥85% 才能 promote，安全敏感类需 ≥95%。Promote 后 48 小时 canary 监控，若预期触发率下降 > 20% 自动 rollback。技能执行失败 fall through 到原始 LLM dispatch，不会让用户看到硬错误。
 
-**Status.** The static layer is fully live: 11 Python tools, 2 YAML skills (production + learned), unified registry, RBAC, sandboxed execution. The discovery loop is designed but not yet wired — the trace table is in place, but the nightly batch, hotspot detector, compilation prompt, and shadow framework are pending implementation. The pending learned-skill queue currently holds one candidate (`fifa_tickets`, status `pending_review`) awaiting manual approval.
+**当前状态。** 静态层已完整上线：11 个 Python 工具、2 个 YAML 技能（生产 + 学习）、统一注册表、RBAC、沙箱执行。Discovery loop 设计完成但还未接通——trace 表已就位，但 nightly batch、热点检测、编译 prompt、shadow 框架都待实现。学习候选队列里目前躺着一个 `fifa_tickets`（status `pending_review`）等手动审核。
 
-### Multi-tier LLM resilience
+### 多层 LLM 容错
 
-xAI Grok-4.1-fast handles main response generation; Gemini is the streaming fallback when Grok degrades. Intent routing runs on Groq Llama-3.3-70B (~300ms, LRU-256 cache), with Cerebras Llama 3.1-8B as the routing backup. Every external call sits behind a circuit breaker (HEALTHY → DEGRADED → UNAVAILABLE) and falls through deterministically.
+xAI Grok-4.1-fast 负责主响应生成；Grok 降级时 Gemini 接 streaming fallback。意图路由跑在 Groq Llama-3.3-70B 上（约 300ms，LRU-256 cache），Cerebras Llama 3.1-8B 作为路由 backup。所有外部调用都包在熔断器里（HEALTHY → DEGRADED → UNAVAILABLE 三态切换），按观察到的失败率确定性地穿透 fallback。
 
-### Voiceprint authentication
+### 声纹认证
 
-SpeechBrain ECAPA-TDNN backs a four-tier permission model: guest → family → trusted → owner. Memory queries are scoped to the speaker's identity; device control and sensitive skills require trusted-or-above. Different users see different memories and unlock different actions.
+SpeechBrain ECAPA-TDNN 支撑四级权限模型：guest → family → trusted → owner。记忆查询按说话人身份隔离；设备控制和敏感技能要求 trusted 及以上。不同用户看到不同记忆、能解锁不同操作。
 
-## Architecture
+## 架构
 
 ```
    Mic ─→ Wake Word ─→ Record (VAD-gated)
@@ -121,7 +123,7 @@ SpeechBrain ECAPA-TDNN backs a four-tier permission model: guest → family → 
             [Voiceprint  ║  SenseVoice ASR]    parallel
                           │
                           ↓
-            DirectAnswer  (high-confidence recall, skips LLM)
+            DirectAnswer  (高置信度记忆召回，跳过 LLM)
                           │
                           ↓
             [Intent route  ║  Memory query]    parallel
@@ -133,123 +135,123 @@ SpeechBrain ECAPA-TDNN backs a four-tier permission model: guest → family → 
             TTS pipeline (MiniMax → edge-tts → pyttsx3)
                           │
                           ↓
-            AudioStreamPlayer (sample-accurate gain ducking)
+            AudioStreamPlayer (sample-accurate 增益 ducking)
                           │
                           ↓
                        Speaker
 
-   Background:    Observer extracts memories → SQLite + FastEmbed
-                  Reflector dedupes and resolves contradictions
-                  Behavior log feeds skill self-discovery
+   Background:    Observer 抽取记忆 → SQLite + FastEmbed
+                  Trace 表喂技能发现循环
+                  (Reflector 去重 / 矛盾解决待实装)
 
-   During TTS:    Mic → VAD-gated segments → shared SenseVoice path
-                       → keyword match → soft duck (30ms) or hard stop
+   During TTS:    Mic → VAD 段切片 → 共享 SenseVoice 路径
+                       → 关键词命中 → 软停（30ms ramp）或硬停
 ```
 
-## Hardware roadmap — spatial intelligence
+## 硬件路线图——空间智能
 
-The next iteration replaces the off-the-shelf USB microphone with an [XMOS XVF3800](https://www.xmos.com/xvf3800/) reference board. The chip provides direction-of-arrival, beamforming, distance estimation, and reverberation fingerprinting in hardware — turning Yue from an audio device into a spatial agent.
+下一代硬件用 [XMOS XVF3800](https://www.xmos.com/xvf3800/) reference board 替换现有的 USB 麦克风。这颗芯片在硬件层面提供声源方向（DOA）、波束成形、距离估计、混响指纹——把 Yue 从一个音频设备升级为空间感知 agent。
 
-Concretely, this enables:
+具体能力：
 
-- **Room-aware control.** "Open the lights" without specifying which room — direction-of-arrival + acoustic fingerprint identify the space.
-- **Zone-based personas.** Different tone, wake-word policy, and TTS volume by location (desk / sofa / bedroom / kitchen).
-- **Distance-adaptive TTS.** Whisper at 0.5m, project at 3m, automatic.
-- **Follow mode.** No-wake-word continuous conversation, gated by direction + voiceprint to suppress false triggers from TV or other people.
-- **Family voiceprint atlas.** Passive presence map (who's home, where, when) for proactive routines and habit learning.
-- **Cross-room handoff.** With multiple devices, the conversation follows you between rooms.
+- **房间感知控制。** 说"开灯"不用指明哪个房间——DOA + 声学指纹自动识别空间。
+- **区域人格切换。** 按位置（书桌 / 沙发 / 卧室 / 厨房）切换语调、唤醒词策略和 TTS 音量。
+- **距离自适应 TTS。** 0.5 米耳语，3 米洪亮，自动调节。
+- **跟随模式。** 无唤醒词连续对话，靠方向 + 声纹双重过滤压制电视和他人误触发。
+- **家人声纹图谱。** 被动 presence map（谁在家、在哪、什么时间）支持主动化日常。
+- **跨房间设备接力。** 多设备时对话跟着人在房间间流转。
 
-Full design analysis in [`notes/hardware-xvf3800-fulltest-2026-04-16.md`](notes/hardware-xvf3800-fulltest-2026-04-16.md). Hardware in transit.
+完整设计分析见 [`notes/hardware-xvf3800-fulltest-2026-04-16.md`](notes/hardware-xvf3800-fulltest-2026-04-16.md)。硬件运输中。
 
-## Tech stack
+## 技术栈
 
-| Layer | Stack |
+| 层 | 栈 |
 |-------|-------|
 | Wake word | openwakeword (`hey_jarvis_v0.1`) |
-| ASR | SenseVoice-Small INT8 via sherpa-onnx · Whisper fallback |
+| ASR | SenseVoice-Small INT8（sherpa-onnx） · Whisper fallback |
 | Voiceprint | SpeechBrain ECAPA-TDNN |
-| VAD | Silero VAD (ONNX), `headphones` / `speakers` mode-based thresholds |
-| Intent router | Groq Llama-3.3-70B · Cerebras Llama 3.1-8B (backup) |
-| LLM | xAI Grok-4.1-fast (primary) · Gemini (fallback) · Anthropic Claude (skill generation) |
-| Memory | Structured observation stream on SQLite · function-calling extraction (Grok 4.20 / Gemini 2.5 Flash) · stable-prefix injection |
-| TTS | MiniMax → edge-tts → pyttsx3 (3-engine fallback) |
-| Audio I/O | sounddevice + custom `AudioStreamPlayer` (PortAudio callback + ring buffer) |
-| Devices | Philips Hue (live) · MQTT · in-memory sim |
-| Desktop | Electron Pet Mode + Cmd+Space command panel |
-| Spatial (next) | XMOS XVF3800 |
+| VAD | Silero VAD (ONNX)，按 `headphones` / `speakers` 模式切阈值 |
+| 意图路由 | Groq Llama-3.3-70B · Cerebras Llama 3.1-8B（备用） |
+| LLM | xAI Grok-4.1-fast（主） · Gemini（fallback） · Anthropic Claude（技能生成） |
+| Memory | 结构化 observation 流 + SQLite · function-calling 抽取（Grok 4.20 / Gemini 2.5 Flash） · stable-prefix 注入 |
+| TTS | MiniMax → edge-tts → pyttsx3（三引擎降级链） |
+| 音频 I/O | sounddevice + 自研 `AudioStreamPlayer`（PortAudio callback + ring buffer） |
+| 设备 | Philips Hue（live） · MQTT · 内存模拟 |
+| Desktop | Electron Pet Mode + Cmd+Space 命令面板 |
+| 空间感知（下一代） | XMOS XVF3800 |
 
-## Getting started
+## 快速上手
 
 ```bash
 git clone https://github.com/samsara0xgg/Jarvis.git && cd Jarvis
 uv pip install -r requirements.txt
 
-# SenseVoice INT8 model (~228MB)
+# 下载 SenseVoice INT8 模型（约 228MB）
 cd data
 wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2
 tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2
 mv sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17 sensevoice-small-int8
 cd ..
 
-# Minimum required env vars (config.yaml holds no secrets)
-export XAI_API_KEY=...     # Primary cloud LLM
-export GROQ_API_KEY=...    # Intent routing
+# 必需的环境变量（config.yaml 不存任何 secret）
+export XAI_API_KEY=...     # 主云端 LLM
+export GROQ_API_KEY=...    # 意图路由
 
-python jarvis.py --no-wake     # Development: press Enter to talk
-python jarvis.py               # Production: wake word "Hey Jarvis"
+python jarvis.py --no-wake     # 开发模式：按回车开始录音
+python jarvis.py               # 生产模式：唤醒词 "Hey Jarvis"
 ```
 
-Optional secondary keys for fallback engines: `GEMINI_API_KEY` (LLM fallback), `CEREBRAS_API_KEY` (router backup), `MINIMAX_API_KEY` (primary TTS).
+可选的 fallback 引擎 key：`GEMINI_API_KEY`（LLM fallback）、`CEREBRAS_API_KEY`（路由备用）、`MINIMAX_API_KEY`（主 TTS）。
 
-For the desktop pet:
+启动桌宠：
 
 ```bash
-python -m ui.web.server         # Terminal 1 — backend
-cd desktop && npm start          # Terminal 2 — Electron
+python -m ui.web.server         # 终端 1 — 后端
+cd desktop && npm start          # 终端 2 — Electron
 ```
 
-## Project structure
+## 项目结构
 
 ```
 yue/
-├── jarvis.py                   # Entry point — initializes all subsystems
-├── config.yaml                 # Unified config (no secrets — env vars only)
-├── core/                       # 25 modules — voice, ASR, LLM, TTS, interrupt, VAD
-├── memory/                     # 11 modules — observer, stable_prefix, trace, store, retriever, direct_answer
-├── auth/                       # Voiceprint enrollment + 4-tier permission model
-├── devices/                    # Smart home backends (Hue / MQTT / sim)
-├── desktop/                    # Electron Pet Mode + Cmd+Space command panel
+├── jarvis.py                   # 入口——初始化所有子系统
+├── config.yaml                 # 统一配置（无 secret——只走环境变量）
+├── core/                       # 25 个模块——voice、ASR、LLM、TTS、interrupt、VAD
+├── memory/                     # 11 个模块——observer、stable_prefix、trace、store、retriever、direct_answer
+├── auth/                       # 声纹注册 + 四级权限
+├── devices/                    # 智能家居后端（Hue / MQTT / sim）
+├── desktop/                    # Electron Pet Mode + Cmd+Space 命令面板
 ├── ui/                         # Live2D web server + OLED display
-├── skills/                     # YAML skills + learned/ runtime-generated skills
-├── tools/                      # Built-in tool modules (reminders, smart-home, etc.)
-├── realtime_data/              # News / stock data services
-├── system_tests/               # End-to-end runner (interactive + Claude Code mode)
-├── tests/                      # 1060 unit tests
-├── deploy/                     # Raspberry Pi systemd + install scripts
-├── esp32/                      # MicroPython firmware (sensor + relay nodes)
-├── notes/                      # Research, plans, session logs
-└── docs/                       # Design specs + git workflow
+├── skills/                     # YAML 技能 + learned/ 运行时生成
+├── tools/                      # 内置工具模块（reminders、smart-home 等）
+├── realtime_data/              # 新闻 / 股票数据服务
+├── system_tests/               # 端到端测试 runner（交互 + Claude Code 模式）
+├── tests/                      # 1060 个单元测试
+├── deploy/                     # Raspberry Pi systemd + 安装脚本
+├── esp32/                      # MicroPython 固件（传感器 + 继电器节点）
+├── notes/                      # 研究、计划、session 日志
+└── docs/                       # 设计 spec + git 工作流
 ```
 
-## Documentation
+## 文档
 
-| Topic | File |
+| 主题 | 文件 |
 |-------|------|
-| Git workflow + commit conventions | [`docs/git-guide.md`](docs/git-guide.md) |
-| Voice pipeline optimization plan | [`notes/plans/voice-pipeline-optimization-2026-04-16.md`](notes/plans/voice-pipeline-optimization-2026-04-16.md) |
-| Interrupt ASR migration design | [`notes/interrupt-asr-migration-2026-04-17.md`](notes/interrupt-asr-migration-2026-04-17.md) |
-| XVF3800 spatial intelligence research | [`notes/hardware-xvf3800-fulltest-2026-04-16.md`](notes/hardware-xvf3800-fulltest-2026-04-16.md) |
-| Open-LLM-VTuber architecture analysis | [`notes/olv-deep-dive-2026-04-16.md`](notes/olv-deep-dive-2026-04-16.md) |
-| AudioStreamPlayer + bench design | [`notes/self-player-and-bench-2026-04-17.md`](notes/self-player-and-bench-2026-04-17.md) |
+| Git 工作流 + commit 规范 | [`docs/git-guide.md`](docs/git-guide.md) |
+| 语音管线优化计划 | [`notes/plans/voice-pipeline-optimization-2026-04-16.md`](notes/plans/voice-pipeline-optimization-2026-04-16.md) |
+| 打断 ASR 迁移设计 | [`notes/interrupt-asr-migration-2026-04-17.md`](notes/interrupt-asr-migration-2026-04-17.md) |
+| XVF3800 空间智能调研 | [`notes/hardware-xvf3800-fulltest-2026-04-16.md`](notes/hardware-xvf3800-fulltest-2026-04-16.md) |
+| Open-LLM-VTuber 架构分析 | [`notes/olv-deep-dive-2026-04-16.md`](notes/olv-deep-dive-2026-04-16.md) |
+| AudioStreamPlayer + bench 设计 | [`notes/self-player-and-bench-2026-04-17.md`](notes/self-player-and-bench-2026-04-17.md) |
 
-## Tests
+## 测试
 
 ```bash
-python -m pytest tests/ -q                     # Unit (1060)
-python system_tests/runner.py --mode cc        # End-to-end (Claude Code)
-python system_tests/runner.py                  # End-to-end (interactive)
+python -m pytest tests/ -q                     # 单元测试（1060）
+python system_tests/runner.py --mode cc        # 端到端（Claude Code 模式）
+python system_tests/runner.py                  # 端到端（交互模式）
 ```
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — 见 [`LICENSE`](LICENSE)。
