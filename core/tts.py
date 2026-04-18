@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import platform
@@ -79,6 +80,84 @@ _EMOTION_TO_MINIMAX = {
     "SURPRISED": "happy",
     "EMO_UNKNOWN": "calm",
 }
+
+
+# ---------------------------------------------------------------------------
+# MiniMax WebSocket — collect-all path used by _synth_minimax (commit 3).
+# Full streaming with player push lives in core/tts_minimax_ws.py (commit 4).
+# ---------------------------------------------------------------------------
+
+async def _ws_collect_audio(
+    base_url: str,
+    api_key: str,
+    task_start_payload: dict,
+    text: str,
+    logger: logging.Logger,
+) -> bytes:
+    """Open a WS, send task_start + task_continue(text), collect all PCM
+    chunks until is_final, return concatenated bytes. Timeouts: 3s connect,
+    3s first-chunk, 5s between-chunks. Raises RuntimeError on any failure.
+    """
+    import websockets  # local import — keeps top-level minimal
+
+    # wss://host/ws/v1/t2a_v2 — convert https://host → wss://host
+    ws_url = (
+        base_url.replace("https://", "wss://").replace("http://", "ws://")
+        + "/ws/v1/t2a_v2"
+    )
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    try:
+        conn = await asyncio.wait_for(
+            websockets.connect(ws_url, additional_headers=headers),
+            timeout=3.0,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"MiniMax WS connect failed: {exc}") from exc
+
+    try:
+        hello = await asyncio.wait_for(conn.recv(), timeout=3.0)
+        hello_obj = json.loads(hello)
+        if hello_obj.get("base_resp", {}).get("status_code", 0) != 0:
+            raise RuntimeError(f"MiniMax WS hello rejected: {hello_obj}")
+
+        await conn.send(json.dumps(task_start_payload))
+        ts_resp = await asyncio.wait_for(conn.recv(), timeout=3.0)
+        ts_obj = json.loads(ts_resp)
+        status = ts_obj.get("base_resp", {}).get("status_code", 0)
+        if status != 0:
+            raise RuntimeError(
+                f"MiniMax task_start rejected: {ts_obj.get('base_resp')}"
+            )
+
+        await conn.send(json.dumps({"event": "task_continue", "text": text}))
+
+        chunks: list[bytes] = []
+        first = True
+        while True:
+            timeout = 3.0 if first else 5.0
+            msg = await asyncio.wait_for(conn.recv(), timeout=timeout)
+            obj = json.loads(msg)
+            audio_hex = obj.get("data", {}).get("audio", "") or ""
+            if audio_hex:
+                if len(audio_hex) % 2:
+                    audio_hex = audio_hex[:-1]
+                chunks.append(bytes.fromhex(audio_hex))
+                first = False
+            if obj.get("is_final"):
+                break
+
+        try:
+            await conn.send(json.dumps({"event": "task_finish"}))
+        except Exception:
+            pass
+
+        return b"".join(chunks)
+    finally:
+        try:
+            await conn.close()
+        except Exception:
+            pass
 
 
 class TTSEngine:
@@ -201,8 +280,16 @@ class TTSEngine:
             return False
 
     def _evict_tts_cache(self) -> None:
-        """Remove oldest files when cache exceeds max size."""
-        files = sorted(self._tts_cache_dir.glob("*.mp3"), key=lambda p: p.stat().st_mtime)
+        """Remove oldest files when cache exceeds max size.
+
+        Globs both .mp3 (legacy) and .pcm (ws streaming) — cache spans both
+        formats during migration; LRU applies equally.
+        """
+        files = sorted(
+            list(self._tts_cache_dir.glob("*.mp3"))
+            + list(self._tts_cache_dir.glob("*.pcm")),
+            key=lambda p: p.stat().st_mtime,
+        )
         while len(files) > self._tts_cache_max:
             files[0].unlink(missing_ok=True)
             files.pop(0)
@@ -218,7 +305,9 @@ class TTSEngine:
 
         def _synth_one(text: str) -> None:
             cache_key = self._tts_cache_key(text, "calm")
-            cache_path = self._tts_cache_dir / f"{cache_key}.mp3"
+            # MiniMax path now caches as .pcm (commit 3); other engines still .mp3.
+            ext = "pcm" if self.engine_name == "minimax" else "mp3"
+            cache_path = self._tts_cache_dir / f"{cache_key}.{ext}"
             if cache_path.exists():
                 self.logger.debug("TTS precache already exists: %r", text)
                 return
@@ -421,22 +510,23 @@ class TTSEngine:
             return tmp.name
 
     def _synth_minimax(self, text: str, emotion: str = "") -> tuple[str, bool]:
-        """Synthesize with MiniMax TTS, return (path, deletable).
+        """Synthesize with MiniMax TTS via WebSocket, return (path, deletable).
 
-        Short texts (<=50 chars) are cached to disk; deletable=False.
-        Long texts go to a temp file; deletable=True.
+        Collects all audio chunks (PCM 32kHz mono 16-bit), writes to a
+        `.pcm` file. Short texts (<=50 chars) cache to disk with
+        deletable=False; long texts go to a temp file with deletable=True.
         """
         if not self.minimax_key:
             raise RuntimeError("MiniMax API key not configured (MINIMAX_API_KEY)")
 
         minimax_emotion = _EMOTION_TO_MINIMAX.get(emotion, "calm")
 
-        # Cache path for short responses
+        # Cache path for short responses (suffix .pcm — new format vs legacy .mp3)
         if len(text) <= 50:
             cache_key = self._tts_cache_key(text, minimax_emotion)
-            cache_path = self._tts_cache_dir / f"{cache_key}.mp3"
+            cache_path = self._tts_cache_dir / f"{cache_key}.pcm"
             if cache_path.exists():
-                cache_path.touch()  # update mtime for LRU eviction
+                cache_path.touch()
                 self.logger.info("TTS cache hit: %r", text[:50])
                 self._last_cache_hit = True
                 return str(cache_path), False
@@ -444,10 +534,9 @@ class TTSEngine:
         else:
             self._last_cache_hit = None
 
-        payload = {
+        task_start_payload = {
+            "event": "task_start",
             "model": self.minimax_model,
-            "text": text,
-            "stream": False,
             "voice_setting": {
                 "voice_id": self.minimax_voice,
                 "speed": self.speed,
@@ -456,38 +545,33 @@ class TTSEngine:
                 "emotion": minimax_emotion,
             },
             "audio_setting": {
-                "format": "mp3",
+                "format": "pcm",
                 "sample_rate": 32000,
+                "bitrate": 128000,
                 "channel": 1,
             },
         }
 
         self.logger.info(
-            "MiniMax TTS: voice=%s emotion=%s text=%r",
+            "MiniMax WS collect: voice=%s emotion=%s text=%r",
             self.minimax_voice, minimax_emotion, text[:50],
         )
 
-        resp = self._http_session.post(
-            self._minimax_url,
-            headers={
-                "Authorization": f"Bearer {self.minimax_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=15,
+        audio_bytes = asyncio.run(
+            _ws_collect_audio(
+                self._minimax_base_url,
+                self.minimax_key,
+                task_start_payload,
+                text,
+                self.logger,
+            )
         )
-        resp.raise_for_status()
-        data = resp.json()
 
-        if "data" not in data or "audio" not in data.get("data", {}):
-            error_msg = data.get("base_resp", {}).get("status_msg", str(data))
-            raise RuntimeError(f"MiniMax TTS error: {error_msg}")
-
-        audio_bytes = bytes.fromhex(data["data"]["audio"])
+        if len(audio_bytes) == 0:
+            raise RuntimeError("MiniMax WS returned empty audio")
 
         if len(text) <= 50:
-            # Write atomically to cache dir
-            tmp_fd, tmp_name = tempfile.mkstemp(suffix=".mp3.tmp", dir=self._tts_cache_dir)
+            tmp_fd, tmp_name = tempfile.mkstemp(suffix=".pcm.tmp", dir=self._tts_cache_dir)
             try:
                 with os.fdopen(tmp_fd, "wb") as f:
                     f.write(audio_bytes)
@@ -500,10 +584,10 @@ class TTSEngine:
                 raise
             self._evict_tts_cache()
             return str(cache_path), False
-        else:
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-                tmp.write(audio_bytes)
-                return tmp.name, True
+
+        with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as tmp:
+            tmp.write(audio_bytes)
+            return tmp.name, True
 
     @staticmethod
     def _build_azure_ssml(text: str, voice: str, style: str, rate_attr: str) -> str:
@@ -689,17 +773,26 @@ class TTSEngine:
     def _decode_file_to_pcm(self, filepath: str, target_sr: int) -> "np.ndarray":
         """Decode any supported audio file → mono float32 PCM at target_sr.
 
-        Handles MP3 / WAV / FLAC / Vorbis via miniaudio's generic decoder
-        (format detection from content, not extension). Stereo is
-        downmixed to mono by channel-averaging. Source rate ≠ target
-        triggers a soxr HQ resample (~1-2ms for a 3s sentence).
+        Fast path for `.pcm` files (raw 32kHz mono 16-bit, MiniMax WS format):
+        skip miniaudio, read bytes, int16→float32, soxr resample if needed.
+
+        General path: miniaudio's generic decoder (MP3/WAV/FLAC/Vorbis),
+        format detection from content. Stereo downmixed to mono. soxr HQ
+        resample if source rate ≠ target.
         """
+        if filepath.endswith(".pcm"):
+            raw = Path(filepath).read_bytes()
+            pcm_i16 = np.frombuffer(raw, dtype=np.int16)
+            pcm_f32 = pcm_i16.astype(np.float32) / 32768.0
+            source_sr = 32000  # MiniMax PCM format fixed at 32kHz
+            if source_sr != target_sr:
+                pcm_f32 = soxr.resample(pcm_f32, source_sr, target_sr, quality="HQ")
+            return pcm_f32.astype(np.float32, copy=False)
+
         dsf = miniaudio.decode_file(filepath)
         pcm = np.asarray(dsf.samples, dtype=np.int16)
         if dsf.nchannels > 1:
-            # Interleaved → (N, channels) → mono mean
             pcm = pcm.reshape(-1, dsf.nchannels).mean(axis=1).astype(np.int16)
-        # int16 → float32 normalized to [-1, 1]
         pcm_f32 = pcm.astype(np.float32) / 32768.0
         if dsf.sample_rate != target_sr:
             pcm_f32 = soxr.resample(pcm_f32, dsf.sample_rate, target_sr, quality="HQ")
