@@ -163,10 +163,14 @@ class SpeechRecognizer:
 
         model_path = self._sensevoice_model_dir
         self.logger.info("Loading SenseVoice model from %s", model_path)
+        # Force the configured language so short utterances don't get
+        # misidentified as Japanese/Korean by SenseVoice's multilingual
+        # detector. Empty string = auto-detect (SenseVoice default).
         self._sherpa_recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
             model=str(model_path / "model.int8.onnx"),
             tokens=str(model_path / "tokens.txt"),
             num_threads=self._sensevoice_num_threads,
+            language=self.language or "",
             use_itn=True,
         )
         return self._sherpa_recognizer

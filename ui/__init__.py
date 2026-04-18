@@ -1,5 +1,1 @@
-"""Web UI helpers for the smart-home voice lock dashboard."""
-
-from .dashboard import DashboardController, build_dashboard, launch_dashboard
-
-__all__ = ["DashboardController", "build_dashboard", "launch_dashboard"]
+"""UI helpers for Jarvis — OLED display + Live2D web server."""
