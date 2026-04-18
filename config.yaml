@@ -386,9 +386,9 @@ tts:
 
   # MiniMax TTS（TTS Arena 第一，中文最自然，带情感）
   # 国内: https://api.minimax.chat ; 国际: https://api.minimax.io 或 https://api-uw.minimax.io
-  minimax_base_url: "https://api.minimax.chat"
-  minimax_key: ""        # env MINIMAX_API_KEY
-  minimax_model: speech-02-turbo
+  minimax_base_url: "https://api-uw.minimax.io"
+  minimax_key: ""        # env MINIMAX_API_KEY (international account)
+  minimax_model: speech-2.8-turbo
   minimax_voice: "Chinese (Mandarin)_ExplorativeGirl"
   minimax_volume: 1    # int 1-10, 1=正常；之前 5 偏大有爆音（float 会被 round+clamp，见 core/tts.py:127）
 

@@ -136,7 +136,7 @@ class TTSEngine:
 
         # MiniMax TTS config
         self.minimax_key = str(tts_config.get("minimax_key", "") or os.environ.get("MINIMAX_API_KEY", ""))
-        self.minimax_model = str(tts_config.get("minimax_model", "speech-02-turbo"))
+        self.minimax_model = str(tts_config.get("minimax_model", "speech-2.8-turbo"))
         self.minimax_voice = str(tts_config.get("minimax_voice", "male-qn-qingse"))
         # Volume default 1 (int). MiniMax API expects int 0-10; floats may 422
         # against strict OpenAPI integer validators. Clamp to [1, 10].
@@ -149,7 +149,7 @@ class TTSEngine:
         # Base URL is region-scoped: `.chat` domestic, `.io` / `-uw.io` international.
         # Path `/v1/t2a_v2` is the same across regions; WS variant reuses this base.
         self._minimax_base_url = str(
-            tts_config.get("minimax_base_url", "https://api.minimax.chat")
+            tts_config.get("minimax_base_url", "https://api-uw.minimax.io")
         ).rstrip("/")
         self._minimax_url = f"{self._minimax_base_url}/v1/t2a_v2"
 
