@@ -391,6 +391,8 @@ tts:
   minimax_model: speech-2.8-turbo
   minimax_voice: "Chinese (Mandarin)_ExplorativeGirl"
   minimax_volume: 1    # int 1-10, 1=正常；之前 5 偏大有爆音（float 会被 round+clamp，见 core/tts.py:127）
+  minimax_ws: true      # use WebSocket streaming path when engine=minimax (false = legacy HTTP collect)
+  minimax_prewarm: true # open WS eagerly on LLM first token (overlaps handshake with LLM)
 
   # 持续流播放器(替代 afplay/mpv/ffplay subprocess)。
   # 保持单个 sd.OutputStream 跨会话打开,PCM 经 ring buffer 喂 callback,

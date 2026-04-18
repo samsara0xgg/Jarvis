@@ -194,3 +194,49 @@ class TestMinimaxWSClientIdle:
         client.start_idle_watchdog()
         await asyncio.sleep(0.2)
         assert not client.is_open()
+
+
+class TestStreamToPlayer:
+    """TTSEngine.stream_to_player: chunk-by-chunk push to player, returns result."""
+
+    @pytest.mark.asyncio
+    async def test_stream_pushes_chunks_and_reports_complete(self, connect_patch):
+        from core.tts import TTSEngine, PlaybackResult
+        from core.tts_minimax_ws import MinimaxWSClient
+        import threading
+
+        ws = connect_patch
+        ws.send_queue = [
+            json.dumps({"event": "connected_success", "base_resp": {"status_code": 0}}),
+            json.dumps({"event": "task_started", "base_resp": {"status_code": 0}}),
+        ]
+        client = MinimaxWSClient("https://api-uw.minimax.io", "sk", "m", "V", 1,
+                                 sample_rate_out=32000)
+        await client.open_session(emotion=None)
+
+        ws.send_queue = [
+            json.dumps({"data": {"audio": (b"\x00\x00" * 10).hex()}, "is_final": False}),
+            json.dumps({"data": {"audio": ""}, "is_final": True}),
+        ]
+
+        player = MagicMock()
+        player.played_samples = 0
+
+        def fake_write(pcm, **kw):
+            player.played_samples += len(pcm)
+        player.write = fake_write
+        player.drain = MagicMock(return_value=True)
+
+        eng = TTSEngine.__new__(TTSEngine)
+        eng.logger = MagicMock()
+        eng._stream_player_sample_rate = 32000
+
+        result = await eng._stream_to_player_async(
+            "你好", emotion=None, player=player, ws_client=client,
+            abort_event=threading.Event(),
+        )
+        assert isinstance(result, PlaybackResult)
+        assert result.completed is True
+        assert result.total_samples == 10
+        assert player.played_samples == 10
+        await client.close_session()

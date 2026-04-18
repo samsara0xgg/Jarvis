@@ -22,6 +22,8 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
 
+from dataclasses import dataclass
+
 from core import tts_preprocessor
 
 # Optional — persistent-stream player stack. If any of these imports
@@ -80,6 +82,25 @@ _EMOTION_TO_MINIMAX = {
     "SURPRISED": "happy",
     "EMO_UNKNOWN": "calm",
 }
+
+# Emotions that should NOT be sent to MiniMax (skipping saves ~500ms server
+# inference tax). NEUTRAL/EMO_UNKNOWN/""/None all mean "no special emotion".
+_MINIMAX_EMOTION_SKIP = {"NEUTRAL", "EMO_UNKNOWN", "", None}
+
+
+def _minimax_emotion_effective(emotion: str | None) -> str | None:
+    """Map jarvis emotion label → MiniMax emotion value, or None to skip field.
+
+    Returns None for NEUTRAL / EMO_UNKNOWN / "" / None — no emotion field sent.
+    Returns the mapped value (e.g. "happy") for active emotions.
+    """
+    if emotion in _MINIMAX_EMOTION_SKIP:
+        return None
+    return _EMOTION_TO_MINIMAX.get(emotion, "calm")
+
+
+# Set of engine names that implement TTSEngine.stream_to_player.
+SUPPORTS_STREAMING: set[str] = {"minimax"}
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +181,26 @@ async def _ws_collect_audio(
             pass
 
 
+@dataclass
+class PlaybackResult:
+    """Outcome of a streaming TTS playback.
+
+    Attributes:
+        completed: True iff is_final received AND player drain finished before abort.
+        played_samples: Player's played-samples counter at exit (for WP5 fraction calc).
+        total_samples: Total samples written to player this sentence (None if error mid-stream).
+        sentence_start_samples: player.played_samples at the moment feed() began.
+        subtitle_url: WS-provided subtitle URL (if any; L1 WP5 input).
+        raised: Exception surfaced by stream_to_player; None on success path.
+    """
+    completed: bool = False
+    played_samples: int = 0
+    total_samples: int | None = None
+    sentence_start_samples: int = 0
+    subtitle_url: str | None = None
+    raised: Exception | None = None
+
+
 class TTSEngine:
     """Speak text aloud using Azure Neural TTS, Edge TTS, or pyttsx3.
 
@@ -231,6 +272,8 @@ class TTSEngine:
             tts_config.get("minimax_base_url", "https://api-uw.minimax.io")
         ).rstrip("/")
         self._minimax_url = f"{self._minimax_base_url}/v1/t2a_v2"
+        self._minimax_ws_enabled = bool(tts_config.get("minimax_ws", True))
+        self._minimax_prewarm_enabled = bool(tts_config.get("minimax_prewarm", True))
 
         # TTS text preprocessor config (strips emoji/brackets/asterisks/etc.).
         # All filters default-on; can be disabled per-key in config.yaml.
@@ -268,8 +311,13 @@ class TTSEngine:
         Engine name is part of the key: different engines produce audibly
         different output for the same text, so sharing cache entries across
         engines would read the wrong voice after a switch.
+
+        Emotion is normalized to "" for None-ish inputs (NEUTRAL / EMO_UNKNOWN
+        / None / "") — all produce identical audio under the emotion-skip
+        rule, so they must share a cache entry.
         """
-        raw = f"{self.engine_name}|{text}|{self.minimax_voice}|{emotion}"
+        emo_norm = emotion if emotion and emotion not in ("NEUTRAL", "EMO_UNKNOWN") else ""
+        raw = f"{self.engine_name}|{text}|{self.minimax_voice}|{emo_norm}"
         return hashlib.md5(raw.encode()).hexdigest()
 
     def _is_cached_file(self, filepath: str) -> bool:
@@ -519,11 +567,11 @@ class TTSEngine:
         if not self.minimax_key:
             raise RuntimeError("MiniMax API key not configured (MINIMAX_API_KEY)")
 
-        minimax_emotion = _EMOTION_TO_MINIMAX.get(emotion, "calm")
+        minimax_emotion = _minimax_emotion_effective(emotion)  # None means skip field
 
         # Cache path for short responses (suffix .pcm — new format vs legacy .mp3)
         if len(text) <= 50:
-            cache_key = self._tts_cache_key(text, minimax_emotion)
+            cache_key = self._tts_cache_key(text, minimax_emotion or "")
             cache_path = self._tts_cache_dir / f"{cache_key}.pcm"
             if cache_path.exists():
                 cache_path.touch()
@@ -534,16 +582,18 @@ class TTSEngine:
         else:
             self._last_cache_hit = None
 
+        voice_setting = {
+            "voice_id": self.minimax_voice,
+            "speed": self.speed,
+            "vol": self.minimax_volume,
+            "pitch": 0,
+        }
+        if minimax_emotion is not None:
+            voice_setting["emotion"] = minimax_emotion
         task_start_payload = {
             "event": "task_start",
             "model": self.minimax_model,
-            "voice_setting": {
-                "voice_id": self.minimax_voice,
-                "speed": self.speed,
-                "vol": self.minimax_volume,
-                "pitch": 0,
-                "emotion": minimax_emotion,
-            },
+            "voice_setting": voice_setting,
             "audio_setting": {
                 "format": "pcm",
                 "sample_rate": 32000,
@@ -554,7 +604,7 @@ class TTSEngine:
 
         self.logger.info(
             "MiniMax WS collect: voice=%s emotion=%s text=%r",
-            self.minimax_voice, minimax_emotion, text[:50],
+            self.minimax_voice, minimax_emotion or "(skipped)", text[:50],
         )
 
         audio_bytes = asyncio.run(
@@ -588,6 +638,60 @@ class TTSEngine:
         with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as tmp:
             tmp.write(audio_bytes)
             return tmp.name, True
+
+    async def _stream_to_player_async(
+        self,
+        text: str,
+        emotion: str | None,
+        player: Any,
+        ws_client: Any,
+        abort_event: threading.Event,
+    ) -> PlaybackResult:
+        """Async core of stream_to_player. Session must already be open."""
+        result = PlaybackResult(sentence_start_samples=getattr(player, "played_samples", 0))
+        total_samples = 0
+        try:
+            async for pcm_f32 in ws_client.feed(text):
+                if abort_event.is_set():
+                    break
+                player.write(pcm_f32)
+                total_samples += len(pcm_f32)
+            # is_final reached or abort — drain any remaining
+            drained = await asyncio.to_thread(player.drain, 5.0)
+            result.total_samples = total_samples
+            result.played_samples = getattr(player, "played_samples", 0)
+            result.subtitle_url = ws_client.last_subtitle_url
+            result.completed = bool(drained) and not abort_event.is_set()
+        except Exception as exc:
+            result.raised = exc
+            result.total_samples = total_samples
+            result.played_samples = getattr(player, "played_samples", 0)
+            result.subtitle_url = getattr(ws_client, "last_subtitle_url", None)
+        return result
+
+    def stream_to_player(
+        self,
+        text: str,
+        emotion: str,
+        player: Any,
+        ws_client: Any,
+        abort_event: threading.Event,
+    ) -> PlaybackResult:
+        """Sync entry point. Runs the async feed+play on an event loop.
+
+        Called from TTSPipeline._tts_worker (a non-asyncio thread). Uses
+        asyncio.run to drive the coroutine — simple and safe given one
+        sentence at a time per pipeline.
+        """
+        effective = _minimax_emotion_effective(emotion)
+        try:
+            return asyncio.run(
+                self._stream_to_player_async(
+                    text, effective, player, ws_client, abort_event,
+                )
+            )
+        except Exception as exc:
+            return PlaybackResult(raised=exc)
 
     @staticmethod
     def _build_azure_ssml(text: str, voice: str, style: str, rate_attr: str) -> str:
@@ -1042,6 +1146,12 @@ class TTSPipeline:
         self._played_texts: list[str] = []
         self._currently_playing: str | None = None
         self._progress_lock = threading.Lock()
+        # Streaming engines need a turn-level WS client. Lazy-created in
+        # prewarm() or first submit(). None for non-streaming engines.
+        self._ws_client: Any = None
+        self._ws_loop: asyncio.AbstractEventLoop | None = None
+        self._ws_thread: threading.Thread | None = None
+        self._progress_map: dict[str, PlaybackResult] = {}
 
     def start(self) -> None:
         """Start the TTS and playback worker threads."""
@@ -1065,6 +1175,105 @@ class TTSPipeline:
         if not text.strip():
             return
         self._text_queue.put((text, sentence_type, emotion))
+
+    def prewarm(self, emotion: str = "") -> None:
+        """Eagerly open WS session (call on LLM first token).
+
+        No-op if engine doesn't support streaming or ws is disabled.
+        Safe to call multiple times — opens only once per turn.
+        """
+        if self._engine.engine_name not in SUPPORTS_STREAMING:
+            return
+        if not getattr(self._engine, "_minimax_ws_enabled", False):
+            return
+        if self._ws_client is not None and self._ws_client.is_open():
+            return
+        self._open_ws_async(emotion)
+
+    def _open_ws_async(self, emotion: str) -> None:
+        """Start a background asyncio loop + open session on it."""
+        from core.tts_minimax_ws import MinimaxWSClient
+
+        if self._ws_loop is None:
+            self._ws_loop = asyncio.new_event_loop()
+            self._ws_thread = threading.Thread(
+                target=self._ws_loop.run_forever,
+                name="tts-ws-loop",
+                daemon=True,
+            )
+            self._ws_thread.start()
+
+        eff_emotion = _minimax_emotion_effective(emotion)
+        eng = self._engine
+        player = eng._ensure_stream_player()
+        client = MinimaxWSClient(
+            base_url=eng._minimax_base_url,
+            api_key=eng.minimax_key,
+            model=eng.minimax_model,
+            voice_id=eng.minimax_voice,
+            volume=eng.minimax_volume,
+            sample_rate_out=eng._stream_player_sample_rate if player else 48000,
+            logger=eng.logger,
+        )
+
+        async def _run():
+            await client.open_session(eff_emotion)
+            client.start_idle_watchdog()
+
+        fut = asyncio.run_coroutine_threadsafe(_run(), self._ws_loop)
+        try:
+            fut.result(timeout=5.0)
+            self._ws_client = client
+        except Exception as exc:
+            eng.logger.warning("prewarm ws open failed: %s", exc)
+            self._ws_client = None
+
+    def _stream_one(self, text: str, sentence_type: Any, emotion: str) -> None:
+        """Stream one sentence through the open WS client to the player.
+
+        Lazy-opens the ws if prewarm didn't fire. Records playback result
+        (for WP5 truncation in abort()).
+        """
+        if self._ws_client is None or not self._ws_client.is_open():
+            self._open_ws_async(emotion)
+            if self._ws_client is None or not self._ws_client.is_open():
+                self.logger.warning("WS unavailable, falling back to file path for: %r", text[:30])
+                try:
+                    result = self._synthesize_to_file(text, emotion)
+                    if result and not self._aborted.is_set():
+                        filepath, deletable = result
+                        self._audio_queue.put((filepath, sentence_type, deletable, text))
+                except Exception as exc:
+                    self.logger.warning("Fallback synth failed: %s", exc)
+                return
+
+        eng = self._engine
+        player = eng._ensure_stream_player()
+        if player is None:
+            self.logger.warning("Stream player unavailable for: %r", text[:30])
+            return
+
+        with self._progress_lock:
+            self._currently_playing = text
+
+        async def _drive():
+            return await eng._stream_to_player_async(
+                text, _minimax_emotion_effective(emotion),
+                player, self._ws_client, self._aborted,
+            )
+
+        fut = asyncio.run_coroutine_threadsafe(_drive(), self._ws_loop)
+        try:
+            result: PlaybackResult = fut.result(timeout=60)
+        except Exception as exc:
+            self.logger.warning("Streaming playback raised: %s", exc)
+            result = PlaybackResult(raised=exc)
+
+        with self._progress_lock:
+            self._currently_playing = None
+            if result.completed:
+                self._played_texts.append(text)
+            self._progress_map[text] = result
 
     def finish(self) -> None:
         """Signal that no more sentences will be submitted. Non-blocking."""
@@ -1128,17 +1337,32 @@ class TTSPipeline:
             return list(self._played_texts)
 
     def stop(self) -> None:
-        """Stop worker threads (call after wait_done or abort)."""
-        # Ensure workers can exit
+        """Stop worker threads + ws loop (call after wait_done or abort)."""
         self._text_queue.put(_SENTINEL)
         self._audio_queue.put(_SENTINEL)
         if self._tts_thread and self._tts_thread.is_alive():
             self._tts_thread.join(timeout=5)
         if self._play_thread and self._play_thread.is_alive():
             self._play_thread.join(timeout=5)
+        # WS client close (turn-end)
+        if self._ws_client is not None and self._ws_loop is not None:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._ws_client.close_session(), self._ws_loop,
+                )
+                fut.result(timeout=2)
+            except Exception as exc:
+                self.logger.warning("ws close_session on stop: %s", exc)
+            self._ws_client = None
+        if self._ws_loop is not None:
+            self._ws_loop.call_soon_threadsafe(self._ws_loop.stop)
+            if self._ws_thread and self._ws_thread.is_alive():
+                self._ws_thread.join(timeout=2)
+            self._ws_loop = None
+            self._ws_thread = None
 
     def _tts_worker(self) -> None:
-        """Consume text_queue, synthesize to temp files, push to audio_queue."""
+        """Consume text_queue; synthesize or stream per engine capability."""
         while not self._aborted.is_set():
             try:
                 item = self._text_queue.get(timeout=1)
@@ -1146,10 +1370,23 @@ class TTSPipeline:
                 continue
 
             if item is _SENTINEL:
+                # Always propagate so _play_worker exits cleanly in both
+                # streaming and legacy modes.
                 self._audio_queue.put(_SENTINEL)
                 return
 
             text, sentence_type, emotion = item
+
+            # Streaming route — minimax with ws enabled
+            if (self._engine.engine_name in SUPPORTS_STREAMING
+                    and getattr(self._engine, "_minimax_ws_enabled", False)):
+                try:
+                    self._stream_one(text, sentence_type, emotion)
+                except Exception as exc:
+                    self.logger.warning("streaming route failed: %s", exc)
+                continue
+
+            # Legacy file-based route
             try:
                 result = self._synthesize_to_file(text, emotion)
                 if result and not self._aborted.is_set():

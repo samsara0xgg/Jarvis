@@ -1010,6 +1010,13 @@ class JarvisApp:
             tts_pipeline = create_tts_pipeline() if create_tts_pipeline else None
             with self._pipeline_lock:
                 self._active_pipeline = tts_pipeline
+            # Prewarm: open WS session in parallel with LLM first-token latency.
+            # No-op for non-streaming engines / ws disabled. Safe if fails (logs + continues).
+            if tts_pipeline is not None:
+                try:
+                    tts_pipeline.prewarm(emotion)
+                except Exception as exc:
+                    self.logger.debug("TTS prewarm skipped: %s", exc)
 
             # Start interrupt monitoring during TTS playback (voice path only)
             if tts_pipeline:
