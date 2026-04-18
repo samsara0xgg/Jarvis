@@ -31,6 +31,11 @@ logs/
 *.mp3
 *.flac
 
+# 机密 (API keys, 环境变量文件)
+.env
+.env.*
+!.env.example
+
 # 隐私数据 & 运行时数据
 data/conversations/
 data/memory/
@@ -62,6 +67,9 @@ ui/web/__pycache__/
 # bench_llm_v3 artifacts (fake notes, gitignored — regenerated from seed)
 bench_fixtures/fake_notes_*.txt
 bench_results/
+
+# System test 运行产物（runner.py 产出的时间戳 .md/.json；重要结论手写到 notes/）
+system_tests/runs/
 
 # Observer bench: observer_cn/ is git-tracked (seeds.yaml + approved fx_*.json)
 # but draft .json (Opus output, awaiting Allen review) is NOT

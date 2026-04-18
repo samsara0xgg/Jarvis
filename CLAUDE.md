@@ -24,6 +24,13 @@ python system_tests/runner.py --mode cc --suite <name>  # system test (CC mode)
 python system_tests/runner.py     # system test (human interactive)
 ```
 
+## Git
+
+- Commit 消息：`type(scope): 中文`，type ∈ `feat fix refactor test docs chore perf data`
+- 一件事一个 commit。禁 `git add .` / `-am` 混提交 / `push -f` / `--no-verify`
+- 大重构走 `feat/xxx` branch，其他直接 main
+- 详见 `docs/git-guide.md`（完整 cheatsheet + gitignore 原则 + 恢复命令）
+
 ## System Tests
 
 After changes that affect runtime behavior (skip for pure refactors):
