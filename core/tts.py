@@ -1104,6 +1104,75 @@ class TTSEngine:
 # Dual-thread TTS pipeline
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# WP5 — truncate sentence text to what the user actually heard.
+# ---------------------------------------------------------------------------
+
+# Characters to snap truncation forward to (Chinese punctuation + ASCII boundaries)
+_WP5_SNAP_CHARS = frozenset("。！？，、；：.!?,;: ")
+
+
+def _wp5_truncate(
+    text: str,
+    played_samples: int,
+    sentence_start_samples: int,
+    total_samples: int | None,
+    subtitle_url: str | None,
+    sample_rate: int,
+    subtitle_fetch_timeout: float = 0.5,
+) -> str:
+    """Return the prefix of `text` corresponding to what the user heard.
+
+    Three-level degradation:
+      L1 — subtitle_url available → fetch ms-precise duration, compute fraction
+      L2 — subtitle_url not available but total_samples known → fraction by ring
+      L3 — neither signal → empty string (strict: assume unheard)
+
+    After fraction is computed, the character cut is snapped FORWARD to the
+    nearest punctuation (within +20% of remaining chars). If no snap target,
+    the raw cut is returned. If fraction >= 1.0, returns full text.
+    """
+    played_this = max(0, played_samples - sentence_start_samples)
+
+    fraction: float | None = None
+    # L1: subtitle fetch
+    if subtitle_url:
+        try:
+            import urllib.request
+            with urllib.request.urlopen(subtitle_url, timeout=subtitle_fetch_timeout) as r:
+                subs = json.loads(r.read().decode("utf-8"))
+            if isinstance(subs, list) and subs:
+                total_ms = (max(e.get("end", 0) for e in subs)
+                            - min(e.get("start", 0) for e in subs))
+                if total_ms > 0:
+                    played_ms = played_this * 1000 / sample_rate
+                    fraction = min(1.0, played_ms / total_ms)
+        except Exception:
+            pass  # fall through to L2
+
+    # L2: ring buffer fraction
+    if fraction is None and total_samples and total_samples > 0:
+        fraction = min(1.0, played_this / total_samples)
+
+    # L3: no signal → empty
+    if fraction is None or fraction <= 0:
+        return ""
+
+    if fraction >= 1.0:
+        return text
+
+    k = int(len(text) * fraction)
+    if k >= len(text):
+        return text
+    # Snap forward: look for punctuation in text[k : k + window] where window
+    # is 20% of remaining characters (minimum 2 chars, maximum 8).
+    window_max = max(2, min(8, int(len(text) * 0.2)))
+    for i in range(k, min(len(text), k + window_max)):
+        if text[i] in _WP5_SNAP_CHARS:
+            return text[:i + 1]  # include the punctuation itself
+    return text[:k]
+
+
 class SentenceType(Enum):
     """Position marker for sentences in a response."""
 
@@ -1299,6 +1368,16 @@ class TTSPipeline:
         with self._progress_lock:
             currently_playing = self._currently_playing
 
+        # Close WS first so feed() exits promptly in streaming mode
+        if self._ws_client is not None and self._ws_loop is not None:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._ws_client.close_session(), self._ws_loop,
+                )
+                fut.result(timeout=1)
+            except Exception as exc:
+                self.logger.warning("ws close on abort: %s", exc)
+
         # Drain text_queue
         text_remaining: list[str] = []
         while not self._text_queue.empty():
@@ -1317,15 +1396,43 @@ class TTSPipeline:
                     audio_remaining.append(item[3])
             except Empty:
                 break
-        # Kill currently playing audio
+        # Kill currently playing audio (flush ring buffer + kill subprocess)
         self._engine.stop()
         # Unblock workers
         self._text_queue.put(_SENTINEL)
         self._audio_queue.put(_SENTINEL)
 
-        unplayed: list[str] = []
+        # WP5: currently-playing sentence — if we have streaming progress,
+        # truncate text to "what user heard" + put remaining in unplayed.
+        # For legacy (non-streaming) engines, currently_playing is whole-unheard.
+        current_unplayed = ""
         if currently_playing:
-            unplayed.append(currently_playing)
+            eng = self._engine
+            pr: PlaybackResult | None = self._progress_map.get(currently_playing)
+            player = getattr(eng, "_stream_player", None)
+            if pr is not None and player is not None:
+                sr_out = getattr(eng, "_stream_player_sample_rate", 48000)
+                heard = _wp5_truncate(
+                    text=currently_playing,
+                    played_samples=getattr(player, "played_samples", 0),
+                    sentence_start_samples=pr.sentence_start_samples,
+                    total_samples=pr.total_samples,
+                    subtitle_url=pr.subtitle_url,
+                    sample_rate=sr_out,
+                )
+                if heard:
+                    with self._progress_lock:
+                        self._played_texts.append(heard)
+                    tail = currently_playing[len(heard):].lstrip()
+                    current_unplayed = tail
+                else:
+                    current_unplayed = currently_playing  # L3: unheard
+            else:
+                current_unplayed = currently_playing  # legacy / no progress
+
+        unplayed: list[str] = []
+        if current_unplayed:
+            unplayed.append(current_unplayed)
         unplayed.extend(audio_remaining)
         unplayed.extend(text_remaining)
         return unplayed

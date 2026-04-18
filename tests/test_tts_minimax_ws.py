@@ -240,3 +240,98 @@ class TestStreamToPlayer:
         assert result.total_samples == 10
         assert player.played_samples == 10
         await client.close_session()
+
+
+class TestWP5Truncation:
+    """WP5 three-level degradation: L1 subtitle / L2 ring-buffer / L3 strict."""
+
+    def test_l2_truncates_by_ring_buffer_fraction(self):
+        """With only total_samples + played_samples, truncate by ratio + snap to punctuation."""
+        from core.tts import _wp5_truncate
+
+        text = "今天天气真好，我们出去散步吧。"  # 15 chars incl. punct
+        # Played 60% of 30 total samples = 18 samples. Fraction 0.6 → k=int(15*0.6)=9
+        # text[:9] = "今天天气真好，我们", last char is 们. Window 9..9+3 (20% of 15 ~= 3)
+        # text[9:12] = "出去散". No 。！？，、 in window → return text[:9].
+        out = _wp5_truncate(
+            text=text,
+            played_samples=18,
+            sentence_start_samples=0,
+            total_samples=30,
+            subtitle_url=None,
+            sample_rate=32000,
+        )
+        # With fraction 0.6 of 15 chars = 9 → "今天天气真好，我们" (9 chars, ends at 们)
+        assert out.startswith("今天天气真好")
+        assert len(out) >= 7
+
+    def test_l3_returns_empty_when_no_progress(self):
+        """No chunks received + nothing played → empty string (L3 strict)."""
+        from core.tts import _wp5_truncate
+        out = _wp5_truncate(
+            text="abc",
+            played_samples=0,
+            sentence_start_samples=0,
+            total_samples=None,
+            subtitle_url=None,
+            sample_rate=32000,
+        )
+        assert out == ""
+
+    def test_snap_to_chinese_comma_within_window(self):
+        """Char index inside a word; when punctuation lands in snap window, snap forward."""
+        from core.tts import _wp5_truncate
+        text = "甲乙丙丁，戊己庚辛壬癸"  # has 1 comma at index 4
+        # 40% of 10 samples → k=int(11*0.4)=4. Window text[4:4+2]="，戊". snap to "，" at 4 → text[:5]="甲乙丙丁，"
+        out = _wp5_truncate(
+            text=text,
+            played_samples=4,
+            sentence_start_samples=0,
+            total_samples=10,
+            subtitle_url=None,
+            sample_rate=32000,
+        )
+        assert out == "甲乙丙丁，"
+
+    def test_no_punctuation_returns_raw_cut(self):
+        """No punctuation in window → return raw char cut."""
+        from core.tts import _wp5_truncate
+        text = "甲乙丙丁戊己庚辛壬癸"  # no punctuation → no snap
+        out = _wp5_truncate(
+            text=text,
+            played_samples=4,
+            sentence_start_samples=0,
+            total_samples=10,
+            subtitle_url=None,
+            sample_rate=32000,
+        )
+        assert out == "甲乙丙丁"
+
+    def test_snap_to_space_in_english(self):
+        """English: snap truncation to space boundary when inside window."""
+        from core.tts import _wp5_truncate
+        text = "hello world this is jarvis"
+        # 40% of 10 → k=int(26*0.4)=10. text[:10]="hello worl". Window=int(26*0.2)=5.
+        # text[10:15]="d this". Space at index 11 → snap → text[:12]="hello world "
+        out = _wp5_truncate(
+            text=text,
+            played_samples=4,
+            sentence_start_samples=0,
+            total_samples=10,
+            subtitle_url=None,
+            sample_rate=32000,
+        )
+        assert out.startswith("hello world")
+
+    def test_full_played_returns_full_text(self):
+        """played_samples >= total_samples → fraction 1.0 → full text."""
+        from core.tts import _wp5_truncate
+        out = _wp5_truncate(
+            text="完全播完了。",
+            played_samples=100,
+            sentence_start_samples=0,
+            total_samples=100,
+            subtitle_url=None,
+            sample_rate=32000,
+        )
+        assert out == "完全播完了。"

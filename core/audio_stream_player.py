@@ -298,6 +298,11 @@ class AudioStreamPlayer:
         # is silently undone by the play worker continuing to feed the
         # remaining PCM of the current sentence into the newly-empty ring.
         self._abort = threading.Event()
+        # Monotonic count of samples that crossed the output stream. Updated
+        # in the callback with the number of REAL (non-padded) samples read
+        # from the ring. External readers (WP5 truncation) use this to
+        # compute fraction-played.
+        self._played_samples: int = 0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -334,6 +339,7 @@ class AudioStreamPlayer:
             LOGGER.warning("stream close error (ignored): %s", exc)
         self._stream = None
         self._ring.reset()
+        self._played_samples = 0
         self._drained.set()
         LOGGER.info(
             "AudioStreamPlayer stopped; lifetime callbacks=%d underflows=%d",
@@ -459,6 +465,12 @@ class AudioStreamPlayer:
     def is_running(self) -> bool:
         return self._stream is not None and self._stream.active
 
+    @property
+    def played_samples(self) -> int:
+        """Monotonic count of real (non-padded) samples written to the output.
+        Resets only on stop(). Used by WP5 truncation."""
+        return self._played_samples
+
     # ------------------------------------------------------------------
     # Callback — runs on PortAudio thread, keep it tight
     # ------------------------------------------------------------------
@@ -481,5 +493,6 @@ class AudioStreamPlayer:
         # outdata shape is (frames, channels). We're mono → flatten view.
         view = outdata[:, 0] if outdata.ndim > 1 else outdata
         # Read-into zero-pads on underrun, so view is always fully written.
-        self._ring.read_into(view, frames)
+        actual = self._ring.read_into(view, frames)
+        self._played_samples += actual  # only real samples, not zero-padded
         self._gain.apply(view)
