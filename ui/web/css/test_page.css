@@ -1502,3 +1502,270 @@ body.pet-mode #logPanel {
 body.pet-mode #live2d-stage {
   background: transparent !important;
 }
+
+/* ==================== Pet Overlay (Liquid Glass command panel) ==================== */
+/* All selectors scoped under .pet-overlay so nothing leaks into the page.         */
+
+.pet-overlay {
+  position: fixed;
+  top: 100px;
+  left: 100px;
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  min-height: 160px;
+  display: none;
+  flex-direction: column;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(30px) saturate(190%);
+  -webkit-backdrop-filter: blur(30px) saturate(190%);
+  border: 0.5px solid rgba(255, 255, 255, 0.22);
+  box-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.04),
+    0 8px 32px rgba(0, 0, 0, 0.12),
+    0 20px 60px rgba(0, 0, 0, 0.10);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  color: #1d1d1f;
+  z-index: 9999;
+  opacity: 0;
+  transform: translateY(6px) scale(0.985);
+  transition:
+    opacity 180ms ease-out,
+    transform 180ms ease-out;
+  overflow: hidden;
+  /* PIXI canvas below must not swallow pointer events when over panel */
+  pointer-events: auto;
+}
+
+/* Upper inner shine — Apple's signature glass depth */
+.pet-overlay::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 30%;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.35) 0%,
+    rgba(255, 255, 255, 0.08) 60%,
+    transparent 100%
+  );
+  border-radius: 16px 16px 0 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.pet-overlay.is-open {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    opacity 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.pet-overlay.is-closing {
+  opacity: 0;
+  transform: translateY(6px) scale(0.985);
+  transition:
+    opacity 180ms ease-out,
+    transform 180ms ease-out;
+}
+
+/* ── Message list ───────────────────────────────────────────────── */
+.pet-overlay__list {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 4px 8px 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Fog the top — fades top 30% of visible list area */
+  mask-image: linear-gradient(to bottom, transparent 0%, black 30%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+.pet-overlay__list::-webkit-scrollbar {
+  width: 4px;
+}
+.pet-overlay__list::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 2px;
+}
+.pet-overlay__list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ── Message bubbles ────────────────────────────────────────────── */
+.pet-overlay__msg {
+  display: flex;
+  width: 100%;
+  animation: pet-overlay-settle 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.pet-overlay__msg--user { justify-content: flex-end; }
+.pet-overlay__msg--ai,
+.pet-overlay__msg--system { justify-content: flex-start; }
+
+.pet-overlay__bubble {
+  max-width: 82%;
+  padding: 8px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  letter-spacing: 0.005em;
+}
+
+.pet-overlay__msg--user .pet-overlay__bubble {
+  background: rgba(255, 107, 157, 0.10);  /* whisper of coral */
+  color: #1d1d1f;
+  font-weight: 500;
+}
+
+.pet-overlay__msg--ai .pet-overlay__bubble {
+  background: rgba(0, 0, 0, 0.04);
+  color: #1d1d1f;
+  font-weight: 400;
+}
+
+.pet-overlay__msg--system .pet-overlay__bubble {
+  background: transparent;
+  color: #30c46a;
+  font-weight: 600;
+  padding-left: 4px;
+  padding-right: 4px;
+  letter-spacing: 0.01em;
+}
+
+/* Secondary-text example (reserved hook for timestamps / meta) */
+.pet-overlay__meta {
+  color: rgba(29, 29, 31, 0.6);
+  font-size: 11px;
+}
+
+/* ── Input row ──────────────────────────────────────────────────── */
+.pet-overlay__input-row {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  margin-top: 6px;
+  padding: 2px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.22);
+  border: 1px solid transparent;
+  transition: border-color 180ms ease-out, background 180ms ease-out;
+}
+
+.pet-overlay__input-row:focus-within {
+  border-color: rgba(255, 107, 157, 0.3);   /* 30% coral — focus ring */
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.pet-overlay__input {
+  flex: 1 1 auto;
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #1d1d1f;
+  caret-color: #ff6b9d;   /* coral caret — signature accent */
+  font-weight: 400;
+}
+
+.pet-overlay__input::placeholder {
+  color: rgba(29, 29, 31, 0.4);
+  font-weight: 400;
+}
+
+/* ── Keyboard hint strip ────────────────────────────────────────── */
+.pet-overlay__hint {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 4px 0 4px;
+  opacity: 0.4;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  font-size: 10.5px;
+  color: #1d1d1f;
+  user-select: none;
+  pointer-events: none;
+}
+
+.pet-overlay__hint kbd {
+  font-family: inherit;
+  font-size: 10.5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.06);
+  border: 0.5px solid rgba(0, 0, 0, 0.08);
+  color: inherit;
+}
+
+.pet-overlay__hint-left,
+.pet-overlay__hint-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Signature "paper settling" keyframe for message entry ───────── */
+@keyframes pet-overlay-settle {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Dark-mode auto adjustment so the panel reads on bright desktops too.  */
+@media (prefers-color-scheme: dark) {
+  .pet-overlay {
+    background: rgba(28, 28, 30, 0.55);
+    border: 0.5px solid rgba(255, 255, 255, 0.12);
+    color: #f5f5f7;
+  }
+  .pet-overlay::before {
+    background: linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.18) 0%,
+      rgba(255, 255, 255, 0.04) 60%,
+      transparent 100%
+    );
+  }
+  .pet-overlay__msg--ai .pet-overlay__bubble {
+    background: rgba(255, 255, 255, 0.06);
+    color: #f5f5f7;
+  }
+  .pet-overlay__msg--user .pet-overlay__bubble {
+    background: rgba(255, 107, 157, 0.18);
+    color: #f5f5f7;
+  }
+  .pet-overlay__input { color: #f5f5f7; }
+  .pet-overlay__input::placeholder { color: rgba(255, 255, 255, 0.4); }
+  .pet-overlay__input-row { background: rgba(255, 255, 255, 0.08); }
+  .pet-overlay__input-row:focus-within { background: rgba(255, 255, 255, 0.12); }
+  .pet-overlay__hint { color: #f5f5f7; }
+  .pet-overlay__hint kbd {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+}

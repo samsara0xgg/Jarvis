@@ -368,6 +368,12 @@ class Live2DManager {
 
             // 添加窗口大小变化监听器，保持模型在Canvas中间和底部
             window.addEventListener('resize', () => {
+                // Resize the PIXI renderer to match the new window size;
+                // otherwise the drawing buffer stays at creation size and the
+                // model gets clipped/stretched when Electron switches modes.
+                if (this.live2dApp && this.live2dApp.renderer) {
+                    this.live2dApp.renderer.resize(window.innerWidth, window.innerHeight);
+                }
                 if (this.live2dModel) {
                     // 使用窗口实际尺寸重新计算模型位置
                     this.live2dModel.x = (window.innerWidth - this.live2dModel.width) * 0.5;
@@ -598,6 +604,27 @@ class Live2DManager {
         const b = this.live2dModel.getBounds();
         if (!b) return false;
         return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
+    }
+
+    /**
+     * Resize the PIXI renderer + canvas drawing buffer and re-center the model.
+     * Called by the Electron Pet Mode mode-change handshake after window bounds
+     * change. OLV's use-live2d-resize.ts does the same: update canvas w/h +
+     * renderer.resize + re-center. We keep it simple (no DPR fiddling —
+     * PIXI.Application was created with autoDensity:true, which handles that).
+     * @param {number} width — new window width in CSS pixels
+     * @param {number} height — new window height in CSS pixels
+     */
+    resizeCanvas(width, height) {
+        if (!this.live2dApp || !this.live2dApp.renderer) return;
+        // Resize the PIXI renderer — this also updates the canvas drawing buffer.
+        this.live2dApp.renderer.resize(width, height);
+        // Re-center the model for the new canvas size. Use the y=-50 convention
+        // that the existing `window.resize` handler uses for post-init resizes.
+        if (this.live2dModel) {
+            this.live2dModel.x = (width - this.live2dModel.width) * 0.5;
+            this.live2dModel.y = -50;
+        }
     }
 
     /**

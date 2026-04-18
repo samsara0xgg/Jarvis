@@ -2,6 +2,7 @@
 import { getAudioPlayer } from './core/audio/player.js';
 import { checkMicrophoneAvailability, isHttpNonLocalhost } from './core/audio/recorder.js';
 import { uiController } from './ui/controller.js';
+import { petOverlay } from './ui/pet-overlay.js';
 import { log } from './utils/logger.js';
 
 class App {
@@ -15,6 +16,7 @@ class App {
         log('正在初始化应用...', 'info');
         this.uiController = uiController;
         this.uiController.init();
+        petOverlay.init(); // idempotent; controller also calls this
         this.audioPlayer = getAudioPlayer();
         await this.audioPlayer.start();
         await this.checkMicrophoneAvailability();

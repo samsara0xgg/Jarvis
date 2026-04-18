@@ -3,6 +3,7 @@ import { loadConfig, saveConfig, getServerUrl } from '../config/manager.js';
 import { getAudioPlayer } from '../core/audio/player.js';
 import { getAudioRecorder } from '../core/audio/recorder.js';
 import { getApiClient } from '../core/api-client.js';
+import { petOverlay } from './pet-overlay.js';
 
 class UIController {
     constructor() {
@@ -50,17 +51,85 @@ class UIController {
             this.updateRecordButtonState(true, seconds);
         };
 
-        // Electron Pet Mode IPC integration — no-op when loaded in plain browser
+        // Electron Pet Mode IPC integration — no-op when loaded in plain browser.
+        // Two-phase mode switch ported from OLV:
+        //   Phase 1 (pre-mode-changed): toggle body class so CSS hides chrome,
+        //     then signal main we're ready for bounds/flags to flip.
+        //   Phase 2 (mode-changed): window bounds have changed — resize PIXI
+        //     canvas to the new window dimensions, then signal main to fade in.
         if (window.jarvis) {
-            window.jarvis.onModeChange((mode) => {
+            window.jarvis.onPreModeChanged((mode) => {
                 document.body.classList.toggle('pet-mode', mode === 'pet');
+                // Wait two rAF ticks so the CSS change has been laid out + painted
+                // before telling main to flip bounds.
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        window.jarvis.sendModeReady();
+                    });
+                });
             });
-            window.jarvis.onCursorUpdate(({ x, y }) => {
+
+            window.jarvis.onModeChanged((mode) => {
                 const live2d = window.chatApp?.live2dManager;
-                const hit = live2d?.isHitOnModel?.(x, y) ?? false;
-                window.jarvis.sendHover(hit);
+                if (live2d && typeof live2d.resizeCanvas === 'function') {
+                    live2d.resizeCanvas(window.innerWidth, window.innerHeight);
+                }
+                // Auto-hide the floating panel when leaving Pet mode —
+                // ⌘Space is gated to Pet-only by main.js, so without this the
+                // panel would be stuck open and unreachable.
+                if (mode === 'window' && petOverlay && petOverlay.isOpen) {
+                    petOverlay.hide();
+                }
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        window.jarvis.sendModeRendered();
+                    });
+                });
             });
+
+            // Hover-based click-through (replaces the old cursor-polling loop).
+            // Renderer runs hit-tests locally and reports to main, which
+            // aggregates across components and flips setIgnoreMouseEvents.
+            document.addEventListener('mousemove', (e) => {
+                const live2d = window.chatApp?.live2dManager;
+                const hit = live2d && typeof live2d.isHitOnModel === 'function'
+                    ? live2d.isHitOnModel(e.clientX, e.clientY)
+                    : false;
+                window.jarvis.updateHover('live2d', hit);
+            });
+
+            // Main relays `⌘Space model <name>` commands from the Pet overlay
+            // through here — actual switch happens on the live2d manager.
+            if (typeof window.jarvis.onSwitchModel === 'function') {
+                window.jarvis.onSwitchModel((name) => {
+                    this.switchLive2DModelByName(name);
+                });
+            }
         }
+
+        // Pet overlay — Liquid Glass floating input/chat panel. Init is
+        // idempotent and guarded by `if (window.jarvis)` for IPC-dependent
+        // parts, so browser-only usage stays untouched.
+        try {
+            petOverlay.init();
+        } catch (err) {
+            // Non-fatal — controller must keep working.
+            // eslint-disable-next-line no-console
+            console.warn('[pet-overlay] init failed:', err);
+        }
+    }
+
+    switchLive2DModelByName(name) {
+        if (typeof name !== 'string' || !name) return;
+        const app = window.chatApp;
+        if (!app || !app.live2dManager) return;
+        // Keep the select in sync so the "Apply" pattern still reflects truth.
+        const modelSelect = document.getElementById('live2dModelSelect');
+        if (modelSelect) modelSelect.value = name;
+        app.live2dManager.switchModel(name).catch((err) => {
+            // eslint-disable-next-line no-console
+            console.warn('[controller] switchLive2DModelByName failed:', err);
+        });
     }
 
     initEventListeners() {
@@ -278,6 +347,14 @@ class UIController {
         messageDiv.innerHTML = `<div class="message-bubble">${content}</div>`;
         chatStream.appendChild(messageDiv);
         chatStream.scrollTop = chatStream.scrollHeight;
+
+        // Fan-out for the Pet overlay (and any other listeners). Vanilla
+        // CustomEvent; listeners guard by their own open/closed state.
+        try {
+            document.dispatchEvent(new CustomEvent('jarvis:message-added', {
+                detail: { text: content, isUser },
+            }));
+        } catch { /* IE-era fallback unnecessary on Electron/modern browsers */ }
     }
 
     switchBackground() {
