@@ -11,22 +11,23 @@
 
 ## 2. Commit 消息格式
 
-Conventional Commits：`type(scope): 中文描述`
+Conventional Commits: `type(scope): English description`
 
 | type | 用法 | 例 |
 |---|---|---|
-| `feat` | 新功能 | `feat(tts): 加 MiniMax emotion 映射` |
+| `feat` | 新功能 | `feat(tts): add MiniMax emotion mapping` |
 | `fix` | bug 修复 | `fix(observer): Gemini fallback endpoint` |
-| `refactor` | 重构（行为不变）| `refactor(memory): 拆 MemoryManager` |
-| `test` | 只改测试 | `test(interrupt): 补 soft-stop 回归` |
+| `refactor` | 重构（行为不变）| `refactor(memory): split MemoryManager` |
+| `test` | 只改测试 | `test(interrupt): add soft-stop regression` |
 | `docs` | 文档 / 笔记 | `docs(notes): 2026-04-17 session` |
-| `chore` | 杂项（依赖 / gitignore / 清理）| `chore(cleanup): 删过时测试` |
-| `perf` | 性能 | `perf(asr): 预热模型减 200ms` |
-| `data` | 数据文件 | `data(bench): 加 observer_cn fx` |
+| `chore` | 杂项（依赖 / gitignore / 清理）| `chore(cleanup): drop obsolete tests` |
+| `perf` | 性能 | `perf(asr): preheat model, save 200ms` |
+| `data` | 数据文件 | `data(bench): add observer_cn fixtures` |
 
 常见 scope：`tts` `asr` `memory` `desktop` `bench` `observer` `router` `interrupt` `vad` `personality` `wake`。
 
 **规则**：
+- 标题和 body 都用英文（Allen 偏好，2026-04-17）
 - 标题 ≤ 72 字符
 - body 写**为什么**不是**做了什么**（diff 会告诉你做了什么）
 - 不加 `Co-Authored-By`
