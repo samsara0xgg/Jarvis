@@ -18,33 +18,31 @@ Built end-to-end without LangChain or any agent framework. ~25 core modules, 106
 
 ### Full-duplex interrupt
 
-Voice assistants that don't let you cut them off feel adversarial. The naive design — buffer 500ms of mic audio, run full ASR, check for stop keywords — produces a 600-700ms latency floor that users can already regret an interruption inside. Yue's interrupt path trades the "instant detection" fantasy for tighter alignment with how people actually interrupt: at clause boundaries, with short single-character markers, expecting the system to fade rather than guillotine-cut.
+During TTS playback, a dedicated mic thread gates audio through Silero VAD into per-utterance segments and dispatches each closed segment asynchronously to the same SenseVoice ASR used by the main loop. On VAD trigger, playback ducks to 30% volume over a 30ms ramp via a custom PortAudio stream player. On confirmed keyword match (`{"停", "等一下", "打住", "暂停", "等等", ...}`) the ring buffer flushes and the LLM cancels. Pre-roll (500ms) captures the initial consonant of single-character keywords; post-roll (200ms) catches trailing fricatives.
 
-**Architecture choice.** Seven alternatives were evaluated across five architectural levels (parameter tuning → component swap → pipeline redesign → UX paradigm shift → hardware reconstruction). KWS-only detection was rejected for two reasons: Chinese single-character homophones in the keyword set (`灯` vs `等`, `挺` vs `停`) cause unfixable false positives, and a fixed keyword vocabulary is brittle on unseen phrasings (`别说了`, `够了够了`). Speculative pause and continuous probabilistic ducking were deferred. The shipped design is two-stage soft-stop / hard-stop on a shared SenseVoice ASR path, with proactive yielding (insert silence at sentence boundaries) and DOA filtering via XVF3800 as the long-term roadmap.
+| Metric | Value |
+|---|---|
+| speech-to-detect ("停"), median | 1179 ms |
+| speech-to-detect ("等一下"), median | 911 ms |
+| p95 latency | < 1850 ms |
+| False positives on 30s controlled silence | 0.0 / s |
+| Audio underflows over 10818 callbacks | 0 |
 
-**Migration story.** The first implementation ran a separate streaming Zipformer transducer — the textbook low-latency-KWS approach. Benchmarking on April 17 told a different story: speech-to-detect median for "停" was **1760ms** because the streaming decoder needed 500ms of buffered audio to commit a single-character Chinese token, and its training corpus was sparse on isolated syllables. The migration unified the interrupt path onto the main SenseVoice INT8 stack with VAD-gated segments. New median: **1179ms (-33%)**, with the same reliability as the main ASR loop because it is literally the same model and same normalizer (injected as constructor arguments, not re-instantiated).
-
-**Pipeline.** During TTS playback, a dedicated mic thread feeds frames into Silero VAD with mode-based dBFS thresholds (`headphones` = -40 dBFS, `speakers` = -22 dBFS to reject TTS bleed). On IDLE→ACTIVE transition, `on_soft_pause` ducks playback to 30% volume over a 30ms ramp. The active segment buffers with **500ms pre-roll** (catches the initial consonant of "停" that the VAD required-hits gate would otherwise swallow into "嗯") and **200ms post-roll** (trailing fricatives). Segments under 150ms are dropped as noise. Closed segments dispatch async to a worker thread: SenseVoice transcribes, the three-layer `ASRNormalizer` (manual corrections → structured aliases → optional fuzzy match) cleans the text, and substring matching against `INTERRUPT_KEYWORDS = {"停", "等一下", "打住", "暂停", "等等", "你听我说", ...}` decides whether `on_interrupt` fires. On match, the ring buffer flushes and the LLM cancels.
-
-**The player.** Gain-ducking soft-stop required writing `core/audio_stream_player.py` (485 lines) because both `afplay` and `ffplay` exhibit a ~300ms loop-tail artifact when paused via SIGSTOP — a macOS CoreAudio HAL behavior, not a player bug. The replacement is a single long-lived `sd.OutputStream` fed by a lockless SPSC ring buffer, with sample-accurate gain ramps applied inside the PortAudio callback (no allocation, no locks, GIL-protected atomic indices). A subtle bug in `GainRamp` had to be fixed: the denominator must be `step - 1` so the last ramp sample exactly equals the target value, otherwise a 0.0015 jump at 48 kHz produces an audible -56 dBFS click. The custom player also eliminates the per-sentence subprocess spawn cost (~30-150ms per sentence in the legacy path), giving zero inter-sentence gap.
-
-**Status and metrics.** Production benchmarks (after WP6/WP7): **1179ms median** speech-to-detect for "停", **911ms** for multi-character "等一下", p95 under 1850ms, **0.0/s false-positive rate** on 30s of controlled silence with XVF3800 input. Soft-stop and unduck audio verified clean (no loop-tail, no click) over 10818 callbacks with zero underflows. 54 unit tests across three files exercise ring-buffer wrap-around, gain-ramp boundary correctness (the click-regression test lives in `test_audio_stream_player.py`), VAD-segment dispatch, the fired-flag lifecycle, and the IDLE↔ACTIVE state machine with its 3-second no-keyword auto-resume timeout. Next: proactive yielding — insert silence at clause boundaries where the empirical ~80% of natural interrupts happen anyway — followed by XVF3800 spatial gating once the hardware arrives.
+In practice, mid-sentence "停" drops the volume within roughly 350ms of speech onset and reaches full stop within another 700ms — smooth fade, no restart artifacts, no inter-sentence gap, no swallowed first consonants. Long-term: insert silence at clause boundaries (the empirical ~80% of natural interrupts happen there) to bring perceived latency near zero, and add XMOS XVF3800 directional gating once hardware lands so the system ignores TV and family voices.
 
 ### Compounding memory
 
-The memory subsystem is the project's main bet: instead of stateful LLM context windows or vector retrieval per query, observations are captured as structured text bullets and injected wholesale into every conversation's system prompt — leveraging LLM prompt caching for sub-cent reads and letting the model do its own ranking across temporal context.
+Each completed conversation triggers an observer (LLM function calling, Grok-4.20 primary / Gemini 2.5 Flash fallback) that extracts priority-tagged text bullets, grouped by date and stored in SQLite. A stable-prefix builder injects the relevant bullets into the next session's system prompt — prompt-cache-friendly, deterministic, no per-query vector retrieval on the read path. A direct-answer fast path uses multi-signal scoring (40% cosine + 25% recency + 20% importance + 15% access frequency) for high-confidence factual recall without invoking the LLM at all.
 
-**Components.** Eleven modules organized as a write/read split:
+| Module | Role |
+|---|---|
+| `observer.py` | Async extraction with four priority tiers (HIGH / MED / LOW / DONE) |
+| `stable_prefix.py` | Assembles personality + observations + last ten turns into the LLM context |
+| `trace.py` | Per-turn analytics (path, tool calls, emotion, latency, outcome) for the skill-discovery loop |
+| `store.py` | SQLite, six tables: memories / user_profiles / episodes / episode_digests / memory_relations / observations |
+| `direct_answer.py` | Multi-signal LLM-bypass for repeated queries |
 
-| Path | Modules |
-|------|---------|
-| Write (cold) | `observer.py` extracts structured bullets from each completed turn via LLM function calling; `trace.py` records per-turn analytics (path, tool calls, emotions, latency, outcome signal) |
-| Read (hot) | `stable_prefix.py` assembles personality + observations + last ten turns + current input into a cache-friendly prompt prefix; `direct_answer.py` skips the LLM entirely for high-confidence factual recall |
-| Storage | `store.py` manages six SQLite tables: `memories`, `user_profiles`, `episodes`, `episode_digests`, `memory_relations`, `observations` |
-| Ranking | `retriever.py` uses a multi-signal weighted score: 40% cosine + 25% recency + 20% importance + 15% access frequency, with cold-start weights for new users |
-| Orchestration | `manager.py` exposes the public API: `query`, `save`, `build_stable_prefix`, `write_observation`, `maintain` |
-
-**Observation format.** Each completed turn produces zero or more bullets:
+A typical observation log:
 
 ```
 Date: 2026-04-17
@@ -53,68 +51,27 @@ Date: 2026-04-17
 * [DONE] (15:45) Reminder set for coffee machine descaling
 ```
 
-Four priority tiers — `HIGH` (explicit user facts, unresolved goals), `MED` (learned context, tool results), `LOW` (uncertain), `DONE` (completed tasks) — determine what surfaces in the next conversation's prefix. The full bullet stream goes in; the LLM handles cross-temporal reasoning natively, no separate retrieval module on the read path.
-
-**Extraction model.** Primary is xAI Grok-4.20-0309 (non-reasoning) for cost and p95 latency stability; fallback is Gemini 2.5 Flash for its observed zero-hallucination rate. Each provider has its own `base_url` and `api_key_env` — a prior bug routed all Gemini fallback calls to xAI's endpoint and silently masked an outage for thirteen days.
-
-**Benchmark experiments (April 2026).** Eight extraction models compared across twenty Chinese home-dialogue fixtures spanning smart-home, preference, state-change, temporal, emotion, correction, multi-entity, and completion patterns. Metric: hallucination-aware F1 = matched / (matched + hallucinated extras), plus priority accuracy and p50/p95 latency. Grok 4.20 won on price/performance ($0.031 per 100 turns, p95 4.8s, F1 0.88); DeepSeek hit p95 9.4s and was dropped; Gemini 2.5 Flash held zero hallucination at twice the cost and was kept as fallback. Total spend: $5.20 for 160 calls.
-
-A parallel LOCOMO-style comparison ruled out alternatives: Mem0 lost six accuracy points versus full-context (66.9% vs 72.9%); Zep reached 76.6% but at 600k tokens per query — prohibitive for sub-2-second voice loops. The direct-injection approach was chosen as the best fit for the latency budget on Mac and Raspberry Pi.
-
-**Status.** Storage, extraction, and injection are live. The FastEmbed `bge-small-zh-v1.5` vector pipeline remains for the `direct_answer` bypass (cosine > 0.5 gates the multi-signal score) while the structured observation stream takes over the main read path. The legacy `behavior_log.py` is being replaced module-by-module with `trace.py`.
+Eight extraction models were benchmarked across twenty Chinese home-dialogue fixtures (smart-home, preference, state-change, temporal, emotion, correction, multi-entity, completion). Grok 4.20 won on price-per-performance: F1 0.88, p95 4.8s, $0.031 per 100 turns. Gemini 2.5 Flash held zero hallucination at twice the cost, kept as fallback. In practice, mention something next week that came up today and it is already part of the prompt context — no "I don't have access to previous conversations" wall, no manual replay.
 
 ### Self-improving skill loop
 
-Skills sit at the boundary between fixed tools and learned behavior. Yue runs a hybrid: a small set of hand-authored Python functions for things that need code, a declarative YAML format for the API-wrapping majority, and a planned discovery pipeline that mines the trace table for new skill candidates.
-
-**Two-tier registration.** `core/tool_registry.py` (195 lines) unifies both formats behind a single dispatch table:
-
-| Tier | Defined as | Currently live |
-|------|------------|----------------|
-| Python | `@jarvis_tool` decorator on a function in `tools/` | 11 functions across `reminders.py`, `smart_home.py`, `time_utils.py`, `todos.py` |
-| YAML | declarative spec under `skills/` or `skills/learned/` | `skills/weather.yaml` (production), `skills/learned/exchange_rate.yaml` (migrated) |
-
-Each tool carries an annotation set (`read_only`, `destructive`, `idempotent`, `required_role`) and is filtered through a four-tier RBAC hierarchy (`guest` < `member`/`resident` < `family`/`admin` < `owner`) before being exposed to the LLM as a function-calling schema.
-
-**YAML skill schema.** Production example (`skills/weather.yaml`):
+Skills register through a unified `tool_registry` in two formats: Python `@jarvis_tool` decorators for things that need code (11 live functions across `tools/reminders.py`, `tools/smart_home.py`, `tools/time_utils.py`, `tools/todos.py`) and YAML declarative specs for HTTP-wrapper-style skills (`skills/weather.yaml` plus auto-migrated `skills/learned/exchange_rate.yaml`). Both surface to the LLM as identical OpenAI-compatible function-calling schemas. Annotations (`read_only`, `destructive`, `idempotent`, `required_role`) gate each tool through a four-tier RBAC hierarchy: guest < family < trusted < owner.
 
 ```yaml
 name: get_weather
-description: "Get current weather for a city."
-version: 1
-status: live
 parameters:
-  - {name: city, type: string, required: false, default: Victoria}
-annotations: {read_only: true, idempotent: true}
+  - {name: city, type: string, default: Victoria}
 action:
   type: http_get
   url: "https://wttr.in/{{ city }}?format=j1"
-  timeout_ms: 10000
   retry: {max: 3, delay_ms: 1000, backoff: exponential}
 response:
-  extract:
-    temp_c: "{{ result.current_condition[0].temp_C }}"
-    desc:   "{{ result.current_condition[0].lang_zh[0].value }}"
   template: "{{ city }} weather: {{ desc }}, {{ temp_c }}C..."
-  error_template: "Weather query failed."
 security:
   allowed_domains: [wttr.in]
 ```
 
-The interpreter (`core/yaml_interpreter.py`, 249 lines) executes the action against a Jinja2 `ImmutableSandboxedEnvironment` and enforces both a per-skill `allowed_domains` whitelist and a hardcoded private-IP block (RFC1918 + loopback) to prevent SSRF. The `to_tool_definition()` method emits an OpenAI-compatible function-calling schema, so YAML skills are indistinguishable from native Python tools at the LLM call site.
-
-**Why YAML for the majority.** The bet is that roughly half of useful skills are HTTP wrappers plus JSON shaping — a class where Python adds bug surface but no expressiveness. Forcing a canonical declarative form (single `http_get` keyword, named extracts, explicit retry semantics) eliminates the failure modes that show up when an LLM picks Python idioms freely. Side-by-side research on equivalent multi-step tasks showed a constrained DSL substantially outperforming open-ended Python generation, which informed the choice to default new auto-generated skills to YAML.
-
-**The discovery pipeline (designed, not yet wired).** The `trace` table makes the loop possible: every conversation turn records `path_taken`, `tool_calls` (JSON), `outcome_signal`, `latency_ms`, and detected emotion. A planned nightly batch will:
-
-1. Cluster the last 24h of `(intent, skill_match, success, user_correction)` tuples.
-2. Detect hotspots via mixed signal — frequency (≥3 occurrences with embedding cosine > 0.85), importance weighting (vocal emphasis, repeated requests), and failure-driven triggers (user correction on an existing skill).
-3. Compile candidates: an LLM (Grok 4.20 for spec generation, Claude reserved for the rare novel-Python case) drafts a YAML skill from 3-5 representative trace examples.
-4. Validate through three gates: schema correctness, replay against the original trace examples (≥80% match), and embedding similarity check vs the existing library (<0.9 to avoid duplicates).
-
-**Shadow then canary.** Promotion design follows a 7-day shadow period where the candidate runs in parallel with the existing path, output recorded but not returned. Output similarity is judged in three layers — structural matching (free, exact name and parameter match), embedding similarity on natural language outputs (free, ~10ms), LLM-as-judge on the gray zone (~$0.003 per turn, ~2s) — with promotion gated at ≥85% alignment overall and ≥95% for safety-critical categories. After promotion, a 48h canary monitors for >20% drop in expected trigger rate and auto-rolls back on regression. Skill execution failures fall through to raw LLM dispatch rather than surfacing a hard error to the user.
-
-**Status.** The static layer is fully live: 11 Python tools, 2 YAML skills (production + learned), unified registry, RBAC, sandboxed execution. The discovery loop is designed but not yet wired — the trace table is in place, but the nightly batch, hotspot detector, compilation prompt, and shadow framework are pending implementation. The pending learned-skill queue currently holds one candidate (`fifa_tickets`, status `pending_review`) awaiting manual approval.
+YAML actions execute through a Jinja2 sandbox with per-skill domain whitelisting and an RFC1918 loopback block for SSRF protection. The discovery loop builds on the trace table that's already in place: a nightly batch will detect hot-spot intent patterns (frequency + importance + user-correction signal), draft new YAML candidates from 3-5 representative examples, run a 7-day shadow period with three-tier output similarity judging (structural / embedding / LLM-as-judge), and promote through canary monitoring with auto-rollback on regression. The static layer is live; the discovery pipeline lands incrementally on the same registry, so new skills appear without restarting the assistant.
 
 ### Multi-tier LLM resilience
 
