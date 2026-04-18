@@ -250,7 +250,12 @@ class IntentRouter:
         # Cerebras (fallback)
         cerebras_cfg = config.get("models", {}).get("cerebras", {})
         self.cerebras_key = cerebras_cfg.get("api_key") or os.environ.get("CEREBRAS_API_KEY", "")
-        self.cerebras_model = cerebras_cfg.get("router_model", "llama-3.3-70b")
+        # Default llama3.1-8b. NOTE: from 7f80fdf (2026-04-04) this was correct
+        # but merge commit 51a749d accidentally set it to "llama-3.3-70b" (a
+        # Groq model never served by Cerebras), causing silent 404 fallback
+        # failures for 13 days until 2026-04-17. See config.yaml models.cerebras
+        # for current valid Cerebras IDs.
+        self.cerebras_model = cerebras_cfg.get("router_model", "llama3.1-8b")
         self.cerebras_url = "https://api.cerebras.ai/v1/chat/completions"
 
         self.logger.info(

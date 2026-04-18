@@ -306,6 +306,14 @@ models:
   groq:
     api_key: ""  # env GROQ_API_KEY
     model: llama-3.3-70b-versatile
+  cerebras:
+    api_key: ""  # env CEREBRAS_API_KEY
+    # Cerebras 现行可用模型（2026-04-17 确认）：gpt-oss-120b /
+    # qwen-3-235b-a22b-instruct-2507 / llama3.1-8b / zai-glm-4.7。意图路由选
+    # 最快最便宜的 8b。
+    # 历史：7f80fdf 引入时就是 llama3.1-8b，merge 51a749d 误改成 llama-3.3-70b
+    # （Cerebras 从未提供过这个模型名），导致 fallback 静默 404 13 天。
+    router_model: llama3.1-8b
   deepseek:
     api_key: ""  # env DEEPSEEK_API_KEY
     model: deepseek-chat
@@ -455,9 +463,15 @@ memory:
   preferences_dir: data/memory
 
   # v2: Observer 记忆抽取配置
+  # 注意：primary 和 fallback 可以指向不同的 LLM 提供商。每个模型独立配置 endpoint +
+  # api_key_env，避免把 Gemini 请求发到 xAI（bug 2026-04-17）。
   observer:
     primary_model: "grok-4.20-0309-non-reasoning"
+    primary_base_url: "https://api.x.ai/v1"
+    primary_api_key_env: XAI_API_KEY
     fallback_model: "gemini-2.5-flash"
+    fallback_base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+    fallback_api_key_env: GEMINI_API_KEY
     enabled: true
   stable_prefix:
     max_tokens: 25000

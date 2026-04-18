@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime
 
 import requests
@@ -119,9 +120,26 @@ class Observer:
         self._fallback_model = obs_cfg.get("fallback_model", "gemini-2.5-flash")
         self._enabled = obs_cfg.get("enabled", True)
 
+        # Per-model endpoint + key. Primary and fallback can point at different
+        # providers (e.g. xAI for primary, Gemini OpenAI-compat for fallback).
+        # Backward compat: if a per-model key_env / base_url isn't set, fall
+        # back to the legacy llm.{base_url, api_key} — that's the old single-
+        # endpoint behaviour.
         llm_cfg = config.get("llm", {})
-        self._api_key = llm_cfg.get("api_key", "")
-        self._base_url = llm_cfg.get("base_url", "https://api.x.ai/v1")
+        legacy_base = llm_cfg.get("base_url", "https://api.x.ai/v1")
+        legacy_key = llm_cfg.get("api_key", "") or os.environ.get("XAI_API_KEY", "")
+
+        self._primary_base_url = obs_cfg.get("primary_base_url") or legacy_base
+        primary_env = obs_cfg.get("primary_api_key_env", "")
+        self._primary_api_key = (
+            os.environ.get(primary_env, "") if primary_env else legacy_key
+        )
+
+        self._fallback_base_url = obs_cfg.get("fallback_base_url") or legacy_base
+        fallback_env = obs_cfg.get("fallback_api_key_env", "")
+        self._fallback_api_key = (
+            os.environ.get(fallback_env, "") if fallback_env else legacy_key
+        )
 
     def extract(self, turn_data: dict) -> list[dict]:
         """Extract 0-N observations from a conversation turn.
@@ -140,17 +158,27 @@ class Observer:
         messages = self._build_prompt(turn_data)
 
         # Try primary model
-        result = self._call_llm(messages, self._primary_model)
+        result = self._call_llm(
+            messages,
+            self._primary_model,
+            self._primary_base_url,
+            self._primary_api_key,
+        )
         if result is not None:
             return result
 
-        # Fallback
+        # Fallback — use fallback endpoint + key (may be a different provider)
         LOGGER.warning(
             "Observer primary model %s failed, trying fallback %s",
             self._primary_model,
             self._fallback_model,
         )
-        result = self._call_llm(messages, self._fallback_model)
+        result = self._call_llm(
+            messages,
+            self._fallback_model,
+            self._fallback_base_url,
+            self._fallback_api_key,
+        )
         if result is not None:
             return result
 
@@ -187,21 +215,29 @@ class Observer:
             {"role": "user", "content": "\n".join(parts)},
         ]
 
-    def _call_llm(self, messages: list[dict], model: str) -> list[dict] | None:
+    def _call_llm(
+        self,
+        messages: list[dict],
+        model: str,
+        base_url: str,
+        api_key: str,
+    ) -> list[dict] | None:
         """Call LLM with function calling to extract observations.
 
         Args:
             messages: Chat messages list.
             model: Model identifier.
+            base_url: OpenAI-compatible API base URL for this model.
+            api_key: Bearer token for ``base_url``.
 
         Returns:
             List of observation dicts, or None on failure.
         """
         try:
             resp = _SESSION.post(
-                f"{self._base_url}/chat/completions",
+                f"{base_url}/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {self._api_key}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
                 json={

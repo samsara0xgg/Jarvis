@@ -218,7 +218,36 @@ class TestConfigDefaults:
         assert obs._primary_model == "grok-4.20-0309-non-reasoning"
         assert obs._fallback_model == "gemini-2.5-flash"
         assert obs._enabled is True
-        assert obs._base_url == "https://api.x.ai/v1"
+        # Legacy single-endpoint behavior: both primary and fallback default
+        # to the llm.base_url when no per-model override is set.
+        assert obs._primary_base_url == "https://api.x.ai/v1"
+        assert obs._fallback_base_url == "https://api.x.ai/v1"
+        assert obs._primary_api_key == "k"
+        assert obs._fallback_api_key == "k"
+
+    def test_per_model_endpoints(self):
+        """Primary and fallback can target different providers."""
+        import os
+        os.environ["XAI_API_KEY"] = "xai-key"
+        os.environ["GEMINI_API_KEY"] = "gemini-key"
+        cfg = {
+            "llm": {"api_key": "", "base_url": "https://api.x.ai/v1"},
+            "memory": {
+                "observer": {
+                    "primary_model": "grok-4.20-0309-non-reasoning",
+                    "primary_base_url": "https://api.x.ai/v1",
+                    "primary_api_key_env": "XAI_API_KEY",
+                    "fallback_model": "gemini-2.5-flash",
+                    "fallback_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                    "fallback_api_key_env": "GEMINI_API_KEY",
+                },
+            },
+        }
+        obs = Observer(cfg)
+        assert obs._primary_base_url == "https://api.x.ai/v1"
+        assert obs._primary_api_key == "xai-key"
+        assert obs._fallback_base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert obs._fallback_api_key == "gemini-key"
 
     def test_custom_config(self):
         cfg = _make_config()
