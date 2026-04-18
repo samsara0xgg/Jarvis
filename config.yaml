@@ -646,12 +646,16 @@ interrupt:
 
   # silero_direct 专用 — TTS 播放期间阈值（比录音模式更严，抗 AEC 残余）
   vad_prob_threshold_during_tts: 0.5
-  # dBFS 门控（同 audio.vad_db_threshold 注释）。TTS 播放时 mic 会录到
-  # 自己输出 + AEC 残余，需要更高（更接近 0）的阈值过滤。
-  # Mac 本地扬声器无 AEC → 残余大，阈值需高（接近正常说话）
-  # RPi+ReSpeaker XVF3800 有硬件 AEC → 残余小，阈值可低
-  vad_db_threshold_during_tts_mac: -22.0   # 需明显大于平均说话音量
-  vad_db_threshold_during_tts_rpi: -32.0   # AEC 后残余约 -40
+  # VAD 环境模式 —— 决定 TTS 期间 dBFS 阈值档位,代码自动应用。
+  #   headphones: TTS 不反灌到 mic → 阈值可松(-40 Mac / -38 RPi),
+  #               能接住正常距离说话。
+  #   speakers:   TTS 从音响反灌到 mic → 阈值要严(-22 Mac / -32 RPi),
+  #               挡 bleed,但要求用户贴麦或大声说才会触发。
+  # 切换只改这一行。
+  vad_mode: headphones
+  # 可选直接覆盖(设了就忽略 vad_mode 档位),通常不需要:
+  # vad_db_threshold_during_tts_mac: -40.0
+  # vad_db_threshold_during_tts_rpi: -38.0
   vad_smoothing_window: 5
   vad_required_hits: 3
   vad_required_misses: 24

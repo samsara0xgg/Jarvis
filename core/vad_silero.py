@@ -93,7 +93,16 @@ class SileroVADDirect:
     # ------------------------------------------------------------------
 
     def reset(self) -> None:
-        """Clear LSTM state and state-machine bookkeeping. Call before each session."""
+        """Clear LSTM state and state-machine bookkeeping. Call before each session.
+
+        After zeroing the LSTM state, feeds 5 silent frames through the
+        model so the hidden state converges to the "silence baseline" the
+        model expects. Without this pre-warm, the first ~160ms of real
+        audio gets unreliable prob outputs (the model's zero-init LSTM
+        state is not a trained condition) — the practical effect is that
+        "say something immediately when TTS starts" sometimes fails to
+        trigger VAD START, since the cold-state prob fluctuates.
+        """
         self._h = np.zeros(_LSTM_SHAPE, dtype=np.float32)
         self._c = np.zeros(_LSTM_SHAPE, dtype=np.float32)
         self._buffer = np.zeros(0, dtype=np.float32)
@@ -107,6 +116,19 @@ class SileroVADDirect:
         # Used by bench harnesses to measure "speech-onset → callback-fire"
         # latency end-to-end. None until the first START event.
         self._last_start_perf: float | None = None
+
+        # LSTM pre-warm: feed silence through the model so hidden state
+        # stabilizes at the "silence baseline" before real audio arrives.
+        # Does NOT update smoothing windows or state machine — just the
+        # LSTM internals.
+        silence = np.zeros(_CHUNK_SAMPLES, dtype=np.float32)
+        for _ in range(5):
+            try:
+                self._infer_chunk(silence)
+            except Exception:
+                # Warmup failures are non-fatal — worst case the first few
+                # real frames have zero-state LSTM output (current behavior).
+                break
 
     # ------------------------------------------------------------------
     # Public API (compatible with previous sherpa-onnx wrapper)
@@ -224,13 +246,33 @@ def build_vad(cfg: dict, *, mode: str = "record") -> Any:
     if provider == "silero_direct":
         if mode == "tts":
             import platform
-            # During-TTS dBFS defaults tuned per-platform: Mac CoreAudio
-            # returns higher energy (near-field mic + louder speaker),
-            # RPi ReSpeaker post-AEC is quieter. Both are dBFS (negative).
-            if platform.system() == "Darwin":
-                db_default = float(cfg.get("vad_db_threshold_during_tts_mac", -22.0))
+            # During-TTS dBFS defaults depend on whether TTS bleeds into the
+            # mic. Two profiles:
+            #   headphones — no bleed → threshold can be lenient (~-40)
+            #                so normal-distance speaking gets through.
+            #   speakers   — TTS plays into the room, reaches mic at ~-25
+            #                → threshold must reject that bleed (~-22 mac,
+            #                ~-32 rpi with hardware AEC residual).
+            # ``interrupt.vad_mode`` (``headphones`` | ``speakers``) selects.
+            # Legacy ``vad_db_threshold_during_tts_{mac,rpi}`` overrides if
+            # set — lets power users pin a specific value regardless of mode.
+            is_mac = platform.system() == "Darwin"
+            platform_suffix = "mac" if is_mac else "rpi"
+            vad_mode = str(cfg.get("vad_mode", "")).lower()
+            _MODE_DEFAULTS = {
+                ("mac", "headphones"): -40.0,
+                ("mac", "speakers"):   -22.0,
+                ("rpi", "headphones"): -38.0,
+                ("rpi", "speakers"):   -32.0,
+            }
+            if vad_mode in ("headphones", "speakers"):
+                db_default = _MODE_DEFAULTS[(platform_suffix, vad_mode)]
             else:
-                db_default = float(cfg.get("vad_db_threshold_during_tts_rpi", -32.0))
+                # No mode set — fall back to legacy keys (pre-vad_mode behavior)
+                db_default = -22.0 if is_mac else -32.0
+            # Explicit key always overrides (backward compat + power user)
+            legacy_key = f"vad_db_threshold_during_tts_{platform_suffix}"
+            db_default = float(cfg.get(legacy_key, db_default))
             return SileroVADDirect(
                 model_path=str(cfg["vad_model_path"]),
                 prob_threshold=float(cfg.get("vad_prob_threshold_during_tts", 0.5)),
