@@ -20,18 +20,36 @@ A separate VAD-gated audio path runs during TTS playback. Mid-sentence "停" or 
 
 ### Compounding memory
 
-The memory subsystem is built on **observational memory** — a pattern adapted from Mastra's OM (Observational Memory) design where recollection is a stream of LLM-authored observations, not a vector index. After each conversation, an **observer** runs async on the cold path and uses function calling to extract priority-tagged Chinese text bullets, grouped by date:
+The memory subsystem is the project's main bet: instead of stateful LLM context windows or vector retrieval per query, observations are captured as structured text bullets and injected wholesale into every conversation's system prompt — leveraging LLM prompt caching for sub-cent reads and letting the model do its own ranking across temporal context.
+
+**Components.** Eleven modules organized as a write/read split:
+
+| Path | Modules |
+|------|---------|
+| Write (cold) | `observer.py` extracts structured bullets from each completed turn via LLM function calling; `trace.py` records per-turn analytics (path, tool calls, emotions, latency, outcome signal) |
+| Read (hot) | `stable_prefix.py` assembles personality + observations + last ten turns + current input into a cache-friendly prompt prefix; `direct_answer.py` skips the LLM entirely for high-confidence factual recall |
+| Storage | `store.py` manages six SQLite tables: `memories`, `user_profiles`, `episodes`, `episode_digests`, `memory_relations`, `observations` |
+| Ranking | `retriever.py` uses a multi-signal weighted score: 40% cosine + 25% recency + 20% importance + 15% access frequency, with cold-start weights for new users |
+| Orchestration | `manager.py` exposes the public API: `query`, `save`, `build_stable_prefix`, `write_observation`, `maintain` |
+
+**Observation format.** Each completed turn produces zero or more bullets:
 
 ```
 Date: 2026-04-17
-* [HIGH] (14:30) 用户偏好直接回答，不要寒暄
-* [MED]  (15:12) 用户提到周末要去温哥华见朋友
-* [DONE] (15:45) 完成订咖啡机的提醒任务
+* [HIGH] (14:30) User prefers warm yellow (2700K) in living room
+* [MED]  (15:12) User mentioned weekend trip to Vancouver to see friends
+* [DONE] (15:45) Reminder set for coffee machine descaling
 ```
 
-Four priority tiers — `HIGH` (explicit user facts and unresolved goals), `MED` (learned context and tool results), `LOW` (uncertain or speculative), `DONE` (completed tasks) — determine what surfaces in the next conversation's prompt prefix. A **stable-prefix builder** assembles relevant observations into the LLM's system context: prompt-cache-friendly, deterministic, no per-query retrieval. A **trace table** logs every conversation turn (path, latency, tool calls, emotions, outcomes) for the skill-discovery loop to mine. A **direct-answer** fast path still handles high-confidence factual recall without invoking the LLM, retained as a bypass for repeated queries.
+Four priority tiers — `HIGH` (explicit user facts, unresolved goals), `MED` (learned context, tool results), `LOW` (uncertain), `DONE` (completed tasks) — determine what surfaces in the next conversation's prefix. The full bullet stream goes in; the LLM handles cross-temporal reasoning natively, no separate retrieval module on the read path.
 
-The legacy FastEmbed (`bge-small-zh-v1.5`) vector pipeline is being phased out as the OM pattern matures — embeddings are kept only for the direct-answer bypass. Storage is SQLite throughout.
+**Extraction model.** Primary is xAI Grok-4.20-0309 (non-reasoning) for cost and p95 latency stability; fallback is Gemini 2.5 Flash for its observed zero-hallucination rate. Each provider has its own `base_url` and `api_key_env` — a prior bug routed all Gemini fallback calls to xAI's endpoint and silently masked an outage for thirteen days.
+
+**Benchmark experiments (April 2026).** Eight extraction models compared across twenty Chinese home-dialogue fixtures spanning smart-home, preference, state-change, temporal, emotion, correction, multi-entity, and completion patterns. Metric: hallucination-aware F1 = matched / (matched + hallucinated extras), plus priority accuracy and p50/p95 latency. Grok 4.20 won on price/performance ($0.031 per 100 turns, p95 4.8s, F1 0.88); DeepSeek hit p95 9.4s and was dropped; Gemini 2.5 Flash held zero hallucination at twice the cost and was kept as fallback. Total spend: $5.20 for 160 calls.
+
+A parallel LOCOMO-style comparison ruled out alternatives: Mem0 lost six accuracy points versus full-context (66.9% vs 72.9%); Zep reached 76.6% but at 600k tokens per query — prohibitive for sub-2-second voice loops. The direct-injection approach was chosen as the best fit for the latency budget on Mac and Raspberry Pi.
+
+**Status.** Storage, extraction, and injection are live. The FastEmbed `bge-small-zh-v1.5` vector pipeline remains for the `direct_answer` bypass (cosine > 0.5 gates the multi-signal score) while the structured observation stream takes over the main read path. The legacy `behavior_log.py` is being replaced module-by-module with `trace.py`.
 
 ### Self-improving skill loop
 
@@ -104,7 +122,7 @@ Full design analysis in [`notes/hardware-xvf3800-fulltest-2026-04-16.md`](notes/
 | VAD | Silero VAD (ONNX), `headphones` / `speakers` mode-based thresholds |
 | Intent router | Groq Llama-3.3-70B · Cerebras Llama 3.1-8B (backup) |
 | LLM | xAI Grok-4.1-fast (primary) · Gemini (fallback) · Anthropic Claude (skill generation) |
-| Memory | Observational memory (Mastra-style) on SQLite · function-calling extraction · stable-prefix injection |
+| Memory | Structured observation stream on SQLite · function-calling extraction (Grok 4.20 / Gemini 2.5 Flash) · stable-prefix injection |
 | TTS | MiniMax → edge-tts → pyttsx3 (3-engine fallback) |
 | Audio I/O | sounddevice + custom `AudioStreamPlayer` (PortAudio callback + ring buffer) |
 | Devices | Philips Hue (live) · MQTT · in-memory sim |
