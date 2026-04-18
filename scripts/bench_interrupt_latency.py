@@ -40,8 +40,11 @@ import logging
 import statistics
 import sys
 import time
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -102,6 +105,53 @@ def _run_once(label: str, run_index: int) -> dict | None:
         print("ERROR: interrupt monitor not enabled in config.yaml")
         return None
 
+    # Instrumentation: tee mic audio + print every ASR partial so we can
+    # see in real time whether the mic picked up '停' and whether the
+    # streaming ASR produced any recognizable text. Both are gated by
+    # instance-attribute monkeypatch so nothing in InterruptMonitor needs
+    # to change.
+    tee_chunks: list[np.ndarray] = []
+    _orig_feed = monitor.feed_audio
+    _vad_state = {"was_active": False}
+
+    def _tee_feed(audio: np.ndarray, sample_rate: int = 16000) -> None:
+        tee_chunks.append(audio.copy())
+        _orig_feed(audio, sample_rate)
+        # Log VAD edges so we can correlate "speech onset" with the
+        # transcribe/keyword callback that fires later.
+        try:
+            vad = monitor._vad
+            is_active = bool(vad.is_speech_detected()) if vad is not None else False
+            if is_active and not _vad_state["was_active"]:
+                print(
+                    f"  [VAD IDLE→ACTIVE @{time.perf_counter()-play_started:+.2f}s]",
+                    flush=True,
+                )
+            elif not is_active and _vad_state["was_active"]:
+                print(
+                    f"  [VAD ACTIVE→IDLE @{time.perf_counter()-play_started:+.2f}s]",
+                    flush=True,
+                )
+            _vad_state["was_active"] = is_active
+        except Exception:
+            pass
+
+    monitor.feed_audio = _tee_feed  # type: ignore[method-assign]
+
+    _orig_check = monitor._check_partial  # bound method  # noqa: SLF001
+
+    def _logged_check(text: str) -> None:
+        print(
+            f"  [transcript @{time.perf_counter()-play_started:+.2f}s] {text!r}",
+            flush=True,
+        )
+        _orig_check(text)
+
+    monitor._check_partial = _logged_check  # type: ignore[method-assign]  # noqa: SLF001
+
+    # play_started is defined below; bind via closure after we set it
+    play_started = 0.0  # placeholder; reassigned before TTS submit
+
     # B1 fix: DO NOT start the mic listener yet — it would run during the
     # 3-second countdown and potentially cache a spurious VAD START from
     # ambient noise, polluting the speech→detect measurement later.
@@ -137,6 +187,21 @@ def _run_once(label: str, run_index: int) -> dict | None:
     monitor.stop()
     pipeline.stop()
 
+    # Save teed mic audio for post-hoc analysis via diag_bench_live.py
+    if tee_chunks:
+        tee_dir = ROOT / "scripts" / "bench_results" / "bench_mic_tees"
+        tee_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        wav_path = tee_dir / f"bench_{label}_run{run_index}_{ts}.wav"
+        audio_full = np.concatenate(tee_chunks)
+        pcm = (audio_full * 32767).clip(-32768, 32767).astype(np.int16)
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(pcm.tobytes())
+        print(f"[run {run_index}] mic tee → {wav_path}  ({len(audio_full)/16000:.1f}s)")
+
     if not detected_perf:
         print(f"[run {run_index}] 没听到打断（可能没说出'停' / 太晚 / 太小声），跳过")
         return None
@@ -166,10 +231,7 @@ def _run_once(label: str, run_index: int) -> dict | None:
         "speech_to_detect_ms": round(speech_to_detect_ms, 1),
         "detect_to_cancel_ms": round(detect_to_cancel_ms, 1),
         "total_ms": round(total_speech_to_cancel_ms, 1),
-        "chunk_samples": cfg.get("interrupt", {}).get(
-            # Default aligned to WP1 production value; fallback to the
-            # pre-WP1 value would obscure whether the live config opted out.
-            "streaming_asr_chunk_samples", 3200),
+        "min_segment_ms": cfg.get("interrupt", {}).get("min_segment_ms", 150),
         "vad_provider": cfg.get("interrupt", {}).get("vad_provider", "?"),
     }
 

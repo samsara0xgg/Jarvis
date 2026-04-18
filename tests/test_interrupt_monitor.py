@@ -1,20 +1,32 @@
-"""Tests for InterruptMonitor — streaming ASR keyword detection."""
+"""Tests for InterruptMonitor — VAD-segmented SenseVoice keyword detection."""
 
 from __future__ import annotations
 
-import threading
 import time
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
 
 from core.interrupt_monitor import (
-    InterruptMonitor,
     INTERRUPT_KEYWORDS,
     RESUME_KEYWORDS,
+    InterruptMonitor,
     strip_interrupt_prefix,
 )
+
+
+def _make_recognizer(text: str = "") -> MagicMock:
+    """Build a SpeechRecognizer-compatible mock returning `text`."""
+    mock = MagicMock()
+    mock.transcribe.return_value = MagicMock(text=text)
+    return mock
+
+
+def _make_normalizer() -> MagicMock:
+    """Pass-through ASRNormalizer mock."""
+    mock = MagicMock()
+    mock.normalize.side_effect = lambda t: t
+    return mock
 
 
 class TestInterruptMonitorKeywordMatch:
@@ -102,6 +114,8 @@ class TestMicListener:
         monitor = InterruptMonitor(
             config={"interrupt": {"enabled": True}},
             on_interrupt=lambda: None,
+            speech_recognizer=_make_recognizer(),
+            asr_normalizer=_make_normalizer(),
         )
         mock_stream = MagicMock()
         mock_stream.read.return_value = (np.zeros((1600, 1), dtype="float32"), None)
@@ -116,21 +130,21 @@ class TestMicListener:
 
 
 class TestInterruptMonitorVADGate:
+    """With VAD present, only ACTIVE→IDLE edges dispatch transcription."""
+
     def _make_config(self, **overrides):
         base = {
             "interrupt": {
                 "enabled": True,
                 "vad_model_path": "data/silero_vad.onnx",
-                # These VAD-gate tests mock the sherpa_onnx wrapper directly, so
-                # pin the provider here. The silero_direct path has its own tests
-                # in tests/test_vad_silero.py.
                 "vad_provider": "sherpa_onnx",
                 "vad_threshold_during_tts": 0.8,
                 "vad_min_speech_duration": 0.15,
                 "vad_min_silence_duration": 0.2,
                 "vad_max_speech_duration": 10.0,
-                # Force buffer threshold low so 1600-sample feeds exercise the ASR path.
-                "streaming_asr_chunk_samples": 100,
+                # Very small threshold so a single 1600-sample chunk
+                # crosses it and a VAD close flushes to transcribe.
+                "min_segment_ms": 10,
             }
         }
         base["interrupt"].update(overrides)
@@ -146,6 +160,8 @@ class TestInterruptMonitorVADGate:
             monitor = InterruptMonitor(
                 config=self._make_config(),
                 on_interrupt=lambda: None,
+                speech_recognizer=_make_recognizer(),
+                asr_normalizer=_make_normalizer(),
             )
             monitor.start()
 
@@ -155,168 +171,108 @@ class TestInterruptMonitorVADGate:
             assert mock_cfg.silero_vad.min_speech_duration == 0.15
             assert mock_cfg.silero_vad.min_silence_duration == 0.2
 
-    def test_feed_audio_skips_asr_when_not_speech(self):
-        """When VAD says no speech, streaming ASR stream should not receive audio."""
+    def test_no_transcribe_when_vad_never_opens(self):
+        """If VAD is silent the whole time, SpeechRecognizer is never called."""
         with patch("sherpa_onnx.VoiceActivityDetector") as mock_vad_cls, \
              patch("sherpa_onnx.VadModelConfig"):
             mock_vad = MagicMock()
             mock_vad.is_speech_detected.return_value = False
             mock_vad_cls.return_value = mock_vad
 
+            rec = _make_recognizer(text="")
             monitor = InterruptMonitor(
                 config=self._make_config(),
                 on_interrupt=lambda: None,
+                speech_recognizer=rec,
+                asr_normalizer=_make_normalizer(),
             )
-            mock_stream = MagicMock()
-            monitor._stream = mock_stream
-            monitor._recognizer = MagicMock()
-            monitor._recording = True
-            monitor._vad = mock_vad
+            monitor.start()
 
             audio = np.zeros(1600, dtype=np.float32)
             monitor.feed_audio(audio)
+            monitor.feed_audio(audio)
+            monitor.stop()
 
-            mock_vad.accept_waveform.assert_called()
-            mock_stream.accept_waveform.assert_not_called()
+            rec.transcribe.assert_not_called()
 
-    def test_feed_audio_passes_to_asr_when_speech_detected(self):
-        """When VAD says speech active, audio is forwarded to streaming ASR."""
+    def test_vad_close_dispatches_transcribe(self):
+        """VAD ACTIVE→IDLE edge flushes the segment to SpeechRecognizer."""
         with patch("sherpa_onnx.VoiceActivityDetector") as mock_vad_cls, \
              patch("sherpa_onnx.VadModelConfig"):
             mock_vad = MagicMock()
-            mock_vad.is_speech_detected.return_value = True
+            # First chunk: speech. Second chunk: silence (close edge).
+            mock_vad.is_speech_detected.side_effect = [True, False]
             mock_vad_cls.return_value = mock_vad
 
+            fires: list[str] = []
+            rec = _make_recognizer(text="停")
             monitor = InterruptMonitor(
                 config=self._make_config(),
-                on_interrupt=lambda: None,
+                on_interrupt=lambda: fires.append("int"),
+                speech_recognizer=rec,
+                asr_normalizer=_make_normalizer(),
             )
-            mock_stream = MagicMock()
-            mock_recognizer = MagicMock()
-            mock_recognizer.is_ready.return_value = False
-            mock_recognizer.get_result.return_value = MagicMock(text="")
-            monitor._stream = mock_stream
-            monitor._recognizer = mock_recognizer
-            monitor._recording = True
-            monitor._vad = mock_vad
+            monitor.start()
 
-            audio = np.zeros(1600, dtype=np.float32)
-            monitor.feed_audio(audio)
+            audio = np.ones(1600, dtype=np.float32) * 0.1
+            monitor.feed_audio(audio)  # VAD opens, audio accumulated
+            monitor.feed_audio(audio)  # VAD closes → dispatch transcribe
+            monitor.stop()  # waits for worker
 
-            mock_stream.accept_waveform.assert_called_once()
+            rec.transcribe.assert_called_once()
+            assert fires == ["int"]
 
 
 class TestStopPreventsFurtherCallbacks:
-    """WP7 T2.3: after stop(), feed_audio must not fire callbacks, even if
-    a mic thread races a chunk in just after stop() is called."""
+    """WP7 T2.3: after stop(), feed_audio must not fire callbacks."""
 
     def test_callback_not_fired_after_stop(self):
         fires: list[str] = []
         monitor = InterruptMonitor(
             config={"interrupt": {"enabled": True}},
             on_interrupt=lambda: fires.append("int"),
+            speech_recognizer=_make_recognizer(),
+            asr_normalizer=_make_normalizer(),
         )
         monitor.start()
         monitor.stop()
         # Simulate a late-arriving chunk on the mic thread
         monitor.feed_audio(np.zeros(1600, dtype=np.float32))
-        # `_check_partial` still fires (it only checks `_fired` + `enabled`);
-        # but feed_audio gates on `_recording`. We verify by checking no audio
-        # was accumulated AFTER stop.
+        # Post-stop: no accumulation, no callback.
         assert monitor._audio_chunks == []
-        # Title invariant: no callbacks fired after stop()
         assert fires == []
 
     def test_start_clears_fired_under_lock(self):
         monitor = InterruptMonitor(
             config={"interrupt": {"enabled": True}},
             on_interrupt=lambda: None,
+            speech_recognizer=_make_recognizer(),
+            asr_normalizer=_make_normalizer(),
         )
         monitor._fired = True  # stale
         monitor.start()
         assert monitor._fired is False
 
 
-class TestStreamingBufferBatching:
-    """WP1 T3.4: `streaming_asr_chunk_samples` should gate when audio is
-    forwarded to the recognizer — small chunks accumulate, threshold triggers
-    one decode."""
+class TestNormalizerApplied:
+    """B4: three-layer ASRNormalizer runs on interrupt transcriptions too."""
 
-    def _make_config(self, chunk_samples: int) -> dict:
-        return {
-            "interrupt": {
-                "enabled": True,
-                "streaming_asr_chunk_samples": chunk_samples,
-            }
-        }
+    def test_normalizer_output_used_for_keyword_match(self):
+        """If normalizer rewrites 'tin' → '停', the keyword should fire."""
+        fires: list[str] = []
+        rec = _make_recognizer(text="tin")
+        normalizer = MagicMock()
+        normalizer.normalize.side_effect = lambda t: "停" if t == "tin" else t
 
-    def test_small_chunk_does_not_trigger_decode(self):
         monitor = InterruptMonitor(
-            config=self._make_config(3200),
-            on_interrupt=lambda: None,
+            config={"interrupt": {"enabled": True}},
+            on_interrupt=lambda: fires.append("int"),
+            speech_recognizer=rec,
+            asr_normalizer=normalizer,
         )
-        mock_stream = MagicMock()
-        mock_recognizer = MagicMock()
-        mock_recognizer.is_ready.return_value = False
-        mock_recognizer.get_result.return_value = MagicMock(text="")
-        monitor._stream = mock_stream
-        monitor._recognizer = mock_recognizer
-        monitor._vad = None
-        # Flip _recording under lock (simulates start()'s invariant)
-        with monitor._lock:
-            monitor._recording = True
+        # Drive the transcribe path directly (no VAD) to isolate the
+        # normalizer contract.
+        monitor._transcribe_segment(np.zeros(8000, dtype=np.float32))
 
-        # Feed 1000 samples (below 3200 threshold)
-        monitor.feed_audio(np.zeros(1000, dtype=np.float32))
-        mock_stream.accept_waveform.assert_not_called()
-
-        # Feed another 1000 — still 2000 total, below threshold
-        monitor.feed_audio(np.zeros(1000, dtype=np.float32))
-        mock_stream.accept_waveform.assert_not_called()
-
-    def test_threshold_crossing_triggers_one_decode(self):
-        monitor = InterruptMonitor(
-            config=self._make_config(3200),
-            on_interrupt=lambda: None,
-        )
-        mock_stream = MagicMock()
-        mock_recognizer = MagicMock()
-        mock_recognizer.is_ready.return_value = False
-        mock_recognizer.get_result.return_value = MagicMock(text="")
-        monitor._stream = mock_stream
-        monitor._recognizer = mock_recognizer
-        monitor._vad = None
-        with monitor._lock:
-            monitor._recording = True
-
-        # Feed 2000 + 2500 → 4500 > 3200 threshold after the second feed
-        monitor.feed_audio(np.zeros(2000, dtype=np.float32))
-        monitor.feed_audio(np.zeros(2500, dtype=np.float32))
-        assert mock_stream.accept_waveform.call_count == 1
-        # Arg shape check — the accumulated chunk fed to the recognizer
-        # should be 4500 samples.
-        args, _ = mock_stream.accept_waveform.call_args
-        assert len(args[1]) == 4500
-
-    def test_buffer_cleared_after_decode(self):
-        monitor = InterruptMonitor(
-            config=self._make_config(3200),
-            on_interrupt=lambda: None,
-        )
-        mock_stream = MagicMock()
-        mock_recognizer = MagicMock()
-        mock_recognizer.is_ready.return_value = False
-        mock_recognizer.get_result.return_value = MagicMock(text="")
-        monitor._stream = mock_stream
-        monitor._recognizer = mock_recognizer
-        monitor._vad = None
-        with monitor._lock:
-            monitor._recording = True
-
-        # Cross threshold once
-        monitor.feed_audio(np.zeros(4000, dtype=np.float32))
-        assert mock_stream.accept_waveform.call_count == 1
-        # Feed another sub-threshold chunk — buffer was cleared, below
-        # threshold again: no second decode.
-        monitor.feed_audio(np.zeros(1000, dtype=np.float32))
-        assert mock_stream.accept_waveform.call_count == 1
+        normalizer.normalize.assert_called_once_with("tin")
+        assert fires == ["int"]

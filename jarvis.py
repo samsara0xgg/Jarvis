@@ -231,6 +231,9 @@ class JarvisApp:
             self.logger.warning("Intent router unavailable: %s", exc)
 
         # --- Interrupt monitor (full-duplex) ---
+        # Share main-path SpeechRecognizer + ASRNormalizer so the interrupt
+        # path uses the same model instance (no double load) and the same
+        # three-layer normalization (B4 decision applied consistently).
         from core.interrupt_monitor import InterruptMonitor
         self.interrupt_monitor = InterruptMonitor(
             config=config,
@@ -238,6 +241,8 @@ class JarvisApp:
             on_resume=self._on_voice_resume,
             on_soft_pause=self._on_soft_pause,
             on_soft_resume=self._on_soft_resume,
+            speech_recognizer=self.speech_recognizer,
+            asr_normalizer=self.asr_normalizer,
         )
 
         # ── TTS 语音合成（懒加载）── 首次调用时才初始化，避免拖慢启动

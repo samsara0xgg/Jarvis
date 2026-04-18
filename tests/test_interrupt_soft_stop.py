@@ -19,7 +19,7 @@ def _make_config(**overrides) -> dict:
             "vad_provider": "sherpa_onnx",
             "soft_stop_enabled": True,
             "soft_stop_timeout_ms": 200,  # short for tests
-            "streaming_asr_chunk_samples": 100,
+            "min_segment_ms": 10,
         }
     }
     base["interrupt"].update(overrides)

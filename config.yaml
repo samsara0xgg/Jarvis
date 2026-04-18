@@ -631,12 +631,14 @@ interrupt:
   keywords: ["等一下", "停", "打住", "暂停", "等等", "你听我说",
              "不对", "你理解错了", "不是这样", "说错了"]
   resume_keywords: ["继续说", "接着说", "你继续", "继续"]
-  streaming_asr:
-    model_dir: data/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16
-    num_threads: 2
-  # 流式 ASR chunk 累积阈值（samples @ 16kHz）
-  # 旧值 8000 = 500ms（打断响应慢），WP1 调到 3200 = 200ms
-  streaming_asr_chunk_samples: 8000
+  # 打断识别走主 ASR 栈（SenseVoice + ASRNormalizer，和 audio.asr 同一个实例）。
+  # VAD 段关门后对段内音频做一次离线解码。跳过太短的 VAD 段（噪声/咔哒声）。
+  min_segment_ms: 150
+  # Pre-roll / post-roll: 给 SenseVoice 留 VAD 触发前/后的音频上下文。
+  # 没有 preroll，VAD required_hits 会把"停"的初始辅音 t 砍掉 → 识别成"嗯"；
+  # +500ms pre / +200ms post 能稳定识别"停"这类单字（实测数据 run2）。
+  preroll_ms: 500
+  postroll_ms: 200
   # Silero VAD 门控（TTS 播放期间过滤非语音帧）
   vad_model_path: data/silero_vad.onnx
   # WP6: provider 选择（同 audio.vad_provider，但播放期间是独立实例）
