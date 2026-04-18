@@ -335,3 +335,256 @@ class TestWP5Truncation:
             sample_rate=32000,
         )
         assert out == "完全播完了。"
+
+
+class TestAbortRace:
+    @pytest.mark.asyncio
+    async def test_abort_mid_stream_stops_yielding(self, connect_patch):
+        """Abort flag set mid-stream → feed exits without yielding more chunks."""
+        from core.tts import TTSEngine
+        from core.tts_minimax_ws import MinimaxWSClient
+        import threading
+        import time as _time
+
+        ws = connect_patch
+        ws.send_queue = [
+            json.dumps({"event": "connected_success", "base_resp": {"status_code": 0}}),
+            json.dumps({"event": "task_started", "base_resp": {"status_code": 0}}),
+        ]
+        client = MinimaxWSClient("https://api-uw.minimax.io", "sk", "m", "V", 1,
+                                 sample_rate_out=32000)
+        await client.open_session(emotion=None)
+
+        # Many chunks — abort fires mid-way (50ms in, mock recv has 1ms sim-delay)
+        ws.send_queue = [
+            json.dumps({"data": {"audio": (b"\x00\x00" * 20).hex()}, "is_final": False}),
+            json.dumps({"data": {"audio": (b"\x00\x01" * 20).hex()}, "is_final": False}),
+            json.dumps({"data": {"audio": (b"\x00\x02" * 20).hex()}, "is_final": False}),
+            json.dumps({"data": {"audio": (b"\x00\x03" * 20).hex()}, "is_final": False}),
+            json.dumps({"data": {"audio": ""}, "is_final": True}),
+        ]
+
+        player = MagicMock()
+        player.played_samples = 0
+        write_count = [0]
+
+        def fake_write(pcm, **kw):
+            write_count[0] += 1
+            player.played_samples += len(pcm)
+        player.write = fake_write
+        player.drain = MagicMock(return_value=False)
+
+        abort_ev = threading.Event()
+
+        async def _trigger_abort():
+            await asyncio.sleep(0.05)
+            abort_ev.set()
+
+        eng = TTSEngine.__new__(TTSEngine)
+        eng.logger = MagicMock()
+        eng._stream_player_sample_rate = 32000
+
+        asyncio.create_task(_trigger_abort())
+        t0 = _time.monotonic()
+        result = await eng._stream_to_player_async(
+            "long text", None, player, client, abort_ev,
+        )
+        elapsed_ms = (_time.monotonic() - t0) * 1000
+
+        # Abort should cut at or before all 4 chunks processed (may process all
+        # 4 if network is super fast; what we really test is that abort_ev is
+        # honored and no hang).
+        assert not result.completed
+        assert elapsed_ms < 500
+
+        await client.close_session()
+
+    def test_pipeline_abort_closes_ws(self):
+        """TTSPipeline.abort invokes ws_client.close_session."""
+        import threading
+        import queue as _q
+        from core.tts import TTSPipeline, TTSEngine
+
+        eng = TTSEngine.__new__(TTSEngine)
+        eng.engine_name = "edge-tts"  # non-streaming path for this test
+        eng.logger = MagicMock()
+        eng.stop = MagicMock()
+        eng._stream_player = None
+        pipeline = TTSPipeline.__new__(TTSPipeline)
+        pipeline._engine = eng
+        pipeline._aborted = threading.Event()
+        pipeline._text_queue = _q.Queue()
+        pipeline._audio_queue = _q.Queue()
+        pipeline._progress_lock = threading.Lock()
+        pipeline._played_texts = []
+        pipeline._currently_playing = None
+        pipeline._progress_map = {}
+        pipeline.logger = MagicMock()
+
+        ws_client = MagicMock()
+        ws_client.close_session = AsyncMock(return_value={})
+        pipeline._ws_client = ws_client
+        pipeline._ws_loop = asyncio.new_event_loop()
+        t = threading.Thread(target=pipeline._ws_loop.run_forever, daemon=True)
+        t.start()
+
+        try:
+            pipeline.abort()
+            assert ws_client.close_session.call_count >= 1
+        finally:
+            pipeline._ws_loop.call_soon_threadsafe(pipeline._ws_loop.stop)
+            t.join(timeout=2)
+
+
+class TestTurnLevelSession:
+    @pytest.mark.asyncio
+    async def test_three_feeds_share_one_ws_session(self, connect_patch):
+        """Multiple feed() calls on one ws: each sends task_continue, no reconnect."""
+        from core.tts_minimax_ws import MinimaxWSClient
+
+        ws = connect_patch
+        ws.send_queue = [
+            json.dumps({"event": "connected_success", "base_resp": {"status_code": 0}}),
+            json.dumps({"event": "task_started", "base_resp": {"status_code": 0}}),
+        ]
+        client = MinimaxWSClient("https://api-uw.minimax.io", "sk", "m", "V", 1,
+                                 sample_rate_out=32000)
+        await client.open_session(emotion=None)
+
+        chunk_msgs = [
+            json.dumps({"data": {"audio": (b"\x00\x00" * 4).hex()}, "is_final": True}),
+            json.dumps({"data": {"audio": (b"\x01\x01" * 4).hex()}, "is_final": True}),
+            json.dumps({"data": {"audio": (b"\x02\x02" * 4).hex()}, "is_final": True}),
+        ]
+        for i, text in enumerate(["句一。", "句二。", "句三。"]):
+            ws.send_queue = [chunk_msgs[i]]
+            out = [p async for p in client.feed(text)]
+            assert len(out) >= 1
+        tc_count = sum(1 for m in ws.sent if m.get("event") == "task_continue")
+        assert tc_count == 3
+        # Only ONE task_start was sent at open_session (sents[0])
+        ts_count = sum(1 for m in ws.sent if m.get("event") == "task_start")
+        assert ts_count == 1
+        await client.close_session()
+
+
+class TestPrewarm:
+    def test_prewarm_opens_ws_in_background(self, monkeypatch):
+        """prewarm() starts ws loop + opens session; is_open() true after."""
+        import threading
+        from core.tts import TTSEngine, TTSPipeline
+
+        eng = TTSEngine.__new__(TTSEngine)
+        eng.engine_name = "minimax"
+        eng.logger = MagicMock()
+        eng.minimax_key = "sk-api"
+        eng.minimax_model = "speech-2.8-turbo"
+        eng.minimax_voice = "V"
+        eng.minimax_volume = 1
+        eng._minimax_base_url = "https://api-uw.minimax.io"
+        eng._minimax_ws_enabled = True
+        eng._stream_player_sample_rate = 32000
+        eng._ensure_stream_player = MagicMock(return_value=MagicMock())
+
+        fake_client = MagicMock()
+        fake_client.is_open = MagicMock(return_value=True)
+
+        async def fake_open(emotion):
+            return None
+        fake_client.open_session = fake_open
+        fake_client.start_idle_watchdog = MagicMock()
+
+        import core.tts_minimax_ws as ws_mod
+        monkeypatch.setattr(ws_mod, "MinimaxWSClient", lambda **kw: fake_client)
+
+        pipeline = TTSPipeline.__new__(TTSPipeline)
+        pipeline._engine = eng
+        pipeline._ws_client = None
+        pipeline._ws_loop = None
+        pipeline._ws_thread = None
+
+        pipeline.prewarm("HAPPY")
+        assert pipeline._ws_client is fake_client
+        assert pipeline._ws_client.is_open()
+
+        if pipeline._ws_loop is not None:
+            pipeline._ws_loop.call_soon_threadsafe(pipeline._ws_loop.stop)
+            if pipeline._ws_thread:
+                pipeline._ws_thread.join(timeout=2)
+
+
+class TestFallbackChain:
+    def test_ws_connect_failure_raises_for_engine_fallback(self, monkeypatch):
+        """ws connect raises → MinimaxWSClient.open_session raises WSConnectError."""
+        from core.tts_minimax_ws import MinimaxWSClient, WSConnectError
+        import websockets as ws_mod
+
+        async def boom(*a, **kw):
+            raise ConnectionRefusedError("simulated")
+
+        monkeypatch.setattr(ws_mod, "connect", boom)
+        client = MinimaxWSClient("https://api-uw.minimax.io", "sk", "m", "V", 1)
+
+        with pytest.raises(WSConnectError):
+            asyncio.run(client.open_session(emotion=None))
+
+
+class TestSubtitleFailure:
+    def test_subtitle_fetch_exception_falls_to_l2(self, monkeypatch):
+        """Subtitle URL set but fetch raises → L2 by ring fraction still works."""
+        from core.tts import _wp5_truncate
+
+        import urllib.request
+
+        def boom(*a, **kw):
+            raise OSError("sim network")
+        monkeypatch.setattr(urllib.request, "urlopen", boom)
+
+        out = _wp5_truncate(
+            text="今天天气真好，我们出去散步吧。",
+            played_samples=15,
+            sentence_start_samples=0,
+            total_samples=30,
+            subtitle_url="https://subs.example/x.json",
+            sample_rate=32000,
+        )
+        assert len(out) > 0  # L2 kicked in
+        assert len(out) < len("今天天气真好，我们出去散步吧。")
+
+
+class TestCacheBypass:
+    """Short text in cache → don't open ws."""
+
+    def test_short_text_cache_hit_skips_ws(self, tmp_path, monkeypatch):
+        from core.tts import TTSEngine, _minimax_emotion_effective
+        from unittest.mock import patch
+
+        with patch.object(TTSEngine, "__init__", lambda self, cfg, **kw: None):
+            eng = TTSEngine.__new__(TTSEngine)
+            eng.engine_name = "minimax"
+            eng.minimax_key = "sk"
+            eng.minimax_model = "speech-2.8-turbo"
+            eng.minimax_voice = "V"
+            eng.minimax_volume = 1
+            eng._minimax_base_url = "https://api-uw.minimax.io"
+            eng._minimax_url = f"{eng._minimax_base_url}/v1/t2a_v2"
+            eng._tts_cache_dir = tmp_path
+            eng._tts_cache_max = 5
+            eng.speed = 1.0
+            eng.logger = MagicMock()
+            eng._preprocessor_config = {}
+
+        emo_eff = _minimax_emotion_effective("calm") or ""
+        key = eng._tts_cache_key("好的", emo_eff)
+        cache_path = tmp_path / f"{key}.pcm"
+        cache_path.write_bytes(b"\x00" * 64)
+
+        from core import tts as tts_mod
+
+        async def should_not_be_called(*a, **kw):
+            raise AssertionError("ws should not be called on cache hit")
+        monkeypatch.setattr(tts_mod, "_ws_collect_audio", should_not_be_called)
+
+        path, deletable = eng._synth_minimax("好的", "calm")
+        assert path == str(cache_path)
+        assert deletable is False
