@@ -1,0 +1,76 @@
+{
+  "id": "fx_013",
+  "category": "emotion",
+  "seed_id": "fx_013",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:03:54+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "22:47",
+      "emotion": "tired",
+      "content": "草 终于交了"
+    },
+    {
+      "role": "assistant",
+      "time": "22:47",
+      "content": "辛苦了，deadline 赶完了？好好歇歇吧。"
+    },
+    {
+      "role": "user",
+      "time": "22:48",
+      "emotion": "tired",
+      "content": "卧槽 我现在瘫沙发上一根手指都不想动 脑子全是浆糊"
+    },
+    {
+      "role": "assistant",
+      "time": "22:48",
+      "content": "那就别动，今晚什么都不用想了。要不要我一会儿帮你把灯关了？"
+    },
+    {
+      "role": "user",
+      "time": "22:49",
+      "emotion": "tired",
+      "content": "嗯 随便 我感觉我能直接在沙发上睡着"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🟡",
+      "must_contain_any_of": [
+        [
+          "疲惫"
+        ],
+        [
+          "疲倦"
+        ],
+        [
+          "累"
+        ],
+        [
+          "不想动"
+        ],
+        [
+          "精疲力竭"
+        ],
+        [
+          "极度",
+          "疲"
+        ],
+        [
+          "瘫"
+        ]
+      ],
+      "semantic_description": "用户处于极度疲惫状态，赶完deadline后瘫在沙发上，一根手指都不想动"
+    }
+  ],
+  "must_not_contain_globally": [
+    "开心",
+    "精力充沛",
+    "想出门",
+    "兴奋",
+    "积极"
+  ]
+}

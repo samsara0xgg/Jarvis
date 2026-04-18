@@ -1,0 +1,62 @@
+{
+  "id": "fx_011",
+  "category": "temporal",
+  "seed_id": "fx_011",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:03:36+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "20:15",
+      "emotion": "happy",
+      "content": "哈哈刚刚跟 Ryan 敲定了！这周六晚上一起去看 Bard on the Beach，超期待的！"
+    },
+    {
+      "role": "assistant",
+      "time": "20:15",
+      "content": "听起来太棒了！Bard on the Beach 的露天莎士比亚剧场氛围超赞的。你们约了几点碰面？要不要我帮你记一下？"
+    },
+    {
+      "role": "user",
+      "time": "20:16",
+      "emotion": "happy",
+      "content": "大概六点半在 Vanier Park 门口集合，先吃个简餐再进场。帮我记下来吧，怕到时候忘了 😂"
+    },
+    {
+      "role": "assistant",
+      "time": "20:16",
+      "content": "没问题！已经帮你记下了：周六傍晚六点半在 Vanier Park 门口和 Ryan 碰面，先吃东西再看 Bard on the Beach。祝你们玩得开心！"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "周六",
+          "Ryan",
+          "Bard on the Beach"
+        ],
+        [
+          "周六",
+          "Ryan",
+          "Bard"
+        ],
+        [
+          "Saturday",
+          "Ryan",
+          "Bard"
+        ]
+      ],
+      "semantic_description": "用户约定周六晚上和 Ryan 一起去看 Bard on the Beach，六点半在 Vanier Park 碰面"
+    }
+  ],
+  "must_not_contain_globally": [
+    "周日",
+    "Kevin",
+    "Lulu",
+    "看电影"
+  ]
+}

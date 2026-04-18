@@ -1,0 +1,88 @@
+{
+  "id": "fx_004",
+  "category": "temporal",
+  "seed_id": "fx_004",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:02:25+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "22:41",
+      "emotion": "neutral",
+      "content": "帮我设个提醒，明早7点出门跑Stanley Park。"
+    },
+    {
+      "role": "assistant",
+      "time": "22:41",
+      "content": "好的，已为你设好提醒：明天早上7:00——出门跑Stanley Park。到时会准时提醒你。"
+    },
+    {
+      "role": "user",
+      "time": "22:41",
+      "emotion": "neutral",
+      "content": "行，谢了。"
+    },
+    {
+      "role": "assistant",
+      "time": "22:41",
+      "content": "不客气，早点休息，明早见。"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "明早",
+          "7",
+          "Stanley Park"
+        ],
+        [
+          "明天",
+          "7",
+          "Stanley Park"
+        ],
+        [
+          "7点",
+          "Stanley"
+        ],
+        [
+          "7:00",
+          "Stanley"
+        ]
+      ],
+      "semantic_description": "用户要求设置提醒：明早7点出门跑Stanley Park，包含具体时间和地点"
+    },
+    {
+      "priority": "✅",
+      "must_contain_any_of": [
+        [
+          "已设",
+          "提醒"
+        ],
+        [
+          "设好",
+          "提醒"
+        ],
+        [
+          "提醒",
+          "完成"
+        ],
+        [
+          "已创建",
+          "提醒"
+        ]
+      ],
+      "semantic_description": "助手已确认成功设置了该提醒"
+    }
+  ],
+  "must_not_contain_globally": [
+    "今天",
+    "下午",
+    "Kitsilano",
+    "午后",
+    "晚上跑"
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "id": "fx_006",
+  "category": "preference",
+  "seed_id": "fx_006",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:02:47+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "12:35",
+      "emotion": "neutral",
+      "content": "对了，帮我记一下，我不吃香菜。"
+    },
+    {
+      "role": "assistant",
+      "time": "12:35",
+      "content": "好的，已经记下了。以后推荐菜品会帮您避开香菜。"
+    },
+    {
+      "role": "user",
+      "time": "12:36",
+      "emotion": "neutral",
+      "content": "嗯，真的特别讨厌那个味道，碰到就整道菜都不想吃了。"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "香菜",
+          "不吃"
+        ],
+        [
+          "香菜",
+          "讨厌"
+        ],
+        [
+          "香菜",
+          "反感"
+        ],
+        [
+          "香菜",
+          "排斥"
+        ],
+        [
+          "香菜",
+          "不能接受"
+        ]
+      ],
+      "semantic_description": "用户明确表示不吃香菜，对香菜味道强烈反感，属于长期饮食偏好/限制"
+    }
+  ],
+  "must_not_contain_globally": [
+    "喜欢香菜",
+    "过敏",
+    "偶尔吃",
+    "花生",
+    "海鲜"
+  ]
+}

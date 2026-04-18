@@ -1,0 +1,113 @@
+{
+  "id": "fx_015",
+  "category": "smart_home",
+  "seed_id": "fx_015",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:04:20+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "22:47",
+      "emotion": "neutral",
+      "content": "帮我把早上7点那个闹钟改一下，铃声换成lo-fi音乐，默认那个铃声真的听够了。"
+    },
+    {
+      "role": "assistant",
+      "time": "22:47",
+      "content": "好的，我来把早上7点的闹钟铃声从默认改成lo-fi音乐。稍等一下。"
+    },
+    {
+      "role": "tool",
+      "name": "smart_home.alarm.update",
+      "args": {
+        "alarm_id": "morning_7am",
+        "sound_type": "lo-fi",
+        "time": "07:00"
+      },
+      "result": "{\"status\": \"success\", \"alarm_id\": \"morning_7am\", \"time\": \"07:00\", \"sound\": \"lo-fi playlist\", \"enabled\": true}"
+    },
+    {
+      "role": "assistant",
+      "time": "22:47",
+      "content": "搞定了，早上7点的闹钟铃声已经换成lo-fi音乐了，明早就生效。终于不用再被那个默认铃声吵醒啦。"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "早",
+          "lo-fi"
+        ],
+        [
+          "7点",
+          "lo-fi"
+        ],
+        [
+          "7:00",
+          "lo-fi"
+        ],
+        [
+          "早晨",
+          "lofi"
+        ],
+        [
+          "闹钟",
+          "lo-fi"
+        ],
+        [
+          "alarm",
+          "lo-fi"
+        ]
+      ],
+      "semantic_description": "用户偏好早晨闹钟使用lo-fi音乐替代默认铃声"
+    },
+    {
+      "priority": "✅",
+      "must_contain_any_of": [
+        [
+          "闹钟",
+          "已改"
+        ],
+        [
+          "闹钟",
+          "已换"
+        ],
+        [
+          "闹钟",
+          "修改"
+        ],
+        [
+          "alarm",
+          "更新"
+        ],
+        [
+          "铃声",
+          "换成"
+        ],
+        [
+          "闹钟",
+          "lo-fi",
+          "成功"
+        ],
+        [
+          "已设置"
+        ],
+        [
+          "已更改"
+        ]
+      ],
+      "semantic_description": "早上7点闹钟已成功修改为lo-fi铃声"
+    }
+  ],
+  "must_not_contain_globally": [
+    "流行歌",
+    "下午",
+    "关闭alarm",
+    "关闭闹钟",
+    "取消"
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "id": "fx_005",
+  "category": "emotion",
+  "seed_id": "fx_005",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:02:40+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "17:42",
+      "emotion": "angry",
+      "content": "我真的要被方圆科技那帮人搞疯了"
+    },
+    {
+      "role": "assistant",
+      "time": "17:42",
+      "content": "怎么了？他们又出什么幺蛾子了？"
+    },
+    {
+      "role": "user",
+      "time": "17:43",
+      "emotion": "angry",
+      "content": "上周说好的交付标准，白纸黑字写在邮件里的，今天开会他们又反悔了，说什么「当时的意思不是这样」。我tm当时截屏都截了，他还跟我装。他们那个对接人叫周博文的，每次都这样，嘴上答应得好好的，回头就翻脸不认账。"
+    },
+    {
+      "role": "assistant",
+      "time": "17:43",
+      "content": "确实挺恶心的，白纸黑字都能赖。你截屏留着就好，至少证据在手。他们这次具体想改哪部分？"
+    },
+    {
+      "role": "user",
+      "time": "17:44",
+      "emotion": "angry",
+      "content": "验收标准啊！之前说按我们的测试报告通过就行，现在非要加一套他们自己的评估流程，等于我们要重新做一遍。三周的活又白干了。我真服了，跟这种人合作纯粹浪费生命。"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🟡",
+      "must_contain_any_of": [
+        [
+          "愤怒"
+        ],
+        [
+          "不满"
+        ],
+        [
+          "气愤"
+        ],
+        [
+          "生气"
+        ],
+        [
+          "恼火"
+        ]
+      ],
+      "semantic_description": "用户对合作方（方圆科技）感到非常愤怒和不满，因为对方反复出尔反尔"
+    },
+    {
+      "priority": "🟡",
+      "must_contain_any_of": [
+        [
+          "方圆科技"
+        ],
+        [
+          "方圆",
+          "合作"
+        ],
+        [
+          "周博文"
+        ],
+        [
+          "方圆",
+          "客户"
+        ]
+      ],
+      "semantic_description": "合作方为方圆科技，对接人为周博文，属于工作场合的合作关系"
+    }
+  ],
+  "must_not_contain_globally": [
+    "辞职",
+    "想杀人",
+    "心理疾病",
+    "上司"
+  ]
+}

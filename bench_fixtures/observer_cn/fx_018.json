@@ -1,0 +1,64 @@
+{
+  "id": "fx_018",
+  "category": "correction",
+  "seed_id": "fx_018",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:04:43+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "14:22",
+      "emotion": "neutral",
+      "content": "对了，周六下午我要跟Lulu去宜家逛一下……啊不对，不是Lulu，是Kevin，说错了。"
+    },
+    {
+      "role": "assistant",
+      "time": "14:22",
+      "content": "好的，周六下午你和Kevin去宜家，有什么想买的吗？"
+    },
+    {
+      "role": "user",
+      "time": "14:23",
+      "emotion": "neutral",
+      "content": "就看看收纳的东西，家里太乱了。"
+    },
+    {
+      "role": "assistant",
+      "time": "14:23",
+      "content": "了解，到时候可以提醒你出发哦。"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "Kevin",
+          "不是Lulu"
+        ],
+        [
+          "Kevin",
+          "纠正"
+        ],
+        [
+          "Kevin",
+          "而非Lulu"
+        ],
+        [
+          "Kevin",
+          "口误"
+        ]
+      ],
+      "semantic_description": "用户自我纠正：周六去宜家的同伴是Kevin，不是Lulu（口误后立即更正）"
+    }
+  ],
+  "must_not_contain_globally": [
+    "和Lulu",
+    "Ryan",
+    "两个人",
+    "Lulu一起",
+    "三个人"
+  ]
+}

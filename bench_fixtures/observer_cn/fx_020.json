@@ -1,0 +1,160 @@
+{
+  "id": "fx_020",
+  "category": "completion",
+  "seed_id": "fx_020",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:05:08+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "09:15",
+      "emotion": "happy",
+      "content": "Jarvis，帮我搞三件事：一杯冰美式送到工位，下午三点提醒我开会，还有把书房的灯调暖一点。"
+    },
+    {
+      "role": "tool",
+      "name": "order_coffee",
+      "args": {
+        "item": "冰美式",
+        "delivery": "工位"
+      },
+      "result": "订单已创建，预计10分钟送达"
+    },
+    {
+      "role": "tool",
+      "name": "set_reminder",
+      "args": {
+        "time": "15:00",
+        "message": "开会"
+      },
+      "result": "提醒已设置：15:00 开会"
+    },
+    {
+      "role": "tool",
+      "name": "adjust_light",
+      "args": {
+        "room": "书房",
+        "color_temp": "warm"
+      },
+      "result": "书房灯光已调至暖色调"
+    },
+    {
+      "role": "assistant",
+      "time": "09:15",
+      "content": "三件事都搞定了：冰美式已下单，大概10分钟到工位；下午三点会提醒你开会；书房灯已经调暖啦。"
+    },
+    {
+      "role": "user",
+      "time": "09:16",
+      "emotion": "happy",
+      "content": "Nice，效率很高，thanks man 🤙"
+    },
+    {
+      "role": "assistant",
+      "time": "09:16",
+      "content": "随时待命！有事再叫我～"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "✅",
+      "must_contain_any_of": [
+        [
+          "咖啡",
+          "完成"
+        ],
+        [
+          "咖啡",
+          "成功"
+        ],
+        [
+          "咖啡",
+          "已订"
+        ],
+        [
+          "冰美式",
+          "完成"
+        ],
+        [
+          "冰美式",
+          "成功"
+        ],
+        [
+          "咖啡",
+          "搞定"
+        ],
+        [
+          "冰美式",
+          "搞定"
+        ],
+        [
+          "订咖啡"
+        ]
+      ],
+      "semantic_description": "Jarvis 已完成订咖啡任务（冰美式已下单送到工位）"
+    },
+    {
+      "priority": "✅",
+      "must_contain_any_of": [
+        [
+          "提醒",
+          "完成"
+        ],
+        [
+          "提醒",
+          "成功"
+        ],
+        [
+          "提醒",
+          "已设"
+        ],
+        [
+          "提醒",
+          "搞定"
+        ],
+        [
+          "设提醒"
+        ]
+      ],
+      "semantic_description": "Jarvis 已完成设提醒任务（下午三点开会提醒已设置）"
+    },
+    {
+      "priority": "✅",
+      "must_contain_any_of": [
+        [
+          "灯",
+          "完成"
+        ],
+        [
+          "灯",
+          "成功"
+        ],
+        [
+          "灯",
+          "已调"
+        ],
+        [
+          "灯",
+          "搞定"
+        ],
+        [
+          "调灯"
+        ],
+        [
+          "灯光",
+          "暖"
+        ]
+      ],
+      "semantic_description": "Jarvis 已完成调灯任务（书房灯光已调至暖色调）"
+    }
+  ],
+  "must_not_contain_globally": [
+    "失败",
+    "不满意",
+    "重做",
+    "取消",
+    "错误"
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "id": "fx_017",
+  "category": "correction",
+  "seed_id": "fx_017",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:04:35+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "15:22",
+      "emotion": "neutral",
+      "content": "帮我记一下，跟老周约了后天下午去他工作室看看……不对不对，等等，我搞混了，是大后天，大后天下午。"
+    },
+    {
+      "role": "assistant",
+      "time": "15:22",
+      "content": "好的，已帮您记下：大后天下午去老周的工作室。"
+    },
+    {
+      "role": "user",
+      "time": "15:23",
+      "emotion": "neutral",
+      "content": "对，大后天，别记成后天了啊，我刚嘴瓢了。"
+    },
+    {
+      "role": "assistant",
+      "time": "15:23",
+      "content": "放心，记的是大后天下午，不会搞错的。"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "大后天",
+          "老周"
+        ],
+        [
+          "大后天",
+          "工作室"
+        ],
+        [
+          "纠正",
+          "大后天"
+        ],
+        [
+          "改为",
+          "大后天"
+        ],
+        [
+          "改到",
+          "大后天"
+        ]
+      ],
+      "semantic_description": "用户纠正了时间：约定是大后天（不是后天）去老周工作室"
+    }
+  ],
+  "must_not_contain_globally": [
+    "后天下午去",
+    "今天",
+    "明天",
+    "周六",
+    "周日"
+  ]
+}

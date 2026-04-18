@@ -1,0 +1,64 @@
+{
+  "id": "fx_009",
+  "category": "state_change",
+  "seed_id": "fx_009",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:03:16+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "19:42",
+      "emotion": "neutral",
+      "content": "对了，我搬家了，从 Kitsilano 搬到 Mount Pleasant 了。"
+    },
+    {
+      "role": "assistant",
+      "time": "19:42",
+      "content": "哦搬家了呀！Mount Pleasant 那边挺好的，是什么契机搬过去的？"
+    },
+    {
+      "role": "user",
+      "time": "19:43",
+      "emotion": "neutral",
+      "content": "主要是 Kits 那边房租涨太多了，续租的时候直接加了好几百。刚好朋友在 Mount Pleasant 有个空房间，租金便宜不少，而且离 Main Street 那边吃东西也方便，就顺势搬了。"
+    },
+    {
+      "role": "assistant",
+      "time": "19:43",
+      "content": "确实，Kits 那片现在租金挺离谱的。Mount Pleasant 生活便利性也很好，希望你在新地方住得开心！"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "Kitsilano",
+          "Mount Pleasant"
+        ],
+        [
+          "Kits",
+          "Mount Pleasant"
+        ],
+        [
+          "搬家",
+          "Mount Pleasant"
+        ],
+        [
+          "搬到",
+          "Mount Pleasant"
+        ]
+      ],
+      "semantic_description": "用户居住地从 Kitsilano 搬到了 Mount Pleasant，属于居住地址替换"
+    }
+  ],
+  "must_not_contain_globally": [
+    "还在Kitsilano",
+    "买房",
+    "新房",
+    "Vancouver以外",
+    "郊区"
+  ]
+}

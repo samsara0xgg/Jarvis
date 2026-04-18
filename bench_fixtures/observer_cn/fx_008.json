@@ -1,0 +1,55 @@
+{
+  "id": "fx_008",
+  "category": "preference",
+  "seed_id": "fx_008",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:03:07+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "14:22",
+      "emotion": "neutral",
+      "content": "跟你说一下啊，以后有什么重要的事情要通知我，走iMessage就行了。"
+    },
+    {
+      "role": "assistant",
+      "time": "14:22",
+      "content": "好的，记住了。那如果是特别紧急的情况呢，需要打电话吗？"
+    },
+    {
+      "role": "user",
+      "time": "14:23",
+      "emotion": "neutral",
+      "content": "不要打电话，真的烦。上次开会开到一半被电话响铃搞得很尴尬，iMessage我静音也能看到，够了。就这么定了，别打电话。"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "iMessage",
+          "电话"
+        ],
+        [
+          "iMessage",
+          "不要打"
+        ],
+        [
+          "iMessage",
+          "不打电话"
+        ]
+      ],
+      "semantic_description": "用户明确表示重要事情走iMessage通知，不要用电话联系，因为电话铃声曾在开会时造成困扰"
+    }
+  ],
+  "must_not_contain_globally": [
+    "喜欢电话",
+    "微信",
+    "邮件优先",
+    "短信",
+    "WhatsApp"
+  ]
+}

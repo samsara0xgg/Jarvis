@@ -1,0 +1,132 @@
+{
+  "id": "fx_001",
+  "category": "smart_home",
+  "seed_id": "fx_001",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:01:52+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "22:47",
+      "emotion": "tired",
+      "content": "草……Jarvis 把客厅灯调暖一点 我眼睛要瞎了"
+    },
+    {
+      "role": "assistant",
+      "time": "22:47",
+      "content": "好的，正在把客厅主灯调为暖色调，色温2700K，亮度降到40%。"
+    },
+    {
+      "role": "tool",
+      "name": "smart_light.set",
+      "args": {
+        "room": "客厅",
+        "color_temp": 2700,
+        "brightness": 40
+      },
+      "result": "ok"
+    },
+    {
+      "role": "assistant",
+      "time": "22:47",
+      "content": "搞定了，客厅灯已经调成暖光、亮度40%，眼睛应该舒服多了。"
+    },
+    {
+      "role": "user",
+      "time": "22:48",
+      "emotion": "tired",
+      "content": "卧槽 终于……今天加班到现在 人都废了 一根指头都不想动"
+    },
+    {
+      "role": "assistant",
+      "time": "22:48",
+      "content": "辛苦了，先歇着吧。要不要我帮你把电视也打开放点白噪音？"
+    },
+    {
+      "role": "user",
+      "time": "22:49",
+      "emotion": "tired",
+      "content": "算了 就这样瘫着吧 谢了"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "客厅",
+          "暖"
+        ],
+        [
+          "客厅",
+          "暖色"
+        ],
+        [
+          "客厅",
+          "暖光"
+        ],
+        [
+          "客厅",
+          "2700"
+        ]
+      ],
+      "semantic_description": "用户偏好客厅灯光为暖色调"
+    },
+    {
+      "priority": "🟡",
+      "must_contain_any_of": [
+        [
+          "疲惫"
+        ],
+        [
+          "疲劳"
+        ],
+        [
+          "累"
+        ],
+        [
+          "不想动"
+        ],
+        [
+          "tired"
+        ]
+      ],
+      "semantic_description": "用户情绪疲惫，加班后不想动"
+    },
+    {
+      "priority": "✅",
+      "must_contain_any_of": [
+        [
+          "灯",
+          "调"
+        ],
+        [
+          "灯",
+          "成功"
+        ],
+        [
+          "灯",
+          "完成"
+        ],
+        [
+          "灯",
+          "已调"
+        ],
+        [
+          "light",
+          "ok"
+        ]
+      ],
+      "semantic_description": "客厅灯已成功调整为暖光"
+    }
+  ],
+  "must_not_contain_globally": [
+    "蓝光",
+    "冷白",
+    "卧室",
+    "冷色",
+    "书房"
+  ]
+}

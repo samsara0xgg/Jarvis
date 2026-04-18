@@ -1,0 +1,87 @@
+{
+  "id": "fx_019",
+  "category": "multi_entity",
+  "seed_id": "fx_019",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:04:54+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "14:32",
+      "emotion": "neutral",
+      "content": "昨天跟 Ryan 聊了一下项目管理的事，他在 Stripe 那边现在全组都在用 Linear，说体验特别好"
+    },
+    {
+      "role": "assistant",
+      "time": "14:32",
+      "content": "Linear 确实口碑不错，很多团队从 Jira 切过来之后都觉得更轻量。Ryan 他们主要用来跟什么？sprint planning 还是 issue tracking？"
+    },
+    {
+      "role": "user",
+      "time": "14:33",
+      "emotion": "neutral",
+      "content": "他说两个都有，主要是 cycle 那套流程比较顺。他还提到 Kevin 也在用 Linear，不过 Kevin 好像是个人项目在用，不是公司层面的"
+    },
+    {
+      "role": "assistant",
+      "time": "14:33",
+      "content": "了解，Linear 个人用也挺合适的，免费 tier 功能就够了。你要是想试的话我可以帮你梳理一下怎么从现有工具迁移过去。"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "Ryan",
+          "Stripe"
+        ],
+        [
+          "Ryan",
+          "stripe"
+        ]
+      ],
+      "semantic_description": "Ryan 在 Stripe 工作，属于关键人物与公司关联信息"
+    },
+    {
+      "priority": "🟡",
+      "must_contain_any_of": [
+        [
+          "Ryan",
+          "Linear"
+        ],
+        [
+          "Ryan",
+          "推荐"
+        ],
+        [
+          "推荐",
+          "Linear"
+        ]
+      ],
+      "semantic_description": "Ryan 推荐使用 Linear 这个项目管理工具"
+    },
+    {
+      "priority": "🟡",
+      "must_contain_any_of": [
+        [
+          "Kevin",
+          "Linear"
+        ],
+        [
+          "Kevin",
+          "linear"
+        ]
+      ],
+      "semantic_description": "Kevin 也在使用 Linear，但主要是个人项目层面"
+    }
+  ],
+  "must_not_contain_globally": [
+    "用户在Stripe",
+    "用户在 Stripe",
+    "Acme",
+    "Lulu"
+  ]
+}

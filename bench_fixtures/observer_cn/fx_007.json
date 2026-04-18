@@ -1,0 +1,68 @@
+{
+  "id": "fx_007",
+  "category": "preference",
+  "seed_id": "fx_007",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:02:58+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "10:22",
+      "emotion": "neutral",
+      "content": "Jarvis，帮我记一下，以后工作的时候给我放音乐，只放纯音乐就行，lo-fi或者instrumental那种。带歌词的不要。"
+    },
+    {
+      "role": "assistant",
+      "time": "10:22",
+      "content": "好的，已记下。工作时段只播放无歌词的纯音乐，比如 lo-fi、instrumental 类型。方便问一下原因吗？这样我以后推荐的时候可以更精准。"
+    },
+    {
+      "role": "user",
+      "time": "10:23",
+      "emotion": "neutral",
+      "content": "有歌词容易分心，脑子会不自觉跟着唱，写代码的时候特别影响思路。纯音乐当背景音刚好，不干扰注意力。"
+    },
+    {
+      "role": "assistant",
+      "time": "10:23",
+      "content": "理解了，歌词容易抢占注意力资源。以后工作时段我只会推荐 lo-fi beats、器乐曲这类无人声的音乐，保证不打扰你的专注状态。"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "工作",
+          "无歌词"
+        ],
+        [
+          "工作",
+          "纯音乐"
+        ],
+        [
+          "工作",
+          "lo-fi"
+        ],
+        [
+          "工作",
+          "instrumental"
+        ],
+        [
+          "工作",
+          "器乐"
+        ]
+      ],
+      "semantic_description": "用户偏好：工作时只听无歌词音乐（lo-fi/instrumental），因为歌词会分散注意力影响思路"
+    }
+  ],
+  "must_not_contain_globally": [
+    "流行歌",
+    "随机播放",
+    "睡觉",
+    "睡眠",
+    "有声书"
+  ]
+}

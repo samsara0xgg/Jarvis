@@ -1,0 +1,137 @@
+{
+  "id": "fx_014",
+  "category": "emotion",
+  "seed_id": "fx_014",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:04:09+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "23:47",
+      "emotion": "anxious",
+      "content": "我又在想那个事……RPi 上跑 Jarvis 的事，明天其实可以搞了，但我现在心里没底。"
+    },
+    {
+      "role": "assistant",
+      "time": "23:47",
+      "content": "嗯，你具体在担心哪部分？是怕环境配不好，还是跑起来之后不稳定？"
+    },
+    {
+      "role": "user",
+      "time": "23:48",
+      "emotion": "anxious",
+      "content": "都有吧……主要是怕搞到一半挂了，然后又要回滚，折腾一晚上啥也没弄好。但又想着，不试一下永远不知道行不行……唉。"
+    },
+    {
+      "role": "assistant",
+      "time": "23:48",
+      "content": "可以先在本地跑一遍 dry-run，确认没问题再往 RPi 上推，这样至少心里有个底。"
+    },
+    {
+      "role": "user",
+      "time": "23:50",
+      "emotion": "anxious",
+      "content": "道理是这样啦……但我就是下不了决心，到底今晚搞还是明天再说。每次想到要 deploy 就有点慌，说不上来为什么。算了先不想了，又在纠结了。"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🟡",
+      "must_contain_any_of": [
+        [
+          "焦虑",
+          "部署"
+        ],
+        [
+          "焦虑",
+          "deploy"
+        ],
+        [
+          "焦虑",
+          "RPi"
+        ],
+        [
+          "焦虑",
+          "Jarvis"
+        ],
+        [
+          "担心",
+          "部署"
+        ],
+        [
+          "担心",
+          "deploy"
+        ],
+        [
+          "紧张",
+          "部署"
+        ],
+        [
+          "慌",
+          "deploy"
+        ],
+        [
+          "慌",
+          "部署"
+        ],
+        [
+          "没底",
+          "RPi"
+        ],
+        [
+          "没底",
+          "Jarvis"
+        ]
+      ],
+      "semantic_description": "用户对将 Jarvis 部署到 RPi 感到焦虑、心里没底"
+    },
+    {
+      "priority": "🟡",
+      "must_contain_any_of": [
+        [
+          "犹豫",
+          "deploy"
+        ],
+        [
+          "犹豫",
+          "部署"
+        ],
+        [
+          "纠结",
+          "deploy"
+        ],
+        [
+          "纠结",
+          "部署"
+        ],
+        [
+          "犹豫",
+          "今晚"
+        ],
+        [
+          "纠结",
+          "今晚"
+        ],
+        [
+          "下不了决心"
+        ],
+        [
+          "举棋不定"
+        ],
+        [
+          "尚未决定"
+        ]
+      ],
+      "semantic_description": "用户在犹豫是否今晚进行部署，尚未做出决定"
+    }
+  ],
+  "must_not_contain_globally": [
+    "已部署",
+    "决定不部署",
+    "兴奋",
+    "成功",
+    "完成部署"
+  ]
+}

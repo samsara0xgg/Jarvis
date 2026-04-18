@@ -1,0 +1,72 @@
+{
+  "id": "fx_012",
+  "category": "temporal",
+  "seed_id": "fx_012",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:03:45+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "21:47",
+      "emotion": "anxious",
+      "content": "完了完了，我妈生日快到了，我还没寄礼物"
+    },
+    {
+      "role": "assistant",
+      "time": "21:47",
+      "content": "别急！她生日是什么时候？你打算寄什么呢？"
+    },
+    {
+      "role": "user",
+      "time": "21:48",
+      "emotion": "anxious",
+      "content": "周三之前必须寄出去 不然来不及了 买了个丝巾还在家放着呢"
+    },
+    {
+      "role": "assistant",
+      "time": "21:48",
+      "content": "那明天赶紧去寄吧，顺丰的话两三天就到了，时间还来得及的。"
+    },
+    {
+      "role": "user",
+      "time": "21:49",
+      "emotion": "anxious",
+      "content": "嗯 明天中午去寄 千万不能再忘了"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "周三",
+          "妈妈",
+          "寄"
+        ],
+        [
+          "周三",
+          "妈",
+          "礼物"
+        ],
+        [
+          "周三",
+          "母亲",
+          "寄"
+        ],
+        [
+          "周三前",
+          "生日礼物"
+        ]
+      ],
+      "semantic_description": "用户需要在周三之前给妈妈寄生日礼物（丝巾），时间紧迫"
+    }
+  ],
+  "must_not_contain_globally": [
+    "周末",
+    "下周",
+    "爸爸",
+    "已寄"
+  ]
+}

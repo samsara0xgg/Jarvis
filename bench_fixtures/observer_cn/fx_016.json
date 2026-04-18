@@ -1,0 +1,83 @@
+{
+  "id": "fx_016",
+  "category": "smart_home",
+  "seed_id": "fx_016",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:04:27+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "23:14",
+      "emotion": "neutral",
+      "content": "帮我把卧室空调调到22度吧，准备睡了。"
+    },
+    {
+      "role": "tool",
+      "name": "set_ac_temperature",
+      "args": {
+        "room": "卧室",
+        "temperature": 22,
+        "mode": "制冷"
+      },
+      "result": "已将卧室空调设置为22°C，制冷模式"
+    },
+    {
+      "role": "assistant",
+      "time": "23:14",
+      "content": "好的，卧室空调已经调到22°C了，晚安～"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "卧室",
+          "22"
+        ],
+        [
+          "卧室",
+          "睡觉"
+        ],
+        [
+          "卧室",
+          "睡眠",
+          "温度"
+        ]
+      ],
+      "semantic_description": "用户偏好卧室睡觉时空调设定为22°C"
+    },
+    {
+      "priority": "✅",
+      "must_contain_any_of": [
+        [
+          "空调",
+          "已调"
+        ],
+        [
+          "空调",
+          "已设置"
+        ],
+        [
+          "空调",
+          "22",
+          "完成"
+        ],
+        [
+          "空调",
+          "调好"
+        ]
+      ],
+      "semantic_description": "卧室空调已成功调至22°C"
+    }
+  ],
+  "must_not_contain_globally": [
+    "客厅",
+    "白天",
+    "暖气",
+    "26",
+    "28"
+  ]
+}

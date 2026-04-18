@@ -1,0 +1,70 @@
+{
+  "id": "fx_010",
+  "category": "state_change",
+  "seed_id": "fx_010",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:03:27+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "20:15",
+      "emotion": "neutral",
+      "content": "我最近把跑步停了，改成做力量训练了。"
+    },
+    {
+      "role": "assistant",
+      "time": "20:15",
+      "content": "哦，这个变化挺大的，是什么让你做了这个决定呢？"
+    },
+    {
+      "role": "user",
+      "time": "20:16",
+      "emotion": "neutral",
+      "content": "主要是觉得跑了大半年，体重倒是降了一些，但整体体型变化不大。看了一些资料说增肌对基础代谢帮助更大，就想试试力量训练。"
+    },
+    {
+      "role": "assistant",
+      "time": "20:16",
+      "content": "确实，力量训练对改善体型和提升代谢都很有效。你现在是去健身房练还是在家做？"
+    },
+    {
+      "role": "user",
+      "time": "20:17",
+      "emotion": "neutral",
+      "content": "办了个健身房的卡，一周去三四次吧，跟着一个计划表练。跑步暂时就不跑了，精力有限，先集中搞力量这块。"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "跑步",
+          "力量"
+        ],
+        [
+          "跑步",
+          "换"
+        ],
+        [
+          "力量训练",
+          "替换"
+        ],
+        [
+          "力量训练",
+          "切换"
+        ]
+      ],
+      "semantic_description": "用户的锻炼方式发生变更：从跑步切换到力量训练，跑步已停止"
+    }
+  ],
+  "must_not_contain_globally": [
+    "继续跑步",
+    "全部停了",
+    "受伤",
+    "瑜伽",
+    "游泳"
+  ]
+}

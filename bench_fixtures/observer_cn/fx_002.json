@@ -1,0 +1,68 @@
+{
+  "id": "fx_002",
+  "category": "preference",
+  "seed_id": "fx_002",
+  "generated_by": "claude-opus-4-6",
+  "generated_at": "2026-04-15T21:02:06+00:00",
+  "approved_by": "",
+  "approved_at": "",
+  "dialogue": [
+    {
+      "role": "user",
+      "time": "14:32",
+      "emotion": "happy",
+      "content": "哎你知道吗！我最近发现一家超绝的咖啡店叫 Revolver，他们家的耶加雪菲拿铁真的绝了，喝完整个人都升华了哈哈哈"
+    },
+    {
+      "role": "assistant",
+      "time": "14:32",
+      "content": "哈哈听起来很不错！耶加雪菲做拿铁会不会偏酸？你平时也是拿铁党吗？"
+    },
+    {
+      "role": "user",
+      "time": "14:33",
+      "emotion": "happy",
+      "content": "对啊我一直都是拿铁死忠粉！每次 order 基本都是 latte，但 Revolver 那个耶加雪菲的豆子做出来有一点点果香，不会很酸，配牛奶刚好，比一般 flat white 还顺滑"
+    },
+    {
+      "role": "assistant",
+      "time": "14:33",
+      "content": "果香配牛奶确实挺特别的，看来你是找到心头好了！下次路过可以试试他们有没有其他单品豆的版本～"
+    },
+    {
+      "role": "user",
+      "time": "14:34",
+      "emotion": "happy",
+      "content": "真的强烈安利！你要是去的话一定要点他们家耶加雪菲拿铁，trust me 不会踩雷的😆"
+    }
+  ],
+  "expected_observations": [
+    {
+      "priority": "🔴",
+      "must_contain_any_of": [
+        [
+          "拿铁",
+          "Revolver",
+          "耶加雪菲"
+        ],
+        [
+          "拿铁",
+          "Revolver",
+          "耶加"
+        ],
+        [
+          "latte",
+          "Revolver"
+        ]
+      ],
+      "semantic_description": "用户最喜欢喝拿铁，特别推荐 Revolver 咖啡店的耶加雪菲拿铁，认为果香配牛奶非常好喝"
+    }
+  ],
+  "must_not_contain_globally": [
+    "美式",
+    "Standard Brew",
+    "不喝咖啡",
+    "讨厌咖啡",
+    "冰美式"
+  ]
+}
