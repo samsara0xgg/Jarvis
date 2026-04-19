@@ -204,7 +204,13 @@ class AudioRecorder {
             // semantics except without the soft-duck stage.
             const ttsPlaying = !!(typeof window !== 'undefined'
                 && window.chatApp && window.chatApp.ttsPlaying);
+            // Console visibility: utils/logger writes to the in-page DIV,
+            // not console.log. Use console directly here so the gate is
+            // easy to see in DevTools.
+            console.log('[VAD]', {text: result.text, ttsPlaying,
+                hasKw: _containsInterruptKeyword(result.text)});
             if (ttsPlaying && !_containsInterruptKeyword(result.text)) {
+                console.warn('[VAD] gate dropped (TTS playing, no keyword):', result.text);
                 log(`VAD: TTS 播放中，非打断词已忽略: "${result.text}"`, 'info');
                 return;
             }
