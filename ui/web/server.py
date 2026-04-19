@@ -42,13 +42,25 @@ def _wrap_pcm_to_wav(pcm_path: Path, wav_path: Path,
     )
     wav_path.write_bytes(header + pcm)
 
-from fastapi import FastAPI, Form, HTTPException, UploadFile, File
+from fastapi import FastAPI, Form, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 LOGGER = logging.getLogger(__name__)
+
+# --- Browser TTS streaming state (Task 2) ---
+_ws_routes: dict[str, Any] = {}          # session_id → WebSocket
+_ws_routes_lock = asyncio.Lock()
+
+
+async def _send_ctrl(ws: Any, payload: dict) -> None:
+    """Send a JSON control frame. Silently drops if ws has gone away."""
+    try:
+        await ws.send_text(json.dumps(payload, ensure_ascii=False))
+    except Exception as exc:
+        LOGGER.debug("ws send_text failed: %s", exc)
 
 class ChatRequest(BaseModel):
     text: str
@@ -277,6 +289,32 @@ def create_app(jarvis_app: Any) -> FastAPI:
         else:
             media_type = "audio/mpeg"  # .mp3 default
         return FileResponse(path, media_type=media_type)
+
+    @app.websocket("/api/tts/stream")
+    async def tts_stream(ws: WebSocket, session_id: str):
+        if session_id not in sessions:
+            await ws.close(code=1008, reason="unknown session")
+            return
+        await ws.accept()
+        async with _ws_routes_lock:
+            old = _ws_routes.get(session_id)
+            _ws_routes[session_id] = ws
+        if old is not None:
+            try:
+                await old.close(code=1001, reason="superseded")
+            except Exception:
+                pass
+        try:
+            while True:
+                # Server-push only for now. We still recv to detect client
+                # close + to accept future {"type":"user_stop"} frames.
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            async with _ws_routes_lock:
+                if _ws_routes.get(session_id) is ws:
+                    _ws_routes.pop(session_id, None)
 
     web_dir = Path(__file__).parent
     app.mount("/", StaticFiles(directory=str(web_dir), html=True, follow_symlink=True), name="static")

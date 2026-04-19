@@ -81,3 +81,75 @@ class TestBrowserWSPlayer:
             assert player.drain() is True  # default timeout
         finally:
             loop.close()
+
+
+# ---------------------------------------------------------------------------
+# Task 2: /api/tts/stream endpoint + session routing
+# ---------------------------------------------------------------------------
+
+from fastapi.testclient import TestClient
+from unittest.mock import patch
+
+
+@pytest.fixture
+def mock_jarvis_app():
+    app_mock = MagicMock()
+    app_mock.handle_text = MagicMock(return_value="")
+    app_mock.speech_recognizer = MagicMock()
+    app_mock._get_tts = MagicMock(return_value=None)
+    app_mock.event_bus = MagicMock()
+    app_mock.event_bus.on = MagicMock()
+    app_mock.config = {
+        "tts": {
+            "browser_streaming": True,
+            "minimax_base_url": "https://api-uw.minimax.io",
+            "minimax_key": "sk-test",
+            "minimax_model": "speech-2.8-turbo",
+            "minimax_voice": "voice",
+            "minimax_volume": 1,
+        },
+    }
+    return app_mock
+
+
+@pytest.fixture
+def web_client(mock_jarvis_app):
+    with patch("ui.web.server.create_jarvis_app", return_value=mock_jarvis_app):
+        from ui.web.server import create_app
+        yield TestClient(create_app(mock_jarvis_app))
+
+
+class TestTTSStreamEndpoint:
+    def test_ws_rejects_unknown_session(self, web_client):
+        with pytest.raises(Exception):
+            with web_client.websocket_connect("/api/tts/stream?session_id=nope"):
+                pass  # should close immediately with 1008
+
+    def test_ws_accepts_known_session(self, web_client):
+        sid = web_client.post("/api/session").json()["session_id"]
+        with web_client.websocket_connect(f"/api/tts/stream?session_id={sid}") as ws:
+            # If accept() ran, we can assert the route dict contains sid.
+            from ui.web import server as srv
+            assert sid in srv._ws_routes
+
+    def test_ws_last_writer_wins(self, web_client):
+        """Second WS for the same session supersedes the first.
+        The first should see a close with code 1001."""
+        sid = web_client.post("/api/session").json()["session_id"]
+        with web_client.websocket_connect(f"/api/tts/stream?session_id={sid}") as ws1:
+            from ui.web import server as srv
+            assert srv._ws_routes.get(sid) is not None
+            first_ws = srv._ws_routes[sid]
+            with web_client.websocket_connect(f"/api/tts/stream?session_id={sid}") as ws2:
+                assert srv._ws_routes.get(sid) is not None
+                assert srv._ws_routes[sid] is not first_ws
+
+    def test_ws_cleanup_on_disconnect(self, web_client):
+        sid = web_client.post("/api/session").json()["session_id"]
+        with web_client.websocket_connect(f"/api/tts/stream?session_id={sid}"):
+            from ui.web import server as srv
+            assert sid in srv._ws_routes
+        # After context exit, client closed the WS — server should have removed the entry.
+        import time; time.sleep(0.05)  # let the finally block run
+        from ui.web import server as srv
+        assert sid not in srv._ws_routes
