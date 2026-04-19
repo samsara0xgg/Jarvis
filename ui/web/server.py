@@ -281,13 +281,37 @@ def create_app(jarvis_app: Any) -> FastAPI:
                     loop,
                 )
                 player = BrowserWSPlayer(ws=ws, sentence_index=idx, loop=loop)
+                result = None
                 try:
-                    result = tts.stream_to_player(
-                        sentence, emotion, player, ws_client_for_turn, abort_event,
+                    # Run _stream_to_player_async on the SAME FastAPI loop
+                    # where MinimaxWSClient.open_session opened the socket,
+                    # so ws_client.feed() awaits on the right loop. The sync
+                    # stream_to_player() wrapper uses asyncio.run(), which
+                    # would create a new loop → cross-loop violation.
+                    fut = asyncio.run_coroutine_threadsafe(
+                        tts._stream_to_player_async(
+                            sentence, emotion, player,
+                            ws_client_for_turn, abort_event,
+                        ),
+                        loop,
                     )
+                    result = fut.result(timeout=30.0)
                 except Exception as exc:
                     LOGGER.warning("stream_to_player failed: %s", exc)
                     result = None
+
+                if result is not None:
+                    if getattr(result, "raised", None) is not None:
+                        LOGGER.warning(
+                            "stream_to_player inner raise: %s",
+                            result.raised,
+                        )
+                    LOGGER.debug(
+                        "stream_to_player done: total_samples=%s played=%s",
+                        getattr(result, "total_samples", None),
+                        getattr(result, "played_samples", None),
+                    )
+
                 asyncio.run_coroutine_threadsafe(
                     _send_ctrl(ws, {
                         "type": "sentence_end",
