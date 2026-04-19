@@ -45,6 +45,19 @@ class App {
         document.addEventListener('click', resume, { once: true });
         document.addEventListener('touchstart', resume, { once: true });
 
+        // Esc / Cmd+. → stop current TTS turn. Always-on, idempotent.
+        document.addEventListener('keydown', (ev) => {
+            const isStop = ev.key === 'Escape' || (ev.metaKey && ev.key === '.');
+            if (!isStop) return;
+            ev.preventDefault();
+            const apiClient = getApiClient();
+            if (apiClient && typeof apiClient.cancelChat === 'function') {
+                apiClient.cancelChat().then((ok) => {
+                    log(`cancelChat ${ok ? 'ok' : 'failed'}`, ok ? 'info' : 'warning');
+                });
+            }
+        });
+
         await this.checkMicrophoneAvailability();
         await this.initLive2D();
         this.setModelLoadingStatus(false);

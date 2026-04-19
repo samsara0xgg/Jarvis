@@ -200,19 +200,23 @@ def create_app(jarvis_app: Any) -> FastAPI:
 
         sentence_index = 0
 
-        # --- Cancel previous turn if still active on this session ---
+        # --- Cancel previous turn + flush any stale browser playback ---
+        # Server-side `prev` may be None (popped in finally after stream_futures
+        # drained) while the browser ring buffer still holds 10s+ of PCM from
+        # the previous turn. Always flush on new_chat so stale audio doesn't
+        # overlap the new turn.
         prev = _active_chats.get(req.session_id)
+        ws_prev = _ws_routes.get(req.session_id)
+        if ws_prev is not None:
+            asyncio.run_coroutine_threadsafe(
+                _send_ctrl(ws_prev, {
+                    "type": "cancel",
+                    "turn_id": prev["turn_id"] if prev else None,
+                    "reason": "new_chat",
+                }),
+                loop,
+            )
         if prev is not None:
-            ws_prev = _ws_routes.get(req.session_id)
-            if ws_prev is not None:
-                asyncio.run_coroutine_threadsafe(
-                    _send_ctrl(ws_prev, {
-                        "type": "cancel",
-                        "turn_id": prev["turn_id"],
-                        "reason": "new_chat",
-                    }),
-                    loop,
-                )
             try:
                 prev["abort_event"].set()
             except Exception:
@@ -499,6 +503,32 @@ def create_app(jarvis_app: Any) -> FastAPI:
             },
         )
 
+    @app.post("/api/chat/cancel")
+    async def chat_cancel(req: ChatRequest):
+        """User-initiated stop. Flushes any in-flight turn on this session
+        and aborts the LLM/TTS pipeline. Safe to call when no turn is
+        active — sends a flush cancel anyway to drain stale browser PCM."""
+        if req.session_id not in sessions:
+            raise HTTPException(404, "Session not found")
+        loop = asyncio.get_running_loop()
+        prev = _active_chats.get(req.session_id)
+        ws = _ws_routes.get(req.session_id)
+        if ws is not None:
+            asyncio.run_coroutine_threadsafe(
+                _send_ctrl(ws, {
+                    "type": "cancel",
+                    "turn_id": prev["turn_id"] if prev else None,
+                    "reason": "user_stop",
+                }),
+                loop,
+            )
+        if prev is not None:
+            try:
+                prev["abort_event"].set()
+            except Exception:
+                pass
+        return {"status": "ok", "cancelled": prev is not None}
+
     # --- ASR ---
     @app.post("/api/asr")
     async def asr(session_id: str = Form(...), audio: UploadFile = File(...)):
@@ -563,14 +593,46 @@ def create_app(jarvis_app: Any) -> FastAPI:
                 await old.close(code=1001, reason="superseded")
             except Exception:
                 pass
+
+        # Heartbeat: send a ping every 25s so idle connections aren't culled
+        # by NAT/reverse-proxy timeouts (typical ~60s). Client replies with
+        # pong in the recv loop below; we don't enforce pong-timeout here —
+        # dead sockets surface via send raising or ws.receive_text EOF.
+        async def _heartbeat() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(25)
+                    await _send_ctrl(ws, {"type": "ping"})
+            except asyncio.CancelledError:
+                pass
+
+        hb_task = asyncio.create_task(_heartbeat())
         try:
             while True:
-                # Server-push only for now. We still recv to detect client
-                # close + to accept future {"type":"user_stop"} frames.
-                await ws.receive_text()
+                msg = await ws.receive_text()
+                # Accept client control frames. "pong" and "user_stop" are
+                # the only ones defined today.
+                try:
+                    payload = json.loads(msg)
+                except Exception:
+                    continue
+                if payload.get("type") == "user_stop":
+                    prev = _active_chats.get(session_id)
+                    if ws is not None:
+                        await _send_ctrl(ws, {
+                            "type": "cancel",
+                            "turn_id": prev["turn_id"] if prev else None,
+                            "reason": "user_stop",
+                        })
+                    if prev is not None:
+                        try:
+                            prev["abort_event"].set()
+                        except Exception:
+                            pass
         except WebSocketDisconnect:
             pass
         finally:
+            hb_task.cancel()
             async with _ws_routes_lock:
                 if _ws_routes.get(session_id) is ws:
                     _ws_routes.pop(session_id, None)

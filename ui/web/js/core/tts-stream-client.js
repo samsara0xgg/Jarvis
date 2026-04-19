@@ -73,6 +73,9 @@ export class TTSStreamClient {
                 else if (t === 'sentence_end' && this.onSentenceEnd) this.onSentenceEnd(payload);
                 else if (t === 'turn_end' && this.onTurnEnd) this.onTurnEnd(payload);
                 else if (t === 'cancel' && this.onCancel) this.onCancel(payload);
+                else if (t === 'ping') {
+                    try { this.ws.send(JSON.stringify({ type: 'pong' })); } catch {}
+                }
                 else log(`[TTSStreamClient] unknown text frame type: ${t}`, 'warning');
             } else if (event.data instanceof ArrayBuffer) {
                 if (this.onAudioChunk) this.onAudioChunk(event.data);

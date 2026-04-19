@@ -61,6 +61,21 @@ class ApiClient {
         if (this.onConnectionStateChange) this.onConnectionStateChange(false);
     }
 
+    async cancelChat() {
+        if (!this.sessionId) return false;
+        try {
+            const resp = await fetch(`${this.serverUrl}/api/chat/cancel`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: this.sessionId, text: '' }),
+            });
+            return resp.ok;
+        } catch (err) {
+            log(`cancelChat failed: ${err.message}`, 'warning');
+            return false;
+        }
+    }
+
     async setHiddenMode(enabled) {
         try {
             await fetch(`${this.serverUrl}/api/hidden-mode`, {
@@ -69,6 +84,39 @@ class ApiClient {
                 body: JSON.stringify({ session_id: this.sessionId || '', enabled }),
             });
         } catch { /* ignore */ }
+    }
+
+    // Cached copy of `/api/llm/presets` so slash-command pickers can render
+    // synchronously. getLLMPresets() refreshes it; getCachedLLMPresets() reads.
+    async getLLMPresets() {
+        try {
+            const resp = await fetch(`${this.serverUrl}/api/llm/presets`);
+            if (!resp.ok) return this._llmPresetsCache || { presets: [], active: null };
+            const data = await resp.json();
+            this._llmPresetsCache = data;
+            return data;
+        } catch {
+            return this._llmPresetsCache || { presets: [], active: null };
+        }
+    }
+
+    getCachedLLMPresets() {
+        return this._llmPresetsCache || { presets: [], active: null };
+    }
+
+    async switchLLM(preset) {
+        const resp = await fetch(`${this.serverUrl}/api/llm/switch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ preset }),
+        });
+        if (!resp.ok) {
+            const msg = await resp.text();
+            throw new Error(msg || `switch failed (${resp.status})`);
+        }
+        // Refresh cache so `/llm` picker reflects new active preset next open
+        this.getLLMPresets().catch(() => {});
+        return resp.json();
     }
 
     async sendTextMessage(text) {
