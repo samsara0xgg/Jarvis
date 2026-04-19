@@ -5,13 +5,18 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import shutil
 import struct
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
 
 import io
+
+from ui.web.browser_ws_player import BrowserWSPlayer
+from core.tts_minimax_ws import MinimaxWSClient
 
 
 # MiniMax WS-collect path writes raw 32kHz mono 16-bit PCM to .pcm files.
@@ -162,35 +167,101 @@ def create_app(jarvis_app: Any) -> FastAPI:
 
         sentence_index = 0
 
+        turn_id = uuid.uuid4().hex
+        abort_event = threading.Event()
+        ws_client_for_turn: MinimaxWSClient | None = None
+        if bool(jarvis_app.config.get("tts", {}).get("browser_streaming", False)) \
+                and _ws_routes.get(req.session_id) is not None:
+            cfg = jarvis_app.config.get("tts", {})
+            try:
+                ws_client_for_turn = MinimaxWSClient(
+                    base_url=cfg.get("minimax_base_url", "https://api-uw.minimax.io"),
+                    api_key=cfg.get("minimax_key", "") or os.environ.get("MINIMAX_API_KEY", ""),
+                    model=cfg.get("minimax_model", "speech-2.8-turbo"),
+                    voice_id=cfg.get("minimax_voice", "Chinese (Mandarin)_ExplorativeGirl"),
+                    volume=int(cfg.get("minimax_volume", 1)),
+                    sample_rate_out=32000,  # skip resampler
+                    sample_rate_in=32000,
+                )
+                # Prewarm: open WS in background so handshake overlaps LLM tokens.
+                asyncio.run_coroutine_threadsafe(
+                    ws_client_for_turn.open_session(emotion=None), loop,
+                )
+                # Announce the turn on the browser WS.
+                asyncio.run_coroutine_threadsafe(
+                    _send_ctrl(_ws_routes[req.session_id],
+                               {"type": "turn_start", "turn_id": turn_id}),
+                    loop,
+                )
+            except Exception as exc:
+                LOGGER.warning("MinimaxWSClient prewarm failed, falling back: %s", exc)
+                ws_client_for_turn = None
+
         def on_sentence(sentence: str, emotion: str = "") -> None:
             nonlocal sentence_index
             idx = sentence_index
             sentence_index += 1
 
+            use_stream = (
+                bool(jarvis_app.config.get("tts", {}).get("browser_streaming", False))
+                and _ws_routes.get(req.session_id) is not None
+                and ws_client_for_turn is not None  # prewarm succeeded
+            )
+
             audio_url = ""
-            if tts:
+            if use_stream:
+                ws = _ws_routes[req.session_id]
+                asyncio.run_coroutine_threadsafe(
+                    _send_ctrl(ws, {
+                        "type": "sentence_start",
+                        "turn_id": turn_id,
+                        "sentence_index": idx,
+                        "text": sentence,
+                        "emotion": (emotion or "neutral").lower(),
+                    }),
+                    loop,
+                )
+                player = BrowserWSPlayer(ws=ws, sentence_index=idx, loop=loop)
                 try:
-                    result = tts.synth_to_file(sentence, emotion)
-                    if result:
-                        audio_path, deletable = result
-                        # .pcm (MiniMax WS-collect) → wrap with WAV header.
-                        # Other engines return .mp3 / .wav / .flac — pass through.
-                        if audio_path.endswith(".pcm"):
-                            audio_name = f"{uuid.uuid4().hex}.wav"
-                            dest = AUDIO_DIR / audio_name
-                            _wrap_pcm_to_wav(Path(audio_path), dest)
-                        else:
-                            ext = Path(audio_path).suffix or ".mp3"
-                            audio_name = f"{uuid.uuid4().hex}{ext}"
-                            dest = AUDIO_DIR / audio_name
-                            shutil.copy2(audio_path, dest)
-                        if deletable:
-                            Path(audio_path).unlink(missing_ok=True)
-                        audio_url = f"/api/audio/{audio_name}"
+                    result = tts.stream_to_player(
+                        sentence, emotion, player, ws_client_for_turn, abort_event,
+                    )
                 except Exception as exc:
-                    LOGGER.warning("TTS synth failed: %s", exc)
+                    LOGGER.warning("stream_to_player failed: %s", exc)
+                    result = None
+                asyncio.run_coroutine_threadsafe(
+                    _send_ctrl(ws, {
+                        "type": "sentence_end",
+                        "turn_id": turn_id,
+                        "sentence_index": idx,
+                        "subtitle_url":
+                            getattr(result, "subtitle_url", None) if result else None,
+                    }),
+                    loop,
+                )
+            else:
+                if tts:
+                    try:
+                        r = tts.synth_to_file(sentence, emotion)
+                        if r:
+                            audio_path, deletable = r
+                            if audio_path.endswith(".pcm"):
+                                audio_name = f"{uuid.uuid4().hex}.wav"
+                                dest = AUDIO_DIR / audio_name
+                                _wrap_pcm_to_wav(Path(audio_path), dest)
+                            else:
+                                ext = Path(audio_path).suffix or ".mp3"
+                                audio_name = f"{uuid.uuid4().hex}{ext}"
+                                dest = AUDIO_DIR / audio_name
+                                shutil.copy2(audio_path, dest)
+                            if deletable:
+                                Path(audio_path).unlink(missing_ok=True)
+                            audio_url = f"/api/audio/{audio_name}"
+                    except Exception as exc:
+                        LOGGER.warning("TTS synth failed: %s", exc)
 
             event = {
+                "turn_id": turn_id,
                 "index": idx,
                 "text": sentence,
                 "emotion": emotion.lower() if emotion else "neutral",
@@ -225,6 +296,18 @@ def create_app(jarvis_app: Any) -> FastAPI:
                 LOGGER.error("handle_text failed: %s", exc)
             finally:
                 root.removeHandler(sse_handler)
+                if ws_client_for_turn is not None:
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            ws_client_for_turn.close_session(), loop,
+                        )
+                    except Exception: pass
+                ws = _ws_routes.get(req.session_id)
+                if ws is not None:
+                    asyncio.run_coroutine_threadsafe(
+                        _send_ctrl(ws, {"type": "turn_end", "turn_id": turn_id}),
+                        loop,
+                    )
                 asyncio.run_coroutine_threadsafe(queue.put(None), loop)
 
         loop.run_in_executor(None, _run)

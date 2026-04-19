@@ -393,6 +393,8 @@ tts:
   minimax_volume: 1    # int 1-10, 1=正常；之前 5 偏大有爆音（float 会被 round+clamp，见 core/tts.py:127）
   minimax_ws: true      # use WebSocket streaming path when engine=minimax (false = legacy HTTP collect)
   minimax_prewarm: true # open WS eagerly on LLM first token (overlaps handshake with LLM)
+  browser_streaming: true  # prefer PCM-over-WS to browser when a WS is open;
+                           # false = always serve /api/audio/<hash>.wav files
 
   # 持续流播放器(替代 afplay/mpv/ffplay subprocess)。
   # 保持单个 sd.OutputStream 跨会话打开,PCM 经 ring buffer 喂 callback,
