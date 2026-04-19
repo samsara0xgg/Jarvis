@@ -651,10 +651,15 @@ class TTSEngine:
         result = PlaybackResult(sentence_start_samples=getattr(player, "played_samples", 0))
         total_samples = 0
         try:
+            write_async = getattr(player, "write_async", None)
+            use_async = asyncio.iscoroutinefunction(write_async)
             async for pcm_f32 in ws_client.feed(text):
                 if abort_event.is_set():
                     break
-                player.write(pcm_f32)
+                if use_async:
+                    await write_async(pcm_f32)
+                else:
+                    player.write(pcm_f32)
                 total_samples += len(pcm_f32)
             # is_final reached or abort — drain any remaining
             drained = await asyncio.to_thread(player.drain, 5.0)

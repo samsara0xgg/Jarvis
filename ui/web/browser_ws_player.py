@@ -20,13 +20,20 @@ import numpy as np
 
 LOGGER = logging.getLogger(__name__)
 
-# MiniMax TTS returns PCM ~5-10x faster than real-time. A ~2-minute turn's
-# worth of audio can arrive in ~15 seconds of wall time. The client-side
-# AudioWorklet ring buffer is sized to absorb this (see
-# ui/web/js/core/audio/pcm-player-processor.js) — we do NOT pace server-side
-# because write() is called from `_stream_to_player_async` running on the
-# FastAPI loop, and a blocking time.sleep would stall the entire event loop
-# (WS frames, SSE events, everything).
+# MiniMax TTS returns PCM ~5-10x faster than real-time. Two backpressure
+# paths exist:
+#
+# 1. ``write_async`` (preferred): awaited directly by
+#    ``TTSEngine._stream_to_player_async`` on the FastAPI loop. ``await
+#    ws.send_bytes`` blocks when the starlette send queue / TCP window is
+#    full, pausing the upstream ``async for pcm in ws_client.feed()`` loop.
+#    This propagates TCP-layer backpressure to MiniMax for free.
+#
+# 2. ``write`` (legacy, fire-and-forget): schedules ``ws.send_bytes`` via
+#    ``run_coroutine_threadsafe`` and returns immediately. No backpressure.
+#    Kept only for callers that have a sync hot path they can't easily
+#    ``await`` — in practice the streaming path always goes through
+#    ``write_async``.
 _SAMPLE_RATE = 32000
 
 
@@ -62,33 +69,47 @@ class BrowserWSPlayer:
         self._pace = pace  # deprecated — retained for tests; never True in prod
         self._chunks_sent = 0
 
-    def write(self, pcm_f32: np.ndarray) -> None:
-        """Called per PCM chunk from ``MinimaxWSClient.feed()``.
-
-        Converts float32 → int16 LE, prepends the 2-byte sentence_index
-        header, and schedules ``ws.send_bytes`` on the FastAPI event loop.
-        Non-blocking — returns immediately after scheduling.
-        """
+    def _encode_chunk(self, pcm_f32: np.ndarray) -> bytes | None:
+        """Shared encode path for write / write_async. Returns None if empty."""
         if pcm_f32.size == 0:
-            return
+            return None
         pcm_i16 = (np.clip(pcm_f32, -1.0, 1.0) * 32767.0).astype("<i2")
-        payload = self._header + pcm_i16.tobytes()
+        self._chunks_sent += 1
+        self.played_samples += pcm_i16.size
+        return self._header + pcm_i16.tobytes()
+
+    async def write_async(self, pcm_f32: np.ndarray) -> None:
+        """Preferred PCM path. Awaits ``ws.send_bytes`` directly so TCP-layer
+        backpressure propagates to the upstream ``ws_client.feed()`` loop,
+        capping MiniMax's effective send rate at the browser's consumption
+        rate. Safe to call from the FastAPI event loop."""
+        payload = self._encode_chunk(pcm_f32)
+        if payload is None:
+            return
+        try:
+            await self._ws.send_bytes(payload)
+        except Exception as exc:
+            LOGGER.warning(
+                "[ws] idx=%d send_bytes failed: %s",
+                self._idx, exc, exc_info=True,
+            )
+
+    def write(self, pcm_f32: np.ndarray) -> None:
+        """Legacy fire-and-forget path. Schedules ``ws.send_bytes`` on the
+        FastAPI loop and returns immediately. No backpressure — prefer
+        ``write_async`` in ``async`` callers."""
+        payload = self._encode_chunk(pcm_f32)
+        if payload is None:
+            return
         try:
             asyncio.run_coroutine_threadsafe(
                 self._ws.send_bytes(payload), self._loop,
-            )
-            self._chunks_sent += 1
-            LOGGER.info(
-                "[ws] idx=%d chunk #%d: %d samples (%.2fs), played_total=%d",
-                self._idx, self._chunks_sent, pcm_i16.size,
-                pcm_i16.size / _SAMPLE_RATE, self.played_samples + pcm_i16.size,
             )
         except Exception as exc:
             LOGGER.warning(
                 "[ws] idx=%d send_bytes scheduling failed: %s",
                 self._idx, exc, exc_info=True,
             )
-        self.played_samples += pcm_i16.size
 
     def drain(self, timeout: float = 5.0) -> bool:
         """Always returns True (optimistic drain).

@@ -8,12 +8,12 @@
 // cleanly clipping the tail.
 // `{clear: true}` resets (used by cancel frames).
 
-// Server-side pacing is disabled (it would block the FastAPI event loop),
-// so MiniMax PCM floods in ~5-10x faster than real-time. The ring needs
-// to be big enough to absorb the entire turn: 120s @ 32kHz mono float32
-// = 15.3 MB, a fine tradeoff for modern browsers. Long turns beyond 120s
-// of audio will trip the drop-new overflow path.
-const RING_SECONDS = 120;
+// Server uses `BrowserWSPlayer.write_async` which awaits `ws.send_bytes`
+// on the FastAPI loop — TCP-layer backpressure paces MiniMax to ~real-time
+// playback rate. 5 seconds of ring (~640 KB) is ample headroom for network
+// jitter and browser scheduling hiccups. If overflow ever trips here, the
+// async write path regressed — investigate the send side, don't grow the ring.
+const RING_SECONDS = 5;
 const SAMPLE_RATE = 32000;
 
 class PCMPlayerProcessor extends AudioWorkletProcessor {
