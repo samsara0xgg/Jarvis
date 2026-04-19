@@ -83,11 +83,15 @@ class App {
         // DEBUG: track every WS event to diagnose stream issues.
         this._dbgStats = { turns: 0, sentences: 0, chunks: 0, bytes: 0, cancels: 0 };
 
-        // Track current turn id so cursor reports carry it back to the server.
+        // Track current turn id + playback state so the recorder's VAD can
+        // gate auto-interrupt (only keyword utterances should interrupt
+        // while TTS is playing). Surfaced on window.chatApp.ttsPlaying.
         this._currentTurnId = null;
+        this.ttsPlaying = false;
         tts.onTurnStart = (p) => {
             this._dbgStats.turns++;
             this._currentTurnId = p && p.turn_id;
+            this.ttsPlaying = true;
             log(`[ws] turn_start turn_id=${p.turn_id}`, 'debug');
         };
         tts.onAudioChunk = (buf) => {
@@ -115,11 +119,13 @@ class App {
         };
         tts.onTurnEnd = (p) => {
             log(`[ws] turn_end turn_id=${p && p.turn_id}. Stats: ${this._dbgStats.sentences} sentences, ${this._dbgStats.chunks} chunks, ${(this._dbgStats.bytes/1024).toFixed(1)} KB`, 'info');
+            this.ttsPlaying = false;
             if (this.live2dManager) this.live2dManager.stopTalking();
         };
         tts.onCancel = (p) => {
             this._dbgStats.cancels++;
             log(`[ws] cancel reason=${p && p.reason} turn_id=${p && p.turn_id}`, 'warning');
+            this.ttsPlaying = false;
             if (this.audioPlayer && typeof this.audioPlayer.clearAll === 'function') {
                 this.audioPlayer.clearAll();
             }

@@ -3,6 +3,18 @@ import { log } from '../../utils/logger.js';
 import { getAudioPlayer } from './player.js';
 import { getApiClient } from '../api-client.js';
 
+// Stop-word whitelist. Order doesn't matter — substring match. ASR
+// commonly returns with trailing "。" / 空格 so we strip those before
+// testing. If you widen this, also consider the CLI InterruptMonitor
+// keyword list in core/interrupt_monitor.py so both modes agree.
+const INTERRUPT_KEYWORDS = ['等一下', '停一下', '等下', '停下', '等', '停'];
+
+function _containsInterruptKeyword(text) {
+    if (!text) return false;
+    const cleaned = text.trim().replace(/[。，,.\s]+$/g, '');
+    return INTERRUPT_KEYWORDS.some((kw) => cleaned.includes(kw));
+}
+
 class AudioRecorder {
     constructor() {
         this.isRecording = false;
@@ -184,6 +196,18 @@ class AudioRecorder {
         if (result && result.text) {
             log(`ASR 识别: ${result.text}`, 'info');
             if (apiClient.onChatMessage) apiClient.onChatMessage(result.text, true);
+            // Interrupt gate: while TTS is playing, only utterances that
+            // contain an explicit stop keyword are allowed to preempt the
+            // current turn. Everything else is logged and dropped so
+            // coughs / fillers / overlapping chatter don't hard-cancel
+            // the assistant mid-sentence. Match CLI InterruptMonitor
+            // semantics except without the soft-duck stage.
+            const ttsPlaying = !!(typeof window !== 'undefined'
+                && window.chatApp && window.chatApp.ttsPlaying);
+            if (ttsPlaying && !_containsInterruptKeyword(result.text)) {
+                log(`VAD: TTS 播放中，非打断词已忽略: "${result.text}"`, 'info');
+                return;
+            }
             await apiClient.sendTextMessage(result.text);
         } else {
             log('ASR 未识别到文字', 'warning');
