@@ -650,18 +650,29 @@ class TTSEngine:
         """Async core of stream_to_player. Session must already be open."""
         result = PlaybackResult(sentence_start_samples=getattr(player, "played_samples", 0))
         total_samples = 0
+        aborted = False
         try:
             write_async = getattr(player, "write_async", None)
             use_async = asyncio.iscoroutinefunction(write_async)
             async for pcm_f32 in ws_client.feed(text):
                 if abort_event.is_set():
+                    aborted = True
                     break
                 if use_async:
                     await write_async(pcm_f32)
                 else:
                     player.write(pcm_f32)
                 total_samples += len(pcm_f32)
-            # is_final reached or abort — drain any remaining
+            # Players with an async drain pipeline (e.g. BrowserWSPlayer's
+            # paced queue) need to finish sending before we declare the
+            # sentence played. On abort, fast-cancel instead of draining.
+            aclose = getattr(player, "aclose", None)
+            if asyncio.iscoroutinefunction(aclose):
+                if aborted:
+                    abort_fn = getattr(player, "abort", None)
+                    if callable(abort_fn):
+                        abort_fn()
+                await aclose()
             drained = await asyncio.to_thread(player.drain, 5.0)
             result.total_samples = total_samples
             result.played_samples = getattr(player, "played_samples", 0)

@@ -144,9 +144,30 @@ def create_app(jarvis_app: Any) -> FastAPI:
         return SessionResponse(session_id=sid, status="connected")
 
     @app.delete("/api/session/{session_id}", response_model=SessionResponse)
-    def delete_session(session_id: str):
+    async def delete_session(session_id: str):
         if session_id not in sessions:
             raise HTTPException(404, "Session not found")
+        # Abort any in-flight chat on this session + flush the browser ring
+        # so paced residual PCM stops immediately. Without this, the drain
+        # task keeps feeding the WS for seconds after the user thinks they
+        # hung up.
+        loop = asyncio.get_running_loop()
+        prev = _active_chats.get(session_id)
+        ws = _ws_routes.get(session_id)
+        if ws is not None:
+            asyncio.run_coroutine_threadsafe(
+                _send_ctrl(ws, {
+                    "type": "cancel",
+                    "turn_id": prev["turn_id"] if prev else None,
+                    "reason": "session_ended",
+                }),
+                loop,
+            )
+        if prev is not None:
+            try:
+                prev["abort_event"].set()
+            except Exception:
+                pass
         del sessions[session_id]
         LOGGER.info("Session deleted: %s", session_id)
         return SessionResponse(session_id=session_id, status="disconnected")
@@ -319,6 +340,7 @@ def create_app(jarvis_app: Any) -> FastAPI:
                         return
                     player = BrowserWSPlayer(
                         ws=ws_ref, sentence_index=idx_local, loop=loop,
+                        abort_event=abort_event,
                     )
                     try:
                         result = await tts._stream_to_player_async(

@@ -10,9 +10,11 @@ class ApiClient {
         this.onChatMessage = null;
         this.onSentence = null;
         this.onSessionStateChange = null;
-        // Serial queue: process one chat request at a time
+        // Client-side chat pipeline. New messages preempt the in-flight
+        // fetch via AbortController; server handles concurrent POSTs.
         this._chatQueue = [];
         this._chatProcessing = false;
+        this._chatAbortController = null;
     }
 
     setServerUrl(url) {
@@ -52,6 +54,15 @@ class ApiClient {
 
     async disconnect() {
         if (!this.sessionId) return;
+        // Local-first cleanup: flush audio immediately so the user hears
+        // silence before the server round-trip returns. Even if the DELETE
+        // fails, the ring is already drained.
+        try {
+            if (typeof window !== 'undefined' && window.chatApp && window.chatApp.audioPlayer) {
+                const p = window.chatApp.audioPlayer;
+                if (typeof p.clearAll === 'function') p.clearAll();
+            }
+        } catch { /* ignore */ }
         try {
             await fetch(`${this.serverUrl}/api/session/${this.sessionId}`, { method: 'DELETE' });
         } catch { /* ignore */ }
@@ -123,7 +134,20 @@ class ApiClient {
         if (!this.connected || !this.sessionId) return false;
         if (!text.trim()) return false;
 
-        // Queue and serialize: server can't handle concurrent handle_text calls
+        // Preempt any in-flight chat: abort its fetch so its SSE reader
+        // unblocks immediately. The server's /api/chat already does an
+        // unconditional cancel-flush on every new POST, so concurrent
+        // handle_text calls are safe. Serializing on the client would
+        // make new utterances wait for the full previous turn to drain —
+        // that's the "new chat doesn't interrupt" bug.
+        if (this._chatAbortController) {
+            try { this._chatAbortController.abort(); } catch {}
+        }
+        // Resolve any stale queued items so their callers don't hang.
+        while (this._chatQueue.length) {
+            try { this._chatQueue.shift().resolve(false); } catch {}
+        }
+
         return new Promise((resolve) => {
             this._chatQueue.push({ text, resolve });
             if (!this._chatProcessing) this._processNextChat();
@@ -137,6 +161,7 @@ class ApiClient {
         }
         this._chatProcessing = true;
         const { text, resolve } = this._chatQueue.shift();
+        this._chatAbortController = new AbortController();
 
         if (this.onSessionStateChange) this.onSessionStateChange(true);
 
@@ -145,6 +170,7 @@ class ApiClient {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text, session_id: this.sessionId }),
+                signal: this._chatAbortController.signal,
             });
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
@@ -192,9 +218,13 @@ class ApiClient {
                 }
             }
         } catch (err) {
-            log(`聊天请求失败: ${err.message}`, 'error');
-            if (this.onChatMessage) this.onChatMessage(`请求失败: ${err.message}`, false);
+            // AbortError means a new message preempted this one — expected.
+            if (err.name !== 'AbortError') {
+                log(`聊天请求失败: ${err.message}`, 'error');
+                if (this.onChatMessage) this.onChatMessage(`请求失败: ${err.message}`, false);
+            }
         } finally {
+            this._chatAbortController = null;
             if (this.onSessionStateChange) this.onSessionStateChange(false);
             resolve(true);
             this._processNextChat();
