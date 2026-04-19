@@ -1359,6 +1359,7 @@ class JarvisApp:
             pipeline = self._active_pipeline
         if pipeline:
             remaining = pipeline.abort()
+            self.event_bus.emit("jarvis.tts_cancelled", {"reason": "vad"})
             # WP5: snapshot played sentences for the surrounding _process_turn
             # to fold into the conversation history (see _truncate_assistant_for_interrupt).
             self._interrupt_played_texts = pipeline.played_texts

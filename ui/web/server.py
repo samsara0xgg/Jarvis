@@ -99,6 +99,37 @@ def create_app(jarvis_app: Any) -> FastAPI:
     )
     sessions: dict[str, dict] = {}
 
+    # --- Task 6: VAD cancel via event_bus ---
+    def _on_tts_cancelled(payload: dict | None = None) -> None:
+        """EventBus handler for VAD-triggered interrupts. Fan out cancel
+        frames to every live browser WS with an active chat."""
+        if payload is None:
+            payload = {}
+        reason = payload.get("reason", "vad")
+        loop = getattr(jarvis_app, "_web_loop", None)
+        if not isinstance(loop, asyncio.AbstractEventLoop):
+            return
+
+        async def _fan_out() -> None:
+            for sid, chat in list(_active_chats.items()):
+                ws = _ws_routes.get(sid)
+                if ws is None:
+                    continue
+                await _send_ctrl(ws, {
+                    "type": "cancel",
+                    "turn_id": chat["turn_id"],
+                    "reason": reason,
+                })
+                try:
+                    chat["abort_event"].set()
+                except Exception:
+                    pass
+
+        asyncio.run_coroutine_threadsafe(_fan_out(), loop)
+
+    if hasattr(jarvis_app, "event_bus") and jarvis_app.event_bus is not None:
+        jarvis_app.event_bus.on("jarvis.tts_cancelled", _on_tts_cancelled)
+
     AUDIO_DIR.mkdir(exist_ok=True)
 
     @app.get("/api/health")
@@ -413,6 +444,12 @@ def create_app(jarvis_app: Any) -> FastAPI:
             await ws.close(code=1008, reason="unknown session")
             return
         await ws.accept()
+        # Capture the running loop so event_bus subscribers can cross
+        # threads via run_coroutine_threadsafe. Runs here (not in a
+        # startup hook) because TestClient doesn't reliably fire startup
+        # without a context-manager wrapper.
+        if not isinstance(getattr(jarvis_app, "_web_loop", None), asyncio.AbstractEventLoop):
+            jarvis_app._web_loop = asyncio.get_running_loop()
         async with _ws_routes_lock:
             old = _ws_routes.get(session_id)
             _ws_routes[session_id] = ws

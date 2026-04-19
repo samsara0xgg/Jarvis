@@ -212,3 +212,36 @@ class TestNewChatCancel:
             assert payload["turn_id"] == prior_turn_id
             assert payload["reason"] == "new_chat"
             assert prior_abort.is_set()
+
+
+class TestVADCancel:
+    """EventBus emit → server fans out cancel frame on every active chat's WS."""
+
+    def test_tts_cancelled_event_sends_cancel_frame(self, web_client, mock_jarvis_app):
+        """When jarvis_app.event_bus fires 'jarvis.tts_cancelled', the server
+        emits a cancel{reason:'vad'} frame on every live ws_route with an
+        active chat."""
+        import ui.web.server as srv
+        import threading as _t
+
+        # Server subscribed to jarvis.tts_cancelled during create_app.
+        bus = mock_jarvis_app.event_bus
+        assert bus.on.called, "server did not subscribe to event_bus"
+        sub_call = bus.on.call_args_list[0]
+        assert sub_call.args[0] == "jarvis.tts_cancelled"
+        cb = sub_call.args[1]
+
+        sid = web_client.post("/api/session").json()["session_id"]
+        with web_client.websocket_connect(f"/api/tts/stream?session_id={sid}") as ws:
+            # Fake an active chat.
+            srv._active_chats[sid] = {"turn_id": "abc123", "abort_event": _t.Event()}
+            # Fire the event.
+            cb({"reason": "vad"})
+            # Read the next frame from the browser WS — should be a cancel.
+            data = ws.receive_text()
+            import json as _j
+            payload = _j.loads(data)
+            assert payload["type"] == "cancel"
+            assert payload["turn_id"] == "abc123"
+            assert payload["reason"] == "vad"
+            assert srv._active_chats[sid]["abort_event"].is_set()
