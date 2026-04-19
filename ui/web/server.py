@@ -170,6 +170,7 @@ def create_app(jarvis_app: Any) -> FastAPI:
         turn_id = uuid.uuid4().hex
         abort_event = threading.Event()
         ws_client_for_turn: MinimaxWSClient | None = None
+        turn_start_sent = False
         if bool(jarvis_app.config.get("tts", {}).get("browser_streaming", False)) \
                 and _ws_routes.get(req.session_id) is not None:
             cfg = jarvis_app.config.get("tts", {})
@@ -193,6 +194,7 @@ def create_app(jarvis_app: Any) -> FastAPI:
                                {"type": "turn_start", "turn_id": turn_id}),
                     loop,
                 )
+                turn_start_sent = True
             except Exception as exc:
                 LOGGER.warning("MinimaxWSClient prewarm failed, falling back: %s", exc)
                 ws_client_for_turn = None
@@ -301,9 +303,10 @@ def create_app(jarvis_app: Any) -> FastAPI:
                         asyncio.run_coroutine_threadsafe(
                             ws_client_for_turn.close_session(), loop,
                         )
-                    except Exception: pass
+                    except Exception as exc:
+                        LOGGER.debug("close_session scheduling failed: %s", exc)
                 ws = _ws_routes.get(req.session_id)
-                if ws is not None:
+                if ws is not None and turn_start_sent:
                     asyncio.run_coroutine_threadsafe(
                         _send_ctrl(ws, {"type": "turn_end", "turn_id": turn_id}),
                         loop,
