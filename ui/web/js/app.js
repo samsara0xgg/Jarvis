@@ -1,5 +1,8 @@
 // 主应用入口
 import { getAudioPlayer } from './core/audio/player.js';
+import { getPCMStreamPlayer } from './core/audio/pcm-stream-player.js';
+import { getTTSStreamClient } from './core/tts-stream-client.js';
+import { getApiClient } from './core/api-client.js';
 import { checkMicrophoneAvailability, isHttpNonLocalhost } from './core/audio/recorder.js';
 import { uiController } from './ui/controller.js';
 import { petOverlay } from './ui/pet-overlay.js';
@@ -17,12 +20,92 @@ class App {
         this.uiController = uiController;
         this.uiController.init();
         petOverlay.init(); // idempotent; controller also calls this
-        this.audioPlayer = getAudioPlayer();
-        await this.audioPlayer.start();
+
+        // Prefer streaming PCM player; fall back to legacy AudioPlayer if the
+        // AudioWorklet or 32kHz AudioContext is unavailable.
+        try {
+            const streamPlayer = getPCMStreamPlayer();
+            await streamPlayer.start();
+            this.audioPlayer = streamPlayer;
+            this._wireTTSStream();
+            log('使用 PCMStreamPlayer (WS streaming)', 'info');
+        } catch (err) {
+            log(`PCMStreamPlayer 初始化失败，回退 AudioPlayer: ${err.message}`, 'warning');
+            this.audioPlayer = getAudioPlayer();
+            await this.audioPlayer.start();
+        }
+
+        // First-gesture hook: user must tap before AudioContext resumes
+        // (browser autoplay policy). Once only, then remove.
+        const resume = () => {
+            if (this.audioPlayer && typeof this.audioPlayer.resumeOnGesture === 'function') {
+                this.audioPlayer.resumeOnGesture().catch(() => {});
+            }
+        };
+        document.addEventListener('click', resume, { once: true });
+        document.addEventListener('touchstart', resume, { once: true });
+
         await this.checkMicrophoneAvailability();
         await this.initLive2D();
         this.setModelLoadingStatus(false);
         log('应用初始化完成', 'success');
+    }
+
+    _wireTTSStream() {
+        // Open the /api/tts/stream WebSocket after the session dials.
+        // Monkey-patch apiClient.connect to chain the TTSStreamClient
+        // connect on successful session establishment. This avoids touching
+        // controller.js (which has unrelated WIP).
+        const apiClient = getApiClient();
+        const tts = getTTSStreamClient();
+        tts.setServerUrl(window.location.origin);
+
+        tts.onAudioChunk = (buf) => {
+            if (this.audioPlayer && typeof this.audioPlayer.writeChunk === 'function') {
+                this.audioPlayer.writeChunk(buf);
+            }
+        };
+        tts.onSentenceStart = (p) => {
+            if (this.live2dManager) {
+                this.live2dManager.triggerEmotionAction(p.emotion || 'neutral');
+                this.live2dManager.startTalking();
+            }
+        };
+        tts.onTurnEnd = () => {
+            if (this.live2dManager) this.live2dManager.stopTalking();
+        };
+        tts.onCancel = (p) => {
+            if (this.audioPlayer && typeof this.audioPlayer.clearAll === 'function') {
+                this.audioPlayer.clearAll();
+            }
+            if (this.live2dManager) this.live2dManager.stopTalking();
+            const r = p && p.reason;
+            if (r === 'new_chat' || r === 'user_stop') {
+                if (this.live2dManager) this.live2dManager.triggerEmotionAction('neutral');
+            } else if (r === 'pipeline_error') {
+                log('TTS error, retrying…', 'warning');
+            }
+        };
+
+        this._ttsStream = tts;
+
+        // Wrap apiClient.connect so the TTS stream opens right after dial.
+        const origConnect = apiClient.connect.bind(apiClient);
+        apiClient.connect = async () => {
+            const ok = await origConnect();
+            if (ok && apiClient.sessionId) {
+                try { tts.connect(apiClient.sessionId); }
+                catch (err) { log(`TTS stream connect failed: ${err.message}`, 'warning'); }
+            }
+            return ok;
+        };
+
+        // Wrap apiClient.disconnect to also close the TTS stream.
+        const origDisconnect = apiClient.disconnect.bind(apiClient);
+        apiClient.disconnect = async () => {
+            try { tts.disconnect(); } catch {}
+            return origDisconnect();
+        };
     }
 
     async initLive2D() {
