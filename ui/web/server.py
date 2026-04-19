@@ -6,11 +6,41 @@ import asyncio
 import json
 import logging
 import shutil
+import struct
 import uuid
 from pathlib import Path
 from typing import Any
 
 import io
+
+
+# MiniMax WS-collect path writes raw 32kHz mono 16-bit PCM to .pcm files.
+# Browsers can't decode raw PCM — wrap with a 44-byte WAV header at serve time
+# so the frontend <audio> element plays it natively.
+_WAV_SR = 32000
+_WAV_CH = 1
+_WAV_BITS = 16
+
+
+def _wrap_pcm_to_wav(pcm_path: Path, wav_path: Path,
+                     sample_rate: int = _WAV_SR,
+                     channels: int = _WAV_CH,
+                     bits: int = _WAV_BITS) -> None:
+    """Read raw PCM bytes from pcm_path, write WAV file with minimal header."""
+    pcm = pcm_path.read_bytes()
+    byte_rate = sample_rate * channels * bits // 8
+    block_align = channels * bits // 8
+    header = (
+        b"RIFF"
+        + struct.pack("<I", 36 + len(pcm))
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack("<IHHIIHH", 16, 1, channels, sample_rate,
+                      byte_rate, block_align, bits)
+        + b"data"
+        + struct.pack("<I", len(pcm))
+    )
+    wav_path.write_bytes(header + pcm)
 
 from fastapi import FastAPI, Form, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,6 +61,10 @@ class SessionResponse(BaseModel):
 class HiddenModeRequest(BaseModel):
     session_id: str = ""
     enabled: bool = False
+
+
+class LLMSwitchRequest(BaseModel):
+    preset: str
 
 AUDIO_DIR = Path(__file__).parent / "audio_cache"
 
@@ -67,6 +101,31 @@ def create_app(jarvis_app: Any) -> FastAPI:
         LOGGER.info("Session deleted: %s", session_id)
         return SessionResponse(session_id=session_id, status="disconnected")
 
+    @app.get("/api/llm/presets")
+    def list_llm_presets():
+        """Return available cloud LLM presets + currently active one."""
+        presets = jarvis_app.llm.get_presets()
+        active = jarvis_app.llm.active_preset
+        items = [
+            {
+                "name": name,
+                "model": cfg.get("model"),
+                "base_url": cfg.get("base_url"),
+            }
+            for name, cfg in presets.items()
+        ]
+        return {"presets": items, "active": active}
+
+    @app.post("/api/llm/switch")
+    def switch_llm_preset(req: LLMSwitchRequest):
+        """Switch cloud LLM to a named preset at runtime."""
+        try:
+            msg = jarvis_app.llm.switch_model(req.preset)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        LOGGER.info("LLM preset switched to '%s'", req.preset)
+        return {"status": "ok", "active": req.preset, "message": msg}
+
     @app.post("/api/hidden-mode")
     async def toggle_hidden_mode(req: HiddenModeRequest):
         from core.personality import set_nsfw_mode
@@ -102,9 +161,17 @@ def create_app(jarvis_app: Any) -> FastAPI:
                     result = tts.synth_to_file(sentence, emotion)
                     if result:
                         audio_path, deletable = result
-                        audio_name = f"{uuid.uuid4().hex}.mp3"
-                        dest = AUDIO_DIR / audio_name
-                        shutil.copy2(audio_path, dest)
+                        # .pcm (MiniMax WS-collect) → wrap with WAV header.
+                        # Other engines return .mp3 / .wav / .flac — pass through.
+                        if audio_path.endswith(".pcm"):
+                            audio_name = f"{uuid.uuid4().hex}.wav"
+                            dest = AUDIO_DIR / audio_name
+                            _wrap_pcm_to_wav(Path(audio_path), dest)
+                        else:
+                            ext = Path(audio_path).suffix or ".mp3"
+                            audio_name = f"{uuid.uuid4().hex}{ext}"
+                            dest = AUDIO_DIR / audio_name
+                            shutil.copy2(audio_path, dest)
                         if deletable:
                             Path(audio_path).unlink(missing_ok=True)
                         audio_url = f"/api/audio/{audio_name}"
@@ -200,7 +267,16 @@ def create_app(jarvis_app: Any) -> FastAPI:
         path = AUDIO_DIR / filename
         if not path.exists():
             raise HTTPException(404, "Audio file not found")
-        return FileResponse(path, media_type="audio/mpeg")
+        # MIME by extension — browsers dispatch their decoder on this.
+        if filename.endswith(".wav"):
+            media_type = "audio/wav"
+        elif filename.endswith(".ogg"):
+            media_type = "audio/ogg"
+        elif filename.endswith(".flac"):
+            media_type = "audio/flac"
+        else:
+            media_type = "audio/mpeg"  # .mp3 default
+        return FileResponse(path, media_type=media_type)
 
     web_dir = Path(__file__).parent
     app.mount("/", StaticFiles(directory=str(web_dir), html=True, follow_symlink=True), name="static")
