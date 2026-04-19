@@ -58,6 +58,8 @@ LOGGER = logging.getLogger(__name__)
 # --- Browser TTS streaming state (Task 2) ---
 _ws_routes: dict[str, Any] = {}          # session_id → WebSocket
 _ws_routes_lock = asyncio.Lock()
+_active_chats: dict[str, dict] = {}      # session_id → {turn_id, abort_event, ws_client}
+_active_chats_lock = asyncio.Lock()
 
 
 async def _send_ctrl(ws: Any, payload: dict) -> None:
@@ -167,8 +169,31 @@ def create_app(jarvis_app: Any) -> FastAPI:
 
         sentence_index = 0
 
+        # --- Cancel previous turn if still active on this session ---
+        prev = _active_chats.get(req.session_id)
+        if prev is not None:
+            ws_prev = _ws_routes.get(req.session_id)
+            if ws_prev is not None:
+                asyncio.run_coroutine_threadsafe(
+                    _send_ctrl(ws_prev, {
+                        "type": "cancel",
+                        "turn_id": prev["turn_id"],
+                        "reason": "new_chat",
+                    }),
+                    loop,
+                )
+            try:
+                prev["abort_event"].set()
+            except Exception:
+                pass
+
         turn_id = uuid.uuid4().hex
         abort_event = threading.Event()
+        _active_chats[req.session_id] = {
+            "turn_id": turn_id,
+            "abort_event": abort_event,
+            "ws_client": None,  # filled in below if streaming
+        }
         ws_client_for_turn: MinimaxWSClient | None = None
         turn_start_sent = False
         if bool(jarvis_app.config.get("tts", {}).get("browser_streaming", False)) \
@@ -195,6 +220,7 @@ def create_app(jarvis_app: Any) -> FastAPI:
                     loop,
                 )
                 turn_start_sent = True
+                _active_chats[req.session_id]["ws_client"] = ws_client_for_turn
             except Exception as exc:
                 LOGGER.warning("MinimaxWSClient prewarm failed, falling back: %s", exc)
                 ws_client_for_turn = None
@@ -311,6 +337,7 @@ def create_app(jarvis_app: Any) -> FastAPI:
                         _send_ctrl(ws, {"type": "turn_end", "turn_id": turn_id}),
                         loop,
                     )
+                _active_chats.pop(req.session_id, None)
                 asyncio.run_coroutine_threadsafe(queue.put(None), loop)
 
         loop.run_in_executor(None, _run)

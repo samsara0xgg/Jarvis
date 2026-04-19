@@ -172,3 +172,43 @@ class TestTurnIdCorrelation:
         tid = resp.headers.get("X-Turn-Id")
         assert tid is not None
         assert len(tid) == 32 and all(c in "0123456789abcdef" for c in tid)
+
+
+# ---------------------------------------------------------------------------
+# Task 5: new-chat cancel + _active_chats state
+# ---------------------------------------------------------------------------
+
+class TestNewChatCancel:
+    """A POST /api/chat cancels any prior active turn on the same session."""
+
+    def test_active_chat_state_triggers_cancel_frame(self, web_client):
+        """Seed _active_chats with a fake prior turn; send a new chat;
+        verify cancel{reason:new_chat} appears on the WS and the prior
+        abort_event is set."""
+        import threading as _t
+        import json as _j
+        import ui.web.server as srv
+
+        sid = web_client.post("/api/session").json()["session_id"]
+        with web_client.websocket_connect(f"/api/tts/stream?session_id={sid}") as ws:
+            prior_abort = _t.Event()
+            prior_turn_id = "a" * 32
+            srv._active_chats[sid] = {
+                "turn_id": prior_turn_id,
+                "abort_event": prior_abort,
+            }
+
+            resp = web_client.post(
+                "/api/chat", json={"text": "two", "session_id": sid},
+            )
+            new_turn = resp.headers["X-Turn-Id"]
+            assert new_turn != prior_turn_id
+
+            # The first text frame on the WS should be the cancel for the
+            # prior turn (server sends it before turn_start of the new one).
+            data = ws.receive_text()
+            payload = _j.loads(data)
+            assert payload["type"] == "cancel"
+            assert payload["turn_id"] == prior_turn_id
+            assert payload["reason"] == "new_chat"
+            assert prior_abort.is_set()
