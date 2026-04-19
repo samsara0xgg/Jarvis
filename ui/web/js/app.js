@@ -28,6 +28,13 @@ class App {
             await streamPlayer.start();
             this.audioPlayer = streamPlayer;
             this._wireTTSStream();
+            // Relay cursor from the worklet to the server so heard_response
+            // precision falls from sentence-level to ~150ms.
+            streamPlayer.onCursor = (samples) => {
+                if (this._ttsStream) {
+                    this._ttsStream.sendCursor(this._currentTurnId, samples);
+                }
+            };
             log('使用 PCMStreamPlayer (WS streaming)', 'info');
         } catch (err) {
             log(`PCMStreamPlayer 初始化失败，回退 AudioPlayer: ${err.message}`, 'warning');
@@ -76,8 +83,11 @@ class App {
         // DEBUG: track every WS event to diagnose stream issues.
         this._dbgStats = { turns: 0, sentences: 0, chunks: 0, bytes: 0, cancels: 0 };
 
+        // Track current turn id so cursor reports carry it back to the server.
+        this._currentTurnId = null;
         tts.onTurnStart = (p) => {
             this._dbgStats.turns++;
+            this._currentTurnId = p && p.turn_id;
             log(`[ws] turn_start turn_id=${p.turn_id}`, 'debug');
         };
         tts.onAudioChunk = (buf) => {

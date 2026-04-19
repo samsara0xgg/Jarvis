@@ -22,6 +22,9 @@ export class PCMStreamPlayer {
         this._ready = false;
         this._preCtxQueue = [];   // Float32Array chunks, bounded ~2s
         this._preCtxSamples = 0;
+        // Called on every cursor report from the worklet. Main loop wires
+        // this to tts-stream-client to relay the cursor to the server.
+        this.onCursor = null;
     }
 
     async start() {
@@ -39,8 +42,12 @@ export class PCMStreamPlayer {
         // Surface worklet overflow notifications to the main-thread log so
         // pacing bugs are visible. Worklet only posts once per overflow run.
         this.node.port.onmessage = (e) => {
-            if (e.data && typeof e.data.overflow === 'number') {
+            if (!e.data) return;
+            if (typeof e.data.overflow === 'number') {
                 log(`PCMStreamPlayer ring overflow, dropped ${e.data.overflow} samples`, 'warning');
+            }
+            if (typeof e.data.cursor === 'number' && this.onCursor) {
+                this.onCursor(e.data.cursor);
             }
         };
         this.gainNode = this.ctx.createGain();

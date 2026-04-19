@@ -629,6 +629,17 @@ def create_app(jarvis_app: Any) -> FastAPI:
                             prev["abort_event"].set()
                         except Exception:
                             pass
+                elif payload.get("type") == "playback_cursor":
+                    # Frontend reports total played samples (~150ms cadence).
+                    # Stored per-session so heard_response truncation and
+                    # delayed session-drain logic can read it.
+                    prev = _active_chats.get(session_id)
+                    if prev is not None:
+                        try:
+                            prev["playback_cursor"] = int(payload.get("samples", 0))
+                            prev["playback_turn_id"] = payload.get("turn_id")
+                        except Exception:
+                            pass
         except WebSocketDisconnect:
             pass
         finally:

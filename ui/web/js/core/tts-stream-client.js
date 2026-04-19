@@ -98,6 +98,17 @@ export class TTSStreamClient {
     }
 
     isConnected() { return this.connected; }
+
+    sendCursor(turnId, samples) {
+        if (!this.ws || !this.connected) return;
+        try {
+            this.ws.send(JSON.stringify({
+                type: 'playback_cursor',
+                turn_id: turnId || null,
+                samples,
+            }));
+        } catch {}
+    }
 }
 
 let instance = null;

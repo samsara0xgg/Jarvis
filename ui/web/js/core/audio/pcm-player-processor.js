@@ -16,6 +16,10 @@
 const RING_SECONDS = 5;
 const SAMPLE_RATE = 32000;
 
+// Cursor reporting cadence: post played-sample total every ~150 ms so the
+// main thread can relay it to the server. 32000 * 0.15 = 4800.
+const CURSOR_REPORT_SAMPLES = 4800;
+
 class PCMPlayerProcessor extends AudioWorkletProcessor {
     constructor() {
         super();
@@ -24,11 +28,15 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
         this._write = 0;
         this._count = 0;  // live samples in ring; avoids read===write ambiguity
         this._overflowNotified = false;
+        this._playedSamples = 0;         // monotonic; only reset on `clear`
+        this._lastReportedCursor = 0;
         this.port.onmessage = (e) => {
             if (e.data && e.data.clear) {
                 this._read = this._write = 0;
                 this._count = 0;
                 this._overflowNotified = false;
+                this._playedSamples = 0;
+                this._lastReportedCursor = 0;
                 return;
             }
             const chunk = e.data && e.data.pcm;
@@ -54,6 +62,7 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
     process(_inputs, outputs) {
         const out = outputs[0][0];  // mono
         const cap = this._ring.length;
+        let produced = 0;
         for (let i = 0; i < out.length; i++) {
             if (this._count === 0) {
                 out[i] = 0;
@@ -61,7 +70,13 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
                 out[i] = this._ring[this._read];
                 this._read = (this._read + 1) % cap;
                 this._count--;
+                produced++;
             }
+        }
+        this._playedSamples += produced;
+        if (this._playedSamples - this._lastReportedCursor >= CURSOR_REPORT_SAMPLES) {
+            this._lastReportedCursor = this._playedSamples;
+            this.port.postMessage({ cursor: this._playedSamples });
         }
         return true;
     }
