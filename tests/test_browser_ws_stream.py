@@ -153,3 +153,22 @@ class TestTTSStreamEndpoint:
         import time; time.sleep(0.05)  # let the finally block run
         from ui.web import server as srv
         assert sid not in srv._ws_routes
+
+
+# ---------------------------------------------------------------------------
+# Task 4: X-Turn-Id response header
+# ---------------------------------------------------------------------------
+
+class TestTurnIdCorrelation:
+    def test_chat_response_carries_turn_id(self, web_client):
+        """POST /api/chat response must include an X-Turn-Id header matching
+        the 32-char uuid4 hex used by upcoming WS turn_start + SSE events."""
+        sid = web_client.post("/api/session").json()["session_id"]
+        resp = web_client.post(
+            "/api/chat",
+            json={"text": "hello", "session_id": sid},
+        )
+        assert resp.status_code == 200
+        tid = resp.headers.get("X-Turn-Id")
+        assert tid is not None
+        assert len(tid) == 32 and all(c in "0123456789abcdef" for c in tid)

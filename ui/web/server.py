@@ -329,7 +329,11 @@ def create_app(jarvis_app: Any) -> FastAPI:
         return StreamingResponse(
             event_stream(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-Turn-Id": turn_id,
+            },
         )
 
     # --- ASR ---
