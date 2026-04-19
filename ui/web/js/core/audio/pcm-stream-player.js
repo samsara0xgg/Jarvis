@@ -36,6 +36,13 @@ export class PCMStreamPlayer {
             basePath + 'js/core/audio/pcm-player-processor.js',
         );
         this.node = new AudioWorkletNode(this.ctx, 'pcm-player');
+        // Surface worklet overflow notifications to the main-thread log so
+        // pacing bugs are visible. Worklet only posts once per overflow run.
+        this.node.port.onmessage = (e) => {
+            if (e.data && typeof e.data.overflow === 'number') {
+                log(`PCMStreamPlayer ring overflow, dropped ${e.data.overflow} samples`, 'warning');
+            }
+        };
         this.gainNode = this.ctx.createGain();
         this.analyser = this.ctx.createAnalyser();
         this.analyser.fftSize = 256;
