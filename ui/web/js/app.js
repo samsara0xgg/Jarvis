@@ -89,18 +89,29 @@ class App {
 
         this._ttsStream = tts;
 
-        // Wrap apiClient.connect so the TTS stream opens right after dial.
-        const origConnect = apiClient.connect.bind(apiClient);
-        apiClient.connect = async () => {
-            const ok = await origConnect();
-            if (ok && apiClient.sessionId) {
+        // Connect the TTS stream. Safe to call multiple times.
+        const connectTTS = () => {
+            if (apiClient.sessionId && !tts.connected && !tts.ws) {
                 try { tts.connect(apiClient.sessionId); }
                 catch (err) { log(`TTS stream connect failed: ${err.message}`, 'warning'); }
             }
+        };
+
+        // Immediate: if dial already completed before _wireTTSStream ran,
+        // connect now. (Race between apiClient.connect click and
+        // addModule's await.)
+        connectTTS();
+
+        // Future dials: wrap apiClient.connect so the TTS stream opens on
+        // subsequent session dial (e.g. after disconnect/re-dial).
+        const origConnect = apiClient.connect.bind(apiClient);
+        apiClient.connect = async () => {
+            const ok = await origConnect();
+            if (ok) connectTTS();
             return ok;
         };
 
-        // Wrap apiClient.disconnect to also close the TTS stream.
+        // Wrap disconnect to also close the TTS stream.
         const origDisconnect = apiClient.disconnect.bind(apiClient);
         apiClient.disconnect = async () => {
             try { tts.disconnect(); } catch {}
