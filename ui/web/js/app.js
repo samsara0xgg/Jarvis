@@ -60,21 +60,43 @@ class App {
         const tts = getTTSStreamClient();
         tts.setServerUrl(window.location.origin);
 
+        // DEBUG: track every WS event to diagnose stream issues.
+        this._dbgStats = { turns: 0, sentences: 0, chunks: 0, bytes: 0, cancels: 0 };
+
+        tts.onTurnStart = (p) => {
+            this._dbgStats.turns++;
+            log(`[ws] turn_start turn_id=${p.turn_id}`, 'debug');
+        };
         tts.onAudioChunk = (buf) => {
+            this._dbgStats.chunks++;
+            this._dbgStats.bytes += buf.byteLength;
+            if (this._dbgStats.chunks % 10 === 0) {
+                log(`[ws] audio: ${this._dbgStats.chunks} chunks, ${(this._dbgStats.bytes / 1024).toFixed(1)} KB`, 'debug');
+            }
             if (this.audioPlayer && typeof this.audioPlayer.writeChunk === 'function') {
                 this.audioPlayer.writeChunk(buf);
+            } else {
+                log('[ws] audio_chunk received but audioPlayer has no writeChunk', 'warning');
             }
         };
         tts.onSentenceStart = (p) => {
+            this._dbgStats.sentences++;
+            log(`[ws] sentence_start idx=${p.sentence_index} emotion=${p.emotion} text=${(p.text || '').slice(0, 30)}`, 'debug');
             if (this.live2dManager) {
                 this.live2dManager.triggerEmotionAction(p.emotion || 'neutral');
                 this.live2dManager.startTalking();
             }
         };
-        tts.onTurnEnd = () => {
+        tts.onSentenceEnd = (p) => {
+            log(`[ws] sentence_end idx=${p.sentence_index}`, 'debug');
+        };
+        tts.onTurnEnd = (p) => {
+            log(`[ws] turn_end turn_id=${p && p.turn_id}. Stats: ${this._dbgStats.sentences} sentences, ${this._dbgStats.chunks} chunks, ${(this._dbgStats.bytes/1024).toFixed(1)} KB`, 'info');
             if (this.live2dManager) this.live2dManager.stopTalking();
         };
         tts.onCancel = (p) => {
+            this._dbgStats.cancels++;
+            log(`[ws] cancel reason=${p && p.reason} turn_id=${p && p.turn_id}`, 'warning');
             if (this.audioPlayer && typeof this.audioPlayer.clearAll === 'function') {
                 this.audioPlayer.clearAll();
             }

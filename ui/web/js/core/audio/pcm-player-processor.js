@@ -8,7 +8,12 @@
 // cleanly clipping the tail.
 // `{clear: true}` resets (used by cancel frames).
 
-const RING_SECONDS = 30;
+// Server-side pacing is disabled (it would block the FastAPI event loop),
+// so MiniMax PCM floods in ~5-10x faster than real-time. The ring needs
+// to be big enough to absorb the entire turn: 120s @ 32kHz mono float32
+// = 15.3 MB, a fine tradeoff for modern browsers. Long turns beyond 120s
+// of audio will trip the drop-new overflow path.
+const RING_SECONDS = 120;
 const SAMPLE_RATE = 32000;
 
 class PCMPlayerProcessor extends AudioWorkletProcessor {

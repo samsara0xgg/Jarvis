@@ -82,60 +82,22 @@ class TestBrowserWSPlayer:
         finally:
             loop.close()
 
-    def test_pace_fills_headstart_without_sleeping(self):
-        """With pace=True, writes totalling up to HEADSTART seconds of audio
-        (2.0 s at 32 kHz = 64 000 samples) ship without any sleep — the
-        browser is allowed to buffer that much ahead of playback."""
+    def test_write_never_blocks(self):
+        """write() must be non-blocking — server-side pacing was tried and
+        dropped because time.sleep() inside write() stalls the FastAPI loop
+        (write is called from _stream_to_player_async running on it).
+        Client ring buffer is large enough to absorb fast TTS arrival."""
         import time as _time
         from ui.web.browser_ws_player import BrowserWSPlayer
 
         loop = asyncio.new_event_loop()
         try:
-            ws = MagicMock()
-            player = BrowserWSPlayer(ws=ws, sentence_index=0, loop=loop, pace=True)
+            player = BrowserWSPlayer(ws=MagicMock(), sentence_index=0, loop=loop)
             t0 = _time.monotonic()
-            # Two 1-second chunks = HEADSTART total. Neither should sleep.
-            player.write(np.zeros(32000, dtype=np.float32))
-            player.write(np.zeros(32000, dtype=np.float32))
+            for _ in range(10):
+                player.write(np.zeros(32000, dtype=np.float32))  # 10 s of audio
             t1 = _time.monotonic()
-            assert (t1 - t0) < 0.2, f"headstart fill should not sleep, got {(t1-t0):.3f}s"
-        finally:
-            loop.close()
-
-    def test_pace_throttles_once_headstart_full(self):
-        """After the 2-second headstart is full, each additional 1-second
-        chunk must block for ~1 second to keep the browser buffer bounded."""
-        import time as _time
-        from ui.web.browser_ws_player import BrowserWSPlayer
-
-        loop = asyncio.new_event_loop()
-        try:
-            ws = MagicMock()
-            player = BrowserWSPlayer(ws=ws, sentence_index=0, loop=loop, pace=True)
-            # Fill headstart (2 s of audio).
-            player.write(np.zeros(32000, dtype=np.float32))
-            player.write(np.zeros(32000, dtype=np.float32))
-            t_ref = _time.monotonic()
-            # Next 1-second chunk should sleep ~1 s.
-            player.write(np.zeros(32000, dtype=np.float32))
-            elapsed = _time.monotonic() - t_ref
-            assert 0.7 < elapsed < 1.5, f"expected ~1s pacing delay, got {elapsed:.3f}s"
-        finally:
-            loop.close()
-
-    def test_pace_false_does_not_sleep(self):
-        """pace=False keeps the old fire-and-forget behavior for tests."""
-        import time as _time
-        from ui.web.browser_ws_player import BrowserWSPlayer
-
-        loop = asyncio.new_event_loop()
-        try:
-            player = BrowserWSPlayer(ws=MagicMock(), sentence_index=0, loop=loop, pace=False)
-            t0 = _time.monotonic()
-            for _ in range(5):
-                player.write(np.zeros(32000, dtype=np.float32))
-            t1 = _time.monotonic()
-            assert (t1 - t0) < 0.1, "pace=False must not sleep"
+            assert (t1 - t0) < 0.1, f"write must be non-blocking, took {(t1-t0):.3f}s"
         finally:
             loop.close()
 

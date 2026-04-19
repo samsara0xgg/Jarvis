@@ -14,21 +14,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import struct
-import time
 from typing import Any
 
 import numpy as np
 
 LOGGER = logging.getLogger(__name__)
 
-# MiniMax TTS returns PCM ~5-10x faster than real-time. Without pacing, the
-# browser's AudioWorklet ring buffer (~30s capacity) overflows on long turns
-# (~15 sentences × 3s = 45s audio arriving in ~5s wall time). Pace each
-# write() so the browser stays at most HEADSTART seconds ahead of the
-# playback clock — small enough to not overflow the ring, large enough to
-# absorb chunk-arrival jitter.
+# MiniMax TTS returns PCM ~5-10x faster than real-time. A ~2-minute turn's
+# worth of audio can arrive in ~15 seconds of wall time. The client-side
+# AudioWorklet ring buffer is sized to absorb this (see
+# ui/web/js/core/audio/pcm-player-processor.js) — we do NOT pace server-side
+# because write() is called from `_stream_to_player_async` running on the
+# FastAPI loop, and a blocking time.sleep would stall the entire event loop
+# (WS frames, SSE events, everything).
 _SAMPLE_RATE = 32000
-_PACE_HEADSTART_SECONDS = 2.0
 
 
 class BrowserWSPlayer:
@@ -53,28 +52,22 @@ class BrowserWSPlayer:
         ws: Any,
         sentence_index: int,
         loop: asyncio.AbstractEventLoop,
-        pace: bool = True,
+        pace: bool = False,
     ) -> None:
         self._ws = ws
         self._idx = sentence_index
         self._loop = loop
         self._header = struct.pack("<H", sentence_index)
         self.played_samples: int = 0  # monotonic, same API as AudioStreamPlayer
-        self._pace = pace
-        # Wall-clock reference set on first write; used to compute how far
-        # ahead of real-time playback we have buffered in the browser.
-        self._pace_t0: float | None = None
+        self._pace = pace  # deprecated — retained for tests; never True in prod
+        self._chunks_sent = 0
 
     def write(self, pcm_f32: np.ndarray) -> None:
         """Called per PCM chunk from ``MinimaxWSClient.feed()``.
 
         Converts float32 → int16 LE, prepends the 2-byte sentence_index
         header, and schedules ``ws.send_bytes`` on the FastAPI event loop.
-
-        Paces forwarding so the browser receives PCM at ~real-time plus a
-        small head-start (see ``_PACE_HEADSTART_SECONDS``). Without pacing,
-        MiniMax's faster-than-real-time TTS overflows the client AudioWorklet
-        ring buffer on long turns.
+        Non-blocking — returns immediately after scheduling.
         """
         if pcm_f32.size == 0:
             return
@@ -84,33 +77,18 @@ class BrowserWSPlayer:
             asyncio.run_coroutine_threadsafe(
                 self._ws.send_bytes(payload), self._loop,
             )
+            self._chunks_sent += 1
+            LOGGER.info(
+                "[ws] idx=%d chunk #%d: %d samples (%.2fs), played_total=%d",
+                self._idx, self._chunks_sent, pcm_i16.size,
+                pcm_i16.size / _SAMPLE_RATE, self.played_samples + pcm_i16.size,
+            )
         except Exception as exc:
-            # Browser WS may have closed; stream_to_player's abort_event
-            # handles the cancel path. We just log and drop this chunk.
-            LOGGER.debug("BrowserWSPlayer send_bytes scheduling failed: %s", exc)
+            LOGGER.warning(
+                "[ws] idx=%d send_bytes scheduling failed: %s",
+                self._idx, exc, exc_info=True,
+            )
         self.played_samples += pcm_i16.size
-
-        if self._pace:
-            self._sleep_to_pace(pcm_i16.size)
-
-    def _sleep_to_pace(self, samples_just_sent: int) -> None:
-        """Block until the browser has at most ``_PACE_HEADSTART_SECONDS``
-        of unplayed audio buffered ahead of real-time playback.
-
-        Model: playback "starts" at ``self._pace_t0`` (the first write).
-        By the time we've sent N samples total, the ideal wall-clock
-        position is ``t0 + N/SR - headstart`` — sleeping any shorter would
-        put the browser more than HEADSTART seconds ahead.
-        """
-        _ = samples_just_sent  # pacing is driven by cumulative played_samples
-        now = time.monotonic()
-        if self._pace_t0 is None:
-            self._pace_t0 = now
-            return  # first chunk ships immediately
-        ideal_wall = self._pace_t0 + (self.played_samples / _SAMPLE_RATE) - _PACE_HEADSTART_SECONDS
-        sleep_for = ideal_wall - now
-        if sleep_for > 0:
-            time.sleep(sleep_for)
 
     def drain(self, timeout: float = 5.0) -> bool:
         """Always returns True (optimistic drain).

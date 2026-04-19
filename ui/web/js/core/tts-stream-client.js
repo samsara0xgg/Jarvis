@@ -49,7 +49,9 @@ export class TTSStreamClient {
     }
 
     _open() {
-        this.ws = new WebSocket(this._wsUrl());
+        const url = this._wsUrl();
+        log(`[TTSStreamClient] opening ${url}`, 'debug');
+        this.ws = new WebSocket(url);
         this.ws.binaryType = 'arraybuffer';
 
         this.ws.onopen = () => {
@@ -61,18 +63,25 @@ export class TTSStreamClient {
             if (typeof event.data === 'string') {
                 let payload;
                 try { payload = JSON.parse(event.data); }
-                catch { return; }
+                catch (e) {
+                    log(`[TTSStreamClient] bad JSON text frame: ${event.data.slice(0, 80)}`, 'warning');
+                    return;
+                }
                 const t = payload.type;
                 if (t === 'turn_start' && this.onTurnStart) this.onTurnStart(payload);
                 else if (t === 'sentence_start' && this.onSentenceStart) this.onSentenceStart(payload);
                 else if (t === 'sentence_end' && this.onSentenceEnd) this.onSentenceEnd(payload);
                 else if (t === 'turn_end' && this.onTurnEnd) this.onTurnEnd(payload);
                 else if (t === 'cancel' && this.onCancel) this.onCancel(payload);
+                else log(`[TTSStreamClient] unknown text frame type: ${t}`, 'warning');
             } else if (event.data instanceof ArrayBuffer) {
                 if (this.onAudioChunk) this.onAudioChunk(event.data);
+            } else {
+                log(`[TTSStreamClient] unexpected message type: ${typeof event.data}`, 'warning');
             }
         };
-        this.ws.onclose = () => {
+        this.ws.onclose = (ev) => {
+            log(`[TTSStreamClient] WS closed code=${ev.code} reason=${ev.reason || '(none)'}`, 'warning');
             this.connected = false;
             this.ws = null;
             if (this._shouldReconnect && this.sessionId) {
@@ -80,7 +89,9 @@ export class TTSStreamClient {
                 this._reconnectMs = Math.min(this._reconnectMs * 2, this._maxReconnectMs);
             }
         };
-        this.ws.onerror = () => { /* onclose will follow */ };
+        this.ws.onerror = () => {
+            log('[TTSStreamClient] WS error event', 'warning');
+        };
     }
 
     isConnected() { return this.connected; }

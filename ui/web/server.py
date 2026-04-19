@@ -227,6 +227,19 @@ def create_app(jarvis_app: Any) -> FastAPI:
         }
         ws_client_for_turn: MinimaxWSClient | None = None
         turn_start_sent = False
+        # Serializes per-sentence _stream_to_player_async calls on the FastAPI
+        # loop so multiple sentences don't clobber the single MiniMax WS
+        # session. chat() is async on the FastAPI loop, so creating the Lock
+        # here binds it to the correct loop.
+        tts_lock: asyncio.Lock = asyncio.Lock()
+        # Track in-flight per-sentence stream futures so _run can wait for
+        # all TTS to finish before emitting turn_end.
+        stream_futures: list = []
+        prewarm_future = None
+        LOGGER.info(
+            "[chat] turn_id=%s session=%s text=%r",
+            turn_id, req.session_id, req.text[:80],
+        )
         if bool(jarvis_app.config.get("tts", {}).get("browser_streaming", False)) \
                 and _ws_routes.get(req.session_id) is not None:
             cfg = jarvis_app.config.get("tts", {})
@@ -241,7 +254,7 @@ def create_app(jarvis_app: Any) -> FastAPI:
                     sample_rate_in=32000,
                 )
                 # Prewarm: open WS in background so handshake overlaps LLM tokens.
-                asyncio.run_coroutine_threadsafe(
+                prewarm_future = asyncio.run_coroutine_threadsafe(
                     ws_client_for_turn.open_session(emotion=None), loop,
                 )
                 # Announce the turn on the browser WS.
@@ -252,9 +265,93 @@ def create_app(jarvis_app: Any) -> FastAPI:
                 )
                 turn_start_sent = True
                 _active_chats[req.session_id]["ws_client"] = ws_client_for_turn
+                LOGGER.info(
+                    "[chat] streaming ENABLED turn_id=%s ws_client prewarm scheduled",
+                    turn_id,
+                )
             except Exception as exc:
-                LOGGER.warning("MinimaxWSClient prewarm failed, falling back: %s", exc)
+                LOGGER.warning(
+                    "[chat] MinimaxWSClient prewarm failed: %s", exc, exc_info=True,
+                )
                 ws_client_for_turn = None
+        else:
+            LOGGER.info(
+                "[chat] streaming DISABLED (flag=%s ws_present=%s) — using file path",
+                jarvis_app.config.get("tts", {}).get("browser_streaming", False),
+                _ws_routes.get(req.session_id) is not None,
+            )
+
+        async def _stream_one(
+            sentence: str,
+            emotion_local: str,
+            idx_local: int,
+            ws_ref: Any,
+        ) -> None:
+            """Run one sentence's TTS stream on the FastAPI loop. Serialized
+            via tts_lock so multiple sentences don't clobber the single
+            MiniMax WS session. Emits sentence_end control frame on exit."""
+            LOGGER.info(
+                "[stream] idx=%d enter (text=%r emotion=%s)",
+                idx_local, sentence[:40], emotion_local,
+            )
+            result = None
+            prewarm_err: Exception | None = None
+            try:
+                if prewarm_future is not None:
+                    try:
+                        await asyncio.wrap_future(prewarm_future)
+                    except Exception as exc:
+                        prewarm_err = exc
+                        LOGGER.warning(
+                            "[stream] idx=%d prewarm open_session failed: %s",
+                            idx_local, exc, exc_info=True,
+                        )
+                if prewarm_err is not None:
+                    return
+                async with tts_lock:
+                    LOGGER.info("[stream] idx=%d lock acquired", idx_local)
+                    if abort_event.is_set():
+                        LOGGER.info("[stream] idx=%d aborted before feed", idx_local)
+                        return
+                    player = BrowserWSPlayer(
+                        ws=ws_ref, sentence_index=idx_local, loop=loop,
+                    )
+                    try:
+                        result = await tts._stream_to_player_async(
+                            sentence, emotion_local, player,
+                            ws_client_for_turn, abort_event,
+                        )
+                    except Exception as exc:
+                        LOGGER.warning(
+                            "[stream] idx=%d _stream_to_player_async raised: %s",
+                            idx_local, exc, exc_info=True,
+                        )
+                        return
+                    if result is not None and getattr(result, "raised", None):
+                        LOGGER.warning(
+                            "[stream] idx=%d inner raised: %s",
+                            idx_local, result.raised, exc_info=result.raised,
+                        )
+                    LOGGER.info(
+                        "[stream] idx=%d done: total_samples=%s played=%s",
+                        idx_local,
+                        getattr(result, "total_samples", None),
+                        getattr(result, "played_samples", None),
+                    )
+            finally:
+                try:
+                    await _send_ctrl(ws_ref, {
+                        "type": "sentence_end",
+                        "turn_id": turn_id,
+                        "sentence_index": idx_local,
+                        "subtitle_url":
+                            getattr(result, "subtitle_url", None) if result else None,
+                    })
+                except Exception as exc:
+                    LOGGER.debug(
+                        "[stream] idx=%d sentence_end send failed: %s",
+                        idx_local, exc,
+                    )
 
         def on_sentence(sentence: str, emotion: str = "") -> None:
             nonlocal sentence_index
@@ -267,9 +364,16 @@ def create_app(jarvis_app: Any) -> FastAPI:
                 and ws_client_for_turn is not None  # prewarm succeeded
             )
 
+            LOGGER.info(
+                "[on_sentence] idx=%d use_stream=%s text=%r emotion=%s",
+                idx, use_stream, sentence[:40], emotion,
+            )
+
             audio_url = ""
             if use_stream:
                 ws = _ws_routes[req.session_id]
+                # Fire sentence_start + schedule TTS stream, then return
+                # immediately so LLM stream isn't blocked.
                 asyncio.run_coroutine_threadsafe(
                     _send_ctrl(ws, {
                         "type": "sentence_start",
@@ -280,48 +384,10 @@ def create_app(jarvis_app: Any) -> FastAPI:
                     }),
                     loop,
                 )
-                player = BrowserWSPlayer(ws=ws, sentence_index=idx, loop=loop)
-                result = None
-                try:
-                    # Run _stream_to_player_async on the SAME FastAPI loop
-                    # where MinimaxWSClient.open_session opened the socket,
-                    # so ws_client.feed() awaits on the right loop. The sync
-                    # stream_to_player() wrapper uses asyncio.run(), which
-                    # would create a new loop → cross-loop violation.
-                    fut = asyncio.run_coroutine_threadsafe(
-                        tts._stream_to_player_async(
-                            sentence, emotion, player,
-                            ws_client_for_turn, abort_event,
-                        ),
-                        loop,
-                    )
-                    result = fut.result(timeout=30.0)
-                except Exception as exc:
-                    LOGGER.warning("stream_to_player failed: %s", exc)
-                    result = None
-
-                if result is not None:
-                    if getattr(result, "raised", None) is not None:
-                        LOGGER.warning(
-                            "stream_to_player inner raise: %s",
-                            result.raised,
-                        )
-                    LOGGER.debug(
-                        "stream_to_player done: total_samples=%s played=%s",
-                        getattr(result, "total_samples", None),
-                        getattr(result, "played_samples", None),
-                    )
-
-                asyncio.run_coroutine_threadsafe(
-                    _send_ctrl(ws, {
-                        "type": "sentence_end",
-                        "turn_id": turn_id,
-                        "sentence_index": idx,
-                        "subtitle_url":
-                            getattr(result, "subtitle_url", None) if result else None,
-                    }),
-                    loop,
+                fut = asyncio.run_coroutine_threadsafe(
+                    _stream_one(sentence, emotion, idx, ws), loop,
                 )
+                stream_futures.append(fut)
             else:
                 if tts:
                     try:
@@ -341,8 +407,9 @@ def create_app(jarvis_app: Any) -> FastAPI:
                                 Path(audio_path).unlink(missing_ok=True)
                             audio_url = f"/api/audio/{audio_name}"
                     except Exception as exc:
-                        LOGGER.warning("TTS synth failed: %s", exc)
+                        LOGGER.warning("TTS synth failed: %s", exc, exc_info=True)
 
+            # Emit SSE event immediately (fast text display in UI)
             event = {
                 "turn_id": turn_id,
                 "index": idx,
@@ -376,9 +443,23 @@ def create_app(jarvis_app: Any) -> FastAPI:
                     on_sentence=on_sentence,
                 )
             except Exception as exc:
-                LOGGER.error("handle_text failed: %s", exc)
+                LOGGER.error("handle_text failed: %s", exc, exc_info=True)
             finally:
                 root.removeHandler(sse_handler)
+                # Wait for all per-sentence TTS streams to finish before
+                # emitting turn_end + closing the MiniMax session.
+                LOGGER.info(
+                    "[chat] handle_text returned, waiting on %d stream futures",
+                    len(stream_futures),
+                )
+                for sfut in stream_futures:
+                    try:
+                        sfut.result(timeout=120.0)
+                    except Exception as exc:
+                        LOGGER.warning(
+                            "[chat] stream future raised: %s", exc, exc_info=True,
+                        )
+                LOGGER.info("[chat] all stream futures drained, turn_id=%s", turn_id)
                 if ws_client_for_turn is not None:
                     try:
                         asyncio.run_coroutine_threadsafe(
