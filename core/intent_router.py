@@ -241,6 +241,14 @@ class IntentRouter:
         self._last_raw_response: str = ""
         self._last_prompt: str = ""
 
+        # Trace v3: per-call metadata snapshot from the underlying Groq /
+        # Cerebras HTTP response. Used by jarvis._flush_trace when a
+        # router-driven response (route.text_response set) is what reached
+        # the user — without this snapshot the router's LLM tokens, cost,
+        # and finish_reason would be lost. Reset at the top of each
+        # route_and_respond / route call.
+        self.last_metadata: dict[str, Any] = self._empty_router_metadata()
+
         # Groq (primary)
         groq_cfg = config.get("models", {}).get("groq", {})
         self.groq_key = groq_cfg.get("api_key") or os.environ.get("GROQ_API_KEY", "")
@@ -263,6 +271,47 @@ class IntentRouter:
             "ready" if self.groq_key else "no key",
             "ready" if self.cerebras_key else "no key",
         )
+
+    @staticmethod
+    def _empty_router_metadata() -> dict[str, Any]:
+        """Default-shape dict for last_metadata — keep all keys present."""
+        return {
+            "provider": None,        # "groq" | "cerebras" | None
+            "model": None,           # actual model id (e.g. "llama-3.3-70b-versatile")
+            "response_id": None,     # provider response id (chatcmpl-...)
+            "finish_reason": None,   # stop / length / content_filter
+            "tokens_in": None,
+            "tokens_out": None,
+            "cache_read_input_tokens": None,
+        }
+
+    def _capture_metadata(
+        self, provider: str, model: str, data: dict[str, Any],
+    ) -> None:
+        """Snapshot tokens / id / finish_reason from a router HTTP response.
+
+        Called at every successful Groq / Cerebras response. The snapshot
+        becomes self.last_metadata, consumed by jarvis trace logging when
+        the router was the response source.
+        """
+        try:
+            choice0 = data.get("choices", [{}])[0]
+            usage = data.get("usage", {}) or {}
+            prompt_details = usage.get("prompt_tokens_details", {}) or {}
+            self.last_metadata = {
+                "provider": provider,
+                "model": model,
+                "response_id": data.get("id"),
+                "finish_reason": choice0.get("finish_reason"),
+                "tokens_in": usage.get("prompt_tokens"),
+                "tokens_out": usage.get("completion_tokens"),
+                "cache_read_input_tokens": prompt_details.get("cached_tokens"),
+            }
+        except (KeyError, IndexError, AttributeError, TypeError) as exc:
+            self.logger.debug("Router metadata capture failed: %s", exc)
+            self.last_metadata = self._empty_router_metadata()
+            self.last_metadata["provider"] = provider
+            self.last_metadata["model"] = model
 
     @property
     def cache_size(self) -> int:
@@ -302,6 +351,8 @@ class IntentRouter:
         """分析用户指令。Groq 70B → Cerebras 70B → 直接走云端 LLM."""
         # 未来可探索模糊匹配（embedding 相似度等），但需注意 "开灯" vs "关灯"
         # 语义相近却意图相反的问题。
+        # Trace v3: reset router metadata so cached / no-call paths don't leak.
+        self.last_metadata = self._empty_router_metadata()
         key = _normalize_cache_key(text)
 
         # Build recent context for ambiguous commands (e.g., "关了" after "灯带调黄色")
@@ -388,6 +439,11 @@ class IntentRouter:
 
             resp.raise_for_status()
             data = resp.json()
+            # Trace v3: snapshot router HTTP metadata (tokens/id/finish_reason).
+            _provider_name = "groq" if "groq" in url else (
+                "cerebras" if "cerebras" in url else "router"
+            )
+            self._capture_metadata(_provider_name, model, data)
             raw = (
                 data.get("choices", [{}])[0]
                 .get("message", {})
@@ -474,6 +530,9 @@ class IntentRouter:
         self._last_cache_hit = False
         self._last_provider_attempts = []
         self._last_raw_response = ""
+        # Trace v3: reset metadata so a cache-hit / no-call leaves no stale
+        # tokens visible to jarvis _flush_trace.
+        self.last_metadata = self._empty_router_metadata()
 
         key = _normalize_cache_key(text)
         recent_context = self._build_context(conversation_history) if conversation_history else []
@@ -564,6 +623,11 @@ class IntentRouter:
 
             resp.raise_for_status()
             data = resp.json()
+            # Trace v3: snapshot router HTTP metadata for the unified call.
+            _provider_name = "groq" if "groq" in url else (
+                "cerebras" if "cerebras" in url else "router"
+            )
+            self._capture_metadata(_provider_name, model, data)
             raw = (
                 data.get("choices", [{}])[0]
                 .get("message", {})

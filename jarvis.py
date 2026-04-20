@@ -1454,24 +1454,46 @@ class JarvisApp:
     def _arm_tts_first_chunk(self) -> None:
         """Wire AudioStreamPlayer's on_first_chunk for the current turn.
 
-        The player is owned by TTSEngine and lazy-initialized. We reset the
-        per-turn fired flag and (re)bind the callback every cloud turn.
-        Callback writes a single attribute (GIL-atomic), no IO/logging —
-        safe to run in the PortAudio audio thread per audio_stream_player
-        contract.
+        Two-tier strategy because the player is lazy-initialized inside
+        TTSEngine — at turn-start we may not yet have a player object:
+
+        1. Install the callback on TTSEngine via set_first_chunk_callback;
+           the engine re-applies it whenever the player gets (re)constructed.
+           Survives lazy init across all turns after the first audio call.
+
+        2. If a player already exists, also reset its per-turn fired flag
+           so the callback fires for THIS turn (would otherwise stay set
+           from a prior turn and skip firing).
+
+        Callback writes a single attribute (GIL-atomic) — no IO/logging,
+        safe to run in PortAudio audio thread per audio_stream_player.py
+        contract. Idempotent: safe to call on every turn even text-path.
         """
-        tts = getattr(self, "_tts", None)  # may not be initialized yet
-        player = getattr(tts, "_stream_player", None) if tts is not None else None
-        if player is None:
-            return
-        try:
-            player.reset_first_chunk()
-        except AttributeError:
-            return  # older AudioStreamPlayer without first-chunk support
-        # Bind the callback fresh each turn (closure captures self).
+        # Stable closure: captures self via lexical scope. New closure each
+        # turn so any stale reference held by the player is replaced.
         def _on_first_chunk() -> None:
+            # Single attribute write under GIL — atomic per CPython.
+            # Use perf_counter for monotonic resolution; turn_start in
+            # _flush_trace also uses perf_counter so the diff is meaningful.
             self._first_audio_at = time.perf_counter()
-        player._on_first_chunk = _on_first_chunk
+
+        tts = getattr(self, "_tts", None)
+        if tts is None:
+            return  # TTS not initialized yet; first voice turn loses ttfs_ms
+        # Tier 1: register on engine — engine forwards to player on creation.
+        if hasattr(tts, "set_first_chunk_callback"):
+            try:
+                tts.set_first_chunk_callback(_on_first_chunk)
+            except Exception:
+                pass
+        # Tier 2: if player exists right now, reset its per-turn flag so
+        # the callback fires for this turn's first chunk.
+        player = getattr(tts, "_stream_player", None)
+        if player is not None:
+            try:
+                player.reset_first_chunk()
+            except AttributeError:
+                pass
 
     def _flush_trace(
         self,
@@ -1551,26 +1573,54 @@ class JarvisApp:
                                 "ms": 0,
                             })
 
+            # Decide which LLM produced this turn's response and pull
+            # tokens / finish_reason / cost from the right source.
+            #
+            # Three cases:
+            # (a) Cloud path: main LLMClient (self.llm). Metadata harvested
+            #     in cloud finally via self._last_llm_metadata + tokens.
+            # (b) Router-driven response (route.text_response set, path=
+            #     local): the intent router's Groq/Cerebras LLM produced
+            #     the response in a single call. Pull intent_router.
+            #     last_metadata for tokens/finish_reason/model.
+            # (c) Pure local (keyword_rule, farewell, memory_l1, memory_
+            #     shortcut): no LLM ran. All llm_* stay NULL.
             llm_metadata = self._last_llm_metadata
-            llm_tokens_in = self._last_llm_tokens.get("input") if self._last_llm_tokens else None
-            llm_tokens_out = self._last_llm_tokens.get("output") if self._last_llm_tokens else None
+            llm_tokens_in: int | None = None
+            llm_tokens_out: int | None = None
             cache_read = self._last_cache_read_tokens
             cache_write = llm_metadata.get("cache_creation_input_tokens") if llm_metadata else None
+            llm_model_used: str | None = None
+            finish_reason_used = self._last_finish_reason
 
-            # Determine which LLM produced the response. Cloud path = main
-            # LLMClient. Local path WITH route.text_response = the intent
-            # router's LLM (Groq/Cerebras) — record provider so analytics
-            # can distinguish router-driven from cloud-driven turns.
             if self._last_path == "cloud":
-                llm_model_used: str | None = self.llm.model
+                # (a) Main chat LLM. Tokens were stashed in self._last_llm_tokens
+                # (legacy) — _last_llm_metadata is the v3 source of truth but
+                # tokens themselves live alongside (cache_read on its own attr).
+                llm_model_used = self.llm.model
+                llm_tokens_in = self._last_llm_tokens.get("input") if self._last_llm_tokens else None
+                llm_tokens_out = self._last_llm_tokens.get("output") if self._last_llm_tokens else None
             elif self._last_route is not None and getattr(self._last_route, "text_response", None):
-                _provider = getattr(self._last_route, "provider", None) or "unknown"
-                llm_model_used = f"router:{_provider}"
-            else:
-                llm_model_used = None
+                # (b) Router-driven inline response. Pull from intent_router.
+                router_meta = getattr(self.intent_router, "last_metadata", None) or {}
+                llm_model_used = router_meta.get("model")
+                llm_tokens_in = router_meta.get("tokens_in")
+                llm_tokens_out = router_meta.get("tokens_out")
+                cache_read = router_meta.get("cache_read_input_tokens") or cache_read
+                if not finish_reason_used:
+                    finish_reason_used = router_meta.get("finish_reason")
+                # Augment llm_metadata to record router origin without
+                # losing the dict shape locked by the schema.
+                if llm_metadata is None:
+                    llm_metadata = {}
+                llm_metadata["provider"] = router_meta.get("provider")
+                llm_metadata["response_id"] = router_meta.get("response_id")
+                llm_metadata["streaming"] = False  # router uses single non-streaming HTTP
+                llm_metadata["router_model"] = router_meta.get("model")
+            # (c) llm_model_used stays None, no tokens.
 
             cost = compute_cost_usd(
-                model=llm_model_used if self._last_path == "cloud" else None,
+                model=llm_model_used,
                 tokens_in=llm_tokens_in,
                 tokens_out=llm_tokens_out,
                 cache_read_in=cache_read,
@@ -1621,7 +1671,7 @@ class JarvisApp:
                 },
                 end_reason=self._last_end_reason,
                 error=self._last_error,
-                finish_reason=self._last_finish_reason,
+                finish_reason=finish_reason_used,
                 cost_usd=cost,
             )
 

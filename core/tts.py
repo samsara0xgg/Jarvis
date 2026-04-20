@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Any
+from typing import Any, Callable
 
 from dataclasses import dataclass
 
@@ -291,6 +291,10 @@ class TTSEngine:
         self._unduck_ramp_ms = float(sp_cfg.get("unduck_ramp_ms", 10.0))
         self._stream_player: Any = None
         self._stream_player_init_failed = False  # sticky: don't retry init spam
+        # Trace v3: callable installed onto AudioStreamPlayer's on_first_chunk
+        # whenever the player is (re)created. Lets jarvis measure ttfs_ms
+        # without racing the player's lazy init. Owner: jarvis._arm_tts_first_chunk.
+        self._first_chunk_callback: Callable[[], None] | None = None
 
         # OpenAI TTS config (gpt-4o-mini-tts — ChatGPT 同款技术)
         self.openai_tts_key = str(tts_config.get("openai_tts_key", "") or os.environ.get("OPENAI_API_KEY", ""))
@@ -850,6 +854,25 @@ class TTSEngine:
     # Stream-player path (miniaudio → soxr → sd.OutputStream)
     # ------------------------------------------------------------------
 
+    def set_first_chunk_callback(self, callback: Callable[[], None] | None) -> None:
+        """Register a callable fired once when the player emits real samples.
+
+        Survives lazy player creation: stored on the engine and applied
+        whenever ``_ensure_stream_player`` constructs (or reuses) the
+        underlying AudioStreamPlayer. Caller is responsible for resetting
+        the player's per-turn first-chunk flag.
+
+        Args:
+            callback: Zero-arg callable (must be audio-thread-safe — no IO,
+                no logging). Pass ``None`` to clear.
+        """
+        self._first_chunk_callback = callback
+        if self._stream_player is not None:
+            try:
+                self._stream_player._on_first_chunk = callback
+            except AttributeError:
+                pass
+
     def _ensure_stream_player(self) -> Any | None:
         """Lazy-init AudioStreamPlayer. Returns None if disabled/failed.
 
@@ -877,6 +900,11 @@ class TTSEngine:
                 ring_seconds=self._stream_player_ring_seconds,
             )
             p.start()
+            # Trace v3: apply the registered first-chunk callback (if any)
+            # immediately on creation. Caller (jarvis) may have set it
+            # before the player was lazy-instantiated; this closes the gap.
+            if self._first_chunk_callback is not None:
+                p._on_first_chunk = self._first_chunk_callback
             self._stream_player = p
             self.logger.info(
                 "AudioStreamPlayer started at %dHz (ring=%.1fs)",
