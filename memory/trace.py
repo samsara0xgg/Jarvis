@@ -247,6 +247,47 @@ class TraceLog:
         LOGGER.debug("trace logged: session=%s turn=%d id=%d", session_id, turn_id, row_id)
         return row_id
 
+    def update_ttfs(self, trace_id: int, ttfs_ms: int) -> None:
+        """Patch ttfs_ms on a previously-logged row.
+
+        Used when TTS playback completes asynchronously after log_turn
+        already wrote the initial row (typical for local-path turns where
+        output_fn dispatches to a background TTS executor and the first
+        audio chunk arrives long after the trace row is committed).
+
+        Mirrors the value into latency_breakdown.tts_first_ms in the JSON
+        column so the two views stay consistent.
+
+        Args:
+            trace_id: Row id returned by ``log_turn``.
+            ttfs_ms: Time to first sound, in ms (>= 0).
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT latency_breakdown FROM trace WHERE id = ?",
+            (trace_id,),
+        ).fetchone()
+        if row is None:
+            return
+        breakdown_text = row["latency_breakdown"]
+        breakdown: dict[str, Any] = {}
+        if breakdown_text:
+            try:
+                breakdown = json.loads(breakdown_text)
+            except (json.JSONDecodeError, TypeError):
+                breakdown = {}
+        breakdown["tts_first_ms"] = ttfs_ms
+        conn.execute(
+            "UPDATE trace SET ttfs_ms = ?, latency_breakdown = ? WHERE id = ?",
+            (
+                ttfs_ms,
+                json.dumps(breakdown, ensure_ascii=False),
+                trace_id,
+            ),
+        )
+        conn.commit()
+        LOGGER.debug("trace ttfs_ms patched: id=%d ttfs=%d", trace_id, ttfs_ms)
+
     def update_outcome(
         self,
         trace_id: int,

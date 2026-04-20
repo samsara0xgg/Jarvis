@@ -745,6 +745,11 @@ class JarvisApp:
             Full assistant response text (or "farewell" signal).
         """
         turn_start = time.monotonic()
+        turn_start_perf = time.perf_counter()
+        # Per-turn capture cell for ttfs_ms — fresh list so a deferred
+        # async-TTS-done callback for THIS turn won't be clobbered by
+        # the next turn's reset. Mutated by the audio thread.
+        ttfs_cell: list[int | None] = [None]
         self._reset_turn_state(text, trigger_source=trigger_source)
         # Stash voice-path snapshots after the reset (these would otherwise
         # be clobbered by reset_turn_state's defaults).
@@ -752,10 +757,9 @@ class JarvisApp:
         self._last_asr_confidence = asr_confidence
         self._last_vad_duration_ms = vad_duration_ms
         # Trace v3: arm the AudioStreamPlayer first-chunk callback BEFORE
-        # the inner runs. This way ttfs_ms is captured for ANY path that
-        # plays TTS audio (cloud, farewell shortcut, memory_l1, etc.) —
-        # not just the cloud path.
-        self._arm_tts_first_chunk()
+        # the inner runs. Captures into the per-turn ttfs_cell so a
+        # deferred TTS-done update can read it without racing reset.
+        self._arm_tts_first_chunk(turn_start_perf=turn_start_perf, cell=ttfs_cell)
         try:
             result = self._process_turn_inner(
                 text,
@@ -779,14 +783,21 @@ class JarvisApp:
             )
             raise
         finally:
+            flushed_id: int | None = None
             if user_id:
-                self._flush_trace(
+                flushed_id = self._flush_trace(
                     text=text,
                     session_id=session_id,
                     user_id=user_id,
                     emotion=emotion,
                     turn_start=turn_start,
+                    ttfs_ms_known=ttfs_cell[0],
                 )
+            # Defer ttfs_ms write for async local-path TTS that started
+            # in output_fn but hasn't played yet. Best-effort, no-op if
+            # already captured or no pending audio.
+            if flushed_id is not None and ttfs_cell[0] is None:
+                self._defer_ttfs_update(flushed_id, ttfs_cell)
 
     def _process_turn_inner(  # noqa: C901 — intentionally long; single pipeline
         self,
@@ -1058,7 +1069,15 @@ class JarvisApp:
             print(f"⏱ 路由: {_route_ms}ms → 无路由")
 
         if response_text is None and route is not None:
-            if route.text_response:
+            # chat intent: skip the router's inline text_response and let
+            # the cloud LLM (self.llm) generate the actual answer. Two
+            # reasons: (1) trace clarity — llm_model records the actual
+            # responding model, not the router; (2) quality — main chat
+            # LLM (e.g., grok-4.20 / claude-opus-4-7) is stronger than
+            # Llama-3.3-70B for open-ended chat. The router's text was
+            # wasted compute for chat (route_ms inflated); future work
+            # is to short-circuit router prompt for chat intent.
+            if route.text_response and route.intent != "chat":
                 response_text = route.text_response
                 self._last_path = "local"
             elif route.tier == "local":
@@ -1451,7 +1470,12 @@ class JarvisApp:
         else:
             self._pending_outcome_update = None
 
-    def _arm_tts_first_chunk(self) -> None:
+    def _arm_tts_first_chunk(
+        self,
+        *,
+        turn_start_perf: float,
+        cell: list[int | None],
+    ) -> None:
         """Wire AudioStreamPlayer's on_first_chunk for the current turn.
 
         Two-tier strategy because the player is lazy-initialized inside
@@ -1465,16 +1489,28 @@ class JarvisApp:
            so the callback fires for THIS turn (would otherwise stay set
            from a prior turn and skip firing).
 
-        Callback writes a single attribute (GIL-atomic) — no IO/logging,
-        safe to run in PortAudio audio thread per audio_stream_player.py
-        contract. Idempotent: safe to call on every turn even text-path.
+        Callback writes one int into ``cell`` (GIL-atomic single store) —
+        no IO/logging, safe to run in PortAudio audio thread per
+        audio_stream_player.py contract. ``cell`` is a per-turn capture
+        list so a deferred TTS-done update for THIS turn won't be
+        clobbered by the next turn's reset.
+
+        Args:
+            turn_start_perf: ``time.perf_counter()`` snapshot from the
+                wrapper at turn entry. Callback computes elapsed delta.
+            cell: One-element mutable list. Callback writes elapsed ms
+                into ``cell[0]``. Wrapper / deferred update reads it.
         """
-        # Stable closure: captures self via lexical scope. New closure each
-        # turn so any stale reference held by the player is replaced.
+        # Stable closure capturing the cell — replaces any prior turn's
+        # callback on the engine via Tier 1.
         def _on_first_chunk() -> None:
-            # Single attribute write under GIL — atomic per CPython.
-            # Use perf_counter for monotonic resolution; turn_start in
-            # _flush_trace also uses perf_counter so the diff is meaningful.
+            # Single store under GIL — atomic per CPython.
+            elapsed_ms = int((time.perf_counter() - turn_start_perf) * 1000)
+            if elapsed_ms < 0:
+                return  # clock skew guard
+            cell[0] = elapsed_ms
+            # Legacy mirror for non-deferred consumers (cloud streaming
+            # path reads self._first_audio_at directly via _flush_trace).
             self._first_audio_at = time.perf_counter()
 
         tts = getattr(self, "_tts", None)
@@ -1495,6 +1531,55 @@ class JarvisApp:
             except AttributeError:
                 pass
 
+    def _defer_ttfs_update(
+        self,
+        trace_id: int,
+        ttfs_cell: list[int | None],
+    ) -> None:
+        """Schedule a ttfs_ms update once async TTS playback completes.
+
+        Local-path turns (farewell / memory_l1 / router-with-text /
+        keyword_rule) dispatch TTS via ``_speak_nonblocking`` which submits
+        to a background executor and returns immediately, so _flush_trace
+        runs BEFORE the first audio chunk plays. We hook a done-callback on
+        the most-recent ``_tts_future``: when synthesis + playback finish,
+        the per-turn ``ttfs_cell`` will have been written by the audio
+        thread; we patch the trace row via ``trace_log.update_ttfs``.
+
+        No-op when there's no pending future or the cell is already
+        populated (cloud path captured it synchronously).
+
+        Args:
+            trace_id: Row id returned by ``_flush_trace``.
+            ttfs_cell: Same one-element list passed to _arm_tts_first_chunk.
+        """
+        fut = getattr(self, "_tts_future", None)
+        if fut is None:
+            return
+
+        def _on_tts_done(_fut: Future) -> None:
+            ttfs = ttfs_cell[0]
+            if ttfs is None or ttfs < 0 or ttfs > 60_000:
+                return
+            try:
+                self.trace_log.update_ttfs(trace_id, ttfs)
+            except Exception as exc:
+                self.logger.debug("Deferred ttfs update failed: %s", exc)
+
+        if fut.done():
+            # Already finished but ttfs_cell empty — race: audio thread
+            # may not yet have run. Schedule a fixed micro-delay check
+            # via the executor so we don't block the wrapper.
+            try:
+                self._executor.submit(_on_tts_done, fut)
+            except Exception:
+                pass
+            return
+        try:
+            fut.add_done_callback(_on_tts_done)
+        except Exception as exc:
+            self.logger.debug("Could not register ttfs done-callback: %s", exc)
+
     def _flush_trace(
         self,
         *,
@@ -1503,13 +1588,23 @@ class JarvisApp:
         user_id: str,
         emotion: str,
         turn_start: float,
-    ) -> None:
+        ttfs_ms_known: int | None = None,
+    ) -> int | None:
         """Assemble a v3 trace row from staged _last_* state and write it.
 
         Always runs in the outer wrapper's finally — covers normal returns,
         early returns (farewell / memory_l1 / etc.), and exceptions. Any
         failure here is logged and swallowed; trace logging must never
         bring down the conversation pipeline.
+
+        Args:
+            ttfs_ms_known: Per-turn ttfs_cell[0] value at flush time. None
+                if the audio thread hasn't fired yet (typical for async
+                local-path TTS — caller schedules a deferred update_ttfs).
+
+        Returns:
+            The new trace row id, or None on failure (so callers can skip
+            the deferred ttfs_ms update).
         """
         try:
             from memory.pricing import compute_cost_usd
@@ -1527,14 +1622,19 @@ class JarvisApp:
             total_ms = int((time.monotonic() - turn_start) * 1000)
             self._last_timings["total_ms"] = total_ms
 
-            # ttfs_ms: time from turn_start to first non-silent audio chunk.
-            # NULL when no TTS played (text-only path, or early return without
-            # output_fn audio dispatch).
-            ttfs_ms: int | None = None
-            if self._first_audio_at is not None:
-                ttfs_ms = int((self._first_audio_at - turn_start) * 1000)
-                if ttfs_ms < 0:
-                    ttfs_ms = None  # clock skew guard
+            # ttfs_ms preference order:
+            # 1. Per-turn ttfs_cell value (already an elapsed delta computed
+            #    by the audio-thread callback against the same turn_start_perf
+            #    — see _arm_tts_first_chunk).
+            # 2. Legacy self._first_audio_at fallback for code paths that
+            #    might not pass ttfs_ms_known.
+            # 3. None — async TTS hasn't fired yet; deferred update_ttfs
+            #    will patch the row when playback completes.
+            ttfs_ms: int | None = ttfs_ms_known
+            if ttfs_ms is None and self._first_audio_at is not None:
+                _legacy = int((self._first_audio_at - turn_start) * 1000)
+                if 0 <= _legacy < 60_000:
+                    ttfs_ms = _legacy
 
             # input_metadata: stable shape; emit None for absent fields.
             # asr_ms also stashed here on voice path (None on text path).
@@ -1600,6 +1700,15 @@ class JarvisApp:
                 llm_model_used = self.llm.model
                 llm_tokens_in = self._last_llm_tokens.get("input") if self._last_llm_tokens else None
                 llm_tokens_out = self._last_llm_tokens.get("output") if self._last_llm_tokens else None
+                # Even though the main LLM produced the response, record
+                # which router was used for classification. Lets analytics
+                # join cloud-LLM cost back to router decisions and detect
+                # router degradation patterns.
+                router_meta = getattr(self.intent_router, "last_metadata", None) or {}
+                if router_meta.get("model"):
+                    if llm_metadata is None:
+                        llm_metadata = {}
+                    llm_metadata["router_model"] = router_meta.get("model")
             elif self._last_route is not None and getattr(self._last_route, "text_response", None):
                 # (b) Router-driven inline response. Pull from intent_router.
                 router_meta = getattr(self.intent_router, "last_metadata", None) or {}
@@ -1684,6 +1793,11 @@ class JarvisApp:
             # Carry this turn's id forward for next turn's outcome detection.
             self._last_trace_id = trace_id
 
+            # Return trace_id BEFORE the async observer submission so
+            # callers (the wrapper) can register a deferred ttfs update
+            # without waiting for the observer to start.
+            _trace_id_to_return = trace_id
+
             # Async Observer extraction (writes to observations table).
             self._executor.submit(
                 self.memory_manager.write_observation,
@@ -1695,8 +1809,10 @@ class JarvisApp:
                 },
                 trace_id,
             )
+            return _trace_id_to_return
         except Exception as exc:
             self.logger.warning("Trace flush failed (non-fatal): %s", exc)
+            return None
 
     def speak(self, text: str) -> None:
         """Speak text via TTS (blocking). Use for non-hot-path calls."""
