@@ -378,3 +378,54 @@ class TestComputePlayedTexts:
         assert len(out) == 2
         assert out[0] == "第一句话完成了。"
         assert "第三句" not in " ".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Step 3 (heard_response): _apply_heard_response → conversation_store
+# ---------------------------------------------------------------------------
+
+
+class TestApplyHeardResponse:
+    def test_replaces_last_assistant_with_heard(self):
+        """Fetches history, delegates to _truncate_assistant_for_interrupt,
+        writes back via conversation_store.replace."""
+        from ui.web.server import _apply_heard_response
+
+        history = [
+            {"role": "user", "content": "给我讲个长故事"},
+            {"role": "assistant", "content": "从前有个国王。他住在城堡里。有一天..."},
+        ]
+        app = MagicMock()
+        app.conversation_store.get_history.return_value = list(history)
+
+        truncated = [
+            {"role": "user", "content": "给我讲个长故事"},
+            {"role": "assistant", "content": "从前有个国王。..."},
+            {"role": "user", "content": "[Interrupted by user]"},
+        ]
+        app._truncate_assistant_for_interrupt = MagicMock(return_value=truncated)
+
+        ok = _apply_heard_response(app, "sid1", ["从前有个国王。"])
+        assert ok is True
+        app._truncate_assistant_for_interrupt.assert_called_once_with(
+            history, ["从前有个国王。"],
+        )
+        app.conversation_store.replace.assert_called_once_with("sid1", truncated)
+
+    def test_empty_history_skips_writeback(self):
+        """Nothing to truncate — no replace call. Prevents phantom interrupt
+        markers on sessions that never produced an assistant message."""
+        from ui.web.server import _apply_heard_response
+        app = MagicMock()
+        app.conversation_store.get_history.return_value = []
+        assert _apply_heard_response(app, "sid1", ["hi"]) is False
+        app._truncate_assistant_for_interrupt.assert_not_called()
+        app.conversation_store.replace.assert_not_called()
+
+    def test_store_failure_is_swallowed(self):
+        """Turn teardown runs in a finally; a broken conversation_store
+        must not propagate out and crash _run."""
+        from ui.web.server import _apply_heard_response
+        app = MagicMock()
+        app.conversation_store.get_history.side_effect = RuntimeError("db down")
+        assert _apply_heard_response(app, "sid1", ["hi"]) is False

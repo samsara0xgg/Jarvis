@@ -70,6 +70,41 @@ async def _send_ctrl(ws: Any, payload: dict) -> None:
         LOGGER.debug("ws send_text failed: %s", exc)
 
 
+def _apply_heard_response(
+    jarvis_app: Any,
+    session_id: str,
+    played_texts: list[str],
+) -> bool:
+    """Write the heard-only assistant message back to conversation_store.
+
+    Fetches the current history, calls
+    ``JarvisApp._truncate_assistant_for_interrupt`` to shrink the last
+    assistant message to what the user actually heard (plus an interrupt
+    marker), and replaces the store entry. Returns True on success.
+    Logs and returns False on any failure so an unwritable store doesn't
+    crash the turn teardown.
+    """
+    try:
+        history = jarvis_app.conversation_store.get_history(session_id) or []
+        if not history:
+            return False
+        truncated = jarvis_app._truncate_assistant_for_interrupt(
+            history, played_texts,
+        )
+        jarvis_app.conversation_store.replace(session_id, truncated)
+        LOGGER.info(
+            "[chat] WP5 heard_response: %d sentence(s) written to store",
+            len(played_texts),
+        )
+        return True
+    except Exception as exc:
+        LOGGER.warning(
+            "[chat] WP5 conversation_store writeback failed: %s",
+            exc, exc_info=True,
+        )
+        return False
+
+
 def _compute_played_texts(
     sentence_results: list[dict],
     abort_event: threading.Event,
@@ -552,16 +587,17 @@ def create_app(jarvis_app: Any) -> FastAPI:
                             "[chat] stream future raised: %s", exc, exc_info=True,
                         )
                 LOGGER.info("[chat] all stream futures drained, turn_id=%s", turn_id)
-                # WP5: if this turn was aborted mid-playback, reconstruct
-                # heard_response from sentence_results and hand to Step 3
-                # (conversation_store writeback) via closure-scoped played_texts.
+                # WP5: if this turn was aborted mid-playback, shrink the last
+                # assistant message in conversation_store so the next LLM
+                # turn only sees what the user actually heard. Mirrors the
+                # CLI path (JarvisApp._process_turn →
+                # _truncate_assistant_for_interrupt).
                 played_texts: list[str] = _compute_played_texts(
                     sentence_results, abort_event, sample_rate=32000,
                 )
                 if abort_event.is_set() and played_texts:
-                    LOGGER.info(
-                        "[chat] WP5 heard_response: %d sentence(s) heard",
-                        len(played_texts),
+                    _apply_heard_response(
+                        jarvis_app, req.session_id, played_texts,
                     )
                 if ws_client_for_turn is not None:
                     try:
