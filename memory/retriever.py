@@ -62,6 +62,11 @@ class MemoryRetriever:
 
     def __init__(self, store: MemoryStore) -> None:
         self.store = store
+        # Snapshot of the most recent retrieve() result. Consumed by trace v3
+        # to populate memory_query_ids without re-running the search. Reset
+        # by callers (e.g. jarvis._process_turn_inner) before each query so
+        # stale hits never leak into a turn that didn't actually query.
+        self.last_hits: list[dict[str, Any]] = []
 
     def retrieve(
         self,
@@ -177,6 +182,7 @@ class MemoryRetriever:
             "Retrieved %d memories for user %s (from %d candidates)",
             len(results), user_id, len(candidates),
         )
+        self.last_hits = results
         return results
 
     def find_similar(

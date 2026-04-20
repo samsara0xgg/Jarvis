@@ -84,6 +84,10 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     app._turn_counter: dict[str, int] = {}
     app._last_trace_id = None
     app._pending_outcome_update = None
+    # Trace v3: per-launch session id (separate from conversation_store
+    # session). Real __init__ uses datetime + uuid; tests only need any
+    # stable string.
+    app._app_session_id = "test_session_0001"
 
     # ── prompt_version (16-char SHA prefix of personality.py) ──
     try:
@@ -99,6 +103,7 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     # ── Voice-path per-turn captures (always None on text path) ──
     app._last_asr_confidence = None
     app._last_vad_duration_ms = None
+    app._last_asr_ms = None
     app._first_audio_at = None
 
     # ── Subsystems replaced with MagicMocks ──
@@ -184,7 +189,10 @@ class TestJarvisTraceV3:
         assert row["user_text"] == "你好"
         assert row["trigger_source"] == "web_text"
         assert row["end_reason"] == "success"
-        assert row["session_id"] == "test_session_1"
+        # trace.session_id is the per-launch _app_session_id, NOT the
+        # conversation_store session_id passed to handle_text. The two
+        # decoupled intentionally — see _flush_trace docstring.
+        assert row["session_id"] == app._app_session_id
         assert row["prompt_version"] is not None
         assert len(row["prompt_version"]) == 16
 
@@ -197,7 +205,9 @@ class TestJarvisTraceV3:
         app.handle_text("第一轮", session_id="sess_stable")
         app.handle_text("第二轮", session_id="sess_stable")
 
-        rows = app.trace_log.query_for_debug(hours=1, session_id="sess_stable")
+        # All trace rows now key on app._app_session_id, not the conversation
+        # session passed by handle_text.
+        rows = app.trace_log.query_for_debug(hours=1, session_id=app._app_session_id)
         assert len(rows) == 2
         versions = {r["prompt_version"] for r in rows}
         assert len(versions) == 1, f"prompt_version changed between turns: {versions}"
@@ -212,7 +222,7 @@ class TestJarvisTraceV3:
             with pytest.raises(RuntimeError, match="boom"):
                 app.handle_text("触发异常", session_id="sess_err")
 
-        rows = app.trace_log.query_for_debug(hours=1, session_id="sess_err")
+        rows = app.trace_log.query_for_debug(hours=1, session_id=app._app_session_id)
         assert len(rows) >= 1
         row = rows[0]
         assert row["end_reason"] == "error"
@@ -228,7 +238,7 @@ class TestJarvisTraceV3:
         """
         app.handle_text("查个东西", session_id="sess_ttfs")
 
-        rows = app.trace_log.query_for_debug(hours=1, session_id="sess_ttfs")
+        rows = app.trace_log.query_for_debug(hours=1, session_id=app._app_session_id)
         assert len(rows) >= 1
         assert rows[0]["ttfs_ms"] is None
 
@@ -243,7 +253,7 @@ class TestJarvisTraceV3:
         app.handle_text("你好", session_id="sess_lag")   # turn N
         app.handle_text("好的", session_id="sess_lag")   # turn N+1 → +1 signal
 
-        rows = app.trace_log.query_for_debug(hours=1, session_id="sess_lag")
+        rows = app.trace_log.query_for_debug(hours=1, session_id=app._app_session_id)
         # query_for_debug returns newest-first; reverse for chronological order
         rows_by_text = {r["user_text"]: r for r in rows}
         assert "你好" in rows_by_text, f"turn N row missing; rows: {[r['user_text'] for r in rows]}"
@@ -268,7 +278,7 @@ class TestJarvisTraceV3:
         app.handle_text("你好", session_id="sess_long")
         app.handle_text("谢谢你刚才说的那件事，其实我有别的疑问", session_id="sess_long")
 
-        rows = app.trace_log.query_for_debug(hours=1, session_id="sess_long")
+        rows = app.trace_log.query_for_debug(hours=1, session_id=app._app_session_id)
         rows_by_text = {r["user_text"]: r for r in rows}
         assert "你好" in rows_by_text
 
