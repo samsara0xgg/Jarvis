@@ -23,6 +23,7 @@ from jarvis import JarvisApp
 class TestPlayedTextsTracking:
     def _make_pipeline(self, play_delay: float = 0.0) -> TTSPipeline:
         engine = MagicMock(spec=TTSEngine)
+        engine.engine_name = "edge-tts"
         # synth_to_file returns (filepath, deletable=False)
         engine.synth_to_file = MagicMock(return_value=("/tmp/fake.mp3", False))
 
@@ -72,6 +73,7 @@ class TestPlayedTextsTracking:
     def test_played_texts_after_partial_playback(self):
         # Sentence 1 plays fast, sentence 2 slow → abort during sentence 2.
         engine = MagicMock(spec=TTSEngine)
+        engine.engine_name = "edge-tts"
         engine.synth_to_file = MagicMock(return_value=("/tmp/fake.mp3", False))
         call_count = {"i": 0}
 
