@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 import time
 from typing import Any
 
@@ -59,6 +60,14 @@ class LLMClient:
         self._base_url: str | None = None
         self._api_key: str | None = None
 
+        # Sticky-routing ID for xAI automatic prompt caching. Without this
+        # header the gateway load-balances across replicas; each replica has
+        # its own local cache, so prefix hit rate drops to ~50-80% in
+        # practice (see 2026-04-19 probes). A stable UUID pins all requests
+        # from this process to one replica and lifts hits to ~100%.
+        # App-level UUID (single user): highest cache utilisation.
+        self._grok_conv_id = str(uuid.uuid4())
+
         if self.provider == "openai":
             default_preset = llm_config.get("default_preset", "")
             if default_preset and default_preset in self._presets:
@@ -100,6 +109,14 @@ class LLMClient:
             return os.environ.get("GROQ_API_KEY")
         return os.environ.get("OPENAI_API_KEY")
 
+    def _xai_cache_headers(self) -> dict[str, str]:
+        """Sticky-routing header for xAI so repeated requests land on the
+        same replica and its prompt cache actually hits. No-op on other
+        OpenAI-compat providers (Groq / OpenAI native / DeepSeek etc.)."""
+        if self._base_url and "x.ai" in self._base_url:
+            return {"x-grok-conv-id": self._grok_conv_id}
+        return {}
+
     def _apply_preset(self, name: str) -> None:
         """Apply a named model preset. Resets ``_client`` to force re-init.
 
@@ -114,6 +131,14 @@ class LLMClient:
                 f"Unknown preset '{name}'. Available: {list(self._presets)}"
             )
         preset = self._presets[name]
+
+        # Optional provider switch — lets presets like "opus" swap between
+        # OpenAI-compatible clients and the native Anthropic SDK at runtime.
+        # If absent, keep current provider.
+        new_provider = preset.get("provider")
+        if new_provider:
+            self.provider = str(new_provider).strip().lower()
+
         self.model = str(preset.get("model", self.model))
         base_url = preset.get("base_url") or ""
         self._base_url = base_url or None
@@ -126,9 +151,13 @@ class LLMClient:
         else:
             self._api_key = self._resolve_api_key("", base_url)
 
-        self._client = None  # force OpenAI client re-init
+        # Reset client so next call re-inits the correct SDK for self.provider
+        self._client = None
         self.active_preset = name
-        self.logger.info("Applied preset '%s': model=%s base_url=%s", name, self.model, self._base_url)
+        self.logger.info(
+            "Applied preset '%s': provider=%s model=%s base_url=%s",
+            name, self.provider, self.model, self._base_url,
+        )
 
     def switch_model(self, preset_name: str) -> str:
         """Switch to a named preset at runtime.
@@ -357,6 +386,9 @@ class LLMClient:
             }
             if openai_tools:
                 kwargs["tools"] = openai_tools
+            headers = self._xai_cache_headers()
+            if headers:
+                kwargs["extra_headers"] = headers
 
             self.logger.info("Sending request to OpenAI (%s)", self.model)
             response = self._call_with_retry(lambda: client.chat.completions.create(**kwargs))
@@ -924,6 +956,9 @@ class LLMClient:
         }
         if openai_tools:
             kwargs["tools"] = openai_tools
+        headers = self._xai_cache_headers()
+        if headers:
+            kwargs["extra_headers"] = headers
 
         self.logger.info("Streaming request to OpenAI (%s)", self.model)
 
