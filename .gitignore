@@ -30,6 +30,7 @@ logs/
 # 音频
 *.wav
 *.mp3
+*.pcm
 *.flac
 
 # 机密 (API keys, 环境变量文件)
