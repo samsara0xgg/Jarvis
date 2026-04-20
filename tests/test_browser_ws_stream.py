@@ -56,17 +56,46 @@ class TestBrowserWSPlayer:
             mod.asyncio.run_coroutine_threadsafe = original
             loop.close()
 
-    def test_played_samples_monotonic(self):
+    def test_played_samples_reads_cursor(self):
+        """played_samples must reflect the browser AudioWorklet cursor
+        (what was actually played) — not the encoded-queue count, which
+        over-reports by up to _MAX_AHEAD_SECONDS of buffered-ahead PCM."""
         from ui.web.browser_ws_player import BrowserWSPlayer
         loop = asyncio.new_event_loop()
         try:
+            cursor_value = 0
+
+            def get_cursor() -> int:
+                return cursor_value
+
             ws = MagicMock()
-            player = BrowserWSPlayer(ws=ws, sentence_index=0, loop=loop, pace=False)
+            player = BrowserWSPlayer(
+                ws=ws, sentence_index=0, loop=loop, pace=False,
+                get_cursor=get_cursor,
+            )
             assert player.played_samples == 0
+            cursor_value = 4800
+            assert player.played_samples == 4800
+            # Encode path must not mutate played_samples.
             player.write(np.zeros(100, dtype=np.float32))
-            assert player.played_samples == 100
-            player.write(np.zeros(50, dtype=np.float32))
-            assert player.played_samples == 150
+            assert player.played_samples == 4800
+            cursor_value = 7200
+            assert player.played_samples == 7200
+        finally:
+            loop.close()
+
+    def test_played_samples_no_cursor_returns_zero(self):
+        """Without a cursor callable (tests/legacy), played_samples == 0.
+        WP5 falls through to L3 (whole-sentence unheard) rather than
+        trusting a fake counter."""
+        from ui.web.browser_ws_player import BrowserWSPlayer
+        loop = asyncio.new_event_loop()
+        try:
+            player = BrowserWSPlayer(
+                ws=MagicMock(), sentence_index=0, loop=loop, pace=False,
+            )
+            player.write(np.zeros(100, dtype=np.float32))
+            assert player.played_samples == 0
         finally:
             loop.close()
 

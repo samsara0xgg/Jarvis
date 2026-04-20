@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import struct
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -69,12 +69,18 @@ class BrowserWSPlayer:
         loop: asyncio.AbstractEventLoop,
         pace: bool = False,
         abort_event: Any = None,
+        get_cursor: Callable[[], int] | None = None,
     ) -> None:
         self._ws = ws
         self._idx = sentence_index
         self._loop = loop
         self._header = struct.pack("<H", sentence_index)
-        self.played_samples: int = 0  # monotonic, same API as AudioStreamPlayer
+        # played_samples is turn-cumulative, read from the browser AudioWorklet
+        # cursor via get_cursor. Matches AudioStreamPlayer semantics (monotonic
+        # across sentences in the turn), which is what WP5 truncation expects.
+        # Without get_cursor (tests/legacy), returns 0 — WP5 will fall through
+        # to L3 (whole-sentence unheard) rather than report encoded-but-unplayed.
+        self._get_cursor = get_cursor
         self._pace = pace  # deprecated — retained for tests; never True in prod
         self._chunks_sent = 0
         self._pace_start: float | None = None
@@ -97,8 +103,22 @@ class BrowserWSPlayer:
             return None
         pcm_i16 = (np.clip(pcm_f32, -1.0, 1.0) * 32767.0).astype("<i2")
         self._chunks_sent += 1
-        self.played_samples += pcm_i16.size
         return self._header + pcm_i16.tobytes()
+
+    @property
+    def played_samples(self) -> int:
+        """Samples the browser has actually played (turn-cumulative).
+
+        Read from the AudioWorklet cursor via ``get_cursor``. Returns 0 if
+        no cursor callable was supplied — callers that need WP5 truncation
+        must wire one up, else the in-progress sentence falls through to
+        L3 (whole-sentence unheard)."""
+        if self._get_cursor is None:
+            return 0
+        try:
+            return int(self._get_cursor())
+        except Exception:
+            return 0
 
     async def write_async(self, pcm_f32: np.ndarray) -> None:
         """Preferred PCM path. Non-blocking on the MiniMax side: encodes
