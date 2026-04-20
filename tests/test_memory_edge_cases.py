@@ -163,7 +163,7 @@ class TestProfileRebuild:
         mgr.store.add_memory(
             user_id="u1", content="用户 周五要交报告",
             category="task", importance=8.0,
-            time_ref="2026-04-10", expires="2026-04-11",
+            time_ref="2026-04-10", expires="2026-12-31",
             embedding=_encode("用户 周五要交报告"),
         )
         mgr._rebuild_profile("u1")

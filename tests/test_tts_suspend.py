@@ -21,6 +21,7 @@ def engine_with_proc():
         e._play_lock = __import__("threading").Lock()
         e._paused = False
         e._platform = "Darwin"
+        e._stream_player = None
         e.logger = MagicMock()
     return e
 
