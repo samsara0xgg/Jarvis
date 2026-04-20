@@ -44,7 +44,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import sounddevice as sd
@@ -274,6 +274,7 @@ class AudioStreamPlayer:
         blocksize: int = 0,
         latency: str | float = "low",
         device: Any | None = None,
+        on_first_chunk: Callable[[], None] | None = None,
     ) -> None:
         if channels != 1:
             raise NotImplementedError("only mono supported for now")
@@ -303,6 +304,12 @@ class AudioStreamPlayer:
         # from the ring. External readers (WP5 truncation) use this to
         # compute fraction-played.
         self._played_samples: int = 0
+        # First-chunk callback — fires once per TTS turn the first time real
+        # (non-silent) audio is read from the ring in _callback. Caller must
+        # invoke reset_first_chunk() at the start of each new turn. Storing
+        # both here avoids closure allocation on every callback invocation.
+        self._on_first_chunk: Callable[[], None] | None = on_first_chunk
+        self._first_chunk_fired: bool = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -471,6 +478,22 @@ class AudioStreamPlayer:
         Resets only on stop(). Used by WP5 truncation."""
         return self._played_samples
 
+    def reset_first_chunk(self) -> None:
+        """Reset the first-chunk fired flag so the callback fires again.
+
+        Must be called at the start of each new TTS turn, before ``write()``
+        begins feeding samples. If not called, the callback will never fire
+        for the second (and subsequent) turns because ``_first_chunk_fired``
+        remains ``True`` from the previous turn.
+
+        It is the caller's responsibility to leave ``ttfs_ms = None`` for
+        turns where TTS is never invoked (farewell shortcut, memory_l1 direct
+        answers). In those cases ``reset_first_chunk`` may still be called
+        safely — the callback simply will not fire because ``write()`` is
+        never called, so ``actual`` is always 0.
+        """
+        self._first_chunk_fired = False
+
     # ------------------------------------------------------------------
     # Callback — runs on PortAudio thread, keep it tight
     # ------------------------------------------------------------------
@@ -495,4 +518,20 @@ class AudioStreamPlayer:
         # Read-into zero-pads on underrun, so view is always fully written.
         actual = self._ring.read_into(view, frames)
         self._played_samples += actual  # only real samples, not zero-padded
+
+        # Fire the first-chunk callback the first time real (non-silent) TTS
+        # samples are copied from the ring. ``actual > 0`` guarantees we skip
+        # PortAudio warm-up calls that drain into an empty ring.
+        # Audio-thread safety: CPython attribute assignment is atomic under the
+        # GIL — no explicit lock needed. We do ONE thing: check flag, call
+        # user callable, flip flag. No logging/IO here; even LOGGER.exception
+        # allocates and can block, which would stall the audio thread. We
+        # silently swallow user-side exceptions to protect the stream.
+        if actual > 0 and not self._first_chunk_fired and self._on_first_chunk is not None:
+            try:
+                self._on_first_chunk()
+            except Exception:  # noqa: BLE001
+                pass  # never crash the audio thread due to caller bugs
+            self._first_chunk_fired = True
+
         self._gain.apply(view)

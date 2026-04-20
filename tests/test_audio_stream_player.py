@@ -373,3 +373,122 @@ class TestAudioStreamPlayer:
         p.write(np.ones(1024, dtype=np.float32), wait_if_full=False)
         assert not p._abort.is_set()
         assert p._ring.available_read() == 1024
+
+    # ------------------------------------------------------------------
+    # on_first_chunk callback tests
+    # ------------------------------------------------------------------
+
+    def test_first_chunk_fires_on_first_real_audio(self, mock_sd):
+        """Callback fires once when _callback reads non-silent samples."""
+        fired = []
+        p = AudioStreamPlayer(
+            sample_rate=48000, ring_seconds=1.0,
+            on_first_chunk=lambda: fired.append(1),
+        )
+        p.start()
+        p.reset_first_chunk()
+        p.write(np.ones(256, dtype=np.float32), wait_if_full=False)
+
+        outdata = np.zeros((256, 1), dtype=np.float32)
+        status = MagicMock()
+        status.output_underflow = False
+        p._callback(outdata, 256, None, status)
+
+        assert fired == [1], "callback must fire exactly once on first real chunk"
+
+    def test_first_chunk_no_fire_without_write(self, mock_sd):
+        """Constraint 4: no-TTS turn — callback never fires if write() is never called.
+
+        In jarvis, turns that skip TTS (farewell shortcut, memory_l1 direct answers)
+        must leave ttfs_ms = None. This test verifies the player never fires the hook
+        when the ring stays empty, so the caller's None is not overwritten.
+        """
+        fired = []
+        p = AudioStreamPlayer(
+            sample_rate=48000, ring_seconds=1.0,
+            on_first_chunk=lambda: fired.append(1),
+        )
+        p.start()
+        p.reset_first_chunk()
+        # Do NOT call write() — simulates a no-TTS turn.
+
+        # Drive several empty callback invocations (ring stays empty → actual == 0).
+        outdata = np.zeros((256, 1), dtype=np.float32)
+        status = MagicMock()
+        status.output_underflow = False
+        for _ in range(4):
+            p._callback(outdata, 256, None, status)
+
+        assert fired == [], "callback must NOT fire when no audio was written"
+
+    def test_reset_allows_callback_to_fire_again(self, mock_sd):
+        """Per-turn reset: after reset_first_chunk(), the callback fires again."""
+        fired = []
+        p = AudioStreamPlayer(
+            sample_rate=48000, ring_seconds=1.0,
+            on_first_chunk=lambda: fired.append(1),
+        )
+        p.start()
+        outdata = np.zeros((256, 1), dtype=np.float32)
+        status = MagicMock()
+        status.output_underflow = False
+
+        # Turn 1
+        p.reset_first_chunk()
+        p.write(np.ones(256, dtype=np.float32), wait_if_full=False)
+        p._callback(outdata, 256, None, status)
+        assert len(fired) == 1, "turn 1: fired once"
+
+        # Turn 2 — without reset the flag stays True; with reset it clears.
+        p.reset_first_chunk()
+        p.write(np.ones(256, dtype=np.float32), wait_if_full=False)
+        p._callback(outdata, 256, None, status)
+        assert len(fired) == 2, "turn 2: fired again after reset"
+
+    def test_first_chunk_fires_only_once_per_turn(self, mock_sd):
+        """The callback fires exactly once even across multiple _callback invocations."""
+        fired = []
+        p = AudioStreamPlayer(
+            sample_rate=48000, ring_seconds=1.0,
+            on_first_chunk=lambda: fired.append(1),
+        )
+        p.start()
+        p.reset_first_chunk()
+
+        status = MagicMock()
+        status.output_underflow = False
+
+        # Write enough for three callback rounds.
+        p.write(np.ones(768, dtype=np.float32), wait_if_full=False)
+        for _ in range(3):
+            outdata = np.zeros((256, 1), dtype=np.float32)
+            p._callback(outdata, 256, None, status)
+
+        assert fired == [1], "callback must fire exactly once per turn regardless of chunk count"
+
+    def test_exception_in_callback_does_not_crash_audio_thread(self, mock_sd):
+        """A buggy on_first_chunk must not stall or crash the audio stream.
+
+        The player must keep producing audio (outdata filled correctly) even
+        when the user's callback raises an exception.
+        """
+        def bad_callback() -> None:
+            raise RuntimeError("user bug")
+
+        p = AudioStreamPlayer(
+            sample_rate=48000, ring_seconds=1.0,
+            on_first_chunk=bad_callback,
+        )
+        p.start()
+        p.reset_first_chunk()
+        p.write(np.ones(256, dtype=np.float32), wait_if_full=False)
+
+        outdata = np.zeros((256, 1), dtype=np.float32)
+        status = MagicMock()
+        status.output_underflow = False
+
+        # Must not raise; audio data must still be filled correctly.
+        p._callback(outdata, 256, None, status)
+        assert np.allclose(outdata[:, 0], 1.0), "audio output intact despite callback exception"
+        # Flag flipped — exception happened after try, so check it was set.
+        assert p._first_chunk_fired, "flag must be set even when callback raised"
