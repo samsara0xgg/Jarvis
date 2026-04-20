@@ -18,6 +18,21 @@ import { getApiClient } from '../core/api-client.js';
 
 // ── Command registry ──────────────────────────────────────────────────────────
 // Strict full-string regex (NO prefix match). Unmatched text → cloud LLM.
+// Commands with `action` go through main via IPC whitelist.
+// Commands with `local(arg)` execute directly in renderer (for live2d zoom etc).
+
+// Canonical case for model names (live2dManager.switchModel keys are case-sensitive).
+const MODEL_CANON = {
+    'hiyori_pro_zh': 'hiyori_pro_zh',
+    'natori_pro_zh': 'natori_pro_zh',
+    'mao': 'Mao',
+    'haru': 'Haru',
+    'rice': 'Rice',
+    'murasame_yukata': 'Murasame_Yukata',
+    'senko_normals': 'Senko_Normals',
+};
+const canonModel = (raw) => MODEL_CANON[String(raw || '').toLowerCase()] || raw;
+
 const LOCAL_COMMANDS = [
     { regex: /^(退出|quit|exit)$/i, action: 'quit', feedback: '✓ 再见，小月下线了' },
     { regex: /^(藏起来|消失一下|hide)$/i, action: 'hide', feedback: '✓ 已躲进菜单栏' },
@@ -26,11 +41,126 @@ const LOCAL_COMMANDS = [
     {
         regex: /^(?:模型|model)\s+(hiyori_pro_zh|natori_pro_zh|Mao|Haru|Rice|Murasame_Yukata|Senko_Normals)$/i,
         action: 'switchModel',
-        feedbackFn: (m) => `✓ 模型已切换到 ${m[1]}`,
+        argFn: (m) => canonModel(m[1]),
+        feedbackFn: (m) => `✓ 模型已切换到 ${canonModel(m[1])}`,
+    },
+    {
+        regex: /^(放大|zoom\s*in)$/i,
+        local: () => window.chatApp?.live2dManager?.zoomIn(),
+        feedback: '✓ 已放大',
+    },
+    {
+        regex: /^(缩小|zoom\s*out)$/i,
+        local: () => window.chatApp?.live2dManager?.zoomOut(),
+        feedback: '✓ 已缩小',
+    },
+    {
+        regex: /^(重置大小|reset\s*size|zoom\s*reset)$/i,
+        local: () => window.chatApp?.live2dManager?.zoomReset(),
+        feedback: '✓ 大小已重置',
+    },
+    {
+        regex: /^(居中|回来|center|recenter)$/i,
+        local: () => window.chatApp?.live2dManager?.centerModel(),
+        feedback: '✓ 已居中',
+    },
+    {
+        regex: /^(重置|reset)$/i,
+        local: () => window.chatApp?.live2dManager?.resetTransform(),
+        feedback: '✓ 已全部重置',
     },
 ];
 
-const PANEL_WIDTH = 420;
+// ── Slash-command palette (Claude Code style) ────────────────────────────────
+// Typing "/" opens an inline picker; each item either runs directly or — for
+// commands that take a pick-list argument — transitions the palette into a
+// second-level chooser (e.g. /model → model list).
+
+const MODEL_OPTIONS = [
+    { value: 'hiyori_pro_zh', label: 'Hiyori Pro' },
+    { value: 'natori_pro_zh', label: 'Natori Pro' },
+    { value: 'Mao', label: 'Mao' },
+    { value: 'Haru', label: 'Haru' },
+    { value: 'Rice', label: 'Rice' },
+    { value: 'Murasame_Yukata', label: 'Murasame Yukata' },
+    { value: 'Senko_Normals', label: 'Senko' },
+];
+
+const liveCall = (fn) => {
+    const live = window.chatApp?.live2dManager;
+    if (live) fn(live);
+};
+
+const SLASH_COMMANDS = [
+    {
+        name: 'model',
+        desc: 'Switch Live2D model',
+        picker: { placeholder: 'pick a model…', options: MODEL_OPTIONS },
+        run: (arg) => ({ kind: 'ipc', action: 'switchModel', arg, feedback: `✓ 模型已切换到 ${arg}` }),
+    },
+    { name: 'window', desc: 'Switch to window mode', run: () => ({ kind: 'ipc', action: 'toWindow', feedback: '✓ 已切到窗口模式' }) },
+    { name: 'pet', desc: 'Switch to pet (floating) mode', run: () => ({ kind: 'ipc', action: 'toPet', feedback: '✓ 已切到悬浮模式' }) },
+    { name: 'hide', desc: 'Hide into menu bar', run: () => ({ kind: 'ipc', action: 'hide', feedback: '✓ 已躲进菜单栏' }) },
+    { name: 'quit', desc: 'Quit Jarvis', run: () => ({ kind: 'ipc', action: 'quit', feedback: '✓ 再见，小月下线了' }) },
+    { name: 'zoom-in', desc: 'Zoom Live2D in (+4%)', run: () => ({ kind: 'local', fn: () => liveCall(m => m.zoomIn()), feedback: '✓ 已放大' }) },
+    { name: 'zoom-out', desc: 'Zoom Live2D out (-4%)', run: () => ({ kind: 'local', fn: () => liveCall(m => m.zoomOut()), feedback: '✓ 已缩小' }) },
+    { name: 'reset-size', desc: 'Reset Live2D scale to default', run: () => ({ kind: 'local', fn: () => liveCall(m => m.zoomReset()), feedback: '✓ 大小已重置' }) },
+    { name: 'center', desc: 'Recenter Live2D in window', run: () => ({ kind: 'local', fn: () => liveCall(m => m.centerModel()), feedback: '✓ 已居中' }) },
+    { name: 'reset', desc: 'Reset Live2D scale + position', run: () => ({ kind: 'local', fn: () => liveCall(m => m.resetTransform()), feedback: '✓ 已全部重置' }) },
+    {
+        name: 'llm',
+        desc: 'Switch cloud LLM preset (fast / deep / ...)',
+        picker: {
+            placeholder: 'pick an LLM preset…',
+            prefetch: () => getApiClient().getLLMPresets().catch(() => {}),
+            getOptions: () => {
+                const data = getApiClient().getCachedLLMPresets();
+                return (data.presets || []).map((p) => ({
+                    value: p.name,
+                    label: `${p.name === data.active ? '● ' : '  '}${p.name} — ${p.model || ''}`,
+                }));
+            },
+        },
+        run: (arg) => ({
+            kind: 'local',
+            fn: () => {
+                getApiClient().switchLLM(arg)
+                    .then((data) => {
+                        window.petOverlay?.appendMessage?.({
+                            text: `✓ LLM ${data.message || 'switched'}`,
+                            role: 'system',
+                        });
+                    })
+                    .catch((err) => {
+                        window.petOverlay?.appendMessage?.({
+                            text: `LLM 切换失败：${err.message || err}`,
+                            role: 'system',
+                        });
+                    });
+            },
+            feedback: `→ 切换 LLM 到 ${arg}…`,
+        }),
+    },
+    {
+        name: 'emote',
+        desc: 'Trigger a motion/expression on current model',
+        picker: {
+            placeholder: 'pick a motion…',
+            getOptions: () => {
+                const live = window.chatApp?.live2dManager;
+                const groups = typeof live?.getMotionGroups === 'function' ? live.getMotionGroups() : [];
+                return groups.map((g) => ({ value: g, label: g }));
+            },
+        },
+        run: (arg) => ({
+            kind: 'local',
+            fn: () => { window.chatApp?.live2dManager?.live2dModel?.motion(arg); },
+            feedback: `✓ 触发动作 ${arg}`,
+        }),
+    },
+];
+
+const PANEL_WIDTH = 485;
 const PANEL_EDGE_MARGIN = 16;
 const MODEL_GAP = 16;
 const HISTORY_HYDRATE_MAX = 20;
@@ -46,6 +176,17 @@ class PetOverlay {
         this._resizeObserver = null;
         this._resizeHandler = null;
         this._messageListener = null;
+        // Drag-to-reposition state（session-only，Jarvis 重启复位）
+        this._userPositioned = false;
+        this._isDraggingPanel = false;
+        this._panelDragStart = null;
+        // Slash-command palette state
+        this._slashEl = null;
+        this._slashOpen = false;
+        this._slashMode = 'command'; // 'command' | 'picker'
+        this._slashActiveCmd = null;
+        this._slashItems = [];
+        this._slashIndex = 0;
     }
 
     // ── lifecycle ─────────────────────────────────────────────────────────────
@@ -72,6 +213,14 @@ class PetOverlay {
             window.jarvis.onToggleInputPanel(() => this.toggle());
         }
 
+        // win.on('hide') 通知：Jarvis 被隐藏时强制收面板，下次 ⌘Space restore
+        // 就是 closed → toggle open 的干净流程
+        if (window.jarvis && typeof window.jarvis.onCloseInputPanel === 'function') {
+            window.jarvis.onCloseInputPanel(() => {
+                if (this.isOpen) this.hide();
+            });
+        }
+
         // Sync with chatStream — when controller dispatches a custom event,
         // mirror the message into the panel (only when open, to keep
         // browser-only mode untouched and avoid DOM churn).
@@ -82,6 +231,41 @@ class PetOverlay {
             this.appendMessage({ text, role: isUser ? 'user' : 'ai' });
         };
         document.addEventListener('jarvis:message-added', this._messageListener);
+
+        // 面板拖动：左键在面板空白区按住拖。点到 input/button 不触发（保证打字 + send 正常）。
+        // 拖过一次 _userPositioned=true，后续 _positionPanel() 自动跳过 anchor 逻辑。
+        this.rootEl.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            const tag = e.target.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON') return;
+            const rect = this.rootEl.getBoundingClientRect();
+            this._isDraggingPanel = true;
+            this._panelDragStart = {
+                pointerX: e.clientX,
+                pointerY: e.clientY,
+                panelLeft: rect.left,
+                panelTop: rect.top,
+            };
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!this._isDraggingPanel || !this._panelDragStart) return;
+            const newLeft = this._panelDragStart.panelLeft + (e.clientX - this._panelDragStart.pointerX);
+            const newTop = this._panelDragStart.panelTop + (e.clientY - this._panelDragStart.pointerY);
+            const rect = this.rootEl.getBoundingClientRect();
+            const maxLeft = window.innerWidth - rect.width - PANEL_EDGE_MARGIN;
+            const maxTop = window.innerHeight - rect.height - PANEL_EDGE_MARGIN;
+            this.rootEl.style.left = `${Math.max(PANEL_EDGE_MARGIN, Math.min(newLeft, maxLeft))}px`;
+            this.rootEl.style.top = `${Math.max(PANEL_EDGE_MARGIN, Math.min(newTop, maxTop))}px`;
+        });
+
+        document.addEventListener('mouseup', (e) => {
+            if (e.button !== 0 || !this._isDraggingPanel) return;
+            this._isDraggingPanel = false;
+            this._panelDragStart = null;
+            this._userPositioned = true;
+        });
     }
 
     toggle() {
@@ -189,8 +373,52 @@ class PetOverlay {
         // Guard CJK IME — mirror existing messageInput behaviour.
         let composing = false;
         input.addEventListener('compositionstart', () => { composing = true; });
-        input.addEventListener('compositionend', () => { composing = false; });
+        input.addEventListener('compositionend', () => {
+            composing = false;
+            this._updateSlashMenu();
+        });
+        input.addEventListener('input', () => {
+            if (!composing) this._updateSlashMenu();
+        });
         input.addEventListener('keydown', (e) => {
+            // Slash palette takes precedence over submit when open
+            if (this._slashOpen && !composing && !e.isComposing) {
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    this._moveSlashIndex(1);
+                    return;
+                }
+                if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    this._moveSlashIndex(-1);
+                    return;
+                }
+                // Claude-Code-style back: ← returns from picker to command list.
+                // Drops the trailing space + any typed arg, keeps `/<name>` so
+                // the command is still the highlighted row.
+                if (e.key === 'ArrowLeft' && this._slashMode === 'picker' && this._slashActiveCmd) {
+                    e.preventDefault();
+                    this.inputEl.value = '/' + this._slashActiveCmd.name;
+                    this._slashIndex = 0;
+                    this._updateSlashMenu();
+                    return;
+                }
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    this._closeSlashMenu();
+                    return;
+                }
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    this._acceptSlashItem({ execute: false });
+                    return;
+                }
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    this._acceptSlashItem({ execute: true });
+                    return;
+                }
+            }
             if (e.key === 'Enter' && !composing && !e.isComposing) {
                 e.preventDefault();
                 this._handleSubmit();
@@ -199,12 +427,18 @@ class PetOverlay {
 
         inputRow.appendChild(input);
 
+        // Slash-command palette — absolutely positioned above input row
+        const slash = document.createElement('div');
+        slash.className = 'pet-overlay__slash';
+        slash.style.display = 'none';
+
         const hintStrip = document.createElement('div');
         hintStrip.className = 'pet-overlay__hint';
         hintStrip.innerHTML = '<span class="pet-overlay__hint-left"><kbd>⌘Space</kbd> close</span>'
-            + '<span class="pet-overlay__hint-right"><kbd>↵</kbd> send</span>';
+            + '<span class="pet-overlay__hint-right"><kbd>/</kbd> commands · <kbd>↵</kbd> send</span>';
 
         root.appendChild(list);
+        root.appendChild(slash);
         root.appendChild(inputRow);
         root.appendChild(hintStrip);
 
@@ -213,6 +447,7 @@ class PetOverlay {
         this.rootEl = root;
         this.listEl = list;
         this.inputEl = input;
+        this._slashEl = slash;
     }
 
     _wireEvents() {
@@ -252,10 +487,12 @@ class PetOverlay {
             const match = text.match(cmd.regex);
             if (!match) continue;
 
-            const arg = match[1] || null;
+            const arg = cmd.argFn ? cmd.argFn(match) : (match[1] || null);
             const feedback = cmd.feedbackFn ? cmd.feedbackFn(match) : cmd.feedback;
 
-            if (window.jarvis && typeof window.jarvis.runLocalCommand === 'function') {
+            if (typeof cmd.local === 'function') {
+                cmd.local(arg);
+            } else if (window.jarvis && typeof window.jarvis.runLocalCommand === 'function') {
                 window.jarvis.runLocalCommand(cmd.action, arg);
             } else {
                 // Browser-only fallback — we still show feedback so user sees
@@ -306,6 +543,196 @@ class PetOverlay {
         chatStream.scrollTop = chatStream.scrollHeight;
     }
 
+    // ── slash-command palette ────────────────────────────────────────────────
+
+    _updateSlashMenu() {
+        if (!this.inputEl || !this._slashEl) return;
+        const raw = this.inputEl.value;
+        if (!raw.startsWith('/')) {
+            this._closeSlashMenu();
+            return;
+        }
+        const body = raw.slice(1);
+        const spaceIdx = body.indexOf(' ');
+
+        if (spaceIdx === -1) {
+            // Command mode — filter full command list by prefix
+            this._slashMode = 'command';
+            this._slashActiveCmd = null;
+            const q = body.toLowerCase();
+            const matches = SLASH_COMMANDS.filter((c) =>
+                c.name.toLowerCase().includes(q) || (c.desc || '').toLowerCase().includes(q),
+            );
+            this._renderSlashItems(matches.map((c) => ({
+                name: '/' + c.name,
+                desc: c.desc,
+                kind: 'command',
+                cmd: c,
+            })));
+            return;
+        }
+
+        // Arg mode — only valid for commands with a picker
+        const cmdName = body.slice(0, spaceIdx).toLowerCase();
+        const argQuery = body.slice(spaceIdx + 1).toLowerCase();
+        const cmd = SLASH_COMMANDS.find((c) => c.name.toLowerCase() === cmdName);
+        if (!cmd || !cmd.picker) {
+            this._closeSlashMenu();
+            return;
+        }
+        this._slashMode = 'picker';
+        this._slashActiveCmd = cmd;
+
+        // Fire prefetch once per picker entry; re-render when it settles so
+        // async-populated caches (e.g. /llm presets) show up without requiring
+        // the user to keystroke again.
+        if (this._slashLastPrefetchCmd !== cmd && typeof cmd.picker.prefetch === 'function') {
+            this._slashLastPrefetchCmd = cmd;
+            Promise.resolve(cmd.picker.prefetch()).finally(() => {
+                if (this._slashOpen && this._slashActiveCmd === cmd) {
+                    this._updateSlashMenu();
+                }
+            });
+        }
+
+        const pickerOpts = typeof cmd.picker.getOptions === 'function'
+            ? cmd.picker.getOptions()
+            : (cmd.picker.options || []);
+        const opts = pickerOpts.filter((o) =>
+            o.value.toLowerCase().includes(argQuery)
+            || o.label.toLowerCase().includes(argQuery),
+        );
+        this._renderSlashItems(opts.map((o) => ({
+            name: o.value,
+            desc: o.label,
+            kind: 'picker',
+            option: o,
+        })));
+    }
+
+    _renderSlashItems(items) {
+        if (!this._slashEl) return;
+        this._slashItems = items;
+        if (items.length === 0) {
+            this._closeSlashMenu();
+            return;
+        }
+        this._slashOpen = true;
+        if (this._slashIndex >= items.length) this._slashIndex = 0;
+        if (this._slashIndex < 0) this._slashIndex = 0;
+
+        this._slashEl.innerHTML = '';
+        items.forEach((it, i) => {
+            const row = document.createElement('div');
+            row.className = 'pet-overlay__slash-item' + (i === this._slashIndex ? ' is-active' : '');
+            const name = document.createElement('span');
+            name.className = 'pet-overlay__slash-name';
+            name.textContent = it.name;
+            const desc = document.createElement('span');
+            desc.className = 'pet-overlay__slash-desc';
+            desc.textContent = it.desc || '';
+            row.appendChild(name);
+            row.appendChild(desc);
+            row.addEventListener('mousedown', (e) => {
+                e.preventDefault(); // keep focus on input
+                this._slashIndex = i;
+                this._acceptSlashItem({ execute: true });
+            });
+            row.addEventListener('mouseenter', () => {
+                this._slashIndex = i;
+                this._refreshSlashActive();
+            });
+            this._slashEl.appendChild(row);
+        });
+        this._slashEl.style.display = 'block';
+    }
+
+    _refreshSlashActive() {
+        if (!this._slashEl) return;
+        const rows = this._slashEl.querySelectorAll('.pet-overlay__slash-item');
+        rows.forEach((r, i) => r.classList.toggle('is-active', i === this._slashIndex));
+        const active = rows[this._slashIndex];
+        if (active && typeof active.scrollIntoView === 'function') {
+            active.scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    _moveSlashIndex(delta) {
+        if (!this._slashOpen || this._slashItems.length === 0) return;
+        const n = this._slashItems.length;
+        this._slashIndex = (this._slashIndex + delta + n) % n;
+        this._refreshSlashActive();
+    }
+
+    _acceptSlashItem({ execute }) {
+        if (!this._slashOpen || !this._slashItems[this._slashIndex]) return;
+        const it = this._slashItems[this._slashIndex];
+
+        if (it.kind === 'command') {
+            const cmd = it.cmd;
+            if (cmd.picker) {
+                // Transition to picker mode even on Enter (matches Claude Code flow)
+                this.inputEl.value = '/' + cmd.name + ' ';
+                this._slashIndex = 0;
+                this._updateSlashMenu();
+                return;
+            }
+            if (execute) {
+                this._runSlashCommand(cmd, null);
+                this.inputEl.value = '';
+                this._closeSlashMenu();
+            } else {
+                // Tab — complete the name, stay in menu
+                this.inputEl.value = '/' + cmd.name;
+                this._updateSlashMenu();
+            }
+            return;
+        }
+
+        if (it.kind === 'picker' && this._slashActiveCmd) {
+            if (execute) {
+                this._runSlashCommand(this._slashActiveCmd, it.option.value);
+                this.inputEl.value = '';
+                this._closeSlashMenu();
+            } else {
+                this.inputEl.value = '/' + this._slashActiveCmd.name + ' ' + it.option.value;
+                this._updateSlashMenu();
+            }
+        }
+    }
+
+    _runSlashCommand(cmd, arg) {
+        let result;
+        try {
+            result = cmd.run(arg);
+        } catch (err) {
+            this.appendMessage({ text: `命令执行失败：${err.message || err}`, role: 'system' });
+            return;
+        }
+        if (!result) return;
+        if (result.kind === 'ipc') {
+            if (window.jarvis?.runLocalCommand) {
+                window.jarvis.runLocalCommand(result.action, result.arg ?? null);
+            }
+        } else if (result.kind === 'local' && typeof result.fn === 'function') {
+            result.fn();
+        }
+        if (result.feedback) {
+            this.appendMessage({ text: result.feedback, role: 'system' });
+            this._pushSystemToChatStream(result.feedback);
+        }
+    }
+
+    _closeSlashMenu() {
+        this._slashOpen = false;
+        this._slashMode = 'command';
+        this._slashActiveCmd = null;
+        this._slashLastPrefetchCmd = null;
+        this._slashItems = [];
+        this._slashIndex = 0;
+        if (this._slashEl) this._slashEl.style.display = 'none';
+    }
+
     // ── hydration / sync ──────────────────────────────────────────────────────
 
     _hydrateFromChatStream() {
@@ -340,6 +767,7 @@ class PetOverlay {
 
     _positionPanel() {
         if (!this.rootEl) return;
+        if (this._userPositioned) return;  // 用户拖过，尊重他的位置，不再 anchor 模型
 
         const rect = this.rootEl.getBoundingClientRect();
         const panelW = rect.width || PANEL_WIDTH;
@@ -424,3 +852,8 @@ class PetOverlay {
 export const petOverlay = new PetOverlay();
 export { PetOverlay };
 export default petOverlay;
+
+// Debug hook: let non-module scripts (live2d.js) push messages into the panel
+if (typeof window !== 'undefined') {
+    window.petOverlay = petOverlay;
+}

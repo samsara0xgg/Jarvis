@@ -92,6 +92,12 @@ class UIController {
             // aggregates across components and flips setIgnoreMouseEvents.
             document.addEventListener('mousemove', (e) => {
                 const live2d = window.chatApp?.live2dManager;
+                // 拖动中保持 hover=true，否则光标一离开模型边界就会触发
+                // setIgnoreMouseEvents(true)，拖动立即断线
+                if (live2d && live2d._isDragging) {
+                    window.jarvis.updateHover('live2d', true);
+                    return;
+                }
                 const hit = live2d && typeof live2d.isHitOnModel === 'function'
                     ? live2d.isHitOnModel(e.clientX, e.clientY)
                     : false;
@@ -103,6 +109,36 @@ class UIController {
             if (typeof window.jarvis.onSwitchModel === 'function') {
                 window.jarvis.onSwitchModel((name) => {
                     this.switchLive2DModelByName(name);
+                });
+            }
+
+            // ⌘⇧→/⌘⇧← 跳屏：保持模型在新屏上的相对比例位置（原右上角还在右上角）
+            // main 已把 setOpacity(0)，所以要先在新尺寸重绘 PIXI + 重定位模型，
+            // 两个 rAF 确认新画面上屏，才通知 main setOpacity(1)。这样跨屏没闪烁。
+            if (typeof window.jarvis.onDisplayChanged === 'function') {
+                window.jarvis.onDisplayChanged((payload) => {
+                    const live2d = window.chatApp?.live2dManager;
+                    if (!live2d) return;
+                    // 先把 PIXI renderer resize 到新屏尺寸（否则 native window.resize
+                    // 事件未必在 IPC 之前到达，模型可能先在旧 canvas 上重定位）
+                    if (live2d.live2dApp?.renderer && payload?.newBounds) {
+                        live2d.live2dApp.renderer.resize(
+                            payload.newBounds.width,
+                            payload.newBounds.height,
+                        );
+                    }
+                    if (payload && typeof live2d.applyProportionalPosition === 'function') {
+                        live2d.applyProportionalPosition(payload.oldBounds, payload.newBounds);
+                    } else if (typeof live2d.centerModel === 'function') {
+                        live2d.centerModel();
+                    }
+                    requestAnimationFrame(() => {
+                        requestAnimationFrame(() => {
+                            if (typeof window.jarvis.sendDisplayRendered === 'function') {
+                                window.jarvis.sendDisplayRendered();
+                            }
+                        });
+                    });
                 });
             }
         }
@@ -117,6 +153,10 @@ class UIController {
             // eslint-disable-next-line no-console
             console.warn('[pet-overlay] init failed:', err);
         }
+
+        // 自动拨号连接 —— Pet mode 下用户见不到拨号按钮，应该开箱即用。
+        // fire-and-forget，handleConnect 内部处理错误状态。
+        this.handleConnect();
     }
 
     switchLive2DModelByName(name) {
@@ -534,3 +574,8 @@ class UIController {
 
 export const uiController = new UIController();
 export { UIController };
+
+// Debug hook: let non-module scripts (live2d.js) reach the controller
+if (typeof window !== 'undefined') {
+    window.uiController = uiController;
+}

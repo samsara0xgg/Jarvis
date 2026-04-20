@@ -1510,14 +1510,14 @@ body.pet-mode #live2d-stage {
   position: fixed;
   top: 100px;
   left: 100px;
-  width: 420px;
+  width: 485px;
   max-width: calc(100vw - 32px);
-  min-height: 160px;
+  min-height: 185px;
   display: none;
   flex-direction: column;
-  padding: 12px;
+  padding: 14px;
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.29);
   backdrop-filter: blur(30px) saturate(190%);
   -webkit-backdrop-filter: blur(30px) saturate(190%);
   border: 0.5px solid rgba(255, 255, 255, 0.22);
@@ -1580,9 +1580,9 @@ body.pet-mode #live2d-stage {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   padding: 4px 4px 8px 4px;
-  max-height: 260px;
+  max-height: 300px;
   overflow-y: auto;
   overflow-x: hidden;
   /* Fog the top — fades top 30% of visible list area */
@@ -1616,9 +1616,9 @@ body.pet-mode #live2d-stage {
 
 .pet-overlay__bubble {
   max-width: 82%;
-  padding: 8px 14px;
-  border-radius: 12px;
-  font-size: 14px;
+  padding: 10px 16px;
+  border-radius: 14px;
+  font-size: 16px;
   line-height: 1.5;
   word-wrap: break-word;
   white-space: pre-wrap;
@@ -1649,7 +1649,63 @@ body.pet-mode #live2d-stage {
 /* Secondary-text example (reserved hook for timestamps / meta) */
 .pet-overlay__meta {
   color: rgba(29, 29, 31, 0.6);
-  font-size: 11px;
+  font-size: 13px;
+}
+
+/* ── Slash-command palette (Claude Code style) ─────────────────── */
+.pet-overlay__slash {
+  position: relative;
+  z-index: 2;
+  margin-top: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.26);
+  border: 0.5px solid rgba(255, 255, 255, 0.22);
+  box-shadow:
+    0 6px 24px rgba(0, 0, 0, 0.10),
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.30);
+  padding: 4px;
+  font-size: 14px;
+  line-height: 1.35;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
+}
+
+.pet-overlay__slash::-webkit-scrollbar { width: 4px; }
+.pet-overlay__slash::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 2px;
+}
+
+.pet-overlay__slash-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #1d1d1f;
+  transition: background 120ms ease-out;
+}
+
+.pet-overlay__slash-item.is-active {
+  background: rgba(255, 107, 157, 0.18);   /* coral highlight */
+}
+
+.pet-overlay__slash-name {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  font-weight: 600;
+  color: #1d1d1f;
+  flex-shrink: 0;
+}
+
+.pet-overlay__slash-desc {
+  color: rgba(29, 29, 31, 0.6);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Input row ──────────────────────────────────────────────────── */
@@ -1677,9 +1733,9 @@ body.pet-mode #live2d-stage {
   background: transparent;
   border: none;
   outline: none;
-  padding: 10px 12px;
+  padding: 12px 14px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.5;
   color: #1d1d1f;
   caret-color: #ff6b9d;   /* coral caret — signature accent */
@@ -1701,7 +1757,7 @@ body.pet-mode #live2d-stage {
   padding: 6px 4px 0 4px;
   opacity: 0.4;
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   color: #1d1d1f;
   user-select: none;
   pointer-events: none;
@@ -1709,7 +1765,7 @@ body.pet-mode #live2d-stage {
 
 .pet-overlay__hint kbd {
   font-family: inherit;
-  font-size: 10.5px;
+  font-size: 12px;
   padding: 1px 4px;
   border-radius: 3px;
   background: rgba(0, 0, 0, 0.06);
@@ -1767,5 +1823,15 @@ body.pet-mode #live2d-stage {
   .pet-overlay__hint kbd {
     background: rgba(255, 255, 255, 0.08);
     border-color: rgba(255, 255, 255, 0.12);
+  }
+  .pet-overlay__slash {
+    background: rgba(28, 28, 30, 0.55);
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+  .pet-overlay__slash-item { color: #f5f5f7; }
+  .pet-overlay__slash-name { color: #f5f5f7; }
+  .pet-overlay__slash-desc { color: rgba(255, 255, 255, 0.55); }
+  .pet-overlay__slash-item.is-active {
+    background: rgba(255, 107, 157, 0.22);
   }
 }

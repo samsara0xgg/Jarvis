@@ -27,6 +27,13 @@
 </head>
 
 <body>
+    <script>
+        // Electron Pet mode 启动时立即应用 body.pet-mode class（preload 已在
+        // window.jarvis.initialMode 上暴露同步值），避免 window-mode UI 闪过。
+        if (window.jarvis && window.jarvis.initialMode === 'pet') {
+            document.body.classList.add('pet-mode');
+        }
+    </script>
     <!-- 背景容器 -->
     <div class="background-container" id="backgroundContainer">
         <div class="background-overlay"></div>
