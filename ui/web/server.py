@@ -69,6 +69,53 @@ async def _send_ctrl(ws: Any, payload: dict) -> None:
     except Exception as exc:
         LOGGER.debug("ws send_text failed: %s", exc)
 
+
+def _compute_played_texts(
+    sentence_results: list[dict],
+    abort_event: threading.Event,
+    sample_rate: int,
+) -> list[str]:
+    """Reconstruct what the user actually heard when a turn was aborted.
+
+    Mirrors ``TTSPipeline.abort``'s WP5 logic for the Web path. Full-played
+    sentences contribute their whole text; the one sentence that was
+    mid-playback when abort landed is truncated via ``_wp5_truncate`` using
+    the browser-reported playback cursor. Returns [] if the turn completed
+    normally (no abort).
+
+    Args:
+        sentence_results: Per-sentence entries from ``_stream_one`` finally,
+            each ``{"idx", "text", "result": PlaybackResult | None}``.
+        abort_event: Turn-level abort flag; [] is returned when unset.
+        sample_rate: Player output sample rate (32 kHz for Web).
+    """
+    if not abort_event.is_set() or not sentence_results:
+        return []
+    from core.tts import _wp5_truncate
+
+    played: list[str] = []
+    for entry in sorted(sentence_results, key=lambda e: e["idx"]):
+        result = entry["result"]
+        if result is None:
+            continue
+        if getattr(result, "completed", False):
+            played.append(entry["text"])
+            continue
+        # Mid-playback on abort — truncate to what cursor reports as heard.
+        # Only one sentence can be in this state under tts_lock serialization.
+        heard = _wp5_truncate(
+            text=entry["text"],
+            played_samples=getattr(result, "played_samples", 0),
+            sentence_start_samples=getattr(result, "sentence_start_samples", 0),
+            total_samples=getattr(result, "total_samples", None),
+            subtitle_url=getattr(result, "subtitle_url", None),
+            sample_rate=sample_rate,
+        )
+        if heard:
+            played.append(heard)
+        break
+    return played
+
 class ChatRequest(BaseModel):
     text: str
     session_id: str
@@ -260,6 +307,10 @@ def create_app(jarvis_app: Any) -> FastAPI:
         # Track in-flight per-sentence stream futures so _run can wait for
         # all TTS to finish before emitting turn_end.
         stream_futures: list = []
+        # WP5: each _stream_one appends {"idx","text","result"} here when
+        # it exits. _run finally iterates to compute played_texts on abort
+        # (heard_response truncation input for conversation_store writeback).
+        sentence_results: list[dict] = []
         prewarm_future = None
         LOGGER.info(
             "[chat] turn_id=%s session=%s text=%r",
@@ -338,9 +389,21 @@ def create_app(jarvis_app: Any) -> FastAPI:
                     if abort_event.is_set():
                         LOGGER.info("[stream] idx=%d aborted before feed", idx_local)
                         return
+                    def _get_cursor() -> int:
+                        # Browser AudioWorklet reports cumulative played
+                        # samples for the turn. Gate on playback_turn_id so
+                        # a stale cursor from the prior turn (still in-flight
+                        # when abort lands) doesn't leak into this turn's WP5.
+                        entry = _active_chats.get(req.session_id)
+                        if entry is None:
+                            return 0
+                        if entry.get("playback_turn_id") != turn_id:
+                            return 0
+                        return int(entry.get("playback_cursor", 0))
                     player = BrowserWSPlayer(
                         ws=ws_ref, sentence_index=idx_local, loop=loop,
                         abort_event=abort_event,
+                        get_cursor=_get_cursor,
                     )
                     try:
                         result = await tts._stream_to_player_async(
@@ -365,6 +428,9 @@ def create_app(jarvis_app: Any) -> FastAPI:
                         getattr(result, "played_samples", None),
                     )
             finally:
+                sentence_results.append(
+                    {"idx": idx_local, "text": sentence, "result": result},
+                )
                 try:
                     await _send_ctrl(ws_ref, {
                         "type": "sentence_end",
@@ -486,6 +552,17 @@ def create_app(jarvis_app: Any) -> FastAPI:
                             "[chat] stream future raised: %s", exc, exc_info=True,
                         )
                 LOGGER.info("[chat] all stream futures drained, turn_id=%s", turn_id)
+                # WP5: if this turn was aborted mid-playback, reconstruct
+                # heard_response from sentence_results and hand to Step 3
+                # (conversation_store writeback) via closure-scoped played_texts.
+                played_texts: list[str] = _compute_played_texts(
+                    sentence_results, abort_event, sample_rate=32000,
+                )
+                if abort_event.is_set() and played_texts:
+                    LOGGER.info(
+                        "[chat] WP5 heard_response: %d sentence(s) heard",
+                        len(played_texts),
+                    )
                 if ws_client_for_turn is not None:
                     try:
                         asyncio.run_coroutine_threadsafe(

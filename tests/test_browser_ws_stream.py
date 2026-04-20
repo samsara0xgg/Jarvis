@@ -293,3 +293,88 @@ class TestVADCancel:
             assert payload["turn_id"] == "abc123"
             assert payload["reason"] == "vad"
             assert srv._active_chats[sid]["abort_event"].is_set()
+
+
+# ---------------------------------------------------------------------------
+# Step 2 (heard_response): _compute_played_texts WP5 reconstruction
+# ---------------------------------------------------------------------------
+
+
+class TestComputePlayedTexts:
+    """Web-side mirror of TTSPipeline.abort's WP5 logic."""
+
+    @staticmethod
+    def _mk_result(completed: bool, played: int, start: int = 0,
+                   total: int | None = None, subtitle: str | None = None):
+        from core.tts import PlaybackResult
+        return PlaybackResult(
+            completed=completed,
+            played_samples=played,
+            sentence_start_samples=start,
+            total_samples=total,
+            subtitle_url=subtitle,
+        )
+
+    def test_no_abort_returns_empty(self):
+        """Normal completion shouldn't produce heard_response — LLM history
+        already contains the full turn."""
+        import threading as _t
+        from ui.web.server import _compute_played_texts
+        entries = [{"idx": 0, "text": "hello", "result": self._mk_result(True, 32000, 0, 32000)}]
+        ev = _t.Event()  # not set
+        assert _compute_played_texts(entries, ev, 32000) == []
+
+    def test_abort_partial_sentence_truncates(self):
+        """Sentence 1 fully played, sentence 2 half-played → full text1 +
+        half text2 (WP5 L2 by ratio, snapped to punctuation)."""
+        import threading as _t
+        from ui.web.server import _compute_played_texts
+        # Sentence 0: done. 32000 samples total, played 32000 (cursor).
+        r0 = self._mk_result(True, 32000, 0, 32000)
+        # Sentence 1: started at 32000, total would be 32000, played 48000
+        # (i.e., 16000 into this sentence = 50%).
+        r1 = self._mk_result(False, 48000, 32000, 32000)
+        entries = [
+            {"idx": 0, "text": "今天天气真好，我们出去散步吧。", "result": r0},
+            {"idx": 1, "text": "先去公园，然后吃饭，再看电影。", "result": r1},
+        ]
+        ev = _t.Event()
+        ev.set()
+        out = _compute_played_texts(entries, ev, 32000)
+        assert len(out) == 2
+        assert out[0] == "今天天气真好，我们出去散步吧。"
+        # Half of ~15-char sentence 1 should snap to first comma.
+        assert out[1].startswith("先去公园")
+        assert len(out[1]) < len(entries[1]["text"])
+
+    def test_abort_before_any_playback(self):
+        """abort_before_feed path: result is None; nothing to record."""
+        import threading as _t
+        from ui.web.server import _compute_played_texts
+        entries = [
+            {"idx": 0, "text": "s1", "result": None},
+            {"idx": 1, "text": "s2", "result": None},
+        ]
+        ev = _t.Event()
+        ev.set()
+        assert _compute_played_texts(entries, ev, 32000) == []
+
+    def test_abort_stops_at_first_partial(self):
+        """Under tts_lock serialization only one sentence can be mid-play;
+        any later non-None results are queue-raced and should be ignored."""
+        import threading as _t
+        from ui.web.server import _compute_played_texts
+        r0 = self._mk_result(True, 32000, 0, 32000)
+        r1 = self._mk_result(False, 40000, 32000, 32000)  # partial
+        r2 = self._mk_result(True, 0, 0, 0)  # shouldn't be reached
+        entries = [
+            {"idx": 0, "text": "第一句话完成了。", "result": r0},
+            {"idx": 1, "text": "第二句被打断了吧。", "result": r1},
+            {"idx": 2, "text": "第三句不应出现。", "result": r2},
+        ]
+        ev = _t.Event()
+        ev.set()
+        out = _compute_played_texts(entries, ev, 32000)
+        assert len(out) == 2
+        assert out[0] == "第一句话完成了。"
+        assert "第三句" not in " ".join(out)
