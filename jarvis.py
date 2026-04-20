@@ -8,9 +8,11 @@ Supports two modes:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import threading
 import time
+import traceback
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
@@ -139,6 +141,37 @@ class JarvisApp:
         from memory.trace import TraceLog
         self.trace_log = TraceLog(mem_db)
         self._turn_counter: dict[str, int] = {}  # session_id → turn count
+
+        # ── Trace v3 stable identifiers (computed once) ──
+        # prompt_version: 16-char SHA prefix of personality.py contents.
+        # Changes whenever the system prompt definition changes; lets us
+        # filter traces by prompt-iteration when comparing behavior.
+        try:
+            personality_src = Path(__file__).parent / "core" / "personality.py"
+            self._prompt_version: str | None = hashlib.sha256(
+                personality_src.read_bytes(),
+            ).hexdigest()[:16]
+        except OSError as exc:
+            self.logger.warning("Could not hash personality.py for prompt_version: %s", exc)
+            self._prompt_version = None
+
+        # ── Trace v3 carry-across-turn state ──
+        # _last_trace_id: the trace.id of the previous turn — used by
+        #   detect_outcome on the current turn to schedule an outcome
+        #   update on the PREVIOUS turn (the one we just judged).
+        # _pending_outcome_update: (prev_trace_id, signal) staged in
+        #   _process_turn entry, applied after the current turn flushes.
+        self._last_trace_id: int | None = None
+        self._pending_outcome_update: tuple[int, int] | None = None
+
+        # ── Trace v3 voice-path captures (set in _handle_utterance_inner) ──
+        # Reset per turn in _reset_turn_state. Stay None for text-only path.
+        self._last_asr_confidence: float | None = None
+        self._last_vad_duration_ms: int | None = None
+        # Time (perf_counter) at which AudioStreamPlayer first emitted real
+        # samples for the current turn. Set by the on_first_chunk callback
+        # (audio thread). Single attr-assign is GIL-atomic, no lock needed.
+        self._first_audio_at: float | None = None
 
         from memory.direct_answer import DirectAnswerer
         self.direct_answerer = DirectAnswerer(
@@ -595,6 +628,15 @@ class JarvisApp:
 
         text = transcription.text.strip()
         detected_emotion = getattr(transcription, "emotion", "") or ""
+        # Trace v3 captures (voice path only — text path leaves these None)
+        self._last_asr_confidence = getattr(transcription, "confidence", None)
+        try:
+            vad = getattr(self.audio_recorder, "_vad", None)
+            self._last_vad_duration_ms = (
+                vad.active_duration_ms if vad is not None else None
+            )
+        except AttributeError:
+            self._last_vad_duration_ms = None
         if not text:
             self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
             self.logger.info("Empty ASR result, staying silent")
@@ -651,7 +693,69 @@ class JarvisApp:
     # 核心处理流水线（语音和文本两条入口共用）
     # ══════════════════════════════════════════════════════════════
 
-    def _process_turn(  # noqa: C901 — intentionally long; single pipeline
+    def _process_turn(
+        self,
+        text: str,
+        *,
+        emotion: str = "",
+        session_id: str,
+        user_id: str = "default_user",
+        user_name: str = "用户",
+        user_role: str = "owner",
+        output_fn: Callable[[str], None],
+        create_tts_pipeline: Callable[[], Any] | None = None,
+        trigger_source: str = "wake_word",
+    ) -> str:
+        """Wrap _process_turn_inner with try/finally to flush trace v3.
+
+        Catches exceptions to record `end_reason="error"` + traceback, then
+        re-raises so callers see the original failure. The finally block
+        always flushes a trace row, even on early returns from the inner.
+
+        Args:
+            text: Raw user message (pre-normalize).
+            trigger_source: One of "wake_word", "continuation", "web_text",
+                "web_voice", "proactive", "test". Plumbed from entry point.
+            (other args forwarded unchanged to _process_turn_inner)
+
+        Returns:
+            Full assistant response text (or "farewell" signal).
+        """
+        turn_start = time.monotonic()
+        self._reset_turn_state(text, trigger_source=trigger_source)
+        try:
+            result = self._process_turn_inner(
+                text,
+                emotion=emotion,
+                session_id=session_id,
+                user_id=user_id,
+                user_name=user_name,
+                user_role=user_role,
+                output_fn=output_fn,
+                create_tts_pipeline=create_tts_pipeline,
+            )
+            if not self._last_end_reason:
+                self._last_end_reason = (
+                    "interrupted" if self._cancel.is_set() else "success"
+                )
+            return result
+        except Exception as exc:
+            self._last_end_reason = "error"
+            self._last_error = (
+                f"{type(exc).__name__}: {exc}\n{traceback.format_exc()[:2000]}"
+            )
+            raise
+        finally:
+            if user_id:
+                self._flush_trace(
+                    text=text,
+                    session_id=session_id,
+                    user_id=user_id,
+                    emotion=emotion,
+                    turn_start=turn_start,
+                )
+
+    def _process_turn_inner(  # noqa: C901 — intentionally long; single pipeline
         self,
         text: str,
         *,
@@ -703,29 +807,10 @@ class JarvisApp:
 
         # 加载对话历史（用于多轮上下文）
         history = self.conversation_store.get_history(session_id)
-
-        # ── Trace attributes (for system test harness) ──
-        self._last_route = None
-        self._last_path = "unknown"
-        self._last_device_ops = []
-        self._last_memory_hits = ""
-        self._last_timings: dict[str, int] = {}
-        self._last_farewell_match: str | None = None
-        self._last_memory_keyword: str | None = None
-        self._last_escalation: dict | None = None
-        self._last_learning_intent: dict | None = None
-        self._last_keyword_rule: dict | None = None
-        self._last_direct_answer: dict | None = None
-        self._last_reqllm = False
         self._last_history_turns = len(history)
-        # Phase B placeholders (populated by hooks when available)
-        self._last_tool_calls: list = []
-        self._last_tool_iterations = 0
-        self._last_llm_tokens: dict = {}
-        self._last_route_cache_hit: bool | None = None
-        self._last_provider_chain: list = []
-        self._last_memory_retrieval: dict = {}
-        self._last_memory_extraction: dict = {}
+        # All other _last_* trace attributes were reset in the outer
+        # _process_turn wrapper via _reset_turn_state(). The inner only
+        # *populates* them at hook points; never re-resets here.
 
         # Resume from interruption: "继续说" etc
         from core.interrupt_monitor import RESUME_KEYWORDS
@@ -743,6 +828,7 @@ class JarvisApp:
             self.conversation_store.replace(session_id, history)
             self._last_path = "resume"
             print(f"path={self._last_path}")
+            self._last_response_text = full_text
             return full_text
 
         # ── 快捷路径 1：告别 ── 直接本地回复，不走任何 API，~120ms
@@ -761,6 +847,7 @@ class JarvisApp:
                     self.memory_manager.save, history, user_id, session_id,
                     emotion,
                 )
+            self._last_response_text = reply
             return "farewell"
 
         # ── 升级模式 ── 用户说"仔细想想"等前缀词，本轮临时切换到更强的 LLM
@@ -803,6 +890,7 @@ class JarvisApp:
                         self.memory_manager.save, history, user_id, session_id,
                         emotion,
                     )
+                self._last_response_text = reply
                 return reply
 
         # ── 关键词规则匹配 ── 用户定义的触发词（如"晚安"→关灯+关窗帘）
@@ -878,6 +966,7 @@ class JarvisApp:
                             self.llm.switch_model(_original_preset)
                         except Exception:
                             pass
+                    self._last_response_text = direct
                     return direct
             except Exception as exc:
                 self.logger.warning("Level 1 answer failed: %s", exc)
@@ -899,6 +988,10 @@ class JarvisApp:
         _route_ms = int((_t_route - _t_think)*1000)
         self._last_route = route
         self._last_timings["route_ms"] = _route_ms
+        # Trace v3: router self-reported confidence (NOT a calibrated logprob).
+        # See trace.py log_turn docstring for the caveat.
+        if route is not None:
+            self._last_intent_route_score = route.confidence
         if route:
             print(f"⏱ 路由: {_route_ms}ms → {route.tier}/{route.intent} ({route.provider}, {route.confidence:.2f})")
             if route.actions:
@@ -1006,6 +1099,10 @@ class JarvisApp:
         _t_llm_start = time.monotonic()
         if response_text is None and not self._cancel.is_set():
             self._last_path = "cloud"
+            self._last_tts_emotion = emotion or None
+            # Trace v3: arm the AudioStreamPlayer first-chunk callback for
+            # this turn so ttfs_ms reflects user-perceived latency.
+            self._arm_tts_first_chunk()
             tools = self.tool_registry.get_tool_definitions(user_role)
             tts_pipeline = create_tts_pipeline() if create_tts_pipeline else None
             with self._pipeline_lock:
@@ -1094,6 +1191,14 @@ class JarvisApp:
                     tts_pipeline.stop()
                 with self._pipeline_lock:
                     self._active_pipeline = None
+                # Trace v3: harvest LLM-layer metadata from the client. Done
+                # in finally so it runs even if chat_stream raised.
+                try:
+                    self._last_llm_metadata = self.llm.last_metadata
+                    self._last_finish_reason = self.llm.last_finish_reason
+                    self._last_cache_read_tokens = self.llm.last_cache_read_tokens
+                except AttributeError:
+                    pass  # older llm.py without v3 metadata exposure
 
         # ── 持久化 ── 保存对话历史 + 后台异步提取记忆（GPT-4o-mini）
         cloud_path = updated_messages is not None
@@ -1106,6 +1211,8 @@ class JarvisApp:
                     updated_messages, self._interrupt_played_texts,
                 )
                 self._interrupt_played_texts = None
+                self._last_llm_metadata["truncated_by_interrupt"] = True
+                self._last_llm_metadata["full_response"] = response_text
             self.conversation_store.replace(session_id, updated_messages)
             if user_id:
                 self._executor.submit(
@@ -1117,8 +1224,11 @@ class JarvisApp:
             history.append({"role": "assistant", "content": response_text})
             self.conversation_store.replace(session_id, history)
             updated_messages = history
+        # Trace v3: stash final messages for _flush_trace to extract tool_calls.
+        self._last_updated_messages = updated_messages
 
         # ── 行为日志 ── 记录技能调用、情绪、路由路径，用于后续分析
+        # (Trace v3 log_turn happens in _flush_trace in the outer wrapper.)
         if user_id:
             if updated_messages:
                 for msg in updated_messages:
@@ -1135,45 +1245,6 @@ class JarvisApp:
                 "route": "local" if response_text and not cloud_path else "cloud",
             })
 
-        # ── Trace (v2) ── structured per-turn log + async Observer extraction
-        if user_id:
-            session_turn = self._turn_counter.get(session_id, 0) + 1
-            self._turn_counter[session_id] = session_turn
-            _trace_tool_calls = []
-            if updated_messages:
-                for msg in updated_messages:
-                    if msg.get("role") == "assistant" and isinstance(msg.get("content"), list):
-                        for block in msg["content"]:
-                            if isinstance(block, dict) and block.get("type") == "tool_use":
-                                _trace_tool_calls.append({
-                                    "name": block.get("name", ""),
-                                    "args": block.get("input", {}),
-                                    "result": "",
-                                    "ms": 0,
-                                })
-            _trace_id = self.trace_log.log_turn(
-                session_id=session_id,
-                turn_id=session_turn,
-                user_text=text,
-                assistant_text=response_text or "",
-                user_emotion=emotion,
-                path_taken=self._last_path,
-                tool_calls=_trace_tool_calls or None,
-                latency_ms=self._last_timings.get("total_ms"),
-            )
-
-            # v2: async Observer extraction (writes to observations table)
-            self._executor.submit(
-                self.memory_manager.write_observation,
-                {
-                    "user_text": text,
-                    "assistant_text": response_text or "",
-                    "tool_calls": _trace_tool_calls,
-                    "user_emotion": emotion,
-                },
-                _trace_id,
-            )
-
         # ── 非流式输出 ── 本地路径的响应在这里一次性播报（流式的已经在上面逐句播了）
         if sentence_count == 0 and not self._cancel.is_set() and response_text:
             if self.oled:
@@ -1189,6 +1260,7 @@ class JarvisApp:
                 self.logger.warning("Failed to restore preset: %s", exc)
 
         print(f"path={self._last_path}")
+        self._last_response_text = response_text or ""
         return response_text
 
     # ══════════════════════════════════════════════════════════════
@@ -1222,8 +1294,244 @@ class JarvisApp:
             user_name=user_name,
             user_role=user_role,
             output_fn=_text_output,
+            trigger_source="web_text",
         )
 
+    # ══════════════════════════════════════════════════════════════
+    # Trace v3 helpers (reset / flush / TTS first-chunk wiring)
+    # ══════════════════════════════════════════════════════════════
+
+    def _reset_turn_state(self, text: str, *, trigger_source: str) -> None:
+        """Reset all per-turn _last_* attributes before _process_turn_inner.
+
+        Preserves cross-turn state (_last_trace_id, _pending_outcome_update)
+        but clears anything that should not leak into the next trace row.
+
+        Args:
+            text: Raw user message (used for outcome detection on previous turn).
+            trigger_source: Trace v3 trigger_source enum value.
+        """
+        # System-test harness fields (legacy)
+        self._last_route = None
+        self._last_path = "unknown"
+        self._last_device_ops = []
+        self._last_memory_hits = ""
+        self._last_timings = {}
+        self._last_farewell_match = None
+        self._last_memory_keyword = None
+        self._last_escalation = None
+        self._last_learning_intent = None
+        self._last_keyword_rule = None
+        self._last_direct_answer = None
+        self._last_reqllm = False
+        self._last_history_turns = 0
+        self._last_tool_calls = []
+        self._last_tool_iterations = 0
+        self._last_llm_tokens = {}
+        self._last_route_cache_hit = None
+        self._last_provider_chain = []
+        self._last_memory_retrieval = {}
+        self._last_memory_extraction = {}
+
+        # Trace v3 per-turn state
+        self._last_trigger_source = trigger_source
+        self._last_response_text = ""
+        self._last_end_reason = None
+        self._last_error = None
+        self._last_intent_route_score = None
+        self._last_tts_emotion = None
+        self._last_memory_query_ids = None
+        self._last_finish_reason = None
+        self._last_cache_read_tokens = None
+        self._last_updated_messages = None
+        self._last_llm_metadata = {
+            "provider": None,
+            "conv_id": None,
+            "response_id": None,
+            "streaming": False,
+            "fallback_used": False,
+            "truncated_by_interrupt": False,
+            "full_response": None,
+            "cache_creation_input_tokens": None,
+        }
+        self._first_audio_at = None
+
+        # Outcome lag: detect_outcome on THIS turn judges the PREVIOUS turn.
+        # Schedule the update; _flush_trace applies it after this turn logs.
+        from memory.outcome_detector import detect_outcome
+        signal = detect_outcome(text)
+        if signal is not None and self._last_trace_id is not None:
+            self._pending_outcome_update = (self._last_trace_id, signal)
+        else:
+            self._pending_outcome_update = None
+
+    def _arm_tts_first_chunk(self) -> None:
+        """Wire AudioStreamPlayer's on_first_chunk for the current turn.
+
+        The player is owned by TTSEngine and lazy-initialized. We reset the
+        per-turn fired flag and (re)bind the callback every cloud turn.
+        Callback writes a single attribute (GIL-atomic), no IO/logging —
+        safe to run in the PortAudio audio thread per audio_stream_player
+        contract.
+        """
+        tts = self._tts  # do not lazy-init from here — caller path drives that
+        player = getattr(tts, "_stream_player", None) if tts is not None else None
+        if player is None:
+            return
+        try:
+            player.reset_first_chunk()
+        except AttributeError:
+            return  # older AudioStreamPlayer without first-chunk support
+        # Bind the callback fresh each turn (closure captures self).
+        def _on_first_chunk() -> None:
+            self._first_audio_at = time.perf_counter()
+        player._on_first_chunk = _on_first_chunk
+
+    def _flush_trace(
+        self,
+        *,
+        text: str,
+        session_id: str,
+        user_id: str,
+        emotion: str,
+        turn_start: float,
+    ) -> None:
+        """Assemble a v3 trace row from staged _last_* state and write it.
+
+        Always runs in the outer wrapper's finally — covers normal returns,
+        early returns (farewell / memory_l1 / etc.), and exceptions. Any
+        failure here is logged and swallowed; trace logging must never
+        bring down the conversation pipeline.
+        """
+        try:
+            from memory.pricing import compute_cost_usd
+
+            session_turn = self._turn_counter.get(session_id, 0) + 1
+            self._turn_counter[session_id] = session_turn
+
+            # Total latency (turn_start was captured BEFORE _reset_turn_state)
+            total_ms = int((time.monotonic() - turn_start) * 1000)
+            self._last_timings["total_ms"] = total_ms
+
+            # ttfs_ms: time from turn_start to first non-silent audio chunk.
+            # NULL when no TTS played (text-only path, or early return without
+            # output_fn audio dispatch).
+            ttfs_ms: int | None = None
+            if self._first_audio_at is not None:
+                ttfs_ms = int((self._first_audio_at - turn_start) * 1000)
+                if ttfs_ms < 0:
+                    ttfs_ms = None  # clock skew guard
+
+            # input_metadata: only populate keys we actually have data for;
+            # plan locks the shape so emit None for absent fields rather than
+            # omitting keys.
+            input_metadata = {
+                "asr_text_raw": None,  # populated below if text was normalized
+                "asr_confidence": self._last_asr_confidence,
+                "vad_duration_ms": self._last_vad_duration_ms,
+                "audio_path": None,
+            }
+            # asr_text_raw is meaningful only when normalize changed the text.
+            # We don't have access to _raw_text here; the inner sets it via
+            # logging only. Best-effort: leave None if equal to user_text.
+
+            # tool_calls: extract from the final messages assembled by inner.
+            tool_calls = []
+            updated = self._last_updated_messages
+            if updated:
+                for msg in updated:
+                    if msg.get("role") != "assistant":
+                        continue
+                    content = msg.get("content")
+                    if not isinstance(content, list):
+                        continue
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            tool_calls.append({
+                                "name": block.get("name", ""),
+                                "args": block.get("input", {}),
+                                "result": "",  # not threaded through yet
+                                "ms": 0,        # not threaded through yet
+                            })
+
+            llm_metadata = self._last_llm_metadata
+            llm_tokens_in = self._last_llm_tokens.get("input")
+            llm_tokens_out = self._last_llm_tokens.get("output")
+            cache_read = self._last_cache_read_tokens
+            cache_write = llm_metadata.get("cache_creation_input_tokens") if llm_metadata else None
+
+            cost = compute_cost_usd(
+                model=self.llm.model if self._last_path == "cloud" else None,
+                tokens_in=llm_tokens_in,
+                tokens_out=llm_tokens_out,
+                cache_read_in=cache_read,
+                cache_write_in=cache_write,
+                pricing_table=self.config.get("llm_pricing", {}),
+            )
+
+            assistant_text = self._last_response_text or ""
+
+            trace_id = self.trace_log.log_turn(
+                session_id=session_id,
+                turn_id=session_turn,
+                user_id=user_id,
+                user_text=text,
+                assistant_text=assistant_text,
+                user_emotion=emotion or None,
+                tts_emotion=self._last_tts_emotion,
+                input_metadata=input_metadata,
+                trigger_source=self._last_trigger_source,
+                parent_trace_id=None,
+                path_taken=self._last_path,
+                intent_route_score=self._last_intent_route_score,
+                tool_calls=tool_calls or None,
+                llm_model=self.llm.model if self._last_path == "cloud" else None,
+                llm_tokens_in=llm_tokens_in,
+                llm_tokens_out=llm_tokens_out,
+                cache_read_input_tokens=cache_read,
+                llm_metadata=llm_metadata if llm_metadata else None,
+                memory_query_ids=self._last_memory_query_ids,
+                prompt_version=self._prompt_version,
+                latency_ms=total_ms,
+                ttfs_ms=ttfs_ms,
+                latency_breakdown={
+                    "asr_ms":          self._last_timings.get("asr_ms"),
+                    "route_ms":        self._last_timings.get("route_ms"),
+                    "memory_query_ms": self._last_timings.get("memory_query_ms"),
+                    "direct_answer_ms": self._last_timings.get("direct_answer_ms"),
+                    "local_exec_ms":   self._last_timings.get("local_exec_ms"),
+                    "llm_first_ms":    self._last_timings.get("llm_first_ms"),
+                    "tts_first_ms":    ttfs_ms,
+                    "total_ms":        total_ms,
+                },
+                end_reason=self._last_end_reason,
+                error=self._last_error,
+                finish_reason=self._last_finish_reason,
+                cost_usd=cost,
+            )
+
+            # Apply pending outcome update for the previous turn (lag-1 model).
+            if self._pending_outcome_update is not None:
+                prev_id, signal = self._pending_outcome_update
+                self.trace_log.update_outcome(prev_id, signal=signal, at_turn_id=trace_id)
+                self._pending_outcome_update = None
+
+            # Carry this turn's id forward for next turn's outcome detection.
+            self._last_trace_id = trace_id
+
+            # Async Observer extraction (writes to observations table).
+            self._executor.submit(
+                self.memory_manager.write_observation,
+                {
+                    "user_text": text,
+                    "assistant_text": assistant_text,
+                    "tool_calls": tool_calls,
+                    "user_emotion": emotion,
+                },
+                trace_id,
+            )
+        except Exception as exc:
+            self.logger.warning("Trace flush failed (non-fatal): %s", exc)
 
     def speak(self, text: str) -> None:
         """Speak text via TTS (blocking). Use for non-hot-path calls."""
