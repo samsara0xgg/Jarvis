@@ -52,8 +52,12 @@ class LLMClient:
         # Store presets (OpenAI-only for now)
         self._presets: dict[str, dict[str, Any]] = dict(llm_config.get("presets") or {})
         self.active_preset: str | None = None
-        # Trace for system testing
-        self._last_tokens: dict = {}
+        # Trace for system testing — single state bag, reset on every chat() entry.
+        # last_metadata matches the llm_metadata JSON column in trace v3.
+        # finish_reason and cache_read_input_tokens are kept separate (own columns).
+        self._last_metadata: dict = self._empty_metadata()
+        self._last_finish_reason: str | None = None
+        self._last_cache_read_tokens: int | None = None
 
         # Defaults — may be overwritten by preset or flat config below
         self.model: str = str(llm_config.get("model", "gpt-4o"))
@@ -81,6 +85,81 @@ class LLMClient:
         else:
             self.model = str(llm_config.get("model", "claude-sonnet-4-20250514"))
             self._api_key = llm_config.get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
+
+    # ------------------------------------------------------------------
+    # Last-call metadata accessors (trace v3)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _empty_metadata() -> dict:
+        """Return a fresh default-shaped metadata dict for one LLM call.
+
+        Shape matches the ``llm_metadata`` JSON column in trace v3.
+        Fields ``truncated_by_interrupt`` and ``full_response`` are intentionally
+        left None here — they are set by the caller (``jarvis.py``) after the
+        stream is cancelled, not at the LLM layer.
+
+        Returns:
+            A dict with all keys present and default values.
+        """
+        return {
+            "provider": None,
+            "conv_id": None,
+            "response_id": None,
+            "streaming": False,
+            "fallback_used": False,
+            "truncated_by_interrupt": False,
+            "full_response": None,
+            "cache_creation_input_tokens": None,
+        }
+
+    @property
+    def last_metadata(self) -> dict:
+        """Metadata for the most recent ``chat()`` / ``chat_stream()`` call.
+
+        Shape matches the ``llm_metadata`` JSON column in trace v3 exactly so
+        ``jarvis.py`` can store it without transformation::
+
+            {
+                "provider": "xai" | "openai" | "anthropic" | ...,
+                "conv_id": "<x-grok-conv-id>" | None,
+                "response_id": "chatcmpl-..." | None,
+                "streaming": bool,
+                "fallback_used": bool,
+                "truncated_by_interrupt": False,   # set by jarvis.py after cancel
+                "full_response": None,             # set by jarvis.py after cancel
+                "cache_creation_input_tokens": int | None,  # Anthropic only
+            }
+
+        Returns:
+            A shallow copy of the internal metadata dict.
+        """
+        return dict(self._last_metadata)
+
+    @property
+    def last_finish_reason(self) -> str | None:
+        """Finish reason from the last LLM response (separate trace column).
+
+        OpenAI/xAI: ``choice.finish_reason`` (e.g. ``"stop"``, ``"length"``).
+        Anthropic: ``response.stop_reason`` (e.g. ``"end_turn"``, ``"max_tokens"``).
+
+        Returns:
+            The finish reason string, or ``None`` if not yet populated.
+        """
+        return self._last_finish_reason
+
+    @property
+    def last_cache_read_tokens(self) -> int | None:
+        """Cache-read input tokens from the last LLM response (separate trace column).
+
+        OpenAI/xAI: ``response.usage.prompt_tokens_details.cached_tokens``.
+        Anthropic:  ``response.usage.cache_read_input_tokens``.
+        Defaults to 0 when the provider returns no cache info.
+
+        Returns:
+            Token count, or ``None`` if not yet populated.
+        """
+        return self._last_cache_read_tokens
 
     # ------------------------------------------------------------------
     # Preset / model switching helpers
@@ -206,6 +285,11 @@ class LLMClient:
         Returns:
             A tuple of (final_text_response, updated_messages_list).
         """
+        # Reset per-call state so stale values from turn N never bleed into N+1.
+        self._last_metadata = self._empty_metadata()
+        self._last_finish_reason = None
+        self._last_cache_read_tokens = None
+
         component = f"llm.{self.provider}"
         try:
             if self.provider == "openai":
@@ -274,6 +358,20 @@ class LLMClient:
 
             self.logger.info("Sending request to Anthropic (%s)", self.model)
             response = self._call_with_retry(lambda: client.messages.create(**kwargs))
+
+            # Populate metadata from this response (overwritten each loop turn,
+            # ending with the final call's data when the loop exits).
+            usage = getattr(response, "usage", None)
+            self._last_metadata["provider"] = "anthropic"
+            self._last_metadata["response_id"] = getattr(response, "id", None)
+            self._last_metadata["streaming"] = False
+            self._last_metadata["cache_creation_input_tokens"] = (
+                getattr(usage, "cache_creation_input_tokens", None) if usage else None
+            )
+            self._last_finish_reason = getattr(response, "stop_reason", None)
+            self._last_cache_read_tokens = (
+                getattr(usage, "cache_read_input_tokens", None) if usage else 0
+            ) or 0
 
             assistant_content = self._serialize_anthropic_content(response.content)
             messages.append({"role": "assistant", "content": assistant_content})
@@ -394,6 +492,26 @@ class LLMClient:
             response = self._call_with_retry(lambda: client.chat.completions.create(**kwargs))
             choice = response.choices[0]
             assistant_msg = choice.message
+
+            # Populate metadata from this response (overwritten each loop turn).
+            usage = getattr(response, "usage", None)
+            ptd = getattr(usage, "prompt_tokens_details", None) if usage else None
+            _base_url = self._base_url or ""
+            _provider = "xai" if "x.ai" in _base_url else (
+                "groq" if "groq" in _base_url else (
+                    "cerebras" if "cerebras" in _base_url else "openai"
+                )
+            )
+            self._last_metadata["provider"] = _provider
+            self._last_metadata["response_id"] = getattr(response, "id", None)
+            self._last_metadata["streaming"] = False
+            self._last_metadata["cache_creation_input_tokens"] = None
+            if _provider == "xai":
+                self._last_metadata["conv_id"] = self._grok_conv_id
+            self._last_finish_reason = getattr(choice, "finish_reason", None)
+            self._last_cache_read_tokens = (
+                getattr(ptd, "cached_tokens", None) if ptd else None
+            ) or 0
 
             # Store assistant message in OpenAI format for the loop
             oai_assistant: dict[str, Any] = {
@@ -889,6 +1007,7 @@ class LLMClient:
                 if has_tool_use or not full_text.strip():
                     reason = "tool use" if has_tool_use else "empty stream"
                     self.logger.info("%s detected, falling back to chat()", reason)
+                    self._last_metadata["fallback_used"] = True
                     messages.pop()
                     return self._chat_anthropic(
                         user_message,
@@ -906,11 +1025,25 @@ class LLMClient:
                     "role": "assistant",
                     "content": [{"type": "text", "text": full_text}],
                 })
+
+                # Commit streaming metadata BEFORE returning (constraint 4).
+                # response_id is not available in Anthropic stream events;
+                # finish_reason and cache tokens require get_final_message().
+                # Those are populated by _chat_anthropic on fallback; for the
+                # pure-stream path we record what we know.
+                self._last_metadata["provider"] = "anthropic"
+                self._last_metadata["response_id"] = None
+                self._last_metadata["streaming"] = True
+                self._last_metadata["cache_creation_input_tokens"] = None
+                # finish_reason and cache_read_tokens stay None for pure-stream path
+                # (Anthropic stream does not surface usage without get_final_message).
+
                 self.logger.info("Anthropic stream complete: %s", full_text[:200])
                 return full_text, messages
 
         except Exception as exc:
             self.logger.warning("Streaming failed: %s, falling back to chat()", exc)
+            self._last_metadata["fallback_used"] = True
             messages.pop()
             return self._chat_anthropic(
                 user_message,
@@ -965,8 +1098,11 @@ class LLMClient:
         stored_messages = list(conversation_history or [])
         stored_messages.append({"role": "user", "content": user_message})
 
-        # Reset token trace
-        self._last_tokens = {"input": 0, "output": 0}
+        # Reset streaming token accumulators; metadata already reset by chat().
+        _stream_input_tokens = 0
+        _stream_output_tokens = 0
+        _stream_finish_reason: str | None = None
+        _stream_cached_tokens: int = 0
 
         try:
             response = self._call_with_retry(
@@ -978,8 +1114,14 @@ class LLMClient:
 
             for chunk in response:
                 if getattr(chunk, "usage", None):
-                    self._last_tokens["input"] += getattr(chunk.usage, "prompt_tokens", 0) or 0
-                    self._last_tokens["output"] += getattr(chunk.usage, "completion_tokens", 0) or 0
+                    _stream_input_tokens += getattr(chunk.usage, "prompt_tokens", 0) or 0
+                    _stream_output_tokens += getattr(chunk.usage, "completion_tokens", 0) or 0
+                    _ptd = getattr(chunk.usage, "prompt_tokens_details", None)
+                    _stream_cached_tokens = getattr(_ptd, "cached_tokens", None) or 0
+                if chunk.choices:
+                    _fr = getattr(chunk.choices[0], "finish_reason", None)
+                    if _fr:
+                        _stream_finish_reason = _fr
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta is None:
                     continue
@@ -996,6 +1138,7 @@ class LLMClient:
             if has_tool_calls or not full_text.strip():
                 reason = "tool use" if has_tool_calls else "empty stream"
                 self.logger.info("%s detected, falling back to chat()", reason)
+                self._last_metadata["fallback_used"] = True
                 return self._chat_openai(
                     user_message,
                     conversation_history=conversation_history,
@@ -1012,11 +1155,30 @@ class LLMClient:
                 "role": "assistant",
                 "content": [{"type": "text", "text": full_text}],
             })
+
+            # Commit streaming metadata BEFORE returning so callers see it
+            # immediately (constraint 4 — no async worker delay).
+            _base_url = self._base_url or ""
+            _provider = "xai" if "x.ai" in _base_url else (
+                "groq" if "groq" in _base_url else (
+                    "cerebras" if "cerebras" in _base_url else "openai"
+                )
+            )
+            self._last_metadata["provider"] = _provider
+            self._last_metadata["response_id"] = None  # not available in stream chunks
+            self._last_metadata["streaming"] = True
+            self._last_metadata["cache_creation_input_tokens"] = None
+            if _provider == "xai":
+                self._last_metadata["conv_id"] = self._grok_conv_id
+            self._last_finish_reason = _stream_finish_reason
+            self._last_cache_read_tokens = _stream_cached_tokens
+
             self.logger.info("OpenAI stream complete: %s", full_text[:200])
             return full_text, stored_messages
 
         except Exception as exc:
             self.logger.warning("Streaming failed: %s, falling back to chat()", exc)
+            self._last_metadata["fallback_used"] = True
             return self._chat_openai(
                 user_message,
                 conversation_history=conversation_history,

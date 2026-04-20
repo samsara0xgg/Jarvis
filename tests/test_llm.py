@@ -426,3 +426,253 @@ class TestModelSwitch:
             assert client.get_presets() == {}
         finally:
             sys.modules.pop("openai", None)
+
+
+# ======================================================================
+# last_metadata / last_finish_reason / last_cache_read_tokens tests
+# ======================================================================
+
+
+class _FakeUsage:
+    """Minimal usage object matching Anthropic SDK shape."""
+
+    def __init__(
+        self,
+        cache_read_input_tokens: int = 0,
+        cache_creation_input_tokens: int | None = None,
+        input_tokens: int = 10,
+        output_tokens: int = 5,
+    ):
+        self.cache_read_input_tokens = cache_read_input_tokens
+        self.cache_creation_input_tokens = cache_creation_input_tokens
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
+class _FakeAnthropicResponse:
+    """Minimal Anthropic Messages.create response with usage and id."""
+
+    def __init__(
+        self,
+        content: list,
+        stop_reason: str = "end_turn",
+        response_id: str = "msg_test001",
+        usage: _FakeUsage | None = None,
+    ):
+        self.content = content
+        self.stop_reason = stop_reason
+        self.id = response_id
+        self.usage = usage or _FakeUsage()
+
+
+class _FakeOAIUsageDetails:
+    def __init__(self, cached_tokens: int = 0):
+        self.cached_tokens = cached_tokens
+
+
+class _FakeOAIUsage:
+    def __init__(self, prompt_tokens: int = 10, completion_tokens: int = 5, cached_tokens: int = 0):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.prompt_tokens_details = _FakeOAIUsageDetails(cached_tokens)
+
+
+class _FakeOAIChoiceWithFinish:
+    def __init__(self, message: "_FakeOAIMessage", finish_reason: str = "stop"):
+        self.message = message
+        self.finish_reason = finish_reason
+
+
+class _FakeOAIResponseFull:
+    """OpenAI response with id, usage, and finish_reason."""
+
+    def __init__(
+        self,
+        choices: list,
+        response_id: str = "chatcmpl-test001",
+        usage: _FakeOAIUsage | None = None,
+    ):
+        self.choices = choices
+        self.id = response_id
+        self.usage = usage or _FakeOAIUsage()
+
+
+def test_last_metadata_anthropic_non_streaming():
+    """Non-streaming Anthropic call populates last_metadata, finish_reason, cache_read_tokens."""
+    _install_fake_anthropic()
+    try:
+        client = LLMClient(_make_config(provider="anthropic"))
+        mock_anthropic = client._get_anthropic_client()
+        mock_anthropic.messages.create = MagicMock(
+            return_value=_FakeAnthropicResponse(
+                content=[_FakeTextBlock("Hi there.")],
+                stop_reason="end_turn",
+                response_id="msg_abc123",
+                usage=_FakeUsage(
+                    cache_read_input_tokens=42,
+                    cache_creation_input_tokens=100,
+                ),
+            )
+        )
+
+        text, _ = client.chat("Hello")
+        assert text == "Hi there."
+
+        meta = client.last_metadata
+        assert meta["provider"] == "anthropic"
+        assert meta["response_id"] == "msg_abc123"
+        assert meta["streaming"] is False
+        assert meta["fallback_used"] is False
+        assert meta["cache_creation_input_tokens"] == 100
+        assert client.last_finish_reason == "end_turn"
+        assert client.last_cache_read_tokens == 42
+    finally:
+        sys.modules.pop("anthropic", None)
+
+
+def test_last_metadata_openai_non_streaming():
+    """Non-streaming OpenAI/xAI call populates last_metadata with correct provider."""
+    _install_fake_openai()
+    try:
+        client = LLMClient(_make_config(provider="openai", base_url="https://api.x.ai/v1"))
+        mock_oai = client._get_openai_client()
+        mock_oai.chat.completions.create = MagicMock(
+            return_value=_FakeOAIResponseFull(
+                choices=[_FakeOAIChoiceWithFinish(
+                    message=_FakeOAIMessage(content="From xAI."),
+                    finish_reason="stop",
+                )],
+                response_id="chatcmpl-xai001",
+                usage=_FakeOAIUsage(cached_tokens=8),
+            )
+        )
+
+        text, _ = client.chat("Hello")
+        assert text == "From xAI."
+
+        meta = client.last_metadata
+        assert meta["provider"] == "xai"
+        assert meta["response_id"] == "chatcmpl-xai001"
+        assert meta["streaming"] is False
+        assert meta["fallback_used"] is False
+        assert meta["cache_creation_input_tokens"] is None
+        assert client.last_finish_reason == "stop"
+        assert client.last_cache_read_tokens == 8
+    finally:
+        sys.modules.pop("openai", None)
+
+
+def test_last_metadata_no_stale_leak_between_turns():
+    """Turn 2 metadata is fresh — fallback_used from turn 1 does not bleed in."""
+    _install_fake_anthropic()
+    try:
+        client = LLMClient(_make_config(provider="anthropic"))
+        mock_anthropic = client._get_anthropic_client()
+
+        # Turn 1: simulate a tool-use stream fallback by directly setting the flag,
+        # then calling chat() for a clean non-tool response.
+        client._last_metadata["fallback_used"] = True  # manually poison state
+
+        mock_anthropic.messages.create = MagicMock(
+            return_value=_FakeAnthropicResponse(
+                content=[_FakeTextBlock("Fresh answer.")],
+                stop_reason="end_turn",
+            )
+        )
+
+        # Turn 2: chat() must reset first.
+        text, _ = client.chat("New question")
+        assert text == "Fresh answer."
+        assert client.last_metadata["fallback_used"] is False, (
+            "fallback_used leaked from poisoned turn 1 into turn 2"
+        )
+    finally:
+        sys.modules.pop("anthropic", None)
+
+
+def test_last_metadata_anthropic_cache_creation_tokens():
+    """Anthropic cache_creation_input_tokens surfaces in last_metadata."""
+    _install_fake_anthropic()
+    try:
+        client = LLMClient(_make_config(provider="anthropic"))
+        mock_anthropic = client._get_anthropic_client()
+        mock_anthropic.messages.create = MagicMock(
+            return_value=_FakeAnthropicResponse(
+                content=[_FakeTextBlock("Cached.")],
+                usage=_FakeUsage(cache_creation_input_tokens=512, cache_read_input_tokens=0),
+            )
+        )
+
+        client.chat("prompt with long system")
+        meta = client.last_metadata
+        assert meta["cache_creation_input_tokens"] == 512
+        assert client.last_cache_read_tokens == 0
+    finally:
+        sys.modules.pop("anthropic", None)
+
+
+def test_last_metadata_openai_no_cache_creation_tokens():
+    """OpenAI responses always have cache_creation_input_tokens=None in last_metadata."""
+    _install_fake_openai()
+    try:
+        client = LLMClient(_make_config(provider="openai"))
+        mock_oai = client._get_openai_client()
+        mock_oai.chat.completions.create = MagicMock(
+            return_value=_FakeOAIResponseFull(
+                choices=[_FakeOAIChoiceWithFinish(
+                    message=_FakeOAIMessage(content="OpenAI answer."),
+                    finish_reason="stop",
+                )],
+                usage=_FakeOAIUsage(cached_tokens=16),
+            )
+        )
+
+        client.chat("hello")
+        meta = client.last_metadata
+        assert meta["cache_creation_input_tokens"] is None
+        assert client.last_cache_read_tokens == 16
+    finally:
+        sys.modules.pop("openai", None)
+
+
+def test_last_metadata_streaming_openai_populated_before_return():
+    """After streaming chat_stream(), metadata is populated BEFORE the call returns."""
+    _install_fake_openai()
+    try:
+        client = LLMClient(_make_config(provider="openai", base_url="https://api.x.ai/v1"))
+        mock_oai = client._get_openai_client()
+
+        # Build fake streaming chunks
+        class _Chunk:
+            def __init__(self, content=None, finish_reason=None, usage=None):
+                self.choices = [_StreamChoice(content, finish_reason)]
+                self.usage = usage
+
+        class _StreamChoice:
+            def __init__(self, content, finish_reason):
+                self.delta = _Delta(content)
+                self.finish_reason = finish_reason
+
+        class _Delta:
+            def __init__(self, content):
+                self.content = content
+                self.tool_calls = None
+
+        usage_chunk = _FakeOAIUsage(cached_tokens=5)
+        chunks = [
+            _Chunk(content="Hello "),
+            _Chunk(content="world."),
+            _Chunk(finish_reason="stop", usage=usage_chunk),
+        ]
+        mock_oai.chat.completions.create = MagicMock(return_value=iter(chunks))
+
+        sentences: list[str] = []
+        text, _ = client.chat_stream("Hi", on_sentence=sentences.append)
+
+        # Constraint 4: metadata must be populated immediately on return
+        meta = client.last_metadata
+        assert meta["provider"] == "xai", f"expected 'xai', got {meta['provider']!r}"
+        assert meta["streaming"] is True
+        assert client.last_cache_read_tokens == 5
+    finally:
+        sys.modules.pop("openai", None)

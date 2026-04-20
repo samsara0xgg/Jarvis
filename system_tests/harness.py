@@ -458,7 +458,7 @@ class TestHarness:
                 "prompt": getattr(router, "_last_prompt", "") or "",
             }
 
-        llm_tokens = dict(getattr(llm, "_last_tokens", {})) if llm else {}
+        llm_tokens = dict(getattr(llm, "_last_metadata", {})) if llm else {}
         tts_cache_hit = getattr(tts, "_last_cache_hit", None) if tts else None
         memory_extraction = dict(getattr(mm, "_last_extraction", {})) if mm else {}
 
