@@ -84,5 +84,4 @@ python system_tests/runner.py --mode cc --suite general
 
   ## Obsidian Wiki
 
-  继承全局协议（`~/.claude/CLAUDE.md` + `~/Documents/Obsidian Vault/_SCHEMA.md`）。项目 vault：`~/Documents/Obsidian
-  Vault/jarvis/`。开场读 `jarvis/_hot.md`；`/clear`/"收尾"/30+ 轮时主动提议写 `jarvis/sessions/`。
+  继承全局协议（`~/.claude/CLAUDE.md` + `~/Documents/Obsidian Vault/_SCHEMA.md`）。项目 vault：`~/Documents/Obsidian Vault/`（根目录即 jarvis vault，无子目录）。开场读 `_hot.md`；`/clear`/"收尾"/30+ 轮时主动提议写 `sessions/`。
