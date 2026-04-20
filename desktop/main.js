@@ -58,21 +58,28 @@ class WindowManager {
     /** @type {Set<string>} */
     this.hoveringComponents = new Set();
     /** @type {'window' | 'pet'} */
-    this.currentMode = 'window';
+    this.currentMode = 'pet';  // 启动即 Pet mode
   }
 
   createWindow() {
+    // 直接以 Pet mode 设置创建窗口 —— 无切换过程、无闪屏
+    const target = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+
     this.window = new BrowserWindow({
-      width: 900,
-      height: 670,
+      x: target.bounds.x,
+      y: target.bounds.y,
+      width: target.bounds.width,
+      height: target.bounds.height,
       show: false,
-      // OLV sets transparent:true + backgroundColor:'#ffffff' for Window mode.
-      // macOS: transparent/frame cannot be mutated at runtime — set once here.
       transparent: true,
-      backgroundColor: '#ffffff',
+      backgroundColor: '#00000000',  // Pet mode 透明；后续切到 window 会 setBackgroundColor('#ffffff')
       frame: false,
       hasShadow: false,
       autoHideMenuBar: true,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      focusable: false,
+      resizable: false,
       icon: ICON_PATH,
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
@@ -81,6 +88,16 @@ class WindowManager {
         sandbox: true,
       },
     });
+
+    // Pet mode 特化（BrowserWindow options 没覆盖的部分）—— 等同
+    // `continueSetWindowModePet` 的效果
+    if (isMac) {
+      this.window.setAlwaysOnTop(true, 'screen-saver');
+      this.window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      this.window.setIgnoreMouseEvents(true);
+    } else {
+      this.window.setIgnoreMouseEvents(true, { forward: true });
+    }
 
     this.window.once('ready-to-show', () => {
       if (this.window) this.window.show();
@@ -115,6 +132,14 @@ class WindowManager {
       if (!isQuitting) {
         e.preventDefault();
         this.window.hide();
+      }
+    });
+
+    // 隐藏时主动收面板，保证下次 ⌘Space restore 时 toggle 语义干净
+    // （否则 panel 的 isOpen=true 会让 toggle 直接走 hide 路径，产生"闪一下就消失"）
+    this.window.on('hide', () => {
+      if (this.window && !this.window.isDestroyed()) {
+        this.window.webContents.send('close-input-panel');
       }
     });
 
@@ -205,22 +230,11 @@ class WindowManager {
   continueSetWindowModePet() {
     if (!this.window) return;
 
-    // Span the virtual desktop across all displays so the model can be dragged
-    // freely between monitors.
-    const displays = screen.getAllDisplays();
-    const minX = Math.min(...displays.map((d) => d.bounds.x));
-    const minY = Math.min(...displays.map((d) => d.bounds.y));
-    const maxX = Math.max(...displays.map((d) => d.bounds.x + d.bounds.width));
-    const maxY = Math.max(...displays.map((d) => d.bounds.y + d.bounds.height));
-    const combinedWidth = maxX - minX;
-    const combinedHeight = maxY - minY;
-
-    this.window.setBounds({
-      x: minX,
-      y: minY,
-      width: combinedWidth,
-      height: combinedHeight,
-    });
+    // macOS 透明 NSWindow 无法可靠跨屏渲染（OLV 也栽在这里）：过去这里
+    // setBounds 跨虚拟桌面 union，实际只在一块屏上画。改成每次只占当前屏，
+    // 用户用 ⌘⇧→/⌘⇧← 在屏之间跳。
+    const target = this._getTargetDisplay();
+    this.window.setBounds(target.bounds);
 
     this.window.setResizable(false);
     this.window.setSkipTaskbar(true);
@@ -234,6 +248,44 @@ class WindowManager {
     }
 
     this.window.webContents.send('mode-changed', 'pet');
+  }
+
+  /**
+   * 挑一块目标显示器：优先用 setWindowModePet 里保存的 windowedBounds（进 pet
+   * 前用户所在的位置），否则用当前光标所在屏。
+   */
+  _getTargetDisplay() {
+    const ref = this.windowedBounds || this.window?.getBounds();
+    if (ref) {
+      const center = { x: ref.x + ref.width / 2, y: ref.y + ref.height / 2 };
+      return screen.getDisplayNearestPoint(center);
+    }
+    return screen.getPrimaryDisplay();
+  }
+
+  /**
+   * 把 pet 窗口跳到相邻显示器（direction: +1 右 / -1 左，按 x 坐标排序）。
+   * 通知 renderer 居中模型到新窗口。
+   */
+  jumpToDisplay(direction) {
+    if (!this.window || this.currentMode !== 'pet') return;
+    const displays = screen.getAllDisplays();
+    if (displays.length <= 1) return;
+    const sorted = displays.slice().sort((a, b) => a.bounds.x - b.bounds.x);
+    const cur = this._getTargetDisplay();
+    const curIdx = sorted.findIndex((d) => d.id === cur.id);
+    const nextIdx = (curIdx + direction + sorted.length) % sorted.length;
+    const target = sorted[nextIdx];
+    const oldBounds = this.window.getBounds();
+    // 用透明度 handshake 盖住 macOS 原生跨屏转场的闪烁：
+    // setOpacity(0) → setBounds → 通知 renderer 重绘 → renderer 发 display-rendered → setOpacity(1)
+    this.window.setOpacity(0);
+    this.window.setBounds(target.bounds);
+    this.windowedBounds = null;
+    this.window.webContents.send('display-changed', {
+      oldBounds: { x: oldBounds.x, y: oldBounds.y, width: oldBounds.width, height: oldBounds.height },
+      newBounds: { x: target.bounds.x, y: target.bounds.y, width: target.bounds.width, height: target.bounds.height },
+    });
   }
 
   // Called on every hover report from the renderer while in Pet Mode.
@@ -358,6 +410,18 @@ ipcMain.on('set-mode', (_event, mode) => {
   if (typeof mode !== 'string' || !['window', 'pet'].includes(mode)) return;
   wm.setWindowMode(mode);
   if (menuManager) menuManager.setCurrentMode(mode);
+});
+
+// Renderer 通过 preload 同步 IPC 拿启动模式，用来立即应用 body.pet-mode CSS，
+// 避免 window-mode UI 闪过。
+ipcMain.on('get-initial-mode', (e) => {
+  e.returnValue = wm ? wm.getCurrentMode() : 'pet';
+});
+
+// 跨屏跳转完成 renderer 重绘后通知 main 恢复透明度
+ipcMain.on('display-rendered', () => {
+  const win = wm.getWindow();
+  if (win && !win.isDestroyed()) win.setOpacity(1);
 });
 
 ipcMain.on('quit', () => {
@@ -500,17 +564,43 @@ app.whenReady().then(async () => {
 
   ensureTray();
 
-  // ⌘Space global shortcut — toggles the Pet-mode Liquid Glass overlay.
-  // In Window mode the shortcut no-ops (by design — no panel in Window).
+  // ⌘Space — 全能召唤键：
+  //   1. 强制 Pet mode（如果在 Window）
+  //   2. 强制可见（如果被 hide 到菜单栏）
+  //   3. 把 Jarvis app 拉到前台（抢焦点）
+  //   4. 切换命令面板
   const toggleOk = globalShortcut.register('CommandOrControl+Space', () => {
-    if (wm.getCurrentMode() !== 'pet') return;
     const win = wm.getWindow();
     if (!win || win.isDestroyed()) return;
+    if (wm.getCurrentMode() !== 'pet') {
+      wm.setWindowMode('pet');
+      if (menuManager) menuManager.setCurrentMode('pet');
+    }
+    if (!win.isVisible()) win.show();
+    if (isMac && typeof app.focus === 'function') {
+      app.focus({ steal: true });
+    }
     win.webContents.send('toggle-input-panel');
   });
   if (!toggleOk) {
     console.warn('[main] Failed to register CommandOrControl+Space — another app may own it.');
   }
+
+  // ⌘⇧P global shortcut — toggles between Window and Pet mode from anywhere.
+  // Works even when the Jarvis window isn't focused.
+  const modeToggleOk = globalShortcut.register('CommandOrControl+Shift+P', () => {
+    const next = wm.getCurrentMode() === 'pet' ? 'window' : 'pet';
+    wm.setWindowMode(next);
+    if (menuManager) menuManager.setCurrentMode(next);
+  });
+  if (!modeToggleOk) {
+    console.warn('[main] Failed to register CommandOrControl+Shift+P — another app may own it.');
+  }
+
+  // ⌘⇧→ / ⌘⇧← — 在显示器之间跳（Pet mode only）。macOS 透明窗口不能真跨屏，
+  // 这是"跨屏"的替代方案。
+  globalShortcut.register('CommandOrControl+Shift+Right', () => wm.jumpToDisplay(+1));
+  globalShortcut.register('CommandOrControl+Shift+Left', () => wm.jumpToDisplay(-1));
 
   app.on('activate', () => {
     // macOS: re-open or un-hide on dock click.
