@@ -1144,6 +1144,9 @@ class LLMClient:
         _stream_output_tokens = 0
         _stream_finish_reason: str | None = None
         _stream_cached_tokens: int = 0
+        # OpenAI/xAI stream chunks carry the same response id (chatcmpl-...)
+        # in every chunk. Capture once from the first chunk that has one.
+        _stream_response_id: str | None = None
 
         try:
             response = self._call_with_retry(
@@ -1154,6 +1157,10 @@ class LLMClient:
             has_tool_calls = False
 
             for chunk in response:
+                if _stream_response_id is None:
+                    _cid = getattr(chunk, "id", None)
+                    if _cid:
+                        _stream_response_id = _cid
                 if getattr(chunk, "usage", None):
                     _stream_input_tokens += getattr(chunk.usage, "prompt_tokens", 0) or 0
                     _stream_output_tokens += getattr(chunk.usage, "completion_tokens", 0) or 0
@@ -1206,7 +1213,7 @@ class LLMClient:
                 )
             )
             self._last_metadata["provider"] = _provider
-            self._last_metadata["response_id"] = None  # not available in stream chunks
+            self._last_metadata["response_id"] = _stream_response_id
             self._last_metadata["streaming"] = True
             self._last_metadata["cache_creation_input_tokens"] = None
             if _provider == "xai":

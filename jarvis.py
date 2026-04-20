@@ -184,6 +184,13 @@ class JarvisApp:
         # samples for the current turn. Set by the on_first_chunk callback
         # (audio thread). Single attr-assign is GIL-atomic, no lock needed.
         self._first_audio_at: float | None = None
+        # Trace v3: snapshots set by _mark_turn_end at the actual end-of-turn
+        # moment. _flush_trace prefers these over computing fresh values in
+        # the wrapper's finally — that decouples end_reason / latency_ms
+        # from the wrapper-finally moment, avoiding a race where the next
+        # turn's user input sets _cancel before this turn's flush runs.
+        self._last_turn_end_at: float | None = None
+        self._last_real_end_reason: str | None = None
 
         from memory.direct_answer import DirectAnswerer
         self.direct_answerer = DirectAnswerer(
@@ -772,9 +779,15 @@ class JarvisApp:
                 create_tts_pipeline=create_tts_pipeline,
             )
             if not self._last_end_reason:
-                self._last_end_reason = (
-                    "interrupted" if self._cancel.is_set() else "success"
-                )
+                # Prefer the inner's snapshot taken at actual end-of-turn —
+                # avoids racing with the NEXT turn's user input setting
+                # _cancel between inner return and this finally.
+                if self._last_real_end_reason:
+                    self._last_end_reason = self._last_real_end_reason
+                else:
+                    self._last_end_reason = (
+                        "interrupted" if self._cancel.is_set() else "success"
+                    )
             return result
         except Exception as exc:
             self._last_end_reason = "error"
@@ -882,6 +895,7 @@ class JarvisApp:
             self._last_path = "resume"
             print(f"path={self._last_path}")
             self._last_response_text = full_text
+            self._mark_turn_end()
             return full_text
 
         # ── 快捷路径 1：告别 ── 直接本地回复，不走任何 API，~120ms
@@ -901,6 +915,7 @@ class JarvisApp:
                     emotion,
                 )
             self._last_response_text = reply
+            self._mark_turn_end()
             return "farewell"
 
         # ── 升级模式 ── 用户说"仔细想想"等前缀词，本轮临时切换到更强的 LLM
@@ -944,6 +959,7 @@ class JarvisApp:
                         emotion,
                     )
                 self._last_response_text = reply
+                self._mark_turn_end()
                 return reply
 
         # ── 关键词规则匹配 ── 用户定义的触发词（如"晚安"→关灯+关窗帘）
@@ -1011,8 +1027,38 @@ class JarvisApp:
 
         # ── 记忆直答（L1）── 如果记忆里有确切答案就直接回复，完全跳过 LLM
         if user_id and response_text is None:
+            # Trace v3: reset DirectAnswerer's INTERNAL retriever last_hits
+            # so the post-call snapshot only reflects this turn's lookup.
+            # DirectAnswerer constructs its own MemoryRetriever instance
+            # (memory/direct_answer.py:48), separate from MemoryManager's.
+            try:
+                self.direct_answerer._retriever.last_hits = []
+            except AttributeError:
+                pass
             try:
                 direct = self.direct_answerer.try_answer(text, user_id)
+                # Trace v3: snapshot DirectAnswerer's retriever hits. This
+                # is the "context retrieval" the user actually cares about
+                # — build_stable_prefix's <=20 branch doesn't call retrieve,
+                # but try_answer always does (the "Retrieved N from M
+                # candidates" log). Overwrites the manager-retriever empty
+                # snapshot from the prior block when DA actually fired.
+                try:
+                    da_hits = getattr(
+                        self.direct_answerer._retriever, "last_hits", [],
+                    )
+                    if da_hits:
+                        self._last_memory_query_ids = {
+                            "observation_ids": [
+                                h.get("id") for h in da_hits if h.get("id") is not None
+                            ],
+                            "top_k_scores": [
+                                round(float(h.get("_score", 0.0)), 4)
+                                for h in da_hits
+                            ],
+                        }
+                except AttributeError:
+                    pass
                 if direct:
                     _t_da = time.monotonic()
                     _da_ms = int((_t_da - _t_think)*1000)
@@ -1034,6 +1080,7 @@ class JarvisApp:
                         except Exception:
                             pass
                     self._last_response_text = direct
+                    self._mark_turn_end()
                     return direct
             except Exception as exc:
                 self.logger.warning("Level 1 answer failed: %s", exc)
@@ -1304,6 +1351,12 @@ class JarvisApp:
                     }
                 except AttributeError:
                     pass  # older llm.py without v3 metadata exposure
+                # Trace v3: snapshot the actual end-of-turn moment NOW —
+                # AFTER tts_pipeline.wait_done() returns (TTS audio fully
+                # played). _flush_trace would otherwise read _cancel state
+                # at wrapper-finally time, which can race with the next
+                # turn's user input setting _cancel. See _mark_turn_end.
+                self._mark_turn_end()
 
         # ── 持久化 ── 保存对话历史 + 后台异步提取记忆（GPT-4o-mini）
         cloud_path = updated_messages is not None
@@ -1366,6 +1419,7 @@ class JarvisApp:
 
         print(f"path={self._last_path}")
         self._last_response_text = response_text or ""
+        self._mark_turn_end()
         return response_text
 
     # ══════════════════════════════════════════════════════════════
@@ -1442,6 +1496,8 @@ class JarvisApp:
         self._last_trigger_source = trigger_source
         self._last_response_text = ""
         self._last_end_reason = None
+        self._last_turn_end_at = None
+        self._last_real_end_reason = None
         self._last_error = None
         self._last_intent_route_score = None
         self._last_tts_emotion = None
@@ -1476,6 +1532,31 @@ class JarvisApp:
             self._pending_outcome_update = (self._last_trace_id, signal)
         else:
             self._pending_outcome_update = None
+
+    def _mark_turn_end(self) -> None:
+        """Snapshot end-of-turn moment for trace v3.
+
+        Idempotent — only the FIRST call wins per turn. Captures:
+        - ``_last_turn_end_at`` (time.monotonic snapshot used by
+          _flush_trace for ``latency_ms``)
+        - ``_last_real_end_reason`` ("interrupted" if ``_cancel`` is set
+          right now, else "success") — _flush_trace prefers this over
+          re-reading ``_cancel`` in the wrapper's finally, where a late
+          interrupt from the NEXT turn's user input would otherwise
+          poison this turn's record.
+
+        Called from each return-bearing path inside _process_turn_inner
+        (early returns + cloud finally after wait_done). The wrapper's
+        existing fallback handles paths that didn't reach a snapshot
+        (e.g., exceptions raised before any return).
+        """
+        if self._last_turn_end_at is not None:
+            return  # first call wins; subsequent ignored
+        self._last_turn_end_at = time.monotonic()
+        if self._last_real_end_reason is None:
+            self._last_real_end_reason = (
+                "interrupted" if self._cancel.is_set() else "success"
+            )
 
     def _arm_tts_first_chunk(
         self,
@@ -1625,8 +1706,12 @@ class JarvisApp:
             session_turn = self._turn_counter.get(trace_session, 0) + 1
             self._turn_counter[trace_session] = session_turn
 
-            # Total latency (turn_start was captured BEFORE _reset_turn_state)
-            total_ms = int((time.monotonic() - turn_start) * 1000)
+            # Total latency: prefer the inner-snapshot moment over now() so
+            # late finally-block delays (slow SQLite / ThreadPool contention
+            # / TTS pipeline draining) don't inflate latency_ms past the
+            # actual end-of-turn perceived by the user.
+            _end_basis = self._last_turn_end_at if self._last_turn_end_at else time.monotonic()
+            total_ms = int((_end_basis - turn_start) * 1000)
             self._last_timings["total_ms"] = total_ms
 
             # ttfs_ms preference order:

@@ -333,7 +333,7 @@ llm:
   provider: openai
 
   # 运行时可切换的模型预设（"小月，快速模式" / "小月，深度模式"）
-  default_preset: fast
+  default_preset: deep
 
   presets:
     fast:
@@ -714,9 +714,11 @@ asr_normalizer_fuzzy:
 # to populate the trace.cost_usd column. Update when provider prices change.
 # ----------------------------------------------------------------------------
 llm_pricing:
-  grok-4.20:           {input: 3.00, output: 15.00, cache_read: 0.30}
-  grok-reasoning:      {input: 5.00, output: 20.00, cache_read: 0.50}
-  grok-4-1-fast:       {input: 0.50, output: 1.50,  cache_read: 0.05}
+  grok-4.20:                       {input: 3.00, output: 15.00, cache_read: 0.30}
+  grok-4.20-0309-non-reasoning:    {input: 3.00, output: 15.00, cache_read: 0.30}  # actual xAI id
+  grok-reasoning:                  {input: 5.00, output: 20.00, cache_read: 0.50}
+  grok-4-1-fast:                   {input: 0.50, output: 1.50,  cache_read: 0.05}
+  grok-4.1-fast-non-reasoning:     {input: 0.50, output: 1.50,  cache_read: 0.05}  # actual xAI id
   claude-opus-4-7:     {input: 15.00, output: 75.00, cache_read: 1.50, cache_write: 18.75}
   claude-sonnet-4-6:   {input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75}
   llama-3.3-70b:            {input: 0.59, output: 0.79,  cache_read: 0.0}   # Groq legacy alias
