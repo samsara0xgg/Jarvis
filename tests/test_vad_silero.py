@@ -242,6 +242,73 @@ class TestDefaultsAreDBFS:
         )
 
 
+class TestActiveDurationMs:
+    """Task 5a: vad_duration_ms accumulator."""
+
+    def test_silence_only_zero_duration(self, mock_session_factory):
+        """All-silence frames never enter ACTIVE, so duration stays 0."""
+        sess = mock_session_factory([0.1] * 20)
+        vad = _build(sess)
+        for _ in range(10):
+            vad.accept_waveform(np.zeros(_CHUNK_SAMPLES, dtype=np.float32))
+        assert vad.active_duration_ms == 0
+
+    def test_speech_frames_counted(self, mock_session_factory):
+        """K frames in ACTIVE state must equal K * _CHUNK_SAMPLES / 16000 * 1000 ms."""
+        # required_hits=2 → enters ACTIVE after 2nd speech chunk.
+        # We feed 5 speech chunks total → 3 are counted in ACTIVE.
+        sess = mock_session_factory([0.9] * 20)
+        vad = _build(sess, required_hits=2)
+        n_chunks = 5
+        for _ in range(n_chunks):
+            vad.accept_waveform(np.zeros(_CHUNK_SAMPLES, dtype=np.float32))
+        active_chunks = n_chunks - 2  # first 2 are the hit-accumulation period
+        expected_ms = int(active_chunks * _CHUNK_SAMPLES / 16000 * 1000)
+        assert vad.active_duration_ms == expected_ms
+
+    def test_mixed_silence_and_speech(self, mock_session_factory):
+        """Only speech-state frames are counted, not silence frames."""
+        # 3 silence frames → still IDLE, then 4 speech frames (required_hits=2)
+        # → ACTIVE after chunk 2 of speech → 2 ACTIVE chunks counted.
+        seq = [0.1] * 3 + [0.9] * 10
+        sess = mock_session_factory(seq)
+        vad = _build(sess, required_hits=2)
+        # silence
+        for _ in range(3):
+            vad.accept_waveform(np.zeros(_CHUNK_SAMPLES, dtype=np.float32))
+        assert vad.active_duration_ms == 0
+        # speech
+        speech_chunks = 4
+        for _ in range(speech_chunks):
+            vad.accept_waveform(np.zeros(_CHUNK_SAMPLES, dtype=np.float32))
+        active_chunks = speech_chunks - 2
+        expected_ms = int(active_chunks * _CHUNK_SAMPLES / 16000 * 1000)
+        assert vad.active_duration_ms == expected_ms
+
+    def test_reset_clears_duration_between_recordings(self, mock_session_factory):
+        """Second recording's duration must be independent of the first."""
+        sess = mock_session_factory([0.9] * 40)
+        vad = _build(sess, required_hits=2)
+
+        # First recording: 6 speech chunks → 4 ACTIVE chunks
+        for _ in range(6):
+            vad.accept_waveform(np.zeros(_CHUNK_SAMPLES, dtype=np.float32))
+        first_ms = vad.active_duration_ms
+        assert first_ms > 0
+
+        vad.reset()
+        assert vad.active_duration_ms == 0, "reset() must clear _active_samples"
+
+        # Second recording: 4 speech chunks → 2 ACTIVE chunks
+        for _ in range(4):
+            vad.accept_waveform(np.zeros(_CHUNK_SAMPLES, dtype=np.float32))
+        second_ms = vad.active_duration_ms
+        expected_second_ms = int(2 * _CHUNK_SAMPLES / 16000 * 1000)
+        assert second_ms == expected_second_ms
+        # The two values must differ — proving no cross-recording accumulation.
+        assert first_ms != second_ms
+
+
 class TestRealModel:
     """Integration-ish: load the real bundled ONNX file if present."""
 

@@ -78,6 +78,7 @@ class SileroVADDirect:
         self._hits: int
         self._misses: int
         self._segment_completed: bool
+        self._active_samples: int
         self.reset()
 
         # Warm up — first inference takes ~200ms; do it now so the first
@@ -112,6 +113,7 @@ class SileroVADDirect:
         self._hits = 0
         self._misses = 0
         self._segment_completed = False
+        self._active_samples = 0
         # perf_counter timestamp of the most recent IDLE→ACTIVE transition.
         # Used by bench harnesses to measure "speech-onset → callback-fire"
         # latency end-to-end. None until the first START event.
@@ -163,6 +165,20 @@ class SileroVADDirect:
         """``time.perf_counter()`` at the last IDLE→ACTIVE transition (None if never)."""
         return self._last_start_perf
 
+    @property
+    def active_duration_ms(self) -> int:
+        """Total speech-active samples accumulated since last ``reset()``, in milliseconds.
+
+        Only samples processed while the state machine is in ACTIVE state are
+        counted — silence frames and the pre-ACTIVE hit-accumulation period are
+        excluded. Resets to 0 on each ``reset()`` call, so it reflects one
+        recording session at a time.
+
+        Returns:
+            Duration of accumulated speech frames in whole milliseconds.
+        """
+        return int(self._active_samples / self._sample_rate * 1000)
+
     def empty(self) -> bool:
         """False when at least one complete speech segment has been observed.
 
@@ -210,6 +226,7 @@ class SileroVADDirect:
             else:
                 self._hits = 0
         else:  # ACTIVE
+            self._active_samples += _CHUNK_SAMPLES
             if not is_speech:
                 self._misses += 1
                 if self._misses >= self._required_misses:
