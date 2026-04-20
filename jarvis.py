@@ -1295,6 +1295,13 @@ class JarvisApp:
                     self._last_llm_metadata = self.llm.last_metadata
                     self._last_finish_reason = self.llm.last_finish_reason
                     self._last_cache_read_tokens = self.llm.last_cache_read_tokens
+                    # Mirror tokens into _last_llm_tokens dict for the
+                    # legacy shape that _flush_trace and other consumers
+                    # already read. Sourced from new LLMClient properties.
+                    self._last_llm_tokens = {
+                        "input": getattr(self.llm, "last_input_tokens", None),
+                        "output": getattr(self.llm, "last_output_tokens", None),
+                    }
                 except AttributeError:
                     pass  # older llm.py without v3 metadata exposure
 

@@ -58,6 +58,12 @@ class LLMClient:
         self._last_metadata: dict = self._empty_metadata()
         self._last_finish_reason: str | None = None
         self._last_cache_read_tokens: int | None = None
+        # Total prompt + completion tokens for the most recent chat() call.
+        # Populated by every concrete chat path (anthropic / openai non-stream
+        # and stream). None when the path doesn't surface usage (Anthropic
+        # pure-stream without get_final_message). Reset by chat() entry.
+        self._last_input_tokens: int | None = None
+        self._last_output_tokens: int | None = None
 
         # Defaults — may be overwritten by preset or flat config below
         self.model: str = str(llm_config.get("model", "gpt-4o"))
@@ -160,6 +166,27 @@ class LLMClient:
             Token count, or ``None`` if not yet populated.
         """
         return self._last_cache_read_tokens
+
+    @property
+    def last_input_tokens(self) -> int | None:
+        """Total prompt tokens for the most recent chat() call.
+
+        Sums OpenAI ``usage.prompt_tokens`` (or Anthropic
+        ``usage.input_tokens``) across the inner provider request — for
+        tool-use loops the value reflects the FINAL request only (each
+        loop iteration overwrites). None when the path doesn't surface
+        usage (Anthropic pure-stream without get_final_message).
+        """
+        return self._last_input_tokens
+
+    @property
+    def last_output_tokens(self) -> int | None:
+        """Total completion tokens for the most recent chat() call.
+
+        See ``last_input_tokens``. Same semantics for tool-use loops and
+        provider quirks.
+        """
+        return self._last_output_tokens
 
     # ------------------------------------------------------------------
     # Preset / model switching helpers
@@ -289,6 +316,8 @@ class LLMClient:
         self._last_metadata = self._empty_metadata()
         self._last_finish_reason = None
         self._last_cache_read_tokens = None
+        self._last_input_tokens = None
+        self._last_output_tokens = None
 
         component = f"llm.{self.provider}"
         try:
@@ -372,6 +401,12 @@ class LLMClient:
             self._last_cache_read_tokens = (
                 getattr(usage, "cache_read_input_tokens", None) if usage else 0
             ) or 0
+            self._last_input_tokens = (
+                getattr(usage, "input_tokens", None) if usage else None
+            )
+            self._last_output_tokens = (
+                getattr(usage, "output_tokens", None) if usage else None
+            )
 
             assistant_content = self._serialize_anthropic_content(response.content)
             messages.append({"role": "assistant", "content": assistant_content})
@@ -512,6 +547,12 @@ class LLMClient:
             self._last_cache_read_tokens = (
                 getattr(ptd, "cached_tokens", None) if ptd else None
             ) or 0
+            self._last_input_tokens = (
+                getattr(usage, "prompt_tokens", None) if usage else None
+            )
+            self._last_output_tokens = (
+                getattr(usage, "completion_tokens", None) if usage else None
+            )
 
             # Store assistant message in OpenAI format for the loop
             oai_assistant: dict[str, Any] = {
@@ -1172,6 +1213,11 @@ class LLMClient:
                 self._last_metadata["conv_id"] = self._grok_conv_id
             self._last_finish_reason = _stream_finish_reason
             self._last_cache_read_tokens = _stream_cached_tokens
+            # Streaming tokens come piecewise via the chunk.usage stat
+            # event (sent at end-of-stream). Commit the totals so callers
+            # can compute cost from prompt + completion before chat() returns.
+            self._last_input_tokens = _stream_input_tokens or None
+            self._last_output_tokens = _stream_output_tokens or None
 
             self.logger.info("OpenAI stream complete: %s", full_text[:200])
             return full_text, stored_messages
