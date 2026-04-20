@@ -708,3 +708,17 @@ asr_aliases:
 asr_normalizer_fuzzy:
   enabled: false
   max_distance: 2
+
+# ----------------------------------------------------------------------------
+# LLM pricing per 1M tokens (USD). Used by memory/pricing.compute_cost_usd
+# to populate the trace.cost_usd column. Update when provider prices change.
+# ----------------------------------------------------------------------------
+llm_pricing:
+  grok-4.20:           {input: 3.00, output: 15.00, cache_read: 0.30}
+  grok-reasoning:      {input: 5.00, output: 20.00, cache_read: 0.50}
+  grok-4-1-fast:       {input: 0.50, output: 1.50,  cache_read: 0.05}
+  claude-opus-4-7:     {input: 15.00, output: 75.00, cache_read: 1.50, cache_write: 18.75}
+  claude-sonnet-4-6:   {input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75}
+  llama-3.3-70b:       {input: 0.59, output: 0.79,  cache_read: 0.0}
+  llama3.1-8b:         {input: 0.10, output: 0.10,  cache_read: 0.0}
+  gpt-4o-mini:         {input: 0.15, output: 0.60,  cache_read: 0.075}
