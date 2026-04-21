@@ -1198,14 +1198,18 @@ class LLMClient:
                 if delta is None:
                     continue
                 if delta.tool_calls:
+                    self.logger.info("Tool call delta: %s", delta.tool_calls)
                     has_tool_calls = True
-                    break
                 if delta.content:
+                    if has_tool_calls:
+                        self.logger.info("Tool call delta overridden by streamed content; continuing text path")
+                        has_tool_calls = False
                     full_text += delta.content
                     buffer += delta.content
                     buffer = self._flush_sentences(buffer, on_sentence)
 
-            self._flush_sentences(buffer, on_sentence, force=True)
+            if not has_tool_calls:
+                self._flush_sentences(buffer, on_sentence, force=True)
 
             if has_tool_calls or not full_text.strip():
                 reason = "tool use" if has_tool_calls else "empty stream"
