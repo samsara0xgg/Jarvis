@@ -143,10 +143,13 @@ class JarvisApp:
         self._turn_counter: dict[str, int] = {}  # session_id → turn count
 
         from memory.cold.nli_classifier import NLIClassifier
-        nli_dir = config.get("memory", {}).get("outcome_detector", {}).get(
-            "nli", {}
-        ).get("model_dir", "data/nli-erlangshen")
-        self.nli_classifier = NLIClassifier(nli_dir)  # lazy-loaded on first use
+        nli_cfg = config.get("memory", {}).get("outcome_detector", {}).get("nli", {})
+        self.nli_classifier = NLIClassifier(
+            model_dir=nli_cfg.get("model_dir", "data/nli-erlangshen"),
+            entailment_threshold=nli_cfg.get("entailment_threshold", 0.65),
+            min_text_length=nli_cfg.get("min_text_length", 2),
+            max_text_length=nli_cfg.get("max_text_length", 500),
+        )  # lazy-loaded on first use
 
         # ── Trace v3 launch session ──
         # The conversation_store keys history by user_id (history persists

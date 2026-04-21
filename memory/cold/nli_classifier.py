@@ -40,9 +40,18 @@ class NLIClassifier:
     the session. All subsequent calls are lock-free reads.
     """
 
-    def __init__(self, model_dir: str | Path = "data/nli-erlangshen") -> None:
-        """Store path. Model loads on first classify() call."""
+    def __init__(
+        self,
+        model_dir: str | Path = "data/nli-erlangshen",
+        entailment_threshold: float = 0.65,
+        min_text_length: int = 2,
+        max_text_length: int = 500,
+    ) -> None:
+        """Store path and thresholds. Model loads on first classify() call."""
         self._model_dir = Path(model_dir)
+        self._entailment_threshold = entailment_threshold
+        self.min_text_length = min_text_length
+        self.max_text_length = max_text_length
         self._session: "ort.InferenceSession | None" = None
         self._tokenizer: "PreTrainedTokenizerBase | None" = None
         self._init_lock = threading.Lock()
@@ -110,13 +119,6 @@ class NLIClassifier:
             "entailment": float(probs[_IDX_ENTAILMENT]),
         }
 
-    # Thresholds: empirically calibrated against Erlangshen-Roberta-110M-NLI
-    # on Chinese conversational feedback utterances. Lowered from config default
-    # of 0.7 → 0.65 to capture mid-confidence positives ("你说得很对" ≈ 0.67)
-    # without false-positive risk at 0.65 boundary (tested: "对了我还想问" = 0.65
-    # strictly not above threshold → correctly returns None).
-    _ENTAILMENT_THRESHOLD: float = 0.65
-
     # Hypothesis templates: shorter, factual-style hypotheses calibrated for
     # this model's NLI training distribution. E.g. "说话人表示认可" achieves
     # entailment 0.80 for "好的" vs 0.43 with longer phrasings.
@@ -136,11 +138,11 @@ class NLIClassifier:
         """
         try:
             neg_scores = self.classify(user_text, self._HYP_NEGATIVE)
-            if neg_scores["entailment"] > self._ENTAILMENT_THRESHOLD:
+            if neg_scores["entailment"] > self._entailment_threshold:
                 return -1
 
             pos_scores = self.classify(user_text, self._HYP_POSITIVE)
-            if pos_scores["entailment"] > self._ENTAILMENT_THRESHOLD:
+            if pos_scores["entailment"] > self._entailment_threshold:
                 return 1
         except Exception:
             LOGGER.exception("NLI classify failed in detect_outcome")

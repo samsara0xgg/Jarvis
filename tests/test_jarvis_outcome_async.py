@@ -43,6 +43,8 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     app._prompt_version = None
 
     app.nli_classifier = MagicMock()
+    app.nli_classifier.min_text_length = 2
+    app.nli_classifier.max_text_length = 500
     app.nli_classifier.detect_outcome = MagicMock(return_value=None)
 
     app._last_asr_confidence = None

@@ -58,9 +58,11 @@ def detect_outcome(
         +1 (entailment) / -1 (contradiction) / None (ambiguous or no NLI).
     """
     text = user_text.strip()
-    if not text or len(text) < 2 or len(text) > 500:
+    if not text:
         return None
     if nli is None:
+        return None
+    if len(text) < nli.min_text_length or len(text) > nli.max_text_length:
         return None
     try:
         return nli.detect_outcome(text)

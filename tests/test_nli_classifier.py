@@ -43,7 +43,9 @@ TEST_CASES = [
 def _run_detect(nli_instance, text: str) -> int | None:
     """Mirror the filter logic from detect_outcome() in outcome_detector.py."""
     stripped = text.strip()
-    if not stripped or len(stripped) < 2 or len(stripped) > 500:
+    if not stripped:
+        return None
+    if len(stripped) < nli_instance.min_text_length or len(stripped) > nli_instance.max_text_length:
         return None
     return nli_instance.detect_outcome(stripped)
 

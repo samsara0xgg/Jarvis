@@ -96,6 +96,8 @@ def _make_jarvis(tmp_path) -> JarvisApp:
 
     # NLI classifier (lazy-loaded; stub returns None so outcome tests are unit-scope)
     app.nli_classifier = MagicMock()
+    app.nli_classifier.min_text_length = 2
+    app.nli_classifier.max_text_length = 500
     app.nli_classifier.detect_outcome = MagicMock(return_value=None)
 
     # ── prompt_version (16-char SHA prefix of personality.py) ──
