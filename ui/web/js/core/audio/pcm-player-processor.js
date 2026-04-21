@@ -13,7 +13,7 @@
 // playback rate. 5 seconds of ring (~640 KB) is ample headroom for network
 // jitter and browser scheduling hiccups. If overflow ever trips here, the
 // async write path regressed — investigate the send side, don't grow the ring.
-const RING_SECONDS = 5;
+const RING_SECONDS = 15;
 const SAMPLE_RATE = 32000;
 
 // Cursor reporting cadence: post played-sample total every ~150 ms so the
