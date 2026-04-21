@@ -1250,11 +1250,11 @@ class LLMClient:
 
     def _personalize_system(
         self, user_name: str | None, user_role: str, user_emotion: str = "",
-        memory_context: str = "",
+        memory_context: str = "",  # deprecated; dropped in Step 7c
     ) -> str:
+        del memory_context  # no-op until Step 7c strips the kwarg from callers
         return build_personality_prompt(
             user_name=user_name,
             user_role=user_role,
             user_emotion=user_emotion,
-            memory_context=memory_context,
         )

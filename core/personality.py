@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from datetime import datetime
 
 LOGGER = logging.getLogger(__name__)
@@ -127,28 +128,20 @@ _EMOTION_CONTEXT = {
 }
 
 
-def build_personality_prompt(
-    user_name: str | None = None,
-    user_role: str = "guest",
-    situation: str = "normal",
-    user_emotion: str = "",
-    memory_context: str = "",
-) -> str:
-    """动态组装 system prompt.
+def build_identity_block(user_role: str = "guest") -> str:
+    """Assembler Block 1 — static identity: personality + output_rules.
+
+    Cache-friendly; only `_nsfw_mode` flips the content. ``user_role`` is
+    accepted for future per-role gating but currently ignored.
 
     Args:
-        user_name: 当前用户名（声纹识别结果）。
-        user_role: 用户角色。
-        situation: 当前情境（normal/urgent/error/rapid）。
-        user_emotion: SenseVoice 检测到的用户情绪（如 "HAPPY", "SAD"）。
-        memory_context: MemoryManager.query() 返回的记忆上下文（含用户偏好）。
+        user_role: Authenticated user role (owner / guest / etc.).
 
     Returns:
-        完整的 system prompt 字符串。
+        ``<personality>...</personality>\n\n<output_rules>...</output_rules>``
     """
-    sections = []
+    del user_role  # accepted for API symmetry with build_situation_block
 
-    # 人格核心（不变）+ 模式切换
     base = _BASE_PERSONALITY
     if _nsfw_mode:
         base += _NSFW_ADDON
@@ -156,10 +149,9 @@ def build_personality_prompt(
         base += ("\n\n你不参与任何色情、性暗示、调教类话题。"
                  "用户提这类要求时，用幽默简短的方式岔开话题，绝对不要配合、不要角色扮演、不要说骚话。"
                  "只说一句岔开就行，不要解释为什么不配合。")
-    sections.append(f"<personality>\n{base}\n</personality>")
 
-    # 输出规则
-    sections.append(
+    personality = f"<personality>\n{base}\n</personality>"
+    output_rules = (
         "<output_rules>\n"
         "回复是给人听的，不是给人看的。不要用列表、序号、标题、markdown。所有内容用自然的口语说出来。\n"
         "一次最多说3-4句话。内容多就先说重点，问他要不要继续听。\n"
@@ -169,38 +161,79 @@ def build_personality_prompt(
         "不要调 create_reminder 或其他工具。你的记忆系统会自动记住对话中的重要信息。\n"
         "</output_rules>"
     )
+    return f"{personality}\n\n{output_rules}"
 
-    # 当前情境（动态）
-    situation_lines = []
 
-    time_slot = get_time_slot()
-    time_ctx = _TIME_CONTEXTS.get(time_slot, "")
+def build_situation_block(
+    user_name: str | None = None,
+    user_role: str = "guest",
+    user_emotion: str = "",
+    situation: str = "normal",
+) -> str:
+    """Assembler Block 4 — dynamic per-turn context: time / emotion / situation / user.
+
+    Never cached because every axis can change between turns.
+
+    Args:
+        user_name: Authenticated speaker's name (voiceprint result); None means unknown.
+        user_role: Authenticated user role; reserved for future role-specific phrasing.
+        user_emotion: SenseVoice emotion tag (e.g. "HAPPY", "SAD"); empty string omits guidance.
+        situation: One of "normal" / "urgent" / "error" / "rapid".
+
+    Returns:
+        ``<situation>\n...\n</situation>`` — always non-empty because time_slot + user
+        status always produce at least one line.
+    """
+    del user_role  # reserved for future per-role phrasing
+
+    lines: list[str] = []
+
+    time_ctx = _TIME_CONTEXTS.get(get_time_slot(), "")
     if time_ctx:
-        situation_lines.append(time_ctx)
+        lines.append(time_ctx)
 
     emo_ctx = _EMOTION_CONTEXT.get(user_emotion, "")
     if emo_ctx:
-        situation_lines.append(emo_ctx)
+        lines.append(emo_ctx)
 
     sit_ctx = _SITUATION_CONTEXTS.get(situation, "")
     if sit_ctx:
-        situation_lines.append(sit_ctx)
+        lines.append(sit_ctx)
 
     if user_name:
-        situation_lines.append(f"现在是{user_name}在跟你说话。")
+        lines.append(f"现在是{user_name}在跟你说话。")
     else:
-        situation_lines.append("这个人你不认识。礼貌但保持距离，提醒他做个声纹注册你才能更好地帮他。")
+        lines.append("这个人你不认识。礼貌但保持距离，提醒他做个声纹注册你才能更好地帮他。")
 
-    # 记忆上下文（持久上下文，在即时情境之前）
-    if memory_context:
-        sections.append(
-            memory_context
-            + "\n以上是你对用户的了解。像朋友一样自然地运用这些信息，"
-            "不要像读档案一样列举。和当前话题无关的记忆不要强行提起。"
-            "待关心的事项找合适的时机自然地提起，别像闹钟一样提醒。"
+    return "<situation>\n" + "\n".join(lines) + "\n</situation>"
+
+
+def build_personality_prompt(
+    user_name: str | None = None,
+    user_role: str = "guest",
+    situation: str = "normal",
+    user_emotion: str = "",
+) -> str:
+    """[DEPRECATED] Legacy wrapper returning identity + situation concatenation.
+
+    Retained for callers that still expect a single `system` string (e.g. the
+    intent_router rephrase path). New callers should use the Assembler via
+    :func:`memory.manager.MemoryManager.build_prompt_context` which returns a
+    structured :class:`memory.hot.assembler.PromptContext` instead.
+    """
+    warnings.warn(
+        "build_personality_prompt is deprecated; use build_identity_block "
+        "+ build_situation_block (or Assembler.build_prompt_context)",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return (
+        build_identity_block(user_role=user_role)
+        + "\n\n"
+        + build_situation_block(
+            user_name=user_name,
+            user_role=user_role,
+            user_emotion=user_emotion,
+            situation=situation,
         )
-
-    if situation_lines:
-        sections.append("<situation>\n" + "\n".join(situation_lines) + "\n</situation>")
-
-    return "\n\n".join(sections)
+    )
