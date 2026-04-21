@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json
 import pytest
-from memory.behavior_log import BehaviorLog
+from memory.cold.behavior_log import BehaviorLog
 
 @pytest.fixture()
 def blog(tmp_path):

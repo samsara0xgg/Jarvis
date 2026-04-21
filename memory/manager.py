@@ -17,14 +17,14 @@ from datetime import datetime, timedelta
 import numpy as np
 import requests
 
-from memory.embedder import Embedder
+from memory.core.embedder import Embedder
 
 # 复用 HTTP 连接，避免每次 LLM 调用重建 TCP/TLS
 _SESSION = requests.Session()
-from memory.observer import Observer
-from memory.retriever import MemoryRetriever
+from memory.cold.observer import Observer
+from memory.core.retriever import MemoryRetriever
 from memory.stable_prefix import StablePrefixBuilder
-from memory.store import MemoryStore
+from memory.core.store import MemoryStore
 
 LOGGER = logging.getLogger(__name__)
 

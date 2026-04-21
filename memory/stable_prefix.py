@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from memory.store import MemoryStore
+    from memory.core.store import MemoryStore
 
 LOGGER = logging.getLogger(__name__)
 

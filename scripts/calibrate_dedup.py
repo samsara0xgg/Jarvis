@@ -19,7 +19,7 @@ import numpy as np
 # Allow importing from project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from memory.embedder import Embedder
+from memory.core.embedder import Embedder
 
 
 # ── Data ─────────────────────────────────────────────────────────────

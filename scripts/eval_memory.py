@@ -318,10 +318,10 @@ def evaluate():
     Returns:
         dict mapping category name to list of per-case result dicts.
     """
-    from memory.embedder import Embedder
+    from memory.core.embedder import Embedder
     from memory.direct_answer import DirectAnswerer
-    from memory.retriever import MemoryRetriever
-    from memory.store import MemoryStore
+    from memory.core.retriever import MemoryRetriever
+    from memory.core.store import MemoryStore
 
     print("Loading embedder (bge-small-zh-v1.5) ...")
     t0 = time.time()
@@ -519,7 +519,7 @@ def print_report(results: dict) -> None:
 
 def main() -> None:
     try:
-        from memory.embedder import Embedder  # noqa: F401
+        from memory.core.embedder import Embedder  # noqa: F401
     except Exception as exc:
         print(f"Failed to import Embedder: {exc}", file=sys.stderr)
         print("Make sure you run this from the project root with venv activated.",

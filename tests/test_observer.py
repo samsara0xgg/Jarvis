@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from memory.observer import (
+from memory.cold.observer import (
     OBSERVER_SYSTEM_PROMPT,
     OBSERVER_TOOL_SCHEMA,
     Observer,
@@ -132,7 +132,7 @@ class TestExtract:
         }
         return resp
 
-    @patch("memory.observer._SESSION")
+    @patch("memory.cold.observer._SESSION")
     def test_extract_success(self, mock_session):
         observations = [
             {"priority": "🔴", "time": "14:30", "text": "用户偏好暖黄灯光"},
@@ -148,7 +148,7 @@ class TestExtract:
         assert result[0]["priority"] == "🔴"
         assert result[0]["text"] == "用户偏好暖黄灯光"
 
-    @patch("memory.observer._SESSION")
+    @patch("memory.cold.observer._SESSION")
     def test_extract_failure_returns_empty(self, mock_session):
         mock_session.post.side_effect = Exception("Network error")
 
@@ -159,7 +159,7 @@ class TestExtract:
         })
         assert result == []
 
-    @patch("memory.observer._SESSION")
+    @patch("memory.cold.observer._SESSION")
     def test_extract_fallback_on_primary_failure(self, mock_session):
         observations = [
             {"priority": "🟡", "time": "10:00", "text": "用户打了招呼"},
@@ -179,7 +179,7 @@ class TestExtract:
         # Verify fallback model was used
         assert mock_session.post.call_count == 2
 
-    @patch("memory.observer._SESSION")
+    @patch("memory.cold.observer._SESSION")
     def test_extract_disabled_returns_empty(self, mock_session):
         cfg = _make_config()
         cfg["memory"]["observer"]["enabled"] = False

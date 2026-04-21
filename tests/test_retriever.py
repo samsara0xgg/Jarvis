@@ -7,8 +7,8 @@ from datetime import datetime, timedelta
 import numpy as np
 import pytest
 
-from memory.store import MemoryStore
-from memory.retriever import MemoryRetriever
+from memory.core.store import MemoryStore
+from memory.core.retriever import MemoryRetriever
 
 
 @pytest.fixture()

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from memory.embedder import Embedder
+from memory.core.embedder import Embedder
 
 
 @pytest.fixture(scope="module")

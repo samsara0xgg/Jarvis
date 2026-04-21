@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from memory.manager import MemoryManager
-from memory.store import MemoryStore
+from memory.core.store import MemoryStore
 
 
 def _make_config(db_path: str) -> dict:
@@ -940,7 +940,7 @@ class TestBuildStablePrefix:
 class TestWriteObservation:
     """v2: MemoryManager.write_observation — Observer integration."""
 
-    @patch("memory.observer._SESSION")
+    @patch("memory.cold.observer._SESSION")
     def test_stores_data(self, mock_session, manager: MemoryManager):
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
@@ -975,7 +975,7 @@ class TestWriteObservation:
         assert len(obs) == 1
         assert "用户说你好" in obs[0]["content"]
 
-    @patch("memory.observer._SESSION")
+    @patch("memory.cold.observer._SESSION")
     def test_returns_zero_when_empty(self, mock_session, manager: MemoryManager):
         """Observer returns no observations -> write_observation returns 0."""
         mock_resp = MagicMock()
@@ -1004,7 +1004,7 @@ class TestWriteObservation:
         assert count == 0
         assert manager.store.get_all_observations() == []
 
-    @patch("memory.observer._SESSION")
+    @patch("memory.cold.observer._SESSION")
     def test_multiple(self, mock_session, manager: MemoryManager):
         """Multiple observations in one extraction."""
         mock_resp = MagicMock()

@@ -2,7 +2,7 @@
 
 import pytest
 
-from memory.pricing import compute_cost_usd
+from memory.cold.pricing import compute_cost_usd
 
 # ---------------------------------------------------------------------------
 # Shared fixture — small inline table; tests must not load config.yaml
@@ -71,12 +71,12 @@ class TestUnknownModel:
     def test_warns_once(self, caplog: pytest.LogCaptureFixture) -> None:
         """Second call with same unknown model must not produce a second warning."""
         import logging
-        from memory import pricing as pricing_mod
+        from memory.cold import pricing as pricing_mod
 
         # Ensure the unknown model hasn't been warned yet in this test's scope
         pricing_mod._warned_models.discard("frobnicator-warn-test")
 
-        with caplog.at_level(logging.WARNING, logger="memory.pricing"):
+        with caplog.at_level(logging.WARNING, logger="memory.cold.pricing"):
             _cost("frobnicator-warn-test", 100, 50)
             _cost("frobnicator-warn-test", 100, 50)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from memory.conversation import ConversationStore
+from memory.hot.conversation import ConversationStore
 
 
 def _make_config(tmp_path):

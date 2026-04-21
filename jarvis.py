@@ -42,7 +42,7 @@ from core.speaker_encoder import SpeakerEncoder
 from core.speaker_verifier import SpeakerVerifier
 from core.speech_recognizer import SpeechRecognizer
 from devices.device_manager import DeviceManager
-from memory.conversation import ConversationStore
+from memory.hot.conversation import ConversationStore
 from memory.manager import MemoryManager
 from memory.user_preferences import UserPreferenceStore
 from core.tool_registry import ToolRegistry
@@ -135,7 +135,7 @@ class JarvisApp:
         # ── 长期记忆 ── SQLite + 向量嵌入，支持记忆存储/检索/直答
         self.memory_manager = MemoryManager(config)
 
-        from memory.behavior_log import BehaviorLog
+        from memory.cold.behavior_log import BehaviorLog
         mem_db = config.get("memory", {}).get("db_path", "data/memory/jarvis_memory.db")
         # BehaviorLog 和 MemoryManager 共用同一个 SQLite（不同表），WAL 模式支持并发读写
         self.behavior_log = BehaviorLog(mem_db)
@@ -1526,7 +1526,7 @@ class JarvisApp:
 
         # Outcome lag: detect_outcome on THIS turn judges the PREVIOUS turn.
         # Schedule the update; _flush_trace applies it after this turn logs.
-        from memory.outcome_detector import detect_outcome
+        from memory.cold.outcome_detector import detect_outcome
         signal = detect_outcome(text)
         if signal is not None and self._last_trace_id is not None:
             self._pending_outcome_update = (self._last_trace_id, signal)
@@ -1695,7 +1695,7 @@ class JarvisApp:
             the deferred ttfs_ms update).
         """
         try:
-            from memory.pricing import compute_cost_usd
+            from memory.cold.pricing import compute_cost_usd
 
             # Trace v3: session_id = per-launch app session, NOT user_id.
             # The conversation_store still keys history by user_id (passed

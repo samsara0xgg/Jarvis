@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from memory.store import MemoryStore
+from memory.core.store import MemoryStore
 
 
 @pytest.fixture()

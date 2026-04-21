@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from memory.stable_prefix import StablePrefixBuilder, _PREAMBLE
-from memory.store import MemoryStore
+from memory.core.store import MemoryStore
 
 
 @pytest.fixture()

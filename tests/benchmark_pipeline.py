@@ -105,7 +105,7 @@ def main() -> None:
     log.info("  Embedder Cache Benchmark")
     log.info("=" * 60)
 
-    from memory.embedder import Embedder
+    from memory.core.embedder import Embedder
     embedder = Embedder()
 
     embed_cases = [

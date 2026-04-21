@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from memory.store import MemoryStore
+from memory.core.store import MemoryStore
 
 LOGGER = logging.getLogger(__name__)
 

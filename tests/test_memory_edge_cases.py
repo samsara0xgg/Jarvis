@@ -9,7 +9,7 @@ import pytest
 
 from memory.direct_answer import DirectAnswerer, _SIMILARITY_THRESHOLD
 from memory.manager import MemoryManager
-from memory.store import MemoryStore
+from memory.core.store import MemoryStore
 
 
 def _encode(text: str) -> np.ndarray:
@@ -235,7 +235,7 @@ class TestKeyDedup:
 class TestExpiresHandling:
     def test_expired_memory_gets_penalty(self, mgr: MemoryManager):
         """Expired memories should get 0.5x score penalty."""
-        from memory.retriever import MemoryRetriever
+        from memory.core.retriever import MemoryRetriever
         retriever = MemoryRetriever(mgr.store)
 
         # Add expired memory

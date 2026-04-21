@@ -81,7 +81,7 @@ negative_queries = [
 
 def main() -> None:
     try:
-        from memory.embedder import Embedder
+        from memory.core.embedder import Embedder
     except Exception as exc:
         print(f"Failed to import Embedder: {exc}", file=sys.stderr)
         print("Make sure you run this from the project root with venv activated.", file=sys.stderr)

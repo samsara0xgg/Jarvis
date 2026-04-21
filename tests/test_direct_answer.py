@@ -14,7 +14,7 @@ from memory.direct_answer import (
 
 @pytest.fixture()
 def answerer(tmp_path):
-    from memory.store import MemoryStore
+    from memory.core.store import MemoryStore
     store = MemoryStore(str(tmp_path / "test.db"))
 
     def mock_encode(text):

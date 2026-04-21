@@ -13,7 +13,7 @@ import pytest
 
 from memory.manager import MemoryManager
 from memory.direct_answer import DirectAnswerer
-from memory.behavior_log import BehaviorLog
+from memory.cold.behavior_log import BehaviorLog
 
 
 def _make_config(db_path: str) -> dict:

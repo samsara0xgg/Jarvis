@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from memory.store import MemoryStore
+from memory.core.store import MemoryStore
 
 LOGGER = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class DirectAnswerer:
     def __init__(self, store: MemoryStore, embedder: Any) -> None:
         self._store = store
         self._embedder = embedder
-        from memory.retriever import MemoryRetriever
+        from memory.core.retriever import MemoryRetriever
         self._retriever = MemoryRetriever(store)
 
     @staticmethod
