@@ -424,8 +424,16 @@ class TestHarness:
         device_changes = diff_devices(before_devices, after_devices)
         memory_diff_result = diff_memory(before_memory, after_memory)
 
-        _mem_hits = getattr(self.app, "_last_memory_hits", "")
-        _mem_count = _mem_hits.count("\n- ") if _mem_hits else 0
+        _mem_hits = getattr(self.app, "_last_memory_hits", None)
+        # memory v2: _last_memory_hits is now a PromptContext (Assembler
+        # output). Count its injected observations instead of the old
+        # '\n- ' bullet count from the v1 string prefix.
+        if _mem_hits is None:
+            _mem_count = 0
+        elif hasattr(_mem_hits, "injected_observation_ids"):
+            _mem_count = len(_mem_hits.injected_observation_ids)
+        else:
+            _mem_count = str(_mem_hits).count("\n- ")
 
         # Phase B3: check for new learned skill files
         skill_factory_status = None
