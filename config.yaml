@@ -490,6 +490,15 @@ memory:
     fallback_api_key_env: GEMINI_API_KEY
     enabled: true
 
+  outcome_detector:
+    nli:
+      enabled: true
+      model_dir: data/nli-erlangshen
+      contradiction_threshold: 0.7
+      entailment_threshold: 0.7
+      max_text_length: 500
+      min_text_length: 5
+
 # ----------------------------------------------------------------------------
 # 技能配置
 # ----------------------------------------------------------------------------

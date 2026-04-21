@@ -53,6 +53,7 @@ data/speechbrain_model/
 data/sensevoice-small-int8/
 data/sherpa-onnx-streaming-*
 data/silero_vad.onnx
+data/nli-erlangshen/
 
 # 本地工具
 .mise.toml
