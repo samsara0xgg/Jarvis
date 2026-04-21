@@ -487,8 +487,8 @@ class AudioStreamPlayer:
         remains ``True`` from the previous turn.
 
         It is the caller's responsibility to leave ``ttfs_ms = None`` for
-        turns where TTS is never invoked (farewell shortcut, memory_l1 direct
-        answers). In those cases ``reset_first_chunk`` may still be called
+        turns where TTS is never invoked (farewell shortcut). In those
+        cases ``reset_first_chunk`` may still be called
         safely — the callback simply will not fire because ``write()`` is
         never called, so ``actual`` is always 0.
         """

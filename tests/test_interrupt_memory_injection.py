@@ -183,7 +183,7 @@ class TestTruncateAssistantForInterrupt:
 # ---------------------------------------------------------------------------
 
 class TestStaleStateReset:
-    """A non-cloud_path return (resume / farewell / direct_answer / etc.) leaves
+    """A non-cloud_path return (resume / farewell / etc.) leaves
     _interrupt_played_texts populated. Without an entry-time reset, the NEXT
     turn that does go cloud_path would mis-truncate its own (uninterrupted)
     assistant response. The reset at _process_turn entry guards against this.

@@ -117,7 +117,7 @@ class TerminalReporter:
                 first = False
 
         if step.memory_diff.is_empty:
-            if step.memory_hits_count > 0 or step.memory_keyword or step.direct_answer:
+            if step.memory_hits_count > 0 or step.memory_keyword:
                 print(f"          {_label('memory')} hits={step.memory_hits_count}")
         else:
             first = True
@@ -145,8 +145,6 @@ class TerminalReporter:
                 parts.append(f"route={t['route_ms']}")
             if "memory_query_ms" in t:
                 parts.append(f"mem={t['memory_query_ms']}")
-            if "direct_answer_ms" in t:
-                parts.append(f"da={t['direct_answer_ms']}")
             if "local_exec_ms" in t:
                 parts.append(f"local={t['local_exec_ms']}")
             if "llm_first_ms" in t:
@@ -182,9 +180,6 @@ class TerminalReporter:
             kr = step.keyword_rule
             print(f"          {_label('kw_rule')} rule=\"{kr['rule_name']}\"   "
                   f"actions={len(kr.get('actions', []))}")
-        if step.direct_answer:
-            da = step.direct_answer
-            print(f"          {_label('direct')} \"{da['answer'][:60]}\"   {da['latency_ms']}ms")
         if step.reqllm:
             print(f"          {_label('reqllm')} true  (local -> cloud for rephrasing)")
         if step.history_turns > 0:
@@ -456,8 +451,6 @@ class JsonReporter:
                         step_d["learning_intent"] = step.learning_intent
                     if step.keyword_rule:
                         step_d["keyword_rule"] = step.keyword_rule
-                    if step.direct_answer:
-                        step_d["direct_answer"] = step.direct_answer
                     if step.reqllm:
                         step_d["reqllm"] = True
                     if step.error:

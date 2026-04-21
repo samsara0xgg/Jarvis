@@ -493,7 +493,6 @@ class TestHarness:
             escalation=getattr(self.app, "_last_escalation", None),
             learning_intent=getattr(self.app, "_last_learning_intent", None),
             keyword_rule=getattr(self.app, "_last_keyword_rule", None),
-            direct_answer=getattr(self.app, "_last_direct_answer", None),
             reqllm=getattr(self.app, "_last_reqllm", False),
             device_ops=list(getattr(self.app, "_last_device_ops", [])),
             memory_hits_count=_mem_count,

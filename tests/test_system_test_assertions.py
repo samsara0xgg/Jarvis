@@ -75,8 +75,8 @@ class TestEvaluateTier:
 
 class TestEvaluatePath:
     def test_pass(self):
-        step = _make_step(path="memory_l1")
-        expect = StepExpect(path="memory_l1")
+        step = _make_step(path="cloud")
+        expect = StepExpect(path="cloud")
         results = evaluate(step, expect)
         assert results["path"].status == "pass"
 

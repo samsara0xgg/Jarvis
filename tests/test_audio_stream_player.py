@@ -399,8 +399,8 @@ class TestAudioStreamPlayer:
     def test_first_chunk_no_fire_without_write(self, mock_sd):
         """Constraint 4: no-TTS turn — callback never fires if write() is never called.
 
-        In jarvis, turns that skip TTS (farewell shortcut, memory_l1 direct answers)
-        must leave ttfs_ms = None. This test verifies the player never fires the hook
+        In jarvis, turns that skip TTS (farewell shortcut) must leave
+        ttfs_ms = None. This test verifies the player never fires the hook
         when the ring stays empty, so the caller's None is not overwritten.
         """
         fired = []

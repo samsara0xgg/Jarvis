@@ -4,8 +4,9 @@ Strategy: bypass JarvisApp.__init__ entirely via __new__ + manual attribute stub
 (same pattern as test_jarvis_asr_integration.py), then wire a real TraceLog backed
 by a tmp_path SQLite so assertions can query actual rows.
 
-Most tests force the memory_l1 path (direct_answerer returns a fixed string) to
-avoid touching LLM / intent_router / TTS subsystems.
+Most tests short-circuit by stubbing llm.chat_stream to return a fixed
+(text, messages) tuple and leaving create_tts_pipeline unset, so the cloud
+path executes without touching TTS / interrupt_monitor subsystems.
 """
 
 from __future__ import annotations
@@ -44,7 +45,10 @@ def _make_llm_stub() -> MagicMock:
     }
     stub.last_finish_reason = "stop"
     stub.last_cache_read_tokens = 0
-    # chat_stream returns (text, messages) tuple; won't be called in memory_l1 path
+    stub.last_input_tokens = 0
+    stub.last_output_tokens = 0
+    # chat_stream returns (text, updated_messages) — fed into the cloud branch
+    # so trace rows are written without invoking a real LLM.
     stub.chat_stream = MagicMock(return_value=("テスト応答", []))
     return stub
 
@@ -54,8 +58,9 @@ def _make_jarvis(tmp_path) -> JarvisApp:
 
     All subsystems that _process_turn_inner touches are replaced with MagicMocks.
     The real TraceLog is wired so trace rows land in a tmp_path SQLite file.
-    The direct_answerer stub returns a fixed answer, forcing the memory_l1 path
-    and keeping every turn away from LLM / TTS / interrupt_monitor code.
+    The intent_router stub returns None (skipping the local branch) and the
+    llm stub's chat_stream returns a fixed (text, []) tuple, so turns flow
+    through the cloud path without invoking real LLM / TTS / interrupt code.
 
     Args:
         tmp_path: pytest tmp_path fixture value.
@@ -124,12 +129,11 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     app.memory_manager.save = MagicMock()
     app.memory_manager.write_observation = MagicMock()
 
-    # direct_answerer returns a fixed string → forces memory_l1 path
-    app.direct_answerer = MagicMock()
-    app.direct_answerer.try_answer = MagicMock(return_value="这是直答。")
-
     app.intent_router = MagicMock()
     app.intent_router.route_and_respond = MagicMock(return_value=None)
+    # Prevent _flush_trace from injecting a MagicMock into llm_metadata
+    # via getattr(intent_router, "last_metadata") on the cloud path.
+    app.intent_router.last_metadata = None
 
     app.tool_registry = MagicMock()
     app.tool_registry.get_tool_definitions = MagicMock(return_value=[])
@@ -233,8 +237,8 @@ class TestJarvisTraceV3:
     def test_text_path_ttfs_ms_is_none(self, app: JarvisApp) -> None:
         """ttfs_ms must be None on the text path because no TTS audio plays.
 
-        _first_audio_at is reset to None in _reset_turn_state and the text
-        path (memory_l1 shortcut) never sets it.
+        _first_audio_at is reset to None in _reset_turn_state and the cloud
+        path (with no tts_pipeline) never sets it.
         """
         app.handle_text("查个东西", session_id="sess_ttfs")
 

@@ -44,7 +44,6 @@ from core.speech_recognizer import SpeechRecognizer
 from devices.device_manager import DeviceManager
 from memory.hot.conversation import ConversationStore
 from memory.manager import MemoryManager
-from memory.user_preferences import UserPreferenceStore
 from core.tool_registry import ToolRegistry
 
 LOGGER = logging.getLogger(__name__)
@@ -130,9 +129,8 @@ class JarvisApp:
         # ── LLM + 对话 ── 云端大模型、对话历史持久化、用户偏好
         self.llm = LLMClient(config, tracker=self.health_tracker)
         self.conversation_store = ConversationStore(config)
-        self.preference_store = UserPreferenceStore(config)
 
-        # ── 长期记忆 ── SQLite + 向量嵌入，支持记忆存储/检索/直答
+        # ── 长期记忆 ── SQLite + 向量嵌入
         self.memory_manager = MemoryManager(config)
 
         from memory.cold.behavior_log import BehaviorLog
@@ -191,11 +189,6 @@ class JarvisApp:
         # turn's user input sets _cancel before this turn's flush runs.
         self._last_turn_end_at: float | None = None
         self._last_real_end_reason: str | None = None
-
-        from memory.direct_answer import DirectAnswerer
-        self.direct_answerer = DirectAnswerer(
-            self.memory_manager.store, self.memory_manager.embedder,
-        )
 
         # 记录最近一次交互的用户，farewell 时用来触发记忆保存
         self._last_user_id: str | None = None
@@ -846,7 +839,7 @@ class JarvisApp:
             Full assistant response text.
         """
         # P0-B: clear stale interrupt-played state from any prior turn.
-        # Non-cloud_path returns (resume / farewell / direct_answer / etc.)
+        # Non-cloud_path returns (resume / farewell / etc.)
         # don't consume _interrupt_played_texts, so without this reset a
         # later cloud_path turn would mis-truncate its assistant response
         # against the previous interrupt's played sentences.
@@ -1025,66 +1018,6 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Memory query failed: %s", exc)
 
-        # ── 记忆直答（L1）── 如果记忆里有确切答案就直接回复，完全跳过 LLM
-        if user_id and response_text is None:
-            # Trace v3: reset DirectAnswerer's INTERNAL retriever last_hits
-            # so the post-call snapshot only reflects this turn's lookup.
-            # DirectAnswerer constructs its own MemoryRetriever instance
-            # (memory/direct_answer.py:48), separate from MemoryManager's.
-            try:
-                self.direct_answerer._retriever.last_hits = []
-            except AttributeError:
-                pass
-            try:
-                direct = self.direct_answerer.try_answer(text, user_id)
-                # Trace v3: snapshot DirectAnswerer's retriever hits. This
-                # is the "context retrieval" the user actually cares about
-                # — build_stable_prefix's <=20 branch doesn't call retrieve,
-                # but try_answer always does (the "Retrieved N from M
-                # candidates" log). Overwrites the manager-retriever empty
-                # snapshot from the prior block when DA actually fired.
-                try:
-                    da_hits = getattr(
-                        self.direct_answerer._retriever, "last_hits", [],
-                    )
-                    if da_hits:
-                        self._last_memory_query_ids = {
-                            "observation_ids": [
-                                h.get("id") for h in da_hits if h.get("id") is not None
-                            ],
-                            "top_k_scores": [
-                                round(float(h.get("_score", 0.0)), 4)
-                                for h in da_hits
-                            ],
-                        }
-                except AttributeError:
-                    pass
-                if direct:
-                    _t_da = time.monotonic()
-                    _da_ms = int((_t_da - _t_think)*1000)
-                    print(f"⏱ DA直答: {_da_ms}ms")
-                    self._last_timings["direct_answer_ms"] = _da_ms
-                    self._last_direct_answer = {"answer": direct, "latency_ms": _da_ms}
-                    self.logger.info("Level 1 direct answer: %s", direct[:60])
-                    self._last_path = "memory_l1"
-                    print(f"path={self._last_path}")
-                    output_fn(direct)
-                    self.behavior_log.log(user_id, "conversation", {
-                        "text": text[:100],
-                        "route": "memory_l1",
-                        "answer": direct[:100],
-                    })
-                    if _escalated and _original_preset is not None:
-                        try:
-                            self.llm.switch_model(_original_preset)
-                        except Exception:
-                            pass
-                    self._last_response_text = direct
-                    self._mark_turn_end()
-                    return direct
-            except Exception as exc:
-                self.logger.warning("Level 1 answer failed: %s", exc)
-
         # ── 意图路由 ── 单次 Groq 调用，同时完成意图分类 + 简单回答
         route = None
         if response_text is None and self.intent_router and self.local_executor:
@@ -1176,18 +1109,10 @@ class JarvisApp:
                             route.sub_type, route.query, user_role,
                         )
                     else:
-                        if user_id:
-                            try:
-                                mem_answer = self.direct_answerer.try_answer(text, user_id)
-                                if mem_answer:
-                                    ar = ActionResponse(Action.RESPONSE, mem_answer)
-                            except Exception:
-                                pass
-                        if ar is None:
-                            ar = ActionResponse(
-                                Action.RESPONSE,
-                                "这个我暂时没有对应的技能。你可以说'小月，学会查这个'来教我。",
-                            )
+                        ar = ActionResponse(
+                            Action.RESPONSE,
+                            "这个我暂时没有对应的技能。你可以说'小月，学会查这个'来教我。",
+                        )
                 elif route.intent == "time":
                     ar = self.local_executor.execute_time(route.sub_type)
                 elif route.intent == "automation":
@@ -1481,7 +1406,6 @@ class JarvisApp:
         self._last_escalation = None
         self._last_learning_intent = None
         self._last_keyword_rule = None
-        self._last_direct_answer = None
         self._last_reqllm = False
         self._last_history_turns = 0
         self._last_tool_calls = []
@@ -1626,8 +1550,8 @@ class JarvisApp:
     ) -> None:
         """Schedule a ttfs_ms update once async TTS playback completes.
 
-        Local-path turns (farewell / memory_l1 / router-with-text /
-        keyword_rule) dispatch TTS via ``_speak_nonblocking`` which submits
+        Local-path turns (farewell / router-with-text / keyword_rule)
+        dispatch TTS via ``_speak_nonblocking`` which submits
         to a background executor and returns immediately, so _flush_trace
         runs BEFORE the first audio chunk plays. We hook a done-callback on
         the most-recent ``_tts_future``: when synthesis + playback finish,
@@ -1681,7 +1605,7 @@ class JarvisApp:
         """Assemble a v3 trace row from staged _last_* state and write it.
 
         Always runs in the outer wrapper's finally — covers normal returns,
-        early returns (farewell / memory_l1 / etc.), and exceptions. Any
+        early returns (farewell / etc.), and exceptions. Any
         failure here is logged and swallowed; trace logging must never
         bring down the conversation pipeline.
 
@@ -1775,8 +1699,8 @@ class JarvisApp:
             #     local): the intent router's Groq/Cerebras LLM produced
             #     the response in a single call. Pull intent_router.
             #     last_metadata for tokens/finish_reason/model.
-            # (c) Pure local (keyword_rule, farewell, memory_l1, memory_
-            #     shortcut): no LLM ran. All llm_* stay NULL.
+            # (c) Pure local (keyword_rule, farewell, memory_shortcut):
+            #     no LLM ran. All llm_* stay NULL.
             llm_metadata = self._last_llm_metadata
             llm_tokens_in: int | None = None
             llm_tokens_out: int | None = None
@@ -1864,7 +1788,6 @@ class JarvisApp:
                     "asr_ms":          self._last_asr_ms,
                     "route_ms":        self._last_timings.get("route_ms"),
                     "memory_query_ms": self._last_timings.get("memory_query_ms"),
-                    "direct_answer_ms": self._last_timings.get("direct_answer_ms"),
                     "local_exec_ms":   self._last_timings.get("local_exec_ms"),
                     "llm_first_ms":    self._last_timings.get("llm_first_ms"),
                     "tts_first_ms":    ttfs_ms,

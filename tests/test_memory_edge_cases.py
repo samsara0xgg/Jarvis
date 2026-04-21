@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from memory.direct_answer import DirectAnswerer, _SIMILARITY_THRESHOLD
 from memory.manager import MemoryManager
 from memory.core.store import MemoryStore
 
@@ -27,13 +26,6 @@ def store(tmp_path):
 
 
 @pytest.fixture()
-def answerer(store):
-    embedder = MagicMock()
-    embedder.encode = _encode
-    return DirectAnswerer(store, embedder)
-
-
-@pytest.fixture()
 def mgr(tmp_path):
     config = {
         "memory": {"db_path": str(tmp_path / "mgr.db")},
@@ -48,69 +40,6 @@ def mgr(tmp_path):
 # ---------------------------------------------------------------
 # L1 Direct Answer: threshold boundary
 # ---------------------------------------------------------------
-
-class TestL1Threshold:
-    def test_threshold_is_0_35(self):
-        """Multi-signal combined score threshold."""
-        assert _SIMILARITY_THRESHOLD == 0.35
-
-    def test_exact_match_returns_answer(self, answerer: DirectAnswerer):
-        """Question with matching embedding → should hit."""
-        content = "Allen 喜欢拿铁"
-        answerer._store.add_memory(
-            user_id="u1", content=content,
-            category="preference", key="drink",
-            importance=8.0, embedding=_encode(content),
-        )
-        answerer._embedder.encode = lambda _text: _encode(content)
-        result = answerer.try_answer("喜欢喝什么？", "u1")
-        assert result is not None
-        assert "拿铁" in result
-
-    def test_touch_updates_access_count(self, answerer: DirectAnswerer):
-        """Successful L1 hit should increment access_count."""
-        content = "Allen 住温哥华"
-        answerer._store.add_memory(
-            user_id="u1", content=content,
-            category="identity", key="location",
-            importance=8.0, embedding=_encode(content),
-        )
-        answerer._embedder.encode = lambda _text: _encode(content)
-        answerer.try_answer("住在哪里？", "u1")
-        mems = answerer._store.get_active_memories("u1")
-        assert mems[0]["access_count"] == 1
-
-    def test_event_category_never_triggers(self, answerer: DirectAnswerer):
-        content = "Allen 明天去北京"
-        answerer._store.add_memory(
-            user_id="u1", content=content,
-            category="event", importance=9.0,
-            embedding=_encode(content),
-        )
-        assert answerer.try_answer(content, "u1") is None
-
-    def test_knowledge_category_triggers(self, answerer: DirectAnswerer):
-        content = "WiFi密码是abc123"
-        answerer._store.add_memory(
-            user_id="u1", content=content,
-            category="knowledge", key="wifi",
-            importance=9.0, embedding=_encode(content),
-        )
-        answerer._embedder.encode = lambda _text: _encode(content)
-        result = answerer.try_answer("WiFi密码是什么？", "u1")
-        assert result is not None
-        assert "abc123" in result
-
-    def test_user_isolation(self, answerer: DirectAnswerer):
-        """User A's memory should not answer user B's query."""
-        content = "Allen 喜欢寿司"
-        answerer._store.add_memory(
-            user_id="userA", content=content,
-            category="preference", key="food",
-            importance=8.0, embedding=_encode(content),
-        )
-        assert answerer.try_answer(content, "userB") is None
-
 
 # ---------------------------------------------------------------
 # Profile rebuild
@@ -471,66 +400,6 @@ class TestSweepExpiredAdditional:
         assert "backfilled" in result
         assert result["swept"] == 1
         assert result["backfilled"] == 1
-
-
-class TestDirectAnswerBoundary:
-    """C2: DirectAnswer threshold boundary and edge cases."""
-
-    def test_score_just_below_threshold_returns_none(self, answerer, store: MemoryStore):
-        """Very low cosine (0.20) should not trigger even with multi-signal scoring."""
-        v_mem = np.zeros(512, dtype=np.float32)
-        v_mem[0] = 1.0
-
-        store.add_memory(
-            user_id="u_b", content="Allen 喜欢拿铁",
-            category="preference", key="drink",
-            importance=8.0, embedding=v_mem,
-        )
-
-        # Craft query vector with cosine = 0.20 (well below _MIN_COSINE=0.35)
-        import math
-        cos_target = 0.20
-        v_query = np.zeros(512, dtype=np.float32)
-        v_query[0] = cos_target
-        v_query[1] = math.sqrt(1 - cos_target ** 2)
-
-        answerer._embedder.encode = lambda _text: v_query
-        result = answerer.try_answer("咖啡", "u_b")
-        assert result is None
-
-    def test_score_just_above_threshold_returns_answer(self, answerer, store: MemoryStore):
-        """Score at 0.56 should trigger (> 0.55), assuming margin is sufficient."""
-        v_mem = np.zeros(512, dtype=np.float32)
-        v_mem[0] = 1.0
-
-        store.add_memory(
-            user_id="u_a", content="Allen 喜欢拿铁",
-            category="preference", key="drink",
-            importance=8.0, embedding=v_mem,
-        )
-
-        import math
-        cos_target = 0.56
-        v_query = np.zeros(512, dtype=np.float32)
-        v_query[0] = cos_target
-        v_query[1] = math.sqrt(1 - cos_target ** 2)
-
-        answerer._embedder.encode = lambda _text: v_query
-        # Only 1 candidate → no margin check (question form required)
-        result = answerer.try_answer("喜欢喝什么咖啡？", "u_a")
-        assert result is not None
-        assert "拿铁" in result
-
-    def test_empty_content_memory_skipped(self, answerer, store: MemoryStore):
-        """Memory with no embedding should be silently skipped."""
-        store.add_memory(
-            user_id="u_e", content="no embedding memory",
-            category="preference", key="test",
-            importance=5.0,
-            # No embedding!
-        )
-        result = answerer.try_answer("anything", "u_e")
-        assert result is None
 
 
 class TestBudgetAndUsageGuide:

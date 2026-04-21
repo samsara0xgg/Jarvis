@@ -319,7 +319,6 @@ def evaluate():
         dict mapping category name to list of per-case result dicts.
     """
     from memory.core.embedder import Embedder
-    from memory.direct_answer import DirectAnswerer
     from memory.core.retriever import MemoryRetriever
     from memory.core.store import MemoryStore
 
@@ -352,7 +351,6 @@ def evaluate():
             with tempfile.TemporaryDirectory() as tmpdir:
                 store = MemoryStore(os.path.join(tmpdir, "eval.db"))
                 retriever = MemoryRetriever(store)
-                da = DirectAnswerer(store, embedder)
 
                 # Store facts
                 for fact in case["facts"]:
@@ -370,14 +368,10 @@ def evaluate():
                 expected = case["expected"]
                 query_emb = embedder.encode(query)
 
-                # Test 1: DirectAnswer
-                da_result = da.try_answer(query, "eval_user")
-                da_hit = (
-                    (da_result is not None)
-                    and (expected is not None)
-                    and (expected in da_result)
-                )
-                da_correct_none = (da_result is None) and (expected is None)
+                # Test 1: DirectAnswer — removed in memory v2; always None.
+                da_result = None
+                da_hit = False
+                da_correct_none = expected is None
 
                 # Test 2: Retriever top-5
                 retrieved = retriever.retrieve(query_emb, "eval_user", top_k=5)

@@ -12,7 +12,6 @@ import numpy as np
 import pytest
 
 from memory.manager import MemoryManager
-from memory.direct_answer import DirectAnswerer
 from memory.cold.behavior_log import BehaviorLog
 
 
@@ -37,15 +36,14 @@ def setup(tmp_path):
     mgr = MemoryManager(config)
     mgr.embedder = MagicMock()
     mgr.embedder.encode = _deterministic_encode
-    answerer = DirectAnswerer(mgr.store, mgr.embedder)
     blog = BehaviorLog(db_path)
-    return mgr, answerer, blog
+    return mgr, blog
 
 
 class TestMemoryE2E:
     def test_save_then_query_contains_memory(self, setup):
         """After saving a conversation, query should return the extracted fact."""
-        mgr, answerer, blog = setup
+        mgr, blog = setup
         extraction = {
             "memories": [{
                 "content": "Allen 喜欢拿铁",
@@ -81,24 +79,9 @@ class TestMemoryE2E:
         assert "拿铁" in context
         assert "<memory>" in context
 
-    def test_save_then_direct_answer(self, setup):
-        """After saving, DirectAnswerer should answer related queries."""
-        mgr, answerer, blog = setup
-        content = "Allen 喜欢拿铁"
-        emb = _deterministic_encode(content)
-        mgr.store.add_memory(
-            user_id="allen", content=content,
-            category="preference", key="favorite_drink",
-            importance=8.0, embedding=emb,
-        )
-        answerer._embedder.encode = lambda _text: _deterministic_encode(content)
-        result = answerer.try_answer("喜欢喝什么？", "allen")
-        assert result is not None
-        assert "拿铁" in result
-
     def test_correction_supersedes_old_memory(self, setup):
         """Saving a correction should deactivate the old memory."""
-        mgr, answerer, blog = setup
+        mgr, blog = setup
         old_emb = _deterministic_encode("Allen 喜欢拿铁")
         mgr.store.add_memory(
             user_id="allen", content="Allen 喜欢拿铁",
@@ -137,7 +120,7 @@ class TestMemoryE2E:
 
     def test_behavior_log_records(self, setup):
         """BehaviorLog should record events correctly."""
-        mgr, answerer, blog = setup
+        mgr, blog = setup
         blog.log("allen", "skill_call", {"skill": "weather"})
         blog.log("allen", "conversation", {"text": "今天天气", "route": "cloud"})
         events = blog.get_events("allen")
@@ -145,7 +128,7 @@ class TestMemoryE2E:
 
     def test_profile_rebuilds_from_memories(self, setup):
         """Profile should auto-rebuild when preference memories are saved."""
-        mgr, answerer, blog = setup
+        mgr, blog = setup
         extraction = {
             "memories": [{
                 "content": "Allen 喜欢拿铁",
@@ -172,7 +155,7 @@ class TestMemoryE2E:
 
     def test_memory_injection_capped(self, setup):
         """Large number of memories should still produce bounded context."""
-        mgr, answerer, blog = setup
+        mgr, blog = setup
         for i in range(50):
             emb = _deterministic_encode(f"记忆{i}")
             mgr.store.add_memory(
@@ -188,7 +171,7 @@ class TestMemoryE2E:
 
     def test_usage_guide_not_in_memory_context(self, setup):
         """Usage guide moved to personality.py — should NOT appear in memory context."""
-        mgr, answerer, blog = setup
+        mgr, blog = setup
         mgr.store.set_profile("allen", {"identity": {"name": "Allen"}})
         context = mgr.query("你好", "allen")
         assert "[使用原则]" not in context

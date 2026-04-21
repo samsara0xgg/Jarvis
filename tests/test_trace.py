@@ -173,7 +173,7 @@ class TestLogTurnV3Kwargs:
                     "fallback_used": False, "truncated_by_interrupt": False, "full_response": None,
                     "cache_creation_input_tokens": None}
         mem_ids = {"observation_ids": [1, 2], "top_k_scores": [0.89, 0.76]}
-        lat_bd = {"asr_ms": 120, "route_ms": 30, "memory_query_ms": 50, "direct_answer_ms": None,
+        lat_bd = {"asr_ms": 120, "route_ms": 30, "memory_query_ms": 50,
                   "local_exec_ms": None, "llm_first_ms": 400, "tts_first_ms": 600, "total_ms": 900}
 
         rid = trace.log_turn(
