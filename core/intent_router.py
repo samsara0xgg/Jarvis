@@ -128,7 +128,6 @@ automation trigger类型：
 
 def build_unified_prompt(
     config: dict,
-    memory_context: str = "",
     user_emotion: str = "",
 ) -> str:
     """Build a system prompt for unified route+respond (single Groq call).
@@ -139,7 +138,6 @@ def build_unified_prompt(
 
     Args:
         config: Application config dict.
-        memory_context: Optional memory context from MemoryManager.query().
         user_emotion: Optional detected emotion label (e.g. "HAPPY").
     """
     from core.personality import get_short_personality
@@ -174,16 +172,11 @@ def build_unified_prompt(
     device_list = "\n".join(devices_desc)
     personality = get_short_personality()
 
-    # Optional sections
-    memory_section = ""
-    if memory_context:
-        memory_section = f"\n\n你对用户的了解：\n{memory_context}"
-
     emotion_section = ""
     if user_emotion:
         emotion_section = f"\n用户当前情绪：{user_emotion}"
 
-    return f"""{personality}{memory_section}{emotion_section}
+    return f"""{personality}{emotion_section}
 
 你同时负责意图路由和回复生成。根据用户消息：
 
@@ -514,7 +507,6 @@ class IntentRouter:
         self,
         text: str,
         conversation_history: list[dict] | None = None,
-        memory_context: str = "",
         user_emotion: str = "",
     ) -> RouteResult:
         """Single Groq call that routes AND generates a response.
@@ -545,7 +537,7 @@ class IntentRouter:
             self.logger.info("Unified cache hit: '%s' → %s/%s", key[:20], cached.tier, cached.intent)
             return copy.copy(cached)
 
-        system_prompt = build_unified_prompt(self.config, memory_context, user_emotion)
+        system_prompt = build_unified_prompt(self.config, user_emotion=user_emotion)
         self._last_prompt = system_prompt
         start = time.time()
 

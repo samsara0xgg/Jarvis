@@ -1025,7 +1025,6 @@ class JarvisApp:
                 route = self.intent_router.route_and_respond(
                     text,
                     conversation_history=history,
-                    memory_context=memory_context,
                     user_emotion=emotion,
                 )
             except Exception as exc:

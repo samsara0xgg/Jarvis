@@ -676,3 +676,103 @@ def test_last_metadata_streaming_openai_populated_before_return():
         assert client.last_cache_read_tokens == 5
     finally:
         sys.modules.pop("openai", None)
+
+
+# ---------------------------------------------------------------------------
+# prompt_context path — verifies Assembler-backed system construction
+# ---------------------------------------------------------------------------
+
+from memory.hot.assembler import PromptBlock, PromptContext
+
+
+def _make_prompt_context():
+    """Build a minimal PromptContext with identity/profile/observations/situation."""
+    return PromptContext(
+        blocks=[
+            PromptBlock(content="IDENTITY", cache=True, name="identity"),
+            PromptBlock(content="PROFILE", cache=True, name="profile"),
+            PromptBlock(content="OBSERVATIONS", cache=True, name="observations"),
+            PromptBlock(content="SITUATION", cache=False, name="situation"),
+        ],
+        messages=[{"role": "user", "content": "Hi"}],
+    )
+
+
+def test_chat_anthropic_uses_prompt_context_system_as_list_with_cache_control():
+    """When prompt_context is given, Anthropic receives system=list[dict] with cache_control."""
+    _install_fake_anthropic()
+    try:
+        client = LLMClient(_make_config())
+        mock_anthropic = client._get_anthropic_client()
+        captured_kwargs: dict = {}
+
+        def _capture(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeResponse([_FakeTextBlock("ok")])
+
+        mock_anthropic.messages.create = MagicMock(side_effect=_capture)
+
+        client.chat("Hi Jarvis", prompt_context=_make_prompt_context())
+
+        system = captured_kwargs["system"]
+        assert isinstance(system, list), f"expected list[dict], got {type(system)}"
+        assert len(system) == 4
+        for entry in system:
+            assert entry["type"] == "text"
+        # First three cached, last not
+        assert system[0]["cache_control"] == {"type": "ephemeral"}
+        assert system[1]["cache_control"] == {"type": "ephemeral"}
+        assert system[2]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in system[3]
+        texts = [e["text"] for e in system]
+        assert texts == ["IDENTITY", "PROFILE", "OBSERVATIONS", "SITUATION"]
+    finally:
+        sys.modules.pop("anthropic", None)
+
+
+def test_chat_anthropic_falls_back_to_memory_context_when_prompt_context_none():
+    """Without prompt_context, system must remain a plain string (legacy path)."""
+    _install_fake_anthropic()
+    try:
+        client = LLMClient(_make_config())
+        mock_anthropic = client._get_anthropic_client()
+        captured_kwargs: dict = {}
+
+        def _capture(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeResponse([_FakeTextBlock("ok")])
+
+        mock_anthropic.messages.create = MagicMock(side_effect=_capture)
+
+        client.chat("Hi")
+
+        assert isinstance(captured_kwargs["system"], str)
+    finally:
+        sys.modules.pop("anthropic", None)
+
+
+def test_chat_openai_uses_prompt_context_system_str():
+    """When prompt_context is given, OpenAI receives blocks joined with blank lines."""
+    _install_fake_openai()
+    try:
+        client = LLMClient(_make_config(provider="openai"))
+        mock_openai = client._get_openai_client()
+        captured_kwargs: dict = {}
+
+        def _capture(**kwargs):
+            captured_kwargs.update(kwargs)
+            # Simulate the full OpenAI response shape expected by _chat_openai
+            return _FakeOAIResponse([
+                _FakeOAIChoice(_FakeOAIMessage(content="ok", tool_calls=[]))
+            ])
+
+        mock_openai.chat.completions.create = MagicMock(side_effect=_capture)
+
+        client.chat("Hi", prompt_context=_make_prompt_context())
+
+        messages = captured_kwargs["messages"]
+        system_msg = messages[0]
+        assert system_msg["role"] == "system"
+        assert system_msg["content"] == "IDENTITY\n\nPROFILE\n\nOBSERVATIONS\n\nSITUATION"
+    finally:
+        sys.modules.pop("openai", None)

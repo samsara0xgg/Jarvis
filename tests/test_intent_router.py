@@ -640,10 +640,6 @@ class TestBuildUnifiedPrompt:
         prompt = build_unified_prompt(config)
         assert "小月" in prompt
 
-    def test_includes_memory_context(self, config):
-        prompt = build_unified_prompt(config, memory_context="用户喜欢喝咖啡")
-        assert "用户喜欢喝咖啡" in prompt
-
     def test_includes_emotion(self, config):
         prompt = build_unified_prompt(config, user_emotion="HAPPY")
         assert "HAPPY" in prompt

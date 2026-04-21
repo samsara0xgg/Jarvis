@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from core.personality import build_personality_prompt
+from memory.hot.assembler import PromptContext
 
 LOGGER = logging.getLogger(__name__)
 
@@ -304,10 +305,16 @@ class LLMClient:
         user_role: str = "guest",
         user_emotion: str = "",
         memory_context: str = "",
+        prompt_context: PromptContext | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         """Send a message and run the full tool-use loop.
 
         Works identically regardless of the underlying provider.
+
+        When ``prompt_context`` is given, its blocks define the ``system``
+        payload (list[dict] for Anthropic with cache_control, joined string
+        for OpenAI/xAI). Otherwise the legacy ``memory_context`` string is
+        concatenated into a single ``system`` via ``_personalize_system``.
 
         Returns:
             A tuple of (final_text_response, updated_messages_list).
@@ -332,6 +339,7 @@ class LLMClient:
                     user_role=user_role,
                     user_emotion=user_emotion,
                     memory_context=memory_context,
+                    prompt_context=prompt_context,
                 )
             else:
                 result = self._chat_anthropic(
@@ -344,6 +352,7 @@ class LLMClient:
                     user_role=user_role,
                     user_emotion=user_emotion,
                     memory_context=memory_context,
+                    prompt_context=prompt_context,
                 )
             if self._tracker:
                 self._tracker.record_success(component)
@@ -369,9 +378,15 @@ class LLMClient:
         user_role: str = "guest",
         user_emotion: str = "",
         memory_context: str = "",
+        prompt_context: PromptContext | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         client = self._get_anthropic_client()
-        system = self._personalize_system(user_name, user_role, user_emotion, memory_context=memory_context)
+        if prompt_context is not None:
+            system: Any = prompt_context.to_anthropic_system()
+        else:
+            system = self._personalize_system(
+                user_name, user_role, user_emotion, memory_context=memory_context,
+            )
         messages = self._truncate_history(list(conversation_history or []))
         messages.append({"role": "user", "content": user_message})
 
@@ -492,9 +507,15 @@ class LLMClient:
         user_role: str = "guest",
         user_emotion: str = "",
         memory_context: str = "",
+        prompt_context: PromptContext | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         client = self._get_openai_client()
-        system = self._personalize_system(user_name, user_role, user_emotion, memory_context=memory_context)
+        if prompt_context is not None:
+            system = prompt_context.to_openai_system_str()
+        else:
+            system = self._personalize_system(
+                user_name, user_role, user_emotion, memory_context=memory_context,
+            )
 
         # Convert Anthropic-style history to OpenAI format
         truncated = self._truncate_history(list(conversation_history or []))
@@ -811,6 +832,7 @@ class LLMClient:
         on_sentence: Any | None = None,
         user_emotion: str = "",
         memory_context: str = "",
+        prompt_context: PromptContext | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         """Stream LLM response, calling on_sentence for each complete sentence.
 
@@ -834,6 +856,7 @@ class LLMClient:
                 user_role=user_role,
                 user_emotion=user_emotion,
                 memory_context=memory_context,
+                prompt_context=prompt_context,
             )
 
         # Reset first-sentence flag at the start of each streaming turn so
@@ -852,6 +875,7 @@ class LLMClient:
                 on_sentence=on_sentence,
                 user_emotion=user_emotion,
                 memory_context=memory_context,
+                prompt_context=prompt_context,
             )
         return self._stream_anthropic(
             user_message,
@@ -864,6 +888,7 @@ class LLMClient:
             on_sentence=on_sentence,
             user_emotion=user_emotion,
             memory_context=memory_context,
+            prompt_context=prompt_context,
         )
 
     def _flush_sentences(self, buffer: str, on_sentence: Any, force: bool = False) -> str:
@@ -1002,9 +1027,15 @@ class LLMClient:
         on_sentence: Any,
         user_emotion: str = "",
         memory_context: str = "",
+        prompt_context: PromptContext | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         client = self._get_anthropic_client()
-        system = self._personalize_system(user_name, user_role, user_emotion, memory_context=memory_context)
+        if prompt_context is not None:
+            system: Any = prompt_context.to_anthropic_system()
+        else:
+            system = self._personalize_system(
+                user_name, user_role, user_emotion, memory_context=memory_context,
+            )
         messages = self._truncate_history(list(conversation_history or []))
         messages.append({"role": "user", "content": user_message})
 
@@ -1111,9 +1142,15 @@ class LLMClient:
         on_sentence: Any,
         user_emotion: str = "",
         memory_context: str = "",
+        prompt_context: PromptContext | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         client = self._get_openai_client()
-        system = self._personalize_system(user_name, user_role, user_emotion, memory_context=memory_context)
+        if prompt_context is not None:
+            system = prompt_context.to_openai_system_str()
+        else:
+            system = self._personalize_system(
+                user_name, user_role, user_emotion, memory_context=memory_context,
+            )
 
         truncated = self._truncate_history(list(conversation_history or []))
         oai_messages = [{"role": "system", "content": system}]
