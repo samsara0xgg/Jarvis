@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import warnings
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -267,7 +268,11 @@ class MemoryManager:
     # ------------------------------------------------------------------
 
     def query(self, text: str, user_id: str) -> str:
-        """Build the ``<memory>`` block to inject into the LLM system prompt.
+        """[DEPRECATED v1] Build the ``<memory>`` block for LLM prompt injection.
+
+        Replaced by :meth:`build_prompt_context` via the Assembler in memory v2.
+        Kept only so legacy eval harnesses and one retained e2e test still run;
+        will be removed in the schema-rewrite pass.
 
         Args:
             text: The user's current utterance (for Tier 3 retrieval).
@@ -277,6 +282,11 @@ class MemoryManager:
             Formatted ``<memory>...</memory>`` string, or empty string
             if no memories exist yet.
         """
+        warnings.warn(
+            "MemoryManager.query is deprecated; use build_prompt_context via Assembler",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         profile = self.store.get_profile(user_id)
         episodes = self.store.get_recent_episodes(user_id, days=3)
         active_count = self.store.count_active(user_id)
@@ -433,12 +443,20 @@ class MemoryManager:
         return results
 
     def _compress_episodes(self, user_id: str) -> None:
-        """Compress episodes older than 7 days into weekly digests.
+        """[DEPRECATED v1] Compress episodes older than 7 days into weekly digests.
+
+        Part of the v1 episode pipeline. Observations (v2) supersede this;
+        will be removed in the schema-rewrite pass.
 
         Groups old episodes by ISO week and creates a simple concatenated
         digest per week. Does not use LLM (maintenance should not depend
         on API keys).
         """
+        warnings.warn(
+            "MemoryManager._compress_episodes is deprecated; observations replace episodes",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         rows = self.store.get_episodes_before(user_id, cutoff)
 
@@ -676,11 +694,20 @@ class MemoryManager:
         )
 
     def _rebuild_profile(self, user_id: str) -> None:
-        """Auto-build user profile from top memories when LLM doesn't provide one.
+        """[DEPRECATED v1] Auto-build user profile from top memories.
+
+        Replaced by deterministic profile assembly in Assembler Block 2
+        (via :meth:`_profile_to_text`). Will be removed in the
+        schema-rewrite pass.
 
         Groups active memories by profile-relevant categories and constructs
         a structured profile JSON. Falls back gracefully if memories are sparse.
         """
+        warnings.warn(
+            "MemoryManager._rebuild_profile is deprecated; profile assembly lives in Assembler Block 2",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         memories = self.store.get_active_memories(user_id)
         existing_profile = self.store.get_profile(user_id) or {}
 
@@ -849,7 +876,17 @@ class MemoryManager:
     def _extract_and_store_relation(
         self, user_id: str, content: str, key: str | None,
     ) -> None:
-        """Extract entity pair from relationship memory and store in relations table."""
+        """[DEPRECATED v1] Extract entity pair from relationship memory.
+
+        Part of the v1 `memory_relations` table pipeline. Observations (v2)
+        capture relationships inline; will be removed in the schema-rewrite
+        pass.
+        """
+        warnings.warn(
+            "MemoryManager._extract_and_store_relation is deprecated; relations live inline in observations",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         source = relation = target = None
 
         # Pattern: "X 的 Y 叫/是 Z"
@@ -1053,7 +1090,17 @@ class MemoryManager:
         memories: list[dict],
         user_id: str = "",
     ) -> str:
-        """Format the three tiers into a ``<memory>`` prompt block."""
+        """[DEPRECATED v1] Format the three tiers into a ``<memory>`` prompt block.
+
+        Replaced by Assembler block assembly in memory v2. Only reachable
+        through the deprecated :meth:`query`; will be removed in the
+        schema-rewrite pass.
+        """
+        warnings.warn(
+            "MemoryManager._format_memory_context is deprecated; Assembler builds the prompt blocks",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         sections: list[str] = []
         char_budget = _MAX_MEMORY_CHARS
 

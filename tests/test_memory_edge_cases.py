@@ -10,6 +10,13 @@ import pytest
 from memory.manager import MemoryManager
 from memory.core.store import MemoryStore
 
+# Exercises v1 _rebuild_profile + query (deprecated). Module-scope filter
+# keeps legacy profile-rebuild / dedup / expires coverage running; see
+# test_memory_manager.py for the rationale.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore::DeprecationWarning:memory.manager"
+)
+
 
 def _encode(text: str) -> np.ndarray:
     rng = np.random.RandomState(hash(text) % 2**31)

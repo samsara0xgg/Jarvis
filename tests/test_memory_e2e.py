@@ -14,6 +14,12 @@ import pytest
 from memory.manager import MemoryManager
 from memory.cold.behavior_log import BehaviorLog
 
+# Exercises v1 MemoryManager.query (deprecated). See test_memory_manager.py
+# for the module-scope filter rationale.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore::DeprecationWarning:memory.manager"
+)
+
 
 def _make_config(db_path: str) -> dict:
     return {

@@ -12,6 +12,16 @@ import pytest
 from memory.manager import MemoryManager
 from memory.core.store import MemoryStore
 
+# These tests intentionally exercise v1 MemoryManager methods that are now
+# deprecated (query, _format_memory_context, _rebuild_profile,
+# _extract_and_store_relation, _compress_episodes). The project-level
+# pyproject.toml turns DeprecationWarning from memory.manager into errors;
+# module-scope suppression keeps this legacy coverage running without
+# wrapping every call in pytest.warns. Hot-path callers remain guarded.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore::DeprecationWarning:memory.manager"
+)
+
 
 def _make_config(db_path: str) -> dict:
     return {

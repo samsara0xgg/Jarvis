@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+filterwarnings = [
+    "default",
+    "error::DeprecationWarning:memory.manager",
+]
