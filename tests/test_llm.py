@@ -730,8 +730,8 @@ def test_chat_anthropic_uses_prompt_context_system_as_list_with_cache_control():
         sys.modules.pop("anthropic", None)
 
 
-def test_chat_anthropic_falls_back_to_memory_context_when_prompt_context_none():
-    """Without prompt_context, system must remain a plain string (legacy path)."""
+def test_chat_anthropic_system_is_str_when_prompt_context_none():
+    """Without prompt_context, _personalize_system produces a single str."""
     _install_fake_anthropic()
     try:
         client = LLMClient(_make_config())

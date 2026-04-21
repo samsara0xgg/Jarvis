@@ -220,7 +220,7 @@ class TestFirstSentenceFlagReset:
                 tool_executor=lambda *a, **k: "",
                 user_name="", user_id="", user_role="",
                 on_sentence=lambda s: None,
-                user_emotion="", memory_context="",
+                user_emotion="",
             )
             assert saw.get("flag") is True, (
                 "chat_stream must reset _is_first_sentence=True"
