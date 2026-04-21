@@ -615,7 +615,8 @@ def create_app(jarvis_app: Any) -> FastAPI:
                 _active_chats.pop(req.session_id, None)
                 # Expose trace_id in the done event so the frontend can send
                 # explicit thumbs feedback via POST /api/outcome.
-                done_trace_id = getattr(jarvis_app, "_last_trace_id", None)
+                _raw_tid = getattr(jarvis_app, "_last_trace_id", None)
+                done_trace_id = _raw_tid if isinstance(_raw_tid, int) else None
                 asyncio.run_coroutine_threadsafe(
                     queue.put({"_done": True, "trace_id": done_trace_id}), loop
                 )
