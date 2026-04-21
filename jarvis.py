@@ -1822,6 +1822,10 @@ class JarvisApp:
 
                 def _resolve_outcome() -> None:
                     from memory.cold.outcome_detector import detect_outcome
+                    # Skip if thumbs already set (explicit user feedback > NLI).
+                    existing = tl.query_by_trace_id(prev_id)
+                    if existing and existing.get("outcome_signal") is not None:
+                        return
                     signal = detect_outcome(cur_text, nli=nli)
                     if signal is not None:
                         tl.update_outcome(prev_id, signal=signal, at_turn_id=cur_trace_id)
