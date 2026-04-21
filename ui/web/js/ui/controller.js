@@ -34,7 +34,7 @@ class UIController {
         const apiClient = getApiClient();
         apiClient.onChatMessage = (text, isUser) => this.addChatMessage(text, isUser);
         apiClient.onTurnDone = (traceId) => {
-            if (traceId != null) this.updateLastAiMessageTraceId(traceId);
+            if (traceId != null) this.addTurnThumbs(traceId);
         };
         apiClient.onSentence = async (sentence) => {
             if (sentence.audio_url) {
@@ -382,31 +382,14 @@ class UIController {
         }
     }
 
-    addChatMessage(content, isUser = false, traceId = null) {
+    addChatMessage(content, isUser = false) {
         const chatStream = document.getElementById('chatStream');
         if (!chatStream) return;
         const messageDiv = document.createElement('div');
         messageDiv.className = `chat-message ${isUser ? 'user' : 'ai'}`;
-        let thumbsHtml = '';
-        if (!isUser) {
-            thumbsHtml = `<div class="thumbs-row" data-trace-id="${traceId ?? ''}">
-                <button class="thumb-btn" data-signal="1" title="好评">&#128077;</button>
-                <button class="thumb-btn" data-signal="-1" title="差评">&#128078;</button>
-                <button class="thumb-btn" data-signal="0" title="跳过">&#9197;</button>
-            </div>`;
-        }
-        messageDiv.innerHTML = `<div class="message-bubble">${content}</div>${thumbsHtml}`;
+        messageDiv.innerHTML = `<div class="message-bubble">${content}</div>`;
         chatStream.appendChild(messageDiv);
         chatStream.scrollTop = chatStream.scrollHeight;
-
-        if (!isUser) {
-            const thumbsRow = messageDiv.querySelector('.thumbs-row');
-            if (thumbsRow) {
-                thumbsRow.querySelectorAll('.thumb-btn').forEach(btn => {
-                    btn.addEventListener('click', () => this._sendOutcome(thumbsRow, btn));
-                });
-            }
-        }
 
         // Fan-out for the Pet overlay (and any other listeners). Vanilla
         // CustomEvent; listeners guard by their own open/closed state.
@@ -415,6 +398,32 @@ class UIController {
                 detail: { text: content, isUser },
             }));
         } catch { /* IE-era fallback unnecessary on Electron/modern browsers */ }
+    }
+
+    addTurnThumbs(traceId) {
+        const chatStream = document.getElementById('chatStream');
+        if (!chatStream || traceId == null) return;
+        // Find the last AI bubble and insert thumbs row after it.
+        const aiMessages = chatStream.querySelectorAll('.chat-message.ai');
+        if (!aiMessages.length) return;
+        const lastAi = aiMessages[aiMessages.length - 1];
+        // Prevent duplicate thumbs if called more than once for the same turn.
+        if (lastAi.nextElementSibling && lastAi.nextElementSibling.classList.contains('thumbs-row')) {
+            return;
+        }
+        const thumbsRow = document.createElement('div');
+        thumbsRow.className = 'thumbs-row';
+        thumbsRow.dataset.traceId = traceId;
+        thumbsRow.innerHTML = `
+            <button class="thumb-btn" data-signal="1" title="好评">&#128077;</button>
+            <button class="thumb-btn" data-signal="-1" title="差评">&#128078;</button>
+            <button class="thumb-btn" data-signal="0" title="跳过">&#9197;</button>
+        `;
+        thumbsRow.querySelectorAll('.thumb-btn').forEach(btn => {
+            btn.addEventListener('click', () => this._sendOutcome(thumbsRow, btn));
+        });
+        lastAi.insertAdjacentElement('afterend', thumbsRow);
+        chatStream.scrollTop = chatStream.scrollHeight;
     }
 
     async _sendOutcome(thumbsRow, clickedBtn) {
@@ -436,16 +445,6 @@ class UIController {
             b.disabled = true;
             b.style.opacity = b === clickedBtn ? '1' : '0.3';
         });
-    }
-
-    updateLastAiMessageTraceId(traceId) {
-        const chatStream = document.getElementById('chatStream');
-        if (!chatStream) return;
-        const aiMessages = chatStream.querySelectorAll('.chat-message.ai');
-        if (!aiMessages.length) return;
-        const last = aiMessages[aiMessages.length - 1];
-        const thumbsRow = last.querySelector('.thumbs-row');
-        if (thumbsRow) thumbsRow.dataset.traceId = traceId;
     }
 
     switchBackground() {

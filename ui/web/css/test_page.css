@@ -328,7 +328,7 @@ body {
 .thumbs-row {
     display: flex;
     gap: 4px;
-    margin-top: 4px;
+    margin: 0 0 8px 12px;
     opacity: 0.6;
     transition: opacity 0.2s;
 }
