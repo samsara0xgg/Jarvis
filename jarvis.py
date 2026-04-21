@@ -986,34 +986,32 @@ class JarvisApp:
                     response_text = ar.text
                     self._last_path = "keyword_rule"
 
-        # ── 记忆检索 ── 向量搜索相关记忆，作为 context 传给后续 LLM（~50-100ms）
-        memory_context = ""
+        # ── 记忆检索 ── Assembler 装配 4-block prompt（~50-100ms）
+        prompt_ctx = None
         if user_id:
-            # Trace v3: reset retriever's last_hits so we know whether the
-            # current turn's build_stable_prefix actually called retrieve.
-            try:
-                self.memory_manager.retriever.last_hits = []
-            except AttributeError:
-                pass
             _t_mem_start = time.monotonic()
             try:
-                memory_context = self.memory_manager.build_stable_prefix(
-                    recent_turns=history,
-                    current_input=text,
+                prompt_ctx = self.memory_manager.build_prompt_context(
+                    text=text,
+                    user_id=user_id,
+                    history=history,
+                    user_name=user_name,
+                    user_role=user_role,
+                    user_emotion=emotion,
+                    situation="normal",
                 )
                 _mem_ms = int((time.monotonic() - _t_mem_start) * 1000)
-                self._last_memory_hits = memory_context
+                self._last_memory_hits = prompt_ctx
                 self._last_timings["memory_query_ms"] = _mem_ms
-                if memory_context:
-                    _mem_count = memory_context.count("\n- ")
-                    print(f"🧠 记忆检索: {_mem_count} 条相关记忆 ({_mem_ms}ms)")
-                # Trace v3: snapshot IDs+scores. Empty arrays mean "queried,
-                # no top-k retrieval ran" (e.g. <=20 memories so prefix used
-                # all-active branch). Distinct from NULL = "did not query".
-                hits = getattr(self.memory_manager.retriever, "last_hits", [])
+                _obs_count = len(prompt_ctx.injected_observation_ids)
+                if _obs_count:
+                    print(f"🧠 记忆检索: {_obs_count} 条观察 ({_mem_ms}ms)")
+                # Trace v3: observation ids actually injected into Block 3.
+                # Empty list = no observations to inject (fresh user), not a
+                # retrieval miss — distinct from NULL (= did not query).
                 self._last_memory_query_ids = {
-                    "observation_ids": [h.get("id") for h in hits if h.get("id") is not None],
-                    "top_k_scores":    [round(float(h.get("_score", 0.0)), 4) for h in hits],
+                    "observation_ids": list(prompt_ctx.injected_observation_ids),
+                    "top_k_scores":    [],  # no top-k filtering; full dump per Mastra OM
                 }
             except Exception as exc:
                 self.logger.warning("Memory query failed: %s", exc)
@@ -1074,8 +1072,18 @@ class JarvisApp:
                                 status_parts.append(f"{did}: {status}")
                             except Exception:
                                 pass
-                        if status_parts:
-                            memory_context += f"\n[当前设备状态] {'; '.join(status_parts)}"
+                        if status_parts and prompt_ctx is not None:
+                            # Append current device state to Block 4 (situation,
+                            # cache=False) so the LLM's creative smart-home
+                            # response sees live device state. Block 4 is the
+                            # only cache-safe place to mutate post-assembly.
+                            device_note = (
+                                f"\n[当前设备状态] {'; '.join(status_parts)}"
+                            )
+                            for _b in prompt_ctx.blocks:
+                                if _b.name == "situation":
+                                    _b.content = _b.content + device_note
+                                    break
                     else:
                         ar = self.local_executor.execute_smart_home(
                             route.actions, user_role, response=route.response,
@@ -1226,7 +1234,7 @@ class JarvisApp:
                             user_role=user_role,
                             on_sentence=_on_sentence,
                             user_emotion=emotion,
-                            memory_context=memory_context,
+                            prompt_context=prompt_ctx,
                         )
                     except Exception as exc:
                         self.logger.error("LLM rephrase failed: %s", exc)
@@ -1243,7 +1251,7 @@ class JarvisApp:
                             user_role=user_role,
                             on_sentence=_on_sentence,
                             user_emotion=emotion,
-                            memory_context=memory_context,
+                            prompt_context=prompt_ctx,
                         )
                     except Exception as exc:
                         self.logger.error("Cloud LLM failed: %s", exc)
