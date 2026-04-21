@@ -125,7 +125,9 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     app.local_executor = None
 
     app.memory_manager = MagicMock()
-    app.memory_manager.build_stable_prefix = MagicMock(return_value="")
+    # The cloud path doesn't call build_prompt_context in this test (user_id
+    # is not set on the stub), but the memory_manager attribute must still
+    # behave as a MagicMock that tolerates any access.
     app.memory_manager.save = MagicMock()
     app.memory_manager.write_observation = MagicMock()
 

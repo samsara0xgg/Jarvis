@@ -26,7 +26,6 @@ from memory.cold.observer import Observer
 from memory.core.retriever import MemoryRetriever
 from memory.core.store import MemoryStore
 from memory.hot.assembler import Assembler, PromptContext
-from memory.stable_prefix import StablePrefixBuilder
 
 LOGGER = logging.getLogger(__name__)
 
@@ -346,30 +345,6 @@ class MemoryManager:
         was given.
         """
         return self._last_ctx
-
-    def build_stable_prefix(
-        self,
-        recent_turns: list[dict] | None = None,
-        current_input: str = "",
-    ) -> str:
-        """[DEPRECATED] Bridge wrapper — use :meth:`build_prompt_context`.
-
-        Kept to preserve the `jarvis.py` call-site contract until Step 7b
-        rewires it to Assembler. Returns the OpenAI-style single-string
-        serialization of the new context. Removed in Step 8.
-        """
-        warnings.warn(
-            "MemoryManager.build_stable_prefix is deprecated; "
-            "use build_prompt_context via Assembler",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        ctx = self.build_prompt_context(
-            text=current_input,
-            user_id="",
-            history=recent_turns or [],
-        )
-        return ctx.to_openai_system_str()
 
     def write_observation(
         self,

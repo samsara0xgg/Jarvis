@@ -478,9 +478,6 @@ memory:
   # 对话历史持久化目录。
   conversation_dir: data/conversations
 
-  # 用户偏好持久化目录。
-  preferences_dir: data/memory
-
   # v2: Observer 记忆抽取配置
   # 注意：primary 和 fallback 可以指向不同的 LLM 提供商。每个模型独立配置 endpoint +
   # api_key_env，避免把 Gemini 请求发到 xAI（bug 2026-04-17）。
@@ -492,8 +489,6 @@ memory:
     fallback_base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
     fallback_api_key_env: GEMINI_API_KEY
     enabled: true
-  stable_prefix:
-    max_tokens: 25000
 
 # ----------------------------------------------------------------------------
 # 技能配置
