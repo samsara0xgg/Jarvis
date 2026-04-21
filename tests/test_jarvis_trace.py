@@ -88,7 +88,6 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     app.trace_log = TraceLog(db_path)
     app._turn_counter: dict[str, int] = {}
     app._last_trace_id = None
-    app._last_user_text = None
     # Trace v3: per-launch session id (separate from conversation_store
     # session). Real __init__ uses datetime + uuid; tests only need any
     # stable string.

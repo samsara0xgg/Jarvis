@@ -38,7 +38,6 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     app.trace_log = TraceLog(db_path)
     app._turn_counter: dict[str, int] = {}
     app._last_trace_id = None
-    app._last_user_text = None
     app._app_session_id = "outcome_test_session"
     app._prompt_version = None
 

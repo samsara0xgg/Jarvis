@@ -177,11 +177,7 @@ class JarvisApp:
         # _last_trace_id: the trace.id of the previous turn — used by
         #   async NLI outcome resolution in _flush_trace to update the
         #   PREVIOUS turn (the one the current turn is judging).
-        # _last_user_text: the user text from the previous turn — NLI runs
-        #   on this text during the current turn's _flush_trace and writes
-        #   outcome_signal back to the previous trace row.
         self._last_trace_id: int | None = None
-        self._last_user_text: str | None = None
 
         # ── Trace v3 voice-path captures (set per turn via _process_turn kwargs) ──
         # Reset every turn in _reset_turn_state. Stay None for text-only path.
@@ -1405,7 +1401,7 @@ class JarvisApp:
     def _reset_turn_state(self, text: str, *, trigger_source: str) -> None:
         """Reset all per-turn _last_* attributes before _process_turn_inner.
 
-        Preserves cross-turn state (_last_trace_id, _last_user_text)
+        Preserves cross-turn state (_last_trace_id)
         but clears anything that should not leak into the next trace row.
 
         Args:
@@ -1835,9 +1831,8 @@ class JarvisApp:
 
                 self._executor.submit(_resolve_outcome)
 
-            # Carry this turn's id and user text forward for next turn.
+            # Carry this turn's trace id forward for next turn's outcome resolution.
             self._last_trace_id = trace_id
-            self._last_user_text = text
 
             # Return trace_id BEFORE the async observer submission so
             # callers (the wrapper) can register a deferred ttfs update
