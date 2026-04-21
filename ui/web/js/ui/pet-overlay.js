@@ -232,6 +232,14 @@ class PetOverlay {
         };
         document.addEventListener('jarvis:message-added', this._messageListener);
 
+        // Wire thumbs: when a turn completes, append thumbs row after the last AI bubble.
+        const apiClient = getApiClient();
+        const origOnTurnDone = apiClient.onTurnDone;
+        apiClient.onTurnDone = (traceId) => {
+            if (origOnTurnDone) origOnTurnDone(traceId);
+            if (this.isOpen && traceId != null) this._addTurnThumbs(traceId);
+        };
+
         // 面板拖动：左键在面板空白区按住拖。点到 input/button 不触发（保证打字 + send 正常）。
         // 拖过一次 _userPositioned=true，后续 _positionPanel() 自动跳过 anchor 逻辑。
         this.rootEl.addEventListener('mousedown', (e) => {
@@ -342,6 +350,48 @@ class PetOverlay {
         const bubble = this._renderBubble({ text, role });
         this.listEl.appendChild(bubble);
         this._scrollToBottom();
+    }
+
+    _addTurnThumbs(traceId) {
+        if (!this.listEl) return;
+        const msgs = this.listEl.querySelectorAll('.pet-overlay__msg--ai');
+        if (!msgs.length) return;
+        const lastAi = msgs[msgs.length - 1];
+        // Prevent duplicate thumbs for the same turn.
+        if (lastAi.nextElementSibling && lastAi.nextElementSibling.classList.contains('pet-overlay__thumbs')) {
+            return;
+        }
+        const row = document.createElement('div');
+        row.className = 'pet-overlay__thumbs';
+        row.dataset.traceId = traceId;
+        row.innerHTML = `
+            <button class="pet-overlay__thumb-btn" data-signal="1" title="好评">&#128077;</button>
+            <button class="pet-overlay__thumb-btn" data-signal="-1" title="差评">&#128078;</button>
+            <button class="pet-overlay__thumb-btn" data-signal="0" title="跳过">&#9197;</button>
+        `;
+        row.querySelectorAll('.pet-overlay__thumb-btn').forEach(btn => {
+            btn.addEventListener('click', () => this._sendThumbsFeedback(row, btn));
+        });
+        lastAi.insertAdjacentElement('afterend', row);
+        this._scrollToBottom();
+    }
+
+    async _sendThumbsFeedback(row, clickedBtn) {
+        const traceId = parseInt(row.dataset.traceId, 10);
+        if (isNaN(traceId)) return;
+        const signal = parseInt(clickedBtn.dataset.signal, 10);
+        try {
+            const apiClient = getApiClient();
+            await fetch(`${apiClient.serverUrl}/api/outcome`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ trace_id: traceId, signal }),
+            });
+        } catch { /* silently ignore */ }
+        row.querySelectorAll('.pet-overlay__thumb-btn').forEach(b => {
+            b.disabled = true;
+            b.style.opacity = b === clickedBtn ? '1' : '0.3';
+        });
     }
 
     // ── DOM construction ──────────────────────────────────────────────────────

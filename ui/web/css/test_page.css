@@ -331,6 +331,7 @@ body {
     margin: 0 0 8px 12px;
     opacity: 0.6;
     transition: opacity 0.2s;
+    pointer-events: auto;
 }
 .thumbs-row:hover { opacity: 1; }
 .thumb-btn {
@@ -1666,6 +1667,30 @@ body.pet-mode #live2d-stage {
   padding-right: 4px;
   letter-spacing: 0.01em;
 }
+
+.pet-overlay__thumbs {
+    display: flex;
+    gap: 6px;
+    padding: 2px 0 6px 4px;
+    opacity: 0.5;
+    transition: opacity 0.2s;
+}
+.pet-overlay__thumbs:hover { opacity: 1; }
+.pet-overlay__thumb-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 15px;
+    padding: 2px 4px;
+    border-radius: 6px;
+    line-height: 1;
+    transition: transform 0.1s, background 0.15s;
+}
+.pet-overlay__thumb-btn:hover:not(:disabled) {
+    transform: scale(1.15);
+    background: rgba(0, 0, 0, 0.05);
+}
+.pet-overlay__thumb-btn:disabled { cursor: default; }
 
 /* Secondary-text example (reserved hook for timestamps / meta) */
 .pet-overlay__meta {
