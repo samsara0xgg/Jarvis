@@ -33,6 +33,9 @@ class UIController {
         // Wire API client callbacks
         const apiClient = getApiClient();
         apiClient.onChatMessage = (text, isUser) => this.addChatMessage(text, isUser);
+        apiClient.onTurnDone = (traceId) => {
+            if (traceId != null) this.updateLastAiMessageTraceId(traceId);
+        };
         apiClient.onSentence = async (sentence) => {
             if (sentence.audio_url) {
                 const player = getAudioPlayer();
@@ -379,14 +382,31 @@ class UIController {
         }
     }
 
-    addChatMessage(content, isUser = false) {
+    addChatMessage(content, isUser = false, traceId = null) {
         const chatStream = document.getElementById('chatStream');
         if (!chatStream) return;
         const messageDiv = document.createElement('div');
         messageDiv.className = `chat-message ${isUser ? 'user' : 'ai'}`;
-        messageDiv.innerHTML = `<div class="message-bubble">${content}</div>`;
+        let thumbsHtml = '';
+        if (!isUser) {
+            thumbsHtml = `<div class="thumbs-row" data-trace-id="${traceId ?? ''}">
+                <button class="thumb-btn" data-signal="1" title="好评">&#128077;</button>
+                <button class="thumb-btn" data-signal="-1" title="差评">&#128078;</button>
+                <button class="thumb-btn" data-signal="0" title="跳过">&#9197;</button>
+            </div>`;
+        }
+        messageDiv.innerHTML = `<div class="message-bubble">${content}</div>${thumbsHtml}`;
         chatStream.appendChild(messageDiv);
         chatStream.scrollTop = chatStream.scrollHeight;
+
+        if (!isUser) {
+            const thumbsRow = messageDiv.querySelector('.thumbs-row');
+            if (thumbsRow) {
+                thumbsRow.querySelectorAll('.thumb-btn').forEach(btn => {
+                    btn.addEventListener('click', () => this._sendOutcome(thumbsRow, btn));
+                });
+            }
+        }
 
         // Fan-out for the Pet overlay (and any other listeners). Vanilla
         // CustomEvent; listeners guard by their own open/closed state.
@@ -395,6 +415,37 @@ class UIController {
                 detail: { text: content, isUser },
             }));
         } catch { /* IE-era fallback unnecessary on Electron/modern browsers */ }
+    }
+
+    async _sendOutcome(thumbsRow, clickedBtn) {
+        const rawTraceId = thumbsRow.dataset.traceId;
+        if (!rawTraceId) return;
+        const traceId = parseInt(rawTraceId, 10);
+        if (isNaN(traceId)) return;
+        const signal = parseInt(clickedBtn.dataset.signal, 10);
+        try {
+            const apiClient = (await import('../core/api-client.js')).getApiClient();
+            await fetch(`${apiClient.serverUrl}/api/outcome`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ trace_id: traceId, signal }),
+            });
+        } catch { /* server unreachable — silently ignore */ }
+        // Visual feedback: dim all buttons, mark selected
+        thumbsRow.querySelectorAll('.thumb-btn').forEach(b => {
+            b.disabled = true;
+            b.style.opacity = b === clickedBtn ? '1' : '0.3';
+        });
+    }
+
+    updateLastAiMessageTraceId(traceId) {
+        const chatStream = document.getElementById('chatStream');
+        if (!chatStream) return;
+        const aiMessages = chatStream.querySelectorAll('.chat-message.ai');
+        if (!aiMessages.length) return;
+        const last = aiMessages[aiMessages.length - 1];
+        const thumbsRow = last.querySelector('.thumbs-row');
+        if (thumbsRow) thumbsRow.dataset.traceId = traceId;
     }
 
     switchBackground() {

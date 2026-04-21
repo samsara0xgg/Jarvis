@@ -10,6 +10,7 @@ class ApiClient {
         this.onChatMessage = null;
         this.onSentence = null;
         this.onSessionStateChange = null;
+        this.onTurnDone = null;  // (traceId: number|null) => void
         // Client-side chat pipeline. New messages preempt the in-flight
         // fetch via AbortController; server handles concurrent POSTs.
         this._chatQueue = [];
@@ -202,6 +203,11 @@ class ApiClient {
                             } catch (e) {
                                 log(`SSE parse error: ${e.message}`, 'error');
                             }
+                        } else if (eventType === 'done') {
+                            try {
+                                const parsed = JSON.parse(eventData || '{}');
+                                if (this.onTurnDone) this.onTurnDone(parsed.trace_id ?? null);
+                            } catch { /* ignore */ }
                         } else if (eventType === 'log') {
                             try {
                                 const parsed = JSON.parse(eventData);

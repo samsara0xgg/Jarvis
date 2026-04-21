@@ -613,15 +613,21 @@ def create_app(jarvis_app: Any) -> FastAPI:
                         loop,
                     )
                 _active_chats.pop(req.session_id, None)
-                asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+                # Expose trace_id in the done event so the frontend can send
+                # explicit thumbs feedback via POST /api/outcome.
+                done_trace_id = getattr(jarvis_app, "_last_trace_id", None)
+                asyncio.run_coroutine_threadsafe(
+                    queue.put({"_done": True, "trace_id": done_trace_id}), loop
+                )
 
         loop.run_in_executor(None, _run)
 
         async def event_stream():
             while True:
                 event = await queue.get()
-                if event is None:
-                    yield f"event: done\ndata: {{}}\n\n"
+                if isinstance(event, dict) and event.get("_done"):
+                    done_payload = {"trace_id": event.get("trace_id")}
+                    yield f"event: done\ndata: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
                     break
                 if isinstance(event, dict) and event.get("_log"):
                     yield f"event: log\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -663,6 +669,33 @@ def create_app(jarvis_app: Any) -> FastAPI:
             except Exception:
                 pass
         return {"status": "ok", "cancelled": prev is not None}
+
+    # --- Outcome feedback (thumbs) ---
+    @app.post("/api/outcome")
+    async def post_outcome(payload: dict):
+        """Record explicit user feedback (thumbs up / down / skip).
+
+        Payload: {trace_id: int, signal: int}
+          signal = 1   thumbs up (positive)
+          signal = -1  thumbs down (negative)
+          signal = 0   skip (explicit no-opinion)
+
+        Idempotent: later call overwrites earlier (update_outcome is a simple
+        SET). trace_id is exposed by the SSE done event for this session.
+        """
+        from fastapi.responses import JSONResponse
+        trace_id = payload.get("trace_id")
+        signal = payload.get("signal")
+        if signal not in (-1, 0, 1):
+            return JSONResponse({"error": "signal must be -1, 0, or 1"}, status_code=400)
+        if not isinstance(trace_id, int):
+            return JSONResponse({"error": "trace_id must be an integer"}, status_code=400)
+        row = jarvis_app.trace_log.query_by_trace_id(trace_id)
+        if row is None:
+            return JSONResponse({"error": "trace not found"}, status_code=404)
+        jarvis_app.trace_log.update_outcome(trace_id, signal=signal, at_turn_id=None)
+        LOGGER.info("[outcome] thumbs trace_id=%d signal=%d", trace_id, signal)
+        return {"ok": True, "trace_id": trace_id}
 
     # --- ASR ---
     @app.post("/api/asr")

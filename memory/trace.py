@@ -428,6 +428,44 @@ class TraceLog:
             results.append(d)
         return results
 
+    def query_by_session_turn(
+        self, session_id: str, turn_id: int
+    ) -> dict[str, Any] | None:
+        """Lookup a trace row by (session_id, turn_id).
+
+        Both values use the trace schema's own columns: session_id is the
+        per-launch app session (_app_session_id), turn_id is the integer
+        counter within that session. Returns the raw row dict or None.
+
+        Args:
+            session_id: Trace session ID (app-level, not web UI session UUID).
+            turn_id: Integer turn counter within the session.
+
+        Returns:
+            Dict with all trace columns, or None if not found.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM trace WHERE session_id = ? AND turn_id = ?",
+            (session_id, turn_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def query_by_trace_id(self, trace_id: int) -> dict[str, Any] | None:
+        """Lookup a trace row by its DB primary key.
+
+        Args:
+            trace_id: The trace.id row ID.
+
+        Returns:
+            Dict with all trace columns, or None if not found.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM trace WHERE id = ?", (trace_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
     def close(self) -> None:
         """Close the current thread's database connection."""
         if hasattr(self._local, "conn") and self._local.conn:
