@@ -24,8 +24,9 @@ from memory.core.embedder import Embedder
 _SESSION = requests.Session()
 from memory.cold.observer import Observer
 from memory.core.retriever import MemoryRetriever
-from memory.stable_prefix import StablePrefixBuilder
 from memory.core.store import MemoryStore
+from memory.hot.assembler import Assembler, PromptContext
+from memory.stable_prefix import StablePrefixBuilder
 
 LOGGER = logging.getLogger(__name__)
 
@@ -253,15 +254,10 @@ class MemoryManager:
         # Trace for system testing
         self._last_extraction: dict = {}
 
-        # v2: Observer + StablePrefixBuilder
+        # v2: Observer (async extraction) + Assembler (hot-path prompt build)
         self._observer = Observer(config)
-        personality_text = ""
-        try:
-            from core.personality import get_system_prompt
-            personality_text = get_system_prompt()
-        except Exception:
-            personality_text = "You are Jarvis, a helpful voice assistant."
-        self._prefix_builder = StablePrefixBuilder(self.store, personality_text)
+        self._assembler = Assembler(self.store, self._profile_to_text)
+        self._last_ctx: PromptContext | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -313,24 +309,67 @@ class MemoryManager:
 
         return self._format_memory_context(profile, episodes, relevant, user_id)
 
+    def build_prompt_context(
+        self,
+        text: str,
+        user_id: str,
+        history: list[dict],
+        *,
+        user_name: str | None = None,
+        user_role: str = "guest",
+        user_emotion: str = "",
+        situation: str = "normal",
+    ) -> PromptContext:
+        """Build a :class:`PromptContext` for the current turn via the Assembler.
+
+        Stores the result so :meth:`get_last_prompt_context` can return it to
+        callers that need the injected observation ids (trace v3) without
+        reaching into private state.
+        """
+        ctx = self._assembler.assemble(
+            text=text,
+            user_id=user_id,
+            history=history,
+            user_name=user_name,
+            user_role=user_role,
+            user_emotion=user_emotion,
+            situation=situation,
+        )
+        self._last_ctx = ctx
+        return ctx
+
+    def get_last_prompt_context(self) -> PromptContext | None:
+        """Return the most recent :class:`PromptContext` assembled, or None.
+
+        Used by jarvis.py to read ``injected_observation_ids`` after the LLM
+        call completes, so trace v3 can record exactly which OM rows the LLM
+        was given.
+        """
+        return self._last_ctx
+
     def build_stable_prefix(
         self,
         recent_turns: list[dict] | None = None,
         current_input: str = "",
     ) -> str:
-        """Build the v2 stable prefix for LLM prompt injection.
+        """[DEPRECATED] Bridge wrapper — use :meth:`build_prompt_context`.
 
-        Args:
-            recent_turns: Recent conversation history.
-            current_input: Current user utterance.
-
-        Returns:
-            Formatted stable prefix string.
+        Kept to preserve the `jarvis.py` call-site contract until Step 7b
+        rewires it to Assembler. Returns the OpenAI-style single-string
+        serialization of the new context. Removed in Step 8.
         """
-        return self._prefix_builder.build(
-            recent_turns=recent_turns or [],
-            current_input=current_input,
+        warnings.warn(
+            "MemoryManager.build_stable_prefix is deprecated; "
+            "use build_prompt_context via Assembler",
+            DeprecationWarning,
+            stacklevel=2,
         )
+        ctx = self.build_prompt_context(
+            text=current_input,
+            user_id="",
+            history=recent_turns or [],
+        )
+        return ctx.to_openai_system_str()
 
     def write_observation(
         self,
@@ -1169,8 +1208,15 @@ class MemoryManager:
             + "\n</memory>"
         )
 
-    def _profile_to_text(self, profile: dict) -> str:
-        """Convert profile JSON to concise natural language."""
+    def _profile_to_text(self, profile: dict | None) -> str:
+        """Convert profile JSON to concise natural language.
+
+        Returns an empty string when ``profile`` is ``None`` so the Assembler
+        Block 2 branch can simply test the returned text for truthiness.
+        """
+        if not profile:
+            return ""
+
         parts: list[str] = []
 
         identity = profile.get("identity", {})

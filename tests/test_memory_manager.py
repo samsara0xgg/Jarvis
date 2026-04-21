@@ -933,18 +933,51 @@ class TestRelationKeywordDetection:
         assert not manager._has_relation_keyword("Allen likes coffee")
 
 
-class TestBuildStablePrefix:
-    """v2: MemoryManager.build_stable_prefix."""
+class TestBuildPromptContext:
+    """v2: MemoryManager.build_prompt_context + get_last_prompt_context."""
 
-    def test_returns_string(self, manager: MemoryManager):
-        result = manager.build_stable_prefix(recent_turns=[], current_input="你好")
-        assert isinstance(result, str)
-        assert "你好" in result
+    def test_returns_prompt_context(self, manager: MemoryManager):
+        from memory.hot.assembler import PromptContext
+        ctx = manager.build_prompt_context(
+            text="你好",
+            user_id="allen",
+            history=[],
+        )
+        assert isinstance(ctx, PromptContext)
+        # identity + observations + situation always present; profile optional
+        names = [b.name for b in ctx.blocks]
+        assert "identity" in names
+        assert "observations" in names
+        assert "situation" in names
 
-    def test_defaults(self, manager: MemoryManager):
-        """Calling with no args should still work (defaults to empty)."""
-        result = manager.build_stable_prefix()
-        assert isinstance(result, str)
+    def test_current_text_appended_to_messages(self, manager: MemoryManager):
+        ctx = manager.build_prompt_context(
+            text="当前输入",
+            user_id="allen",
+            history=[{"role": "user", "content": "之前"}],
+        )
+        assert ctx.messages[-1] == {"role": "user", "content": "当前输入"}
+        assert ctx.messages[0] == {"role": "user", "content": "之前"}
+
+    def test_situation_kwargs_forwarded(self, manager: MemoryManager):
+        ctx = manager.build_prompt_context(
+            text="x", user_id="allen", history=[],
+            user_name="Allen", user_role="owner",
+            user_emotion="SAD", situation="urgent",
+        )
+        situation = next(b for b in ctx.blocks if b.name == "situation")
+        assert "Allen" in situation.content
+        assert "不开心" in situation.content
+        assert "严肃" in situation.content or "紧急" in situation.content
+
+    def test_get_last_prompt_context_none_before_build(self, manager: MemoryManager):
+        assert manager.get_last_prompt_context() is None
+
+    def test_get_last_prompt_context_tracks_most_recent(self, manager: MemoryManager):
+        ctx1 = manager.build_prompt_context(text="a", user_id="u", history=[])
+        assert manager.get_last_prompt_context() is ctx1
+        ctx2 = manager.build_prompt_context(text="b", user_id="u", history=[])
+        assert manager.get_last_prompt_context() is ctx2
 
 
 class TestWriteObservation:
