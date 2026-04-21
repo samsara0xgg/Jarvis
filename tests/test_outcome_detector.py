@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from memory.cold.outcome_detector import _NEGATIVE_PATTERNS, _POSITIVE_PATTERNS, detect_outcome
+from memory.cold.outcome_detector import (
+    _NEGATIVE_PATTERNS,
+    _POSITIVE_PATTERNS,
+    _detect_regex_only as detect_outcome,
+)
 
 
 class TestPositivePatterns:

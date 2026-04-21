@@ -142,6 +142,12 @@ class JarvisApp:
         self.trace_log = TraceLog(mem_db)
         self._turn_counter: dict[str, int] = {}  # session_id → turn count
 
+        from memory.cold.nli_classifier import NLIClassifier
+        nli_dir = config.get("memory", {}).get("outcome_detector", {}).get(
+            "nli", {}
+        ).get("model_dir", "data/nli-erlangshen")
+        self.nli_classifier = NLIClassifier(nli_dir)  # lazy-loaded on first use
+
         # ── Trace v3 launch session ──
         # The conversation_store keys history by user_id (history persists
         # across launches). For trace analytics we want a per-launch session
@@ -166,12 +172,13 @@ class JarvisApp:
 
         # ── Trace v3 carry-across-turn state ──
         # _last_trace_id: the trace.id of the previous turn — used by
-        #   detect_outcome on the current turn to schedule an outcome
-        #   update on the PREVIOUS turn (the one we just judged).
-        # _pending_outcome_update: (prev_trace_id, signal) staged in
-        #   _process_turn entry, applied after the current turn flushes.
+        #   async NLI outcome resolution in _flush_trace to update the
+        #   PREVIOUS turn (the one the current turn is judging).
+        # _last_user_text: the user text from the previous turn — NLI runs
+        #   on this text during the current turn's _flush_trace and writes
+        #   outcome_signal back to the previous trace row.
         self._last_trace_id: int | None = None
-        self._pending_outcome_update: tuple[int, int] | None = None
+        self._last_user_text: str | None = None
 
         # ── Trace v3 voice-path captures (set per turn via _process_turn kwargs) ──
         # Reset every turn in _reset_turn_state. Stay None for text-only path.
@@ -1395,7 +1402,7 @@ class JarvisApp:
     def _reset_turn_state(self, text: str, *, trigger_source: str) -> None:
         """Reset all per-turn _last_* attributes before _process_turn_inner.
 
-        Preserves cross-turn state (_last_trace_id, _pending_outcome_update)
+        Preserves cross-turn state (_last_trace_id, _last_user_text)
         but clears anything that should not leak into the next trace row.
 
         Args:
@@ -1455,14 +1462,8 @@ class JarvisApp:
         }
         self._first_audio_at = None
 
-        # Outcome lag: detect_outcome on THIS turn judges the PREVIOUS turn.
-        # Schedule the update; _flush_trace applies it after this turn logs.
-        from memory.cold.outcome_detector import detect_outcome
-        signal = detect_outcome(text)
-        if signal is not None and self._last_trace_id is not None:
-            self._pending_outcome_update = (self._last_trace_id, signal)
-        else:
-            self._pending_outcome_update = None
+        # Outcome lag: NLI runs async in _flush_trace on the PREVIOUS turn's
+        # user_text. Nothing to do here — main path stays 0ms overhead.
 
     def _mark_turn_end(self) -> None:
         """Snapshot end-of-turn moment for trace v3.
@@ -1806,14 +1807,34 @@ class JarvisApp:
                 cost_usd=cost,
             )
 
-            # Apply pending outcome update for the previous turn (lag-1 model).
-            if self._pending_outcome_update is not None:
-                prev_id, signal = self._pending_outcome_update
-                self.trace_log.update_outcome(prev_id, signal=signal, at_turn_id=trace_id)
-                self._pending_outcome_update = None
+            # Async NLI outcome resolution for the PREVIOUS turn (lag-1 model).
+            # The CURRENT turn's text ("好的") is used to judge the PREVIOUS
+            # turn's outcome — same lag-1 semantics as the old sync regex path.
+            # Submits to executor and returns immediately; does not block flush.
+            if self._last_trace_id is not None:
+                prev_id = self._last_trace_id
+                # text is the current turn's user utterance — what the user said
+                # in THIS turn that may signal approval/disapproval of the PRIOR
+                # turn's LLM response.
+                cur_text = text
+                cur_trace_id = trace_id
+                nli = self.nli_classifier
+                tl = self.trace_log
 
-            # Carry this turn's id forward for next turn's outcome detection.
+                def _resolve_outcome() -> None:
+                    from memory.cold.outcome_detector import detect_outcome
+                    signal = detect_outcome(cur_text, nli=nli)
+                    if signal is not None:
+                        tl.update_outcome(prev_id, signal=signal, at_turn_id=cur_trace_id)
+                        LOGGER.debug(
+                            "trace outcome updated: id=%d signal=%d", prev_id, signal
+                        )
+
+                self._executor.submit(_resolve_outcome)
+
+            # Carry this turn's id and user text forward for next turn.
             self._last_trace_id = trace_id
+            self._last_user_text = text
 
             # Return trace_id BEFORE the async observer submission so
             # callers (the wrapper) can register a deferred ttfs update

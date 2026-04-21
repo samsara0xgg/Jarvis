@@ -1,16 +1,27 @@
-"""Conservative outcome signal detector for trace feedback.
+"""Outcome signal detector for trace feedback — NLI-based.
 
-Scans user utterances for clear approval/disapproval patterns. Designed
-to minimize false positives — ambiguous cases return None (NULL outcome).
+DEPRECATED regex layer — kept for historical reference only.
 
-Phase 3 Step 1 treats NULL as 'unknown' and does not filter on it, so
-erring conservative keeps the training pipeline honest.
+Superseded by NLI-based detection (see memory/cold/nli_classifier.py).
+The regex patterns below are no longer called by detect_outcome() as of
+2026-04-21. Kept in source for:
+  1. rollback path (if NLI model unavailable, can be re-enabled)
+  2. test fixture reference
+  3. comparison benchmarks
+Do NOT extend or modify these patterns for production use.
 """
 from __future__ import annotations
 
+import logging
 import re
+from typing import TYPE_CHECKING
 
-# Positive: short approving utterances, no negation
+if TYPE_CHECKING:
+    from memory.cold.nli_classifier import NLIClassifier
+
+LOGGER = logging.getLogger(__name__)
+
+# DEPRECATED — superseded by NLI. Kept for reference only.
 _POSITIVE_PATTERNS = [
     r"^好的?[。!！.]?$",
     r"^(好嘞|行|对|对的|没错|可以|棒|厉害)[。!！.]?$",
@@ -18,7 +29,7 @@ _POSITIVE_PATTERNS = [
     r"^就是(这样|这个|它)[。!！.]?$",
 ]
 
-# Negative: clear correction / disagreement
+# DEPRECATED — superseded by NLI. Kept for reference only.
 _NEGATIVE_PATTERNS = [
     r"^不对[。!！.]?$",
     r"^错了?[。!！.]?$",
@@ -32,23 +43,39 @@ _POS_RE = [re.compile(p) for p in _POSITIVE_PATTERNS]
 _NEG_RE = [re.compile(p) for p in _NEGATIVE_PATTERNS]
 
 
-def detect_outcome(user_text: str) -> int | None:
-    """Return +1 / -1 / None based on conservative pattern match.
-
-    Only fires on short, unambiguous utterances. Longer user utterances
-    that *contain* the trigger word (e.g., "谢谢你刚才说的那件事其实...")
-    are NOT matched because the patterns are anchored to start/end with
-    optional punctuation only.
+def detect_outcome(
+    user_text: str,
+    nli: "NLIClassifier | None" = None,
+) -> int | None:
+    """Detect outcome signal via NLI layer.
 
     Args:
-        user_text: Raw utterance from the user.
+        user_text: user utterance (will be stripped).
+        nli: NLIClassifier instance. If None → return None (regex layer is
+             deprecated and will not be invoked as fallback).
 
     Returns:
-        +1 if a positive pattern matches, -1 if a negative pattern matches,
-        None if the utterance is empty, too long, or ambiguous.
+        +1 (entailment) / -1 (contradiction) / None (ambiguous or no NLI).
     """
     text = user_text.strip()
-    if not text or len(text) > 30:  # long utterances: skip
+    if not text or len(text) < 2 or len(text) > 500:
+        return None
+    if nli is None:
+        return None
+    try:
+        return nli.detect_outcome(text)
+    except Exception:
+        LOGGER.exception("NLI outcome detection failed, returning None")
+        return None
+
+
+def _detect_regex_only(user_text: str) -> int | None:
+    """DEPRECATED: regex-layer detection kept for test fixtures only.
+
+    Production code must use detect_outcome() which goes through NLI.
+    """
+    text = user_text.strip()
+    if not text or len(text) > 30:
         return None
     for r in _POS_RE:
         if r.match(text):

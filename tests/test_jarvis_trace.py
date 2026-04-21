@@ -88,11 +88,15 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     app.trace_log = TraceLog(db_path)
     app._turn_counter: dict[str, int] = {}
     app._last_trace_id = None
-    app._pending_outcome_update = None
+    app._last_user_text = None
     # Trace v3: per-launch session id (separate from conversation_store
     # session). Real __init__ uses datetime + uuid; tests only need any
     # stable string.
     app._app_session_id = "test_session_0001"
+
+    # NLI classifier (lazy-loaded; stub returns None so outcome tests are unit-scope)
+    app.nli_classifier = MagicMock()
+    app.nli_classifier.detect_outcome = MagicMock(return_value=None)
 
     # ── prompt_version (16-char SHA prefix of personality.py) ──
     try:
@@ -249,15 +253,22 @@ class TestJarvisTraceV3:
         assert rows[0]["ttfs_ms"] is None
 
     def test_outcome_lag_one_turn(self, app: JarvisApp) -> None:
-        """Turn N+1's short approval text must update turn N's outcome_signal.
+        """Turn N+1's approval text updates turn N's outcome_signal via async NLI.
 
-        "好的" matches the positive pattern in detect_outcome (+1). When it fires
-        on turn N+1 and _last_trace_id points to turn N, the pending update is
-        applied in _flush_trace and turn N's row is rewritten with outcome_signal=1
-        and outcome_at_turn_id equal to turn N+1's trace id.
+        NLI is mocked to return +1 for "好的". When it fires on turn N+1 and
+        _last_trace_id points to turn N, the async outcome job writes
+        outcome_signal=1 on turn N and sets outcome_at_turn_id to turn N+1's id.
         """
+        # Mock NLI to return +1 for "好的" (simulates positive NLI detection).
+        app.nli_classifier.detect_outcome = lambda t: 1 if "好的" in t else None
+
         app.handle_text("你好", session_id="sess_lag")   # turn N
         app.handle_text("好的", session_id="sess_lag")   # turn N+1 → +1 signal
+
+        # Wait for async executor to complete outcome write.
+        app._executor.shutdown(wait=True)
+        from concurrent.futures import ThreadPoolExecutor
+        app._executor = ThreadPoolExecutor(max_workers=1)
 
         rows = app.trace_log.query_for_debug(hours=1, session_id=app._app_session_id)
         # query_for_debug returns newest-first; reverse for chronological order
@@ -276,13 +287,18 @@ class TestJarvisTraceV3:
         )
 
     def test_long_user_text_does_not_trigger_outcome(self, app: JarvisApp) -> None:
-        """A long utterance containing approval words must NOT update the prior turn's outcome_signal.
+        """NLI returning None for a long ambiguous utterance leaves outcome_signal NULL.
 
-        detect_outcome returns None for utterances longer than 30 chars, even if
-        they contain "谢谢". Turn N's outcome_signal must remain None.
+        The mock NLI returns None for ambiguous text, so turn N's
+        outcome_signal must remain None.
         """
+        # Default mock returns None — no outcome for ambiguous text.
         app.handle_text("你好", session_id="sess_long")
         app.handle_text("谢谢你刚才说的那件事，其实我有别的疑问", session_id="sess_long")
+
+        app._executor.shutdown(wait=True)
+        from concurrent.futures import ThreadPoolExecutor
+        app._executor = ThreadPoolExecutor(max_workers=1)
 
         rows = app.trace_log.query_for_debug(hours=1, session_id=app._app_session_id)
         rows_by_text = {r["user_text"]: r for r in rows}
