@@ -44,6 +44,7 @@ from core.speech_recognizer import SpeechRecognizer
 from devices.device_manager import DeviceManager
 from memory.hot.conversation import ConversationStore
 from memory.manager import MemoryManager
+from memory import trace as memory_trace
 from core.tool_registry import ToolRegistry
 
 LOGGER = logging.getLogger(__name__)
@@ -1762,6 +1763,15 @@ class JarvisApp:
 
             assistant_text = self._last_response_text or ""
 
+            # Parse <cited_obs>[...] from LLM response, filter against actually-injected
+            # observation ids (defense against hallucinated citations).
+            parsed_cited = memory_trace.parse_cited_obs_ids(assistant_text)
+            injected = set(self._last_memory_hits.injected_observation_ids) if self._last_memory_hits else set()
+            cited_obs_ids = (
+                [i for i in parsed_cited if i in injected]
+                if parsed_cited is not None else None
+            )
+
             # Coerce empty strings to None for nullable string columns —
             # SQL semantics: "" is a value, NULL is absence. Analytics
             # queries on `IS NULL` should not match empty placeholders.
@@ -1787,7 +1797,7 @@ class JarvisApp:
                 llm_tokens_out=llm_tokens_out,
                 cache_read_input_tokens=cache_read,
                 llm_metadata=llm_metadata if llm_metadata else None,
-                memory_query_ids=self._last_memory_query_ids,
+                cited_obs_ids=cited_obs_ids,
                 prompt_version=self._prompt_version,
                 latency_ms=total_ms,
                 ttfs_ms=ttfs_ms,
