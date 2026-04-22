@@ -1020,6 +1020,8 @@ class LLMClient:
         user_emotion: str = "",
         prompt_context: PromptContext | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
+        import json as _json
+
         client = self._get_anthropic_client()
         if prompt_context is not None:
             system: Any = prompt_context.to_anthropic_system()
@@ -1027,98 +1029,202 @@ class LLMClient:
             system = self._personalize_system(
                 user_name, user_role, user_emotion,
             )
+
         messages = self._truncate_history(list(conversation_history or []))
         messages.append({"role": "user", "content": user_message})
 
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
-            "system": system,
-            "messages": messages,
-        }
-        if tools:
-            kwargs["tools"] = tools
-
         self.logger.info("Streaming request to Anthropic (%s)", self.model)
 
-        try:
-            with client.messages.stream(**kwargs) as stream:
-                full_text = ""
-                buffer = ""
-                has_tool_use = False
+        for _tool_round in range(10):
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "system": system,
+                "messages": messages,
+            }
+            if tools:
+                kwargs["tools"] = tools
 
-                for event in stream:
-                    if hasattr(event, "type"):
-                        if event.type == "content_block_start" and getattr(
-                            getattr(event, "content_block", None), "type", None
-                        ) == "tool_use":
-                            has_tool_use = True
-                            break
-                        if event.type == "content_block_delta" and hasattr(event, "delta"):
-                            text_chunk = getattr(event.delta, "text", "")
-                            if text_chunk:
-                                full_text += text_chunk
-                                buffer += text_chunk
-                                buffer = self._flush_sentences(buffer, on_sentence)
+            try:
+                stream_ctx = self._call_with_retry(lambda: client.messages.stream(**kwargs))
+            except Exception as exc:
+                self.logger.warning("Streaming failed: %s, falling back to chat()", exc)
+                self._last_metadata["fallback_used"] = True
+                messages.pop()
+                return self._chat_anthropic(
+                    user_message,
+                    conversation_history=conversation_history,
+                    tools=tools,
+                    tool_executor=tool_executor,
+                    user_name=user_name,
+                    user_id=user_id,
+                    user_role=user_role,
+                    user_emotion=user_emotion,
+                    prompt_context=prompt_context,
+                )
 
-                # 只在纯文本响应时 flush 剩余 buffer；
-                # 如果检测到 tool_use，跳过——fallback 会重新生成完整回复，
-                # 否则用户会听到重复内容（流式播了一遍，fallback 又播一遍）
-                if not has_tool_use:
-                    self._flush_sentences(buffer, on_sentence, force=True)
+            full_text = ""
+            buffer = ""
+            # tool_use_blocks: id → {id, name, partial_json}
+            tool_use_blocks: dict[str, dict[str, Any]] = {}
+            _current_tool_id: str | None = None
+            _stream_stop_reason: str | None = None
 
-                if has_tool_use or not full_text.strip():
-                    reason = "tool use" if has_tool_use else "empty stream"
-                    self.logger.info("%s detected, falling back to chat()", reason)
-                    self._last_metadata["fallback_used"] = True
-                    messages.pop()
-                    return self._chat_anthropic(
-                        user_message,
-                        conversation_history=conversation_history,
-                        tools=tools,
-                        tool_executor=tool_executor,
-                        user_name=user_name,
-                        user_id=user_id,
-                        user_role=user_role,
-                        user_emotion=user_emotion,
-                        prompt_context=prompt_context,
+            try:
+                with stream_ctx as stream:
+                    for event in stream:
+                        if not hasattr(event, "type"):
+                            continue
+                        etype = event.type
+
+                        if etype == "content_block_start":
+                            cb = getattr(event, "content_block", None)
+                            if cb and getattr(cb, "type", None) == "tool_use":
+                                _current_tool_id = cb.id
+                                tool_use_blocks[cb.id] = {
+                                    "id": cb.id,
+                                    "name": cb.name,
+                                    "partial_json": "",
+                                }
+                            else:
+                                _current_tool_id = None
+
+                        elif etype == "content_block_delta":
+                            delta = getattr(event, "delta", None)
+                            if delta is None:
+                                continue
+                            delta_type = getattr(delta, "type", None)
+                            if delta_type == "text_delta":
+                                text_chunk = getattr(delta, "text", "")
+                                if text_chunk:
+                                    full_text += text_chunk
+                                    buffer += text_chunk
+                                    buffer = self._flush_sentences(buffer, on_sentence)
+                            elif delta_type == "input_json_delta" and _current_tool_id:
+                                tool_use_blocks[_current_tool_id]["partial_json"] += (
+                                    getattr(delta, "partial_json", "") or ""
+                                )
+
+                        elif etype == "message_delta":
+                            delta = getattr(event, "delta", None)
+                            if delta:
+                                _stream_stop_reason = getattr(delta, "stop_reason", None)
+
+                    # Try to get usage from final message
+                    try:
+                        final_msg = stream.get_final_message()
+                        usage = getattr(final_msg, "usage", None)
+                        self._last_metadata["cache_creation_input_tokens"] = (
+                            getattr(usage, "cache_creation_input_tokens", None) if usage else None
                         )
+                        self._last_finish_reason = getattr(final_msg, "stop_reason", _stream_stop_reason)
+                        self._last_cache_read_tokens = (
+                            getattr(usage, "cache_read_input_tokens", None) if usage else None
+                        ) or 0
+                        self._last_input_tokens = (
+                            getattr(usage, "input_tokens", None) if usage else None
+                        )
+                        self._last_output_tokens = (
+                            getattr(usage, "output_tokens", None) if usage else None
+                        )
+                        self._last_metadata["response_id"] = getattr(final_msg, "id", None)
+                    except Exception:
+                        self._last_finish_reason = _stream_stop_reason
+                        self._last_metadata["response_id"] = None
 
-                messages.append({
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": full_text}],
-                })
+            except Exception as exc:
+                self.logger.warning("Streaming failed: %s, falling back to chat()", exc)
+                self._last_metadata["fallback_used"] = True
+                messages.pop()
+                return self._chat_anthropic(
+                    user_message,
+                    conversation_history=conversation_history,
+                    tools=tools,
+                    tool_executor=tool_executor,
+                    user_name=user_name,
+                    user_id=user_id,
+                    user_role=user_role,
+                    user_emotion=user_emotion,
+                    prompt_context=prompt_context,
+                )
 
-                # Commit streaming metadata BEFORE returning (constraint 4).
-                # response_id is not available in Anthropic stream events;
-                # finish_reason and cache tokens require get_final_message().
-                # Those are populated by _chat_anthropic on fallback; for the
-                # pure-stream path we record what we know.
-                self._last_metadata["provider"] = "anthropic"
-                self._last_metadata["response_id"] = None
-                self._last_metadata["streaming"] = True
-                self._last_metadata["cache_creation_input_tokens"] = None
-                # finish_reason and cache_read_tokens stay None for pure-stream path
-                # (Anthropic stream does not surface usage without get_final_message).
+            # Decide based on stop_reason
+            if _stream_stop_reason == "tool_use" and tool_use_blocks and tool_executor is not None:
+                self.logger.info(
+                    "Tool use confirmed (stop_reason=tool_use), executing %d tool(s)",
+                    len(tool_use_blocks),
+                )
+                # Build assistant content block list
+                assistant_content: list[dict[str, Any]] = []
+                if full_text:
+                    assistant_content.append({"type": "text", "text": full_text})
+                for tb in tool_use_blocks.values():
+                    try:
+                        parsed_input = _json.loads(tb["partial_json"]) if tb["partial_json"] else {}
+                    except Exception:
+                        parsed_input = {}
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": tb["id"],
+                        "name": tb["name"],
+                        "input": parsed_input,
+                    })
+                messages.append({"role": "assistant", "content": assistant_content})
 
-                self.logger.info("Anthropic stream complete: %s", full_text[:200])
-                return full_text, messages
+                # Execute tools and collect results
+                tool_results: list[dict[str, Any]] = []
+                for tb in tool_use_blocks.values():
+                    try:
+                        parsed_input = _json.loads(tb["partial_json"]) if tb["partial_json"] else {}
+                    except Exception:
+                        parsed_input = {}
+                    self.logger.info("Tool call: %s(%s)", tb["name"], parsed_input)
+                    result_text = tool_executor(
+                        tb["name"], parsed_input,
+                        user_id=user_id, user_role=user_role,
+                    )
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tb["id"],
+                        "content": str(result_text),
+                    })
+                messages.append({"role": "user", "content": tool_results})
+                continue  # Round 3 will be streamed
 
-        except Exception as exc:
-            self.logger.warning("Streaming failed: %s, falling back to chat()", exc)
-            self._last_metadata["fallback_used"] = True
-            messages.pop()
-            return self._chat_anthropic(
-                user_message,
-                conversation_history=conversation_history,
-                tools=tools,
-                tool_executor=tool_executor,
-                user_name=user_name,
-                user_id=user_id,
-                user_role=user_role,
-                user_emotion=user_emotion,
-                prompt_context=prompt_context,
+            # No tool use — normal text path
+            if not full_text.strip():
+                self.logger.info("Empty stream, falling back to chat()")
+                self._last_metadata["fallback_used"] = True
+                messages.pop()
+                return self._chat_anthropic(
+                    user_message,
+                    conversation_history=conversation_history,
+                    tools=tools,
+                    tool_executor=tool_executor,
+                    user_name=user_name,
+                    user_id=user_id,
+                    user_role=user_role,
+                    user_emotion=user_emotion,
+                    prompt_context=prompt_context,
+                )
+
+            self._flush_sentences(buffer, on_sentence, force=True)
+
+            messages.append({
+                "role": "assistant",
+                "content": [{"type": "text", "text": full_text}],
+            })
+
+            self._last_metadata["provider"] = "anthropic"
+            self._last_metadata["streaming"] = True
+            self._last_metadata["cache_creation_input_tokens"] = self._last_metadata.get(
+                "cache_creation_input_tokens"
             )
+
+            self.logger.info("Anthropic stream complete: %s", full_text[:200])
+            return full_text, messages
+
+        return "I seem to be going in circles. Let me try a different approach.", messages
 
     def _stream_openai(
         self,
@@ -1134,6 +1240,8 @@ class LLMClient:
         user_emotion: str = "",
         prompt_context: PromptContext | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
+        import json as _json
+
         client = self._get_openai_client()
         if prompt_context is not None:
             system = prompt_context.to_openai_system_str()
@@ -1143,81 +1251,44 @@ class LLMClient:
             )
 
         truncated = self._truncate_history(list(conversation_history or []))
-        oai_messages = [{"role": "system", "content": system}]
+        oai_messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
         oai_messages.extend(self._history_to_openai(truncated))
         oai_messages.append({"role": "user", "content": user_message})
 
         openai_tools = self._tools_to_openai(tools) if tools else None
-        _tok_key = "max_completion_tokens" if self.model.startswith("gpt-5") else "max_tokens"
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            _tok_key: self.max_tokens,
-            "messages": oai_messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
-        if openai_tools:
-            kwargs["tools"] = openai_tools
-        headers = self._xai_cache_headers()
-        if headers:
-            kwargs["extra_headers"] = headers
-
-        self.logger.info("Streaming request to OpenAI (%s)", self.model)
 
         stored_messages = list(conversation_history or [])
         stored_messages.append({"role": "user", "content": user_message})
 
-        # Reset streaming token accumulators; metadata already reset by chat().
-        _stream_input_tokens = 0
-        _stream_output_tokens = 0
-        _stream_finish_reason: str | None = None
-        _stream_cached_tokens: int = 0
-        # OpenAI/xAI stream chunks carry the same response id (chatcmpl-...)
-        # in every chunk. Capture once from the first chunk that has one.
-        _stream_response_id: str | None = None
+        self.logger.info("Streaming request to OpenAI (%s)", self.model)
 
-        try:
-            response = self._call_with_retry(
-                lambda: client.chat.completions.create(**kwargs)
-            )
-            full_text = ""
-            buffer = ""
-            has_tool_calls = False
+        for _tool_round in range(10):
+            _stream_input_tokens = 0
+            _stream_output_tokens = 0
+            _stream_finish_reason: str | None = None
+            _stream_cached_tokens: int = 0
+            _stream_response_id: str | None = None
 
-            for chunk in response:
-                if _stream_response_id is None:
-                    _cid = getattr(chunk, "id", None)
-                    if _cid:
-                        _stream_response_id = _cid
-                if getattr(chunk, "usage", None):
-                    _stream_input_tokens += getattr(chunk.usage, "prompt_tokens", 0) or 0
-                    _stream_output_tokens += getattr(chunk.usage, "completion_tokens", 0) or 0
-                    _ptd = getattr(chunk.usage, "prompt_tokens_details", None)
-                    _stream_cached_tokens = getattr(_ptd, "cached_tokens", None) or 0
-                if chunk.choices:
-                    _fr = getattr(chunk.choices[0], "finish_reason", None)
-                    if _fr:
-                        _stream_finish_reason = _fr
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if delta is None:
-                    continue
-                if delta.tool_calls:
-                    self.logger.info("Tool call delta: %s", delta.tool_calls)
-                    has_tool_calls = True
-                if delta.content:
-                    if has_tool_calls:
-                        self.logger.info("Tool call delta overridden by streamed content; continuing text path")
-                        has_tool_calls = False
-                    full_text += delta.content
-                    buffer += delta.content
-                    buffer = self._flush_sentences(buffer, on_sentence)
+            _tok_key = "max_completion_tokens" if self.model.startswith("gpt-5") else "max_tokens"
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                _tok_key: self.max_tokens,
+                "messages": oai_messages,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            }
+            if openai_tools:
+                kwargs["tools"] = openai_tools
+            headers = self._xai_cache_headers()
+            if headers:
+                kwargs["extra_headers"] = headers
 
-            if not has_tool_calls:
-                self._flush_sentences(buffer, on_sentence, force=True)
-
-            if has_tool_calls or not full_text.strip():
-                reason = "tool use" if has_tool_calls else "empty stream"
-                self.logger.info("%s detected, falling back to chat()", reason)
+            try:
+                response = self._call_with_retry(
+                    lambda: client.chat.completions.create(**kwargs)
+                )
+            except Exception as exc:
+                self.logger.warning("Streaming failed: %s, falling back to chat()", exc)
                 self._last_metadata["fallback_used"] = True
                 return self._chat_openai(
                     user_message,
@@ -1231,13 +1302,155 @@ class LLMClient:
                     prompt_context=prompt_context,
                 )
 
+            full_text = ""
+            buffer = ""
+            tool_calls_acc: dict[int, dict[str, Any]] = {}  # index → {id, name, arguments}
+
+            try:
+                for chunk in response:
+                    if _stream_response_id is None:
+                        _cid = getattr(chunk, "id", None)
+                        if _cid:
+                            _stream_response_id = _cid
+                    if getattr(chunk, "usage", None):
+                        _stream_input_tokens += getattr(chunk.usage, "prompt_tokens", 0) or 0
+                        _stream_output_tokens += getattr(chunk.usage, "completion_tokens", 0) or 0
+                        _ptd = getattr(chunk.usage, "prompt_tokens_details", None)
+                        _stream_cached_tokens = getattr(_ptd, "cached_tokens", None) or 0
+                    if chunk.choices:
+                        _fr = getattr(chunk.choices[0], "finish_reason", None)
+                        if _fr:
+                            _stream_finish_reason = _fr
+
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if delta is None:
+                        continue
+
+                    # Accumulate tool calls by index
+                    if delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = getattr(tc_delta, "index", 0) or 0
+                            if idx not in tool_calls_acc:
+                                tool_calls_acc[idx] = {
+                                    "id": getattr(tc_delta, "id", None) or f"call_{idx}",
+                                    "name": "",
+                                    "arguments": "",
+                                }
+                            fn = getattr(tc_delta, "function", None)
+                            if fn:
+                                if fn.name:
+                                    tool_calls_acc[idx]["name"] = fn.name
+                                if fn.arguments:
+                                    tool_calls_acc[idx]["arguments"] += fn.arguments
+
+                    # Stream text content to TTS
+                    if delta.content:
+                        full_text += delta.content
+                        buffer += delta.content
+                        buffer = self._flush_sentences(buffer, on_sentence)
+
+            except Exception as exc:
+                self.logger.warning("Streaming failed: %s, falling back to chat()", exc)
+                self._last_metadata["fallback_used"] = True
+                return self._chat_openai(
+                    user_message,
+                    conversation_history=conversation_history,
+                    tools=tools,
+                    tool_executor=tool_executor,
+                    user_name=user_name,
+                    user_id=user_id,
+                    user_role=user_role,
+                    user_emotion=user_emotion,
+                    prompt_context=prompt_context,
+                )
+
+            # Decide based on finish_reason (authoritative signal)
+            if _stream_finish_reason == "tool_calls" and tool_calls_acc and tool_executor is not None:
+                self.logger.info(
+                    "Tool use confirmed (finish_reason=tool_calls), executing %d tool(s)",
+                    len(tool_calls_acc),
+                )
+                # Build assistant message with text + tool_calls
+                oai_assistant: dict[str, Any] = {"role": "assistant", "content": full_text or None}
+                oai_assistant["tool_calls"] = [
+                    {
+                        "id": tool_calls_acc[i]["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tool_calls_acc[i]["name"],
+                            "arguments": tool_calls_acc[i]["arguments"],
+                        },
+                    }
+                    for i in sorted(tool_calls_acc)
+                ]
+                oai_messages.append(oai_assistant)
+
+                # Store in Anthropic-compatible format for persistence
+                stored_content: list[dict[str, Any]] = []
+                if full_text:
+                    stored_content.append({"type": "text", "text": full_text})
+                for idx in sorted(tool_calls_acc):
+                    tc = tool_calls_acc[idx]
+                    try:
+                        parsed = _json.loads(tc["arguments"]) if tc["arguments"] else {}
+                    except Exception:
+                        parsed = {}
+                    stored_content.append({
+                        "type": "tool_use",
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "input": parsed,
+                    })
+                stored_messages.append({"role": "assistant", "content": stored_content})
+
+                # Execute tools and append results
+                for idx in sorted(tool_calls_acc):
+                    tc = tool_calls_acc[idx]
+                    try:
+                        func_args = _json.loads(tc["arguments"]) if tc["arguments"] else {}
+                    except Exception:
+                        func_args = {}
+                    self.logger.info("Tool call: %s(%s)", tc["name"], func_args)
+                    result_text = tool_executor(
+                        tc["name"], func_args,
+                        user_id=user_id, user_role=user_role,
+                    )
+                    oai_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": str(result_text),
+                    })
+                    stored_messages.append({"role": "user", "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tc["id"],
+                        "content": str(result_text),
+                    }]})
+
+                continue  # Round 3 will be streamed
+
+            # No tool use — normal text path
+            if not full_text.strip():
+                self.logger.info("Empty stream, falling back to chat()")
+                self._last_metadata["fallback_used"] = True
+                return self._chat_openai(
+                    user_message,
+                    conversation_history=conversation_history,
+                    tools=tools,
+                    tool_executor=tool_executor,
+                    user_name=user_name,
+                    user_id=user_id,
+                    user_role=user_role,
+                    user_emotion=user_emotion,
+                    prompt_context=prompt_context,
+                )
+
+            self._flush_sentences(buffer, on_sentence, force=True)
+
             stored_messages.append({
                 "role": "assistant",
                 "content": [{"type": "text", "text": full_text}],
             })
 
-            # Commit streaming metadata BEFORE returning so callers see it
-            # immediately (constraint 4 — no async worker delay).
             _base_url = self._base_url or ""
             _provider = "xai" if "x.ai" in _base_url else (
                 "groq" if "groq" in _base_url else (
@@ -1252,29 +1465,13 @@ class LLMClient:
                 self._last_metadata["conv_id"] = self._grok_conv_id
             self._last_finish_reason = _stream_finish_reason
             self._last_cache_read_tokens = _stream_cached_tokens
-            # Streaming tokens come piecewise via the chunk.usage stat
-            # event (sent at end-of-stream). Commit the totals so callers
-            # can compute cost from prompt + completion before chat() returns.
             self._last_input_tokens = _stream_input_tokens or None
             self._last_output_tokens = _stream_output_tokens or None
 
             self.logger.info("OpenAI stream complete: %s", full_text[:200])
             return full_text, stored_messages
 
-        except Exception as exc:
-            self.logger.warning("Streaming failed: %s, falling back to chat()", exc)
-            self._last_metadata["fallback_used"] = True
-            return self._chat_openai(
-                user_message,
-                conversation_history=conversation_history,
-                tools=tools,
-                tool_executor=tool_executor,
-                user_name=user_name,
-                user_id=user_id,
-                user_role=user_role,
-                user_emotion=user_emotion,
-                prompt_context=prompt_context,
-            )
+        return "I seem to be going in circles. Let me try a different approach.", stored_messages
 
     # ------------------------------------------------------------------
     # Shared helpers
