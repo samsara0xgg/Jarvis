@@ -42,6 +42,7 @@ CREATE TABLE trace (
   llm_metadata              TEXT,
 
   memory_query_ids          TEXT,
+  cited_obs_ids             TEXT,
 
   prompt_version            TEXT,
 

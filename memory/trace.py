@@ -1,4 +1,4 @@
-"""Structured per-turn trace store — v3 schema (31 columns).
+"""Structured per-turn trace store — v3 schema (32 columns).
 
 Records every conversation turn with identity, routing path, tool calls,
 LLM metadata, memory query IDs, latency breakdowns, and outcome signals.
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 from datetime import datetime
@@ -22,6 +23,21 @@ from typing import Any
 from memory.trace_migration import V3_SCHEMA_SQL, migrate_trace_v2_to_v3
 
 LOGGER = logging.getLogger(__name__)
+
+_CITED_OBS_RE = re.compile(r"<cited_obs>\s*\[\s*([\d,\s]+?)\s*\]\s*</cited_obs>")
+
+
+def parse_cited_obs_ids(text: str) -> list[int] | None:
+    """Extract ids from <cited_obs>[n, n, n]</cited_obs>. Returns None if tag absent."""
+    if not text:
+        return None
+    m = _CITED_OBS_RE.search(text)
+    if not m:
+        return None
+    try:
+        return [int(x) for x in m.group(1).split(",") if x.strip()]
+    except ValueError:
+        return None
 
 
 class TriggerSource(str, Enum):
@@ -108,6 +124,13 @@ class TraceLog:
 
         migrate_trace_v2_to_v3(conn)
 
+        # Idempotent column additions for v3+ databases that predate this column.
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(trace)").fetchall()}
+        if "cited_obs_ids" not in existing:
+            conn.execute("ALTER TABLE trace ADD COLUMN cited_obs_ids TEXT")
+            conn.commit()
+            LOGGER.info("trace: added cited_obs_ids column (online migration)")
+
     def log_turn(
         self,
         *,
@@ -136,6 +159,7 @@ class TraceLog:
         llm_metadata: dict | None = None,
         # --- Memory ---
         memory_query_ids: dict | None = None,
+        cited_obs_ids: list[int] | None = None,
         # --- Context ---
         prompt_version: str | None = None,
         # --- Performance ---
@@ -175,6 +199,7 @@ class TraceLog:
             cache_read_input_tokens: Prompt cache hit tokens (all providers).
             llm_metadata: JSON-serializable dict. See V3 schema doc for keys.
             memory_query_ids: JSON-serializable dict with observation_ids and scores.
+            cited_obs_ids: LLM-cited observation ids, filtered against injected set. NULL if tag absent; [] if all hallucinated.
             prompt_version: SHA-256 hash prefix (16 chars) of system prompt.
             latency_ms: Total end-to-end latency in milliseconds.
             ttfs_ms: Time to first sound in milliseconds (user-perceived).
@@ -195,7 +220,7 @@ class TraceLog:
             "trigger_source, parent_trace_id, path_taken, intent_route_score, "
             "tool_calls, "
             "llm_model, llm_tokens_in, llm_tokens_out, cache_read_input_tokens, llm_metadata, "
-            "memory_query_ids, "
+            "memory_query_ids, cited_obs_ids, "
             "prompt_version, "
             "latency_ms, ttfs_ms, latency_breakdown, "
             "end_reason, error, finish_reason, cost_usd"
@@ -205,7 +230,7 @@ class TraceLog:
             "?, ?, ?, ?, "
             "?, "
             "?, ?, ?, ?, ?, "
-            "?, "
+            "?, ?, "
             "?, "
             "?, ?, ?, "
             "?, ?, ?, ?"
@@ -231,6 +256,7 @@ class TraceLog:
                 cache_read_input_tokens,
                 json.dumps(llm_metadata, ensure_ascii=False) if llm_metadata is not None else None,
                 json.dumps(memory_query_ids, ensure_ascii=False) if memory_query_ids is not None else None,
+                json.dumps(cited_obs_ids, ensure_ascii=False) if cited_obs_ids is not None else None,
                 prompt_version,
                 latency_ms,
                 ttfs_ms,
