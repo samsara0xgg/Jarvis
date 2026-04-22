@@ -1081,6 +1081,7 @@ class LLMClient:
                         user_id=user_id,
                         user_role=user_role,
                         user_emotion=user_emotion,
+                        prompt_context=prompt_context,
                         )
 
                 messages.append({
@@ -1116,6 +1117,7 @@ class LLMClient:
                 user_id=user_id,
                 user_role=user_role,
                 user_emotion=user_emotion,
+                prompt_context=prompt_context,
             )
 
     def _stream_openai(
@@ -1226,6 +1228,7 @@ class LLMClient:
                     user_id=user_id,
                     user_role=user_role,
                     user_emotion=user_emotion,
+                    prompt_context=prompt_context,
                 )
 
             stored_messages.append({
@@ -1270,6 +1273,7 @@ class LLMClient:
                 user_id=user_id,
                 user_role=user_role,
                 user_emotion=user_emotion,
+                prompt_context=prompt_context,
             )
 
     # ------------------------------------------------------------------
