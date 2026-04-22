@@ -1527,6 +1527,9 @@ class TTSPipeline:
                 return
 
             text, sentence_type, emotion = item
+            text = tts_preprocessor.clean(text, self._engine._preprocessor_config)
+            if not text.strip():
+                continue
 
             # Streaming route — minimax with ws enabled
             if (self._engine.engine_name in SUPPORTS_STREAMING
