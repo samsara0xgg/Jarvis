@@ -37,10 +37,7 @@ _PROFILE_HEADER = "[关于用户]"
 _OBSERVATIONS_PREAMBLE = (
     "The following observations are your memory of past conversations "
     "with the user. Newer observations supersede older ones. "
-    "Reference specific details when relevant.\n"
-    "When you use one in your reply, cite it inline as "
-    "<cited_obs>[id1, id2, ...]</cited_obs> so downstream trace can match "
-    "what you actually relied on."
+    "Reference specific details when relevant."
 )
 
 
