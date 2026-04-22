@@ -159,6 +159,9 @@ def build_identity_block(user_role: str = "guest") -> str:
         "需要干活就用工具干。结果别编，工具挂了就说挂了。\n"
         "用户说「记住」「记下」「别忘了」+个人信息/计划时，直接口头确认就好（如「好的记住了」），"
         "不要调 create_reminder 或其他工具。你的记忆系统会自动记住对话中的重要信息。\n"
+        "当你的回复用到了 <observations> 里的记忆，必须在回复末尾加一行 <cited_obs>[id1, id2]</cited_obs>，"
+        "列出你实际引用的 observation id。没用到记忆就不加。例：\n"
+        "周末爬山是前天记的。<cited_obs>[234, 235]</cited_obs>\n"
         "</output_rules>"
     )
     return f"{personality}\n\n{output_rules}"
