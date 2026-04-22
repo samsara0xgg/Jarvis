@@ -548,22 +548,22 @@ class TestRouteAndRespond:
         assert result.text_response is None
 
     @patch("core.intent_router._SESSION")
-    def test_natural_language_sets_text_response(self, mock_session, config):
-        """Non-JSON response sets text_response for direct use."""
+    def test_chat_intent_returns_no_text_response(self, mock_session, config):
+        """Chat intent returns JSON with no text_response (caller handles LLM generation)."""
         config["models"]["groq"]["api_key"] = "test_key"
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status.return_value = None
         mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "今天天气不错，适合出门走走。"}}]
+            "choices": [{"message": {"content": json.dumps({"intent": "chat", "confidence": 0.95})}}]
         }
         mock_session.post.return_value = mock_resp
 
         router = IntentRouter(config)
-        result = router.route_and_respond("今天天气怎么样")
+        result = router.route_and_respond("讲个故事")
 
         assert result.intent == "chat"
-        assert result.text_response == "今天天气不错，适合出门走走。"
+        assert result.text_response is None
         assert result.provider == "groq"
 
     @patch("core.intent_router._SESSION")
@@ -590,14 +590,14 @@ class TestRouteAndRespond:
         assert r2.intent == "smart_home"
 
     @patch("core.intent_router._SESSION")
-    def test_text_response_not_cached(self, mock_session, config):
-        """Natural language responses should NOT be cached."""
+    def test_chat_intent_is_cached(self, mock_session, config):
+        """Chat JSON responses are cached like any other intent."""
         config["models"]["groq"]["api_key"] = "test_key"
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status.return_value = None
         mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "你好呀！"}}]
+            "choices": [{"message": {"content": json.dumps({"intent": "chat", "confidence": 0.95})}}]
         }
         mock_session.post.return_value = mock_resp
 
@@ -605,18 +605,18 @@ class TestRouteAndRespond:
         router.route_and_respond("你好")
         router.route_and_respond("你好")
 
-        # Should call API twice since text responses are not cached
-        assert mock_session.post.call_count == 2
+        # Second call should be served from cache
+        assert mock_session.post.call_count == 1
 
     @patch("core.intent_router._SESSION")
-    def test_no_json_mode_in_request(self, mock_session, config):
-        """Unified call should NOT use response_format: json_object."""
+    def test_json_mode_in_request(self, mock_session, config):
+        """Unified call should use response_format: json_object."""
         config["models"]["groq"]["api_key"] = "test_key"
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status.return_value = None
         mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "好的"}}]
+            "choices": [{"message": {"content": json.dumps({"intent": "chat", "confidence": 0.95})}}]
         }
         mock_session.post.return_value = mock_resp
 
@@ -625,7 +625,8 @@ class TestRouteAndRespond:
 
         call_kwargs = mock_session.post.call_args
         request_json = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-        assert "response_format" not in request_json
+        assert request_json.get("response_format") == {"type": "json_object"}
+        assert request_json.get("max_tokens") == 200
 
 
 class TestBuildUnifiedPrompt:

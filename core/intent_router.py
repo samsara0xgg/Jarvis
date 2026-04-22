@@ -187,7 +187,7 @@ def build_unified_prompt(
 4. 自动化规则 → 输出一个JSON（永远只输出一个JSON，不要输出多个）：
    持久规则（"以后每次…""每天…"）：{{"intent":"automation","confidence":0.9,"sub_type":"create","rule":{{"name":"晚安模式","trigger":{{"type":"keyword","keyword":"晚安"}},"actions":[{{"device_id":"xxx","action":"turn_off"}}]}},"response":"好的，以后说晚安就会关灯。"}}
    一次性延时（"关灯过3秒再开灯"）：{{"intent":"automation","confidence":0.9,"sub_type":"create","rule":{{"name":"延时操作","trigger":{{"type":"once","delay_minutes":0.05}},"actions":[{{"device_id":"all_lights","action":"turn_off"}},{{"device_id":"all_lights","action":"turn_on","delay_seconds":3}}]}},"response":"好的，先关灯，3秒后开灯。"}}
-5. 其他所有情况 → 直接用自然语言回复，不要输出JSON
+5. 其他所有情况 → 输出JSON：{{"intent":"chat","confidence":0.95}}
 
 设备：
 {device_list}
@@ -197,8 +197,8 @@ def build_unified_prompt(
 - "所有灯"=列出全部灯的device_id
 - 上下文设备推断：如果用户没指定设备名，根据对话上下文推断是哪个设备
 - 隐含意图："有点暗"=开灯，"好热"=调空调
-- 记忆/个人信息相关问题→直接回复
-- 只有1-4类输出JSON，其他一律自然语言回复"""
+- 记忆/个人信息相关问题→输出chat JSON
+- 所有情况都输出JSON，不要输出自然语言"""
 
 
 @dataclass
@@ -591,7 +591,7 @@ class IntentRouter:
         recent_context: list[dict],
         system_prompt: str,
     ) -> RouteResult | None:
-        """Call cloud API with unified route+respond prompt (no JSON mode)."""
+        """Call cloud API with unified route+respond prompt (JSON mode)."""
         try:
             messages = [{"role": "system", "content": system_prompt}]
             if recent_context:
@@ -604,7 +604,8 @@ class IntentRouter:
                     "model": model,
                     "messages": messages,
                     "temperature": 0.7,
-                    "max_tokens": 500,
+                    "max_tokens": 200,
+                    "response_format": {"type": "json_object"},
                 },
                 timeout=5,
             )
@@ -640,74 +641,62 @@ class IntentRouter:
             return None
 
     def _parse_unified_response(self, raw: str, start: float) -> RouteResult | None:
-        """Parse unified response: JSON for structured intents, text for chat."""
+        """Parse unified response: always JSON."""
         duration_ms = int((time.time() - start) * 1000)
 
         # Strip markdown fences if present, then try JSON parse
         cleaned = raw.strip()
         if cleaned.startswith("```"):
             cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        if cleaned.startswith("{"):
-            # Multiple JSON objects → take only the first one
-            first_json = cleaned
+
+        # Multiple JSON objects → take only the first one
+        first_json = cleaned
+        try:
+            decoder = json.JSONDecoder()
+            _, end_idx = decoder.raw_decode(cleaned)
+            first_json = cleaned[:end_idx]
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        parsed = None
+        for attempt in (first_json, first_json + "}", first_json + "]}"):
             try:
-                decoder = json.JSONDecoder()
-                _, end_idx = decoder.raw_decode(cleaned)
-                first_json = cleaned[:end_idx]
-            except (json.JSONDecodeError, ValueError):
-                pass
-            # Try parsing; if fail, attempt common fixes
-            parsed = None
-            for attempt in (first_json, first_json + "}", first_json + "]}"):
-                try:
-                    parsed = json.loads(attempt)
-                    break
-                except json.JSONDecodeError:
-                    continue
-            if parsed is None:
-                # Extract response from malformed JSON as fallback
-                resp_match = re.search(r'"response"\s*:\s*"([^"]+)"', first_json)
-                if resp_match:
-                    self.logger.warning("Malformed JSON, extracted response: %s", resp_match.group(1))
-                    return RouteResult(
-                        tier="cloud", intent="chat", confidence=0.9,
-                        duration_ms=duration_ms, provider="",
-                        text_response=resp_match.group(1),
-                    )
-            if parsed:
-                intent = parsed.get("intent", "uncertain")
-                if intent not in VALID_INTENTS:
-                    intent = "uncertain"
+                parsed = json.loads(attempt)
+                break
+            except json.JSONDecodeError:
+                continue
 
-                confidence = float(parsed.get("confidence", 0.5))
-                actions = parsed.get("actions", [])
-                response = parsed.get("response")
-                sub_type = parsed.get("sub_type")
-                query = parsed.get("query")
-                rule = parsed.get("rule")
+        if parsed is None:
+            self.logger.warning("Unified: unparseable JSON response: %s", raw[:100])
+            return RouteResult(
+                tier="cloud", intent="chat", confidence=0.5,
+                duration_ms=duration_ms, provider="",
+            )
 
-                if intent in ("smart_home", "info_query", "time", "automation") and confidence >= 0.90:
-                    tier = "local"
-                else:
-                    tier = "cloud"
+        intent = parsed.get("intent", "uncertain")
+        if intent not in VALID_INTENTS:
+            intent = "uncertain"
 
-                self.logger.info(
-                    "Unified(json): %s/%s (%.2f, %dms) sub_type=%s query=%r actions=%d",
-                    tier, intent, confidence, duration_ms,
-                    sub_type, query, len(actions),
-                )
-                return RouteResult(
-                    tier=tier, intent=intent, confidence=confidence,
-                    duration_ms=duration_ms, provider="",
-                    actions=actions, response=response,
-                    sub_type=sub_type, query=query, rule=rule,
-                )
-        # Natural language response
+        confidence = float(parsed.get("confidence", 0.5))
+        actions = parsed.get("actions", [])
+        response = parsed.get("response")
+        sub_type = parsed.get("sub_type")
+        query = parsed.get("query")
+        rule = parsed.get("rule")
+
+        if intent in ("smart_home", "info_query", "time", "automation") and confidence >= 0.90:
+            tier = "local"
+        else:
+            tier = "cloud"
+
         self.logger.info(
-            "Unified(text): '%s' → chat (%dms)", raw[:40], duration_ms,
+            "Unified(json): %s/%s (%.2f, %dms) sub_type=%s query=%r actions=%d",
+            tier, intent, confidence, duration_ms,
+            sub_type, query, len(actions),
         )
         return RouteResult(
-            tier="cloud", intent="chat", confidence=1.0,
+            tier=tier, intent=intent, confidence=confidence,
             duration_ms=duration_ms, provider="",
-            text_response=raw,
+            actions=actions, response=response,
+            sub_type=sub_type, query=query, rule=rule,
         )
