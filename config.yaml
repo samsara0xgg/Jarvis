@@ -342,9 +342,9 @@ llm:
       api_key_env: GROQ_API_KEY
       max_tokens: 1024
     deep:
-      model: grok-4.20-0309-non-reasoning
-      base_url: "https://api.x.ai/v1"
-      api_key_env: XAI_API_KEY
+      model: gpt-5.4-mini
+      base_url: "https://api.openai.com/v1"
+      api_key_env: OPENAI_API_KEY
       max_tokens: 1024
 
   # 后备配置（无 presets 时使用）
@@ -730,3 +730,4 @@ llm_pricing:
   llama-3.3-70b-versatile:  {input: 0.59, output: 0.79,  cache_read: 0.0}   # Groq actual id
   llama3.1-8b:              {input: 0.10, output: 0.10,  cache_read: 0.0}   # Cerebras
   gpt-4o-mini:         {input: 0.15, output: 0.60,  cache_read: 0.075}
+  gpt-5.4:             {input: 2.50, output: 15.00, cache_read: 0.25}
