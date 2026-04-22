@@ -32,67 +32,61 @@ def _load_config(config_path: Path) -> dict:
 
 
 def _render(ctx, out: Path) -> None:
-    anth = ctx.to_anthropic_system()
-    openai = ctx.to_openai_system_str()
+    """Write the raw prompt that would be sent to the LLM.
+
+    Format matches the historical `/tmp/jarvis_last_prompt.txt` layout so
+    the new Assembler output is directly comparable to pre-v2 dumps:
+      === SYSTEM (N chars) ===
+      <raw system text, exactly what xAI/OpenAI receives>
+      === MESSAGES (N entries) ===
+      <JSON messages array, exactly what the API receives>
+      === ANTHROPIC SYSTEM (N entries) ===
+      <list[dict] form, what Anthropic receives with cache_control>
+    """
+    openai_system = ctx.to_openai_system_str()
+    anthropic_system = ctx.to_anthropic_system()
 
     lines: list[str] = []
-    lines.append("=" * 78)
-    lines.append("PromptContext dump — memory v2 finish verification")
-    lines.append("=" * 78)
-    lines.append("")
-    lines.append(f"blocks: {len(ctx.blocks)}")
-    lines.append(f"injected_observation_ids: {ctx.injected_observation_ids}")
-    lines.append(f"messages: {len(ctx.messages)}")
+
+    # --- SYSTEM (OpenAI/xAI single string — raw concatenation of 4 blocks) ---
+    lines.append(f"=== SYSTEM ({len(openai_system)} chars) ===")
+    lines.append(openai_system)
     lines.append("")
 
-    lines.append("-" * 78)
-    lines.append("Anthropic serialization (list[dict])")
-    lines.append("-" * 78)
-    for i, entry in enumerate(anth):
-        cache = "cache=ephemeral" if "cache_control" in entry else "cache=off"
-        preview = entry["text"].replace("\n", " / ")
-        if len(preview) > 120:
-            preview = preview[:117] + "..."
-        lines.append(f"[{i}] {cache}")
-        lines.append(f"    {preview}")
-
+    # --- MESSAGES (JSON array exactly as sent to the API) ---
+    lines.append(f"=== MESSAGES ({len(ctx.messages)} entries) ===")
+    lines.append(json.dumps(ctx.messages, ensure_ascii=False, indent=2))
     lines.append("")
-    lines.append("-" * 78)
-    lines.append("Per-block full content")
-    lines.append("-" * 78)
-    for b in ctx.blocks:
-        lines.append(f"### block: name={b.name!r} cache={b.cache}")
-        lines.append(b.content)
-        lines.append("")
 
-    lines.append("-" * 78)
-    lines.append("Messages")
-    lines.append("-" * 78)
-    for m in ctx.messages:
-        lines.append(f"[{m.get('role')}] {m.get('content', '')[:200]}")
-
+    # --- ANTHROPIC SYSTEM (list[dict] with cache_control — what Claude sees) ---
+    lines.append(f"=== ANTHROPIC SYSTEM ({len(anthropic_system)} entries, "
+                 f"{sum(1 for e in anthropic_system if 'cache_control' in e)} cached) ===")
+    lines.append(json.dumps(anthropic_system, ensure_ascii=False, indent=2))
     lines.append("")
-    lines.append("-" * 78)
-    lines.append("OpenAI serialization (single string preview, first 400 chars)")
-    lines.append("-" * 78)
-    lines.append(openai[:400])
+
+    # --- METADATA (injected observation ids — for trace v3 verification) ---
+    lines.append(f"=== INJECTED OBSERVATION IDS ({len(ctx.injected_observation_ids)}) ===")
+    lines.append(json.dumps(ctx.injected_observation_ids))
     lines.append("")
 
     out.write_text("\n".join(lines), encoding="utf-8")
 
     # Also emit a machine-readable JSON summary for scripted checks.
     summary = {
+        "system_chars": len(openai_system),
+        "messages_count": len(ctx.messages),
+        "messages_roles": [m.get("role") for m in ctx.messages],
         "block_names": [b.name for b in ctx.blocks],
         "block_cache_flags": [b.cache for b in ctx.blocks],
         "injected_observation_ids": ctx.injected_observation_ids,
-        "messages_roles": [m.get("role") for m in ctx.messages],
-        "anthropic_entries": len(anth),
-        "anthropic_cached_count": sum(1 for e in anth if "cache_control" in e),
+        "anthropic_entries": len(anthropic_system),
+        "anthropic_cached_count": sum(1 for e in anthropic_system if "cache_control" in e),
     }
     json_out = out.with_suffix(".json")
     json_out.write_text(json.dumps(summary, indent=2, ensure_ascii=False))
 
-    print(f"Wrote prompt dump to {out}")
+    print(f"Wrote prompt dump to {out} ({len(openai_system)} system chars, "
+          f"{len(ctx.messages)} messages)")
     print(f"Wrote JSON summary to {json_out}")
 
 
@@ -111,10 +105,22 @@ def main() -> int:
     config = _load_config(args.config)
     mgr = MemoryManager(config)
 
-    history = [
-        {"role": "user", "content": "之前聊过温哥华"},
-        {"role": "assistant", "content": "嗯，你提过。"},
-    ]
+    # Load real conversation history from disk so the dump reflects what
+    # jarvis.py would actually send on the next turn.
+    conv_path = Path(f"data/conversations/{args.user_id}.json")
+    history: list[dict] = []
+    if conv_path.exists():
+        try:
+            history = json.loads(conv_path.read_text(encoding="utf-8"))
+            if not isinstance(history, list):
+                history = history.get("messages", []) if isinstance(history, dict) else []
+        except Exception as exc:
+            print(f"[warn] failed to load {conv_path}: {exc}", file=sys.stderr)
+    if not history:
+        history = [
+            {"role": "user", "content": "之前聊过温哥华"},
+            {"role": "assistant", "content": "嗯，你提过。"},
+        ]
 
     ctx = mgr.build_prompt_context(
         text=args.text,
