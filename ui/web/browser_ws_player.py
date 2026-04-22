@@ -70,6 +70,7 @@ class BrowserWSPlayer:
         pace: bool = False,
         abort_event: Any = None,
         get_cursor: Callable[[], int] | None = None,
+        on_first_chunk: Callable[[], None] | None = None,
     ) -> None:
         self._ws = ws
         self._idx = sentence_index
@@ -96,6 +97,11 @@ class BrowserWSPlayer:
         # iteration + after each paced sleep so a new_chat cancel stops
         # residual paced PCM within ~1s instead of draining the full queue.
         self._abort_event = abort_event
+        # Mirrors AudioStreamPlayer semantics — fired once per player instance
+        # when the first non-empty PCM chunk is encoded (i.e. server has audio
+        # ready to push to browser). Used by jarvis.py for trace v3 ttfs_ms.
+        self._on_first_chunk: Callable[[], None] | None = on_first_chunk
+        self._first_chunk_fired: bool = False
 
     def _encode_chunk(self, pcm_f32: np.ndarray) -> bytes | None:
         """Shared encode path for write / write_async. Returns None if empty."""
@@ -129,6 +135,12 @@ class BrowserWSPlayer:
         payload = self._encode_chunk(pcm_f32)
         if payload is None:
             return
+        if not self._first_chunk_fired and self._on_first_chunk is not None:
+            try:
+                self._on_first_chunk()
+            except Exception:
+                pass  # callback must not break streaming
+            self._first_chunk_fired = True
         if self._send_q is None:
             self._send_q = asyncio.Queue()
             self._drain_task = asyncio.create_task(self._drain_loop())
@@ -207,6 +219,12 @@ class BrowserWSPlayer:
         payload = self._encode_chunk(pcm_f32)
         if payload is None:
             return
+        if not self._first_chunk_fired and self._on_first_chunk is not None:
+            try:
+                self._on_first_chunk()
+            except Exception:
+                pass
+            self._first_chunk_fired = True
         try:
             asyncio.run_coroutine_threadsafe(
                 self._ws.send_bytes(payload), self._loop,

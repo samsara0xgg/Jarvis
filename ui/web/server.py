@@ -439,6 +439,7 @@ def create_app(jarvis_app: Any) -> FastAPI:
                         ws=ws_ref, sentence_index=idx_local, loop=loop,
                         abort_event=abort_event,
                         get_cursor=_get_cursor,
+                        on_first_chunk=(tts._first_chunk_callback if idx_local == 0 else None),
                     )
                     try:
                         result = await tts._stream_to_player_async(
@@ -482,6 +483,13 @@ def create_app(jarvis_app: Any) -> FastAPI:
 
         def on_sentence(sentence: str, emotion: str = "") -> None:
             nonlocal sentence_index
+
+            from core import tts_preprocessor
+            pp_cfg = jarvis_app.config.get("tts", {}).get("tts_preprocessor", {})
+            sentence = tts_preprocessor.clean(sentence, pp_cfg)
+            if not sentence.strip():
+                return
+
             idx = sentence_index
             sentence_index += 1
 
@@ -694,7 +702,7 @@ def create_app(jarvis_app: Any) -> FastAPI:
         row = jarvis_app.trace_log.query_by_trace_id(trace_id)
         if row is None:
             return JSONResponse({"error": "trace not found"}, status_code=404)
-        jarvis_app.trace_log.update_outcome(trace_id, signal=signal, at_turn_id=None)
+        jarvis_app.trace_log.update_outcome(trace_id, signal=signal, at_turn_id=trace_id)
         LOGGER.info("[outcome] thumbs trace_id=%d signal=%d", trace_id, signal)
         return {"ok": True, "trace_id": trace_id}
 
