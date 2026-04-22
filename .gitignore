@@ -84,3 +84,6 @@ desktop/dist/
 # keep desktop/build/ (icon assets) even though top-level build/ is ignored
 !desktop/build/
 !desktop/build/**
+
+# Auto-generated Claude memory dump (not a real agents config)
+AGENTS.md
