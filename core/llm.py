@@ -527,10 +527,11 @@ class LLMClient:
 
         import json as _json
 
+        _tok_key = "max_completion_tokens" if self.model.startswith("gpt-5") else "max_tokens"
         for _ in range(10):
             kwargs: dict[str, Any] = {
                 "model": self.model,
-                "max_tokens": self.max_tokens,
+                _tok_key: self.max_tokens,
                 "messages": messages,
             }
             if openai_tools:
@@ -1145,9 +1146,10 @@ class LLMClient:
         oai_messages.append({"role": "user", "content": user_message})
 
         openai_tools = self._tools_to_openai(tools) if tools else None
+        _tok_key = "max_completion_tokens" if self.model.startswith("gpt-5") else "max_tokens"
         kwargs: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": self.max_tokens,
+            _tok_key: self.max_tokens,
             "messages": oai_messages,
             "stream": True,
             "stream_options": {"include_usage": True},
