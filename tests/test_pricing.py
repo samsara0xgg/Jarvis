@@ -1,8 +1,11 @@
-"""Tests for memory.pricing.compute_cost_usd."""
+"""Tests for memory.pricing.compute_cost_usd + load_pricing_table."""
+
+import json
+from pathlib import Path
 
 import pytest
 
-from memory.cold.pricing import compute_cost_usd
+from memory.cold.pricing import compute_cost_usd, load_pricing_table
 
 # ---------------------------------------------------------------------------
 # Shared fixture — small inline table; tests must not load config.yaml
@@ -134,3 +137,88 @@ class TestCacheWrite:
         )
         result = _cost("claude-opus-4-7", tokens_in, tokens_out, cache_write_in=cache_write)
         assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# load_pricing_table
+# ---------------------------------------------------------------------------
+
+class TestLoadPricingTable:
+    def _write(self, tmp_path: Path, payload: dict) -> Path:
+        path = tmp_path / "pricing.json"
+        path.write_text(json.dumps(payload))
+        return path
+
+    def test_flattens_llm_section(self, tmp_path: Path) -> None:
+        path = self._write(tmp_path, {
+            "llm": {
+                "grok-4.20": {
+                    "input_per_1m": 2.0,
+                    "output_per_1m": 6.0,
+                    "cache_read_per_1m": 0.2,
+                },
+                "claude-opus-4-7": {
+                    "input_per_1m": 5.0,
+                    "output_per_1m": 25.0,
+                    "cache_read_per_1m": 0.5,
+                    "cache_write_per_1m": 6.25,
+                },
+            },
+            "tts": {"speech-02-turbo": {"unit": "character"}},  # must be ignored
+        })
+        table = load_pricing_table(path)
+        assert table["grok-4.20"] == {"input": 2.0, "output": 6.0, "cache_read": 0.2}
+        assert table["claude-opus-4-7"] == {
+            "input": 5.0,
+            "output": 25.0,
+            "cache_read": 0.5,
+            "cache_write": 6.25,
+        }
+        assert "speech-02-turbo" not in table
+
+    def test_round_trip_with_compute_cost_usd(self, tmp_path: Path) -> None:
+        """Loaded table must plug straight into compute_cost_usd."""
+        path = self._write(tmp_path, {
+            "llm": {
+                "grok-4.20": {
+                    "input_per_1m": 2.0,
+                    "output_per_1m": 6.0,
+                    "cache_read_per_1m": 0.2,
+                },
+            },
+        })
+        table = load_pricing_table(path)
+        # 1000 input, 500 output, no cache
+        expected = round((1000 * 2.0 + 500 * 6.0) / 1_000_000, 6)
+        assert compute_cost_usd("grok-4.20", 1000, 500, None, None, table) == expected
+
+    def test_missing_input_or_output_skipped(self, tmp_path: Path) -> None:
+        path = self._write(tmp_path, {
+            "llm": {
+                "bad": {"input_per_1m": None, "output_per_1m": 1.0},
+                "also-bad": {"input_per_1m": 1.0, "output_per_1m": None},
+                "good": {"input_per_1m": 1.0, "output_per_1m": 1.0},
+            },
+        })
+        table = load_pricing_table(path)
+        assert "bad" not in table
+        assert "also-bad" not in table
+        assert "good" in table
+
+    def test_missing_file_uses_fallback(self, tmp_path: Path) -> None:
+        fb = {"some-model": {"input": 1.0, "output": 2.0}}
+        table = load_pricing_table(tmp_path / "nonexistent.json", fallback_table=fb)
+        assert table == fb
+
+    def test_missing_file_no_fallback_returns_empty(self, tmp_path: Path) -> None:
+        assert load_pricing_table(tmp_path / "nonexistent.json") == {}
+
+    def test_malformed_json_uses_fallback(self, tmp_path: Path) -> None:
+        path = tmp_path / "pricing.json"
+        path.write_text("not{valid}json")
+        fb = {"m": {"input": 1.0, "output": 1.0}}
+        assert load_pricing_table(path, fallback_table=fb) == fb
+
+    def test_empty_llm_section(self, tmp_path: Path) -> None:
+        path = self._write(tmp_path, {"llm": {}})
+        assert load_pricing_table(path) == {}

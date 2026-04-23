@@ -143,6 +143,13 @@ class JarvisApp:
         self.trace_log = TraceLog(mem_db)
         self._turn_counter: dict[str, int] = {}  # session_id → turn count
 
+        from memory.cold.pricing import load_pricing_table
+        # LiteLLM-sourced snapshot (data/pricing.json) is the source of truth;
+        # config.yaml llm_pricing stays as a fallback so existing setups still work.
+        self._pricing_table = load_pricing_table(
+            fallback_table=config.get("llm_pricing"),
+        )
+
         from memory.cold.nli_classifier import NLIClassifier
         nli_cfg = config.get("memory", {}).get("outcome_detector", {}).get("nli", {})
         self.nli_classifier = NLIClassifier(
@@ -858,6 +865,7 @@ class JarvisApp:
         # also benefits. Corrections have require_context guards → safe for
         # non-voice input.
         _raw_text = text
+        self._last_asr_text_raw = _raw_text
         text = self.asr_normalizer.normalize(text)
         if text != _raw_text:
             self.logger.info("ASR normalized: %r -> %r", _raw_text, text)
@@ -1220,6 +1228,7 @@ class JarvisApp:
                 if tts_pipeline:
                     st = SentenceType.FIRST if sentence_count == 1 else SentenceType.MIDDLE
                     tts_pipeline.submit(sentence, st, emotion=emotion)
+                    self._last_tts_chars_synthesized += len(sentence)
                 else:
                     self._wait_tts()
                     output_fn(sentence)
@@ -1425,8 +1434,6 @@ class JarvisApp:
         self._last_tool_calls = []
         self._last_tool_iterations = 0
         self._last_llm_tokens = {}
-        self._last_route_cache_hit = None
-        self._last_provider_chain = []
         self._last_memory_retrieval = {}
         self._last_memory_extraction = {}
 
@@ -1450,6 +1457,8 @@ class JarvisApp:
         self._last_asr_ms = None
         self._last_asr_confidence = None
         self._last_vad_duration_ms = None
+        self._last_asr_text_raw: str | None = None
+        self._last_tts_chars_synthesized = 0
         self._last_llm_metadata = {
             "provider": None,
             "conv_id": None,
@@ -1663,7 +1672,7 @@ class JarvisApp:
             # input_metadata: stable shape; emit None for absent fields.
             # asr_ms also stashed here on voice path (None on text path).
             input_metadata = {
-                "asr_text_raw": None,
+                "asr_text_raw": self._last_asr_text_raw,
                 "asr_confidence": self._last_asr_confidence,
                 "vad_duration_ms": self._last_vad_duration_ms,
                 "audio_path": None,
@@ -1733,6 +1742,18 @@ class JarvisApp:
                     if llm_metadata is None:
                         llm_metadata = {}
                     llm_metadata["router_model"] = router_meta.get("model")
+                if llm_metadata is None:
+                    llm_metadata = {}
+                llm_metadata["router_intent"] = getattr(self._last_route, "intent", None)
+                llm_metadata["router_sub_type"] = getattr(self._last_route, "sub_type", None)
+                llm_metadata["router_provider"] = router_meta.get("provider")
+                _cache_hit = getattr(self.intent_router, "_last_cache_hit", False)
+                llm_metadata["router_cache_hit"] = _cache_hit if isinstance(_cache_hit, bool) else None
+                llm_metadata["router_tokens_in"] = router_meta.get("tokens_in")
+                llm_metadata["router_tokens_out"] = router_meta.get("tokens_out")
+                llm_metadata["router_response_id"] = router_meta.get("response_id")
+                _raw_resp = getattr(self.intent_router, "_last_raw_response", None)
+                llm_metadata["router_raw_json"] = _raw_resp if isinstance(_raw_resp, str) and _raw_resp else None
             elif self._last_route is not None and getattr(self._last_route, "text_response", None):
                 # (b) Router-driven inline response. Pull from intent_router.
                 router_meta = getattr(self.intent_router, "last_metadata", None) or {}
@@ -1750,6 +1771,16 @@ class JarvisApp:
                 llm_metadata["response_id"] = router_meta.get("response_id")
                 llm_metadata["streaming"] = False  # router uses single non-streaming HTTP
                 llm_metadata["router_model"] = router_meta.get("model")
+                llm_metadata["router_intent"] = getattr(self._last_route, "intent", None)
+                llm_metadata["router_sub_type"] = getattr(self._last_route, "sub_type", None)
+                llm_metadata["router_provider"] = router_meta.get("provider")
+                _cache_hit = getattr(self.intent_router, "_last_cache_hit", False)
+                llm_metadata["router_cache_hit"] = _cache_hit if isinstance(_cache_hit, bool) else None
+                llm_metadata["router_tokens_in"] = router_meta.get("tokens_in")
+                llm_metadata["router_tokens_out"] = router_meta.get("tokens_out")
+                llm_metadata["router_response_id"] = router_meta.get("response_id")
+                _raw_resp = getattr(self.intent_router, "_last_raw_response", None)
+                llm_metadata["router_raw_json"] = _raw_resp if isinstance(_raw_resp, str) and _raw_resp else None
             # (c) llm_model_used stays None, no tokens.
 
             cost = compute_cost_usd(
@@ -1758,7 +1789,7 @@ class JarvisApp:
                 tokens_out=llm_tokens_out,
                 cache_read_in=cache_read,
                 cache_write_in=cache_write,
-                pricing_table=self.config.get("llm_pricing", {}),
+                pricing_table=self._pricing_table,
             )
 
             assistant_text = self._last_response_text or ""
@@ -1814,6 +1845,7 @@ class JarvisApp:
                 error=self._last_error,
                 finish_reason=finish_reason_used,
                 cost_usd=cost,
+                tts_chars_synthesized=self._last_tts_chars_synthesized or None,
             )
 
             # Async NLI outcome resolution for the PREVIOUS turn (lag-1 model).

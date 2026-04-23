@@ -1,0 +1,235 @@
+{
+  "generated_at": "2026-04-23T06:01:15+00:00",
+  "source": "litellm",
+  "source_url": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+  "notes": {
+    "unit": "All *_per_1m values are USD per 1,000,000 tokens or characters.",
+    "speech-2.8-turbo": "Not yet in LiteLLM; mapped to speech-2.6-turbo which shares the same published rate ($0.06/1M chars). Re-verify when upstream lands."
+  },
+  "llm": {
+    "grok-4.20-0309-non-reasoning": {
+      "litellm_id": "xai/grok-4.20-beta-0309-non-reasoning",
+      "provider": "xai",
+      "input_per_1m": 2.0,
+      "output_per_1m": 6.0,
+      "cache_read_per_1m": 0.2,
+      "cache_write_per_1m": null,
+      "supports_prompt_caching": true,
+      "source": "https://docs.x.ai/docs/models"
+    },
+    "grok-4.20": {
+      "litellm_id": "xai/grok-4.20-beta-0309-non-reasoning",
+      "provider": "xai",
+      "input_per_1m": 2.0,
+      "output_per_1m": 6.0,
+      "cache_read_per_1m": 0.2,
+      "cache_write_per_1m": null,
+      "supports_prompt_caching": true,
+      "source": "https://docs.x.ai/docs/models"
+    },
+    "grok-reasoning": {
+      "litellm_id": "xai/grok-4.20-beta-0309-reasoning",
+      "provider": "xai",
+      "input_per_1m": 2.0,
+      "output_per_1m": 6.0,
+      "cache_read_per_1m": 0.2,
+      "cache_write_per_1m": null,
+      "supports_prompt_caching": true,
+      "source": "https://docs.x.ai/docs/models"
+    },
+    "grok-4.1-fast-non-reasoning": {
+      "litellm_id": "xai/grok-4-1-fast-non-reasoning",
+      "provider": "xai",
+      "input_per_1m": 0.2,
+      "output_per_1m": 0.5,
+      "cache_read_per_1m": 0.05,
+      "cache_write_per_1m": null,
+      "supports_prompt_caching": true,
+      "source": "https://docs.x.ai/docs/models/grok-4-1-fast-non-reasoning"
+    },
+    "grok-4-1-fast": {
+      "litellm_id": "xai/grok-4-1-fast-non-reasoning",
+      "provider": "xai",
+      "input_per_1m": 0.2,
+      "output_per_1m": 0.5,
+      "cache_read_per_1m": 0.05,
+      "cache_write_per_1m": null,
+      "supports_prompt_caching": true,
+      "source": "https://docs.x.ai/docs/models/grok-4-1-fast-non-reasoning"
+    },
+    "grok-4.1-fast-reasoning": {
+      "litellm_id": "xai/grok-4-1-fast-reasoning",
+      "provider": "xai",
+      "input_per_1m": 0.2,
+      "output_per_1m": 0.5,
+      "cache_read_per_1m": 0.05,
+      "cache_write_per_1m": null,
+      "supports_prompt_caching": true,
+      "source": "https://docs.x.ai/docs/models/grok-4-1-fast-reasoning"
+    },
+    "claude-opus-4-7": {
+      "litellm_id": "claude-opus-4-7",
+      "provider": "anthropic",
+      "input_per_1m": 5.0,
+      "output_per_1m": 25.0,
+      "cache_read_per_1m": 0.5,
+      "cache_write_per_1m": 6.25,
+      "supports_prompt_caching": true,
+      "source": null
+    },
+    "claude-sonnet-4-6": {
+      "litellm_id": "claude-sonnet-4-6",
+      "provider": "anthropic",
+      "input_per_1m": 3.0,
+      "output_per_1m": 15.0,
+      "cache_read_per_1m": 0.3,
+      "cache_write_per_1m": 3.75,
+      "supports_prompt_caching": true,
+      "source": null
+    },
+    "llama-3.3-70b-versatile": {
+      "litellm_id": "groq/llama-3.3-70b-versatile",
+      "provider": "groq",
+      "input_per_1m": 0.59,
+      "output_per_1m": 0.79,
+      "cache_read_per_1m": null,
+      "cache_write_per_1m": null,
+      "supports_prompt_caching": false,
+      "source": null
+    },
+    "llama-3.3-70b": {
+      "litellm_id": "groq/llama-3.3-70b-versatile",
+      "provider": "groq",
+      "input_per_1m": 0.59,
+      "output_per_1m": 0.79,
+      "cache_read_per_1m": null,
+      "cache_write_per_1m": null,
+      "supports_prompt_caching": false,
+      "source": null
+    },
+    "llama3.1-8b": {
+      "litellm_id": "cerebras/llama3.1-8b",
+      "provider": "cerebras",
+      "input_per_1m": 0.1,
+      "output_per_1m": 0.1,
+      "cache_read_per_1m": null,
+      "cache_write_per_1m": null,
+      "supports_prompt_caching": false,
+      "source": null
+    },
+    "gpt-4o-mini": {
+      "litellm_id": "gpt-4o-mini",
+      "provider": "openai",
+      "input_per_1m": 0.15,
+      "output_per_1m": 0.6,
+      "cache_read_per_1m": 0.075,
+      "cache_write_per_1m": null,
+      "supports_prompt_caching": true,
+      "source": null
+    },
+    "gpt-5.4": {
+      "litellm_id": "gpt-5.4",
+      "provider": "openai",
+      "input_per_1m": 2.5,
+      "output_per_1m": 15.0,
+      "cache_read_per_1m": 0.25,
+      "cache_write_per_1m": null,
+      "supports_prompt_caching": true,
+      "source": null
+    },
+    "gpt-5.4-mini": {
+      "litellm_id": "gpt-5.4-mini",
+      "provider": "openai",
+      "input_per_1m": 0.75,
+      "output_per_1m": 4.5,
+      "cache_read_per_1m": 0.075,
+      "cache_write_per_1m": null,
+      "supports_prompt_caching": true,
+      "source": null
+    },
+    "gemini-2.5-flash": {
+      "litellm_id": "gemini-2.5-flash",
+      "provider": "vertex_ai-language-models",
+      "input_per_1m": 0.3,
+      "output_per_1m": 2.5,
+      "cache_read_per_1m": 0.03,
+      "cache_write_per_1m": null,
+      "supports_prompt_caching": true,
+      "source": "https://ai.google.dev/gemini-api/docs/models#gemini-2.5-flash-preview"
+    }
+  },
+  "tts": {
+    "gpt-4o-mini-tts": {
+      "litellm_id": "gpt-4o-mini-tts",
+      "provider": "openai",
+      "unit": "token",
+      "input_per_1m_chars": null,
+      "input_per_1m_tokens": 2.5,
+      "output_per_1m_audio_tokens": 10.0,
+      "output_per_second": 0.00025
+    },
+    "tts-1": {
+      "litellm_id": "tts-1",
+      "provider": "openai",
+      "unit": "character",
+      "input_per_1m_chars": 15.0,
+      "input_per_1m_tokens": null,
+      "output_per_1m_audio_tokens": null,
+      "output_per_second": null
+    },
+    "tts-1-hd": {
+      "litellm_id": "tts-1-hd",
+      "provider": "openai",
+      "unit": "character",
+      "input_per_1m_chars": 30.0,
+      "input_per_1m_tokens": null,
+      "output_per_1m_audio_tokens": null,
+      "output_per_second": null
+    },
+    "speech-02-turbo": {
+      "litellm_id": "minimax/speech-02-turbo",
+      "provider": "minimax",
+      "unit": "character",
+      "input_per_1m_chars": 60.0,
+      "input_per_1m_tokens": null,
+      "output_per_1m_audio_tokens": null,
+      "output_per_second": null
+    },
+    "speech-02-hd": {
+      "litellm_id": "minimax/speech-02-hd",
+      "provider": "minimax",
+      "unit": "character",
+      "input_per_1m_chars": 100.0,
+      "input_per_1m_tokens": null,
+      "output_per_1m_audio_tokens": null,
+      "output_per_second": null
+    },
+    "speech-2.6-turbo": {
+      "litellm_id": "minimax/speech-2.6-turbo",
+      "provider": "minimax",
+      "unit": "character",
+      "input_per_1m_chars": 60.0,
+      "input_per_1m_tokens": null,
+      "output_per_1m_audio_tokens": null,
+      "output_per_second": null
+    },
+    "speech-2.6-hd": {
+      "litellm_id": "minimax/speech-2.6-hd",
+      "provider": "minimax",
+      "unit": "character",
+      "input_per_1m_chars": 100.0,
+      "input_per_1m_tokens": null,
+      "output_per_1m_audio_tokens": null,
+      "output_per_second": null
+    },
+    "speech-2.8-turbo": {
+      "litellm_id": "minimax/speech-2.6-turbo",
+      "provider": "minimax",
+      "unit": "character",
+      "input_per_1m_chars": 60.0,
+      "input_per_1m_tokens": null,
+      "output_per_1m_audio_tokens": null,
+      "output_per_second": null
+    }
+  }
+}

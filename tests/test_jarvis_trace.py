@@ -74,6 +74,10 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     # ── Config (only llm_pricing key used in _flush_trace) ──
     app.config = {}
 
+    # ── Pricing table (set in real __init__ via load_pricing_table). Empty
+    # dict makes compute_cost_usd return None, which _flush_trace tolerates.
+    app._pricing_table: dict = {}
+
     # ── Logger ──
     app.logger = logging.getLogger("jarvis.test")
 

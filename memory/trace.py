@@ -130,6 +130,10 @@ class TraceLog:
             conn.execute("ALTER TABLE trace ADD COLUMN cited_obs_ids TEXT")
             conn.commit()
             LOGGER.info("trace: added cited_obs_ids column (online migration)")
+        if "tts_chars_synthesized" not in existing:
+            conn.execute("ALTER TABLE trace ADD COLUMN tts_chars_synthesized INTEGER")
+            conn.commit()
+            LOGGER.info("trace: added tts_chars_synthesized column (online migration)")
 
     def log_turn(
         self,
@@ -171,6 +175,7 @@ class TraceLog:
         error: str | None = None,
         finish_reason: str | None = None,
         cost_usd: float | None = None,
+        tts_chars_synthesized: int | None = None,
     ) -> int:
         """Log a single conversation turn. Returns the inserted row ID.
 
@@ -223,7 +228,7 @@ class TraceLog:
             "memory_query_ids, cited_obs_ids, "
             "prompt_version, "
             "latency_ms, ttfs_ms, latency_breakdown, "
-            "end_reason, error, finish_reason, cost_usd"
+            "end_reason, error, finish_reason, cost_usd, tts_chars_synthesized"
             ") VALUES ("
             "?, ?, ?, ?, "
             "?, ?, ?, ?, ?, "
@@ -233,7 +238,7 @@ class TraceLog:
             "?, ?, "
             "?, "
             "?, ?, ?, "
-            "?, ?, ?, ?"
+            "?, ?, ?, ?, ?"
             ")",
             (
                 session_id,
@@ -265,6 +270,7 @@ class TraceLog:
                 error,
                 finish_reason,
                 cost_usd,
+                tts_chars_synthesized,
             ),
         )
         conn.commit()
