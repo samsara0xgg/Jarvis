@@ -27,6 +27,7 @@ python system_tests/runner.py     # system test (human interactive)
 - Commit 消息：`type(scope): English description`，type ∈ `feat fix refactor test docs chore perf data`
 - 一件事一个 commit。禁 `git add .` / `-am` 混提交 / `push -f` / `--no-verify`
 - 大重构走 `feat/xxx` branch，其他直接 main
+- 未人工验证的改动在 commit body 加 `Verify:` trailer（单行或多行 bullet），post-commit hook 自动 append 到 `docs/verification-log.md`
 - 详见 `docs/git-guide.md`（完整 cheatsheet + gitignore 原则 + 恢复命令）
 
 ## System Tests

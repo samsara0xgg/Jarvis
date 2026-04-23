@@ -32,6 +32,26 @@ Conventional Commits: `type(scope): English description`
 - body 写**为什么**不是**做了什么**（diff 会告诉你做了什么）
 - 不加 `Co-Authored-By`
 
+### Verify trailer（未人工验证的改动）
+
+Commit body 末尾加 `Verify:` trailer，post-commit hook (`.git/hooks/post-commit`) 自动把清单 append 到 `docs/verification-log.md`。验证完手动把 `[ ]` 改成 `[x]` 或删掉对应条目。查待验证项：`grep -B2 "\[ \]" docs/verification-log.md`。
+
+支持单行或多行 bullet：
+
+```
+fix(tts): switch emotion detector to local model
+
+<body>
+
+Verify:
+  - hardware mic latency < 300ms
+  - emotion label matches expected for sample set
+```
+
+或单行：`Verify: quick smoke test after deploy`。
+
+Trailer 块遇空行或下一个 `Key: value` trailer 终止。无 `Verify:` trailer 的 commit 被 hook 静默忽略。
+
 ## 3. 分支
 
 - 日常开发 → 直接 `main`
