@@ -20,6 +20,10 @@ class WakeWordDetector:
         wake_config = config.get("wake_word", {})
         self.keyword = str(wake_config.get("keyword", "jarvis")).strip().lower()
         self.threshold = float(wake_config.get("sensitivity", 0.5))
+        # 0.0 disables openwakeword's built-in Silero VAD pre-gate. Raise (e.g. 0.3-0.5)
+        # only if false wakes from TV/music are observed; on XVF3800 the hardware NS
+        # already filters most non-speech, so leave at 0.0 unless measured otherwise.
+        self.vad_threshold = float(wake_config.get("vad_threshold", 0.0))
         self.logger = LOGGER
         self._model = None
 
@@ -45,12 +49,13 @@ class WakeWordDetector:
         if model_path is None:
             raise RuntimeError(f"openwakeword model '{model_name}' not found")
 
-        self._model = Model(
-            wakeword_model_paths=[model_path],
-        )
+        kwargs: dict = {"wakeword_model_paths": [model_path]}
+        if self.vad_threshold > 0:
+            kwargs["vad_threshold"] = self.vad_threshold
+        self._model = Model(**kwargs)
         self.logger.info(
-            "openwakeword detector started (model=%s, threshold=%.2f)",
-            model_name, self.threshold,
+            "openwakeword detector started (model=%s, threshold=%.2f, vad_threshold=%.2f)",
+            model_name, self.threshold, self.vad_threshold,
         )
 
     def process_frame(self, pcm_frame: list[int]) -> bool:
