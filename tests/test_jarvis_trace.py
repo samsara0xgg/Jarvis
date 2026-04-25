@@ -71,7 +71,7 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     with patch.object(JarvisApp, "__init__", lambda self, cfg, **kw: None):
         app = JarvisApp.__new__(JarvisApp)
 
-    # ── Config (only llm_pricing key used in _flush_trace) ──
+    # ── Config (no fields read by _flush_trace; pricing comes via _pricing_table) ──
     app.config = {}
 
     # ── Pricing table (set in real __init__ via load_pricing_table). Empty

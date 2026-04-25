@@ -144,11 +144,7 @@ class JarvisApp:
         self._turn_counter: dict[str, int] = {}  # session_id → turn count
 
         from memory.cold.pricing import load_pricing_table
-        # LiteLLM-sourced snapshot (data/pricing.json) is the source of truth;
-        # config.yaml llm_pricing stays as a fallback so existing setups still work.
-        self._pricing_table = load_pricing_table(
-            fallback_table=config.get("llm_pricing"),
-        )
+        self._pricing_table = load_pricing_table()
 
         from memory.cold.nli_classifier import NLIClassifier
         nli_cfg = config.get("memory", {}).get("outcome_detector", {}).get("nli", {})
