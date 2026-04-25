@@ -269,35 +269,6 @@ class TestHarness:
             return orig_chat(*args, **kwargs)
         app.llm.chat_stream = _counted_chat
 
-        orig_save = app.memory_manager.save
-        def _counted_save(*a: Any, **kw: Any) -> Any:
-            self._api_counter["gpt4o_mini"] = self._api_counter.get("gpt4o_mini", 0) + 1
-            return orig_save(*a, **kw)
-        app.memory_manager.save = _counted_save
-
-        # Memory retriever — capture per-hit scores
-        retriever = getattr(app.memory_manager, "retriever", None)
-        if retriever:
-            orig_retrieve = retriever.retrieve
-            def _hooked_retrieve(*a: Any, **kw: Any) -> Any:
-                results = orig_retrieve(*a, **kw)
-                try:
-                    app._last_memory_retrieval = {
-                        "count": len(results),
-                        "hits": [
-                            {
-                                "id": m["id"][:8],
-                                "content": m["content"][:80],
-                                "category": m.get("category"),
-                                "score": round(float(m.get("_score", 0)), 3),
-                            }
-                            for m in results[:5]
-                        ],
-                    }
-                except Exception:
-                    pass
-                return results
-            retriever.retrieve = _hooked_retrieve
 
     def snapshot_devices(self) -> dict[str, dict[str, Any]]:
         return copy.deepcopy(self.app.device_manager.get_all_status())
