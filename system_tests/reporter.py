@@ -176,10 +176,6 @@ class TerminalReporter:
             li = step.learning_intent
             print(f"          {_label('learn')} mode={li['mode']}   "
                   f"desc=\"{li['description'][:60]}\"")
-        if step.keyword_rule:
-            kr = step.keyword_rule
-            print(f"          {_label('kw_rule')} rule=\"{kr['rule_name']}\"   "
-                  f"actions={len(kr.get('actions', []))}")
         if step.reqllm:
             print(f"          {_label('reqllm')} true  (local -> cloud for rephrasing)")
         if step.history_turns > 0:
@@ -449,8 +445,6 @@ class JsonReporter:
                         step_d["memory_keyword"] = step.memory_keyword
                     if step.learning_intent:
                         step_d["learning_intent"] = step.learning_intent
-                    if step.keyword_rule:
-                        step_d["keyword_rule"] = step.keyword_rule
                     if step.reqllm:
                         step_d["reqllm"] = True
                     if step.error:

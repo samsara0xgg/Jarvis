@@ -23,7 +23,7 @@ LOGGER = logging.getLogger(__name__)
 # 复用 HTTP 连接（IntentRouter 仅在主循环单线程调用，无需线程安全）
 _SESSION = requests.Session()
 
-VALID_INTENTS = {"smart_home", "info_query", "time", "complex", "uncertain", "automation", "chat"}
+VALID_INTENTS = {"smart_home", "info_query", "time", "complex", "uncertain", "chat"}
 
 # Strip punctuation for route cache key normalization
 _PUNCT_RE = re.compile(r'[。，！？、；：\u201c\u201d\u2018\u2019\u2026\u2014\u00b7.!?,;:]+')
@@ -105,14 +105,8 @@ JSON格式：
 smart_home: {{"intent":"smart_home","confidence":0.95,"actions":[{{"device_id":"xxx","action":"turn_on","value":null}}],"response":"好的，已开灯。"}}
 info_query: {{"intent":"info_query","confidence":0.9,"sub_type":"news|stocks|weather","query":"AI","response":null}}
 time: {{"intent":"time","confidence":0.95,"sub_type":"current_time|date|weekday","response":null}}
-automation: {{"intent":"automation","confidence":0.9,"sub_type":"create|list|delete","rule":{{"name":"晚安模式","trigger":{{"type":"keyword","keyword":"晚安"}},"actions":[{{"device_id":"xxx","action":"turn_off","value":null}}]}},"response":"好的，以后说晚安就会关灯。"}}
 complex: {{"intent":"complex","confidence":0.85,"response":null}}
 uncertain: {{"intent":"uncertain","confidence":0.3,"response":null}}
-
-automation trigger类型：
-- keyword: {{"type":"keyword","keyword":"晚安"}} — 用户说这个词时触发
-- cron: {{"type":"cron","hour":7,"minute":0,"days":"everyday|weekdays|weekends"}} — 定时触发
-- once: {{"type":"once","delay_minutes":30}} — 一次性延时触发
 
 规则：
 - 多设备用actions数组，如"开灯和空调"输出两个action
@@ -132,7 +126,7 @@ def build_unified_prompt(
 ) -> str:
     """Build a system prompt for unified route+respond (single Groq call).
 
-    For device/info/time/automation intents the model outputs JSON (same schema
+    For device/info/time intents the model outputs JSON (same schema
     as ``build_system_prompt``).  For everything else it outputs a natural
     language response directly, avoiding the second LLM round-trip.
 
@@ -184,10 +178,7 @@ def build_unified_prompt(
 2. 信息查询（仅限天气/股票/新闻这三种）→ 输出JSON：{{"intent":"info_query","confidence":0.9,"sub_type":"news|stocks|weather","query":"AI","response":null}}
    其他查询（门票、翻译、百科等）→ 直接自然语言回复，不要输出info_query JSON
 3. 时间查询 → 输出JSON：{{"intent":"time","confidence":0.95,"sub_type":"current_time|date|weekday","response":null}}
-4. 自动化规则 → 输出一个JSON（永远只输出一个JSON，不要输出多个）：
-   持久规则（"以后每次…""每天…"）：{{"intent":"automation","confidence":0.9,"sub_type":"create","rule":{{"name":"晚安模式","trigger":{{"type":"keyword","keyword":"晚安"}},"actions":[{{"device_id":"xxx","action":"turn_off"}}]}},"response":"好的，以后说晚安就会关灯。"}}
-   一次性延时（"关灯过3秒再开灯"）：{{"intent":"automation","confidence":0.9,"sub_type":"create","rule":{{"name":"延时操作","trigger":{{"type":"once","delay_minutes":0.05}},"actions":[{{"device_id":"all_lights","action":"turn_off"}},{{"device_id":"all_lights","action":"turn_on","delay_seconds":3}}]}},"response":"好的，先关灯，3秒后开灯。"}}
-5. 其他所有情况 → 输出JSON：{{"intent":"chat","confidence":0.95}}
+4. 其他所有情况 → 输出JSON：{{"intent":"chat","confidence":0.95}}
 
 设备：
 {device_list}
@@ -214,7 +205,6 @@ class RouteResult:
     response: str | None = None
     sub_type: str | None = None
     query: str | None = None
-    rule: dict[str, Any] | None = None
     text_response: str | None = None
 
 
@@ -477,9 +467,8 @@ class IntentRouter:
         response = parsed.get("response")
         sub_type = parsed.get("sub_type")
         query = parsed.get("query")
-        rule = parsed.get("rule")
 
-        if intent in ("smart_home", "info_query", "time", "automation") and confidence >= 0.90:
+        if intent in ("smart_home", "info_query", "time") and confidence >= 0.90:
             tier = "local"
         else:
             tier = "cloud"
@@ -496,7 +485,7 @@ class IntentRouter:
             tier=tier, intent=intent, confidence=confidence,
             duration_ms=duration_ms, provider=provider,
             actions=actions, response=response,
-            sub_type=sub_type, query=query, rule=rule,
+            sub_type=sub_type, query=query,
         )
 
     # ------------------------------------------------------------------
@@ -511,7 +500,7 @@ class IntentRouter:
     ) -> RouteResult:
         """Single Groq call that routes AND generates a response.
 
-        For device/info/time/automation intents the output is JSON (same as
+        For device/info/time intents the output is JSON (same as
         ``route()``).  For everything else the model responds in natural
         language, stored in ``RouteResult.text_response``, eliminating the
         need for a second LLM call.
@@ -682,9 +671,8 @@ class IntentRouter:
         response = parsed.get("response")
         sub_type = parsed.get("sub_type")
         query = parsed.get("query")
-        rule = parsed.get("rule")
 
-        if intent in ("smart_home", "info_query", "time", "automation") and confidence >= 0.90:
+        if intent in ("smart_home", "info_query", "time") and confidence >= 0.90:
             tier = "local"
         else:
             tier = "cloud"
@@ -698,5 +686,5 @@ class IntentRouter:
             tier=tier, intent=intent, confidence=confidence,
             duration_ms=duration_ms, provider="",
             actions=actions, response=response,
-            sub_type=sub_type, query=query, rule=rule,
+            sub_type=sub_type, query=query,
         )

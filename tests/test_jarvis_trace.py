@@ -130,7 +130,6 @@ def _make_jarvis(tmp_path) -> JarvisApp:
 
     app.event_bus = MagicMock()
 
-    app.rule_manager = None  # skip keyword-rule branch
     app.local_executor = None
 
     app.memory_manager = MagicMock()

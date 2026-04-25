@@ -58,7 +58,6 @@ class PathTaken(str, Enum):
     RESUME = "resume"
     FAREWELL = "farewell"
     MEMORY_SHORTCUT = "memory_shortcut"
-    KEYWORD_RULE = "keyword_rule"
     LOCAL = "local"
     CLOUD = "cloud"
 

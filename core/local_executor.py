@@ -8,8 +8,6 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from core.automation_rules import AutomationRuleManager
-
 LOGGER = logging.getLogger(__name__)
 
 
@@ -31,9 +29,8 @@ class ActionResponse:
 class LocalExecutor:
     """执行路由器解析好的结构化指令."""
 
-    def __init__(self, skill_registry: Any, rule_manager: AutomationRuleManager | None = None) -> None:
+    def __init__(self, skill_registry: Any) -> None:
         self.skill_registry = skill_registry
-        self.rule_manager = rule_manager
         self.logger = LOGGER
 
     def execute_smart_home(
@@ -168,61 +165,4 @@ class LocalExecutor:
 
         return ActionResponse(Action.RESPONSE, text)
 
-    def execute_automation(self, sub_type: str | None, rule: dict[str, Any] | None) -> ActionResponse:
-        """处理自动化规则操作.
-
-        Args:
-            sub_type: create / list / delete
-            rule: Groq 返回的 rule JSON（仅 create 时需要）
-
-        Returns:
-            ActionResponse — 直接播报。
-        """
-        if not self.rule_manager:
-            return ActionResponse(Action.RESPONSE, "自动化功能未启用。")
-
-        if sub_type == "create":
-            if not rule:
-                return ActionResponse(Action.RESPONSE, "缺少规则信息。")
-            return ActionResponse(Action.RESPONSE, self.rule_manager.create_rule(rule))
-
-        if sub_type == "list":
-            return ActionResponse(Action.RESPONSE, self.rule_manager.list_rules())
-
-        if sub_type == "delete":
-            name = rule.get("name", "") if rule else ""
-            if not name:
-                return ActionResponse(Action.RESPONSE, "请指定要删除的规则名称。")
-            return ActionResponse(Action.RESPONSE, self.rule_manager.delete_rule(name))
-
-        return ActionResponse(Action.RESPONSE, "不支持的自动化操作。")
-
-    def execute_skill_alias(
-        self, actions: list[dict], user_role: str = "owner",
-    ) -> ActionResponse:
-        """执行 skill_alias actions — 调用指定 skill 的指定 tool.
-
-        Args:
-            actions: 包含 skill/tool/params 的 action 列表。
-            user_role: 用户角色。
-
-        Returns:
-            ActionResponse — REQLLM，让 LLM 用小月语气转述结果。
-        """
-        results = []
-        for act in actions:
-            tool_name = act.get("tool", "")
-            params = act.get("params", {})
-            if not tool_name:
-                continue
-            result = self.skill_registry.execute(
-                tool_name, params, user_role=user_role,
-            )
-            self.logger.info("Skill alias execute: %s(%s) → %s", tool_name, params, result[:80])
-            results.append(result)
-
-        if not results:
-            return ActionResponse(Action.RESPONSE, "没有需要执行的操作。")
-
-        return ActionResponse(Action.REQLLM, "\n".join(results))
 

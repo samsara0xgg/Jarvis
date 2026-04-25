@@ -58,7 +58,6 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     app.conversation_store.get_history = MagicMock(return_value=[])
     app.conversation_store.replace = MagicMock()
     app.event_bus = MagicMock()
-    app.rule_manager = None
     app.local_executor = None
     app.memory_manager = MagicMock()
     app.memory_manager.save = MagicMock()

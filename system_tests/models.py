@@ -97,7 +97,6 @@ class StepResult:
     memory_keyword: str | None = None
     escalation: dict | None = None
     learning_intent: dict | None = None
-    keyword_rule: dict | None = None
     reqllm: bool = False
     device_ops: list = field(default_factory=list)
     memory_hits_count: int = 0

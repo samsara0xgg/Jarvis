@@ -35,7 +35,6 @@ from core.local_executor import Action, ActionResponse
 from core.tts import SentenceType
 from auth.user_store import UserStore
 from core.audio_recorder import AudioRecorder
-from core.automation_engine import AutomationEngine
 from core.event_bus import EventBus
 from core.llm import LLMClient
 from core.speaker_encoder import SpeakerEncoder
@@ -215,16 +214,6 @@ class JarvisApp:
         except Exception as exc:
             self.logger.warning("Scheduler unavailable: %s", exc)
 
-        # ── 自动化引擎 ── 场景执行（如"回家模式"触发一系列设备动作）
-        self.automation_engine = AutomationEngine(
-            device_manager=self.device_manager,
-            event_bus=self.event_bus,
-            tts_callback=self.speak,
-        )
-        for scene_name, steps in config.get("automations", {}).items():
-            if isinstance(steps, list):
-                self.automation_engine.register_scene(scene_name, steps)
-
         # ── OLED 显示屏（可选）── RPi 上的小屏幕，显示状态/正在说的话
         self.oled = None
         if config.get("oled", {}).get("enabled", False):
@@ -254,33 +243,15 @@ class JarvisApp:
 
         self.tool_registry = ToolRegistry(config)
 
-        # ── 意图路由 + 本地执行器 + 自动化规则 ──
+        # ── 意图路由 + 本地执行器 ──
         self.intent_router = None
         self.local_executor = None
-        self.rule_manager = None
         try:
             from core.intent_router import IntentRouter
             from core.local_executor import LocalExecutor
-            from core.automation_rules import AutomationRuleManager
 
             self.intent_router = IntentRouter(config, tracker=self.health_tracker)
-
-            # 自动化规则管理器：支持关键词触发（如"晚安"→关灯）和定时触发
-            def _execute_rule_actions(actions: list) -> None:
-                """Callback for scheduled/keyword rule execution."""
-                if self.local_executor:
-                    ar = self.local_executor.execute_smart_home(actions, "owner")
-                    if "失败" in ar.text:
-                        self.logger.warning("Rule action failed: %s", ar.text)
-
-            default_rules = str(Path(config_path).parent / "data" / "automation_rules.json") if config_path else "data/automation_rules.json"
-            self.rule_manager = AutomationRuleManager(
-                rules_path=config.get("automation", {}).get("rules_path", default_rules),
-                scheduler=self.scheduler,
-                action_executor=_execute_rule_actions,
-            )
-
-            self.local_executor = LocalExecutor(self.tool_registry, self.rule_manager)
+            self.local_executor = LocalExecutor(self.tool_registry)
         except Exception as exc:
             self.logger.warning("Intent router unavailable: %s", exc)
 
@@ -961,28 +932,6 @@ class JarvisApp:
         sentence_count = 0
         use_llm_rephrase = False
 
-        if self.rule_manager and self.local_executor:
-            match = self.rule_manager.check_keyword(text)
-            if match:
-                keyword_actions, rule_name = match
-                self._last_keyword_rule = {"rule_name": rule_name, "actions": keyword_actions}
-                if keyword_actions and keyword_actions[0].get("skill"):
-                    ar = self.local_executor.execute_skill_alias(
-                        keyword_actions, user_role,
-                    )
-                    if ar.action == Action.REQLLM:
-                        use_llm_rephrase = True
-                        self._last_reqllm = True
-                    else:
-                        response_text = ar.text
-                        self._last_path = "keyword_rule"
-                else:
-                    ar = self.local_executor.execute_smart_home(
-                        keyword_actions, user_role, response=f"好的，{rule_name}已执行。",
-                    )
-                    response_text = ar.text
-                    self._last_path = "keyword_rule"
-
         # ── 记忆检索 ── Assembler 装配 4-block prompt（~50-100ms）
         prompt_ctx = None
         if user_id:
@@ -1112,12 +1061,6 @@ class JarvisApp:
                         )
                 elif route.intent == "time":
                     ar = self.local_executor.execute_time(route.sub_type)
-                elif route.intent == "automation":
-                    ar = self.local_executor.execute_automation(
-                        route.sub_type, route.rule,
-                    )
-                    if route.response is not None:
-                        ar = type(ar)(ar.action, route.response)
                 else:
                     ar = None
 
@@ -1398,7 +1341,6 @@ class JarvisApp:
         self._last_memory_keyword = None
         self._last_escalation = None
         self._last_learning_intent = None
-        self._last_keyword_rule = None
         self._last_reqllm = False
         self._last_history_turns = 0
         self._last_tool_calls = []
@@ -1536,7 +1478,7 @@ class JarvisApp:
     ) -> None:
         """Schedule a ttfs_ms update once async TTS playback completes.
 
-        Local-path turns (farewell / router-with-text / keyword_rule)
+        Local-path turns (farewell / router-with-text)
         dispatch TTS via ``_speak_nonblocking`` which submits
         to a background executor and returns immediately, so _flush_trace
         runs BEFORE the first audio chunk plays. We hook a done-callback on
@@ -1685,7 +1627,7 @@ class JarvisApp:
             #     local): the intent router's Groq/Cerebras LLM produced
             #     the response in a single call. Pull intent_router.
             #     last_metadata for tokens/finish_reason/model.
-            # (c) Pure local (keyword_rule, farewell, memory_shortcut):
+            # (c) Pure local (farewell, memory_shortcut):
             #     no LLM ran. All llm_* stay NULL.
             llm_metadata = self._last_llm_metadata
             llm_tokens_in: int | None = None

@@ -598,22 +598,6 @@ scheduler:
       - realtime_data     # 加入新闻+股票
 
 # ----------------------------------------------------------------------------
-# 场景自动化
-# ----------------------------------------------------------------------------
-automations:
-  晚安:
-    - {type: device, device_id: bedroom_light, action: turn_off}
-    - {type: device, device_id: living_room_light, action: turn_off}
-    - {type: speak, text: "晚安，好梦"}
-  我回来了:
-    - {type: device, device_id: living_room_light, action: turn_on}
-    - {type: speak, text: "欢迎回家"}
-  出门:
-    - {type: device, device_id: living_room_light, action: turn_off}
-    - {type: device, device_id: bedroom_light, action: turn_off}
-    - {type: speak, text: "一路顺风"}
-
-# ----------------------------------------------------------------------------
 # 系统健康监控 (F8)
 # ----------------------------------------------------------------------------
 health:
