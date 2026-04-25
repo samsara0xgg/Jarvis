@@ -72,7 +72,6 @@ class TestFreshInstall:
             assert "trigger_source" in cols
             assert "cache_read_input_tokens" in cols
             assert "llm_metadata" in cols
-            assert "memory_query_ids" in cols
             assert "prompt_version" in cols
             assert "ttfs_ms" in cols
             assert "latency_breakdown" in cols
@@ -173,7 +172,7 @@ class TestV2ToV3Migration:
 
         row = dict(conn.execute("SELECT * FROM trace").fetchone())
         for col in ("input_metadata", "trigger_source", "parent_trace_id", "intent_route_score",
-                    "llm_metadata", "memory_query_ids", "prompt_version", "ttfs_ms",
+                    "llm_metadata", "prompt_version", "ttfs_ms",
                     "latency_breakdown", "end_reason", "error", "finish_reason",
                     "cost_usd", "cache_read_input_tokens"):
             assert row[col] is None, f"expected {col} to be NULL, got {row[col]!r}"

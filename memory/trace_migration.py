@@ -41,7 +41,6 @@ CREATE TABLE trace (
   cache_read_input_tokens   INTEGER,
   llm_metadata              TEXT,
 
-  memory_query_ids          TEXT,
   cited_obs_ids             TEXT,
 
   prompt_version            TEXT,

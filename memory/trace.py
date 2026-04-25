@@ -124,7 +124,7 @@ class TraceLog:
 
         migrate_trace_v2_to_v3(conn)
 
-        # Idempotent column additions for v3+ databases that predate this column.
+        # Idempotent online migrations for v3+ databases.
         existing = {row[1] for row in conn.execute("PRAGMA table_info(trace)").fetchall()}
         if "cited_obs_ids" not in existing:
             conn.execute("ALTER TABLE trace ADD COLUMN cited_obs_ids TEXT")
@@ -134,6 +134,10 @@ class TraceLog:
             conn.execute("ALTER TABLE trace ADD COLUMN tts_chars_synthesized INTEGER")
             conn.commit()
             LOGGER.info("trace: added tts_chars_synthesized column (online migration)")
+        if "memory_query_ids" in existing:
+            conn.execute("ALTER TABLE trace DROP COLUMN memory_query_ids")
+            conn.commit()
+            LOGGER.info("trace: dropped memory_query_ids column (online migration)")
 
     def log_turn(
         self,
@@ -162,7 +166,6 @@ class TraceLog:
         cache_read_input_tokens: int | None = None,
         llm_metadata: dict | None = None,
         # --- Memory ---
-        memory_query_ids: dict | None = None,
         cited_obs_ids: list[int] | None = None,
         # --- Context ---
         prompt_version: str | None = None,
@@ -203,7 +206,6 @@ class TraceLog:
             llm_tokens_out: Completion token count.
             cache_read_input_tokens: Prompt cache hit tokens (all providers).
             llm_metadata: JSON-serializable dict. See V3 schema doc for keys.
-            memory_query_ids: JSON-serializable dict with observation_ids and scores.
             cited_obs_ids: LLM-cited observation ids, filtered against injected set. NULL if tag absent; [] if all hallucinated.
             prompt_version: SHA-256 hash prefix (16 chars) of system prompt.
             latency_ms: Total end-to-end latency in milliseconds.
@@ -225,7 +227,7 @@ class TraceLog:
             "trigger_source, parent_trace_id, path_taken, intent_route_score, "
             "tool_calls, "
             "llm_model, llm_tokens_in, llm_tokens_out, cache_read_input_tokens, llm_metadata, "
-            "memory_query_ids, cited_obs_ids, "
+            "cited_obs_ids, "
             "prompt_version, "
             "latency_ms, ttfs_ms, latency_breakdown, "
             "end_reason, error, finish_reason, cost_usd, tts_chars_synthesized"
@@ -235,7 +237,7 @@ class TraceLog:
             "?, ?, ?, ?, "
             "?, "
             "?, ?, ?, ?, ?, "
-            "?, ?, "
+            "?, "
             "?, "
             "?, ?, ?, "
             "?, ?, ?, ?, ?"
@@ -260,7 +262,6 @@ class TraceLog:
                 llm_tokens_out,
                 cache_read_input_tokens,
                 json.dumps(llm_metadata, ensure_ascii=False) if llm_metadata is not None else None,
-                json.dumps(memory_query_ids, ensure_ascii=False) if memory_query_ids is not None else None,
                 json.dumps(cited_obs_ids, ensure_ascii=False) if cited_obs_ids is not None else None,
                 prompt_version,
                 latency_ms,
@@ -394,7 +395,7 @@ class TraceLog:
         results = []
         for r in rows:
             d = dict(r)
-            for col in ("tool_calls", "input_metadata", "llm_metadata", "memory_query_ids", "latency_breakdown"):
+            for col in ("tool_calls", "input_metadata", "llm_metadata", "latency_breakdown"):
                 val = d.get(col)
                 if val:
                     try:
@@ -448,7 +449,7 @@ class TraceLog:
         results = []
         for r in rows:
             d = dict(r)
-            for col in ("input_metadata", "tool_calls", "llm_metadata", "memory_query_ids", "latency_breakdown"):
+            for col in ("input_metadata", "tool_calls", "llm_metadata", "latency_breakdown"):
                 val = d.get(col)
                 if val:
                     try:

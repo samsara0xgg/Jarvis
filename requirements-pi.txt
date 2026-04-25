@@ -28,9 +28,6 @@ websockets>=12.0
 # Wake word
 openwakeword
 
-# Memory system
-fastembed>=0.7
-
 # Display (RPi SPI screens, replaces luma.oled)
 Pillow>=10.0
 

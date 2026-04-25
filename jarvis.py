@@ -212,7 +212,6 @@ class JarvisApp:
             if self.scheduler.available and config.get("scheduler", {}).get("enabled", True):
                 self.scheduler.start()
                 self._setup_morning_briefing(config)
-                self._setup_memory_maintenance()
         except Exception as exc:
             self.logger.warning("Scheduler unavailable: %s", exc)
 
@@ -323,9 +322,6 @@ class JarvisApp:
         # Set in _cancel_current; consumed (and cleared) in _process_turn before
         # writing history. None means no pending interrupt to inject.
         self._interrupt_played_texts: list[str] | None = None
-
-        # 预热 embedding 模型（后台加载，不阻塞启动）
-        self._executor.submit(self.memory_manager.embedder.encode, "warmup")
 
         # 预热 HTTP 连接（建立 keep-alive，首次真实调用省 ~100ms TCP+TLS）
         self._executor.submit(self._prewarm_connections)
@@ -913,11 +909,6 @@ class JarvisApp:
             history.append({"role": "user", "content": text})
             history.append({"role": "assistant", "content": reply})
             self.conversation_store.replace(session_id, history)
-            if user_id:
-                self._executor.submit(
-                    self.memory_manager.save, history, user_id, session_id,
-                    emotion,
-                )
             self._last_response_text = reply
             self._mark_turn_end()
             return "farewell"
@@ -957,11 +948,6 @@ class JarvisApp:
                 history.append({"role": "user", "content": text})
                 history.append({"role": "assistant", "content": reply})
                 self.conversation_store.replace(session_id, history)
-                if user_id:
-                    self._executor.submit(
-                        self.memory_manager.save, history, user_id, session_id,
-                        emotion,
-                    )
                 self._last_response_text = reply
                 self._mark_turn_end()
                 return reply
@@ -1017,13 +1003,6 @@ class JarvisApp:
                 _obs_count = len(prompt_ctx.injected_observation_ids)
                 if _obs_count:
                     print(f"🧠 记忆检索: {_obs_count} 条观察 ({_mem_ms}ms)")
-                # Trace v3: observation ids actually injected into Block 3.
-                # Empty list = no observations to inject (fresh user), not a
-                # retrieval miss — distinct from NULL (= did not query).
-                self._last_memory_query_ids = {
-                    "observation_ids": list(prompt_ctx.injected_observation_ids),
-                    "top_k_scores":    [],  # no top-k filtering; full dump per Mastra OM
-                }
             except Exception as exc:
                 self.logger.warning("Memory query failed: %s", exc)
 
@@ -1316,11 +1295,6 @@ class JarvisApp:
                 self._last_llm_metadata["truncated_by_interrupt"] = True
                 self._last_llm_metadata["full_response"] = response_text
             self.conversation_store.replace(session_id, updated_messages)
-            if user_id:
-                self._executor.submit(
-                    self.memory_manager.save, updated_messages, user_id, session_id,
-                    emotion,
-                )
         elif response_text:
             history.append({"role": "user", "content": text})
             history.append({"role": "assistant", "content": response_text})
@@ -1442,7 +1416,6 @@ class JarvisApp:
         self._last_error = None
         self._last_intent_route_score = None
         self._last_tts_emotion = None
-        self._last_memory_query_ids = None
         self._last_finish_reason = None
         self._last_cache_read_tokens = None
         self._last_updated_messages = None
@@ -2127,17 +2100,6 @@ class JarvisApp:
             return str(record.get("role", "guest"))
         return "guest"
 
-    def _save_on_farewell(self) -> None:
-        """Save full conversation to memory on farewell."""
-        user_id = self._last_user_id
-        session_id = self._last_session_id
-        if user_id and session_id:
-            full_history = self.conversation_store.get_history(session_id)
-            if full_history:
-                self._executor.submit(
-                    self.memory_manager.save, full_history, user_id, session_id,
-                )
-
     def _is_farewell(self, text: str) -> bool:
         """Check if text contains a farewell phrase."""
         normalized = text.strip().lower()
@@ -2178,29 +2140,6 @@ class JarvisApp:
             day_of_week=day_of_week,
         )
         self.logger.info("Morning briefing scheduled at %s:%s", hour, minute)
-
-    def _setup_memory_maintenance(self) -> None:
-        """Register daily memory maintenance (3am)."""
-        self.scheduler.add_cron_job(
-            job_id="memory_maintenance",
-            func=self._run_memory_maintenance,
-            hour="3",
-            minute="0",
-        )
-        self.logger.info("Memory maintenance scheduled: daily 3:00am")
-
-    def _run_memory_maintenance(self) -> None:
-        """Execute daily memory maintenance — merge duplicates."""
-        try:
-            results = self.memory_manager.maintain_all()
-            for uid, stats in results.items():
-                if isinstance(stats, dict) and not stats.get("error"):
-                    self.logger.info(
-                        "Memory maintenance [%s]: merged=%d, checked=%d",
-                        uid, stats.get("merged", 0), stats.get("checked", 0),
-                    )
-        except Exception:
-            self.logger.exception("Memory maintenance failed")
 
     def _run_morning_briefing(self) -> None:
         """Execute the morning briefing — weather + reminders + todos."""

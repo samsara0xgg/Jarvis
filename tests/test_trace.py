@@ -172,7 +172,6 @@ class TestLogTurnV3Kwargs:
         llm_meta = {"provider": "xai", "conv_id": "abc", "response_id": "xyz", "streaming": True,
                     "fallback_used": False, "truncated_by_interrupt": False, "full_response": None,
                     "cache_creation_input_tokens": None}
-        mem_ids = {"observation_ids": [1, 2], "top_k_scores": [0.89, 0.76]}
         lat_bd = {"asr_ms": 120, "route_ms": 30, "memory_query_ms": 50,
                   "local_exec_ms": None, "llm_first_ms": 400, "tts_first_ms": 600, "total_ms": 900}
 
@@ -195,7 +194,6 @@ class TestLogTurnV3Kwargs:
             llm_tokens_out=200,
             cache_read_input_tokens=100,
             llm_metadata=llm_meta,
-            memory_query_ids=mem_ids,
             prompt_version="abcdef0123456789",
             latency_ms=900,
             ttfs_ms=600,
@@ -240,7 +238,6 @@ class TestLogTurnV3Kwargs:
         assert json.loads(row["input_metadata"]) == input_meta
         assert json.loads(row["tool_calls"]) == tool_calls
         assert json.loads(row["llm_metadata"]) == llm_meta
-        assert json.loads(row["memory_query_ids"]) == mem_ids
         assert json.loads(row["latency_breakdown"]) == lat_bd
 
     def test_none_json_kwargs_stored_as_null(self, trace: TraceLog):
@@ -252,7 +249,7 @@ class TestLogTurnV3Kwargs:
         )
         conn = trace._get_conn()
         row = dict(conn.execute("SELECT * FROM trace WHERE id=?", (rid,)).fetchone())
-        for col in ("input_metadata", "tool_calls", "llm_metadata", "memory_query_ids", "latency_breakdown"):
+        for col in ("input_metadata", "tool_calls", "llm_metadata", "latency_breakdown"):
             assert row[col] is None, f"expected {col} NULL, got {row[col]!r}"
 
     def test_json_deserializes_via_query_for_debug(self, trace: TraceLog):
@@ -408,4 +405,3 @@ class TestQueryForDebug:
         # NULL json cols are None (not JSON strings)
         assert r["input_metadata"] is None
         assert r["llm_metadata"] is None
-        assert r["memory_query_ids"] is None

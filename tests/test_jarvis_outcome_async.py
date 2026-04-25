@@ -27,6 +27,7 @@ def _make_jarvis(tmp_path) -> JarvisApp:
         app = JarvisApp.__new__(JarvisApp)
 
     app.config = {}
+    app._pricing_table = {}
     app.logger = logging.getLogger("jarvis.test.outcome")
     app._cancel = threading.Event()
     app._pipeline_lock = threading.Lock()
