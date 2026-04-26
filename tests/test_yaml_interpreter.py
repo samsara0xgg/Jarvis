@@ -834,3 +834,237 @@ class TestTypeToFocusedYAMLSkill:
             mock_run.return_value = MagicMock(returncode=0)
             out = interp.execute(skill, {"text": "hi"})
         assert "..." not in out
+
+
+# ===========================================================================
+# macos_paste target param — focus control
+# ===========================================================================
+
+
+class TestMacOSPasteTarget:
+    def _skill_with_target(self):
+        return {
+            "name": "test_paste",
+            "description": "paste",
+            "parameters": [
+                {"name": "text", "type": "string", "required": True},
+                {"name": "target", "type": "string", "required": False, "default": ""},
+            ],
+            "action": {
+                "type": "macos_paste",
+                "text": "{{ text }}",
+                "target": "{{ target }}",
+            },
+            "response": {"template": "ok", "error_template": "fail"},
+        }
+
+    def test_empty_target_keeps_v1_path(self):
+        """No target → 2 subprocess calls: pbcopy + plain paste."""
+        from core.yaml_interpreter import _APPLESCRIPT_PASTE
+        skill = self._skill_with_target()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": "x", "target": ""})
+        assert mock_run.call_count == 2
+        argv = mock_run.call_args_list[1].args[0]
+        assert argv == ["osascript", "-e", _APPLESCRIPT_PASTE]
+
+    def test_target_app_uses_argv_binding(self):
+        """target='Cursor' → activate via 'item 1 of argv', name as positional arg."""
+        skill = self._skill_with_target()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": "x", "target": "Cursor"})
+        argv = mock_run.call_args_list[1].args[0]
+        # App name appears as final positional arg (after all -e fragments)
+        assert argv[-1] == "Cursor"
+        # AppleScript uses argv binding, not interpolation
+        e_fragments = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
+        assert any("item 1 of argv" in f for f in e_fragments)
+        # The name itself is NOT inside any -e fragment
+        for f in e_fragments:
+            assert "Cursor" not in f
+
+    def test_malicious_target_no_injection(self):
+        """AppleScript metachars in target stay as a positional arg only."""
+        skill = self._skill_with_target()
+        nasty = '"; do shell script "rm -rf ~"; tell app "'
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": "x", "target": nasty})
+        argv = mock_run.call_args_list[1].args[0]
+        assert argv[-1] == nasty
+        e_fragments = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
+        for f in e_fragments:
+            assert "rm -rf" not in f
+            assert "do shell script" not in f
+
+    def test_target_prev_uses_cmdtab(self):
+        from core.yaml_interpreter import _APPLESCRIPT_CMDTAB
+        skill = self._skill_with_target()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": "x", "target": "prev"})
+        argv = mock_run.call_args_list[1].args[0]
+        e_fragments = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
+        assert _APPLESCRIPT_CMDTAB in e_fragments
+        # No argv binding in prev mode
+        assert "on run argv" not in e_fragments
+
+    def test_target_chinese_prev_keyword(self):
+        from core.yaml_interpreter import _APPLESCRIPT_CMDTAB
+        skill = self._skill_with_target()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": "x", "target": "上一个"})
+        e_fragments = [
+            mock_run.call_args_list[1].args[0][i + 1]
+            for i, a in enumerate(mock_run.call_args_list[1].args[0])
+            if a == "-e"
+        ]
+        assert _APPLESCRIPT_CMDTAB in e_fragments
+
+    def test_target_case_insensitive_prev(self):
+        from core.yaml_interpreter import _APPLESCRIPT_CMDTAB
+        skill = self._skill_with_target()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": "x", "target": "PREVIOUS"})
+        e_fragments = [
+            mock_run.call_args_list[1].args[0][i + 1]
+            for i, a in enumerate(mock_run.call_args_list[1].args[0])
+            if a == "-e"
+        ]
+        assert _APPLESCRIPT_CMDTAB in e_fragments
+
+    def test_response_template_renders_target(self):
+        skill = self._skill_with_target()
+        skill["response"]["template"] = "→ {{ target }}: {{ text }}"
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = YAMLInterpreter().execute(skill, {"text": "hi", "target": "iTerm"})
+        assert out == "→ iTerm: hi"
+
+    def test_target_activate_failure_returns_error_template(self):
+        import subprocess
+        skill = self._skill_with_target()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            # pbcopy succeeds, osascript activate-+-paste fails
+            mock_run.side_effect = [
+                MagicMock(returncode=0),
+                subprocess.CalledProcessError(1, ["osascript"]),
+            ]
+            out = YAMLInterpreter().execute(skill, {"text": "x", "target": "NopeApp"})
+        assert out == "fail"
+
+    def test_build_paste_argv_pure_function(self):
+        """_build_paste_argv is a pure helper — exercise all 3 branches directly."""
+        from core.yaml_interpreter import (
+            YAMLInterpreter,
+            _APPLESCRIPT_CMDTAB,
+            _APPLESCRIPT_PASTE,
+        )
+        # Empty
+        empty = YAMLInterpreter._build_paste_argv("")
+        assert empty == ["osascript", "-e", _APPLESCRIPT_PASTE]
+        # prev
+        prev = YAMLInterpreter._build_paste_argv("prev")
+        assert _APPLESCRIPT_CMDTAB in prev
+        assert "on run argv" not in prev
+        # app name
+        app = YAMLInterpreter._build_paste_argv("TextEdit")
+        assert app[-1] == "TextEdit"
+        assert "on run argv" in app
+
+
+# ===========================================================================
+# Case-insensitive app-name resolution
+# ===========================================================================
+
+
+class TestResolveAppName:
+    def test_canonical_name_unchanged(self, tmp_path, monkeypatch):
+        from core.yaml_interpreter import _resolve_app_name
+        (tmp_path / "Cursor.app").mkdir()
+        monkeypatch.setattr("core.yaml_interpreter._APP_DIRS", (str(tmp_path),))
+        assert _resolve_app_name("Cursor") == "Cursor"
+
+    def test_lowercase_resolves_to_canonical(self, tmp_path, monkeypatch):
+        from core.yaml_interpreter import _resolve_app_name
+        (tmp_path / "Cursor.app").mkdir()
+        monkeypatch.setattr("core.yaml_interpreter._APP_DIRS", (str(tmp_path),))
+        assert _resolve_app_name("cursor") == "Cursor"
+
+    def test_uppercase_resolves_to_canonical(self, tmp_path, monkeypatch):
+        from core.yaml_interpreter import _resolve_app_name
+        (tmp_path / "iTerm.app").mkdir()
+        monkeypatch.setattr("core.yaml_interpreter._APP_DIRS", (str(tmp_path),))
+        assert _resolve_app_name("ITERM") == "iTerm"
+
+    def test_multiword_app_name(self, tmp_path, monkeypatch):
+        from core.yaml_interpreter import _resolve_app_name
+        (tmp_path / "Visual Studio Code.app").mkdir()
+        monkeypatch.setattr("core.yaml_interpreter._APP_DIRS", (str(tmp_path),))
+        assert _resolve_app_name("visual studio code") == "Visual Studio Code"
+
+    def test_unknown_app_passes_through(self, tmp_path, monkeypatch):
+        from core.yaml_interpreter import _resolve_app_name
+        monkeypatch.setattr("core.yaml_interpreter._APP_DIRS", (str(tmp_path),))
+        assert _resolve_app_name("DefinitelyNotInstalled") == "DefinitelyNotInstalled"
+
+    def test_missing_app_dir_safe(self, monkeypatch):
+        from core.yaml_interpreter import _resolve_app_name
+        monkeypatch.setattr("core.yaml_interpreter._APP_DIRS", ("/this/does/not/exist",))
+        # falls through to original
+        assert _resolve_app_name("anything") == "anything"
+
+    def test_empty_target_unchanged(self):
+        from core.yaml_interpreter import _resolve_app_name
+        assert _resolve_app_name("") == ""
+
+    def test_resolve_used_in_build_argv(self, tmp_path, monkeypatch):
+        """End-to-end: build_paste_argv passes the resolved canonical name."""
+        from core.yaml_interpreter import YAMLInterpreter
+        (tmp_path / "Cursor.app").mkdir()
+        monkeypatch.setattr("core.yaml_interpreter._APP_DIRS", (str(tmp_path),))
+        argv = YAMLInterpreter._build_paste_argv("cursor")
+        assert argv[-1] == "Cursor"
+
+
+# ===========================================================================
+# Real type_to_focused.yaml v2 — target field end-to-end
+# ===========================================================================
+
+
+class TestTypeToFocusedV2Target:
+    def _load(self):
+        interp = YAMLInterpreter()
+        skill_path = os.path.join(
+            os.path.dirname(__file__), "..", "skills", "type_to_focused.yaml"
+        )
+        return interp, interp.load_skill(skill_path)
+
+    def test_schema_has_target_optional(self):
+        interp, skill = self._load()
+        td = interp.to_tool_definition(skill)
+        assert "target" in td["input_schema"]["properties"]
+        assert "target" not in td["input_schema"].get("required", [])
+
+    def test_yaml_targets_iterm(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"text": "x", "target": "iTerm"})
+        argv = mock_run.call_args_list[1].args[0]
+        assert argv[-1] == "iTerm"
+        assert "→ iTerm" in out
+
+    def test_yaml_default_target_empty(self):
+        from core.yaml_interpreter import _APPLESCRIPT_PASTE
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"text": "x"})
+        argv = mock_run.call_args_list[1].args[0]
+        assert argv == ["osascript", "-e", _APPLESCRIPT_PASTE]
+        assert "→" not in out  # no target arrow when target empty

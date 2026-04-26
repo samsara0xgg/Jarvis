@@ -51,8 +51,38 @@ _SLUG_MAX_CHARS = 60
 _APPLESCRIPT_PASTE = (
     'tell application "System Events" to keystroke "v" using command down'
 )
+_APPLESCRIPT_CMDTAB = (
+    'tell application "System Events" to keystroke tab using command down'
+)
+_APPLESCRIPT_DELAY = "delay 0.2"
+_PREV_KEYWORDS = {"prev", "previous", "上一个", "前一个"}
 _PBCOPY_TIMEOUT_S = 2.0
 _OSASCRIPT_TIMEOUT_S = 5.0
+
+_APP_DIRS = ("/Applications", "/Applications/Utilities", "/System/Applications")
+
+
+def _resolve_app_name(target: str) -> str:
+    """Case-insensitive match against installed .app bundles.
+
+    AppleScript's ``tell application "X"`` is case-sensitive — "iterm"
+    fails where "iTerm" works. To make voice input forgiving, we map
+    user-supplied target to the canonical .app name found in standard
+    locations. Falls back to the original string if no match (osascript
+    will then fail clean and the error_template fires).
+    """
+    target_lower = target.strip().lower()
+    if not target_lower:
+        return target
+    for app_dir in _APP_DIRS:
+        try:
+            entries = os.listdir(app_dir)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.endswith(".app") and entry[:-4].lower() == target_lower:
+                return entry[:-4]
+    return target
 
 
 def _is_private_url(url: str) -> bool:
@@ -247,20 +277,26 @@ class YAMLInterpreter:
             return error_template if error_template else _FALLBACK_ERROR
 
     def _execute_macos_paste(self, skill: dict, params: dict) -> str:
-        """macos_paste path: render text → pbcopy → Cmd+V to frontmost app.
+        """macos_paste path: render text + optional target → pbcopy → focus → Cmd+V.
 
-        Security model: the AppleScript command is a fixed module-level
-        constant (no template interpolation). User text reaches the focused
-        app only via the system clipboard. Subprocess uses argv lists (no
-        shell), so shell metacharacters in text are inert.
+        Optional ``target`` field selects where the paste lands:
+            empty / unset    paste to current frontmost (no focus change)
+            "prev"/"上一个"   send Cmd+Tab to flip back to the previous app
+            <app name>       activate that macOS app via argv binding
+
+        Security model: the AppleScript fragments are module-level constants
+        (no template interpolation). User text reaches the focused app only
+        via the system clipboard. App-name targets pass through osascript
+        argv binding (``on run argv ... item 1 of argv``), so AppleScript
+        sees the name as a literal string — shell or AppleScript metachars
+        in target are inert. Subprocess uses argv lists (no shell), so
+        nothing in text or target ever reaches a shell.
 
         Errors:
             - empty text → "无内容可输入"
             - subprocess timeout / non-zero exit → error_template
+              (covers first-run macOS Accessibility permission denial)
             - osascript missing (non-macOS) → "Not on macOS"
-            - first-run without Accessibility permission → CalledProcessError
-              path returns the error_template; user must grant in System
-              Settings → Privacy & Security → Accessibility.
         """
         action = skill["action"]
         response_cfg = skill.get("response", {})
@@ -268,12 +304,17 @@ class YAMLInterpreter:
 
         try:
             text = self._render(action.get("text", ""), params)
+            target = ""
+            if "target" in action:
+                target = self._render(action["target"], params).strip()
         except Exception:
-            LOGGER.exception("macos_paste text render failed for %s", skill.get("name"))
+            LOGGER.exception("macos_paste render failed for %s", skill.get("name"))
             return error_template if error_template else _FALLBACK_ERROR
 
         if not text:
             return "无内容可输入"
+
+        osascript_argv = self._build_paste_argv(target)
 
         try:
             subprocess.run(
@@ -284,7 +325,7 @@ class YAMLInterpreter:
                 timeout=_PBCOPY_TIMEOUT_S,
             )
             subprocess.run(
-                ["osascript", "-e", _APPLESCRIPT_PASTE],
+                osascript_argv,
                 capture_output=True,
                 check=True,
                 timeout=_OSASCRIPT_TIMEOUT_S,
@@ -301,10 +342,40 @@ class YAMLInterpreter:
 
         template = response_cfg.get("template", "已输入")
         try:
-            return self._render(template, {**params, "text": text})
+            return self._render(template, {**params, "text": text, "target": target})
         except Exception:
             LOGGER.exception("macos_paste response render failed for %s", skill.get("name"))
             return error_template if error_template else _FALLBACK_ERROR
+
+    @staticmethod
+    def _build_paste_argv(target: str) -> list[str]:
+        """Return osascript argv for the requested target mode.
+
+        - empty → just the fixed paste keystroke
+        - prev keyword → Cmd+Tab + delay + paste
+        - app name → resolve to canonical case via installed-apps scan,
+          then activate-via-argv-binding + delay + paste with the canonical
+          name as a positional arg (never interpolated into -e fragments)
+        """
+        if not target:
+            return ["osascript", "-e", _APPLESCRIPT_PASTE]
+        if target.lower() in _PREV_KEYWORDS:
+            return [
+                "osascript",
+                "-e", _APPLESCRIPT_CMDTAB,
+                "-e", _APPLESCRIPT_DELAY,
+                "-e", _APPLESCRIPT_PASTE,
+            ]
+        canonical = _resolve_app_name(target)
+        return [
+            "osascript",
+            "-e", "on run argv",
+            "-e", "tell application (item 1 of argv) to activate",
+            "-e", _APPLESCRIPT_DELAY,
+            "-e", _APPLESCRIPT_PASTE,
+            "-e", "end run",
+            canonical,
+        ]
 
     # ------------------------------------------------------------------
     # Internal helpers

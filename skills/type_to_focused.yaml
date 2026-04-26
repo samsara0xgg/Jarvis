@@ -1,28 +1,49 @@
 name: type_to_focused
 description: |
-  Type Chinese (or any) text into the currently focused app — Claude Code,
-  any text editor, any input field.
+  Type Chinese (or any) text into a specified or currently focused app —
+  Claude Code, any text editor, any input field.
 
   Use ONLY when the user explicitly asks to "input / type / paste" into a
   window. Anchor phrases: "帮我输入", "帮我打字", "输入进去", "替我输入",
   "把这个打到", "type this into cc", "paste this into".
 
+  Target selection:
+    - User says "帮我输入到 X：YYY" / "type into X: YYY" → text=YYY, target=X
+      where X is the macOS app name ("Cursor", "iTerm", "Terminal",
+      "TextEdit", "Notes", "Code", "Slack", etc.).
+    - User says "帮我输入到上一个" / "前一个" / "back to previous" →
+      target="prev" (jarvis sends Cmd+Tab to flip back to whatever app was
+      active before they triggered jarvis).
+    - User says "帮我输入：YYY" with no app mentioned → target="" (paste
+      lands wherever cursor currently is — user must keep target window
+      focused).
+
   Don't trigger on bare "记一下" / "保存" / "搜一下" — those are different
-  intents (inbox / search). The focused-window paste is destructive: it
-  enters the text wherever the user's cursor is, and the system clipboard
-  is overwritten.
+  intents (inbox / search). This action is destructive: text goes into the
+  user's cursor position, system clipboard is overwritten.
 
   Requires macOS Accessibility permission for the running python process
   on first use (System Settings → Privacy & Security → Accessibility).
-version: 1
+version: 2
 status: live
 created_by: dogfood
 
 parameters:
   - name: text
     type: string
-    description: "The text to type into the currently focused window."
+    description: "The text to type into the focused window."
     required: true
+  - name: target
+    type: string
+    description: |
+      Optional: where to paste. Empty = current frontmost (default).
+      "prev" / "previous" / "上一个" / "前一个" = Cmd+Tab to last app.
+      Otherwise the macOS app name to activate first. The interpreter
+      does case-insensitive lookup against installed apps, so "cursor"
+      and "Cursor" both work. Common targets: "Cursor", "Visual Studio
+      Code", "Terminal", "TextEdit", "Notes", "Obsidian", "Claude".
+    required: false
+    default: ""
 
 annotations:
   read_only: false
@@ -32,9 +53,10 @@ annotations:
 action:
   type: macos_paste
   text: "{{ text }}"
+  target: "{{ target }}"
 
 response:
-  template: "已输入：{{ text[:30] }}{% if text|length > 30 %}...{% endif %}"
+  template: "已输入{% if target %}（→ {{ target }}）{% endif %}：{{ text[:30] }}{% if text|length > 30 %}...{% endif %}"
   error_template: "输入失败，请检查辅助功能权限并确认目标窗口已聚焦。"
 
 security:
