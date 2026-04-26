@@ -678,3 +678,159 @@ class TestObsidianInboxYAMLSkill:
         assert "Saved to inbox" in out or "Path escape blocked" in out
         outside = tmp_path.parent / "etc"
         assert not outside.exists()
+
+
+# ===========================================================================
+# macos_paste action — mocked subprocess
+# ===========================================================================
+
+
+def _macos_paste_skill(**action_overrides):
+    """Build a minimal macos_paste skill."""
+    action = {"type": "macos_paste", "text": "{{ text }}"}
+    action.update(action_overrides)
+    return {
+        "name": "test_paste",
+        "description": "Paste text to focused app",
+        "parameters": [{"name": "text", "type": "string", "required": True}],
+        "action": action,
+        "response": {
+            "template": "Pasted: {{ text }}",
+            "error_template": "fail",
+        },
+    }
+
+
+class TestMacOSPasteAction:
+    def test_pbcopy_receives_rendered_text(self):
+        skill = _macos_paste_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": "你好 world"})
+        # First call: pbcopy with text on stdin
+        first = mock_run.call_args_list[0]
+        assert first.args[0] == ["pbcopy"]
+        assert first.kwargs.get("input") == "你好 world"
+        assert first.kwargs.get("text") is True
+
+    def test_osascript_called_with_fixed_paste_command(self):
+        from core.yaml_interpreter import _APPLESCRIPT_PASTE
+        skill = _macos_paste_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": "x"})
+        # Second call: osascript -e <fixed AppleScript>
+        second = mock_run.call_args_list[1]
+        assert second.args[0] == ["osascript", "-e", _APPLESCRIPT_PASTE]
+
+    def test_user_text_never_appears_in_subprocess_argv(self):
+        """Injection guard: text must not flow into argv, only into stdin."""
+        skill = _macos_paste_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(
+                skill, {"text": '"; do evil; tell app to "'}
+            )
+        for call in mock_run.call_args_list:
+            argv = call.args[0]
+            # text appears nowhere in command-line arguments
+            assert all(
+                'do evil' not in str(arg) for arg in argv
+            ), f"text leaked into argv: {argv}"
+
+    def test_response_template_rendered_with_text(self):
+        skill = _macos_paste_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = YAMLInterpreter().execute(skill, {"text": "hello"})
+        assert out == "Pasted: hello"
+
+    def test_empty_text_short_circuits_no_subprocess(self):
+        skill = _macos_paste_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            out = YAMLInterpreter().execute(skill, {"text": ""})
+        assert "无内容" in out
+        mock_run.assert_not_called()
+
+    def test_subprocess_timeout_returns_error_template(self):
+        import subprocess
+        skill = _macos_paste_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="pbcopy", timeout=2)
+            out = YAMLInterpreter().execute(skill, {"text": "x"})
+        assert out == "fail"
+
+    def test_called_process_error_returns_error_template(self):
+        import subprocess
+        skill = _macos_paste_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.CalledProcessError(1, ["osascript"])
+            out = YAMLInterpreter().execute(skill, {"text": "x"})
+        assert out == "fail"
+
+    def test_file_not_found_returns_error_template(self):
+        skill = _macos_paste_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError("pbcopy")
+            out = YAMLInterpreter().execute(skill, {"text": "x"})
+        assert out == "fail"
+
+    def test_file_not_found_no_error_template_returns_not_macos(self):
+        skill = _macos_paste_skill()
+        skill["response"].pop("error_template")
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError("pbcopy")
+            out = YAMLInterpreter().execute(skill, {"text": "x"})
+        assert "Not on macOS" in out
+
+
+# ===========================================================================
+# Real type_to_focused.yaml end-to-end (mocked subprocess)
+# ===========================================================================
+
+
+class TestTypeToFocusedYAMLSkill:
+    def _load(self):
+        interp = YAMLInterpreter()
+        skill_path = os.path.join(
+            os.path.dirname(__file__), "..", "skills", "type_to_focused.yaml"
+        )
+        return interp, interp.load_skill(skill_path)
+
+    def test_loads_correct_schema(self):
+        interp, skill = self._load()
+        td = interp.to_tool_definition(skill)
+        assert td["name"] == "type_to_focused"
+        assert td["input_schema"]["required"] == ["text"]
+        # Trigger anchors documented in description
+        desc = td["description"].lower()
+        for anchor in ("帮我输入", "type this into cc"):
+            assert anchor.lower() in desc
+
+    def test_pastes_text_via_clipboard(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"text": "测试输入"})
+        assert mock_run.call_count == 2
+        first = mock_run.call_args_list[0]
+        assert first.args[0] == ["pbcopy"]
+        assert first.kwargs["input"] == "测试输入"
+        assert "已输入" in out
+
+    def test_long_text_truncated_in_response(self):
+        interp, skill = self._load()
+        long_text = "a" * 100
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"text": long_text})
+        assert "..." in out
+        # Response is truncated to ~30 chars + ellipsis
+        assert len(out) < 80
+
+    def test_short_text_not_truncated(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"text": "hi"})
+        assert "..." not in out

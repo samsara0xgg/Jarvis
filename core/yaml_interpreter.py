@@ -20,6 +20,7 @@ import ipaddress
 import logging
 import os
 import re
+import subprocess
 import time
 import unicodedata
 from datetime import datetime
@@ -44,6 +45,14 @@ _FALLBACK_ERROR = "技能执行失败，请稍后再试"
 
 _SLUG_MAX_WORDS = 5
 _SLUG_MAX_CHARS = 60
+
+# AppleScript for paste: hardcoded constant — no user input ever flows here.
+# User text reaches the focused app only via the system clipboard (pbcopy).
+_APPLESCRIPT_PASTE = (
+    'tell application "System Events" to keystroke "v" using command down'
+)
+_PBCOPY_TIMEOUT_S = 2.0
+_OSASCRIPT_TIMEOUT_S = 5.0
 
 
 def _is_private_url(url: str) -> bool:
@@ -156,6 +165,8 @@ class YAMLInterpreter:
             return self._execute_http(skill, params)
         if atype == "file_write":
             return self._execute_file_write(skill, params)
+        if atype == "macos_paste":
+            return self._execute_macos_paste(skill, params)
 
         msg = f"Unsupported action type: {atype}"
         LOGGER.warning(msg)
@@ -233,6 +244,66 @@ class YAMLInterpreter:
             return self._render(template, ctx)
         except Exception:
             LOGGER.exception("Response render failed for %s", skill.get("name"))
+            return error_template if error_template else _FALLBACK_ERROR
+
+    def _execute_macos_paste(self, skill: dict, params: dict) -> str:
+        """macos_paste path: render text → pbcopy → Cmd+V to frontmost app.
+
+        Security model: the AppleScript command is a fixed module-level
+        constant (no template interpolation). User text reaches the focused
+        app only via the system clipboard. Subprocess uses argv lists (no
+        shell), so shell metacharacters in text are inert.
+
+        Errors:
+            - empty text → "无内容可输入"
+            - subprocess timeout / non-zero exit → error_template
+            - osascript missing (non-macOS) → "Not on macOS"
+            - first-run without Accessibility permission → CalledProcessError
+              path returns the error_template; user must grant in System
+              Settings → Privacy & Security → Accessibility.
+        """
+        action = skill["action"]
+        response_cfg = skill.get("response", {})
+        error_template = response_cfg.get("error_template")
+
+        try:
+            text = self._render(action.get("text", ""), params)
+        except Exception:
+            LOGGER.exception("macos_paste text render failed for %s", skill.get("name"))
+            return error_template if error_template else _FALLBACK_ERROR
+
+        if not text:
+            return "无内容可输入"
+
+        try:
+            subprocess.run(
+                ["pbcopy"],
+                input=text,
+                text=True,
+                check=True,
+                timeout=_PBCOPY_TIMEOUT_S,
+            )
+            subprocess.run(
+                ["osascript", "-e", _APPLESCRIPT_PASTE],
+                capture_output=True,
+                check=True,
+                timeout=_OSASCRIPT_TIMEOUT_S,
+            )
+        except FileNotFoundError:
+            LOGGER.warning("macos_paste: pbcopy or osascript not found (non-macOS?)")
+            return error_template if error_template else "Not on macOS"
+        except subprocess.TimeoutExpired:
+            LOGGER.warning("macos_paste: subprocess timeout")
+            return error_template if error_template else "输入超时"
+        except subprocess.CalledProcessError as exc:
+            LOGGER.warning("macos_paste: subprocess failed: %s", exc)
+            return error_template if error_template else _FALLBACK_ERROR
+
+        template = response_cfg.get("template", "已输入")
+        try:
+            return self._render(template, {**params, "text": text})
+        except Exception:
+            LOGGER.exception("macos_paste response render failed for %s", skill.get("name"))
             return error_template if error_template else _FALLBACK_ERROR
 
     # ------------------------------------------------------------------
