@@ -1,0 +1,87 @@
+name: cc_slash
+description: |
+  Trigger a Claude Code slash command (e.g. /commit, /compact, /clear,
+  /cost, /model) by writing "/<command> [args]" + Enter to the cc
+  pane. Generic — any cc slash command works because the actual
+  validation happens inside cc.
+
+  Use when the user wants Jarvis to invoke a cc-builtin or
+  user-defined slash command. The LLM picks the ``command`` arg from
+  the user's natural-language intent.
+
+  Anchor phrases:
+    - "让 cc 提交" → command="commit"
+    - "让 cc 压缩" / "让 cc 压一下对话" → command="compact"
+    - "让 cc 清空" / "让 cc 清对话" → command="clear"
+    - "让 cc 看一下成本" / "查一下 cc 用量" → command="cost"
+    - "让 cc 切到 opus" / "让 cc 换 opus" → command="model" args="opus"
+    - "让 cc 设 effort 中" / "让 cc effort medium" / "cc 思考量 medium"
+      → command="effort" args="medium"
+    - "让 cc 快速模式" → command="fast"
+    - "让 cc /xxx" / "tell cc /xxx" / "cc slash xxx" → command=xxx
+    - "让 cc 退出" → command="exit"
+
+  Common cc built-in slash commands (non-exhaustive — cc accepts any):
+    /commit  /compact  /clear  /cost  /exit  /effort  /fast  /help
+    /init  /login  /logout  /model  /mcp  /permissions  /review
+    /security-review  /settings  /status  /think  /tools
+
+  Note on similar-sounding commands: "effort" (5 levels of thinking
+  depth: low/medium/high/xhigh/max) is DIFFERENT from "effect" (not a
+  cc command) and from "model" (which switches the LLM, not the
+  thinking level). When user says "effort", always use command="effort"
+  — never substitute "model" or "effect".
+
+  Do NOT use this for sending a normal prompt to cc — that is
+  ``cc_tell``. cc_slash is specifically for the / prefix commands that
+  trigger cc-side actions (commit, compact, etc.), not LLM messages.
+  If unsure between cc_tell and cc_slash, prefer cc_tell.
+
+  Behavior: writes "/{{command}} {{args}}" (no leading space) + Enter.
+  cc parses the slash command itself; if the command is unknown cc
+  prints "Unknown slash command" — that is a cc-side response, not a
+  cc_slash failure.
+
+  Requires:
+    - zellij installed
+    - zellij session named <session> running cc
+
+version: 1
+status: live
+created_by: dogfood
+
+parameters:
+  - name: command
+    type: string
+    description: |
+      The slash command name WITHOUT the leading slash. Common values:
+      commit, compact, clear, cost, exit, help, model, mcp, review.
+    required: true
+  - name: args
+    type: string
+    description: 'Optional argument string after the command name (default empty).'
+    required: false
+    default: ""
+  - name: session
+    type: string
+    description: 'Optional zellij session name. Default "cc".'
+    required: false
+    default: "cc"
+
+annotations:
+  read_only: false
+  destructive: false
+  idempotent: false
+
+action:
+  type: zellij_send
+  session: "{{ session }}"
+  text: "/{{ command }}{% if args %} {{ args }}{% endif %}"
+  submit: true
+
+response:
+  template: '已触发 cc /{{ command }}{% if args %} {{ args }}{% endif %}{% if session != "cc" %}（→ {{ session }}）{% endif %}'
+  error_template: "触发失败 — 检查 zellij session 是否在跑"
+
+security:
+  requires_auth: false

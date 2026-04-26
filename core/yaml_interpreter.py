@@ -67,6 +67,23 @@ _ZELLIJ_TIMEOUT_S = 3.0
 _ZELLIJ_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _ZELLIJ_ENTER_BYTE = "13"  # CR — what a real keyboard sends on Enter
 
+# Whitelist of special keys for the zellij_send ``keys`` parameter.
+# Each value is a space-separated decimal byte sequence accepted by
+# ``zellij action write <bytes>``. Whitelist (not arbitrary bytes) is
+# deliberate: voice → LLM may hallucinate exotic sequences, so we
+# constrain to the small set actually needed for cc control.
+_ZELLIJ_KEYS_MAP: dict[str, str] = {
+    "c-c": "3",          # Ctrl+C — interrupt
+    "c-d": "4",          # Ctrl+D — EOF / exit
+    "c-z": "26",         # Ctrl+Z — suspend (rarely useful for cc but cheap)
+    "esc": "27",         # Escape — dismiss autocomplete / cancel
+    "tab": "9",          # Tab — accept suggestion
+    "up": "27 91 65",    # ESC [ A — history up
+    "down": "27 91 66",  # ESC [ B — history down
+    "left": "27 91 68",  # ESC [ D
+    "right": "27 91 67", # ESC [ C
+}
+
 _APP_DIRS = ("/Applications", "/Applications/Utilities", "/System/Applications")
 
 
@@ -360,12 +377,16 @@ class YAMLInterpreter:
             return error_template if error_template else _FALLBACK_ERROR
 
     def _execute_zellij_send(self, skill: dict, params: dict) -> str:
-        """zellij_send: write text (and optional Enter) into a zellij session.
+        """zellij_send: write text and/or special keys into a zellij session.
 
-        Calls ``zellij --session <name> action write-chars <text>`` via
-        subprocess argv (no shell). With ``submit: true``, follows up with
-        ``zellij ... action write 13`` — byte 13 is CR, what a real keyboard
-        sends when Enter is pressed.
+        Three optional inputs combined per call (in order of execution):
+            keys   : list[str] of whitelisted key names (see ``_ZELLIJ_KEYS_MAP``).
+                     Each maps to a byte sequence sent via
+                     ``zellij action write <bytes>``. Sent first.
+            text   : string sent via ``zellij action write-chars``. Sent second.
+            submit : bool — appends Enter (CR=13). Sent last.
+
+        At least one of ``keys`` or ``text`` must be provided.
 
         Security model:
             - subprocess uses argv lists (shell=False), so user text in
@@ -374,21 +395,24 @@ class YAMLInterpreter:
               reaching subprocess, blocking flag injection (e.g. a session
               like ``--config /etc/passwd`` would otherwise be parsed as
               another zellij flag)
+            - keys constrained to a fixed whitelist — voice → LLM might
+              hallucinate exotic byte sequences; whitelist forces every
+              new control key to be added in code review
             - text content is opaque to zellij — it just relays bytes to
               the target pane's PTY stdin. The receiving program (cc) is
               responsible for input sanitization on its side.
 
         Errors:
-            - empty text → "无内容可发送"
+            - empty text AND empty keys → "无内容可发送"
             - invalid session name → returned as error message
+            - unknown key name → returned as error message
             - zellij not in PATH → "zellij 未安装"
             - subprocess CalledProcessError → error_template (most common
               cause: session does not exist; zellij prints "no such
               session" to stderr)
             - subprocess timeout → "发送超时"
-            - if write-chars succeeds but Enter byte fails (with submit),
-              the text sits in the pane uncomitted — the user must press
-              Enter manually
+            - any subprocess in the keys → text → submit chain fails
+              fast; later steps are skipped on first error
         """
         action = skill["action"]
         response_cfg = skill.get("response", {})
@@ -398,11 +422,13 @@ class YAMLInterpreter:
             text = self._render(action.get("text", ""), params)
             session = self._render(action.get("session", "cc"), params).strip()
             submit = bool(action.get("submit", False))
+            keys_raw = action.get("keys", []) or []
+            keys = [str(k).strip().lower() for k in keys_raw]
         except Exception:
             LOGGER.exception("zellij_send render failed for %s", skill.get("name"))
             return error_template if error_template else _FALLBACK_ERROR
 
-        if not text:
+        if not text and not keys:
             return "无内容可发送"
 
         if not _ZELLIJ_SESSION_RE.match(session):
@@ -410,15 +436,30 @@ class YAMLInterpreter:
             LOGGER.warning(msg)
             return error_template if error_template else msg
 
+        for k in keys:
+            if k not in _ZELLIJ_KEYS_MAP:
+                msg = f"未知 key: {k!r}（白名单: {sorted(_ZELLIJ_KEYS_MAP)}）"
+                LOGGER.warning(msg)
+                return error_template if error_template else msg
+
         base_argv = ["zellij", "--session", session, "action"]
 
         try:
-            subprocess.run(
-                [*base_argv, "write-chars", text],
-                capture_output=True,
-                check=True,
-                timeout=_ZELLIJ_TIMEOUT_S,
-            )
+            for k in keys:
+                byte_seq = _ZELLIJ_KEYS_MAP[k].split()
+                subprocess.run(
+                    [*base_argv, "write", *byte_seq],
+                    capture_output=True,
+                    check=True,
+                    timeout=_ZELLIJ_TIMEOUT_S,
+                )
+            if text:
+                subprocess.run(
+                    [*base_argv, "write-chars", text],
+                    capture_output=True,
+                    check=True,
+                    timeout=_ZELLIJ_TIMEOUT_S,
+                )
             if submit:
                 subprocess.run(
                     [*base_argv, "write", _ZELLIJ_ENTER_BYTE],
@@ -441,7 +482,9 @@ class YAMLInterpreter:
 
         template = response_cfg.get("template", "已发送")
         try:
-            return self._render(template, {**params, "text": text, "session": session})
+            return self._render(
+                template, {**params, "text": text, "session": session, "keys": keys}
+            )
         except Exception:
             LOGGER.exception("zellij_send response render failed for %s", skill.get("name"))
             return error_template if error_template else _FALLBACK_ERROR

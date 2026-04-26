@@ -1,0 +1,52 @@
+name: cc_deny
+description: |
+  Deny a Claude Code permission prompt by sending "n" + Enter to the
+  cc pane. Use ONLY when cc is currently waiting on a y/n permission
+  prompt and the user wants to reject it.
+
+  Anchor phrases (must include "cc" or be in clear cc context):
+    - "别让 cc 做" / "别让 cc"
+    - "cc 拒绝" / "cc 不行" / "cc 不要"
+    - "deny cc" / "no cc" / "reject cc"
+    - "cc 不通过" / "cc 不批"
+
+  Do NOT trigger on bare "不行" / "no" / "不要" — those are too
+  ambiguous. Always require an explicit "cc" anchor unless the
+  conversation has established cc context.
+
+  Behavior: writes "n" + CR (byte 13) to the cc pane's PTY. If cc is
+  NOT currently waiting on a y/n prompt, the "n" lands in cc's input
+  box as text — harmless but useless.
+
+  Requires:
+    - zellij installed
+    - zellij session named <session> running cc
+
+version: 1
+status: live
+created_by: dogfood
+
+parameters:
+  - name: session
+    type: string
+    description: 'Optional zellij session name. Default "cc".'
+    required: false
+    default: "cc"
+
+annotations:
+  read_only: false
+  destructive: false
+  idempotent: false
+
+action:
+  type: zellij_send
+  session: "{{ session }}"
+  text: "n"
+  submit: true
+
+response:
+  template: '已拒绝 cc{% if session != "cc" %}（→ {{ session }}）{% endif %}'
+  error_template: "拒绝失败 — 检查 zellij session 是否在跑"
+
+security:
+  requires_auth: false

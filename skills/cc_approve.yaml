@@ -1,0 +1,53 @@
+name: cc_approve
+description: |
+  Approve a Claude Code permission prompt by sending "y" + Enter to
+  the cc pane. Use ONLY when cc is currently waiting on a y/n
+  permission prompt and the user wants to approve it.
+
+  Anchor phrases (must include "cc" or be in clear cc context):
+    - "让 cc 做" / "让 cc 继续"
+    - "cc 同意" / "cc 行" / "cc 可以"
+    - "approve cc" / "ok cc" / "yes cc"
+    - "cc 通过" / "cc 批准"
+
+  Do NOT trigger on bare "行" / "yes" / "ok" — those are too ambiguous.
+  Always require an explicit "cc" anchor unless the conversation has
+  established cc context.
+
+  Behavior: writes "y" + CR (byte 13) to the cc pane's PTY. cc treats
+  this exactly as if the user had typed y and pressed Return at the
+  permission dialog. If cc is NOT currently waiting on a y/n prompt,
+  the "y" lands in cc's prompt input box as text — harmless but useless.
+
+  Requires:
+    - zellij installed
+    - zellij session named <session> running cc
+
+version: 1
+status: live
+created_by: dogfood
+
+parameters:
+  - name: session
+    type: string
+    description: 'Optional zellij session name. Default "cc".'
+    required: false
+    default: "cc"
+
+annotations:
+  read_only: false
+  destructive: false
+  idempotent: false
+
+action:
+  type: zellij_send
+  session: "{{ session }}"
+  text: "y"
+  submit: true
+
+response:
+  template: '已批准 cc{% if session != "cc" %}（→ {{ session }}）{% endif %}'
+  error_template: "批准失败 — 检查 zellij session 是否在跑"
+
+security:
+  requires_auth: false

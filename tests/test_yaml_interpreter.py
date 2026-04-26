@@ -1292,3 +1292,242 @@ class TestCCTellYAMLSkill:
             )
             out = interp.execute(skill, {"text": "x"})
         assert "zellij list-sessions" in out
+
+
+# ===========================================================================
+# zellij_send keys param — Phase 1A: special-key whitelist
+# ===========================================================================
+
+
+class TestZellijKeysParam:
+    def _skill(self, **action_overrides):
+        action = {"type": "zellij_send"}
+        action.update(action_overrides)
+        return {
+            "name": "test_keys",
+            "description": "keys test",
+            "parameters": [],
+            "action": action,
+            "response": {
+                "template": "ok",
+                "error_template": "fail",
+            },
+        }
+
+    def test_ctrl_c_writes_byte_3(self):
+        skill = self._skill(keys=["c-c"])
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {})
+        assert mock_run.call_count == 1
+        argv = mock_run.call_args_list[0].args[0]
+        # zellij --session cc action write 3
+        assert argv[0] == "zellij"
+        assert argv[2] == "cc"
+        assert argv[3:5] == ["action", "write"]
+        assert argv[5] == "3"
+
+    def test_arrow_up_writes_three_bytes_in_one_call(self):
+        skill = self._skill(keys=["up"])
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {})
+        argv = mock_run.call_args_list[0].args[0]
+        # write 27 91 65 — multi-byte ANSI sequence
+        assert argv[4:] == ["write", "27", "91", "65"]
+
+    def test_keys_only_no_text_no_submit_allowed(self):
+        skill = self._skill(keys=["esc"])
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = YAMLInterpreter().execute(skill, {})
+        # Single zellij call (one key); no "无内容" error
+        assert mock_run.call_count == 1
+        assert out == "ok"
+
+    def test_empty_text_empty_keys_short_circuits(self):
+        skill = self._skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            out = YAMLInterpreter().execute(skill, {})
+        assert "无内容" in out
+        mock_run.assert_not_called()
+
+    def test_keys_then_text_then_submit_order(self):
+        skill = self._skill(keys=["esc"], text="hello", submit=True)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {})
+        assert mock_run.call_count == 3
+        # Call 0: write 27 (esc)
+        assert mock_run.call_args_list[0].args[0][4:] == ["write", "27"]
+        # Call 1: write-chars hello
+        assert mock_run.call_args_list[1].args[0][4:] == ["write-chars", "hello"]
+        # Call 2: write 13 (Enter)
+        assert mock_run.call_args_list[2].args[0][4:] == ["write", "13"]
+
+    def test_unknown_key_blocked_before_subprocess(self):
+        skill = self._skill(keys=["c-q"])
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            out = YAMLInterpreter().execute(skill, {})
+        mock_run.assert_not_called()
+        assert out == "fail"
+
+    def test_unknown_key_no_error_template_shows_whitelist(self):
+        skill = self._skill(keys=["fookey"])
+        skill["response"].pop("error_template")
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            out = YAMLInterpreter().execute(skill, {})
+        mock_run.assert_not_called()
+        assert "fookey" in out
+        assert "c-c" in out  # whitelist mentioned in error
+
+    def test_key_case_normalized(self):
+        skill = self._skill(keys=["C-C"])
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {})
+        # uppercase user input still maps via lower()
+        assert mock_run.call_args_list[0].args[0][5] == "3"
+
+    def test_multiple_keys_sent_as_separate_calls(self):
+        skill = self._skill(keys=["esc", "c-c"])
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {})
+        assert mock_run.call_count == 2
+        assert mock_run.call_args_list[0].args[0][4:] == ["write", "27"]
+        assert mock_run.call_args_list[1].args[0][4:] == ["write", "3"]
+
+
+# ===========================================================================
+# Real cc_interrupt.yaml end-to-end
+# ===========================================================================
+
+
+class TestCCInterruptYAMLSkill:
+    def _load(self):
+        interp = YAMLInterpreter()
+        skill_path = os.path.join(
+            os.path.dirname(__file__), "..", "skills", "cc_interrupt.yaml"
+        )
+        return interp, interp.load_skill(skill_path)
+
+    def test_loads_correct_schema(self):
+        interp, skill = self._load()
+        td = interp.to_tool_definition(skill)
+        assert td["name"] == "cc_interrupt"
+        # text is NOT in params (key-only skill)
+        assert "text" not in td["input_schema"]["properties"]
+        # session is optional
+        assert td["input_schema"]["required"] == []
+        desc = td["description"].lower()
+        for anchor in ("停 cc", "interrupt cc", "abort cc"):
+            assert anchor.lower() in desc
+
+    def test_sends_ctrl_c_to_cc_session(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {})
+        assert mock_run.call_count == 1
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv == ["zellij", "--session", "cc", "action", "write", "3"]
+        assert "已打断" in out
+
+
+# ===========================================================================
+# Real cc_approve.yaml end-to-end
+# ===========================================================================
+
+
+class TestCCApproveYAMLSkill:
+    def _load(self):
+        interp = YAMLInterpreter()
+        skill_path = os.path.join(
+            os.path.dirname(__file__), "..", "skills", "cc_approve.yaml"
+        )
+        return interp, interp.load_skill(skill_path)
+
+    def test_writes_y_then_enter(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {})
+        assert mock_run.call_count == 2
+        assert mock_run.call_args_list[0].args[0][4:] == ["write-chars", "y"]
+        assert mock_run.call_args_list[1].args[0][4:] == ["write", "13"]
+        assert "已批准" in out
+
+
+# ===========================================================================
+# Real cc_deny.yaml end-to-end
+# ===========================================================================
+
+
+class TestCCDenyYAMLSkill:
+    def _load(self):
+        interp = YAMLInterpreter()
+        skill_path = os.path.join(
+            os.path.dirname(__file__), "..", "skills", "cc_deny.yaml"
+        )
+        return interp, interp.load_skill(skill_path)
+
+    def test_writes_n_then_enter(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {})
+        assert mock_run.call_count == 2
+        assert mock_run.call_args_list[0].args[0][4:] == ["write-chars", "n"]
+        assert mock_run.call_args_list[1].args[0][4:] == ["write", "13"]
+        assert "已拒绝" in out
+
+
+# ===========================================================================
+# Real cc_slash.yaml end-to-end
+# ===========================================================================
+
+
+class TestCCSlashYAMLSkill:
+    def _load(self):
+        interp = YAMLInterpreter()
+        skill_path = os.path.join(
+            os.path.dirname(__file__), "..", "skills", "cc_slash.yaml"
+        )
+        return interp, interp.load_skill(skill_path)
+
+    def test_loads_correct_schema(self):
+        interp, skill = self._load()
+        td = interp.to_tool_definition(skill)
+        assert td["name"] == "cc_slash"
+        assert td["input_schema"]["required"] == ["command"]
+        assert "command" in td["input_schema"]["properties"]
+        assert "args" in td["input_schema"]["properties"]
+
+    def test_simple_commit_command(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"command": "commit"})
+        assert mock_run.call_count == 2
+        # write-chars "/commit"
+        assert mock_run.call_args_list[0].args[0][4:] == ["write-chars", "/commit"]
+        # write 13 (Enter)
+        assert mock_run.call_args_list[1].args[0][4:] == ["write", "13"]
+        assert "/commit" in out
+
+    def test_command_with_args(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"command": "model", "args": "opus"})
+        assert mock_run.call_args_list[0].args[0][4:] == ["write-chars", "/model opus"]
+        assert "/model opus" in out
+
+    def test_no_args_no_trailing_space(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            interp.execute(skill, {"command": "compact"})
+        # No trailing space when args empty (argv[4]=write-chars, argv[5]=text)
+        assert mock_run.call_args_list[0].args[0][5] == "/compact"

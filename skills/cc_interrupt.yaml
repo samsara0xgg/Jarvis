@@ -1,0 +1,55 @@
+name: cc_interrupt
+description: |
+  Interrupt the Claude Code session that is currently generating, by
+  sending Ctrl+C to its zellij pane. Equivalent to the user pressing
+  Ctrl+C inside the cc terminal.
+
+  Use ONLY when the user explicitly asks to STOP / INTERRUPT / ABORT a
+  running cc generation. Anchor phrases:
+    - "停 cc" / "停下 cc"
+    - "打断 cc" / "中断 cc"
+    - "让 cc 停" / "让 cc 停下"
+    - "stop cc" / "interrupt cc" / "abort cc" / "cancel cc"
+
+  Do NOT trigger on bare "停" / "stop" — those are too ambiguous (could
+  mean stop Jarvis TTS, stop a reminder, etc.). Always require an
+  explicit "cc" anchor in the utterance.
+
+  Behavior: writes byte 3 (Ctrl+C) to the cc pane's PTY. cc receives
+  this exactly as if the user had pressed Ctrl+C. cc will stop the
+  current generation and return control to its prompt.
+
+  Requires:
+    - zellij installed
+    - zellij session named <session> running cc
+
+  Idempotent in practice: pressing Ctrl+C when cc is already idle is a
+  no-op for cc; whoever sends the keys first wins.
+
+version: 1
+status: live
+created_by: dogfood
+
+parameters:
+  - name: session
+    type: string
+    description: 'Optional zellij session name. Default "cc".'
+    required: false
+    default: "cc"
+
+annotations:
+  read_only: false
+  destructive: false
+  idempotent: true
+
+action:
+  type: zellij_send
+  session: "{{ session }}"
+  keys: ["c-c"]
+
+response:
+  template: '已打断 cc{% if session != "cc" %}（→ {{ session }}）{% endif %}'
+  error_template: "打断失败 — 检查 zellij session 是否在跑（zellij list-sessions）"
+
+security:
+  requires_auth: false
