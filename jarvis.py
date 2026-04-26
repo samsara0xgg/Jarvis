@@ -240,6 +240,12 @@ class JarvisApp:
         tools.todos.init(
             persist_dir=config.get("skills", {}).get("todos", {}).get("dir", "data/todos"),
         )
+        import tools.obsidian
+        tools.obsidian.init(
+            inbox_dir=config.get("obsidian", {}).get(
+                "inbox_dir", "~/Documents/Obsidian Vault/jarvis/inbox"
+            ),
+        )
 
         self.tool_registry = ToolRegistry(config)
 
