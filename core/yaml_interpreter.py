@@ -1,10 +1,14 @@
 """YAML skill interpreter — load, validate, and execute YAML-defined skills.
 
-Two action types:
+Action types:
     http_get / http_post — outbound HTTP with retry, domain whitelist,
                            and private-IP block.
     file_write           — local file write with mandatory ``allowed_root``
                            guard against path traversal / symlink escape.
+    macos_paste          — pbcopy + AppleScript Cmd+V into focused or
+                           named app (case-insensitive resolver).
+    zellij_send          — inject text (and optional Enter) into a named
+                           zellij session via ``zellij action write-chars``.
 
 Templates render in a Jinja2 sandbox extended with two helpers:
     slug    — filter: NFKD ASCII kebab; Chinese-literal fallback.
@@ -58,6 +62,10 @@ _APPLESCRIPT_DELAY = "delay 0.2"
 _PREV_KEYWORDS = {"prev", "previous", "上一个", "前一个"}
 _PBCOPY_TIMEOUT_S = 2.0
 _OSASCRIPT_TIMEOUT_S = 5.0
+
+_ZELLIJ_TIMEOUT_S = 3.0
+_ZELLIJ_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_ZELLIJ_ENTER_BYTE = "13"  # CR — what a real keyboard sends on Enter
 
 _APP_DIRS = ("/Applications", "/Applications/Utilities", "/System/Applications")
 
@@ -186,6 +194,8 @@ class YAMLInterpreter:
         Dispatches by ``action.type``:
             http_get / http_post → HTTP path with retry + security checks
             file_write           → local file write under allowed_root
+            macos_paste          → clipboard + AppleScript focus + paste
+            zellij_send          → zellij CLI write-chars into a session
         """
         params = self._apply_defaults(skill, dict(params))
         action = skill.get("action", {})
@@ -197,6 +207,8 @@ class YAMLInterpreter:
             return self._execute_file_write(skill, params)
         if atype == "macos_paste":
             return self._execute_macos_paste(skill, params)
+        if atype == "zellij_send":
+            return self._execute_zellij_send(skill, params)
 
         msg = f"Unsupported action type: {atype}"
         LOGGER.warning(msg)
@@ -345,6 +357,93 @@ class YAMLInterpreter:
             return self._render(template, {**params, "text": text, "target": target})
         except Exception:
             LOGGER.exception("macos_paste response render failed for %s", skill.get("name"))
+            return error_template if error_template else _FALLBACK_ERROR
+
+    def _execute_zellij_send(self, skill: dict, params: dict) -> str:
+        """zellij_send: write text (and optional Enter) into a zellij session.
+
+        Calls ``zellij --session <name> action write-chars <text>`` via
+        subprocess argv (no shell). With ``submit: true``, follows up with
+        ``zellij ... action write 13`` — byte 13 is CR, what a real keyboard
+        sends when Enter is pressed.
+
+        Security model:
+            - subprocess uses argv lists (shell=False), so user text in
+              argv[N] is shell-inert: metachars cannot trigger expansion
+            - session name validated against ``[A-Za-z0-9_-]{1,64}`` BEFORE
+              reaching subprocess, blocking flag injection (e.g. a session
+              like ``--config /etc/passwd`` would otherwise be parsed as
+              another zellij flag)
+            - text content is opaque to zellij — it just relays bytes to
+              the target pane's PTY stdin. The receiving program (cc) is
+              responsible for input sanitization on its side.
+
+        Errors:
+            - empty text → "无内容可发送"
+            - invalid session name → returned as error message
+            - zellij not in PATH → "zellij 未安装"
+            - subprocess CalledProcessError → error_template (most common
+              cause: session does not exist; zellij prints "no such
+              session" to stderr)
+            - subprocess timeout → "发送超时"
+            - if write-chars succeeds but Enter byte fails (with submit),
+              the text sits in the pane uncomitted — the user must press
+              Enter manually
+        """
+        action = skill["action"]
+        response_cfg = skill.get("response", {})
+        error_template = response_cfg.get("error_template")
+
+        try:
+            text = self._render(action.get("text", ""), params)
+            session = self._render(action.get("session", "cc"), params).strip()
+            submit = bool(action.get("submit", False))
+        except Exception:
+            LOGGER.exception("zellij_send render failed for %s", skill.get("name"))
+            return error_template if error_template else _FALLBACK_ERROR
+
+        if not text:
+            return "无内容可发送"
+
+        if not _ZELLIJ_SESSION_RE.match(session):
+            msg = f"非法 zellij session 名: {session!r}"
+            LOGGER.warning(msg)
+            return error_template if error_template else msg
+
+        base_argv = ["zellij", "--session", session, "action"]
+
+        try:
+            subprocess.run(
+                [*base_argv, "write-chars", text],
+                capture_output=True,
+                check=True,
+                timeout=_ZELLIJ_TIMEOUT_S,
+            )
+            if submit:
+                subprocess.run(
+                    [*base_argv, "write", _ZELLIJ_ENTER_BYTE],
+                    capture_output=True,
+                    check=True,
+                    timeout=_ZELLIJ_TIMEOUT_S,
+                )
+        except FileNotFoundError:
+            LOGGER.warning("zellij_send: zellij not in PATH")
+            return error_template if error_template else "zellij 未安装"
+        except subprocess.TimeoutExpired:
+            LOGGER.warning("zellij_send: subprocess timeout")
+            return error_template if error_template else "发送超时"
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or b"").decode("utf-8", "replace").strip()
+            LOGGER.warning(
+                "zellij_send: zellij failed (exit=%s): %s", exc.returncode, stderr
+            )
+            return error_template if error_template else f"zellij 错误: {stderr[:80]}"
+
+        template = response_cfg.get("template", "已发送")
+        try:
+            return self._render(template, {**params, "text": text, "session": session})
+        except Exception:
+            LOGGER.exception("zellij_send response render failed for %s", skill.get("name"))
             return error_template if error_template else _FALLBACK_ERROR
 
     @staticmethod

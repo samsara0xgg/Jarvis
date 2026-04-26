@@ -1068,3 +1068,227 @@ class TestTypeToFocusedV2Target:
         argv = mock_run.call_args_list[1].args[0]
         assert argv == ["osascript", "-e", _APPLESCRIPT_PASTE]
         assert "→" not in out  # no target arrow when target empty
+
+
+# ===========================================================================
+# zellij_send action — direct injection into a zellij session pane
+# ===========================================================================
+
+
+def _zellij_send_skill(**action_overrides):
+    """Build a minimal zellij_send skill."""
+    action = {"type": "zellij_send", "text": "{{ text }}"}
+    action.update(action_overrides)
+    return {
+        "name": "test_zellij",
+        "description": "Send to zellij",
+        "parameters": [{"name": "text", "type": "string", "required": True}],
+        "action": action,
+        "response": {
+            "template": "Sent: {{ text }}",
+            "error_template": "fail",
+        },
+    }
+
+
+class TestZellijSendAction:
+    def test_default_session_is_cc(self):
+        skill = _zellij_send_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": "hello"})
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv[:4] == ["zellij", "--session", "cc", "action"]
+
+    def test_write_chars_carries_text(self):
+        skill = _zellij_send_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": "你好 cc"})
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv[4] == "write-chars"
+        assert argv[5] == "你好 cc"
+
+    def test_submit_true_sends_enter_byte_after(self):
+        skill = _zellij_send_skill(submit=True)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": "x"})
+        assert mock_run.call_count == 2
+        second = mock_run.call_args_list[1].args[0]
+        assert second[4:] == ["write", "13"]
+
+    def test_submit_false_no_enter_byte(self):
+        skill = _zellij_send_skill(submit=False)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": "x"})
+        assert mock_run.call_count == 1
+
+    def test_session_override_via_template(self):
+        skill = _zellij_send_skill(session="{{ sess }}")
+        skill["parameters"].append(
+            {"name": "sess", "type": "string", "required": True}
+        )
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": "x", "sess": "frontend"})
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv[2] == "frontend"
+
+    def test_empty_text_short_circuits(self):
+        skill = _zellij_send_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            out = YAMLInterpreter().execute(skill, {"text": ""})
+        assert "无内容" in out
+        mock_run.assert_not_called()
+
+    def test_invalid_session_flag_injection_blocked(self):
+        skill = _zellij_send_skill(session="--config evil")
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            out = YAMLInterpreter().execute(skill, {"text": "x"})
+        mock_run.assert_not_called()
+        assert out == "fail"
+
+    def test_session_with_shell_metachars_blocked(self):
+        skill = _zellij_send_skill(session="cc; rm -rf /")
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            out = YAMLInterpreter().execute(skill, {"text": "x"})
+        mock_run.assert_not_called()
+        assert out == "fail"
+
+    def test_session_with_spaces_blocked(self):
+        skill = _zellij_send_skill(session="my session")
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            out = YAMLInterpreter().execute(skill, {"text": "x"})
+        mock_run.assert_not_called()
+
+    def test_session_alphanumeric_dash_underscore_allowed(self):
+        for name in ("cc", "frontend", "back-end", "my_session", "Test123"):
+            skill = _zellij_send_skill(session=name)
+            with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0)
+                YAMLInterpreter().execute(skill, {"text": "x"})
+            assert mock_run.call_args_list[0].args[0][2] == name
+
+    def test_zellij_not_found_friendly_error(self):
+        skill = _zellij_send_skill()
+        skill["response"].pop("error_template")
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError("zellij")
+            out = YAMLInterpreter().execute(skill, {"text": "x"})
+        assert "zellij" in out
+
+    def test_called_process_error_returns_error_template(self):
+        import subprocess as _sp
+        skill = _zellij_send_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = _sp.CalledProcessError(
+                1, ["zellij"], stderr=b"no such session"
+            )
+            out = YAMLInterpreter().execute(skill, {"text": "x"})
+        assert out == "fail"
+
+    def test_subprocess_timeout_returns_error_template(self):
+        import subprocess as _sp
+        skill = _zellij_send_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = _sp.TimeoutExpired(cmd="zellij", timeout=3)
+            out = YAMLInterpreter().execute(skill, {"text": "x"})
+        assert out == "fail"
+
+    def test_text_with_shell_metachars_inert_in_argv(self):
+        """Text reaches argv intact but shell-inert (subprocess uses argv list)."""
+        skill = _zellij_send_skill()
+        evil = '"; rm -rf /; echo "'
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"text": evil})
+        argv = mock_run.call_args_list[0].args[0]
+        assert evil in argv  # passed verbatim
+        # Confirm shell=False (default — never enabled)
+        for call in mock_run.call_args_list:
+            assert call.kwargs.get("shell", False) is False
+            assert isinstance(call.args[0], list)
+
+    def test_response_template_rendered(self):
+        skill = _zellij_send_skill()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = YAMLInterpreter().execute(skill, {"text": "hi"})
+        assert out == "Sent: hi"
+
+
+# ===========================================================================
+# Real cc_tell.yaml end-to-end (mocked subprocess)
+# ===========================================================================
+
+
+class TestCCTellYAMLSkill:
+    def _load(self):
+        interp = YAMLInterpreter()
+        skill_path = os.path.join(
+            os.path.dirname(__file__), "..", "skills", "cc_tell.yaml"
+        )
+        return interp, interp.load_skill(skill_path)
+
+    def test_loads_correct_schema(self):
+        interp, skill = self._load()
+        td = interp.to_tool_definition(skill)
+        assert td["name"] == "cc_tell"
+        assert td["input_schema"]["required"] == ["text"]
+        # Trigger anchors documented in description
+        desc = td["description"].lower()
+        for anchor in ("让 cc", "tell cc", "ask cc"):
+            assert anchor.lower() in desc
+
+    def test_default_session_cc(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            interp.execute(skill, {"text": "refactor jarvis.py"})
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv[2] == "cc"
+        assert "refactor jarvis.py" in argv
+
+    def test_auto_submits_after_text(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            interp.execute(skill, {"text": "x"})
+        assert mock_run.call_count == 2
+        assert mock_run.call_args_list[1].args[0][-2:] == ["write", "13"]
+
+    def test_response_includes_text(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"text": "hello cc"})
+        assert "hello cc" in out
+        assert "已发给" in out
+
+    def test_long_text_truncated_in_response(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"text": "a" * 100})
+        assert "..." in out
+
+    def test_explicit_session_override(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"text": "x", "session": "frontend"})
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv[2] == "frontend"
+        assert "frontend" in out
+
+    def test_failure_returns_friendly_error_template(self):
+        import subprocess as _sp
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = _sp.CalledProcessError(
+                1, ["zellij"], stderr=b"no such session"
+            )
+            out = interp.execute(skill, {"text": "x"})
+        assert "zellij list-sessions" in out

@@ -1,0 +1,64 @@
+name: cc_tell
+description: |
+  Send a prompt to Claude Code running inside a zellij session. Default
+  session is "cc". Auto-submits (Enter sent right after the text).
+
+  Use ONLY when the user explicitly asks Jarvis to forward / route a
+  message to Claude Code. Anchor phrases:
+    - "让 cc..." / "让 claude code..."
+    - "告诉 cc..." / "tell cc..."
+    - "cc 帮我..." / "ask cc..."
+    - "问 cc..."
+    - "派 cc..."
+
+  Do NOT trigger on bare "记一下" (inbox), "搜一下" (search), or
+  "帮我输入" (type_to_focused, AppleScript-based). The cc-routing skills
+  always have "cc" or "claude code" as an explicit anchor in the
+  utterance.
+
+  Behavior: text is injected into the cc pane's stdin via
+  `zellij --session <name> action write-chars`, immediately followed by
+  an Enter byte (CR=13). cc receives this exactly as if the user had
+  typed the text and pressed Return.
+
+  Requires:
+    - zellij installed (`brew install zellij`)
+    - a zellij session named <session> already running cc, e.g. user
+      started: `zellij -s cc claude --continue`
+
+  This action is destructive: it submits a prompt to a real Claude Code
+  session that may invoke tools, edit files, run code. The user is
+  responsible for the consequences of what they ask cc to do.
+
+version: 1
+status: live
+created_by: dogfood
+
+parameters:
+  - name: text
+    type: string
+    description: "The prompt text to send to cc."
+    required: true
+  - name: session
+    type: string
+    description: 'Optional zellij session name. Default "cc".'
+    required: false
+    default: "cc"
+
+annotations:
+  read_only: false
+  destructive: true
+  idempotent: false
+
+action:
+  type: zellij_send
+  session: "{{ session }}"
+  text: "{{ text }}"
+  submit: true
+
+response:
+  template: '已发给 cc{% if session != "cc" %}（→ {{ session }}）{% endif %}：{{ text[:40] }}{% if text|length > 40 %}...{% endif %}'
+  error_template: "发送 cc 失败 — 检查 zellij session 是否在跑（zellij list-sessions）"
+
+security:
+  requires_auth: false
