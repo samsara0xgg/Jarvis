@@ -44,3 +44,6 @@ luma.oled>=3.13
 luma.emulator>=1.5
 Pillow>=10.0
 psutil>=5.9
+
+# MCP server (read-only trace queries for cc debugging)
+mcp>=1.27
