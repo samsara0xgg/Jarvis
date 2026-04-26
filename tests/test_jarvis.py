@@ -51,6 +51,7 @@ def _make_config(tmp_path):
             "max_conversation_turns": 10,
             "conversation_dir": str(tmp_path / "convos"),
             "preferences_dir": str(tmp_path / "prefs"),
+            "db_path": str(tmp_path / "memory.db"),
         },
         "skills": {
             "weather": {"default_city": "Vancouver"},
