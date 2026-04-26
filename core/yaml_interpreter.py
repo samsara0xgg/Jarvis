@@ -1,8 +1,17 @@
 """YAML skill interpreter — load, validate, and execute YAML-defined skills.
 
-Renders URLs and response templates with Jinja2 (sandboxed), enforces domain
-whitelists and private-IP blocking, and retries HTTP calls with exponential
-backoff.  Three-layer error handling: retry → error_template → fallback string.
+Two action types:
+    http_get / http_post — outbound HTTP with retry, domain whitelist,
+                           and private-IP block.
+    file_write           — local file write with mandatory ``allowed_root``
+                           guard against path traversal / symlink escape.
+
+Templates render in a Jinja2 sandbox extended with two helpers:
+    slug    — filter: NFKD ASCII kebab; Chinese-literal fallback.
+    now()   — global: timestamp in jarvis schema (YYYY-MM-DD-HHMM).
+
+Three-layer error handling: action-specific failure → ``error_template`` →
+hard-coded fallback string.
 """
 
 from __future__ import annotations
@@ -10,7 +19,11 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import re
 import time
+import unicodedata
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -29,6 +42,9 @@ _PRIVATE_NETWORKS = [
 
 _FALLBACK_ERROR = "技能执行失败，请稍后再试"
 
+_SLUG_MAX_WORDS = 5
+_SLUG_MAX_CHARS = 60
+
 
 def _is_private_url(url: str) -> bool:
     """Check if *url* points to a private/local network address."""
@@ -43,18 +59,47 @@ def _is_private_url(url: str) -> bool:
         return False  # hostname is a domain name, not an IP
 
 
+def _slug_filter(text: Any) -> str:
+    """Jinja2 filter ``slug``: convert text to filename slug.
+
+    ASCII letters extracted from ``text`` join as a 1-5 word kebab.
+    If no ASCII letters are present (typical Chinese voice notes), the
+    cleaned literal text is used instead — Unicode filenames are
+    filesystem-safe on macOS / iOS / linux. Empty input yields ``note``.
+    """
+    if text is None:
+        return "note"
+    raw = str(text)
+    norm = unicodedata.normalize("NFKD", raw)
+    ascii_only = norm.encode("ascii", "ignore").decode("ascii")
+    words = re.findall(r"[a-zA-Z]+", ascii_only.lower())
+    if words:
+        slug = "-".join(words[:_SLUG_MAX_WORDS])
+        return slug[:_SLUG_MAX_CHARS]
+    cleaned = re.sub(r"\s+", "", raw)
+    cleaned = re.sub(r"[\\/:*?\"<>|]", "", cleaned)[:_SLUG_MAX_CHARS]
+    return cleaned or "note"
+
+
+def _now_global(fmt: str = "%Y-%m-%d-%H%M") -> str:
+    """Jinja2 global ``now``: current timestamp in *fmt*."""
+    return datetime.now().strftime(fmt)
+
+
 class YAMLInterpreter:
     """Execute YAML skill definitions.
 
     Lifecycle per call::
 
-        load_skill(path)  →  skill dict
-        to_tool_definition(skill)  →  OpenAI-compatible schema
-        execute(skill, params)  →  rendered string
+        load_skill(path)         →  skill dict
+        to_tool_definition(skill) →  OpenAI-compatible schema
+        execute(skill, params)    →  rendered string
     """
 
     def __init__(self) -> None:
         self._env = ImmutableSandboxedEnvironment()
+        self._env.filters["slug"] = _slug_filter
+        self._env.globals["now"] = _now_global
 
     # ------------------------------------------------------------------
     # Public API
@@ -99,22 +144,35 @@ class YAMLInterpreter:
     def execute(self, skill: dict, params: dict) -> str:
         """Execute a YAML skill and return the rendered response string.
 
-        Steps:
-            1. Apply parameter defaults
-            2. Render action URL
-            3. Security checks (domain whitelist, private IP)
-            4. HTTP call with retry
-            5. Render response (extract → compute → template)
-            6. On failure: error_template (layer 2) → fallback (layer 3)
+        Dispatches by ``action.type``:
+            http_get / http_post → HTTP path with retry + security checks
+            file_write           → local file write under allowed_root
         """
-        # 1. Apply defaults
         params = self._apply_defaults(skill, dict(params))
+        action = skill.get("action", {})
+        atype = action.get("type", "http_get")
 
-        # 2. Render URL
+        if atype in ("http_get", "http_post"):
+            return self._execute_http(skill, params)
+        if atype == "file_write":
+            return self._execute_file_write(skill, params)
+
+        msg = f"Unsupported action type: {atype}"
+        LOGGER.warning(msg)
+        return msg
+
+    # ------------------------------------------------------------------
+    # Action executors
+    # ------------------------------------------------------------------
+
+    def _execute_http(self, skill: dict, params: dict) -> str:
+        """HTTP path: render URL, security checks, call, render response."""
         action = skill["action"]
+        response_cfg = skill.get("response", {})
+        error_template = response_cfg.get("error_template")
+
         url = self._render(action["url"], params)
 
-        # 3. Security: domain whitelist
         allowed = skill.get("security", {}).get("allowed_domains", [])
         if allowed:
             parsed = urlparse(url)
@@ -123,15 +181,10 @@ class YAMLInterpreter:
                 LOGGER.warning(msg)
                 return msg
 
-        # 3b. Security: private IP block
         if _is_private_url(url):
             msg = f"Blocked: private/local address ({urlparse(url).hostname})"
             LOGGER.warning(msg)
             return msg
-
-        # 4. HTTP call with retry
-        response_cfg = skill.get("response", {})
-        error_template = response_cfg.get("error_template")
 
         try:
             resp = self._http_call(action, url, params, skill)
@@ -139,16 +192,75 @@ class YAMLInterpreter:
             LOGGER.exception("All retries exhausted for %s", skill.get("name"))
             return error_template if error_template else _FALLBACK_ERROR
 
-        # 5. Render response
         try:
             return self._render_response(response_cfg, params, resp.json())
         except Exception:
             LOGGER.exception("Response rendering failed for %s", skill.get("name"))
             return error_template if error_template else _FALLBACK_ERROR
 
+    def _execute_file_write(self, skill: dict, params: dict) -> str:
+        """File write path: render path/content under allowed_root, write."""
+        action = skill["action"]
+        response_cfg = skill.get("response", {})
+        error_template = response_cfg.get("error_template")
+
+        try:
+            path = self._resolve_safe_path(action, params)
+        except PermissionError as exc:
+            LOGGER.warning("Path-traversal blocked for %s: %s", skill.get("name"), exc)
+            return str(exc)
+        except Exception:
+            LOGGER.exception("Path render failed for %s", skill.get("name"))
+            return error_template if error_template else _FALLBACK_ERROR
+
+        try:
+            content = self._render(action.get("content", ""), params)
+        except Exception:
+            LOGGER.exception("Content render failed for %s", skill.get("name"))
+            return error_template if error_template else _FALLBACK_ERROR
+
+        try:
+            if action.get("create_parents", True):
+                path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        except OSError:
+            LOGGER.exception("File write failed for %s", skill.get("name"))
+            return error_template if error_template else _FALLBACK_ERROR
+
+        template = response_cfg.get("template", "Saved.")
+        ctx = {**params, "file_path": str(path), "filename": path.name}
+        try:
+            return self._render(template, ctx)
+        except Exception:
+            LOGGER.exception("Response render failed for %s", skill.get("name"))
+            return error_template if error_template else _FALLBACK_ERROR
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _resolve_safe_path(self, action: dict, params: dict) -> Path:
+        """Render path template and verify it stays inside ``allowed_root``.
+
+        Raises ``PermissionError`` if the resolved path escapes
+        ``allowed_root`` (covers ``..`` traversal, absolute injection,
+        and symlink escape — ``Path.resolve()`` follows symlinks).
+        """
+        if "path" not in action:
+            raise PermissionError("file_write requires action.path")
+        rendered = self._render(action["path"], params)
+        path = Path(rendered).expanduser().resolve()
+
+        allowed_root = action.get("allowed_root")
+        if not allowed_root:
+            raise PermissionError("file_write requires action.allowed_root")
+        allowed = Path(str(allowed_root)).expanduser().resolve()
+
+        if path != allowed and not path.is_relative_to(allowed):
+            raise PermissionError(
+                f"Path escape blocked: {path} not under {allowed}"
+            )
+        return path
 
     def _apply_defaults(self, skill: dict, params: dict) -> dict:
         """Fill missing params with their declared defaults."""
@@ -230,7 +342,6 @@ class YAMLInterpreter:
 
         # Step 2: compute — try to convert extracted strings to floats
         for key, tpl in response_cfg.get("compute", {}).items():
-            # Build a numeric-aware context for compute expressions
             num_ctx = dict(context)
             for k, v in num_ctx.items():
                 if isinstance(v, str):

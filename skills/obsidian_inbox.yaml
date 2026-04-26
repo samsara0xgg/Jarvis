@@ -1,0 +1,51 @@
+name: obsidian_add_to_inbox
+description: |
+  Save a voice-captured note to the Obsidian inbox.
+
+  Use ONLY when the user explicitly mentions "inbox" (e.g. "把这个记到
+  inbox", "加到 inbox", "存进 inbox"). Don't trigger on bare "记一下"
+  or "记下来" — those go to chat / reminders / todos by user preference.
+
+  Filename: YYYY-MM-DD-HHMM-<slug>.md derived from title (preferred) or
+  the first 80 chars of content. Body is bare content unless a title is
+  given, in which case body is "# {title}\n\n{content}".
+version: 1
+status: live
+created_by: dogfood
+
+parameters:
+  - name: content
+    type: string
+    description: "The note body to save."
+    required: true
+  - name: title
+    type: string
+    description: "Optional short heading. If given, becomes a top-level h1 in the body and drives the filename slug."
+    required: false
+    default: ""
+
+annotations:
+  read_only: false
+  destructive: false
+  idempotent: false
+
+action:
+  type: file_write
+  allowed_root: "~/Documents/Obsidian Vault/jarvis/inbox"
+  path: "~/Documents/Obsidian Vault/jarvis/inbox/{{ now() }}-{{ (title or content[:80]) | slug }}.md"
+  create_parents: true
+  content: |
+    {%- if title and title.strip() -%}
+    # {{ title.strip() }}
+
+    {{ content.strip() }}
+    {%- else -%}
+    {{ content.strip() }}
+    {%- endif %}
+
+response:
+  template: "Saved to inbox: {{ filename }}"
+  error_template: "无法保存到 inbox。"
+
+security:
+  requires_auth: false

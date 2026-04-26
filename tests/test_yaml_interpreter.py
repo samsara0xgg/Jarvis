@@ -410,3 +410,271 @@ class TestAuthEnv:
         call_kwargs = mock_requests.get.call_args
         headers = call_kwargs[1]["headers"] if "headers" in call_kwargs[1] else call_kwargs.kwargs.get("headers", {})
         assert headers.get("Authorization") == "Bearer secret123"
+
+
+# ===========================================================================
+# Slug filter
+# ===========================================================================
+
+
+class TestSlugFilter:
+    def test_ascii_text_to_kebab(self):
+        from core.yaml_interpreter import _slug_filter
+        assert _slug_filter("Dentist Reminder") == "dentist-reminder"
+
+    def test_caps_at_five_words(self):
+        from core.yaml_interpreter import _slug_filter
+        out = _slug_filter("one two three four five six seven eight")
+        assert out == "one-two-three-four-five"
+
+    def test_caps_at_sixty_chars(self):
+        from core.yaml_interpreter import _slug_filter
+        out = _slug_filter("aaaa " * 30)
+        assert len(out) <= 60
+
+    def test_chinese_only_falls_back_to_literal(self):
+        from core.yaml_interpreter import _slug_filter
+        out = _slug_filter("提醒看牙医")
+        assert "提醒" in out
+        assert out == "提醒看牙医"
+
+    def test_chinese_strips_whitespace(self):
+        from core.yaml_interpreter import _slug_filter
+        out = _slug_filter("提  醒\n看\t牙医")
+        assert out == "提醒看牙医"
+
+    def test_chinese_strips_filesystem_unsafe_chars(self):
+        from core.yaml_interpreter import _slug_filter
+        out = _slug_filter("提/醒\\看*牙?医:笔<记>|")
+        assert "/" not in out and "\\" not in out and "*" not in out
+        assert "?" not in out and ":" not in out and "<" not in out
+        assert ">" not in out and "|" not in out
+
+    def test_empty_string_to_note(self):
+        from core.yaml_interpreter import _slug_filter
+        assert _slug_filter("") == "note"
+
+    def test_whitespace_only_to_note(self):
+        from core.yaml_interpreter import _slug_filter
+        assert _slug_filter("   \t\n") == "note"
+
+    def test_none_to_note(self):
+        from core.yaml_interpreter import _slug_filter
+        assert _slug_filter(None) == "note"
+
+    def test_works_inside_jinja_render(self):
+        interp = YAMLInterpreter()
+        out = interp._render("{{ x | slug }}", {"x": "Hello World"})
+        assert out == "hello-world"
+
+
+# ===========================================================================
+# now() global
+# ===========================================================================
+
+
+class TestNowGlobal:
+    def test_default_format_matches_jarvis_schema(self):
+        import re
+        interp = YAMLInterpreter()
+        out = interp._render("{{ now() }}", {})
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}-\d{4}", out)
+
+    def test_custom_format(self):
+        interp = YAMLInterpreter()
+        out = interp._render("{{ now('%Y') }}", {})
+        assert len(out) == 4
+        assert out.isdigit()
+
+
+# ===========================================================================
+# file_write action — happy paths
+# ===========================================================================
+
+
+def _file_write_skill(tmp_root, **action_overrides):
+    """Build a minimal file_write skill rooted at tmp_root."""
+    action = {
+        "type": "file_write",
+        "allowed_root": str(tmp_root),
+        "path": str(tmp_root) + "/{{ name }}.txt",
+        "content": "{{ body }}",
+        "create_parents": True,
+    }
+    action.update(action_overrides)
+    return {
+        "name": "test_write",
+        "description": "Write a file",
+        "parameters": [
+            {"name": "name", "type": "string", "required": True},
+            {"name": "body", "type": "string", "required": True},
+        ],
+        "action": action,
+        "response": {
+            "template": "Saved: {{ filename }}",
+            "error_template": "fail",
+        },
+    }
+
+
+class TestFileWriteHappyPath:
+    def test_writes_content_to_path(self, tmp_path):
+        skill = _file_write_skill(tmp_path)
+        out = YAMLInterpreter().execute(skill, {"name": "hello", "body": "world"})
+        assert out == "Saved: hello.txt"
+        assert (tmp_path / "hello.txt").read_text() == "world"
+
+    def test_creates_parent_dirs(self, tmp_path):
+        skill = _file_write_skill(
+            tmp_path,
+            path=str(tmp_path) + "/sub/dir/{{ name }}.txt",
+        )
+        YAMLInterpreter().execute(skill, {"name": "x", "body": "y"})
+        assert (tmp_path / "sub" / "dir" / "x.txt").read_text() == "y"
+
+    def test_create_parents_false_missing_dir_falls_back(self, tmp_path):
+        skill = _file_write_skill(
+            tmp_path,
+            path=str(tmp_path) + "/missing/{{ name }}.txt",
+            create_parents=False,
+        )
+        out = YAMLInterpreter().execute(skill, {"name": "x", "body": "y"})
+        assert out == "fail"
+        assert not (tmp_path / "missing").exists()
+
+    def test_response_template_has_file_path_and_filename(self, tmp_path):
+        skill = _file_write_skill(tmp_path)
+        skill["response"]["template"] = "{{ file_path }} :: {{ filename }}"
+        out = YAMLInterpreter().execute(skill, {"name": "n", "body": "b"})
+        assert out == f"{tmp_path}/n.txt :: n.txt"
+
+    def test_overwrites_existing_file(self, tmp_path):
+        (tmp_path / "x.txt").write_text("old")
+        skill = _file_write_skill(tmp_path)
+        YAMLInterpreter().execute(skill, {"name": "x", "body": "new"})
+        assert (tmp_path / "x.txt").read_text() == "new"
+
+
+# ===========================================================================
+# file_write action — security
+# ===========================================================================
+
+
+class TestFileWritePathSafety:
+    def test_dotdot_escape_blocked(self, tmp_path):
+        skill = _file_write_skill(
+            tmp_path,
+            path=str(tmp_path) + "/{{ name }}.txt",
+        )
+        out = YAMLInterpreter().execute(
+            skill, {"name": "../../../etc/passwd_pwn", "body": "x"}
+        )
+        assert "Path escape blocked" in out
+
+    def test_absolute_path_outside_root_blocked(self, tmp_path):
+        skill = _file_write_skill(tmp_path, path="/tmp/outside_pwn.txt")
+        out = YAMLInterpreter().execute(skill, {"name": "x", "body": "y"})
+        assert "Path escape blocked" in out
+        assert not os.path.exists("/tmp/outside_pwn.txt")
+
+    def test_symlink_escape_blocked(self, tmp_path):
+        outside = tmp_path.parent / "outside_target"
+        outside.mkdir()
+        link = tmp_path / "evil_link"
+        link.symlink_to(outside)
+        skill = _file_write_skill(
+            tmp_path,
+            path=str(link) + "/{{ name }}.txt",
+        )
+        out = YAMLInterpreter().execute(skill, {"name": "x", "body": "y"})
+        assert "Path escape blocked" in out
+        assert not (outside / "x.txt").exists()
+
+    def test_missing_allowed_root_blocked(self, tmp_path):
+        skill = _file_write_skill(tmp_path)
+        del skill["action"]["allowed_root"]
+        out = YAMLInterpreter().execute(skill, {"name": "x", "body": "y"})
+        assert "allowed_root" in out
+
+    def test_missing_path_blocked(self, tmp_path):
+        skill = _file_write_skill(tmp_path)
+        del skill["action"]["path"]
+        out = YAMLInterpreter().execute(skill, {"name": "x", "body": "y"})
+        assert "path" in out.lower()
+
+
+# ===========================================================================
+# Real obsidian_inbox.yaml end-to-end
+# ===========================================================================
+
+
+class TestObsidianInboxYAMLSkill:
+    def _load(self, monkeypatch, tmp_path):
+        """Load the real yaml but redirect inbox to tmp_path."""
+        interp = YAMLInterpreter()
+        skill_path = os.path.join(
+            os.path.dirname(__file__), "..", "skills", "obsidian_inbox.yaml"
+        )
+        skill = interp.load_skill(skill_path)
+        skill["action"]["allowed_root"] = str(tmp_path)
+        skill["action"]["path"] = (
+            str(tmp_path) + "/{{ now() }}-{{ (title or content[:80]) | slug }}.md"
+        )
+        return interp, skill
+
+    def test_loads_correct_schema(self):
+        interp = YAMLInterpreter()
+        skill_path = os.path.join(
+            os.path.dirname(__file__), "..", "skills", "obsidian_inbox.yaml"
+        )
+        skill = interp.load_skill(skill_path)
+        td = interp.to_tool_definition(skill)
+        assert td["name"] == "obsidian_add_to_inbox"
+        assert "inbox" in td["description"].lower()
+        assert "content" in td["input_schema"]["properties"]
+        assert td["input_schema"]["required"] == ["content"]
+
+    def test_writes_content_only_no_title(self, monkeypatch, tmp_path):
+        interp, skill = self._load(monkeypatch, tmp_path)
+        out = interp.execute(skill, {"content": "hello yaml world"})
+        assert "Saved to inbox" in out
+        files = list(tmp_path.iterdir())
+        assert len(files) == 1
+        assert files[0].read_text() == "hello yaml world"
+
+    def test_writes_with_title_h1_format(self, monkeypatch, tmp_path):
+        interp, skill = self._load(monkeypatch, tmp_path)
+        interp.execute(skill, {"content": "body line", "title": "My Tag"})
+        files = list(tmp_path.iterdir())
+        assert len(files) == 1
+        text = files[0].read_text()
+        assert text.startswith("# My Tag")
+        assert "body line" in text
+
+    def test_filename_starts_with_timestamp(self, monkeypatch, tmp_path):
+        import re
+        interp, skill = self._load(monkeypatch, tmp_path)
+        interp.execute(skill, {"content": "x", "title": "test"})
+        fname = next(tmp_path.iterdir()).name
+        assert re.match(r"^\d{4}-\d{2}-\d{2}-\d{4}-", fname)
+        assert fname.endswith(".md")
+
+    def test_chinese_content_no_title(self, monkeypatch, tmp_path):
+        interp, skill = self._load(monkeypatch, tmp_path)
+        interp.execute(skill, {"content": "明天去买菜"})
+        files = list(tmp_path.iterdir())
+        assert len(files) == 1
+        assert "明天去买菜" in files[0].name
+        assert files[0].read_text() == "明天去买菜"
+
+    def test_malicious_title_with_dotdot_safe(self, monkeypatch, tmp_path):
+        """LLM-supplied title containing path traversal must not escape inbox."""
+        interp, skill = self._load(monkeypatch, tmp_path)
+        out = interp.execute(
+            skill,
+            {"content": "x", "title": "../../etc/passwd"},
+        )
+        # slug filter strips slashes, so file lands safely inside tmp_path
+        assert "Saved to inbox" in out or "Path escape blocked" in out
+        outside = tmp_path.parent / "etc"
+        assert not outside.exists()
