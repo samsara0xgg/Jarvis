@@ -289,6 +289,24 @@ async def test_query_recent_excludes_old_rows(seeded_db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_query_recent_includes_fresh_rows_within_window(seeded_db) -> None:
+    """Regression: with hours=1 a row written 'now' in Python isoformat must
+    appear. The original SQL ``created_at > datetime('now', '-1 hours')`` was a
+    string-lex compare between local-tz isoformat-with-T and UTC space-format,
+    silently excluding everything. Fixed with ``julianday(...) > julianday(...,
+    'localtime')``.
+    """
+    db_path, ids = seeded_db
+    server = mcp_server.build_server(db_path)
+    result = await server.call_tool("trace_query_recent", {"hours": 1})
+    rows = _result_rows(result)
+    returned_ids = {r["id"] for r in rows}
+    # All seeded rows were just inserted (no backdating), every id must show up
+    for key, rid in ids.items():
+        assert rid in returned_ids, f"fresh row {key} (id={rid}) missing from 1h window"
+
+
+@pytest.mark.asyncio
 async def test_query_recent_rejects_invalid_hours(seeded_db) -> None:
     db_path, _ = seeded_db
     server = mcp_server.build_server(db_path)

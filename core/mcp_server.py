@@ -148,7 +148,13 @@ def build_server(db_path: Path) -> FastMCP:
             raise ValueError(f"hours must be in (0, {_MAX_HOURS}]")
         bounded_limit = max(1, min(limit, _MAX_LIMIT))
 
-        conditions = ["created_at > datetime('now', ?)"]
+        # julianday() parses both 'YYYY-MM-DDTHH:MM:SS.ffffff' (Python isoformat
+        # with 'T' separator + microseconds, what the trace writer emits) and
+        # SQLite's own 'YYYY-MM-DD HH:MM:SS' format, so the comparison is no
+        # longer string-lex. 'localtime' modifier makes 'now' match the writer's
+        # local-tz timestamps — without it, SQLite uses UTC and rows look like
+        # they're in the future / past depending on offset.
+        conditions = ["julianday(created_at) > julianday('now', ?, 'localtime')"]
         params: list[Any] = [f"-{hours} hours"]
         if only_errors:
             conditions.append("error IS NOT NULL")
