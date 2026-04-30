@@ -1286,6 +1286,7 @@ class JarvisApp:
         """
         # System-test harness fields (legacy)
         self._last_route = None
+        self._last_regex_match = None
         self._last_path = "unknown"
         self._last_device_ops = []
         self._last_memory_hits = ""
@@ -1674,7 +1675,16 @@ class JarvisApp:
                 llm_metadata["router_context"] = list(getattr(self.intent_router, "_last_context", []) or [])
                 llm_metadata["router_prompt_version"] = getattr(self.intent_router, "prompt_hash", None)
                 llm_metadata["router_attempts"] = list(getattr(self.intent_router, "_last_provider_attempts", []) or [])
-            # llm_model_used stays None for case (c), no tokens.
+            elif self._last_path == "regex" and self._last_regex_match is not None:
+                # (d) L0 regex fast-path — no LLM was called, no router_* fields.
+                # Record only regex_* identifiers for observability.
+                rm = self._last_regex_match
+                if llm_metadata is None:
+                    llm_metadata = {}
+                llm_metadata["regex_pattern_id"] = rm.pattern_id
+                llm_metadata["regex_intent"] = rm.intent
+                llm_metadata["regex_tool"] = rm.tool_name
+            # llm_model_used stays None for case (c) and (d), no tokens.
 
             cost = compute_cost_usd(
                 model=llm_model_used,
