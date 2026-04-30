@@ -234,12 +234,9 @@ class TestHarness:
 
     def _wrap_api_counter(self, app: Any) -> None:
         """Wrap API-calling methods to count calls + capture debug trace."""
-        if app.intent_router:
-            orig_route = app.intent_router.route_and_respond
-            def _counted_route(*a: Any, **kw: Any) -> Any:
-                self._api_counter["groq"] = self._api_counter.get("groq", 0) + 1
-                return orig_route(*a, **kw)
-            app.intent_router.route_and_respond = _counted_route
+        # Note: intent_router is no longer on the main path (replaced by
+        # regex_router fast-path → cloud LLM tool_use). Groq counter would
+        # always be 0; wrapper removed.
 
         # LLM chat_stream wrapper — wraps tool_executor to capture tool calls
         orig_chat = app.llm.chat_stream

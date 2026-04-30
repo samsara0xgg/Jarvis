@@ -64,8 +64,18 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     app.memory_manager.write_observation = MagicMock()
 
     app.intent_router = MagicMock()
-    app.intent_router.route_and_respond = MagicMock(return_value=None)
     app.intent_router.last_metadata = None
+    # Avoid MagicMock auto-attrs leaking into trace JSON serialization.
+    app.intent_router._last_context = []
+    app.intent_router._last_provider_attempts = []
+    app.intent_router._last_raw_response = None
+    app.intent_router._last_cache_hit = False
+    app.intent_router.prompt_hash = None
+
+    # L0 regex router stub — always miss so tests exercise cloud path.
+    app.regex_router = MagicMock()
+    app.regex_router.match = MagicMock(return_value=None)
+    app._last_regex_match = None
 
     app.tool_registry = MagicMock()
     app.tool_registry.get_tool_definitions = MagicMock(return_value=[])

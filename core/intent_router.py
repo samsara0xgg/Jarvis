@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -98,7 +99,14 @@ def build_system_prompt(config: dict) -> str:
     return f"""你是小月，私人AI管家。性格简洁、略带幽默。分析用户指令，返回JSON。
 response字段用中文，语气简洁自然（如"好的，灯开了。"而不是"好的，我已经帮你把客厅的灯打开了。"）
 
-设备：
+最高优先级规则（先于一切）：
+"cc" / "CC" / "claude code" 是终端里的 Claude Code 进程，**不是**下面设备列表里的任何 device。
+任何包含 "cc"、"让 cc"、"告诉 cc"、"问 cc"、"给 cc 发"、"打断 cc"、"压缩"、"切到 opus"
+等指向 Claude Code 的输入，**一律输出 complex**，不要输出 smart_home，
+不要把 cc 放进 actions[].device_id。即使后面跟 effort / effect / model / max / medium /
+high / low / 中 / 高 / 低 等词，那是 cc 的 slash 命令参数，由云端 LLM 工具层处理。
+
+设备（不含 cc）：
 {device_list}
 
 JSON格式：
@@ -118,78 +126,6 @@ uncertain: {{"intent":"uncertain","confidence":0.3,"response":null}}
 - 关于用户自身的提问→complex：如"我喜欢喝什么""我最近有什么安排""我上次说了什么"
 - 需要工具调用的查询→complex：如"查汇率""换算货币""翻译""计算"等需要外部工具才能回答的问题
 - 只输出JSON"""
-
-
-def build_unified_prompt(
-    config: dict,
-    user_emotion: str = "",
-) -> str:
-    """Build a system prompt for unified route+respond (single Groq call).
-
-    For device/info/time intents the model outputs JSON (same schema
-    as ``build_system_prompt``).  For everything else it outputs a natural
-    language response directly, avoiding the second LLM round-trip.
-
-    Args:
-        config: Application config dict.
-        user_emotion: Optional detected emotion label (e.g. "HAPPY").
-    """
-    from core.personality import get_short_personality
-
-    # Reuse device enumeration logic from build_system_prompt
-    devices_desc: list[str] = []
-    mode = config.get("devices", {}).get("mode", "sim")
-
-    if mode == "live":
-        hue_config = config.get("hue", {})
-        color_devices = set(hue_config.get("color_capable", []))
-        for did, aliases in hue_config.get("light_aliases", {}).items():
-            alias_list = aliases if isinstance(aliases, list) else [aliases]
-            chinese_aliases = [a for a in alias_list if not a.startswith("Hue ")]
-            name = chinese_aliases[0] if chinese_aliases else did
-            actions = _DEVICE_ACTIONS["color_light"] if did in color_devices else _DEVICE_ACTIONS["light"]
-            devices_desc.append(f"- {did}（{name}）: {actions}")
-        for did, aliases in hue_config.get("group_aliases", {}).items():
-            alias_list = aliases if isinstance(aliases, list) else [aliases]
-            chinese_aliases = [a for a in alias_list if not a.startswith(("Hue ", "5 AM", "Gaming"))]
-            name = chinese_aliases[0] if chinese_aliases else did
-            actions = _DEVICE_ACTIONS["color_light"] if did in color_devices else _DEVICE_ACTIONS["light"]
-            devices_desc.append(f"- {did}（{name}，灯组）: {actions}")
-    else:
-        for dev in config.get("devices", {}).get("sim_devices", []):
-            did = dev["device_id"]
-            name = dev.get("name", did)
-            dtype = dev.get("device_type", "unknown")
-            actions = _DEVICE_ACTIONS.get(dtype, "unknown")
-            devices_desc.append(f"- {did}（{name}）: {actions}")
-
-    device_list = "\n".join(devices_desc)
-    personality = get_short_personality()
-
-    emotion_section = ""
-    if user_emotion:
-        emotion_section = f"\n用户当前情绪：{user_emotion}"
-
-    return f"""{personality}{emotion_section}
-
-你同时负责意图路由和回复生成。根据用户消息：
-
-1. 设备控制 → 输出JSON：{{"intent":"smart_home","confidence":0.95,"actions":[{{"device_id":"xxx","action":"turn_on","value":null}}],"response":"好的，已开灯。"}}
-2. 信息查询（仅限天气/股票/新闻这三种）→ 输出JSON：{{"intent":"info_query","confidence":0.9,"sub_type":"news|stocks|weather","query":"AI","response":null}}
-   其他查询（门票、翻译、百科等）→ 直接自然语言回复，不要输出info_query JSON
-3. 时间查询 → 输出JSON：{{"intent":"time","confidence":0.95,"sub_type":"current_time|date|weekday","response":null}}
-4. 其他所有情况 → 输出JSON：{{"intent":"chat","confidence":0.95}}
-
-设备：
-{device_list}
-
-规则：
-- 多设备用actions数组
-- "所有灯"=列出全部灯的device_id
-- 上下文设备推断：如果用户没指定设备名，根据对话上下文推断是哪个设备
-- 隐含意图："有点暗"=开灯，"好热"=调空调
-- 记忆/个人信息相关问题→输出chat JSON
-- 所有情况都输出JSON，不要输出自然语言"""
 
 
 @dataclass
@@ -214,22 +150,32 @@ class IntentRouter:
     def __init__(self, config: dict, tracker: Any = None) -> None:
         self.config = config
         self.system_prompt = build_system_prompt(config)
+        # Hash of the system prompt content. Lets trace analytics tell apart
+        # decisions made under different prompt versions without diffing files.
+        self.prompt_hash = hashlib.sha256(
+            self.system_prompt.encode("utf-8"),
+        ).hexdigest()[:16]
         self.logger = LOGGER
         self._tracker = tracker
         self._route_cache: OrderedDict = OrderedDict()
         self._cache_max = 256
         # Trace attributes for system testing
         self._last_cache_hit: bool = False
+        # Per-call fallback chain: list of {provider, status, ms} dicts.
+        # Status ∈ {ok, http_<code>, timeout, request_error, empty, parse_error}.
         self._last_provider_attempts: list[dict] = []
         self._last_raw_response: str = ""
         self._last_prompt: str = ""
+        # Context (last 4 user/assistant msgs) actually fed to the router LLM.
+        # Critical for debugging ambiguous-pronoun / continuation utterances.
+        self._last_context: list[dict] = []
 
         # Trace v3: per-call metadata snapshot from the underlying Groq /
         # Cerebras HTTP response. Used by jarvis._flush_trace when a
         # router-driven response (route.text_response set) is what reached
         # the user — without this snapshot the router's LLM tokens, cost,
         # and finish_reason would be lost. Reset at the top of each
-        # route_and_respond / route call.
+        # route() call.
         self.last_metadata: dict[str, Any] = self._empty_router_metadata()
 
         # Groq (primary)
@@ -336,15 +282,20 @@ class IntentRouter:
         # 语义相近却意图相反的问题。
         # Trace v3: reset router metadata so cached / no-call paths don't leak.
         self.last_metadata = self._empty_router_metadata()
+        self._last_cache_hit = False
+        self._last_raw_response = ""
+        self._last_provider_attempts = []
         key = _normalize_cache_key(text)
 
         # Build recent context for ambiguous commands (e.g., "关了" after "灯带调黄色")
         recent_context = self._build_context(conversation_history) if conversation_history else []
+        self._last_context = recent_context
 
         # Cache hit — only use cache when no conversation context (ambiguous commands need context)
         if not recent_context and key in self._route_cache:
             self._route_cache.move_to_end(key)
             cached = self._route_cache[key]
+            self._last_cache_hit = True
             self.logger.info("Route cache hit: '%s' → %s/%s", key[:20], cached.tier, cached.intent)
             return copy.copy(cached)
 
@@ -352,7 +303,13 @@ class IntentRouter:
 
         # 1. Groq (primary)
         if self.groq_key and (not self._tracker or self._tracker.is_available("intent.groq")):
+            t_attempt = time.time()
             result = self._call_cloud(self.groq_url, self.groq_key, self.groq_model, text, start, recent_context)
+            self._last_provider_attempts.append({
+                "provider": "groq",
+                "status": "ok" if result else (self._last_call_status or "fail"),
+                "ms": int((time.time() - t_attempt) * 1000),
+            })
             if result:
                 if self._tracker:
                     self._tracker.record_success("intent.groq")
@@ -365,7 +322,13 @@ class IntentRouter:
 
         # 2. Cerebras (fallback)
         if self.cerebras_key and (not self._tracker or self._tracker.is_available("intent.cerebras")):
+            t_attempt = time.time()
             result = self._call_cloud(self.cerebras_url, self.cerebras_key, self.cerebras_model, text, start, recent_context)
+            self._last_provider_attempts.append({
+                "provider": "cerebras",
+                "status": "ok" if result else (self._last_call_status or "fail"),
+                "ms": int((time.time() - t_attempt) * 1000),
+            })
             if result:
                 if self._tracker:
                     self._tracker.record_success("intent.cerebras")
@@ -398,6 +361,7 @@ class IntentRouter:
         recent_context: list[dict] | None = None,
     ) -> RouteResult | None:
         """调用云端 API."""
+        self._last_call_status: str | None = None
         try:
             messages = [{"role": "system", "content": self.system_prompt}]
             if recent_context:
@@ -417,9 +381,12 @@ class IntentRouter:
             )
 
             if resp.status_code == 429:
+                self._last_call_status = "http_429"
                 self.logger.warning("Rate limited by %s", url)
                 return None
 
+            if not resp.ok:
+                self._last_call_status = f"http_{resp.status_code}"
             resp.raise_for_status()
             data = resp.json()
             # Trace v3: snapshot router HTTP metadata (tokens/id/finish_reason).
@@ -434,14 +401,21 @@ class IntentRouter:
                 .strip()
             )
             if not raw:
+                self._last_call_status = "empty"
                 return None
 
-            return self._parse_json_response(raw, start, "cloud")
+            self._last_raw_response = raw
+            parsed = self._parse_json_response(raw, start, "cloud")
+            if parsed is None:
+                self._last_call_status = "parse_error"
+            return parsed
 
         except requests.Timeout:
+            self._last_call_status = "timeout"
             self.logger.warning("Timeout calling %s", url)
             return None
         except requests.RequestException as exc:
+            self._last_call_status = self._last_call_status or "request_error"
             self.logger.warning("Request failed (%s): %s", url, exc)
             return None
 
@@ -492,199 +466,3 @@ class IntentRouter:
     # Unified route + respond (single Groq call)
     # ------------------------------------------------------------------
 
-    def route_and_respond(
-        self,
-        text: str,
-        conversation_history: list[dict] | None = None,
-        user_emotion: str = "",
-    ) -> RouteResult:
-        """Single Groq call that routes AND generates a response.
-
-        For device/info/time intents the output is JSON (same as
-        ``route()``).  For everything else the model responds in natural
-        language, stored in ``RouteResult.text_response``, eliminating the
-        need for a second LLM call.
-
-        Falls back: Groq → Cerebras → empty result (provider="none").
-        """
-        # Reset trace
-        self._last_cache_hit = False
-        self._last_provider_attempts = []
-        self._last_raw_response = ""
-        # Trace v3: reset metadata so a cache-hit / no-call leaves no stale
-        # tokens visible to jarvis _flush_trace.
-        self.last_metadata = self._empty_router_metadata()
-
-        key = _normalize_cache_key(text)
-        recent_context = self._build_context(conversation_history) if conversation_history else []
-
-        # Cache hit — only for structured routes (not free-text), no conversation context
-        if not recent_context and key in self._route_cache:
-            self._route_cache.move_to_end(key)
-            cached = self._route_cache[key]
-            self._last_cache_hit = True
-            self.logger.info("Unified cache hit: '%s' → %s/%s", key[:20], cached.tier, cached.intent)
-            return copy.copy(cached)
-
-        system_prompt = build_unified_prompt(self.config, user_emotion=user_emotion)
-        self._last_prompt = system_prompt
-        start = time.time()
-
-        # 1. Groq (primary)
-        if self.groq_key and (not self._tracker or self._tracker.is_available("intent.groq")):
-            t_attempt = time.time()
-            result = self._call_unified(
-                self.groq_url, self.groq_key, self.groq_model, text, start, recent_context, system_prompt,
-            )
-            attempt_ms = int((time.time() - t_attempt) * 1000)
-            if result:
-                self._last_provider_attempts.append({"provider": "groq", "status": "ok", "ms": attempt_ms})
-                if self._tracker:
-                    self._tracker.record_success("intent.groq")
-                result.provider = "groq"
-                if not recent_context and result.text_response is None:
-                    self._cache_result(key, result)
-                return result
-            self._last_provider_attempts.append({"provider": "groq", "status": "fail", "ms": attempt_ms})
-            if self._tracker:
-                self._tracker.record_failure("intent.groq")
-
-        # 2. Cerebras (fallback)
-        if self.cerebras_key and (not self._tracker or self._tracker.is_available("intent.cerebras")):
-            t_attempt = time.time()
-            result = self._call_unified(
-                self.cerebras_url, self.cerebras_key, self.cerebras_model, text, start, recent_context, system_prompt,
-            )
-            attempt_ms = int((time.time() - t_attempt) * 1000)
-            if result:
-                self._last_provider_attempts.append({"provider": "cerebras", "status": "ok", "ms": attempt_ms})
-                if self._tracker:
-                    self._tracker.record_success("intent.cerebras")
-                result.provider = "cerebras"
-                if not recent_context and result.text_response is None:
-                    self._cache_result(key, result)
-                return result
-            self._last_provider_attempts.append({"provider": "cerebras", "status": "fail", "ms": attempt_ms})
-            if self._tracker:
-                self._tracker.record_failure("intent.cerebras")
-
-        return self._all_providers_failed(key, start)
-
-    def _call_unified(
-        self,
-        url: str,
-        api_key: str,
-        model: str,
-        text: str,
-        start: float,
-        recent_context: list[dict],
-        system_prompt: str,
-    ) -> RouteResult | None:
-        """Call cloud API with unified route+respond prompt (JSON mode)."""
-        try:
-            messages = [{"role": "system", "content": system_prompt}]
-            if recent_context:
-                messages.extend(recent_context)
-            messages.append({"role": "user", "content": text})
-            resp = _SESSION.post(
-                url,
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "temperature": 0.7,
-                    "max_tokens": 200,
-                    "response_format": {"type": "json_object"},
-                },
-                timeout=5,
-            )
-
-            if resp.status_code == 429:
-                self.logger.warning("Rate limited by %s", url)
-                return None
-
-            resp.raise_for_status()
-            data = resp.json()
-            # Trace v3: snapshot router HTTP metadata for the unified call.
-            _provider_name = "groq" if "groq" in url else (
-                "cerebras" if "cerebras" in url else "router"
-            )
-            self._capture_metadata(_provider_name, model, data)
-            raw = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
-            if not raw:
-                return None
-
-            self._last_raw_response = raw
-            return self._parse_unified_response(raw, start)
-
-        except requests.Timeout:
-            self.logger.warning("Timeout calling %s", url)
-            return None
-        except requests.RequestException as exc:
-            self.logger.warning("Request failed (%s): %s", url, exc)
-            return None
-
-    def _parse_unified_response(self, raw: str, start: float) -> RouteResult | None:
-        """Parse unified response: always JSON."""
-        duration_ms = int((time.time() - start) * 1000)
-
-        # Strip markdown fences if present, then try JSON parse
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
-        # Multiple JSON objects → take only the first one
-        first_json = cleaned
-        try:
-            decoder = json.JSONDecoder()
-            _, end_idx = decoder.raw_decode(cleaned)
-            first_json = cleaned[:end_idx]
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-        parsed = None
-        for attempt in (first_json, first_json + "}", first_json + "]}"):
-            try:
-                parsed = json.loads(attempt)
-                break
-            except json.JSONDecodeError:
-                continue
-
-        if parsed is None:
-            self.logger.warning("Unified: unparseable JSON response: %s", raw[:100])
-            return RouteResult(
-                tier="cloud", intent="chat", confidence=0.5,
-                duration_ms=duration_ms, provider="",
-            )
-
-        intent = parsed.get("intent", "uncertain")
-        if intent not in VALID_INTENTS:
-            intent = "uncertain"
-
-        confidence = float(parsed.get("confidence", 0.5))
-        actions = parsed.get("actions", [])
-        response = parsed.get("response")
-        sub_type = parsed.get("sub_type")
-        query = parsed.get("query")
-
-        if intent in ("smart_home", "info_query", "time") and confidence >= 0.90:
-            tier = "local"
-        else:
-            tier = "cloud"
-
-        self.logger.info(
-            "Unified(json): %s/%s (%.2f, %dms) sub_type=%s query=%r actions=%d",
-            tier, intent, confidence, duration_ms,
-            sub_type, query, len(actions),
-        )
-        return RouteResult(
-            tier=tier, intent=intent, confidence=confidence,
-            duration_ms=duration_ms, provider="",
-            actions=actions, response=response,
-            sub_type=sub_type, query=query,
-        )
