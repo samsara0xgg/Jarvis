@@ -195,3 +195,82 @@ class TestSetTimerPattern:
 
     def test_set_timer_miss_no_minutes_word(self) -> None:
         assert self.router.match("5提醒我") is None
+
+
+class TestSmartHomePatterns:
+    def setup_method(self) -> None:
+        self.router = RegexRouter(_minimal_config())
+
+    def test_turn_on_v_first_with_lighstrip(self) -> None:
+        m = self.router.match("打开灯带")
+        assert m is not None
+        assert m.pattern_id == "smart_home_on_v_first"
+        assert m.tool_name == "smart_home_control"
+        assert m.tool_args == {"device_id": "desk_lightstrip", "action": "turn_on"}
+        assert m.template_vars == {"device": "灯带"}
+
+    def test_turn_on_v_first_short(self) -> None:
+        m = self.router.match("开大灯")
+        assert m is not None
+        assert m.tool_args["device_id"] == "bedroom_lamp_1"
+        assert m.tool_args["action"] == "turn_on"
+
+    def test_turn_on_v_first_dianlao(self) -> None:
+        m = self.router.match("打开电脑灯")
+        assert m is not None
+        assert m.tool_args["device_id"] == "desk_lights"
+
+    def test_turn_on_v_first_single_char(self) -> None:
+        # "灯" alone → all_lights
+        m = self.router.match("开灯")
+        assert m is not None
+        assert m.tool_args["device_id"] == "all_lights"
+
+    def test_turn_on_v_last(self) -> None:
+        m = self.router.match("把灯带打开")
+        assert m is not None
+        assert m.pattern_id == "smart_home_on_v_last"
+        assert m.tool_args["device_id"] == "desk_lightstrip"
+        assert m.tool_args["action"] == "turn_on"
+
+    def test_turn_off_v_first(self) -> None:
+        m = self.router.match("关灯带")
+        assert m is not None
+        assert m.pattern_id == "smart_home_off_v_first"
+        assert m.tool_args == {"device_id": "desk_lightstrip", "action": "turn_off"}
+
+    def test_turn_off_v_last_guandiao(self) -> None:
+        m = self.router.match("把灯带关掉")
+        assert m is not None
+        assert m.pattern_id == "smart_home_off_v_last"
+        assert m.tool_args["action"] == "turn_off"
+
+    def test_turn_off_v_last_guanle(self) -> None:
+        m = self.router.match("把大灯关了")
+        assert m is not None
+        assert m.tool_args == {"device_id": "bedroom_lamp_1", "action": "turn_off"}
+
+    def test_set_brightness(self) -> None:
+        m = self.router.match("把灯带调到百分之60")
+        assert m is not None
+        assert m.pattern_id == "smart_home_set_brightness"
+        assert m.tool_args == {
+            "device_id": "desk_lightstrip",
+            "action": "set_brightness",
+            "value": "60",
+        }
+        assert m.template_vars == {"device": "灯带", "value": "60"}
+
+    def test_alias_priority_zhuangshi_over_zhuang(self) -> None:
+        # "灯带" is checked before "灯" in alternation; "开灯带" must match "灯带"
+        m = self.router.match("开灯带")
+        assert m is not None
+        assert m.tool_args["device_id"] == "desk_lightstrip"
+
+    def test_miss_unknown_alias(self) -> None:
+        # 卧室灯 not in DEVICE_ALIAS → fall-through
+        assert self.router.match("打开卧室灯") is None
+
+    def test_miss_brightness_no_baifenzhi(self) -> None:
+        # Without "百分之" → fall-through
+        assert self.router.match("把灯带调到60") is None

@@ -157,4 +157,75 @@ class RegexRouter:
                     template_vars={"minutes": m.group(1)},
                 ),
             ),
+            (
+                re.compile(r"^(打开|开)(灯带|大灯|电脑灯|灯)$"),
+                lambda m: RegexMatch(
+                    pattern_id="smart_home_on_v_first",
+                    intent="smart_home_control",
+                    tool_name="smart_home_control",
+                    tool_args={
+                        "device_id": self.device_alias[m.group(2)],
+                        "action": "turn_on",
+                    },
+                    template_key="smart_home_turn_on",
+                    template_vars={"device": m.group(2)},
+                ),
+            ),
+            (
+                re.compile(r"^把(灯带|大灯|电脑灯|灯)打开$"),
+                lambda m: RegexMatch(
+                    pattern_id="smart_home_on_v_last",
+                    intent="smart_home_control",
+                    tool_name="smart_home_control",
+                    tool_args={
+                        "device_id": self.device_alias[m.group(1)],
+                        "action": "turn_on",
+                    },
+                    template_key="smart_home_turn_on",
+                    template_vars={"device": m.group(1)},
+                ),
+            ),
+            (
+                re.compile(r"^关(灯带|大灯|电脑灯|灯)$"),
+                lambda m: RegexMatch(
+                    pattern_id="smart_home_off_v_first",
+                    intent="smart_home_control",
+                    tool_name="smart_home_control",
+                    tool_args={
+                        "device_id": self.device_alias[m.group(1)],
+                        "action": "turn_off",
+                    },
+                    template_key="smart_home_turn_off",
+                    template_vars={"device": m.group(1)},
+                ),
+            ),
+            (
+                re.compile(r"^把(灯带|大灯|电脑灯|灯)(关掉|关了)$"),
+                lambda m: RegexMatch(
+                    pattern_id="smart_home_off_v_last",
+                    intent="smart_home_control",
+                    tool_name="smart_home_control",
+                    tool_args={
+                        "device_id": self.device_alias[m.group(1)],
+                        "action": "turn_off",
+                    },
+                    template_key="smart_home_turn_off",
+                    template_vars={"device": m.group(1)},
+                ),
+            ),
+            (
+                re.compile(r"^把(灯带|大灯|电脑灯|灯)调到百分之(\d+)$"),
+                lambda m: RegexMatch(
+                    pattern_id="smart_home_set_brightness",
+                    intent="smart_home_control",
+                    tool_name="smart_home_control",
+                    tool_args={
+                        "device_id": self.device_alias[m.group(1)],
+                        "action": "set_brightness",
+                        "value": m.group(2),
+                    },
+                    template_key="smart_home_set_brightness",
+                    template_vars={"device": m.group(1), "value": m.group(2)},
+                ),
+            ),
         ]
