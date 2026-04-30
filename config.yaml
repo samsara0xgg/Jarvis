@@ -24,6 +24,12 @@ audio:
   # 录音质量检查的最小时长，单位秒。
   min_duration: 0.3
 
+  # 原始 ASR 录音存档：每个 voice turn 写一份 wav 到 dir/<session_id>/<ts>.wav，
+  # 路径写入 trace.input_metadata.audio_path，用于后续重跑 ASR / 拿 n-best / 换模型对比。
+  capture:
+    enabled: true
+    dir: data/audio
+
   # 录音 RMS 音量阈值（仅用于质量警告，不用于 VAD）。
   low_volume_threshold: 0.02
 
@@ -346,6 +352,11 @@ llm:
       base_url: "https://api.openai.com/v1"
       api_key_env: OPENAI_API_KEY
       max_tokens: 1024
+    teacher:
+      model: gpt-5.5
+      base_url: "https://api.openai.com/v1"
+      api_key_env: OPENAI_API_KEY
+      max_tokens: 1500
 
   # 后备配置（无 presets 时使用）
   # 模型 ID。gpt-4o-mini / grok-4.20-0309-non-reasoning / grok-4.1-fast-non-reasoning。

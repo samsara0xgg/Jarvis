@@ -187,6 +187,13 @@ class JarvisApp:
         self._last_asr_confidence: float | None = None
         self._last_vad_duration_ms: int | None = None
         self._last_asr_ms: int | None = None
+        self._last_audio_path: str | None = None
+
+        # Audio capture: archive raw 16k float32 wav per voice turn so future
+        # quality work (n-best, model comparison, fine-tuning data) is unblocked.
+        _capture_cfg = config.get("audio", {}).get("capture", {})
+        self._audio_capture_enabled = bool(_capture_cfg.get("enabled", False))
+        self._audio_capture_dir = str(_capture_cfg.get("dir", "data/audio"))
         # Time (perf_counter) at which AudioStreamPlayer first emitted real
         # samples for the current turn. Set by the on_first_chunk callback
         # (audio thread). Single attr-assign is GIL-atomic, no lock needed.
@@ -627,6 +634,18 @@ class JarvisApp:
             _vad_duration_ms = _vad.active_duration_ms if _vad is not None else None
         except AttributeError:
             _vad_duration_ms = None
+
+        # Archive raw audio. Best-effort: failures must not poison the turn.
+        _audio_path: str | None = None
+        if self._audio_capture_enabled and audio.size > 0:
+            try:
+                ts = datetime.now().strftime("%Y%m%dT%H%M%S_%f")[:-3]
+                rel = Path(self._audio_capture_dir) / self._app_session_id / f"{ts}.wav"
+                rel.parent.mkdir(parents=True, exist_ok=True)
+                self.audio_recorder.save_wav(audio, str(rel))
+                _audio_path = str(rel)
+            except Exception:
+                self.logger.warning("audio capture failed", exc_info=True)
         if not text:
             self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
             self.logger.info("Empty ASR result, staying silent")
@@ -676,6 +695,7 @@ class JarvisApp:
             asr_ms=_asr_ms,
             asr_confidence=_asr_confidence,
             vad_duration_ms=_vad_duration_ms,
+            audio_path=_audio_path,
         )
 
         _t_end = time.monotonic()
@@ -702,6 +722,7 @@ class JarvisApp:
         asr_ms: int | None = None,
         asr_confidence: float | None = None,
         vad_duration_ms: int | None = None,
+        audio_path: str | None = None,
     ) -> str:
         """Wrap _process_turn_inner with try/finally to flush trace v3.
 
@@ -733,6 +754,7 @@ class JarvisApp:
         self._last_asr_ms = asr_ms
         self._last_asr_confidence = asr_confidence
         self._last_vad_duration_ms = vad_duration_ms
+        self._last_audio_path = audio_path
         # Trace v3: arm the AudioStreamPlayer first-chunk callback BEFORE
         # the inner runs. Captures into the per-turn ttfs_cell so a
         # deferred TTS-done update can read it without racing reset.
@@ -1368,6 +1390,7 @@ class JarvisApp:
         self._last_asr_ms = None
         self._last_asr_confidence = None
         self._last_vad_duration_ms = None
+        self._last_audio_path = None
         self._last_asr_text_raw: str | None = None
         self._last_tts_chars_synthesized = 0
         self._last_llm_metadata = {
@@ -1586,7 +1609,7 @@ class JarvisApp:
                 "asr_text_raw": self._last_asr_text_raw,
                 "asr_confidence": self._last_asr_confidence,
                 "vad_duration_ms": self._last_vad_duration_ms,
-                "audio_path": None,
+                "audio_path": self._last_audio_path,
             }
 
             # tool_calls extraction:
