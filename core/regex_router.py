@@ -57,6 +57,27 @@ class RegexRouter:
                 return builder(m)
         return None
 
+    def render_response(self, match: RegexMatch, tool_result: str) -> str:
+        """Pick a random template for ``match.template_key`` and fill it.
+
+        Variables: ``match.template_vars`` plus ``{tool_result}``. Falls
+        back to raw ``tool_result`` if no templates are registered or if
+        the chosen template references a missing variable.
+        """
+        templates = self.templates.get(match.template_key, [])
+        if not templates:
+            return tool_result
+        template = random.choice(templates)
+        variables = {**match.template_vars, "tool_result": tool_result}
+        try:
+            return template.format(**variables)
+        except (KeyError, IndexError) as exc:
+            LOGGER.warning(
+                "Template %r missing variable for match %s: %s",
+                match.template_key, match.pattern_id, exc,
+            )
+            return tool_result
+
     def _compile(
         self,
     ) -> list[tuple[re.Pattern[str], Callable[[re.Match[str]], RegexMatch]]]:

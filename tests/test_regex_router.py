@@ -316,3 +316,61 @@ class TestCcSlashPatterns:
     def test_miss_effort_chinese(self) -> None:
         # Chinese effort values intentionally fall-through
         assert self.router.match("effort 高") is None
+
+
+class TestRenderResponse:
+    def setup_method(self) -> None:
+        config = {
+            "regex_router": {
+                "device_alias": {"灯带": "desk_lightstrip"},
+                "templates": {
+                    "get_current_time": ["现在{tool_result}。", "{tool_result}。"],
+                    "smart_home_set_brightness": [
+                        "好，{device}{value}%了。",
+                        "调好了，{value}%。",
+                    ],
+                    "missing_var_template": ["{nonexistent}"],
+                },
+            },
+        }
+        self.router = RegexRouter(config)
+
+    def test_render_with_tool_result(self) -> None:
+        match = RegexMatch(
+            pattern_id="get_current_time",
+            intent="get_current_time",
+            tool_name="get_current_time",
+            template_key="get_current_time",
+        )
+        out = self.router.render_response(match, "下午两点")
+        assert out in ("现在下午两点。", "下午两点。")
+
+    def test_render_with_template_vars(self) -> None:
+        match = RegexMatch(
+            pattern_id="smart_home_set_brightness",
+            intent="smart_home_control",
+            tool_name="smart_home_control",
+            template_key="smart_home_set_brightness",
+            template_vars={"device": "灯带", "value": "60"},
+        )
+        out = self.router.render_response(match, "")
+        assert out in ("好，灯带60%了。", "调好了，60%。")
+
+    def test_render_unknown_template_key_falls_back_to_tool_result(self) -> None:
+        match = RegexMatch(
+            pattern_id="x",
+            intent="i",
+            tool_name="t",
+            template_key="no_such_key",
+        )
+        assert self.router.render_response(match, "fallback text") == "fallback text"
+
+    def test_render_template_missing_var_falls_back(self) -> None:
+        match = RegexMatch(
+            pattern_id="x",
+            intent="i",
+            tool_name="t",
+            template_key="missing_var_template",
+        )
+        # Template references {nonexistent} but vars don't supply it
+        assert self.router.render_response(match, "fallback") == "fallback"
