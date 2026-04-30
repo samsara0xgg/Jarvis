@@ -146,4 +146,15 @@ class RegexRouter:
                     template_key="type_to_focused",
                 ),
             ),
+            (
+                re.compile(r"^(\d+)\s*分钟(后)?提醒我$"),
+                lambda m: RegexMatch(
+                    pattern_id="set_timer",
+                    intent="set_timer",
+                    tool_name="set_timer",
+                    tool_args={"seconds": int(m.group(1)) * 60, "label": "timer"},
+                    template_key="set_timer",
+                    template_vars={"minutes": m.group(1)},
+                ),
+            ),
         ]

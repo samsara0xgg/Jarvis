@@ -164,3 +164,34 @@ class TestContentCapturePatterns:
 
     def test_add_todo_miss_no_content(self) -> None:
         assert self.router.match("加个todo") is None
+
+
+class TestSetTimerPattern:
+    def setup_method(self) -> None:
+        self.router = RegexRouter(_minimal_config())
+
+    def test_set_timer_basic(self) -> None:
+        m = self.router.match("5分钟提醒我")
+        assert m is not None
+        assert m.pattern_id == "set_timer"
+        assert m.intent == "set_timer"
+        assert m.tool_name == "set_timer"
+        assert m.tool_args == {"seconds": 300, "label": "timer"}
+        assert m.template_vars == {"minutes": "5"}
+
+    def test_set_timer_with_hou(self) -> None:
+        m = self.router.match("10分钟后提醒我")
+        assert m is not None
+        assert m.tool_args["seconds"] == 600
+
+    def test_set_timer_with_space(self) -> None:
+        m = self.router.match("3 分钟提醒我")
+        assert m is not None
+        assert m.tool_args["seconds"] == 180
+
+    def test_set_timer_miss_with_label(self) -> None:
+        # Label after "提醒我" not in pattern → fall-through
+        assert self.router.match("5分钟提醒我喝水") is None
+
+    def test_set_timer_miss_no_minutes_word(self) -> None:
+        assert self.router.match("5提醒我") is None
