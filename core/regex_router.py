@@ -46,4 +46,28 @@ class RegexRouter:
         self.templates: dict[str, list[str]] = dict(section.get("templates", {}))
         self._patterns: list[
             tuple[re.Pattern[str], Callable[[re.Match[str]], RegexMatch]]
-        ] = []
+        ] = self._compile()
+
+    def match(self, text: str) -> RegexMatch | None:
+        """Return the first pattern hit, or None on miss."""
+        text = text.strip()
+        for pattern, builder in self._patterns:
+            m = pattern.match(text)
+            if m is not None:
+                return builder(m)
+        return None
+
+    def _compile(
+        self,
+    ) -> list[tuple[re.Pattern[str], Callable[[re.Match[str]], RegexMatch]]]:
+        return [
+            (
+                re.compile(r"^现在几点了?[?？]?$"),
+                lambda m: RegexMatch(
+                    pattern_id="get_current_time",
+                    intent="get_current_time",
+                    tool_name="get_current_time",
+                    template_key="get_current_time",
+                ),
+            ),
+        ]

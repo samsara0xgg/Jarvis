@@ -43,3 +43,34 @@ class TestRegexRouterInit:
         router = RegexRouter(_minimal_config())
         assert router.device_alias["灯带"] == "desk_lightstrip"
         assert "get_current_time" in router.templates
+
+
+class TestMatchGetCurrentTime:
+    def setup_method(self) -> None:
+        self.router = RegexRouter(_minimal_config())
+
+    def test_match_canonical(self) -> None:
+        m = self.router.match("现在几点了")
+        assert m is not None
+        assert m.pattern_id == "get_current_time"
+        assert m.intent == "get_current_time"
+        assert m.tool_name == "get_current_time"
+        assert m.tool_args == {}
+        assert m.template_key == "get_current_time"
+
+    def test_match_no_le(self) -> None:
+        # 了 optional
+        assert self.router.match("现在几点") is not None
+
+    def test_match_chinese_question_mark(self) -> None:
+        assert self.router.match("现在几点了？") is not None
+
+    def test_match_english_question_mark(self) -> None:
+        assert self.router.match("现在几点?") is not None
+
+    def test_miss_with_prefix(self) -> None:
+        # Conversational prefix → fall-through
+        assert self.router.match("我说现在几点了") is None
+
+    def test_miss_with_suffix(self) -> None:
+        assert self.router.match("现在几点了能见面") is None
