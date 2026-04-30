@@ -20,6 +20,12 @@ python jarvis.py                  # prod (wake word "Hey Jarvis")
 python -m pytest tests/ -q        # unit tests (~900)
 python system_tests/runner.py --mode cc --suite <name>  # system test (Claude code mode)
 python system_tests/runner.py     # system test (human interactive)
+
+# Web backend (pet mode / browser UI), port 8006, log -> /tmp/jarvis-web.log
+# Must use `uv run` — soxr/sherpa lives in uv venv, plain python ModuleNotFoundError
+PYTHONPATH=. nohup uv run python ui/web/server.py --config config.yaml > /tmp/jarvis-web.log 2>&1 &
+lsof -i :8006                     # check if running
+pkill -f "ui/web/server.py"       # stop
 ```
 
 ## Git
