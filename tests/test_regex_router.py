@@ -74,3 +74,42 @@ class TestMatchGetCurrentTime:
 
     def test_miss_with_suffix(self) -> None:
         assert self.router.match("现在几点了能见面") is None
+
+
+class TestNoArgPatterns:
+    def setup_method(self) -> None:
+        self.router = RegexRouter(_minimal_config())
+
+    def test_get_date(self) -> None:
+        m = self.router.match("今天几号")
+        assert m is not None
+        assert m.pattern_id == "get_date"
+        assert m.intent == "get_date"
+        # reuses get_current_time tool — no separate get_date python tool exists
+        assert m.tool_name == "get_current_time"
+        assert m.template_key == "get_date"
+
+    def test_weather(self) -> None:
+        m = self.router.match("今天天气怎么样")
+        assert m is not None
+        assert m.pattern_id == "weather"
+        assert m.tool_name == "weather"
+
+    def test_list_todos_daiban(self) -> None:
+        m = self.router.match("我有什么待办")
+        assert m is not None
+        assert m.pattern_id == "list_todos"
+
+    def test_list_todos_english(self) -> None:
+        m = self.router.match("我有什么todo")
+        assert m is not None
+        assert m.pattern_id == "list_todos"
+
+    def test_cc_interrupt(self) -> None:
+        m = self.router.match("停cc")
+        assert m is not None
+        assert m.pattern_id == "cc_interrupt"
+        assert m.tool_name == "cc_interrupt"
+
+    def test_miss_unrelated(self) -> None:
+        assert self.router.match("讲个故事") is None

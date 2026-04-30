@@ -70,4 +70,40 @@ class RegexRouter:
                     template_key="get_current_time",
                 ),
             ),
+            (
+                re.compile(r"^今天几号$"),
+                lambda m: RegexMatch(
+                    pattern_id="get_date",
+                    intent="get_date",
+                    tool_name="get_current_time",
+                    template_key="get_date",
+                ),
+            ),
+            (
+                re.compile(r"^今天天气怎么样$"),
+                lambda m: RegexMatch(
+                    pattern_id="weather",
+                    intent="weather",
+                    tool_name="weather",
+                    template_key="weather",
+                ),
+            ),
+            (
+                re.compile(r"^我有什么(待办|todo)$"),
+                lambda m: RegexMatch(
+                    pattern_id="list_todos",
+                    intent="list_todos",
+                    tool_name="list_todos",
+                    template_key="list_todos",
+                ),
+            ),
+            (
+                re.compile(r"^停cc$"),
+                lambda m: RegexMatch(
+                    pattern_id="cc_interrupt",
+                    intent="cc_interrupt",
+                    tool_name="cc_interrupt",
+                    template_key="cc_interrupt",
+                ),
+            ),
         ]
