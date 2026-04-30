@@ -105,7 +105,7 @@ class RegexRouter:
                 lambda m: RegexMatch(
                     pattern_id="weather",
                     intent="weather",
-                    tool_name="weather",
+                    tool_name="get_weather",
                     template_key="weather",
                 ),
             ),

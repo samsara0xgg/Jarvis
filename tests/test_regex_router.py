@@ -93,7 +93,7 @@ class TestNoArgPatterns:
         m = self.router.match("今天天气怎么样")
         assert m is not None
         assert m.pattern_id == "weather"
-        assert m.tool_name == "weather"
+        assert m.tool_name == "get_weather"
 
     def test_list_todos_daiban(self) -> None:
         m = self.router.match("我有什么待办")
