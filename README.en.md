@@ -195,7 +195,6 @@ yue/
 ├── tests/                      # 1060 unit tests
 ├── deploy/                     # Raspberry Pi systemd + install scripts
 ├── esp32/                      # MicroPython firmware (sensor + relay nodes)
-├── notes/                      # Research, plans, session logs
 └── docs/                       # Design specs + git workflow
 ```
 

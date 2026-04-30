@@ -195,7 +195,6 @@ yue/
 ├── tests/                      # 1060 个单元测试
 ├── deploy/                     # Raspberry Pi systemd + 安装脚本
 ├── esp32/                      # MicroPython 固件（传感器 + 继电器节点）
-├── notes/                      # 研究、计划、session 日志
 └── docs/                       # 设计 spec + git 工作流
 ```
 
