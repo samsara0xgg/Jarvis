@@ -113,3 +113,54 @@ class TestNoArgPatterns:
 
     def test_miss_unrelated(self) -> None:
         assert self.router.match("讲个故事") is None
+
+
+class TestContentCapturePatterns:
+    def setup_method(self) -> None:
+        self.router = RegexRouter(_minimal_config())
+
+    def test_add_todo_colon(self) -> None:
+        m = self.router.match("加个todo: 买牛奶")
+        assert m is not None
+        assert m.pattern_id == "add_todo"
+        assert m.tool_args == {"content": "买牛奶"}
+
+    def test_add_todo_chinese_colon(self) -> None:
+        m = self.router.match("加个todo：写代码")
+        assert m is not None
+        assert m.tool_args == {"content": "写代码"}
+
+    def test_add_todo_space(self) -> None:
+        m = self.router.match("加个todo 跑步")
+        assert m is not None
+        assert m.tool_args == {"content": "跑步"}
+
+    def test_obsidian_inbox(self) -> None:
+        m = self.router.match("记到inbox 想个新项目")
+        assert m is not None
+        assert m.pattern_id == "obsidian_inbox"
+        assert m.tool_args == {"content": "想个新项目"}
+
+    def test_cc_tell(self) -> None:
+        m = self.router.match("给cc发 下一步是什么")
+        assert m is not None
+        assert m.pattern_id == "cc_tell"
+        assert m.tool_args == {"text": "下一步是什么"}
+
+    def test_type_to_focused_colon(self) -> None:
+        m = self.router.match("帮我输入: hello world")
+        assert m is not None
+        assert m.pattern_id == "type_to_focused"
+        assert m.tool_args == {"text": "hello world"}
+
+    def test_type_to_focused_chinese_colon(self) -> None:
+        m = self.router.match("帮我输入:你好")
+        assert m is not None
+        assert m.tool_args == {"text": "你好"}
+
+    def test_cc_tell_miss_no_content(self) -> None:
+        # \s+(.+) requires at least one whitespace + char
+        assert self.router.match("给cc发") is None
+
+    def test_add_todo_miss_no_content(self) -> None:
+        assert self.router.match("加个todo") is None

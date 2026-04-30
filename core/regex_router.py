@@ -106,4 +106,44 @@ class RegexRouter:
                     template_key="cc_interrupt",
                 ),
             ),
+            (
+                re.compile(r"^加个todo[:：\s]+(.+)$"),
+                lambda m: RegexMatch(
+                    pattern_id="add_todo",
+                    intent="add_todo",
+                    tool_name="add_todo",
+                    tool_args={"content": m.group(1).strip()},
+                    template_key="add_todo",
+                ),
+            ),
+            (
+                re.compile(r"^记到inbox\s+(.+)$"),
+                lambda m: RegexMatch(
+                    pattern_id="obsidian_inbox",
+                    intent="obsidian_inbox",
+                    tool_name="obsidian_inbox",
+                    tool_args={"content": m.group(1).strip()},
+                    template_key="obsidian_inbox",
+                ),
+            ),
+            (
+                re.compile(r"^给cc发\s+(.+)$"),
+                lambda m: RegexMatch(
+                    pattern_id="cc_tell",
+                    intent="cc_tell",
+                    tool_name="cc_tell",
+                    tool_args={"text": m.group(1).strip()},
+                    template_key="cc_tell",
+                ),
+            ),
+            (
+                re.compile(r"^帮我输入[:：]\s*(.+)$"),
+                lambda m: RegexMatch(
+                    pattern_id="type_to_focused",
+                    intent="type_to_focused",
+                    tool_name="type_to_focused",
+                    tool_args={"text": m.group(1)},
+                    template_key="type_to_focused",
+                ),
+            ),
         ]
