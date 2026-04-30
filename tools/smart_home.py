@@ -13,6 +13,13 @@ LOGGER = logging.getLogger(__name__)
 _device_manager: Any = None
 _permission_manager: Any = None
 
+# Virtual groups: client-side fan-out to multiple physical device_ids.
+# Use when Hue Bridge has no native group for the bundle (e.g. two whitelamps
+# wired separately on the bridge). Members must be real device_ids.
+VIRTUAL_GROUPS: dict[str, list[str]] = {
+    "bedroom_group": ["bedroom_lamp_1", "bedroom_lamp_2"],
+}
+
 
 def init(device_manager: Any, permission_manager: Any) -> None:
     """Inject dependencies at startup. Called by jarvis.py."""
@@ -26,6 +33,9 @@ def smart_home_control(device_id: str, action: str, value: str = "") -> str:
     """Control smart home devices: lights, thermostat, door locks, Hue scenes. Use for turn on/off, adjust brightness, change color/color_temp, set temperature, lock/unlock, or activate a scene."""
     user_role = _EXECUTION_CONTEXT.get("user_role", "owner")
 
+    if device_id in VIRTUAL_GROUPS:
+        return _execute_virtual_group(device_id, action, value, user_role)
+
     try:
         device = _device_manager.get_device(device_id)
     except KeyError:
@@ -38,6 +48,34 @@ def smart_home_control(device_id: str, action: str, value: str = "") -> str:
         return _device_manager.execute_command(device_id, action, value if value else None)
     except Exception as exc:
         return f"Failed to execute {action} on {device.name}: {exc}"
+
+
+def _execute_virtual_group(group_id: str, action: str, value: str, user_role: str) -> str:
+    """Fan out one logical command to each member device, aggregate results."""
+    successes: list[str] = []
+    failures: list[str] = []
+    for member_id in VIRTUAL_GROUPS[group_id]:
+        try:
+            device = _device_manager.get_device(member_id)
+        except KeyError:
+            failures.append(f"{member_id}: not found")
+            continue
+        if not _permission_manager.check_permission(user_role, device, action):
+            failures.append(f"{device.name}: permission denied")
+            continue
+        try:
+            _device_manager.execute_command(member_id, action, value if value else None)
+            successes.append(device.name)
+        except Exception as exc:
+            failures.append(f"{device.name}: {exc}")
+    if not failures:
+        return f"{group_id}: {len(successes)}/{len(successes)} OK."
+    if not successes:
+        return f"{group_id}: all failed — {'; '.join(failures)}"
+    return (
+        f"{group_id}: {len(successes)}/{len(successes) + len(failures)} OK "
+        f"(failed: {'; '.join(failures)})"
+    )
 
 
 @jarvis_tool(read_only=True)

@@ -12,7 +12,7 @@ def _minimal_config() -> dict:
         "regex_router": {
             "device_alias": {
                 "灯带": "desk_lightstrip",
-                "大灯": "bedroom_lamp_1",
+                "大灯": "bedroom_group",
                 "电脑灯": "desk_lights",
                 "灯": "all_lights",
             },
@@ -212,7 +212,7 @@ class TestSmartHomePatterns:
     def test_turn_on_v_first_short(self) -> None:
         m = self.router.match("开大灯")
         assert m is not None
-        assert m.tool_args["device_id"] == "bedroom_lamp_1"
+        assert m.tool_args["device_id"] == "bedroom_group"
         assert m.tool_args["action"] == "turn_on"
 
     def test_turn_on_v_first_dianlao(self) -> None:
@@ -248,7 +248,7 @@ class TestSmartHomePatterns:
     def test_turn_off_v_last_guanle(self) -> None:
         m = self.router.match("把大灯关了")
         assert m is not None
-        assert m.tool_args == {"device_id": "bedroom_lamp_1", "action": "turn_off"}
+        assert m.tool_args == {"device_id": "bedroom_group", "action": "turn_off"}
 
     def test_set_brightness(self) -> None:
         m = self.router.match("把灯带调到百分之60")

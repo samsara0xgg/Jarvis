@@ -686,7 +686,7 @@ regex_router:
   # are intentionally NOT here and fall through to cloud LLM.
   device_alias:
     灯带: desk_lightstrip
-    大灯: bedroom_lamp_1
+    大灯: bedroom_group     # virtual group: bedroom_lamp_1 + bedroom_lamp_2 (see tools/smart_home.py VIRTUAL_GROUPS)
     电脑灯: desk_lights
     灯: all_lights
 

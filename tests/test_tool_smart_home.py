@@ -228,3 +228,77 @@ def test_smart_home_status_device_not_found():
         {"device_id": "ghost"},
     )
     assert "not found" in result.lower() or "ghost" in result
+
+
+# ---------------------------------------------------------------------------
+# Virtual group fan-out
+# ---------------------------------------------------------------------------
+
+
+def test_virtual_group_fanout_all_success():
+    """bedroom_group fans out to both whitelamps; all succeed -> aggregate OK."""
+    dm, pm = _inject()
+    devices = {
+        "bedroom_lamp_1": _make_device("bedroom_lamp_1", "Bedroom Lamp 1"),
+        "bedroom_lamp_2": _make_device("bedroom_lamp_2", "Bedroom Lamp 2"),
+    }
+    dm.get_device.side_effect = lambda did: devices[did]
+    dm.execute_command.return_value = "ok"
+
+    _EXECUTION_CONTEXT["user_role"] = "owner"
+    entry = _TOOL_REGISTRY["smart_home_control"]
+    result = entry["execute"](
+        "smart_home_control",
+        {"device_id": "bedroom_group", "action": "turn_on"},
+    )
+    assert dm.execute_command.call_count == 2
+    dm.execute_command.assert_any_call("bedroom_lamp_1", "turn_on", None)
+    dm.execute_command.assert_any_call("bedroom_lamp_2", "turn_on", None)
+    assert "2/2" in result
+
+
+def test_virtual_group_fanout_partial_failure():
+    """One member raises, the other succeeds -> partial result."""
+    dm, pm = _inject()
+    devices = {
+        "bedroom_lamp_1": _make_device("bedroom_lamp_1", "Bedroom Lamp 1"),
+        "bedroom_lamp_2": _make_device("bedroom_lamp_2", "Bedroom Lamp 2"),
+    }
+    dm.get_device.side_effect = lambda did: devices[did]
+
+    def _exec(did: str, action: str, value: Any) -> str:
+        if did == "bedroom_lamp_2":
+            raise RuntimeError("bridge timeout")
+        return "ok"
+
+    dm.execute_command.side_effect = _exec
+
+    _EXECUTION_CONTEXT["user_role"] = "owner"
+    entry = _TOOL_REGISTRY["smart_home_control"]
+    result = entry["execute"](
+        "smart_home_control",
+        {"device_id": "bedroom_group", "action": "set_brightness", "value": "60"},
+    )
+    assert "1/2" in result
+    assert "Bedroom Lamp 2" in result
+    assert "bridge timeout" in result
+
+
+def test_virtual_group_fanout_value_passed():
+    """Value (e.g. brightness) is forwarded to every member."""
+    dm, pm = _inject()
+    devices = {
+        "bedroom_lamp_1": _make_device("bedroom_lamp_1", "Bedroom Lamp 1"),
+        "bedroom_lamp_2": _make_device("bedroom_lamp_2", "Bedroom Lamp 2"),
+    }
+    dm.get_device.side_effect = lambda did: devices[did]
+    dm.execute_command.return_value = "ok"
+
+    _EXECUTION_CONTEXT["user_role"] = "owner"
+    entry = _TOOL_REGISTRY["smart_home_control"]
+    entry["execute"](
+        "smart_home_control",
+        {"device_id": "bedroom_group", "action": "set_brightness", "value": "60"},
+    )
+    dm.execute_command.assert_any_call("bedroom_lamp_1", "set_brightness", "60")
+    dm.execute_command.assert_any_call("bedroom_lamp_2", "set_brightness", "60")
