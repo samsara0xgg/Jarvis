@@ -253,14 +253,20 @@ class JarvisApp:
         # ── 意图路由 + 本地执行器 ──
         self.intent_router = None
         self.local_executor = None
+        self.regex_router = None
         try:
             from core.intent_router import IntentRouter
             from core.local_executor import LocalExecutor
+            from core.regex_router import RegexRouter
 
             self.intent_router = IntentRouter(config, tracker=self.health_tracker)
             self.local_executor = LocalExecutor(self.tool_registry)
+            self.regex_router = RegexRouter(config)
         except Exception as exc:
             self.logger.warning("Intent router unavailable: %s", exc)
+        # Latest regex match (set during _process_turn when L0 hits) — used by
+        # _flush_trace to record regex_pattern_id without re-running the match.
+        self._last_regex_match = None
 
         # --- Interrupt monitor (full-duplex) ---
         # Share main-path SpeechRecognizer + ASRNormalizer so the interrupt
@@ -1688,6 +1694,9 @@ class JarvisApp:
                 llm_metadata["router_response_id"] = router_meta.get("response_id")
                 _raw_resp = getattr(self.intent_router, "_last_raw_response", None)
                 llm_metadata["router_raw_json"] = _raw_resp if isinstance(_raw_resp, str) and _raw_resp else None
+                llm_metadata["router_context"] = list(getattr(self.intent_router, "_last_context", []) or [])
+                llm_metadata["router_prompt_version"] = getattr(self.intent_router, "prompt_hash", None)
+                llm_metadata["router_attempts"] = list(getattr(self.intent_router, "_last_provider_attempts", []) or [])
             elif self._last_route is not None and getattr(self._last_route, "text_response", None):
                 # (b) Router-driven inline response. Pull from intent_router.
                 router_meta = getattr(self.intent_router, "last_metadata", None) or {}
@@ -1715,7 +1724,32 @@ class JarvisApp:
                 llm_metadata["router_response_id"] = router_meta.get("response_id")
                 _raw_resp = getattr(self.intent_router, "_last_raw_response", None)
                 llm_metadata["router_raw_json"] = _raw_resp if isinstance(_raw_resp, str) and _raw_resp else None
-            # (c) llm_model_used stays None, no tokens.
+                llm_metadata["router_context"] = list(getattr(self.intent_router, "_last_context", []) or [])
+                llm_metadata["router_prompt_version"] = getattr(self.intent_router, "prompt_hash", None)
+                llm_metadata["router_attempts"] = list(getattr(self.intent_router, "_last_provider_attempts", []) or [])
+            elif self._last_route is not None:
+                # (c) Pure local exec (smart_home/info_query/time) — no cloud
+                # LLM ran, but the router's classification still drove routing.
+                # Without this branch ~78% of router decisions land in trace
+                # with router_intent=NULL, blocking observability of fast paths.
+                router_meta = getattr(self.intent_router, "last_metadata", None) or {}
+                if llm_metadata is None:
+                    llm_metadata = {}
+                llm_metadata["router_model"] = router_meta.get("model")
+                llm_metadata["router_intent"] = getattr(self._last_route, "intent", None)
+                llm_metadata["router_sub_type"] = getattr(self._last_route, "sub_type", None)
+                llm_metadata["router_provider"] = router_meta.get("provider")
+                _cache_hit = getattr(self.intent_router, "_last_cache_hit", False)
+                llm_metadata["router_cache_hit"] = _cache_hit if isinstance(_cache_hit, bool) else None
+                llm_metadata["router_tokens_in"] = router_meta.get("tokens_in")
+                llm_metadata["router_tokens_out"] = router_meta.get("tokens_out")
+                llm_metadata["router_response_id"] = router_meta.get("response_id")
+                _raw_resp = getattr(self.intent_router, "_last_raw_response", None)
+                llm_metadata["router_raw_json"] = _raw_resp if isinstance(_raw_resp, str) and _raw_resp else None
+                llm_metadata["router_context"] = list(getattr(self.intent_router, "_last_context", []) or [])
+                llm_metadata["router_prompt_version"] = getattr(self.intent_router, "prompt_hash", None)
+                llm_metadata["router_attempts"] = list(getattr(self.intent_router, "_last_provider_attempts", []) or [])
+            # llm_model_used stays None for case (c), no tokens.
 
             cost = compute_cost_usd(
                 model=llm_model_used,
