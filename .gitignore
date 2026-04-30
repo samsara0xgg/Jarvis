@@ -88,3 +88,23 @@ desktop/dist/
 
 # Auto-generated Claude memory dump (not a real agents config)
 AGENTS.md
+
+# Internal notes & collaboration docs (main keeps project body only)
+docs/PROJECT_COCKPIT.md
+docs/project-dashboard.md
+docs/cockpit-maintenance.md
+docs/verification-log.md
+docs/architecture/
+docs/modules/
+docs/risks/
+docs/superpowers/
+docs/testing/
+
+# Experiments & bench artifacts
+experiments/
+overnight/
+notes/
+bench_fixtures/
+
+# Runtime databases
+data/*.db
