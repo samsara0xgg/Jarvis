@@ -675,3 +675,66 @@ asr_normalizer_fuzzy:
   max_distance: 2
 
 # LLM/TTS pricing lives in data/pricing.json (refresh via scripts/refresh_pricing.py).
+
+# ----------------------------------------------------------------------------
+# Regex Router (L0 fast-path)
+# ----------------------------------------------------------------------------
+# Closed-trigger whitelist for single-step skills. See
+# docs/superpowers/specs/2026-04-29-regex-router-cleanup-design.md
+regex_router:
+  # Canonical Chinese alias → device_id. Other aliases (e.g. 卧室灯, strip)
+  # are intentionally NOT here and fall through to cloud LLM.
+  device_alias:
+    灯带: desk_lightstrip
+    大灯: bedroom_lamp_1
+    电脑灯: desk_lights
+    灯: all_lights
+
+  # TTS template pool. random.choice per turn. Variables: {tool_result}
+  # plus per-pattern template_vars (e.g. {device}, {value}, {minutes}, {arg}).
+  templates:
+    get_current_time:
+      - "现在{tool_result}。"
+      - "{tool_result}。"
+    get_date:
+      - "今天{tool_result}。"
+      - "{tool_result}。"
+    set_timer:
+      - "好，{minutes}分钟后提醒你。"
+      - "行，{minutes}分钟。"
+    weather:
+      - "{tool_result}"
+    list_todos:
+      - "{tool_result}"
+    add_todo:
+      - "好，加进todo了。"
+      - "记下了。"
+    obsidian_inbox:
+      - "好，进inbox了。"
+      - "记下了。"
+    cc_tell:
+      - "发过去了。"
+      - "说了。"
+    type_to_focused:
+      - "好，输入了。"
+      - "打了。"
+    smart_home_turn_on:
+      - "好，{device}开了。"
+      - "{device}亮了。"
+      - "好的。"
+    smart_home_turn_off:
+      - "好，{device}关了。"
+      - "{device}灭了。"
+      - "好的。"
+    smart_home_set_brightness:
+      - "好，{device}{value}%了。"
+      - "调好了，{value}%。"
+    cc_interrupt:
+      - "好，停了。"
+      - "停了。"
+    cc_slash_model:
+      - "好，切到{arg}了。"
+      - "{arg}了。"
+    cc_slash_effort:
+      - "好，effort {arg}了。"
+      - "{arg}了。"
