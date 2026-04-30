@@ -983,123 +983,48 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Memory query failed: %s", exc)
 
-        # ── 意图路由 ── 单次 Groq 调用，同时完成意图分类 + 简单回答
-        route = None
-        if response_text is None and self.intent_router and self.local_executor:
+        # ── L0 Regex 快速路径 ──
+        # 命中 → tool_registry.execute → render TTS 模板 → set response_text + path="regex"
+        # 未命中 → response_text 保持 None，下游 cloud LLM (tool_use) 兜底
+        regex_match = None
+        if response_text is None and self.regex_router is not None:
             try:
-                route = self.intent_router.route_and_respond(
-                    text,
-                    conversation_history=history,
-                    user_emotion=emotion,
-                )
+                regex_match = self.regex_router.match(text)
             except Exception as exc:
-                self.logger.warning("Unified route failed: %s", exc)
+                self.logger.warning("RegexRouter.match failed: %s", exc)
+                regex_match = None
 
         _t_route = time.monotonic()
-        _route_ms = int((_t_route - _t_think)*1000)
-        self._last_route = route
+        _route_ms = int((_t_route - _t_think) * 1000)
+        self._last_regex_match = regex_match
+        self._last_route = None  # legacy field — None when regex path is used
         self._last_timings["route_ms"] = _route_ms
-        # Trace v3: router self-reported confidence (NOT a calibrated logprob).
-        # See trace.py log_turn docstring for the caveat.
-        if route is not None:
-            self._last_intent_route_score = route.confidence
-        if route:
-            print(f"⏱ 路由: {_route_ms}ms → {route.tier}/{route.intent} ({route.provider}, {route.confidence:.2f})")
-            if route.actions:
-                for a in route.actions:
-                    val_str = f" ({a['value']})" if a.get("value") else ""
-                    print(f"   📋 {a.get('device_id', '?')} → {a.get('action', '?')}{val_str}")
+
+        if regex_match is not None:
+            print(f"⏱ 路由: {_route_ms}ms → regex/{regex_match.intent} ({regex_match.pattern_id})")
+            print(f"   📋 {regex_match.tool_name} args={regex_match.tool_args}")
+            try:
+                tool_result = self.tool_registry.execute(
+                    regex_match.tool_name,
+                    regex_match.tool_args,
+                    user_role=user_role,
+                )
+                response_text = self.regex_router.render_response(regex_match, tool_result)
+                self._last_path = "regex"
+                # Track device ops for trace continuity with old smart_home path.
+                if regex_match.intent == "smart_home_control":
+                    self._last_device_ops = [dict(regex_match.tool_args)]
+                self.logger.info(
+                    "Regex hit: %s → %s args=%s",
+                    regex_match.pattern_id, regex_match.tool_name, regex_match.tool_args,
+                )
+            except Exception as exc:
+                self.logger.warning("Regex tool execution failed: %s", exc)
+                # On exec failure, fall through to cloud LLM
+                regex_match = None
+                self._last_regex_match = None
         else:
-            print(f"⏱ 路由: {_route_ms}ms → 无路由")
-
-        if response_text is None and route is not None:
-            # chat intent: skip the router's inline text_response and let
-            # the cloud LLM (self.llm) generate the actual answer. Two
-            # reasons: (1) trace clarity — llm_model records the actual
-            # responding model, not the router; (2) quality — main chat
-            # LLM (e.g., grok-4.20 / claude-opus-4-7) is stronger than
-            # Llama-3.3-70B for open-ended chat. The router's text was
-            # wasted compute for chat (route_ms inflated); future work
-            # is to short-circuit router prompt for chat intent.
-            if route.text_response and route.intent != "chat":
-                response_text = route.text_response
-                self._last_path = "local"
-            elif route.tier == "local":
-                if route.intent == "smart_home":
-                    needs_llm = (
-                        any(a.get("action") in _NEEDS_LLM_ACTIONS for a in route.actions)
-                        or _color_needs_llm(route.actions)
-                    )
-                    if needs_llm:
-                        device_ids = {a.get("device_id") for a in route.actions if a.get("device_id")}
-                        status_parts = []
-                        for did in device_ids:
-                            try:
-                                status = self.device_manager.get_device(did).get_status()
-                                status_parts.append(f"{did}: {status}")
-                            except Exception:
-                                pass
-                        if status_parts and prompt_ctx is not None:
-                            # Append current device state to Block 4 (situation,
-                            # cache=False) so the LLM's creative smart-home
-                            # response sees live device state. Block 4 is the
-                            # only cache-safe place to mutate post-assembly.
-                            device_note = (
-                                f"\n[当前设备状态] {'; '.join(status_parts)}"
-                            )
-                            for _b in prompt_ctx.blocks:
-                                if _b.name == "situation":
-                                    _b.content = _b.content + device_note
-                                    break
-                    else:
-                        ar = self.local_executor.execute_smart_home(
-                            route.actions, user_role, response=route.response,
-                        )
-                        self._last_device_ops = route.actions
-                        for a in route.actions:
-                            did = a.get("device_id")
-                            if did:
-                                try:
-                                    st = self.device_manager.get_device(did).get_status()
-                                    on_str = "ON" if st.get("is_on") else "OFF"
-                                    extras = []
-                                    if "brightness" in st:
-                                        extras.append(f"brightness={st['brightness']}")
-                                    if "color_temp" in st:
-                                        extras.append(f"color_temp={st['color_temp']}")
-                                    if "color" in st and st["color"] != "white":
-                                        extras.append(f"color={st['color']}")
-                                    if "temperature" in st:
-                                        extras.append(f"temp={st['temperature']}°C")
-                                    if "is_locked" in st:
-                                        extras.append("locked" if st["is_locked"] else "unlocked")
-                                    extra_str = f"  {' '.join(extras)}" if extras else ""
-                                    print(f"   💡 {did}: {on_str}{extra_str}")
-                                except Exception:
-                                    pass
-                elif route.intent == "info_query":
-                    if route.sub_type in ("news", "stocks", "weather"):
-                        ar = self.local_executor.execute_info_query(
-                            route.sub_type, route.query, user_role,
-                        )
-                    else:
-                        ar = ActionResponse(
-                            Action.RESPONSE,
-                            "这个我暂时没有对应的技能。你可以说'小月，学会查这个'来教我。",
-                        )
-                elif route.intent == "time":
-                    ar = self.local_executor.execute_time(route.sub_type)
-                else:
-                    ar = None
-
-                if ar is not None:
-                    if ar.action == Action.REQLLM:
-                        use_llm_rephrase = True
-                        self._last_reqllm = True
-                        response_text = None
-                    else:
-                        response_text = ar.text
-                        self._last_path = "local"
+            print(f"⏱ 路由: {_route_ms}ms → miss (cloud LLM)")
 
         # 本地执行计时
         if response_text is not None:
