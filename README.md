@@ -191,7 +191,6 @@ yue/
 ├── ui/                         # Live2D web server + OLED display
 ├── skills/                     # YAML 技能 + learned/ 运行时生成
 ├── tools/                      # 内置工具模块（reminders、smart-home 等）
-├── realtime_data/              # 新闻 / 股票数据服务
 ├── system_tests/               # 端到端测试 runner（交互 + Claude Code 模式）
 ├── tests/                      # 1060 个单元测试
 ├── deploy/                     # Raspberry Pi systemd + 安装脚本

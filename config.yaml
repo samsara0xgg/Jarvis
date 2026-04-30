@@ -532,36 +532,6 @@ skills:
     # 待办数据目录。
     dir: data/todos
 
-  realtime_data:
-    enabled: false
-    mock_mode: false
-    cache:
-      dir: data/realtime_data
-      news_ttl_seconds: 1800
-      stocks_ttl_seconds: 600
-    news:
-      provider: gnews
-      api_key: ""  # env GNEWS_API_KEY
-      language: zh  # en 或 zh
-      country: cn   # us 或 cn
-      topics:
-        - world
-        - ai
-        - technology
-        - business
-      limit: 10
-    stocks:
-      provider: yahoo
-      watchlist:
-        - AAPL
-        - NVDA
-        - MSFT
-        - GOOGL
-    scheduler:
-      enabled: true
-      refresh_news_cron: "*/30 * * * *"    # 每30分钟刷新新闻
-      refresh_stocks_cron: "*/15 * * * *"  # 每15分钟刷新股票
-
 # ----------------------------------------------------------------------------
 # OLED 显示
 # ----------------------------------------------------------------------------
@@ -606,7 +576,6 @@ scheduler:
       - weather
       - reminders
       - todos
-      - realtime_data     # 加入新闻+股票
 
 # ----------------------------------------------------------------------------
 # 系统健康监控 (F8)

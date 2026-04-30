@@ -191,7 +191,6 @@ yue/
 ├── ui/                         # Live2D web server + OLED display
 ├── skills/                     # YAML skills + learned/ runtime-generated skills
 ├── tools/                      # Built-in tool modules (reminders, smart-home, etc.)
-├── realtime_data/              # News / stock data services
 ├── system_tests/               # End-to-end runner (interactive + Claude Code mode)
 ├── tests/                      # 1060 unit tests
 ├── deploy/                     # Raspberry Pi systemd + install scripts
