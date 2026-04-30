@@ -11,7 +11,7 @@ import uuid
 import time
 from typing import Any
 
-from core.personality import build_personality_prompt
+from core.personality import build_identity_block, build_situation_block
 from memory.hot.assembler import PromptContext
 
 LOGGER = logging.getLogger(__name__)
@@ -1486,8 +1486,12 @@ class LLMClient:
         entry points; this helper survives for rephrase / tests that still
         call in without an Assembler-built context.
         """
-        return build_personality_prompt(
-            user_name=user_name,
-            user_role=user_role,
-            user_emotion=user_emotion,
+        return (
+            build_identity_block(user_role=user_role)
+            + "\n\n"
+            + build_situation_block(
+                user_name=user_name,
+                user_role=user_role,
+                user_emotion=user_emotion,
+            )
         )

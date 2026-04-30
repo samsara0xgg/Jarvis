@@ -9,7 +9,6 @@ import pytest
 
 from core.personality import (
     build_identity_block,
-    build_personality_prompt,
     build_situation_block,
     get_time_slot,
     set_nsfw_mode,
@@ -58,63 +57,6 @@ class TestGetTimeSlot:
             assert get_time_slot() == "late_night"
 
 
-class TestBuildPersonalityPrompt:
-    def test_base_personality_always_present(self):
-        prompt = build_personality_prompt()
-        assert "小月" in prompt
-        assert "管家" in prompt
-
-    def test_no_ai_references(self):
-        prompt = build_personality_prompt()
-        assert "AI" not in prompt
-        assert "人工智能" not in prompt
-        assert "助手" not in prompt
-
-    def test_includes_user_name(self):
-        prompt = build_personality_prompt(user_name="Allen", user_role="owner")
-        assert "Allen" in prompt
-
-    def test_guest_user(self):
-        prompt = build_personality_prompt(user_name=None, user_role="guest")
-        assert "不认识" in prompt
-        assert "声纹注册" in prompt
-
-    def test_urgent_situation(self):
-        prompt = build_personality_prompt(situation="urgent")
-        assert "严肃" in prompt or "紧急" in prompt
-
-    def test_error_situation(self):
-        prompt = build_personality_prompt(situation="error")
-        assert "故障" in prompt or "诚实" in prompt
-
-    def test_time_context_included(self):
-        prompt = build_personality_prompt()
-        time_keywords = ["清早", "上午", "下午", "傍晚", "晚上", "这会儿"]
-        assert any(k in prompt for k in time_keywords)
-
-    def test_tool_rules_included(self):
-        prompt = build_personality_prompt()
-        assert "工具" in prompt
-
-    def test_emotion_context_injected(self):
-        prompt = build_personality_prompt(user_emotion="SAD")
-        assert "不开心" in prompt
-
-    def test_emotion_happy(self):
-        prompt = build_personality_prompt(user_emotion="HAPPY")
-        assert "高兴" in prompt
-
-    def test_emotion_angry(self):
-        prompt = build_personality_prompt(user_emotion="ANGRY")
-        assert "气头" in prompt
-
-    def test_no_memory_usage_guide_tail(self):
-        """Memory usage guide tail belongs to v1; the split wrapper must not carry it."""
-        prompt = build_personality_prompt()
-        assert "像朋友一样自然地运用" not in prompt
-        assert "别像闹钟一样提醒" not in prompt
-
-
 class TestBuildIdentityBlock:
     """Block 1 of Assembler — static, cache-friendly."""
 
@@ -130,6 +72,12 @@ class TestBuildIdentityBlock:
         assert "<output_rules>" in block
         assert "</output_rules>" in block
         assert "工具" in block
+
+    def test_no_ai_references(self):
+        block = build_identity_block()
+        assert "AI" not in block
+        assert "人工智能" not in block
+        assert "助手" not in block
 
     def test_no_situation_content(self):
         """Identity block must be free of dynamic (time/emotion/user-status) content."""
@@ -182,6 +130,14 @@ class TestBuildSituationBlock:
         block = build_situation_block(user_emotion="SAD")
         assert "不开心" in block
 
+    def test_emotion_happy(self):
+        block = build_situation_block(user_emotion="HAPPY")
+        assert "高兴" in block
+
+    def test_emotion_angry(self):
+        block = build_situation_block(user_emotion="ANGRY")
+        assert "气头" in block
+
     def test_no_emotion_when_empty(self):
         """Empty user_emotion should not introduce emotion guidance."""
         block = build_situation_block(user_emotion="")
@@ -220,29 +176,3 @@ class TestBuildSituationBlock:
         import inspect
         sig = inspect.signature(build_situation_block)
         assert "memory_context" not in sig.parameters
-
-
-class TestBuildPersonalityPromptDeprecated:
-    """Legacy wrapper: identity + situation concatenation, emits DeprecationWarning."""
-
-    def test_emits_deprecation_warning(self):
-        with pytest.warns(DeprecationWarning):
-            build_personality_prompt(user_name="Allen")
-
-    def test_result_equals_identity_plus_situation(self):
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            wrapper = build_personality_prompt(
-                user_name="Allen", user_role="owner",
-                situation="normal", user_emotion="HAPPY",
-            )
-        expected = (
-            build_identity_block(user_role="owner")
-            + "\n\n"
-            + build_situation_block(
-                user_name="Allen", user_role="owner",
-                user_emotion="HAPPY", situation="normal",
-            )
-        )
-        assert wrapper == expected

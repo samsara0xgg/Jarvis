@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import logging
-import warnings
 from datetime import datetime
 
 LOGGER = logging.getLogger(__name__)
@@ -209,34 +208,3 @@ def build_situation_block(
         lines.append("这个人你不认识。礼貌但保持距离，提醒他做个声纹注册你才能更好地帮他。")
 
     return "<situation>\n" + "\n".join(lines) + "\n</situation>"
-
-
-def build_personality_prompt(
-    user_name: str | None = None,
-    user_role: str = "guest",
-    situation: str = "normal",
-    user_emotion: str = "",
-) -> str:
-    """[DEPRECATED] Legacy wrapper returning identity + situation concatenation.
-
-    Retained for callers that still expect a single `system` string (e.g. the
-    intent_router rephrase path). New callers should use the Assembler via
-    :func:`memory.manager.MemoryManager.build_prompt_context` which returns a
-    structured :class:`memory.hot.assembler.PromptContext` instead.
-    """
-    warnings.warn(
-        "build_personality_prompt is deprecated; use build_identity_block "
-        "+ build_situation_block (or Assembler.build_prompt_context)",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return (
-        build_identity_block(user_role=user_role)
-        + "\n\n"
-        + build_situation_block(
-            user_name=user_name,
-            user_role=user_role,
-            user_emotion=user_emotion,
-            situation=situation,
-        )
-    )
