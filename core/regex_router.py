@@ -228,4 +228,26 @@ class RegexRouter:
                     template_vars={"device": m.group(1), "value": m.group(2)},
                 ),
             ),
+            (
+                re.compile(r"^切到(opus|sonnet|haiku)$"),
+                lambda m: RegexMatch(
+                    pattern_id="cc_slash_model",
+                    intent="cc_slash",
+                    tool_name="cc_slash",
+                    tool_args={"command": "model", "args": m.group(1)},
+                    template_key="cc_slash_model",
+                    template_vars={"arg": m.group(1)},
+                ),
+            ),
+            (
+                re.compile(r"^effort\s+(low|medium|high|xhigh|max)$"),
+                lambda m: RegexMatch(
+                    pattern_id="cc_slash_effort",
+                    intent="cc_slash",
+                    tool_name="cc_slash",
+                    tool_args={"command": "effort", "args": m.group(1)},
+                    template_key="cc_slash_effort",
+                    template_vars={"arg": m.group(1)},
+                ),
+            ),
         ]

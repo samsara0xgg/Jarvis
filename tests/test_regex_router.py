@@ -274,3 +274,45 @@ class TestSmartHomePatterns:
     def test_miss_brightness_no_baifenzhi(self) -> None:
         # Without "百分之" → fall-through
         assert self.router.match("把灯带调到60") is None
+
+
+class TestCcSlashPatterns:
+    def setup_method(self) -> None:
+        self.router = RegexRouter(_minimal_config())
+
+    def test_model_opus(self) -> None:
+        m = self.router.match("切到opus")
+        assert m is not None
+        assert m.pattern_id == "cc_slash_model"
+        assert m.tool_name == "cc_slash"
+        assert m.tool_args == {"command": "model", "args": "opus"}
+        assert m.template_vars == {"arg": "opus"}
+
+    def test_model_sonnet(self) -> None:
+        m = self.router.match("切到sonnet")
+        assert m is not None
+        assert m.tool_args["args"] == "sonnet"
+
+    def test_model_haiku(self) -> None:
+        m = self.router.match("切到haiku")
+        assert m is not None
+        assert m.tool_args["args"] == "haiku"
+
+    def test_effort_xhigh(self) -> None:
+        m = self.router.match("effort xhigh")
+        assert m is not None
+        assert m.pattern_id == "cc_slash_effort"
+        assert m.tool_args == {"command": "effort", "args": "xhigh"}
+
+    def test_effort_medium(self) -> None:
+        m = self.router.match("effort medium")
+        assert m is not None
+        assert m.tool_args["args"] == "medium"
+
+    def test_miss_chinese_value(self) -> None:
+        # "切到大模型" not in enum
+        assert self.router.match("切到大模型") is None
+
+    def test_miss_effort_chinese(self) -> None:
+        # Chinese effort values intentionally fall-through
+        assert self.router.match("effort 高") is None
