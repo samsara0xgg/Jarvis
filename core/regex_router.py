@@ -43,6 +43,9 @@ class RegexRouter:
     def __init__(self, config: dict) -> None:
         section = config.get("regex_router", {})
         self.device_alias: dict[str, str] = dict(section.get("device_alias", {}))
+        self.scene_alias: dict[str, str] = {
+            str(k): str(v) for k, v in section.get("scene_alias", {}).items()
+        }
         self.templates: dict[str, list[str]] = dict(section.get("templates", {}))
         self._patterns: list[
             tuple[re.Pattern[str], Callable[[re.Match[str]], RegexMatch]]
@@ -269,6 +272,21 @@ class RegexRouter:
                     tool_args={"command": "effort", "args": m.group(1)},
                     template_key="cc_slash_effort",
                     template_vars={"arg": m.group(1)},
+                ),
+            ),
+            (
+                re.compile(r"^(切到|激活)场景\s*([1-7])$"),
+                lambda m: RegexMatch(
+                    pattern_id="scene_activate",
+                    intent="smart_home_control",
+                    tool_name="smart_home_control",
+                    tool_args={
+                        "device_id": "scene",
+                        "action": "activate",
+                        "value": self.scene_alias[m.group(2)],
+                    },
+                    template_key="scene_activate",
+                    template_vars={"scene": self.scene_alias[m.group(2)]},
                 ),
             ),
         ]

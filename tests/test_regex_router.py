@@ -16,6 +16,15 @@ def _minimal_config() -> dict:
                 "电脑灯": "desk_lights",
                 "灯": "all_lights",
             },
+            "scene_alias": {
+                "1": "2023-12-23",
+                "2": "Hoho",
+                "3": "lol",
+                "4": "Ocean",
+                "5": "pink",
+                "6": "study",
+                "7": "赛博朋克",
+            },
             "templates": {
                 "get_current_time": ["现在{tool_result}。", "{tool_result}。"],
             },
@@ -316,6 +325,49 @@ class TestCcSlashPatterns:
     def test_miss_effort_chinese(self) -> None:
         # Chinese effort values intentionally fall-through
         assert self.router.match("effort 高") is None
+
+
+class TestSceneActivatePattern:
+    def setup_method(self) -> None:
+        self.router = RegexRouter(_minimal_config())
+
+    def test_scene_index_with_space(self) -> None:
+        m = self.router.match("切到场景 1")
+        assert m is not None
+        assert m.pattern_id == "scene_activate"
+        assert m.tool_name == "smart_home_control"
+        assert m.tool_args == {
+            "device_id": "scene",
+            "action": "activate",
+            "value": "2023-12-23",
+        }
+        assert m.template_vars == {"scene": "2023-12-23"}
+
+    def test_scene_index_no_space(self) -> None:
+        m = self.router.match("切到场景6")
+        assert m is not None
+        assert m.tool_args["value"] == "study"
+
+    def test_scene_jihuo_verb(self) -> None:
+        m = self.router.match("激活场景7")
+        assert m is not None
+        assert m.tool_args["value"] == "赛博朋克"
+
+    def test_scene_out_of_range(self) -> None:
+        # Index 8 not configured -> regex strict [1-7] -> miss
+        assert self.router.match("切到场景8") is None
+        assert self.router.match("切到场景0") is None
+
+    def test_scene_requires_changjing_word(self) -> None:
+        # Bare "切到 1" no longer matches — must say "场景"
+        assert self.router.match("切到 1") is None
+        assert self.router.match("切到1") is None
+
+    def test_scene_not_collide_with_cc_slash(self) -> None:
+        # "切到opus" must still hit cc_slash_model, not scene
+        m = self.router.match("切到opus")
+        assert m is not None
+        assert m.pattern_id == "cc_slash_model"
 
 
 class TestRenderResponse:

@@ -690,6 +690,19 @@ regex_router:
     电脑灯: desk_lights
     灯: all_lights
 
+  # Scene index → canonical Hue scene name. "切到 N" / "激活 N" via regex.
+  # Update both this map AND the regex range [1-N] in core/regex_router.py
+  # if you add scenes. Canonical name is matched against the bridge via
+  # HueSceneDevice fuzzy match (tier-2 exact name). Testing-phase indices.
+  scene_alias:
+    "1": "2023-12-23"
+    "2": "Hoho"
+    "3": "lol"
+    "4": "Ocean"
+    "5": "pink"
+    "6": "study"
+    "7": "赛博朋克"
+
   # TTS template pool. random.choice per turn. Variables: {tool_result}
   # plus per-pattern template_vars (e.g. {device}, {value}, {minutes}, {arg}).
   templates:
@@ -738,3 +751,6 @@ regex_router:
     cc_slash_effort:
       - "好，effort {arg}了。"
       - "{arg}了。"
+    scene_activate:
+      - "好，{scene}场景。"
+      - "切到{scene}了。"
