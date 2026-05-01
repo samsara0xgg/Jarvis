@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1531,3 +1532,337 @@ class TestCCSlashYAMLSkill:
             interp.execute(skill, {"command": "compact"})
         # No trailing space when args empty (argv[4]=write-chars, argv[5]=text)
         assert mock_run.call_args_list[0].args[0][5] == "/compact"
+
+
+# ---------------------------------------------------------------------------
+# cc_read_state action + cc_show YAML skill (cc_bridge Phase 1B)
+# ---------------------------------------------------------------------------
+
+
+def _cc_read_state_skill(**action_overrides) -> dict:
+    """Minimal skill driving the cc_read_state action."""
+    action = {"type": "cc_read_state"}
+    action.update(action_overrides)
+    return {
+        "name": "test_cc_read_state",
+        "description": "Read cc state",
+        "parameters": [],
+        "action": action,
+        "response": {"template": "{{ result }}", "error_template": "fail"},
+    }
+
+
+def _list_panes_payload(panes: list[dict]) -> str:
+    """Render a list-panes JSON payload like zellij would emit."""
+    return json.dumps(panes)
+
+
+_DEFAULT_PANE = {
+    "id": 1,
+    "is_plugin": False,
+    "is_focused": True,
+    "title": "Pane #2",
+    "pane_command": "claude",
+    "pane_cwd": "/tmp/proj",
+}
+
+_PLUGIN_PANE = {
+    "id": 0,
+    "is_plugin": True,
+    "is_focused": False,
+    "title": "Pane #2",   # same title as default — must be skipped (is_plugin)
+    "pane_cwd": None,
+}
+
+
+def _subprocess_factory(panes_json: str, dump_text: str = "$ ls\nfile1\nfile2\n"):
+    """Return a fake subprocess.run that dispatches by argv inspection."""
+
+    def _fake_run(argv, **kwargs):
+        if "list-panes" in argv:
+            return MagicMock(returncode=0, stdout=panes_json, stderr="")
+        if "dump-screen" in argv:
+            return MagicMock(returncode=0, stdout=dump_text, stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    return _fake_run
+
+
+class TestCCReadStateResolver:
+    def test_resolver_matches_title_returns_terminal_id_and_cwd(self):
+        skill = _cc_read_state_skill()
+        panes = _list_panes_payload([_PLUGIN_PANE, _DEFAULT_PANE])
+        with patch(
+            "core.yaml_interpreter.subprocess.run",
+            side_effect=_subprocess_factory(panes),
+        ):
+            with patch(
+                "core.yaml_interpreter.cc_jsonl_reader.find_recent_jsonls",
+                return_value=[],
+            ):
+                out = YAMLInterpreter().execute(skill, {})
+        assert "终端状态" in out
+        assert "file1" in out
+
+    def test_resolver_skips_plugin_panes_with_same_title(self):
+        skill = _cc_read_state_skill()
+        # Only the plugin pane has the matching title — should fail.
+        panes = _list_panes_payload([_PLUGIN_PANE])
+        with patch(
+            "core.yaml_interpreter.subprocess.run",
+            side_effect=_subprocess_factory(panes),
+        ):
+            out = YAMLInterpreter().execute(skill, {})
+        assert out == "fail"
+
+    def test_resolver_returns_error_template_when_title_missing(self):
+        skill = _cc_read_state_skill(pane_title="Pane #99")
+        panes = _list_panes_payload([_DEFAULT_PANE])
+        with patch(
+            "core.yaml_interpreter.subprocess.run",
+            side_effect=_subprocess_factory(panes),
+        ):
+            out = YAMLInterpreter().execute(skill, {})
+        assert out == "fail"
+
+    def test_resolver_passes_session_to_subprocess(self):
+        skill = _cc_read_state_skill(session="frontend")
+        panes = _list_panes_payload([_DEFAULT_PANE])
+        captured: list[list] = []
+
+        def _capture(argv, **kwargs):
+            captured.append(argv)
+            return _subprocess_factory(panes)(argv, **kwargs)
+
+        with patch("core.yaml_interpreter.subprocess.run", side_effect=_capture):
+            with patch(
+                "core.yaml_interpreter.cc_jsonl_reader.find_recent_jsonls",
+                return_value=[],
+            ):
+                YAMLInterpreter().execute(skill, {})
+        list_panes_argv = next(a for a in captured if "list-panes" in a)
+        assert list_panes_argv[:3] == ["zellij", "--session", "frontend"]
+
+
+class TestCCReadStateExecution:
+    def test_invalid_session_short_circuits_before_subprocess(self):
+        skill = _cc_read_state_skill(session="--config evil")
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            out = YAMLInterpreter().execute(skill, {})
+        mock_run.assert_not_called()
+        assert out == "fail"
+
+    def test_candidates_rendered_with_user_assistant_and_tool_blocks(self, tmp_path):
+        """Candidate format must surface user prompt + assistant text + tools so LLM can fingerprint."""
+        from core.cc_jsonl_reader import CCCandidate, ToolCall
+
+        skill = _cc_read_state_skill()
+        panes = _list_panes_payload([_DEFAULT_PANE])
+        cand = CCCandidate(
+            jsonl_path=tmp_path / "abc12345-rest.jsonl",
+            session_id="abc12345-rest",
+            mtime=time.time() - 30,
+            last_user_prompt="帮我修 router 的 bug",
+            last_assistant_text="Let me grep for that",
+            recent_tool_calls=[ToolCall(name="Grep", input_summary="router")],
+            empty=False,
+        )
+        with patch(
+            "core.yaml_interpreter.subprocess.run",
+            side_effect=_subprocess_factory(panes),
+        ):
+            with patch(
+                "core.yaml_interpreter.cc_jsonl_reader.find_recent_jsonls",
+                return_value=[cand.jsonl_path],
+            ):
+                with patch(
+                    "core.yaml_interpreter.cc_jsonl_reader.read_recent_exchange",
+                    return_value=cand,
+                ):
+                    out = YAMLInterpreter().execute(skill, {})
+        # User prompt and assistant text must appear in the candidate block
+        assert "帮我修 router 的 bug" in out
+        assert "Let me grep for that" in out
+        # Tool call rendered with name(input_summary)
+        assert "Grep(router)" in out
+        # Session id prefix shown (first 8 chars)
+        assert "abc12345" in out
+        # Matching instructions present
+        assert "匹配指引" in out
+
+    def test_no_candidates_falls_back_to_viewport_only(self):
+        skill = _cc_read_state_skill()
+        panes = _list_panes_payload([_DEFAULT_PANE])
+        with patch(
+            "core.yaml_interpreter.subprocess.run",
+            side_effect=_subprocess_factory(panes, dump_text="some terminal output\n"),
+        ):
+            with patch(
+                "core.yaml_interpreter.cc_jsonl_reader.find_recent_jsonls",
+                return_value=[],
+            ):
+                out = YAMLInterpreter().execute(skill, {})
+        # Viewport must still appear
+        assert "some terminal output" in out
+        # And the no-candidates fallback message
+        assert "没找到 cc 对话日志候选" in out
+        # Matching instructions still appear (LLM told to use viewport alone)
+        assert "匹配指引" in out
+
+    def test_top_n_candidates_passed_to_jsonl_reader(self, tmp_path):
+        """cc_show should request 3 candidates from find_recent_jsonls."""
+        skill = _cc_read_state_skill()
+        panes = _list_panes_payload([_DEFAULT_PANE])
+        with patch(
+            "core.yaml_interpreter.subprocess.run",
+            side_effect=_subprocess_factory(panes),
+        ):
+            with patch(
+                "core.yaml_interpreter.cc_jsonl_reader.find_recent_jsonls",
+                return_value=[],
+            ) as mock_find:
+                YAMLInterpreter().execute(skill, {})
+        mock_find.assert_called_once()
+        # Second positional or keyword arg should be n=3
+        call_kwargs = mock_find.call_args.kwargs
+        call_args = mock_find.call_args.args
+        n = call_kwargs.get("n", call_args[1] if len(call_args) > 1 else None)
+        assert n == 3
+
+    def test_empty_candidates_filtered_from_output(self, tmp_path):
+        """Candidates with empty=True should be skipped — they have no fingerprint to match."""
+        from core.cc_jsonl_reader import CCCandidate
+
+        skill = _cc_read_state_skill()
+        panes = _list_panes_payload([_DEFAULT_PANE])
+        empty_cand = CCCandidate(
+            jsonl_path=tmp_path / "empty.jsonl",
+            session_id="empty-session",
+            mtime=time.time(),
+            empty=True,
+        )
+        good_cand = CCCandidate(
+            jsonl_path=tmp_path / "good.jsonl",
+            session_id="good-session",
+            mtime=time.time() - 60,
+            last_assistant_text="real content",
+            empty=False,
+        )
+        with patch(
+            "core.yaml_interpreter.subprocess.run",
+            side_effect=_subprocess_factory(panes),
+        ):
+            with patch(
+                "core.yaml_interpreter.cc_jsonl_reader.find_recent_jsonls",
+                return_value=[empty_cand.jsonl_path, good_cand.jsonl_path],
+            ):
+                with patch(
+                    "core.yaml_interpreter.cc_jsonl_reader.read_recent_exchange",
+                    side_effect=[empty_cand, good_cand],
+                ):
+                    out = YAMLInterpreter().execute(skill, {})
+        assert "good-session"[:8] in out
+        assert "empty-se"  not in out or "empty-session" not in out  # not surfaced
+
+    def test_oversized_dump_truncated_to_8kb(self):
+        skill = _cc_read_state_skill()
+        panes = _list_panes_payload([_DEFAULT_PANE])
+        big = "x" * 20000  # 20KB > 8KB cap
+        with patch(
+            "core.yaml_interpreter.subprocess.run",
+            side_effect=_subprocess_factory(panes, dump_text=big),
+        ):
+            with patch(
+                "core.yaml_interpreter.cc_jsonl_reader.find_recent_jsonls",
+                return_value=[],
+            ):
+                out = YAMLInterpreter().execute(skill, {})
+        # Cap is on the full dump, but ui_tail is just the last 25 lines so it's a
+        # single trailing block. Truncation marker only appears if >8KB.
+        assert "[viewport truncated]" in out
+
+    def test_dump_screen_subprocess_failure_returns_error_template(self):
+        skill = _cc_read_state_skill()
+        panes = _list_panes_payload([_DEFAULT_PANE])
+
+        def _fake_run(argv, **kwargs):
+            if "list-panes" in argv:
+                return MagicMock(returncode=0, stdout=panes, stderr="")
+            if "dump-screen" in argv:
+                from subprocess import CalledProcessError
+                raise CalledProcessError(1, argv, output="", stderr="dump failed")
+            return MagicMock(returncode=0)
+
+        with patch("core.yaml_interpreter.subprocess.run", side_effect=_fake_run):
+            out = YAMLInterpreter().execute(skill, {})
+        # error_template is the canonical fallback string.
+        assert out == "fail" or "dump failed" in out
+
+    def test_zellij_not_installed_returns_error_template(self):
+        skill = _cc_read_state_skill()
+        with patch(
+            "core.yaml_interpreter.subprocess.run",
+            side_effect=FileNotFoundError("zellij"),
+        ):
+            out = YAMLInterpreter().execute(skill, {})
+        assert out == "fail"
+
+    def test_pane_id_format_is_terminal_underscore_n(self):
+        skill = _cc_read_state_skill()
+        panes = _list_panes_payload([_DEFAULT_PANE])
+        captured: list[list] = []
+
+        def _capture(argv, **kwargs):
+            captured.append(argv)
+            if "list-panes" in argv:
+                return MagicMock(returncode=0, stdout=panes, stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("core.yaml_interpreter.subprocess.run", side_effect=_capture):
+            with patch(
+                "core.yaml_interpreter.cc_jsonl_reader.find_recent_jsonls",
+                return_value=[],
+            ):
+                YAMLInterpreter().execute(skill, {})
+        dump_argv = next(a for a in captured if "dump-screen" in a)
+        assert "--pane-id" in dump_argv
+        idx = dump_argv.index("--pane-id")
+        assert dump_argv[idx + 1] == "terminal_1"
+
+
+class TestCCShowYAMLSkill:
+    def test_cc_show_yaml_loads_and_registers(self):
+        interp = YAMLInterpreter()
+        skill = interp.load_skill("skills/cc_show.yaml")
+        assert skill["name"] == "cc_show"
+        tool = interp.to_tool_definition(skill)
+        assert tool["name"] == "cc_show"
+        # Both params optional — required list should be empty.
+        assert tool["input_schema"]["required"] == []
+
+    def test_cc_show_default_params_target_pane_2_in_session_cc(self):
+        interp = YAMLInterpreter()
+        skill = interp.load_skill("skills/cc_show.yaml")
+        panes = _list_panes_payload([_DEFAULT_PANE])
+        captured: list[list] = []
+
+        def _capture(argv, **kwargs):
+            captured.append(argv)
+            if "list-panes" in argv:
+                return MagicMock(returncode=0, stdout=panes, stderr="")
+            return MagicMock(returncode=0, stdout="$ idle\n", stderr="")
+
+        with patch("core.yaml_interpreter.subprocess.run", side_effect=_capture):
+            with patch(
+                "core.yaml_interpreter.cc_jsonl_reader.find_recent_jsonls",
+                return_value=[],
+            ):
+                interp.execute(skill, {})
+        list_argv = next(a for a in captured if "list-panes" in a)
+        assert list_argv[:3] == ["zellij", "--session", "cc"]
+
+    def test_cc_show_marked_read_only(self):
+        interp = YAMLInterpreter()
+        skill = interp.load_skill("skills/cc_show.yaml")
+        assert skill["annotations"]["read_only"] is True
+        assert skill["annotations"]["destructive"] is False

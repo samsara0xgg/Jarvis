@@ -21,6 +21,7 @@ hard-coded fallback string.
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -35,6 +36,8 @@ from urllib.parse import urlparse
 import requests
 import yaml
 from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+from core import cc_jsonl_reader
 
 LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +69,64 @@ _OSASCRIPT_TIMEOUT_S = 5.0
 _ZELLIJ_TIMEOUT_S = 3.0
 _ZELLIJ_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _ZELLIJ_ENTER_BYTE = "13"  # CR — what a real keyboard sends on Enter
+
+# cc_read_state: cap on the dump-screen text returned to the LLM. Average
+# zellij viewport is ~3KB; 8KB headroom covers wider terminals while
+# keeping tool-result tokens bounded.
+_CC_READ_DUMP_MAX_BYTES = 8000
+# Number of trailing viewport lines forwarded as "ui_tail" — captures
+# current UI state (permission prompts, "Done" markers, in-flight
+# rendering) for LLM matching against jsonl candidates.
+_CC_READ_UI_TAIL_LINES = 25
+# Number of recent jsonl candidates to feed the chat LLM. The LLM
+# correlates each candidate's user/assistant/tool fingerprint against
+# the viewport to pick the right one — no deterministic pane→jsonl
+# binding is required. 3 covers Allen's typical concurrent cc count.
+_CC_READ_CANDIDATE_COUNT = 3
+
+
+class _PaneNotFound(LookupError):
+    """Raised when ``_resolve_zellij_pane`` finds no pane with the given title."""
+
+
+def _format_relative_time(seconds: float) -> str:
+    """Compact 'X 前' style relative-time string for cc candidate timestamps."""
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return f"{int(seconds)} 秒"
+    if seconds < 3600:
+        return f"{int(seconds / 60)} 分钟"
+    if seconds < 86400:
+        return f"{int(seconds / 3600)} 小时"
+    return f"{int(seconds / 86400)} 天"
+
+
+def _render_cc_candidate(
+    idx: int,
+    cand: "cc_jsonl_reader.CCCandidate",
+    now_epoch: float,
+) -> str:
+    """Format one cc jsonl candidate as a fingerprint block for LLM matching.
+
+    The structure (user prompt → assistant text → tool calls) gives the
+    chat LLM three independent fingerprints to correlate against the
+    pane viewport. user prompts are usually the most distinctive — short,
+    human-written, often verbatim in the viewport.
+    """
+    rel = _format_relative_time(now_epoch - cand.mtime)
+    sid_short = cand.session_id[:8] if cand.session_id else "?"
+    lines = [f"### 候选 {idx} — session {sid_short} — {rel}前"]
+    if cand.last_user_prompt:
+        lines.append(f"↳ user 最近问：{cand.last_user_prompt}")
+    if cand.last_assistant_text:
+        lines.append(f"↳ assistant 最近答：{cand.last_assistant_text}")
+    if cand.recent_tool_calls:
+        tools_str = " / ".join(
+            f"{tc.name}({tc.input_summary})" if tc.input_summary else tc.name
+            for tc in cand.recent_tool_calls
+        )
+        lines.append(f"↳ tool calls：{tools_str}")
+    return "\n".join(lines)
 
 # Whitelist of special keys for the zellij_send ``keys`` parameter.
 # Each value is a space-separated decimal byte sequence accepted by
@@ -226,6 +287,8 @@ class YAMLInterpreter:
             return self._execute_macos_paste(skill, params)
         if atype == "zellij_send":
             return self._execute_zellij_send(skill, params)
+        if atype == "cc_read_state":
+            return self._execute_cc_read_state(skill, params)
 
         msg = f"Unsupported action type: {atype}"
         LOGGER.warning(msg)
@@ -488,6 +551,218 @@ class YAMLInterpreter:
         except Exception:
             LOGGER.exception("zellij_send response render failed for %s", skill.get("name"))
             return error_template if error_template else _FALLBACK_ERROR
+
+    def _execute_cc_read_state(self, skill: dict, params: dict) -> str:
+        """cc_read_state: read a cc pane's recent state, plus jsonl candidates.
+
+        Returns three sections to the chat LLM:
+
+        1. The dump-screen viewport of the named pane — deterministic
+           UI state (permission prompts, ✻ Done markers, in-flight
+           rendering).
+        2. Up to ``_CC_READ_CANDIDATE_COUNT`` recent jsonl candidates
+           from the pane's cwd, each with last-user-prompt /
+           last-assistant-text / recent tool calls. The LLM
+           content-correlates the viewport against these candidates
+           to pick the right one — no deterministic pane→jsonl
+           binding is required.
+        3. Matching instructions telling the LLM how to combine the
+           viewport with the matched candidate.
+
+        Action params:
+            session    : zellij session name (default "cc"). Validated
+                         by ``_ZELLIJ_SESSION_RE``.
+            pane_title : zellij pane title to target (default "Pane #2"
+                         — Allen's primary cc pane). Resolved at call
+                         time via ``zellij action list-panes --json``;
+                         pane_id is not stored so layout reordering
+                         doesn't break the link.
+
+        On dump-screen failure, the error template fires. Candidate
+        lookup failure (no jsonl found) degrades gracefully — the LLM
+        still gets the viewport.
+        """
+        action = skill["action"]
+        response_cfg = skill.get("response", {})
+        error_template = response_cfg.get("error_template")
+
+        try:
+            session = self._render(action.get("session", "cc"), params).strip()
+            pane_title = self._render(
+                action.get("pane_title", "Pane #2"), params
+            ).strip()
+        except Exception:
+            LOGGER.exception("cc_read_state render failed for %s", skill.get("name"))
+            return error_template if error_template else _FALLBACK_ERROR
+
+        if not _ZELLIJ_SESSION_RE.match(session):
+            msg = f"非法 zellij session 名: {session!r}"
+            LOGGER.warning(msg)
+            return error_template if error_template else msg
+
+        try:
+            pane_id, pane_cwd = self._resolve_zellij_pane(session, pane_title)
+        except FileNotFoundError:
+            return error_template if error_template else "zellij 未安装"
+        except subprocess.TimeoutExpired:
+            return error_template if error_template else "zellij 响应超时"
+        except _PaneNotFound as exc:
+            LOGGER.warning("cc_read_state: pane not found: %s", exc)
+            return error_template if error_template else str(exc)
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or b"").decode("utf-8", "replace").strip()
+            LOGGER.warning("cc_read_state: list-panes failed: %s", stderr)
+            return error_template if error_template else f"zellij 错误: {stderr[:80]}"
+
+        # Dump-screen — viewport text, no ANSI (LLM doesn't need colors).
+        try:
+            dump_result = subprocess.run(
+                [
+                    "zellij",
+                    "--session",
+                    session,
+                    "action",
+                    "dump-screen",
+                    "--pane-id",
+                    pane_id,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=_ZELLIJ_TIMEOUT_S,
+                check=True,
+            )
+            dump_text = dump_result.stdout
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip() or (exc.stdout or "").strip()
+            LOGGER.warning("cc_read_state: dump-screen failed: %s", stderr)
+            return error_template if error_template else f"zellij 错误: {stderr[:80]}"
+        except subprocess.TimeoutExpired:
+            return error_template if error_template else "dump-screen 超时"
+
+        if len(dump_text) > _CC_READ_DUMP_MAX_BYTES:
+            dump_text = "...[viewport truncated]...\n" + dump_text[-_CC_READ_DUMP_MAX_BYTES:]
+
+        ui_tail = "\n".join(dump_text.rstrip().splitlines()[-_CC_READ_UI_TAIL_LINES:])
+
+        # jsonl candidates — let LLM correlate against viewport. No
+        # deterministic mapping; LLM picks based on content match.
+        candidates: list[cc_jsonl_reader.CCCandidate] = []
+        if pane_cwd:
+            for jsonl_path in cc_jsonl_reader.find_recent_jsonls(
+                pane_cwd, n=_CC_READ_CANDIDATE_COUNT
+            ):
+                cand = cc_jsonl_reader.read_recent_exchange(jsonl_path)
+                if not cand.empty:
+                    candidates.append(cand)
+
+        formatted = self._format_cc_state_with_candidates(
+            pane_title, ui_tail, candidates
+        )
+        template = response_cfg.get("template", "{{ result }}")
+        try:
+            return self._render(
+                template,
+                {
+                    **params,
+                    "result": formatted,
+                    "session": session,
+                    "pane_title": pane_title,
+                    "pane_id": pane_id,
+                },
+            )
+        except Exception:
+            LOGGER.exception("cc_read_state response render failed for %s", skill.get("name"))
+            return error_template if error_template else _FALLBACK_ERROR
+
+    def _resolve_zellij_pane(self, session: str, pane_title: str) -> tuple[str, str]:
+        """Find the pane_id and cwd of the named pane in a zellij session.
+
+        Calls ``zellij --session <s> action list-panes --json --command``
+        and matches a non-plugin pane whose ``title`` equals ``pane_title``.
+        Returns ``(pane_id, pane_cwd)`` where ``pane_id`` is in the form
+        ``terminal_<n>`` accepted by zellij CLI.
+
+        Raises:
+            _PaneNotFound       — no matching pane in the session
+            FileNotFoundError   — zellij not on PATH
+            subprocess.TimeoutExpired
+            subprocess.CalledProcessError — zellij CLI errored
+        """
+        result = subprocess.run(
+            ["zellij", "--session", session, "action", "list-panes", "--json", "--command"],
+            capture_output=True,
+            text=True,
+            timeout=_ZELLIJ_TIMEOUT_S,
+            check=True,
+        )
+        try:
+            panes = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise _PaneNotFound(f"无法解析 zellij list-panes 输出: {exc}") from exc
+
+        if not isinstance(panes, list):
+            raise _PaneNotFound("zellij list-panes 返回非列表")
+
+        for pane in panes:
+            if not isinstance(pane, dict):
+                continue
+            if pane.get("is_plugin"):
+                continue
+            if pane.get("title") != pane_title:
+                continue
+            pane_num = pane.get("id")
+            if pane_num is None:
+                continue
+            cwd = pane.get("pane_cwd", "") or ""
+            return f"terminal_{pane_num}", cwd
+
+        raise _PaneNotFound(f"未找到 pane: title={pane_title!r} session={session!r}")
+
+    @staticmethod
+    def _format_cc_state_with_candidates(
+        pane_title: str,
+        ui_tail: str,
+        candidates: list[cc_jsonl_reader.CCCandidate],
+    ) -> str:
+        """Render viewport + N candidates + matching instructions for the chat LLM.
+
+        The chat LLM reads this as the cc_show tool result and is
+        expected to:
+            1. Match ``ui_tail`` content against each candidate's
+               ``last_user_prompt`` / ``last_assistant_text`` / tool call
+               summaries.
+            2. Use the matched candidate as the cc conversation source
+               for whatever the user asked.
+            3. Fall back to viewport-only narration if no candidate
+               matches (cc just started, idle too long, etc.).
+        """
+        parts: list[str] = [
+            f"## cc Pane {pane_title!r} 终端状态\n{ui_tail}"
+        ]
+
+        if not candidates:
+            parts.append(
+                "## 该项目没找到 cc 对话日志候选\n"
+                "（可能 cc 刚起且还没写 jsonl，或者 pane 的 cwd 不是任何 cc "
+                "项目目录。仅用 viewport 信息回答即可。）"
+            )
+        else:
+            now = time.time()
+            cand_lines = [
+                f"## 该项目最近活跃的 cc 对话日志候选（前 {len(candidates)} 个，按 mtime 倒序）"
+            ]
+            for idx, cand in enumerate(candidates, 1):
+                cand_lines.append(_render_cc_candidate(idx, cand, now))
+            parts.append("\n\n".join(cand_lines))
+
+        parts.append(
+            "## 给 LLM 的匹配指引\n"
+            "viewport 显示的是这个 pane 的当前 UI 状态。请把 viewport 内容跟上面候选的 "
+            "user / assistant / tool 比对，**挑出最一致的那一条候选**作为这个 pane 对应的 "
+            "cc 对话源，回答用户时综合 viewport + 匹配候选。如果 viewport 跟所有候选都对不上"
+            "（cc 刚起或长时间 idle），仅基于 viewport 信息回答。"
+        )
+        return "\n\n".join(parts)
 
     @staticmethod
     def _build_paste_argv(target: str) -> list[str]:

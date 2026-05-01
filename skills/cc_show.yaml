@@ -1,0 +1,84 @@
+name: cc_show
+description: |
+  Read what Claude Code (cc) is currently doing in a specific zellij
+  pane. Returns:
+    - the pane's terminal viewport tail (current UI state — permission
+      prompts, ✻ Done markers, in-flight rendering)
+    - up to 3 recent cc conversation log (jsonl) candidates from the
+      pane's project directory, each fingerprinted with last user
+      prompt + last assistant text + recent tool calls
+    - explicit instructions for YOU (the calling LLM) to match the
+      viewport against the candidates and pick the right one
+
+  YOU MUST do the matching work: compare the viewport content to each
+  candidate's user / assistant / tool fingerprints, pick the one that
+  best correlates, then synthesize a 1-2 sentence answer combining
+  viewport (UI state) + matched candidate (conversation content).
+  If no candidate matches the viewport (cc just started or has been
+  idle), use the viewport alone.
+
+  CRITICAL — answer SHAPE depends on what the user asked:
+    - "干啥/在做什么/在干嘛" → focus on CURRENT activity. Look at
+      viewport's running tool / cogitating marker, plus the matched
+      candidate's most recent tool_use entries. Output verb-first:
+      "cc 在跑 X / 在改 Y / 在等 Z".
+    - "说啥/最后说什么/怎么说" → focus on the LAST ASSISTANT TEXT
+      content from the matched candidate. If text is empty (only tool
+      calls), say "cc 没说话只在跑工具". Output content-first:
+      paraphrase the actual reply substance, not the activity.
+    - "怎么样/进度/弄好了吗/做完了吗" → focus on COMPLETION STATUS.
+      Look for ✻ Done / 已完成 / error markers / permission prompts
+      in viewport. Output status-first: "做完了 / 还在跑 / 卡在权限
+      确认 / 报错了".
+
+  Three different question shapes MUST yield three meaningfully
+  different answers from the same tool result. Do not collapse to a
+  generic "cc 在跑 X" summary regardless of how the user asked.
+
+  Use ONLY when the user asks Jarvis what cc said / is doing /
+  progress on. Anchor phrases:
+    - "cc 干啥呢" / "cc 在干嘛" / "cc 在做什么"
+    - "cc 说啥了" / "cc 最后说什么" / "cc 怎么说"
+    - "cc 怎么样了" / "cc 进度" / "cc 弄好了吗"
+    - "show cc" / "what's cc doing"
+    - "看下 cc" / "瞧瞧 cc"
+
+  Do NOT trigger on: "让 cc..." (cc_tell — that ROUTES a prompt TO cc),
+  or "打断 cc" (cc_interrupt). cc_show only READS, never writes.
+
+  Read-only. Does not modify cc state. Requires zellij installed and
+  the target pane running cc. Default target is the pane titled
+  "Pane #2" in session "cc".
+
+version: 1
+status: live
+created_by: dogfood
+
+parameters:
+  - name: session
+    type: string
+    description: 'Optional zellij session name. Default "cc".'
+    required: false
+    default: "cc"
+  - name: pane_title
+    type: string
+    description: 'Optional zellij pane title. Default "Pane #2" (Allen primary cc).'
+    required: false
+    default: "Pane #2"
+
+annotations:
+  read_only: true
+  destructive: false
+  idempotent: true
+
+action:
+  type: cc_read_state
+  session: "{{ session }}"
+  pane_title: "{{ pane_title }}"
+
+response:
+  template: "{{ result }}"
+  error_template: "读不到 cc — 检查 zellij session 和 pane（zellij --session cc action list-panes）"
+
+security:
+  requires_auth: false
