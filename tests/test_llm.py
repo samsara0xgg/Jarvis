@@ -776,3 +776,124 @@ def test_chat_openai_uses_prompt_context_system_str():
         assert system_msg["content"] == "IDENTITY\n\nPROFILE\n\nOBSERVATIONS\n\nSITUATION"
     finally:
         sys.modules.pop("openai", None)
+
+
+# --------------------------------------------------------------------------
+# prompt_cache_retention="24h" pinning for gpt-5.4 family on OpenAI native
+# (see core.llm.LLMClient._openai_cache_retention_kwargs).
+# --------------------------------------------------------------------------
+
+def test_openai_cache_retention_returns_24h_for_gpt_5_4_mini_on_openai():
+    client = LLMClient(_make_config(
+        provider="openai",
+        model="gpt-5.4-mini",
+        base_url="https://api.openai.com/v1",
+    ))
+    assert client._openai_cache_retention_kwargs() == {
+        "prompt_cache_retention": "24h",
+    }
+
+
+def test_openai_cache_retention_returns_24h_when_base_url_empty():
+    # Empty base_url = OpenAI default endpoint — should still pin.
+    client = LLMClient(_make_config(
+        provider="openai",
+        model="gpt-5.4-nano",
+        base_url="",
+    ))
+    assert client._openai_cache_retention_kwargs() == {
+        "prompt_cache_retention": "24h",
+    }
+
+
+def test_openai_cache_retention_skipped_for_xai():
+    # xAI shares the OpenAI-compat code path but doesn't accept this param.
+    client = LLMClient(_make_config(
+        provider="openai",
+        model="gpt-5.4-mini",
+        base_url="https://api.x.ai/v1",
+    ))
+    assert client._openai_cache_retention_kwargs() == {}
+
+
+def test_openai_cache_retention_skipped_for_groq():
+    client = LLMClient(_make_config(
+        provider="openai",
+        model="llama-3.3-70b-versatile",
+        base_url="https://api.groq.com/openai/v1",
+    ))
+    assert client._openai_cache_retention_kwargs() == {}
+
+
+def test_openai_cache_retention_skipped_for_gpt_4o():
+    # gpt-4o family doesn't support prompt_cache_retention.
+    client = LLMClient(_make_config(
+        provider="openai",
+        model="gpt-4o-mini",
+        base_url="https://api.openai.com/v1",
+    ))
+    assert client._openai_cache_retention_kwargs() == {}
+
+
+def test_openai_cache_retention_skipped_for_gpt_5_5():
+    # gpt-5.5+ already defaults to 24h server-side, no need to send.
+    client = LLMClient(_make_config(
+        provider="openai",
+        model="gpt-5.5",
+        base_url="https://api.openai.com/v1",
+    ))
+    assert client._openai_cache_retention_kwargs() == {}
+
+
+def test_chat_openai_sends_prompt_cache_retention_for_gpt_5_4_mini():
+    """End-to-end: chat() with gpt-5.4-mini on OpenAI passes the param to SDK."""
+    _install_fake_openai()
+    try:
+        client = LLMClient(_make_config(
+            provider="openai",
+            model="gpt-5.4-mini",
+            base_url="https://api.openai.com/v1",
+        ))
+        mock_openai = client._get_openai_client()
+        captured_kwargs: dict = {}
+
+        def _capture(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeOAIResponse([
+                _FakeOAIChoice(_FakeOAIMessage(content="ok", tool_calls=[]))
+            ])
+
+        mock_openai.chat.completions.create = MagicMock(side_effect=_capture)
+
+        client.chat("Hi")
+
+        assert captured_kwargs.get("prompt_cache_retention") == "24h"
+    finally:
+        sys.modules.pop("openai", None)
+
+
+def test_chat_openai_omits_prompt_cache_retention_for_xai():
+    """xAI base_url must NOT receive prompt_cache_retention."""
+    _install_fake_openai()
+    try:
+        client = LLMClient(_make_config(
+            provider="openai",
+            model="grok-4.20-0309-non-reasoning",
+            base_url="https://api.x.ai/v1",
+        ))
+        mock_openai = client._get_openai_client()
+        captured_kwargs: dict = {}
+
+        def _capture(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeOAIResponse([
+                _FakeOAIChoice(_FakeOAIMessage(content="ok", tool_calls=[]))
+            ])
+
+        mock_openai.chat.completions.create = MagicMock(side_effect=_capture)
+
+        client.chat("Hi")
+
+        assert "prompt_cache_retention" not in captured_kwargs
+    finally:
+        sys.modules.pop("openai", None)

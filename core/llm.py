@@ -224,6 +224,23 @@ class LLMClient:
             return {"x-grok-conv-id": self._grok_conv_id}
         return {}
 
+    def _openai_cache_retention_kwargs(self) -> dict[str, Any]:
+        """Pin gpt-5.4 family to 24h prompt cache TTL.
+
+        OpenAI's ``prompt_cache_retention`` (landed 2025-11-14) accepts
+        ``"in_memory"`` (gpt-5.4 default per docs, ~1h hard cap) or
+        ``"24h"``. We pass ``"24h"`` so a future OpenAI default flip
+        can't quietly spike cold-start latency. No-op for non-OpenAI
+        bases (xAI/Groq/Cerebras share this code path but don't
+        support the param) and non-gpt-5.4 models (gpt-4o doesn't
+        support it; gpt-5.5+ already defaults to 24h)."""
+        base = self._base_url or ""
+        if base and "api.openai.com" not in base:
+            return {}
+        if not self.model.startswith("gpt-5.4"):
+            return {}
+        return {"prompt_cache_retention": "24h"}
+
     def _apply_preset(self, name: str) -> None:
         """Apply a named model preset. Resets ``_client`` to force re-init.
 
@@ -539,6 +556,7 @@ class LLMClient:
             headers = self._xai_cache_headers()
             if headers:
                 kwargs["extra_headers"] = headers
+            kwargs.update(self._openai_cache_retention_kwargs())
 
             self.logger.info("Sending request to OpenAI (%s)", self.model)
             response = self._call_with_retry(lambda: client.chat.completions.create(**kwargs))
@@ -1282,6 +1300,7 @@ class LLMClient:
             headers = self._xai_cache_headers()
             if headers:
                 kwargs["extra_headers"] = headers
+            kwargs.update(self._openai_cache_retention_kwargs())
 
             try:
                 response = self._call_with_retry(
