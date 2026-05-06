@@ -7,8 +7,10 @@ import json
 import logging
 import os
 import shutil
+import socket
 import struct
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -60,6 +62,25 @@ _ws_routes: dict[str, Any] = {}          # session_id → WebSocket
 _ws_routes_lock = asyncio.Lock()
 _active_chats: dict[str, dict] = {}      # session_id → {turn_id, abort_event, ws_client}
 _active_chats_lock = asyncio.Lock()
+
+# --- Inherent card bridge: broadcast jarvis response.* events to every
+# connected /inherent/ws client. Multiple clients = multiple Electron cards
+# all showing the same content (acceptable for single-user setup).
+_inherent_clients: set[Any] = set()
+
+# --- cc-mode turn counters for trace.turn_id (process-local, fine to reset
+# on restart since trace_id is the canonical key). Keyed by ':cc'-suffixed
+# session_id so they live in their own namespace and never collide with
+# /api/chat turn ids.
+_cc_turn_counters: dict[str, int] = {}
+_cc_turn_lock = threading.Lock()
+
+
+def _next_cc_turn(session_id: str) -> int:
+    with _cc_turn_lock:
+        n = _cc_turn_counters.get(session_id, 0) + 1
+        _cc_turn_counters[session_id] = n
+        return n
 
 
 async def _send_ctrl(ws: Any, payload: dict) -> None:
@@ -151,6 +172,72 @@ def _compute_played_texts(
         break
     return played
 
+
+def _write_cc_trace(
+    jarvis_app: Any,
+    req: "ToolExecuteRequest",
+    result: str | None,
+    err: Exception | None,
+    elapsed_ms: int,
+) -> None:
+    """Write a single trace row for a cc-mode tool execution.
+
+    Best-effort caller is responsible for swallowing exceptions; this
+    function only validates inputs and delegates to ``trace_log.log_turn``.
+    """
+    from memory.trace import (
+        EndReason, InputDevice, Mode, PathTaken, TriggerSource,
+    )
+
+    trace_log = getattr(jarvis_app, "trace_log", None)
+    if trace_log is None:
+        return
+
+    trace_session = f"{req.session_id}:cc" if req.session_id else "cc:anonymous"
+    turn_id = _next_cc_turn(trace_session)
+
+    # tool_calls — single-element list mirroring the LLM trace shape so
+    # downstream analytics can union over both code paths.
+    tool_call: dict[str, Any] = {
+        "name": req.name,
+        "args": req.args or {},
+        "ms": elapsed_ms,
+    }
+    if err is None:
+        tool_call["result"] = result
+    else:
+        tool_call["error"] = str(err)
+
+    # user_text fallback: if FE didn't send raw input, synthesize from
+    # tool args so the column is never empty for cc rows.
+    user_text = req.user_text
+    if not user_text:
+        if req.name == "cc_tell":
+            user_text = str((req.args or {}).get("text", ""))
+        elif req.name == "cc_slash":
+            cmd = (req.args or {}).get("command", "")
+            extra = (req.args or {}).get("args", "")
+            user_text = f"/{cmd}" + (f" {extra}" if extra else "")
+        else:
+            user_text = f"[{req.name}]"
+
+    trace_log.log_turn(
+        session_id=trace_session,
+        turn_id=turn_id,
+        user_text=user_text,
+        assistant_text="",
+        trigger_source=TriggerSource.WEB_TEXT.value,
+        path_taken=PathTaken.LOCAL.value,
+        tool_calls=[tool_call],
+        latency_ms=elapsed_ms,
+        end_reason=(EndReason.SUCCESS if err is None else EndReason.ERROR).value,
+        error=(None if err is None else str(err)),
+        input_metadata={"hostname": socket.gethostname()},
+        mode=Mode.CC.value,
+        input_device=InputDevice.PET_APP.value,
+    )
+
+
 class ChatRequest(BaseModel):
     text: str
     session_id: str
@@ -166,6 +253,18 @@ class HiddenModeRequest(BaseModel):
 
 class LLMSwitchRequest(BaseModel):
     preset: str
+
+
+class ToolExecuteRequest(BaseModel):
+    name: str
+    args: dict = {}
+    # Trace metadata — optional. session_id ties the row to the panel's
+    # FastAPI session (suffixed ':cc' so turn_id space stays separate from
+    # /api/chat). user_text is the raw input the user typed in cc mode
+    # before this request parsed it into name+args.
+    session_id: str = ""
+    user_text: str = ""
+
 
 AUDIO_DIR = Path(__file__).parent / "audio_cache"
 
@@ -211,6 +310,50 @@ def create_app(jarvis_app: Any) -> FastAPI:
 
     if hasattr(jarvis_app, "event_bus") and jarvis_app.event_bus is not None:
         jarvis_app.event_bus.on("jarvis.tts_cancelled", _on_tts_cancelled)
+
+        # --- Inherent card bridge ---
+        # Forward jarvis response.{start,chunk,final} events as siri:*
+        # protocol JSON to every connected /inherent/ws client. Cross-thread
+        # safe: event_bus.emit fires on jarvis main thread, we hop to the web
+        # asyncio loop via run_coroutine_threadsafe. No-op if no clients
+        # connected (loop not yet captured) — events are simply dropped.
+        def _broadcast_inherent(op: str, payload: dict) -> None:
+            loop = getattr(jarvis_app, "_web_loop", None)
+            if not isinstance(loop, asyncio.AbstractEventLoop):
+                return
+            msg = json.dumps({"op": op, "payload": payload}, ensure_ascii=False)
+
+            async def _fan_out() -> None:
+                dead = []
+                for ws in list(_inherent_clients):
+                    try:
+                        await ws.send_text(msg)
+                    except Exception:
+                        dead.append(ws)
+                for ws in dead:
+                    _inherent_clients.discard(ws)
+
+            asyncio.run_coroutine_threadsafe(_fan_out(), loop)
+
+        def _on_response_start(_payload: dict | None = None) -> None:
+            _broadcast_inherent("open", {
+                "content": "",
+                "streaming": True,
+                "kind": "text",
+            })
+
+        def _on_response_chunk(payload: dict | None = None) -> None:
+            text = (payload or {}).get("text")
+            if not text:
+                return
+            _broadcast_inherent("append", {"token": text})
+
+        def _on_response_final(_payload: dict | None = None) -> None:
+            _broadcast_inherent("done", {"fadeMs": 5000})
+
+        jarvis_app.event_bus.on("response.start", _on_response_start)
+        jarvis_app.event_bus.on("response.chunk", _on_response_chunk)
+        jarvis_app.event_bus.on("response.final", _on_response_final)
 
     AUDIO_DIR.mkdir(exist_ok=True)
 
@@ -278,6 +421,49 @@ def create_app(jarvis_app: Any) -> FastAPI:
             raise HTTPException(400, str(exc))
         LOGGER.info("LLM preset switched to '%s'", req.preset)
         return {"status": "ok", "active": req.preset, "message": msg}
+
+    @app.post("/api/tool/execute")
+    def execute_tool(req: ToolExecuteRequest):
+        """Direct tool / YAML-skill invocation, bypassing the LLM and TTS.
+
+        Used by the pet overlay's cc mode to forward keystrokes to a zellij
+        cc session (cc_tell / cc_slash). Localhost-only by network policy;
+        runs at owner role since the panel is the user's own UI.
+
+        Each successful or failed call writes a row to the trace table with
+        ``mode='cc'`` and ``input_device='pet_app'`` so cc proxy traffic is
+        auditable alongside normal Jarvis turns.
+        """
+        registry = getattr(jarvis_app, "tool_registry", None)
+        if registry is None:
+            raise HTTPException(500, "tool_registry not available")
+        # Validate the tool name is known so we return 404 instead of an
+        # ambiguous "Unknown tool" string from the registry. Validation
+        # failures are NOT traced — they're caller mistakes, not turns.
+        known = {d["name"] for d in registry.get_tool_definitions("owner")}
+        if req.name not in known:
+            raise HTTPException(404, f"Unknown tool: {req.name}")
+
+        args = req.args or {}
+        t0 = time.monotonic()
+        result: str | None = None
+        err: Exception | None = None
+        try:
+            result = registry.execute(req.name, args, user_role="owner")
+        except Exception as exc:
+            err = exc
+            LOGGER.exception("execute_tool %s failed", req.name)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        # Best-effort trace write: never let a trace failure break the call.
+        try:
+            _write_cc_trace(jarvis_app, req, result, err, elapsed_ms)
+        except Exception:
+            LOGGER.warning("cc trace write failed", exc_info=True)
+
+        if err is not None:
+            raise HTTPException(500, f"{err}")
+        return {"ok": True, "result": result}
 
     @app.post("/api/hidden-mode")
     async def toggle_hidden_mode(req: HiddenModeRequest):
@@ -824,6 +1010,33 @@ def create_app(jarvis_app: Any) -> FastAPI:
             async with _ws_routes_lock:
                 if _ws_routes.get(session_id) is ws:
                     _ws_routes.pop(session_id, None)
+
+    @app.websocket("/inherent/ws")
+    async def inherent_ws(ws: WebSocket):
+        """Inherent card bridge endpoint (outbound-only broadcast).
+
+        Server pushes ``{op, payload}`` JSON when jarvis response.* events
+        fire on event_bus. Client (Electron inherent-main) does not send
+        anything yet — the recv loop is only here so disconnects surface
+        as WebSocketDisconnect rather than zombie sockets.
+
+        NB: Must be registered *before* the StaticFiles mount below, or the
+        wildcard "/" mount intercepts the upgrade and StarLette asserts on
+        scope["type"] == "http".
+        """
+        await ws.accept()
+        # Same _web_loop capture trick as tts_stream — must run inside a real
+        # request so TestClient/uvicorn-startup ordering doesn't matter.
+        if not isinstance(getattr(jarvis_app, "_web_loop", None), asyncio.AbstractEventLoop):
+            jarvis_app._web_loop = asyncio.get_running_loop()
+        _inherent_clients.add(ws)
+        try:
+            while True:
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            _inherent_clients.discard(ws)
 
     web_dir = Path(__file__).parent
     app.mount("/", StaticFiles(directory=str(web_dir), html=True, follow_symlink=True), name="static")
