@@ -49,8 +49,6 @@ description: |
     minimize_focused()          — "最小化"
     close_focused()             — "关闭这个窗口"
     close_all_but_current()     — "关掉其他窗口"
-    resize_focused(delta)       — "放大一点" → delta="+100"; "缩小" → delta="-100".
-                                  delta is a signed integer string in pixels.
 
   System:
     set_volume(level)           — "音量调到 30" → level="30" (integer 0-100)
@@ -120,14 +118,6 @@ parameters:
     description: |
       AeroSpace workspace identifier (typically "1"-"9"). Required for
       workspace_switch and move_to_workspace.
-    required: false
-    default: ""
-  - name: delta
-    type: string
-    description: |
-      Signed integer pixel delta for resize_focused. "+100" grows, "-100"
-      shrinks (in the smart direction AeroSpace picks). Required for
-      resize_focused.
     required: false
     default: ""
   - name: level
@@ -288,13 +278,6 @@ action:
           cmd: ["aerospace", "close-all-windows-but-current"]
           timeout_s: 5.0
       response: "已关闭其他窗口"
-
-    resize_focused:
-      steps:
-        - type: shell
-          cmd: ["aerospace", "resize", "smart", "{{ delta }}"]
-          timeout_s: 3.0
-      response: "已调整大小 ({{ delta }}px)"
 
     # ----- System --------------------------------------------------------
 

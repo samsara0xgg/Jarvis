@@ -2396,11 +2396,11 @@ class TestMacGuiYAMLSkill:
         props = td["input_schema"]["properties"]
         assert set(props.keys()) == {
             "action_id", "app", "display",
-            "url", "title_hint", "workspace", "delta", "level",
+            "url", "title_hint", "workspace", "level",
         }
         assert td["input_schema"]["required"] == ["action_id"]
 
-    def test_registry_has_twenty_actions(self):
+    def test_registry_has_nineteen_actions(self):
         _, skill = self._load()
         registry = skill["action"]["registry"]
         assert set(registry.keys()) == {
@@ -2413,9 +2413,10 @@ class TestMacGuiYAMLSkill:
             "focus_app", "focus_monitor", "focus_back_and_forth",
             # workspace
             "workspace_switch",
-            # window state
+            # window state (resize_focused removed — AeroSpace issue #9:
+            # resize doesn't support floating windows, which we use exclusively)
             "fullscreen_focused", "minimize_focused", "close_focused",
-            "close_all_but_current", "resize_focused",
+            "close_all_but_current",
             # system
             "set_volume", "mute_toggle", "lock_screen", "screenshot",
         }
@@ -2687,19 +2688,6 @@ class TestMacGuiYAMLSkill:
         assert out == "已关闭其他窗口"
         assert mock_run.call_args_list[0].args[0] == [
             "aerospace", "close-all-windows-but-current",
-        ]
-
-    def test_resize_focused(self):
-        interp, skill = self._load()
-        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="", returncode=0)
-            out = interp.execute(
-                skill,
-                {"action_id": "resize_focused", "delta": "+100"},
-            )
-        assert out == "已调整大小 (+100px)"
-        assert mock_run.call_args_list[0].args[0] == [
-            "aerospace", "resize", "smart", "+100",
         ]
 
     # ----- System -----------------------------------------------------------
