@@ -1,0 +1,210 @@
+:root {
+  --text-primary: rgba(255, 255, 255, 0.96);
+  --text-secondary: rgba(255, 255, 255, 0.55);
+  --text-tertiary: rgba(255, 255, 255, 0.40);
+  --link: #5ec8ff;
+  --code-bg: rgba(0, 0, 0, 0.22);
+  --code-text: rgba(255, 220, 180, 0.95);
+  --divider: rgba(255, 255, 255, 0.10);
+  --radius-card: 30px;
+  --radius-code: 12px;
+  --pad-x: 24px;
+  --pad-y: 22px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 1.55;
+  letter-spacing: -0.1px;
+}
+
+#card-root {
+  padding: var(--pad-y) var(--pad-x);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+}
+
+#card-root:empty {
+  min-height: 0;
+}
+
+/* Display answer (h1 as primary content) */
+#card-root h1 {
+  font-size: 32px;
+  font-weight: 300;
+  letter-spacing: -0.8px;
+  line-height: 1.05;
+  margin: 0 0 4px;
+  color: var(--text-primary);
+}
+#card-root h1 + p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  margin-bottom: 0;
+  letter-spacing: 0;
+}
+
+/* Typography */
+#card-root p {
+  margin-bottom: 8px;
+}
+#card-root p:last-child {
+  margin-bottom: 0;
+}
+
+#card-root strong {
+  font-weight: 600;
+}
+
+#card-root em {
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+#card-root del {
+  color: var(--text-tertiary);
+}
+
+#card-root h2,
+#card-root h3,
+#card-root h4 {
+  font-weight: 500;
+  letter-spacing: -0.3px;
+  margin: 14px 0 6px;
+}
+#card-root h2:first-child,
+#card-root h3:first-child {
+  margin-top: 0;
+}
+#card-root h2 { font-size: 18px; }
+#card-root h3 { font-size: 16px; }
+#card-root h4 { font-size: 14px; color: var(--text-secondary); }
+
+#card-root ul,
+#card-root ol {
+  padding-left: 20px;
+  margin: 6px 0 10px;
+}
+#card-root li {
+  margin-bottom: 4px;
+}
+#card-root li::marker {
+  color: var(--text-tertiary);
+}
+
+#card-root a {
+  color: var(--link);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(94, 200, 255, 0.30);
+}
+#card-root a:hover {
+  border-bottom-color: rgba(94, 200, 255, 0.70);
+}
+
+#card-root hr {
+  border: none;
+  border-top: 1px solid var(--divider);
+  margin: 12px 0;
+}
+
+#card-root blockquote {
+  border-left: 2px solid rgba(255, 255, 255, 0.18);
+  padding-left: 12px;
+  color: var(--text-secondary);
+  margin: 8px 0;
+}
+
+/* Inline code */
+#card-root :not(pre) > code {
+  font-family: 'JetBrains Mono', 'SF Mono', 'Sarasa Mono SC', 'Menlo', monospace;
+  font-size: 0.86em;
+  background: var(--code-bg);
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: var(--code-text);
+  letter-spacing: 0;
+}
+
+/* Fenced code blocks (Shiki output) */
+#card-root pre {
+  background: var(--code-bg) !important;
+  border-radius: var(--radius-code);
+  padding: 12px 14px;
+  margin: 10px 0;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+#card-root pre code {
+  font-family: 'JetBrains Mono', 'SF Mono', 'Sarasa Mono SC', 'Menlo', monospace;
+  background: transparent !important;
+  padding: 0;
+  border-radius: 0;
+  color: inherit;
+  font-size: 1em;
+  letter-spacing: 0;
+}
+
+#card-root pre .line {
+  display: block;
+  min-height: 1.55em;
+}
+
+/* Tables */
+#card-root table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 13px;
+  width: 100%;
+}
+#card-root th,
+#card-root td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--divider);
+}
+#card-root th {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* Streaming char-by-char fade-in (drip-fade scenario only).
+   Each render rewraps the trailing N chars; per-span animation-delay encodes
+   each char's age, so conceptual animation start is stable across DOM rebuilds.
+   fill-mode `both` keeps post-end chars at opacity 1 → no jump when sliding
+   into plain text on the next render. */
+.char-fadein {
+  animation: charFadeIn 250ms ease-out both;
+  display: inline;
+}
+
+@keyframes charFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Scrollbar (for internal scroll on code or long content) */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.20);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

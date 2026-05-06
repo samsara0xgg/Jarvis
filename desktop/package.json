@@ -9,10 +9,26 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
+    "inherent": "electron . --inherent --scenario=basic",
+    "inherent:silent": "electron . --inherent",
+    "inherent:multi-turn": "electron . --inherent --scenario=multi-turn",
+    "inherent:overflow": "electron . --inherent --scenario=overflow",
+    "inherent:contract:empty": "electron . --inherent --scenario=empty",
+    "inherent:contract:append-no-open": "electron . --inherent --scenario=append-no-open",
+    "inherent:contract:done-no-open": "electron . --inherent --scenario=done-no-open",
+    "inherent:race": "electron . --inherent --scenario=gen-race",
+    "inherent:drip-plain": "electron . --inherent --scenario=drip-plain",
+    "inherent:drip-fade": "electron . --inherent --scenario=drip-fade",
+    "inherent:bridge-mock": "electron . --inherent --scenario=bridge-mock",
+    "inherent:demo": "electron . --inherent --demo=short",
     "dist": "electron-builder --mac"
   },
   "devDependencies": {
     "electron": "^33.0.0",
     "electron-builder": "^25.0.0"
+  },
+  "dependencies": {
+    "electron-liquid-glass": "^1.1.1",
+    "ws": "^8.20.0"
   }
 }

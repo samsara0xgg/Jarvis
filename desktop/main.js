@@ -14,6 +14,16 @@
 //   webContents.send('mode-changed', mode) →
 //   renderer resizes PIXI canvas, responds with 'mode-change-rendered' →
 //   setOpacity(1).
+//
+// Inherent mode (Siri-style floating card) lives in ./inherent/ and is dispatched
+// here when --inherent or JARVIS_DESKTOP_MODE=inherent. The dispatch is a top-level
+// require + return so the existing Pet/Window logic is untouched in either path.
+
+// ── Inherent-mode dispatch (must happen before anything else) ────────────────
+if (process.argv.includes('--inherent') || process.env.JARVIS_DESKTOP_MODE === 'inherent') {
+  require('./inherent/inherent-main.js');
+  return;
+}
 
 const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, globalShortcut } = require('electron');
 const path = require('path');
