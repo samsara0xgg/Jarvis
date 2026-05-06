@@ -786,6 +786,24 @@ class JarvisApp:
                     self._last_end_reason = (
                         "interrupted" if self._cancel.is_set() else "success"
                     )
+            # Inherent card events. Cloud streaming path already emitted
+            # response.start + per-sentence response.chunk via _on_sentence;
+            # here we only need response.final. Non-streaming paths (regex,
+            # farewell, memory_shortcut, resume, fall-through) reach here
+            # without any prior emit — synthesize start + full chunk + final
+            # so the card sees the same protocol regardless of source.
+            # NB: deliberately NOT using `text` as the local name — the finally
+            # block below calls _flush_trace(text=text, ...) with the user
+            # input parameter; shadowing it would corrupt user_text in trace.
+            _card_text = self._last_response_text
+            if _card_text:
+                if not self._last_card_streamed_emitted:
+                    self.event_bus.emit("response.start", {"path": self._last_path})
+                    self.event_bus.emit("response.chunk", {"text": _card_text})
+                self.event_bus.emit(
+                    "response.final",
+                    {"text": _card_text, "path": self._last_path},
+                )
             return result
         except Exception as exc:
             self._last_end_reason = "error"
@@ -1095,6 +1113,12 @@ class JarvisApp:
                     _llm_first_ms = int((_t_first_sentence[0] - _t_llm_start)*1000)
                     print(f"⏱ LLM首句: {_llm_first_ms}ms")
                     self._last_timings["llm_first_ms"] = _llm_first_ms
+                    # Inherent card: open stream on first sentence
+                    self.event_bus.emit("response.start", {"path": self._last_path})
+                    self._last_card_streamed_emitted = True
+                # Inherent card: stream this sentence as a chunk (frontend drip
+                # smooths sentence-burst cadence into per-char reveal)
+                self.event_bus.emit("response.chunk", {"text": sentence})
                 print(f"🤖 Jarvis: {sentence}")
                 if tts_pipeline:
                     st = SentenceType.FIRST if sentence_count == 1 else SentenceType.MIDDLE
@@ -1306,6 +1330,10 @@ class JarvisApp:
         # Trace v3 per-turn state
         self._last_trigger_source = trigger_source
         self._last_response_text = ""
+        # Inherent card: tracks whether _on_sentence already emitted start +
+        # chunks for this turn. Outer wrapper checks this to decide whether to
+        # synthesize start+chunk(full) for non-streaming paths or just emit final.
+        self._last_card_streamed_emitted = False
         self._last_end_reason = None
         self._last_turn_end_at = None
         self._last_real_end_reason = None

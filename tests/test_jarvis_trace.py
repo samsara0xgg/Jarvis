@@ -325,3 +325,59 @@ class TestJarvisTraceV3:
         assert turn_n["outcome_signal"] is None, (
             f"Expected outcome_signal=None on turn N for long text, got {turn_n['outcome_signal']}"
         )
+
+    def test_response_events_emitted_for_inherent_card(self, app: JarvisApp) -> None:
+        """1a contract: response.start / response.chunk / response.final are
+        emitted on event_bus for the inherent card bridge.
+
+        - Non-streaming path (mocked chat_stream returns text but never invokes
+          on_sentence): outer wrapper synthesizes start + chunk(full) + final.
+        - Streaming path (mocked chat_stream invokes on_sentence per sentence):
+          _on_sentence emits start + chunks per sentence; outer wrapper adds final.
+        """
+        # ── Non-streaming path ──
+        # Default fixture's chat_stream returns ("テスト応答", []) without
+        # invoking on_sentence — exercises the outer-wrapper synthesis branch.
+        app.handle_text("非流式", session_id="card_nons")
+        nons_events = [
+            c.args for c in app.event_bus.emit.call_args_list
+            if c.args[0].startswith("response.")
+        ]
+        assert [e[0] for e in nons_events] == [
+            "response.start", "response.chunk", "response.final",
+        ]
+        assert nons_events[1][1] == {"text": "テスト応答"}
+        assert nons_events[2][1]["text"] == "テスト応答"
+
+        # ── Streaming path ──
+        # Override chat_stream to actually feed sentences through on_sentence,
+        # then return the joined text — exercises the _on_sentence emit branch.
+        # _on_sentence touches _wait_tts() in the no-pipeline branch, which
+        # accesses _tts_future (not in fixture). Stub it out for the streaming
+        # path test specifically.
+        app.event_bus.emit.reset_mock()
+        app._wait_tts = MagicMock()
+
+        def stream_sentences(**kwargs: Any) -> tuple:
+            cb = kwargs.get("on_sentence")
+            if cb:
+                cb("第一句。")
+                cb("第二句。")
+            return ("第一句。第二句。", [])
+
+        app.llm.chat_stream = MagicMock(side_effect=stream_sentences)
+        app.handle_text("流式", session_id="card_stream")
+
+        stream_events = [
+            c.args for c in app.event_bus.emit.call_args_list
+            if c.args[0].startswith("response.")
+        ]
+        assert [e[0] for e in stream_events] == [
+            "response.start",
+            "response.chunk",
+            "response.chunk",
+            "response.final",
+        ]
+        assert stream_events[1][1] == {"text": "第一句。"}
+        assert stream_events[2][1] == {"text": "第二句。"}
+        assert stream_events[3][1]["text"] == "第一句。第二句。"
