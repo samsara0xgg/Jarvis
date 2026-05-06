@@ -84,9 +84,24 @@ _CC_READ_UI_TAIL_LINES = 25
 # binding is required. 3 covers Allen's typical concurrent cc count.
 _CC_READ_CANDIDATE_COUNT = 3
 
+# aerospace_op step timeouts. List/poll values tuned for AeroSpace 0.20.x
+# on M2 Max — list-windows returns in ~30ms warm, ~150ms cold; window-spawn
+# after ``open -a`` is typically 0.3-2s, can stretch to 4s for Electron
+# cold-starts. Step default 5s covers everything except the explicit
+# poll_window step which gets its own 8s budget.
+_AEROSPACE_STEP_TIMEOUT_S = 5.0
+_AEROSPACE_POLL_TIMEOUT_S = 8.0
+_AEROSPACE_POLL_INTERVAL_S = 0.3
+_AEROSPACE_LIST_TIMEOUT_S = 2.0
+_AEROSPACE_LIST_FORMAT = "%{window-id}\t%{app-name}\t%{window-title}"
+
 
 class _PaneNotFound(LookupError):
     """Raised when ``_resolve_zellij_pane`` finds no pane with the given title."""
+
+
+class _PollTimeout(TimeoutError):
+    """Raised when ``_step_poll_window`` does not find a matching window in time."""
 
 
 def _format_relative_time(seconds: float) -> str:
@@ -289,6 +304,8 @@ class YAMLInterpreter:
             return self._execute_zellij_send(skill, params)
         if atype == "cc_read_state":
             return self._execute_cc_read_state(skill, params)
+        if atype == "aerospace_op":
+            return self._execute_aerospace_op(skill, params)
 
         msg = f"Unsupported action type: {atype}"
         LOGGER.warning(msg)
@@ -673,6 +690,233 @@ class YAMLInterpreter:
         except Exception:
             LOGGER.exception("cc_read_state response render failed for %s", skill.get("name"))
             return error_template if error_template else _FALLBACK_ERROR
+
+    def _execute_aerospace_op(self, skill: dict, params: dict) -> str:
+        """aerospace_op: dispatch to one of N declared operations and run its steps.
+
+        ``skill["action"]`` carries:
+            registry         : dict of action_id → {steps, response}
+            display_aliases  : optional dict (e.g. ``副 → BenQ``) pre-applied to
+                               ``params["display"]`` before any step renders
+
+        ``params["action_id"]`` selects the entry from ``registry``. Each
+        entry's ``steps`` is executed in order. Steps may capture output
+        into ``params`` for downstream steps (e.g. ``poll_window`` writes a
+        window-id to ``params["wid"]`` which a later ``shell`` step
+        interpolates into ``aerospace move-node-to-monitor --window-id ...``).
+
+        Step types:
+            shell        — subprocess.run(cmd, check=True). All argv parts
+                           rendered via Jinja2 against current params. May set
+                           ``capture_var`` to bind stripped stdout into params.
+            applescript  — osascript -e <script> [argv...]. Script body is
+                           NOT rendered (AppleScript injection guard); user
+                           input flows only through the optional ``argv``
+                           list, each item rendered. Mirrors the
+                           ``_build_paste_argv`` argv-binding pattern.
+            poll_window  — repeats ``aerospace list-windows --all`` until a
+                           row matches (app + optional title substring),
+                           writes the window-id to ``capture_var``. Times out
+                           after ``timeout_s`` (default 8s).
+
+        Errors propagate to the standard error_template / fallback layer.
+        ``FileNotFoundError`` covers AeroSpace not installed; ``_PollTimeout``
+        covers app launched but window never became visible (e.g. minimized
+        on launch, or sandboxed app rejecting AX).
+        """
+        action = skill["action"]
+        response_cfg = skill.get("response", {})
+        error_template = response_cfg.get("error_template")
+
+        action_id = str(params.get("action_id") or "").strip()
+        registry = action.get("registry", {})
+        if action_id not in registry:
+            msg = (
+                f"Unknown mac_gui action_id: {action_id!r} "
+                f"(known: {sorted(registry)})"
+            )
+            LOGGER.warning(msg)
+            return error_template if error_template else msg
+
+        # Resolve display alias before any step renders.
+        display_aliases = action.get("display_aliases", {}) or {}
+        if "display" in params and params["display"] in display_aliases:
+            params["display"] = display_aliases[params["display"]]
+
+        op = registry[action_id]
+        try:
+            for step in op.get("steps", []):
+                self._run_aerospace_step(step, params)
+        except FileNotFoundError as exc:
+            LOGGER.warning("aerospace_op: missing binary: %s", exc)
+            return (
+                error_template
+                if error_template
+                else f"依赖缺失: {exc}"
+            )
+        except subprocess.TimeoutExpired:
+            LOGGER.warning("aerospace_op: subprocess timeout for %s", action_id)
+            return error_template if error_template else "操作超时"
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or b"")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", "replace")
+            stderr = stderr.strip()
+            LOGGER.warning(
+                "aerospace_op: subprocess failed (exit=%s): %s",
+                exc.returncode,
+                stderr,
+            )
+            return (
+                error_template
+                if error_template
+                else f"命令失败: {stderr[:80]}"
+            )
+        except _PollTimeout as exc:
+            LOGGER.warning("aerospace_op: %s", exc)
+            return error_template if error_template else str(exc)
+        except Exception:
+            LOGGER.exception("aerospace_op: unexpected step error for %s", action_id)
+            return error_template if error_template else _FALLBACK_ERROR
+
+        # Per-action response → outer skill response template.
+        op_response_tpl = op.get("response", "完成")
+        try:
+            result_str = self._render(op_response_tpl, params)
+        except Exception:
+            LOGGER.exception("aerospace_op: response render failed for %s", action_id)
+            return error_template if error_template else _FALLBACK_ERROR
+
+        outer_tpl = response_cfg.get("template", "{{ result }}")
+        try:
+            return self._render(outer_tpl, {**params, "result": result_str})
+        except Exception:
+            LOGGER.exception(
+                "aerospace_op: outer response render failed for %s", action_id
+            )
+            return error_template if error_template else _FALLBACK_ERROR
+
+    def _run_aerospace_step(self, step: dict, params: dict) -> None:
+        """Dispatch a single aerospace_op step. Mutates *params* on capture."""
+        stype = step.get("type", "")
+        if stype == "shell":
+            self._step_shell(step, params)
+            return
+        if stype == "applescript":
+            self._step_applescript(step, params)
+            return
+        if stype == "poll_window":
+            self._step_poll_window(step, params)
+            return
+        msg = f"Unsupported aerospace step type: {stype!r}"
+        LOGGER.warning(msg)
+        raise ValueError(msg)
+
+    def _step_shell(self, step: dict, params: dict) -> None:
+        """Run ``subprocess.run(cmd, check=True)`` with each argv part rendered.
+
+        ``check=True`` propagates non-zero exit as ``CalledProcessError`` to
+        the outer handler. ``shell=False`` (argv list) keeps user-rendered
+        values shell-inert.
+        """
+        cmd_template = step.get("cmd")
+        if not isinstance(cmd_template, list) or not cmd_template:
+            raise ValueError(f"shell step requires non-empty cmd list, got {cmd_template!r}")
+        cmd = [self._render(str(part), params) for part in cmd_template]
+        timeout_s = float(step.get("timeout_s", _AEROSPACE_STEP_TIMEOUT_S))
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=True,
+        )
+        capture_var = step.get("capture_var")
+        if capture_var:
+            params[str(capture_var)] = result.stdout.strip()
+
+    def _step_applescript(self, step: dict, params: dict) -> None:
+        """Run ``osascript -e <script> [argv...]``.
+
+        Script body is treated as a literal — never rendered through Jinja2 —
+        so user-supplied params cannot inject AppleScript. The ``argv`` list
+        IS rendered, and each rendered string is passed as a positional
+        argument to osascript (accessed inside AppleScript via
+        ``on run argv ... item N of argv ... end run``). Same defense as
+        ``_build_paste_argv``.
+        """
+        script = step.get("script")
+        if not isinstance(script, str) or not script:
+            raise ValueError("applescript step requires non-empty script string")
+        argv_template = step.get("argv", []) or []
+        rendered_argv = [self._render(str(a), params) for a in argv_template]
+        timeout_s = float(step.get("timeout_s", _AEROSPACE_STEP_TIMEOUT_S))
+        subprocess.run(
+            ["osascript", "-e", script, *rendered_argv],
+            capture_output=True,
+            check=True,
+            timeout=timeout_s,
+        )
+
+    def _step_poll_window(self, step: dict, params: dict) -> None:
+        """Poll ``aerospace list-windows --all`` until a matching window appears.
+
+        Match: ``app-name == match_app`` AND (if provided)
+        ``match_title_contains in window-title``. On hit, the window-id is
+        written to ``params[capture_var]``. On timeout, raises ``_PollTimeout``.
+
+        Output is parsed as tab-separated rows from the
+        ``%{window-id}\t%{app-name}\t%{window-title}`` format string —
+        avoids JSON-parsing surprises across AeroSpace versions and
+        sidesteps tab-in-title edge cases by limiting splits to 2.
+        """
+        match_app = self._render(str(step.get("match_app", "")), params)
+        match_title = self._render(str(step.get("match_title_contains", "")), params)
+        capture_var = step.get("capture_var")
+        if not capture_var:
+            raise ValueError("poll_window step requires capture_var")
+        if not match_app:
+            raise ValueError("poll_window step requires match_app")
+
+        timeout_s = float(step.get("timeout_s", _AEROSPACE_POLL_TIMEOUT_S))
+        interval_s = float(step.get("interval_s", _AEROSPACE_POLL_INTERVAL_S))
+
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                result = subprocess.run(
+                    [
+                        "aerospace", "list-windows", "--all",
+                        "--format", _AEROSPACE_LIST_FORMAT,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=_AEROSPACE_LIST_TIMEOUT_S,
+                    check=True,
+                )
+                stdout = result.stdout
+            except subprocess.CalledProcessError:
+                # AeroSpace daemon may be transiently unavailable; keep
+                # polling until our own timeout fires.
+                stdout = ""
+            for line in stdout.splitlines():
+                parts = line.split("\t", 2)
+                if len(parts) < 2:
+                    continue
+                wid, app = parts[0].strip(), parts[1].strip()
+                title = parts[2] if len(parts) >= 3 else ""
+                if app != match_app:
+                    continue
+                if match_title and match_title not in title:
+                    continue
+                params[str(capture_var)] = wid
+                return
+            if time.monotonic() >= deadline:
+                raise _PollTimeout(
+                    f"窗口未出现 ({timeout_s:g}s 内): "
+                    f"app={match_app!r} title~{match_title!r}"
+                )
+            time.sleep(interval_s)
 
     def _resolve_zellij_pane(self, session: str, pane_title: str) -> tuple[str, str]:
         """Find the pane_id and cwd of the named pane in a zellij session.

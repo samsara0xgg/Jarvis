@@ -1,0 +1,344 @@
+name: mac_gui
+description: |
+  Control macOS GUI: launch apps, route windows across displays / workspaces,
+  control focus, window state, system volume / mute / lock / screenshot.
+  Backed by AeroSpace window manager + osascript + screencapture.
+
+  Use ONLY for explicit GUI / window / system commands. Do NOT trigger on:
+    - smart-home commands ("打开灯" — that is smart_home_control)
+    - regular app input ("type X" / "input Y" — that is type_to_focused)
+    - tab/keystroke automation within an app
+
+  ## Action selection guide
+
+  Launch & open:
+    launch_app(app)
+        bare launch — "打开 Cursor", "启动 Spotify"
+    launch_app_on_display(app, display)
+        launch + place — "打开抖音放副屏", "把 Discord 启动到 BenQ"
+    open_url(url)
+        open URL in default browser — "打开 youtube.com"
+    open_url_on_display(url, display, title_hint?)
+        open URL as Chrome app-mode window + place on display.
+        title_hint is a substring of the page <title> for the poll matcher
+        (e.g. "抖音", "YouTube") — without it the poll grabs the first
+        Chrome window and may target the wrong one.
+
+  Window placement:
+    move_app_to_display(app, display)
+        PREFERRED whenever the user names an app — looks up by name,
+        does NOT touch focus, safe under pet mode.
+    move_focused_to_display(display)
+        LAST RESORT. Moves the focused window. WARNING: from pet-mode
+        voice, the focused window IS Jarvis itself — this will silently
+        move the pet UI. Only use when user said "this/current/这个/
+        当前" AND focus is known not to be Jarvis.
+    move_to_workspace(workspace)
+        Move focused window to workspace N (1-9 typically).
+
+  Focus:
+    focus_app(app)              — "切到 Cursor", "前台 Discord"
+    focus_monitor(display)      — focus a monitor (e.g. "聚焦到副屏")
+    focus_back_and_forth()      — "切回上一个", "回去"
+
+  Workspace:
+    workspace_switch(workspace) — "切到工作区 3"
+
+  Window state (act on focused window):
+    fullscreen_focused()        — "全屏" / "退出全屏"
+    minimize_focused()          — "最小化"
+    close_focused()             — "关闭这个窗口"
+    close_all_but_current()     — "关掉其他窗口"
+    resize_focused(delta)       — "放大一点" → delta="+100"; "缩小" → delta="-100".
+                                  delta is a signed integer string in pixels.
+
+  System:
+    set_volume(level)           — "音量调到 30" → level="30" (integer 0-100)
+    mute_toggle()               — "静音" / "取消静音"
+    lock_screen()               — "锁屏"
+    screenshot()                — "截屏" / "截图" — full-screen to clipboard
+
+  ## Display values
+
+  副 / 主 / 外接 / BenQ / Built-in / next / prev (substring match against
+  AeroSpace monitor name; aliases resolved before dispatch).
+
+  ## Requirements
+
+  AeroSpace running (``open -a AeroSpace``) with Accessibility permission
+  granted. Window-routing only works for visible windows — minimized
+  windows are invisible to AeroSpace and silently miss.
+version: 2
+status: live
+created_by: dogfood
+
+parameters:
+  - name: action_id
+    type: string
+    description: |
+      Operation to run. See description for the full action selection guide
+      with required params per action_id.
+    required: true
+  - name: app
+    type: string
+    description: |
+      App name as it appears in /Applications (Chinese or English).
+      Examples: "抖音", "Cursor", "Google Chrome", "Discord", "Visual Studio Code".
+      Required for launch_app, launch_app_on_display, move_app_to_display,
+      focus_app. Case-sensitive — must match the .app bundle name exactly.
+    required: false
+    default: ""
+  - name: display
+    type: string
+    description: |
+      Display alias or AeroSpace monitor pattern. Aliases (resolved before
+      dispatch): 副 → BenQ, 主 → Built-in, 外接 → BenQ. Or pass an explicit
+      pattern like "BenQ", "Built-in", "next", "prev". Required for
+      launch_app_on_display, move_app_to_display, move_focused_to_display,
+      open_url_on_display, focus_monitor.
+    required: false
+    default: ""
+  - name: url
+    type: string
+    description: |
+      Full URL including scheme. Required for open_url and
+      open_url_on_display. Examples: "https://www.douyin.com",
+      "https://youtube.com".
+    required: false
+    default: ""
+  - name: title_hint
+    type: string
+    description: |
+      Substring of the target window <title> tag for the poll matcher,
+      used by open_url_on_display only. Helps disambiguate when multiple
+      Chrome windows are open. Example: open_url_on_display(url=douyin.com,
+      title_hint=抖音, display=副).
+    required: false
+    default: ""
+  - name: workspace
+    type: string
+    description: |
+      AeroSpace workspace identifier (typically "1"-"9"). Required for
+      workspace_switch and move_to_workspace.
+    required: false
+    default: ""
+  - name: delta
+    type: string
+    description: |
+      Signed integer pixel delta for resize_focused. "+100" grows, "-100"
+      shrinks (in the smart direction AeroSpace picks). Required for
+      resize_focused.
+    required: false
+    default: ""
+  - name: level
+    type: string
+    description: |
+      Integer 0-100 for set_volume. Required for set_volume only.
+    required: false
+    default: ""
+
+annotations:
+  read_only: false
+  destructive: false
+  idempotent: false
+
+action:
+  type: aerospace_op
+  display_aliases:
+    副: "BenQ"
+    主: "Built-in"
+    外接: "BenQ"
+  registry:
+
+    # ----- Launch & open -------------------------------------------------
+
+    launch_app:
+      steps:
+        - type: shell
+          cmd: ["open", "-a", "{{ app }}"]
+          timeout_s: 5.0
+      response: "已打开 {{ app }}"
+
+    launch_app_on_display:
+      steps:
+        - type: shell
+          cmd: ["open", "-a", "{{ app }}"]
+          timeout_s: 5.0
+        - type: poll_window
+          match_app: "{{ app }}"
+          capture_var: wid
+          timeout_s: 8.0
+        - type: shell
+          cmd: ["aerospace", "move-node-to-monitor", "--window-id", "{{ wid }}", "{{ display }}"]
+          timeout_s: 3.0
+      response: "已打开 {{ app }} 到 {{ display }}"
+
+    open_url:
+      steps:
+        - type: shell
+          cmd: ["open", "{{ url }}"]
+          timeout_s: 5.0
+      response: "已打开 {{ url }}"
+
+    open_url_on_display:
+      steps:
+        - type: shell
+          cmd: ["open", "-na", "Google Chrome", "--args", "--app={{ url }}", "--new-window"]
+          timeout_s: 5.0
+        - type: poll_window
+          match_app: "Google Chrome"
+          match_title_contains: "{{ title_hint }}"
+          capture_var: wid
+          timeout_s: 10.0
+        - type: shell
+          cmd: ["aerospace", "move-node-to-monitor", "--window-id", "{{ wid }}", "{{ display }}"]
+          timeout_s: 3.0
+      response: "已在 {{ display }} 打开 {{ url }}"
+
+    # ----- Window placement ---------------------------------------------
+
+    move_app_to_display:
+      steps:
+        - type: poll_window
+          match_app: "{{ app }}"
+          capture_var: wid
+          timeout_s: 2.0
+          interval_s: 0.1
+        - type: shell
+          cmd: ["aerospace", "move-node-to-monitor", "--window-id", "{{ wid }}", "{{ display }}"]
+          timeout_s: 3.0
+      response: "已把 {{ app }} 挪到 {{ display }}"
+
+    move_focused_to_display:
+      steps:
+        - type: shell
+          cmd: ["aerospace", "move-node-to-monitor", "{{ display }}"]
+          timeout_s: 3.0
+      response: "已移到 {{ display }}"
+
+    move_to_workspace:
+      steps:
+        - type: shell
+          cmd: ["aerospace", "move-node-to-workspace", "{{ workspace }}"]
+          timeout_s: 3.0
+      response: "已扔到工作区 {{ workspace }}"
+
+    # ----- Focus ---------------------------------------------------------
+
+    focus_app:
+      steps:
+        - type: applescript
+          script: |
+            on run argv
+              tell application (item 1 of argv) to activate
+            end run
+          argv: ["{{ app }}"]
+          timeout_s: 5.0
+      response: "已切到 {{ app }}"
+
+    focus_monitor:
+      steps:
+        - type: shell
+          cmd: ["aerospace", "focus-monitor", "{{ display }}"]
+          timeout_s: 3.0
+      response: "聚焦到 {{ display }}"
+
+    focus_back_and_forth:
+      steps:
+        - type: shell
+          cmd: ["aerospace", "focus-back-and-forth"]
+          timeout_s: 3.0
+      response: "切回上一个窗口"
+
+    # ----- Workspace -----------------------------------------------------
+
+    workspace_switch:
+      steps:
+        - type: shell
+          cmd: ["aerospace", "workspace", "{{ workspace }}"]
+          timeout_s: 3.0
+      response: "已切到工作区 {{ workspace }}"
+
+    # ----- Window state (focused) ---------------------------------------
+
+    fullscreen_focused:
+      steps:
+        - type: shell
+          cmd: ["aerospace", "macos-native-fullscreen"]
+          timeout_s: 3.0
+      response: "全屏已切换"
+
+    minimize_focused:
+      steps:
+        - type: shell
+          cmd: ["aerospace", "macos-native-minimize"]
+          timeout_s: 3.0
+      response: "已最小化"
+
+    close_focused:
+      steps:
+        - type: shell
+          cmd: ["aerospace", "close"]
+          timeout_s: 3.0
+      response: "已关闭"
+
+    close_all_but_current:
+      steps:
+        - type: shell
+          cmd: ["aerospace", "close-all-windows-but-current"]
+          timeout_s: 5.0
+      response: "已关闭其他窗口"
+
+    resize_focused:
+      steps:
+        - type: shell
+          cmd: ["aerospace", "resize", "smart", "{{ delta }}"]
+          timeout_s: 3.0
+      response: "已调整大小 ({{ delta }}px)"
+
+    # ----- System --------------------------------------------------------
+
+    set_volume:
+      steps:
+        - type: applescript
+          script: |
+            on run argv
+              set volume output volume (item 1 of argv as integer)
+            end run
+          argv: ["{{ level }}"]
+          timeout_s: 3.0
+      response: "音量调到 {{ level }}"
+
+    mute_toggle:
+      steps:
+        - type: applescript
+          script: |
+            if output muted of (get volume settings) then
+              set volume without output muted
+            else
+              set volume with output muted
+            end if
+          timeout_s: 3.0
+      response: "静音已切换"
+
+    lock_screen:
+      steps:
+        - type: applescript
+          script: |
+            tell application "System Events" to keystroke "q" using {control down, command down}
+          timeout_s: 3.0
+      response: "锁屏中"
+
+    screenshot:
+      steps:
+        - type: shell
+          cmd: ["screencapture", "-c", "-x"]
+          timeout_s: 5.0
+      response: "已截屏到剪贴板"
+
+response:
+  template: "{{ result }}"
+  error_template: "Mac GUI 操作失败 — 检查 AeroSpace 是否在运行、应用是否已安装、Accessibility 权限是否授权。"
+
+security:
+  requires_auth: false

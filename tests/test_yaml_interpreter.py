@@ -1866,3 +1866,954 @@ class TestCCShowYAMLSkill:
         skill = interp.load_skill("skills/cc_show.yaml")
         assert skill["annotations"]["read_only"] is True
         assert skill["annotations"]["destructive"] is False
+
+
+# ===========================================================================
+# aerospace_op action — mocked subprocess
+# ===========================================================================
+
+
+def _aerospace_skill(registry: dict, display_aliases: dict | None = None) -> dict:
+    """Build a minimal aerospace_op skill for unit tests."""
+    return {
+        "name": "mac_gui_test",
+        "description": "test mac_gui",
+        "parameters": [
+            {"name": "action_id", "type": "string", "required": True},
+            {"name": "app", "type": "string", "required": False, "default": ""},
+            {"name": "display", "type": "string", "required": False, "default": ""},
+        ],
+        "action": {
+            "type": "aerospace_op",
+            "registry": registry,
+            "display_aliases": display_aliases or {},
+        },
+        "response": {
+            "template": "{{ result }}",
+            "error_template": "MAC_GUI_ERR",
+        },
+    }
+
+
+class TestAeroSpaceOpDispatch:
+    def test_unknown_action_id_returns_error_template(self):
+        skill = _aerospace_skill({"focus_app": {"steps": [], "response": "ok"}})
+        out = YAMLInterpreter().execute(skill, {"action_id": "no_such"})
+        assert out == "MAC_GUI_ERR"
+
+    def test_unknown_action_id_no_error_template_lists_known(self):
+        skill = _aerospace_skill({"focus_app": {"steps": [], "response": "ok"}})
+        skill["response"].pop("error_template")
+        out = YAMLInterpreter().execute(skill, {"action_id": "no_such"})
+        assert "no_such" in out
+        assert "focus_app" in out
+
+    def test_empty_action_id_returns_error(self):
+        skill = _aerospace_skill({"focus_app": {"steps": [], "response": "ok"}})
+        out = YAMLInterpreter().execute(skill, {"action_id": ""})
+        assert out == "MAC_GUI_ERR"
+
+    def test_empty_steps_renders_response(self):
+        skill = _aerospace_skill({"x": {"steps": [], "response": "OK-{{ app }}"}})
+        out = YAMLInterpreter().execute(skill, {"action_id": "x", "app": "Cursor"})
+        assert out == "OK-Cursor"
+
+
+class TestAeroSpaceOpShellStep:
+    def test_shell_step_renders_each_argv_part(self):
+        registry = {
+            "x": {
+                "steps": [{"type": "shell", "cmd": ["echo", "{{ app }}"]}],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            YAMLInterpreter().execute(skill, {"action_id": "x", "app": "抖音"})
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv == ["echo", "抖音"]
+
+    def test_shell_step_uses_argv_list_no_shell(self):
+        registry = {
+            "x": {
+                "steps": [{"type": "shell", "cmd": ["open", "-a", "{{ app }}"]}],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            YAMLInterpreter().execute(skill, {"action_id": "x", "app": "Discord"})
+        kwargs = mock_run.call_args_list[0].kwargs
+        # shell mode never enabled
+        assert kwargs.get("shell") in (False, None)
+        assert kwargs.get("check") is True
+
+    def test_shell_step_user_metachars_inert_in_argv(self):
+        registry = {
+            "x": {
+                "steps": [{"type": "shell", "cmd": ["open", "-a", "{{ app }}"]}],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            evil = '"; rm -rf /; echo "'
+            YAMLInterpreter().execute(skill, {"action_id": "x", "app": evil})
+        argv = mock_run.call_args_list[0].args[0]
+        # whole evil string lives in one argv slot, never split or interpreted
+        assert argv == ["open", "-a", evil]
+
+    def test_shell_step_capture_var_passes_to_next_step(self):
+        registry = {
+            "x": {
+                "steps": [
+                    {"type": "shell", "cmd": ["echo", "42"], "capture_var": "wid"},
+                    {"type": "shell", "cmd": ["touch", "{{ wid }}"]},
+                ],
+                "response": "wid={{ wid }}",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(stdout="42\n", returncode=0),
+                MagicMock(stdout="", returncode=0),
+            ]
+            out = YAMLInterpreter().execute(skill, {"action_id": "x"})
+        assert out == "wid=42"
+        assert mock_run.call_args_list[1].args[0] == ["touch", "42"]
+
+    def test_shell_step_called_process_error_returns_error_template(self):
+        import subprocess
+        registry = {
+            "x": {"steps": [{"type": "shell", "cmd": ["false"]}], "response": "ok"}
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.CalledProcessError(
+                1, ["false"], stderr=b"bad"
+            )
+            assert YAMLInterpreter().execute(skill, {"action_id": "x"}) == "MAC_GUI_ERR"
+
+    def test_shell_step_file_not_found_returns_error_template(self):
+        registry = {
+            "x": {"steps": [{"type": "shell", "cmd": ["aerospace"]}], "response": "ok"}
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError("aerospace")
+            assert YAMLInterpreter().execute(skill, {"action_id": "x"}) == "MAC_GUI_ERR"
+
+    def test_shell_step_timeout_returns_error_template(self):
+        import subprocess
+        registry = {
+            "x": {"steps": [{"type": "shell", "cmd": ["sleep", "100"]}], "response": "ok"}
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd=["sleep"], timeout=5)
+            assert YAMLInterpreter().execute(skill, {"action_id": "x"}) == "MAC_GUI_ERR"
+
+    def test_shell_step_missing_cmd_returns_error_template(self):
+        registry = {"x": {"steps": [{"type": "shell"}], "response": "ok"}}
+        skill = _aerospace_skill(registry)
+        assert YAMLInterpreter().execute(skill, {"action_id": "x"}) == "MAC_GUI_ERR"
+
+    def test_shell_step_empty_cmd_list_returns_error_template(self):
+        registry = {"x": {"steps": [{"type": "shell", "cmd": []}], "response": "ok"}}
+        skill = _aerospace_skill(registry)
+        assert YAMLInterpreter().execute(skill, {"action_id": "x"}) == "MAC_GUI_ERR"
+
+
+class TestAeroSpaceOpAppleScriptStep:
+    def test_applescript_uses_argv_binding(self):
+        script_body = (
+            "on run argv\n"
+            "  tell application (item 1 of argv) to activate\n"
+            "end run"
+        )
+        registry = {
+            "x": {
+                "steps": [
+                    {"type": "applescript", "script": script_body, "argv": ["{{ app }}"]}
+                ],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"action_id": "x", "app": "Cursor"})
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv[:3] == ["osascript", "-e", script_body]
+        assert argv[3:] == ["Cursor"]
+
+    def test_applescript_script_body_is_literal_no_jinja_render(self):
+        # Critical injection guard: any {{ }} inside the script body must
+        # be treated as literal AppleScript text, never rendered.
+        script_body = (
+            "on run argv\n"
+            "  return (item 1 of argv)\n"
+            "end run -- {{ never_rendered }}"
+        )
+        registry = {
+            "x": {
+                "steps": [
+                    {"type": "applescript", "script": script_body, "argv": ["safe"]}
+                ],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            # Try to leak a value through Jinja — must not be substituted
+            YAMLInterpreter().execute(
+                skill, {"action_id": "x", "never_rendered": "LEAKED"}
+            )
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv[2] == script_body
+        assert "LEAKED" not in argv[2]
+
+    def test_applescript_user_input_only_via_argv(self):
+        script_body = (
+            "on run argv\n"
+            "  tell application (item 1 of argv) to activate\n"
+            "end run"
+        )
+        registry = {
+            "x": {
+                "steps": [
+                    {"type": "applescript", "script": script_body, "argv": ["{{ app }}"]}
+                ],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            evil = '"; do shell script "rm -rf /"; tell app "X'
+            YAMLInterpreter().execute(skill, {"action_id": "x", "app": evil})
+        argv = mock_run.call_args_list[0].args[0]
+        # script body unchanged; evil flows only into the argv positional
+        assert argv[2] == script_body
+        assert argv[3] == evil
+        # evil cannot be a -e fragment because it lives at position 3+
+        assert argv.index("-e") == 1
+        assert "-e" not in argv[3:]
+
+    def test_applescript_missing_script_returns_error_template(self):
+        registry = {"x": {"steps": [{"type": "applescript"}], "response": "ok"}}
+        skill = _aerospace_skill(registry)
+        assert YAMLInterpreter().execute(skill, {"action_id": "x"}) == "MAC_GUI_ERR"
+
+    def test_applescript_empty_argv_works(self):
+        # Some scripts don't need argv at all (e.g. "set volume" with hardcoded
+        # value). Empty argv is valid.
+        script_body = "tell application \"System Events\" to log \"hi\""
+        registry = {
+            "x": {
+                "steps": [{"type": "applescript", "script": script_body}],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            YAMLInterpreter().execute(skill, {"action_id": "x"})
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv == ["osascript", "-e", script_body]
+
+
+class TestAeroSpaceOpPollWindow:
+    def test_poll_window_finds_match_and_captures_wid(self):
+        registry = {
+            "x": {
+                "steps": [
+                    {
+                        "type": "poll_window",
+                        "match_app": "{{ app }}",
+                        "capture_var": "wid",
+                        "timeout_s": 1.0,
+                        "interval_s": 0.01,
+                    },
+                    {"type": "shell", "cmd": ["echo", "{{ wid }}"]},
+                ],
+                "response": "wid={{ wid }}",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(stdout="42\t抖音\tdouyin\n", returncode=0),  # poll
+                MagicMock(stdout="", returncode=0),                    # echo
+            ]
+            out = YAMLInterpreter().execute(skill, {"action_id": "x", "app": "抖音"})
+        assert out == "wid=42"
+        assert mock_run.call_args_list[1].args[0] == ["echo", "42"]
+
+    def test_poll_window_skips_non_matching_apps(self):
+        registry = {
+            "x": {
+                "steps": [
+                    {
+                        "type": "poll_window",
+                        "match_app": "{{ app }}",
+                        "capture_var": "wid",
+                        "timeout_s": 1.0,
+                        "interval_s": 0.01,
+                    }
+                ],
+                "response": "wid={{ wid }}",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        rows = "1\tOther App\ttitle\n99\t抖音\tdouyin\n"
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=rows, returncode=0)
+            out = YAMLInterpreter().execute(skill, {"action_id": "x", "app": "抖音"})
+        assert out == "wid=99"
+
+    def test_poll_window_respects_title_substring(self):
+        registry = {
+            "x": {
+                "steps": [
+                    {
+                        "type": "poll_window",
+                        "match_app": "Google Chrome",
+                        "match_title_contains": "{{ needle }}",
+                        "capture_var": "wid",
+                        "timeout_s": 1.0,
+                        "interval_s": 0.01,
+                    }
+                ],
+                "response": "wid={{ wid }}",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        rows = (
+            "1\tGoogle Chrome\tFoo - Google Chrome\n"
+            "2\tGoogle Chrome\t抖音-记录美好生活\n"
+        )
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=rows, returncode=0)
+            out = YAMLInterpreter().execute(
+                skill, {"action_id": "x", "needle": "抖音"}
+            )
+        assert out == "wid=2"
+
+    def test_poll_window_times_out_returns_error_template(self):
+        registry = {
+            "x": {
+                "steps": [
+                    {
+                        "type": "poll_window",
+                        "match_app": "Nonexistent",
+                        "capture_var": "wid",
+                        "timeout_s": 0.05,
+                        "interval_s": 0.01,
+                    }
+                ],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            assert YAMLInterpreter().execute(skill, {"action_id": "x"}) == "MAC_GUI_ERR"
+
+    def test_poll_window_handles_aerospace_called_process_error(self):
+        # When AeroSpace errors transiently, poll loop swallows the error and
+        # continues until its own timeout. Verifies we don't crash on a
+        # CalledProcessError mid-loop.
+        import subprocess
+        registry = {
+            "x": {
+                "steps": [
+                    {
+                        "type": "poll_window",
+                        "match_app": "Whatever",
+                        "capture_var": "wid",
+                        "timeout_s": 0.05,
+                        "interval_s": 0.01,
+                    }
+                ],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.CalledProcessError(
+                1, ["aerospace"], stderr=b"server unavailable"
+            )
+            # eventually times out — _PollTimeout, not CalledProcessError
+            assert YAMLInterpreter().execute(skill, {"action_id": "x"}) == "MAC_GUI_ERR"
+
+    def test_poll_window_file_not_found_propagates(self):
+        # AeroSpace not installed: poll_window does NOT swallow this.
+        registry = {
+            "x": {
+                "steps": [
+                    {
+                        "type": "poll_window",
+                        "match_app": "X",
+                        "capture_var": "wid",
+                        "timeout_s": 1.0,
+                        "interval_s": 0.01,
+                    }
+                ],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError("aerospace")
+            assert YAMLInterpreter().execute(skill, {"action_id": "x"}) == "MAC_GUI_ERR"
+
+    def test_poll_window_missing_capture_var_returns_error(self):
+        registry = {
+            "x": {
+                "steps": [{"type": "poll_window", "match_app": "X"}],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        assert YAMLInterpreter().execute(skill, {"action_id": "x"}) == "MAC_GUI_ERR"
+
+    def test_poll_window_missing_match_app_returns_error(self):
+        registry = {
+            "x": {
+                "steps": [{"type": "poll_window", "capture_var": "wid"}],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        assert YAMLInterpreter().execute(skill, {"action_id": "x"}) == "MAC_GUI_ERR"
+
+    def test_poll_window_uses_aerospace_format_flag(self):
+        # Sanity: the subprocess argv must include --format with the
+        # tab-separated layout the parser expects.
+        from core.yaml_interpreter import _AEROSPACE_LIST_FORMAT
+        registry = {
+            "x": {
+                "steps": [
+                    {
+                        "type": "poll_window",
+                        "match_app": "X",
+                        "capture_var": "wid",
+                        "timeout_s": 0.05,
+                        "interval_s": 0.01,
+                    }
+                ],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            YAMLInterpreter().execute(skill, {"action_id": "x"})
+        first = mock_run.call_args_list[0].args[0]
+        assert first[:3] == ["aerospace", "list-windows", "--all"]
+        assert "--format" in first
+        assert _AEROSPACE_LIST_FORMAT in first
+
+
+class TestAeroSpaceOpDisplayAlias:
+    def test_alias_resolves_before_step_render(self):
+        registry = {
+            "x": {
+                "steps": [{"type": "shell", "cmd": ["echo", "{{ display }}"]}],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(
+            registry, display_aliases={"副": "BenQ", "主": "Built-in"}
+        )
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            YAMLInterpreter().execute(skill, {"action_id": "x", "display": "副"})
+        assert mock_run.call_args_list[0].args[0] == ["echo", "BenQ"]
+
+    def test_pattern_passes_through_when_no_alias(self):
+        registry = {
+            "x": {
+                "steps": [{"type": "shell", "cmd": ["echo", "{{ display }}"]}],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry, display_aliases={"副": "BenQ"})
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            YAMLInterpreter().execute(skill, {"action_id": "x", "display": "next"})
+        assert mock_run.call_args_list[0].args[0] == ["echo", "next"]
+
+    def test_no_aliases_leaves_display_untouched(self):
+        registry = {
+            "x": {
+                "steps": [{"type": "shell", "cmd": ["echo", "{{ display }}"]}],
+                "response": "ok",
+            }
+        }
+        skill = _aerospace_skill(registry)
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            YAMLInterpreter().execute(skill, {"action_id": "x", "display": "BenQ"})
+        assert mock_run.call_args_list[0].args[0] == ["echo", "BenQ"]
+
+
+class TestAeroSpaceOpStepValidation:
+    def test_unsupported_step_type_returns_error(self):
+        registry = {"x": {"steps": [{"type": "telepath"}], "response": "ok"}}
+        skill = _aerospace_skill(registry)
+        assert YAMLInterpreter().execute(skill, {"action_id": "x"}) == "MAC_GUI_ERR"
+
+    def test_step_without_type_returns_error(self):
+        registry = {"x": {"steps": [{"foo": "bar"}], "response": "ok"}}
+        skill = _aerospace_skill(registry)
+        assert YAMLInterpreter().execute(skill, {"action_id": "x"}) == "MAC_GUI_ERR"
+
+
+# ===========================================================================
+# Real skills/mac_gui.yaml end-to-end (mocked subprocess)
+# ===========================================================================
+
+
+class TestMacGuiYAMLSkill:
+    def _load(self):
+        interp = YAMLInterpreter()
+        skill_path = os.path.join(
+            os.path.dirname(__file__), "..", "skills", "mac_gui.yaml"
+        )
+        return interp, interp.load_skill(skill_path)
+
+    def test_loads_correct_schema(self):
+        interp, skill = self._load()
+        td = interp.to_tool_definition(skill)
+        assert td["name"] == "mac_gui"
+        props = td["input_schema"]["properties"]
+        assert set(props.keys()) == {
+            "action_id", "app", "display",
+            "url", "title_hint", "workspace", "delta", "level",
+        }
+        assert td["input_schema"]["required"] == ["action_id"]
+
+    def test_registry_has_twenty_actions(self):
+        _, skill = self._load()
+        registry = skill["action"]["registry"]
+        assert set(registry.keys()) == {
+            # launch & open
+            "launch_app", "launch_app_on_display",
+            "open_url", "open_url_on_display",
+            # window placement
+            "move_app_to_display", "move_focused_to_display", "move_to_workspace",
+            # focus
+            "focus_app", "focus_monitor", "focus_back_and_forth",
+            # workspace
+            "workspace_switch",
+            # window state
+            "fullscreen_focused", "minimize_focused", "close_focused",
+            "close_all_but_current", "resize_focused",
+            # system
+            "set_volume", "mute_toggle", "lock_screen", "screenshot",
+        }
+
+    def test_display_aliases_match_expected(self):
+        _, skill = self._load()
+        aliases = skill["action"]["display_aliases"]
+        assert aliases["副"] == "BenQ"
+        assert aliases["主"] == "Built-in"
+        assert aliases["外接"] == "BenQ"
+
+    def test_launch_app_on_display_full_sequence(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(stdout="", returncode=0),                        # open -a 抖音
+                MagicMock(stdout="42\t抖音\tdouyin\n", returncode=0),      # poll
+                MagicMock(stdout="", returncode=0),                        # move
+            ]
+            out = interp.execute(
+                skill,
+                {
+                    "action_id": "launch_app_on_display",
+                    "app": "抖音",
+                    "display": "副",  # → BenQ
+                },
+            )
+        assert out == "已打开 抖音 到 BenQ"
+        calls = mock_run.call_args_list
+        assert calls[0].args[0] == ["open", "-a", "抖音"]
+        assert calls[1].args[0][:3] == ["aerospace", "list-windows", "--all"]
+        assert calls[2].args[0] == [
+            "aerospace", "move-node-to-monitor",
+            "--window-id", "42", "BenQ",
+        ]
+
+    def test_move_app_to_display_finds_window_by_name_not_focus(self):
+        """The pet-mode safety contract: this action must not depend on what
+        is focused. Verifies it polls aerospace for the named app and moves
+        that window directly, regardless of which window has focus."""
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                # poll_window: aerospace lists windows, 抖音 has wid 555,
+                # plus a Jarvis window which must be ignored
+                MagicMock(
+                    stdout=(
+                        "111\tJarvis\tpet-overlay\n"
+                        "555\t抖音\tdouyin\n"
+                    ),
+                    returncode=0,
+                ),
+                # move
+                MagicMock(stdout="", returncode=0),
+            ]
+            out = interp.execute(
+                skill,
+                {
+                    "action_id": "move_app_to_display",
+                    "app": "抖音",
+                    "display": "副",
+                },
+            )
+        assert out == "已把 抖音 挪到 BenQ"
+        move_argv = mock_run.call_args_list[1].args[0]
+        # Critical: --window-id is 555 (抖音), NOT 111 (Jarvis pet UI)
+        assert move_argv == [
+            "aerospace", "move-node-to-monitor",
+            "--window-id", "555", "BenQ",
+        ]
+
+    def test_move_app_to_display_app_not_running_returns_error_template(self):
+        interp, skill = self._load()
+        # speed up the poll for this test
+        skill["action"]["registry"]["move_app_to_display"]["steps"][0][
+            "timeout_s"
+        ] = 0.05
+        skill["action"]["registry"]["move_app_to_display"]["steps"][0][
+            "interval_s"
+        ] = 0.01
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(
+                skill,
+                {
+                    "action_id": "move_app_to_display",
+                    "app": "Nonexistent",
+                    "display": "BenQ",
+                },
+            )
+        assert "Mac GUI" in out
+
+    def test_move_focused_to_display_uses_alias(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(
+                skill, {"action_id": "move_focused_to_display", "display": "主"}
+            )
+        assert out == "已移到 Built-in"
+        assert mock_run.call_args_list[0].args[0] == [
+            "aerospace", "move-node-to-monitor", "Built-in",
+        ]
+
+    def test_focus_app_uses_argv_binding(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"action_id": "focus_app", "app": "Cursor"})
+        assert out == "已切到 Cursor"
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv[0] == "osascript"
+        assert argv[1] == "-e"
+        assert "on run argv" in argv[2]
+        assert "tell application (item 1 of argv)" in argv[2]
+        assert argv[-1] == "Cursor"
+
+    def test_focus_app_blocks_applescript_injection(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            evil = '"; do shell script "rm -rf /"; tell app "X'
+            interp.execute(skill, {"action_id": "focus_app", "app": evil})
+        argv = mock_run.call_args_list[0].args[0]
+        # Evil flows to argv[3] only; script body never sees it.
+        assert argv[-1] == evil
+        assert "do shell script" not in argv[2]
+
+    # ----- Launch & open ----------------------------------------------------
+
+    def test_launch_app(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(skill, {"action_id": "launch_app", "app": "Cursor"})
+        assert out == "已打开 Cursor"
+        assert mock_run.call_args_list[0].args[0] == ["open", "-a", "Cursor"]
+
+    def test_open_url(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(
+                skill,
+                {"action_id": "open_url", "url": "https://youtube.com"},
+            )
+        assert out == "已打开 https://youtube.com"
+        assert mock_run.call_args_list[0].args[0] == ["open", "https://youtube.com"]
+
+    def test_open_url_on_display_full_sequence(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(stdout="", returncode=0),  # open chrome --app=
+                MagicMock(  # poll: chrome window matches title hint
+                    stdout="77\tGoogle Chrome\t抖音-记录美好生活\n",
+                    returncode=0,
+                ),
+                MagicMock(stdout="", returncode=0),  # move
+            ]
+            out = interp.execute(
+                skill,
+                {
+                    "action_id": "open_url_on_display",
+                    "url": "https://www.douyin.com",
+                    "title_hint": "抖音",
+                    "display": "副",
+                },
+            )
+        assert out == "已在 BenQ 打开 https://www.douyin.com"
+        calls = mock_run.call_args_list
+        assert calls[0].args[0] == [
+            "open", "-na", "Google Chrome", "--args",
+            "--app=https://www.douyin.com", "--new-window",
+        ]
+        assert calls[2].args[0] == [
+            "aerospace", "move-node-to-monitor",
+            "--window-id", "77", "BenQ",
+        ]
+
+    # ----- Window placement -------------------------------------------------
+
+    def test_move_to_workspace(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(
+                skill,
+                {"action_id": "move_to_workspace", "workspace": "3"},
+            )
+        assert out == "已扔到工作区 3"
+        assert mock_run.call_args_list[0].args[0] == [
+            "aerospace", "move-node-to-workspace", "3",
+        ]
+
+    # ----- Focus ------------------------------------------------------------
+
+    def test_focus_monitor(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(
+                skill,
+                {"action_id": "focus_monitor", "display": "副"},
+            )
+        assert out == "聚焦到 BenQ"
+        assert mock_run.call_args_list[0].args[0] == [
+            "aerospace", "focus-monitor", "BenQ",
+        ]
+
+    def test_focus_back_and_forth(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(skill, {"action_id": "focus_back_and_forth"})
+        assert out == "切回上一个窗口"
+        assert mock_run.call_args_list[0].args[0] == [
+            "aerospace", "focus-back-and-forth",
+        ]
+
+    # ----- Workspace --------------------------------------------------------
+
+    def test_workspace_switch(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(
+                skill,
+                {"action_id": "workspace_switch", "workspace": "2"},
+            )
+        assert out == "已切到工作区 2"
+        assert mock_run.call_args_list[0].args[0] == ["aerospace", "workspace", "2"]
+
+    # ----- Window state -----------------------------------------------------
+
+    def test_fullscreen_focused(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(skill, {"action_id": "fullscreen_focused"})
+        assert out == "全屏已切换"
+        assert mock_run.call_args_list[0].args[0] == [
+            "aerospace", "macos-native-fullscreen",
+        ]
+
+    def test_minimize_focused(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(skill, {"action_id": "minimize_focused"})
+        assert out == "已最小化"
+        assert mock_run.call_args_list[0].args[0] == [
+            "aerospace", "macos-native-minimize",
+        ]
+
+    def test_close_focused(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(skill, {"action_id": "close_focused"})
+        assert out == "已关闭"
+        assert mock_run.call_args_list[0].args[0] == ["aerospace", "close"]
+
+    def test_close_all_but_current(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(skill, {"action_id": "close_all_but_current"})
+        assert out == "已关闭其他窗口"
+        assert mock_run.call_args_list[0].args[0] == [
+            "aerospace", "close-all-windows-but-current",
+        ]
+
+    def test_resize_focused(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(
+                skill,
+                {"action_id": "resize_focused", "delta": "+100"},
+            )
+        assert out == "已调整大小 (+100px)"
+        assert mock_run.call_args_list[0].args[0] == [
+            "aerospace", "resize", "smart", "+100",
+        ]
+
+    # ----- System -----------------------------------------------------------
+
+    def test_set_volume(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(
+                skill, {"action_id": "set_volume", "level": "30"}
+            )
+        assert out == "音量调到 30"
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv[0] == "osascript"
+        assert "set volume output volume" in argv[2]
+        assert argv[-1] == "30"
+
+    def test_set_volume_user_input_only_via_argv(self):
+        # Injection guard: level value flows via argv, not script body.
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            evil = "100); do shell script \"rm -rf /\"; ("
+            interp.execute(skill, {"action_id": "set_volume", "level": evil})
+        argv = mock_run.call_args_list[0].args[0]
+        assert "do shell script" not in argv[2]
+        assert argv[-1] == evil
+
+    def test_mute_toggle(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"action_id": "mute_toggle"})
+        assert out == "静音已切换"
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv[0] == "osascript"
+        assert "output muted" in argv[2]
+        assert "set volume with output muted" in argv[2]
+        assert "set volume without output muted" in argv[2]
+        # mute_toggle reads+flips internally, no argv binding
+        assert len(argv) == 3  # ["osascript", "-e", <script>]
+
+    def test_lock_screen(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"action_id": "lock_screen"})
+        assert out == "锁屏中"
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv[0] == "osascript"
+        # Ctrl+Cmd+Q is the macOS lock shortcut
+        assert "control down" in argv[2]
+        assert "command down" in argv[2]
+        assert 'keystroke "q"' in argv[2]
+
+    def test_screenshot(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(skill, {"action_id": "screenshot"})
+        assert out == "已截屏到剪贴板"
+        # -c clipboard, -x silent
+        assert mock_run.call_args_list[0].args[0] == ["screencapture", "-c", "-x"]
+
+    def test_aerospace_missing_returns_error_template(self):
+        interp, skill = self._load()
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(stdout="", returncode=0),  # open succeeds
+                FileNotFoundError("aerospace"),      # poll: aerospace missing
+            ]
+            out = interp.execute(
+                skill,
+                {
+                    "action_id": "launch_app_on_display",
+                    "app": "抖音",
+                    "display": "BenQ",
+                },
+            )
+        assert "Mac GUI" in out
+
+    def test_window_never_appears_returns_error_template(self):
+        interp, skill = self._load()
+        # speed up: shrink poll timeout for this test
+        skill["action"]["registry"]["launch_app_on_display"]["steps"][1][
+            "timeout_s"
+        ] = 0.05
+        skill["action"]["registry"]["launch_app_on_display"]["steps"][1][
+            "interval_s"
+        ] = 0.01
+        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            out = interp.execute(
+                skill,
+                {
+                    "action_id": "launch_app_on_display",
+                    "app": "Nonexistent",
+                    "display": "BenQ",
+                },
+            )
+        assert "Mac GUI" in out
+
+    def test_marked_not_read_only_destructive(self):
+        _, skill = self._load()
+        # mac_gui mutates window state; should not be marked read_only.
+        assert skill["annotations"]["read_only"] is False
+
+    def test_registered_via_tool_registry(self, tmp_path):
+        # End-to-end: ToolRegistry should pick up skills/mac_gui.yaml and
+        # surface a tool named "mac_gui".
+        from core.tool_registry import ToolRegistry
+        registry = ToolRegistry({}, yaml_dirs=[
+            os.path.join(os.path.dirname(__file__), "..", "skills"),
+        ])
+        defs = registry.get_tool_definitions(user_role="owner")
+        names = {d["name"] for d in defs}
+        assert "mac_gui" in names
