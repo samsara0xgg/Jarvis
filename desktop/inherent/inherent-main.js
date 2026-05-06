@@ -178,6 +178,12 @@ ipcMain.handle('card:fadeOut', (_, ms) => {
 
 ipcMain.handle('card:cancelFade', () => {
   if (!card || card.isDestroyed()) return;
+  // electron-liquid-glass NSGlassEffectView seems to bypass NSWindow's
+  // ignoresMouseEvents — DOM mouseenter still fires when the card is
+  // alpha=0 + click-through. Without this gate, hover over the idle
+  // card area calls cardAPI.cancelFade → setCardVisible and the empty
+  // card pops back into view. Only honor cancelFade during an open turn.
+  if (turnState === 'idle') return;
   fadeGen++;
   setCardVisible();
 });
