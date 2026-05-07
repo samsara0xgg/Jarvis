@@ -485,12 +485,6 @@ memory:
   # 保留最近 N 轮对话（每轮 = 一问一答）。
   max_conversation_turns: 20
 
-  # 记忆提取专用 LLM（不填则跟主 llm 一样）。
-  # 建议固定用 GPT-4o-mini — 支持 function calling，便宜稳定。
-  llm:
-    model: gpt-4o-mini
-    base_url: ""  # 空 = OpenAI 官方
-
   # 对话历史持久化目录。
   conversation_dir: data/conversations
 
