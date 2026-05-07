@@ -58,8 +58,8 @@ def _make_jarvis(tmp_path) -> JarvisApp:
 
     All subsystems that _process_turn_inner touches are replaced with MagicMocks.
     The real TraceLog is wired so trace rows land in a tmp_path SQLite file.
-    The intent_router stub returns None (skipping the local branch) and the
-    llm stub's chat_stream returns a fixed (text, []) tuple, so turns flow
+    The regex_router stub returns None (forcing cloud path) and the llm
+    stub's chat_stream returns a fixed (text, []) tuple, so turns flow
     through the cloud path without invoking real LLM / TTS / interrupt code.
 
     Args:
@@ -130,28 +130,12 @@ def _make_jarvis(tmp_path) -> JarvisApp:
 
     app.event_bus = MagicMock()
 
-    app.local_executor = None
-
     app.memory_manager = MagicMock()
     # The cloud path doesn't call build_prompt_context in this test (user_id
     # is not set on the stub), but the memory_manager attribute must still
     # behave as a MagicMock that tolerates any access.
     app.memory_manager.save = MagicMock()
     app.memory_manager.write_observation = MagicMock()
-
-    app.intent_router = MagicMock()
-    app.intent_router.route_and_respond = MagicMock(return_value=None)
-    # Prevent _flush_trace from injecting a MagicMock into llm_metadata
-    # via getattr(intent_router, "last_metadata") on the cloud path.
-    app.intent_router.last_metadata = None
-    # MagicMock auto-creates attrs as MagicMocks (truthy) — the trace flush
-    # uses ``getattr(..., default) or default`` which returns a MagicMock for
-    # any missing attr, then JSON serialization fails. Explicitly null these.
-    app.intent_router._last_context = []
-    app.intent_router._last_provider_attempts = []
-    app.intent_router._last_raw_response = None
-    app.intent_router._last_cache_hit = False
-    app.intent_router.prompt_hash = None
 
     # L0 regex router stub — always miss so tests exercise cloud path.
     app.regex_router = MagicMock()

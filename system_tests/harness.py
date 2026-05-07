@@ -233,10 +233,6 @@ class TestHarness:
 
     def _wrap_api_counter(self, app: Any) -> None:
         """Wrap API-calling methods to count calls + capture debug trace."""
-        # Note: intent_router is no longer on the main path (replaced by
-        # regex_router fast-path → cloud LLM tool_use). Groq counter would
-        # always be 0; wrapper removed.
-
         # LLM chat_stream wrapper — wraps tool_executor to capture tool calls
         orig_chat = app.llm.chat_stream
         def _counted_chat(*args: Any, **kwargs: Any) -> Any:
@@ -417,21 +413,12 @@ class TestHarness:
                     "subprocess_returncode": proc.returncode if proc and proc.poll() is not None else None,
                 }
 
-        # Phase C: capture router/llm/tts/memory extended trace
-        router = self.app.intent_router
+        # Phase C: capture llm/tts/memory extended trace
+        # router_trace retained as empty dict for archive-format compatibility.
         llm = self.app.llm
         tts = getattr(self.app, "_tts", None)
         mm = self.app.memory_manager
-
-        router_trace = {}
-        if router is not None:
-            router_trace = {
-                "cache_hit": getattr(router, "_last_cache_hit", False),
-                "provider_attempts": list(getattr(router, "_last_provider_attempts", [])),
-                "raw_response": (getattr(router, "_last_raw_response", "") or "")[:500],
-                "prompt_len": len(getattr(router, "_last_prompt", "") or ""),
-                "prompt": getattr(router, "_last_prompt", "") or "",
-            }
+        router_trace: dict = {}
 
         llm_tokens = dict(getattr(llm, "_last_metadata", {})) if llm else {}
         tts_cache_hit = getattr(tts, "_last_cache_hit", None) if tts else None

@@ -129,22 +129,11 @@ def test_jarvis_handle_utterance_end_to_end(tmp_path):
             "enrolled_at": "2025-01-01T00:00:00Z",
         })
 
-        # Mock the intent router to return a controlled smart_home result
-        from core.intent_router import RouteResult
-        mock_route = RouteResult(
-            tier="local", intent="smart_home", confidence=0.95,
-            duration_ms=10, provider="mock",
-            actions=[{"device_id": "bedroom_light", "action": "turn_on", "value": None}],
-            response="好的，卧室灯已打开。",
-        )
-        app.intent_router.route = MagicMock(return_value=mock_route)
-        app.intent_router.route_and_respond = MagicMock(return_value=mock_route)
-
-        # Run the pipeline
+        # Run the pipeline (regex_router miss → cloud LLM mock returns 卧室灯已打开)
         audio = np.random.randn(16000).astype(np.float32)
         response = app.handle_utterance(audio)
 
-        assert "开了" in response
+        assert "卧室灯" in response and "打开" in response
         app.speaker_verifier.verify.assert_called_once()
         app.speech_recognizer.transcribe.assert_called_once()
     finally:

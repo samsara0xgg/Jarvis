@@ -39,24 +39,6 @@ class TestTTSIntegration:
         assert tracker.get_status("tts.openai").status == ComponentStatus.HEALTHY
 
 
-class TestIntentRouterIntegration:
-    """Test that IntentRouter respects tracker.is_available()."""
-
-    def test_router_skips_degraded_groq(self):
-        tracker = _make_tracker(failure_threshold=2)
-        tracker.record_failure("intent.groq", "rate_limit")
-        tracker.record_failure("intent.groq", "rate_limit")
-        assert tracker.is_available("intent.groq") is False
-        assert tracker.is_available("intent.deepseek") is True  # next tier
-
-    def test_router_records_failure(self):
-        tracker = _make_tracker(failure_threshold=2)
-        tracker.record_failure("intent.groq")
-        assert tracker.get_status("intent.groq").status == ComponentStatus.HEALTHY
-        tracker.record_failure("intent.groq")
-        assert tracker.get_status("intent.groq").status == ComponentStatus.DEGRADED
-
-
 class TestLLMIntegration:
     """Test that LLMClient reports to tracker."""
 

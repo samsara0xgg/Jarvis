@@ -1,3 +1,7 @@
+# REVIEW [B01] L1-49 ACTIVE · 模块顶部 (docstring + imports + 警告抑制)
+# REVIEW 分析: stdlib/3rd-party/项目内部 import；urllib3+ONNX 警告抑制 L26-31 跟 import 块混；L34 `Action,ActionResponse` 仅服务下面 REQLLM 死分支
+# REVIEW 建议: 留主体；L34 import 等 IPB9 死分支删后同步移除；L26-31 顺序整理可作 Tier 3 小修
+# REVIEW 评估: ___
 """Jarvis AI Voice Assistant — main entry point.
 
 Supports two modes:
@@ -31,7 +35,6 @@ warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")
 os.environ["ONNXRUNTIME_LOG_SEVERITY_LEVEL"] = "3"  # onnxruntime 在没有 GPU 时会刷屏警告
 
 from auth.permission_manager import PermissionManager
-from core.local_executor import Action, ActionResponse
 from core.tts import SentenceType
 from auth.user_store import UserStore
 from core.audio_recorder import AudioRecorder
@@ -48,12 +51,20 @@ from core.tool_registry import ToolRegistry
 
 LOGGER = logging.getLogger(__name__)
 
+# REVIEW [B02] L51-54 MIXED · 模块常量
+# REVIEW 分析: L52 `_ESCALATION_KEYWORDS` ACTIVE (用在 _process_turn_inner L893)；L54 `_NEEDS_LLM_ACTIONS = {"set_effect"}` DEAD (无 reader)
+# REVIEW 建议: 留 L52；删 L53-54 整段
+# REVIEW 评估: ___
 # 用户说这些前缀词，本轮临时切换到更强的 LLM 模型（deep preset）
 _ESCALATION_KEYWORDS = ("仔细想想", "详细分析", "认真想", "好好想")
 # 这些智能家居动作无法本地解析参数，必须交给 LLM 理解
 _NEEDS_LLM_ACTIONS = {"set_effect"}
 
 
+# REVIEW [B03] L57-78 DEAD · _color_needs_llm 模块级 helper
+# REVIEW 分析: 22 行函数无 caller (grep 全 repo 仅定义自身)；原服务 intent_router/local_executor smart_home 路径
+# REVIEW 建议: 删整个函数
+# REVIEW 评估: ___
 def _color_needs_llm(actions: list[dict]) -> bool:
     """Check if any set_color/set_color_temp value is unresolvable locally."""
     from core.command_parser import COLOR_XY_MAP, COLOR_TEMP_MAP
@@ -77,6 +88,10 @@ def _color_needs_llm(actions: list[dict]) -> bool:
             return True
     return False
 
+# REVIEW [B04] L81-87 ACTIVE · APScheduler 模块级 health helpers
+# REVIEW 分析: `_health_tracker_ref` + `_run_health_probes` 模块级 (APScheduler 序列化 job 必须用模块级 ref，不能 self.method)
+# REVIEW 建议: 留
+# REVIEW 评估: ___
 # APScheduler 序列化 job 时需要模块级引用，不能用实例方法
 _health_tracker_ref = None
 
@@ -99,6 +114,10 @@ class JarvisApp:
         self.config_path = Path(config_path) if config_path else Path("config.yaml")
         self.logger = LOGGER
 
+        # REVIEW [IB1] L102-112 ACTIVE · 事件总线 + health_tracker
+        # REVIEW 分析: EventBus 组件解耦 (state_changed/health.status_changed/response.start 等)；health_tracker 可选，config.health.enabled 默认 true
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # ── 事件总线 ── 组件间解耦通信，比如健康状态变化、state 切换
         self.event_bus = EventBus()
 
@@ -111,6 +130,10 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Health tracker unavailable: %s", exc)
 
+        # REVIEW [IB2] L114-130 ACTIVE · 音频+身份 stack + LLM/对话/记忆
+        # REVIEW 分析: UserStore/AudioRecorder/SpeakerEncoder/Verifier/SpeechRecognizer/ASRNormalizer/DeviceManager/PermissionManager + LLMClient/ConversationStore/MemoryManager
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # ── 音频 + 身份认证 ── 录音、ASR、声纹编码/验证、用户库、权限
         self.user_store = UserStore(config)
         self.audio_recorder = AudioRecorder(config)
@@ -129,6 +152,10 @@ class JarvisApp:
         # ── 长期记忆 ── SQLite + 向量嵌入
         self.memory_manager = MemoryManager(config)
 
+        # REVIEW [IB3] L132-186 ACTIVE · 行为日志 + Trace v3 全套设施
+        # REVIEW 分析: BehaviorLog+TraceLog 共用 SQLite (WAL)；turn_counter/pricing/NLI lazy/app_session_id (per-launch)/prompt_version (sha256 personality.py)/cross-turn placeholders/voice-path captures
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         from memory.cold.behavior_log import BehaviorLog
         mem_db = config.get("memory", {}).get("db_path", "data/memory/jarvis_memory.db")
         # BehaviorLog 和 MemoryManager 共用同一个 SQLite（不同表），WAL 模式支持并发读写
@@ -185,6 +212,10 @@ class JarvisApp:
         self._last_asr_ms: int | None = None
         self._last_audio_path: str | None = None
 
+        # REVIEW [IB4] L188-207 ACTIVE · 音频归档 + last user/session 占位
+        # REVIEW 分析: audio capture (config 控制开关) + first_audio_at + last_turn_end_at + last_user_id/session_id；future quality work (n-best/对比) 数据源
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # Audio capture: archive raw 16k float32 wav per voice turn so future
         # quality work (n-best, model comparison, fine-tuning data) is unblocked.
         _capture_cfg = config.get("audio", {}).get("capture", {})
@@ -206,6 +237,10 @@ class JarvisApp:
         self._last_user_id: str | None = None
         self._last_session_id: str | None = None
 
+        # REVIEW [IB5] L209-228 ACTIVE · 可选子系统 (scheduler + OLED)
+        # REVIEW 分析: APScheduler 给 reminders/health probes/morning briefing 用；OLED 给 RPi 显示屏，桌面 macOS 上跳过
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # ── 定时任务（可选）── 早报、记忆维护等 cron 任务
         self.scheduler = None
         try:
@@ -227,6 +262,10 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("OLED display unavailable: %s", exc)
 
+        # REVIEW [IB6] L230-247 ACTIVE · tools init + ToolRegistry
+        # REVIEW 分析: smart_home/time_utils/reminders/todos 各自 init() 注入依赖；ToolRegistry 自动扫 skills/+skills/learned/
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # ── 工具注册中心 (v2) ── @jarvis_tool 函数 + YAML skills 统一管理
         import tools.smart_home
         tools.smart_home.init(self.device_manager, self.permission_manager)
@@ -246,24 +285,22 @@ class JarvisApp:
 
         self.tool_registry = ToolRegistry(config)
 
-        # ── 意图路由 + 本地执行器 ──
-        self.intent_router = None
-        self.local_executor = None
+        # L0 RegexRouter — fast-path classifier (17 patterns ^...$).
+        # L1 surrogate slot reserved for trace-trained classifier (see TraceLog).
         self.regex_router = None
         try:
-            from core.intent_router import IntentRouter
-            from core.local_executor import LocalExecutor
             from core.regex_router import RegexRouter
-
-            self.intent_router = IntentRouter(config, tracker=self.health_tracker)
-            self.local_executor = LocalExecutor(self.tool_registry)
             self.regex_router = RegexRouter(config)
         except Exception as exc:
-            self.logger.warning("Intent router unavailable: %s", exc)
+            self.logger.warning("RegexRouter unavailable: %s", exc)
         # Latest regex match (set during _process_turn when L0 hits) — used by
         # _flush_trace to record regex_pattern_id without re-running the match.
         self._last_regex_match = None
 
+        # REVIEW [IB8] L267-283 ACTIVE · InterruptMonitor + TTS placeholder
+        # REVIEW 分析: InterruptMonitor 共享 main-path SpeechRecognizer + ASRNormalizer (避免双 load)；TTS 懒加载占位 (首次调用才 init)
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # --- Interrupt monitor (full-duplex) ---
         # Share main-path SpeechRecognizer + ASRNormalizer so the interrupt
         # path uses the same model instance (no double load) and the same
@@ -282,6 +319,10 @@ class JarvisApp:
         # ── TTS 语音合成（懒加载）── 首次调用时才初始化，避免拖慢启动
         self._tts: Any = None
 
+        # REVIEW [IB9] L285-300 MIXED · 会话状态
+        # REVIEW 分析: _cancel/utterance_duration/silence_timeout/ThreadPoolExecutor(3)/_pipeline_lock 全 ACTIVE；L295 `_interrupted_response` 写入但 resume read 路径已删 (commit 4692e3d)，无 reader → DEAD state；L300 `_interrupt_played_texts` 是 WP5 仍活
+        # REVIEW 建议: 删 `_interrupted_response: list[str] | None = None` 占位 + B32 里两处写入 + 3 个 test 文件引用 (Tier 2 #6)
+        # REVIEW 评估: ___
         # ── 会话状态 ──
         self._cancel = threading.Event()  # 用户按 Enter 打断时设置此信号
         session_config = config.get("session", {})
@@ -299,6 +340,10 @@ class JarvisApp:
         # writing history. None means no pending interrupt to inject.
         self._interrupt_played_texts: list[str] | None = None
 
+        # REVIEW [IB10] L302-324 ACTIVE · prewarms + health monitor wire-up
+        # REVIEW 分析: 4 个 prewarm submitted 到 executor (HTTP keepalive/TTS precache 6 短句/ASR/VAD)；health 状态变化订阅 + 定期 probe
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # 预热 HTTP 连接（建立 keep-alive，首次真实调用省 ~100ms TCP+TLS）
         self._executor.submit(self._prewarm_connections)
 
@@ -326,22 +371,31 @@ class JarvisApp:
     def _prewarm_connections(self) -> None:
         """Pre-warm HTTP connections to reduce first-call latency."""
         import requests as _req
-        if self.intent_router and self.intent_router.groq_key:
+        groq_key = self.config.get("models", {}).get("groq", {}).get("api_key")
+        if groq_key:
             try:
                 _req.get(
                     "https://api.groq.com/openai/v1/models",
-                    headers={"Authorization": f"Bearer {self.intent_router.groq_key}"},
+                    headers={"Authorization": f"Bearer {groq_key}"},
                     timeout=5,
                 )
             except Exception:
                 pass
 
+    # REVIEW [B12] L339-343 ACTIVE · _on_health_changed
+    # REVIEW 分析: degradation 第一次发生时语音通知"X 暂时不可用，已切换备用"
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _on_health_changed(self, data: dict) -> None:
         """Voice-notify user on first degradation only."""
         if data.get("new_status") == "degraded" and data.get("old_status") == "healthy":
             component = data.get("component", "unknown")
             self.speak(f"{component} 暂时不可用，已切换备用。")
 
+    # REVIEW [B13] L345-406 ACTIVE · _setup_health_probes
+    # REVIEW 分析: 注册 groq/openai/asr 三个 probe + scheduler interval (默认 60s)；用模块级 _health_tracker_ref 因 APScheduler 序列化要求
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _setup_health_probes(self, config: dict) -> None:
         """Register health probes and schedule periodic checks."""
         import requests as _req
@@ -405,6 +459,10 @@ class JarvisApp:
             )
             self.logger.info("Health probes scheduled every %ds", interval)
 
+    # REVIEW [B14] L408-416 ACTIVE · shutdown
+    # REVIEW 分析: executor.shutdown(wait=True) → scheduler.stop() → oled.stop() → mqtt.disconnect()；最后一行用了 `device_manager._mqtt_client` 私有属性 (Tier 3 cosmetic)
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def shutdown(self) -> None:
         """Clean up all subsystems."""
         self._executor.shutdown(wait=True)
@@ -415,6 +473,10 @@ class JarvisApp:
         if hasattr(self.device_manager, '_mqtt_client') and self.device_manager._mqtt_client:
             self.device_manager._mqtt_client.disconnect()
 
+    # REVIEW [B15] L418-502 ACTIVE · run_interactive (--no-wake 模式)
+    # REVIEW 分析: 后台线程 _input_listener 监 Enter；主循环录音→handle_utterance→检 _cancel→检 farewell；按 farewell 用 `_last_path == "farewell"` 判退出
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def run_interactive(self) -> int:
         """Run in press-Enter-to-talk mode (no wake word needed).
 
@@ -501,6 +563,10 @@ class JarvisApp:
 
         return 0
 
+    # REVIEW [B16] L504-590 ACTIVE · run_always_listening (wake word 模式)
+    # REVIEW 分析: WakeWordDetector(openwakeword) + sd.InputStream 双流抢麦克风方案；hit→speak("在的")→暂停 wake stream→record→handle_utterance→恢复；farewell 走 reset+drain+listening_for_wake=True
+    # REVIEW 建议: 留 (注：docstring 提 Porcupine 但实际是 openwakeword，可改)
+    # REVIEW 评估: ___
     def run_always_listening(self) -> int:
         """Run with Porcupine wake word detection (always-on mode).
 
@@ -589,6 +655,10 @@ class JarvisApp:
 
         return 0
 
+    # REVIEW [B17] L592-606 ACTIVE · handle_utterance (顶层 wrapper)
+    # REVIEW 分析: try/except 捕全部 pipeline 异常，emit state=idle 后重新抛
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def handle_utterance(self, audio: np.ndarray) -> str:
         """Process one utterance through the full Jarvis pipeline.
 
@@ -605,6 +675,10 @@ class JarvisApp:
             self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
             raise
 
+    # REVIEW [B18] L608-702 ACTIVE · _handle_utterance_inner (语音入口)
+    # REVIEW 分析: 并行 SpeakerVerifier+SpeechRecognizer→snapshot ASR/VAD/audio metadata→audio capture→resolve user→_voice_output→_process_turn(trigger_source="wake_word")；空 ASR 早返 "" 不写 trace
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _handle_utterance_inner(self, audio: np.ndarray) -> str:
         """Inner utterance handler — wrapped by handle_utterance for safety."""
         _t0 = time.monotonic()
@@ -705,6 +779,10 @@ class JarvisApp:
     # 核心处理流水线（语音和文本两条入口共用）
     # ══════════════════════════════════════════════════════════════
 
+    # REVIEW [B19] L708-822 MIXED · _process_turn (外层 wrapper)
+    # REVIEW 分析: try/finally 包 _flush_trace + inherent card 事件转发；STALE-DOC L781-786 注释提"farewell, memory_shortcut, resume, fall-through"，后三个已删
+    # REVIEW 建议: 留逻辑；改 L781-786 注释只列 regex/farewell/cloud
+    # REVIEW 评估: ___
     def _process_turn(
         self,
         text: str,
@@ -820,6 +898,10 @@ class JarvisApp:
             if flushed_id is not None and ttfs_cell[0] is None:
                 self._defer_ttfs_update(flushed_id, ttfs_cell)
 
+    # REVIEW [B20] L823-1211 MIXED · _process_turn_inner (主流水线)
+    # REVIEW 分析: 13 子段 (IPB1-13)；STALE-DOC L837-839 docstring 列 7 个已删 path (farewell/memory_shortcut/learning/keyword_trigger/direct_answer/intent_route/route_dispatch)
+    # REVIEW 建议: 改 docstring 只列 regex+cloud；逻辑见各 IPB# 子标
+    # REVIEW 评估: ___
     def _process_turn_inner(  # noqa: C901 — intentionally long; single pipeline
         self,
         text: str,
@@ -853,6 +935,10 @@ class JarvisApp:
         Returns:
             Full assistant response text.
         """
+        # REVIEW [IPB1] L856-863 ACTIVE · 清 stale interrupt-played state (P0-B)
+        # REVIEW 分析: 防上轮 cancel 留下的 _interrupt_played_texts 漏到下轮 mistruncate；_cancel_current 中途会重写
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # P0-B: clear stale interrupt-played state from any prior turn.
         # Non-cloud_path returns (resume / farewell / etc.)
         # don't consume _interrupt_played_texts, so without this reset a
@@ -862,6 +948,10 @@ class JarvisApp:
         # interrupts during streaming, and the consumer below clears it again.
         self._interrupt_played_texts = None
 
+        # REVIEW [IPB2] L865-872 ACTIVE · ASR normalize (T1.5)
+        # REVIEW 分析: 共享 normalizer 让 web/text path 也吃 corrections；require_context 守卫保证 voice-only 修正不污染文本
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # T1.5: normalize on shared pipeline so text-path (handle_text/web/MQTT)
         # also benefits. Corrections have require_context guards → safe for
         # non-voice input.
@@ -871,6 +961,10 @@ class JarvisApp:
         if text != _raw_text:
             self.logger.info("ASR normalized: %r -> %r", _raw_text, text)
 
+        # REVIEW [IPB3] L874-888 ACTIVE · history 加载 + trace v3 snapshot
+        # REVIEW 分析: ConversationStore.get_history(session_id)→snapshot _last_history_len_before 给 _flush_trace 用 (避免 leak few-shot 到 tool_calls)
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # 加载对话历史（用于多轮上下文）
         history = self.conversation_store.get_history(session_id)
         self._last_history_turns = len(history)
@@ -887,6 +981,10 @@ class JarvisApp:
         # _process_turn wrapper via _reset_turn_state(). The inner only
         # *populates* them at hook points; never re-resets here.
 
+        # REVIEW [IPB4] L890-910 ACTIVE · escalation (升级模式)
+        # REVIEW 分析: 4 个前缀词触发 LLM "deep" preset 切换；voice path 加一句"嗯，让我想想"占空白
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # ── 升级模式 ── 用户说"仔细想想"等前缀词，本轮临时切换到更强的 LLM
         _escalated = False
         _original_preset: str | None = None
@@ -909,15 +1007,17 @@ class JarvisApp:
                     self.logger.warning("Escalation switch failed: %s", exc)
                 break
 
-        # ── 关键词规则匹配 ── 用户定义的触发词（如"晚安"→关灯+关窗帘）
+        # ── per-turn 局部状态 ──
         _t_think = time.monotonic()
         self.event_bus.emit("jarvis.state_changed", {"state": "thinking"})
         response_text = None
         updated_messages = None
-        ar: ActionResponse | None = None
         sentence_count = 0
-        use_llm_rephrase = False
 
+        # REVIEW [IPB6] L921-942 ACTIVE · 记忆检索 (4-block prompt 装配)
+        # REVIEW 分析: memory_manager.build_prompt_context 返回 PromptContext (含 injected_observation_ids)；耗时 50-100ms
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # ── 记忆检索 ── Assembler 装配 4-block prompt（~50-100ms）
         prompt_ctx = None
         if user_id:
@@ -941,6 +1041,10 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Memory query failed: %s", exc)
 
+        # REVIEW [IPB7] L944-996 ACTIVE · L0 RegexRouter 快速路径
+        # REVIEW 分析: regex_match→tool_registry.execute (no-op pattern 走 tool_result="")→render_response；farewell intent 设 _last_path="farewell"，其他设 "regex"；smart_home_control 记 _last_device_ops 给 trace
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # ── L0 Regex 快速路径 ──
         # 命中 → tool_registry.execute → render TTS 模板 → set response_text + path="regex"
         # 未命中 → response_text 保持 None，下游 cloud LLM (tool_use) 兜底
@@ -994,6 +1098,10 @@ class JarvisApp:
         else:
             print(f"⏱ 路由: {_route_ms}ms → miss (cloud LLM)")
 
+        # REVIEW [IPB8] L997-1002 ACTIVE · 本地执行计时
+        # REVIEW 分析: 仅 regex 命中时记 local_exec_ms，给 trace 看 fast-path 耗时
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # 本地执行计时
         if response_text is not None:
             _t_local = time.monotonic()
@@ -1001,9 +1109,11 @@ class JarvisApp:
             print(f"⏱ 本地执行: {_local_ms}ms")
             self._last_timings["local_exec_ms"] = _local_ms
 
-        # ── 云端 LLM ── 前面都没处理掉才到这里。两种模式：
-        #   - REQLLM 转述：本地查到了数据，让 LLM 用小月语气润色
-        #   - 完整 cloud：直接让 LLM 回答（支持 streaming + tool-use 循环）
+        # REVIEW [IPB9] L1004-1152 MIXED · 云端 LLM 路径
+        # REVIEW 分析: wrapped_tool_executor 给 trace 抓 name/args/result/ms；TTSPipeline.prewarm + InterruptMonitor.start()→chat_stream(on_sentence)→finally 收尾；DEAD 子分支 L1084-1102 REQLLM 转述 (use_llm_rephrase=False 永远不 fire)；STALE-DOC L1004-1006 注释提"REQLLM 转述"
+        # REVIEW 建议: 删 L1084-1102 整个 if 分支 (留 L1104 起的 else 体并 dedent)；改 L1004-1006 注释只留"完整 cloud"
+        # REVIEW 评估: ___
+        # ── 云端 LLM ── regex 未命中才到这里：streaming + tool-use 循环
         _t_llm_start = time.monotonic()
         if response_text is None and not self._cancel.is_set():
             self._last_path = "cloud"
@@ -1081,42 +1191,22 @@ class JarvisApp:
             self.event_bus.emit("jarvis.state_changed", {"state": "speaking"})
 
             try:
-                if use_llm_rephrase and ar is not None:
-                    rephrase_msg = (
-                        f"用户问的是：{text}\n"
-                        f"以下是查到的信息，用你自己的话简短转述给用户：\n{ar.text}"
+                try:
+                    response_text, updated_messages = self.llm.chat_stream(
+                        user_message=text,
+                        conversation_history=history,
+                        tools=tools,
+                        tool_executor=_wrapped_tool_executor,
+                        user_name=user_name,
+                        user_id=user_id,
+                        user_role=user_role,
+                        on_sentence=_on_sentence,
+                        user_emotion=emotion,
+                        prompt_context=prompt_ctx,
                     )
-                    try:
-                        response_text, updated_messages = self.llm.chat_stream(
-                            user_message=rephrase_msg,
-                            conversation_history=history,
-                            user_name=user_name,
-                            user_id=user_id,
-                            user_role=user_role,
-                            on_sentence=_on_sentence,
-                            user_emotion=emotion,
-                            prompt_context=prompt_ctx,
-                        )
-                    except Exception as exc:
-                        self.logger.error("LLM rephrase failed: %s", exc)
-                        response_text = ar.text
-                else:
-                    try:
-                        response_text, updated_messages = self.llm.chat_stream(
-                            user_message=text,
-                            conversation_history=history,
-                            tools=tools,
-                            tool_executor=_wrapped_tool_executor,
-                            user_name=user_name,
-                            user_id=user_id,
-                            user_role=user_role,
-                            on_sentence=_on_sentence,
-                            user_emotion=emotion,
-                            prompt_context=prompt_ctx,
-                        )
-                    except Exception as exc:
-                        self.logger.error("Cloud LLM failed: %s", exc)
-                        response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
+                except Exception as exc:
+                    self.logger.error("Cloud LLM failed: %s", exc)
+                    response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
             finally:
                 # Stop interrupt monitor, get accumulated audio
                 if tts_pipeline:
@@ -1151,6 +1241,10 @@ class JarvisApp:
                 # turn's user input setting _cancel. See _mark_turn_end.
                 self._mark_turn_end()
 
+        # REVIEW [IPB10] L1154-1175 ACTIVE · 持久化 conversation
+        # REVIEW 分析: cloud path 用 updated_messages.replace；local path append+replace；WP5 interrupt 触发时 _truncate_assistant_for_interrupt 改写最后 assistant 消息；STALE-DOC 注释提 "GPT-4o-mini"，实际 Observer 用 Grok+Gemini 兜底 (CLAUDE.md)
+        # REVIEW 建议: 留逻辑；改注释 LLM 名
+        # REVIEW 评估: ___
         # ── 持久化 ── 保存对话历史 + 后台异步提取记忆（GPT-4o-mini）
         cloud_path = updated_messages is not None
         if cloud_path:
@@ -1173,6 +1267,10 @@ class JarvisApp:
         # Trace v3: stash final messages for _flush_trace to extract tool_calls.
         self._last_updated_messages = updated_messages
 
+        # REVIEW [IPB11] L1176-1193 ACTIVE · behavior_log
+        # REVIEW 分析: 抽 tool_use blocks 记 skill_call；记 conversation 摘要 + route (local/cloud)
+        # REVIEW 建议: 留 (注：跟 trace_log 字段重叠，未来可考虑合并)
+        # REVIEW 评估: ___
         # ── 行为日志 ── 记录技能调用、情绪、路由路径，用于后续分析
         # (Trace v3 log_turn happens in _flush_trace in the outer wrapper.)
         if user_id:
@@ -1191,12 +1289,20 @@ class JarvisApp:
                 "route": "local" if response_text and not cloud_path else "cloud",
             })
 
+        # REVIEW [IPB12] L1194-1198 ACTIVE · 非流式输出 fallback
+        # REVIEW 分析: regex/farewell 路径 sentence_count==0，到这里一次性 output_fn(response_text)；含 OLED 展示
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # ── 非流式输出 ── 本地路径的响应在这里一次性播报（流式的已经在上面逐句播了）
         if sentence_count == 0 and not self._cancel.is_set() and response_text:
             if self.oled:
                 self.oled.set_speaking_text(response_text)
             output_fn(response_text)
 
+        # REVIEW [IPB13] L1200-1211 ACTIVE · 收尾 (恢复 preset + path 打印 + return)
+        # REVIEW 分析: escalation 完毕回原 preset；打印 path=...；_mark_turn_end 幂等 snapshot (防 race)
+        # REVIEW 建议: 留
+        # REVIEW 评估: ___
         # 如果本轮升级了模型，恢复原来的 preset
         if _escalated and _original_preset is not None:
             try:
@@ -1214,6 +1320,10 @@ class JarvisApp:
     # 纯文本入口（Web 前端用，不走录音/TTS）
     # ══════════════════════════════════════════════════════════════
 
+    # REVIEW [B21] L1217-1245 ACTIVE · handle_text (Web 文本入口)
+    # REVIEW 分析: 不走 ASR/TTS 的 wrapper；trigger_source="web_text"；TTSPipeline 不创建
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def handle_text(
         self,
         text: str,
@@ -1248,6 +1358,10 @@ class JarvisApp:
     # Trace v3 helpers (reset / flush / TTS first-chunk wiring)
     # ══════════════════════════════════════════════════════════════
 
+    # REVIEW [B22] L1251-1318 MIXED · _reset_turn_state
+    # REVIEW 分析: 每轮清 _last_*；7 个字段永远不被 set 是死的：_last_route (L1262)/_last_intent_route_score (L1290)/_last_reqllm (L1271)/_last_learning_intent (L1270)/_last_tool_iterations (L1274)/_last_memory_retrieval (L1276)/_last_memory_extraction (L1277)
+    # REVIEW 建议: 删上述 7 行 (与 B26 _flush_trace 中读它们的代码同步删)
+    # REVIEW 评估: ___
     def _reset_turn_state(self, text: str, *, trigger_source: str) -> None:
         """Reset all per-turn _last_* attributes before _process_turn_inner.
 
@@ -1317,6 +1431,10 @@ class JarvisApp:
         # Outcome lag: NLI runs async in _flush_trace on the PREVIOUS turn's
         # user_text. Nothing to do here — main path stays 0ms overhead.
 
+    # REVIEW [B23] L1320-1343 ACTIVE · _mark_turn_end (幂等 end-of-turn snapshot)
+    # REVIEW 分析: first-call wins；cloud 路径在 wait_done() 后调一次 (L1152)；inner 收尾再调一次 (L1210，兜底非 cloud 路径)；avoid race with next turn's _cancel
+    # REVIEW 建议: 留 (双调用是有意防 race)
+    # REVIEW 评估: ___
     def _mark_turn_end(self) -> None:
         """Snapshot end-of-turn moment for trace v3.
 
@@ -1342,6 +1460,10 @@ class JarvisApp:
                 "interrupted" if self._cancel.is_set() else "success"
             )
 
+    # REVIEW [B24] L1345-1404 ACTIVE · _arm_tts_first_chunk (TTFS callback 装配)
+    # REVIEW 分析: two-tier — engine 注册 first_chunk_callback (lazy player 创建后转发) + player 已存在则直接 reset_first_chunk；GIL-atomic 单 store 进 ttfs_cell
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _arm_tts_first_chunk(
         self,
         *,
@@ -1403,6 +1525,10 @@ class JarvisApp:
             except AttributeError:
                 pass
 
+    # REVIEW [B25] L1406-1453 ACTIVE · _defer_ttfs_update (async 本地 TTS 的 ttfs 后补)
+    # REVIEW 分析: 给 _tts_future 挂 done_callback；audio thread 写完 ttfs_cell 后 patch trace row；handle fut already done race
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _defer_ttfs_update(
         self,
         trace_id: int,
@@ -1452,6 +1578,10 @@ class JarvisApp:
         except Exception as exc:
             self.logger.debug("Could not register ttfs done-callback: %s", exc)
 
+    # REVIEW [B26] L1455-1782 MIXED · _flush_trace (trace v3 行组装)
+    # REVIEW 分析: 327 行；session/turn/latency 计算→ttfs_ms 三级 fallback→input_metadata→tool_calls→4-way LLM source 分支：(a) cloud ACTIVE / (b) router-driven L1603-1632 DEAD (`_last_route` 永远 None) / (c) pure-local-router L1633-1654 DEAD (同上) / (d) regex ACTIVE→cost→cited_obs→empty→NULL→log_turn→async NLI lag-1→async Observer
+    # REVIEW 建议: 删 (b)+(c) 整段 L1603-1654 (52 行)，逻辑改成 if cloud / elif regex / else 直接进 log_turn；与 B22 七字段删除联动
+    # REVIEW 评估: ___
     def _flush_trace(
         self,
         *,
@@ -1552,15 +1682,11 @@ class JarvisApp:
             # Decide which LLM produced this turn's response and pull
             # tokens / finish_reason / cost from the right source.
             #
-            # Three cases:
+            # Two cases:
             # (a) Cloud path: main LLMClient (self.llm). Metadata harvested
             #     in cloud finally via self._last_llm_metadata + tokens.
-            # (b) Router-driven response (route.text_response set, path=
-            #     local): the intent router's Groq/Cerebras LLM produced
-            #     the response in a single call. Pull intent_router.
-            #     last_metadata for tokens/finish_reason/model.
-            # (c) Pure local (farewell, memory_shortcut):
-            #     no LLM ran. All llm_* stay NULL.
+            # (b) L0 regex fast-path or farewell: no LLM ran, all llm_*
+            #     stay NULL; only regex_* identifiers are recorded.
             llm_metadata = self._last_llm_metadata
             llm_tokens_in: int | None = None
             llm_tokens_out: int | None = None
@@ -1570,98 +1696,18 @@ class JarvisApp:
             finish_reason_used = self._last_finish_reason
 
             if self._last_path == "cloud":
-                # (a) Main chat LLM. Tokens were stashed in self._last_llm_tokens
-                # (legacy) — _last_llm_metadata is the v3 source of truth but
-                # tokens themselves live alongside (cache_read on its own attr).
+                # (a) Main chat LLM. Tokens stashed in self._last_llm_tokens.
                 llm_model_used = self.llm.model
                 llm_tokens_in = self._last_llm_tokens.get("input") if self._last_llm_tokens else None
                 llm_tokens_out = self._last_llm_tokens.get("output") if self._last_llm_tokens else None
-                # Even though the main LLM produced the response, record
-                # which router was used for classification. Lets analytics
-                # join cloud-LLM cost back to router decisions and detect
-                # router degradation patterns.
-                router_meta = getattr(self.intent_router, "last_metadata", None) or {}
-                if router_meta.get("model"):
-                    if llm_metadata is None:
-                        llm_metadata = {}
-                    llm_metadata["router_model"] = router_meta.get("model")
-                if llm_metadata is None:
-                    llm_metadata = {}
-                llm_metadata["router_intent"] = getattr(self._last_route, "intent", None)
-                llm_metadata["router_sub_type"] = getattr(self._last_route, "sub_type", None)
-                llm_metadata["router_provider"] = router_meta.get("provider")
-                _cache_hit = getattr(self.intent_router, "_last_cache_hit", False)
-                llm_metadata["router_cache_hit"] = _cache_hit if isinstance(_cache_hit, bool) else None
-                llm_metadata["router_tokens_in"] = router_meta.get("tokens_in")
-                llm_metadata["router_tokens_out"] = router_meta.get("tokens_out")
-                llm_metadata["router_response_id"] = router_meta.get("response_id")
-                _raw_resp = getattr(self.intent_router, "_last_raw_response", None)
-                llm_metadata["router_raw_json"] = _raw_resp if isinstance(_raw_resp, str) and _raw_resp else None
-                llm_metadata["router_context"] = list(getattr(self.intent_router, "_last_context", []) or [])
-                llm_metadata["router_prompt_version"] = getattr(self.intent_router, "prompt_hash", None)
-                llm_metadata["router_attempts"] = list(getattr(self.intent_router, "_last_provider_attempts", []) or [])
-            elif self._last_route is not None and getattr(self._last_route, "text_response", None):
-                # (b) Router-driven inline response. Pull from intent_router.
-                router_meta = getattr(self.intent_router, "last_metadata", None) or {}
-                llm_model_used = router_meta.get("model")
-                llm_tokens_in = router_meta.get("tokens_in")
-                llm_tokens_out = router_meta.get("tokens_out")
-                cache_read = router_meta.get("cache_read_input_tokens") or cache_read
-                if not finish_reason_used:
-                    finish_reason_used = router_meta.get("finish_reason")
-                # Augment llm_metadata to record router origin without
-                # losing the dict shape locked by the schema.
-                if llm_metadata is None:
-                    llm_metadata = {}
-                llm_metadata["provider"] = router_meta.get("provider")
-                llm_metadata["response_id"] = router_meta.get("response_id")
-                llm_metadata["streaming"] = False  # router uses single non-streaming HTTP
-                llm_metadata["router_model"] = router_meta.get("model")
-                llm_metadata["router_intent"] = getattr(self._last_route, "intent", None)
-                llm_metadata["router_sub_type"] = getattr(self._last_route, "sub_type", None)
-                llm_metadata["router_provider"] = router_meta.get("provider")
-                _cache_hit = getattr(self.intent_router, "_last_cache_hit", False)
-                llm_metadata["router_cache_hit"] = _cache_hit if isinstance(_cache_hit, bool) else None
-                llm_metadata["router_tokens_in"] = router_meta.get("tokens_in")
-                llm_metadata["router_tokens_out"] = router_meta.get("tokens_out")
-                llm_metadata["router_response_id"] = router_meta.get("response_id")
-                _raw_resp = getattr(self.intent_router, "_last_raw_response", None)
-                llm_metadata["router_raw_json"] = _raw_resp if isinstance(_raw_resp, str) and _raw_resp else None
-                llm_metadata["router_context"] = list(getattr(self.intent_router, "_last_context", []) or [])
-                llm_metadata["router_prompt_version"] = getattr(self.intent_router, "prompt_hash", None)
-                llm_metadata["router_attempts"] = list(getattr(self.intent_router, "_last_provider_attempts", []) or [])
-            elif self._last_route is not None:
-                # (c) Pure local exec (smart_home/info_query/time) — no cloud
-                # LLM ran, but the router's classification still drove routing.
-                # Without this branch ~78% of router decisions land in trace
-                # with router_intent=NULL, blocking observability of fast paths.
-                router_meta = getattr(self.intent_router, "last_metadata", None) or {}
-                if llm_metadata is None:
-                    llm_metadata = {}
-                llm_metadata["router_model"] = router_meta.get("model")
-                llm_metadata["router_intent"] = getattr(self._last_route, "intent", None)
-                llm_metadata["router_sub_type"] = getattr(self._last_route, "sub_type", None)
-                llm_metadata["router_provider"] = router_meta.get("provider")
-                _cache_hit = getattr(self.intent_router, "_last_cache_hit", False)
-                llm_metadata["router_cache_hit"] = _cache_hit if isinstance(_cache_hit, bool) else None
-                llm_metadata["router_tokens_in"] = router_meta.get("tokens_in")
-                llm_metadata["router_tokens_out"] = router_meta.get("tokens_out")
-                llm_metadata["router_response_id"] = router_meta.get("response_id")
-                _raw_resp = getattr(self.intent_router, "_last_raw_response", None)
-                llm_metadata["router_raw_json"] = _raw_resp if isinstance(_raw_resp, str) and _raw_resp else None
-                llm_metadata["router_context"] = list(getattr(self.intent_router, "_last_context", []) or [])
-                llm_metadata["router_prompt_version"] = getattr(self.intent_router, "prompt_hash", None)
-                llm_metadata["router_attempts"] = list(getattr(self.intent_router, "_last_provider_attempts", []) or [])
             elif self._last_path == "regex" and self._last_regex_match is not None:
-                # (d) L0 regex fast-path — no LLM was called, no router_* fields.
-                # Record only regex_* identifiers for observability.
+                # (b) L0 regex fast-path — no LLM, no tokens.
                 rm = self._last_regex_match
                 if llm_metadata is None:
                     llm_metadata = {}
                 llm_metadata["regex_pattern_id"] = rm.pattern_id
                 llm_metadata["regex_intent"] = rm.intent
                 llm_metadata["regex_tool"] = rm.tool_name
-            # llm_model_used stays None for case (c) and (d), no tokens.
 
             cost = compute_cost_usd(
                 model=llm_model_used,
@@ -1781,6 +1827,10 @@ class JarvisApp:
             self.logger.warning("Trace flush failed (non-fatal): %s", exc)
             return None
 
+    # REVIEW [B27] L1784-1819 ACTIVE · TTS 输出三件套 (speak / _speak_nonblocking / _wait_tts)
+    # REVIEW 分析: speak blocking；_speak_nonblocking 提交到 executor + 完成 emit idle；_wait_tts block 直到上一轮完成 (timeout 30s)
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def speak(self, text: str) -> None:
         """Speak text via TTS (blocking). Use for non-hot-path calls."""
         if not text:
@@ -1818,12 +1868,20 @@ class JarvisApp:
         if self._tts_future and not self._tts_future.done():
             self._tts_future.result(timeout=30)
 
+    # REVIEW [B28] L1821-1825 ACTIVE · _on_voice_interrupt
+    # REVIEW 分析: InterruptMonitor 关键词命中→ _cancel.set + _cancel_current
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _on_voice_interrupt(self) -> None:
         """Called by InterruptMonitor when an interrupt keyword is detected."""
         self.logger.info("Voice interrupt detected")
         self._cancel.set()
         self._cancel_current()
 
+    # REVIEW [B29] L1827-1869 ACTIVE · _truncate_assistant_for_interrupt (WP5 历史改写)
+    # REVIEW 分析: 把最后 assistant 消息缩成已播部分 + "..."，append "[Interrupted by user]" 让 LLM 下轮知道用户实际听到啥；handle openai/anthropic 两种 content shape
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _truncate_assistant_for_interrupt(
         self, messages: list[dict], played: list[str],
     ) -> list[dict]:
@@ -1868,6 +1926,10 @@ class JarvisApp:
         )
         return truncated
 
+    # REVIEW [B30] L1871-1887 MIXED · _on_voice_resume
+    # REVIEW 分析: resume 关键词命中→_cancel.set + pipeline.abort + tts.stop；docstring (L1872-1876) 提"do NOT clear _interrupted_response — the resume check in _process_turn needs it"，但 resume read path 已删 (commit 4692e3d) → STALE-DOC
+    # REVIEW 建议: 留 abort/stop 行为 (resume 关键词仍想 stop TTS)；删/改 L1872-1876 docstring；与 IB9 _interrupted_response 一并清
+    # REVIEW 评估: ___
     def _on_voice_resume(self) -> None:
         """Called by InterruptMonitor when a resume keyword is detected.
 
@@ -1890,6 +1952,10 @@ class JarvisApp:
     # WP7 soft-stop callbacks (VAD-driven pause/resume of TTS playback)
     # ------------------------------------------------------------------
 
+    # REVIEW [B31] L1889-1907 ACTIVE · WP7 soft-stop 对 (_on_soft_pause + _on_soft_resume)
+    # REVIEW 分析: VAD-driven TTS ducking；user 开口→suspend；VAD 结束/无关键词超时→resume
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _on_soft_pause(self) -> None:
         """Pause active TTS playback when VAD detects user speech."""
         tts = self._get_tts()
@@ -1906,6 +1972,10 @@ class JarvisApp:
         if tts.resume_playback():
             self.logger.debug("Soft-resume: TTS resumed (no keyword in window)")
 
+    # REVIEW [B32] L1909-1937 MIXED · _cancel_current
+    # REVIEW 分析: pipeline.abort→snapshot played_texts (WP5)→cancel _tts_future→tts.stop；DEAD 1: L1914 + L1923-1924 写 _interrupted_response (无 reader)；DEAD 2: L1932-1936 `hasattr(self,"skill_factory")` 永 False (整 repo 不在 JarvisApp 上 set)
+    # REVIEW 建议: 删 L1914/L1923-1924 + L1932-1936 整个 try 块；保留 played_texts/abort/stop 主逻辑
+    # REVIEW 评估: ___
     def _cancel_current(self) -> None:
         """Cancel current TTS and reset state after user interrupt."""
         # Read pipeline ref under lock, call abort() outside to avoid blocking
@@ -1936,6 +2006,10 @@ class JarvisApp:
                 pass
         self.event_bus.emit("jarvis.state_changed", {"state": "idle"})
 
+    # REVIEW [B33] L1939-1948 ACTIVE · _flush_stdin (清 stdin buffer)
+    # REVIEW 分析: 防止录音时多按 Enter 残留进下轮 input()
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     @staticmethod
     def _flush_stdin() -> None:
         """Drain any buffered stdin input (extra Enter presses during recording)."""
@@ -1947,6 +2021,10 @@ class JarvisApp:
         except (OSError, ValueError):
             pass
 
+    # REVIEW [B34] L1950-1957 DEAD · JarvisApp.speak_short
+    # REVIEW 分析: 全 repo 无 JarvisApp 这层 caller；TTSEngine.speak_short 是另一个东西，活着但不依赖此 wrapper
+    # REVIEW 建议: 删整个方法
+    # REVIEW 评估: ___
     def speak_short(self, text: str) -> None:
         """Speak a brief acknowledgment (low latency)."""
         tts = self._get_tts()
@@ -1956,6 +2034,10 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("TTS short failed: %s", exc)
 
+    # REVIEW [B35] L1959-1969 ACTIVE · _get_tts (TTS 懒加载)
+    # REVIEW 分析: 首次调用时构造 TTSEngine；失败返 None (graceful)
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _get_tts(self) -> Any:
         """Lazily initialize TTS engine."""
         if self._tts is not None:
@@ -1968,6 +2050,10 @@ class JarvisApp:
             self.logger.warning("TTS unavailable: %s", exc)
             return None
 
+    # REVIEW [B36] L1971-1983 ACTIVE · _create_tts_pipeline (流式 TTS 工厂)
+    # REVIEW 分析: cloud LLM 路径用；构造 TTSPipeline.start() 返回，失败返 None
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _create_tts_pipeline(self) -> Any:
         """Create a new TTS pipeline for streaming output."""
         tts = self._get_tts()
@@ -1982,6 +2068,10 @@ class JarvisApp:
             self.logger.warning("TTS pipeline unavailable: %s", exc)
             return None
 
+    # REVIEW [B37] L1985-1994 ACTIVE · _warmup_interrupt_vad
+    # REVIEW 分析: 启动时预热 InterruptMonitor 的 Silero VAD (lazy load 触发 + 喂 1 帧零样本)
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _warmup_interrupt_vad(self) -> None:
         """Warm up the interrupt monitor's VAD by triggering lazy load."""
         try:
@@ -1993,6 +2083,10 @@ class JarvisApp:
         except Exception as exc:
             self.logger.warning("Interrupt VAD warmup failed: %s", exc)
 
+    # REVIEW [B38] L1996-2012 ACTIVE · 用户身份 helpers (_resolve_display_name + _resolve_role)
+    # REVIEW 分析: 两个 user_store 查询 wrapper；guest 默认；都很简单
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _resolve_display_name(self, user_id: str | None) -> str | None:
         """Map user_id to display name."""
         if not user_id:
@@ -2011,6 +2105,10 @@ class JarvisApp:
             return str(record.get("role", "guest"))
         return "guest"
 
+    # REVIEW [B39] L2014-2028 ACTIVE · _print_banner (启动横幅)
+    # REVIEW 分析: clear screen + print 设备模式/用户数/工具数/LLM model
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _print_banner(self) -> None:
         """Print startup information."""
         import os as _os
@@ -2027,6 +2125,10 @@ class JarvisApp:
         print(f"  LLM         : {self.llm.model}")
         print("=" * 60)
 
+    # REVIEW [B40] L2030-2081 ACTIVE · 早报对 (_setup_morning_briefing + _run_morning_briefing)
+    # REVIEW 分析: 默认 7:00 cron；含 weather + reminders + todos 三段，按 config.scheduler.morning_briefing.include 选；speak() 播报
+    # REVIEW 建议: 留
+    # REVIEW 评估: ___
     def _setup_morning_briefing(self, config: dict) -> None:
         """Register the morning briefing cron job if configured."""
         briefing_cfg = config.get("scheduler", {}).get("morning_briefing", {})
@@ -2081,6 +2183,10 @@ class JarvisApp:
         self.speak(briefing_text)
 
 
+# REVIEW [B41] L2084-2088 ACTIVE · load_config
+# REVIEW 分析: yaml.safe_load
+# REVIEW 建议: 留
+# REVIEW 评估: ___
 def load_config(config_path: str | Path) -> dict[str, Any]:
     """Load YAML config from disk."""
     path = Path(config_path)
@@ -2088,6 +2194,10 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
+# REVIEW [B42] L2091-2099 ACTIVE · deep_merge (config overlay)
+# REVIEW 分析: 递归合并 overlay (deploy/pi.yaml) 到 base config
+# REVIEW 建议: 留
+# REVIEW 评估: ___
 def deep_merge(base: dict, overlay: dict) -> dict:
     """Recursively merge overlay into base. Overlay values win."""
     merged = dict(base)
@@ -2099,6 +2209,10 @@ def deep_merge(base: dict, overlay: dict) -> dict:
     return merged
 
 
+# REVIEW [B43] L2102-2109 ACTIVE · configure_logging
+# REVIEW 分析: 根 logger basicConfig
+# REVIEW 建议: 留
+# REVIEW 评估: ___
 def configure_logging(config: dict) -> None:
     """Configure root logging."""
     level_name = str(config.get("logging", {}).get("level", "INFO")).upper()
@@ -2109,6 +2223,10 @@ def configure_logging(config: dict) -> None:
     )
 
 
+# REVIEW [B44] L2112-2158 ACTIVE · main (CLI 入口)
+# REVIEW 分析: argparse (--no-wake/--config/--config-overlay) → load_config → deep_merge → JarvisApp(config) → run_interactive 或 run_always_listening
+# REVIEW 建议: 留
+# REVIEW 评估: ___
 def main() -> int:
     """CLI entry point for Jarvis."""
     parser = argparse.ArgumentParser(description="Jarvis AI Voice Assistant")
@@ -2158,5 +2276,8 @@ def main() -> int:
         return app.run_always_listening()
 
 
+# REVIEW [B45] L2161-2162 ACTIVE · entry guard
+# REVIEW 建议: 留
+# REVIEW 评估: ___
 if __name__ == "__main__":
     raise SystemExit(main())
