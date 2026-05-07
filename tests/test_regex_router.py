@@ -54,6 +54,41 @@ class TestRegexRouterInit:
         assert "get_current_time" in router.templates
 
 
+class TestFarewell:
+    def setup_method(self) -> None:
+        self.router = RegexRouter(_minimal_config())
+
+    def test_match_zaijian(self) -> None:
+        m = self.router.match("再见")
+        assert m is not None
+        assert m.pattern_id == "farewell"
+        assert m.intent == "farewell"
+        assert m.tool_name == ""  # no-op marker
+        assert m.template_key == "farewell"
+
+    def test_match_tuichu(self) -> None:
+        m = self.router.match("退出")
+        assert m is not None
+        assert m.pattern_id == "farewell"
+
+    def test_match_with_period(self) -> None:
+        assert self.router.match("再见。") is not None
+        assert self.router.match("退出.") is not None
+        assert self.router.match("再见！") is not None
+
+    def test_miss_substring(self) -> None:
+        # Strict anchored — no substring match.
+        assert self.router.match("在家再见") is None
+        assert self.router.match("好的再见") is None
+        assert self.router.match("再见了我先走") is None
+
+    def test_miss_english(self) -> None:
+        # English farewell phrases dropped — only 再见/退出.
+        assert self.router.match("bye") is None
+        assert self.router.match("goodbye") is None
+        assert self.router.match("that's all") is None
+
+
 class TestMatchGetCurrentTime:
     def setup_method(self) -> None:
         self.router = RegexRouter(_minimal_config())

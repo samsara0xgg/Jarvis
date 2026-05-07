@@ -86,6 +86,18 @@ class RegexRouter:
     ) -> list[tuple[re.Pattern[str], Callable[[re.Match[str]], RegexMatch]]]:
         return [
             (
+                # End-of-session shortcut. tool_name="" marks no-op: caller
+                # skips tool_registry.execute and treats it as a path=farewell
+                # signal (run_interactive / run_always_listening end the loop).
+                re.compile(r"^(再见|退出)[。.！!]?$"),
+                lambda m: RegexMatch(
+                    pattern_id="farewell",
+                    intent="farewell",
+                    tool_name="",
+                    template_key="farewell",
+                ),
+            ),
+            (
                 re.compile(r"^现在几点了?[?？]?$"),
                 lambda m: RegexMatch(
                     pattern_id="get_current_time",

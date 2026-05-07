@@ -175,9 +175,6 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     app._interrupted_response = None
     app._interrupt_played_texts = None
 
-    # ── Session config ──
-    app.farewell_phrases = {"再见", "bye", "goodbye"}
-
     return app
 
 

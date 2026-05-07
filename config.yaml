@@ -470,14 +470,6 @@ session:
   # 单次录音时长（秒）。
   utterance_duration: 5
 
-  # 结束会话的关键词。
-  farewell_phrases:
-    - 再见
-    - 退出
-    - bye
-    - goodbye
-    - that's all
-
 # ----------------------------------------------------------------------------
 # 记忆与对话历史
 # ----------------------------------------------------------------------------
@@ -700,6 +692,8 @@ regex_router:
   # TTS template pool. random.choice per turn. Variables: {tool_result}
   # plus per-pattern template_vars (e.g. {device}, {value}, {minutes}, {arg}).
   templates:
+    farewell:
+      - "再见。"
     get_current_time:
       - "现在{tool_result}。"
       - "{tool_result}。"

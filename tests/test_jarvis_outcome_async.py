@@ -104,7 +104,6 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     app.interrupt_monitor = MagicMock()
     app._interrupted_response = None
     app._interrupt_played_texts = None
-    app.farewell_phrases = {"再见", "bye"}
 
     return app
 

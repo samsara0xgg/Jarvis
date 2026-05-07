@@ -48,8 +48,6 @@ from core.tool_registry import ToolRegistry
 
 LOGGER = logging.getLogger(__name__)
 
-# 用户说这些词就结束对话，回到待命/唤醒词监听
-FAREWELL_DEFAULTS = ["再见", "退出", "bye", "goodbye", "that's all"]
 # 用户说这些前缀词，本轮临时切换到更强的 LLM 模型（deep preset）
 _ESCALATION_KEYWORDS = ("仔细想想", "详细分析", "认真想", "好好想")
 # 这些智能家居动作无法本地解析参数，必须交给 LLM 理解
@@ -289,10 +287,6 @@ class JarvisApp:
         session_config = config.get("session", {})
         self.silence_timeout = float(session_config.get("silence_timeout", 30))
         self.utterance_duration = float(session_config.get("utterance_duration", 5))
-        self.farewell_phrases = set(
-            str(p).strip().lower()
-            for p in session_config.get("farewell_phrases", FAREWELL_DEFAULTS)
-        )
         self._running = True
         self._last_interaction = time.monotonic()
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="jarvis")
@@ -487,7 +481,7 @@ class JarvisApp:
                         # enter_pressed 已经被 watcher 消费，不需要 clear
                         continue
 
-                    if response == "farewell":
+                    if self._last_path == "farewell":
                         return 0
 
                 except KeyboardInterrupt:
@@ -565,7 +559,7 @@ class JarvisApp:
                         # 等 TTS 播完再恢复麦克风，否则自己的声音会被录进去
                         self._wait_tts()
 
-                        if response == "farewell":
+                        if self._last_path == "farewell":
                             time.sleep(2.5)
                             detector.reset()
                             stream.start()
@@ -893,21 +887,6 @@ class JarvisApp:
         # _process_turn wrapper via _reset_turn_state(). The inner only
         # *populates* them at hook points; never re-resets here.
 
-        # ── 快捷路径 1：告别 ── 直接本地回复，不走任何 API，~120ms
-        if self._is_farewell(text):
-            reply = "再见。"
-            self.logger.info("Farewell shortcut: %s", text[:60])
-            self._last_path = "farewell"
-            self._last_farewell_match = text.strip().lower()
-            print(f"path={self._last_path}")
-            output_fn(reply)
-            history.append({"role": "user", "content": text})
-            history.append({"role": "assistant", "content": reply})
-            self.conversation_store.replace(session_id, history)
-            self._last_response_text = reply
-            self._mark_turn_end()
-            return "farewell"
-
         # ── 升级模式 ── 用户说"仔细想想"等前缀词，本轮临时切换到更强的 LLM
         _escalated = False
         _original_preset: str | None = None
@@ -981,15 +960,25 @@ class JarvisApp:
 
         if regex_match is not None:
             print(f"⏱ 路由: {_route_ms}ms → regex/{regex_match.intent} ({regex_match.pattern_id})")
-            print(f"   📋 {regex_match.tool_name} args={regex_match.tool_args}")
+            if regex_match.tool_name:
+                print(f"   📋 {regex_match.tool_name} args={regex_match.tool_args}")
             try:
-                tool_result = self.tool_registry.execute(
-                    regex_match.tool_name,
-                    regex_match.tool_args,
-                    user_role=user_role,
-                )
+                # tool_name="" marks no-op patterns (e.g. farewell) — render
+                # the template with empty tool_result, no tool_registry call.
+                if regex_match.tool_name:
+                    tool_result = self.tool_registry.execute(
+                        regex_match.tool_name,
+                        regex_match.tool_args,
+                        user_role=user_role,
+                    )
+                else:
+                    tool_result = ""
                 response_text = self.regex_router.render_response(regex_match, tool_result)
-                self._last_path = "regex"
+                if regex_match.intent == "farewell":
+                    self._last_path = "farewell"
+                    self._last_farewell_match = text.strip().lower()
+                else:
+                    self._last_path = "regex"
                 # Track device ops for trace continuity with old smart_home path.
                 if regex_match.intent == "smart_home_control":
                     self._last_device_ops = [dict(regex_match.tool_args)]
@@ -2021,11 +2010,6 @@ class JarvisApp:
         if record:
             return str(record.get("role", "guest"))
         return "guest"
-
-    def _is_farewell(self, text: str) -> bool:
-        """Check if text contains a farewell phrase."""
-        normalized = text.strip().lower()
-        return any(phrase in normalized for phrase in self.farewell_phrases)
 
     def _print_banner(self) -> None:
         """Print startup information."""

@@ -158,7 +158,6 @@ class TestHarness:
             "wake_word": {"enabled": False},
             "session": {
                 "silence_timeout": 30, "utterance_duration": 3,
-                "farewell_phrases": ["再见", "退出", "bye", "goodbye"],
             },
             "memory": {
                 "max_conversation_turns": 10,
