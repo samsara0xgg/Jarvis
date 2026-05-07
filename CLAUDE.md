@@ -57,11 +57,11 @@ python system_tests/runner.py --mode cc --suite general
   Python 3.12 · config.yaml for all settings
   ASR: SenseVoice-Small INT8 (sherpa-onnx) + Whisper fallback
   VAD: Silero (silero_direct via onnxruntime)
-  LLM: xAI grok-4.20-0309-non-reasoning (default) · grok-reasoning / Claude Opus 4.7 (voice-switchable)
-  Intent router: Groq Llama-3.3-70B (primary) → Cerebras llama3.1-8b (fallback)
+  LLM: gpt-5.4-mini (default) · 可替换 gpt-5.5
+  Router: L0 RegexRouter (17 pattern ^...$) → L2 cloud LLM. L1 surrogate ML 是目标，trace 在攒数据，未来三层。
   TTS: MiniMax speech-02-turbo (primary) → OpenAI gpt-4o-mini-tts → Azure → edge-tts → pyttsx3
   TTS player: AudioStreamPlayer (persistent sd.OutputStream + ring buffer + gain ducking, replaces afplay subprocess)
-  Memory: SQLite + FastEmbed (bge-small-zh-v1.5) + Observer (Grok primary, Gemini-2.5-flash fallback) + GPT-4o-mini extraction
+  Memory: Observer (Grok primary, Gemini-2.5-flash fallback) per-turn 抽 priority observations → SQLite append; Assembler Block 3 全量 dump 进 system prompt; 无跨 chunk dedup/supersede 写路径 (29k tok and growing)
   Wake: openwakeword (hey_jarvis_v0.1)
   Devices: Philips Hue (live) + sim
   Auth: SpeechBrain ECAPA-TDNN voiceprint + 4-tier roles
@@ -71,13 +71,17 @@ python system_tests/runner.py --mode cc --suite general
 
   ```
   Mic → Wake word → Record(VAD) → [Voiceprint + ASR] parallel
-    → Farewell shortcut (120ms)
-    → DirectAnswer from memory (no LLM)
-    → [Intent route + Memory query] parallel
-    → Local exec OR Cloud LLM (streaming, tool-use loop)
-    → TTS pipeline (AudioStreamPlayer, emotion-aware) → Speaker
+    ↓
+    memory inject  build_prompt_context() 50-100ms 装 4-block
+    ↓
+    RegexRouter (L0, 17 pattern ^...$ 全句锚)
+      ├─ HIT  → tool_registry.execute → render_response 模板池   path="regex"
+      └─ MISS → LLMClient.chat_stream (gpt-5.4-mini) + tool_use   path="cloud"
+    ↓
+    TTS pipeline (AudioStreamPlayer, emotion-aware) → Speaker
     ↑ InterruptMonitor (Silero VAD + SenseVoice re-decode) → soft-stop via ducking
-    → Background: memory extraction + dedup + behavior log
+
+  Background (cloud only): Observer.extract → observations | NLI outcome | trace
   ```
 
   ## Coding Standards
