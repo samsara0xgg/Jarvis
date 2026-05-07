@@ -1,7 +1,3 @@
-# REVIEW [B01] L1-49 ACTIVE · 模块顶部 (docstring + imports + 警告抑制)
-# REVIEW 分析: stdlib/3rd-party/项目内部 import；urllib3+ONNX 警告抑制 L26-31 跟 import 块混；L34 `Action,ActionResponse` 仅服务下面 REQLLM 死分支
-# REVIEW 建议: 留主体；L34 import 等 IPB9 死分支删后同步移除；L26-31 顺序整理可作 Tier 3 小修
-# REVIEW 评估: ___
 """Jarvis AI Voice Assistant — main entry point.
 
 Supports two modes:
@@ -27,7 +23,6 @@ import numpy as np
 import urllib3
 import yaml
 
-# 压制第三方库的无用警告，保持日志干净
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import os
 import warnings
@@ -51,42 +46,9 @@ from core.tool_registry import ToolRegistry
 
 LOGGER = logging.getLogger(__name__)
 
-# REVIEW [B02] L51-54 MIXED · 模块常量
-# REVIEW 分析: L52 `_ESCALATION_KEYWORDS` ACTIVE (用在 _process_turn_inner L893)；L54 `_NEEDS_LLM_ACTIONS = {"set_effect"}` DEAD (无 reader)
-# REVIEW 建议: 留 L52；删 L53-54 整段
-# REVIEW 评估: ___
 # 用户说这些前缀词，本轮临时切换到更强的 LLM 模型（deep preset）
 _ESCALATION_KEYWORDS = ("仔细想想", "详细分析", "认真想", "好好想")
-# 这些智能家居动作无法本地解析参数，必须交给 LLM 理解
-_NEEDS_LLM_ACTIONS = {"set_effect"}
 
-
-# REVIEW [B03] L57-78 DEAD · _color_needs_llm 模块级 helper
-# REVIEW 分析: 22 行函数无 caller (grep 全 repo 仅定义自身)；原服务 intent_router/local_executor smart_home 路径
-# REVIEW 建议: 删整个函数
-# REVIEW 评估: ___
-def _color_needs_llm(actions: list[dict]) -> bool:
-    """Check if any set_color/set_color_temp value is unresolvable locally."""
-    from core.command_parser import COLOR_XY_MAP, COLOR_TEMP_MAP
-    for a in actions:
-        act = a.get("action", "")
-        val = str(a.get("value", "")).strip().lower()
-        if act == "set_color":
-            if val in COLOR_XY_MAP:
-                continue
-            hex_str = val.lstrip("#")
-            if len(hex_str) == 6:
-                try:
-                    int(hex_str, 16)
-                    continue
-                except ValueError:
-                    pass
-            return True
-        if act == "set_color_temp":
-            if val in COLOR_TEMP_MAP:
-                continue
-            return True
-    return False
 
 # REVIEW [B04] L81-87 ACTIVE · APScheduler 模块级 health helpers
 # REVIEW 分析: `_health_tracker_ref` + `_run_health_probes` 模块级 (APScheduler 序列化 job 必须用模块级 ref，不能 self.method)
@@ -1109,10 +1071,6 @@ class JarvisApp:
             print(f"⏱ 本地执行: {_local_ms}ms")
             self._last_timings["local_exec_ms"] = _local_ms
 
-        # REVIEW [IPB9] L1004-1152 MIXED · 云端 LLM 路径
-        # REVIEW 分析: wrapped_tool_executor 给 trace 抓 name/args/result/ms；TTSPipeline.prewarm + InterruptMonitor.start()→chat_stream(on_sentence)→finally 收尾；DEAD 子分支 L1084-1102 REQLLM 转述 (use_llm_rephrase=False 永远不 fire)；STALE-DOC L1004-1006 注释提"REQLLM 转述"
-        # REVIEW 建议: 删 L1084-1102 整个 if 分支 (留 L1104 起的 else 体并 dedent)；改 L1004-1006 注释只留"完整 cloud"
-        # REVIEW 评估: ___
         # ── 云端 LLM ── regex 未命中才到这里：streaming + tool-use 循环
         _t_llm_start = time.monotonic()
         if response_text is None and not self._cancel.is_set():
@@ -1578,10 +1536,6 @@ class JarvisApp:
         except Exception as exc:
             self.logger.debug("Could not register ttfs done-callback: %s", exc)
 
-    # REVIEW [B26] L1455-1782 MIXED · _flush_trace (trace v3 行组装)
-    # REVIEW 分析: 327 行；session/turn/latency 计算→ttfs_ms 三级 fallback→input_metadata→tool_calls→4-way LLM source 分支：(a) cloud ACTIVE / (b) router-driven L1603-1632 DEAD (`_last_route` 永远 None) / (c) pure-local-router L1633-1654 DEAD (同上) / (d) regex ACTIVE→cost→cited_obs→empty→NULL→log_turn→async NLI lag-1→async Observer
-    # REVIEW 建议: 删 (b)+(c) 整段 L1603-1654 (52 行)，逻辑改成 if cloud / elif regex / else 直接进 log_turn；与 B22 七字段删除联动
-    # REVIEW 评估: ___
     def _flush_trace(
         self,
         *,
