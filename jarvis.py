@@ -50,8 +50,6 @@ LOGGER = logging.getLogger(__name__)
 
 # 用户说这些词就结束对话，回到待命/唤醒词监听
 FAREWELL_DEFAULTS = ["再见", "退出", "bye", "goodbye", "that's all"]
-# 用户说这些词就跳过 LLM，直接确认"记住了"，后台异步提取记忆
-_REMEMBER_KEYWORDS = ("记住", "记下", "别忘了", "帮我记")
 # 用户说这些前缀词，本轮临时切换到更强的 LLM 模型（deep preset）
 _ESCALATION_KEYWORDS = ("仔细想想", "详细分析", "认真想", "好好想")
 # 这些智能家居动作无法本地解析参数，必须交给 LLM 理解
@@ -932,23 +930,6 @@ class JarvisApp:
                     self.logger.warning("Escalation switch failed: %s", exc)
                 break
 
-        # ── 快捷路径 2：记忆存储 ── "记住/记下/别忘了" → 直接确认，后台异步提取
-        _matched_kw = next((kw for kw in _REMEMBER_KEYWORDS if text.startswith(kw) or kw in text[:10]), None)
-        if _matched_kw:
-            if "每次" not in text:
-                reply = "好的，记住了。"
-                self.logger.info("Memory shortcut: %s", text[:60])
-                self._last_path = "memory_shortcut"
-                self._last_memory_keyword = _matched_kw
-                print(f"path={self._last_path}")
-                output_fn(reply)
-                history.append({"role": "user", "content": text})
-                history.append({"role": "assistant", "content": reply})
-                self.conversation_store.replace(session_id, history)
-                self._last_response_text = reply
-                self._mark_turn_end()
-                return reply
-
         # ── 关键词规则匹配 ── 用户定义的触发词（如"晚安"→关灯+关窗帘）
         _t_think = time.monotonic()
         self.event_bus.emit("jarvis.state_changed", {"state": "thinking"})
@@ -1296,7 +1277,6 @@ class JarvisApp:
         self._last_memory_hits = ""
         self._last_timings = {}
         self._last_farewell_match = None
-        self._last_memory_keyword = None
         self._last_escalation = None
         self._last_learning_intent = None
         self._last_reqllm = False
