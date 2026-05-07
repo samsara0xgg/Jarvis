@@ -383,26 +383,19 @@ llm:
 # TTS 语音合成
 # ----------------------------------------------------------------------------
 tts:
-  # 首选引擎：openai_tts（最自然）/ minimax / azure / edge-tts / pyttsx3。
-  engine: minimax
-
   # 全局语速 0.25-4.0（1.0=正常，1.2=稍快，0.8=稍慢）
   speed: 1.0
 
-  # OpenAI TTS（gpt-4o-mini-tts，ChatGPT 同款，最像真人）
-  openai_tts_key: ""     # env OPENAI_API_KEY
-  openai_tts_model: gpt-4o-mini-tts
-  openai_tts_voice: nova  # nova(女声温暖活泼) echo(男声沉稳) shimmer(女声柔和) ballad(感性) verse(多变)
-  openai_tts_instructions: "你叫小月，是一个中文私人管家。说话像跟认识很久的朋友聊天——自然、有温度、有个性。语气随内容变化，该轻快就轻快，该认真就认真。不要播音腔，不要客服腔。"
-
-  # MiniMax TTS（TTS Arena 第一，中文最自然，带情感）
-  # 国内: https://api.minimax.chat ; 国际: https://api.minimax.io 或 https://api-uw.minimax.io
+  # MiniMax TTS — primary: 国际 .io WS 流式; fallback: 国内 .chat HTTP 一次性。
+  # 两者使用不同账号 key，但 voice/model 必须一致以保证音色不变。
   minimax_base_url: "https://api-uw.minimax.io"
-  minimax_key: ""        # env MINIMAX_API_KEY (international account)
+  minimax_key: ""                        # env MINIMAX_API_KEY (international account)
+  minimax_fallback_base_url: "https://api.minimax.chat"
+  minimax_fallback_key: ""               # env MINIMAX_FALLBACK_API_KEY (domestic account)
   minimax_model: speech-2.8-turbo
   minimax_voice: "Chinese (Mandarin)_ExplorativeGirl"
   minimax_volume: 1    # int 1-10, 1=正常；之前 5 偏大有爆音（float 会被 round+clamp，见 core/tts.py:127）
-  minimax_ws: true      # use WebSocket streaming path when engine=minimax (false = legacy HTTP collect)
+  minimax_ws: true      # WS streaming on primary (.io); fallback path is HTTP-only
   minimax_prewarm: true # open WS eagerly on LLM first token (overlaps handshake with LLM)
   browser_streaming: true  # prefer PCM-over-WS to browser when a WS is open;
                            # false = always serve /api/audio/<hash>.wav files
@@ -428,18 +421,6 @@ tts:
     ignore_parentheses: true      # (旁白) （旁白）
     ignore_asterisks: true        # *强调* **粗体**
     ignore_angle_brackets: true   # <break/> <emotion>x</emotion>
-
-  # Azure Neural TTS（备用，50万字/月免费）
-  azure_key: ""          # env AZURE_SPEECH_KEY
-  azure_region: canadacentral
-  azure_voice: zh-CN-XiaoxiaoNeural
-
-  # Edge TTS（免费备用）
-  edge_voice: zh-CN-YunxiNeural
-  edge_rate: "+0%"
-
-  # 失败时回退到下一级引擎。
-  fallback_enabled: true
 
 # ----------------------------------------------------------------------------
 # 唤醒词检测

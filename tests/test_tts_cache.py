@@ -17,13 +17,15 @@ def tts_with_cache(tmp_path):
     """TTSEngine with cache pointed at a temp dir."""
     with patch.object(TTSEngine, "__init__", lambda self, cfg, **kw: None):
         engine = TTSEngine.__new__(TTSEngine)
-        engine.engine_name = "minimax"
         engine.minimax_key = "test_key"
+        engine.minimax_fallback_key = ""
         engine.minimax_model = "speech-02-turbo"
         engine.minimax_voice = "male-qn-qingse"
         engine.minimax_volume = 1
         engine._minimax_base_url = "https://api.minimax.chat"
         engine._minimax_url = "https://api.minimax.chat/v1/t2a_v2"
+        engine._minimax_fallback_base_url = "https://api.minimax.chat"
+        engine._minimax_fallback_url = "https://api.minimax.chat/v1/t2a_v2"
         engine._http_session = MagicMock()
         engine._tracker = None
         engine._tts_cache_dir = tmp_path
@@ -45,19 +47,6 @@ class TestTTSCache:
         k1 = tts_with_cache._tts_cache_key("好的", "calm")
         k2 = tts_with_cache._tts_cache_key("好的", "happy")
         assert k1 != k2
-
-    def test_cache_key_differs_by_engine(self, tts_with_cache):
-        """Switching engines must invalidate cache — different engines produce
-        different audio for the same text, so the key must include engine name."""
-        tts_with_cache.engine_name = "minimax"
-        k_minimax = tts_with_cache._tts_cache_key("好的", "calm")
-        tts_with_cache.engine_name = "openai_tts"
-        k_openai = tts_with_cache._tts_cache_key("好的", "calm")
-        tts_with_cache.engine_name = "azure"
-        k_azure = tts_with_cache._tts_cache_key("好的", "calm")
-        assert k_minimax != k_openai
-        assert k_minimax != k_azure
-        assert k_openai != k_azure
 
     def test_cache_hit_returns_existing_file(self, tts_with_cache, tmp_path, monkeypatch):
         """Cache hit uses .pcm suffix (commit 3 — WS collect path)."""
@@ -169,13 +158,15 @@ class TestMinimaxWSCollect:
     def eng_ws(self, tmp_path):
         with patch.object(TTSEngine, "__init__", lambda self, cfg, **kw: None):
             engine = TTSEngine.__new__(TTSEngine)
-            engine.engine_name = "minimax"
             engine.minimax_key = "sk-api-test"
+            engine.minimax_fallback_key = ""
             engine.minimax_model = "speech-2.8-turbo"
             engine.minimax_voice = "Chinese (Mandarin)_ExplorativeGirl"
             engine.minimax_volume = 1
             engine._minimax_base_url = "https://api-uw.minimax.io"
             engine._minimax_url = f"{engine._minimax_base_url}/v1/t2a_v2"
+            engine._minimax_fallback_base_url = "https://api.minimax.chat"
+            engine._minimax_fallback_url = "https://api.minimax.chat/v1/t2a_v2"
             engine._http_session = MagicMock()
             engine._tracker = None
             engine._tts_cache_dir = tmp_path
@@ -224,8 +215,8 @@ class TestMinimaxWSCollect:
         assert str(eng_ws._tts_cache_dir) not in path
         Path(path).unlink(missing_ok=True)
 
-    def test_http_session_is_not_called(self, eng_ws, monkeypatch):
-        """Commit 3 removes HTTP path entirely from _synth_minimax."""
+    def test_http_session_not_called_when_ws_succeeds(self, eng_ws, monkeypatch):
+        """When WS .io primary succeeds, HTTP fallback path is never invoked."""
         from core import tts as tts_mod
 
         async def fake_ws_collect(*args, **kwargs):

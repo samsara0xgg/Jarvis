@@ -482,7 +482,7 @@ class TestHarness:
             try:
                 tts = self.app._get_tts()
                 if tts:
-                    engine_name = getattr(tts, "engine_name", None) or "unknown"
+                    engine_name = "minimax"
             except Exception:
                 pass
 

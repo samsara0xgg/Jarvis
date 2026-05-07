@@ -1676,7 +1676,7 @@ def bench_live_first_audio_e2e(config: dict, results: Results) -> None:
     results.add(Measurement(
         bench="live_e2e", name="tts_only::text_to_synth_ms",
         status="info", value=round(synth_ms, 0), unit="ms",
-        details={"text": text, "path": path, "engine": engine.engine_name,
+        details={"text": text, "path": path, "engine": "minimax",
                  "note": "TTS synth only (no LLM); real-api enabled"},
     ))
 

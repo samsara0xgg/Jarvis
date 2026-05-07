@@ -59,7 +59,7 @@ python system_tests/runner.py --mode cc --suite general
   VAD: Silero (silero_direct via onnxruntime)
   LLM: gpt-5.4-mini (default) · 可替换 gpt-5.5
   Router: L0 RegexRouter (17 pattern ^...$) → L2 cloud LLM. L1 surrogate ML 是目标，trace 在攒数据，未来三层。
-  TTS: MiniMax speech-02-turbo (primary) → OpenAI gpt-4o-mini-tts → Azure → edge-tts → pyttsx3
+  TTS: MiniMax speech-2.8-turbo only · primary api-uw.minimax.io WS 流式; fallback api.minimax.chat HTTP 一次性 (不同 key)
   TTS player: AudioStreamPlayer (persistent sd.OutputStream + ring buffer + gain ducking, replaces afplay subprocess)
   Memory: Observer (Grok primary, Gemini-2.5-flash fallback) per-turn 抽 priority observations → SQLite append; Assembler Block 3 全量 dump 进 system prompt; 无跨 chunk dedup/supersede 写路径 (29k tok and growing)
   Wake: openwakeword (hey_jarvis_v0.1)

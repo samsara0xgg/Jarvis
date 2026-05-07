@@ -47,30 +47,6 @@ LOGGER = logging.getLogger(__name__)
 # User's detected emotion → Jarvis's RESPONSE style (not echo)
 # 用户开心→Jarvis也开心；用户难过→Jarvis温柔安慰；用户生气→Jarvis冷静
 
-# Azure TTS styles
-_EMOTION_TO_AZURE_STYLE = {
-    "HAPPY": "cheerful",
-    "SAD": "gentle",
-    "ANGRY": "calm",
-    "NEUTRAL": "chat",
-    "FEARFUL": "gentle",
-    "DISGUSTED": "calm",
-    "SURPRISED": "cheerful",
-    "EMO_UNKNOWN": "chat",
-}
-
-# OpenAI TTS emotion instructions (natural language, most expressive)
-_EMOTION_TO_OPENAI_INSTRUCTION = {
-    "HAPPY": "语气愉快轻松，像分享好消息的朋友。",
-    "SAD": "语气温柔关心，像安慰朋友一样，温暖但不夸张。",
-    "ANGRY": "语气平静沉稳，安抚对方情绪，让人感到安心。",
-    "NEUTRAL": "",
-    "FEARFUL": "语气稳重温暖，给人安全感。",
-    "DISGUSTED": "语气理解包容，不否定对方的感受。",
-    "SURPRISED": "语气有活力，带着好奇和兴趣。",
-    "EMO_UNKNOWN": "",
-}
-
 # MiniMax TTS emotions (direct API parameter)
 _EMOTION_TO_MINIMAX = {
     "HAPPY": "happy",
@@ -100,7 +76,6 @@ def _minimax_emotion_effective(emotion: str | None) -> str | None:
 
 
 # Set of engine names that implement TTSEngine.stream_to_player.
-SUPPORTS_STREAMING: set[str] = {"minimax"}
 
 
 # ---------------------------------------------------------------------------
@@ -215,16 +190,10 @@ class TTSEngine:
 
     def __init__(self, config: dict, tracker: Any = None) -> None:
         tts_config = config.get("tts", {})
-        self.engine_name = str(tts_config.get("engine", "edge-tts")).strip().lower()
-        self.edge_voice = str(tts_config.get("edge_voice", "zh-CN-YunxiNeural"))
-        self.edge_rate = str(tts_config.get("edge_rate", "+0%"))
         self.speed = float(tts_config.get("speed", 1.0))
         self.speed = max(0.25, min(4.0, self.speed))
-        self.fallback_enabled = bool(tts_config.get("fallback_enabled", True))
         self.logger = LOGGER
         self._tracker = tracker
-        self._pyttsx_engine: Any = None
-        self._openai_client: Any = None
         self._http_session: Any = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
         self._platform = platform.system()
@@ -248,16 +217,13 @@ class TTSEngine:
         except ImportError:
             pass
 
-        # Azure Neural TTS config
-        self.azure_key = str(tts_config.get("azure_key", "") or os.environ.get("AZURE_SPEECH_KEY", ""))
-        self.azure_region = str(tts_config.get("azure_region", "canadacentral"))
-        self.azure_voice = str(tts_config.get("azure_voice", "zh-CN-XiaoxiaoNeural"))
-        self._azure_synthesizer: Any = None
-
-        # MiniMax TTS config
+        # MiniMax TTS config — primary (.io international WS) + fallback (.chat domestic HTTP)
         self.minimax_key = str(tts_config.get("minimax_key", "") or os.environ.get("MINIMAX_API_KEY", ""))
+        self.minimax_fallback_key = str(
+            tts_config.get("minimax_fallback_key", "") or os.environ.get("MINIMAX_FALLBACK_API_KEY", "")
+        )
         self.minimax_model = str(tts_config.get("minimax_model", "speech-2.8-turbo"))
-        self.minimax_voice = str(tts_config.get("minimax_voice", "male-qn-qingse"))
+        self.minimax_voice = str(tts_config.get("minimax_voice", "Chinese (Mandarin)_ExplorativeGirl"))
         # Volume default 1 (int). MiniMax API expects int 0-10; floats may 422
         # against strict OpenAPI integer validators. Clamp to [1, 10].
         raw_vol = tts_config.get("minimax_volume", 1)
@@ -266,12 +232,16 @@ class TTSEngine:
         except (TypeError, ValueError):
             _vol = 1
         self.minimax_volume = max(1, min(10, _vol))
-        # Base URL is region-scoped: `.chat` domestic, `.io` / `-uw.io` international.
-        # Path `/v1/t2a_v2` is the same across regions; WS variant reuses this base.
+        # Region-scoped: `.io` / `-uw.io` international (primary), `.chat` domestic (fallback).
+        # Path `/v1/t2a_v2` is the same across regions; WS variant reuses primary base.
         self._minimax_base_url = str(
             tts_config.get("minimax_base_url", "https://api-uw.minimax.io")
         ).rstrip("/")
+        self._minimax_fallback_base_url = str(
+            tts_config.get("minimax_fallback_base_url", "https://api.minimax.chat")
+        ).rstrip("/")
         self._minimax_url = f"{self._minimax_base_url}/v1/t2a_v2"
+        self._minimax_fallback_url = f"{self._minimax_fallback_base_url}/v1/t2a_v2"
         self._minimax_ws_enabled = bool(tts_config.get("minimax_ws", True))
         self._minimax_prewarm_enabled = bool(tts_config.get("minimax_prewarm", True))
 
@@ -296,15 +266,6 @@ class TTSEngine:
         # without racing the player's lazy init. Owner: jarvis._arm_tts_first_chunk.
         self._first_chunk_callback: Callable[[], None] | None = None
 
-        # OpenAI TTS config (gpt-4o-mini-tts — ChatGPT 同款技术)
-        self.openai_tts_key = str(tts_config.get("openai_tts_key", "") or os.environ.get("OPENAI_API_KEY", ""))
-        self.openai_tts_voice = str(tts_config.get("openai_tts_voice", "alloy"))
-        self.openai_tts_model = str(tts_config.get("openai_tts_model", "gpt-4o-mini-tts"))
-        self.openai_tts_instructions = str(tts_config.get(
-            "openai_tts_instructions",
-            "你是 Jarvis，说话像一个亲切聪明的朋友。语气自然温暖，有情感，不要像机器人。中文为主。",
-        ))
-
     # ------------------------------------------------------------------
     # Cache helpers
     # ------------------------------------------------------------------
@@ -312,16 +273,12 @@ class TTSEngine:
     def _tts_cache_key(self, text: str, emotion: str) -> str:
         """Deterministic cache key from engine + text + voice + emotion.
 
-        Engine name is part of the key: different engines produce audibly
-        different output for the same text, so sharing cache entries across
-        engines would read the wrong voice after a switch.
-
         Emotion is normalized to "" for None-ish inputs (NEUTRAL / EMO_UNKNOWN
         / None / "") — all produce identical audio under the emotion-skip
         rule, so they must share a cache entry.
         """
         emo_norm = emotion if emotion and emotion not in ("NEUTRAL", "EMO_UNKNOWN") else ""
-        raw = f"{self.engine_name}|{text}|{self.minimax_voice}|{emo_norm}"
+        raw = f"minimax|{text}|{self.minimax_voice}|{emo_norm}"
         return hashlib.md5(raw.encode()).hexdigest()
 
     def _is_cached_file(self, filepath: str) -> bool:
@@ -357,9 +314,7 @@ class TTSEngine:
 
         def _synth_one(text: str) -> None:
             cache_key = self._tts_cache_key(text, "calm")
-            # MiniMax path now caches as .pcm (commit 3); other engines still .mp3.
-            ext = "pcm" if self.engine_name == "minimax" else "mp3"
-            cache_path = self._tts_cache_dir / f"{cache_key}.{ext}"
+            cache_path = self._tts_cache_dir / f"{cache_key}.pcm"
             if cache_path.exists():
                 self.logger.debug("TTS precache already exists: %r", text)
                 return
@@ -374,12 +329,11 @@ class TTSEngine:
             list(pool.map(_synth_one, to_cache))
 
     def speak(self, text: str, emotion: str = "") -> None:
-        """Speak text aloud with optional emotion.
+        """Speak text aloud via MiniMax (.io WS primary, .chat HTTP fallback).
 
         Args:
             text: Text to speak.
-            emotion: SenseVoice emotion label (e.g. "HAPPY", "SAD"). Only used
-                by Azure engine; ignored by Edge TTS and pyttsx3.
+            emotion: SenseVoice emotion label (e.g. "HAPPY", "SAD").
         """
         if not text.strip():
             return
@@ -387,55 +341,22 @@ class TTSEngine:
         if not text.strip():
             return
 
-        if self.engine_name == "openai_tts":
-            if not self._tracker or self._tracker.is_available("tts.openai"):
-                try:
-                    self._speak_openai_tts(text, emotion)
-                    if self._tracker:
-                        self._tracker.record_success("tts.openai")
-                    return
-                except Exception as exc:
-                    if self._tracker:
-                        self._tracker.record_failure("tts.openai", str(exc))
-                    self.logger.warning("OpenAI TTS failed: %s, trying fallback", exc)
-
-        if self.engine_name == "minimax":
-            if not self._tracker or self._tracker.is_available("tts.minimax"):
-                try:
-                    self._speak_minimax(text, emotion)
-                    if self._tracker:
-                        self._tracker.record_success("tts.minimax")
-                    return
-                except Exception as exc:
-                    if self._tracker:
-                        self._tracker.record_failure("tts.minimax", str(exc))
-                    self.logger.warning("MiniMax TTS failed: %s, trying fallback", exc)
-
-        if self.engine_name == "azure":
-            if not self._tracker or self._tracker.is_available("tts.azure"):
-                try:
-                    self._speak_azure(text, emotion)
-                    if self._tracker:
-                        self._tracker.record_success("tts.azure")
-                    return
-                except Exception as exc:
-                    if self._tracker:
-                        self._tracker.record_failure("tts.azure", str(exc))
-                    self.logger.warning("Azure TTS failed: %s, trying fallback", exc)
-
-        if self.engine_name == "pyttsx3":
-            self._speak_pyttsx3(text)
+        if self._tracker and not self._tracker.is_available("tts.minimax"):
+            self.logger.warning("MiniMax TTS unavailable per tracker; skipping speak.")
             return
-
         try:
-            self._speak_edge(text)
+            tmp_path, deletable = self._synth_minimax(text, emotion)
+            try:
+                self._play_audio_file(tmp_path)
+            finally:
+                if deletable:
+                    Path(tmp_path).unlink(missing_ok=True)
+            if self._tracker:
+                self._tracker.record_success("tts.minimax")
         except Exception as exc:
-            self.logger.warning("Edge TTS failed: %s", exc)
-            if self.fallback_enabled:
-                try:
-                    self._speak_pyttsx3(text)
-                except Exception as fallback_exc:
-                    self.logger.warning("pyttsx3 fallback also failed: %s", fallback_exc)
+            if self._tracker:
+                self._tracker.record_failure("tts.minimax", str(exc))
+            self.logger.warning("MiniMax TTS failed (both endpoints): %s", exc)
 
     def speak_async(self, text: str) -> None:
         """Speak text in a background thread (non-blocking).
@@ -453,120 +374,40 @@ class TTSEngine:
         except Exception as exc:
             self.logger.warning("Background TTS failed: %s", exc)
 
-    def speak_short(self, text: str) -> None:
-        """Speak a brief acknowledgment with minimal latency.
-
-        Uses pyttsx3 first (no network round-trip) for snappy responses.
-
-        Args:
-            text: Short text to speak.
-        """
-        if not text.strip():
-            return
-        try:
-            self._speak_pyttsx3(text)
-        except Exception:
-            try:
-                self._speak_edge(text)
-            except Exception as exc:
-                self.logger.warning("All TTS engines failed for short speak: %s", exc)
-
     # ------------------------------------------------------------------
     # Synthesis-to-file methods (shared by TTSEngine.speak and TTSPipeline)
     # ------------------------------------------------------------------
 
     def synth_to_file(self, text: str, emotion: str = "") -> tuple[str, bool] | None:
-        """Synthesize text to an audio file and return (path, deletable).
+        """Synthesize text to a MiniMax audio file. Returns (path, deletable).
 
-        Returns None if the engine plays directly (pyttsx3) or if
-        preprocessing leaves nothing to speak.
+        Tries .io WS primary; on failure, falls back to .chat HTTP.
+        Returns None only if preprocessing leaves nothing to speak.
         deletable=True means caller should delete the file after playback.
         deletable=False means the file is cached and must NOT be deleted.
         """
         text = tts_preprocessor.clean(text, self._preprocessor_config)
         if not text.strip():
             return None
-        if self.engine_name == "openai_tts" and self.openai_tts_key:
-            if not self._tracker or self._tracker.is_available("tts.openai"):
-                try:
-                    path = self._synth_openai(text, emotion)
-                    if self._tracker:
-                        self._tracker.record_success("tts.openai")
-                    return path, True
-                except Exception as exc:
-                    if self._tracker:
-                        self._tracker.record_failure("tts.openai", str(exc))
-                    self.logger.warning("OpenAI TTS synth failed: %s, trying fallback", exc)
-        if self.engine_name == "minimax" and self.minimax_key:
-            if not self._tracker or self._tracker.is_available("tts.minimax"):
-                try:
-                    result = self._synth_minimax(text, emotion)
-                    if self._tracker:
-                        self._tracker.record_success("tts.minimax")
-                    return result
-                except Exception as exc:
-                    if self._tracker:
-                        self._tracker.record_failure("tts.minimax", str(exc))
-                    self.logger.warning("MiniMax TTS synth failed: %s, trying fallback", exc)
-        if self.engine_name == "azure" and self.azure_key:
-            if not self._tracker or self._tracker.is_available("tts.azure"):
-                try:
-                    path = self._synth_azure(text, emotion)
-                    if self._tracker:
-                        self._tracker.record_success("tts.azure")
-                    return path, True
-                except Exception as exc:
-                    if self._tracker:
-                        self._tracker.record_failure("tts.azure", str(exc))
-                    self.logger.warning("Azure TTS synth failed: %s, trying fallback", exc)
-        if self.engine_name == "pyttsx3":
-            self._speak_pyttsx3(text)
+        if self._tracker and not self._tracker.is_available("tts.minimax"):
             return None
-        return self._synth_edge(text), True
-
-    def _synth_openai(self, text: str, emotion: str = "") -> str:
-        """Synthesize with OpenAI TTS, return temp file path."""
         try:
-            from openai import OpenAI
-        except ImportError as exc:
-            raise RuntimeError(
-                "openai package is required. Install with: pip install openai"
-            ) from exc
-
-        if not self.openai_tts_key:
-            raise RuntimeError("OpenAI API key not configured (OPENAI_API_KEY)")
-
-        base_instructions = self.openai_tts_instructions
-        emotion_hint = _EMOTION_TO_OPENAI_INSTRUCTION.get(emotion, "")
-        instructions = f"{base_instructions} {emotion_hint}" if emotion_hint else base_instructions
-
-        self.logger.info(
-            "OpenAI TTS: voice=%s emotion=%s text=%r",
-            self.openai_tts_voice, emotion or "neutral", text[:50],
-        )
-
-        if self._openai_client is None:
-            self._openai_client = OpenAI(api_key=self.openai_tts_key)
-
-        response = self._openai_client.audio.speech.create(
-            model=self.openai_tts_model,
-            voice=self.openai_tts_voice,
-            input=text,
-            instructions=instructions,
-            response_format="mp3",
-            speed=self.speed,
-        )
-
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            tmp.write(response.content)
-            return tmp.name
+            result = self._synth_minimax(text, emotion)
+            if self._tracker:
+                self._tracker.record_success("tts.minimax")
+            return result
+        except Exception as exc:
+            if self._tracker:
+                self._tracker.record_failure("tts.minimax", str(exc))
+            self.logger.warning("MiniMax TTS synth failed (both endpoints): %s", exc)
+            return None
 
     def _synth_minimax(self, text: str, emotion: str = "") -> tuple[str, bool]:
-        """Synthesize with MiniMax TTS via WebSocket, return (path, deletable).
+        """Synthesize MiniMax audio: WS .io primary → HTTP .chat fallback.
 
-        Collects all audio chunks (PCM 32kHz mono 16-bit), writes to a
-        `.pcm` file. Short texts (<=50 chars) cache to disk with
-        deletable=False; long texts go to a temp file with deletable=True.
+        Collects PCM 32kHz mono 16-bit audio. Short texts (<=50 chars) cache
+        to disk with deletable=False; long texts go to a temp file with
+        deletable=True.
         """
         if not self.minimax_key:
             raise RuntimeError("MiniMax API key not configured (MINIMAX_API_KEY)")
@@ -594,35 +435,54 @@ class TTSEngine:
         }
         if minimax_emotion is not None:
             voice_setting["emotion"] = minimax_emotion
-        task_start_payload = {
-            "event": "task_start",
-            "model": self.minimax_model,
-            "voice_setting": voice_setting,
-            "audio_setting": {
-                "format": "pcm",
-                "sample_rate": 32000,
-                "bitrate": 128000,
-                "channel": 1,
-            },
+        audio_setting = {
+            "format": "pcm",
+            "sample_rate": 32000,
+            "bitrate": 128000,
+            "channel": 1,
         }
 
         self.logger.info(
-            "MiniMax WS collect: voice=%s emotion=%s text=%r",
+            "MiniMax synth: voice=%s emotion=%s text=%r",
             self.minimax_voice, minimax_emotion or "(skipped)", text[:50],
         )
 
-        audio_bytes = asyncio.run(
-            _ws_collect_audio(
-                self._minimax_base_url,
-                self.minimax_key,
-                task_start_payload,
-                text,
-                self.logger,
+        audio_bytes = b""
+        try:
+            task_start_payload = {
+                "event": "task_start",
+                "model": self.minimax_model,
+                "voice_setting": voice_setting,
+                "audio_setting": audio_setting,
+            }
+            audio_bytes = asyncio.run(
+                _ws_collect_audio(
+                    self._minimax_base_url,
+                    self.minimax_key,
+                    task_start_payload,
+                    text,
+                    self.logger,
+                )
             )
-        )
-
-        if len(audio_bytes) == 0:
-            raise RuntimeError("MiniMax WS returned empty audio")
+            if len(audio_bytes) == 0:
+                raise RuntimeError("MiniMax WS returned empty audio")
+        except Exception as primary_exc:
+            if not self.minimax_fallback_key:
+                raise
+            self.logger.warning(
+                "MiniMax primary (.io WS) failed: %s — falling back to .chat HTTP",
+                primary_exc,
+            )
+            audio_bytes = self._synth_minimax_http(
+                self._minimax_fallback_url,
+                self.minimax_fallback_key,
+                text,
+                self.minimax_model,
+                voice_setting,
+                audio_setting,
+            )
+            if len(audio_bytes) == 0:
+                raise RuntimeError("MiniMax fallback HTTP returned empty audio") from primary_exc
 
         if len(text) <= 50:
             tmp_fd, tmp_name = tempfile.mkstemp(suffix=".pcm.tmp", dir=self._tts_cache_dir)
@@ -642,6 +502,44 @@ class TTSEngine:
         with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as tmp:
             tmp.write(audio_bytes)
             return tmp.name, True
+
+    def _synth_minimax_http(
+        self,
+        url: str,
+        api_key: str,
+        text: str,
+        model: str,
+        voice_setting: dict,
+        audio_setting: dict,
+    ) -> bytes:
+        """HTTP T2A v2 fallback (.chat domestic). Returns raw PCM bytes.
+
+        Response shape: ``{"data": {"audio": "<hex>", ...}, ...}`` per MiniMax docs.
+        """
+        if self._http_session is None:
+            import requests
+            self._http_session = requests.Session()
+        body = {
+            "model": model,
+            "text": text,
+            "voice_setting": voice_setting,
+            "audio_setting": audio_setting,
+        }
+        resp = self._http_session.post(
+            url,
+            json=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        audio_hex = payload.get("data", {}).get("audio") or ""
+        if not audio_hex:
+            raise RuntimeError(f"MiniMax HTTP empty audio: trace_id={payload.get('trace_id')}")
+        return bytes.fromhex(audio_hex)
 
     async def _stream_to_player_async(
         self,
@@ -712,143 +610,6 @@ class TTSEngine:
             )
         except Exception as exc:
             return PlaybackResult(raised=exc)
-
-    @staticmethod
-    def _build_azure_ssml(text: str, voice: str, style: str, rate_attr: str) -> str:
-        """Build Azure TTS SSML with full escaping for both text and attributes.
-
-        Attribute values escape `<`, `>`, `&`, and `"` so an unexpected quote
-        in voice/style (e.g. from user config) can't break the SSML document.
-        """
-        from xml.sax.saxutils import escape
-        attr_entities = {'"': "&quot;"}
-        v = escape(voice, attr_entities)
-        s = escape(style, attr_entities)
-        r = escape(rate_attr, attr_entities)
-        return (
-            '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
-            'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="zh-CN">'
-            f'<voice name="{v}">'
-            f'<mstts:express-as style="{s}">'
-            f'<prosody rate="{r}">'
-            f'{escape(text)}'
-            '</prosody>'
-            '</mstts:express-as>'
-            '</voice></speak>'
-        )
-
-    def _synth_azure(self, text: str, emotion: str = "") -> str:
-        """Synthesize with Azure Neural TTS, return temp file path."""
-        try:
-            import azure.cognitiveservices.speech as speechsdk
-        except ImportError as exc:
-            raise RuntimeError(
-                "azure-cognitiveservices-speech is required. "
-                "Install with: pip install azure-cognitiveservices-speech"
-            ) from exc
-
-        if not self.azure_key:
-            raise RuntimeError("Azure Speech key not configured (AZURE_SPEECH_KEY)")
-
-        style = _EMOTION_TO_AZURE_STYLE.get(emotion, "chat")
-        rate_pct = round((self.speed - 1.0) * 100)
-        rate_attr = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"
-        ssml = self._build_azure_ssml(text, self.azure_voice, style, rate_attr)
-
-        speech_config = speechsdk.SpeechConfig(
-            subscription=self.azure_key, region=self.azure_region,
-        )
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
-        audio_config = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
-        synthesizer = speechsdk.SpeechSynthesizer(
-            speech_config=speech_config, audio_config=audio_config,
-        )
-
-        self.logger.info("Azure TTS: voice=%s style=%s text=%r", self.azure_voice, style, text[:50])
-        result = synthesizer.speak_ssml_async(ssml).get()
-
-        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            return tmp_path
-        Path(tmp_path).unlink(missing_ok=True)
-        cancellation = result.cancellation_details
-        raise RuntimeError(f"Azure TTS failed: {cancellation.reason} - {cancellation.error_details}")
-
-    def _synth_edge(self, text: str) -> str:
-        """Synthesize with edge-tts, return temp file path."""
-        try:
-            import edge_tts
-        except ImportError as exc:
-            raise RuntimeError(
-                "edge-tts is required for Edge TTS. Install with: pip install edge-tts"
-            ) from exc
-
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            tmp_path = tmp.name
-
-        async def _save() -> None:
-            communicate = edge_tts.Communicate(text, self.edge_voice, rate=self.edge_rate)
-            await communicate.save(tmp_path)
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                pool.submit(lambda: asyncio.run(_save())).result()
-        else:
-            asyncio.run(_save())
-        return tmp_path
-
-    # ------------------------------------------------------------------
-    # speak methods — thin wrappers around synth_to_file + play
-    # ------------------------------------------------------------------
-
-    def _speak_openai_tts(self, text: str, emotion: str = "") -> None:
-        tmp_path = self._synth_openai(text, emotion)
-        try:
-            self._play_audio_file(tmp_path)
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
-
-    def _speak_minimax(self, text: str, emotion: str = "") -> None:
-        tmp_path, deletable = self._synth_minimax(text, emotion)
-        try:
-            self._play_audio_file(tmp_path)
-        finally:
-            if deletable:
-                Path(tmp_path).unlink(missing_ok=True)
-
-    def _speak_azure(self, text: str, emotion: str = "") -> None:
-        tmp_path = self._synth_azure(text, emotion)
-        try:
-            self._play_audio_file(tmp_path)
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
-
-    def _speak_edge(self, text: str) -> None:
-        tmp_path = self._synth_edge(text)
-        try:
-            self._play_audio_file(tmp_path)
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
-
-    def _speak_pyttsx3(self, text: str) -> None:
-        """Speak using the offline pyttsx3 engine."""
-        try:
-            import pyttsx3
-        except ImportError as exc:
-            raise RuntimeError(
-                "pyttsx3 is required for offline TTS. Install with: pip install pyttsx3"
-            ) from exc
-
-        if self._pyttsx_engine is None:
-            self._pyttsx_engine = pyttsx3.init()
-        self._pyttsx_engine.say(text)
-        self._pyttsx_engine.runAndWait()
 
     # ------------------------------------------------------------------
     # Stream-player path (miniaudio → soxr → sd.OutputStream)
@@ -1292,11 +1053,8 @@ class TTSPipeline:
     def prewarm(self, emotion: str = "") -> None:
         """Eagerly open WS session (call on LLM first token).
 
-        No-op if engine doesn't support streaming or ws is disabled.
-        Safe to call multiple times — opens only once per turn.
+        No-op if WS is disabled. Safe to call multiple times — opens only once per turn.
         """
-        if self._engine.engine_name not in SUPPORTS_STREAMING:
-            return
         if not getattr(self._engine, "_minimax_ws_enabled", False):
             return
         if self._ws_client is not None and self._ws_client.is_open():
@@ -1531,16 +1289,15 @@ class TTSPipeline:
             if not text.strip():
                 continue
 
-            # Streaming route — minimax with ws enabled
-            if (self._engine.engine_name in SUPPORTS_STREAMING
-                    and getattr(self._engine, "_minimax_ws_enabled", False)):
+            # Streaming route — MiniMax WS .io (primary)
+            if getattr(self._engine, "_minimax_ws_enabled", False):
                 try:
                     self._stream_one(text, sentence_type, emotion)
                 except Exception as exc:
                     self.logger.warning("streaming route failed: %s", exc)
                 continue
 
-            # Legacy file-based route
+            # File-based route — MiniMax HTTP fallback (.chat) handled inside _synth_minimax
             try:
                 result = self._synthesize_to_file(text, emotion)
                 if result and not self._aborted.is_set():
