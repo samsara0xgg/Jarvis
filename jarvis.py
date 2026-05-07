@@ -306,9 +306,6 @@ class JarvisApp:
         # REVIEW 分析: 4 个 prewarm submitted 到 executor (HTTP keepalive/TTS precache 6 短句/ASR/VAD)；health 状态变化订阅 + 定期 probe
         # REVIEW 建议: 留
         # REVIEW 评估: ___
-        # 预热 HTTP 连接（建立 keep-alive，首次真实调用省 ~100ms TCP+TLS）
-        self._executor.submit(self._prewarm_connections)
-
         # 预热 TTS 缓存（常用短句提前合成，首次播报零延迟）
         _PRECACHE_PHRASES = ["好的", "嗯，让我想想", "好的，灯开了", "好的，灯关了", "再见", "在的"]
         self._executor.submit(lambda: self._get_tts() and self._get_tts().precache(_PRECACHE_PHRASES))
@@ -329,20 +326,6 @@ class JarvisApp:
         if self.health_tracker:
             self.event_bus.on("health.status_changed", self._on_health_changed)
             self._setup_health_probes(config)
-
-    def _prewarm_connections(self) -> None:
-        """Pre-warm HTTP connections to reduce first-call latency."""
-        import requests as _req
-        groq_key = self.config.get("models", {}).get("groq", {}).get("api_key")
-        if groq_key:
-            try:
-                _req.get(
-                    "https://api.groq.com/openai/v1/models",
-                    headers={"Authorization": f"Bearer {groq_key}"},
-                    timeout=5,
-                )
-            except Exception:
-                pass
 
     # REVIEW [B12] L339-343 ACTIVE · _on_health_changed
     # REVIEW 分析: degradation 第一次发生时语音通知"X 暂时不可用，已切换备用"

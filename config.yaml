@@ -308,69 +308,27 @@ hue:
 # ----------------------------------------------------------------------------
 # 本地模型路由（F1）
 # ----------------------------------------------------------------------------
-models:
-  groq:
-    api_key: ""  # env GROQ_API_KEY
-    model: llama-3.3-70b-versatile
-  cerebras:
-    api_key: ""  # env CEREBRAS_API_KEY
-    # Cerebras 现行可用模型（2026-04-17 确认）：gpt-oss-120b /
-    # qwen-3-235b-a22b-instruct-2507 / llama3.1-8b / zai-glm-4.7。意图路由选
-    # 最快最便宜的 8b。
-    # 历史：7f80fdf 引入时就是 llama3.1-8b，merge 51a749d 误改成 llama-3.3-70b
-    # （Cerebras 从未提供过这个模型名），导致 fallback 静默 404 13 天。
-    router_model: llama3.1-8b
-  deepseek:
-    api_key: ""  # env DEEPSEEK_API_KEY
-    model: deepseek-chat
-  local:
-    provider: ollama
-    model: qwen2.5:7b
-    base_url: http://localhost:11434
-    timeout: 30
-  routing:
-    confidence_threshold: 0.7
-
 # ----------------------------------------------------------------------------
 # 小月 AI 助手（LLM 大脑）
 # ----------------------------------------------------------------------------
 llm:
-  # LLM 提供商：openai（兼容 Kimi/DeepSeek）或 anthropic。
+  # LLM 提供商：openai（兼容 xAI/Kimi/DeepSeek）或 anthropic。
   provider: openai
 
   # 运行时可切换的模型预设（"小月，快速模式" / "小月，深度模式"）
-  default_preset: deep
+  default_preset: fast
 
   presets:
     fast:
-      model: llama-3.3-70b-versatile
-      base_url: "https://api.groq.com/openai/v1"
-      api_key_env: GROQ_API_KEY
-      max_tokens: 1024
-    deep:
       model: gpt-5.4-mini
       base_url: "https://api.openai.com/v1"
       api_key_env: OPENAI_API_KEY
       max_tokens: 1024
-    teacher:
+    deep:
       model: gpt-5.5
       base_url: "https://api.openai.com/v1"
       api_key_env: OPENAI_API_KEY
-      max_tokens: 1500
-
-  # 后备配置（无 presets 时使用）
-  # 模型 ID。gpt-4o-mini / grok-4.20-0309-non-reasoning / grok-4.1-fast-non-reasoning。
-  model: grok-4.20-0309-non-reasoning
-
-  # OpenAI 兼容 base_url。留空 = OpenAI 官方。xAI: https://api.x.ai/v1
-  base_url: "https://api.x.ai/v1"
-
-  # 单次回复最大 token 数。
-  max_tokens: 1024
-
-  # API key。留空则从环境变量读取（OPENAI_API_KEY 或 ANTHROPIC_API_KEY）。
-  # Kimi: env MOONSHOT_API_KEY 或填在此处。
-  api_key: ""
+      max_tokens: 1024
 
   # 流式回复的句子切分调优
   sentence_divider:
