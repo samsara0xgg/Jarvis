@@ -895,26 +895,6 @@ class JarvisApp:
         # _process_turn wrapper via _reset_turn_state(). The inner only
         # *populates* them at hook points; never re-resets here.
 
-        # Resume from interruption: "继续说" etc
-        from core.interrupt_monitor import RESUME_KEYWORDS
-        _resume_sentences: list[str] | None = None
-        with self._pipeline_lock:
-            if self._interrupted_response and any(kw in text for kw in RESUME_KEYWORDS):
-                _resume_sentences = self._interrupted_response
-                self._interrupted_response = None
-        if _resume_sentences is not None:
-            for s in _resume_sentences:
-                output_fn(s)
-            full_text = "".join(_resume_sentences)
-            history.append({"role": "user", "content": text})
-            history.append({"role": "assistant", "content": full_text})
-            self.conversation_store.replace(session_id, history)
-            self._last_path = "resume"
-            print(f"path={self._last_path}")
-            self._last_response_text = full_text
-            self._mark_turn_end()
-            return full_text
-
         # ── 快捷路径 1：告别 ── 直接本地回复，不走任何 API，~120ms
         if self._is_farewell(text):
             reply = "再见。"
