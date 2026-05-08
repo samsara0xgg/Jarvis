@@ -7,7 +7,39 @@
 <link rel="stylesheet" href="card.css">
 </head>
 <body>
-<main id="card-root"></main>
+<div class="card-wrap" id="card-wrap">
+  <div class="q2x7-hover-region" id="hover-region">
+    <div class="q2x7-pill" id="pill">
+      <div class="q2x7-pill-history" id="pill-history">
+        <span class="glyph">⌃</span>
+        <span class="count">0</span>
+        <span class="label">history</span>
+      </div>
+      <div class="q2x7-pill-divider"></div>
+      <div class="q2x7-pill-clear" id="pill-clear">×</div>
+    </div>
+  </div>
+  <div class="card" id="card">
+    <div class="thinking-aura"></div>
+    <div class="chips-ext-wrap" id="chips-wrap"><div class="chips chips-ext" id="chips"></div></div>
+    <div class="row">
+      <div class="dot"></div>
+      <div class="waveform">
+        <span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span>
+      </div>
+      <div class="input-wrap">
+        <input id="card-input" type="text" placeholder="问问 jarvis" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" />
+        <span class="ghost"></span>
+      </div>
+      <div class="state-pill" id="state-pill"></div>
+    </div>
+    <div class="answer" id="answer"></div>
+  </div>
+  <div class="q2x9-popover" id="popover">
+    <span class="popover-q"></span>
+    <span class="popover-a"></span>
+  </div>
+</div>
 <script type="module" src="card.js"></script>
 </body>
 </html>

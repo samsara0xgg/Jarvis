@@ -1,24 +1,33 @@
 // inherent-main.js — Electron main entry for Jarvis "inherent" mode.
 //
-// Owns a single Siri-style floating card (NSGlassEffectView via electron-liquid-glass).
-// Path 3 (2): hide-only lifecycle, fade cancellation, turn-state contract guards,
-// scenario-based test harness.
+// Owns a single Siri-style floating card. Visual surface is CSS-driven
+// (background tint + backdrop-filter blur + inset highlights in card.css);
+// macOS provides the outer drop-shadow via BrowserWindow.hasShadow:true so
+// the click area stays tight to the visible card (no transparent margin).
+//
+// Wave 1 (2026-05-06): adds hotkey-driven text input. ⌘+Space → openInputMode
+// reveals the card focused-with-input; Enter POSTs to /inherent/submit on the
+// jarvis web backend; the response surfaces back via the same response.* →
+// /inherent/ws → siri:* path that the response-only mode used.
 //
 // IPC contract:
 //   main → renderer (webContents.send):
-//     siri:open    { content: markdown, kind?: 'text'|'code'|'mixed' }
-//     siri:append  { token: string }    (streaming, path 3)
-//     siri:done    { fadeMs?: number }
-//     siri:reset                          (clear card before next turn)
+//     siri:open       { content: markdown, kind?: 'text'|'code'|'mixed' }
+//     siri:append     { token: string }    (streaming, path 3)
+//     siri:done       { fadeMs?: number }
+//     siri:reset                            (clear card before next turn)
+//     card:openInput                        (hotkey hit, enter input mode)
 //
 //   renderer → main (ipcRenderer.invoke):
 //     card:resize       height_px
+//     card:setWidth     width_px   (widens leftward, right edge fixed — for popover)
 //     card:show
 //     card:close
 //     card:fadeOut      ms
 //     card:cancelFade
+//     card:submit       text   → POST /inherent/submit, returns {ok, reason?}
 
-const { app, BrowserWindow, screen, ipcMain } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, globalShortcut } = require('electron');
 const path = require('path');
 const liquidGlass = require('electron-liquid-glass');
 const WebSocketClient = require('ws');
@@ -54,6 +63,11 @@ let fadeGen = 0;
 // turnState gates contract violations: open/append/done outside the expected order
 // just warn rather than crash — useful when backend has bugs and we want a clear log.
 let turnState = 'idle';  // 'idle' | 'open'
+// userHidden: set true when the user explicitly hid the card (⌘+Space toggle off,
+// or fade-out completion). Renderer-driven implicit shows (cardAPI.show called
+// from flushHeight during streaming, etc.) are blocked while this is true.
+// Cleared on explicit user action (openInputMode) or backend turn (siriOpen).
+let userHidden = false;
 
 // Bridge state
 let wsClient = null;
@@ -70,14 +84,26 @@ function createCardWindow() {
     width: CARD_WIDTH,
     height: CARD_INITIAL_HEIGHT,
     x: workArea.x + workArea.width - CARD_WIDTH - CARD_MARGIN,
-    y: workArea.y + CARD_MARGIN,
+    // Window y is shifted up by (PILL_RESERVED - CARD_MARGIN) so the body's
+    // 38px top padding can host the pill flush above the card while the card
+    // itself stays at its original screen position (workArea.y + CARD_MARGIN).
+    // PILL_RESERVED (=38) lives in card.css as body padding-top.
+    y: workArea.y + CARD_MARGIN - 38,
     transparent: true,
     frame: false,
+    // hasShadow: false — CSS-side outer drop-shadow was tried and removed
+    // (clipped at window edge → visible dark frame on bright backdrops).
+    // The dark glass tint + inset highlights carry visual presence; depth
+    // can be re-attempted later via macOS Vibrancy when geometry caching
+    // issues in electron-liquid-glass are resolved.
     hasShadow: false,
     alwaysOnTop: true,
     resizable: false,
     vibrancy: false,
-    focusable: false,
+    // focusable: true so the hotkey-driven input mode can take keystrokes.
+    // Response-only siri:* paths still call setCardVisible (showInactive),
+    // which avoids stealing focus from whatever app the user was using.
+    focusable: true,
     type: 'panel',
     show: false,  // first card:show IPC reveals it
     backgroundColor: '#00000000',
@@ -100,12 +126,12 @@ function createCardWindow() {
   const url = qs ? `file://${cardPath}?${qs}` : `file://${cardPath}`;
   card.loadURL(url);
 
-  card.webContents.once('did-finish-load', () => {
-    glassId = liquidGlass.addView(card.getNativeWindowHandle(), {
-      cornerRadius: CORNER_RADIUS,
-      tintColor: TINT_COLOR
-    });
-  });
+  // NSGlassEffectView (electron-liquid-glass) is intentionally NOT applied:
+  // its geometry caching during rapid window resizes (drip streaming) leaves
+  // misaligned rounded corners that show as stray "ear" shapes on the sides
+  // of the card. CSS handles glass surface (backdrop-filter blur+saturate)
+  // and inset highlights — geometry follows the .card element directly, no
+  // caching gap.
 
   card.on('closed', () => { card = null; glassId = null; });
 }
@@ -119,12 +145,27 @@ function createCardWindow() {
 // restores it without any orderOut/orderFront cycle.
 function setCardHidden() {
   if (!card || card.isDestroyed()) return;
+  // Width might have widened for the popover; collapse it back so a stale
+  // 678px-wide hidden window doesn't trap clicks across the empty left half
+  // when ignoreMouseEvents flips back to false on the next show.
+  const bounds = card.getBounds();
+  if (bounds.width !== CARD_WIDTH) {
+    const rightEdge = bounds.x + bounds.width;
+    card.setBounds({ x: rightEdge - CARD_WIDTH, y: bounds.y, width: CARD_WIDTH, height: bounds.height });
+  }
   card.setOpacity(0);
   card.setIgnoreMouseEvents(true);
+  userHidden = true;
 }
 
 function setCardVisible() {
   if (!card || card.isDestroyed()) return;
+  // Block implicit shows after a manual hide. Renderer's flushHeight calls
+  // cardAPI.show() during streaming and that would otherwise resurrect the
+  // card a few ms after ⌘+Space toggled it off. Explicit user paths
+  // (openInputMode / siriOpen) clear userHidden first, so this only blocks
+  // the implicit case.
+  if (userHidden) return;
   card.setOpacity(1);
   card.setIgnoreMouseEvents(false);
   if (!card.isVisible()) {
@@ -142,6 +183,18 @@ ipcMain.handle('card:resize', (_, height) => {
   card.setBounds({ ...bounds, height: clamped });
 });
 
+// Widen the window leftward to accommodate the history-preview popover.
+// The card itself is right-anchored to its original screen position (top-right
+// corner); we move x leftward by the delta so the right edge stays put.
+ipcMain.handle('card:setWidth', (_, width) => {
+  if (!card || card.isDestroyed()) return;
+  const bounds = card.getBounds();
+  const clamped = Math.min(Math.max(CARD_WIDTH, Math.ceil(width)), 900);
+  if (clamped === bounds.width) return;
+  const rightEdge = bounds.x + bounds.width;
+  card.setBounds({ x: rightEdge - clamped, y: bounds.y, width: clamped, height: bounds.height });
+});
+
 ipcMain.handle('card:show', () => {
   setCardVisible();
 });
@@ -156,6 +209,12 @@ ipcMain.handle('card:close', () => {
 
 ipcMain.handle('card:fadeOut', (_, ms) => {
   if (!card || card.isDestroyed()) return;
+  // Guard: a fadeOut on an already-hidden card flashes the window — the
+  // tick loop sets opacity = (steps-1)/steps ≈ 0.94 on its first frame,
+  // making a 0 → 0.94 → 0 pop. After auto-fade, mouseleave events still
+  // fire on transparent click-through panels (macOS quirk) and re-schedule
+  // fades; this gate makes those a no-op.
+  if (card.getOpacity() <= 0.01) return;
   const total = Math.max(60, Math.min(2000, Number(ms) || 280));
   const steps = 18;
   const stepMs = total / steps;
@@ -188,6 +247,66 @@ ipcMain.handle('card:cancelFade', () => {
   setCardVisible();
 });
 
+ipcMain.handle('card:submit', async (_, text) => {
+  const t = String(text || '').trim();
+  if (!t) return { ok: false, reason: 'empty' };
+  try {
+    const res = await fetch('http://127.0.0.1:8006/inherent/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: t })
+    });
+    if (!res.ok) {
+      console.warn(`[inherent] submit failed: HTTP ${res.status}`);
+      return { ok: false, reason: `http_${res.status}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    console.warn(`[inherent] submit network error: ${err?.message}`);
+    return { ok: false, reason: 'network' };
+  }
+});
+
+// ─── Input mode (hotkey-driven) ──────────────────────────────
+// Distinct from setCardVisible (response-only): input mode steals focus
+// so the renderer's <input> can take keystrokes. Cancels any in-flight
+// fade and tells the renderer to clear answer + focus the input.
+function openInputMode() {
+  if (!card || card.isDestroyed()) return;
+  fadeGen++;
+  userHidden = false;  // user is invoking; clear the implicit-show block
+  card.setOpacity(1);
+  card.setIgnoreMouseEvents(false);
+  if (!card.isVisible()) {
+    card.show();  // focus-stealing variant — input mode wants keyboard focus
+    card.setAlwaysOnTop(true, 'screen-saver');
+    card.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  } else {
+    card.focus();
+  }
+  card.webContents.send('card:openInput');
+  // Clear watchdog: the user is now driving, not the LLM. A fresh
+  // turn from siri:open will rearm it.
+  clearBridgeWatchdog();
+  turnState = 'idle';
+}
+
+// ⌘+Space toggle: if the card is up (opacity > 0), hide it; otherwise summon
+// input mode. setCardHidden uses opacity rather than orderOut, so checking
+// opacity is the right "is it currently shown" test (isVisible() stays true
+// after a hide-via-opacity).
+function toggleHotkey() {
+  if (!card || card.isDestroyed()) return;
+  if (card.getOpacity() > 0.5) {
+    fadeGen++;
+    setCardHidden();
+    clearBridgeWatchdog();
+    turnState = 'idle';
+  } else {
+    openInputMode();
+  }
+}
+
 // ─── Public dispatchers (callable from a future backend bridge) ───
 function siriOpen(payload) {
   if (!card || card.isDestroyed()) return;
@@ -204,6 +323,7 @@ function siriOpen(payload) {
   // Cancel any pending fade and ensure the card is visible so a new turn
   // arriving mid-fade (or post-hidden) reveals reliably.
   fadeGen++;
+  userHidden = false;  // backend turn arriving — unblock implicit shows
   setCardVisible();
   card.webContents.send('siri:open', payload);
   turnState = 'open';
@@ -529,7 +649,19 @@ app.whenReady().then(() => {
   if (!demoMode && !scenario) {
     connectBridge();
   }
+
+  // ⌘+Space: universal summon → input mode. Demos/scenarios skip this so
+  // the test harness doesn't reset state mid-fixture.
+  if (!demoMode && !scenario) {
+    const ok = globalShortcut.register('CommandOrControl+Space', toggleHotkey);
+    if (!ok) {
+      console.warn('[inherent] failed to register CommandOrControl+Space — another app may own it.');
+    }
+  }
 });
 
-app.on('before-quit', shutdownBridge);
+app.on('before-quit', () => {
+  shutdownBridge();
+  globalShortcut.unregisterAll();
+});
 app.on('window-all-closed', () => app.quit());

@@ -4,7 +4,179 @@
 import MarkdownItAsync from 'https://esm.sh/markdown-it-async@2'
 import { codeToHtml } from 'https://esm.sh/shiki@3'
 
-const root = document.getElementById('card-root')
+const root = document.getElementById('answer')
+const card = document.getElementById('card')
+const cardWrap = document.getElementById('card-wrap')
+const cardInput = document.getElementById('card-input')
+const statePill = document.getElementById('state-pill')
+const chipsWrap = document.getElementById('chips-wrap')
+const chipsContainer = document.getElementById('chips')
+const popover = document.getElementById('popover')
+const popoverQ = popover.querySelector('.popover-q')
+const popoverA = popover.querySelector('.popover-a')
+const hoverRegion = document.getElementById('hover-region')
+const pillHistory = document.getElementById('pill-history')
+const pillClear = document.getElementById('pill-clear')
+const pillCount = pillHistory.querySelector('.count')
+
+// ─── History strip + popover (Q2.9 ship v1) ────────────────
+// In-memory turn log; persists for the lifetime of the card window. Each
+// completed turn (siri:done w/ non-empty answer) appends a chip. Strip auto-
+// reveals on first chip and stays open. Click any chip → popover slides in
+// to the LEFT of the card; window widens via card:setWidth IPC.
+const POPOVER_WIDTH = 300
+const POPOVER_GAP = 18
+const CARD_WIDTH = 360
+const CARD_WIDTH_WITH_POPOVER = CARD_WIDTH + POPOVER_GAP + POPOVER_WIDTH
+const POPOVER_HIDE_DELAY_MS = 450
+
+let popoverHideTimer = null
+function cancelPopoverHide() {
+  if (popoverHideTimer) { clearTimeout(popoverHideTimer); popoverHideTimer = null }
+}
+
+// Smooth height growth: drives flushHeight() on every frame for `durationMs`
+// so the BrowserWindow expands/contracts in step with CSS transitions (chip
+// strip max-height open/close = 380ms). Without this, scrollHeight is read
+// once and the window snaps at the end instead of growing alongside.
+let flushPollHandle = null
+function flushHeightFor(durationMs) {
+  if (flushPollHandle) cancelAnimationFrame(flushPollHandle)
+  const start = performance.now()
+  const tick = () => {
+    flushHeight()
+    if (performance.now() - start < durationMs) {
+      flushPollHandle = requestAnimationFrame(tick)
+    } else {
+      flushPollHandle = null
+    }
+  }
+  flushPollHandle = requestAnimationFrame(tick)
+}
+function clearSourceActive() {
+  chipsContainer.querySelectorAll('.chip.source-active').forEach(c => c.classList.remove('source-active'))
+}
+function showPopover(chip) {
+  cancelPopoverHide()
+  popoverQ.textContent = chip.dataset.q || ''
+  popoverA.textContent = chip.dataset.fullA || ''
+  // Anchor popover top to the clicked chip's top — popover follows whichever
+  // chip the user is previewing, so the visual link between source-active
+  // chip + popover content reads naturally.
+  const chipRect = chip.getBoundingClientRect()
+  const wrapRect = cardWrap.getBoundingClientRect()
+  popover.style.top = (chipRect.top - wrapRect.top) + 'px'
+  popover.classList.add('visible')
+  clearSourceActive()
+  chip.classList.add('source-active')
+  window.cardAPI?.setWidth?.(CARD_WIDTH_WITH_POPOVER)
+  // Window widening shifts card position; re-flush so height accounts for popover
+  flushHeight()
+}
+function hidePopoverNow() {
+  cancelPopoverHide()
+  popover.classList.remove('visible')
+  clearSourceActive()
+  window.cardAPI?.setWidth?.(CARD_WIDTH)
+  flushHeight()
+}
+function schedulePopoverHide() {
+  cancelPopoverHide()
+  popoverHideTimer = setTimeout(() => {
+    popover.classList.remove('visible')
+    clearSourceActive()
+    window.cardAPI?.setWidth?.(CARD_WIDTH)
+    flushHeight()
+    popoverHideTimer = null
+  }, POPOVER_HIDE_DELAY_MS)
+}
+popover.addEventListener('mouseenter', cancelPopoverHide)
+popover.addEventListener('mouseleave', schedulePopoverHide)
+
+function buildChip(q, a) {
+  const chip = document.createElement('div')
+  chip.className = 'chip tally-fresh'
+  // chip-a in strip = single-line answer preview (no markdown). Use first line.
+  const previewA = String(a).split(/\r?\n/)[0]
+  chip.innerHTML =
+    `<span class="chip-q"></span><span class="chip-arrow">→</span><span class="chip-a"></span>`
+  chip.querySelector('.chip-q').textContent = q
+  chip.querySelector('.chip-a').textContent = previewA
+  chip.dataset.q = q
+  chip.dataset.fullA = a
+  chip.addEventListener('click', () => showPopover(chip))
+  chip.addEventListener('mouseleave', schedulePopoverHide)
+  // tally-fresh stripe auto-fades over 1.1s — strip the class so it doesn't
+  // re-trigger if the chip is re-rendered.
+  setTimeout(() => chip.classList.remove('tally-fresh'), 1100)
+  return chip
+}
+
+function updatePillCount() {
+  const n = chipsContainer.querySelectorAll('.chip:not(.fading)').length
+  pillCount.textContent = String(n)
+  // Pill stays hover-only — no auto-reveal. The user must hover the region
+  // above the card top to see / interact with the history affordance.
+}
+
+function pushTurn(q, a) {
+  if (!q || !a) return
+  const chip = buildChip(q, a)
+  chipsContainer.appendChild(chip)
+  card.classList.add('history-shown')
+  updatePillCount()
+  requestAnimationFrame(() => {
+    chipsWrap.scrollTop = chipsWrap.scrollHeight
+  })
+  // Drive resize per-frame so the window grows in step with the strip's
+  // 380ms max-height transition instead of snapping at the end.
+  flushHeightFor(420)
+}
+
+function cascadeClear() {
+  hidePopoverNow()
+  const chips = Array.from(chipsContainer.querySelectorAll('.chip'))
+  card.classList.remove('history-shown')
+  if (chips.length === 0) {
+    updatePillCount()
+    flushHeightFor(420)
+    return
+  }
+  // Stagger the fade-out from newest to oldest, then wipe DOM after the last
+  // chip's transition finishes. Drive resize per-frame for the full duration.
+  chips.slice().reverse().forEach((c, i) => {
+    setTimeout(() => c.classList.add('fading'), i * 50)
+  })
+  const totalMs = chips.length * 50 + 380
+  setTimeout(() => {
+    chipsContainer.innerHTML = ''
+    updatePillCount()
+  }, totalMs)
+  flushHeightFor(totalMs + 60)
+}
+
+// Pill wiring (idempotent: card.js loads once per renderer)
+pillHistory.addEventListener('click', () => {
+  pillHistory.classList.add('click-flash')
+  setTimeout(() => pillHistory.classList.remove('click-flash'), 240)
+  if (card.classList.contains('history-shown')) {
+    card.classList.remove('history-shown')
+    hidePopoverNow()
+  } else if (chipsContainer.querySelectorAll('.chip').length > 0) {
+    card.classList.add('history-shown')
+    requestAnimationFrame(() => { chipsWrap.scrollTop = chipsWrap.scrollHeight })
+  }
+  // Smooth growth: per-frame flushHeight for the strip's full 380ms transition.
+  flushHeightFor(420)
+})
+pillClear.addEventListener('click', () => {
+  pillClear.classList.add('click-flash')
+  setTimeout(() => pillClear.classList.remove('click-flash'), 240)
+  cascadeClear()
+})
+
+// Track Q for the in-flight turn so we can pair it with A on siri:done.
+let inFlightQ = null
 
 const md = new MarkdownItAsync({
   html: false,
@@ -209,13 +381,23 @@ async function flushHeight() {
     try { await document.fonts.ready } catch {}
   }
   await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
-  // Lift card-root max-height before measuring: scrollHeight respects max-height,
+  // Lift answer max-height before measuring: scrollHeight respects max-height,
   // so without this long content reports the clamped value and the window never
   // grows to the main-process 800px cap.
   const prevMax = root.style.maxHeight
   root.style.maxHeight = 'none'
   void root.offsetHeight
-  const height = Math.ceil(document.documentElement.scrollHeight)
+  // Measure body (content-driven). documentElement.scrollHeight can be pinned
+  // to viewport in Chromium and won't shrink when content is smaller than the
+  // current window bounds; body.scrollHeight tracks the actual content extent.
+  let height = Math.ceil(document.body.scrollHeight)
+  // Popover is position:absolute → doesn't contribute to scrollHeight. When
+  // visible, ensure window is tall enough to fit it (popover.bottom relative
+  // to body top).
+  if (popover.classList.contains('visible')) {
+    const popRect = popover.getBoundingClientRect()
+    height = Math.max(height, Math.ceil(popRect.bottom + 4))
+  }
   root.style.maxHeight = prevMax
   window.cardAPI?.resize(height)
   window.cardAPI?.show?.()
@@ -243,7 +425,120 @@ document.addEventListener('mouseenter', () => {
 })
 document.addEventListener('mouseleave', () => scheduleFade(2500))
 
-window.jarvisCard = { setContent, cancelFade, scheduleFade }
+window.jarvisCard = { setContent, cancelFade, scheduleFade, pushTurn, hidePopoverNow }
+
+// ─── State pill (motion-reel L1806-1817 port) ──────────────
+const STATE_VARIANTS = ['thinking', 'idle', 'warn', 'error', 'success', 'neutral']
+function setState(label, variant = '') {
+  if (!label) {
+    statePill.classList.remove('visible')
+    statePill.textContent = ''
+    STATE_VARIANTS.forEach(v => statePill.classList.remove(v))
+    return
+  }
+  statePill.textContent = label
+  STATE_VARIANTS.forEach(v => statePill.classList.remove(v))
+  if (variant) statePill.classList.add(variant)
+  statePill.classList.add('visible')
+}
+
+// Thinking aura helpers (motion-reel L1864-1874 port)
+function thinkFluent() {
+  card.classList.remove('thinking-deep')
+  card.classList.add('thinking-fluent')
+}
+function thinkOff() {
+  card.classList.remove('thinking-fluent', 'thinking-deep')
+}
+
+// ─── Input lifecycle ───────────────────────────────────────
+// inputActive tracks whether the most recent siri:open was triggered by a
+// local submit (true) or arrived from a non-input source like voice (false).
+// This lets siri:open differentiate "user typed → continue showing breadcrumb"
+// from "external response → just render answer".
+let inputActive = false
+// streamingStarted flips true when the first token appends in the current
+// turn — used to defer thinkOff + state→streaming until real content arrives
+// (response.start fires when the LLM API connection opens, often noticeably
+// before the first token, so transitioning at .start makes the thinking aura
+// look like it stops "too early").
+let streamingStarted = false
+
+function resetInputState() {
+  cardInput.value = ''
+  cardInput.disabled = false
+  cardInput.placeholder = '问点什么…'
+  card.classList.remove('submitted', 'listening', 'warn', 'error')
+  thinkOff()
+}
+
+function enterInputMode() {
+  cancelFade()
+  clearDrip()
+  target = ''
+  shown = ''
+  prevVisibleText = ''
+  charBirthTimes = []
+  resetInputState()
+  setState('idle', 'idle')
+  // setContent('') early-returns without flushHeight, so the window stays at
+  // its previous (larger) bounds. Clear the answer DOM and force a flush so
+  // the window shrinks to just the input row.
+  root.innerHTML = ''
+  flushHeight()
+  // .row has a 0.32s height transition (and .answer a 0.5s max-height
+  // transition). When entering from .submitted state the immediate
+  // flushHeight above measures mid-animation (.row at ~38px instead of
+  // its final 64px), so main clamps the window to 60px and the final
+  // 64px row overflows → scrollbar. Re-flush after transitions settle.
+  setTimeout(() => { flushHeight() }, 540)
+  // Defer focus until the height/layout settles so the OS doesn't focus
+  // a still-resizing window (panel + showInactive race observed otherwise).
+  requestAnimationFrame(() => cardInput.focus())
+  inputActive = true
+}
+
+function submitInputText() {
+  const text = cardInput.value.trim()
+  if (!text) return
+  inFlightQ = text
+  cardInput.disabled = true
+  card.classList.add('submitted')
+  setState('thinking', 'thinking')
+  thinkFluent()
+  // Width-morph (Q2 = B): the input element itself shrinks into the breadcrumb
+  // via .submitted CSS — no separate node, no DOM swap. The streaming answer
+  // expands below in the existing #answer pane.
+  Promise.resolve(window.cardAPI?.submit?.(text)).then(result => {
+    // Surface backend reachability problems to the user. Without this the
+    // pill stays at "thinking" forever when the POST fails (server down,
+    // network gone, http error), since no siri:* events will ever arrive.
+    if (!result || result.ok === false) {
+      thinkOff()
+      const reason = result?.reason || 'unknown'
+      const label = reason === 'network' ? 'offline' : `error · ${reason}`
+      setState(label, 'error')
+      // Auto-clear after a beat so the user can try again without a manual reset.
+      scheduleFade(3000)
+    }
+  }).catch(err => {
+    thinkOff()
+    setState('error', 'error')
+    scheduleFade(3000)
+    console.warn('[card] submit failed:', err?.message)
+  })
+}
+
+cardInput.addEventListener('keydown', (e) => {
+  if (e.isComposing) return  // IME composition, don't intercept
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    submitInputText()
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    window.cardAPI?.close?.()
+  }
+})
 
 // ─── IPC: main → renderer ──────────────────────────────────
 // In production (inherent mode), main process pushes content via these channels.
@@ -255,15 +550,33 @@ if (window.cardAPI?.onSiriOpen) {
     shown = ''
     prevVisibleText = ''
     charBirthTimes = []
+    streamingStarted = false
+    // If a local submit hasn't already moved the card into .submitted state,
+    // do it now — siri:open from voice / cli paths still needs the answer
+    // pane to expand. Local-submit path (inputActive=true) already added
+    // .submitted; we just leave it.
+    if (!inputActive) {
+      cardInput.value = ''
+      cardInput.disabled = true
+      card.classList.add('submitted')
+    }
+    // Hold thinking aura: response.start fires when the LLM connection opens,
+    // often noticeably before the first token. Stay in thinking state; flip
+    // to streaming when the first token actually arrives (onSiriAppend below).
+    setState('thinking', 'thinking')
+    thinkFluent()
     const streaming = !!payload?.streaming
     const content = payload?.content ?? ''
     if (streaming) {
       // Mode A: empty start, await siri:append events
       await setContent('')
     } else if (content) {
-      // Mode B: full content arrives in one shot
+      // Mode B: full content arrives in one shot — no streaming gap
       target = content
       shown = content
+      streamingStarted = true
+      thinkOff()
+      setState('streaming', 'thinking')
       await setContent(content)
     }
   })
@@ -271,6 +584,11 @@ if (window.cardAPI?.onSiriOpen) {
 if (window.cardAPI?.onSiriAppend) {
   window.cardAPI.onSiriAppend((payload) => {
     if (payload?.token == null) return
+    if (!streamingStarted) {
+      streamingStarted = true
+      thinkOff()
+      setState('streaming', 'thinking')
+    }
     target += payload.token
     if (!dripTimer) startDrip()
   })
@@ -280,6 +598,22 @@ if (window.cardAPI?.onSiriDone) {
     // If drip hasn't caught up to target yet, defer fade until it would.
     const remainingChars = Math.max(0, target.length - shown.length)
     const dripRemaining = remainingChars * DRIP_MS
+    thinkOff()
+    setState('done', 'success')
+    inputActive = false
+    streamingStarted = false
+    // Pair the in-flight Q with the final A and append a history chip.
+    // Voice-path Q isn't surfaced here yet (siri:open payload has no
+    // transcript) — those turns get a placeholder until the bridge sends Q.
+    if (target) {
+      pushTurn(inFlightQ || '语音', target)
+    }
+    inFlightQ = null
+    // Force a final reflow + window resize after the .submitted transitions
+    // settle (max-height 0.5s, padding 0.32s). Without this, intermediate
+    // flushHeight readings during streaming can leave the window stuck on a
+    // tall bound (visible as empty space below the answer).
+    setTimeout(() => { flushHeight() }, 600 + dripRemaining)
     scheduleFade((payload?.fadeMs ?? 5000) + dripRemaining)
   })
 }
@@ -290,7 +624,26 @@ if (window.cardAPI?.onSiriReset) {
     shown = ''
     prevVisibleText = ''
     charBirthTimes = []
+    setState('')
+    inputActive = false
+    streamingStarted = false
+    // Dismiss popover on turn boundary so the new turn isn't confused with history.
+    hidePopoverNow()
+    // resetInputState removes .submitted/.listening/.warn/.error so .row /
+    // .answer drop back to idle dimensions. Without this the card kept its
+    // submitted breadcrumb geometry while content was empty, producing a
+    // window-vs-body size mismatch (oversized window, transparent area
+    // showing through after switching apps and back).
+    resetInputState()
     await setContent('')
+    // setContent('') early-returns without flushHeight; force one so the
+    // BrowserWindow shrinks back to row-only height.
+    flushHeight()
+  })
+}
+if (window.cardAPI?.onOpenInput) {
+  window.cardAPI.onOpenInput(() => {
+    enterInputMode()
   })
 }
 
