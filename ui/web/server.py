@@ -242,6 +242,9 @@ class ChatRequest(BaseModel):
     text: str
     session_id: str
 
+class InherentSubmitRequest(BaseModel):
+    text: str
+
 class SessionResponse(BaseModel):
     session_id: str
     status: str
@@ -336,6 +339,9 @@ def create_app(jarvis_app: Any) -> FastAPI:
             asyncio.run_coroutine_threadsafe(_fan_out(), loop)
 
         def _on_response_start(_payload: dict | None = None) -> None:
+            LOGGER.info("[inherent-bridge] response.start fired clients=%d loop_set=%s",
+                        len(_inherent_clients),
+                        getattr(jarvis_app, "_web_loop", None) is not None)
             _broadcast_inherent("open", {
                 "content": "",
                 "streaming": True,
@@ -344,16 +350,20 @@ def create_app(jarvis_app: Any) -> FastAPI:
 
         def _on_response_chunk(payload: dict | None = None) -> None:
             text = (payload or {}).get("text")
+            LOGGER.info("[inherent-bridge] response.chunk fired text=%r clients=%d",
+                        (text or "")[:40], len(_inherent_clients))
             if not text:
                 return
             _broadcast_inherent("append", {"token": text})
 
         def _on_response_final(_payload: dict | None = None) -> None:
+            LOGGER.info("[inherent-bridge] response.final fired clients=%d", len(_inherent_clients))
             _broadcast_inherent("done", {"fadeMs": 5000})
 
         jarvis_app.event_bus.on("response.start", _on_response_start)
         jarvis_app.event_bus.on("response.chunk", _on_response_chunk)
         jarvis_app.event_bus.on("response.final", _on_response_final)
+        LOGGER.info("[inherent-bridge] listeners registered for response.start/chunk/final")
 
     AUDIO_DIR.mkdir(exist_ok=True)
 
@@ -1011,6 +1021,28 @@ def create_app(jarvis_app: Any) -> FastAPI:
                 if _ws_routes.get(session_id) is ws:
                     _ws_routes.pop(session_id, None)
 
+    @app.post("/inherent/submit")
+    async def inherent_submit(req: InherentSubmitRequest):
+        """Text submit entry for the desktop inherent card.
+
+        The hotkey-driven Electron card POSTs typed text here. We hand off
+        to JarvisApp.handle_text on a worker thread; the response surfaces
+        to the renderer via event_bus → /inherent/ws → siri:open/append/done
+        automatically (the bridge is wired up at create_app() time).
+        Returns immediately so the renderer stays responsive while the LLM
+        streams.
+        """
+        text = (req.text or "").strip()
+        if not text:
+            raise HTTPException(400, "text is required")
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(
+            None,
+            lambda: jarvis_app.handle_text(text, session_id="_inherent"),
+        )
+        LOGGER.info("[inherent] submit text=%r", text[:80])
+        return {"status": "accepted"}
+
     @app.websocket("/inherent/ws")
     async def inherent_ws(ws: WebSocket):
         """Inherent card bridge endpoint (outbound-only broadcast).
@@ -1053,12 +1085,25 @@ def create_jarvis_app(config_path: str = "config.yaml") -> Any:
     return JarvisApp(config, config_path=config_path)
 
 
+def app_factory():
+    """Module-level factory for uvicorn --reload mode.
+
+    Reads config.yaml from cwd. JarvisApp is recreated on every reload, so
+    the SenseVoice / Silero / TTS model load (~5s) is paid each time the
+    watcher fires. Acceptable for dev iteration, NEVER for prod.
+    """
+    jarvis = create_jarvis_app(os.environ.get("JARVIS_CONFIG_PATH", "config.yaml"))
+    return create_app(jarvis)
+
+
 def main():
     import uvicorn
     parser = argparse.ArgumentParser(description="Jarvis Live2D Web Server")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8006)
     parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--dev", action="store_true",
+                        help="Enable uvicorn --reload (watches Python source for changes)")
     args = parser.parse_args()
 
     # Logging: console + file (same format as jarvis.py)
@@ -1075,9 +1120,22 @@ def main():
         shutil.rmtree(AUDIO_DIR)
     AUDIO_DIR.mkdir(exist_ok=True)
 
-    jarvis = create_jarvis_app(args.config)
-    app = create_app(jarvis)
-    uvicorn.run(app, host=args.host, port=args.port)
+    if args.dev:
+        LOGGER.info("[dev] uvicorn --reload mode; watching ui/web, core, memory")
+        os.environ["JARVIS_CONFIG_PATH"] = args.config
+        uvicorn.run(
+            "ui.web.server:app_factory",
+            factory=True,
+            host=args.host,
+            port=args.port,
+            reload=True,
+            reload_dirs=["ui/web", "core", "memory", "."],
+            reload_includes=["jarvis.py", "*.py"],
+        )
+    else:
+        jarvis = create_jarvis_app(args.config)
+        app = create_app(jarvis)
+        uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
