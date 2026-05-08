@@ -7,7 +7,7 @@
 - Commit OK, **never push** unless explicitly asked.
 - No Co-Authored-By in commit messages.
 - Use Grep/Glob before spawning Agents.
-- Don't modify model files under `data/speechbrain_model/` or `data/sensevoice-small-int8/`.
+- Don't modify model files under `data/sensevoice-small-int8/`.
 - Don't hardcode IPs, API keys, or file paths. Read from config.yaml.
 - Don't bypass `permission_manager` for device operations.
 - Don't use `print` — use `logging`.
@@ -64,13 +64,13 @@ python system_tests/runner.py --mode cc --suite general
   Memory: Observer (Grok primary, Gemini-2.5-flash fallback) per-turn 抽 priority observations → SQLite append; Assembler Block 3 全量 dump 进 system prompt; 无跨 chunk dedup/supersede 写路径 (29k tok and growing)
   Wake: openwakeword (hey_jarvis_v0.1)
   Devices: Philips Hue (live) + sim
-  Auth: SpeechBrain ECAPA-TDNN voiceprint + 4-tier roles
+  Auth: 4-tier role-based device permissions (single-user mode, role hardcoded to owner)
   Frontend: `desktop/` (Electron Pet Mode) + `ui/web/` (browser UI + Live2D)
 
   ## Architecture
 
   ```
-  Mic → Wake word → Record(VAD) → [Voiceprint + ASR] parallel
+  Mic → Wake word → Record(VAD) → ASR
     ↓
     memory inject  build_prompt_context() 50-100ms 装 4-block
     ↓

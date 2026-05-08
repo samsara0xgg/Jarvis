@@ -13,9 +13,7 @@ class TestInterruptResume:
         """Create a minimal JarvisApp with mocks."""
         from tests.test_jarvis import _make_config
         config = _make_config(tmp_path)
-        with patch("core.speaker_encoder.SpeakerEncoder"), \
-             patch("core.speaker_verifier.SpeakerVerifier"), \
-             patch("core.speech_recognizer.SpeechRecognizer"), \
+        with patch("core.speech_recognizer.SpeechRecognizer"), \
              patch("core.audio_recorder.AudioRecorder"), \
              patch("core.llm.LLMClient"), \
              patch("devices.device_manager.DeviceManager"):
@@ -50,9 +48,7 @@ class TestInterruptDuringTTS:
         from tests.test_jarvis import _make_config
         config = _make_config(tmp_path)
         config["interrupt"] = {"enabled": True}
-        with patch("core.speaker_encoder.SpeakerEncoder"), \
-             patch("core.speaker_verifier.SpeakerVerifier"), \
-             patch("core.speech_recognizer.SpeechRecognizer"), \
+        with patch("core.speech_recognizer.SpeechRecognizer"), \
              patch("core.audio_recorder.AudioRecorder"), \
              patch("core.llm.LLMClient"), \
              patch("devices.device_manager.DeviceManager"):

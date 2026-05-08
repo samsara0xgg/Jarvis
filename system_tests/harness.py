@@ -84,10 +84,6 @@ class TestHarness:
                 "min_duration": 0.1, "low_volume_threshold": 0.001,
             },
             "asr": {"model_size": "base", "language": "zh"},
-            "speaker": {"model_source": "test", "embedding_dim": 192, "device": "cpu"},
-            "verification": {"threshold": 0.70},
-            "enrollment": {"num_samples": 3, "default_role": "resident"},
-            "auth": {"user_store_path": str(self._tmp_dir / "users.json")},
             "devices": {
                 "mode": "sim",
                 "sim_devices": [
@@ -187,8 +183,6 @@ class TestHarness:
         config["memory"]["db_path"] = str(self._tmp_dir / "memory.db")
         config["memory"]["conversation_dir"] = str(self._tmp_dir / "convos")
         config["memory"]["preferences_dir"] = str(self._tmp_dir / "prefs")
-        config.setdefault("auth", {})
-        config["auth"]["user_store_path"] = str(self._tmp_dir / "users.json")
         # Disable wake word
         config.setdefault("wake_word", {})
         config["wake_word"]["enabled"] = False
@@ -219,8 +213,6 @@ class TestHarness:
             sys.modules["pyttsx3"] = fake_pyttsx3
 
         with (
-            patch("core.speaker_encoder.SpeakerEncoder"),
-            patch("core.speaker_verifier.SpeakerVerifier"),
             patch("core.speech_recognizer.SpeechRecognizer"),
             patch("core.audio_recorder.AudioRecorder"),
         ):

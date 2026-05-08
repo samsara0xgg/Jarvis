@@ -149,11 +149,6 @@ class TestBuildSituationBlock:
         block = build_situation_block(user_name="Allen", user_role="owner")
         assert "Allen" in block
 
-    def test_guest_prompts_voiceprint_registration(self):
-        block = build_situation_block(user_name=None, user_role="guest")
-        assert "不认识" in block
-        assert "声纹注册" in block
-
     def test_urgent_situation_marker(self):
         block = build_situation_block(situation="urgent")
         assert "严肃" in block or "紧急" in block

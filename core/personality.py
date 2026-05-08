@@ -177,8 +177,8 @@ def build_situation_block(
     Never cached because every axis can change between turns.
 
     Args:
-        user_name: Authenticated speaker's name (voiceprint result); None means unknown.
-        user_role: Authenticated user role; reserved for future role-specific phrasing.
+        user_name: Display name for the user; None means unknown.
+        user_role: User role; reserved for future role-specific phrasing.
         user_emotion: SenseVoice emotion tag (e.g. "HAPPY", "SAD"); empty string omits guidance.
         situation: One of "normal" / "urgent" / "error" / "rapid".
 
@@ -204,7 +204,5 @@ def build_situation_block(
 
     if user_name:
         lines.append(f"现在是{user_name}在跟你说话。")
-    else:
-        lines.append("这个人你不认识。礼貌但保持距离，提醒他做个声纹注册你才能更好地帮他。")
 
     return "<situation>\n" + "\n".join(lines) + "\n</situation>"

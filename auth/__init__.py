@@ -1,3 +1,3 @@
-"""Authentication and enrollment helpers for speaker-based smart-home access."""
+"""Role-based permission checks for smart-home device access."""
 
-__all__ = ["EnrollmentService", "PermissionManager", "UserStore"]
+__all__ = ["PermissionManager"]

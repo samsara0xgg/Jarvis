@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import sys
 import types
-from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
-import pytest
 
-from core.speaker_verifier import VerificationResult
 from core.speech_recognizer import TranscriptionResult
 
 
@@ -19,10 +16,6 @@ def _make_config(tmp_path):
         "audio": {"sample_rate": 16000, "channels": 1, "default_duration": 1.0,
                    "min_duration": 0.1, "low_volume_threshold": 0.001},
         "asr": {"model_size": "base", "language": "zh"},
-        "speaker": {"model_source": "test", "embedding_dim": 192, "device": "cpu"},
-        "verification": {"threshold": 0.70},
-        "enrollment": {"num_samples": 3, "default_role": "resident"},
-        "auth": {"user_store_path": str(tmp_path / "users.json")},
         "devices": {
             "mode": "sim",
             "sim_devices": [
@@ -94,7 +87,7 @@ def _install_fake_pyttsx3():
 
 
 def test_jarvis_handle_utterance_end_to_end(tmp_path):
-    """Test the full pipeline: audio → verify + ASR → Claude → response."""
+    """Test the full pipeline: audio → ASR → Claude → response."""
     _install_fake_anthropic()
     _install_fake_pyttsx3()
 
@@ -104,70 +97,18 @@ def test_jarvis_handle_utterance_end_to_end(tmp_path):
         config = _make_config(tmp_path)
         app = JarvisApp(config, config_path=tmp_path / "config.yaml")
 
-        # Mock the Claude response
         app.llm._get_anthropic_client().messages.create = MagicMock(
             return_value=_FakeResponse([_FakeTextBlock("卧室灯已打开，先生。")])
         )
 
-        # Mock speaker verification
-        fake_verification = VerificationResult(
-            verified=True, user="test_user", confidence=0.85, all_scores={"test_user": 0.85},
-        )
-        app.speaker_verifier.verify = MagicMock(return_value=fake_verification)
-
-        # Mock ASR
         fake_transcription = TranscriptionResult(text="打开卧室灯", language="zh", confidence=0.9)
         app.speech_recognizer.transcribe = MagicMock(return_value=fake_transcription)
 
-        # Add a user to the store
-        app.user_store.add_user({
-            "user_id": "test_user",
-            "name": "Tony",
-            "embedding": [0.1] * 192,
-            "role": "owner",
-            "permissions": [],
-            "enrolled_at": "2025-01-01T00:00:00Z",
-        })
-
-        # Run the pipeline (regex_router miss → cloud LLM mock returns 卧室灯已打开)
         audio = np.random.randn(16000).astype(np.float32)
         response = app.handle_utterance(audio)
 
         assert "卧室灯" in response and "打开" in response
-        app.speaker_verifier.verify.assert_called_once()
         app.speech_recognizer.transcribe.assert_called_once()
-    finally:
-        sys.modules.pop("anthropic", None)
-        sys.modules.pop("pyttsx3", None)
-
-
-def test_jarvis_unidentified_speaker_gets_guest_access(tmp_path):
-    """Unidentified speakers should still get a response but with guest role."""
-    _install_fake_anthropic()
-    _install_fake_pyttsx3()
-
-    try:
-        from jarvis import JarvisApp
-
-        config = _make_config(tmp_path)
-        app = JarvisApp(config, config_path=tmp_path / "config.yaml")
-
-        app.llm._get_anthropic_client().messages.create = MagicMock(
-            return_value=_FakeResponse([_FakeTextBlock("I don't recognize you, but I can help.")])
-        )
-
-        fake_verification = VerificationResult(
-            verified=False, user=None, confidence=0.3, all_scores={},
-        )
-        app.speaker_verifier.verify = MagicMock(return_value=fake_verification)
-
-        fake_transcription = TranscriptionResult(text="what time is it", language="en", confidence=0.9)
-        app.speech_recognizer.transcribe = MagicMock(return_value=fake_transcription)
-
-        audio = np.random.randn(16000).astype(np.float32)
-        response = app.handle_utterance(audio)
-
-        assert response  # Should still get a response
     finally:
         sys.modules.pop("anthropic", None)
         sys.modules.pop("pyttsx3", None)
@@ -208,23 +149,12 @@ def test_jarvis_conversation_persists_across_calls(tmp_path):
             return_value=_FakeResponse([_FakeTextBlock("Response 1")])
         )
 
-        fake_verification = VerificationResult(
-            verified=True, user="user1", confidence=0.9, all_scores={"user1": 0.9},
-        )
-        app.speaker_verifier.verify = MagicMock(return_value=fake_verification)
-
-        app.user_store.add_user({
-            "user_id": "user1", "name": "Test", "embedding": [0.1] * 192,
-            "role": "owner", "permissions": [], "enrolled_at": "2025-01-01",
-        })
-
         fake_transcription = TranscriptionResult(text="hello", language="en", confidence=0.9)
         app.speech_recognizer.transcribe = MagicMock(return_value=fake_transcription)
 
         audio = np.random.randn(16000).astype(np.float32)
         app.handle_utterance(audio)
 
-        # Second call
         app.llm._get_anthropic_client().messages.create = MagicMock(
             return_value=_FakeResponse([_FakeTextBlock("Response 2")])
         )
@@ -232,7 +162,7 @@ def test_jarvis_conversation_persists_across_calls(tmp_path):
         app.speech_recognizer.transcribe = MagicMock(return_value=fake_transcription2)
         app.handle_utterance(audio)
 
-        history = app.conversation_store.get_history("user1")
+        history = app.conversation_store.get_history("default_user")
         assert len(history) >= 4  # 2 user + 2 assistant messages
     finally:
         sys.modules.pop("anthropic", None)

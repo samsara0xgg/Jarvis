@@ -77,9 +77,9 @@ YAML actions execute through a Jinja2 sandbox with per-skill domain whitelisting
 
 xAI Grok-4.1-fast handles main response generation; Gemini is the streaming fallback when Grok degrades. Intent routing runs on Groq Llama-3.3-70B (~300ms, LRU-256 cache), with Cerebras Llama 3.1-8B as the routing backup. Every external call sits behind a circuit breaker (HEALTHY → DEGRADED → UNAVAILABLE) and falls through deterministically.
 
-### Voiceprint authentication
+### Role-based device permissions
 
-SpeechBrain ECAPA-TDNN backs a four-tier permission model: guest → family → trusted → owner. Memory queries are scoped to the speaker's identity; device control and sensitive skills require trusted-or-above. Different users see different memories and unlock different actions.
+A four-tier permission model (guest → family → trusted → owner) gates smart-home device control: each device declares a `required_role` and the runtime denies actions below that tier. Currently single-user — the active role is hardcoded to `owner` — but the plumbing supports future identification backends.
 
 ## Architecture
 
@@ -87,7 +87,7 @@ SpeechBrain ECAPA-TDNN backs a four-tier permission model: guest → family → 
    Mic ─→ Wake Word ─→ Record (VAD-gated)
                           │
                           ↓
-            [Voiceprint  ║  SenseVoice ASR]    parallel
+                 SenseVoice ASR
                           │
                           ↓
             DirectAnswer  (high-confidence recall, skips LLM)
@@ -124,8 +124,7 @@ Concretely, this enables:
 - **Room-aware control.** "Open the lights" without specifying which room — direction-of-arrival + acoustic fingerprint identify the space.
 - **Zone-based personas.** Different tone, wake-word policy, and TTS volume by location (desk / sofa / bedroom / kitchen).
 - **Distance-adaptive TTS.** Whisper at 0.5m, project at 3m, automatic.
-- **Follow mode.** No-wake-word continuous conversation, gated by direction + voiceprint to suppress false triggers from TV or other people.
-- **Family voiceprint atlas.** Passive presence map (who's home, where, when) for proactive routines and habit learning.
+- **Follow mode.** No-wake-word continuous conversation, gated by direction-of-arrival to suppress false triggers from TV or other speakers.
 - **Cross-room handoff.** With multiple devices, the conversation follows you between rooms.
 
 Full design analysis in [`notes/hardware-xvf3800-fulltest-2026-04-16.md`](notes/hardware-xvf3800-fulltest-2026-04-16.md). Hardware in transit.
@@ -136,7 +135,6 @@ Full design analysis in [`notes/hardware-xvf3800-fulltest-2026-04-16.md`](notes/
 |-------|-------|
 | Wake word | openwakeword (`hey_jarvis_v0.1`) |
 | ASR | SenseVoice-Small INT8 via sherpa-onnx · Whisper fallback |
-| Voiceprint | SpeechBrain ECAPA-TDNN |
 | VAD | Silero VAD (ONNX), `headphones` / `speakers` mode-based thresholds |
 | Intent router | Groq Llama-3.3-70B · Cerebras Llama 3.1-8B (backup) |
 | LLM | xAI Grok-4.1-fast (primary) · Gemini (fallback) · Anthropic Claude (skill generation) |
@@ -185,7 +183,7 @@ yue/
 ├── config.yaml                 # Unified config (no secrets — env vars only)
 ├── core/                       # 25 modules — voice, ASR, LLM, TTS, interrupt, VAD
 ├── memory/                     # 11 modules — observer, stable_prefix, trace, store, retriever, direct_answer
-├── auth/                       # Voiceprint enrollment + 4-tier permission model
+├── auth/                       # Role-based device permission checks
 ├── devices/                    # Smart home backends (Hue / MQTT / sim)
 ├── desktop/                    # Electron Pet Mode + Cmd+Space command panel
 ├── ui/                         # Live2D web server + OLED display

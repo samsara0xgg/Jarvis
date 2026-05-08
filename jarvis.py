@@ -31,12 +31,9 @@ os.environ["ONNXRUNTIME_LOG_SEVERITY_LEVEL"] = "3"  # onnxruntime 在没有 GPU 
 
 from auth.permission_manager import PermissionManager
 from core.tts import SentenceType
-from auth.user_store import UserStore
 from core.audio_recorder import AudioRecorder
 from core.event_bus import EventBus
 from core.llm import LLMClient
-from core.speaker_encoder import SpeakerEncoder
-from core.speaker_verifier import SpeakerVerifier
 from core.speech_recognizer import SpeechRecognizer
 from devices.device_manager import DeviceManager
 from memory.hot.conversation import ConversationStore
@@ -92,15 +89,12 @@ class JarvisApp:
             except Exception as exc:
                 self.logger.warning("Health tracker unavailable: %s", exc)
 
-        # REVIEW [IB2] L114-130 ACTIVE · 音频+身份 stack + LLM/对话/记忆
-        # REVIEW 分析: UserStore/AudioRecorder/SpeakerEncoder/Verifier/SpeechRecognizer/ASRNormalizer/DeviceManager/PermissionManager + LLMClient/ConversationStore/MemoryManager
+        # REVIEW [IB2] L114-130 ACTIVE · 音频 stack + LLM/对话/记忆
+        # REVIEW 分析: AudioRecorder/SpeechRecognizer/ASRNormalizer/DeviceManager/PermissionManager + LLMClient/ConversationStore/MemoryManager
         # REVIEW 建议: 留
         # REVIEW 评估: ___
-        # ── 音频 + 身份认证 ── 录音、ASR、声纹编码/验证、用户库、权限
-        self.user_store = UserStore(config)
+        # ── 音频 ── 录音、ASR、设备权限
         self.audio_recorder = AudioRecorder(config)
-        self.speaker_encoder = SpeakerEncoder(config)
-        self.speaker_verifier = SpeakerVerifier(config, self.speaker_encoder, self.user_store)
         self.speech_recognizer = SpeechRecognizer(config)
         from core.asr_normalizer import ASRNormalizer
         self.asr_normalizer = ASRNormalizer(config)
@@ -621,7 +615,7 @@ class JarvisApp:
             raise
 
     # REVIEW [B18] L608-702 ACTIVE · _handle_utterance_inner (语音入口)
-    # REVIEW 分析: 并行 SpeakerVerifier+SpeechRecognizer→snapshot ASR/VAD/audio metadata→audio capture→resolve user→_voice_output→_process_turn(trigger_source="wake_word")；空 ASR 早返 "" 不写 trace
+    # REVIEW 分析: SpeechRecognizer→snapshot ASR/VAD/audio metadata→audio capture→_voice_output→_process_turn(trigger_source="wake_word")；空 ASR 早返 "" 不写 trace
     # REVIEW 建议: 留
     # REVIEW 评估: ___
     def _handle_utterance_inner(self, audio: np.ndarray) -> str:
@@ -631,12 +625,9 @@ class JarvisApp:
         # ① 通知 UI 进入"聆听"状态
         self.event_bus.emit("jarvis.state_changed", {"state": "listening"})
 
-        # ② 并行：声纹验证 + 语音识别（两个都是 CPU 密集，互不依赖）
+        # ② 语音识别
         self._wait_tts()  # 先确保上一轮 TTS 播完，否则会把自己的声音录进去
-        verify_future = self._executor.submit(self.speaker_verifier.verify, np.copy(audio))
-        asr_future = self._executor.submit(self.speech_recognizer.transcribe, np.copy(audio))
-        verification = verify_future.result()
-        transcription = asr_future.result()
+        transcription = self.speech_recognizer.transcribe(np.copy(audio))
         _t_asr = time.monotonic()
 
         text = transcription.text.strip()
@@ -668,28 +659,17 @@ class JarvisApp:
             self.logger.info("Empty ASR result, staying silent")
             return ""
 
-        print(f"⏱ ASR+声纹: {(_t_asr - _t0)*1000:.0f}ms")
+        print(f"⏱ ASR: {(_t_asr - _t0)*1000:.0f}ms")
 
-        # ③ 解析用户身份：声纹匹配 → user_id → 查角色和显示名
-        user_id = verification.user if verification.verified else None
-        # 没有注册用户时默认当 owner（单用户开发模式）
-        if user_id is None and not self.user_store.get_all_users():
-            user_id = "default_user"
-        user_name = self._resolve_display_name(user_id) or "用户"
-        user_role = self._resolve_role(user_id) if user_id != "default_user" else "owner"
-        confidence = verification.confidence
+        # ③ 单用户模式：永远 owner
+        user_id = "default_user"
+        user_name = "用户"
+        user_role = "owner"
 
-        # ④ 打印识别结果（终端调试用）
-        if user_id:
-            self.logger.info(
-                "Identified: %s (%.2f) said: %s", user_name, confidence, text,
-            )
-            print(f"🎤 {user_name} ({confidence:.2f}): {text}")
-        else:
-            self.logger.info("Unidentified speaker (%.2f) said: %s", confidence, text)
-            print(f"🎤 Guest ({confidence:.2f}): {text}")
+        self.logger.info("User said: %s", text)
+        print(f"🎤 {user_name}: {text}")
 
-        session_id = user_id or "_guest"
+        session_id = user_id
         self._last_user_id = user_id
         self._last_session_id = session_id
 
@@ -703,7 +683,7 @@ class JarvisApp:
             text,
             emotion=detected_emotion,
             session_id=session_id,
-            user_id=user_id or "default_user",
+            user_id=user_id,
             user_name=user_name,
             user_role=user_role,
             output_fn=_voice_output,
@@ -1958,19 +1938,6 @@ class JarvisApp:
         except (OSError, ValueError):
             pass
 
-    # REVIEW [B34] L1950-1957 DEAD · JarvisApp.speak_short
-    # REVIEW 分析: 全 repo 无 JarvisApp 这层 caller；TTSEngine.speak_short 是另一个东西，活着但不依赖此 wrapper
-    # REVIEW 建议: 删整个方法
-    # REVIEW 评估: ___
-    def speak_short(self, text: str) -> None:
-        """Speak a brief acknowledgment (low latency)."""
-        tts = self._get_tts()
-        if tts:
-            try:
-                tts.speak_short(text)
-            except Exception as exc:
-                self.logger.warning("TTS short failed: %s", exc)
-
     # REVIEW [B35] L1959-1969 ACTIVE · _get_tts (TTS 懒加载)
     # REVIEW 分析: 首次调用时构造 TTSEngine；失败返 None (graceful)
     # REVIEW 建议: 留
@@ -2020,30 +1987,8 @@ class JarvisApp:
         except Exception as exc:
             self.logger.warning("Interrupt VAD warmup failed: %s", exc)
 
-    # REVIEW [B38] L1996-2012 ACTIVE · 用户身份 helpers (_resolve_display_name + _resolve_role)
-    # REVIEW 分析: 两个 user_store 查询 wrapper；guest 默认；都很简单
-    # REVIEW 建议: 留
-    # REVIEW 评估: ___
-    def _resolve_display_name(self, user_id: str | None) -> str | None:
-        """Map user_id to display name."""
-        if not user_id:
-            return None
-        record = self.user_store.get_user(user_id)
-        if record:
-            return str(record.get("name", user_id))
-        return user_id
-
-    def _resolve_role(self, user_id: str | None) -> str:
-        """Map user_id to role."""
-        if not user_id:
-            return "guest"
-        record = self.user_store.get_user(user_id)
-        if record:
-            return str(record.get("role", "guest"))
-        return "guest"
-
     # REVIEW [B39] L2014-2028 ACTIVE · _print_banner (启动横幅)
-    # REVIEW 分析: clear screen + print 设备模式/用户数/工具数/LLM model
+    # REVIEW 分析: clear screen + print 设备模式/工具数/LLM model
     # REVIEW 建议: 留
     # REVIEW 评估: ___
     def _print_banner(self) -> None:
@@ -2051,13 +1996,11 @@ class JarvisApp:
         import os as _os
         _os.system("clear" if _os.name != "nt" else "cls")
         mode = self.config.get("devices", {}).get("mode", "sim")
-        user_count = len(self.user_store.get_all_users())
         tool_count = self.tool_registry.count()
         print("=" * 60)
         print("  J.A.R.V.I.S. — Personal AI Voice Assistant")
         print("=" * 60)
         print(f"  Device mode : {mode}")
-        print(f"  Users       : {user_count} registered")
         print(f"  Tools       : {tool_count}")
         print(f"  LLM         : {self.llm.model}")
         print("=" * 60)
