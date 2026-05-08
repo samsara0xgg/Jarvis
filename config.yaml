@@ -527,7 +527,7 @@ interrupt:
 
 # Layer 1：手动 override + require_context 守卫（防误改）
 # 每条都必须带 require_context（一个或多个上下文词），命中时才替换
-# Allen 翻 behavior_log 找设备执行失败的 ASR 原文，把高频误识别加进来
+# Allen 翻 trace_log 找设备执行失败的 ASR 原文（user_text + input_metadata.asr_text_raw + path_taken），把高频误识别加进来
 asr_corrections:
   - pattern: 客厅大蛋
     replace: 客厅大灯

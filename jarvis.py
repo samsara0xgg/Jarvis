@@ -105,17 +105,14 @@ class JarvisApp:
         self.llm = LLMClient(config, tracker=self.health_tracker)
         self.conversation_store = ConversationStore(config)
 
-        # ── 长期记忆 ── SQLite + 向量嵌入
+        # ── 长期记忆 ── SQLite append-only observations + Observer (写) + Assembler (4-block prompt)
         self.memory_manager = MemoryManager(config)
 
-        # REVIEW [IB3] L132-186 ACTIVE · 行为日志 + Trace v3 全套设施
-        # REVIEW 分析: BehaviorLog+TraceLog 共用 SQLite (WAL)；turn_counter/pricing/NLI lazy/app_session_id (per-launch)/prompt_version (sha256 personality.py)/cross-turn placeholders/voice-path captures
+        # REVIEW [IB3] L132-186 ACTIVE · Trace v3 全套设施
+        # REVIEW 分析: TraceLog+MemoryManager 共用 SQLite (WAL，不同表)；turn_counter/pricing/NLI lazy/app_session_id (per-launch)/prompt_version (sha256 personality.py)/cross-turn placeholders/voice-path captures
         # REVIEW 建议: 留
         # REVIEW 评估: ___
-        from memory.cold.behavior_log import BehaviorLog
         mem_db = config.get("memory", {}).get("db_path", "data/memory/jarvis_memory.db")
-        # BehaviorLog 和 MemoryManager 共用同一个 SQLite（不同表），WAL 模式支持并发读写
-        self.behavior_log = BehaviorLog(mem_db)
 
         from memory.trace import TraceLog
         self.trace_log = TraceLog(mem_db)
@@ -1187,28 +1184,6 @@ class JarvisApp:
             updated_messages = history
         # Trace v3: stash final messages for _flush_trace to extract tool_calls.
         self._last_updated_messages = updated_messages
-
-        # REVIEW [IPB11] L1176-1193 ACTIVE · behavior_log
-        # REVIEW 分析: 抽 tool_use blocks 记 skill_call；记 conversation 摘要 + route (local/cloud)
-        # REVIEW 建议: 留 (注：跟 trace_log 字段重叠，未来可考虑合并)
-        # REVIEW 评估: ___
-        # ── 行为日志 ── 记录技能调用、情绪、路由路径，用于后续分析
-        # (Trace v3 log_turn happens in _flush_trace in the outer wrapper.)
-        if user_id:
-            if updated_messages:
-                for msg in updated_messages:
-                    if msg.get("role") == "assistant" and isinstance(msg.get("content"), list):
-                        for block in msg["content"]:
-                            if isinstance(block, dict) and block.get("type") == "tool_use":
-                                self.behavior_log.log(user_id, "skill_call", {
-                                    "skill": block.get("name", ""),
-                                    "input": block.get("input", {}),
-                                })
-            self.behavior_log.log(user_id, "conversation", {
-                "text": text[:100],
-                "emotion": emotion,
-                "route": "local" if response_text and not cloud_path else "cloud",
-            })
 
         # REVIEW [IPB12] L1194-1198 ACTIVE · 非流式输出 fallback
         # REVIEW 分析: regex/farewell 路径 sentence_count==0，到这里一次性 output_fn(response_text)；含 OLED 展示

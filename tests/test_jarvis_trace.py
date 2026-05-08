@@ -148,9 +148,6 @@ def _make_jarvis(tmp_path) -> JarvisApp:
 
     app.llm = _make_llm_stub()
 
-    app.behavior_log = MagicMock()
-    app.behavior_log.log = MagicMock()
-
     app._tts = None
     app.oled = None
     app.interrupt_monitor = MagicMock()

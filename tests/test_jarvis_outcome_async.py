@@ -87,8 +87,6 @@ def _make_jarvis(tmp_path) -> JarvisApp:
     llm.chat_stream = MagicMock(return_value=("回答", []))
     app.llm = llm
 
-    app.behavior_log = MagicMock()
-    app.behavior_log.log = MagicMock()
     app._tts = None
     app.oled = None
     app.interrupt_monitor = MagicMock()
