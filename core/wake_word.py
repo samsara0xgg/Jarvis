@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import numpy as np
 
@@ -20,6 +21,9 @@ class WakeWordDetector:
         wake_config = config.get("wake_word", {})
         self.keyword = str(wake_config.get("keyword", "jarvis")).strip().lower()
         self.threshold = float(wake_config.get("sensitivity", 0.5))
+        self.inference_framework = str(
+            wake_config.get("inference_framework", "onnx")
+        ).strip().lower()
         # 0.0 disables openwakeword's built-in Silero VAD pre-gate. Raise (e.g. 0.3-0.5)
         # only if false wakes from TV/music are observed; on XVF3800 the hardware NS
         # already filters most non-speech, so leave at 0.0 unless measured otherwise.
@@ -30,6 +34,7 @@ class WakeWordDetector:
     def start(self) -> None:
         """Initialize the openwakeword engine."""
         import openwakeword
+        from openwakeword.utils import download_models
         from openwakeword.model import Model
 
         model_map = {
@@ -39,23 +44,40 @@ class WakeWordDetector:
         }
         model_name = model_map.get(self.keyword, "hey_jarvis_v0.1")
 
-        # Find full path from installed models
-        model_path = None
-        for path in openwakeword.get_pretrained_model_paths():
-            if model_name in path:
-                model_path = path
-                break
+        def _find_model_path() -> str | None:
+            for path in openwakeword.get_pretrained_model_paths(self.inference_framework):
+                if model_name in path and Path(path).exists():
+                    return path
+            return None
 
+        # Find full path from installed models. Some openwakeword wheels ship
+        # metadata without the actual model assets, so download the requested
+        # official model on first use if the path is missing.
+        model_path = _find_model_path()
         if model_path is None:
-            raise RuntimeError(f"openwakeword model '{model_name}' not found")
+            self.logger.info("Downloading openwakeword model assets for %s", model_name)
+            download_models([model_name])
+            model_path = _find_model_path()
+        if model_path is None:
+            available = [
+                path for path in openwakeword.get_pretrained_model_paths(self.inference_framework)
+                if model_name in path
+            ]
+            raise RuntimeError(
+                f"openwakeword model '{model_name}' not found for "
+                f"{self.inference_framework}; candidates={available}"
+            )
 
-        kwargs: dict = {"wakeword_model_paths": [model_path]}
+        kwargs: dict = {
+            "wakeword_models": [model_path],
+            "inference_framework": self.inference_framework,
+        }
         if self.vad_threshold > 0:
             kwargs["vad_threshold"] = self.vad_threshold
         self._model = Model(**kwargs)
         self.logger.info(
-            "openwakeword detector started (model=%s, threshold=%.2f, vad_threshold=%.2f)",
-            model_name, self.threshold, self.vad_threshold,
+            "openwakeword detector started (model=%s, framework=%s, threshold=%.2f, vad_threshold=%.2f)",
+            model_name, self.inference_framework, self.threshold, self.vad_threshold,
         )
 
     def process_frame(self, pcm_frame: list[int]) -> bool:

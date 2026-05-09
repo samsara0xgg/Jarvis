@@ -790,7 +790,7 @@ class JarvisApp:
             _card_text = self._last_response_text
             if _card_text:
                 if not self._last_card_streamed_emitted:
-                    self.event_bus.emit("response.start", {"path": self._last_path})
+                    self.event_bus.emit("response.start", {"path": self._last_path, "q": text})
                     self.event_bus.emit("response.chunk", {"text": _card_text})
                 self.event_bus.emit(
                     "response.final",
@@ -1092,7 +1092,7 @@ class JarvisApp:
                     print(f"⏱ LLM首句: {_llm_first_ms}ms")
                     self._last_timings["llm_first_ms"] = _llm_first_ms
                     # Inherent card: open stream on first sentence
-                    self.event_bus.emit("response.start", {"path": self._last_path})
+                    self.event_bus.emit("response.start", {"path": self._last_path, "q": text})
                     self._last_card_streamed_emitted = True
                 # Inherent card: stream this sentence as a chunk (frontend drip
                 # smooths sentence-burst cadence into per-char reveal)

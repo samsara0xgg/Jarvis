@@ -8,10 +8,12 @@
 //   fadeOut(ms)      lerp window opacity 1→0 then hide
 //   cancelFade()     ask main to abort an in-flight fade and restore opacity
 //   submit(text)     POST typed text to backend (Wave 1 input edge)
+//   submitVoice(wav) POST recorded WAV bytes to backend voice submit edge
 //   onSiriOpen(cb)   subscribe to main → renderer 'siri:open' events
 //   onSiriAppend(cb) subscribe to streaming token append (path 3)
 //   onSiriDone(cb)   subscribe to streaming-finished signal
 //   onSiriReset(cb)  subscribe to "clear card" signal
+//   onVoiceState(cb) subscribe to wake/listening/transcribing voice states
 //   onOpenInput(cb)  subscribe to "hotkey hit, enter input mode" signal
 
 const { contextBridge, ipcRenderer } = require('electron');
@@ -25,11 +27,13 @@ contextBridge.exposeInMainWorld('cardAPI', {
   fadeOut: (ms) => ipcRenderer.invoke('card:fadeOut', ms),
   cancelFade: () => ipcRenderer.invoke('card:cancelFade'),
   submit: (text) => ipcRenderer.invoke('card:submit', text),
+  submitVoice: (wavArrayBuffer) => ipcRenderer.invoke('card:submitVoice', wavArrayBuffer),
 
   // Incoming (main → renderer)
   onSiriOpen: (cb) => ipcRenderer.on('siri:open', (_, payload) => cb(payload)),
   onSiriAppend: (cb) => ipcRenderer.on('siri:append', (_, payload) => cb(payload)),
   onSiriDone: (cb) => ipcRenderer.on('siri:done', (_, payload) => cb(payload)),
   onSiriReset: (cb) => ipcRenderer.on('siri:reset', () => cb()),
+  onVoiceState: (cb) => ipcRenderer.on('card:voice', (_, payload) => cb(payload)),
   onOpenInput: (cb) => ipcRenderer.on('card:openInput', () => cb())
 });

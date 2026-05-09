@@ -473,6 +473,144 @@ let followupSnapshot = null
 let followupDraftActive = false
 const FOLLOWUP_ENTER_MS = 240
 const FOLLOWUP_RESTORE_MS = 340
+const VOICE_HOLD_MS = 220
+const VOICE_FOLLOWUP_START_DELAY_MS = FOLLOWUP_ENTER_MS + 80
+const VOICE_MIN_WAV_BYTES = 48
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+class InherentVoiceCapture {
+  constructor() {
+    this.context = null
+    this.workletReady = false
+    this.stream = null
+    this.source = null
+    this.node = null
+    this.sink = null
+    this.chunks = []
+    this.sampleRate = 16000
+    this.recording = false
+  }
+
+  async start() {
+    if (this.recording) return
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext
+    if (!AudioContextCtor) throw new Error('AudioContext unavailable')
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('getUserMedia unavailable')
+
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
+    })
+    if (!this.context) this.context = new AudioContextCtor()
+    if (this.context.state === 'suspended') await this.context.resume()
+    if (!this.workletReady) {
+      const workletCode = `
+        class VoiceCaptureProcessor extends AudioWorkletProcessor {
+          process(inputs) {
+            const input = inputs[0]
+            const channel = input && input[0]
+            if (!channel) return true
+            const samples = new Int16Array(channel.length)
+            for (let i = 0; i < channel.length; i += 1) {
+              const s = Math.max(-1, Math.min(1, channel[i]))
+              samples[i] = s < 0 ? s * 0x8000 : s * 0x7fff
+            }
+            this.port.postMessage(samples, [samples.buffer])
+            return true
+          }
+        }
+        registerProcessor('voice-capture-processor', VoiceCaptureProcessor)
+      `
+      const workletUrl = URL.createObjectURL(new Blob([workletCode], { type: 'application/javascript' }))
+      try {
+        await this.context.audioWorklet.addModule(workletUrl)
+        this.workletReady = true
+      } finally {
+        URL.revokeObjectURL(workletUrl)
+      }
+    }
+
+    this.chunks = []
+    this.sampleRate = this.context.sampleRate || 16000
+    this.source = this.context.createMediaStreamSource(this.stream)
+    this.node = new AudioWorkletNode(this.context, 'voice-capture-processor')
+    this.node.port.onmessage = (event) => {
+      const chunk = event.data instanceof Int16Array
+        ? event.data
+        : new Int16Array(event.data?.buffer || event.data)
+      if (chunk.length) this.chunks.push(chunk)
+    }
+    this.sink = this.context.createGain()
+    this.sink.gain.value = 0
+    this.source.connect(this.node)
+    this.node.connect(this.sink)
+    this.sink.connect(this.context.destination)
+    this.recording = true
+  }
+
+  async stop() {
+    if (!this.recording && !this.stream) return null
+    this.recording = false
+    try { this.source?.disconnect?.() } catch (err) {}
+    try { this.node?.disconnect?.() } catch (err) {}
+    try { this.sink?.disconnect?.() } catch (err) {}
+    if (this.node) this.node.port.onmessage = null
+    this.stream?.getTracks?.().forEach(track => track.stop())
+    const blob = this.buildWav()
+    this.stream = null
+    this.source = null
+    this.node = null
+    this.sink = null
+    this.chunks = []
+    return blob
+  }
+
+  buildWav() {
+    const totalSamples = this.chunks.reduce((sum, chunk) => sum + chunk.length, 0)
+    const buffer = new ArrayBuffer(44 + totalSamples * 2)
+    const view = new DataView(buffer)
+    const writeString = (offset, value) => {
+      for (let i = 0; i < value.length; i += 1) {
+        view.setUint8(offset + i, value.charCodeAt(i))
+      }
+    }
+    const sampleRate = Math.max(1, Math.round(this.sampleRate || 16000))
+    writeString(0, 'RIFF')
+    view.setUint32(4, 36 + totalSamples * 2, true)
+    writeString(8, 'WAVE')
+    writeString(12, 'fmt ')
+    view.setUint32(16, 16, true)
+    view.setUint16(20, 1, true)
+    view.setUint16(22, 1, true)
+    view.setUint32(24, sampleRate, true)
+    view.setUint32(28, sampleRate * 2, true)
+    view.setUint16(32, 2, true)
+    view.setUint16(34, 16, true)
+    writeString(36, 'data')
+    view.setUint32(40, totalSamples * 2, true)
+    let offset = 44
+    for (const chunk of this.chunks) {
+      for (let i = 0; i < chunk.length; i += 1) {
+        view.setInt16(offset, chunk[i], true)
+        offset += 2
+      }
+    }
+    return new Blob([buffer], { type: 'audio/wav' })
+  }
+}
+
+let enterHoldState = null
+let voiceCapture = null
+let voiceListening = false
+let voiceStartGen = 0
+let voiceInputSnapshot = null
 
 function keyboardEventIsComposing(e) {
   // IME commit emits keydown with keyCode=229 on WebKit even after
@@ -662,31 +800,346 @@ function submitInputText() {
   })
 }
 
+function getVoiceCapture() {
+  if (!voiceCapture) voiceCapture = new InherentVoiceCapture()
+  return voiceCapture
+}
+
+function canStartVoiceHold() {
+  if (voiceListening) return false
+  if (turnPhase === 'submitting' || turnPhase === 'streaming') return false
+  if (turnPhase === 'listening' || turnPhase === 'transcribing') return false
+  if (card.classList.contains('thinking-fluent') || card.classList.contains('thinking-deep')) return false
+  return true
+}
+
+function restoreVoiceDraftForRetry() {
+  const snapshot = voiceInputSnapshot
+  cardInput.value = snapshot?.value || ''
+  cardInput.placeholder = snapshot?.placeholder || (followupDraftActive ? '继续问…' : '问点什么…')
+  voiceInputSnapshot = null
+}
+
+function returnToVoiceRetryState(label, variant) {
+  thinkOff()
+  card.classList.remove('listening')
+  restoreVoiceDraftForRetry()
+  cardInput.disabled = false
+  setState(label, variant)
+  inputActive = true
+  turnPhase = 'input'
+  flushHeight()
+  requestAnimationFrame(() => cardInput.focus())
+}
+
+async function beginEnterVoiceCapture() {
+  if (!canStartVoiceHold()) return false
+  const gen = ++voiceStartGen
+  try {
+    cancelFade()
+    window.cardAPI?.cancelFade?.()
+    hidePopoverNow()
+
+    if (canEnterFollowupInput()) {
+      enterInputMode({ followup: true })
+      await delay(VOICE_FOLLOWUP_START_DELAY_MS)
+    } else if (cardInput.disabled) {
+      enterInputMode()
+      await delay(80)
+    }
+    if (gen !== voiceStartGen) return false
+
+    voiceInputSnapshot = {
+      value: cardInput.value,
+      placeholder: cardInput.placeholder
+    }
+    voiceListening = true
+    cardInput.value = ''
+    cardInput.placeholder = '正在听…'
+    cardInput.disabled = true
+    card.classList.remove('warn', 'error')
+    card.classList.add('listening')
+    setState('listening')
+    turnPhase = 'listening'
+    flushHeight()
+
+    await getVoiceCapture().start()
+    if (gen !== voiceStartGen) {
+      await getVoiceCapture().stop()
+      return false
+    }
+    return true
+  } catch (err) {
+    voiceListening = false
+    card.classList.remove('listening')
+    restoreVoiceDraftForRetry()
+    cardInput.disabled = false
+    thinkOff()
+    const label = err?.name === 'NotAllowedError' ? 'mic denied' : 'mic error'
+    setState(label, 'error')
+    turnPhase = 'input'
+    flushHeight()
+    requestAnimationFrame(() => cardInput.focus())
+    console.warn('[card] voice capture failed:', err?.message)
+    return false
+  }
+}
+
+async function finishEnterVoiceCapture() {
+  if (!voiceListening) return
+  voiceListening = false
+  voiceStartGen += 1
+  card.classList.remove('listening')
+
+  let wavBlob = null
+  try {
+    wavBlob = await getVoiceCapture().stop()
+  } catch (err) {
+    returnToVoiceRetryState('mic error', 'error')
+    console.warn('[card] voice stop failed:', err?.message)
+    return
+  }
+
+  if (!wavBlob || wavBlob.size <= VOICE_MIN_WAV_BYTES) {
+    returnToVoiceRetryState('no speech', 'warn')
+    return
+  }
+
+  cardInput.value = ''
+  cardInput.placeholder = '识别中…'
+  cardInput.disabled = true
+  setState('transcribing', 'neutral')
+  turnPhase = 'transcribing'
+  flushHeight()
+
+  try {
+    const result = await window.cardAPI?.submitVoice?.(await wavBlob.arrayBuffer())
+    if (!result || result.ok === false) {
+      const reason = result?.reason || 'unknown'
+      const label = reason === 'network' ? 'offline' : `error · ${reason}`
+      returnToVoiceRetryState(label, 'error')
+      return
+    }
+
+    const text = String(result.text || '').trim()
+    if (result.status === 'empty' || !text) {
+      returnToVoiceRetryState('no speech', 'warn')
+      return
+    }
+
+    voiceInputSnapshot = null
+    clearFollowupDraft()
+    inFlightQ = text
+    cardInput.value = text
+    cardInput.placeholder = '问点什么…'
+    cardInput.disabled = true
+    card.classList.remove('followup-entering', 'followup-input', 'followup-restoring', 'warn', 'error')
+    card.classList.add('submitted')
+    inputActive = true
+    streamingStarted = false
+    setState('thinking', 'thinking')
+    thinkFluent()
+    turnPhase = 'submitting'
+    flushHeight()
+  } catch (err) {
+    returnToVoiceRetryState('error', 'error')
+    console.warn('[card] voice submit failed:', err?.message)
+  }
+}
+
+function beginExternalVoiceCapture() {
+  inputTransitionGen += 1
+  voiceStartGen += 1
+  voiceInputSnapshot = null
+  clearFollowupDraft()
+  cancelFade()
+  window.cardAPI?.cancelFade?.()
+  clearDrip()
+  hidePopoverNow()
+  target = ''
+  shown = ''
+  prevVisibleText = ''
+  charBirthTimes = []
+  cardInput.value = ''
+  cardInput.placeholder = '正在听…'
+  cardInput.disabled = true
+  card.classList.remove('submitted', 'warn', 'error', 'followup-entering', 'followup-input', 'followup-restoring')
+  card.classList.add('listening')
+  thinkOff()
+  setState('listening')
+  inputActive = false
+  streamingStarted = false
+  turnPhase = 'listening'
+  clearAnswerContent()
+  flushHeight()
+  flushHeightFor(540)
+}
+
+function setExternalVoiceTranscribing() {
+  card.classList.remove('listening', 'warn', 'error')
+  cardInput.value = ''
+  cardInput.placeholder = '识别中…'
+  cardInput.disabled = true
+  thinkOff()
+  setState('transcribing', 'neutral')
+  turnPhase = 'transcribing'
+  flushHeight()
+}
+
+function acceptExternalVoiceText(text) {
+  const trimmed = String(text || '').trim()
+  if (!trimmed) {
+    failExternalVoiceState('no speech', 'warn')
+    return
+  }
+  inputTransitionGen += 1
+  clearFollowupDraft()
+  clearDrip()
+  target = ''
+  shown = ''
+  prevVisibleText = ''
+  charBirthTimes = []
+  inFlightQ = trimmed
+  cardInput.value = trimmed
+  cardInput.placeholder = '问点什么…'
+  cardInput.disabled = true
+  card.classList.remove('listening', 'followup-entering', 'followup-input', 'followup-restoring', 'warn', 'error')
+  card.classList.add('submitted')
+  inputActive = true
+  streamingStarted = false
+  setState('thinking', 'thinking')
+  thinkFluent()
+  turnPhase = 'submitting'
+  clearAnswerContent()
+  flushHeight()
+  flushHeightFor(700)
+}
+
+function failExternalVoiceState(label, variant = 'warn') {
+  card.classList.remove('listening')
+  cardInput.value = ''
+  cardInput.placeholder = '问点什么…'
+  cardInput.disabled = true
+  thinkOff()
+  setState(label, variant)
+  inputActive = false
+  streamingStarted = false
+  turnPhase = variant === 'error' ? 'error' : 'idle'
+  flushHeight()
+  scheduleFade(1800)
+}
+
+function handleExternalVoiceState(payload = {}) {
+  const phase = payload?.phase
+  if (phase === 'listening') {
+    beginExternalVoiceCapture()
+  } else if (phase === 'transcribing') {
+    setExternalVoiceTranscribing()
+  } else if (phase === 'accepted') {
+    acceptExternalVoiceText(payload?.text)
+  } else if (phase === 'empty') {
+    failExternalVoiceState('no speech', 'warn')
+  } else if (phase === 'error') {
+    failExternalVoiceState('error', 'error')
+  }
+}
+
+function cancelEnterHoldTimer() {
+  if (!enterHoldState) return false
+  clearTimeout(enterHoldState.timer)
+  enterHoldState = null
+  return true
+}
+
+function cancelActiveVoiceCapture() {
+  voiceStartGen += 1
+  if (!voiceListening) return
+  voiceListening = false
+  card.classList.remove('listening')
+  getVoiceCapture().stop().catch(err => {
+    console.warn('[card] voice cancel failed:', err?.message)
+  })
+}
+
+function scheduleEnterHold(e, shortAction = null) {
+  if (e.repeat && enterHoldState) {
+    e.preventDefault()
+    return
+  }
+  if (enterHoldState) return
+  e.preventDefault()
+  const state = {
+    holdFired: false,
+    shortAction,
+    startedAt: performance.now(),
+    timer: null,
+    startPromise: null
+  }
+  state.timer = setTimeout(() => {
+    state.holdFired = true
+    state.startPromise = beginEnterVoiceCapture()
+  }, VOICE_HOLD_MS)
+  enterHoldState = state
+}
+
+function handleEnterKeyUp(e) {
+  if (e.key !== 'Enter' || !enterHoldState) return
+  e.preventDefault()
+  const state = enterHoldState
+  enterHoldState = null
+  clearTimeout(state.timer)
+  const heldMs = performance.now() - state.startedAt
+  if (!state.holdFired && heldMs >= VOICE_HOLD_MS) {
+    state.holdFired = true
+    state.startPromise = beginEnterVoiceCapture()
+  }
+  if (!state.holdFired) {
+    state.shortAction?.()
+    return
+  }
+  Promise.resolve(state.startPromise).then((started) => {
+    if (started) return finishEnterVoiceCapture()
+    return null
+  }).catch(err => {
+    returnToVoiceRetryState('error', 'error')
+    console.warn('[card] enter voice lifecycle failed:', err?.message)
+  })
+}
+
 cardInput.addEventListener('keydown', (e) => {
   if (keyboardEventIsComposing(e)) return
   if (e.key === 'Enter') {
-    e.preventDefault()
-    submitInputText()
+    scheduleEnterHold(e, submitInputText)
   } else if (e.key === 'Escape') {
     e.preventDefault()
+    cancelEnterHoldTimer()
+    cancelActiveVoiceCapture()
     window.cardAPI?.close?.()
   }
 })
 
 document.addEventListener('keydown', (e) => {
   if (keyboardEventIsComposing(e) || isEditableTarget(e.target)) return
-  if (e.key === 'Enter' && canEnterFollowupInput()) {
-    e.preventDefault()
-    enterInputMode({ followup: true })
+  if (e.key === 'Enter') {
+    const shortAction = canEnterFollowupInput()
+      ? () => enterInputMode({ followup: true })
+      : null
+    scheduleEnterHold(e, shortAction)
   } else if (e.key === 'Escape') {
     e.preventDefault()
+    cancelEnterHoldTimer()
+    cancelActiveVoiceCapture()
     window.cardAPI?.close?.()
   }
 })
+document.addEventListener('keyup', handleEnterKeyUp, true)
 
 // ─── IPC: main → renderer ──────────────────────────────────
 // In production (inherent mode), main process pushes content via these channels.
 // scratch preview shell may or may not expose these — guard with optional chaining.
+if (window.cardAPI?.onVoiceState) {
+  window.cardAPI.onVoiceState(handleExternalVoiceState)
+}
 if (window.cardAPI?.onSiriOpen) {
   window.cardAPI.onSiriOpen(async (payload) => {
     inputTransitionGen += 1
@@ -702,8 +1155,10 @@ if (window.cardAPI?.onSiriOpen) {
     // do it now — siri:open from voice / cli paths still needs the answer
     // pane to expand. Local-submit path (inputActive=true) already added
     // .submitted; we just leave it.
+    const q = String(payload?.q || '').trim()
+    if (q && !inFlightQ) inFlightQ = q
     if (!inputActive) {
-      cardInput.value = ''
+      cardInput.value = q
       cardInput.disabled = true
       card.classList.add('submitted')
     }
@@ -754,8 +1209,8 @@ if (window.cardAPI?.onSiriDone) {
     streamingStarted = false
     turnPhase = 'done'
     // Pair the in-flight Q with the final A and append a history chip.
-    // Voice-path Q isn't surfaced here yet (siri:open payload has no
-    // transcript) — those turns get a placeholder until the bridge sends Q.
+    // External voice sets inFlightQ when ASR accepts the transcript; backend
+    // response.start can also include q for non-local submit paths.
     if (target) {
       pushTurn(inFlightQ || '语音', target)
     }

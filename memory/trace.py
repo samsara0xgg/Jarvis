@@ -81,6 +81,35 @@ class FinishReason(str, Enum):
     CONTENT_FILTER = "content_filter"
 
 
+class Mode(str, Enum):
+    """Operational mode the turn was issued under.
+
+    Orthogonal to ``trigger_source`` (which captures *how* a turn was
+    initiated). ``mode`` captures the user-facing operating context — e.g.
+    cc proxy mode where pet panel input is forwarded to a zellij cc session
+    instead of going through Jarvis's LLM.
+    """
+
+    NORMAL = "normal"
+    CC = "cc"
+
+
+class InputDevice(str, Enum):
+    """Hardware/UI surface the turn originated from.
+
+    Useful as a top-level analytics dimension: 'all turns from rpi5',
+    'pet-panel-only metrics', etc. NULL on legacy rows pre-dating this
+    column. ``input_metadata`` JSON may carry finer details (hostname,
+    OS) when needed.
+    """
+
+    PET_APP = "pet_app"          # Electron Pet panel (mac primary)
+    MAC_CLI = "mac_cli"          # python jarvis.py on mac (CLI)
+    RPI_CLI = "rpi_cli"          # python jarvis.py on RPi5 (CLI)
+    BROWSER = "browser"          # plain browser ui/web (no Electron)
+    UNKNOWN = "unknown"
+
+
 class TraceLog:
     """Per-turn trace store — v3 schema.
 
@@ -137,6 +166,14 @@ class TraceLog:
             conn.execute("ALTER TABLE trace DROP COLUMN memory_query_ids")
             conn.commit()
             LOGGER.info("trace: dropped memory_query_ids column (online migration)")
+        if "mode" not in existing:
+            conn.execute("ALTER TABLE trace ADD COLUMN mode TEXT")
+            conn.commit()
+            LOGGER.info("trace: added mode column (online migration)")
+        if "input_device" not in existing:
+            conn.execute("ALTER TABLE trace ADD COLUMN input_device TEXT")
+            conn.commit()
+            LOGGER.info("trace: added input_device column (online migration)")
 
     def log_turn(
         self,
@@ -178,6 +215,9 @@ class TraceLog:
         finish_reason: str | None = None,
         cost_usd: float | None = None,
         tts_chars_synthesized: int | None = None,
+        # --- Surface / Mode ---
+        mode: str | None = None,
+        input_device: str | None = None,
     ) -> int:
         """Log a single conversation turn. Returns the inserted row ID.
 
@@ -214,6 +254,10 @@ class TraceLog:
             error: Exception message and short traceback on failure.
             finish_reason: LLM generation stop reason. Use FinishReason enum.
             cost_usd: Computed cost from llm_pricing * tokens.
+            mode: Operational mode. Use Mode enum (default 'normal' is
+                applied at call sites, not here, so legacy NULL rows stay
+                queryable).
+            input_device: Surface the turn came from. Use InputDevice enum.
 
         Returns:
             The auto-generated trace row ID (lastrowid).
@@ -229,7 +273,8 @@ class TraceLog:
             "cited_obs_ids, "
             "prompt_version, "
             "latency_ms, ttfs_ms, latency_breakdown, "
-            "end_reason, error, finish_reason, cost_usd, tts_chars_synthesized"
+            "end_reason, error, finish_reason, cost_usd, tts_chars_synthesized, "
+            "mode, input_device"
             ") VALUES ("
             "?, ?, ?, ?, "
             "?, ?, ?, ?, ?, "
@@ -239,7 +284,8 @@ class TraceLog:
             "?, "
             "?, "
             "?, ?, ?, "
-            "?, ?, ?, ?, ?"
+            "?, ?, ?, ?, ?, "
+            "?, ?"
             ")",
             (
                 session_id,
@@ -271,6 +317,8 @@ class TraceLog:
                 finish_reason,
                 cost_usd,
                 tts_chars_synthesized,
+                mode,
+                input_device,
             ),
         )
         conn.commit()

@@ -27,6 +27,7 @@ edge-tts
 pyttsx3
 
 # Wake word
+openwakeword
 pvporcupine
 
 # HTTP requests (weather, etc.)

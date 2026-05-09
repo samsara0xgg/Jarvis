@@ -57,6 +57,9 @@ CREATE TABLE trace (
   outcome_at_turn_id        INTEGER,
   tts_chars_synthesized     INTEGER,
 
+  mode                      TEXT,
+  input_device              TEXT,
+
   CHECK (outcome_signal IS NULL OR outcome_signal IN (-1, 0, 1)),
   CHECK (end_reason IS NULL OR end_reason IN ('success', 'interrupted', 'error', 'timeout', 'cancelled'))
 );

@@ -85,12 +85,13 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
   border-radius: var(--radius-card);
   border: 1.5px solid rgba(94, 200, 255, 0);
   pointer-events: none;
-  transition: border-color 0.4s ease;
+  transition: border-color 0.4s ease, box-shadow 0.4s ease, opacity 0.4s ease;
   z-index: 2;
 }
 .card.listening::before {
-  border-color: rgba(94, 200, 255, 0.8);
-  animation: breath 1.5s ease-in-out infinite;
+  opacity: 1;
+  border-color: rgba(94, 200, 255, 0.82);
+  box-shadow: 0 0 10px rgba(94, 200, 255, 0.24);
 }
 .card.warn::before {
   border-color: rgba(255, 184, 77, 0.85);
@@ -99,10 +100,6 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
 .card.error::before {
   border-color: rgba(255, 108, 108, 0.85);
   animation: breath-error 1.6s ease-in-out infinite;
-}
-@keyframes breath {
-  0%, 100% { opacity: 0.42; box-shadow: inset 0 0 0 0 rgba(94, 200, 255, 0); }
-  50%      { opacity: 1;    box-shadow: inset 0 0 22px 0 rgba(94, 200, 255, 0.20); }
 }
 @keyframes breath-warn {
   0%, 100% { opacity: 0.42; box-shadow: inset 0 0 0 0 rgba(255, 184, 77, 0); }

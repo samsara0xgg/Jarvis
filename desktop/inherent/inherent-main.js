@@ -26,8 +26,9 @@
 //     card:fadeOut      ms
 //     card:cancelFade
 //     card:submit       text   → POST /inherent/submit, returns {ok, reason?}
+//     card:submitVoice  wav    → POST /inherent/asr-submit, returns {ok, status, text?}
 
-const { app, BrowserWindow, screen, ipcMain, globalShortcut } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, globalShortcut, session } = require('electron');
 const path = require('path');
 const liquidGlass = require('electron-liquid-glass');
 const WebSocketClient = require('ws');
@@ -76,6 +77,101 @@ let reconnectTimer = null;
 let watchdogTimer = null;
 let bridgeShuttingDown = false;
 
+// ─── Diagnostic state tracking ───────────────────────────────
+// Electron has no getter for ignoreMouseEvents; track it ourselves so logs
+// reflect the current state. Updated whenever we call setIgnoreMouseEvents.
+let ignoreMouseEventsState = false;
+function setIgnoreMouseEventsTracked(value) {
+  if (!card || card.isDestroyed()) return;
+  card.setIgnoreMouseEvents(value);
+  ignoreMouseEventsState = value;
+}
+
+// ─── Sticky display anti-teleport ────────────────────────────
+// macOS auto-relocates panel-type windows back to the primary display after
+// focus / show events (likely tied to setVisibleOnAllWorkspaces + focus-
+// stealing show()). Trace evidence: explicit setBounds to display 1
+// succeeded, then ~100ms later an os:move event teleported the panel to
+// display 2 with no setBounds call from us. To counter: stamp a sticky
+// display id on every explicit reposition, and in the os:move handler,
+// if the panel is found on a non-sticky display within the sticky window,
+// move it back. lastSetBounds disambiguates our own moves from OS moves
+// to avoid an infinite ping-pong.
+let stickyDisplayId = null;
+let stickyExpiresAt = 0;
+let lastSetBounds = null;
+const STICKY_DURATION_MS = 3000;
+
+function applyBounds(target) {
+  if (!card || card.isDestroyed()) return;
+  lastSetBounds = { ...target };
+  card.setBounds(target);
+}
+
+function setStickyDisplay(displayId) {
+  stickyDisplayId = displayId;
+  stickyExpiresAt = Date.now() + STICKY_DURATION_MS;
+}
+
+function isOurMove(currentBounds) {
+  if (!lastSetBounds) return false;
+  return (
+    currentBounds.x === lastSetBounds.x &&
+    currentBounds.y === lastSetBounds.y &&
+    currentBounds.width === lastSetBounds.width &&
+    currentBounds.height === lastSetBounds.height
+  );
+}
+
+function maybeAntiTeleport() {
+  if (!card || card.isDestroyed()) return;
+  if (Date.now() > stickyExpiresAt) return;
+  if (!stickyDisplayId) return;
+  const bounds = card.getBounds();
+  if (isOurMove(bounds)) return;
+  const cardCenter = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+  const currentDisplay = screen.getDisplayNearestPoint(cardCenter);
+  if (currentDisplay.id === stickyDisplayId) return;
+  // OS teleported the panel off the sticky display. Bring it back.
+  const target = screen.getAllDisplays().find(d => d.id === stickyDisplayId);
+  if (!target) return;
+  const { workArea } = target;
+  const fixed = {
+    x: workArea.x + workArea.width - bounds.width - CARD_MARGIN,
+    y: workArea.y + CARD_MARGIN - 38,
+    width: bounds.width,
+    height: bounds.height,
+  };
+  console.log(`[fix] anti-teleport: os moved card to display ${currentDisplay.id}, restoring to sticky ${stickyDisplayId}`);
+  applyBounds(fixed);
+}
+
+function snapshotState() {
+  if (!card || card.isDestroyed()) return { card: 'none' };
+  const cursor = screen.getCursorScreenPoint();
+  const cursorDisplay = screen.getDisplayNearestPoint(cursor);
+  const bounds = card.getBounds();
+  const cardCenter = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+  const cardDisplay = screen.getDisplayNearestPoint(cardCenter);
+  return {
+    bounds,
+    opacity: card.getOpacity(),
+    isVisible: card.isVisible(),
+    isFocused: card.isFocused(),
+    ignoreMouseEvents: ignoreMouseEventsState,
+    cursor,
+    cursorDisplay: cursorDisplay.id,
+    cardDisplay: cardDisplay.id,
+    sameDisplay: cursorDisplay.id === cardDisplay.id,
+    userHidden,
+    turnState,
+  };
+}
+
+function logState(event, extra = {}) {
+  console.log(`[state] ${event}`, JSON.stringify({ ...snapshotState(), ...extra }));
+}
+
 function createCardWindow() {
   const display = screen.getPrimaryDisplay();
   const { workArea } = display;
@@ -104,7 +200,13 @@ function createCardWindow() {
     // Response-only siri:* paths still call setCardVisible (showInactive),
     // which avoids stealing focus from whatever app the user was using.
     focusable: true,
-    type: 'panel',
+    // type: 'panel' was removed because macOS NSPanel has built-in
+    // auto-positioning logic (follows cursor display or sticks to menubar
+    // display depending on collectionBehavior) that fights any explicit
+    // setBounds. Plain BrowserWindow → NSWindow has no such auto-positioning.
+    // Trade-off: showInactive() may behave slightly differently re: focus,
+    // but focusable:true + frame:false + alwaysOnTop:floating still gives us
+    // a Siri-style summon panel.
     show: false,  // first card:show IPC reveals it
     backgroundColor: '#00000000',
     webPreferences: {
@@ -115,8 +217,20 @@ function createCardWindow() {
     }
   });
 
-  card.setAlwaysOnTop(true, 'screen-saver');
+  // 'floating' (= NSFloatingWindowLevel) is enough to keep the card above app
+  // windows. Earlier we used 'screen-saver' (= CGShieldingWindowLevel) but on
+  // multi-display setups that level + type:'panel' caused the OS to shunt all
+  // hit-testing on the card's display to the panel — making the rest of that
+  // display unclickable when focus moved to a different display.
+  card.setAlwaysOnTop(true, 'floating');
+  // visibleOnAllWorkspaces is needed so the card surfaces on whichever macOS
+  // Space the user is on (full-screen apps included). When type: 'panel' was
+  // set, this combination triggered OS auto-relocation toward the menubar
+  // display; on a plain NSWindow the auto-positioning logic doesn't apply.
   card.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // setMovable(false) was tried here to stop OS auto-positioning during
+  // streaming. It "worked" but introduced a hard regression: the entire host
+  // display (the Mac internal screen) became unclickable. Removed.
 
   const cardPath = path.join(__dirname, 'card.html');
   const urlParams = new URLSearchParams();
@@ -126,6 +240,15 @@ function createCardWindow() {
   const url = qs ? `file://${cardPath}?${qs}` : `file://${cardPath}`;
   card.loadURL(url);
 
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    const isCard = card && !card.isDestroyed() && webContents.id === card.webContents.id;
+    if (isCard && (permission === 'media' || permission === 'microphone')) {
+      callback(true);
+      return;
+    }
+    callback(false);
+  });
+
   // NSGlassEffectView (electron-liquid-glass) is intentionally NOT applied:
   // its geometry caching during rapid window resizes (drip streaming) leaves
   // misaligned rounded corners that show as stray "ear" shapes on the sides
@@ -134,45 +257,93 @@ function createCardWindow() {
   // caching gap.
 
   card.on('closed', () => { card = null; glassId = null; });
+
+  // OS-level lifecycle: log anything that could move/show/hide the window
+  // outside our explicit code paths (NSPanel restore, Mission Control, etc.)
+  card.on('move',  () => { logState('os:move'); maybeAntiTeleport(); });
+  card.on('focus', () => logState('os:focus'));
+  card.on('blur',  () => logState('os:blur'));
+  card.on('show',  () => logState('os:show'));
+  card.on('hide',  () => logState('os:hide'));
+
+  // Dump the full display layout once at startup so multi-monitor bug reports
+  // include enough context to correlate with bounds traces below.
+  const displays = screen.getAllDisplays().map(d => ({
+    id: d.id,
+    primary: d.id === screen.getPrimaryDisplay().id,
+    bounds: d.bounds,
+    workArea: d.workArea,
+    scaleFactor: d.scaleFactor,
+  }));
+  console.log('[state] displays', JSON.stringify(displays));
+  logState('createCardWindow:done');
 }
 
 // ─── Visibility helpers ──────────────────────────────────────
-// We *never* call card.hide() — on a transparent panel + NSGlassEffectView,
-// hide() leaves the window in a state where showInactive() does not reliably
-// re-reveal it (multi-turn and gen-race both showed B never appearing).
-// Instead, "hidden" means alphaValue=0 + ignoreMouseEvents=true, so the
-// window is invisible and click-through, yet a single setOpacity(1) fully
-// restores it without any orderOut/orderFront cycle.
+// "Hidden" means alphaValue=0 + ignoreMouseEvents=true. We never call
+// card.hide() / card.show(): orderOut+orderFront re-anchors the NSPanel to
+// its "home" macOS Space, and the next show() drags the user back to that
+// Space. So the window is always orderFront'd, just transparent and
+// click-through when hidden.
+// Move the card to the top-right of whichever display the cursor is on.
+// Called before show on user-driven entry points (Cmd+Space input mode + new
+// backend turn) so the card follows the user across monitors instead of being
+// stuck on the primary display where it was first created.
+function repositionCardToCursorDisplay() {
+  if (!card || card.isDestroyed()) return;
+  const cursor = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(cursor);
+  const { workArea } = display;
+  const bounds = card.getBounds();
+  const target = {
+    x: workArea.x + workArea.width - bounds.width - CARD_MARGIN,
+    y: workArea.y + CARD_MARGIN - 38,
+    width: bounds.width,
+    height: bounds.height,
+  };
+  setStickyDisplay(display.id);
+  logState('reposition:before', { targetDisplayId: display.id, target });
+  applyBounds(target);
+  logState('reposition:after');
+}
+
 function setCardHidden() {
   if (!card || card.isDestroyed()) return;
+  logState('setCardHidden:enter');
   // Width might have widened for the popover; collapse it back so a stale
   // 678px-wide hidden window doesn't trap clicks across the empty left half
   // when ignoreMouseEvents flips back to false on the next show.
   const bounds = card.getBounds();
   if (bounds.width !== CARD_WIDTH) {
     const rightEdge = bounds.x + bounds.width;
-    card.setBounds({ x: rightEdge - CARD_WIDTH, y: bounds.y, width: CARD_WIDTH, height: bounds.height });
+    applyBounds({ x: rightEdge - CARD_WIDTH, y: bounds.y, width: CARD_WIDTH, height: bounds.height });
   }
   card.setOpacity(0);
-  card.setIgnoreMouseEvents(true);
+  setIgnoreMouseEventsTracked(true);
   userHidden = true;
+  logState('setCardHidden:done');
 }
 
 function setCardVisible() {
   if (!card || card.isDestroyed()) return;
+  logState('setCardVisible:enter');
   // Block implicit shows after a manual hide. Renderer's flushHeight calls
   // cardAPI.show() during streaming and that would otherwise resurrect the
   // card a few ms after ⌘+Space toggled it off. Explicit user paths
   // (openInputMode / siriOpen) clear userHidden first, so this only blocks
   // the implicit case.
-  if (userHidden) return;
+  if (userHidden) {
+    logState('setCardVisible:blocked-userHidden');
+    return;
+  }
   card.setOpacity(1);
-  card.setIgnoreMouseEvents(false);
+  setIgnoreMouseEventsTracked(false);
   if (!card.isVisible()) {
     card.showInactive();
-    card.setAlwaysOnTop(true, 'screen-saver');
+    card.setAlwaysOnTop(true, 'floating');
     card.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   }
+  logState('setCardVisible:done');
 }
 
 // ─── Renderer → Main IPC ─────────────────────────────────────
@@ -180,7 +351,8 @@ ipcMain.handle('card:resize', (_, height) => {
   if (!card || card.isDestroyed()) return;
   const bounds = card.getBounds();
   const clamped = Math.min(Math.max(60, Math.ceil(height)), 800);
-  card.setBounds({ ...bounds, height: clamped });
+  applyBounds({ ...bounds, height: clamped });
+  logState('ipc:resize', { requested: height, clamped });
 });
 
 // Widen the window leftward to accommodate the history-preview popover.
@@ -192,14 +364,17 @@ ipcMain.handle('card:setWidth', (_, width) => {
   const clamped = Math.min(Math.max(CARD_WIDTH, Math.ceil(width)), 900);
   if (clamped === bounds.width) return;
   const rightEdge = bounds.x + bounds.width;
-  card.setBounds({ x: rightEdge - clamped, y: bounds.y, width: clamped, height: bounds.height });
+  applyBounds({ x: rightEdge - clamped, y: bounds.y, width: clamped, height: bounds.height });
+  logState('ipc:setWidth', { requested: width, clamped });
 });
 
 ipcMain.handle('card:show', () => {
+  logState('ipc:show');
   setCardVisible();
 });
 
 ipcMain.handle('card:close', () => {
+  logState('ipc:close');
   // Hide-only — keep the Electron process alive across turns.
   if (!card || card.isDestroyed()) return;
   fadeGen++;
@@ -209,6 +384,7 @@ ipcMain.handle('card:close', () => {
 
 ipcMain.handle('card:fadeOut', (_, ms) => {
   if (!card || card.isDestroyed()) return;
+  logState('ipc:fadeOut', { ms });
   // Guard: a fadeOut on an already-hidden card flashes the window — the
   // tick loop sets opacity = (steps-1)/steps ≈ 0.94 on its first frame,
   // making a 0 → 0.94 → 0 pop. After auto-fade, mouseleave events still
@@ -267,23 +443,70 @@ ipcMain.handle('card:submit', async (_, text) => {
   }
 });
 
+function normalizeWavBytes(wavBytes) {
+  if (wavBytes instanceof ArrayBuffer) {
+    return new Uint8Array(wavBytes);
+  }
+  if (ArrayBuffer.isView(wavBytes)) {
+    return new Uint8Array(wavBytes.buffer, wavBytes.byteOffset, wavBytes.byteLength);
+  }
+  if (Array.isArray(wavBytes)) {
+    return Uint8Array.from(wavBytes);
+  }
+  return null;
+}
+
+ipcMain.handle('card:submitVoice', async (_, wavBytes) => {
+  const bytes = normalizeWavBytes(wavBytes);
+  if (!bytes || bytes.byteLength <= 44) {
+    return { ok: false, reason: 'empty_audio' };
+  }
+  try {
+    const form = new FormData();
+    form.append('audio', new Blob([bytes], { type: 'audio/wav' }), 'inherent.wav');
+    const res = await fetch('http://127.0.0.1:8006/inherent/asr-submit', {
+      method: 'POST',
+      body: form
+    });
+    let payload = {};
+    try {
+      payload = await res.json();
+    } catch (err) {
+      payload = {};
+    }
+    if (!res.ok) {
+      console.warn(`[inherent] voice submit failed: HTTP ${res.status}`);
+      return { ok: false, reason: `http_${res.status}`, ...payload };
+    }
+    return { ok: true, ...payload };
+  } catch (err) {
+    console.warn(`[inherent] voice submit network error: ${err?.message}`);
+    return { ok: false, reason: 'network' };
+  }
+});
+
 // ─── Input mode (hotkey-driven) ──────────────────────────────
 // Distinct from setCardVisible (response-only): input mode steals focus
 // so the renderer's <input> can take keystrokes. Cancels any in-flight
 // fade and tells the renderer to clear answer + focus the input.
 function openInputMode() {
   if (!card || card.isDestroyed()) return;
+  logState('openInputMode:enter');
   fadeGen++;
   userHidden = false;  // user is invoking; clear the implicit-show block
   card.setOpacity(1);
-  card.setIgnoreMouseEvents(false);
+  setIgnoreMouseEventsTracked(false);
   if (!card.isVisible()) {
     card.show();  // focus-stealing variant — input mode wants keyboard focus
-    card.setAlwaysOnTop(true, 'screen-saver');
+    card.setAlwaysOnTop(true, 'floating');
     card.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   } else {
     card.focus();
   }
+  // Reposition AFTER show: macOS panels restore to the last NSScreen they were
+  // visible on when show() is called, which would undo any pre-show setBounds.
+  repositionCardToCursorDisplay();
+  logState('openInputMode:done');
   card.webContents.send('card:openInput');
   // Clear watchdog: the user is now driving, not the LLM. A fresh
   // turn from siri:open will rearm it.
@@ -291,13 +514,30 @@ function openInputMode() {
   turnState = 'idle';
 }
 
-// ⌘+Space toggle: if the card is up (opacity > 0), hide it; otherwise summon
-// input mode. setCardHidden uses opacity rather than orderOut, so checking
-// opacity is the right "is it currently shown" test (isVisible() stays true
-// after a hide-via-opacity).
+// ⌘+Space toggle. Three branches:
+//   visible + same display as cursor  → hide
+//   visible + different display       → relocate to cursor's display + refocus
+//                                       (equivalent to "close A + open B" in one
+//                                       press; preserves any in-flight answer
+//                                       or typed input)
+//   hidden                            → openInputMode (full summon)
+// setCardHidden uses opacity rather than orderOut, so checking opacity is the
+// right "is it currently shown" test (isVisible() stays true after hide).
 function toggleHotkey() {
   if (!card || card.isDestroyed()) return;
+  logState('toggleHotkey:enter');
   if (card.getOpacity() > 0.5) {
+    const cursor = screen.getCursorScreenPoint();
+    const cursorDisplay = screen.getDisplayNearestPoint(cursor);
+    const bounds = card.getBounds();
+    const cardCenter = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+    const cardDisplay = screen.getDisplayNearestPoint(cardCenter);
+    if (cardDisplay.id !== cursorDisplay.id) {
+      logState('toggleHotkey:relocate', { from: cardDisplay.id, to: cursorDisplay.id });
+      repositionCardToCursorDisplay();
+      card.focus();
+      return;
+    }
     fadeGen++;
     setCardHidden();
     clearBridgeWatchdog();
@@ -310,6 +550,7 @@ function toggleHotkey() {
 // ─── Public dispatchers (callable from a future backend bridge) ───
 function siriOpen(payload) {
   if (!card || card.isDestroyed()) return;
+  logState('siriOpen:enter', { streaming: !!payload?.streaming });
   const content = payload?.content;
   const streaming = !!payload?.streaming;
   if (!streaming && (content == null || content === '')) {
@@ -325,6 +566,9 @@ function siriOpen(payload) {
   fadeGen++;
   userHidden = false;  // backend turn arriving — unblock implicit shows
   setCardVisible();
+  // Reposition AFTER show (see openInputMode comment for rationale).
+  repositionCardToCursorDisplay();
+  logState('siriOpen:done');
   card.webContents.send('siri:open', payload);
   turnState = 'open';
 }
@@ -352,10 +596,18 @@ function siriReset() {
   card.webContents.send('siri:reset');
   turnState = 'idle';
 }
+function voiceState(payload) {
+  if (!card || card.isDestroyed()) return;
+  fadeGen++;
+  userHidden = false;
+  setCardVisible();
+  repositionCardToCursorDisplay();
+  card.webContents.send('card:voice', payload);
+}
 
 // Expose for backend bridge (path 3): jarvis.py will require this module
 // or talk over a WS / unix socket → these functions.
-module.exports = { siriOpen, siriAppend, siriDone, siriReset };
+module.exports = { siriOpen, siriAppend, siriDone, siriReset, voiceState };
 
 // ─── Backend WS bridge ───────────────────────────────────────
 // Connects to ui/web/server.py:/inherent/ws. Server broadcasts response.*
@@ -448,6 +700,9 @@ function dispatchBridgeMessage(msg) {
     case 'reset':
       siriReset();
       clearBridgeWatchdog();
+      break;
+    case 'voice':
+      voiceState(payload);
       break;
     default:
       console.warn(`[bridge] unknown op: ${op}`);

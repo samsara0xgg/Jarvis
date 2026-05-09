@@ -98,6 +98,15 @@ const SLASH_COMMANDS = [
         picker: { placeholder: 'pick a model…', options: MODEL_OPTIONS },
         run: (arg) => ({ kind: 'ipc', action: 'switchModel', arg, feedback: `✓ 模型已切换到 ${arg}` }),
     },
+    {
+        name: 'cc',
+        desc: 'Enter cc proxy mode — Esc or Ctrl+C×2 to exit',
+        run: () => ({
+            kind: 'local',
+            fn: () => window.petOverlay?.enterCCMode?.(),
+            feedback: '→ cc mode (Esc 退出)',
+        }),
+    },
     { name: 'window', desc: 'Switch to window mode', run: () => ({ kind: 'ipc', action: 'toWindow', feedback: '✓ 已切到窗口模式' }) },
     { name: 'pet', desc: 'Switch to pet (floating) mode', run: () => ({ kind: 'ipc', action: 'toPet', feedback: '✓ 已切到悬浮模式' }) },
     { name: 'hide', desc: 'Hide into menu bar', run: () => ({ kind: 'ipc', action: 'hide', feedback: '✓ 已躲进菜单栏' }) },
@@ -187,6 +196,19 @@ class PetOverlay {
         this._slashActiveCmd = null;
         this._slashItems = [];
         this._slashIndex = 0;
+        // CC mode — sticky proxy: every Enter forwards to a zellij cc session
+        // via cc_tell / cc_slash skills, bypassing LLM and TTS.
+        this._ccMode = false;
+        this._ccCtrlCArmed = false;       // first Ctrl+C arms; second within 500ms exits
+        this._ccCtrlCTimer = null;
+        this._hintEl = null;              // ref to hint strip; swapped on cc mode
+        this._ccPrefixEl = null;          // 'cc ▸' label inside input row
+        this._defaultPlaceholder = '问我点什么…';
+        this._ccPlaceholder = '发给 cc…';
+        this._defaultHintHTML = '<span class="pet-overlay__hint-left"><kbd>⌘Space</kbd> close</span>'
+            + '<span class="pet-overlay__hint-right"><kbd>/</kbd> commands · <kbd>↵</kbd> send</span>';
+        this._ccHintHTML = '<span class="pet-overlay__hint-left"><kbd>Esc</kbd> 或 <kbd>Ctrl+C</kbd>×2 退出</span>'
+            + '<span class="pet-overlay__hint-right"><kbd>↵</kbd> send to cc</span>';
     }
 
     // ── lifecycle ─────────────────────────────────────────────────────────────
@@ -412,10 +434,16 @@ class PetOverlay {
             this._handleSubmit();
         });
 
+        // CC mode prefix — '.is-cc-mode' on root unhides it via CSS.
+        const ccPrefix = document.createElement('span');
+        ccPrefix.className = 'pet-overlay__cc-prefix';
+        ccPrefix.textContent = 'cc ▸';
+        inputRow.appendChild(ccPrefix);
+
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'pet-overlay__input';
-        input.placeholder = '问我点什么…';
+        input.placeholder = this._defaultPlaceholder;
         input.setAttribute('autocomplete', 'off');
         input.setAttribute('autocapitalize', 'off');
         input.setAttribute('spellcheck', 'false');
@@ -431,6 +459,38 @@ class PetOverlay {
             if (!composing) this._updateSlashMenu();
         });
         input.addEventListener('keydown', (e) => {
+            // CC mode hotkeys take precedence over everything else: jarvis's
+            // own slash palette is suppressed in cc mode (see _updateSlashMenu)
+            // so we only need Esc + Ctrl+C×2 here.
+            if (this._ccMode && !composing && !e.isComposing) {
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    this.exitCCMode();
+                    return;
+                }
+                if (e.ctrlKey && e.key.toLowerCase() === 'c') {
+                    e.preventDefault();
+                    if (this._ccCtrlCArmed) {
+                        clearTimeout(this._ccCtrlCTimer);
+                        this._ccCtrlCArmed = false;
+                        this._ccCtrlCTimer = null;
+                        this.exitCCMode();
+                        return;
+                    }
+                    // First press — clear input + arm; mirror cc's terminal UX
+                    // (Ctrl+C clears, second within 500ms exits).
+                    this.inputEl.value = '';
+                    this._ccCtrlCArmed = true;
+                    const orig = this.inputEl.placeholder;
+                    this.inputEl.placeholder = '再按一次 Ctrl+C 退出 cc mode';
+                    this._ccCtrlCTimer = setTimeout(() => {
+                        this._ccCtrlCArmed = false;
+                        this._ccCtrlCTimer = null;
+                        if (this._ccMode) this.inputEl.placeholder = orig;
+                    }, 500);
+                    return;
+                }
+            }
             // Slash palette takes precedence over submit when open
             if (this._slashOpen && !composing && !e.isComposing) {
                 if (e.key === 'ArrowDown') {
@@ -484,8 +544,7 @@ class PetOverlay {
 
         const hintStrip = document.createElement('div');
         hintStrip.className = 'pet-overlay__hint';
-        hintStrip.innerHTML = '<span class="pet-overlay__hint-left"><kbd>⌘Space</kbd> close</span>'
-            + '<span class="pet-overlay__hint-right"><kbd>/</kbd> commands · <kbd>↵</kbd> send</span>';
+        hintStrip.innerHTML = this._defaultHintHTML;
 
         root.appendChild(list);
         root.appendChild(slash);
@@ -498,6 +557,8 @@ class PetOverlay {
         this.listEl = list;
         this.inputEl = input;
         this._slashEl = slash;
+        this._hintEl = hintStrip;
+        this._ccPrefixEl = ccPrefix;
     }
 
     _wireEvents() {
@@ -531,6 +592,13 @@ class PetOverlay {
         const text = raw.trim();
         if (!text) return;
         this.inputEl.value = '';
+
+        // CC mode: every submit forwards to a zellij cc session. No LLM,
+        // no TTS, no jarvis-side LOCAL_COMMANDS / SLASH_COMMANDS routing.
+        if (this._ccMode) {
+            this._ccSubmit(text);
+            return;
+        }
 
         // Try local commands first.
         for (const cmd of LOCAL_COMMANDS) {
@@ -580,6 +648,94 @@ class PetOverlay {
         }
     }
 
+    // ── cc mode (sticky proxy to zellij cc session) ──────────────────────────
+
+    enterCCMode() {
+        if (this._ccMode) return;
+        this._ccMode = true;
+        if (this.rootEl) this.rootEl.classList.add('is-cc-mode');
+        if (this.inputEl) {
+            this.inputEl.placeholder = this._ccPlaceholder;
+            this.inputEl.value = '';
+            this.inputEl.focus();
+        }
+        if (this._hintEl) this._hintEl.innerHTML = this._ccHintHTML;
+        this._closeSlashMenu();
+        this.appendMessage({ text: '→ entered cc mode', role: 'system' });
+    }
+
+    exitCCMode() {
+        if (!this._ccMode) return;
+        this._ccMode = false;
+        if (this._ccCtrlCTimer) {
+            clearTimeout(this._ccCtrlCTimer);
+            this._ccCtrlCTimer = null;
+        }
+        this._ccCtrlCArmed = false;
+        if (this.rootEl) this.rootEl.classList.remove('is-cc-mode');
+        if (this.inputEl) {
+            this.inputEl.placeholder = this._defaultPlaceholder;
+            this.inputEl.value = '';
+        }
+        if (this._hintEl) this._hintEl.innerHTML = this._defaultHintHTML;
+        this.appendMessage({ text: '← exited cc mode', role: 'system' });
+    }
+
+    async _ccSubmit(text) {
+        // Echo user input first so the panel records what was sent.
+        this.appendMessage({ text, role: 'user' });
+
+        // Parse: '/cmd [args]' → cc_slash; otherwise → cc_tell.
+        let toolName, toolArgs;
+        if (text.startsWith('/')) {
+            const body = text.slice(1);
+            const sp = body.indexOf(' ');
+            const cmd = sp === -1 ? body : body.slice(0, sp);
+            const args = sp === -1 ? '' : body.slice(sp + 1);
+            if (!cmd) {
+                // bare '/' — treat as plain text rather than an empty slash
+                toolName = 'cc_tell';
+                toolArgs = { text };
+            } else {
+                toolName = 'cc_slash';
+                toolArgs = { command: cmd, args };
+            }
+        } else {
+            toolName = 'cc_tell';
+            toolArgs = { text };
+        }
+
+        try {
+            const api = getApiClient();
+            const url = `${api.serverUrl}/api/tool/execute`;
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: toolName,
+                    args: toolArgs,
+                    // Trace metadata: session_id ties the cc-mode trace row
+                    // to the panel's chat session (server appends ':cc');
+                    // user_text preserves the literal input the user typed
+                    // before slash-parsing, so audit reads exactly as typed.
+                    session_id: api.sessionId || '',
+                    user_text: text,
+                }),
+            });
+            if (!resp.ok) {
+                let detail = '';
+                try { detail = (await resp.json()).detail || ''; } catch { /* ignore */ }
+                if (!detail) {
+                    try { detail = await resp.text(); } catch { detail = `HTTP ${resp.status}`; }
+                }
+                this.appendMessage({ text: `cc ${toolName} failed: ${detail}`, role: 'system' });
+            }
+            // Success: silent — '只发不看'. cc's terminal will echo on its side.
+        } catch (err) {
+            this.appendMessage({ text: `cc ${toolName} failed: ${err.message || err}`, role: 'system' });
+        }
+    }
+
     _pushSystemToChatStream(text) {
         const chatStream = document.getElementById('chatStream');
         if (!chatStream) return;
@@ -597,6 +753,12 @@ class PetOverlay {
 
     _updateSlashMenu() {
         if (!this.inputEl || !this._slashEl) return;
+        // CC mode: jarvis's own palette is fully disabled — '/' typing is
+        // forwarded to cc as part of cc_slash on submit.
+        if (this._ccMode) {
+            this._closeSlashMenu();
+            return;
+        }
         const raw = this.inputEl.value;
         if (!raw.startsWith('/')) {
             this._closeSlashMenu();

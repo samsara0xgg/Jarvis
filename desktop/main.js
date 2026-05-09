@@ -574,43 +574,11 @@ app.whenReady().then(async () => {
 
   ensureTray();
 
-  // ⌘Space — 全能召唤键：
-  //   1. 强制 Pet mode（如果在 Window）
-  //   2. 强制可见（如果被 hide 到菜单栏）
-  //   3. 把 Jarvis app 拉到前台（抢焦点）
-  //   4. 切换命令面板
-  const toggleOk = globalShortcut.register('CommandOrControl+Space', () => {
-    const win = wm.getWindow();
-    if (!win || win.isDestroyed()) return;
-    if (wm.getCurrentMode() !== 'pet') {
-      wm.setWindowMode('pet');
-      if (menuManager) menuManager.setCurrentMode('pet');
-    }
-    if (!win.isVisible()) win.show();
-    if (isMac && typeof app.focus === 'function') {
-      app.focus({ steal: true });
-    }
-    win.webContents.send('toggle-input-panel');
-  });
-  if (!toggleOk) {
-    console.warn('[main] Failed to register CommandOrControl+Space — another app may own it.');
-  }
-
-  // ⌘⇧P global shortcut — toggles between Window and Pet mode from anywhere.
-  // Works even when the Jarvis window isn't focused.
-  const modeToggleOk = globalShortcut.register('CommandOrControl+Shift+P', () => {
-    const next = wm.getCurrentMode() === 'pet' ? 'window' : 'pet';
-    wm.setWindowMode(next);
-    if (menuManager) menuManager.setCurrentMode(next);
-  });
-  if (!modeToggleOk) {
-    console.warn('[main] Failed to register CommandOrControl+Shift+P — another app may own it.');
-  }
-
-  // ⌘⇧→ / ⌘⇧← — 在显示器之间跳（Pet mode only）。macOS 透明窗口不能真跨屏，
-  // 这是"跨屏"的替代方案。
-  globalShortcut.register('CommandOrControl+Shift+Right', () => wm.jumpToDisplay(+1));
-  globalShortcut.register('CommandOrControl+Shift+Left', () => wm.jumpToDisplay(-1));
+  // Pet-mode global shortcuts retired 2026-05-06 — ⌘+Space, ⌘⇧P (window/pet
+  // toggle), and ⌘⇧← / ⌘⇧→ (cross-display jump in pet mode) are no longer
+  // bound here. The desktop has pivoted from pet mode to the inherent card
+  // (desktop/inherent/), which owns ⌘+Space for hotkey input. Pet/Window
+  // mode itself stays operable via the tray menu, just not via global keys.
 
   app.on('activate', () => {
     // macOS: re-open or un-hide on dock click.

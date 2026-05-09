@@ -1881,3 +1881,69 @@ body.pet-mode #live2d-stage {
     background: rgba(255, 107, 157, 0.22);
   }
 }
+
+/* ── CC mode (sticky proxy to zellij cc session) ─────────────────────
+   Visual contract: '/cc' flips the panel into a clearly different state.
+   Prefix label is hidden by default and shown only with .is-cc-mode.
+   Input border + caret intensify to terminal-cyan so the user can never
+   confuse cc mode with normal jarvis chat.                              */
+
+.pet-overlay__cc-prefix {
+  display: none;
+  flex: 0 0 auto;
+  margin: 0 4px 0 8px;
+  padding: 4px 8px;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: #00a4b4;            /* cyan accent — distinct from coral */
+  background: rgba(0, 164, 180, 0.12);
+  border-radius: 6px;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.pet-overlay.is-cc-mode .pet-overlay__cc-prefix {
+  display: inline-flex;
+  align-items: center;
+}
+
+.pet-overlay.is-cc-mode .pet-overlay__input-row {
+  border-color: rgba(0, 164, 180, 0.45);
+  background: rgba(0, 164, 180, 0.06);
+}
+
+.pet-overlay.is-cc-mode .pet-overlay__input-row:focus-within {
+  border-color: rgba(0, 164, 180, 0.7);
+  background: rgba(0, 164, 180, 0.10);
+}
+
+.pet-overlay.is-cc-mode .pet-overlay__input {
+  caret-color: #00a4b4;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+}
+
+.pet-overlay.is-cc-mode .pet-overlay__hint kbd {
+  background: rgba(0, 164, 180, 0.10);
+  border-color: rgba(0, 164, 180, 0.25);
+}
+
+@media (prefers-color-scheme: dark) {
+  .pet-overlay__cc-prefix {
+    color: #5fd5e0;
+    background: rgba(95, 213, 224, 0.14);
+  }
+  .pet-overlay.is-cc-mode .pet-overlay__input-row {
+    border-color: rgba(95, 213, 224, 0.45);
+    background: rgba(95, 213, 224, 0.08);
+  }
+  .pet-overlay.is-cc-mode .pet-overlay__input-row:focus-within {
+    border-color: rgba(95, 213, 224, 0.7);
+    background: rgba(95, 213, 224, 0.14);
+  }
+  .pet-overlay.is-cc-mode .pet-overlay__input { caret-color: #5fd5e0; }
+  .pet-overlay.is-cc-mode .pet-overlay__hint kbd {
+    background: rgba(95, 213, 224, 0.12);
+    border-color: rgba(95, 213, 224, 0.28);
+  }
+}

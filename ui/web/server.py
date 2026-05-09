@@ -55,6 +55,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from core.inherent_wake_listener import InherentWakeListener, inherent_wake_enabled
+
 LOGGER = logging.getLogger(__name__)
 
 # --- Browser TTS streaming state (Task 2) ---
@@ -342,11 +344,15 @@ def create_app(jarvis_app: Any) -> FastAPI:
             LOGGER.info("[inherent-bridge] response.start fired clients=%d loop_set=%s",
                         len(_inherent_clients),
                         getattr(jarvis_app, "_web_loop", None) is not None)
-            _broadcast_inherent("open", {
+            payload = {
                 "content": "",
                 "streaming": True,
                 "kind": "text",
-            })
+            }
+            q = (_payload or {}).get("q")
+            if q:
+                payload["q"] = q
+            _broadcast_inherent("open", payload)
 
         def _on_response_chunk(payload: dict | None = None) -> None:
             text = (payload or {}).get("text")
@@ -364,6 +370,25 @@ def create_app(jarvis_app: Any) -> FastAPI:
         jarvis_app.event_bus.on("response.chunk", _on_response_chunk)
         jarvis_app.event_bus.on("response.final", _on_response_final)
         LOGGER.info("[inherent-bridge] listeners registered for response.start/chunk/final")
+
+        def _emit_inherent_voice(phase: str, payload: dict[str, Any]) -> None:
+            voice_payload = {"phase": phase}
+            voice_payload.update(payload)
+            _broadcast_inherent("voice", voice_payload)
+
+        if inherent_wake_enabled(getattr(jarvis_app, "config", None)):
+            listener = getattr(jarvis_app, "_inherent_wake_listener", None)
+            if not isinstance(listener, InherentWakeListener):
+                listener = InherentWakeListener(jarvis_app, _emit_inherent_voice)
+                setattr(jarvis_app, "_inherent_wake_listener", listener)
+            listener.start()
+            LOGGER.info("[inherent-wake] listener requested from web backend")
+
+    def _shutdown_inherent_wake_listener() -> None:
+        listener = getattr(jarvis_app, "_inherent_wake_listener", None)
+        if isinstance(listener, InherentWakeListener):
+            listener.stop()
+    app.router.add_event_handler("shutdown", _shutdown_inherent_wake_listener)
 
     AUDIO_DIR.mkdir(exist_ok=True)
 
@@ -902,22 +927,29 @@ def create_app(jarvis_app: Any) -> FastAPI:
         LOGGER.info("[outcome] thumbs trace_id=%d signal=%d", trace_id, signal)
         return {"ok": True, "trace_id": trace_id}
 
-    # --- ASR ---
-    @app.post("/api/asr")
-    async def asr(session_id: str = Form(...), audio: UploadFile = File(...)):
-        if session_id not in sessions:
-            raise HTTPException(404, "Session not found")
+    async def _transcribe_audio_upload(audio: UploadFile) -> dict[str, str]:
         import soundfile as sf
         import numpy as np
+
         audio_bytes = await audio.read()
+        if not audio_bytes:
+            return {"text": "", "emotion": ""}
+
         data, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32")
+        if getattr(data, "ndim", 1) > 1:
+            data = data.mean(axis=1).astype(np.float32)
+        if len(data) == 0:
+            return {"text": "", "emotion": ""}
+
         if sr != 16000:
-            LOGGER.info("ASR resampling %dHz → 16000Hz", sr)
-            # Linear interpolation resample
+            LOGGER.info("ASR resampling %dHz to 16000Hz", sr)
             duration = len(data) / sr
             target_len = int(duration * 16000)
+            if target_len <= 0:
+                return {"text": "", "emotion": ""}
             indices = np.linspace(0, len(data) - 1, target_len)
             data = np.interp(indices, np.arange(len(data)), data).astype(np.float32)
+
         result = jarvis_app.speech_recognizer.transcribe(data)
         text = result.text or ""
         lang = getattr(result, "language", "") or ""
@@ -929,6 +961,13 @@ def create_app(jarvis_app: Any) -> FastAPI:
             "text": text,
             "emotion": getattr(result, "emotion", "") or "",
         }
+
+    # --- ASR ---
+    @app.post("/api/asr")
+    async def asr(session_id: str = Form(...), audio: UploadFile = File(...)):
+        if session_id not in sessions:
+            raise HTTPException(404, "Session not found")
+        return await _transcribe_audio_upload(audio)
 
     @app.get("/api/audio/{filename}")
     def get_audio(filename: str):
@@ -1042,6 +1081,29 @@ def create_app(jarvis_app: Any) -> FastAPI:
         )
         LOGGER.info("[inherent] submit text=%r", text[:80])
         return {"status": "accepted"}
+
+    @app.post("/inherent/asr-submit")
+    async def inherent_asr_submit(audio: UploadFile = File(...)):
+        """Voice submit entry for the desktop inherent card.
+
+        The Electron renderer records a push-to-talk WAV clip, main forwards
+        it here, and this endpoint transcribes then submits the recognized
+        text into the same `_inherent` conversation used by typed card input.
+        """
+        result = await _transcribe_audio_upload(audio)
+        text = (result.get("text") or "").strip()
+        emotion = result.get("emotion", "")
+        if not text:
+            LOGGER.info("[inherent] voice submit produced empty transcript")
+            return {"status": "empty", "text": "", "emotion": emotion}
+
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(
+            None,
+            lambda: jarvis_app.handle_text(text, session_id="_inherent"),
+        )
+        LOGGER.info("[inherent] submit voice text=%r", text[:80])
+        return {"status": "accepted", "text": text, "emotion": emotion}
 
     @app.websocket("/inherent/ws")
     async def inherent_ws(ws: WebSocket):
