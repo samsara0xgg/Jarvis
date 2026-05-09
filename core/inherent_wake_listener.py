@@ -159,6 +159,16 @@ class InherentWakeListener:
             if self._stop.is_set():
                 return
 
+            # Drop silent / too-short audio before ASR. Whisper hallucinates
+            # confidently on near-silent input (the "我可以做一些"×N repetition
+            # loop and "请不吝点赞..." prior pollution both fire when given
+            # < 0.02 RMS or < min_duration audio).
+            quality_ok, message = self.jarvis_app.audio_recorder.is_quality_ok(audio)
+            if not quality_ok:
+                LOGGER.info("[inherent-wake] dropped low-quality audio: %s", message)
+                self._emit("empty")
+                return
+
             self._emit("transcribing")
             result = self.jarvis_app.speech_recognizer.transcribe(np.copy(audio))
             text = (getattr(result, "text", "") or "").strip()
