@@ -1054,6 +1054,9 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
   top: 0;
   right: calc(100% + 18px);
   width: 300px;
+  box-sizing: border-box;
+  max-height: min(520px, calc(100vh - 24px));
+  overflow: hidden;
   padding: 18px 22px 20px 22px;
   background: rgba(20, 25, 38, 0.55);
   backdrop-filter: blur(36px) saturate(140%);
@@ -1089,6 +1092,8 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
   margin-bottom: 12px;
   position: relative;
   line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .q2x9-popover .popover-q::after {
   content: "";
@@ -1106,4 +1111,11 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
   font-size: 13px;
   line-height: 1.62;
   letter-spacing: 0;
+  max-height: min(410px, calc(100vh - 112px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
