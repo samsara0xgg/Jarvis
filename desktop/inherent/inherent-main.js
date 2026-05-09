@@ -26,6 +26,7 @@
 //     card:fadeOut      ms
 //     card:cancelFade
 //     card:submit       text   → POST /inherent/submit, returns {ok, reason?}
+//     card:submitImage  payload→ POST /inherent/image-submit, returns {ok, reason?}
 //     card:submitVoice  wav    → POST /inherent/asr-submit, returns {ok, status, text?}
 //     card:duckAudio           → mute system output during microphone capture
 //     card:restoreAudio        → restore system output after microphone capture
@@ -534,6 +535,39 @@ ipcMain.handle('card:submit', async (_, text) => {
     return { ok: true };
   } catch (err) {
     console.warn(`[inherent] submit network error: ${err?.message}`);
+    return { ok: false, reason: 'network' };
+  }
+});
+
+ipcMain.handle('card:submitImage', async (_, payload) => {
+  const text = String(payload?.text || '').trim();
+  const mime = String(payload?.mime || 'image/png').split(';')[0].trim() || 'image/png';
+  const name = String(payload?.name || 'image.png').replace(/[\\/]/g, '_');
+  const bytes = normalizeWavBytes(payload?.buffer);
+  if (!bytes || bytes.byteLength <= 0) {
+    return { ok: false, reason: 'empty_image' };
+  }
+  try {
+    const form = new FormData();
+    form.append('text', text);
+    form.append('image', new Blob([bytes], { type: mime }), name || 'image.png');
+    const res = await fetch('http://127.0.0.1:8006/inherent/image-submit', {
+      method: 'POST',
+      body: form
+    });
+    let body = {};
+    try {
+      body = await res.json();
+    } catch (err) {
+      body = {};
+    }
+    if (!res.ok) {
+      console.warn(`[inherent] image submit failed: HTTP ${res.status}`);
+      return { ok: false, reason: `http_${res.status}`, ...body };
+    }
+    return { ok: true, ...body };
+  } catch (err) {
+    console.warn(`[inherent] image submit network error: ${err?.message}`);
     return { ok: false, reason: 'network' };
   }
 });

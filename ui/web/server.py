@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
+import mimetypes
 import os
 import shutil
 import socket
@@ -58,6 +60,13 @@ from pydantic import BaseModel
 from core.inherent_wake_listener import InherentWakeListener, inherent_wake_enabled
 
 LOGGER = logging.getLogger(__name__)
+_INHERENT_IMAGE_MAX_BYTES = 15 * 1024 * 1024
+_INHERENT_IMAGE_MIME_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+}
 
 # --- Browser TTS streaming state (Task 2) ---
 _ws_routes: dict[str, Any] = {}          # session_id → WebSocket
@@ -1081,6 +1090,56 @@ def create_app(jarvis_app: Any) -> FastAPI:
         )
         LOGGER.info("[inherent] submit text=%r", text[:80])
         return {"status": "accepted"}
+
+    @app.post("/inherent/image-submit")
+    async def inherent_image_submit(
+        text: str = Form(""),
+        image: UploadFile = File(...),
+    ):
+        """Image submit entry for the desktop inherent card.
+
+        The card sends one staged image plus optional text. We turn the image
+        into a data URL for the current OpenAI-compatible LLM request and keep
+        only the text/attachment marker in conversation history.
+        """
+        llm_provider = getattr(getattr(jarvis_app, "llm", None), "provider", None)
+        if isinstance(llm_provider, str) and llm_provider != "openai":
+            raise HTTPException(400, "image input requires provider=openai")
+
+        raw_mime = (image.content_type or "").split(";", 1)[0].strip().lower()
+        guessed_mime = mimetypes.guess_type(image.filename or "")[0] or ""
+        mime = raw_mime or guessed_mime.lower()
+        if mime == "image/jpg":
+            mime = "image/jpeg"
+        if mime not in _INHERENT_IMAGE_MIME_TYPES:
+            raise HTTPException(400, "unsupported image type")
+
+        image_bytes = await image.read()
+        if not image_bytes:
+            raise HTTPException(400, "image is required")
+        if len(image_bytes) > _INHERENT_IMAGE_MAX_BYTES:
+            raise HTTPException(413, "image too large")
+
+        prompt = (text or "").strip()
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        data_url = f"data:{mime};base64,{encoded}"
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(
+            None,
+            lambda: jarvis_app.handle_image(
+                prompt,
+                data_url,
+                session_id="_inherent",
+                image_name=image.filename or None,
+                image_mime=mime,
+                image_bytes=len(image_bytes),
+            ),
+        )
+        LOGGER.info(
+            "[inherent] submit image text=%r filename=%r bytes=%d",
+            prompt[:80], image.filename, len(image_bytes),
+        )
+        return {"status": "accepted", "text": prompt}
 
     @app.post("/inherent/asr-submit")
     async def inherent_asr_submit(audio: UploadFile = File(...)):

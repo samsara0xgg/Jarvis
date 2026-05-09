@@ -201,6 +201,33 @@ class TestJarvisTraceV3:
         assert row["prompt_version"] is not None
         assert len(row["prompt_version"]) == 16
 
+    def test_handle_image_writes_trace_attachment_metadata(self, app: JarvisApp) -> None:
+        """Image turns must leave attachment metadata in trace without base64."""
+        app.handle_image(
+            "这是什么",
+            "data:image/png;base64,AAAA",
+            session_id="image_session",
+            image_name="screen.png",
+            image_mime="image/png",
+            image_bytes=4,
+        )
+
+        rows = app.trace_log.query_for_debug(hours=48)
+        row = rows[0]
+        assert row["user_text"] == "这是什么"
+        assert row["path_taken"] == "cloud"
+        assert row["input_metadata"]["input_type"] == "multimodal"
+        assert row["input_metadata"]["attachments"] == [
+            {
+                "type": "image",
+                "detail": "auto",
+                "filename": "screen.png",
+                "mime_type": "image/png",
+                "bytes": 4,
+            }
+        ]
+        assert "base64" not in str(row["input_metadata"])
+
     def test_prompt_version_stable_across_turns(self, app: JarvisApp) -> None:
         """prompt_version must be identical across consecutive turns.
 

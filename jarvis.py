@@ -721,6 +721,8 @@ class JarvisApp:
         asr_confidence: float | None = None,
         vad_duration_ms: int | None = None,
         audio_path: str | None = None,
+        model_user_message: Any | None = None,
+        input_attachments: list[dict[str, Any]] | None = None,
     ) -> str:
         """Wrap _process_turn_inner with try/finally to flush trace v3.
 
@@ -747,6 +749,7 @@ class JarvisApp:
         # the next turn's reset. Mutated by the audio thread.
         ttfs_cell: list[int | None] = [None]
         self._reset_turn_state(text, trigger_source=trigger_source)
+        self._last_input_attachments = list(input_attachments or [])
         # Stash voice-path snapshots after the reset (these would otherwise
         # be clobbered by reset_turn_state's defaults).
         self._last_asr_ms = asr_ms
@@ -767,6 +770,7 @@ class JarvisApp:
                 user_role=user_role,
                 output_fn=output_fn,
                 create_tts_pipeline=create_tts_pipeline,
+                model_user_message=model_user_message,
             )
             if not self._last_end_reason:
                 # Prefer the inner's snapshot taken at actual end-of-turn —
@@ -835,6 +839,7 @@ class JarvisApp:
         user_role: str = "owner",
         output_fn: Callable[[str], None],
         create_tts_pipeline: Callable[[], Any] | None = None,
+        model_user_message: Any | None = None,
     ) -> str:
         """Process a text turn through the full pipeline.
 
@@ -971,7 +976,8 @@ class JarvisApp:
         # 命中 → tool_registry.execute → render TTS 模板 → set response_text + path="regex"
         # 未命中 → response_text 保持 None，下游 cloud LLM (tool_use) 兜底
         regex_match = None
-        if response_text is None and self.regex_router is not None:
+        force_cloud = model_user_message is not None
+        if response_text is None and self.regex_router is not None and not force_cloud:
             try:
                 regex_match = self.regex_router.match(text)
             except Exception as exc:
@@ -1017,6 +1023,8 @@ class JarvisApp:
                 # On exec failure, fall through to cloud LLM
                 regex_match = None
                 self._last_regex_match = None
+        elif force_cloud:
+            print(f"⏱ 路由: {_route_ms}ms → image input (cloud LLM)")
         else:
             print(f"⏱ 路由: {_route_ms}ms → miss (cloud LLM)")
 
@@ -1111,7 +1119,7 @@ class JarvisApp:
             try:
                 try:
                     response_text, updated_messages = self.llm.chat_stream(
-                        user_message=text,
+                        user_message=model_user_message if model_user_message is not None else text,
                         conversation_history=history,
                         tools=tools,
                         tool_executor=_wrapped_tool_executor,
@@ -1250,6 +1258,70 @@ class JarvisApp:
             trigger_source="web_text",
         )
 
+    def handle_image(
+        self,
+        text: str,
+        image_data_url: str,
+        session_id: str = "_web",
+        on_sentence: Any = None,
+        emotion: str = "",
+        *,
+        user_id: str = "default_user",
+        user_name: str = "用户",
+        user_role: str = "owner",
+        image_name: str | None = None,
+        image_mime: str | None = None,
+        image_bytes: int | None = None,
+    ) -> str:
+        """Process a text + image message without audio/TTS.
+
+        The user-visible ``text`` stays as the turn label for memory, routing,
+        trace, and the Inherent breadcrumb. The model receives a multimodal
+        OpenAI-compatible content array for this single turn; conversation
+        history stores only a compact attachment marker.
+        """
+        prompt_text = (text or "").strip() or "请看这张图片"
+        model_user_message = [
+            {"type": "text", "text": prompt_text},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": image_data_url,
+                    "detail": "auto",
+                },
+            },
+        ]
+        mime = (image_mime or "").split(";", 1)[0].strip().lower()
+        if not mime and image_data_url.startswith("data:"):
+            mime = image_data_url[5:].split(";", 1)[0].strip().lower()
+        attachment: dict[str, Any] = {
+            "type": "image",
+            "detail": "auto",
+        }
+        if image_name:
+            attachment["filename"] = image_name
+        if mime:
+            attachment["mime_type"] = mime
+        if image_bytes is not None:
+            attachment["bytes"] = image_bytes
+
+        def _text_output(sentence: str) -> None:
+            if on_sentence:
+                on_sentence(sentence, emotion=emotion)
+
+        return self._process_turn(
+            prompt_text,
+            emotion=emotion,
+            session_id=session_id,
+            user_id=user_id,
+            user_name=user_name,
+            user_role=user_role,
+            output_fn=_text_output,
+            trigger_source="web_text",
+            model_user_message=model_user_message,
+            input_attachments=[attachment],
+        )
+
     # ══════════════════════════════════════════════════════════════
     # Trace v3 helpers (reset / flush / TTS first-chunk wiring)
     # ══════════════════════════════════════════════════════════════
@@ -1310,6 +1382,7 @@ class JarvisApp:
         self._last_asr_confidence = None
         self._last_vad_duration_ms = None
         self._last_audio_path = None
+        self._last_input_attachments: list[dict[str, Any]] = []
         self._last_asr_text_raw: str | None = None
         self._last_tts_chars_synthesized = 0
         self._last_llm_metadata = {
@@ -1542,6 +1615,9 @@ class JarvisApp:
                 "vad_duration_ms": self._last_vad_duration_ms,
                 "audio_path": self._last_audio_path,
             }
+            if self._last_input_attachments:
+                input_metadata["input_type"] = "multimodal"
+                input_metadata["attachments"] = self._last_input_attachments
 
             # tool_calls extraction:
             # 1. PREFER the wrapped-executor log (cloud path) — has real

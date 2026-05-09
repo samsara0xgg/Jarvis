@@ -8,6 +8,7 @@
 //   fadeOut(ms)      lerp window opacity 1→0 then hide
 //   cancelFade()     ask main to abort an in-flight fade and restore opacity
 //   submit(text)     POST typed text to backend (Wave 1 input edge)
+//   submitImage(...) POST one staged image + optional text to backend
 //   submitVoice(wav) POST recorded WAV bytes to backend voice submit edge
 //   duckAudio()      mute system output during microphone capture
 //   restoreAudio()   restore system output after microphone capture
@@ -29,6 +30,7 @@ contextBridge.exposeInMainWorld('cardAPI', {
   fadeOut: (ms) => ipcRenderer.invoke('card:fadeOut', ms),
   cancelFade: () => ipcRenderer.invoke('card:cancelFade'),
   submit: (text) => ipcRenderer.invoke('card:submit', text),
+  submitImage: (payload) => ipcRenderer.invoke('card:submitImage', payload),
   submitVoice: (wavArrayBuffer) => ipcRenderer.invoke('card:submitVoice', wavArrayBuffer),
   duckAudio: () => ipcRenderer.invoke('card:duckAudio'),
   restoreAudio: () => ipcRenderer.invoke('card:restoreAudio'),

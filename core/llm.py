@@ -19,6 +19,7 @@ LOGGER = logging.getLogger(__name__)
 # Rough token estimate: Chinese ≈ 1.5 chars/token, English ≈ 4 chars/token.
 # Use 1.5 (conservative) to avoid sending more context than max_history_tokens.
 _CHARS_PER_TOKEN = 1.5
+UserMessage = str | list[dict[str, Any]]
 
 
 class LLMClient:
@@ -312,7 +313,7 @@ class LLMClient:
 
     def chat(
         self,
-        user_message: str,
+        user_message: UserMessage,
         *,
         conversation_history: list[dict[str, Any]] | None = None,
         tools: list[dict[str, Any]] | None = None,
@@ -344,6 +345,8 @@ class LLMClient:
 
         component = f"llm.{self.provider}"
         try:
+            if self.provider != "openai" and not isinstance(user_message, str):
+                raise ValueError("multimodal user messages require provider=openai")
             if self.provider == "openai":
                 result = self._chat_openai(
                     user_message,
@@ -510,7 +513,7 @@ class LLMClient:
 
     def _chat_openai(
         self,
-        user_message: str,
+        user_message: UserMessage,
         *,
         conversation_history: list[dict[str, Any]] | None = None,
         tools: list[dict[str, Any]] | None = None,
@@ -540,7 +543,7 @@ class LLMClient:
 
         # Keep a parallel Anthropic-style history for storage
         stored_messages = list(conversation_history or [])
-        stored_messages.append({"role": "user", "content": user_message})
+        stored_messages.append({"role": "user", "content": self._stored_user_content(user_message)})
 
         import json as _json
 
@@ -835,7 +838,7 @@ class LLMClient:
 
     def chat_stream(
         self,
-        user_message: str,
+        user_message: UserMessage,
         *,
         conversation_history: list[dict[str, Any]] | None = None,
         tools: list[dict[str, Any]] | None = None,
@@ -858,6 +861,9 @@ class LLMClient:
         Returns:
             Same as ``chat()`` — (full_text, updated_messages).
         """
+        if self.provider != "openai" and not isinstance(user_message, str):
+            raise ValueError("multimodal user messages require provider=openai")
+
         if on_sentence is None or self.provider not in ("anthropic", "openai"):
             return self.chat(
                 user_message,
@@ -1246,7 +1252,7 @@ class LLMClient:
 
     def _stream_openai(
         self,
-        user_message: str,
+        user_message: UserMessage,
         *,
         conversation_history: list[dict[str, Any]] | None = None,
         tools: list[dict[str, Any]] | None = None,
@@ -1276,7 +1282,7 @@ class LLMClient:
         openai_tools = self._tools_to_openai(tools) if tools else None
 
         stored_messages = list(conversation_history or [])
-        stored_messages.append({"role": "user", "content": user_message})
+        stored_messages.append({"role": "user", "content": self._stored_user_content(user_message)})
 
         self.logger.info("Streaming request to OpenAI (%s)", self.model)
 
@@ -1495,6 +1501,32 @@ class LLMClient:
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
+
+    def _stored_user_content(self, user_message: UserMessage) -> str:
+        """Return a compact, persistent-safe representation of user input.
+
+        Multimodal requests can include base64 image payloads. Those must not be
+        persisted in hot conversation history, otherwise one screenshot would
+        bloat every later turn. Store the user-visible text plus an attachment
+        marker instead; the current provider request still receives the image.
+        """
+        if isinstance(user_message, str):
+            return user_message
+        text_parts: list[str] = []
+        image_count = 0
+        for part in user_message:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text":
+                text = str(part.get("text") or "").strip()
+                if text:
+                    text_parts.append(text)
+            elif part.get("type") == "image_url":
+                image_count += 1
+        text = "\n".join(text_parts).strip() or "请看这张图片"
+        if image_count:
+            text += f"\n[Attached image x{image_count}]"
+        return text
 
     def _personalize_system(
         self, user_name: str | None, user_role: str, user_emotion: str = "",

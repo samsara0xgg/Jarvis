@@ -18,6 +18,16 @@ def _test_wav_bytes(sample_rate=16000, samples=1600):
     return buf.getvalue()
 
 
+def _test_png_bytes():
+    # 1x1 transparent PNG.
+    return (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc`\x00\x00\x00\x02"
+        b"\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+
 @pytest.fixture
 def mock_jarvis_app():
     app = MagicMock()
@@ -205,6 +215,28 @@ class TestInherentSubmitEndpoint:
         # The endpoint returning 202-equivalent (200 + accepted) is the
         # contract; deeper integration is covered by TestInherentWsBridge.
         assert resp.json()["status"] == "accepted"
+
+    def test_image_submit_accepts_png(self, client, mock_jarvis_app):
+        mock_jarvis_app.handle_image = MagicMock(return_value="ok")
+
+        resp = client.post(
+            "/inherent/image-submit",
+            data={"text": "这是什么"},
+            files={"image": ("screen.png", _test_png_bytes(), "image/png")},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "accepted", "text": "这是什么"}
+
+    def test_image_submit_rejects_non_image(self, client):
+        resp = client.post(
+            "/inherent/image-submit",
+            data={"text": "读一下"},
+            files={"image": ("note.txt", b"hello", "text/plain")},
+        )
+
+        assert resp.status_code == 400
+        assert "unsupported" in resp.json()["detail"]
 
     def test_voice_submit_transcribes_and_accepts(self, client, mock_jarvis_app):
         mock_jarvis_app.speech_recognizer.transcribe.return_value = SimpleNamespace(

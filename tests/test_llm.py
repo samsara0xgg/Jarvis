@@ -217,6 +217,34 @@ def test_openai_chat_returns_text():
         sys.modules.pop("openai", None)
 
 
+def test_openai_chat_accepts_image_content_without_persisting_base64():
+    _install_fake_openai()
+    try:
+        client = LLMClient(_make_config(provider="openai"))
+        mock_oai = client._get_openai_client()
+        mock_oai.chat.completions.create = MagicMock(
+            return_value=_FakeOAIResponse([
+                _FakeOAIChoice(_FakeOAIMessage(content="这是截图里的错误。"))
+            ])
+        )
+        image_message = [
+            {"type": "text", "text": "这是什么"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,AAAA", "detail": "auto"},
+            },
+        ]
+
+        text, messages = client.chat(image_message)
+
+        assert "截图" in text
+        sent = mock_oai.chat.completions.create.call_args.kwargs["messages"][-2]
+        assert sent["content"] == image_message
+        assert messages[0]["content"] == "这是什么\n[Attached image x1]"
+    finally:
+        sys.modules.pop("openai", None)
+
+
 def test_openai_chat_executes_tool_call():
     _install_fake_openai()
     try:

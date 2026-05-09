@@ -8,6 +8,7 @@ const root = document.getElementById('answer')
 const card = document.getElementById('card')
 const cardWrap = document.getElementById('card-wrap')
 const cardInput = document.getElementById('card-input')
+const attachmentsWrap = document.getElementById('attachments')
 const questionText = document.getElementById('question-text')
 const statePill = document.getElementById('state-pill')
 const chipsWrap = document.getElementById('chips-wrap')
@@ -192,6 +193,281 @@ pillClear.addEventListener('click', () => {
 
 // Track Q for the in-flight turn so we can pair it with A on siri:done.
 let inFlightQ = null
+let stagedImage = null
+
+const IMAGE_MAX_BYTES = 15 * 1024 * 1024
+const IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+
+function attachmentQuestionLabel(text) {
+  return text || '请看这张图片'
+}
+
+function formatImageBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return ''
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))}KB`
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)}MB`
+}
+
+function normalizeImageName(file, source) {
+  const raw = String(file?.name || '').trim()
+  if (source === 'paste' || !raw || /^image\.(png|jpe?g|webp|gif)$/i.test(raw)) return 'screen'
+  return raw.length > 28 ? `${raw.slice(0, 24)}…` : raw
+}
+
+function imageMimeType(file) {
+  const mime = String(file?.type || '').split(';')[0].trim().toLowerCase()
+  if (mime === 'image/jpg') return 'image/jpeg'
+  return mime
+}
+
+function flashAttachmentEdge() {
+  card.classList.remove('edge-flash')
+  void card.offsetWidth
+  card.classList.add('edge-flash')
+  setTimeout(() => card.classList.remove('edge-flash'), 720)
+}
+
+function imageStageError(message = 'image failed') {
+  card.classList.remove('drop-target')
+  setState(message, 'warn')
+  flashAttachmentEdge()
+  flushHeightFor(420)
+}
+
+async function imageDimensions(file) {
+  if (!file) return null
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(file)
+      const dims = { width: bitmap.width, height: bitmap.height }
+      bitmap.close?.()
+      return dims
+    } catch {
+      // Fall back to HTMLImageElement below.
+    }
+  }
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = () => {
+      const dims = { width: img.naturalWidth || img.width, height: img.naturalHeight || img.height }
+      URL.revokeObjectURL(url)
+      resolve(dims.width && dims.height ? dims : null)
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      resolve(null)
+    }
+    img.src = url
+  })
+}
+
+function renderAttachmentChip() {
+  if (!attachmentsWrap) return
+  attachmentsWrap.innerHTML = ''
+  if (!stagedImage) return
+
+  const chip = document.createElement('span')
+  chip.className = 'attach-chip'
+  chip.innerHTML =
+    '<span class="a-icon"></span>' +
+    '<span class="a-name"></span>' +
+    '<span class="a-meta"></span>' +
+    '<button class="a-remove" type="button" aria-label="Remove image">×</button>'
+  chip.querySelector('.a-name').textContent = stagedImage.label
+  chip.querySelector('.a-meta').textContent = stagedImage.meta || ''
+  chip.querySelector('.a-remove').addEventListener('click', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    clearStagedImage()
+    requestAnimationFrame(() => cardInput.focus())
+  })
+  attachmentsWrap.appendChild(chip)
+  requestAnimationFrame(() => chip.classList.add('in'))
+}
+
+function clearStagedImage() {
+  stagedImage = null
+  if (attachmentsWrap) attachmentsWrap.innerHTML = ''
+  flushHeight()
+}
+
+function restoreStagedImage(snapshot) {
+  stagedImage = snapshot || null
+  renderAttachmentChip()
+}
+
+function canStageImage() {
+  return !['submitting', 'streaming', 'listening', 'transcribing', 'transition'].includes(turnPhase)
+}
+
+async function stageImageFile(file, source = 'drop') {
+  if (!file || !canStageImage()) return false
+  const mime = imageMimeType(file)
+  if (!IMAGE_MIME_TYPES.has(mime)) {
+    imageStageError('image only')
+    return false
+  }
+  if (file.size > IMAGE_MAX_BYTES) {
+    imageStageError(`image > ${formatImageBytes(IMAGE_MAX_BYTES)}`)
+    return false
+  }
+  if (cardInput.disabled && canEnterFollowupInput()) {
+    enterInputMode({ followup: true })
+    await delay(FOLLOWUP_ENTER_MS + 40)
+  } else if (cardInput.disabled) {
+    enterInputMode()
+    await delay(80)
+  }
+
+  const dims = await imageDimensions(file)
+  const buffer = await file.arrayBuffer()
+  const meta = dims?.width && dims?.height
+    ? `${dims.width}×${dims.height}`
+    : formatImageBytes(file.size)
+  stagedImage = {
+    label: normalizeImageName(file, source),
+    meta,
+    mime,
+    name: file.name || `${source}.png`,
+    bytes: file.size,
+    buffer,
+  }
+  renderAttachmentChip()
+  flashAttachmentEdge()
+  inputActive = true
+  turnPhase = 'input'
+  flushHeightFor(420)
+  requestAnimationFrame(() => cardInput.focus())
+  return true
+}
+
+function firstImageFile(fileList) {
+  for (const file of Array.from(fileList || [])) {
+    if (IMAGE_MIME_TYPES.has(imageMimeType(file))) return file
+  }
+  return null
+}
+
+function firstImageItem(itemList) {
+  for (const item of Array.from(itemList || [])) {
+    if (item?.kind !== 'file') continue
+    const type = String(item.type || '').toLowerCase()
+    if (!IMAGE_MIME_TYPES.has(type)) continue
+    const file = item.getAsFile?.()
+    if (file) return file
+  }
+  return null
+}
+
+function firstImageFromTransfer(transfer) {
+  return firstImageFile(transfer?.files) || firstImageItem(transfer?.items)
+}
+
+function transferHasFile(transfer) {
+  return Array.from(transfer?.items || []).some(item => item?.kind === 'file') ||
+    (transfer?.files?.length || 0) > 0
+}
+
+function arrayBufferFromBase64(base64) {
+  const binary = atob(String(base64 || ''))
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  return bytes.buffer
+}
+
+window.jarvisStageImageAttachment = async (payload = {}) => {
+  const mime = String(payload.mime || 'image/png')
+  const name = String(payload.name || 'image.png')
+  const source = String(payload.source || 'drop')
+  const buffer = arrayBufferFromBase64(payload.base64 || '')
+  const file = new File([buffer], name, { type: mime })
+  return stageImageFile(file, source)
+}
+
+window.jarvisImageAttachmentError = (payload = {}) => {
+  const message = String(payload.message || 'image failed')
+  imageStageError(message)
+  return true
+}
+
+function dragHasImage(e) {
+  const items = Array.from(e.dataTransfer?.items || [])
+  if (items.some(item => item.kind === 'file' && IMAGE_MIME_TYPES.has(String(item.type || '').toLowerCase()))) {
+    return true
+  }
+  return !!firstImageFile(e.dataTransfer?.files)
+}
+
+async function handleImagePaste(e) {
+  if (!canStageImage()) return
+  const file = firstImageFromTransfer(e.clipboardData)
+  if (!file) return
+  e.preventDefault()
+  await stageImageFile(file, 'paste')
+}
+
+function pasteTextIntoActiveElement(text) {
+  const value = String(text || '')
+  if (!value) return false
+  const el = document.activeElement
+  if (!el || !('value' in el)) return false
+  const start = Number.isFinite(el.selectionStart) ? el.selectionStart : String(el.value || '').length
+  const end = Number.isFinite(el.selectionEnd) ? el.selectionEnd : start
+  const before = String(el.value || '').slice(0, start)
+  const after = String(el.value || '').slice(end)
+  el.value = `${before}${value}${after}`
+  const next = start + value.length
+  el.setSelectionRange?.(next, next)
+  el.dispatchEvent(new InputEvent('input', {
+    bubbles: true,
+    inputType: 'insertFromPaste',
+    data: value,
+  }))
+  return true
+}
+
+window.jarvisPastePlainText = (payload = {}) => {
+  const text = typeof payload === 'string' ? payload : payload.text
+  return pasteTextIntoActiveElement(text)
+}
+
+async function handleNativePasteShortcut(e) {
+  if (keyboardEventIsComposing(e)) return
+  if (!(e.metaKey || e.ctrlKey)) return
+  if (String(e.key || '').toLowerCase() !== 'v') return
+  if (!window.cardAPI?.pasteClipboard) return
+  e.preventDefault()
+  try {
+    const result = await window.cardAPI.pasteClipboard()
+    if (result?.text) pasteTextIntoActiveElement(result.text)
+  } catch (err) {
+    console.warn('[card] native paste failed:', err?.message || err)
+  }
+}
+
+function handleImageDragOver(e) {
+  if (!canStageImage() || (!dragHasImage(e) && !transferHasFile(e.dataTransfer))) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+  card.classList.add('drop-target')
+}
+
+function handleImageDragLeave(e) {
+  if (card.contains(e.relatedTarget)) return
+  card.classList.remove('drop-target')
+}
+
+async function handleImageDrop(e) {
+  card.classList.remove('drop-target')
+  if (!canStageImage() || (!dragHasImage(e) && !transferHasFile(e.dataTransfer))) return
+  e.preventDefault()
+  const file = firstImageFromTransfer(e.dataTransfer)
+  if (!file) return
+  await stageImageFile(file, 'drop')
+}
 
 const md = new MarkdownItAsync({
   html: false,
@@ -669,6 +945,7 @@ function captureResponseSnapshot() {
     visibleText,
     prevVisibleText,
     charBirthTimes: charBirthTimes.slice(),
+    attachment: stagedImage,
     stateLabel: statePill.textContent || (turnPhase === 'error' ? 'error' : 'done'),
     stateVariant: currentStateVariant() || (turnPhase === 'error' ? 'error' : 'success'),
     phase: turnPhase === 'error' ? 'error' : 'done'
@@ -692,6 +969,7 @@ function restoreFollowupSnapshot() {
   followupDraftActive = false
   cardInput.value = snapshot.inputValue || ''
   setSubmittedQuestion(cardInput.value)
+  restoreStagedImage(snapshot.attachment || null)
   cardInput.placeholder = snapshot.inputPlaceholder || '问点什么…'
   cardInput.disabled = true
   cardInput.blur()
@@ -722,6 +1000,7 @@ function restoreFollowupSnapshot() {
 
 function resetInputState({ placeholder = '问点什么…' } = {}) {
   cardInput.value = ''
+  clearStagedImage()
   clearSubmittedQuestion()
   cardInput.disabled = false
   cardInput.placeholder = placeholder
@@ -776,14 +1055,16 @@ function enterInputMode({ followup = false } = {}) {
 
 function submitInputText() {
   const text = cardInput.value.trim()
-  if (!text) {
+  const image = stagedImage
+  if (!text && !image) {
     if (followupDraftActive) restoreFollowupSnapshot()
     return
   }
+  const displayText = attachmentQuestionLabel(text)
   inputTransitionGen += 1
   clearFollowupDraft()
-  inFlightQ = text
-  setSubmittedQuestion(text)
+  inFlightQ = displayText
+  setSubmittedQuestion(displayText)
   cardInput.disabled = true
   card.classList.remove('followup-entering', 'followup-input', 'followup-restoring')
   card.classList.add('submitted')
@@ -793,7 +1074,15 @@ function submitInputText() {
   // Width-morph (Q2 = B): the input element itself shrinks into the breadcrumb
   // via .submitted CSS — no separate node, no DOM swap. The streaming answer
   // expands below in the existing #answer pane.
-  Promise.resolve(window.cardAPI?.submit?.(text)).then(result => {
+  const submitPromise = image
+    ? window.cardAPI?.submitImage?.({
+        text,
+        name: image.name,
+        mime: image.mime,
+        buffer: image.buffer,
+      })
+    : window.cardAPI?.submit?.(text)
+  Promise.resolve(submitPromise).then(result => {
     // Surface backend reachability problems to the user. Without this the
     // pill stays at "thinking" forever when the POST fails (server down,
     // network gone, http error), since no siri:* events will ever arrive.
@@ -853,6 +1142,7 @@ window.addEventListener('pagehide', () => {
 
 function canStartVoiceHold() {
   if (voiceListening) return false
+  if (stagedImage) return false
   if (turnPhase === 'submitting' || turnPhase === 'streaming') return false
   if (turnPhase === 'listening' || turnPhase === 'transcribing') return false
   if (card.classList.contains('thinking-fluent') || card.classList.contains('thinking-deep')) return false
@@ -1008,6 +1298,7 @@ function beginExternalVoiceCapture() {
   window.cardAPI?.cancelFade?.()
   clearDrip()
   hidePopoverNow()
+  clearStagedImage()
   clearSubmittedQuestion()
   target = ''
   shown = ''
@@ -1052,6 +1343,7 @@ function acceptExternalVoiceText(text) {
   shown = ''
   prevVisibleText = ''
   charBirthTimes = []
+  clearStagedImage()
   inFlightQ = trimmed
   cardInput.value = trimmed
   setSubmittedQuestion(trimmed)
@@ -1189,6 +1481,12 @@ document.addEventListener('keydown', (e) => {
   }
 })
 document.addEventListener('keyup', handleEnterKeyUp, true)
+document.addEventListener('keydown', handleNativePasteShortcut, true)
+document.addEventListener('paste', handleImagePaste)
+card.addEventListener('dragenter', handleImageDragOver)
+card.addEventListener('dragover', handleImageDragOver)
+card.addEventListener('dragleave', handleImageDragLeave)
+card.addEventListener('drop', handleImageDrop)
 
 // ─── IPC: main → renderer ──────────────────────────────────
 // In production (inherent mode), main process pushes content via these channels.
