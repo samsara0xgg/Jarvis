@@ -17,6 +17,7 @@ const popover = document.getElementById('popover')
 const popoverQ = popover.querySelector('.popover-q')
 const popoverA = popover.querySelector('.popover-a')
 const hoverRegion = document.getElementById('hover-region')
+const pill = document.getElementById('pill')
 const pillHistory = document.getElementById('pill-history')
 const pillClear = document.getElementById('pill-clear')
 const pillCount = pillHistory.querySelector('.count')
@@ -31,6 +32,32 @@ function clearSubmittedQuestion() {
   questionText.textContent = ''
 }
 
+function syncPillHitRegion() {
+  if (!pill) return
+  const rect = pill.getBoundingClientRect()
+  try {
+    window.webkit?.messageHandlers?.cardAPI?.postMessage({
+      op: 'setHitRegions',
+      pill: {
+        x: rect.left,
+        y: rect.top,
+        w: rect.width,
+        h: rect.height
+      }
+    })
+  } catch {
+    // Non-Swift preview shells do not expose window.webkit.
+  }
+}
+function syncPillHitRegionSoon() {
+  requestAnimationFrame(() => {
+    syncPillHitRegion()
+    requestAnimationFrame(syncPillHitRegion)
+  })
+  setTimeout(syncPillHitRegion, 380)
+}
+syncPillHitRegionSoon()
+
 // ─── History strip + popover (Q2.9 ship v1) ────────────────
 // In-memory turn log; persists for the lifetime of the card window. Each
 // completed turn (siri:done w/ non-empty answer) appends a chip. Strip auto-
@@ -43,8 +70,25 @@ const CARD_WIDTH_WITH_POPOVER = CARD_WIDTH + POPOVER_GAP + POPOVER_WIDTH
 const POPOVER_HIDE_DELAY_MS = 450
 
 let popoverHideTimer = null
+let popoverWidthShrinkTimer = null
 function cancelPopoverHide() {
   if (popoverHideTimer) { clearTimeout(popoverHideTimer); popoverHideTimer = null }
+  if (popoverWidthShrinkTimer) { clearTimeout(popoverWidthShrinkTimer); popoverWidthShrinkTimer = null }
+}
+// Defer setWidth(CARD_WIDTH) until the popover's CSS opacity transition (240ms)
+// has finished, otherwise the still-fading popover gets clipped at the left
+// edge as setFrame instantly snaps the panel from 660→360 — visible as a brief
+// flash on the card body. The check skips the shrink if a new chip click
+// re-shows the popover during the wait.
+function deferredShrinkToCardWidth() {
+  if (popoverWidthShrinkTimer) clearTimeout(popoverWidthShrinkTimer)
+  popoverWidthShrinkTimer = setTimeout(() => {
+    if (!popover.classList.contains('visible')) {
+      window.cardAPI?.setWidth?.(CARD_WIDTH)
+      flushHeight()
+    }
+    popoverWidthShrinkTimer = null
+  }, 260)
 }
 
 // Smooth height growth: drives flushHeight() on every frame for `durationMs`
@@ -78,27 +122,32 @@ function showPopover(chip) {
   const chipRect = chip.getBoundingClientRect()
   const wrapRect = cardWrap.getBoundingClientRect()
   popover.style.top = (chipRect.top - wrapRect.top) + 'px'
-  popover.classList.add('visible')
   clearSourceActive()
   chip.classList.add('source-active')
+  // Order matters: widen the panel BEFORE starting the popover opacity
+  // transition. If the .visible class is added in the same task as the IPC
+  // setWidth, the popover begins fading in while still clipped to the old
+  // 360px panel bounds, then briefly flashes when the panel widens to 660
+  // and the popover snaps into view at intermediate opacity. Two RAFs let
+  // the setFrame redraw settle before the CSS transition starts.
   window.cardAPI?.setWidth?.(CARD_WIDTH_WITH_POPOVER)
-  // Window widening shifts card position; re-flush so height accounts for popover
   flushHeight()
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    popover.classList.add('visible')
+  }))
 }
 function hidePopoverNow() {
   cancelPopoverHide()
   popover.classList.remove('visible')
   clearSourceActive()
-  window.cardAPI?.setWidth?.(CARD_WIDTH)
-  flushHeight()
+  deferredShrinkToCardWidth()
 }
 function schedulePopoverHide() {
   cancelPopoverHide()
   popoverHideTimer = setTimeout(() => {
     popover.classList.remove('visible')
     clearSourceActive()
-    window.cardAPI?.setWidth?.(CARD_WIDTH)
-    flushHeight()
+    deferredShrinkToCardWidth()
     popoverHideTimer = null
   }, POPOVER_HIDE_DELAY_MS)
 }
@@ -127,11 +176,13 @@ function buildChip(q, a) {
 function updatePillCount() {
   const n = chipsContainer.querySelectorAll('.chip:not(.fading)').length
   pillCount.textContent = String(n)
+  syncPillHitRegionSoon()
   // Pill stays hover-only — no auto-reveal. The user must hover the region
   // above the card top to see / interact with the history affordance.
 }
 function setPillCount(n) {
   pillCount.textContent = String(n)
+  syncPillHitRegionSoon()
 }
 
 function pushTurn(q, a) {
@@ -149,7 +200,25 @@ function pushTurn(q, a) {
 }
 
 function cascadeClear() {
-  hidePopoverNow()
+  // Synchronous popover teardown. hidePopoverNow's 240ms CSS opacity fade +
+  // 260ms deferred width-shrink would otherwise overlap with the chip strip's
+  // per-frame height collapse, leaving a still-fading popover anchored
+  // outside the rapidly shrinking card-wrap area — visible as a flash on the
+  // card. Disabling the transition for one frame and shrinking width
+  // immediately removes the overlap when the user clears via × with popover
+  // already open.
+  cancelPopoverHide()
+  if (popover.classList.contains('visible')) {
+    popover.style.transition = 'none'
+    popover.classList.remove('visible')
+    void popover.offsetHeight  // force reflow so the no-transition pass sticks
+    popover.style.transition = ''
+  } else {
+    popover.classList.remove('visible')
+  }
+  clearSourceActive()
+  window.cardAPI?.setWidth?.(CARD_WIDTH)
+
   const chips = Array.from(chipsContainer.querySelectorAll('.chip'))
   card.classList.remove('history-shown')
   if (chips.length === 0) {
@@ -182,6 +251,7 @@ pillHistory.addEventListener('click', () => {
     card.classList.add('history-shown')
     requestAnimationFrame(() => { chipsWrap.scrollTop = chipsWrap.scrollHeight })
   }
+  syncPillHitRegionSoon()
   // Smooth growth: per-frame flushHeight for the strip's full 380ms transition.
   flushHeightFor(420)
 })
@@ -556,6 +626,14 @@ async function setContent(markdown, { animate = false } = {}) {
   // gen token guards against late-arriving md.renderAsync results overwriting fresher content
   const myGen = ++contentGen
   cancelFade()
+  // Stick-to-bottom (GPT/Claude style): if the user was at (or near) the
+  // bottom before the re-render, snap back to bottom after so streaming
+  // chars stay visible. If they scrolled up to read earlier content,
+  // leave their scroll position alone — they can wheel back down to
+  // re-engage stick.
+  const STICK_THRESHOLD = 8
+  const wasAtBottom =
+    root.scrollHeight - root.scrollTop - root.clientHeight < STICK_THRESHOLD
   if (!markdown) {
     root.innerHTML = ''
     return
@@ -576,6 +654,7 @@ async function setContent(markdown, { animate = false } = {}) {
     applyCharAnimations(root, charBirthTimes)
   }
   await flushHeight()
+  if (wasAtBottom) root.scrollTop = root.scrollHeight
 }
 
 // Diff prev/curr visible text via common-prefix + (marker-trimmed) common-suffix
@@ -709,14 +788,74 @@ function cancelFade() {
   }
 }
 
+// Soft-dim is CSS-driven (.card-wrap.hovering — see card.css). The class
+// toggles on document mouseenter/leave so the entire panel area (card body +
+// the popover, which visually sits 18px to the left) treats hover as one
+// unit. mouseenter still cancels any in-flight fadeOut from siri:done auto-
+// dismiss so the user can interact with a card that was about to disappear.
 document.addEventListener('mouseenter', () => {
+  cardWrap.classList.add('hovering')
   cancelFade()
-  // Also abort any in-flight main-process fade tick chain
   window.cardAPI?.cancelFade?.()
 })
-document.addEventListener('mouseleave', () => scheduleFade(2500))
+document.addEventListener('mouseleave', () => {
+  cardWrap.classList.remove('hovering')
+})
 
 window.jarvisCard = { setContent, cancelFade, scheduleFade, pushTurn, hidePopoverNow }
+
+// ─── Press-and-drag relocation ────────────────────────────────
+// Mousedown on the card body (excluding input/chip/popover/pill) arms a
+// drag. The first mousemove after mousedown enters drag mode and starts
+// streaming deltas to the panel; a quick down→up without movement is
+// silently ignored, so it doesn't interfere with text selection or chip
+// clicks elsewhere on the card. Cmd+0 resets to the default top-right
+// position.
+const DRAG_INTERACTIVE_SELECTOR =
+  'input, button, .chip, a, .q2x9-popover, .q2x7-pill, [contenteditable="true"]'
+let dragArmedScreen = null
+let dragMode = false
+card.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return
+  if (e.target.closest(DRAG_INTERACTIVE_SELECTOR)) return
+  dragArmedScreen = { x: e.screenX, y: e.screenY }
+})
+document.addEventListener('mousemove', (e) => {
+  if (!dragArmedScreen) return
+  if (!dragMode) {
+    dragMode = true
+    document.body.classList.add('dragging')
+    window.cardAPI?.setDragging?.(true)
+  }
+  const dx = e.screenX - dragArmedScreen.x
+  const dy = e.screenY - dragArmedScreen.y
+  if (dx !== 0 || dy !== 0) {
+    // Cocoa screen coords are bottom-up; JS screenY is top-down. Flip dy.
+    window.cardAPI?.movePanel?.(dx, -dy)
+    dragArmedScreen = { x: e.screenX, y: e.screenY }
+  }
+})
+document.addEventListener('mouseup', () => {
+  if (dragMode) {
+    dragMode = false
+    document.body.classList.remove('dragging')
+    window.cardAPI?.setDragging?.(false)
+  }
+  dragArmedScreen = null
+})
+// Cmd+0 → reset panel to its default top-right position.
+document.addEventListener('keydown', (e) => {
+  if (e.metaKey && e.key === '0') {
+    e.preventDefault()
+    window.cardAPI?.resetPosition?.()
+    return
+  }
+  if (keyboardEventIsComposing(e) || isEditableTarget(e.target)) return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    window.cardAPI?.close?.()
+  }
+})
 
 // ─── State pill (motion-reel L1806-1817 port) ──────────────
 const STATE_VARIANTS = ['thinking', 'idle', 'warn', 'error', 'success', 'neutral']
@@ -1436,11 +1575,13 @@ function handleEnterKeyUp(e) {
   const state = enterHoldState
   enterHoldState = null
   clearTimeout(state.timer)
+
   const heldMs = performance.now() - state.startedAt
   if (!state.holdFired && heldMs >= VOICE_HOLD_MS) {
     state.holdFired = true
     state.startPromise = beginEnterVoiceCapture()
   }
+
   if (!state.holdFired) {
     state.shortAction?.()
     return
@@ -1560,10 +1701,15 @@ if (window.cardAPI?.onSiriDone) {
     const remainingChars = Math.max(0, target.length - shown.length)
     const dripRemaining = remainingChars * DRIP_MS
     thinkOff()
-    setState('done', 'success')
     inputActive = false
     streamingStarted = false
     turnPhase = 'done'
+    // Defer the pill flip to 'done' until drip has revealed the last char,
+    // so the visible content and the pill state agree. Guard against a new
+    // turn starting mid-defer by checking turnPhase at fire time.
+    const flipDone = () => { if (turnPhase === 'done') setState('done', 'success') }
+    if (dripRemaining > 0) setTimeout(flipDone, dripRemaining)
+    else flipDone()
     // Pair the in-flight Q with the final A and append a history chip.
     // External voice sets inFlightQ when ASR accepts the transcript; backend
     // response.start can also include q for non-local submit paths.
@@ -1673,3 +1819,10 @@ if (demo && fixtures[demo]) {
     }
   })
 }
+
+// Module successfully evaluated through end. Inline core in card.html
+// observes this flag and yields all keydown/openInput handling to the
+// listeners registered above. If module evaluation fails anywhere
+// (import block, syntax, runtime throw), the flag stays unset and
+// core stays in control — Enter / ESC / focus survive.
+window.__cardModuleReady = true

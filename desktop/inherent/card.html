@@ -42,6 +42,306 @@
     <span class="popover-a"></span>
   </div>
 </div>
+<script>
+// CORE: zero imports, zero deps. Enter / ESC / focus must work even if
+// card.js module fails to load (esm.sh outage, syntax error, etc).
+// card.js sets __cardModuleReady at end; core then yields to module.
+;(function () {
+  const input = document.getElementById('card-input')
+  const card = document.getElementById('card')
+  const cardWrap = document.getElementById('card-wrap')
+  const root = document.getElementById('answer')
+  const state = document.getElementById('state-pill')
+  const chipsWrap = document.getElementById('chips-wrap')
+  const chips = document.getElementById('chips')
+  const popover = document.getElementById('popover')
+  const popoverQ = popover?.querySelector('.popover-q')
+  const popoverA = popover?.querySelector('.popover-a')
+  const pill = document.getElementById('pill')
+  const pillHistory = document.getElementById('pill-history')
+  const pillClear = document.getElementById('pill-clear')
+  const pillCount = pillHistory?.querySelector('.count')
+  let corePhase = 'idle'
+  let coreQuestion = ''
+  let coreHistoryPushed = false
+  let coreFollowupSnapshot = null
+  let coreFollowupDraftActive = false
+  const FOLLOWUP_ENTER_MS = 240
+  const FOLLOWUP_RESTORE_MS = 340
+  const syncPillHitRegion = () => {
+    if (!pill) return
+    const rect = pill.getBoundingClientRect()
+    try {
+      window.webkit?.messageHandlers?.cardAPI?.postMessage({
+        op: 'setHitRegions',
+        pill: { x: rect.left, y: rect.top, w: rect.width, h: rect.height }
+      })
+    } catch {
+      // Preview shells do not expose window.webkit.
+    }
+  }
+  const syncPillHitRegionSoon = () => {
+    requestAnimationFrame(() => {
+      syncPillHitRegion()
+      requestAnimationFrame(syncPillHitRegion)
+    })
+    setTimeout(syncPillHitRegion, 380)
+  }
+  syncPillHitRegionSoon()
+  const setState = (label, cls) => {
+    if (!state) return
+    state.className = 'state-pill'
+    if (!label) {
+      state.textContent = ''
+      return
+    }
+    state.textContent = label
+    if (cls) state.classList.add(cls)
+    state.classList.add('visible')
+  }
+  const resetToInput = (placeholder = '问问 jarvis', options = {}) => {
+    if (!options.preserveFollowup) {
+      coreFollowupSnapshot = null
+      coreFollowupDraftActive = false
+    }
+    corePhase = 'input'
+    card.classList.remove('submitted', 'thinking-fluent', 'thinking-deep', 'followup-entering', 'followup-input', 'followup-restoring')
+    input.value = ''
+    input.disabled = false
+    input.placeholder = placeholder
+    root.textContent = ''
+    setState('')
+    requestAnimationFrame(() => input.focus())
+    window.cardAPI?.resize?.(document.body.scrollHeight)
+    window.cardAPI?.show?.()
+  }
+  const stateVariant = () => {
+    const variants = ['thinking', 'idle', 'warn', 'error', 'success', 'neutral']
+    return variants.find(v => state?.classList.contains(v)) || ''
+  }
+  const captureCoreResponse = () => {
+    const answerText = root.textContent || ''
+    if (!answerText.trim()) return null
+    return {
+      inputValue: input.value,
+      inputPlaceholder: input.placeholder,
+      answerText,
+      stateLabel: state?.textContent || (corePhase === 'error' ? 'error' : 'done'),
+      stateVariant: stateVariant() || (corePhase === 'error' ? 'error' : 'success'),
+      phase: corePhase === 'error' ? 'error' : 'done',
+      question: coreQuestion,
+      historyPushed: coreHistoryPushed
+    }
+  }
+  const restoreCoreResponse = () => {
+    if (!coreFollowupSnapshot) return false
+    const snapshot = coreFollowupSnapshot
+    coreFollowupDraftActive = false
+    corePhase = snapshot.phase || 'done'
+    coreQuestion = snapshot.question || coreQuestion
+    coreHistoryPushed = snapshot.historyPushed
+    input.value = snapshot.inputValue || ''
+    input.placeholder = snapshot.inputPlaceholder || '问问 jarvis'
+    input.disabled = true
+    input.blur()
+    root.textContent = snapshot.answerText || ''
+    card.classList.remove('followup-entering', 'followup-input', 'thinking-fluent', 'thinking-deep', 'warn', 'error')
+    card.classList.add('submitted', 'followup-restoring')
+    setState(snapshot.stateLabel || 'done', snapshot.stateVariant || 'success')
+    setTimeout(() => card.classList.remove('followup-restoring'), FOLLOWUP_RESTORE_MS)
+    window.cardAPI?.resize?.(document.body.scrollHeight)
+    window.cardAPI?.show?.()
+    return true
+  }
+  const updateHistoryCount = () => {
+    if (!pillCount || !chips) return
+    pillCount.textContent = String(chips.querySelectorAll('.chip').length)
+    syncPillHitRegionSoon()
+  }
+  const hidePopover = () => {
+    popover?.classList.remove('visible')
+    chips?.querySelectorAll('.chip.source-active').forEach(chip => chip.classList.remove('source-active'))
+    window.cardAPI?.setWidth?.(360)
+  }
+  const showPopover = chip => {
+    if (!popover || !popoverQ || !popoverA || !cardWrap) return
+    const chipRect = chip.getBoundingClientRect()
+    const wrapRect = cardWrap.getBoundingClientRect()
+    popover.style.top = `${chipRect.top - wrapRect.top}px`
+    popoverQ.textContent = chip.dataset.q || ''
+    popoverA.textContent = chip.dataset.fullA || ''
+    chips?.querySelectorAll('.chip.source-active').forEach(c => c.classList.remove('source-active'))
+    chip.classList.add('source-active')
+    window.cardAPI?.setWidth?.(678)
+    requestAnimationFrame(() => popover.classList.add('visible'))
+  }
+  const pushTurn = (q, a) => {
+    const question = String(q || '').trim()
+    const answer = String(a || '').trim()
+    if (!question || !answer || !chips) return
+    const chip = document.createElement('div')
+    chip.className = 'chip tally-fresh'
+    chip.innerHTML = '<span class="chip-q"></span><span class="chip-arrow">→</span><span class="chip-a"></span>'
+    chip.querySelector('.chip-q').textContent = question
+    chip.querySelector('.chip-a').textContent = answer.split(/\r?\n/)[0]
+    chip.dataset.q = question
+    chip.dataset.fullA = answer
+    chip.addEventListener('click', () => {
+      if (window.__cardModuleReady) return
+      showPopover(chip)
+    })
+    setTimeout(() => chip.classList.remove('tally-fresh'), 1100)
+    chips.appendChild(chip)
+    card.classList.add('history-shown')
+    updateHistoryCount()
+    requestAnimationFrame(() => {
+      chipsWrap.scrollTop = chipsWrap.scrollHeight
+      window.cardAPI?.resize?.(document.body.scrollHeight)
+      window.cardAPI?.show?.()
+    })
+  }
+  pillHistory?.addEventListener('click', () => {
+    if (window.__cardModuleReady) return
+    if (card.classList.contains('history-shown')) {
+      card.classList.remove('history-shown')
+      hidePopover()
+    } else if (chips?.querySelector('.chip')) {
+      card.classList.add('history-shown')
+      requestAnimationFrame(() => { chipsWrap.scrollTop = chipsWrap.scrollHeight })
+    }
+    syncPillHitRegionSoon()
+    window.cardAPI?.resize?.(document.body.scrollHeight)
+    window.cardAPI?.show?.()
+  })
+  pillClear?.addEventListener('click', () => {
+    if (window.__cardModuleReady) return
+    chips.innerHTML = ''
+    card.classList.remove('history-shown')
+    hidePopover()
+    updateHistoryCount()
+    window.cardAPI?.resize?.(document.body.scrollHeight)
+    window.cardAPI?.show?.()
+  })
+  const enterFollowup = () => {
+    coreFollowupSnapshot = captureCoreResponse()
+    coreFollowupDraftActive = false
+    corePhase = 'transition'
+    hidePopover()
+    card.classList.add('followup-entering')
+    setState('input')
+    setTimeout(() => {
+      resetToInput('继续问…', { preserveFollowup: true })
+      coreFollowupDraftActive = !!coreFollowupSnapshot
+      card.classList.add('followup-input')
+    }, FOLLOWUP_ENTER_MS)
+  }
+  input.addEventListener('keydown', e => {
+    if (window.__cardModuleReady) return
+    // IME commit emits keydown with keyCode=229 on WebKit even after
+    // compositionend has fired (isComposing is false at that point), so
+    // both checks are needed to avoid pinyin string getting submitted.
+    if (e.isComposing || e.keyCode === 229) return
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      const text = input.value.trim()
+      if (!text) {
+        if (coreFollowupDraftActive) restoreCoreResponse()
+        return
+      }
+      if (text) {
+        coreFollowupSnapshot = null
+        coreFollowupDraftActive = false
+        corePhase = 'submitting'
+        coreQuestion = text
+        coreHistoryPushed = false
+        root.textContent = ''
+        card.classList.remove('followup-entering', 'followup-input', 'followup-restoring')
+        card.classList.add('submitted', 'thinking-fluent')
+        input.disabled = true
+        setState('thinking', 'thinking')
+        Promise.resolve(window.cardAPI?.submit?.(text)).then(result => {
+          if (!result || result.ok === false) {
+            corePhase = 'error'
+            card.classList.remove('thinking-fluent', 'thinking-deep')
+            setState('error', 'error')
+          }
+        }).catch(() => {
+          corePhase = 'error'
+          card.classList.remove('thinking-fluent', 'thinking-deep')
+          setState('error', 'error')
+        })
+        window.cardAPI?.resize?.(document.body.scrollHeight)
+        window.cardAPI?.show?.()
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      window.cardAPI?.close?.()
+    }
+  })
+  document.addEventListener('keydown', e => {
+    if (window.__cardModuleReady) return
+    if (e.isComposing || e.keyCode === 229) return
+    if (e.target && e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]')) return
+    if (e.key === 'Enter' && input.disabled && corePhase === 'done' && root.textContent.trim()) {
+      e.preventDefault()
+      enterFollowup()
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      window.cardAPI?.close?.()
+    }
+  })
+  window.cardAPI?.onOpenInput?.(() => {
+    if (window.__cardModuleReady) return
+    resetToInput()
+  })
+  window.cardAPI?.onSiriOpen?.(p => {
+    if (window.__cardModuleReady) return
+    coreFollowupSnapshot = null
+    coreFollowupDraftActive = false
+    card.classList.add('submitted')
+    card.classList.remove('thinking-fluent', 'thinking-deep', 'followup-entering', 'followup-input', 'followup-restoring')
+    input.disabled = true
+    root.textContent = (p && p.content) ? p.content : ''
+    const hasContent = root.textContent.trim().length > 0
+    coreHistoryPushed = false
+    corePhase = p?.streaming ? 'streaming' : (hasContent ? 'done' : 'submitting')
+    setState(corePhase === 'done' ? 'done' : 'streaming', corePhase === 'done' ? 'success' : 'thinking')
+    window.cardAPI?.resize?.(document.body.scrollHeight)
+    window.cardAPI?.show?.()
+  })
+  window.cardAPI?.onSiriAppend?.(p => {
+    if (window.__cardModuleReady) return
+    if (p && p.token) {
+      coreFollowupSnapshot = null
+      coreFollowupDraftActive = false
+      card.classList.add('submitted')
+      card.classList.remove('thinking-fluent', 'thinking-deep', 'followup-entering', 'followup-input', 'followup-restoring')
+      input.disabled = true
+      root.textContent += p.token
+      corePhase = 'streaming'
+      setState('streaming', 'thinking')
+      window.cardAPI?.resize?.(document.body.scrollHeight)
+      window.cardAPI?.show?.()
+    }
+  })
+  window.cardAPI?.onSiriDone?.(() => {
+    if (window.__cardModuleReady) return
+    card.classList.remove('thinking-fluent', 'thinking-deep')
+    corePhase = 'done'
+    setState('done', 'success')
+    if (!coreHistoryPushed) {
+      pushTurn(coreQuestion || '语音', root.textContent)
+      coreHistoryPushed = true
+    }
+    window.cardAPI?.resize?.(document.body.scrollHeight)
+    window.cardAPI?.show?.()
+  })
+  window.cardAPI?.onSiriReset?.(() => {
+    if (window.__cardModuleReady) return
+    resetToInput()
+  })
+})()
+</script>
 <script type="module" src="card.js"></script>
 </body>
 </html>

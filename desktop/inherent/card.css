@@ -44,7 +44,19 @@ body {
 .card-wrap {
   position: relative;
   width: 360px;
+  /* Soft-dim when no mouse is over the card or popover. The .hovering class is
+     toggled by document-level mouseenter/leave in card.js (covers the whole
+     panel area including the popover, which is a DOM child of card-wrap but
+     visually overflows to the left). Replaces the old auto-fade-to-0 timer. */
+  opacity: 0.95;
+  transition: opacity 220ms ease;
 }
+.card-wrap.hovering,
+.card-wrap:hover,
+.card-wrap:focus-within { opacity: 1; }
+body.dragging,
+body.dragging .card,
+body.dragging .q2x9-popover { cursor: grabbing !important; }
 
 /* Hide scrollbar visually but keep body scrollable. Two reasons:
    1. During streaming, body height grows ahead of the flushHeight → IPC →
@@ -64,7 +76,7 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
   position: relative;
   width: 360px;
   border-radius: var(--radius-card);
-  background: rgba(20, 25, 38, 0.55);
+  background: rgba(20, 25, 38, 0.95);
   backdrop-filter: blur(36px) saturate(140%);
   -webkit-backdrop-filter: blur(36px) saturate(140%);
   box-shadow:
@@ -166,7 +178,7 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
     gap 0.26s ease,
     opacity 0.24s ease,
     transform 0.34s cubic-bezier(0.32, 0.94, 0.6, 1),
-    box-shadow 0.26s ease;
+    box-shadow 0.28s ease;
 }
 
 .input-wrap {
@@ -1028,28 +1040,25 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
 }
 
 /* History pill — flush against the card's upper edge (pill bottom touches
-   card top, no overlap). Hover-revealed only. Pill itself is rendered at 70%
-   via transform: scale on the visible state (see .q2x7-pill below). The
-   near-zero alpha background keeps Electron from treating the region as a
-   click-through transparent pixel. */
+   card top, no overlap). The wrapper is only as wide as the actual pill; the
+   native passthrough layer mirrors .q2x7-pill's real DOM rect so surrounding
+   transparent pixels remain clickable in the app behind Jarvis. */
 .q2x7-hover-region {
   position: absolute;
   top: -38px;
   left: 50%;
   transform: translateX(-50%);
-  width: 220px;
+  width: max-content;
   height: 38px;
   display: flex;
   justify-content: center;
   align-items: flex-end;
   z-index: 6;
-  pointer-events: auto;
-  background: rgba(255, 255, 255, 0.001);
+  pointer-events: none;
+  background: transparent;
 }
 .q2x7-hover-region::before {
-  content: "";
-  position: absolute;
-  top: 0; left: 0; right: 0; height: 38px;
+  content: none;
 }
 .q2x7-pill {
   display: inline-flex;
@@ -1067,12 +1076,19 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
   letter-spacing: 0.04em;
   overflow: hidden;
   opacity: 0;
+  /* Pill is at 100% of design-lab dimensions; hidden state shrinks slightly
+     and lifts up to give the entry a subtle pop. */
   transform: translateY(-8px) scale(0.96);
   transform-origin: center bottom;
   transition:
     opacity 240ms ease,
     transform 360ms cubic-bezier(0.34, 1.4, 0.64, 1);
-  pointer-events: none;
+  pointer-events: auto;
+  /* Pre-allocate the backdrop-filter compositor layer at page load so the
+     first hover doesn't render one frame without the filter while WebKit
+     spins up the layer — that's the flash on first reveal. will-change
+     pins the element to its own GPU layer permanently. */
+  will-change: opacity, transform, backdrop-filter;
 }
 .q2x7-hover-region:hover .q2x7-pill,
 .q2x7-hover-region.revealed .q2x7-pill {
@@ -1161,7 +1177,7 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
   max-height: min(520px, calc(100vh - 24px));
   overflow: hidden;
   padding: 18px 22px 20px 22px;
-  background: rgba(20, 25, 38, 0.55);
+  background: rgba(20, 25, 38, 0.95);
   backdrop-filter: blur(36px) saturate(140%);
   -webkit-backdrop-filter: blur(36px) saturate(140%);
   border-radius: var(--radius-card);
