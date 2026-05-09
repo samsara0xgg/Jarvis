@@ -22,7 +22,7 @@ audio:
   default_duration: 3.0
 
   # 录音质量检查的最小时长，单位秒。
-  min_duration: 0.3
+  min_duration: 0.1
 
   # 原始 ASR 录音存档：每个 voice turn 写一份 wav 到 dir/<session_id>/<ts>.wav，
   # 路径写入 trace.input_metadata.audio_path，用于后续重跑 ASR / 拿 n-best / 换模型对比。
@@ -58,7 +58,7 @@ audio:
   # sherpa_onnx fallback 参数（vad_provider=sherpa_onnx 时使用）
   vad_threshold: 0.5              # 语音概率阈值 (0.0-1.0)
   vad_silence_duration: 0.5       # 语音后静音多久判结束（秒）
-  vad_min_speech_duration: 0.25   # 最短语音段（秒，更短视为噪声）
+  vad_min_speech_duration: 0.1    # 最短语音段（秒，更短视为噪声）
   vad_max_speech_duration: 20.0   # 最长语音段（秒，超过强制切分）
 
 # ----------------------------------------------------------------------------
@@ -69,7 +69,7 @@ asr:
   #   sensevoice  - sherpa-onnx INT8, 短中文指令首选 (M2 Max RTF ~0.015)
   #   mlx_whisper - Apple Silicon 加速 Whisper, 中英混杂/技术词友好
   #   local       - openai-whisper (PyTorch), 慢, 仅作回退
-  provider: sensevoice
+  provider: mlx_whisper
 
   # SenseVoice 配置 (sherpa-onnx)
   sensevoice_model_dir: data/sensevoice-small-int8

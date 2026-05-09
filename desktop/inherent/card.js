@@ -8,6 +8,7 @@ const root = document.getElementById('answer')
 const card = document.getElementById('card')
 const cardWrap = document.getElementById('card-wrap')
 const cardInput = document.getElementById('card-input')
+const questionText = document.getElementById('question-text')
 const statePill = document.getElementById('state-pill')
 const chipsWrap = document.getElementById('chips-wrap')
 const chipsContainer = document.getElementById('chips')
@@ -18,6 +19,16 @@ const hoverRegion = document.getElementById('hover-region')
 const pillHistory = document.getElementById('pill-history')
 const pillClear = document.getElementById('pill-clear')
 const pillCount = pillHistory.querySelector('.count')
+
+function setSubmittedQuestion(text) {
+  if (!questionText) return
+  questionText.textContent = String(text || '').trim()
+}
+
+function clearSubmittedQuestion() {
+  if (!questionText) return
+  questionText.textContent = ''
+}
 
 // ─── History strip + popover (Q2.9 ship v1) ────────────────
 // In-memory turn log; persists for the lifetime of the card window. Each
@@ -680,6 +691,7 @@ function restoreFollowupSnapshot() {
 
   followupDraftActive = false
   cardInput.value = snapshot.inputValue || ''
+  setSubmittedQuestion(cardInput.value)
   cardInput.placeholder = snapshot.inputPlaceholder || '问点什么…'
   cardInput.disabled = true
   cardInput.blur()
@@ -710,6 +722,7 @@ function restoreFollowupSnapshot() {
 
 function resetInputState({ placeholder = '问点什么…' } = {}) {
   cardInput.value = ''
+  clearSubmittedQuestion()
   cardInput.disabled = false
   cardInput.placeholder = placeholder
   card.classList.remove('submitted', 'listening', 'warn', 'error', 'followup-entering', 'followup-input', 'followup-restoring')
@@ -770,6 +783,7 @@ function submitInputText() {
   inputTransitionGen += 1
   clearFollowupDraft()
   inFlightQ = text
+  setSubmittedQuestion(text)
   cardInput.disabled = true
   card.classList.remove('followup-entering', 'followup-input', 'followup-restoring')
   card.classList.add('submitted')
@@ -968,6 +982,7 @@ async function finishEnterVoiceCapture() {
     clearFollowupDraft()
     inFlightQ = text
     cardInput.value = text
+    setSubmittedQuestion(text)
     cardInput.placeholder = '问点什么…'
     cardInput.disabled = true
     card.classList.remove('followup-entering', 'followup-input', 'followup-restoring', 'warn', 'error')
@@ -993,6 +1008,7 @@ function beginExternalVoiceCapture() {
   window.cardAPI?.cancelFade?.()
   clearDrip()
   hidePopoverNow()
+  clearSubmittedQuestion()
   target = ''
   shown = ''
   prevVisibleText = ''
@@ -1038,6 +1054,7 @@ function acceptExternalVoiceText(text) {
   charBirthTimes = []
   inFlightQ = trimmed
   cardInput.value = trimmed
+  setSubmittedQuestion(trimmed)
   cardInput.placeholder = '问点什么…'
   cardInput.disabled = true
   card.classList.remove('listening', 'followup-entering', 'followup-input', 'followup-restoring', 'warn', 'error')
@@ -1196,8 +1213,10 @@ if (window.cardAPI?.onSiriOpen) {
     // .submitted; we just leave it.
     const q = String(payload?.q || '').trim()
     if (q && !inFlightQ) inFlightQ = q
+    if (q) setSubmittedQuestion(q)
     if (!inputActive) {
       cardInput.value = q
+      if (!q) clearSubmittedQuestion()
       cardInput.disabled = true
       card.classList.add('submitted')
     }

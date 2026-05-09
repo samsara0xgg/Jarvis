@@ -166,6 +166,11 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
   position: relative;
 }
 
+.question-text {
+  display: none;
+  min-width: 0;
+}
+
 .card input {
   flex: 1;
   height: 100%;
@@ -263,16 +268,36 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
    Driven by .card.submitted class. The same input element becomes the breadcrumb,
    sized down to 11.5px / 0.48 alpha. Answer area opens below. (motion-reel L368-376) */
 .card.submitted .row {
-  height: 36px;
-  padding-top: 14px;
+  min-height: 38px;
+  height: auto;
+  align-items: flex-start;
+  padding-top: 12px;
+  padding-bottom: 8px;
   padding-left: 38px;
-  padding-right: 88px;
+  padding-right: 92px;
   gap: 0;
 }
+.card.submitted .input-wrap {
+  align-items: flex-start;
+}
 .card.submitted input {
+  display: none;
   font-size: 11.5px;
   color: rgba(255, 255, 255, 0.48);
   font-weight: 400;
+}
+.card.submitted .question-text {
+  display: block;
+  width: 100%;
+  padding-top: 1px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.56);
+  font-weight: 400;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .card.submitted .ghost     { display: none; }
 .card.submitted .waveform  { width: 0; opacity: 0; }
