@@ -1,0 +1,53 @@
+name: InherentCard
+options:
+  bundleIdPrefix: com.allen.jarvis
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    PRODUCT_BUNDLE_IDENTIFIER: com.allen.jarvis.inherent
+    INFOPLIST_FILE: InherentCard/Info.plist
+    ENABLE_HARDENED_RUNTIME: NO
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+targets:
+  InherentCard:
+    type: application
+    platform: macOS
+    sources:
+      - path: InherentCard
+        excludes:
+          - "Resources/**"
+      - path: InherentCard/Resources/cardAPIShim.js
+        buildPhase: resources
+      - path: InherentCard/Resources/consoleBridge.js
+        buildPhase: resources
+    settings:
+      base:
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
+  InherentCardTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: InherentCardTests
+    dependencies:
+      - target: InherentCard
+    settings:
+      base:
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        OTHER_CODE_SIGN_FLAGS: "--deep"
+        INFOPLIST_FILE: ""
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  InherentCard:
+    build:
+      targets:
+        InherentCard: all
+        InherentCardTests: [test]
+    test:
+      targets:
+        - InherentCardTests
