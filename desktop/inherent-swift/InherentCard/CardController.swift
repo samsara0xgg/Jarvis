@@ -236,7 +236,17 @@ final class CardController: NSObject, IPCBridgeDelegate {
     }
     let source = DispatchSource.makeFileSystemObjectSource(
       fileDescriptor: fd,
-      eventMask: [.write, .extend, .delete, .rename, .attrib],
+      // .attrib excluded: macOS background services (Spotlight xattrs, APFS
+      // atime updates, etc.) and webView.reload()'s own file reads create
+      // a self-trigger loop without any real content change. The remaining
+      // four masks cover every real edit path:
+      //   - text editor save  -> .write (in-place) or .delete+.rename (atomic)
+      //   - git checkout      -> .delete+.rename
+      //   - truncate/extend   -> .extend
+      // Verified empirically: chflags hidden/nohidden (only fires .attrib)
+      // triggered 4 reloads in 1s on the previous mask; idle 60s with this
+      // mask yields 0 spontaneous reloads.
+      eventMask: [.write, .extend, .delete, .rename],
       queue: DispatchQueue.main
     )
     source.setEventHandler { [weak self, weak source] in
