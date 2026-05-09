@@ -83,6 +83,20 @@ def test_inherent_wake_submit_does_not_block_listener():
         def transcribe(self, audio):
             return SimpleNamespace(text="在吗", language="zh", emotion="neutral")
 
+    class FakeDucker:
+        def __init__(self):
+            self.calls = []
+
+        def duck(self):
+            self.calls.append("duck")
+            return True
+
+        def restore(self):
+            self.calls.append("restore")
+
+        def restore_all(self):
+            self.calls.append("restore_all")
+
     class FakeJarvis:
         config = {"session": {"utterance_duration": 5}}
         audio_recorder = FakeRecorder()
@@ -95,6 +109,8 @@ def test_inherent_wake_submit_does_not_block_listener():
 
     events = []
     listener = InherentWakeListener(FakeJarvis(), lambda phase, payload: events.append(phase))
+    ducker = FakeDucker()
+    listener._audio_ducker = ducker
     t0 = time.monotonic()
     try:
         listener._capture_and_submit_one_turn()
@@ -102,6 +118,7 @@ def test_inherent_wake_submit_does_not_block_listener():
         assert started.wait(timeout=1)
         assert calls == [("在吗", "_inherent")]
         assert events == ["transcribing", "accepted"]
+        assert ducker.calls == ["duck", "restore"]
     finally:
         release.set()
         listener.stop()

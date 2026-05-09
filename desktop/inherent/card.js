@@ -611,6 +611,7 @@ let voiceCapture = null
 let voiceListening = false
 let voiceStartGen = 0
 let voiceInputSnapshot = null
+let voiceAudioDucked = false
 
 function keyboardEventIsComposing(e) {
   // IME commit emits keydown with keyCode=229 on WebKit even after
@@ -805,6 +806,37 @@ function getVoiceCapture() {
   return voiceCapture
 }
 
+async function duckSystemAudioForVoice() {
+  if (voiceAudioDucked) return
+  voiceAudioDucked = true
+  try {
+    const result = await window.cardAPI?.duckAudio?.()
+    if (result && result.ok === false) {
+      voiceAudioDucked = false
+      console.warn('[card] audio duck unavailable:', result.reason || 'unknown')
+    }
+  } catch (err) {
+    voiceAudioDucked = false
+    console.warn('[card] audio duck failed:', err?.message)
+  }
+}
+
+async function restoreSystemAudioForVoice() {
+  if (!voiceAudioDucked) return
+  voiceAudioDucked = false
+  try {
+    await window.cardAPI?.restoreAudio?.()
+  } catch (err) {
+    console.warn('[card] audio restore failed:', err?.message)
+  }
+}
+
+window.addEventListener('pagehide', () => {
+  if (!voiceAudioDucked) return
+  voiceAudioDucked = false
+  window.cardAPI?.restoreAudio?.()
+})
+
 function canStartVoiceHold() {
   if (voiceListening) return false
   if (turnPhase === 'submitting' || turnPhase === 'streaming') return false
@@ -863,13 +895,16 @@ async function beginEnterVoiceCapture() {
     turnPhase = 'listening'
     flushHeight()
 
+    await duckSystemAudioForVoice()
     await getVoiceCapture().start()
     if (gen !== voiceStartGen) {
       await getVoiceCapture().stop()
+      await restoreSystemAudioForVoice()
       return false
     }
     return true
   } catch (err) {
+    await restoreSystemAudioForVoice()
     voiceListening = false
     card.classList.remove('listening')
     restoreVoiceDraftForRetry()
@@ -898,6 +933,8 @@ async function finishEnterVoiceCapture() {
     returnToVoiceRetryState('mic error', 'error')
     console.warn('[card] voice stop failed:', err?.message)
     return
+  } finally {
+    await restoreSystemAudioForVoice()
   }
 
   if (!wavBlob || wavBlob.size <= VOICE_MIN_WAV_BYTES) {
@@ -1058,6 +1095,8 @@ function cancelActiveVoiceCapture() {
   card.classList.remove('listening')
   getVoiceCapture().stop().catch(err => {
     console.warn('[card] voice cancel failed:', err?.message)
+  }).finally(() => {
+    restoreSystemAudioForVoice()
   })
 }
 

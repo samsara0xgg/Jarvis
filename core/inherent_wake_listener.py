@@ -9,6 +9,8 @@ from typing import Any, Callable
 
 import numpy as np
 
+from core.media_ducking import SystemAudioDucker
+
 LOGGER = logging.getLogger(__name__)
 
 VoiceEvent = Callable[[str, dict[str, Any]], None]
@@ -52,6 +54,7 @@ class InherentWakeListener:
             max_workers=1,
             thread_name_prefix="jarvis-inherent-submit",
         )
+        self._audio_ducker = SystemAudioDucker.from_config(self.config)
 
     def start(self) -> None:
         """Start the background listener once."""
@@ -72,6 +75,7 @@ class InherentWakeListener:
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=timeout)
+        self._audio_ducker.restore_all()
         self._submit_executor.shutdown(wait=False, cancel_futures=True)
 
     def _emit(self, phase: str, **payload: Any) -> None:
@@ -147,7 +151,11 @@ class InherentWakeListener:
 
     def _capture_and_submit_one_turn(self) -> None:
         try:
-            audio = self.jarvis_app.audio_recorder.record(self.utterance_duration)
+            self._audio_ducker.duck()
+            try:
+                audio = self.jarvis_app.audio_recorder.record(self.utterance_duration)
+            finally:
+                self._audio_ducker.restore()
             if self._stop.is_set():
                 return
 

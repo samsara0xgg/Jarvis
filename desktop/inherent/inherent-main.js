@@ -27,8 +27,11 @@
 //     card:cancelFade
 //     card:submit       text   → POST /inherent/submit, returns {ok, reason?}
 //     card:submitVoice  wav    → POST /inherent/asr-submit, returns {ok, status, text?}
+//     card:duckAudio           → mute system output during microphone capture
+//     card:restoreAudio        → restore system output after microphone capture
 
 const { app, BrowserWindow, screen, ipcMain, globalShortcut, session } = require('electron');
+const { execFile } = require('child_process');
 const path = require('path');
 const liquidGlass = require('electron-liquid-glass');
 const WebSocketClient = require('ws');
@@ -55,6 +58,94 @@ const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000];
 // would silently auto-reset. 30s covers the longest expected LLM responses
 // (cloud streaming + tool-use loops) with margin.
 const BRIDGE_WATCHDOG_MS = 30000;
+
+let audioDuckDepth = 0;
+let audioDuckSnapshot = null;
+
+function runOsascript(script) {
+  return new Promise((resolve, reject) => {
+    execFile('/usr/bin/osascript', ['-e', script], { timeout: 2000 }, (err, stdout) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve(String(stdout || '').trim());
+    });
+  });
+}
+
+function parseVolumeSnapshot(raw) {
+  const parts = String(raw || '').trim().split(',').map(part => part.trim());
+  if (parts.length !== 2) throw new Error(`unexpected volume settings: ${raw}`);
+  const outputVolume = Math.max(0, Math.min(100, Number.parseInt(parts[0], 10)));
+  if (!Number.isFinite(outputVolume)) throw new Error(`unexpected output volume: ${raw}`);
+  return {
+    outputVolume,
+    outputMuted: parts[1].toLowerCase() === 'true'
+  };
+}
+
+async function duckSystemAudio() {
+  if (process.platform !== 'darwin') return { ok: false, reason: 'unsupported_platform' };
+  if (audioDuckDepth > 0) {
+    audioDuckDepth += 1;
+    return { ok: true };
+  }
+  let snapshot = null;
+  try {
+    snapshot = parseVolumeSnapshot(await runOsascript(`
+      set s to get volume settings
+      return (output volume of s as text) & "," & (output muted of s as text)
+    `));
+    await runOsascript(`
+      set volume output volume 0
+      try
+        set volume output muted true
+      end try
+    `);
+    audioDuckSnapshot = snapshot;
+    audioDuckDepth = 1;
+    return { ok: true };
+  } catch (err) {
+    if (snapshot) {
+      await runOsascript(`
+        set volume output volume ${snapshot.outputVolume}
+        try
+          set volume output muted ${snapshot.outputMuted ? 'true' : 'false'}
+        end try
+      `).catch(() => {});
+    }
+    audioDuckSnapshot = null;
+    audioDuckDepth = 0;
+    console.warn(`[audio-ducking] failed to duck system output: ${err?.message}`);
+    return { ok: false, reason: 'duck_failed' };
+  }
+}
+
+async function restoreSystemAudio(force = false) {
+  if (audioDuckDepth <= 0 && !force) return { ok: true };
+  if (!force) {
+    audioDuckDepth -= 1;
+    if (audioDuckDepth > 0) return { ok: true };
+  } else {
+    audioDuckDepth = 0;
+  }
+  const snapshot = audioDuckSnapshot;
+  audioDuckSnapshot = null;
+  if (!snapshot || process.platform !== 'darwin') return { ok: true };
+  try {
+    await runOsascript(`
+      set volume output volume ${snapshot.outputVolume}
+      try
+        set volume output muted ${snapshot.outputMuted ? 'true' : 'false'}
+      end try
+    `);
+    return { ok: true };
+  } catch (err) {
+    console.warn(`[audio-ducking] failed to restore system output: ${err?.message}`);
+    return { ok: false, reason: 'restore_failed' };
+  }
+}
 
 let card = null;
 let glassId = null;
@@ -422,6 +513,10 @@ ipcMain.handle('card:cancelFade', () => {
   fadeGen++;
   setCardVisible();
 });
+
+ipcMain.handle('card:duckAudio', async () => duckSystemAudio());
+
+ipcMain.handle('card:restoreAudio', async () => restoreSystemAudio());
 
 ipcMain.handle('card:submit', async (_, text) => {
   const t = String(text || '').trim();
@@ -916,6 +1011,9 @@ app.whenReady().then(() => {
 });
 
 app.on('before-quit', () => {
+  restoreSystemAudio(true).catch(err => {
+    console.warn(`[audio-ducking] quit restore failed: ${err?.message}`);
+  });
   shutdownBridge();
   globalShortcut.unregisterAll();
 });

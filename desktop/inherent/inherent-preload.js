@@ -9,6 +9,8 @@
 //   cancelFade()     ask main to abort an in-flight fade and restore opacity
 //   submit(text)     POST typed text to backend (Wave 1 input edge)
 //   submitVoice(wav) POST recorded WAV bytes to backend voice submit edge
+//   duckAudio()      mute system output during microphone capture
+//   restoreAudio()   restore system output after microphone capture
 //   onSiriOpen(cb)   subscribe to main → renderer 'siri:open' events
 //   onSiriAppend(cb) subscribe to streaming token append (path 3)
 //   onSiriDone(cb)   subscribe to streaming-finished signal
@@ -28,6 +30,8 @@ contextBridge.exposeInMainWorld('cardAPI', {
   cancelFade: () => ipcRenderer.invoke('card:cancelFade'),
   submit: (text) => ipcRenderer.invoke('card:submit', text),
   submitVoice: (wavArrayBuffer) => ipcRenderer.invoke('card:submitVoice', wavArrayBuffer),
+  duckAudio: () => ipcRenderer.invoke('card:duckAudio'),
+  restoreAudio: () => ipcRenderer.invoke('card:restoreAudio'),
 
   // Incoming (main → renderer)
   onSiriOpen: (cb) => ipcRenderer.on('siri:open', (_, payload) => cb(payload)),
