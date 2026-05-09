@@ -1,4 +1,4 @@
-"""Speech recognition — SenseVoice (sherpa-onnx) primary, Whisper fallback."""
+"""Speech recognition — SenseVoice / MLX Whisper / openai-whisper backends."""
 
 from __future__ import annotations
 
@@ -53,7 +53,9 @@ class SpeechRecognizer:
         self.language = str(configured_language) if configured_language else None
         self.logger = LOGGER
 
-        # Provider selection: sensevoice (fast, local) or local (Whisper)
+        # Provider selection: "sensevoice" (sherpa-onnx, recommended for short
+        # CN utterances), "mlx_whisper" (Apple Silicon, recommended for EN /
+        # mixed CN-EN dictation), or "local" (openai-whisper, slow fallback).
         self.provider = str(asr_config.get("provider", "local")).strip().lower()
         self.fallback_to_local = bool(asr_config.get("fallback_to_local", True))
 
@@ -64,7 +66,17 @@ class SpeechRecognizer:
         self._sensevoice_num_threads = int(asr_config.get("sensevoice_num_threads", 4))
         self._sherpa_recognizer: Any | None = None
 
-        # Whisper (lazy loaded)
+        # MLX Whisper config (Apple Silicon native, requires `mlx-whisper`)
+        self._mlx_whisper_repo = str(asr_config.get(
+            "mlx_whisper_repo", "mlx-community/whisper-large-v3-turbo",
+        ))
+        self._mlx_whisper_fp16 = bool(asr_config.get("mlx_whisper_fp16", True))
+        self._mlx_whisper_temperature = float(
+            asr_config.get("mlx_whisper_temperature", 0.0)
+        )
+        self._mlx_whisper_module: Any | None = None
+
+        # openai-whisper (lazy loaded, fallback / `local` provider)
         self._model: Any | None = None
         self._whisper_module: Any | None = None
 
@@ -100,6 +112,14 @@ class SpeechRecognizer:
                 return self._transcribe_sensevoice(normalized_audio)
             except Exception as exc:
                 self.logger.warning("SenseVoice failed: %s", exc)
+                if not self.fallback_to_local:
+                    raise
+
+        if self.provider == "mlx_whisper":
+            try:
+                return self._transcribe_mlx_whisper(normalized_audio)
+            except Exception as exc:
+                self.logger.warning("MLX Whisper failed: %s", exc)
                 if not self.fallback_to_local:
                     raise
 
@@ -213,6 +233,47 @@ class SpeechRecognizer:
         self._whisper_module = whisper
         self._model = whisper.load_model(self.model_size)
         return self._model
+
+    # ------------------------------------------------------------------
+    # MLX Whisper backend (Apple Silicon native)
+    # ------------------------------------------------------------------
+
+    def _transcribe_mlx_whisper(self, audio: np.ndarray) -> TranscriptionResult:
+        """Transcribe using mlx-whisper (Apple Silicon native, fp16)."""
+        mlx_whisper = self._load_mlx_whisper()
+        transcription = mlx_whisper.transcribe(
+            audio,
+            path_or_hf_repo=self._mlx_whisper_repo,
+            fp16=self._mlx_whisper_fp16,
+            temperature=self._mlx_whisper_temperature,
+            language=self.language,
+            verbose=False,
+        )
+        text = str(transcription.get("text", "")).strip()
+        language = str(transcription.get("language") or self.language or "unknown")
+        confidence = self._estimate_confidence(transcription)
+        self.logger.info(
+            "MLX Whisper: language=%s confidence=%.3f text=%r",
+            language, confidence, text,
+        )
+        return TranscriptionResult(text=text, language=language, confidence=confidence)
+
+    def _load_mlx_whisper(self) -> Any:
+        """Lazy-load the mlx_whisper module (model is fetched on first transcribe)."""
+        if self._mlx_whisper_module is not None:
+            return self._mlx_whisper_module
+
+        try:
+            import mlx_whisper
+        except ImportError as exc:
+            raise RuntimeError(
+                "mlx-whisper is required for provider=mlx_whisper but is not installed. "
+                "Install with: uv pip install mlx-whisper"
+            ) from exc
+
+        self.logger.info("Loaded mlx_whisper (repo=%s)", self._mlx_whisper_repo)
+        self._mlx_whisper_module = mlx_whisper
+        return self._mlx_whisper_module
 
     def _estimate_confidence(self, transcription: dict[str, Any]) -> float:
         """Estimate a confidence score from Whisper segment log probabilities."""

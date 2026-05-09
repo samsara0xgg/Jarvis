@@ -268,3 +268,95 @@ def test_auto_degrade_when_model_missing(tmp_path) -> None:
     config = {"asr": {"provider": "sensevoice", "sensevoice_model_dir": str(tmp_path / "nonexistent")}}
     recognizer = SpeechRecognizer(config)
     assert recognizer.provider == "local"
+
+
+# --- MLX Whisper backend tests ---
+
+
+def test_mlx_whisper_provider_dispatches_to_module() -> None:
+    """provider=mlx_whisper should route transcription through mlx_whisper.transcribe."""
+    config = {"asr": {"provider": "mlx_whisper", "language": "zh"}}
+    recognizer = SpeechRecognizer(config)
+    assert recognizer.provider == "mlx_whisper"
+
+    fake_module = SimpleNamespace(transcribe=lambda audio, **kw: {
+        "text": "MLX 转写结果",
+        "language": "zh",
+        "segments": [{"avg_logprob": -0.2, "no_speech_prob": 0.05}],
+    })
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "mlx_whisper", fake_module)
+        result = recognizer.transcribe(np.ones(16000, dtype=np.float32))
+
+    assert result.text == "MLX 转写结果"
+    assert result.language == "zh"
+    assert result.confidence > 0
+
+
+def test_mlx_whisper_passes_config_params() -> None:
+    """mlx_whisper backend should pass repo / fp16 / temperature from config."""
+    config = {"asr": {
+        "provider": "mlx_whisper",
+        "mlx_whisper_repo": "custom/repo",
+        "mlx_whisper_fp16": False,
+        "mlx_whisper_temperature": 0.5,
+        "language": "en",
+    }}
+    recognizer = SpeechRecognizer(config)
+
+    captured: dict[str, object] = {}
+
+    def _fake_transcribe(audio, **kwargs):
+        captured.update(kwargs)
+        return {"text": "ok", "language": "en", "segments": []}
+
+    fake_module = SimpleNamespace(transcribe=_fake_transcribe)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "mlx_whisper", fake_module)
+        recognizer.transcribe(np.ones(16000, dtype=np.float32))
+
+    assert captured["path_or_hf_repo"] == "custom/repo"
+    assert captured["fp16"] is False
+    assert captured["temperature"] == 0.5
+    assert captured["language"] == "en"
+
+
+def test_mlx_whisper_missing_module_raises() -> None:
+    """A missing mlx-whisper dependency should surface as a descriptive runtime error."""
+    config = {"asr": {"provider": "mlx_whisper", "fallback_to_local": False}}
+    recognizer = SpeechRecognizer(config)
+    original_import = builtins.__import__
+
+    def _fake_import(name, globals_dict=None, locals_dict=None, fromlist=(), level=0):
+        if name == "mlx_whisper":
+            raise ImportError("mlx_whisper not installed")
+        return original_import(name, globals_dict, locals_dict, fromlist, level)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(builtins, "__import__", _fake_import)
+        mp.delitem(sys.modules, "mlx_whisper", raising=False)
+
+        with pytest.raises(RuntimeError, match="mlx-whisper"):
+            recognizer.transcribe(np.ones(8, dtype=np.float32))
+
+
+def test_mlx_whisper_falls_back_to_whisper_on_failure() -> None:
+    """If mlx_whisper raises and fallback_to_local=True, fall through to Whisper."""
+    config = {"asr": {"provider": "mlx_whisper", "fallback_to_local": True, "language": "zh"}}
+    recognizer = SpeechRecognizer(config)
+
+    def _fail(audio, **kwargs):
+        raise RuntimeError("mlx_whisper crashed")
+
+    fake_mlx = SimpleNamespace(transcribe=_fail)
+    fake_model = _FakeWhisperModel([{"text": "回退成功", "language": "zh", "segments": []}])
+    fake_whisper = SimpleNamespace(load_model=lambda s: fake_model)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "mlx_whisper", fake_mlx)
+        mp.setitem(sys.modules, "whisper", fake_whisper)
+        result = recognizer.transcribe(np.ones(16000, dtype=np.float32))
+
+    assert result.text == "回退成功"

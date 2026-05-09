@@ -65,7 +65,10 @@ audio:
 # 自动语音识别（ASR）
 # ----------------------------------------------------------------------------
 asr:
-  # ASR 引擎: "sensevoice" (本地快，推荐) 或 "local" (Whisper 离线)
+  # ASR 引擎:
+  #   sensevoice  - sherpa-onnx INT8, 短中文指令首选 (M2 Max RTF ~0.015)
+  #   mlx_whisper - Apple Silicon 加速 Whisper, 中英混杂/技术词友好
+  #   local       - openai-whisper (PyTorch), 慢, 仅作回退
   provider: sensevoice
 
   # SenseVoice 配置 (sherpa-onnx)
@@ -73,7 +76,12 @@ asr:
   sensevoice_num_threads: 4
   fallback_to_local: true
 
-  # Whisper 配置 (回退用)
+  # MLX Whisper 配置 (provider=mlx_whisper)
+  mlx_whisper_repo: mlx-community/whisper-large-v3-turbo
+  mlx_whisper_fp16: true
+  mlx_whisper_temperature: 0.0
+
+  # openai-whisper 配置 (provider=local, 回退用)
   model_size: base
   language: zh
 
@@ -355,6 +363,13 @@ wake_word:
   # 仅当观测到 TV/音乐误唤醒时调高（建议 0.3-0.5）。
   # XVF3800 硬件已做 NS+AEC，保持 0.0；调高可能导致远场/轻声漏检。
   vad_threshold: 0.0
+
+# ----------------------------------------------------------------------------
+# 语音输入时系统音频压低
+# ----------------------------------------------------------------------------
+audio_ducking:
+  # 语音录音期间把 macOS 系统输出设为 0 + 静音，录音结束后恢复原状态。
+  enabled: true
 
 # ----------------------------------------------------------------------------
 # 会话管理
