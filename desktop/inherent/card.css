@@ -152,7 +152,13 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
   gap: 12px;
   position: relative;
   z-index: 1;
-  transition: height 0.32s ease, padding 0.32s ease;
+  transition:
+    height 0.32s ease,
+    padding 0.32s ease,
+    gap 0.26s ease,
+    opacity 0.24s ease,
+    transform 0.34s cubic-bezier(0.32, 0.94, 0.6, 1),
+    box-shadow 0.26s ease;
 }
 
 .input-wrap {
@@ -241,7 +247,7 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
   box-shadow: 0 0 8px rgba(94, 200, 255, 0.8);
   flex-shrink: 0;
   opacity: 0;
-  transition: opacity 0.3s ease, background 0.3s ease, box-shadow 0.3s ease;
+  transition: width 0.26s ease, opacity 0.3s ease, background 0.3s ease, box-shadow 0.3s ease;
 }
 .card.ambient.listening .dot {
   opacity: 1;
@@ -262,6 +268,9 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
 .card.submitted .row {
   height: 36px;
   padding-top: 14px;
+  padding-left: 38px;
+  padding-right: 88px;
+  gap: 0;
 }
 .card.submitted input {
   font-size: 11.5px;
@@ -270,7 +279,7 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
 }
 .card.submitted .ghost     { display: none; }
 .card.submitted .waveform  { width: 0; opacity: 0; }
-.card.submitted .dot       { opacity: 0; }
+.card.submitted .dot       { width: 0; opacity: 0; }
 
 /* =============== State pill (top-right, motion-reel L300-355) =============== */
 .state-pill {
@@ -345,7 +354,10 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
   position: relative;
   z-index: 1;
   transition: max-height 0.5s cubic-bezier(0.32, 0.94, 0.6, 1),
-              padding 0.32s ease;
+              padding 0.32s ease,
+              opacity 0.26s ease,
+              transform 0.36s cubic-bezier(0.32, 0.94, 0.6, 1),
+              filter 0.22s ease;
 }
 .card.submitted .answer {
   max-height: 480px;
@@ -354,7 +366,63 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
      auto so the wheel can scroll the answer's interior; the global
      ::-webkit-scrollbar { display:none } above keeps the bar invisible. */
   overflow-y: auto;
-  padding: 0 var(--pad-x) var(--pad-y);
+  padding: 0 34px var(--pad-y) 38px;
+}
+.card.followup-entering .answer {
+  opacity: 0;
+  transform: translateY(-10px) scale(0.992);
+  filter: blur(1px);
+}
+.card.followup-entering .row {
+  opacity: 0.86;
+  transform: translateY(-3px) scale(0.988);
+}
+.card.followup-input .row {
+  height: 58px;
+  padding-left: 40px;
+  padding-right: 24px;
+  gap: 0;
+  animation: followup-row-ready 360ms cubic-bezier(0.32, 0.94, 0.6, 1) both;
+  box-shadow: 0 -1px 0 rgba(94, 200, 255, 0.08) inset;
+}
+.card.followup-input .dot {
+  width: 0;
+  opacity: 0;
+}
+.card.followup-input .waveform {
+  width: 0;
+  opacity: 0;
+}
+.card.followup-input input {
+  color: rgba(255, 255, 255, 0.96);
+  font-weight: 500;
+}
+.card.followup-input input::placeholder {
+  color: rgba(94, 200, 255, 0.50);
+}
+.card.followup-entering .chips-ext .chip:last-child,
+.card.followup-input .chips-ext .chip:last-child {
+  background: rgba(94, 200, 255, 0.11);
+  box-shadow: inset 2px 0 0 0 rgba(94, 200, 255, 0.55);
+}
+.card.followup-restoring .answer {
+  animation: response-return 320ms cubic-bezier(0.32, 0.94, 0.6, 1) both;
+}
+.card.followup-restoring .row {
+  animation: response-row-return 260ms cubic-bezier(0.32, 0.94, 0.6, 1) both;
+}
+
+@keyframes followup-row-ready {
+  from { opacity: 0.86; transform: translateY(-3px) scale(0.988); }
+  to   { opacity: 1;    transform: translateY(0) scale(1); }
+}
+@keyframes response-return {
+  from { opacity: 0; transform: translateY(-6px) scale(0.992); filter: blur(1px); }
+  to   { opacity: 1; transform: translateY(0) scale(1);     filter: blur(0); }
+}
+@keyframes response-row-return {
+  from { opacity: 0.90; transform: translateY(2px) scale(1.006); }
+  to   { opacity: 1;    transform: translateY(0) scale(1); }
 }
 
 .answer:empty {
@@ -874,9 +942,7 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
   letter-spacing: 0.04em;
   overflow: hidden;
   opacity: 0;
-  /* Visible pill is scaled to 70% of design-lab dimensions; hidden state
-     adds a slight extra shrink + lift for the entry animation. */
-  transform: translateY(-8px) scale(0.672);
+  transform: translateY(-8px) scale(0.96);
   transform-origin: center bottom;
   transition:
     opacity 240ms ease,
@@ -886,7 +952,7 @@ html, body { scrollbar-width: none; -ms-overflow-style: none; }
 .q2x7-hover-region:hover .q2x7-pill,
 .q2x7-hover-region.revealed .q2x7-pill {
   opacity: 1;
-  transform: translateY(0) scale(0.7);
+  transform: translateY(0) scale(1);
   pointer-events: auto;
 }
 .q2x7-pill-history {

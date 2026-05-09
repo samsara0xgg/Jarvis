@@ -118,6 +118,9 @@ function updatePillCount() {
   // Pill stays hover-only — no auto-reveal. The user must hover the region
   // above the card top to see / interact with the history affordance.
 }
+function setPillCount(n) {
+  pillCount.textContent = String(n)
+}
 
 function pushTurn(q, a) {
   if (!q || !a) return
@@ -142,6 +145,7 @@ function cascadeClear() {
     flushHeightFor(420)
     return
   }
+  setPillCount(0)
   // Stagger the fade-out from newest to oldest, then wipe DOM after the last
   // chip's transition finishes. Drive resize per-frame for the full duration.
   chips.slice().reverse().forEach((c, i) => {
@@ -149,7 +153,7 @@ function cascadeClear() {
   })
   const totalMs = chips.length * 50 + 380
   setTimeout(() => {
-    chipsContainer.innerHTML = ''
+    chips.forEach(c => c.remove())
     updatePillCount()
   }, totalMs)
   flushHeightFor(totalMs + 60)
@@ -463,49 +467,176 @@ let inputActive = false
 // before the first token, so transitioning at .start makes the thinking aura
 // look like it stops "too early").
 let streamingStarted = false
+let turnPhase = 'idle'
+let inputTransitionGen = 0
+let followupSnapshot = null
+let followupDraftActive = false
+const FOLLOWUP_ENTER_MS = 240
+const FOLLOWUP_RESTORE_MS = 340
 
-function resetInputState() {
+function keyboardEventIsComposing(e) {
+  // IME commit emits keydown with keyCode=229 on WebKit even after
+  // compositionend has fired (isComposing is false at that point), so both
+  // checks are needed to avoid pinyin text getting submitted.
+  return e.isComposing || e.keyCode === 229
+}
+
+function isEditableTarget(target) {
+  return !!target?.closest?.('input, textarea, [contenteditable="true"]')
+}
+
+function canEnterFollowupInput() {
+  if (!cardInput.disabled) return false
+  if (turnPhase === 'submitting' || turnPhase === 'streaming' || streamingStarted) return false
+  if (card.classList.contains('thinking-fluent') || card.classList.contains('thinking-deep')) return false
+  if (turnPhase === 'done' || turnPhase === 'error') return true
+  // DOM recovery path: hot reloads or module re-evaluation can reset JS-only
+  // turnPhase while leaving the rendered completed answer on screen. Treat a
+  // disabled submitted card with visible answer content as a completed turn.
+  return root.textContent.trim().length > 0
+}
+
+function clearAnswerContent() {
+  contentGen += 1
+  root.innerHTML = ''
+  prevVisibleText = ''
+  charBirthTimes = []
+}
+
+function currentStateVariant() {
+  return STATE_VARIANTS.find(v => statePill.classList.contains(v)) || ''
+}
+
+function captureResponseSnapshot() {
+  const visibleText = root.textContent || ''
+  const answerText = target || shown || visibleText
+  if (!answerText.trim() && !visibleText.trim()) return null
+  return {
+    inputValue: cardInput.value,
+    inputPlaceholder: cardInput.placeholder,
+    answerHtml: root.innerHTML,
+    answerText,
+    visibleText,
+    prevVisibleText,
+    charBirthTimes: charBirthTimes.slice(),
+    stateLabel: statePill.textContent || (turnPhase === 'error' ? 'error' : 'done'),
+    stateVariant: currentStateVariant() || (turnPhase === 'error' ? 'error' : 'success'),
+    phase: turnPhase === 'error' ? 'error' : 'done'
+  }
+}
+
+function clearFollowupDraft() {
+  followupSnapshot = null
+  followupDraftActive = false
+}
+
+function restoreFollowupSnapshot() {
+  if (!followupSnapshot) return false
+  const snapshot = followupSnapshot
+  const gen = ++inputTransitionGen
+  cancelFade()
+  window.cardAPI?.cancelFade?.()
+  clearDrip()
+  hidePopoverNow()
+
+  followupDraftActive = false
+  cardInput.value = snapshot.inputValue || ''
+  cardInput.placeholder = snapshot.inputPlaceholder || '问点什么…'
+  cardInput.disabled = true
+  cardInput.blur()
+  card.classList.remove('followup-entering', 'followup-input', 'listening', 'warn', 'error')
+  card.classList.add('submitted', 'followup-restoring')
+  thinkOff()
+  setState(snapshot.stateLabel || 'done', snapshot.stateVariant || 'success')
+
+  contentGen += 1
+  target = snapshot.answerText || snapshot.visibleText || ''
+  shown = target
+  prevVisibleText = snapshot.prevVisibleText || snapshot.visibleText || target
+  charBirthTimes = snapshot.charBirthTimes.slice()
+  root.innerHTML = snapshot.answerHtml || ''
+  if (!root.innerHTML && target) root.textContent = target
+
+  inputActive = false
+  streamingStarted = false
+  turnPhase = snapshot.phase || 'done'
+  flushHeight()
+  flushHeightFor(FOLLOWUP_RESTORE_MS + 220)
+  setTimeout(() => {
+    if (gen === inputTransitionGen) card.classList.remove('followup-restoring')
+  }, FOLLOWUP_RESTORE_MS)
+  scheduleFade(5000)
+  return true
+}
+
+function resetInputState({ placeholder = '问点什么…' } = {}) {
   cardInput.value = ''
   cardInput.disabled = false
-  cardInput.placeholder = '问点什么…'
-  card.classList.remove('submitted', 'listening', 'warn', 'error')
+  cardInput.placeholder = placeholder
+  card.classList.remove('submitted', 'listening', 'warn', 'error', 'followup-entering', 'followup-input', 'followup-restoring')
   thinkOff()
 }
 
-function enterInputMode() {
+function enterInputMode({ followup = false } = {}) {
+  const gen = ++inputTransitionGen
+  if (followup) {
+    followupSnapshot = captureResponseSnapshot()
+    followupDraftActive = false
+  } else {
+    clearFollowupDraft()
+  }
   cancelFade()
+  window.cardAPI?.cancelFade?.()
   clearDrip()
   target = ''
   shown = ''
   prevVisibleText = ''
   charBirthTimes = []
-  resetInputState()
-  setState('idle', 'idle')
-  // setContent('') early-returns without flushHeight, so the window stays at
-  // its previous (larger) bounds. Clear the answer DOM and force a flush so
-  // the window shrinks to just the input row.
-  root.innerHTML = ''
-  flushHeight()
-  // .row has a 0.32s height transition (and .answer a 0.5s max-height
-  // transition). When entering from .submitted state the immediate
-  // flushHeight above measures mid-animation (.row at ~38px instead of
-  // its final 64px), so main clamps the window to 60px and the final
-  // 64px row overflows → scrollbar. Re-flush after transitions settle.
-  setTimeout(() => { flushHeight() }, 540)
-  // Defer focus until the height/layout settles so the OS doesn't focus
-  // a still-resizing window (panel + showInactive race observed otherwise).
-  requestAnimationFrame(() => cardInput.focus())
-  inputActive = true
+  hidePopoverNow()
+
+  const finish = () => {
+    if (gen !== inputTransitionGen) return
+    resetInputState({ placeholder: followup ? '继续问…' : '问点什么…' })
+    if (followup) card.classList.add('followup-input')
+    setState(followup ? 'input' : 'idle', followup ? '' : 'idle')
+    clearAnswerContent()
+    flushHeight()
+    // .row has a 0.32s height transition and .answer a 0.5s max-height
+    // transition. Poll through the transition so the native panel shrinks in
+    // step instead of measuring one mid-animation frame and leaving overflow.
+    flushHeightFor(followup ? 700 : 540)
+    requestAnimationFrame(() => cardInput.focus())
+    inputActive = true
+    turnPhase = 'input'
+    followupDraftActive = followup && !!followupSnapshot
+  }
+
+  if (followup && card.classList.contains('submitted')) {
+    card.classList.add('followup-entering')
+    setState('input')
+    turnPhase = 'transition'
+    flushHeightFor(FOLLOWUP_ENTER_MS + 160)
+    setTimeout(finish, FOLLOWUP_ENTER_MS)
+  } else {
+    finish()
+  }
 }
 
 function submitInputText() {
   const text = cardInput.value.trim()
-  if (!text) return
+  if (!text) {
+    if (followupDraftActive) restoreFollowupSnapshot()
+    return
+  }
+  inputTransitionGen += 1
+  clearFollowupDraft()
   inFlightQ = text
   cardInput.disabled = true
+  card.classList.remove('followup-entering', 'followup-input', 'followup-restoring')
   card.classList.add('submitted')
   setState('thinking', 'thinking')
   thinkFluent()
+  turnPhase = 'submitting'
   // Width-morph (Q2 = B): the input element itself shrinks into the breadcrumb
   // via .submitted CSS — no separate node, no DOM swap. The streaming answer
   // expands below in the existing #answer pane.
@@ -518,22 +649,35 @@ function submitInputText() {
       const reason = result?.reason || 'unknown'
       const label = reason === 'network' ? 'offline' : `error · ${reason}`
       setState(label, 'error')
+      turnPhase = 'error'
       // Auto-clear after a beat so the user can try again without a manual reset.
       scheduleFade(3000)
     }
   }).catch(err => {
     thinkOff()
     setState('error', 'error')
+    turnPhase = 'error'
     scheduleFade(3000)
     console.warn('[card] submit failed:', err?.message)
   })
 }
 
 cardInput.addEventListener('keydown', (e) => {
-  if (e.isComposing) return  // IME composition, don't intercept
+  if (keyboardEventIsComposing(e)) return
   if (e.key === 'Enter') {
     e.preventDefault()
     submitInputText()
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    window.cardAPI?.close?.()
+  }
+})
+
+document.addEventListener('keydown', (e) => {
+  if (keyboardEventIsComposing(e) || isEditableTarget(e.target)) return
+  if (e.key === 'Enter' && canEnterFollowupInput()) {
+    e.preventDefault()
+    enterInputMode({ followup: true })
   } else if (e.key === 'Escape') {
     e.preventDefault()
     window.cardAPI?.close?.()
@@ -545,6 +689,9 @@ cardInput.addEventListener('keydown', (e) => {
 // scratch preview shell may or may not expose these — guard with optional chaining.
 if (window.cardAPI?.onSiriOpen) {
   window.cardAPI.onSiriOpen(async (payload) => {
+    inputTransitionGen += 1
+    clearFollowupDraft()
+    card.classList.remove('followup-entering', 'followup-input', 'followup-restoring')
     clearDrip()
     target = ''
     shown = ''
@@ -565,6 +712,7 @@ if (window.cardAPI?.onSiriOpen) {
     // to streaming when the first token actually arrives (onSiriAppend below).
     setState('thinking', 'thinking')
     thinkFluent()
+    turnPhase = 'submitting'
     const streaming = !!payload?.streaming
     const content = payload?.content ?? ''
     if (streaming) {
@@ -577,6 +725,7 @@ if (window.cardAPI?.onSiriOpen) {
       streamingStarted = true
       thinkOff()
       setState('streaming', 'thinking')
+      turnPhase = 'streaming'
       await setContent(content)
     }
   })
@@ -588,6 +737,7 @@ if (window.cardAPI?.onSiriAppend) {
       streamingStarted = true
       thinkOff()
       setState('streaming', 'thinking')
+      turnPhase = 'streaming'
     }
     target += payload.token
     if (!dripTimer) startDrip()
@@ -602,6 +752,7 @@ if (window.cardAPI?.onSiriDone) {
     setState('done', 'success')
     inputActive = false
     streamingStarted = false
+    turnPhase = 'done'
     // Pair the in-flight Q with the final A and append a history chip.
     // Voice-path Q isn't surfaced here yet (siri:open payload has no
     // transcript) — those turns get a placeholder until the bridge sends Q.
@@ -619,6 +770,8 @@ if (window.cardAPI?.onSiriDone) {
 }
 if (window.cardAPI?.onSiriReset) {
   window.cardAPI.onSiriReset(async () => {
+    inputTransitionGen += 1
+    clearFollowupDraft()
     clearDrip()
     target = ''
     shown = ''
@@ -627,6 +780,7 @@ if (window.cardAPI?.onSiriReset) {
     setState('')
     inputActive = false
     streamingStarted = false
+    turnPhase = 'idle'
     // Dismiss popover on turn boundary so the new turn isn't confused with history.
     hidePopoverNow()
     // resetInputState removes .submitted/.listening/.warn/.error so .row /
