@@ -74,6 +74,14 @@ class SpeechRecognizer:
         self._mlx_whisper_temperature = float(
             asr_config.get("mlx_whisper_temperature", 0.0)
         )
+        # initial_prompt biases the decoder toward the prompt's writing system.
+        # Whisper's CN training set mixes simplified and traditional;
+        # large-v3-turbo defaults toward traditional on ambiguous tokens.
+        # Feeding a short simplified-Chinese hint flips the prior.
+        self._mlx_whisper_initial_prompt = str(asr_config.get(
+            "mlx_whisper_initial_prompt",
+            "以下是普通话的简体中文转录。",
+        )) or None
         self._mlx_whisper_module: Any | None = None
 
         # openai-whisper (lazy loaded, fallback / `local` provider)
@@ -247,6 +255,7 @@ class SpeechRecognizer:
             fp16=self._mlx_whisper_fp16,
             temperature=self._mlx_whisper_temperature,
             language=self.language,
+            initial_prompt=self._mlx_whisper_initial_prompt,
             verbose=False,
         )
         text = str(transcription.get("text", "")).strip()

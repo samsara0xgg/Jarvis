@@ -80,6 +80,10 @@ asr:
   mlx_whisper_repo: mlx-community/whisper-large-v3-turbo
   mlx_whisper_fp16: true
   mlx_whisper_temperature: 0.0
+  # initial_prompt 是 Whisper 的"前文锚点"——decoder 看到这段提示后，会假设
+  # 当前音频是这段话之后的延续，从而偏向同款书写系统。large-v3-turbo 在中文
+  # 模糊 token 上默认倒向繁体（"什麼"/"當"/"後"），用一段简体中文当 anchor 把 prior 翻回简体。
+  mlx_whisper_initial_prompt: "以下是普通话的简体中文转录。"
 
   # openai-whisper 配置 (provider=local, 回退用)
   model_size: base
