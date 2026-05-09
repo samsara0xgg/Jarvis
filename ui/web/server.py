@@ -959,6 +959,14 @@ def create_app(jarvis_app: Any) -> FastAPI:
             indices = np.linspace(0, len(data) - 1, target_len)
             data = np.interp(indices, np.arange(len(data)), data).astype(np.float32)
 
+        # Drop silent / too-short audio before ASR. Whisper hallucinates
+        # confidently on near-silent input ("请不吝点赞..." prior pollution and
+        # "X X X X" repetition loops). Same gate the wake listener uses.
+        quality_ok, qmsg = jarvis_app.audio_recorder.is_quality_ok(data)
+        if not quality_ok:
+            LOGGER.info("ASR dropped low-quality audio: %s", qmsg)
+            return {"text": "", "emotion": ""}
+
         result = jarvis_app.speech_recognizer.transcribe(data)
         text = result.text or ""
         lang = getattr(result, "language", "") or ""
