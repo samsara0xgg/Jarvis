@@ -111,3 +111,11 @@ data/*.db
 .superpowers/
 desktop/scratch/
 uv.lock
+
+# Repo-root scratch (design screenshots, recordings, in-progress task notes)
+/*.png
+/*.mov
+/findings.md
+/progress.md
+/task_plan.md
+.playwright-mcp/
