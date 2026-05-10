@@ -1606,10 +1606,15 @@ struct NativeCardTextField: NSViewRepresentable {
     field.font = NSFont.systemFont(ofSize: 15, weight: .medium)
     field.textColor = NSColor.white.withAlphaComponent(0.96)
     field.placeholderString = placeholder
+    field.target = context.coordinator
+    field.action = #selector(Coordinator.commitTextField(_:))
     field.onEnterDown = onEnterDown
     field.onEnterUp = onEnterUp
     field.onEscape = onEscape
     field.onPasteImage = onPasteImage
+    context.coordinator.onEnterDown = onEnterDown
+    context.coordinator.onEnterUp = onEnterUp
+    context.coordinator.onEscape = onEscape
     return field
   }
 
@@ -1619,6 +1624,8 @@ struct NativeCardTextField: NSViewRepresentable {
     }
     nsView.placeholderString = placeholder
     nsView.isEnabled = !isDisabled
+    nsView.target = context.coordinator
+    nsView.action = #selector(Coordinator.commitTextField(_:))
     if isDisabled {
       nsView.resignEditingIfNeeded()
     }
@@ -1626,6 +1633,9 @@ struct NativeCardTextField: NSViewRepresentable {
     nsView.onEnterUp = onEnterUp
     nsView.onEscape = onEscape
     nsView.onPasteImage = onPasteImage
+    context.coordinator.onEnterDown = onEnterDown
+    context.coordinator.onEnterUp = onEnterUp
+    context.coordinator.onEscape = onEscape
   }
 
   func makeCoordinator() -> Coordinator {
@@ -1634,6 +1644,9 @@ struct NativeCardTextField: NSViewRepresentable {
 
   final class Coordinator: NSObject, NSTextFieldDelegate {
     @Binding var text: String
+    var onEnterDown: (() -> Void)?
+    var onEnterUp: (() -> Void)?
+    var onEscape: (() -> Void)?
 
     init(text: Binding<String>) {
       _text = text
@@ -1642,6 +1655,28 @@ struct NativeCardTextField: NSViewRepresentable {
     func controlTextDidChange(_ obj: Notification) {
       guard let field = obj.object as? NSTextField else { return }
       text = field.stringValue
+    }
+
+    @objc func commitTextField(_ sender: NSTextField) {
+      text = sender.stringValue
+      onEnterDown?()
+      onEnterUp?()
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+      switch commandSelector {
+      case #selector(NSResponder.insertNewline(_:)),
+           #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+        text = control.stringValue
+        onEnterDown?()
+        onEnterUp?()
+        return true
+      case #selector(NSResponder.cancelOperation(_:)):
+        onEscape?()
+        return true
+      default:
+        return false
+      }
     }
   }
 }

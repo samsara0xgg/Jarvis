@@ -594,7 +594,11 @@ final class NativeCardController: NSObject {
           self.userHidden = false
           self.fade.showInstant()
           self.panel.ignoresMouseEvents = false
-          self.model.handleGlobalEnterDown()
+          if self.isTextFieldFirstResponder {
+            self.model.handleEnterDown { [weak self] in self?.model.submitInputText() }
+          } else {
+            self.model.handleGlobalEnterDown()
+          }
         }
         return nil
       }
