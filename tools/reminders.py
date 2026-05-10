@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -91,6 +92,25 @@ def create_reminder(content: str, remind_at: str = "") -> str:
                 },
             },
             error_code="missing_due_at",
+            outcome_type=OUTCOME_FAILED,
+            verified=False,
+            verification_source="none",
+            claim_policy=_failed_claim_policy(),
+        )
+    user_text = str(_EXECUTION_CONTEXT.get("user_text") or "").strip()
+    if user_text and not _user_text_has_explicit_time(user_text):
+        return make_tool_result(
+            NEEDS_CLARIFICATION,
+            "What exact time should I remind you?",
+            data={
+                "remind_at": remind_at,
+                "missing_fields": ["due_at.time"],
+                "clarification": {
+                    "question": "What exact time should I remind you?",
+                    "missing_fields": ["due_at.time"],
+                },
+            },
+            error_code="missing_explicit_time_in_user_text",
             outcome_type=OUTCOME_FAILED,
             verified=False,
             verification_source="none",
@@ -329,6 +349,21 @@ def _normalize_due_at(raw: str) -> tuple[str, str]:
         parsed = parsed.astimezone()
     timezone = parsed.tzname() or "local"
     return parsed.isoformat(), timezone
+
+
+def _user_text_has_explicit_time(text: str) -> bool:
+    """Return True only when the user utterance includes a concrete time."""
+    normalized = text.strip().lower()
+    explicit_patterns = (
+        r"\d{1,2}\s*[:：]\s*\d{2}",
+        r"\d{1,2}\s*(?:am|pm)\b",
+        r"\b(?:at|by)\s+\d{1,2}(?:\s*(?:am|pm))?\b",
+        r"[零〇一二两三四五六七八九十\d]{1,3}\s*点(?:半|[零〇一二两三四五六七八九十\d]{1,3}\s*分?)?",
+        r"\d{1,2}\s*点(?:半|\d{1,2}\s*分?)?",
+        r"\d+\s*(?:秒|分钟|小时|天|周|礼拜|星期)\s*(?:后|以后|之后)",
+        r"[零〇一二两三四五六七八九十两]+(?:个)?\s*(?:小时|分钟|天|周|礼拜|星期)\s*(?:后|以后|之后)",
+    )
+    return any(re.search(pattern, normalized) for pattern in explicit_patterns)
 
 
 def _failed_claim_policy() -> dict[str, list[str]]:

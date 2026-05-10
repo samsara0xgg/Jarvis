@@ -1022,6 +1022,7 @@ class JarvisApp:
                             regex_match.tool_args,
                             user_role=user_role,
                             caller="regex_router",
+                            user_text=text,
                         )
                     finally:
                         regex_tool_call_log.append({
@@ -1085,6 +1086,7 @@ class JarvisApp:
                 _tool_result: Any = ""
                 try:
                     kw.setdefault("caller", "llm")
+                    kw.setdefault("user_text", text)
                     _tool_result = self.tool_registry.execute(name, args, **kw)
                     return _tool_result
                 except Exception as exc:

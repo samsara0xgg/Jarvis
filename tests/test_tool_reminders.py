@@ -31,6 +31,7 @@ def _setup(tmp_path):
     _EXECUTION_CONTEXT["user_id"] = "test_user"
     yield
     _EXECUTION_CONTEXT.pop("user_id", None)
+    _EXECUTION_CONTEXT.pop("user_text", None)
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +86,31 @@ def test_create_reminder_with_time():
     assert parsed["data"]["due_at"].startswith("2030-01-01T10:00")
     assert parsed["data"]["timezone"]
     assert parsed["claim_policy"]["allowed_claims"] == ["reminder_created"]
+
+
+def test_create_reminder_rejects_llm_invented_default_time():
+    _EXECUTION_CONTEXT["user_text"] = "明天提醒我带作业"
+    entry = _TOOL_REGISTRY["create_reminder"]
+    result = entry["execute"](
+        "create_reminder",
+        {"content": "带作业", "remind_at": "2026-05-11T09:00:00-07:00"},
+    )
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "needs_clarification"
+    assert parsed["error_code"] == "missing_explicit_time_in_user_text"
+    assert "reminder_created" in parsed["claim_policy"]["forbidden_claims"]
+
+
+def test_create_reminder_allows_explicit_user_time():
+    _EXECUTION_CONTEXT["user_text"] = "明天早上九点提醒我带作业"
+    entry = _TOOL_REGISTRY["create_reminder"]
+    result = entry["execute"](
+        "create_reminder",
+        {"content": "带作业", "remind_at": "2026-05-11T09:00:00-07:00"},
+    )
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "success"
+    assert parsed["data"]["due_at"].startswith("2026-05-11T09:00")
 
 
 def test_create_reminder_empty_content():
