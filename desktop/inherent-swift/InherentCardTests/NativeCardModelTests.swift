@@ -231,6 +231,31 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertEqual(model.stateLabel, "done")
   }
 
+  func test_newSiriOpenCancelsPendingFollowupInputTransition() async throws {
+    let model = NativeCardModel()
+
+    model.siriOpen(payload: ["q": "first", "content": "# Answer"])
+    try await settle(milliseconds: 80)
+    model.siriDone(payload: ["fadeMs": 60000])
+    try await settle(milliseconds: 80)
+
+    model.handleGlobalEnterDown()
+    model.handleEnterUp()
+    try await settle(milliseconds: 80)
+    XCTAssertTrue(model.isFollowupEntering)
+
+    model.siriOpen(payload: ["q": "second", "content": "# Second"])
+    try await settle(milliseconds: 360)
+
+    XCTAssertEqual(model.phase, .streaming)
+    XCTAssertTrue(model.isSubmitted)
+    XCTAssertFalse(model.isFollowupInput)
+    XCTAssertFalse(model.isFollowupEntering)
+    XCTAssertEqual(model.questionText, "second")
+    XCTAssertEqual(model.answerText, "# Second")
+    XCTAssertEqual(model.stateLabel, "streaming")
+  }
+
   func test_popoverHideAndClearHistoryCascade() async throws {
     let model = NativeCardModel()
 

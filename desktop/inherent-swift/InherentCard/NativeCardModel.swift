@@ -103,6 +103,7 @@ final class NativeCardModel: ObservableObject {
   private var inputActive = false
   private var bridgeTurnOpen = false
   private var streamingStarted = false
+  private var inputTransitionGeneration = 0
   private var followupSnapshot: NativeFollowupSnapshot?
   private var followupDraftActive = false
   private var targetAnswer = ""
@@ -268,6 +269,7 @@ final class NativeCardModel: ObservableObject {
     }
 
     let displayText = trimmed.isEmpty ? "请看这张图片" : trimmed
+    inputTransitionGeneration += 1
     inputActive = true
     inFlightQuestion = displayText
     clearFollowupDraft()
@@ -465,6 +467,8 @@ final class NativeCardModel: ObservableObject {
 
   private func restoreFollowupSnapshot() -> Bool {
     guard let snapshot = followupSnapshot else { return false }
+    inputTransitionGeneration += 1
+    let generation = inputTransitionGeneration
     cancelFade()
     onRequestCancelFade?()
     clearDrip()
@@ -490,7 +494,8 @@ final class NativeCardModel: ObservableObject {
     streamingStarted = false
     requestLayout(animatedFor: followupRestoreMs + 0.22)
     DispatchQueue.main.asyncAfter(deadline: .now() + followupRestoreMs) { [weak self] in
-      self?.isFollowupRestoring = false
+      guard let self, generation == self.inputTransitionGeneration else { return }
+      self.isFollowupRestoring = false
     }
     scheduleFade(5000)
     return true
@@ -513,6 +518,8 @@ final class NativeCardModel: ObservableObject {
   }
 
   private func enterInputMode(followup: Bool = false) {
+    inputTransitionGeneration += 1
+    let generation = inputTransitionGeneration
     if followup {
       followupSnapshot = captureResponseSnapshot()
       followupDraftActive = false
@@ -527,7 +534,7 @@ final class NativeCardModel: ObservableObject {
     shownAnswer = ""
 
     let finish = { [weak self] in
-      guard let self else { return }
+      guard let self, generation == self.inputTransitionGeneration else { return }
       self.resetInputState(placeholder: followup ? "继续问…" : "问点什么…")
       self.isFollowupInput = followup
       self.setState(followup ? "input" : "idle", followup ? nil : .idle)
@@ -1038,6 +1045,7 @@ extension NativeCardModel: BridgeDispatcher {
       let content = payload?["content"] as? String ?? ""
       guard streaming || !content.isEmpty else { return }
 
+      inputTransitionGeneration += 1
       if bridgeTurnOpen {
         inFlightQuestion = nil
         inputActive = false
@@ -1129,6 +1137,7 @@ extension NativeCardModel: BridgeDispatcher {
 
   nonisolated func siriReset() {
     Task { @MainActor in
+      inputTransitionGeneration += 1
       clearFollowupDraft()
       clearDrip()
       targetAnswer = ""
@@ -1167,6 +1176,7 @@ extension NativeCardModel: BridgeDispatcher {
   }
 
   private func beginExternalVoiceCapture() {
+    inputTransitionGeneration += 1
     voiceStartGeneration += 1
     voiceInputSnapshot = nil
     clearFollowupDraft()
@@ -1208,6 +1218,7 @@ extension NativeCardModel: BridgeDispatcher {
       failExternalVoiceState(label: "no speech", variant: .warn)
       return
     }
+    inputTransitionGeneration += 1
     clearFollowupDraft()
     clearDrip()
     targetAnswer = ""
