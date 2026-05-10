@@ -182,7 +182,11 @@ final class NativeCardController: NSObject {
   private func targetPanelHeight() -> CGFloat {
     hostingView.layoutSubtreeIfNeeded()
     let fitting = hostingView.fittingSize
-    let measured = max(DisplayManager.MIN_HEIGHT, fitting.height)
+    let popoverHeight = NativePopoverSizing.requiredPanelHeight(
+      for: model.activeHistoryTurn,
+      selectedTop: model.selectedPopoverTop
+    )
+    let measured = max(DisplayManager.MIN_HEIGHT, fitting.height, popoverHeight)
     return DisplayManager.clampPanelHeight(measured, on: panel.screen)
   }
 
@@ -690,6 +694,39 @@ final class NativeCardController: NSObject {
     }
     fade.showInstant()
     model.voiceState(payload: payload)
+  }
+}
+
+enum NativePopoverSizing {
+  static func requiredPanelHeight(for turn: NativeHistoryTurn?, selectedTop: CGFloat) -> CGFloat {
+    guard let turn else { return 0 }
+    let contentWidth = NativeCardModel.popoverWidth - 44
+    let questionHeight = textHeight(
+      turn.question,
+      width: contentWidth,
+      font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+      lineSpacing: 4
+    )
+    let answerHeight = min(410, textHeight(
+      turn.answer,
+      width: contentWidth,
+      font: NSFont.systemFont(ofSize: 13),
+      lineSpacing: 4.5
+    ))
+    let popoverHeight = 18 + questionHeight + 12 + 12 + answerHeight + 20
+    return NativeCardModel.pillReservedTop + selectedTop + popoverHeight + 4
+  }
+
+  private static func textHeight(_ text: String, width: CGFloat, font: NSFont, lineSpacing: CGFloat) -> CGFloat {
+    guard !text.isEmpty else { return 0 }
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineSpacing = lineSpacing
+    let rect = (text as NSString).boundingRect(
+      with: NSSize(width: width, height: .greatestFiniteMagnitude),
+      options: [.usesLineFragmentOrigin, .usesFontLeading],
+      attributes: [.font: font, .paragraphStyle: paragraph]
+    )
+    return ceil(rect.height)
   }
 }
 

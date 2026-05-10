@@ -89,6 +89,23 @@ final class DisplayMathTests: XCTestCase {
     ))
   }
 
+  func test_popoverSizingExtendsPanelBelowOffsetPopover() {
+    let turn = NativeHistoryTurn(
+      question: "今天 天气怎么样",
+      answer: """
+      Victoria, British Columbia, Canada
+      - Current: 阴天
+      - Temperature: 15.6°C
+      - Feels like: 15.6°C
+      - Humidity: 72%
+      """
+    )
+
+    let required = NativePopoverSizing.requiredPanelHeight(for: turn, selectedTop: 8)
+
+    XCTAssertGreaterThan(required, NativeCardModel.pillReservedTop + 8 + 120)
+  }
+
   func test_dragPolicyExcludesInputAndStatePillRegions() {
     let idle = NativeCardDragPolicy.State(
       historyViewportHeight: 0,
