@@ -422,47 +422,16 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertEqual(model.stagedImage?.name, "screen.png")
   }
 
-  func test_answerParserRecognizesLegacyHtmlPrimitives() {
-    let html = """
-    <div class="tool done"><span class="tool-tag">hue</span><span class="tool-name">set bedroom lamp</span><span class="tool-status">done</span></div>
-    <div class="choose"><span class="opt picked">A</span><span class="opt faded">B</span></div>
-    <div class="confirm-gate"><span class="gate-btn allow picked">allow</span><span class="gate-btn deny faded">deny</span></div>
-    <div class="tts ducked"><span class="bar"></span><span class="bar"></span></div>
-    <span class="display">23°</span>
-    <span class="display-label">bedroom</span>
-    """
+  func test_answerParserEscapesRawHtmlLikeMarkdownIt() {
+    let html = #"<div class="tool done"><span class="tool-tag">hue</span></div>"#
 
-    let blocks = NativeAnswerParser.parse(html)
+    XCTAssertEqual(NativeAnswerParser.parse(html), [.paragraph(html)])
 
-    guard case .tool(let tool) = blocks[0] else {
-      return XCTFail("expected first block to be tool")
-    }
-    XCTAssertEqual(tool.tag, "hue")
-    XCTAssertEqual(tool.name, "set bedroom lamp")
-    XCTAssertEqual(tool.status, "done")
-
-    guard case .choice(let options) = blocks[1] else {
-      return XCTFail("expected second block to be choice")
-    }
-    XCTAssertEqual(options.map(\.label), ["A", "B"])
-    XCTAssertTrue(options[0].picked)
-    XCTAssertTrue(options[1].faded)
-
-    guard case .confirmGate(let buttons) = blocks[2] else {
-      return XCTFail("expected third block to be confirm gate")
-    }
-    XCTAssertTrue(buttons[0].allow)
-    XCTAssertTrue(buttons[0].picked)
-    XCTAssertTrue(buttons[1].deny)
-    XCTAssertTrue(buttons[1].faded)
-
-    guard case .tts(let style) = blocks[3] else {
-      return XCTFail("expected fourth block to be tts")
-    }
-    XCTAssertTrue(style.classes.contains("ducked"))
-
-    XCTAssertEqual(blocks[4], .display("23°"))
-    XCTAssertEqual(blocks[5], .displayLabel("bedroom"))
+    let attributed = NativeInlineStyler.attributed(
+      markdown: html,
+      baseColor: Color.white.opacity(0.92)
+    )
+    XCTAssertEqual(String(attributed.characters), html)
   }
 
   func test_answerParserRecognizesMarkdownTables() {

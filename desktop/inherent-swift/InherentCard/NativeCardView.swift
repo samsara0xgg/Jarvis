@@ -1287,8 +1287,6 @@ enum NativeAnswerParser {
       if line.isEmpty {
         i += 1
         continue
-      } else if let htmlBlock = parseHTMLPrimitive(line) {
-        result.append(htmlBlock)
       } else if line.hasPrefix("# ") {
         result.append(.heading1(String(line.dropFirst(2))))
       } else if line.hasPrefix("## ") {
@@ -1438,7 +1436,6 @@ enum NativeAnswerParser {
     if isFenceLine(line) { return false }
     if line == "---" || line == "***" || line == "___" { return false }
     if orderedListItem(line) != nil { return false }
-    if parseHTMLPrimitive(line) != nil { return false }
     return !(isTableHeader(line) || isTableSeparator(line))
   }
 
