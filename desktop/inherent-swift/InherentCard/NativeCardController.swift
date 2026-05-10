@@ -138,12 +138,14 @@ final class NativeCardController: NSObject {
 
   private func hideFromUser() {
     userHidden = true
+    ws?.discardOpenTurn()
     fade.hideInstant()
   }
 
   private func fadeOut(durationMs: Int) {
     fade.fadeOut(durationMs: durationMs) { [weak self] in
       self?.userHidden = true
+      self?.ws?.discardOpenTurn()
       self?.fade.hideInstant()
     }
   }
@@ -641,6 +643,7 @@ final class NativeCardController: NSObject {
       }
       fade.hideInstant()
       userHidden = true
+      ws?.discardOpenTurn()
       return
     }
 

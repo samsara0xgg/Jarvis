@@ -139,6 +139,13 @@ final class WSClient {
     }
   }
 
+  func discardOpenTurn() {
+    q.async { [weak self] in
+      self?.turnGate.forceReset()
+      self?.clearWatchdog()
+    }
+  }
+
   private func armWatchdog() {
     // Caller is on q.
     watchdog?.cancel()
