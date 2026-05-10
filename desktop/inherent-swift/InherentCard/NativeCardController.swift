@@ -78,7 +78,7 @@ final class NativeCardController: NSObject {
     if let debugMode = ProcessInfo.processInfo.environment["INHERENT_DEBUG_FAKE_TURNS"] {
       let scenarioModes = [
         "basic", "multi-turn", "overflow", "drip-plain", "drip-fade", "followup-restore",
-        "voice-listening", "voice-transcribing", "voice-accepted", "voice-empty", "voice-error",
+        "popover", "voice-listening", "voice-transcribing", "voice-accepted", "voice-empty", "voice-error",
       ]
       let delay: TimeInterval = scenarioModes.contains(debugMode) ? 0 : 1.0
       DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -417,6 +417,9 @@ final class NativeCardController: NSObject {
     case "followup-restore":
       runFollowupRestoreScenario()
       return
+    case "popover":
+      runPopoverScenario()
+      return
     case "voice-listening", "voice-transcribing", "voice-accepted", "voice-empty", "voice-error":
       runVoiceScenario(mode: mode)
       return
@@ -588,6 +591,31 @@ final class NativeCardController: NSObject {
           break
         }
       }
+    }
+  }
+
+  private func runPopoverScenario() {
+    let turns: [(String, String)] = [
+      ("test 1", "alpha response"),
+      ("test 2", "beta response with a bit more text"),
+      ("test 3", "gamma - third turn"),
+    ]
+    var delay: TimeInterval = 0.5
+    for (question, answer) in turns {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        self?.handleSiriOpen(payload: ["q": question, "streaming": true])
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay + 0.05) { [weak self] in
+        self?.model.siriAppend(payload: ["token": answer])
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay + 0.20) { [weak self] in
+        self?.model.siriDone(payload: ["fadeMs": 60000])
+      }
+      delay += 0.6
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay + 0.8) { [weak self] in
+      guard let self, let turn = self.model.history.last else { return }
+      self.model.showPopover(for: turn)
     }
   }
 
