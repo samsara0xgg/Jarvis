@@ -1588,6 +1588,11 @@ final class NativeTextField: NSTextField {
   }
 
   override func keyDown(with event: NSEvent) {
+    if hasMarkedInputText {
+      super.keyDown(with: event)
+      return
+    }
+
     if event.keyCode == 36 || event.keyCode == 76 {
       if !enterWasDown {
         enterWasDown = true
@@ -1600,6 +1605,11 @@ final class NativeTextField: NSTextField {
       return
     }
     super.keyDown(with: event)
+  }
+
+  private var hasMarkedInputText: Bool {
+    guard let editor = currentEditor() as? NSTextInputClient else { return false }
+    return editor.hasMarkedText()
   }
 
   override func keyUp(with event: NSEvent) {
