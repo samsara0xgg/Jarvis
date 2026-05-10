@@ -579,8 +579,47 @@ final class NativeCardModelTests: XCTestCase {
     }
   }
 
+  func test_codeHighlighterMatchesWebPythonTokenColors() {
+    let attributed = NSAttributedString(NativeCodeText.highlighted(
+      """
+      def hello():
+          print("Hello, jarvis!")
+          return 42
+      """,
+      language: "python"
+    ))
+
+    assertForeground(in: attributed, token: "def", hex: 0xFF7B72)
+    assertForeground(in: attributed, token: "hello", hex: 0xD2A8FF)
+    assertForeground(in: attributed, token: "print", hex: 0x79C0FF)
+    assertForeground(in: attributed, token: "\"Hello, jarvis!\"", hex: 0xA5D6FF)
+    assertForeground(in: attributed, token: "return", hex: 0xFF7B72)
+    assertForeground(in: attributed, token: "42", hex: 0x79C0FF)
+  }
+
   private func settle(milliseconds: UInt64 = 20) async throws {
     try await Task.sleep(nanoseconds: milliseconds * 1_000_000)
+  }
+
+  private func assertForeground(
+    in attributed: NSAttributedString,
+    token: String,
+    hex expected: Int,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    let range = (attributed.string as NSString).range(of: token)
+    XCTAssertNotEqual(range.location, NSNotFound, "missing token \(token)", file: file, line: line)
+    guard range.location != NSNotFound,
+          let color = attributed.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? NSColor,
+          let rgb = color.usingColorSpace(.sRGB) else {
+      return XCTFail("missing foreground color for \(token)", file: file, line: line)
+    }
+    let actual =
+      (Int(round(rgb.redComponent * 255)) << 16) |
+      (Int(round(rgb.greenComponent * 255)) << 8) |
+      Int(round(rgb.blueComponent * 255))
+    XCTAssertEqual(actual, expected, file: file, line: line)
   }
 }
 

@@ -895,22 +895,25 @@ struct NativeCodeText: View {
     Text(Self.highlighted(code, language: language))
   }
 
-  private static func highlighted(_ code: String, language: String?) -> AttributedString {
+  static func highlighted(_ code: String, language: String?) -> AttributedString {
     let nsCode = code as NSString
     let fullRange = NSRange(location: 0, length: nsCode.length)
     let attributed = NSMutableAttributedString(string: code)
     attributed.addAttributes([
-      .foregroundColor: NSColor(calibratedRed: 1.0, green: 0.86, blue: 0.70, alpha: 0.92),
+      .foregroundColor: themeColor(0xE6EDF3),
     ], range: fullRange)
     guard !code.isEmpty else { return AttributedString(attributed) }
 
-    let keywordColor = NSColor(calibratedRed: 1.0, green: 0.45, blue: 0.52, alpha: 0.95)
-    let stringColor = NSColor(calibratedRed: 0.56, green: 0.78, blue: 1.0, alpha: 0.95)
-    let numberColor = NSColor(calibratedRed: 0.98, green: 0.70, blue: 0.42, alpha: 0.95)
-    let commentColor = NSColor.white.withAlphaComponent(0.42)
+    let keywordColor = themeColor(0xFF7B72)
+    let functionColor = themeColor(0xD2A8FF)
+    let literalColor = themeColor(0x79C0FF)
+    let stringColor = themeColor(0xA5D6FF)
+    let commentColor = themeColor(0x8B949E)
 
     apply(pattern: keywordPattern(for: language), color: keywordColor, to: attributed, in: fullRange)
-    apply(pattern: #"\b\d+(?:\.\d+)?\b"#, color: numberColor, to: attributed, in: fullRange)
+    apply(pattern: functionDeclarationPattern(for: language), color: functionColor, to: attributed, in: fullRange, captureGroup: 1)
+    apply(pattern: builtinCallPattern(for: language), color: literalColor, to: attributed, in: fullRange)
+    apply(pattern: #"\b\d+(?:\.\d+)?\b"#, color: literalColor, to: attributed, in: fullRange)
     apply(pattern: #""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'"#, color: stringColor, to: attributed, in: fullRange)
     apply(pattern: #"(?m)(#|//).*$"#, color: commentColor, to: attributed, in: fullRange)
 
@@ -932,16 +935,47 @@ struct NativeCodeText: View {
     return #"(?i)\b("# + words.joined(separator: "|") + #")\b"#
   }
 
+  private static func functionDeclarationPattern(for language: String?) -> String {
+    let normalized = language?.lowercased() ?? ""
+    if normalized.hasPrefix("py") {
+      return #"\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\b"#
+    }
+    if normalized == "swift" || ["js", "jsx", "javascript", "ts", "tsx", "typescript"].contains(normalized) {
+      return #"\bfunc(?:tion)?\s+([A-Za-z_$][A-Za-z0-9_$]*)\b"#
+    }
+    return #"\b(?:def|func|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b"#
+  }
+
+  private static func builtinCallPattern(for language: String?) -> String {
+    let normalized = language?.lowercased() ?? ""
+    if normalized.hasPrefix("py") {
+      return #"\b(print|len|range|str|int|float|dict|list|set|tuple|open|enumerate|zip|sum|min|max|json\.loads|Path)\b(?=\s*\()"#
+    }
+    return #"\b(print|console\.log|len|range|map|filter|reduce|min|max)\b(?=\s*\()"#
+  }
+
+  private static func themeColor(_ hex: Int, alpha: CGFloat = 1) -> NSColor {
+    NSColor(
+      srgbRed: CGFloat((hex >> 16) & 0xff) / 255,
+      green: CGFloat((hex >> 8) & 0xff) / 255,
+      blue: CGFloat(hex & 0xff) / 255,
+      alpha: alpha
+    )
+  }
+
   private static func apply(
     pattern: String,
     color: NSColor,
     to attributed: NSMutableAttributedString,
-    in range: NSRange
+    in range: NSRange,
+    captureGroup: Int = 0
   ) {
     guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
     regex.enumerateMatches(in: attributed.string, range: range) { match, _, _ in
       guard let match else { return }
-      attributed.addAttribute(.foregroundColor, value: color, range: match.range)
+      let targetRange = match.range(at: min(captureGroup, match.numberOfRanges - 1))
+      guard targetRange.location != NSNotFound, targetRange.length > 0 else { return }
+      attributed.addAttribute(.foregroundColor, value: color, range: targetRange)
     }
   }
 }
