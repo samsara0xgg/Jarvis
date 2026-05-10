@@ -341,6 +341,38 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertEqual(model.phase, .streaming)
   }
 
+  func test_imageClipboardAfterCompletedAnswerSurvivesFollowupTransition() async throws {
+    let model = NativeCardModel()
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    defer { pasteboard.clearContents() }
+    let image = NSImage(size: NSSize(width: 2, height: 2))
+    image.lockFocus()
+    NSColor.purple.setFill()
+    NSRect(x: 0, y: 0, width: 2, height: 2).fill()
+    image.unlockFocus()
+    guard let tiff = image.tiffRepresentation else {
+      return XCTFail("expected test image tiff")
+    }
+    pasteboard.setData(tiff, forType: .tiff)
+
+    model.siriOpen(payload: ["q": "first", "content": "# Answer"])
+    try await settle(milliseconds: 80)
+    model.siriDone(payload: ["fadeMs": 60000])
+    try await settle(milliseconds: 80)
+
+    XCTAssertTrue(model.stageImageFromClipboard())
+    XCTAssertTrue(model.isFollowupEntering)
+    XCTAssertNil(model.stagedImage)
+
+    try await settle(milliseconds: 360)
+    XCTAssertEqual(model.phase, .input)
+    XCTAssertTrue(model.isFollowupInput)
+    XCTAssertEqual(model.inputPlaceholder, "继续问…")
+    XCTAssertEqual(model.stagedImage?.mime, "image/png")
+    XCTAssertEqual(model.stagedImage?.name, "screen.png")
+  }
+
   func test_answerParserRecognizesLegacyHtmlPrimitives() {
     let html = """
     <div class="tool done"><span class="tool-tag">hue</span><span class="tool-name">set bedroom lamp</span><span class="tool-status">done</span></div>

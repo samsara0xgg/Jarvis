@@ -599,9 +599,19 @@ final class NativeCardModel: ObservableObject {
     }
     if inputDisabled && canEnterFollowupInput() {
       enterInputMode(followup: true)
+      DispatchQueue.main.asyncAfter(deadline: .now() + followupEnterMs + 0.04) { [weak self] in
+        guard let self, self.canStageImage() else { return }
+        self.commitStagedImage(data: data, mime: mime, name: name, source: source)
+      }
+      return true
     } else if inputDisabled {
       enterInputMode()
     }
+    commitStagedImage(data: data, mime: mime, name: name, source: source)
+    return true
+  }
+
+  private func commitStagedImage(data: Data, mime: String, name: String, source: String) {
     let image = NSImage(data: data)
     let dimensions = image.map { "\(Int($0.size.width))×\(Int($0.size.height))" }
     let label = Self.normalizedImageName(name: name, source: source)
@@ -619,7 +629,6 @@ final class NativeCardModel: ObservableObject {
     flashAttachmentEdge()
     focusNonce += 1
     requestLayout(animatedFor: 0.42)
-    return true
   }
 
   private func imageStageError(_ message: String) {
