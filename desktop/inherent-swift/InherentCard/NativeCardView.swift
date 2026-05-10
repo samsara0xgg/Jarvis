@@ -287,7 +287,7 @@ struct NativeCardView: View {
         NativeMarkdownText(markdown: model.answerText, characterBirthTimes: model.answerCharacterBirthTimes)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .frame(maxHeight: 466, alignment: .top)
+      .frame(maxHeight: 461, alignment: .top)
     } else {
       NativeMarkdownText(markdown: model.answerText, characterBirthTimes: model.answerCharacterBirthTimes)
     }
