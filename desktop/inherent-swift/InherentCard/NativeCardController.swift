@@ -273,32 +273,11 @@ final class NativeCardController: NSObject {
   private func updatePassthrough() {
     guard !userHidden else { return }
     let cursor = NSEvent.mouseLocation
-    let frame = panel.frame
-    let cardTop = frame.maxY - NativeCardModel.pillReservedTop
-    let cardLeft = frame.maxX - NativeCardModel.cardWidth
-    let cardRect = NSRect(
-      x: cardLeft,
-      y: frame.minY,
-      width: NativeCardModel.cardWidth,
-      height: cardTop - frame.minY
+    let shouldIgnore = NativeCardHitTest.shouldIgnoreMouse(
+      at: cursor,
+      panelFrame: panel.frame,
+      popoverVisible: model.popoverVisible
     )
-    let pillWidth: CGFloat = 136
-    let pillRect = NSRect(
-      x: cardLeft + NativeCardModel.cardWidth / 2 - pillWidth / 2,
-      y: cardTop,
-      width: pillWidth,
-      height: 35
-    )
-    let popoverRect = NSRect(
-      x: frame.minX,
-      y: frame.minY,
-      width: NativeCardModel.popoverWidth,
-      height: cardTop - frame.minY
-    )
-    let inCard = pointInRoundedRect(cursor, cardRect, 30)
-    let inPill = pointInRoundedRect(cursor, pillRect, pillRect.height / 2)
-    let inPopover = model.popoverVisible && pointInRoundedRect(cursor, popoverRect, 30)
-    let shouldIgnore = !(inCard || inPill || inPopover)
     if panel.ignoresMouseEvents != shouldIgnore {
       panel.ignoresMouseEvents = shouldIgnore
     }
@@ -350,33 +329,6 @@ final class NativeCardController: NSObject {
         self?.writeDebugSnapshot(to: path)
       }
     }
-  }
-
-  private func pointInRoundedRect(_ point: NSPoint, _ rect: NSRect, _ radius: CGFloat) -> Bool {
-    if !rect.contains(point) { return false }
-    let r = min(radius, min(rect.width, rect.height) / 2)
-    if r <= 0 { return true }
-    if point.x < rect.minX + r && point.y > rect.maxY - r {
-      let dx = (rect.minX + r) - point.x
-      let dy = point.y - (rect.maxY - r)
-      return dx * dx + dy * dy <= r * r
-    }
-    if point.x > rect.maxX - r && point.y > rect.maxY - r {
-      let dx = point.x - (rect.maxX - r)
-      let dy = point.y - (rect.maxY - r)
-      return dx * dx + dy * dy <= r * r
-    }
-    if point.x < rect.minX + r && point.y < rect.minY + r {
-      let dx = (rect.minX + r) - point.x
-      let dy = (rect.minY + r) - point.y
-      return dx * dx + dy * dy <= r * r
-    }
-    if point.x > rect.maxX - r && point.y < rect.minY + r {
-      let dx = point.x - (rect.maxX - r)
-      let dy = (rect.minY + r) - point.y
-      return dx * dx + dy * dy <= r * r
-    }
-    return true
   }
 
   private func focusForKeyboardInput(openInput: Bool = false) {
@@ -731,6 +683,74 @@ final class NativeCardController: NSObject {
     }
     fade.showInstant()
     model.voiceState(payload: payload)
+  }
+}
+
+enum NativeCardHitTest {
+  struct Regions: Equatable {
+    let card: NSRect
+    let pill: NSRect
+    let popover: NSRect
+  }
+
+  static func regions(for panelFrame: NSRect) -> Regions {
+    let cardTop = panelFrame.maxY - NativeCardModel.pillReservedTop
+    let cardLeft = panelFrame.maxX - NativeCardModel.cardWidth
+    let cardRect = NSRect(
+      x: cardLeft,
+      y: panelFrame.minY,
+      width: NativeCardModel.cardWidth,
+      height: cardTop - panelFrame.minY
+    )
+    let pillWidth: CGFloat = 136
+    let pillRect = NSRect(
+      x: cardLeft + NativeCardModel.cardWidth / 2 - pillWidth / 2,
+      y: cardTop,
+      width: pillWidth,
+      height: 35
+    )
+    let popoverRect = NSRect(
+      x: panelFrame.minX,
+      y: panelFrame.minY,
+      width: NativeCardModel.popoverWidth,
+      height: cardTop - panelFrame.minY
+    )
+    return Regions(card: cardRect, pill: pillRect, popover: popoverRect)
+  }
+
+  static func shouldIgnoreMouse(at point: NSPoint, panelFrame: NSRect, popoverVisible: Bool) -> Bool {
+    let regions = regions(for: panelFrame)
+    let inCard = pointInRoundedRect(point, regions.card, 30)
+    let inPill = pointInRoundedRect(point, regions.pill, regions.pill.height / 2)
+    let inPopover = popoverVisible && pointInRoundedRect(point, regions.popover, 30)
+    return !(inCard || inPill || inPopover)
+  }
+
+  private static func pointInRoundedRect(_ point: NSPoint, _ rect: NSRect, _ radius: CGFloat) -> Bool {
+    if !rect.contains(point) { return false }
+    let r = min(radius, min(rect.width, rect.height) / 2)
+    if r <= 0 { return true }
+    if point.x < rect.minX + r && point.y > rect.maxY - r {
+      let dx = (rect.minX + r) - point.x
+      let dy = point.y - (rect.maxY - r)
+      return dx * dx + dy * dy <= r * r
+    }
+    if point.x > rect.maxX - r && point.y > rect.maxY - r {
+      let dx = point.x - (rect.maxX - r)
+      let dy = point.y - (rect.maxY - r)
+      return dx * dx + dy * dy <= r * r
+    }
+    if point.x < rect.minX + r && point.y < rect.minY + r {
+      let dx = (rect.minX + r) - point.x
+      let dy = (rect.minY + r) - point.y
+      return dx * dx + dy * dy <= r * r
+    }
+    if point.x > rect.maxX - r && point.y < rect.minY + r {
+      let dx = point.x - (rect.maxX - r)
+      let dy = (rect.minY + r) - point.y
+      return dx * dx + dy * dy <= r * r
+    }
+    return true
   }
 }
 

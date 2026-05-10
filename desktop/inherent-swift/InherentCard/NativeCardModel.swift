@@ -53,11 +53,11 @@ private struct NativeFollowupSnapshot {
 
 @MainActor
 final class NativeCardModel: ObservableObject {
-  static let cardWidth: CGFloat = 360
-  static let popoverWidth: CGFloat = 300
-  static let popoverGap: CGFloat = 18
-  static let panelWidth: CGFloat = 678
-  static let pillReservedTop: CGFloat = 38
+  nonisolated static let cardWidth: CGFloat = 360
+  nonisolated static let popoverWidth: CGFloat = 300
+  nonisolated static let popoverGap: CGFloat = 18
+  nonisolated static let panelWidth: CGFloat = 678
+  nonisolated static let pillReservedTop: CGFloat = 38
 
   @Published var inputText = ""
   @Published var inputPlaceholder = "问点什么…"

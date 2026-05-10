@@ -34,4 +34,58 @@ final class DisplayMathTests: XCTestCase {
     XCTAssertEqual(DisplayManager.clampWidth(1000), 900) // ceil
     XCTAssertEqual(DisplayManager.clampWidth(500), 500)
   }
+
+  func test_hitRegionsMatchFixedPanelGeometry() {
+    let panel = NSRect(x: 100, y: 200, width: 678, height: 204)
+    let regions = NativeCardHitTest.regions(for: panel)
+
+    XCTAssertEqual(regions.card, NSRect(x: 418, y: 200, width: 360, height: 166))
+    XCTAssertEqual(regions.popover, NSRect(x: 100, y: 200, width: 300, height: 166))
+    XCTAssertEqual(regions.pill, NSRect(x: 530, y: 366, width: 136, height: 35))
+  }
+
+  func test_hitTestKeepsTransparentPopoverSlotClickThrough() {
+    let panel = NSRect(x: 100, y: 200, width: 678, height: 204)
+
+    XCTAssertFalse(NativeCardHitTest.shouldIgnoreMouse(
+      at: NSPoint(x: 600, y: 250),
+      panelFrame: panel,
+      popoverVisible: false
+    ))
+    XCTAssertFalse(NativeCardHitTest.shouldIgnoreMouse(
+      at: NSPoint(x: 598, y: 383),
+      panelFrame: panel,
+      popoverVisible: false
+    ))
+    XCTAssertTrue(NativeCardHitTest.shouldIgnoreMouse(
+      at: NSPoint(x: 250, y: 250),
+      panelFrame: panel,
+      popoverVisible: false
+    ))
+    XCTAssertFalse(NativeCardHitTest.shouldIgnoreMouse(
+      at: NSPoint(x: 250, y: 250),
+      panelFrame: panel,
+      popoverVisible: true
+    ))
+    XCTAssertTrue(NativeCardHitTest.shouldIgnoreMouse(
+      at: NSPoint(x: 409, y: 250),
+      panelFrame: panel,
+      popoverVisible: true
+    ))
+  }
+
+  func test_hitTestHonorsRoundedCardCorners() {
+    let panel = NSRect(x: 100, y: 200, width: 678, height: 204)
+
+    XCTAssertTrue(NativeCardHitTest.shouldIgnoreMouse(
+      at: NSPoint(x: 419, y: 201),
+      panelFrame: panel,
+      popoverVisible: false
+    ))
+    XCTAssertFalse(NativeCardHitTest.shouldIgnoreMouse(
+      at: NSPoint(x: 448, y: 230),
+      panelFrame: panel,
+      popoverVisible: false
+    ))
+  }
 }
