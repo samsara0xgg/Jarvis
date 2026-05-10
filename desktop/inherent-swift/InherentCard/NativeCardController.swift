@@ -423,7 +423,7 @@ final class NativeCardController: NSObject {
     var delay: TimeInterval = 0
     for (question, answer) in turns {
       DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-        self?.model.siriOpen(payload: ["q": question, "streaming": true])
+        self?.handleSiriOpen(payload: ["q": question, "streaming": true])
       }
       DispatchQueue.main.asyncAfter(deadline: .now() + delay + 0.05) { [weak self] in
         self?.model.siriAppend(payload: ["token": answer])
@@ -450,7 +450,7 @@ final class NativeCardController: NSObject {
 
   private func runBasicScenario() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-      self?.model.siriOpen(payload: [
+      self?.handleSiriOpen(payload: [
         "content": "# 现在 23°\n\nbedroom · 客厅 22°  \n_(via siri:open IPC)_",
         "kind": "text",
       ])
@@ -462,7 +462,7 @@ final class NativeCardController: NSObject {
 
   private func runMultiTurnScenario() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-      self?.model.siriOpen(payload: [
+      self?.handleSiriOpen(payload: [
         "content": "# Turn 1\n\n_(first turn — fades after 1s)_",
         "kind": "text",
       ])
@@ -470,7 +470,7 @@ final class NativeCardController: NSObject {
         self?.model.siriDone(payload: ["fadeMs": 1000])
       }
       DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) { [weak self] in
-        self?.model.siriOpen(payload: [
+        self?.handleSiriOpen(payload: [
           "content": "# Turn 2\n\n_(second turn, 6s after first)_",
           "kind": "text",
         ])
@@ -491,7 +491,7 @@ final class NativeCardController: NSObject {
     }.joined(separator: "\n\n")
     let content = "# 长内容溢出测试\n\n\(sections)"
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-      self?.model.siriOpen(payload: ["content": content, "kind": "text"])
+      self?.handleSiriOpen(payload: ["content": content, "kind": "text"])
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
         self?.model.siriDone(payload: ["fadeMs": 8000])
       }
@@ -525,7 +525,7 @@ final class NativeCardController: NSObject {
       "测试结束。",
     ]
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-      self?.model.siriOpen(payload: ["content": "", "streaming": true, "kind": "text"])
+      self?.handleSiriOpen(payload: ["content": "", "streaming": true, "kind": "text"])
       var delay: TimeInterval = 0.1
       for token in parts {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
