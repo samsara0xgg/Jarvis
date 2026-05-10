@@ -698,6 +698,10 @@ final class NativeCardController: NSObject {
   }
 
   fileprivate func handleSiriOpen(payload: [String: Any]?) {
+    let streaming = (payload?["streaming"] as? Bool) ?? false
+    let content = payload?["content"] as? String
+    guard streaming || !(content?.isEmpty ?? true) else { return }
+
     userHidden = false
     if !userMovedPanel, let screen = DisplayManager.cursorScreen() {
       panel.anchorTopRight(of: screen)
