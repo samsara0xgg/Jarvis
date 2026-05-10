@@ -10,6 +10,7 @@ struct NativeCardView: View {
   @State private var hovering = false
   @State private var pillHovering = false
   @State private var dragStart: CGPoint?
+  @State private var dragBlocked = false
   @State private var lastDragTranslation: CGSize = .zero
   @FocusState private var inputFocused: Bool
 
@@ -498,7 +499,12 @@ struct NativeCardView: View {
   private var dragGesture: some Gesture {
     DragGesture(minimumDistance: 2)
       .onChanged { value in
+        if dragBlocked { return }
         if dragStart == nil {
+          guard canStartPanelDrag(at: value.startLocation) else {
+            dragBlocked = true
+            return
+          }
           dragStart = value.location
           lastDragTranslation = .zero
           model.beginDrag()
@@ -510,8 +516,71 @@ struct NativeCardView: View {
       }
       .onEnded { _ in
         dragStart = nil
+        dragBlocked = false
         lastDragTranslation = .zero
       }
+  }
+
+  private func canStartPanelDrag(at location: CGPoint) -> Bool {
+    NativeCardDragPolicy.shouldStartDrag(
+      at: location,
+      state: NativeCardDragPolicy.State(
+        historyViewportHeight: historyViewportHeight,
+        isSubmitted: model.isSubmitted,
+        isFollowupInput: model.isFollowupInput,
+        isListening: model.isListening,
+        hasStatePill: !model.stateLabel.isEmpty
+      )
+    )
+  }
+}
+
+enum NativeCardDragPolicy {
+  struct State: Equatable {
+    var historyViewportHeight: CGFloat
+    var isSubmitted: Bool
+    var isFollowupInput: Bool
+    var isListening: Bool
+    var hasStatePill: Bool
+  }
+
+  static func shouldStartDrag(at location: CGPoint, state: State) -> Bool {
+    guard location.x >= 0,
+          location.x <= NativeCardModel.cardWidth,
+          location.y >= 0 else { return false }
+
+    let historyTotalHeight = state.historyViewportHeight > 0 ? state.historyViewportHeight + 14 : 0
+    if location.y < historyTotalHeight {
+      let chipViewport = CGRect(
+        x: 22,
+        y: 8,
+        width: NativeCardModel.cardWidth - 44,
+        height: state.historyViewportHeight
+      )
+      return !chipViewport.contains(location)
+    }
+
+    let rowY = location.y - historyTotalHeight
+    if rowY < inputRowHeight(for: state) {
+      let interactiveStart = inputInteractiveStart(for: state)
+      let trailingDragSliver: CGFloat = state.hasStatePill ? 0 : 12
+      return location.x < interactiveStart || location.x > NativeCardModel.cardWidth - trailingDragSliver
+    }
+
+    return true
+  }
+
+  private static func inputRowHeight(for state: State) -> CGFloat {
+    if state.isSubmitted { return 38 }
+    if state.isFollowupInput { return 57 }
+    return 64
+  }
+
+  private static func inputInteractiveStart(for state: State) -> CGFloat {
+    if state.isSubmitted { return 38 }
+    if state.isFollowupInput { return 40 }
+    if state.isListening { return 100 }
+    return 42
   }
 }
 

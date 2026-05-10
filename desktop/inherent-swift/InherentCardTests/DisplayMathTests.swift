@@ -88,4 +88,46 @@ final class DisplayMathTests: XCTestCase {
       popoverVisible: false
     ))
   }
+
+  func test_dragPolicyExcludesInputAndStatePillRegions() {
+    let idle = NativeCardDragPolicy.State(
+      historyViewportHeight: 0,
+      isSubmitted: false,
+      isFollowupInput: false,
+      isListening: false,
+      hasStatePill: true
+    )
+
+    XCTAssertTrue(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 24, y: 32), state: idle))
+    XCTAssertFalse(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 80, y: 32), state: idle))
+    XCTAssertFalse(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 320, y: 32), state: idle))
+  }
+
+  func test_dragPolicyKeepsSubmittedBreadcrumbNonDraggable() {
+    let submitted = NativeCardDragPolicy.State(
+      historyViewportHeight: 0,
+      isSubmitted: true,
+      isFollowupInput: false,
+      isListening: false,
+      hasStatePill: true
+    )
+
+    XCTAssertTrue(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 20, y: 18), state: submitted))
+    XCTAssertFalse(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 60, y: 18), state: submitted))
+    XCTAssertTrue(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 60, y: 52), state: submitted))
+  }
+
+  func test_dragPolicyExcludesHistoryChipViewport() {
+    let withHistory = NativeCardDragPolicy.State(
+      historyViewportHeight: 95.75,
+      isSubmitted: true,
+      isFollowupInput: false,
+      isListening: false,
+      hasStatePill: true
+    )
+
+    XCTAssertTrue(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 12, y: 20), state: withHistory))
+    XCTAssertFalse(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 180, y: 20), state: withHistory))
+    XCTAssertTrue(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 180, y: 155), state: withHistory))
+  }
 }
