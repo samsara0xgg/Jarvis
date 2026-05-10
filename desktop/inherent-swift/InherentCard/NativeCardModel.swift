@@ -121,7 +121,7 @@ final class NativeCardModel: ObservableObject {
   private var enterHoldStarted = Date()
 
   private let imageMaxBytes = 15 * 1024 * 1024
-  private let dripMs: TimeInterval = 0.030
+  private let dripMs: TimeInterval = 0.020
   private let catchupMs: TimeInterval = 0.008
   private let catchupThreshold = 40
   private let followupEnterMs: TimeInterval = 0.240
