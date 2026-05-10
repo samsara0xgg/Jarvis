@@ -660,6 +660,17 @@ final class NativeCardModelTests: XCTestCase {
     assertForeground(in: attributed, token: "42", hex: 0x79C0FF)
   }
 
+  func test_codeRendererTrimsHighlightedSourceLikeWebShiki() {
+    XCTAssertEqual(
+      NativeCodeText.renderedSource("def hello():\n    return 42\n  \n", language: "python"),
+      "def hello():\n    return 42"
+    )
+    XCTAssertEqual(
+      NativeCodeText.renderedSource("raw fence\n  \n", language: nil),
+      "raw fence\n  \n"
+    )
+  }
+
   private func settle(milliseconds: UInt64 = 20) async throws {
     try await Task.sleep(nanoseconds: milliseconds * 1_000_000)
   }

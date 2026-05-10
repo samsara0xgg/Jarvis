@@ -649,7 +649,7 @@ struct NativeMarkdownText: View {
       .font(.system(size: 13.5))
       .foregroundStyle(Color.white.opacity(0.88))
     case .code(let code, let language):
-      let renderedCode = language == nil ? code : Self.trimHighlightedCode(code)
+      let renderedCode = NativeCodeText.renderedSource(code, language: language)
       let lineCount = renderedCode.isEmpty ? 0 : renderedCode.components(separatedBy: .newlines).count
       let codeBlockHeight = lineCount == 0 ? 24 : CGFloat(lineCount * 2 - 1) * 19.575 + 24
       ScrollView(.horizontal, showsIndicators: false) {
@@ -755,10 +755,6 @@ struct NativeMarkdownText: View {
       }
     }
     return false
-  }
-
-  private static func trimHighlightedCode(_ code: String) -> String {
-    code.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression)
   }
 
   private func toolRow(_ tool: NativeAnswerTool) -> some View {
@@ -1023,6 +1019,11 @@ struct NativeCodeText: View {
     apply(pattern: #"(?m)(#|//).*$"#, color: commentColor, to: attributed, in: fullRange)
 
     return AttributedString(attributed)
+  }
+
+  static func renderedSource(_ code: String, language: String?) -> String {
+    guard language != nil else { return code }
+    return code.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression)
   }
 
   private static func keywordPattern(for language: String?) -> String {
