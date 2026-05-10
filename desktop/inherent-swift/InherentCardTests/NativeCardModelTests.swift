@@ -159,6 +159,36 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertEqual(model.stagedImage?.name, "screen.png")
   }
 
+  func test_imageClipboardIgnoredWhileTurnIsActive() async throws {
+    let model = NativeCardModel()
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    defer { pasteboard.clearContents() }
+    let image = NSImage(size: NSSize(width: 2, height: 2))
+    image.lockFocus()
+    NSColor.green.setFill()
+    NSRect(x: 0, y: 0, width: 2, height: 2).fill()
+    image.unlockFocus()
+    guard let tiff = image.tiffRepresentation else {
+      return XCTFail("expected test image tiff")
+    }
+    pasteboard.setData(tiff, forType: .tiff)
+
+    model.siriOpen(payload: ["q": "active", "streaming": true])
+    try await settle(milliseconds: 80)
+    XCTAssertEqual(model.phase, .submitting)
+    XCTAssertFalse(model.stageImageFromClipboard())
+    XCTAssertNil(model.stagedImage)
+    XCTAssertEqual(model.phase, .submitting)
+
+    model.siriAppend(payload: ["token": "streaming answer"])
+    try await settle(milliseconds: 700)
+    XCTAssertEqual(model.phase, .streaming)
+    XCTAssertFalse(model.stageImageFromClipboard())
+    XCTAssertNil(model.stagedImage)
+    XCTAssertEqual(model.phase, .streaming)
+  }
+
   func test_answerParserRecognizesLegacyHtmlPrimitives() {
     let html = """
     <div class="tool done"><span class="tool-tag">hue</span><span class="tool-name">set bedroom lamp</span><span class="tool-status">done</span></div>

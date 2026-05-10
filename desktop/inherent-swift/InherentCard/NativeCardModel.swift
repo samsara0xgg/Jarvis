@@ -538,6 +538,7 @@ final class NativeCardModel: ObservableObject {
   }
 
   private func stageImageFile(_ url: URL, source: String) -> Bool {
+    guard canStageImage() else { return false }
     guard let mime = Self.imageMimeType(for: url) else {
       imageStageError("image only")
       return false
@@ -557,6 +558,7 @@ final class NativeCardModel: ObservableObject {
   }
 
   private func stageImageFromPasteboard(_ pasteboard: NSPasteboard, source: String) -> Bool {
+    guard canStageImage() else { return false }
     let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
     if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [NSURL],
        let url = urls.map({ $0 as URL }).first(where: { Self.imageMimeType(for: $0) != nil }) {
@@ -575,6 +577,7 @@ final class NativeCardModel: ObservableObject {
   }
 
   private func stageImage(data: Data, mime: String, name: String, source: String) -> Bool {
+    guard canStageImage() else { return false }
     guard !data.isEmpty else { return false }
     guard data.count <= imageMaxBytes else {
       imageStageError("image > 15MB")
@@ -608,6 +611,10 @@ final class NativeCardModel: ObservableObject {
     isDropTarget = false
     setState(message, .warn)
     requestLayout(animatedFor: 0.42)
+  }
+
+  private func canStageImage() -> Bool {
+    phase != .submitting && phase != .streaming && phase != .listening && phase != .transcribing
   }
 
   private func beginEnterVoiceCapture() async {
