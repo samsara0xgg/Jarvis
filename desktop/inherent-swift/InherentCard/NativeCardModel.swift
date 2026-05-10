@@ -629,8 +629,7 @@ final class NativeCardModel: ObservableObject {
   }
 
   private func commitStagedImage(data: Data, mime: String, name: String, source: String) {
-    let image = NSImage(data: data)
-    let dimensions = image.map { "\(Int($0.size.width))×\(Int($0.size.height))" }
+    let dimensions = Self.imagePixelDimensions(data: data)
     let label = Self.normalizedImageName(name: name, source: source)
     stagedImage = NativeImageAttachment(
       data: data,
@@ -985,6 +984,19 @@ final class NativeCardModel: ObservableObject {
       return nil
     }
     return rep.representation(using: .png, properties: [:])
+  }
+
+  nonisolated private static func imagePixelDimensions(data: Data) -> String? {
+    if let rep = NSBitmapImageRep(data: data),
+       rep.pixelsWide > 0,
+       rep.pixelsHigh > 0 {
+      return "\(rep.pixelsWide)×\(rep.pixelsHigh)"
+    }
+    guard let image = NSImage(data: data) else { return nil }
+    for rep in image.representations where rep.pixelsWide > 0 && rep.pixelsHigh > 0 {
+      return "\(rep.pixelsWide)×\(rep.pixelsHigh)"
+    }
+    return nil
   }
 
   nonisolated private static func normalizedImageName(name: String, source: String) -> String {

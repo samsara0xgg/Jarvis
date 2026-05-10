@@ -331,23 +331,19 @@ final class NativeCardModelTests: XCTestCase {
 
   func test_imageClipboardStagesAttachment() async throws {
     let model = NativeCardModel()
-    let image = NSImage(size: NSSize(width: 2, height: 2))
-    image.lockFocus()
-    NSColor.blue.setFill()
-    NSRect(x: 0, y: 0, width: 2, height: 2).fill()
-    image.unlockFocus()
-    guard let tiff = image.tiffRepresentation else {
-      return XCTFail("expected test image tiff")
+    guard let png = makePNG(width: 4, height: 3) else {
+      return XCTFail("expected test image png")
     }
 
     let pasteboard = NSPasteboard.general
     pasteboard.clearContents()
     defer { pasteboard.clearContents() }
-    pasteboard.setData(tiff, forType: .tiff)
+    pasteboard.setData(png, forType: .png)
 
     XCTAssertTrue(model.stageImageFromClipboard())
     XCTAssertEqual(model.stagedImage?.mime, "image/png")
     XCTAssertEqual(model.stagedImage?.name, "screen.png")
+    XCTAssertEqual(model.stagedImage?.meta, "4×3")
     XCTAssertTrue(model.attachmentEdgeFlash)
     try await settle(milliseconds: 820)
     XCTAssertFalse(model.attachmentEdgeFlash)
@@ -666,6 +662,30 @@ final class NativeCardModelTests: XCTestCase {
 
   private func settle(milliseconds: UInt64 = 20) async throws {
     try await Task.sleep(nanoseconds: milliseconds * 1_000_000)
+  }
+
+  private func makePNG(width: Int, height: Int) -> Data? {
+    guard let rep = NSBitmapImageRep(
+      bitmapDataPlanes: nil,
+      pixelsWide: width,
+      pixelsHigh: height,
+      bitsPerSample: 8,
+      samplesPerPixel: 4,
+      hasAlpha: true,
+      isPlanar: false,
+      colorSpaceName: .deviceRGB,
+      bytesPerRow: 0,
+      bitsPerPixel: 0
+    ) else {
+      return nil
+    }
+
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    NSColor.blue.setFill()
+    NSRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)).fill()
+    NSGraphicsContext.restoreGraphicsState()
+    return rep.representation(using: .png, properties: [:])
   }
 
   private func assertForeground(
