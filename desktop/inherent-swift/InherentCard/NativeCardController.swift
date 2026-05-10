@@ -588,7 +588,7 @@ final class NativeCardController: NSObject {
         self.model.handleEscape()
         return nil
       }
-      if (event.keyCode == 36 || event.keyCode == 76) && !self.isTextFieldFirstResponder {
+      if event.keyCode == 36 || event.keyCode == 76 {
         if !self.nativeEnterDown {
           self.nativeEnterDown = true
           self.userHidden = false
