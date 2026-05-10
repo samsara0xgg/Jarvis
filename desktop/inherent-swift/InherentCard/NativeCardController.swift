@@ -76,7 +76,7 @@ final class NativeCardController: NSObject {
     startPasteShortcutMonitor()
 
     if let debugMode = ProcessInfo.processInfo.environment["INHERENT_DEBUG_FAKE_TURNS"] {
-      let scenarioModes = ["basic", "multi-turn", "overflow", "drip-plain", "drip-fade"]
+      let scenarioModes = ["basic", "multi-turn", "overflow", "drip-plain", "drip-fade", "followup-restore"]
       let delay: TimeInterval = scenarioModes.contains(debugMode) ? 0 : 1.0
       DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
         self?.runFakeTurns()
@@ -411,6 +411,9 @@ final class NativeCardController: NSObject {
     case "drip-plain", "drip-fade":
       runDripScenario()
       return
+    case "followup-restore":
+      runFollowupRestoreScenario()
+      return
     default:
       break
     }
@@ -477,6 +480,28 @@ final class NativeCardController: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
           self?.model.siriDone(payload: ["fadeMs": 5000])
         }
+      }
+    }
+  }
+
+  private func runFollowupRestoreScenario() {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+      self?.handleSiriOpen(payload: [
+        "q": "first",
+        "content": "# Answer\n\n_(ready for follow-up)_",
+        "kind": "text",
+      ])
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+        self?.model.siriDone(payload: ["fadeMs": 60000])
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+        self?.model.handleGlobalEnterDown()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+          self?.model.handleEnterUp()
+        }
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.7) { [weak self] in
+        self?.model.submitInputText()
       }
     }
   }
