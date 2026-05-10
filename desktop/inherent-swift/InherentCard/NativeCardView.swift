@@ -243,7 +243,7 @@ struct NativeCardView: View {
         answerContent
           .padding(.leading, 38)
           .padding(.trailing, 34)
-          .padding(.bottom, 22)
+          .padding(.bottom, answerBottomPadding)
           .transition(.move(edge: .top).combined(with: .opacity))
       }
     }
@@ -268,6 +268,10 @@ struct NativeCardView: View {
 
   private var answerShouldScroll: Bool {
     model.answerText.count > 1800 || model.answerText.filter { $0 == "\n" }.count > 20
+  }
+
+  private var answerBottomPadding: CGFloat {
+    model.answerText.contains("```") ? 29 : 22
   }
 
   private var historyPill: some View {
@@ -367,9 +371,6 @@ struct NativeCardView: View {
     ZStack {
       RoundedRectangle(cornerRadius: 30, style: .continuous)
         .fill(Color(red: 0.078, green: 0.098, blue: 0.149).opacity(0.95))
-      RoundedRectangle(cornerRadius: 30, style: .continuous)
-        .fill(.ultraThinMaterial)
-        .opacity(0.35)
       if model.isThinking {
         TimelineView(.animation) { timeline in
           let t = timeline.date.timeIntervalSinceReferenceDate
@@ -567,7 +568,7 @@ struct NativeMarkdownText: View {
           .fill(Color.black.opacity(0.32))
       )
       .padding(.top, 5.5)
-      .padding(.bottom, 14.5)
+      .padding(.bottom, 6)
     case .paragraph(let text):
       inlineTextView(text, range: range, color: Color.white.opacity(followsHeading1 ? 0.55 : 0.92))
         .font(.system(size: followsHeading1 ? 13 : 14.5))
