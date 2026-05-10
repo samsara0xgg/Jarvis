@@ -34,6 +34,9 @@ struct NativeCardView: View {
         NSApp.keyWindow?.makeFirstResponder(nil)
       }
     }
+    .onChange(of: model.activeHistoryID) { _, _ in
+      pillHovering = false
+    }
     .onKeyPress(.escape) {
       model.handleEscape()
       return .handled
@@ -299,6 +302,30 @@ struct NativeCardView: View {
   }
 
   private var historyPill: some View {
+    ZStack(alignment: .bottom) {
+      Rectangle()
+        .fill(Color.clear)
+        .frame(width: historyPillHoverWidth, height: NativeCardModel.pillReservedTop)
+        .contentShape(Rectangle())
+
+      if pillHovering {
+        historyPillBody
+          .transition(.offset(y: -8).combined(with: .scale(scale: 0.96, anchor: .bottom)).combined(with: .opacity))
+      }
+    }
+    .frame(height: NativeCardModel.pillReservedTop, alignment: .bottom)
+    .onHover { pillHovering = $0 }
+    .animation(.timingCurve(0.34, 1.4, 0.64, 1, duration: 0.36), value: pillHovering)
+  }
+
+  private var historyPillHoverWidth: CGFloat {
+    let countWidth = ceil(("\(model.historyCount)" as NSString).size(
+      withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)]
+    ).width)
+    return 93 + countWidth + 32
+  }
+
+  private var historyPillBody: some View {
     HStack(spacing: 0) {
       HStack(spacing: 7) {
         Text("⌃")
@@ -336,12 +363,6 @@ struct NativeCardView: View {
         .overlay(Capsule(style: .continuous).stroke(Color.white.opacity(0.07), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.55), radius: 16, y: 14)
     )
-    .opacity(pillHovering ? 1 : 0)
-    .scaleEffect(pillHovering ? 1 : 0.96, anchor: .bottom)
-    .offset(y: pillHovering ? 0 : -8)
-    .frame(height: NativeCardModel.pillReservedTop, alignment: .bottom)
-    .onHover { pillHovering = $0 }
-    .animation(.timingCurve(0.34, 1.4, 0.64, 1, duration: 0.36), value: pillHovering)
   }
 
   private var popoverLayer: some View {
