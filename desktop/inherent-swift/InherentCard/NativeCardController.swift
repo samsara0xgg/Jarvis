@@ -23,6 +23,7 @@ final class NativeCardController: NSObject {
   private var userHidden = false
   private var userMovedPanel = false
   private var nativeEnterDown = false
+  private var panelDragActive = false
 
   override init() {
     let panel = CardPanel()
@@ -57,6 +58,8 @@ final class NativeCardController: NSObject {
     model.onRequestFadeOut = { [weak self] ms in self?.fadeOut(durationMs: ms) }
     model.onRequestCancelFade = { [weak self] in self?.cancelFade() }
     model.onRequestMovePanel = { [weak self] dx, dy in self?.movePanel(dx: dx, dy: dy) }
+    model.onRequestBeginPanelDrag = { [weak self] in self?.beginPanelDrag() }
+    model.onRequestEndPanelDrag = { [weak self] in self?.endPanelDrag() }
     model.onRequestResetPosition = { [weak self] in self?.resetPosition() }
 
     let dispatcher = NativeControllerBridge(controller: self)
@@ -160,8 +163,19 @@ final class NativeCardController: NSObject {
     var frame = panel.frame
     frame.origin.x += dx
     frame.origin.y += dy
+    panel.ignoresMouseEvents = false
     panel.setFrame(frame, display: true, animate: false)
     userMovedPanel = true
+  }
+
+  private func beginPanelDrag() {
+    panelDragActive = true
+    panel.ignoresMouseEvents = false
+  }
+
+  private func endPanelDrag() {
+    panelDragActive = false
+    updatePassthrough()
   }
 
   private func resetPosition() {
@@ -278,6 +292,10 @@ final class NativeCardController: NSObject {
 
   private func updatePassthrough() {
     guard !userHidden else { return }
+    if panelDragActive {
+      panel.ignoresMouseEvents = false
+      return
+    }
     let cursor = NSEvent.mouseLocation
     let shouldIgnore = NativeCardHitTest.shouldIgnoreMouse(
       at: cursor,
@@ -698,23 +716,55 @@ final class NativeCardController: NSObject {
 }
 
 enum NativePopoverSizing {
+  static let horizontalPadding: CGFloat = 22
+  static let topPadding: CGFloat = 18
+  static let questionBottomPadding: CGFloat = 12
+  static let questionAnswerSpacing: CGFloat = 12
+  static let bottomPadding: CGFloat = 20
+  static let maxAnswerViewportHeight: CGFloat = 410
+  static let panelBottomSlack: CGFloat = 4
+
   static func requiredPanelHeight(for turn: NativeHistoryTurn?, selectedTop: CGFloat) -> CGFloat {
     guard let turn else { return 0 }
-    let contentWidth = NativeCardModel.popoverWidth - 44
-    let questionHeight = textHeight(
+    return NativeCardModel.pillReservedTop
+      + selectedTop
+      + popoverHeight(for: turn)
+      + panelBottomSlack
+  }
+
+  static func popoverHeight(for turn: NativeHistoryTurn) -> CGFloat {
+    topPadding
+      + questionHeight(for: turn)
+      + questionBottomPadding
+      + questionAnswerSpacing
+      + answerViewportHeight(for: turn)
+      + bottomPadding
+  }
+
+  static func answerViewportHeight(for turn: NativeHistoryTurn) -> CGFloat {
+    min(maxAnswerViewportHeight, answerContentHeight(for: turn))
+  }
+
+  static func questionHeight(for turn: NativeHistoryTurn) -> CGFloat {
+    textHeight(
       turn.question,
       width: contentWidth,
       font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
       lineSpacing: 4
     )
-    let answerHeight = min(410, textHeight(
+  }
+
+  static func answerContentHeight(for turn: NativeHistoryTurn) -> CGFloat {
+    textHeight(
       turn.answer,
       width: contentWidth,
       font: NSFont.systemFont(ofSize: 13),
       lineSpacing: 4.5
-    ))
-    let popoverHeight = 18 + questionHeight + 12 + 12 + answerHeight + 20
-    return NativeCardModel.pillReservedTop + selectedTop + popoverHeight + 4
+    )
+  }
+
+  private static var contentWidth: CGFloat {
+    NativeCardModel.popoverWidth - horizontalPadding * 2
   }
 
   private static func textHeight(_ text: String, width: CGFloat, font: NSFont, lineSpacing: CGFloat) -> CGFloat {

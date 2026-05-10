@@ -106,6 +106,25 @@ final class DisplayMathTests: XCTestCase {
     XCTAssertGreaterThan(required, NativeCardModel.pillReservedTop + 8 + 120)
   }
 
+  func test_popoverSizingUsesContentHeightForShortAnswer() {
+    let turn = NativeHistoryTurn(question: "1", answer: "在，怎么了？")
+
+    XCTAssertLessThan(NativePopoverSizing.answerViewportHeight(for: turn), 40)
+    XCTAssertLessThan(NativePopoverSizing.requiredPanelHeight(for: turn, selectedTop: 8), 180)
+  }
+
+  func test_popoverSizingCapsLongAnswerViewport() {
+    let turn = NativeHistoryTurn(
+      question: "long",
+      answer: Array(repeating: "这是一段用于撑高历史详情的内容。", count: 80).joined(separator: "\n")
+    )
+
+    XCTAssertEqual(
+      NativePopoverSizing.answerViewportHeight(for: turn),
+      NativePopoverSizing.maxAnswerViewportHeight
+    )
+  }
+
   func test_dragPolicyExcludesInputAndStatePillRegions() {
     let idle = NativeCardDragPolicy.State(
       historyViewportHeight: 0,

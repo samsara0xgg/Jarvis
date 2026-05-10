@@ -89,6 +89,8 @@ final class NativeCardModel: ObservableObject {
   var onRequestFadeOut: ((Int) -> Void)?
   var onRequestCancelFade: (() -> Void)?
   var onRequestMovePanel: ((CGFloat, CGFloat) -> Void)?
+  var onRequestBeginPanelDrag: (() -> Void)?
+  var onRequestEndPanelDrag: (() -> Void)?
   var onRequestResetPosition: (() -> Void)?
 
   private let backend: any NativeBackendSubmitting
@@ -207,7 +209,13 @@ final class NativeCardModel: ObservableObject {
   }
 
   func beginDrag() {
-    requestLayout()
+    cancelFade()
+    onRequestCancelFade?()
+    onRequestBeginPanelDrag?()
+  }
+
+  func endDrag() {
+    onRequestEndPanelDrag?()
   }
 
   func movePanel(dx: CGFloat, dy: CGFloat) {
@@ -252,12 +260,30 @@ final class NativeCardModel: ObservableObject {
     return false
   }
 
+  func stageDroppedFileURLs(_ urls: [URL]) -> Bool {
+    guard canStageImage(), !urls.isEmpty else { return false }
+    for url in urls where Self.imageMimeType(for: url) != nil {
+      _ = stageImageFile(url, source: "drop")
+      return true
+    }
+    isDropTarget = false
+    requestLayout()
+    return true
+  }
+
   func clearStagedImage() {
     stagedImage = nil
     requestLayout()
   }
 
   func submitInputText() {
+    if inputDisabled {
+      if canEnterFollowupInput() {
+        enterInputMode(followup: true)
+      }
+      return
+    }
+
     let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
     let image = stagedImage
     if trimmed.isEmpty && image == nil {

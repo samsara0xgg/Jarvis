@@ -9,9 +9,8 @@ struct NativeCardView: View {
 
   @State private var hovering = false
   @State private var pillHovering = false
-  @State private var dragStart: CGPoint?
   @State private var dragBlocked = false
-  @State private var lastDragTranslation: CGSize = .zero
+  @State private var lastDragScreenLocation: NSPoint?
   @FocusState private var inputFocused: Bool
 
   var body: some View {
@@ -104,7 +103,8 @@ struct NativeCardView: View {
             onEnterDown: { model.handleEnterDown(shortAction: model.submitInputText) },
             onEnterUp: { model.handleEnterUp() },
             onEscape: { model.handleEscape() },
-            onPasteImage: { model.stageImageFromClipboard() }
+            onPasteImage: { model.stageImageFromClipboard() },
+            onDropFileURLs: { model.stageDroppedFileURLs($0) }
           )
           .focused($inputFocused)
           .frame(height: 36)
@@ -347,6 +347,7 @@ struct NativeCardView: View {
   private var popoverLayer: some View {
     Group {
       if model.popoverVisible, let turn = model.activeHistoryTurn {
+        let answerViewportHeight = NativePopoverSizing.answerViewportHeight(for: turn)
         VStack(alignment: .leading, spacing: 12) {
           Text(turn.question)
             .font(.system(size: 11, weight: .regular, design: .monospaced))
@@ -365,12 +366,13 @@ struct NativeCardView: View {
               .frame(maxWidth: .infinity, alignment: .leading)
               .textSelection(.enabled)
           }
-          .frame(maxHeight: 410)
+          .frame(height: answerViewportHeight)
         }
-        .padding(.top, 18)
-        .padding(.horizontal, 22)
-        .padding(.bottom, 20)
+        .padding(.top, NativePopoverSizing.topPadding)
+        .padding(.horizontal, NativePopoverSizing.horizontalPadding)
+        .padding(.bottom, NativePopoverSizing.bottomPadding)
         .frame(width: NativeCardModel.popoverWidth, alignment: .topLeading)
+        .fixedSize(horizontal: false, vertical: true)
         .background(cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).stroke(Color.white.opacity(0.06), lineWidth: 0.5))
@@ -481,24 +483,24 @@ struct NativeCardView: View {
     DragGesture(minimumDistance: 2)
       .onChanged { value in
         if dragBlocked { return }
-        if dragStart == nil {
+        let current = NSEvent.mouseLocation
+        if lastDragScreenLocation == nil {
           guard canStartPanelDrag(at: value.startLocation) else {
             dragBlocked = true
             return
           }
-          dragStart = value.location
-          lastDragTranslation = .zero
+          lastDragScreenLocation = current
           model.beginDrag()
+          return
         }
-        let dx = value.translation.width - lastDragTranslation.width
-        let dy = value.translation.height - lastDragTranslation.height
-        lastDragTranslation = value.translation
-        model.movePanel(dx: dx, dy: -dy)
+        guard let previous = lastDragScreenLocation else { return }
+        lastDragScreenLocation = current
+        model.movePanel(dx: current.x - previous.x, dy: current.y - previous.y)
       }
       .onEnded { _ in
-        dragStart = nil
         dragBlocked = false
-        lastDragTranslation = .zero
+        lastDragScreenLocation = nil
+        model.endDrag()
       }
   }
 
@@ -1576,6 +1578,7 @@ struct NativeCardTextField: NSViewRepresentable {
   let onEnterUp: () -> Void
   let onEscape: () -> Void
   let onPasteImage: () -> Bool
+  let onDropFileURLs: ([URL]) -> Bool
 
   func makeNSView(context: Context) -> NativeTextField {
     let field = NativeTextField()
@@ -1593,6 +1596,11 @@ struct NativeCardTextField: NSViewRepresentable {
     field.onEnterUp = onEnterUp
     field.onEscape = onEscape
     field.onPasteImage = onPasteImage
+    field.onDropFileURLs = onDropFileURLs
+    field.registerForDraggedTypes([
+      .fileURL,
+      NSPasteboard.PasteboardType("NSFilenamesPboardType"),
+    ])
     context.coordinator.onEnterDown = onEnterDown
     context.coordinator.onEnterUp = onEnterUp
     context.coordinator.onEscape = onEscape
@@ -1614,6 +1622,7 @@ struct NativeCardTextField: NSViewRepresentable {
     nsView.onEnterUp = onEnterUp
     nsView.onEscape = onEscape
     nsView.onPasteImage = onPasteImage
+    nsView.onDropFileURLs = onDropFileURLs
     context.coordinator.onEnterDown = onEnterDown
     context.coordinator.onEnterUp = onEnterUp
     context.coordinator.onEscape = onEscape
@@ -1667,6 +1676,7 @@ final class NativeTextField: NSTextField {
   var onEnterUp: (() -> Void)?
   var onEscape: (() -> Void)?
   var onPasteImage: (() -> Bool)?
+  var onDropFileURLs: (([URL]) -> Bool)?
   private var enterWasDown = false
 
   func resignEditingIfNeeded() {
@@ -1728,5 +1738,36 @@ final class NativeTextField: NSTextField {
   @objc func paste(_ sender: Any?) {
     if onPasteImage?() == true { return }
     currentEditor()?.paste(sender)
+  }
+
+  override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+    Self.fileURLs(from: sender.draggingPasteboard).isEmpty ? [] : .copy
+  }
+
+  override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+    Self.fileURLs(from: sender.draggingPasteboard).isEmpty ? [] : .copy
+  }
+
+  override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    let urls = Self.fileURLs(from: sender.draggingPasteboard)
+    guard !urls.isEmpty else { return super.performDragOperation(sender) }
+    _ = onDropFileURLs?(urls)
+    return true
+  }
+
+  private static func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
+    let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+    if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [NSURL] {
+      return urls.map { $0 as URL }
+    }
+    if let paths = pasteboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String] {
+      return paths.map { URL(fileURLWithPath: $0) }
+    }
+    if let raw = pasteboard.string(forType: .fileURL),
+       let url = URL(string: raw),
+       url.isFileURL {
+      return [url]
+    }
+    return []
   }
 }

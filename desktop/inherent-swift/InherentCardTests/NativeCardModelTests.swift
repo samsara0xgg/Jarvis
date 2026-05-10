@@ -371,6 +371,42 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertEqual(model.phase, .idle)
   }
 
+  func test_textFieldFileDropStagesImageURL() async throws {
+    let model = NativeCardModel()
+    guard let png = makePNG(width: 5, height: 4) else {
+      return XCTFail("expected test image png")
+    }
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("jarvis-inherent-drop-\(UUID().uuidString).png")
+    try png.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    XCTAssertTrue(model.stageDroppedFileURLs([url]))
+    try await settle(milliseconds: 80)
+
+    XCTAssertEqual(model.phase, .input)
+    XCTAssertEqual(model.stagedImage?.mime, "image/png")
+    XCTAssertEqual(model.stagedImage?.name, url.lastPathComponent)
+    XCTAssertEqual(model.stagedImage?.meta, "5×4")
+    XCTAssertEqual(model.inputText, "")
+  }
+
+  func test_textFieldNonImageFileDropIsSwallowedWithoutTextInsertion() async throws {
+    let model = NativeCardModel()
+    model.inputText = "draft"
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("jarvis-inherent-drop-\(UUID().uuidString).txt")
+    try Data("not an image".utf8).write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    XCTAssertTrue(model.stageDroppedFileURLs([url]))
+    try await settle(milliseconds: 80)
+
+    XCTAssertNil(model.stagedImage)
+    XCTAssertEqual(model.inputText, "draft")
+    XCTAssertEqual(model.phase, .idle)
+  }
+
   func test_plainTextClipboardDoesNotBypassTextFieldPasteSemantics() {
     let model = NativeCardModel()
     model.inputText = "before"
@@ -516,6 +552,43 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertTrue(model.isSubmitted)
     XCTAssertEqual(model.phase, .submitting)
     XCTAssertEqual(model.stateLabel, "thinking")
+  }
+
+  func test_enterAfterCompletedImageAnswerStartsFollowupInsteadOfResubmittingImage() async throws {
+    let backend = FakeNativeBackend()
+    let model = NativeCardModel(backend: backend)
+    guard let png = makePNG(width: 4, height: 3) else {
+      return XCTFail("expected test image png")
+    }
+    model.inputText = "这是什么"
+    model.stagedImage = NativeImageAttachment(
+      data: png,
+      mime: "image/png",
+      name: "screen.png",
+      label: "screen",
+      meta: "4×3"
+    )
+
+    model.submitInputText()
+    try await settle(milliseconds: 80)
+    XCTAssertEqual(backend.imagePayloads.count, 1)
+
+    model.siriAppend(payload: ["token": "这是图片回答"])
+    try await settle(milliseconds: 700)
+    model.siriDone(payload: ["fadeMs": 60000])
+    try await settle(milliseconds: 80)
+    XCTAssertEqual(model.phase, .done)
+
+    // Simulates the stale text-field first-responder path routing Return to
+    // submitInputText after the answer is complete.
+    model.submitInputText()
+    try await settle(milliseconds: 320)
+
+    XCTAssertEqual(backend.imagePayloads.count, 1)
+    XCTAssertTrue(model.isFollowupInput)
+    XCTAssertFalse(model.isSubmitted)
+    XCTAssertEqual(model.inputPlaceholder, "继续问…")
+    XCTAssertNil(model.stagedImage)
   }
 
   func test_submitStagedImageFailureShowsOfflineState() async throws {
