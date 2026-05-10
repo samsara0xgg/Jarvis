@@ -642,6 +642,19 @@ final class NativeCardModelTests: XCTestCase {
     }
   }
 
+  func test_characterFadeDiffPreservesTextWhenMarkdownMarkersClose() {
+    let previous = "**Bold**"
+    let previousBirths: [TimeInterval] = [1, 2, 3, 4, 5, 6, 7, 8]
+
+    let currentBirths = NativeCardModel.diffBirthTimes(
+      previous: previous,
+      previousBirthTimes: previousBirths,
+      current: "Bold"
+    )
+
+    XCTAssertEqual(currentBirths, [3, 4, 5, 6])
+  }
+
   func test_codeHighlighterMatchesWebPythonTokenColors() {
     let attributed = NSAttributedString(NativeCodeText.highlighted(
       """

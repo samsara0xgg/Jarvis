@@ -904,7 +904,7 @@ final class NativeCardModel: ObservableObject {
     visibleAnswerText = visibleText
   }
 
-  private static func diffBirthTimes(
+  static func diffBirthTimes(
     previous: String,
     previousBirthTimes: [TimeInterval],
     current: String
@@ -919,16 +919,29 @@ final class NativeCardModel: ObservableObject {
       output[prefix] = prefix < previousBirthTimes.count ? previousBirthTimes[prefix] : now
       prefix += 1
     }
+    let previousTrimmedCount = previousChars.count - inlineMarkerTailCount(in: previousChars, after: prefix)
     var suffix = 0
-    while suffix < previousChars.count - prefix,
+    while suffix < previousTrimmedCount - prefix,
           suffix < currentChars.count - prefix,
-          previousChars[previousChars.count - 1 - suffix] == currentChars[currentChars.count - 1 - suffix] {
+          previousChars[previousTrimmedCount - 1 - suffix] == currentChars[currentChars.count - 1 - suffix] {
       let currentIndex = currentChars.count - 1 - suffix
-      let previousIndex = previousChars.count - 1 - suffix
+      let previousIndex = previousTrimmedCount - 1 - suffix
       output[currentIndex] = previousIndex < previousBirthTimes.count ? previousBirthTimes[previousIndex] : now
       suffix += 1
     }
     return output
+  }
+
+  private static func inlineMarkerTailCount(in chars: [Character], after prefix: Int) -> Int {
+    let markers = Set<Character>(["*", "_", "~", "`", "[", "]", "(", ")", "!"])
+    var count = 0
+    var idx = chars.count - 1
+    while idx >= prefix, markers.contains(chars[idx]) {
+      count += 1
+      if idx == 0 { break }
+      idx -= 1
+    }
+    return count
   }
 
   private func requestLayout(animatedFor duration: TimeInterval = 0.0) {
