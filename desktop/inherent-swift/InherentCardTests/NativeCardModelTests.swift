@@ -435,6 +435,63 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertEqual(model.stagedImage?.name, "screen.png")
   }
 
+  func test_submitStagedImageUsesImageEndpointAndFallbackQuestion() async throws {
+    let backend = FakeNativeBackend()
+    let model = NativeCardModel(backend: backend)
+    guard let png = makePNG(width: 4, height: 3) else {
+      return XCTFail("expected test image png")
+    }
+    model.stagedImage = NativeImageAttachment(
+      data: png,
+      mime: "image/png",
+      name: "screen.png",
+      label: "screen",
+      meta: "4×3"
+    )
+
+    model.submitInputText()
+    try await settle(milliseconds: 80)
+
+    XCTAssertEqual(backend.submitTexts, [])
+    XCTAssertEqual(backend.imagePayloads.count, 1)
+    XCTAssertEqual(backend.imagePayloads[0].text, "")
+    XCTAssertEqual(backend.imagePayloads[0].mime, "image/png")
+    XCTAssertEqual(backend.imagePayloads[0].name, "screen.png")
+    XCTAssertEqual(backend.imagePayloads[0].imageData, png)
+    XCTAssertEqual(model.questionText, "请看这张图片")
+    XCTAssertTrue(model.isSubmitted)
+    XCTAssertEqual(model.phase, .submitting)
+    XCTAssertEqual(model.stateLabel, "thinking")
+  }
+
+  func test_submitStagedImageFailureShowsOfflineState() async throws {
+    let backend = FakeNativeBackend()
+    backend.imageResult = SubmitResult(ok: false, reason: "network")
+    let model = NativeCardModel(backend: backend)
+    guard let png = makePNG(width: 2, height: 2) else {
+      return XCTFail("expected test image png")
+    }
+    model.inputText = "这是什么"
+    model.stagedImage = NativeImageAttachment(
+      data: png,
+      mime: "image/png",
+      name: "screen.png",
+      label: "screen",
+      meta: "2×2"
+    )
+
+    model.submitInputText()
+    try await settle(milliseconds: 80)
+
+    XCTAssertEqual(backend.submitTexts, [])
+    XCTAssertEqual(backend.imagePayloads.count, 1)
+    XCTAssertEqual(backend.imagePayloads[0].text, "这是什么")
+    XCTAssertEqual(model.questionText, "这是什么")
+    XCTAssertEqual(model.phase, .error)
+    XCTAssertEqual(model.stateLabel, "offline")
+    XCTAssertEqual(model.stateVariant, .error)
+  }
+
   func test_answerParserEscapesRawHtmlLikeMarkdownIt() {
     let html = #"<div class="tool done"><span class="tool-tag">hue</span></div>"#
 
