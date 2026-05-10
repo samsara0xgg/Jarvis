@@ -560,12 +560,13 @@ struct NativeMarkdownText: View {
           .padding(.horizontal, 14)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .frame(minHeight: CGFloat(lineCount) * 30 + 24, alignment: .topLeading)
+      .frame(minHeight: CGFloat(lineCount) * 30 + 32, alignment: .topLeading)
       .background(
         RoundedRectangle(cornerRadius: 12, style: .continuous)
           .fill(Color.black.opacity(0.32))
       )
-      .padding(.vertical, 10)
+      .padding(.top, 5.5)
+      .padding(.bottom, 14.5)
     case .paragraph(let text):
       inlineTextView(text, range: range, color: Color.white.opacity(followsHeading1 ? 0.55 : 0.92))
         .font(.system(size: followsHeading1 ? 13 : 14.5))
