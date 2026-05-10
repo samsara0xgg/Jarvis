@@ -986,6 +986,10 @@ final class NativeCardModel: ObservableObject {
 extension NativeCardModel: BridgeDispatcher {
   nonisolated func siriOpen(payload: [String: Any]?) {
     Task { @MainActor in
+      let streaming = (payload?["streaming"] as? Bool) ?? false
+      let content = payload?["content"] as? String ?? ""
+      guard streaming || !content.isEmpty else { return }
+
       clearFollowupDraft()
       cancelFade()
       clearDrip()
@@ -1007,8 +1011,6 @@ extension NativeCardModel: BridgeDispatcher {
       setState("thinking", .thinking)
       isThinking = true
       phase = .submitting
-      let streaming = (payload?["streaming"] as? Bool) ?? false
-      let content = payload?["content"] as? String ?? ""
       if !streaming && !content.isEmpty {
         targetAnswer = content
         shownAnswer = content
@@ -1026,6 +1028,7 @@ extension NativeCardModel: BridgeDispatcher {
   nonisolated func siriAppend(payload: [String: Any]?) {
     Task { @MainActor in
       guard let token = payload?["token"] as? String else { return }
+      guard phase == .submitting || phase == .streaming else { return }
       if !streamingStarted {
         streamingStarted = true
         isThinking = false
@@ -1039,6 +1042,7 @@ extension NativeCardModel: BridgeDispatcher {
 
   nonisolated func siriDone(payload: [String: Any]?) {
     Task { @MainActor in
+      guard phase == .submitting || phase == .streaming else { return }
       let remaining = max(0, targetAnswer.count - shownAnswer.count)
       let dripRemainingMs = estimatedDripRemainingMs(remaining: remaining)
       isThinking = false

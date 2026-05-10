@@ -43,6 +43,34 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertEqual(model.stateLabel, "")
   }
 
+  func test_emptyNonStreamingOpenIsIgnored() async throws {
+    let model = NativeCardModel()
+
+    model.siriOpen(payload: ["content": "", "kind": "text"])
+    try await settle(milliseconds: 80)
+
+    XCTAssertEqual(model.phase, .idle)
+    XCTAssertFalse(model.isSubmitted)
+    XCTAssertEqual(model.answerText, "")
+    XCTAssertEqual(model.stateLabel, "")
+  }
+
+  func test_appendAndDoneWithoutOpenAreIgnored() async throws {
+    let model = NativeCardModel()
+
+    model.siriAppend(payload: ["token": "orphan token"])
+    try await settle(milliseconds: 120)
+    XCTAssertEqual(model.phase, .idle)
+    XCTAssertEqual(model.answerText, "")
+    XCTAssertTrue(model.history.isEmpty)
+
+    model.siriDone(payload: ["fadeMs": 3000])
+    try await settle(milliseconds: 120)
+    XCTAssertEqual(model.phase, .idle)
+    XCTAssertEqual(model.stateLabel, "")
+    XCTAssertTrue(model.history.isEmpty)
+  }
+
   func test_externalVoiceAcceptedUsesTranscriptAsSubmittedQuestion() async throws {
     let model = NativeCardModel()
 
