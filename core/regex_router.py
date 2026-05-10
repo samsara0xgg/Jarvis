@@ -208,6 +208,8 @@ class RegexRouter:
                     tool_args={
                         "device_id": self.device_alias[m.group(2)],
                         "action": "turn_on",
+                        "matched_alias": m.group(2),
+                        "resolution_source": "regex_router",
                     },
                     template_key="smart_home_turn_on",
                     template_vars={"device": m.group(2)},
@@ -222,6 +224,8 @@ class RegexRouter:
                     tool_args={
                         "device_id": self.device_alias[m.group(1)],
                         "action": "turn_on",
+                        "matched_alias": m.group(1),
+                        "resolution_source": "regex_router",
                     },
                     template_key="smart_home_turn_on",
                     template_vars={"device": m.group(1)},
@@ -236,6 +240,8 @@ class RegexRouter:
                     tool_args={
                         "device_id": self.device_alias[m.group(1)],
                         "action": "turn_off",
+                        "matched_alias": m.group(1),
+                        "resolution_source": "regex_router",
                     },
                     template_key="smart_home_turn_off",
                     template_vars={"device": m.group(1)},
@@ -250,6 +256,8 @@ class RegexRouter:
                     tool_args={
                         "device_id": self.device_alias[m.group(1)],
                         "action": "turn_off",
+                        "matched_alias": m.group(1),
+                        "resolution_source": "regex_router",
                     },
                     template_key="smart_home_turn_off",
                     template_vars={"device": m.group(1)},
@@ -265,6 +273,8 @@ class RegexRouter:
                         "device_id": self.device_alias[m.group(1)],
                         "action": "set_brightness",
                         "value": m.group(2),
+                        "matched_alias": m.group(1),
+                        "resolution_source": "regex_router",
                     },
                     template_key="smart_home_set_brightness",
                     template_vars={"device": m.group(1), "value": m.group(2)},
@@ -302,6 +312,8 @@ class RegexRouter:
                         "device_id": "scene",
                         "action": "activate",
                         "value": self.scene_alias[m.group(2)],
+                        "matched_alias": f"场景 {m.group(2)}",
+                        "resolution_source": "regex_router",
                     },
                     template_key="scene_activate",
                     template_vars={"scene": self.scene_alias[m.group(2)]},

@@ -232,7 +232,12 @@ class TestJarvisTraceV3:
         assert row["tool_calls"] == [
             {
                 "name": "smart_home_control",
-                "args": {"device_id": "all_lights", "action": "turn_on"},
+                "args": {
+                    "device_id": "all_lights",
+                    "action": "turn_on",
+                    "matched_alias": "灯",
+                    "resolution_source": "regex_router",
+                },
                 "result": make_tool_result(FAILURE, "Device not found: all_lights"),
                 "ms": row["tool_calls"][0]["ms"],
             }

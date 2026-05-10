@@ -252,7 +252,10 @@ class TestSmartHomePatterns:
         assert m is not None
         assert m.pattern_id == "smart_home_on_v_first"
         assert m.tool_name == "smart_home_control"
-        assert m.tool_args == {"device_id": "desk_lightstrip", "action": "turn_on"}
+        assert m.tool_args["device_id"] == "desk_lightstrip"
+        assert m.tool_args["action"] == "turn_on"
+        assert m.tool_args["matched_alias"] == "灯带"
+        assert m.tool_args["resolution_source"] == "regex_router"
         assert m.template_vars == {"device": "灯带"}
 
     def test_turn_on_v_first_short(self) -> None:
@@ -283,7 +286,10 @@ class TestSmartHomePatterns:
         m = self.router.match("关灯带")
         assert m is not None
         assert m.pattern_id == "smart_home_off_v_first"
-        assert m.tool_args == {"device_id": "desk_lightstrip", "action": "turn_off"}
+        assert m.tool_args["device_id"] == "desk_lightstrip"
+        assert m.tool_args["action"] == "turn_off"
+        assert m.tool_args["matched_alias"] == "灯带"
+        assert m.tool_args["resolution_source"] == "regex_router"
 
     def test_turn_off_v_last_guandiao(self) -> None:
         m = self.router.match("把灯带关掉")
@@ -294,17 +300,20 @@ class TestSmartHomePatterns:
     def test_turn_off_v_last_guanle(self) -> None:
         m = self.router.match("把大灯关了")
         assert m is not None
-        assert m.tool_args == {"device_id": "bedroom_group", "action": "turn_off"}
+        assert m.tool_args["device_id"] == "bedroom_group"
+        assert m.tool_args["action"] == "turn_off"
+        assert m.tool_args["matched_alias"] == "大灯"
+        assert m.tool_args["resolution_source"] == "regex_router"
 
     def test_set_brightness(self) -> None:
         m = self.router.match("把灯带调到百分之60")
         assert m is not None
         assert m.pattern_id == "smart_home_set_brightness"
-        assert m.tool_args == {
-            "device_id": "desk_lightstrip",
-            "action": "set_brightness",
-            "value": "60",
-        }
+        assert m.tool_args["device_id"] == "desk_lightstrip"
+        assert m.tool_args["action"] == "set_brightness"
+        assert m.tool_args["value"] == "60"
+        assert m.tool_args["matched_alias"] == "灯带"
+        assert m.tool_args["resolution_source"] == "regex_router"
         assert m.template_vars == {"device": "灯带", "value": "60"}
 
     def test_alias_priority_zhuangshi_over_zhuang(self) -> None:
@@ -379,11 +388,11 @@ class TestSceneActivatePattern:
         assert m is not None
         assert m.pattern_id == "scene_activate"
         assert m.tool_name == "smart_home_control"
-        assert m.tool_args == {
-            "device_id": "scene",
-            "action": "activate",
-            "value": "2023-12-23",
-        }
+        assert m.tool_args["device_id"] == "scene"
+        assert m.tool_args["action"] == "activate"
+        assert m.tool_args["value"] == "2023-12-23"
+        assert m.tool_args["matched_alias"] == "场景 1"
+        assert m.tool_args["resolution_source"] == "regex_router"
         assert m.template_vars == {"scene": "2023-12-23"}
 
     def test_scene_index_no_space(self) -> None:

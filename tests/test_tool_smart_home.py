@@ -109,6 +109,38 @@ def test_smart_home_control_execute():
     parsed = parse_tool_result(result)
     assert parsed["status"] == "success"
     assert parsed["message"] == "Living Room Light turned on"
+    data = parsed["data"]
+    assert data["entity"]["entity_id"] == "living_room_light"
+    assert data["entity"]["display_name"] == "Living Room Light"
+    assert data["action"] == "turn_on"
+    assert data["verification"]["controller_ack"] is True
+    assert data["verification"]["postcondition_confirmed"] is True
+    assert parsed["outcome"]["verification_source"] == "postcondition"
+    assert "actual_device_state_confirmed" in parsed["claim_policy"]["allowed_claims"]
+
+
+def test_smart_home_control_records_regex_alias_provenance():
+    dm, pm = _inject()
+    device = _make_device(status={"on": False, "brightness": 0})
+    dm.get_device.return_value = device
+    dm.execute_command.return_value = "Living Room Light turned off"
+
+    _EXECUTION_CONTEXT["user_role"] = "owner"
+    entry = _TOOL_REGISTRY["smart_home_control"]
+    result = entry["execute"](
+        "smart_home_control",
+        {
+            "device_id": "living_room_light",
+            "action": "turn_off",
+            "matched_alias": "大灯",
+            "resolution_source": "regex_router",
+        },
+    )
+
+    entity = parse_tool_result(result)["data"]["entity"]
+    assert entity["matched_alias"] == "大灯"
+    assert entity["alias_source"] == "regex_router"
+    assert entity["resolution_source"] == "regex_router"
 
 
 def test_smart_home_control_with_value():
@@ -137,6 +169,10 @@ def test_smart_home_control_device_not_found():
         "smart_home_control",
         {"device_id": "ghost", "action": "turn_on"},
     )
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "failure"
+    assert parsed["data"]["entity"]["entity_type"] == "unknown"
+    assert "device_state_changed" in parsed["claim_policy"]["forbidden_claims"]
     assert "not found" in tool_message(result).lower() or "ghost" in tool_message(result)
 
 
@@ -203,9 +239,13 @@ def test_smart_home_status_execute():
     result = entry["execute"]("smart_home_status", {})
 
     dm.get_all_status.assert_called_once()
-    parsed = parse_tool_result(result)["data"]["entities"]
+    data = parse_tool_result(result)["data"]
+    parsed = data["entities"]
     assert "light1" in parsed
     assert "thermo" in parsed
+    assert "entity_inventory" in data
+    assert data["entity_inventory"][0]["entity_id"] in {"light1", "thermo"}
+    assert "freshness" in data
 
 
 def test_smart_home_status_single_device():
@@ -220,8 +260,11 @@ def test_smart_home_status_single_device():
     )
 
     dm.get_device.assert_called_with("living_room_light")
-    parsed = parse_tool_result(result)["data"]["status"]
+    data = parse_tool_result(result)["data"]
+    parsed = data["status"]
     assert parsed["on"] is False
+    assert data["entity"]["entity_id"] == "living_room_light"
+    assert "freshness" in data
 
 
 def test_smart_home_status_device_not_found():
@@ -261,6 +304,10 @@ def test_virtual_group_fanout_all_success():
     dm.execute_command.assert_any_call("bedroom_lamp_1", "turn_on", None)
     dm.execute_command.assert_any_call("bedroom_lamp_2", "turn_on", None)
     assert "2/2" in result
+    parsed = parse_tool_result(result)
+    assert parsed["data"]["entity"]["entity_type"] == "virtual_group"
+    assert len(parsed["data"]["successes"]) == 2
+    assert parsed["data"]["verification"]["controller_ack"] is True
 
 
 def test_virtual_group_fanout_partial_failure():
@@ -288,6 +335,11 @@ def test_virtual_group_fanout_partial_failure():
     assert "1/2" in result
     assert "Bedroom Lamp 2" in result
     assert "bridge timeout" in result
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "partial_success"
+    assert len(parsed["data"]["successes"]) == 1
+    assert len(parsed["data"]["failures"]) == 1
+    assert "all_devices_changed" in parsed["claim_policy"]["forbidden_claims"]
 
 
 def test_virtual_group_fanout_value_passed():
