@@ -75,16 +75,12 @@ struct NativeCardView: View {
 
   private var inputRow: some View {
     HStack(alignment: model.isSubmitted ? .top : .center, spacing: inputRowSpacing) {
-      if model.isListening && !model.isSubmitted && !model.isFollowupInput {
-        waveform
-          .frame(width: 64, height: 22)
-          .transition(.move(edge: .leading).combined(with: .opacity))
-      } else if !model.isSubmitted && !model.isFollowupInput {
+      if !model.isSubmitted && !model.isFollowupInput {
         Circle()
           .fill(Color(red: 0.37, green: 0.78, blue: 1.0))
           .frame(width: 6, height: 6)
           .shadow(color: Color(red: 0.37, green: 0.78, blue: 1.0).opacity(0.8), radius: 4)
-          .opacity(model.isListening ? 1 : 0)
+          .opacity(0)
       }
 
       HStack(spacing: model.isSubmitted ? 7 : 8) {
@@ -435,22 +431,6 @@ struct NativeCardView: View {
     if model.stateVariant == .warn { return Color(red: 1, green: 0.72, blue: 0.30).opacity(0.85) }
     if model.isListening || model.isDropTarget || model.attachmentEdgeFlash { return Color(red: 0.37, green: 0.78, blue: 1).opacity(0.82) }
     return Color.white.opacity(0.06)
-  }
-
-  private var waveform: some View {
-    TimelineView(.animation) { timeline in
-      HStack(spacing: 3) {
-        ForEach([0.30, 0.70, 1.00, 0.60, 0.40].indices, id: \.self) { idx in
-          let base = [0.30, 0.70, 1.00, 0.60, 0.40][idx]
-          let t = timeline.date.timeIntervalSinceReferenceDate
-          let wave = (sin(t * 2 * .pi / 0.9 + Double(idx) * 0.7) + 1) / 2
-          RoundedRectangle(cornerRadius: 2)
-            .fill(Color(red: 0.37, green: 0.78, blue: 1))
-            .frame(width: 3, height: 22 * base)
-            .scaleEffect(y: 0.40 + wave * 0.60)
-        }
-      }
-    }
   }
 
   private func statePulse(at date: Date) -> (scale: CGFloat, opacity: Double) {
