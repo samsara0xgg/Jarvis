@@ -271,6 +271,20 @@ final class NativeCardModelTests: XCTestCase {
     ])
   }
 
+  func test_answerParserPreservesFenceLanguage() {
+    let markdown = """
+    ```python
+    def hello():
+        return 42
+    ```
+    """
+
+    XCTAssertEqual(
+      NativeAnswerParser.parse(markdown),
+      [.code("def hello():\n    return 42", language: "python")]
+    )
+  }
+
   func test_answerParserCombinesContiguousParagraphLines() {
     let markdown = """
     bedroom · 客厅 22°  

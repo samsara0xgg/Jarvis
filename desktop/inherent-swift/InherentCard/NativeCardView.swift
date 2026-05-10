@@ -546,12 +546,11 @@ struct NativeMarkdownText: View {
       }
       .font(.system(size: 13.5))
       .foregroundStyle(Color.white.opacity(0.88))
-    case .code(let code):
+    case .code(let code, let language):
       let lineCount = max(1, code.components(separatedBy: .newlines).count)
       ScrollView(.horizontal, showsIndicators: false) {
-        Text(code)
+        NativeCodeText(code: code, language: language)
           .font(.system(size: 12.5, weight: .regular, design: .monospaced))
-          .foregroundStyle(Color(red: 1.0, green: 0.86, blue: 0.70).opacity(0.92))
           .lineSpacing(6)
           .padding(.vertical, 12)
           .padding(.horizontal, 14)
@@ -799,6 +798,65 @@ struct NativeAnimatedInlineText: View {
   }
 }
 
+struct NativeCodeText: View {
+  let code: String
+  let language: String?
+
+  var body: some View {
+    Text(Self.highlighted(code, language: language))
+  }
+
+  private static func highlighted(_ code: String, language: String?) -> AttributedString {
+    let nsCode = code as NSString
+    let fullRange = NSRange(location: 0, length: nsCode.length)
+    let attributed = NSMutableAttributedString(string: code)
+    attributed.addAttributes([
+      .foregroundColor: NSColor(calibratedRed: 1.0, green: 0.86, blue: 0.70, alpha: 0.92),
+    ], range: fullRange)
+    guard !code.isEmpty else { return AttributedString(attributed) }
+
+    let keywordColor = NSColor(calibratedRed: 1.0, green: 0.45, blue: 0.52, alpha: 0.95)
+    let stringColor = NSColor(calibratedRed: 0.56, green: 0.78, blue: 1.0, alpha: 0.95)
+    let numberColor = NSColor(calibratedRed: 0.98, green: 0.70, blue: 0.42, alpha: 0.95)
+    let commentColor = NSColor.white.withAlphaComponent(0.42)
+
+    apply(pattern: keywordPattern(for: language), color: keywordColor, to: attributed, in: fullRange)
+    apply(pattern: #"\b\d+(?:\.\d+)?\b"#, color: numberColor, to: attributed, in: fullRange)
+    apply(pattern: #""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'"#, color: stringColor, to: attributed, in: fullRange)
+    apply(pattern: #"(?m)(#|//).*$"#, color: commentColor, to: attributed, in: fullRange)
+
+    return AttributedString(attributed)
+  }
+
+  private static func keywordPattern(for language: String?) -> String {
+    let normalized = language?.lowercased() ?? ""
+    let words: [String]
+    if normalized.hasPrefix("py") {
+      words = ["and", "as", "async", "await", "class", "def", "elif", "else", "except", "False", "finally", "for", "from", "if", "import", "in", "is", "lambda", "None", "not", "or", "pass", "return", "True", "try", "while", "with", "yield"]
+    } else if normalized == "swift" {
+      words = ["actor", "as", "async", "await", "case", "catch", "class", "else", "enum", "false", "for", "func", "guard", "if", "import", "in", "let", "nil", "private", "return", "static", "struct", "switch", "throw", "throws", "true", "try", "var", "while"]
+    } else if ["js", "jsx", "javascript", "ts", "tsx", "typescript"].contains(normalized) {
+      words = ["async", "await", "case", "catch", "class", "const", "else", "export", "false", "for", "function", "if", "import", "let", "new", "null", "return", "switch", "throw", "true", "try", "undefined", "var", "while"]
+    } else {
+      words = ["async", "await", "case", "class", "const", "def", "else", "false", "for", "func", "function", "if", "let", "nil", "null", "return", "struct", "true", "var", "while"]
+    }
+    return #"(?i)\b("# + words.joined(separator: "|") + #")\b"#
+  }
+
+  private static func apply(
+    pattern: String,
+    color: NSColor,
+    to attributed: NSMutableAttributedString,
+    in range: NSRange
+  ) {
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
+    regex.enumerateMatches(in: attributed.string, range: range) { match, _, _ in
+      guard let match else { return }
+      attributed.addAttribute(.foregroundColor, value: color, range: match.range)
+    }
+  }
+}
+
 struct NativeTimedAnswerBlock: Equatable {
   let offset: Int
   let block: NativeAnswerBlock
@@ -813,7 +871,7 @@ enum NativeAnswerBlock: Equatable {
   case heading4(String)
   case bullet(String)
   case numbered(String, String)
-  case code(String)
+  case code(String, language: String?)
   case paragraph(String)
   case display(String)
   case displayLabel(String)
@@ -927,7 +985,7 @@ enum NativeAnswerParser {
       return plainInlineText(text)
     case .numbered(_, let text):
       return plainInlineText(text)
-    case .code(let code):
+    case .code(let code, _):
       return code
     case .table(let headers, let rows):
       return (headers + rows.flatMap { $0 }).map(plainInlineText).joined()
@@ -953,6 +1011,7 @@ enum NativeAnswerParser {
   static func parse(_ markdown: String) -> [NativeAnswerBlock] {
     var result: [NativeAnswerBlock] = []
     var codeLines: [String] = []
+    var codeLanguage: String?
     var inCode = false
     let lines = markdown.components(separatedBy: .newlines)
     var i = 0
@@ -962,11 +1021,13 @@ enum NativeAnswerParser {
       let line = raw.trimmingCharacters(in: .whitespaces)
       if line.hasPrefix("```") {
         if inCode {
-          result.append(.code(codeLines.joined(separator: "\n")))
+          result.append(.code(codeLines.joined(separator: "\n"), language: codeLanguage))
           codeLines.removeAll()
+          codeLanguage = nil
           inCode = false
         } else {
           inCode = true
+          codeLanguage = fenceLanguage(from: line)
           codeLines.removeAll()
         }
         i += 1
@@ -1028,9 +1089,15 @@ enum NativeAnswerParser {
       i += 1
     }
     if inCode {
-      result.append(.code(codeLines.joined(separator: "\n")))
+      result.append(.code(codeLines.joined(separator: "\n"), language: codeLanguage))
     }
     return result
+  }
+
+  private static func fenceLanguage(from line: String) -> String? {
+    let raw = String(line.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+    let language = raw.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
+    return language.isEmpty ? nil : language.lowercased()
   }
 
   private static func isTableHeader(_ line: String) -> Bool {
