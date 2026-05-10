@@ -1,5 +1,18 @@
 import Foundation
 
+struct SubmitResult {
+  let ok: Bool
+  let reason: String?
+}
+
+struct VoiceSubmitResult {
+  let ok: Bool
+  let reason: String?
+  let status: String?
+  let text: String?
+  let emotion: String?
+}
+
 // MARK: - Dispatch protocol + router
 
 protocol BridgeDispatcher: AnyObject {

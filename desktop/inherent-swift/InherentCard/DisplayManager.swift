@@ -11,9 +11,16 @@ enum DisplayManager {
   static func clampHeight(_ h: CGFloat) -> CGFloat { min(max(MIN_HEIGHT, ceil(h)), MAX_HEIGHT) }
   static func clampWidth(_ w: CGFloat) -> CGFloat { min(max(CARD_WIDTH, ceil(w)), MAX_WIDTH) }
 
-  /// Adjusts panel height while keeping the bottom-left origin fixed. In Cocoa
-  /// coords this means the visible content top moves DOWN as height shrinks
-  /// and UP as height grows — the right-edge x coordinate is unchanged.
+  static func clampPanelHeight(_ h: CGFloat, on screen: NSScreen?) -> CGFloat {
+    guard let visibleFrame = (screen ?? NSScreen.main)?.visibleFrame else {
+      return clampHeight(h)
+    }
+    let available = max(MIN_HEIGHT, visibleFrame.height - CARD_MARGIN + PILL_RESERVED_TOP)
+    return min(clampHeight(h), floor(available))
+  }
+
+  /// Adjusts panel height while keeping the top edge fixed. In Cocoa coords,
+  /// that means origin.y moves as height changes while maxY stays stable.
   static func applyHeight(to bounds: NSRect, newHeight: CGFloat) -> NSRect {
     // Anchor the visible top edge: keep maxY fixed and let bottom (origin.y)
     // move so the card grows DOWN and collapses UP. The chips strip + answer
@@ -42,7 +49,7 @@ enum DisplayManager {
     let v = screen.visibleFrame
     return NSRect(
       x: v.maxX - width - CARD_MARGIN,
-      y: v.maxY - height - CARD_MARGIN + PILL_RESERVED_TOP,
+      y: v.maxY - height - CARD_MARGIN + PILL_RESERVED_TOP * 2,
       width: width,
       height: height
     )

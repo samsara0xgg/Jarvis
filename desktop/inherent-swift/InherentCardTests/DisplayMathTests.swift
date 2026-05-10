@@ -8,10 +8,10 @@ final class DisplayMathTests: XCTestCase {
     XCTAssertEqual(resized.width, 360)
     XCTAssertEqual(resized.height, 200)
     XCTAssertEqual(resized.maxX, original.maxX, "right edge must stay fixed")
-    // y is the bottom in Cocoa coords; growing height keeps the existing y the
-    // same, which means the top moves UP. That matches the existing card.css
-    // expectation (card grows downward visually as content arrives).
-    XCTAssertEqual(resized.origin.y, original.origin.y)
+    // Height is top-anchored: maxY stays fixed and origin.y moves down when
+    // the panel grows, matching the DOM stack expanding downward from the row.
+    XCTAssertEqual(resized.maxY, original.maxY)
+    XCTAssertEqual(resized.origin.y, original.maxY - resized.height)
   }
 
   func test_setWidthAnchorsRightEdge() {

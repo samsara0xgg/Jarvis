@@ -411,11 +411,21 @@ final class CardController: NSObject, IPCBridgeDelegate {
     let work = DispatchWorkItem { [weak self] in
       guard let self else { return }
       NSLog("[hot-reload] reloading webview")
+      // Hot reload can race with an answer fade-out from the previous page.
+      // Cancel that fade before the WebView tears down; otherwise the old
+      // completion can leave the reloaded card at a partial/zero alpha even
+      // though the new page immediately calls cardAPI.show().
+      if !self.userHidden {
+        self.fade.showInstant()
+      }
+      self.popoverActive = false
+      self.pillHitRegion = nil
       self.webView.reload()
       // Re-arm watchers for any URLs we know about. Atomic write replaced
       // the inode, so all three need re-watching to be safe.
       self.hotReloadSources.removeAll()
       self.startHotReload()
+      self.updatePassthrough()
     }
     hotReloadDebounce = work
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
@@ -551,7 +561,7 @@ final class CardController: NSObject, IPCBridgeDelegate {
     switch op {
     case "resize":
       if let h = payload["h"] as? Double {
-        let clamped = DisplayManager.clampHeight(CGFloat(h))
+        let clamped = DisplayManager.clampPanelHeight(CGFloat(h), on: panel.screen)
         if abs(clamped - panel.frame.height) < 0.5 { return }
         let next = DisplayManager.applyHeight(to: panel.frame, newHeight: clamped)
         panel.setFrame(next, display: true, animate: false)

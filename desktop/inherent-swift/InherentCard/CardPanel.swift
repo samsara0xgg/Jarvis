@@ -13,7 +13,7 @@ import AppKit
 //     No other code path may assign panel.alphaValue.
 //
 //   ignoresMouseEvents
-//     Primary owner: CardController.updatePassthrough (cursor-based, per
+//     Primary owner: NativeCardController.updatePassthrough (cursor-based, per
 //     mousemove). Secondary: setHidden forces true on hide (the passthrough
 //     monitor exits early when userHidden=true, so something has to claim
 //     hidden state). Drag forces false during a drag gesture. No other code
@@ -21,20 +21,20 @@ import AppKit
 //
 //   frame.size.width
 //     Owner: this init only. Width is FIXED at 678 for the panel's lifetime.
-//     setWidth IPC is now a popoverActive flag in CardController, not a
-//     setFrame call.
+//     popover visibility is now a NativeCardModel flag in NativeCardController,
+//     not a setFrame call.
 //
 //   frame.size.height
-//     Owner: case "resize" in CardController via DisplayManager.applyHeight
+//     Owner: NativeCardController.updatePanelHeight via DisplayManager.applyHeight
 //     (top-anchored). No other code path may setFrame the height.
 //
 //   frame.origin
 //     Owners: anchorTopRight (init / hotkey relocate) + case "movePanel"
 //     (drag) + case "resetPosition". All preserve the right-anchor invariant.
 //
-// Why this matters: InherentCard is a webview hosted in a native panel. The
-// two layers have independent paint pipelines (CALayer + NSWindow setFrame
-// on native, CSS + RAF on web) and shared state without sync primitives.
+// Why this matters: InherentCard is a SwiftUI view hosted in a native panel.
+// SwiftUI layout, CALayer alpha animation, and NSWindow setFrame all have
+// independent timing paths.
 // When two paths both write the same attribute, they race → user-visible
 // flash. This table is our discipline for staying out of those races.
 
@@ -99,7 +99,7 @@ final class CardPanel: NSPanel {
     // into the menu-bar zone to host the pill, but the visible content does not.
     let target = NSRect(
       x: v.maxX - frame.width - cardMargin,
-      y: v.maxY - frame.height - cardMargin + pillReservedTop,
+      y: v.maxY - frame.height - cardMargin + pillReservedTop * 2,
       width: frame.width,
       height: frame.height
     )

@@ -2,7 +2,7 @@ import AppKit
 
 @main
 class InherentCardApp: NSObject, NSApplicationDelegate {
-  var controller: CardController?
+  var controller: NativeCardController?
   let watchdog = ParentWatchdog()
 
   static func main() {
@@ -16,7 +16,7 @@ class InherentCardApp: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
     watchdog.startIfRequested()
 
-    let controller = CardController()
+    let controller = NativeCardController()
     self.controller = controller
     controller.showInitial()
     controller.startPassthroughMonitor()
@@ -49,7 +49,7 @@ class InherentCardApp: NSObject, NSApplicationDelegate {
   }
 
   #if DEBUG
-  @objc func reloadCard() { controller?.webView.reload() }
+  @objc func reloadCard() { controller?.model.siriReset() }
   #endif
 
   func applicationWillTerminate(_ notification: Notification) {

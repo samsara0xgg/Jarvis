@@ -20,11 +20,11 @@ targets:
     sources:
       - path: InherentCard
         excludes:
+          - "CardController.swift"
+          - "CardWebView.swift"
+          - "ConsoleBridge.swift"
+          - "IPCBridge.swift"
           - "Resources/**"
-      - path: InherentCard/Resources/cardAPIShim.js
-        buildPhase: resources
-      - path: InherentCard/Resources/consoleBridge.js
-        buildPhase: resources
     settings:
       base:
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"

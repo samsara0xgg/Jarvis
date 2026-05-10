@@ -8,19 +8,6 @@ protocol IPCBridgeDelegate: AnyObject {
   func ipcPasteClipboard() -> ClipboardPasteResult
 }
 
-struct SubmitResult {
-  let ok: Bool
-  let reason: String?
-}
-
-struct VoiceSubmitResult {
-  let ok: Bool
-  let reason: String?
-  let status: String?
-  let text: String?
-  let emotion: String?
-}
-
 struct ClipboardPasteResult {
   let ok: Bool
   let text: String?
