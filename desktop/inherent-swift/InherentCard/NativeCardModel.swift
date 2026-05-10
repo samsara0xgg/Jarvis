@@ -91,9 +91,9 @@ final class NativeCardModel: ObservableObject {
   var onRequestMovePanel: ((CGFloat, CGFloat) -> Void)?
   var onRequestResetPosition: (() -> Void)?
 
-  private let backend = BridgeBackend()
-  private let audioDucker = SystemAudioDucker()
-  private let voiceRecorder = NativeVoiceRecorder()
+  private let backend: any NativeBackendSubmitting
+  private let audioDucker: any NativeAudioDucking
+  private let voiceRecorder: any NativeVoiceRecording
   private var voiceAudioDucked = false
   private var voiceListening = false
   private var voiceStartGeneration = 0
@@ -129,6 +129,16 @@ final class NativeCardModel: ObservableObject {
   private let voiceHoldMs: TimeInterval = 0.220
   private let voiceMinWavBytes = 48
   private let animateAnswerCharacters = ProcessInfo.processInfo.environment["INHERENT_DEBUG_FAKE_TURNS"] == "drip-fade"
+
+  init(
+    backend: any NativeBackendSubmitting = BridgeBackend(),
+    audioDucker: any NativeAudioDucking = SystemAudioDucker(),
+    voiceRecorder: any NativeVoiceRecording = NativeVoiceRecorder()
+  ) {
+    self.backend = backend
+    self.audioDucker = audioDucker
+    self.voiceRecorder = voiceRecorder
+  }
 
   var popoverVisible: Bool { activeHistoryID != nil }
 

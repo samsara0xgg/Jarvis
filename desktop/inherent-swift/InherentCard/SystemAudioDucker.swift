@@ -1,6 +1,12 @@
 import Foundation
 
-final class SystemAudioDucker {
+protocol NativeAudioDucking: AnyObject {
+  func duck() -> Bool
+  func restore()
+  func restoreAll()
+}
+
+final class SystemAudioDucker: NativeAudioDucking {
   struct Snapshot: Equatable {
     let outputVolume: Int
     let outputMuted: Bool

@@ -103,6 +103,107 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertEqual(model.stateVariant, .thinking)
   }
 
+  func test_enterHoldVoiceAcceptedSubmitsTranscriptWithoutRealMicrophone() async throws {
+    let wav = Data(repeating: 7, count: 80)
+    let backend = FakeNativeBackend(
+      voiceResult: VoiceSubmitResult(ok: true, reason: nil, status: "accepted", text: "打开客厅灯", emotion: nil)
+    )
+    let recorder = FakeVoiceRecorder(stopData: wav)
+    let ducker = FakeAudioDucker()
+    let model = NativeCardModel(backend: backend, audioDucker: ducker, voiceRecorder: recorder)
+    model.inputText = "draft"
+
+    model.handleEnterDown()
+    try await settle(milliseconds: 280)
+    XCTAssertEqual(model.phase, .listening)
+    XCTAssertEqual(model.inputPlaceholder, "正在听…")
+
+    model.handleEnterUp()
+    try await settle(milliseconds: 120)
+
+    XCTAssertEqual(recorder.startCount, 1)
+    XCTAssertEqual(recorder.stopCount, 1)
+    XCTAssertEqual(ducker.duckCount, 1)
+    XCTAssertEqual(ducker.restoreCount, 1)
+    XCTAssertEqual(backend.voicePayloads, [wav])
+    XCTAssertEqual(model.phase, .submitting)
+    XCTAssertEqual(model.questionText, "打开客厅灯")
+    XCTAssertEqual(model.inputText, "打开客厅灯")
+    XCTAssertEqual(model.stateLabel, "thinking")
+    XCTAssertEqual(model.stateVariant, .thinking)
+  }
+
+  func test_enterHoldVoiceEmptyAudioRestoresDraftAndDoesNotSubmit() async throws {
+    let backend = FakeNativeBackend()
+    let recorder = FakeVoiceRecorder(stopData: Data(repeating: 0, count: 44))
+    let ducker = FakeAudioDucker()
+    let model = NativeCardModel(backend: backend, audioDucker: ducker, voiceRecorder: recorder)
+    model.inputText = "keep draft"
+
+    model.handleEnterDown()
+    try await settle(milliseconds: 280)
+    model.handleEnterUp()
+    try await settle(milliseconds: 120)
+
+    XCTAssertEqual(backend.voicePayloads, [])
+    XCTAssertEqual(recorder.startCount, 1)
+    XCTAssertEqual(recorder.stopCount, 1)
+    XCTAssertEqual(model.phase, .input)
+    XCTAssertEqual(model.inputText, "keep draft")
+    XCTAssertEqual(model.inputPlaceholder, "问点什么…")
+    XCTAssertFalse(model.inputDisabled)
+    XCTAssertEqual(model.stateLabel, "no speech")
+    XCTAssertEqual(model.stateVariant, .warn)
+  }
+
+  func test_enterHoldVoiceNetworkErrorRestoresDraftForRetry() async throws {
+    let backend = FakeNativeBackend(
+      voiceResult: VoiceSubmitResult(ok: false, reason: "network", status: nil, text: nil, emotion: nil)
+    )
+    let recorder = FakeVoiceRecorder(stopData: Data(repeating: 4, count: 80))
+    let ducker = FakeAudioDucker()
+    let model = NativeCardModel(backend: backend, audioDucker: ducker, voiceRecorder: recorder)
+    model.inputText = "retry draft"
+
+    model.handleEnterDown()
+    try await settle(milliseconds: 280)
+    model.handleEnterUp()
+    try await settle(milliseconds: 120)
+
+    XCTAssertEqual(backend.voicePayloads.count, 1)
+    XCTAssertEqual(model.phase, .input)
+    XCTAssertEqual(model.inputText, "retry draft")
+    XCTAssertEqual(model.inputPlaceholder, "问点什么…")
+    XCTAssertFalse(model.inputDisabled)
+    XCTAssertEqual(model.stateLabel, "offline")
+    XCTAssertEqual(model.stateVariant, .error)
+  }
+
+  func test_enterHoldVoiceMicrophoneDeniedRestoresDraftForRetry() async throws {
+    let backend = FakeNativeBackend()
+    let recorder = FakeVoiceRecorder(startError: NativeVoiceRecorderError.microphoneDenied)
+    let ducker = FakeAudioDucker()
+    let model = NativeCardModel(backend: backend, audioDucker: ducker, voiceRecorder: recorder)
+    model.inputText = "typed draft"
+
+    model.handleEnterDown()
+    try await settle(milliseconds: 280)
+    model.handleEnterUp()
+    try await settle(milliseconds: 120)
+
+    XCTAssertEqual(recorder.startCount, 1)
+    XCTAssertEqual(recorder.stopCount, 0)
+    XCTAssertEqual(backend.voicePayloads, [])
+    XCTAssertEqual(ducker.duckCount, 1)
+    XCTAssertEqual(ducker.restoreCount, 1)
+    XCTAssertEqual(model.phase, .input)
+    XCTAssertEqual(model.inputText, "typed draft")
+    XCTAssertEqual(model.inputPlaceholder, "问点什么…")
+    XCTAssertFalse(model.inputDisabled)
+    XCTAssertEqual(model.stateLabel, "mic denied")
+    XCTAssertEqual(model.stateVariant, .error)
+  }
+
   func test_followupInputCanRestorePreviousAnswerWhenSubmittedEmpty() async throws {
     let model = NativeCardModel()
 
@@ -353,5 +454,83 @@ final class NativeCardModelTests: XCTestCase {
 
   private func settle(milliseconds: UInt64 = 20) async throws {
     try await Task.sleep(nanoseconds: milliseconds * 1_000_000)
+  }
+}
+
+private final class FakeNativeBackend: NativeBackendSubmitting {
+  var submitTexts: [String] = []
+  var imagePayloads: [(text: String, imageData: Data, mime: String, name: String)] = []
+  var voicePayloads: [Data] = []
+  var submitResult = SubmitResult(ok: true, reason: nil)
+  var imageResult = SubmitResult(ok: true, reason: nil)
+  var voiceResult: VoiceSubmitResult
+
+  init(
+    voiceResult: VoiceSubmitResult = VoiceSubmitResult(
+      ok: true,
+      reason: nil,
+      status: "accepted",
+      text: "voice text",
+      emotion: nil
+    )
+  ) {
+    self.voiceResult = voiceResult
+  }
+
+  func submit(text: String) async -> SubmitResult {
+    submitTexts.append(text)
+    return submitResult
+  }
+
+  func submitImage(text: String, imageData: Data, mime: String, name: String) async -> SubmitResult {
+    imagePayloads.append((text, imageData, mime, name))
+    return imageResult
+  }
+
+  func submitVoice(wavData: Data) async -> VoiceSubmitResult {
+    voicePayloads.append(wavData)
+    return voiceResult
+  }
+}
+
+private final class FakeVoiceRecorder: NativeVoiceRecording {
+  var startCount = 0
+  var stopCount = 0
+  var startError: Error?
+  var stopData: Data?
+
+  init(stopData: Data? = Data(repeating: 1, count: 80), startError: Error? = nil) {
+    self.stopData = stopData
+    self.startError = startError
+  }
+
+  func start() async throws {
+    startCount += 1
+    if let startError { throw startError }
+  }
+
+  func stop() async -> Data? {
+    stopCount += 1
+    return stopData
+  }
+}
+
+private final class FakeAudioDucker: NativeAudioDucking {
+  var duckCount = 0
+  var restoreCount = 0
+  var restoreAllCount = 0
+  var duckResult = true
+
+  func duck() -> Bool {
+    duckCount += 1
+    return duckResult
+  }
+
+  func restore() {
+    restoreCount += 1
+  }
+
+  func restoreAll() {
+    restoreAllCount += 1
   }
 }

@@ -13,6 +13,12 @@ struct VoiceSubmitResult {
   let emotion: String?
 }
 
+protocol NativeBackendSubmitting {
+  func submit(text: String) async -> SubmitResult
+  func submitImage(text: String, imageData: Data, mime: String, name: String) async -> SubmitResult
+  func submitVoice(wavData: Data) async -> VoiceSubmitResult
+}
+
 // MARK: - Dispatch protocol + router
 
 protocol BridgeDispatcher: AnyObject {
@@ -335,7 +341,7 @@ enum VoiceSubmitRequest {
   }
 }
 
-final class BridgeBackend {
+final class BridgeBackend: NativeBackendSubmitting {
   func submit(text: String) async -> SubmitResult {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed.isEmpty { return SubmitResult(ok: false, reason: "empty") }

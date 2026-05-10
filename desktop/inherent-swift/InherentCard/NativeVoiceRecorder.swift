@@ -7,10 +7,15 @@ enum NativeVoiceRecorderError: Error, Equatable {
   case alreadyRecording
 }
 
+protocol NativeVoiceRecording: AnyObject {
+  func start() async throws
+  func stop() async -> Data?
+}
+
 /// Native replacement for the renderer-side AudioWorklet recorder. It records
 /// mono PCM from AVAudioEngine and packages the result as a WAV file for the
 /// existing `/inherent/asr-submit` endpoint.
-final class NativeVoiceRecorder {
+final class NativeVoiceRecorder: NativeVoiceRecording {
   private let lock = NSLock()
   private var engine: AVAudioEngine?
   private var chunks: [Data] = []
