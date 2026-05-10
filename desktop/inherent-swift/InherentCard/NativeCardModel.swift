@@ -425,13 +425,17 @@ final class NativeCardModel: ObservableObject {
 
   func showPopover(for turn: NativeHistoryTurn) {
     cancelPopoverHide()
-    activeHistoryID = turn.id
+    withAnimation(.easeInOut(duration: 0.34)) {
+      activeHistoryID = turn.id
+    }
     requestLayout(animatedFor: 0.32)
   }
 
   func hidePopover() {
     cancelPopoverHide()
-    activeHistoryID = nil
+    withAnimation(.easeInOut(duration: 0.34)) {
+      activeHistoryID = nil
+    }
     requestLayout(animatedFor: 0.30)
   }
 

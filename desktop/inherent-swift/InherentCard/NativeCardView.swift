@@ -303,22 +303,21 @@ struct NativeCardView: View {
 
   private var historyPill: some View {
     ZStack(alignment: .bottom) {
-      Rectangle()
-        .fill(Color.clear)
-        .frame(width: historyPillHoverWidth, height: NativeCardModel.pillReservedTop)
-        .contentShape(Rectangle())
-
       if pillHovering {
         historyPillBody
-          .transition(.offset(y: -5).combined(with: .scale(scale: 0.985, anchor: .bottom)).combined(with: .opacity))
+          .transition(.asymmetric(
+            insertion: .scale(scale: 0.98, anchor: .bottom).combined(with: .opacity),
+            removal: .opacity
+          ))
       }
     }
-    .frame(height: NativeCardModel.pillReservedTop, alignment: .bottom)
+    .frame(width: historyPillHoverWidth, height: NativeCardModel.pillReservedTop, alignment: .bottom)
+    .contentShape(Rectangle())
     .onHover { pillHovering = $0 }
     .animation(
       pillHovering
-        ? .timingCurve(0.18, 0.88, 0.24, 1, duration: 0.24)
-        : .easeInOut(duration: 0.16),
+        ? .easeOut(duration: 0.20)
+        : .easeOut(duration: 0.13),
       value: pillHovering
     )
   }
@@ -403,10 +402,7 @@ struct NativeCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).stroke(Color.white.opacity(0.06), lineWidth: 0.5))
         .offset(x: -(NativeCardModel.cardWidth + NativeCardModel.popoverGap), y: NativeCardModel.pillReservedTop + model.selectedPopoverTop)
-        .transition(.asymmetric(
-          insertion: .offset(x: 5).combined(with: .scale(scale: 0.992, anchor: .trailing)).combined(with: .opacity),
-          removal: .offset(x: 4).combined(with: .scale(scale: 0.996, anchor: .trailing)).combined(with: .opacity)
-        ))
+        .transition(.opacity)
         .onHover { value in
           if value {
             model.cancelNativeFade()
@@ -416,7 +412,7 @@ struct NativeCardView: View {
         }
       }
     }
-    .animation(.timingCurve(0.20, 0.86, 0.26, 1, duration: 0.22), value: model.activeHistoryID)
+    .animation(.easeInOut(duration: 0.34), value: model.popoverVisible)
   }
 
   private var cardBackground: some View {
