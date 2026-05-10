@@ -571,7 +571,7 @@ struct NativeMarkdownText: View {
       .padding(.bottom, 6)
     case .paragraph(let text):
       inlineTextView(text, range: range, color: Color.white.opacity(followsHeading1 ? 0.55 : 0.92))
-        .font(.system(size: followsHeading1 ? 13 : 14.5))
+        .font(.system(size: followsHeading1 ? 13 : 14.5, weight: followsHeading1 ? .light : .regular))
         .fixedSize(horizontal: false, vertical: true)
     case .display(let text):
       Text(text)
