@@ -100,6 +100,7 @@ final class NativeCardModel: ObservableObject {
 
   private var inFlightQuestion: String?
   private var inputActive = false
+  private var bridgeTurnOpen = false
   private var streamingStarted = false
   private var followupSnapshot: NativeFollowupSnapshot?
   private var followupDraftActive = false
@@ -990,6 +991,12 @@ extension NativeCardModel: BridgeDispatcher {
       let content = payload?["content"] as? String ?? ""
       guard streaming || !content.isEmpty else { return }
 
+      if bridgeTurnOpen {
+        inFlightQuestion = nil
+        inputActive = false
+        questionText = ""
+      }
+      bridgeTurnOpen = true
       clearFollowupDraft()
       cancelFade()
       clearDrip()
@@ -1064,6 +1071,7 @@ extension NativeCardModel: BridgeDispatcher {
         pushTurn(question: inFlightQuestion ?? "语音", answer: targetAnswer)
       }
       inFlightQuestion = nil
+      bridgeTurnOpen = false
       let fadeMs = (payload?["fadeMs"] as? Int) ?? (payload?["fadeMs"] as? Double).map(Int.init) ?? 5000
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.60 + Double(dripRemainingMs) / 1000.0) { [weak self] in
         self?.requestLayout()
@@ -1081,6 +1089,7 @@ extension NativeCardModel: BridgeDispatcher {
       setAnswerText("")
       inFlightQuestion = nil
       inputActive = false
+      bridgeTurnOpen = false
       streamingStarted = false
       phase = .idle
       hidePopover()

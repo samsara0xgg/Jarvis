@@ -71,6 +71,25 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertTrue(model.history.isEmpty)
   }
 
+  func test_newOpenWhileTurnOpenResetsInFlightQuestion() async throws {
+    let model = NativeCardModel()
+
+    model.siriOpen(payload: ["q": "old question", "streaming": true])
+    try await settle(milliseconds: 80)
+    XCTAssertEqual(model.questionText, "old question")
+
+    model.siriOpen(payload: ["content": "# B final", "kind": "text"])
+    try await settle(milliseconds: 80)
+    model.siriDone(payload: ["fadeMs": 60000])
+    try await settle(milliseconds: 80)
+
+    XCTAssertEqual(model.answerText, "# B final")
+    XCTAssertEqual(model.questionText, "")
+    XCTAssertEqual(model.history.count, 1)
+    XCTAssertEqual(model.history.first?.question, "语音")
+    XCTAssertEqual(model.history.first?.answer, "# B final")
+  }
+
   func test_externalVoiceAcceptedUsesTranscriptAsSubmittedQuestion() async throws {
     let model = NativeCardModel()
 
