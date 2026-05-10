@@ -91,9 +91,9 @@ final class FadeController {
       ctx.duration = 0
       panel.animator().alphaValue = value
     })
-    // The animator model value can lag behind an interrupted fade on some
-    // WebKit/CALayer timing paths. Commit the model value directly as the last
-    // step so a stale fade animation cannot leave the panel half-transparent.
+    // The animator model value can lag behind an interrupted panel fade.
+    // Commit the model value directly as the last step so a stale animation
+    // cannot leave the panel half-transparent.
     panel.alphaValue = value
   }
 }

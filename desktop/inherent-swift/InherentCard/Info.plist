@@ -14,6 +14,5 @@
   <key>NSHighResolutionCapable</key> <true/>
   <key>NSMicrophoneUsageDescription</key>
   <string>Jarvis uses the microphone for Enter voice input and Hey Jarvis wake-word turns.</string>
-  <key>WebKitDeveloperExtras</key>   <true/>
 </dict>
 </plist>
