@@ -6,6 +6,7 @@ import importlib
 
 import pytest
 
+from core.tool_result import parse_tool_result
 from tools import _TOOL_REGISTRY, _EXECUTION_CONTEXT
 
 
@@ -49,6 +50,10 @@ def test_complete_todo_registered():
 
 def test_delete_todo_registered():
     assert "delete_todo" in _TOOL_REGISTRY
+
+
+def test_undo_delete_todo_registered():
+    assert "undo_delete_todo" in _TOOL_REGISTRY
 
 
 def test_list_todos_read_only():
@@ -132,11 +137,64 @@ def test_delete_todo():
 
     dele = _TOOL_REGISTRY["delete_todo"]
     result = dele["execute"]("delete_todo", {"todo_id": tid})
-    assert "deleted" in result.lower()
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "success"
+    assert parsed["outcome"]["type"] == "archived"
+    assert parsed["claim_policy"]["allowed_claims"] == ["todo_archived"]
+    assert "todo_permanently_deleted" in parsed["claim_policy"]["forbidden_claims"]
+    assert parsed["data"]["todo"]["archived"] is True
+    assert parsed["data"]["undo_token"]
 
     lst = _TOOL_REGISTRY["list_todos"]
     result = lst["execute"]("list_todos", {})
     assert "No active todos" in result
+
+
+def test_delete_todo_can_be_undone():
+    add = _TOOL_REGISTRY["add_todo"]
+    result = add["execute"]("add_todo", {"content": "Restore me"})
+    tid = result.split("ID: ")[1].split(")")[0]
+
+    dele = _TOOL_REGISTRY["delete_todo"]
+    parsed = parse_tool_result(dele["execute"]("delete_todo", {"todo_id": tid}))
+    token = parsed["data"]["undo_token"]
+
+    undo = _TOOL_REGISTRY["undo_delete_todo"]
+    restored = parse_tool_result(undo["execute"]("undo_delete_todo", {"undo_token": token}))
+    assert restored["status"] == "success"
+    assert restored["claim_policy"]["allowed_claims"] == ["todo_restored"]
+
+    lst = _TOOL_REGISTRY["list_todos"]
+    result = lst["execute"]("list_todos", {})
+    assert "Restore me" in result
+
+
+def test_delete_todo_already_archived_noop():
+    add = _TOOL_REGISTRY["add_todo"]
+    result = add["execute"]("add_todo", {"content": "Archive once"})
+    tid = result.split("ID: ")[1].split(")")[0]
+
+    dele = _TOOL_REGISTRY["delete_todo"]
+    dele["execute"]("delete_todo", {"todo_id": tid})
+    second = parse_tool_result(dele["execute"]("delete_todo", {"todo_id": tid}))
+
+    assert second["status"] == "noop"
+    assert second["outcome"]["type"] == "no_change"
+
+
+def test_complete_archived_todo_fails():
+    add = _TOOL_REGISTRY["add_todo"]
+    result = add["execute"]("add_todo", {"content": "Do not complete archived"})
+    tid = result.split("ID: ")[1].split(")")[0]
+
+    _TOOL_REGISTRY["delete_todo"]["execute"]("delete_todo", {"todo_id": tid})
+    result = _TOOL_REGISTRY["complete_todo"]["execute"](
+        "complete_todo",
+        {"todo_id": tid},
+    )
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "failure"
+    assert parsed["error_code"] == "todo_archived"
 
 
 def test_delete_todo_not_found():

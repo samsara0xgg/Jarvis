@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core.tool_result import FAILURE, SUCCESS, make_tool_result
+from core.tool_result import FAILURE, NOOP, SUCCESS, make_tool_result
 from tools import jarvis_tool, _EXECUTION_CONTEXT
 
 LOGGER = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ def list_todos() -> str:
     """List all incomplete todos for the current user."""
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"
     data = _load(user_id)
-    active = [t for t in data if not t.get("done", False)]
+    active = [t for t in data if not t.get("done", False) and not t.get("archived", False)]
     if not active:
         return make_tool_result(SUCCESS, "No active todos.", data={"todos": []})
     lines = []
@@ -137,12 +137,26 @@ def complete_todo(todo_id: str) -> str:
     data = _load(user_id)
     for t in data:
         if t.get("id") == todo_id:
+            if t.get("archived", False):
+                return make_tool_result(
+                    FAILURE,
+                    f"Todo {todo_id} is archived and cannot be completed.",
+                    data={"todo": t},
+                    error_code="todo_archived",
+                    outcome_type="failed",
+                    verified=False,
+                    verification_source="todo_store_ack",
+                )
             t["done"] = True
+            t["completed_at"] = datetime.now().isoformat()
             _save(user_id, data)
             return make_tool_result(
                 SUCCESS,
                 f"Todo '{t['content']}' completed.",
                 data={"todo": t},
+                outcome_type="updated",
+                verified=True,
+                verification_source="todo_store_ack",
             )
     return make_tool_result(
         FAILURE,
@@ -155,42 +169,133 @@ def complete_todo(todo_id: str) -> str:
 @jarvis_tool(
     read_only=False,
     lifecycle={
-        "status": "rewrite_required",
-        "reason": "Deletion should support confirmation, soft-delete, or undo semantics.",
+        "status": "active",
+        "reason": "Delete is implemented as archive/soft-delete with undo token.",
         "reviewed_at": "2026-05-10",
-        "phase3_action": "Replace hard delete with soft-delete/archive and add undo/confirmation policy.",
+        "phase3_action": "Monitor ambiguity cases and add natural-language candidate resolution later.",
         "replacement": None,
     },
     exposure={
-        "expose_to_llm": "limited",
+        "expose_to_llm": True,
         "allow_regex": False,
         "allow_frontend_direct": False,
     },
     classification={
         "layer": "primitive",
         "primary": "state_changing",
-        "risk_level": "medium",
+        "risk_level": "low",
         "has_side_effects": True,
     },
 )
 def delete_todo(todo_id: str) -> str:
-    """Delete a todo by its ID."""
+    """Archive a todo by its ID and return an undo token."""
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"
     data = _load(user_id)
-    for i, t in enumerate(data):
+    for t in data:
         if t.get("id") == todo_id:
-            removed = data.pop(i)
+            if t.get("archived", False):
+                return make_tool_result(
+                    NOOP,
+                    f"Todo '{t['content']}' was already archived.",
+                    data={"todo": t, "undo_token": t.get("undo_token")},
+                    outcome_type="no_change",
+                    verified=True,
+                    verification_source="todo_store_ack",
+                    claim_policy={
+                        "allowed_claims": ["todo_already_archived"],
+                        "forbidden_claims": ["todo_permanently_deleted"],
+                    },
+                )
+            undo_token = str(uuid.uuid4())[:12]
+            t["archived"] = True
+            t["archived_at"] = datetime.now().isoformat()
+            t["undo_token"] = undo_token
             _save(user_id, data)
             return make_tool_result(
                 SUCCESS,
-                f"Todo '{removed['content']}' deleted.",
-                data={"todo": removed},
+                f"Todo '{t['content']}' archived. Undo token: {undo_token}.",
+                data={"todo": t, "undo_token": undo_token},
+                outcome_type="archived",
+                verified=True,
+                verification_source="todo_store_ack",
+                claim_policy={
+                    "allowed_claims": ["todo_archived"],
+                    "forbidden_claims": ["todo_permanently_deleted"],
+                },
             )
     return make_tool_result(
         FAILURE,
         f"Todo {todo_id} not found.",
         data={"todo_id": todo_id},
         error_code="todo_not_found",
+        outcome_type="failed",
+        verified=False,
+        verification_source="todo_store_ack",
+    )
+
+
+@jarvis_tool(
+    read_only=False,
+    lifecycle={
+        "status": "active",
+        "reason": "Undo path for soft-deleted todos.",
+        "reviewed_at": "2026-05-10",
+        "phase3_action": "Enhance with expiry if trace shows stale undo-token misuse.",
+        "replacement": None,
+    },
+    exposure={
+        "expose_to_llm": True,
+        "allow_regex": False,
+        "allow_frontend_direct": False,
+    },
+    classification={
+        "layer": "primitive",
+        "primary": "state_changing",
+        "risk_level": "low",
+        "has_side_effects": True,
+    },
+)
+def undo_delete_todo(undo_token: str) -> str:
+    """Restore an archived todo by undo token."""
+    token = undo_token.strip()
+    if not token:
+        return make_tool_result(
+            FAILURE,
+            "Undo token cannot be empty.",
+            error_code="empty_undo_token",
+            outcome_type="failed",
+            verified=False,
+            verification_source="todo_store_ack",
+        )
+    user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"
+    data = _load(user_id)
+    for t in data:
+        if t.get("undo_token") == token:
+            t["archived"] = False
+            t["restored_at"] = datetime.now().isoformat()
+            t.pop("archived_at", None)
+            t.pop("undo_token", None)
+            _save(user_id, data)
+            return make_tool_result(
+                SUCCESS,
+                f"Todo '{t['content']}' restored.",
+                data={"todo": t},
+                outcome_type="updated",
+                verified=True,
+                verification_source="todo_store_ack",
+                claim_policy={
+                    "allowed_claims": ["todo_restored"],
+                    "forbidden_claims": ["todo_permanently_deleted"],
+                },
+            )
+    return make_tool_result(
+        FAILURE,
+        "Undo token not found.",
+        data={"undo_token": token},
+        error_code="undo_token_not_found",
+        outcome_type="failed",
+        verified=False,
+        verification_source="todo_store_ack",
     )
 
 

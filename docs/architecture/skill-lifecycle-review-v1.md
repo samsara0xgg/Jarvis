@@ -36,6 +36,8 @@ user exposure is not by itself a reason to delete it.
 | `add_todo` | Low-risk state-changing personal capture. |
 | `list_todos` | Low-risk read-only todo query. |
 | `complete_todo` | Low-risk when `todo_id` is explicit. |
+| `delete_todo` | Implemented as archive/soft-delete with undo token; does not permanently delete through the default LLM path. |
+| `undo_delete_todo` | Restores archived todos by undo token. |
 | `create_reminder` | Core assistant capability; time parsing needs later hardening. |
 | `list_reminders` | Low-risk read-only reminder query. |
 | `complete_reminder` | Low-risk when `reminder_id` is explicit. |
@@ -50,9 +52,7 @@ user exposure is not by itself a reason to delete it.
 
 ### Rewrite Required
 
-| Skill | Phase 3 Action |
-| --- | --- |
-| `delete_todo` | Replace hard delete with soft-delete/archive and add undo/confirmation policy. |
+None.
 
 ### Deprecated
 
@@ -68,7 +68,6 @@ None.
 
 ## Phase 3 Backlog
 
-1. Todo delete v2: soft-delete/archive, undo, and confirmation for ambiguous or bulk delete.
-2. Smart home enhancements: entity registry, alias provenance, capabilities, and postcondition verification.
-3. Reminder/timer enhancements: timezone, due/fires-at timestamps, recurrence, missing-field clarification.
-4. Renderer improvements: voice/document split for long todo/reminder lists and raw IDs.
+1. Smart home enhancements: entity registry, alias provenance, capabilities, and postcondition verification.
+2. Reminder/timer enhancements: timezone, due/fires-at timestamps, recurrence, missing-field clarification.
+3. Renderer improvements: voice/document split for long todo/reminder lists and raw IDs.
