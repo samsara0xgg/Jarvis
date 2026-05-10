@@ -2863,7 +2863,13 @@ class TestMacGuiYAMLSkill:
                     "display": "副",  # → BenQ
                 },
             )
-        assert out == "已打开 抖音 到 BenQ"
+        assert tool_message(out) == "已打开 抖音 到 BenQ"
+        parsed = parse_tool_result(out)
+        assert parsed["data"]["operation"] == "launch_app_on_display"
+        assert parsed["data"]["target"]["window_id"] == "42"
+        assert parsed["data"]["risk"]["level"] == "medium"
+        assert "pre_action_observation" in parsed["data"]
+        assert "post_action_observation" in parsed["data"]
         calls = mock_run.call_args_list
         assert calls[0].args[0] == ["open", "-a", "抖音"]
         assert calls[1].args[0][:3] == ["aerospace", "list-windows", "--all"]
@@ -2899,7 +2905,10 @@ class TestMacGuiYAMLSkill:
                     "display": "副",
                 },
             )
-        assert out == "已把 抖音 挪到 BenQ"
+        assert tool_message(out) == "已把 抖音 挪到 BenQ"
+        parsed = parse_tool_result(out)
+        assert parsed["outcome"]["verification_source"] == "executor_ack"
+        assert parsed["claim_policy"]["allowed_claims"] == ["mac_gui_action_completed"]
         move_argv = mock_run.call_args_list[1].args[0]
         # Critical: --window-id is 555 (抖音), NOT 111 (Jarvis pet UI)
         assert move_argv == [
@@ -2926,7 +2935,10 @@ class TestMacGuiYAMLSkill:
                     "display": "BenQ",
                 },
             )
-        assert "Mac GUI" in out
+        parsed = parse_tool_result(out)
+        assert parsed["status"] == "needs_clarification"
+        assert parsed["error_code"] == "target_not_found"
+        assert "Mac GUI" in parsed["message"]
 
     def test_move_focused_to_display_uses_alias(self):
         interp, skill = self._load()
@@ -2935,7 +2947,7 @@ class TestMacGuiYAMLSkill:
             out = interp.execute(
                 skill, {"action_id": "move_focused_to_display", "display": "主"}
             )
-        assert out == "已移到 Built-in"
+        assert tool_message(out) == "已移到 Built-in"
         assert mock_run.call_args_list[0].args[0] == [
             "aerospace", "move-node-to-monitor", "Built-in",
         ]
@@ -2945,7 +2957,7 @@ class TestMacGuiYAMLSkill:
         with patch("core.yaml_interpreter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             out = interp.execute(skill, {"action_id": "focus_app", "app": "Cursor"})
-        assert out == "已切到 Cursor"
+        assert tool_message(out) == "已切到 Cursor"
         argv = mock_run.call_args_list[0].args[0]
         assert argv[0] == "osascript"
         assert argv[1] == "-e"
@@ -2971,7 +2983,7 @@ class TestMacGuiYAMLSkill:
         with patch("core.yaml_interpreter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout="", returncode=0)
             out = interp.execute(skill, {"action_id": "launch_app", "app": "Cursor"})
-        assert out == "已打开 Cursor"
+        assert tool_message(out) == "已打开 Cursor"
         assert mock_run.call_args_list[0].args[0] == ["open", "-a", "Cursor"]
 
     def test_open_url(self):
@@ -2982,7 +2994,7 @@ class TestMacGuiYAMLSkill:
                 skill,
                 {"action_id": "open_url", "url": "https://youtube.com"},
             )
-        assert out == "已打开 https://youtube.com"
+        assert tool_message(out) == "已打开 https://youtube.com"
         assert mock_run.call_args_list[0].args[0] == ["open", "https://youtube.com"]
 
     def test_open_url_on_display_full_sequence(self):
@@ -3005,7 +3017,7 @@ class TestMacGuiYAMLSkill:
                     "display": "副",
                 },
             )
-        assert out == "已在 BenQ 打开 https://www.douyin.com"
+        assert tool_message(out) == "已在 BenQ 打开 https://www.douyin.com"
         calls = mock_run.call_args_list
         assert calls[0].args[0] == [
             "open", "-na", "Google Chrome", "--args",
@@ -3026,7 +3038,7 @@ class TestMacGuiYAMLSkill:
                 skill,
                 {"action_id": "move_to_workspace", "workspace": "3"},
             )
-        assert out == "已扔到工作区 3"
+        assert tool_message(out) == "已扔到工作区 3"
         assert mock_run.call_args_list[0].args[0] == [
             "aerospace", "move-node-to-workspace", "3",
         ]
@@ -3041,7 +3053,7 @@ class TestMacGuiYAMLSkill:
                 skill,
                 {"action_id": "focus_monitor", "display": "副"},
             )
-        assert out == "聚焦到 BenQ"
+        assert tool_message(out) == "聚焦到 BenQ"
         assert mock_run.call_args_list[0].args[0] == [
             "aerospace", "focus-monitor", "BenQ",
         ]
@@ -3051,7 +3063,7 @@ class TestMacGuiYAMLSkill:
         with patch("core.yaml_interpreter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout="", returncode=0)
             out = interp.execute(skill, {"action_id": "focus_back_and_forth"})
-        assert out == "切回上一个窗口"
+        assert tool_message(out) == "切回上一个窗口"
         assert mock_run.call_args_list[0].args[0] == [
             "aerospace", "focus-back-and-forth",
         ]
@@ -3066,7 +3078,7 @@ class TestMacGuiYAMLSkill:
                 skill,
                 {"action_id": "workspace_switch", "workspace": "2"},
             )
-        assert out == "已切到工作区 2"
+        assert tool_message(out) == "已切到工作区 2"
         assert mock_run.call_args_list[0].args[0] == ["aerospace", "workspace", "2"]
 
     # ----- Window state -----------------------------------------------------
@@ -3076,7 +3088,7 @@ class TestMacGuiYAMLSkill:
         with patch("core.yaml_interpreter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout="", returncode=0)
             out = interp.execute(skill, {"action_id": "fullscreen_focused"})
-        assert out == "全屏已切换"
+        assert tool_message(out) == "全屏已切换"
         assert mock_run.call_args_list[0].args[0] == [
             "aerospace", "macos-native-fullscreen",
         ]
@@ -3086,7 +3098,7 @@ class TestMacGuiYAMLSkill:
         with patch("core.yaml_interpreter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout="", returncode=0)
             out = interp.execute(skill, {"action_id": "minimize_focused"})
-        assert out == "已最小化"
+        assert tool_message(out) == "已最小化"
         assert mock_run.call_args_list[0].args[0] == [
             "aerospace", "macos-native-minimize",
         ]
@@ -3096,18 +3108,22 @@ class TestMacGuiYAMLSkill:
         with patch("core.yaml_interpreter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout="", returncode=0)
             out = interp.execute(skill, {"action_id": "close_focused"})
-        assert out == "已关闭"
-        assert mock_run.call_args_list[0].args[0] == ["aerospace", "close"]
+        parsed = parse_tool_result(out)
+        assert parsed["status"] == "needs_clarification"
+        assert parsed["error_code"] == "confirmation_required"
+        assert parsed["data"]["risk"]["level"] == "high"
+        mock_run.assert_not_called()
 
     def test_close_all_but_current(self):
         interp, skill = self._load()
         with patch("core.yaml_interpreter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout="", returncode=0)
             out = interp.execute(skill, {"action_id": "close_all_but_current"})
-        assert out == "已关闭其他窗口"
-        assert mock_run.call_args_list[0].args[0] == [
-            "aerospace", "close-all-windows-but-current",
-        ]
+        parsed = parse_tool_result(out)
+        assert parsed["status"] == "needs_clarification"
+        assert parsed["error_code"] == "confirmation_required"
+        assert parsed["data"]["risk"]["level"] == "high"
+        mock_run.assert_not_called()
 
     # ----- System -----------------------------------------------------------
 
@@ -3118,7 +3134,7 @@ class TestMacGuiYAMLSkill:
             out = interp.execute(
                 skill, {"action_id": "set_volume", "level": "30"}
             )
-        assert out == "音量调到 30"
+        assert tool_message(out) == "音量调到 30"
         argv = mock_run.call_args_list[0].args[0]
         assert argv[0] == "osascript"
         assert "set volume output volume" in argv[2]
@@ -3140,7 +3156,7 @@ class TestMacGuiYAMLSkill:
         with patch("core.yaml_interpreter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             out = interp.execute(skill, {"action_id": "mute_toggle"})
-        assert out == "静音已切换"
+        assert tool_message(out) == "静音已切换"
         argv = mock_run.call_args_list[0].args[0]
         assert argv[0] == "osascript"
         assert "output muted" in argv[2]
@@ -3154,20 +3170,18 @@ class TestMacGuiYAMLSkill:
         with patch("core.yaml_interpreter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             out = interp.execute(skill, {"action_id": "lock_screen"})
-        assert out == "锁屏中"
-        argv = mock_run.call_args_list[0].args[0]
-        assert argv[0] == "osascript"
-        # Ctrl+Cmd+Q is the macOS lock shortcut
-        assert "control down" in argv[2]
-        assert "command down" in argv[2]
-        assert 'keystroke "q"' in argv[2]
+        parsed = parse_tool_result(out)
+        assert parsed["status"] == "needs_clarification"
+        assert parsed["error_code"] == "confirmation_required"
+        assert parsed["data"]["risk"]["level"] == "high"
+        mock_run.assert_not_called()
 
     def test_screenshot(self):
         interp, skill = self._load()
         with patch("core.yaml_interpreter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout="", returncode=0)
             out = interp.execute(skill, {"action_id": "screenshot"})
-        assert out == "已截屏到剪贴板"
+        assert tool_message(out) == "已截屏到剪贴板"
         # -c clipboard, -x silent
         assert mock_run.call_args_list[0].args[0] == ["screencapture", "-c", "-x"]
 
@@ -3186,7 +3200,10 @@ class TestMacGuiYAMLSkill:
                     "display": "BenQ",
                 },
             )
-        assert "Mac GUI" in out
+        parsed = parse_tool_result(out)
+        assert parsed["status"] == "failure"
+        assert parsed["error_code"] == "dependency_missing"
+        assert "Mac GUI" in parsed["message"]
 
     def test_window_never_appears_returns_error_template(self):
         interp, skill = self._load()
@@ -3207,7 +3224,10 @@ class TestMacGuiYAMLSkill:
                     "display": "BenQ",
                 },
             )
-        assert "Mac GUI" in out
+        parsed = parse_tool_result(out)
+        assert parsed["status"] == "needs_clarification"
+        assert parsed["error_code"] == "target_not_found"
+        assert "Mac GUI" in parsed["message"]
 
     def test_marked_not_read_only_destructive(self):
         _, skill = self._load()

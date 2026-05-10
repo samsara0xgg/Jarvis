@@ -70,13 +70,13 @@ description: |
 version: 2
 status: live
 lifecycle:
-  status: rewrite_required
-  reason: "Broad local GUI primitive with mixed-risk actions; needs per-action policy or smaller skills."
+  status: active
+  reason: "Broad local GUI primitive now returns structured operation, target, risk, and pre/post execution evidence."
   reviewed_at: "2026-05-10"
-  phase3_action: "Split into smaller mac_* primitives or add per-action risk, target verification, and pre/post observations."
+  phase3_action: "Monitor trace usage; split into smaller mac_* primitives only when high-frequency operations justify it."
   replacement: null
 exposure:
-  expose_to_llm: limited
+  expose_to_llm: true
   allow_regex: false
   allow_frontend_direct: false
 classification:
@@ -150,6 +150,7 @@ annotations:
 
 action:
   type: aerospace_op
+  result_contract: true
   display_aliases:
     副: "BenQ"
     主: "Built-in"
@@ -282,6 +283,10 @@ action:
       response: "已最小化"
 
     close_focused:
+      risk_level: high
+      risk_reason: "Closes the currently focused window and may discard unsaved work."
+      confirmation_required: true
+      confirmation_message: "关闭当前窗口可能丢失未保存内容，需要你确认后再执行。"
       steps:
         - type: shell
           cmd: ["aerospace", "close"]
@@ -289,6 +294,10 @@ action:
       response: "已关闭"
 
     close_all_but_current:
+      risk_level: high
+      risk_reason: "Closes multiple windows and may discard unsaved work."
+      confirmation_required: true
+      confirmation_message: "关闭其他窗口可能影响多个应用，需要你确认后再执行。"
       steps:
         - type: shell
           cmd: ["aerospace", "close-all-windows-but-current"]
@@ -321,6 +330,10 @@ action:
       response: "静音已切换"
 
     lock_screen:
+      risk_level: high
+      risk_reason: "Locks the local computer session."
+      confirmation_required: true
+      confirmation_message: "锁屏会中断当前本地操作，需要你确认后再执行。"
       steps:
         - type: applescript
           script: |

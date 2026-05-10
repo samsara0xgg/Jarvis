@@ -1733,6 +1733,7 @@ class YAMLInterpreter:
         action = skill["action"]
         response_cfg = skill.get("response", {})
         error_template = response_cfg.get("error_template")
+        result_contract = bool(action.get("result_contract", False))
 
         action_id = str(params.get("action_id") or "").strip()
         registry = action.get("registry", {})
@@ -1742,6 +1743,17 @@ class YAMLInterpreter:
                 f"(known: {sorted(registry)})"
             )
             LOGGER.warning(msg)
+            if result_contract:
+                return self._aerospace_result(
+                    FAILURE,
+                    error_template if error_template else msg,
+                    action_id=action_id,
+                    op={},
+                    params=params,
+                    error_code="unknown_action",
+                    outcome_type="failed",
+                    verified=False,
+                )
             return error_template if error_template else msg
 
         # Resolve display alias before any step renders.
@@ -1750,11 +1762,35 @@ class YAMLInterpreter:
             params["display"] = display_aliases[params["display"]]
 
         op = registry[action_id]
+        if result_contract and op.get("confirmation_required"):
+            return self._aerospace_result(
+                NEEDS_CLARIFICATION,
+                op.get("confirmation_message")
+                or "这个 Mac GUI 操作需要你确认后再执行。",
+                action_id=action_id,
+                op=op,
+                params=params,
+                error_code="confirmation_required",
+                outcome_type="failed",
+                verified=False,
+            )
+
         try:
             for step in op.get("steps", []):
                 self._run_aerospace_step(step, params)
         except FileNotFoundError as exc:
             LOGGER.warning("aerospace_op: missing binary: %s", exc)
+            if result_contract:
+                return self._aerospace_result(
+                    FAILURE,
+                    error_template if error_template else f"依赖缺失: {exc}",
+                    action_id=action_id,
+                    op=op,
+                    params=params,
+                    error_code="dependency_missing",
+                    outcome_type="failed",
+                    verified=False,
+                )
             return (
                 error_template
                 if error_template
@@ -1762,6 +1798,17 @@ class YAMLInterpreter:
             )
         except subprocess.TimeoutExpired:
             LOGGER.warning("aerospace_op: subprocess timeout for %s", action_id)
+            if result_contract:
+                return self._aerospace_result(
+                    FAILURE,
+                    error_template if error_template else "操作超时",
+                    action_id=action_id,
+                    op=op,
+                    params=params,
+                    error_code="timeout",
+                    outcome_type="failed",
+                    verified=False,
+                )
             return error_template if error_template else "操作超时"
         except subprocess.CalledProcessError as exc:
             stderr = (exc.stderr or b"")
@@ -1773,6 +1820,17 @@ class YAMLInterpreter:
                 exc.returncode,
                 stderr,
             )
+            if result_contract:
+                return self._aerospace_result(
+                    FAILURE,
+                    error_template if error_template else f"命令失败: {stderr[:80]}",
+                    action_id=action_id,
+                    op=op,
+                    params=params,
+                    error_code="command_failed",
+                    outcome_type="failed",
+                    verified=False,
+                )
             return (
                 error_template
                 if error_template
@@ -1780,9 +1838,31 @@ class YAMLInterpreter:
             )
         except _PollTimeout as exc:
             LOGGER.warning("aerospace_op: %s", exc)
+            if result_contract:
+                return self._aerospace_result(
+                    NEEDS_CLARIFICATION,
+                    error_template if error_template else str(exc),
+                    action_id=action_id,
+                    op=op,
+                    params=params,
+                    error_code="target_not_found",
+                    outcome_type="failed",
+                    verified=False,
+                )
             return error_template if error_template else str(exc)
         except Exception:
             LOGGER.exception("aerospace_op: unexpected step error for %s", action_id)
+            if result_contract:
+                return self._aerospace_result(
+                    FAILURE,
+                    error_template if error_template else _FALLBACK_ERROR,
+                    action_id=action_id,
+                    op=op,
+                    params=params,
+                    error_code="unknown_error",
+                    outcome_type="failed",
+                    verified=False,
+                )
             return error_template if error_template else _FALLBACK_ERROR
 
         # Per-action response → outer skill response template.
@@ -1795,12 +1875,101 @@ class YAMLInterpreter:
 
         outer_tpl = response_cfg.get("template", "{{ result }}")
         try:
-            return self._render(outer_tpl, {**params, "result": result_str})
+            message = self._render(outer_tpl, {**params, "result": result_str})
+            if result_contract:
+                return self._aerospace_result(
+                    SUCCESS,
+                    message,
+                    action_id=action_id,
+                    op=op,
+                    params=params,
+                    error_code=None,
+                    outcome_type="changed",
+                    verified=True,
+                    post_message=result_str,
+                )
+            return message
         except Exception:
             LOGGER.exception(
                 "aerospace_op: outer response render failed for %s", action_id
             )
+            if result_contract:
+                return self._aerospace_result(
+                    FAILURE,
+                    error_template if error_template else _FALLBACK_ERROR,
+                    action_id=action_id,
+                    op=op,
+                    params=params,
+                    error_code="response_render_failed",
+                    outcome_type="failed",
+                    verified=False,
+                )
             return error_template if error_template else _FALLBACK_ERROR
+
+    def _aerospace_result(
+        self,
+        status: str,
+        message: str,
+        *,
+        action_id: str,
+        op: dict[str, Any],
+        params: dict[str, Any],
+        error_code: str | None,
+        outcome_type: str,
+        verified: bool,
+        post_message: str | None = None,
+    ) -> str:
+        """Return a structured mac_gui result with operation evidence."""
+        risk_level = str(op.get("risk_level") or "medium")
+        target = {
+            "app": params.get("app") or None,
+            "display": params.get("display") or None,
+            "url": params.get("url") or None,
+            "workspace": params.get("workspace") or None,
+            "level": params.get("level") or None,
+            "window_id": params.get("wid") or None,
+        }
+        target = {k: v for k, v in target.items() if v not in (None, "")}
+        data = {
+            "operation": action_id,
+            "target": target,
+            "risk": {
+                "level": risk_level,
+                "reason": op.get("risk_reason")
+                or "mac_gui changes local computer UI state.",
+            },
+            "pre_action_observation": {
+                "type": "declared_request",
+                "action_id": action_id,
+                "target": target,
+            },
+            "post_action_observation": {
+                "type": "executor_result",
+                "message": post_message or message,
+                "captured_window_id": params.get("wid"),
+            },
+        }
+        claim_policy = (
+            {
+                "allowed_claims": ["mac_gui_action_completed"],
+                "forbidden_claims": [],
+            }
+            if status == SUCCESS and verified
+            else {
+                "allowed_claims": ["mac_gui_action_not_performed"],
+                "forbidden_claims": ["action_completed", "state_changed"],
+            }
+        )
+        return make_tool_result(
+            status,
+            message,
+            data=data,
+            error_code=error_code,
+            outcome_type=outcome_type,
+            verified=verified,
+            verification_source="executor_ack" if verified else "mac_gui_gate",
+            claim_policy=claim_policy,
+        )
 
     def _run_aerospace_step(self, step: dict, params: dict) -> None:
         """Dispatch a single aerospace_op step. Mutates *params* on capture."""

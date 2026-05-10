@@ -42,6 +42,7 @@ user exposure is not by itself a reason to delete it.
 | `obsidian_add_to_inbox` | Low-risk append-only capture. |
 | `get_weather` | Weather v2 uses Open-Meteo with explicit forecast type, coverage, location, timezone, freshness, and claim policy. |
 | `type_to_focused` | Local text input now verifies focused target before paste; terminal, browser, external-message, password/payment, and unknown targets do not receive text without clarification or rejection. |
+| `mac_gui` | Broad local GUI primitive now returns structured operation, target, risk, and pre/post execution evidence; high-risk close/lock actions require confirmation. |
 | `cc_tell` | Preserved by user request; delivery does not imply completion. |
 | `cc_slash` | Preserved by user request; command policy unchanged. |
 | `cc_interrupt` | Preserved by user request. |
@@ -51,7 +52,6 @@ user exposure is not by itself a reason to delete it.
 
 | Skill | Phase 3 Action |
 | --- | --- |
-| `mac_gui` | Split into smaller primitives or add per-action risk, target verification, and pre/post observations. |
 | `delete_todo` | Replace hard delete with soft-delete/archive and add undo/confirmation policy. |
 
 ### Deprecated
@@ -68,8 +68,7 @@ None.
 
 ## Phase 3 Backlog
 
-1. Local control v2: split or per-action policy for `mac_gui`.
-2. Todo delete v2: soft-delete/archive, undo, and confirmation for ambiguous or bulk delete.
-3. Smart home enhancements: entity registry, alias provenance, capabilities, and postcondition verification.
-4. Reminder/timer enhancements: timezone, due/fires-at timestamps, recurrence, missing-field clarification.
-5. Renderer improvements: voice/document split for long todo/reminder lists and raw IDs.
+1. Todo delete v2: soft-delete/archive, undo, and confirmation for ambiguous or bulk delete.
+2. Smart home enhancements: entity registry, alias provenance, capabilities, and postcondition verification.
+3. Reminder/timer enhancements: timezone, due/fires-at timestamps, recurrence, missing-field clarification.
+4. Renderer improvements: voice/document split for long todo/reminder lists and raw IDs.
