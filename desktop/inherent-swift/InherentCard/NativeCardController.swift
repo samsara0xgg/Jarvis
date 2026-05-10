@@ -76,7 +76,10 @@ final class NativeCardController: NSObject {
     startPasteShortcutMonitor()
 
     if let debugMode = ProcessInfo.processInfo.environment["INHERENT_DEBUG_FAKE_TURNS"] {
-      let scenarioModes = ["basic", "multi-turn", "overflow", "drip-plain", "drip-fade", "followup-restore"]
+      let scenarioModes = [
+        "basic", "multi-turn", "overflow", "drip-plain", "drip-fade", "followup-restore",
+        "voice-listening", "voice-transcribing", "voice-accepted", "voice-empty", "voice-error",
+      ]
       let delay: TimeInterval = scenarioModes.contains(debugMode) ? 0 : 1.0
       DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
         self?.runFakeTurns()
@@ -414,6 +417,9 @@ final class NativeCardController: NSObject {
     case "followup-restore":
       runFollowupRestoreScenario()
       return
+    case "voice-listening", "voice-transcribing", "voice-accepted", "voice-empty", "voice-error":
+      runVoiceScenario(mode: mode)
+      return
     default:
       break
     }
@@ -560,6 +566,27 @@ final class NativeCardController: NSObject {
       }
       DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
         self?.model.siriDone(payload: ["fadeMs": 5000])
+      }
+    }
+  }
+
+  private func runVoiceScenario(mode: String) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+      self?.handleVoiceState(payload: ["phase": "listening"])
+      guard mode != "voice-listening" else { return }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+        switch mode {
+        case "voice-transcribing":
+          self?.handleVoiceState(payload: ["phase": "transcribing"])
+        case "voice-accepted":
+          self?.handleVoiceState(payload: ["phase": "accepted", "text": "客厅几度"])
+        case "voice-empty":
+          self?.handleVoiceState(payload: ["phase": "empty"])
+        case "voice-error":
+          self?.handleVoiceState(payload: ["phase": "error"])
+        default:
+          break
+        }
       }
     }
   }

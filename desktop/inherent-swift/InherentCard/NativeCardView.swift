@@ -261,12 +261,17 @@ struct NativeCardView: View {
 
   private var answerView: some View {
     Group {
-      if model.isSubmitted && !model.answerText.isEmpty {
-        answerContent
-          .padding(.leading, 38)
-          .padding(.trailing, 34)
-          .padding(.bottom, answerBottomPadding)
-          .transition(.move(edge: .top).combined(with: .opacity))
+      if model.isSubmitted {
+        if model.answerText.isEmpty {
+          Color.clear
+            .frame(height: answerBottomPadding + 4)
+        } else {
+          answerContent
+            .padding(.leading, 38)
+            .padding(.trailing, 34)
+            .padding(.bottom, answerBottomPadding)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
