@@ -423,6 +423,7 @@ struct NativeCardView: View {
     RoundedRectangle(cornerRadius: 30, style: .continuous)
       .stroke(edgeColor, lineWidth: (model.isListening || model.isDropTarget || model.attachmentEdgeFlash || model.stateVariant == .warn || model.stateVariant == .error) ? 1.5 : 0.5)
       .shadow(color: edgeColor.opacity(model.isListening || model.isDropTarget || model.attachmentEdgeFlash ? 0.24 : 0), radius: model.attachmentEdgeFlash ? 14 : 10)
+      .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
       .allowsHitTesting(false)
   }
 
