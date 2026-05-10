@@ -7,6 +7,11 @@ import textwrap
 
 import pytest
 
+from core.tool_result import (
+    LEGACY_UNVERIFIED,
+    SCHEMA_VERSION,
+    parse_tool_result,
+)
 from tools import _TOOL_REGISTRY, _EXECUTION_CONTEXT, jarvis_tool
 
 
@@ -82,14 +87,19 @@ def test_registry_rbac_filters():
 
 
 def test_registry_execute():
-    """Execute a Python tool and verify the result."""
+    """Execute a Python tool and verify the normalized result."""
     _register_test_tools()
 
     from core.tool_registry import ToolRegistry
     reg = ToolRegistry(config={})
 
     result = reg.execute("test_func", {"x": "hello"}, user_id="u1", user_role="owner")
-    assert result == "result: hello"
+    parsed = parse_tool_result(result)
+    assert parsed["schema_version"] == SCHEMA_VERSION
+    assert parsed["skill_name"] == "test_func"
+    assert parsed["caller"] == "llm"
+    assert parsed["message"] == "result: hello"
+    assert parsed["outcome"]["type"] == "observed"
 
 
 def test_registry_execute_unknown():
@@ -98,8 +108,10 @@ def test_registry_execute_unknown():
     reg = ToolRegistry(config={})
 
     result = reg.execute("no_such_tool", {})
-    assert "Error" in result
-    assert "no_such_tool" in result
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "failure"
+    assert parsed["error_code"] == "unknown_tool"
+    assert "no_such_tool" in parsed["message"]
 
 
 def test_registry_count():
@@ -196,6 +208,61 @@ def test_default_registry_hides_deprecated_yaml_skills():
     assert "cc_slash" in names
 
 
+def test_default_registry_exposes_phase2_yaml_metadata():
+    """Lifecycle metadata is auditable without changing the tool surface."""
+    from core.tool_registry import ToolRegistry
+
+    reg = ToolRegistry(config={})
+    metadata = {m["name"]: m for m in reg.get_skill_metadata()}
+
+    assert metadata["get_weather"]["lifecycle"]["status"] == "rewrite_required"
+    assert metadata["get_weather"]["exposure"]["expose_to_llm"] == "limited"
+    assert metadata["mac_gui"]["lifecycle"]["status"] == "rewrite_required"
+    assert metadata["type_to_focused"]["classification"]["risk_level"] == "high"
+    assert metadata["cc_tell"]["lifecycle"]["status"] == "active"
+    assert metadata["cc_tell"]["exposure"]["allow_frontend_direct"] is True
+    assert metadata["cc_approve"]["lifecycle"]["status"] == "deprecated"
+    assert metadata["cc_approve"]["loaded"] is False
+    assert metadata["get_exchange_rate"]["lifecycle"]["status"] == "deprecated"
+
+
+def test_registry_exposes_python_lifecycle_metadata():
+    """Python @jarvis_tool metadata participates in the same audit surface."""
+    @jarvis_tool(
+        read_only=False,
+        lifecycle={
+            "status": "rewrite_required",
+            "reason": "test reason",
+            "reviewed_at": "2026-05-10",
+            "phase3_action": "test action",
+            "replacement": None,
+        },
+        exposure={
+            "expose_to_llm": "limited",
+            "allow_regex": False,
+            "allow_frontend_direct": False,
+        },
+        classification={
+            "layer": "primitive",
+            "primary": "state_changing",
+            "risk_level": "medium",
+            "has_side_effects": True,
+        },
+    )
+    def needs_rewrite() -> str:
+        return "ok"
+
+    from core.tool_registry import ToolRegistry
+
+    reg = ToolRegistry(config={})
+    metadata = {m["name"]: m for m in reg.get_skill_metadata()}
+
+    assert metadata["needs_rewrite"]["source"] == "python"
+    assert metadata["needs_rewrite"]["lifecycle"]["status"] == "rewrite_required"
+    assert metadata["needs_rewrite"]["exposure"]["expose_to_llm"] == "limited"
+    assert metadata["needs_rewrite"]["classification"]["risk_level"] == "medium"
+
+
 def test_registry_rbac_execute_denied():
     """Executing a tool without sufficient role returns permission denied."""
     _register_test_tools()
@@ -204,4 +271,74 @@ def test_registry_rbac_execute_denied():
     reg = ToolRegistry(config={})
 
     result = reg.execute("admin_func", {}, user_id="u1", user_role="guest")
-    assert "Permission denied" in result
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "failure"
+    assert parsed["error_code"] == "permission_denied"
+    assert "Permission denied" in parsed["message"]
+
+
+def test_registry_normalizes_yaml_legacy_side_effect(tmp_path):
+    """YAML side-effect plaintext results become V1 evidence envelopes."""
+    yaml_content = textwrap.dedent("""\
+        name: test_file_write
+        description: "A test file-write YAML skill"
+        version: 1
+        status: live
+        parameters:
+          - name: body
+            type: string
+            required: true
+        annotations:
+          read_only: false
+          destructive: false
+          idempotent: false
+        action:
+          type: file_write
+          allowed_root: "{{ root }}"
+          path: "{{ root }}/note.txt"
+          content: "{{ body }}"
+        response:
+          template: "Saved."
+    """)
+    root = tmp_path / "vault"
+    root.mkdir()
+    (tmp_path / "write.yaml").write_text(
+        yaml_content.replace("{{ root }}", str(root)),
+    )
+
+    from core.tool_registry import ToolRegistry
+    reg = ToolRegistry(config={}, yaml_dirs=[str(tmp_path)])
+
+    result = reg.execute(
+        "test_file_write",
+        {"body": "hello"},
+        caller="regex_router",
+    )
+    parsed = parse_tool_result(result)
+    assert parsed["schema_version"] == SCHEMA_VERSION
+    assert parsed["skill_name"] == "test_file_write"
+    assert parsed["caller"] == "regex_router"
+    assert parsed["message"] == "Saved."
+    assert parsed["outcome"] == {
+        "type": "created",
+        "verified": True,
+        "verification_source": "file_write_ack",
+    }
+
+
+def test_registry_normalizes_untyped_side_effect_as_unverified():
+    """Plain medium-risk side-effect output cannot support completion claims."""
+    @jarvis_tool(read_only=False, destructive=True)
+    def legacy_side_effect() -> str:
+        return "已输入"
+
+    from core.tool_registry import ToolRegistry
+    reg = ToolRegistry(config={})
+
+    parsed = parse_tool_result(
+        reg.execute("legacy_side_effect", {}, caller="llm")
+    )
+    assert parsed["status"] == "success"
+    assert parsed["message"] == "工具返回了旧格式结果，但没有可验证完成证据。"
+    assert parsed["data"]["legacy_raw_result"] == "已输入"
+    assert parsed["outcome"]["type"] == LEGACY_UNVERIFIED

@@ -1,3 +1,4 @@
+schema_version: jarvis.skill.v1
 name: cc_show
 description: |
   Read what Claude Code (cc) is currently doing in a specific zellij
@@ -52,6 +53,21 @@ description: |
 
 version: 1
 status: live
+lifecycle:
+  status: active
+  reason: "Read-only CC status primitive; CC behavior is intentionally preserved for this phase."
+  reviewed_at: "2026-05-10"
+  phase3_action: "Keep current behavior unless CC policy is explicitly reopened."
+  replacement: null
+exposure:
+  expose_to_llm: true
+  allow_regex: false
+  allow_frontend_direct: false
+classification:
+  layer: primitive
+  primary: read_only
+  risk_level: low
+  has_side_effects: false
 created_by: dogfood
 
 parameters:

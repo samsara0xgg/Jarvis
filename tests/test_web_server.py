@@ -123,6 +123,7 @@ class TestDirectToolEndpoint:
             "cc_tell",
             {"text": "hi"},
             user_role="owner",
+            caller="frontend_direct",
         )
 
     def test_execute_tool_rejects_non_cc_tools(self, client, mock_jarvis_app):

@@ -35,7 +35,27 @@ def init(
         _restore_scheduled_reminders()
 
 
-@jarvis_tool(read_only=False)
+@jarvis_tool(
+    read_only=False,
+    lifecycle={
+        "status": "active",
+        "reason": "Core personal-assistant reminder creation capability.",
+        "reviewed_at": "2026-05-10",
+        "phase3_action": "Add missing_fields, timezone, recurrence, and due_at schema.",
+        "replacement": None,
+    },
+    exposure={
+        "expose_to_llm": True,
+        "allow_regex": True,
+        "allow_frontend_direct": False,
+    },
+    classification={
+        "layer": "primitive",
+        "primary": "state_changing",
+        "risk_level": "low",
+        "has_side_effects": True,
+    },
+)
 def create_reminder(content: str, remind_at: str = "") -> str:
     """Create a reminder for the current user."""
     content = content.strip()
@@ -74,7 +94,27 @@ def create_reminder(content: str, remind_at: str = "") -> str:
     )
 
 
-@jarvis_tool(read_only=True)
+@jarvis_tool(
+    read_only=True,
+    lifecycle={
+        "status": "active",
+        "reason": "Low-risk read-only reminder query.",
+        "reviewed_at": "2026-05-10",
+        "phase3_action": "Improve voice/document rendering for list output.",
+        "replacement": None,
+    },
+    exposure={
+        "expose_to_llm": True,
+        "allow_regex": True,
+        "allow_frontend_direct": False,
+    },
+    classification={
+        "layer": "primitive",
+        "primary": "read_only",
+        "risk_level": "low",
+        "has_side_effects": False,
+    },
+)
 def list_reminders() -> str:
     """List all active reminders for the current user."""
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"
@@ -101,7 +141,27 @@ def list_reminders() -> str:
     )
 
 
-@jarvis_tool(read_only=False)
+@jarvis_tool(
+    read_only=False,
+    lifecycle={
+        "status": "active",
+        "reason": "Low-risk completion action when reminder_id is explicit.",
+        "reviewed_at": "2026-05-10",
+        "phase3_action": "Add ambiguity handling for natural-language reminder references.",
+        "replacement": None,
+    },
+    exposure={
+        "expose_to_llm": True,
+        "allow_regex": True,
+        "allow_frontend_direct": False,
+    },
+    classification={
+        "layer": "primitive",
+        "primary": "state_changing",
+        "risk_level": "low",
+        "has_side_effects": True,
+    },
+)
 def complete_reminder(reminder_id: str) -> str:
     """Mark a reminder as done by its ID."""
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"

@@ -1,7 +1,23 @@
+schema_version: jarvis.skill.v1
 name: get_weather
 description: "Get current weather for a city. Returns temperature, conditions, humidity, and wind."
 version: 1
 status: live
+lifecycle:
+  status: rewrite_required
+  reason: "Current implementation has weak forecast scope and freshness guarantees."
+  reviewed_at: "2026-05-10"
+  phase3_action: "Rewrite weather provider wrapper with explicit forecast_type, coverage, location, timezone, and freshness."
+  replacement: null
+exposure:
+  expose_to_llm: limited
+  allow_regex: true
+  allow_frontend_direct: false
+classification:
+  layer: primitive
+  primary: read_only
+  risk_level: low
+  has_side_effects: false
 created_by: migrated
 
 parameters:

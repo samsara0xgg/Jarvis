@@ -1,3 +1,4 @@
+schema_version: jarvis.skill.v1
 name: cc_tell
 description: |
   Send a prompt to Claude Code running inside a zellij session. Default
@@ -32,6 +33,21 @@ description: |
 
 version: 1
 status: live
+lifecycle:
+  status: active
+  reason: "CC behavior is intentionally preserved for this phase; delivery does not imply completion."
+  reviewed_at: "2026-05-10"
+  phase3_action: "Do not adjust CC command behavior in current phase unless explicitly requested."
+  replacement: null
+exposure:
+  expose_to_llm: true
+  allow_regex: true
+  allow_frontend_direct: true
+classification:
+  layer: primitive
+  primary: delivery
+  risk_level: medium
+  has_side_effects: true
 created_by: dogfood
 
 parameters:

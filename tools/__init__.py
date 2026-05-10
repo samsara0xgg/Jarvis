@@ -26,6 +26,9 @@ def jarvis_tool(
     read_only: bool = True,
     destructive: bool = False,
     required_role: str = "guest",
+    lifecycle: dict[str, Any] | None = None,
+    exposure: dict[str, Any] | None = None,
+    classification: dict[str, Any] | None = None,
 ) -> Callable:
     """Register a function as a Jarvis tool.
 
@@ -90,6 +93,13 @@ def jarvis_tool(
             "read_only": read_only,
             "destructive": destructive,
             "required_role": required_role,
+            "lifecycle": _default_lifecycle(lifecycle),
+            "exposure": _default_exposure(exposure),
+            "classification": _default_classification(
+                classification,
+                read_only=read_only,
+                destructive=destructive,
+            ),
         }
 
         @functools.wraps(fn)
@@ -101,3 +111,53 @@ def jarvis_tool(
     if func is not None:
         return _decorator(func)
     return _decorator
+
+
+def _default_lifecycle(lifecycle: dict[str, Any] | None) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "status": "active",
+        "reason": "Existing Python tool; lifecycle not explicitly reviewed.",
+        "reviewed_at": "2026-05-10",
+        "phase3_action": "Review and enhance if trace shows issues.",
+        "replacement": None,
+    }
+    if lifecycle:
+        base.update(lifecycle)
+    return base
+
+
+def _default_exposure(exposure: dict[str, Any] | None) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "expose_to_llm": True,
+        "allow_regex": True,
+        "allow_frontend_direct": False,
+    }
+    if exposure:
+        base.update(exposure)
+    return base
+
+
+def _default_classification(
+    classification: dict[str, Any] | None,
+    *,
+    read_only: bool,
+    destructive: bool,
+) -> dict[str, Any]:
+    if read_only:
+        primary = "read_only"
+        risk_level = "low"
+    elif destructive:
+        primary = "physical_control"
+        risk_level = "medium"
+    else:
+        primary = "state_changing"
+        risk_level = "low"
+    base: dict[str, Any] = {
+        "layer": "primitive",
+        "primary": primary,
+        "risk_level": risk_level,
+        "has_side_effects": not read_only,
+    }
+    if classification:
+        base.update(classification)
+    return base

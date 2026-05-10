@@ -1,3 +1,4 @@
+schema_version: jarvis.skill.v1
 name: mac_gui
 description: |
   Control macOS GUI: launch apps, route windows across displays / workspaces,
@@ -68,6 +69,21 @@ description: |
   windows are invisible to AeroSpace and silently miss.
 version: 2
 status: live
+lifecycle:
+  status: rewrite_required
+  reason: "Broad local GUI primitive with mixed-risk actions; needs per-action policy or smaller skills."
+  reviewed_at: "2026-05-10"
+  phase3_action: "Split into smaller mac_* primitives or add per-action risk, target verification, and pre/post observations."
+  replacement: null
+exposure:
+  expose_to_llm: limited
+  allow_regex: false
+  allow_frontend_direct: false
+classification:
+  layer: primitive
+  primary: local_control
+  risk_level: high
+  has_side_effects: true
 created_by: dogfood
 
 parameters:

@@ -1,3 +1,4 @@
+schema_version: jarvis.skill.v1
 name: obsidian_add_to_inbox
 description: |
   Save a voice-captured note to the Obsidian inbox.
@@ -11,6 +12,21 @@ description: |
   given, in which case body is "# {title}\n\n{content}".
 version: 1
 status: live
+lifecycle:
+  status: active
+  reason: "Low-risk append-only capture primitive suited to voice workflows."
+  reviewed_at: "2026-05-10"
+  phase3_action: "Return note_id/display_name and keep internal paths out of voice."
+  replacement: null
+exposure:
+  expose_to_llm: true
+  allow_regex: true
+  allow_frontend_direct: false
+classification:
+  layer: primitive
+  primary: content_capture
+  risk_level: low
+  has_side_effects: true
 created_by: dogfood
 
 parameters:

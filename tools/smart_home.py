@@ -29,7 +29,29 @@ def init(device_manager: Any, permission_manager: Any) -> None:
     _permission_manager = permission_manager
 
 
-@jarvis_tool(destructive=True, read_only=False, required_role="guest")
+@jarvis_tool(
+    destructive=True,
+    read_only=False,
+    required_role="guest",
+    lifecycle={
+        "status": "active",
+        "reason": "High-value Jarvis capability with proven regex fast-path usage.",
+        "reviewed_at": "2026-05-10",
+        "phase3_action": "Add entity registry, alias provenance, and postcondition verification.",
+        "replacement": None,
+    },
+    exposure={
+        "expose_to_llm": True,
+        "allow_regex": True,
+        "allow_frontend_direct": False,
+    },
+    classification={
+        "layer": "primitive",
+        "primary": "physical_control",
+        "risk_level": "medium",
+        "has_side_effects": True,
+    },
+)
 def smart_home_control(device_id: str, action: str, value: str = "") -> str:
     """Change smart-home state for a verified device_id.
 
@@ -132,7 +154,27 @@ def _execute_virtual_group(group_id: str, action: str, value: str, user_role: st
     )
 
 
-@jarvis_tool(read_only=True)
+@jarvis_tool(
+    read_only=True,
+    lifecycle={
+        "status": "active",
+        "reason": "Read-only inventory/status primitive needed for entity resolution.",
+        "reviewed_at": "2026-05-10",
+        "phase3_action": "Return aliases, area, capabilities, current_state, and last_updated.",
+        "replacement": None,
+    },
+    exposure={
+        "expose_to_llm": True,
+        "allow_regex": True,
+        "allow_frontend_direct": False,
+    },
+    classification={
+        "layer": "primitive",
+        "primary": "read_only",
+        "risk_level": "low",
+        "has_side_effects": False,
+    },
+)
 def smart_home_status(device_id: str = "") -> str:
     """Read smart-home inventory/status without changing state.
 

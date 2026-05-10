@@ -1021,12 +1021,13 @@ class JarvisApp:
                             regex_match.tool_name,
                             regex_match.tool_args,
                             user_role=user_role,
+                            caller="regex_router",
                         )
                     finally:
                         regex_tool_call_log.append({
                             "name": regex_match.tool_name,
                             "args": dict(regex_match.tool_args),
-                            "result": str(tool_result)[:500],
+                            "result": str(tool_result)[:2000],
                             "ms": int((time.monotonic() - _tool_t0) * 1000),
                         })
                 else:
@@ -1083,6 +1084,7 @@ class JarvisApp:
                 _tool_t0 = time.monotonic()
                 _tool_result: Any = ""
                 try:
+                    kw.setdefault("caller", "llm")
                     _tool_result = self.tool_registry.execute(name, args, **kw)
                     return _tool_result
                 except Exception as exc:
@@ -1092,7 +1094,7 @@ class JarvisApp:
                     tool_call_log.append({
                         "name": name,
                         "args": args,
-                        "result": str(_tool_result)[:500],
+                        "result": str(_tool_result)[:2000],
                         "ms": int((time.monotonic() - _tool_t0) * 1000),
                     })
 

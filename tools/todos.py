@@ -22,7 +22,27 @@ def init(persist_dir: str = "data/todos") -> None:
     _persist_dir.mkdir(parents=True, exist_ok=True)
 
 
-@jarvis_tool(read_only=False)
+@jarvis_tool(
+    read_only=False,
+    lifecycle={
+        "status": "active",
+        "reason": "Low-risk personal capture capability.",
+        "reviewed_at": "2026-05-10",
+        "phase3_action": "Enhance structured output only; no rewrite required.",
+        "replacement": None,
+    },
+    exposure={
+        "expose_to_llm": True,
+        "allow_regex": True,
+        "allow_frontend_direct": False,
+    },
+    classification={
+        "layer": "primitive",
+        "primary": "state_changing",
+        "risk_level": "low",
+        "has_side_effects": True,
+    },
+)
 def add_todo(content: str, priority: str = "medium") -> str:
     """Add a todo item for the current user."""
     content = content.strip()
@@ -52,7 +72,27 @@ def add_todo(content: str, priority: str = "medium") -> str:
     )
 
 
-@jarvis_tool(read_only=True)
+@jarvis_tool(
+    read_only=True,
+    lifecycle={
+        "status": "active",
+        "reason": "Low-risk read-only todo query.",
+        "reviewed_at": "2026-05-10",
+        "phase3_action": "Improve voice/document rendering for list output.",
+        "replacement": None,
+    },
+    exposure={
+        "expose_to_llm": True,
+        "allow_regex": True,
+        "allow_frontend_direct": False,
+    },
+    classification={
+        "layer": "primitive",
+        "primary": "read_only",
+        "risk_level": "low",
+        "has_side_effects": False,
+    },
+)
 def list_todos() -> str:
     """List all incomplete todos for the current user."""
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"
@@ -70,7 +110,27 @@ def list_todos() -> str:
     )
 
 
-@jarvis_tool(read_only=False)
+@jarvis_tool(
+    read_only=False,
+    lifecycle={
+        "status": "active",
+        "reason": "Low-risk completion action when todo_id is explicit.",
+        "reviewed_at": "2026-05-10",
+        "phase3_action": "Add ambiguity handling for natural-language todo references.",
+        "replacement": None,
+    },
+    exposure={
+        "expose_to_llm": True,
+        "allow_regex": True,
+        "allow_frontend_direct": False,
+    },
+    classification={
+        "layer": "primitive",
+        "primary": "state_changing",
+        "risk_level": "low",
+        "has_side_effects": True,
+    },
+)
 def complete_todo(todo_id: str) -> str:
     """Mark a todo as completed by its ID."""
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"
@@ -92,7 +152,27 @@ def complete_todo(todo_id: str) -> str:
     )
 
 
-@jarvis_tool(read_only=False)
+@jarvis_tool(
+    read_only=False,
+    lifecycle={
+        "status": "rewrite_required",
+        "reason": "Deletion should support confirmation, soft-delete, or undo semantics.",
+        "reviewed_at": "2026-05-10",
+        "phase3_action": "Replace hard delete with soft-delete/archive and add undo/confirmation policy.",
+        "replacement": None,
+    },
+    exposure={
+        "expose_to_llm": "limited",
+        "allow_regex": False,
+        "allow_frontend_direct": False,
+    },
+    classification={
+        "layer": "primitive",
+        "primary": "state_changing",
+        "risk_level": "medium",
+        "has_side_effects": True,
+    },
+)
 def delete_todo(todo_id: str) -> str:
     """Delete a todo by its ID."""
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"

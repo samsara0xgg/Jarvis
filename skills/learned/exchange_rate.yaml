@@ -1,7 +1,23 @@
+schema_version: jarvis.skill.v1
 name: get_exchange_rate
 description: "Get current exchange rate or convert between currencies. Uses ISO 4217 codes (USD, CNY, EUR, JPY, CAD)."
 version: 1
 status: deprecated
+lifecycle:
+  status: deprecated
+  reason: "Low-priority realtime-data skill without strong source/freshness contract."
+  reviewed_at: "2026-05-10"
+  phase3_action: "Keep deprecated; reintroduce only as a v2 provider-backed skill if needed."
+  replacement: null
+exposure:
+  expose_to_llm: false
+  allow_regex: false
+  allow_frontend_direct: false
+classification:
+  layer: primitive
+  primary: read_only
+  risk_level: low
+  has_side_effects: false
 created_by: migrated
 
 parameters:

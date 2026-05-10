@@ -20,7 +20,27 @@ def init(tts_callback: Any = None) -> None:
     _timer_callback = tts_callback
 
 
-@jarvis_tool(read_only=True)
+@jarvis_tool(
+    read_only=True,
+    lifecycle={
+        "status": "active",
+        "reason": "Low-risk core voice-assistant capability.",
+        "reviewed_at": "2026-05-10",
+        "phase3_action": "Fix spoken formatting and include clearer locale/timezone text.",
+        "replacement": None,
+    },
+    exposure={
+        "expose_to_llm": True,
+        "allow_regex": True,
+        "allow_frontend_direct": False,
+    },
+    classification={
+        "layer": "primitive",
+        "primary": "read_only",
+        "risk_level": "low",
+        "has_side_effects": False,
+    },
+)
 def get_current_time() -> str:
     """Get the current date and time."""
     now = datetime.now().astimezone()
@@ -36,7 +56,27 @@ def get_current_time() -> str:
     )
 
 
-@jarvis_tool(read_only=False)
+@jarvis_tool(
+    read_only=False,
+    lifecycle={
+        "status": "active",
+        "reason": "Core timer capability; reliable enough for current use.",
+        "reviewed_at": "2026-05-10",
+        "phase3_action": "Add fires_at, timezone, and stronger timer evidence.",
+        "replacement": None,
+    },
+    exposure={
+        "expose_to_llm": True,
+        "allow_regex": True,
+        "allow_frontend_direct": False,
+    },
+    classification={
+        "layer": "primitive",
+        "primary": "state_changing",
+        "risk_level": "low",
+        "has_side_effects": True,
+    },
+)
 def set_timer(seconds: int, label: str = "timer") -> str:
     """Set a countdown timer. When it fires, Jarvis will announce it."""
     if seconds <= 0:

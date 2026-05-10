@@ -497,7 +497,12 @@ def create_app(jarvis_app: Any) -> FastAPI:
         result: str | None = None
         err: Exception | None = None
         try:
-            result = registry.execute(req.name, args, user_role="owner")
+            result = registry.execute(
+                req.name,
+                args,
+                user_role="owner",
+                caller="frontend_direct",
+            )
         except Exception as exc:
             err = exc
             LOGGER.exception("execute_tool %s failed", req.name)
