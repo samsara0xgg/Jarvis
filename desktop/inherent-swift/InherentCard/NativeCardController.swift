@@ -82,6 +82,16 @@ final class NativeCardController: NSObject {
         self?.runFakeTurns()
       }
     }
+
+    if let snapshotPath = ProcessInfo.processInfo.environment["INHERENT_DEBUG_SNAPSHOT_PATH"] {
+      let delayMs = Double(ProcessInfo.processInfo.environment["INHERENT_DEBUG_SNAPSHOT_DELAY_MS"] ?? "") ?? 2600
+      DispatchQueue.main.asyncAfter(deadline: .now() + delayMs / 1000.0) { [weak self] in
+        self?.writeDebugSnapshot(to: snapshotPath)
+      }
+    }
+    if let snapshotDir = ProcessInfo.processInfo.environment["INHERENT_DEBUG_SNAPSHOT_DIR"] {
+      scheduleDebugSnapshots(toDirectory: snapshotDir)
+    }
   }
 
   func showInitial() {
@@ -288,6 +298,54 @@ final class NativeCardController: NSObject {
     let shouldIgnore = !(inCard || inPill || inPopover)
     if panel.ignoresMouseEvents != shouldIgnore {
       panel.ignoresMouseEvents = shouldIgnore
+    }
+  }
+
+  private func writeDebugSnapshot(to path: String) {
+    containerView.layoutSubtreeIfNeeded()
+    containerView.displayIfNeeded()
+    let bounds = containerView.bounds
+    guard bounds.width > 0, bounds.height > 0,
+          let rep = containerView.bitmapImageRepForCachingDisplay(in: bounds) else {
+      NSLog("[native-card] debug snapshot failed: invalid bounds \(bounds)")
+      return
+    }
+    containerView.cacheDisplay(in: bounds, to: rep)
+    guard let data = rep.representation(using: .png, properties: [:]) else {
+      NSLog("[native-card] debug snapshot failed: PNG encoding")
+      return
+    }
+    do {
+      try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+      NSLog("[native-card] debug snapshot wrote \(path)")
+    } catch {
+      NSLog("[native-card] debug snapshot failed: \(error)")
+    }
+  }
+
+  private func scheduleDebugSnapshots(toDirectory directory: String) {
+    let env = ProcessInfo.processInfo.environment
+    let startMs = Double(env["INHERENT_DEBUG_SNAPSHOT_START_MS"] ?? "") ?? 0
+    let intervalMs = Double(env["INHERENT_DEBUG_SNAPSHOT_INTERVAL_MS"] ?? "") ?? 100
+    let count = max(1, Int(env["INHERENT_DEBUG_SNAPSHOT_COUNT"] ?? "") ?? 1)
+    do {
+      try FileManager.default.createDirectory(
+        at: URL(fileURLWithPath: directory),
+        withIntermediateDirectories: true
+      )
+    } catch {
+      NSLog("[native-card] debug snapshot sequence failed: \(error)")
+      return
+    }
+
+    for index in 0..<count {
+      let delay = (startMs + Double(index) * intervalMs) / 1000.0
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        let path = URL(fileURLWithPath: directory)
+          .appendingPathComponent(String(format: "frame-%04d.png", index))
+          .path
+        self?.writeDebugSnapshot(to: path)
+      }
     }
   }
 

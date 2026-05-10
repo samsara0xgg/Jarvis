@@ -191,7 +191,8 @@ struct NativeCardView: View {
         .foregroundStyle(Color.white.opacity(0.55))
         .lineLimit(1)
         .truncationMode(.tail)
-        .frame(maxWidth: 110, alignment: .leading)
+        .frame(width: chipQuestionWidth(turn.question), alignment: .leading)
+        .clipped()
       Text("→")
         .foregroundStyle(Color.white.opacity(0.35))
       Text(turn.answer.components(separatedBy: .newlines).first ?? turn.answer)
@@ -226,6 +227,12 @@ struct NativeCardView: View {
       if !value { model.schedulePopoverHide() }
     }
     .animation(.easeInOut(duration: 0.24), value: turn.fading)
+  }
+
+  private func chipQuestionWidth(_ text: String) -> CGFloat {
+    let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    let width = ceil((text as NSString).size(withAttributes: [.font: font]).width)
+    return min(max(width, 1), 110)
   }
 
   private var answerView: some View {
@@ -484,9 +491,15 @@ struct NativeMarkdownText: View {
   var characterBirthTimes: [TimeInterval] = []
 
   var body: some View {
+    let blocks = timedBlocks
     VStack(alignment: .leading, spacing: 6) {
-      ForEach(timedBlocks, id: \.offset) { timed in
-        blockView(timed.block, range: timed.range)
+      ForEach(blocks.indices, id: \.self) { index in
+        let timed = blocks[index]
+        blockView(
+          timed.block,
+          range: timed.range,
+          followsHeading1: previousTextBlockIsHeading1(before: index, in: blocks)
+        )
       }
     }
     .font(.system(size: 14.5))
@@ -496,13 +509,13 @@ struct NativeMarkdownText: View {
   }
 
   @ViewBuilder
-  private func blockView(_ block: NativeAnswerBlock, range: Range<Int>?) -> some View {
+  private func blockView(_ block: NativeAnswerBlock, range: Range<Int>?, followsHeading1: Bool) -> some View {
     switch block {
     case .spacer:
       Spacer().frame(height: 4)
     case .heading1(let text):
       inlineTextView(text, range: range, color: Color.white.opacity(0.98))
-        .font(.system(size: 32, weight: .light))
+        .font(.system(size: 32, weight: .ultraLight))
     case .heading2(let text):
       inlineTextView(text, range: range, color: Color.white.opacity(0.98))
         .font(.system(size: 18, weight: .medium))
@@ -551,8 +564,8 @@ struct NativeMarkdownText: View {
       )
       .padding(.vertical, 10)
     case .paragraph(let text):
-      inlineTextView(text, range: range, color: Color.white.opacity(0.92))
-        .font(.system(size: 14.5))
+      inlineTextView(text, range: range, color: Color.white.opacity(followsHeading1 ? 0.55 : 0.92))
+        .font(.system(size: followsHeading1 ? 13 : 14.5))
         .fixedSize(horizontal: false, vertical: true)
     case .display(let text):
       Text(text)
@@ -629,6 +642,21 @@ struct NativeMarkdownText: View {
 
   private var timedBlocks: [NativeTimedAnswerBlock] {
     NativeAnswerParser.timedBlocks(markdown)
+  }
+
+  private func previousTextBlockIsHeading1(before index: Int, in blocks: [NativeTimedAnswerBlock]) -> Bool {
+    guard index > 0 else { return false }
+    for previousIndex in stride(from: index - 1, through: 0, by: -1) {
+      switch blocks[previousIndex].block {
+      case .spacer:
+        continue
+      case .heading1:
+        return true
+      default:
+        return false
+      }
+    }
+    return false
   }
 
   private func toolRow(_ tool: NativeAnswerTool) -> some View {
