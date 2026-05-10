@@ -54,4 +54,29 @@ final class BridgeDispatchTests: XCTestCase {
     BridgeMessageRouter.dispatch(json: ["nope": "wrong"], to: stub)
     XCTAssertTrue(stub.calls.isEmpty)
   }
+
+  func test_turnGateRejectsEmptyOpenAndOrphanEvents() {
+    var gate = BridgeTurnGate()
+
+    XCTAssertFalse(gate.shouldDispatch(op: "open", payload: ["content": ""]))
+    XCTAssertFalse(gate.turnOpen)
+    XCTAssertFalse(gate.shouldDispatch(op: "append", payload: ["token": "x"]))
+    XCTAssertFalse(gate.shouldDispatch(op: "done", payload: nil))
+  }
+
+  func test_turnGateTracksOpenDoneReset() {
+    var gate = BridgeTurnGate()
+
+    XCTAssertTrue(gate.shouldDispatch(op: "open", payload: ["streaming": true]))
+    XCTAssertTrue(gate.turnOpen)
+    XCTAssertTrue(gate.shouldDispatch(op: "append", payload: ["token": "x"]))
+    XCTAssertTrue(gate.turnOpen)
+    XCTAssertTrue(gate.shouldDispatch(op: "done", payload: nil))
+    XCTAssertFalse(gate.turnOpen)
+
+    XCTAssertTrue(gate.shouldDispatch(op: "open", payload: ["content": "full answer"]))
+    XCTAssertTrue(gate.turnOpen)
+    XCTAssertTrue(gate.shouldDispatch(op: "reset", payload: nil))
+    XCTAssertFalse(gate.turnOpen)
+  }
 }

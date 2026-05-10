@@ -55,6 +55,38 @@ struct ReconnectBackoff {
   mutating func reset() { attempt = 0 }
 }
 
+struct BridgeTurnGate {
+  private(set) var turnOpen = false
+
+  mutating func forceReset() {
+    turnOpen = false
+  }
+
+  mutating func shouldDispatch(op: String, payload: [String: Any]?) -> Bool {
+    switch op {
+    case "open":
+      let streaming = (payload?["streaming"] as? Bool) ?? false
+      let content = payload?["content"] as? String
+      guard streaming || !(content?.isEmpty ?? true) else { return false }
+      turnOpen = true
+      return true
+    case "append":
+      return turnOpen
+    case "done":
+      guard turnOpen else { return false }
+      turnOpen = false
+      return true
+    case "reset":
+      turnOpen = false
+      return true
+    case "voice":
+      return true
+    default:
+      return true
+    }
+  }
+}
+
 final class WSClient {
   weak var dispatcher: BridgeDispatcher?
   private var task: URLSessionWebSocketTask?
@@ -63,6 +95,7 @@ final class WSClient {
   private var reconnectWork: DispatchWorkItem?
   private var watchdog: DispatchWorkItem?
   private var shutdown = false
+  private var turnGate = BridgeTurnGate()
   private let q = DispatchQueue(label: "com.allen.jarvis.inherent.ws", qos: .userInitiated)
 
   /// Public turn-state snapshot the controller updates so reconnect logic can
@@ -83,6 +116,7 @@ final class WSClient {
     NSLog("[bridge] WS connecting")
     if turnIsOpen() {
       NSLog("[bridge] (re)connect mid-turn; forcing reset")
+      turnGate.forceReset()
       DispatchQueue.main.async { self.dispatcher?.siriReset() }
     }
     receiveLoop()
@@ -104,6 +138,7 @@ final class WSClient {
     watchdog?.cancel()
     let work = DispatchWorkItem { [weak self] in
       NSLog("[bridge] watchdog: no done within 30s; forcing reset")
+      self?.turnGate.forceReset()
       DispatchQueue.main.async { self?.dispatcher?.siriReset() }
     }
     watchdog = work
@@ -155,22 +190,46 @@ final class WSClient {
       NSLog("[bridge] WS JSON parse failed")
       return
     }
+    guard shouldDispatch(json: json) else {
+      backoff.reset()
+      return
+    }
     // Dispatcher calls are AppKit-touching — hop to main.
     DispatchQueue.main.async { [weak self] in
       guard let dispatcher = self?.dispatcher else { return }
       BridgeMessageRouter.dispatch(json: json, to: dispatcher)
     }
-    // arm/clear watchdog on q (state mutation stays on q).
-    if let op = json["op"] as? String {
-      switch op {
-      case "open":           armWatchdog()
-      case "done", "reset":  clearWatchdog()
-      default: break
-      }
-    }
     // First successful receive proves the connection is alive — reset backoff.
     // (Task 9 deviation: kept here on first receive, not moved back to connect().)
     backoff.reset()
+  }
+
+  private func shouldDispatch(json: [String: Any]) -> Bool {
+    guard let op = json["op"] as? String else { return false }
+    let payload = json["payload"] as? [String: Any]
+    let accepted = turnGate.shouldDispatch(op: op, payload: payload)
+    if !accepted {
+      switch op {
+      case "open":
+        NSLog("[bridge] ignoring empty non-streaming open")
+      case "append":
+        NSLog("[bridge] ignoring append while turn idle")
+      case "done":
+        NSLog("[bridge] ignoring done while turn idle")
+      default:
+        break
+      }
+      return false
+    }
+    switch op {
+    case "open":
+      armWatchdog()
+    case "done", "reset":
+      clearWatchdog()
+    default:
+      break
+    }
+    return true
   }
 }
 
