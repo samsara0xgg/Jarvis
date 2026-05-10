@@ -658,7 +658,7 @@ struct NativeMarkdownText: View {
           .padding(.horizontal, 14)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .frame(minHeight: CGFloat(lineCount) * 27 + 32, alignment: .topLeading)
+      .frame(minHeight: CGFloat(lineCount) * 27 + 41, alignment: .topLeading)
       .background(
         RoundedRectangle(cornerRadius: 12, style: .continuous)
           .fill(Color.black.opacity(0.32))
