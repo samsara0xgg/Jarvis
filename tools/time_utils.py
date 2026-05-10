@@ -2,10 +2,10 @@
 
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
-from core.tool_result import FAILURE, SUCCESS, make_tool_result
+from core.tool_result import FAILURE, OBSERVED, OUTCOME_FAILED, SUCCESS, make_tool_result
 from tools import jarvis_tool
 
 LOGGER = logging.getLogger(__name__)
@@ -52,7 +52,11 @@ def get_current_time() -> str:
             "iso": now.isoformat(),
             "timezone": now.tzname(),
             "utc_offset": now.strftime("%z"),
+            "observed_at": now.isoformat(),
         },
+        outcome_type=OBSERVED,
+        verified=True,
+        verification_source="system_clock",
     )
 
 
@@ -85,6 +89,13 @@ def set_timer(seconds: int, label: str = "timer") -> str:
             "Timer duration must be positive.",
             data={"seconds": seconds, "label": label},
             error_code="invalid_duration",
+            outcome_type=OUTCOME_FAILED,
+            verified=False,
+            verification_source="timer_store_ack",
+            claim_policy={
+                "allowed_claims": ["tool_failed_contract_validation"],
+                "forbidden_claims": ["timer_created"],
+            },
         )
     return _start_timer(seconds, label)
 
@@ -92,6 +103,8 @@ def set_timer(seconds: int, label: str = "timer") -> str:
 def _start_timer(seconds: int, label: str) -> str:
     """Create and start a daemon timer thread."""
     timer_id = f"{label}_{seconds}"
+    now = datetime.now().astimezone()
+    fires_at = now + timedelta(seconds=seconds)
 
     def _on_fire() -> None:
         _active_timers.pop(timer_id, None)
@@ -118,7 +131,21 @@ def _start_timer(seconds: int, label: str) -> str:
     return make_tool_result(
         SUCCESS,
         f"Timer set: '{label}' for {display}.",
-        data={"timer_id": timer_id, "seconds": seconds, "label": label},
+        data={
+            "timer_id": timer_id,
+            "duration_seconds": seconds,
+            "seconds": seconds,
+            "label": label,
+            "fires_at": fires_at.isoformat(),
+            "timezone": fires_at.tzname(),
+        },
+        outcome_type="created",
+        verified=True,
+        verification_source="timer_store_ack",
+        claim_policy={
+            "allowed_claims": ["timer_created"],
+            "forbidden_claims": [],
+        },
     )
 
 

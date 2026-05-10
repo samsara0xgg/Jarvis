@@ -72,6 +72,10 @@ def test_add_todo_not_read_only():
 def test_add_todo():
     entry = _TOOL_REGISTRY["add_todo"]
     result = entry["execute"]("add_todo", {"content": "Write tests"})
+    parsed = parse_tool_result(result)
+    assert parsed["outcome"]["type"] == "created"
+    assert parsed["claim_policy"]["allowed_claims"] == ["todo_created"]
+    assert parsed["data"]["todo_id"]
     assert "Todo added" in result
     assert "Write tests" in result
     assert "[medium]" in result
@@ -88,7 +92,9 @@ def test_add_todo_with_priority():
 def test_add_todo_empty_content():
     entry = _TOOL_REGISTRY["add_todo"]
     result = entry["execute"]("add_todo", {"content": ""})
-    assert "cannot be empty" in result.lower()
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "failure"
+    assert "todo_created" in parsed["claim_policy"]["forbidden_claims"]
 
 
 def test_list_todos_empty():
@@ -104,6 +110,9 @@ def test_list_todos_after_add():
 
     lst = _TOOL_REGISTRY["list_todos"]
     result = lst["execute"]("list_todos", {})
+    parsed = parse_tool_result(result)
+    assert parsed["outcome"]["type"] == "observed"
+    assert parsed["data"]["count"] == 2
     assert "Item A" in result
     assert "Item B" in result
     assert "(high)" in result
@@ -116,7 +125,10 @@ def test_complete_todo():
 
     comp = _TOOL_REGISTRY["complete_todo"]
     result = comp["execute"]("complete_todo", {"todo_id": tid})
-    assert "completed" in result.lower()
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "success"
+    assert parsed["claim_policy"]["allowed_claims"] == ["todo_completed"]
+    assert parsed["data"]["completed_at"]
 
     # Should not appear in listing
     lst = _TOOL_REGISTRY["list_todos"]
@@ -127,7 +139,16 @@ def test_complete_todo():
 def test_complete_todo_not_found():
     entry = _TOOL_REGISTRY["complete_todo"]
     result = entry["execute"]("complete_todo", {"todo_id": "nonexist"})
-    assert "not found" in result.lower()
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "failure"
+    assert parsed["error_code"] == "todo_not_found"
+
+
+def test_complete_todo_missing_id_needs_clarification():
+    entry = _TOOL_REGISTRY["complete_todo"]
+    parsed = parse_tool_result(entry["execute"]("complete_todo", {"todo_id": ""}))
+    assert parsed["status"] == "needs_clarification"
+    assert parsed["error_code"] == "missing_todo_id"
 
 
 def test_delete_todo():
@@ -200,7 +221,16 @@ def test_complete_archived_todo_fails():
 def test_delete_todo_not_found():
     entry = _TOOL_REGISTRY["delete_todo"]
     result = entry["execute"]("delete_todo", {"todo_id": "nonexist"})
-    assert "not found" in result.lower()
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "failure"
+    assert parsed["error_code"] == "todo_not_found"
+
+
+def test_delete_todo_missing_id_needs_clarification():
+    entry = _TOOL_REGISTRY["delete_todo"]
+    parsed = parse_tool_result(entry["execute"]("delete_todo", {"todo_id": ""}))
+    assert parsed["status"] == "needs_clarification"
+    assert parsed["error_code"] == "missing_todo_id"
 
 
 def test_user_isolation():

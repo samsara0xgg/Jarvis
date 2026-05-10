@@ -56,6 +56,8 @@ def test_get_current_time_returns_string():
     result = entry["execute"]("get_current_time", {})
     parsed = parse_tool_result(result)
     assert parsed["status"] == "success"
+    assert parsed["outcome"]["type"] == "observed"
+    assert parsed["outcome"]["verification_source"] == "system_clock"
     assert parsed["message"].startswith("Current time:")
     # Should contain date pattern like 2026-04-15
     assert re.search(r"\d{4}-\d{2}-\d{2}", parsed["message"])
@@ -74,6 +76,14 @@ def test_get_current_time_direct():
 def test_set_timer_positive():
     entry = _TOOL_REGISTRY["set_timer"]
     result = entry["execute"]("set_timer", {"seconds": 5, "label": "test"})
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "success"
+    assert parsed["outcome"]["type"] == "created"
+    assert parsed["data"]["timer_id"] == "test_5"
+    assert parsed["data"]["duration_seconds"] == 5
+    assert parsed["data"]["fires_at"]
+    assert parsed["data"]["timezone"]
+    assert parsed["claim_policy"]["allowed_claims"] == ["timer_created"]
     assert "Timer set:" in result
     assert "'test'" in result
     assert "5 seconds" in result
@@ -82,7 +92,10 @@ def test_set_timer_positive():
 def test_set_timer_negative():
     entry = _TOOL_REGISTRY["set_timer"]
     result = entry["execute"]("set_timer", {"seconds": -1})
-    assert "must be positive" in result.lower()
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "failure"
+    assert parsed["error_code"] == "invalid_duration"
+    assert "timer_created" in parsed["claim_policy"]["forbidden_claims"]
 
 
 def test_set_timer_zero():

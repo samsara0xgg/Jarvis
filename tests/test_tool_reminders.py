@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from core.tool_result import parse_tool_result
 from tools import _TOOL_REGISTRY, _EXECUTION_CONTEXT
 
 
@@ -65,8 +66,10 @@ def test_create_reminder_not_read_only():
 def test_create_reminder():
     entry = _TOOL_REGISTRY["create_reminder"]
     result = entry["execute"]("create_reminder", {"content": "Buy milk"})
-    assert "Reminder created" in result
-    assert "Buy milk" in result
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "needs_clarification"
+    assert parsed["error_code"] == "missing_due_at"
+    assert parsed["data"]["missing_fields"] == ["due_at"]
 
 
 def test_create_reminder_with_time():
@@ -75,13 +78,21 @@ def test_create_reminder_with_time():
         "create_reminder",
         {"content": "Meeting", "remind_at": "2030-01-01 10:00"},
     )
-    assert "for 2030-01-01 10:00" in result
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "success"
+    assert parsed["outcome"]["type"] == "created"
+    assert parsed["data"]["reminder_id"]
+    assert parsed["data"]["due_at"].startswith("2030-01-01T10:00")
+    assert parsed["data"]["timezone"]
+    assert parsed["claim_policy"]["allowed_claims"] == ["reminder_created"]
 
 
 def test_create_reminder_empty_content():
     entry = _TOOL_REGISTRY["create_reminder"]
     result = entry["execute"]("create_reminder", {"content": ""})
-    assert "cannot be empty" in result.lower()
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "failure"
+    assert parsed["error_code"] == "empty_content"
 
 
 def test_list_reminders_empty():
@@ -92,24 +103,39 @@ def test_list_reminders_empty():
 
 def test_list_reminders_after_create():
     create = _TOOL_REGISTRY["create_reminder"]
-    create["execute"]("create_reminder", {"content": "Task A"})
-    create["execute"]("create_reminder", {"content": "Task B"})
+    create["execute"](
+        "create_reminder",
+        {"content": "Task A", "remind_at": "2030-01-01 10:00"},
+    )
+    create["execute"](
+        "create_reminder",
+        {"content": "Task B", "remind_at": "2030-01-02 10:00"},
+    )
 
     lst = _TOOL_REGISTRY["list_reminders"]
     result = lst["execute"]("list_reminders", {})
+    parsed = parse_tool_result(result)
+    assert parsed["outcome"]["type"] == "observed"
+    assert parsed["data"]["count"] == 2
     assert "Task A" in result
     assert "Task B" in result
 
 
 def test_complete_reminder():
     create = _TOOL_REGISTRY["create_reminder"]
-    result = create["execute"]("create_reminder", {"content": "Done soon"})
+    result = create["execute"](
+        "create_reminder",
+        {"content": "Done soon", "remind_at": "2030-01-01 10:00"},
+    )
     # Extract ID from "Reminder created (ID: xxxxxxxx)"
     rid = result.split("ID: ")[1].split(")")[0]
 
     comp = _TOOL_REGISTRY["complete_reminder"]
     result = comp["execute"]("complete_reminder", {"reminder_id": rid})
-    assert "marked as done" in result.lower()
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "success"
+    assert parsed["claim_policy"]["allowed_claims"] == ["reminder_completed"]
+    assert parsed["data"]["completed_at"]
 
     # Should not appear in listing
     lst = _TOOL_REGISTRY["list_reminders"]
@@ -126,7 +152,10 @@ def test_complete_reminder_not_found():
 def test_user_isolation():
     """Reminders from one user are not visible to another."""
     create = _TOOL_REGISTRY["create_reminder"]
-    create["execute"]("create_reminder", {"content": "User1 item"})
+    create["execute"](
+        "create_reminder",
+        {"content": "User1 item", "remind_at": "2030-01-01 10:00"},
+    )
 
     _EXECUTION_CONTEXT["user_id"] = "other_user"
     lst = _TOOL_REGISTRY["list_reminders"]
@@ -140,7 +169,10 @@ def test_persistence(tmp_path):
     rm.init(filepath=str(fp))
 
     create = _TOOL_REGISTRY["create_reminder"]
-    create["execute"]("create_reminder", {"content": "Persist me"})
+    create["execute"](
+        "create_reminder",
+        {"content": "Persist me", "remind_at": "2030-01-01 10:00"},
+    )
 
     # Re-init from same file
     rm.init(filepath=str(fp))

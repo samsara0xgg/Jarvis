@@ -7,7 +7,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core.tool_result import FAILURE, NOOP, SUCCESS, make_tool_result
+from core.tool_result import (
+    FAILURE,
+    NEEDS_CLARIFICATION,
+    NOOP,
+    OBSERVED,
+    OUTCOME_FAILED,
+    SUCCESS,
+    make_tool_result,
+)
 from tools import jarvis_tool, _EXECUTION_CONTEXT
 
 LOGGER = logging.getLogger(__name__)
@@ -51,6 +59,10 @@ def add_todo(content: str, priority: str = "medium") -> str:
             FAILURE,
             "Todo content cannot be empty.",
             error_code="empty_content",
+            outcome_type=OUTCOME_FAILED,
+            verified=False,
+            verification_source="todo_store_ack",
+            claim_policy=_failed_claim_policy(),
         )
     priority = priority.strip().lower()
 
@@ -68,7 +80,19 @@ def add_todo(content: str, priority: str = "medium") -> str:
     return make_tool_result(
         SUCCESS,
         f"Todo added (ID: {todo['id']}): '{content}' [{priority}].",
-        data={"todo": todo},
+        data={
+            "todo": todo,
+            "todo_id": todo["id"],
+            "title": content,
+            "priority": priority,
+        },
+        outcome_type="created",
+        verified=True,
+        verification_source="todo_store_ack",
+        claim_policy={
+            "allowed_claims": ["todo_created"],
+            "forbidden_claims": [],
+        },
     )
 
 
@@ -99,14 +123,24 @@ def list_todos() -> str:
     data = _load(user_id)
     active = [t for t in data if not t.get("done", False) and not t.get("archived", False)]
     if not active:
-        return make_tool_result(SUCCESS, "No active todos.", data={"todos": []})
+        return make_tool_result(
+            SUCCESS,
+            "No active todos.",
+            data={"todos": [], "count": 0},
+            outcome_type=OBSERVED,
+            verified=True,
+            verification_source="todo_store_read",
+        )
     lines = []
     for t in active:
         lines.append(f"- [{t['id']}] ({t.get('priority', 'medium')}) {t['content']}")
     return make_tool_result(
         SUCCESS,
         "Todos:\n" + "\n".join(lines),
-        data={"todos": active},
+        data={"todos": active, "count": len(active)},
+        outcome_type=OBSERVED,
+        verified=True,
+        verification_source="todo_store_read",
     )
 
 
@@ -133,6 +167,18 @@ def list_todos() -> str:
 )
 def complete_todo(todo_id: str) -> str:
     """Mark a todo as completed by its ID."""
+    todo_id = todo_id.strip()
+    if not todo_id:
+        return make_tool_result(
+            NEEDS_CLARIFICATION,
+            "Which todo should I complete?",
+            data={"missing_fields": ["todo_id"]},
+            error_code="missing_todo_id",
+            outcome_type=OUTCOME_FAILED,
+            verified=False,
+            verification_source="none",
+            claim_policy=_failed_claim_policy(),
+        )
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"
     data = _load(user_id)
     for t in data:
@@ -146,6 +192,7 @@ def complete_todo(todo_id: str) -> str:
                     outcome_type="failed",
                     verified=False,
                     verification_source="todo_store_ack",
+                    claim_policy=_failed_claim_policy(),
                 )
             t["done"] = True
             t["completed_at"] = datetime.now().isoformat()
@@ -153,16 +200,28 @@ def complete_todo(todo_id: str) -> str:
             return make_tool_result(
                 SUCCESS,
                 f"Todo '{t['content']}' completed.",
-                data={"todo": t},
+                data={
+                    "todo": t,
+                    "todo_id": t["id"],
+                    "completed_at": t["completed_at"],
+                },
                 outcome_type="updated",
                 verified=True,
                 verification_source="todo_store_ack",
+                claim_policy={
+                    "allowed_claims": ["todo_completed"],
+                    "forbidden_claims": ["todo_archived"],
+                },
             )
     return make_tool_result(
         FAILURE,
         f"Todo {todo_id} not found.",
         data={"todo_id": todo_id},
         error_code="todo_not_found",
+        outcome_type=OUTCOME_FAILED,
+        verified=False,
+        verification_source="todo_store_ack",
+        claim_policy=_failed_claim_policy(),
     )
 
 
@@ -189,6 +248,18 @@ def complete_todo(todo_id: str) -> str:
 )
 def delete_todo(todo_id: str) -> str:
     """Archive a todo by its ID and return an undo token."""
+    todo_id = todo_id.strip()
+    if not todo_id:
+        return make_tool_result(
+            NEEDS_CLARIFICATION,
+            "Which todo should I archive?",
+            data={"missing_fields": ["todo_id"]},
+            error_code="missing_todo_id",
+            outcome_type=OUTCOME_FAILED,
+            verified=False,
+            verification_source="none",
+            claim_policy=_failed_claim_policy(),
+        )
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"
     data = _load(user_id)
     for t in data:
@@ -214,7 +285,13 @@ def delete_todo(todo_id: str) -> str:
             return make_tool_result(
                 SUCCESS,
                 f"Todo '{t['content']}' archived. Undo token: {undo_token}.",
-                data={"todo": t, "undo_token": undo_token},
+                data={
+                    "todo": t,
+                    "todo_id": t["id"],
+                    "title": t["content"],
+                    "archived_at": t["archived_at"],
+                    "undo_token": undo_token,
+                },
                 outcome_type="archived",
                 verified=True,
                 verification_source="todo_store_ack",
@@ -231,6 +308,7 @@ def delete_todo(todo_id: str) -> str:
         outcome_type="failed",
         verified=False,
         verification_source="todo_store_ack",
+        claim_policy=_failed_claim_policy(),
     )
 
 
@@ -266,6 +344,7 @@ def undo_delete_todo(undo_token: str) -> str:
             outcome_type="failed",
             verified=False,
             verification_source="todo_store_ack",
+            claim_policy=_failed_claim_policy(),
         )
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"
     data = _load(user_id)
@@ -279,7 +358,7 @@ def undo_delete_todo(undo_token: str) -> str:
             return make_tool_result(
                 SUCCESS,
                 f"Todo '{t['content']}' restored.",
-                data={"todo": t},
+                data={"todo": t, "todo_id": t["id"], "restored_at": t["restored_at"]},
                 outcome_type="updated",
                 verified=True,
                 verification_source="todo_store_ack",
@@ -296,6 +375,7 @@ def undo_delete_todo(undo_token: str) -> str:
         outcome_type="failed",
         verified=False,
         verification_source="todo_store_ack",
+        claim_policy=_failed_claim_policy(),
     )
 
 
@@ -328,3 +408,16 @@ def _save(user_id: str, data: list[dict[str, Any]]) -> None:
     fp = _filepath(user_id)
     with fp.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _failed_claim_policy() -> dict[str, list[str]]:
+    return {
+        "allowed_claims": ["tool_failed_contract_validation"],
+        "forbidden_claims": [
+            "todo_created",
+            "todo_completed",
+            "todo_archived",
+            "todo_permanently_deleted",
+            "todo_restored",
+        ],
+    }

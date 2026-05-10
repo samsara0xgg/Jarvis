@@ -7,7 +7,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from core.tool_result import FAILURE, SUCCESS, make_tool_result
+from core.tool_result import (
+    FAILURE,
+    NEEDS_CLARIFICATION,
+    NOOP,
+    OBSERVED,
+    OUTCOME_FAILED,
+    SUCCESS,
+    make_tool_result,
+)
 from tools import jarvis_tool, _EXECUTION_CONTEXT
 
 LOGGER = logging.getLogger(__name__)
@@ -64,33 +72,85 @@ def create_reminder(content: str, remind_at: str = "") -> str:
             FAILURE,
             "Reminder content cannot be empty.",
             error_code="empty_content",
+            outcome_type=OUTCOME_FAILED,
+            verified=False,
+            verification_source="reminder_store_ack",
+            claim_policy=_failed_claim_policy(),
         )
 
-    remind_at = remind_at.strip() or None
+    remind_at = remind_at.strip()
+    if not remind_at:
+        return make_tool_result(
+            NEEDS_CLARIFICATION,
+            "What time should I remind you?",
+            data={
+                "missing_fields": ["due_at"],
+                "clarification": {
+                    "question": "What time should I remind you?",
+                    "missing_fields": ["due_at"],
+                },
+            },
+            error_code="missing_due_at",
+            outcome_type=OUTCOME_FAILED,
+            verified=False,
+            verification_source="none",
+            claim_policy=_failed_claim_policy(),
+        )
+    try:
+        due_at, timezone = _normalize_due_at(remind_at)
+    except ValueError as exc:
+        return make_tool_result(
+            FAILURE,
+            str(exc),
+            data={"remind_at": remind_at},
+            error_code="invalid_due_at",
+            outcome_type=OUTCOME_FAILED,
+            verified=False,
+            verification_source="none",
+            claim_policy=_failed_claim_policy(),
+        )
+
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"
 
     reminder = {
         "id": str(uuid.uuid4())[:8],
+        "reminder_id": None,
         "user_id": user_id,
         "content": content,
-        "remind_at": remind_at,
+        "remind_at": due_at,
+        "due_at": due_at,
+        "timezone": timezone,
         "is_done": False,
         "created_at": datetime.now().isoformat(),
     }
+    reminder["reminder_id"] = reminder["id"]
 
     data = _load()
     data.append(reminder)
     _save(data)
 
     # Schedule the reminder if we have a scheduler and a time
-    if remind_at and _scheduler and getattr(_scheduler, "available", False):
+    if _scheduler and getattr(_scheduler, "available", False):
         _schedule_reminder(reminder)
 
-    time_part = f" for {remind_at}" if remind_at else ""
     return make_tool_result(
         SUCCESS,
-        f"Reminder created (ID: {reminder['id']}): '{content}'{time_part}.",
-        data={"reminder": reminder, "scheduled": bool(remind_at)},
+        f"Reminder created (ID: {reminder['id']}): '{content}' for {due_at}.",
+        data={
+            "reminder": reminder,
+            "reminder_id": reminder["id"],
+            "title": content,
+            "due_at": due_at,
+            "timezone": timezone,
+            "scheduled": True,
+        },
+        outcome_type="created",
+        verified=True,
+        verification_source="reminder_store_ack",
+        claim_policy={
+            "allowed_claims": ["reminder_created"],
+            "forbidden_claims": [],
+        },
     )
 
 
@@ -127,7 +187,10 @@ def list_reminders() -> str:
         return make_tool_result(
             SUCCESS,
             "No active reminders.",
-            data={"reminders": []},
+            data={"reminders": [], "count": 0},
+            outcome_type=OBSERVED,
+            verified=True,
+            verification_source="reminder_store_read",
         )
 
     lines = []
@@ -137,7 +200,10 @@ def list_reminders() -> str:
     return make_tool_result(
         SUCCESS,
         "Active reminders:\n" + "\n".join(lines),
-        data={"reminders": user_reminders},
+        data={"reminders": user_reminders, "count": len(user_reminders)},
+        outcome_type=OBSERVED,
+        verified=True,
+        verification_source="reminder_store_read",
     )
 
 
@@ -164,22 +230,69 @@ def list_reminders() -> str:
 )
 def complete_reminder(reminder_id: str) -> str:
     """Mark a reminder as done by its ID."""
+    reminder_id = reminder_id.strip()
+    if not reminder_id:
+        return make_tool_result(
+            NEEDS_CLARIFICATION,
+            "Which reminder should I complete?",
+            data={
+                "missing_fields": ["reminder_id"],
+                "clarification": {
+                    "question": "Which reminder should I complete?",
+                    "missing_fields": ["reminder_id"],
+                },
+            },
+            error_code="missing_reminder_id",
+            outcome_type=OUTCOME_FAILED,
+            verified=False,
+            verification_source="none",
+            claim_policy=_failed_claim_policy(),
+        )
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"
     data = _load()
     for r in data:
         if r.get("id") == reminder_id and r.get("user_id") == user_id:
+            if r.get("is_done", False):
+                return make_tool_result(
+                    NOOP,
+                    f"Reminder '{r['content']}' was already done.",
+                    data={"reminder": r, "reminder_id": reminder_id},
+                    outcome_type="no_change",
+                    verified=True,
+                    verification_source="reminder_store_ack",
+                    claim_policy={
+                        "allowed_claims": ["reminder_already_completed"],
+                        "forbidden_claims": ["reminder_completed"],
+                    },
+                )
             r["is_done"] = True
+            r["completed_at"] = datetime.now().isoformat()
             _save(data)
             return make_tool_result(
                 SUCCESS,
                 f"Reminder '{r['content']}' marked as done.",
-                data={"reminder": r},
+                data={
+                    "reminder": r,
+                    "reminder_id": reminder_id,
+                    "completed_at": r["completed_at"],
+                },
+                outcome_type="updated",
+                verified=True,
+                verification_source="reminder_store_ack",
+                claim_policy={
+                    "allowed_claims": ["reminder_completed"],
+                    "forbidden_claims": [],
+                },
             )
     return make_tool_result(
         FAILURE,
         f"Reminder {reminder_id} not found.",
         data={"reminder_id": reminder_id},
         error_code="reminder_not_found",
+        outcome_type=OUTCOME_FAILED,
+        verified=False,
+        verification_source="reminder_store_ack",
+        claim_policy=_failed_claim_policy(),
     )
 
 
@@ -204,6 +317,29 @@ def _save(data: list[dict[str, Any]]) -> None:
     """Save reminders to JSON file."""
     with _filepath.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _normalize_due_at(raw: str) -> tuple[str, str]:
+    """Normalize an ISO-like reminder time and attach local timezone if absent."""
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError("Reminder time must be an ISO-like datetime.") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    timezone = parsed.tzname() or "local"
+    return parsed.isoformat(), timezone
+
+
+def _failed_claim_policy() -> dict[str, list[str]]:
+    return {
+        "allowed_claims": ["tool_failed_contract_validation"],
+        "forbidden_claims": [
+            "reminder_created",
+            "reminder_completed",
+            "reminder_already_completed",
+        ],
+    }
 
 
 def _schedule_reminder(reminder: dict[str, Any]) -> None:
