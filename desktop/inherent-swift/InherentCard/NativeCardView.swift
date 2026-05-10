@@ -28,6 +28,12 @@ struct NativeCardView: View {
     .onChange(of: model.focusNonce) { _, _ in
       inputFocused = true
     }
+    .onChange(of: model.inputDisabled) { _, disabled in
+      if disabled {
+        inputFocused = false
+        NSApp.keyWindow?.makeFirstResponder(nil)
+      }
+    }
     .onKeyPress(.escape) {
       model.handleEscape()
       return .handled
@@ -67,12 +73,12 @@ struct NativeCardView: View {
   }
 
   private var inputRow: some View {
-    HStack(alignment: model.isSubmitted ? .top : .center, spacing: model.isSubmitted ? 0 : 12) {
-      if model.isListening && !model.isSubmitted {
+    HStack(alignment: model.isSubmitted ? .top : .center, spacing: inputRowSpacing) {
+      if model.isListening && !model.isSubmitted && !model.isFollowupInput {
         waveform
           .frame(width: 64, height: 22)
           .transition(.move(edge: .leading).combined(with: .opacity))
-      } else if !model.isSubmitted {
+      } else if !model.isSubmitted && !model.isFollowupInput {
         Circle()
           .fill(Color(red: 0.37, green: 0.78, blue: 1.0))
           .frame(width: 6, height: 6)
@@ -115,9 +121,9 @@ struct NativeCardView: View {
     }
     .padding(.top, model.isSubmitted ? 12 : 0)
     .padding(.bottom, model.isSubmitted ? 8 : 0)
-    .padding(.leading, model.isSubmitted || model.isFollowupInput ? 38 : 24)
+    .padding(.leading, inputRowLeadingPadding)
     .padding(.trailing, model.isSubmitted ? 92 : 24)
-    .frame(minHeight: model.isSubmitted ? 38 : 64)
+    .frame(minHeight: inputRowMinHeight)
     .overlay(alignment: .topTrailing) {
       if !model.stateLabel.isEmpty && model.isSubmitted {
         statePill
@@ -127,6 +133,22 @@ struct NativeCardView: View {
     }
     .animation(.easeInOut(duration: 0.32), value: model.isSubmitted)
     .animation(.easeInOut(duration: 0.32), value: model.isFollowupInput)
+  }
+
+  private var inputRowSpacing: CGFloat {
+    model.isSubmitted || model.isFollowupInput ? 0 : 12
+  }
+
+  private var inputRowLeadingPadding: CGFloat {
+    if model.isSubmitted { return 38 }
+    if model.isFollowupInput { return 40 }
+    return 24
+  }
+
+  private var inputRowMinHeight: CGFloat {
+    if model.isSubmitted { return 38 }
+    if model.isFollowupInput { return 57 }
+    return 64
   }
 
   private var statePill: some View {
@@ -1519,6 +1541,9 @@ struct NativeCardTextField: NSViewRepresentable {
     }
     nsView.placeholderString = placeholder
     nsView.isEnabled = !isDisabled
+    if isDisabled {
+      nsView.resignEditingIfNeeded()
+    }
     nsView.onEnterDown = onEnterDown
     nsView.onEnterUp = onEnterUp
     nsView.onEscape = onEscape
@@ -1549,6 +1574,18 @@ final class NativeTextField: NSTextField {
   var onEscape: (() -> Void)?
   var onPasteImage: (() -> Bool)?
   private var enterWasDown = false
+
+  func resignEditingIfNeeded() {
+    enterWasDown = false
+    guard let window else { return }
+
+    if let editor = currentEditor(), window.firstResponder === editor {
+      abortEditing()
+      window.makeFirstResponder(nil)
+    } else if window.firstResponder === self {
+      window.makeFirstResponder(nil)
+    }
+  }
 
   override func keyDown(with event: NSEvent) {
     if event.keyCode == 36 || event.keyCode == 76 {
