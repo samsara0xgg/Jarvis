@@ -1020,6 +1020,7 @@ enum NativeAnswerParser {
     var result: [NativeAnswerBlock] = []
     var codeLines: [String] = []
     var codeLanguage: String?
+    var codeFenceMarker = ""
     var inCode = false
     let lines = markdown.components(separatedBy: .newlines)
     var i = 0
@@ -1027,14 +1028,18 @@ enum NativeAnswerParser {
     while i < lines.count {
       let raw = lines[i]
       let line = raw.trimmingCharacters(in: .whitespaces)
-      if line.hasPrefix("```") {
-        if inCode {
+      if let fenceMarker = fenceMarker(in: line) {
+        if inCode, fenceCloses(fenceMarker, opening: codeFenceMarker) {
           result.append(.code(codeLines.joined(separator: "\n"), language: codeLanguage))
           codeLines.removeAll()
           codeLanguage = nil
+          codeFenceMarker = ""
           inCode = false
+        } else if inCode {
+          codeLines.append(raw)
         } else {
           inCode = true
+          codeFenceMarker = fenceMarker
           codeLanguage = fenceLanguage(from: line)
           codeLines.removeAll()
         }
@@ -1078,8 +1083,8 @@ enum NativeAnswerParser {
         result.append(.heading5(String(line.dropFirst(6))))
       } else if line.hasPrefix("###### ") {
         result.append(.heading6(String(line.dropFirst(7))))
-      } else if line.hasPrefix("- ") {
-        result.append(.bullet(String(line.dropFirst(2))))
+      } else if let bullet = unorderedListItem(line) {
+        result.append(.bullet(bullet))
       } else if let ordered = orderedListItem(line) {
         result.append(.numbered(ordered.marker, ordered.text))
       } else if line.hasPrefix("> ") {
@@ -1107,9 +1112,30 @@ enum NativeAnswerParser {
   }
 
   private static func fenceLanguage(from line: String) -> String? {
-    let raw = String(line.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+    let markerLength = fenceMarker(in: line)?.count ?? 3
+    let raw = String(line.dropFirst(markerLength)).trimmingCharacters(in: .whitespacesAndNewlines)
     let language = raw.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
     return language.isEmpty ? nil : language.lowercased()
+  }
+
+  private static func isFenceLine(_ line: String) -> Bool {
+    fenceMarker(in: line) != nil
+  }
+
+  private static func fenceMarker(in line: String) -> String? {
+    guard let first = line.first, first == "`" || first == "~" else { return nil }
+    let marker = line.prefix { $0 == first }
+    return marker.count >= 3 ? String(marker) : nil
+  }
+
+  private static func fenceCloses(_ candidate: String, opening: String) -> Bool {
+    candidate.first == opening.first && candidate.count >= opening.count
+  }
+
+  private static func isHeadingLine(_ line: String) -> Bool {
+    (1...6).contains { level in
+      line.hasPrefix(String(repeating: "#", count: level) + " ")
+    }
   }
 
   private static func isTableHeader(_ line: String) -> Bool {
@@ -1149,11 +1175,19 @@ enum NativeAnswerParser {
     return ("\(digits).", String(text))
   }
 
+  private static func unorderedListItem(_ line: String) -> String? {
+    guard let marker = line.first, marker == "-" || marker == "*" || marker == "+" else { return nil }
+    let rest = line.dropFirst()
+    guard rest.first?.isWhitespace == true else { return nil }
+    let text = rest.drop { $0.isWhitespace }
+    return text.isEmpty ? nil : String(text)
+  }
+
   private static func isParagraphContinuation(_ line: String) -> Bool {
     if line.isEmpty { return false }
-    if line.hasPrefix("# ") || line.hasPrefix("## ") || line.hasPrefix("### ") || line.hasPrefix("#### ") { return false }
-    if line.hasPrefix("- ") || line.hasPrefix("> ") { return false }
-    if line.hasPrefix("```") { return false }
+    if isHeadingLine(line) { return false }
+    if unorderedListItem(line) != nil || line.hasPrefix("> ") { return false }
+    if isFenceLine(line) { return false }
     if line == "---" || line == "***" || line == "___" { return false }
     if orderedListItem(line) != nil { return false }
     if parseHTMLPrimitive(line) != nil { return false }

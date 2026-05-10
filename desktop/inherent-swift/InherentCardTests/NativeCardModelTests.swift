@@ -440,6 +440,30 @@ final class NativeCardModelTests: XCTestCase {
     )
   }
 
+  func test_answerParserRecognizesMarkdownItBulletAndFenceVariants() {
+    let markdown = """
+    intro
+    ##### Boundary
+    * Star
+    + Plus
+    ~~~swift
+    let value = 1
+    ~~~~
+    ```
+    ~~~ stays inside backtick fence
+    ```
+    """
+
+    XCTAssertEqual(NativeAnswerParser.parse(markdown), [
+      .paragraph("intro"),
+      .heading5("Boundary"),
+      .bullet("Star"),
+      .bullet("Plus"),
+      .code("let value = 1", language: "swift"),
+      .code("~~~ stays inside backtick fence", language: nil),
+    ])
+  }
+
   func test_answerParserCombinesContiguousParagraphLines() {
     let markdown = """
     bedroom · 客厅 22°  
