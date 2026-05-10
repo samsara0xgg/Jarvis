@@ -311,6 +311,30 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertFalse(model.attachmentEdgeFlash)
   }
 
+  func test_jpegClipboardStagesAttachment() async throws {
+    let model = NativeCardModel()
+    let image = NSImage(size: NSSize(width: 2, height: 2))
+    image.lockFocus()
+    NSColor.orange.setFill()
+    NSRect(x: 0, y: 0, width: 2, height: 2).fill()
+    image.unlockFocus()
+    guard let tiff = image.tiffRepresentation,
+          let rep = NSBitmapImageRep(data: tiff),
+          let jpeg = rep.representation(using: .jpeg, properties: [:]) else {
+      return XCTFail("expected test image jpeg")
+    }
+
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    defer { pasteboard.clearContents() }
+    pasteboard.setData(jpeg, forType: NSPasteboard.PasteboardType("public.jpeg"))
+
+    XCTAssertTrue(model.stageImageFromClipboard())
+    XCTAssertEqual(model.stagedImage?.mime, "image/jpeg")
+    XCTAssertEqual(model.stagedImage?.name, "screen.jpg")
+    XCTAssertEqual(model.stagedImage?.label, "screen")
+  }
+
   func test_imageClipboardIgnoredWhileTurnIsActive() async throws {
     let model = NativeCardModel()
     let pasteboard = NSPasteboard.general

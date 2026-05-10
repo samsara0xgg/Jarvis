@@ -582,6 +582,18 @@ final class NativeCardModel: ObservableObject {
     if let data = pasteboard.data(forType: .png) {
       return stageImage(data: data, mime: "image/png", name: "screen.png", source: source)
     }
+    let directImageTypes: [(NSPasteboard.PasteboardType, String, String)] = [
+      (NSPasteboard.PasteboardType("public.jpeg"), "image/jpeg", "screen.jpg"),
+      (NSPasteboard.PasteboardType("public.jpg"), "image/jpeg", "screen.jpg"),
+      (NSPasteboard.PasteboardType("com.compuserve.gif"), "image/gif", "screen.gif"),
+      (NSPasteboard.PasteboardType("public.webp"), "image/webp", "screen.webp"),
+      (NSPasteboard.PasteboardType("org.webmproject.webp"), "image/webp", "screen.webp"),
+    ]
+    for (type, mime, name) in directImageTypes {
+      if let data = pasteboard.data(forType: type) {
+        return stageImage(data: data, mime: mime, name: name, source: source)
+      }
+    }
     if let data = pasteboard.data(forType: .tiff),
        let image = NSImage(data: data),
        let png = Self.pngData(from: image) {
