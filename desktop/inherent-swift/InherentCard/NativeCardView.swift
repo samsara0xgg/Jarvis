@@ -584,12 +584,12 @@ struct NativeMarkdownText: View {
       ScrollView(.horizontal, showsIndicators: false) {
         NativeCodeText(code: code, language: language)
           .font(.system(size: 12.5, weight: .regular, design: .monospaced))
-          .lineSpacing(25)
+          .lineSpacing(20.5)
           .padding(.vertical, 12)
           .padding(.horizontal, 14)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .frame(minHeight: CGFloat(lineCount) * 30 + 32, alignment: .topLeading)
+      .frame(minHeight: CGFloat(lineCount) * 27 + 32, alignment: .topLeading)
       .background(
         RoundedRectangle(cornerRadius: 12, style: .continuous)
           .fill(Color.black.opacity(0.32))
