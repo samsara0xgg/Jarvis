@@ -66,8 +66,28 @@ None.
 
 None.
 
-## Phase 3 Backlog
+## Completed Phase 3 Hardening
 
-1. Smart home enhancements: entity registry, alias provenance, capabilities, and postcondition verification.
-2. Reminder/timer enhancements: timezone, due/fires-at timestamps, recurrence, missing-field clarification.
-3. Renderer improvements: voice/document split for long todo/reminder lists and raw IDs.
+1. `get_weather` now uses Open-Meteo with explicit current/hourly/daily scope,
+   location, freshness, and claim policy.
+2. `type_to_focused` now requires runtime target verification before text input.
+3. `mac_gui` now returns operation, target, risk, and pre/post evidence; high-risk
+   actions require confirmation.
+4. `delete_todo` now archives with an undo token instead of hard deleting.
+5. `smart_home_control` now returns entity provenance, verification source, and
+   group partial-success evidence while preserving the regex fast path.
+6. Reminder/timer/todo skills now expose IDs, timestamps, missing fields, and
+   claim policies; reminder creation rejects LLM-invented default times when the
+   user did not say an explicit time.
+
+## Future Backlog
+
+1. Build a first-class smart-home status board over `smart_home_status`.
+2. Add official severe-weather alerts as a separate `get_weather_alerts` skill.
+3. Add air quality as a separate `get_air_quality` skill.
+4. Add richer natural-language time parsing only if it preserves explicit
+   provenance.
+5. Split `mac_gui` into narrower primitives after trace data shows stable usage
+   clusters.
+6. Implement composite skills only after the v1 interface is validated; see
+   `docs/architecture/composite-skill-interface-v1.md`.
