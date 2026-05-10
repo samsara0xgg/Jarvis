@@ -3,6 +3,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct NativeCardView: View {
+  private static let historyChipHeight: CGFloat = 29.25
+
   @ObservedObject var model: NativeCardModel
 
   @State private var hovering = false
@@ -182,7 +184,7 @@ struct NativeCardView: View {
     guard model.isHistoryShown else { return 0 }
     let visibleCount = min(max(model.historyCount, 0), 3)
     guard visibleCount > 0 else { return 0 }
-    return CGFloat(visibleCount * 27 + (visibleCount - 1) * 4)
+    return CGFloat(visibleCount - 1) * 4 + CGFloat(visibleCount) * Self.historyChipHeight
   }
 
   private func historyChip(_ turn: NativeHistoryTurn) -> some View {
@@ -202,9 +204,9 @@ struct NativeCardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
     .font(.system(size: 11, weight: .regular, design: .monospaced))
-    .padding(.vertical, turn.fading ? 0 : 5)
+    .padding(.vertical, turn.fading ? 0 : 6)
     .padding(.horizontal, 12)
-    .frame(maxWidth: .infinity, minHeight: turn.fading ? 0 : 27, maxHeight: turn.fading ? 0 : 27)
+    .frame(maxWidth: .infinity, minHeight: turn.fading ? 0 : Self.historyChipHeight, maxHeight: turn.fading ? 0 : Self.historyChipHeight)
     .background(
       RoundedRectangle(cornerRadius: 12, style: .continuous)
         .fill(model.activeHistoryID == turn.id ? Color(red: 0.37, green: 0.78, blue: 1).opacity(0.13) : Color.white.opacity(0.05))
@@ -248,7 +250,6 @@ struct NativeCardView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .opacity(model.isFollowupEntering ? 0 : 1)
     .blur(radius: model.isFollowupEntering ? 1 : 0)
-    .animation(.timingCurve(0.32, 0.94, 0.6, 1, duration: 0.50), value: model.answerText)
     .animation(.easeInOut(duration: 0.24), value: model.isFollowupEntering)
   }
 
