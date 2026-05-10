@@ -60,24 +60,27 @@ class TestGetTimeSlot:
 class TestBuildIdentityBlock:
     """Block 1 of Assembler — static, cache-friendly."""
 
-    def test_contains_personality(self):
+    def test_contains_operating_kernel(self):
         block = build_identity_block()
         assert "小月" in block
-        assert "管家" in block
-        assert "<personality>" in block
-        assert "</personality>" in block
+        assert "personal operating layer" in block
+        assert "<xiaoyue_kernel>" in block
+        assert "</xiaoyue_kernel>" in block
 
-    def test_contains_output_rules(self):
+    def test_contains_output_contract(self):
         block = build_identity_block()
-        assert "<output_rules>" in block
-        assert "</output_rules>" in block
-        assert "工具" in block
+        assert "<output_contract>" in block
+        assert "<voice>" in block
+        assert "<document>" in block
+        assert "tool result explicitly confirms" in block
 
-    def test_no_ai_references(self):
+    def test_general_style_without_phrase_patch_list(self):
         block = build_identity_block()
-        assert "AI" not in block
-        assert "人工智能" not in block
-        assert "助手" not in block
+        assert "persona performance" in block
+        assert "fixed openings" in block
+        assert "别吊着" not in block
+        assert "少来" not in block
+        assert "在，怎么了" not in block
 
     def test_no_situation_content(self):
         """Identity block must be free of dynamic (time/emotion/user-status) content."""
@@ -85,7 +88,7 @@ class TestBuildIdentityBlock:
         time_markers = ["清早", "上午", "下午", "傍晚", "晚上", "这会儿"]
         assert not any(m in block for m in time_markers)
         assert "<situation>" not in block
-        # "Allen 的私人管家" is static identity text; dynamic user-status markers
+        # Static identity can mention Allen; dynamic user-status markers
         # like "现在是X在跟你说话" or guest "不认识" belong to Block 4.
         assert "现在是" not in block
         assert "不认识" not in block
@@ -94,7 +97,7 @@ class TestBuildIdentityBlock:
         set_nsfw_mode(False)
         try:
             block = build_identity_block()
-            assert "色情" in block or "调教类" in block
+            assert "sexual roleplay" in block or "erotic content" in block
         finally:
             set_nsfw_mode(False)
 
@@ -164,8 +167,8 @@ class TestBuildSituationBlock:
     def test_no_personality_content(self):
         """Situation block must be free of static identity content."""
         block = build_situation_block(user_name="Allen")
-        assert "<personality>" not in block
-        assert "<output_rules>" not in block
+        assert "<xiaoyue_kernel>" not in block
+        assert "<output_contract>" not in block
 
     def test_no_memory_context_parameter(self):
         import inspect

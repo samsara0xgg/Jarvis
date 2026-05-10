@@ -30,7 +30,15 @@ def init(device_manager: Any, permission_manager: Any) -> None:
 
 @jarvis_tool(destructive=True, read_only=False, required_role="guest")
 def smart_home_control(device_id: str, action: str, value: str = "") -> str:
-    """Control smart home devices: lights, thermostat, door locks, Hue scenes. Use for turn on/off, adjust brightness, change color/color_temp, set temperature, lock/unlock, or activate a scene."""
+    """Change smart-home state for a verified device_id.
+
+    Use only after the target entity is resolved to a real, stable device_id
+    from smart_home_status, runtime registry, stable profile mapping, explicit
+    user-provided ID, or a recent successful tool result. Do not pass casual
+    natural-language names as device_id. If the user names a device ambiguously,
+    call smart_home_status first or ask one clarification question. Success or
+    failure is limited to the returned tool result.
+    """
     user_role = _EXECUTION_CONTEXT.get("user_role", "owner")
 
     if device_id in VIRTUAL_GROUPS:
@@ -80,7 +88,13 @@ def _execute_virtual_group(group_id: str, action: str, value: str, user_role: st
 
 @jarvis_tool(read_only=True)
 def smart_home_status(device_id: str = "") -> str:
-    """Get the current status of smart home devices. Omit device_id to get all devices."""
+    """Read smart-home inventory/status without changing state.
+
+    Use this before control when a user gives a natural-language device name,
+    room, group, or ambiguous entity reference. Omit device_id to list all
+    controllable entities and their current states. Passing device_id returns
+    status for that verified entity only.
+    """
     if device_id:
         try:
             device = _device_manager.get_device(device_id)

@@ -34,6 +34,7 @@ from core.tts import SentenceType
 from core.audio_recorder import AudioRecorder
 from core.event_bus import EventBus
 from core.llm import LLMClient
+from core.response_channels import parse_response_channels
 from core.speech_recognizer import SpeechRecognizer
 from devices.device_manager import DeviceManager
 from memory.hot.conversation import ConversationStore
@@ -1126,10 +1127,39 @@ class JarvisApp:
                         user_name=user_name,
                         user_id=user_id,
                         user_role=user_role,
-                        on_sentence=_on_sentence,
+                        on_sentence=None,
                         user_emotion=emotion,
                         prompt_context=prompt_ctx,
                     )
+                    channels = parse_response_channels(response_text)
+                    speech_text = channels.voice
+                    display_text = channels.document if channels.has_channels else channels.document
+                    if channels.has_channels and not display_text:
+                        display_text = speech_text
+
+                    if display_text:
+                        self.event_bus.emit("response.start", {"path": self._last_path, "q": text})
+                        self.event_bus.emit("response.chunk", {"text": display_text})
+                        self._last_card_streamed_emitted = True
+
+                    if tts_pipeline and speech_text:
+                        sentence_count += 1
+                        _t_first_sentence[0] = time.monotonic()
+                        _llm_first_ms = int((_t_first_sentence[0] - _t_llm_start)*1000)
+                        print(f"⏱ LLM首句: {_llm_first_ms}ms")
+                        self._last_timings["llm_first_ms"] = _llm_first_ms
+                        print(f"🤖 Jarvis: {speech_text}")
+                        tts_pipeline.submit(speech_text, SentenceType.FIRST, emotion=emotion)
+                        self._last_tts_chars_synthesized += len(speech_text)
+                    elif display_text:
+                        sentence_count += 1
+                        try:
+                            output_fn(display_text, voice_text=speech_text)
+                        except TypeError:
+                            output_fn(display_text)
+
+                    if channels.has_channels:
+                        response_text = display_text or speech_text or response_text
                 except Exception as exc:
                     self.logger.error("Cloud LLM failed: %s", exc)
                     response_text = "抱歉，云端服务暂时不可用。请检查 API key 配置。"
@@ -1243,9 +1273,12 @@ class JarvisApp:
 
         Thin wrapper around :meth:`_process_turn` for the web frontend.
         """
-        def _text_output(sentence: str) -> None:
+        def _text_output(sentence: str, *, voice_text: str | None = None) -> None:
             if on_sentence:
-                on_sentence(sentence, emotion=emotion)
+                try:
+                    on_sentence(sentence, emotion=emotion, voice_text=voice_text)
+                except TypeError:
+                    on_sentence(sentence, emotion=emotion)
 
         return self._process_turn(
             text,
@@ -1305,9 +1338,12 @@ class JarvisApp:
         if image_bytes is not None:
             attachment["bytes"] = image_bytes
 
-        def _text_output(sentence: str) -> None:
+        def _text_output(sentence: str, *, voice_text: str | None = None) -> None:
             if on_sentence:
-                on_sentence(sentence, emotion=emotion)
+                try:
+                    on_sentence(sentence, emotion=emotion, voice_text=voice_text)
+                except TypeError:
+                    on_sentence(sentence, emotion=emotion)
 
         return self._process_turn(
             prompt_text,

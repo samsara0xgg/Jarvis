@@ -435,7 +435,7 @@ class TraceLog:
             "SELECT * FROM trace "
             "WHERE path_taken = 'cloud' "
             "AND (outcome_signal IS NULL OR outcome_signal >= 0) "
-            "AND created_at > datetime('now', ?) "
+            "AND datetime(created_at) > datetime('now', 'localtime', ?) "
             "ORDER BY created_at DESC",
             (f"-{days} days",),
         ).fetchall()
@@ -475,7 +475,7 @@ class TraceLog:
             List of trace dicts with all 5 JSON columns deserialized. Newest first.
         """
         conn = self._get_conn()
-        conditions = ["created_at > datetime('now', ?)"]
+        conditions = ["datetime(created_at) > datetime('now', 'localtime', ?)"]
         params: list[Any] = [f"-{hours} hours"]
 
         if session_id is not None:

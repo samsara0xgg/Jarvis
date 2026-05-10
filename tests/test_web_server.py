@@ -33,6 +33,8 @@ def mock_jarvis_app():
     app = MagicMock()
     app.handle_text = MagicMock(return_value="你好呀")
     app.speech_recognizer = MagicMock()
+    app.audio_recorder = MagicMock()
+    app.audio_recorder.is_quality_ok = MagicMock(return_value=(True, "ok"))
     app._get_tts = MagicMock()
     return app
 
@@ -82,8 +84,8 @@ class TestChatEndpoint:
 
         def fake_handle(text, session_id, on_sentence=None, emotion=""):
             if on_sentence:
-                on_sentence("你好呀", emotion="happy")
-            return "你好呀"
+                on_sentence("```python\nprint('ok')\n```", emotion="happy", voice_text="我写好了")
+            return "```python\nprint('ok')\n```"
         mock_jarvis_app.handle_text = fake_handle
 
         tts = MagicMock()
@@ -99,6 +101,8 @@ class TestChatEndpoint:
         body = resp.text
         assert "event: sentence" in body
         assert "event: done" in body
+        assert "print('ok')" in body
+        tts.synth_to_file.assert_called_once_with("我写好了", "happy")
 
 
 class TestInherentWsBridge:

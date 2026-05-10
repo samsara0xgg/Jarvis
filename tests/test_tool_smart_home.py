@@ -69,6 +69,8 @@ def test_smart_home_control_definition_shape():
     assert "input_schema" in defn
     assert "device_id" in defn["input_schema"]["properties"]
     assert "action" in defn["input_schema"]["properties"]
+    assert "verified device_id" in defn["description"]
+    assert "Do not pass casual" in defn["description"]
     assert entry["destructive"] is True
     assert entry["read_only"] is False
 
@@ -77,6 +79,8 @@ def test_smart_home_status_definition_shape():
     entry = _TOOL_REGISTRY["smart_home_status"]
     defn = entry["definition"]
     assert defn["name"] == "smart_home_status"
+    assert "Read smart-home inventory/status" in defn["description"]
+    assert "ambiguous entity reference" in defn["description"]
     assert entry["read_only"] is True
 
 

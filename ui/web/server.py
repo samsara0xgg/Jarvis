@@ -711,13 +711,19 @@ def create_app(jarvis_app: Any) -> FastAPI:
                         idx_local, exc,
                     )
 
-        def on_sentence(sentence: str, emotion: str = "") -> None:
+        def on_sentence(
+            sentence: str,
+            emotion: str = "",
+            voice_text: str | None = None,
+        ) -> None:
             nonlocal sentence_index
 
             from core import tts_preprocessor
             pp_cfg = jarvis_app.config.get("tts", {}).get("tts_preprocessor", {})
-            sentence = tts_preprocessor.clean(sentence, pp_cfg)
-            if not sentence.strip():
+            display_text = sentence or ""
+            spoken_text = voice_text if voice_text is not None else display_text
+            spoken_text = tts_preprocessor.clean(spoken_text, pp_cfg)
+            if not display_text.strip() and not spoken_text.strip():
                 return
 
             idx = sentence_index
@@ -730,12 +736,12 @@ def create_app(jarvis_app: Any) -> FastAPI:
             )
 
             LOGGER.info(
-                "[on_sentence] idx=%d use_stream=%s text=%r emotion=%s",
-                idx, use_stream, sentence[:40], emotion,
+                "[on_sentence] idx=%d use_stream=%s display=%r spoken=%r emotion=%s",
+                idx, use_stream, display_text[:40], spoken_text[:40], emotion,
             )
 
             audio_url = ""
-            if use_stream:
+            if use_stream and spoken_text.strip():
                 ws = _ws_routes[req.session_id]
                 # Fire sentence_start + schedule TTS stream, then return
                 # immediately so LLM stream isn't blocked.
@@ -744,19 +750,19 @@ def create_app(jarvis_app: Any) -> FastAPI:
                         "type": "sentence_start",
                         "turn_id": turn_id,
                         "sentence_index": idx,
-                        "text": sentence,
+                        "text": spoken_text,
                         "emotion": (emotion or "neutral").lower(),
                     }),
                     loop,
                 )
                 fut = asyncio.run_coroutine_threadsafe(
-                    _stream_one(sentence, emotion, idx, ws), loop,
+                    _stream_one(spoken_text, emotion, idx, ws), loop,
                 )
                 stream_futures.append(fut)
             else:
-                if tts:
+                if tts and spoken_text.strip():
                     try:
-                        r = tts.synth_to_file(sentence, emotion)
+                        r = tts.synth_to_file(spoken_text, emotion)
                         if r:
                             audio_path, deletable = r
                             if audio_path.endswith(".pcm"):
@@ -778,7 +784,7 @@ def create_app(jarvis_app: Any) -> FastAPI:
             event = {
                 "turn_id": turn_id,
                 "index": idx,
-                "text": sentence,
+                "text": display_text,
                 "emotion": emotion.lower() if emotion else "neutral",
                 "audio_url": audio_url,
             }

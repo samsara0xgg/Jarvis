@@ -121,8 +121,8 @@ class TestAssembler:
         ctx = asm.assemble("x", "u", history=[])
         identity = next(b for b in ctx.blocks if b.name == "identity")
         assert identity.cache is True
-        assert "<personality>" in identity.content
-        assert "<output_rules>" in identity.content
+        assert "<xiaoyue_kernel>" in identity.content
+        assert "<output_contract>" in identity.content
 
     def test_block2_profile_skipped_when_profile_absent(self):
         store = _make_store(profile=None, observations=[{"id": 1, "content": "o"}])
@@ -145,7 +145,8 @@ class TestAssembler:
         ctx = asm.assemble("x", "u", history=[])
         profile = next(b for b in ctx.blocks if b.name == "profile")
         assert profile.cache is True
-        assert "[关于用户]" in profile.content
+        assert "<allen_operating_context>" in profile.content
+        assert "background configuration" in profile.content
         assert "name=Allen" in profile.content
 
     def test_block3_observations_cache_true_and_full(self):

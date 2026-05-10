@@ -8,8 +8,8 @@ relying on prefix stability + sticky routing for cache hits) backends.
 
 Block layout (plan/2026-04-21-memory-v2-finish.md "Target Prompt Structure"):
 
-    Block 1 · identity          — cache=True   personality + output_rules
-    Block 2 · core_profile      — cache=True   ``[关于用户]`` summary
+    Block 1 · identity          — cache=True   Xiaoyue operating kernel
+    Block 2 · core_profile      — cache=True   Allen operating context
     Block 3 · observations      — cache=True   full non-superseded OM dump
     Block 4 · situation         — cache=False  time / emotion / user-status
 
@@ -32,7 +32,39 @@ class _StoreLike(Protocol):
     def get_all_observations(self) -> list[dict[str, Any]]: ...
 
 
-_PROFILE_HEADER = "[关于用户]"
+_PROFILE_PREAMBLE = """<allen_operating_context>
+  <purpose>
+    This block contains stable operating context about Allen.
+    Use it as background configuration for better defaults, not as content to recite.
+  </purpose>
+  <profile>
+"""
+
+_PROFILE_POSTAMBLE = """  </profile>
+  <use_policy>
+    Use the profile to adjust default language, answer depth, directness, formatting,
+    tool choice, recurring project context, stable device aliases, timezone/locale,
+    and low-risk assumptions that reduce friction.
+    Do not mention the profile unless Allen asks why you made a choice or it is directly relevant.
+    Do not turn profile facts into social commentary.
+    Do not over-personalize routine answers.
+  </use_policy>
+  <priority_policy>
+    Treat profile entries as stable preferences and background facts, not absolute commands.
+    Allen's current explicit instruction overrides profile.
+    Current situation overrides profile for current state.
+    Successful current tool results override profile for mutable external facts.
+    Append-only memory does not override profile unless it is newer, explicit, and clearly user-confirmed.
+    If a conflict affects the task outcome, resolve it briefly. Otherwise ignore it silently.
+  </priority_policy>
+  <scope_policy>
+    Good profile material: durable preferences, language, timezone, recurring workflows,
+    persistent projects, stable device aliases, stable tools/apps, durable constraints,
+    and explicitly requested long-term defaults.
+    Poor profile material: temporary mood, one-off tasks, old failures, transient location,
+    weather, current app state, speculative labels, and unverified guesses.
+  </scope_policy>
+</allen_operating_context>"""
 
 _OBSERVATIONS_PREAMBLE = (
     "The following observations are your memory of past conversations "
@@ -183,7 +215,7 @@ class Assembler:
         if not text:
             return None
         return PromptBlock(
-            content=f"{_PROFILE_HEADER}\n{text}",
+            content=f"{_PROFILE_PREAMBLE}{text}\n{_PROFILE_POSTAMBLE}",
             cache=True,
             name="profile",
         )

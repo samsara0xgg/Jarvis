@@ -335,10 +335,8 @@ class TestJarvisTraceV3:
         """1a contract: response.start / response.chunk / response.final are
         emitted on event_bus for the inherent card bridge.
 
-        - Non-streaming path (mocked chat_stream returns text but never invokes
-          on_sentence): outer wrapper synthesizes start + chunk(full) + final.
-        - Streaming path (mocked chat_stream invokes on_sentence per sentence):
-          _on_sentence emits start + chunks per sentence; outer wrapper adds final.
+        - Legacy text path displays the full returned response.
+        - Channelized path displays document content, not voice content.
         """
         # ── Non-streaming path ──
         # Default fixture's chat_stream returns ("テスト応答", []) without
@@ -354,24 +352,22 @@ class TestJarvisTraceV3:
         assert nons_events[1][1] == {"text": "テスト応答"}
         assert nons_events[2][1]["text"] == "テスト応答"
 
-        # ── Streaming path ──
-        # Override chat_stream to actually feed sentences through on_sentence,
-        # then return the joined text — exercises the _on_sentence emit branch.
-        # _on_sentence touches _wait_tts() in the no-pipeline branch, which
-        # accesses _tts_future (not in fixture). Stub it out for the streaming
-        # path test specifically.
+        # ── Channelized path ──
+        # Cloud responses are now parsed into voice/document after completion.
+        # Text/card output receives the document channel, while on_sentence is
+        # intentionally not used for raw streaming.
         app.event_bus.emit.reset_mock()
-        app._wait_tts = MagicMock()
 
-        def stream_sentences(**kwargs: Any) -> tuple:
-            cb = kwargs.get("on_sentence")
-            if cb:
-                cb("第一句。")
-                cb("第二句。")
-            return ("第一句。第二句。", [])
+        def channelized_response(**kwargs: Any) -> tuple:
+            assert kwargs.get("on_sentence") is None
+            return (
+                "<voice>我写好了，内容放在屏幕上。</voice>"
+                "<document>```python\nprint('ok')\n```</document>",
+                [],
+            )
 
-        app.llm.chat_stream = MagicMock(side_effect=stream_sentences)
-        app.handle_text("流式", session_id="card_stream")
+        app.llm.chat_stream = MagicMock(side_effect=channelized_response)
+        app.handle_text("双通道", session_id="card_channels")
 
         stream_events = [
             c.args for c in app.event_bus.emit.call_args_list
@@ -380,9 +376,35 @@ class TestJarvisTraceV3:
         assert [e[0] for e in stream_events] == [
             "response.start",
             "response.chunk",
-            "response.chunk",
             "response.final",
         ]
-        assert stream_events[1][1] == {"text": "第一句。"}
-        assert stream_events[2][1] == {"text": "第二句。"}
-        assert stream_events[3][1]["text"] == "第一句。第二句。"
+        assert stream_events[1][1] == {"text": "```python\nprint('ok')\n```"}
+        assert stream_events[2][1]["text"] == "```python\nprint('ok')\n```"
+
+    def test_channelized_text_callback_receives_document_and_voice(self, app: JarvisApp) -> None:
+        """Browser text callbacks can display document while TTS reads voice."""
+        app.llm.chat_stream = MagicMock(return_value=(
+            "<voice>我写好了，代码放在屏幕上。</voice>"
+            "<document>```python\nprint('ok')\n```</document>",
+            [],
+        ))
+        seen: list[dict[str, str | None]] = []
+
+        def on_sentence(
+            sentence: str,
+            emotion: str = "",
+            voice_text: str | None = None,
+        ) -> None:
+            seen.append({
+                "sentence": sentence,
+                "emotion": emotion,
+                "voice_text": voice_text,
+            })
+
+        app.handle_text("写代码", session_id="channel_cb", on_sentence=on_sentence)
+
+        assert seen == [{
+            "sentence": "```python\nprint('ok')\n```",
+            "emotion": "",
+            "voice_text": "我写好了，代码放在屏幕上。",
+        }]
