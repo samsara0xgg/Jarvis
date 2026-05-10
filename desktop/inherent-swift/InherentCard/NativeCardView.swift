@@ -310,12 +310,17 @@ struct NativeCardView: View {
 
       if pillHovering {
         historyPillBody
-          .transition(.offset(y: -8).combined(with: .scale(scale: 0.96, anchor: .bottom)).combined(with: .opacity))
+          .transition(.offset(y: -5).combined(with: .scale(scale: 0.985, anchor: .bottom)).combined(with: .opacity))
       }
     }
     .frame(height: NativeCardModel.pillReservedTop, alignment: .bottom)
     .onHover { pillHovering = $0 }
-    .animation(.timingCurve(0.34, 1.4, 0.64, 1, duration: 0.36), value: pillHovering)
+    .animation(
+      pillHovering
+        ? .timingCurve(0.18, 0.88, 0.24, 1, duration: 0.24)
+        : .easeInOut(duration: 0.16),
+      value: pillHovering
+    )
   }
 
   private var historyPillHoverWidth: CGFloat {
@@ -399,8 +404,8 @@ struct NativeCardView: View {
         .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).stroke(Color.white.opacity(0.06), lineWidth: 0.5))
         .offset(x: -(NativeCardModel.cardWidth + NativeCardModel.popoverGap), y: NativeCardModel.pillReservedTop + model.selectedPopoverTop)
         .transition(.asymmetric(
-          insertion: .offset(x: 8).combined(with: .scale(scale: 0.985, anchor: .trailing)).combined(with: .opacity),
-          removal: .offset(x: 8).combined(with: .scale(scale: 0.985, anchor: .trailing)).combined(with: .opacity)
+          insertion: .offset(x: 5).combined(with: .scale(scale: 0.992, anchor: .trailing)).combined(with: .opacity),
+          removal: .offset(x: 4).combined(with: .scale(scale: 0.996, anchor: .trailing)).combined(with: .opacity)
         ))
         .onHover { value in
           if value {
@@ -411,7 +416,7 @@ struct NativeCardView: View {
         }
       }
     }
-    .animation(.timingCurve(0.34, 1.4, 0.64, 1, duration: 0.32), value: model.activeHistoryID)
+    .animation(.timingCurve(0.20, 0.86, 0.26, 1, duration: 0.22), value: model.activeHistoryID)
   }
 
   private var cardBackground: some View {
