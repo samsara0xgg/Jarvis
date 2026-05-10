@@ -395,15 +395,15 @@ struct NativeCardView: View {
 
   private var edgeStroke: some View {
     RoundedRectangle(cornerRadius: 30, style: .continuous)
-      .stroke(edgeColor, lineWidth: (model.isListening || model.isDropTarget || model.stateVariant == .warn || model.stateVariant == .error) ? 1.5 : 0.5)
-      .shadow(color: edgeColor.opacity(model.isListening || model.isDropTarget ? 0.24 : 0), radius: 10)
+      .stroke(edgeColor, lineWidth: (model.isListening || model.isDropTarget || model.attachmentEdgeFlash || model.stateVariant == .warn || model.stateVariant == .error) ? 1.5 : 0.5)
+      .shadow(color: edgeColor.opacity(model.isListening || model.isDropTarget || model.attachmentEdgeFlash ? 0.24 : 0), radius: model.attachmentEdgeFlash ? 14 : 10)
       .allowsHitTesting(false)
   }
 
   private var edgeColor: Color {
     if model.stateVariant == .error { return Color(red: 1, green: 0.42, blue: 0.42).opacity(0.85) }
     if model.stateVariant == .warn { return Color(red: 1, green: 0.72, blue: 0.30).opacity(0.85) }
-    if model.isListening || model.isDropTarget { return Color(red: 0.37, green: 0.78, blue: 1).opacity(0.82) }
+    if model.isListening || model.isDropTarget || model.attachmentEdgeFlash { return Color(red: 0.37, green: 0.78, blue: 1).opacity(0.82) }
     return Color.white.opacity(0.06)
   }
 

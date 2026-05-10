@@ -204,6 +204,9 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertTrue(model.stageImageFromClipboard())
     XCTAssertEqual(model.stagedImage?.mime, "image/png")
     XCTAssertEqual(model.stagedImage?.name, "screen.png")
+    XCTAssertTrue(model.attachmentEdgeFlash)
+    try await settle(milliseconds: 820)
+    XCTAssertFalse(model.attachmentEdgeFlash)
   }
 
   func test_imageClipboardIgnoredWhileTurnIsActive() async throws {

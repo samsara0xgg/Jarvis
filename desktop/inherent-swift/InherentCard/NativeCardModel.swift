@@ -71,6 +71,7 @@ final class NativeCardModel: ObservableObject {
   @Published var isSubmitted = false
   @Published var isListening = false
   @Published var isDropTarget = false
+  @Published var attachmentEdgeFlash = false
   @Published var isThinking = false
   @Published var isHistoryShown = false
   @Published var isFollowupEntering = false
@@ -113,6 +114,7 @@ final class NativeCardModel: ObservableObject {
   private var dripCarry = 0.0
   private var fadeWork: DispatchWorkItem?
   private var popoverHideWork: DispatchWorkItem?
+  private var attachmentEdgeFlashWork: DispatchWorkItem?
   private var enterHoldWork: DispatchWorkItem?
   private var enterHoldFired = false
   private var enterHoldShortAction: (() -> Void)?
@@ -164,6 +166,7 @@ final class NativeCardModel: ObservableObject {
     cancelFade()
     clearDrip()
     cancelEnterHoldTimer()
+    attachmentEdgeFlashWork?.cancel()
     cancelActiveVoiceCapture()
     audioDucker.restoreAll()
   }
@@ -603,6 +606,7 @@ final class NativeCardModel: ObservableObject {
     inputActive = true
     phase = .input
     setState(stateLabel.isEmpty ? "idle" : stateLabel, stateVariant ?? .idle)
+    flashAttachmentEdge()
     focusNonce += 1
     requestLayout(animatedFor: 0.42)
     return true
@@ -611,7 +615,19 @@ final class NativeCardModel: ObservableObject {
   private func imageStageError(_ message: String) {
     isDropTarget = false
     setState(message, .warn)
+    flashAttachmentEdge()
     requestLayout(animatedFor: 0.42)
+  }
+
+  private func flashAttachmentEdge() {
+    attachmentEdgeFlashWork?.cancel()
+    attachmentEdgeFlash = false
+    attachmentEdgeFlash = true
+    let work = DispatchWorkItem { [weak self] in
+      self?.attachmentEdgeFlash = false
+    }
+    attachmentEdgeFlashWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.72, execute: work)
   }
 
   private func canStageImage() -> Bool {
