@@ -104,6 +104,60 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertEqual(model.stateVariant, .thinking)
   }
 
+  func test_externalVoiceListeningAndTranscribingStatesMatchWebLifecycle() async throws {
+    let model = NativeCardModel()
+    model.inputText = "draft"
+
+    model.voiceState(payload: ["phase": "listening"])
+    try await settle(milliseconds: 80)
+
+    XCTAssertEqual(model.phase, .listening)
+    XCTAssertTrue(model.isListening)
+    XCTAssertFalse(model.isSubmitted)
+    XCTAssertEqual(model.inputText, "")
+    XCTAssertEqual(model.inputPlaceholder, "正在听…")
+    XCTAssertTrue(model.inputDisabled)
+    XCTAssertEqual(model.stateLabel, "listening")
+
+    model.voiceState(payload: ["phase": "transcribing"])
+    try await settle(milliseconds: 80)
+
+    XCTAssertEqual(model.phase, .transcribing)
+    XCTAssertFalse(model.isListening)
+    XCTAssertEqual(model.inputPlaceholder, "识别中…")
+    XCTAssertTrue(model.inputDisabled)
+    XCTAssertEqual(model.stateLabel, "transcribing")
+    XCTAssertEqual(model.stateVariant, .neutral)
+  }
+
+  func test_externalVoiceEmptyAndErrorStatesRecoverToRetryShell() async throws {
+    let model = NativeCardModel()
+
+    model.voiceState(payload: ["phase": "empty"])
+    try await settle(milliseconds: 80)
+
+    XCTAssertEqual(model.phase, .idle)
+    XCTAssertFalse(model.isListening)
+    XCTAssertFalse(model.isSubmitted)
+    XCTAssertEqual(model.inputText, "")
+    XCTAssertEqual(model.inputPlaceholder, "问点什么…")
+    XCTAssertTrue(model.inputDisabled)
+    XCTAssertEqual(model.stateLabel, "no speech")
+    XCTAssertEqual(model.stateVariant, .warn)
+
+    model.voiceState(payload: ["phase": "error"])
+    try await settle(milliseconds: 80)
+
+    XCTAssertEqual(model.phase, .error)
+    XCTAssertFalse(model.isListening)
+    XCTAssertFalse(model.isSubmitted)
+    XCTAssertEqual(model.inputText, "")
+    XCTAssertEqual(model.inputPlaceholder, "问点什么…")
+    XCTAssertTrue(model.inputDisabled)
+    XCTAssertEqual(model.stateLabel, "error")
+    XCTAssertEqual(model.stateVariant, .error)
+  }
+
   func test_enterHoldVoiceAcceptedSubmitsTranscriptWithoutRealMicrophone() async throws {
     let wav = Data(repeating: 7, count: 80)
     let backend = FakeNativeBackend(
