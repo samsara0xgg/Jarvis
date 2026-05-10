@@ -105,6 +105,41 @@ class TestChatEndpoint:
         tts.synth_to_file.assert_called_once_with("我写好了", "happy")
 
 
+class TestDirectToolEndpoint:
+    def test_execute_tool_allows_cc_tools(self, client, mock_jarvis_app):
+        registry = MagicMock()
+        registry.get_tool_definitions.return_value = [{"name": "cc_tell"}]
+        registry.execute.return_value = "sent"
+        mock_jarvis_app.tool_registry = registry
+
+        resp = client.post(
+            "/api/tool/execute",
+            json={"name": "cc_tell", "args": {"text": "hi"}},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "result": "sent"}
+        registry.execute.assert_called_once_with(
+            "cc_tell",
+            {"text": "hi"},
+            user_role="owner",
+        )
+
+    def test_execute_tool_rejects_non_cc_tools(self, client, mock_jarvis_app):
+        registry = MagicMock()
+        registry.get_tool_definitions.return_value = [{"name": "get_weather"}]
+        mock_jarvis_app.tool_registry = registry
+
+        resp = client.post(
+            "/api/tool/execute",
+            json={"name": "get_weather", "args": {"city": "Victoria"}},
+        )
+
+        assert resp.status_code == 403
+        assert "not allowed" in resp.json()["detail"]
+        registry.execute.assert_not_called()
+
+
 class TestInherentWsBridge:
     """1b: jarvis response.{start,chunk,final} → /inherent/ws siri:* JSON.
 

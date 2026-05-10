@@ -37,14 +37,17 @@ def _make_config(tmp_path):
             "voice_shortcuts": {},
         },
         "llm": {"model": "test-model", "max_tokens": 256, "api_key": "test-key"},
-        "tts": {"engine": "pyttsx3", "fallback_enabled": False},
+        "tts": {"engine": "pyttsx3", "fallback_enabled": False, "minimax_ws": False},
         "wake_word": {"enabled": False},
+        "startup": {"prewarm": False},
         "session": {"silence_timeout": 30, "utterance_duration": 3},
         "memory": {
             "max_conversation_turns": 10,
             "conversation_dir": str(tmp_path / "convos"),
             "preferences_dir": str(tmp_path / "prefs"),
             "db_path": str(tmp_path / "memory.db"),
+            "observer": {"enabled": False},
+            "outcome_detector": {"nli": {"enabled": False}},
         },
         "skills": {
             "weather": {"default_city": "Vancouver"},
@@ -91,6 +94,7 @@ def test_jarvis_handle_utterance_end_to_end(tmp_path):
     _install_fake_anthropic()
     _install_fake_pyttsx3()
 
+    app = None
     try:
         from jarvis import JarvisApp
 
@@ -110,6 +114,8 @@ def test_jarvis_handle_utterance_end_to_end(tmp_path):
         assert "卧室灯" in response and "打开" in response
         app.speech_recognizer.transcribe.assert_called_once()
     finally:
+        if app is not None:
+            app.shutdown()
         sys.modules.pop("anthropic", None)
         sys.modules.pop("pyttsx3", None)
 
@@ -119,6 +125,7 @@ def test_jarvis_tool_registry_has_tools(tmp_path):
     _install_fake_anthropic()
     _install_fake_pyttsx3()
 
+    app = None
     try:
         from jarvis import JarvisApp
 
@@ -130,6 +137,8 @@ def test_jarvis_tool_registry_has_tools(tmp_path):
         tool_names = {d["name"] for d in defs}
         assert "smart_home_control" in tool_names, f"Missing smart_home_control in {tool_names}"
     finally:
+        if app is not None:
+            app.shutdown()
         sys.modules.pop("anthropic", None)
         sys.modules.pop("pyttsx3", None)
 
@@ -139,6 +148,7 @@ def test_jarvis_conversation_persists_across_calls(tmp_path):
     _install_fake_anthropic()
     _install_fake_pyttsx3()
 
+    app = None
     try:
         from jarvis import JarvisApp
 
@@ -165,5 +175,7 @@ def test_jarvis_conversation_persists_across_calls(tmp_path):
         history = app.conversation_store.get_history("default_user")
         assert len(history) >= 4  # 2 user + 2 assistant messages
     finally:
+        if app is not None:
+            app.shutdown()
         sys.modules.pop("anthropic", None)
         sys.modules.pop("pyttsx3", None)

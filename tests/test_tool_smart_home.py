@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import importlib
-import json
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+from core.tool_result import parse_tool_result, tool_message
 from tools import _TOOL_REGISTRY, _EXECUTION_CONTEXT
 
 
@@ -106,7 +106,9 @@ def test_smart_home_control_execute():
     dm.get_device.assert_called_once_with("living_room_light")
     pm.check_permission.assert_called_once_with("owner", device, "turn_on")
     dm.execute_command.assert_called_once_with("living_room_light", "turn_on", None)
-    assert result == "Living Room Light turned on"
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "success"
+    assert parsed["message"] == "Living Room Light turned on"
 
 
 def test_smart_home_control_with_value():
@@ -122,7 +124,7 @@ def test_smart_home_control_with_value():
     )
 
     dm.execute_command.assert_called_once_with("living_room_light", "set_brightness", "50")
-    assert "50" in result
+    assert "50" in tool_message(result)
 
 
 def test_smart_home_control_device_not_found():
@@ -135,7 +137,7 @@ def test_smart_home_control_device_not_found():
         "smart_home_control",
         {"device_id": "ghost", "action": "turn_on"},
     )
-    assert "not found" in result.lower() or "ghost" in result
+    assert "not found" in tool_message(result).lower() or "ghost" in tool_message(result)
 
 
 def test_permission_denied():
@@ -150,7 +152,7 @@ def test_permission_denied():
         "smart_home_control",
         {"device_id": "living_room_light", "action": "turn_on"},
     )
-    assert "permission denied" in result.lower() or "Permission denied" in result
+    assert "permission denied" in tool_message(result).lower()
 
 
 def test_smart_home_control_execution_failure():
@@ -165,7 +167,7 @@ def test_smart_home_control_execution_failure():
         "smart_home_control",
         {"device_id": "living_room_light", "action": "turn_on"},
     )
-    assert "failed" in result.lower() or "bridge timeout" in result.lower()
+    assert "failed" in tool_message(result).lower() or "bridge timeout" in tool_message(result).lower()
 
 
 def test_smart_home_control_default_role():
@@ -201,7 +203,7 @@ def test_smart_home_status_execute():
     result = entry["execute"]("smart_home_status", {})
 
     dm.get_all_status.assert_called_once()
-    parsed = json.loads(result)
+    parsed = parse_tool_result(result)["data"]["entities"]
     assert "light1" in parsed
     assert "thermo" in parsed
 
@@ -218,7 +220,7 @@ def test_smart_home_status_single_device():
     )
 
     dm.get_device.assert_called_with("living_room_light")
-    parsed = json.loads(result)
+    parsed = parse_tool_result(result)["data"]["status"]
     assert parsed["on"] is False
 
 
@@ -231,7 +233,7 @@ def test_smart_home_status_device_not_found():
         "smart_home_status",
         {"device_id": "ghost"},
     )
-    assert "not found" in result.lower() or "ghost" in result
+    assert "not found" in tool_message(result).lower() or "ghost" in tool_message(result)
 
 
 # ---------------------------------------------------------------------------

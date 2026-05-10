@@ -1,4 +1,4 @@
-"""Idempotent migration from trace v2 (16-col) to v3 (31-col).
+"""Idempotent migration from trace v2 (16-col) to v3 (34-col).
 
 v3 adds user_id, all new routing/LLM/performance/lifecycle columns, 2 CHECK
 constraints, and 3 additional indexes. Because SQLite cannot add CHECK
@@ -74,7 +74,7 @@ CREATE INDEX idx_trace_errors  ON trace(created_at DESC)
 
 
 def migrate_trace_v2_to_v3(conn: sqlite3.Connection) -> bool:
-    """Upgrade trace table from v2 (16 cols) to v3 (31 cols).
+    """Upgrade trace table from v2 (16 cols) to v3 (34 cols).
 
     Idempotent: returns False and does nothing if already v3. Detects v3 by
     checking for the 'user_id' column in the existing trace table.

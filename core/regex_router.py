@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from core.tool_result import tool_message, tool_succeeded
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -67,11 +69,15 @@ class RegexRouter:
         back to raw ``tool_result`` if no templates are registered or if
         the chosen template references a missing variable.
         """
+        message = tool_message(tool_result)
+        if match.tool_name and not tool_succeeded(tool_result):
+            return message
+
         templates = self.templates.get(match.template_key, [])
         if not templates:
-            return tool_result
+            return message
         template = random.choice(templates)
-        variables = {**match.template_vars, "tool_result": tool_result}
+        variables = {**match.template_vars, "tool_result": message}
         try:
             return template.format(**variables)
         except (KeyError, IndexError) as exc:
@@ -79,7 +85,7 @@ class RegexRouter:
                 "Template %r missing variable for match %s: %s",
                 match.template_key, match.pattern_id, exc,
             )
-            return tool_result
+            return message
 
     def _compile(
         self,
@@ -157,7 +163,7 @@ class RegexRouter:
                 lambda m: RegexMatch(
                     pattern_id="obsidian_inbox",
                     intent="obsidian_inbox",
-                    tool_name="obsidian_inbox",
+                    tool_name="obsidian_add_to_inbox",
                     tool_args={"content": m.group(1).strip()},
                     template_key="obsidian_inbox",
                 ),
@@ -265,7 +271,7 @@ class RegexRouter:
                 ),
             ),
             (
-                re.compile(r"^切到(opus|sonnet|haiku)$"),
+                re.compile(r"^(?:cc\s*|让\s*cc\s*)切到(opus|sonnet|haiku)$"),
                 lambda m: RegexMatch(
                     pattern_id="cc_slash_model",
                     intent="cc_slash",
@@ -276,7 +282,7 @@ class RegexRouter:
                 ),
             ),
             (
-                re.compile(r"^effort\s+(low|medium|high|xhigh|max)$"),
+                re.compile(r"^(?:cc\s*|让\s*cc\s*)effort\s+(low|medium|high|xhigh|max)$"),
                 lambda m: RegexMatch(
                     pattern_id="cc_slash_effort",
                     intent="cc_slash",

@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any
 
+from core.tool_result import FAILURE, PARTIAL_SUCCESS, SUCCESS, make_tool_result
 from tools import jarvis_tool, _EXECUTION_CONTEXT
 
 LOGGER = logging.getLogger(__name__)
@@ -47,15 +48,39 @@ def smart_home_control(device_id: str, action: str, value: str = "") -> str:
     try:
         device = _device_manager.get_device(device_id)
     except KeyError:
-        return f"Device not found: {device_id}"
+        return make_tool_result(
+            FAILURE,
+            f"Device not found: {device_id}",
+            data={"device_id": device_id, "action": action},
+            error_code="device_not_found",
+        )
 
     if not _permission_manager.check_permission(user_role, device, action):
-        return f"Permission denied: your role '{user_role}' cannot control {device.name}."
+        return make_tool_result(
+            FAILURE,
+            f"Permission denied: your role '{user_role}' cannot control {device.name}.",
+            data={"device_id": device_id, "action": action, "role": user_role},
+            error_code="permission_denied",
+        )
 
     try:
-        return _device_manager.execute_command(device_id, action, value if value else None)
+        message = _device_manager.execute_command(
+            device_id,
+            action,
+            value if value else None,
+        )
+        return make_tool_result(
+            SUCCESS,
+            str(message),
+            data={"device_id": device_id, "action": action, "value": value or None},
+        )
     except Exception as exc:
-        return f"Failed to execute {action} on {device.name}: {exc}"
+        return make_tool_result(
+            FAILURE,
+            f"Failed to execute {action} on {device.name}: {exc}",
+            data={"device_id": device_id, "action": action, "value": value or None},
+            error_code="execution_failed",
+        )
 
 
 def _execute_virtual_group(group_id: str, action: str, value: str, user_role: str) -> str:
@@ -76,13 +101,34 @@ def _execute_virtual_group(group_id: str, action: str, value: str, user_role: st
             successes.append(device.name)
         except Exception as exc:
             failures.append(f"{device.name}: {exc}")
+    data = {
+        "group_id": group_id,
+        "action": action,
+        "value": value or None,
+        "successes": successes,
+        "failures": failures,
+    }
     if not failures:
-        return f"{group_id}: {len(successes)}/{len(successes)} OK."
+        return make_tool_result(
+            SUCCESS,
+            f"{group_id}: {len(successes)}/{len(successes)} OK.",
+            data=data,
+        )
     if not successes:
-        return f"{group_id}: all failed — {'; '.join(failures)}"
-    return (
-        f"{group_id}: {len(successes)}/{len(successes) + len(failures)} OK "
-        f"(failed: {'; '.join(failures)})"
+        return make_tool_result(
+            FAILURE,
+            f"{group_id}: all failed — {'; '.join(failures)}",
+            data=data,
+            error_code="group_all_failed",
+        )
+    return make_tool_result(
+        PARTIAL_SUCCESS,
+        (
+            f"{group_id}: {len(successes)}/{len(successes) + len(failures)} OK "
+            f"(failed: {'; '.join(failures)})"
+        ),
+        data=data,
+        error_code="group_partial_failure",
     )
 
 
@@ -98,7 +144,22 @@ def smart_home_status(device_id: str = "") -> str:
     if device_id:
         try:
             device = _device_manager.get_device(device_id)
-            return json.dumps(device.get_status(), ensure_ascii=False)
+            status = device.get_status()
+            return make_tool_result(
+                SUCCESS,
+                json.dumps(status, ensure_ascii=False),
+                data={"device_id": device_id, "status": status},
+            )
         except KeyError:
-            return f"Device not found: {device_id}"
-    return json.dumps(_device_manager.get_all_status(), ensure_ascii=False, indent=2)
+            return make_tool_result(
+                FAILURE,
+                f"Device not found: {device_id}",
+                data={"device_id": device_id},
+                error_code="device_not_found",
+            )
+    status = _device_manager.get_all_status()
+    return make_tool_result(
+        SUCCESS,
+        json.dumps(status, ensure_ascii=False, indent=2),
+        data={"entities": status},
+    )

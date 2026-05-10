@@ -716,6 +716,18 @@ class TTSEngine:
                 self.logger.warning("stream player stop error (ignored): %s", exc)
             self._stream_player = None
 
+    def close(self) -> None:
+        """Release background resources owned by the TTS engine."""
+        self.stop()
+        self.close_stream_player()
+        if self._http_session is not None:
+            try:
+                self._http_session.close()
+            except Exception as exc:
+                self.logger.warning("TTS HTTP session close error (ignored): %s", exc)
+            self._http_session = None
+        self._executor.shutdown(wait=True)
+
     # ------------------------------------------------------------------
     # Playback
     # ------------------------------------------------------------------
@@ -1264,9 +1276,12 @@ class TTSPipeline:
                 self.logger.warning("ws close_session on stop: %s", exc)
             self._ws_client = None
         if self._ws_loop is not None:
-            self._ws_loop.call_soon_threadsafe(self._ws_loop.stop)
+            loop = self._ws_loop
+            loop.call_soon_threadsafe(loop.stop)
             if self._ws_thread and self._ws_thread.is_alive():
                 self._ws_thread.join(timeout=2)
+            if not loop.is_closed():
+                loop.close()
             self._ws_loop = None
             self._ws_thread = None
 
@@ -1285,7 +1300,8 @@ class TTSPipeline:
                 return
 
             text, sentence_type, emotion = item
-            text = tts_preprocessor.clean(text, self._engine._preprocessor_config)
+            preprocessor_config = getattr(self._engine, "_preprocessor_config", {})
+            text = tts_preprocessor.clean(text, preprocessor_config)
             if not text.strip():
                 continue
 

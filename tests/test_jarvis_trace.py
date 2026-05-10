@@ -19,6 +19,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from jarvis import JarvisApp
+from core.regex_router import RegexRouter
+from core.tool_result import FAILURE, make_tool_result
 from memory.trace import TraceLog
 
 LOGGER = logging.getLogger(__name__)
@@ -200,6 +202,43 @@ class TestJarvisTraceV3:
         assert row["session_id"] == app._app_session_id
         assert row["prompt_version"] is not None
         assert len(row["prompt_version"]) == 16
+
+    def test_regex_path_records_tool_call_and_uses_failure_message(
+        self,
+        app: JarvisApp,
+    ) -> None:
+        app.regex_router = RegexRouter({
+            "regex_router": {
+                "device_alias": {"灯": "all_lights"},
+                "templates": {
+                    "smart_home_turn_on": ["好，{device}开了。"],
+                },
+            },
+        })
+        app.tool_registry.execute = MagicMock(
+            return_value=make_tool_result(
+                FAILURE,
+                "Device not found: all_lights",
+            )
+        )
+
+        result = app.handle_text("开灯", session_id="regex_session")
+
+        assert result == "Device not found: all_lights"
+        rows = app.trace_log.query_for_debug(hours=1)
+        row = rows[0]
+        assert row["path_taken"] == "regex"
+        assert row["assistant_text"] == "Device not found: all_lights"
+        assert row["tool_calls"] == [
+            {
+                "name": "smart_home_control",
+                "args": {"device_id": "all_lights", "action": "turn_on"},
+                "result": make_tool_result(FAILURE, "Device not found: all_lights"),
+                "ms": row["tool_calls"][0]["ms"],
+            }
+        ]
+        assert row["llm_metadata"]["regex_tool"] == "smart_home_control"
+        app.llm.chat_stream.assert_not_called()
 
     def test_handle_image_writes_trace_attachment_metadata(self, app: JarvisApp) -> None:
         """Image turns must leave attachment metadata in trace without base64."""

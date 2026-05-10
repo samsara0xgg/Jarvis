@@ -23,7 +23,10 @@ class TestInterruptResume:
 
     def test_interrupted_response_initially_none(self, tmp_path):
         app = self._make_app(tmp_path)
-        assert app._interrupted_response is None
+        try:
+            assert app._interrupted_response is None
+        finally:
+            app.shutdown()
 
 
 class TestKeywordStripping:
@@ -58,6 +61,9 @@ class TestInterruptDuringTTS:
 
     def test_app_has_interrupt_monitor(self, tmp_path):
         app = self._make_app(tmp_path)
-        assert hasattr(app, "interrupt_monitor")
-        from core.interrupt_monitor import InterruptMonitor
-        assert isinstance(app.interrupt_monitor, InterruptMonitor)
+        try:
+            assert hasattr(app, "interrupt_monitor")
+            from core.interrupt_monitor import InterruptMonitor
+            assert isinstance(app.interrupt_monitor, InterruptMonitor)
+        finally:
+            app.shutdown()

@@ -57,7 +57,9 @@ action:
   submit: true
 
 response:
-  template: '已发给 cc{% if session != "cc" %}（→ {{ session }}）{% endif %}：{{ text[:40] }}{% if text|length > 40 %}...{% endif %}'
+  envelope: true
+  status: success
+  template: '已投递给 cc{% if session != "cc" %}（→ {{ session }}）{% endif %}：{{ text[:40] }}{% if text|length > 40 %}...{% endif %}。这只表示消息已发送，不代表 cc 已完成任务。'
   error_template: "发送 cc 失败 — 检查 zellij session 是否在跑（zellij list-sessions）"
 
 security:

@@ -21,6 +21,14 @@ from devices.hue.hue_scene import HueSceneDevice
 from tests.helpers import load_config
 
 
+@pytest.fixture(autouse=True)
+def _clear_hue_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep local Hue credentials from overriding deterministic test config."""
+
+    monkeypatch.delenv("HUE_BRIDGE_IP", raising=False)
+    monkeypatch.delenv("HUE_BRIDGE_USERNAME", raising=False)
+
+
 def _build_live_config() -> dict:
     """Create a config copy for live Hue tests."""
 

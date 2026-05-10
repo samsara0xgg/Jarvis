@@ -5,9 +5,9 @@ description: |
   pane. Generic — any cc slash command works because the actual
   validation happens inside cc.
 
-  Use when the user wants Jarvis to invoke a cc-builtin or
-  user-defined slash command. The LLM picks the ``command`` arg from
-  the user's natural-language intent.
+  Use only when the user explicitly targets Claude Code / cc or when
+  the request comes from an established cc proxy context. Do not infer
+  that a generic model/mode/change request is meant for cc.
 
   Anchor phrases:
     - "让 cc 提交" → command="commit"
@@ -70,7 +70,7 @@ parameters:
 
 annotations:
   read_only: false
-  destructive: false
+  destructive: true
   idempotent: false
 
 action:

@@ -1,4 +1,4 @@
-"""Structured per-turn trace store — v3 schema (32 columns).
+"""Structured per-turn trace store — v3 schema (34 columns).
 
 Records every conversation turn with identity, routing path, tool calls,
 LLM metadata, memory query IDs, latency breakdowns, and outcome signals.

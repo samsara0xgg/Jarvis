@@ -434,6 +434,7 @@ class TestAbortRace:
         finally:
             pipeline._ws_loop.call_soon_threadsafe(pipeline._ws_loop.stop)
             t.join(timeout=2)
+            pipeline._ws_loop.close()
 
 
 class TestTurnLevelSession:
@@ -508,9 +509,11 @@ class TestPrewarm:
         assert pipeline._ws_client.is_open()
 
         if pipeline._ws_loop is not None:
-            pipeline._ws_loop.call_soon_threadsafe(pipeline._ws_loop.stop)
+            loop = pipeline._ws_loop
+            loop.call_soon_threadsafe(loop.stop)
             if pipeline._ws_thread:
                 pipeline._ws_thread.join(timeout=2)
+            loop.close()
 
 
 class TestFallbackChain:

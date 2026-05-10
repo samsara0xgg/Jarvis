@@ -79,6 +79,9 @@ def test_inherent_wake_submit_does_not_block_listener():
         def record(self, duration):
             return np.zeros(16000, dtype=np.float32)
 
+        def is_quality_ok(self, audio):
+            return True, "ok"
+
     class FakeRecognizer:
         def transcribe(self, audio):
             return SimpleNamespace(text="在吗", language="zh", emotion="neutral")

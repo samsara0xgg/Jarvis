@@ -67,6 +67,7 @@ _INHERENT_IMAGE_MIME_TYPES = {
     "image/webp",
     "image/gif",
 }
+_DIRECT_TOOL_ALLOWLIST = {"cc_tell", "cc_slash", "cc_interrupt"}
 
 # --- Browser TTS streaming state (Task 2) ---
 _ws_routes: dict[str, Any] = {}          # session_id → WebSocket
@@ -484,6 +485,9 @@ def create_app(jarvis_app: Any) -> FastAPI:
         # Validate the tool name is known so we return 404 instead of an
         # ambiguous "Unknown tool" string from the registry. Validation
         # failures are NOT traced — they're caller mistakes, not turns.
+        if req.name not in _DIRECT_TOOL_ALLOWLIST:
+            raise HTTPException(403, f"Tool not allowed on this endpoint: {req.name}")
+
         known = {d["name"] for d in registry.get_tool_definitions("owner")}
         if req.name not in known:
             raise HTTPException(404, f"Unknown tool: {req.name}")

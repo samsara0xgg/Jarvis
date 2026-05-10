@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from core.yaml_interpreter import YAMLInterpreter
+from core.tool_result import parse_tool_result, tool_message
 
 
 def _make_skill(**overrides) -> dict:
@@ -1265,15 +1266,18 @@ class TestCCTellYAMLSkill:
         with patch("core.yaml_interpreter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             out = interp.execute(skill, {"text": "hello cc"})
-        assert "hello cc" in out
-        assert "已发给" in out
+        parsed = parse_tool_result(out)
+        assert parsed["status"] == "success"
+        assert "hello cc" in parsed["message"]
+        assert "已投递" in parsed["message"]
+        assert "不代表 cc 已完成任务" in parsed["message"]
 
     def test_long_text_truncated_in_response(self):
         interp, skill = self._load()
         with patch("core.yaml_interpreter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             out = interp.execute(skill, {"text": "a" * 100})
-        assert "..." in out
+        assert "..." in tool_message(out)
 
     def test_explicit_session_override(self):
         interp, skill = self._load()
@@ -1282,7 +1286,7 @@ class TestCCTellYAMLSkill:
             out = interp.execute(skill, {"text": "x", "session": "frontend"})
         argv = mock_run.call_args_list[0].args[0]
         assert argv[2] == "frontend"
-        assert "frontend" in out
+        assert "frontend" in tool_message(out)
 
     def test_failure_returns_friendly_error_template(self):
         import subprocess as _sp

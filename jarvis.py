@@ -122,14 +122,17 @@ class JarvisApp:
         from memory.cold.pricing import load_pricing_table
         self._pricing_table = load_pricing_table()
 
-        from memory.cold.nli_classifier import NLIClassifier
         nli_cfg = config.get("memory", {}).get("outcome_detector", {}).get("nli", {})
-        self.nli_classifier = NLIClassifier(
-            model_dir=nli_cfg.get("model_dir", "data/nli-erlangshen"),
-            entailment_threshold=nli_cfg.get("entailment_threshold", 0.65),
-            min_text_length=nli_cfg.get("min_text_length", 2),
-            max_text_length=nli_cfg.get("max_text_length", 500),
-        )  # lazy-loaded on first use
+        if nli_cfg.get("enabled", True):
+            from memory.cold.nli_classifier import NLIClassifier
+            self.nli_classifier = NLIClassifier(
+                model_dir=nli_cfg.get("model_dir", "data/nli-erlangshen"),
+                entailment_threshold=nli_cfg.get("entailment_threshold", 0.65),
+                min_text_length=nli_cfg.get("min_text_length", 2),
+                max_text_length=nli_cfg.get("max_text_length", 500),
+            )  # lazy-loaded on first use
+        else:
+            self.nli_classifier = None
 
         # ── Trace v3 launch session ──
         # The conversation_store keys history by user_id (history persists
@@ -298,21 +301,22 @@ class JarvisApp:
         # REVIEW 分析: 4 个 prewarm submitted 到 executor (HTTP keepalive/TTS precache 6 短句/ASR/VAD)；health 状态变化订阅 + 定期 probe
         # REVIEW 建议: 留
         # REVIEW 评估: ___
-        # 预热 TTS 缓存（常用短句提前合成，首次播报零延迟）
-        _PRECACHE_PHRASES = ["好的", "嗯，让我想想", "好的，灯开了", "好的，灯关了", "再见", "在的"]
-        self._executor.submit(lambda: self._get_tts() and self._get_tts().precache(_PRECACHE_PHRASES))
+        if config.get("startup", {}).get("prewarm", True):
+            # 预热 TTS 缓存（常用短句提前合成，首次播报零延迟）
+            _PRECACHE_PHRASES = ["好的", "嗯，让我想想", "好的，灯开了", "好的，灯关了", "再见", "在的"]
+            self._executor.submit(lambda: self._get_tts() and self._get_tts().precache(_PRECACHE_PHRASES))
 
-        # 预热 ASR 模型（首次加载 SenseVoice 需要 ~2s）
-        self._executor.submit(self.speech_recognizer.transcribe, np.zeros(16000, dtype=np.float32))
+            # 预热 ASR 模型（首次加载 SenseVoice 需要 ~2s）
+            self._executor.submit(self.speech_recognizer.transcribe, np.zeros(16000, dtype=np.float32))
 
-        # 预热 Silero VAD（录音 + 打断各一个实例）
-        if getattr(self.audio_recorder, "_vad", None) is not None:
-            self._executor.submit(
-                self.audio_recorder._vad.accept_waveform,
-                np.zeros(512, dtype=np.float32),
-            )
-        if hasattr(self, "interrupt_monitor"):
-            self._executor.submit(self._warmup_interrupt_vad)
+            # 预热 Silero VAD（录音 + 打断各一个实例）
+            if getattr(self.audio_recorder, "_vad", None) is not None:
+                self._executor.submit(
+                    self.audio_recorder._vad.accept_waveform,
+                    np.zeros(512, dtype=np.float32),
+                )
+            if hasattr(self, "interrupt_monitor"):
+                self._executor.submit(self._warmup_interrupt_vad)
 
         # ── 健康监控启动 ── 状态变化时语音通知 + 定期主动探测 API 可用性
         if self.health_tracker:
@@ -402,6 +406,15 @@ class JarvisApp:
     # REVIEW 评估: ___
     def shutdown(self) -> None:
         """Clean up all subsystems."""
+        try:
+            self._wait_tts()
+        except Exception as exc:
+            self.logger.warning("TTS wait during shutdown failed: %s", exc)
+        if self._tts is not None and hasattr(self._tts, "close"):
+            try:
+                self._tts.close()
+            except Exception as exc:
+                self.logger.warning("TTS close failed: %s", exc)
         self._executor.shutdown(wait=True)
         if self.scheduler and self.scheduler.available:
             self.scheduler.stop()
@@ -995,15 +1008,27 @@ class JarvisApp:
             print(f"⏱ 路由: {_route_ms}ms → regex/{regex_match.intent} ({regex_match.pattern_id})")
             if regex_match.tool_name:
                 print(f"   📋 {regex_match.tool_name} args={regex_match.tool_args}")
+            regex_tool_call_log: list[dict] = []
+            self._last_tool_call_log = regex_tool_call_log
             try:
                 # tool_name="" marks no-op patterns (e.g. farewell) — render
                 # the template with empty tool_result, no tool_registry call.
                 if regex_match.tool_name:
-                    tool_result = self.tool_registry.execute(
-                        regex_match.tool_name,
-                        regex_match.tool_args,
-                        user_role=user_role,
-                    )
+                    _tool_t0 = time.monotonic()
+                    tool_result = ""
+                    try:
+                        tool_result = self.tool_registry.execute(
+                            regex_match.tool_name,
+                            regex_match.tool_args,
+                            user_role=user_role,
+                        )
+                    finally:
+                        regex_tool_call_log.append({
+                            "name": regex_match.tool_name,
+                            "args": dict(regex_match.tool_args),
+                            "result": str(tool_result)[:500],
+                            "ms": int((time.monotonic() - _tool_t0) * 1000),
+                        })
                 else:
                     tool_result = ""
                 response_text = self.regex_router.render_response(regex_match, tool_result)
@@ -1707,8 +1732,7 @@ class JarvisApp:
             elif self._last_path == "regex" and self._last_regex_match is not None:
                 # (b) L0 regex fast-path — no LLM, no tokens.
                 rm = self._last_regex_match
-                if llm_metadata is None:
-                    llm_metadata = {}
+                llm_metadata = {}
                 llm_metadata["regex_pattern_id"] = rm.pattern_id
                 llm_metadata["regex_intent"] = rm.intent
                 llm_metadata["regex_tool"] = rm.tool_name

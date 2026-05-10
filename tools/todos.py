@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.tool_result import FAILURE, SUCCESS, make_tool_result
 from tools import jarvis_tool, _EXECUTION_CONTEXT
 
 LOGGER = logging.getLogger(__name__)
@@ -26,7 +27,11 @@ def add_todo(content: str, priority: str = "medium") -> str:
     """Add a todo item for the current user."""
     content = content.strip()
     if not content:
-        return "Todo content cannot be empty."
+        return make_tool_result(
+            FAILURE,
+            "Todo content cannot be empty.",
+            error_code="empty_content",
+        )
     priority = priority.strip().lower()
 
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"
@@ -40,7 +45,11 @@ def add_todo(content: str, priority: str = "medium") -> str:
     data = _load(user_id)
     data.append(todo)
     _save(user_id, data)
-    return f"Todo added (ID: {todo['id']}): '{content}' [{priority}]."
+    return make_tool_result(
+        SUCCESS,
+        f"Todo added (ID: {todo['id']}): '{content}' [{priority}].",
+        data={"todo": todo},
+    )
 
 
 @jarvis_tool(read_only=True)
@@ -50,11 +59,15 @@ def list_todos() -> str:
     data = _load(user_id)
     active = [t for t in data if not t.get("done", False)]
     if not active:
-        return "No active todos."
+        return make_tool_result(SUCCESS, "No active todos.", data={"todos": []})
     lines = []
     for t in active:
         lines.append(f"- [{t['id']}] ({t.get('priority', 'medium')}) {t['content']}")
-    return "Todos:\n" + "\n".join(lines)
+    return make_tool_result(
+        SUCCESS,
+        "Todos:\n" + "\n".join(lines),
+        data={"todos": active},
+    )
 
 
 @jarvis_tool(read_only=False)
@@ -66,8 +79,17 @@ def complete_todo(todo_id: str) -> str:
         if t.get("id") == todo_id:
             t["done"] = True
             _save(user_id, data)
-            return f"Todo '{t['content']}' completed."
-    return f"Todo {todo_id} not found."
+            return make_tool_result(
+                SUCCESS,
+                f"Todo '{t['content']}' completed.",
+                data={"todo": t},
+            )
+    return make_tool_result(
+        FAILURE,
+        f"Todo {todo_id} not found.",
+        data={"todo_id": todo_id},
+        error_code="todo_not_found",
+    )
 
 
 @jarvis_tool(read_only=False)
@@ -79,8 +101,17 @@ def delete_todo(todo_id: str) -> str:
         if t.get("id") == todo_id:
             removed = data.pop(i)
             _save(user_id, data)
-            return f"Todo '{removed['content']}' deleted."
-    return f"Todo {todo_id} not found."
+            return make_tool_result(
+                SUCCESS,
+                f"Todo '{removed['content']}' deleted.",
+                data={"todo": removed},
+            )
+    return make_tool_result(
+        FAILURE,
+        f"Todo {todo_id} not found.",
+        data={"todo_id": todo_id},
+        error_code="todo_not_found",
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 name: get_exchange_rate
 description: "Get current exchange rate or convert between currencies. Uses ISO 4217 codes (USD, CNY, EUR, JPY, CAD)."
 version: 1
-status: live
+status: deprecated
 created_by: migrated
 
 parameters:

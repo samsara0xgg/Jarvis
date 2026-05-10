@@ -183,6 +183,19 @@ def test_registry_skips_deprecated_yaml(tmp_path):
     assert "old_skill" not in names
 
 
+def test_default_registry_hides_deprecated_yaml_skills():
+    """Low-value/high-risk YAML skills are not exposed by default."""
+    from core.tool_registry import ToolRegistry
+
+    reg = ToolRegistry(config={})
+    names = {d["name"] for d in reg.get_tool_definitions(user_role="owner")}
+
+    assert "get_exchange_rate" not in names
+    assert "cc_approve" not in names
+    assert "cc_deny" not in names
+    assert "cc_slash" in names
+
+
 def test_registry_rbac_execute_denied():
     """Executing a tool without sufficient role returns permission denied."""
     _register_test_tools()

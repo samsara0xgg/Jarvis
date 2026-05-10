@@ -7,6 +7,7 @@ import re
 
 import pytest
 
+from core.tool_result import parse_tool_result, tool_message
 from tools import _TOOL_REGISTRY
 
 
@@ -53,14 +54,16 @@ def test_set_timer_not_read_only():
 def test_get_current_time_returns_string():
     entry = _TOOL_REGISTRY["get_current_time"]
     result = entry["execute"]("get_current_time", {})
-    assert result.startswith("Current time:")
+    parsed = parse_tool_result(result)
+    assert parsed["status"] == "success"
+    assert parsed["message"].startswith("Current time:")
     # Should contain date pattern like 2026-04-15
-    assert re.search(r"\d{4}-\d{2}-\d{2}", result)
+    assert re.search(r"\d{4}-\d{2}-\d{2}", parsed["message"])
 
 
 def test_get_current_time_direct():
     result = tm.get_current_time()
-    assert "Current time:" in result
+    assert "Current time:" in tool_message(result)
 
 
 # ---------------------------------------------------------------------------

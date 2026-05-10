@@ -23,7 +23,7 @@ description: |
     - zellij session named <session> running cc
 
 version: 1
-status: live
+status: deprecated
 created_by: dogfood
 
 parameters:

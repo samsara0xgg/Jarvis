@@ -18,6 +18,7 @@ def _make_config(**overrides):
         "tts": {
             "engine": "pyttsx3",
             "fallback_enabled": False,
+            "stream_player": {"enabled": False},
         }
     }
     base["tts"].update(overrides)

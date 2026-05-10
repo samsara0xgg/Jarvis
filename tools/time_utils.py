@@ -5,6 +5,7 @@ import threading
 from datetime import datetime
 from typing import Any
 
+from core.tool_result import FAILURE, SUCCESS, make_tool_result
 from tools import jarvis_tool
 
 LOGGER = logging.getLogger(__name__)
@@ -22,14 +23,29 @@ def init(tts_callback: Any = None) -> None:
 @jarvis_tool(read_only=True)
 def get_current_time() -> str:
     """Get the current date and time."""
-    return datetime.now().strftime("Current time: %Y-%m-%d %H:%M:%S (%A)")
+    now = datetime.now().astimezone()
+    message = now.strftime("Current time: %Y-%m-%d %H:%M:%S (%A)")
+    return make_tool_result(
+        SUCCESS,
+        message,
+        data={
+            "iso": now.isoformat(),
+            "timezone": now.tzname(),
+            "utc_offset": now.strftime("%z"),
+        },
+    )
 
 
 @jarvis_tool(read_only=False)
 def set_timer(seconds: int, label: str = "timer") -> str:
     """Set a countdown timer. When it fires, Jarvis will announce it."""
     if seconds <= 0:
-        return "Timer duration must be positive."
+        return make_tool_result(
+            FAILURE,
+            "Timer duration must be positive.",
+            data={"seconds": seconds, "label": label},
+            error_code="invalid_duration",
+        )
     return _start_timer(seconds, label)
 
 
@@ -59,7 +75,11 @@ def _start_timer(seconds: int, label: str) -> str:
         display = f"{seconds // 60} minutes {seconds % 60} seconds"
     else:
         display = f"{seconds} seconds"
-    return f"Timer set: '{label}' for {display}."
+    return make_tool_result(
+        SUCCESS,
+        f"Timer set: '{label}' for {display}.",
+        data={"timer_id": timer_id, "seconds": seconds, "label": label},
+    )
 
 
 def cancel_all() -> None:

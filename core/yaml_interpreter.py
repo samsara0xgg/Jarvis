@@ -38,6 +38,7 @@ import yaml
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from core import cc_jsonl_reader
+from core.tool_result import SUCCESS, make_tool_result
 
 LOGGER = logging.getLogger(__name__)
 
@@ -562,9 +563,15 @@ class YAMLInterpreter:
 
         template = response_cfg.get("template", "已发送")
         try:
-            return self._render(
+            message = self._render(
                 template, {**params, "text": text, "session": session, "keys": keys}
             )
+            if response_cfg.get("envelope"):
+                return make_tool_result(
+                    str(response_cfg.get("status", SUCCESS)),
+                    message,
+                )
+            return message
         except Exception:
             LOGGER.exception("zellij_send response render failed for %s", skill.get("name"))
             return error_template if error_template else _FALLBACK_ERROR
@@ -1160,4 +1167,10 @@ class YAMLInterpreter:
 
         # Step 3: template
         template_str = response_cfg.get("template", "")
-        return self._render(template_str, context)
+        message = self._render(template_str, context)
+        if response_cfg.get("envelope"):
+            return make_tool_result(
+                str(response_cfg.get("status", SUCCESS)),
+                message,
+            )
+        return message

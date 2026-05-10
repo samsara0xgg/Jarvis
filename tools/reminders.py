@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from core.tool_result import FAILURE, SUCCESS, make_tool_result
 from tools import jarvis_tool, _EXECUTION_CONTEXT
 
 LOGGER = logging.getLogger(__name__)
@@ -39,7 +40,11 @@ def create_reminder(content: str, remind_at: str = "") -> str:
     """Create a reminder for the current user."""
     content = content.strip()
     if not content:
-        return "Reminder content cannot be empty."
+        return make_tool_result(
+            FAILURE,
+            "Reminder content cannot be empty.",
+            error_code="empty_content",
+        )
 
     remind_at = remind_at.strip() or None
     user_id = _EXECUTION_CONTEXT.get("user_id") or "_anonymous"
@@ -62,7 +67,11 @@ def create_reminder(content: str, remind_at: str = "") -> str:
         _schedule_reminder(reminder)
 
     time_part = f" for {remind_at}" if remind_at else ""
-    return f"Reminder created (ID: {reminder['id']}): '{content}'{time_part}."
+    return make_tool_result(
+        SUCCESS,
+        f"Reminder created (ID: {reminder['id']}): '{content}'{time_part}.",
+        data={"reminder": reminder, "scheduled": bool(remind_at)},
+    )
 
 
 @jarvis_tool(read_only=True)
@@ -75,13 +84,21 @@ def list_reminders() -> str:
         if r.get("user_id") == user_id and not r.get("is_done", False)
     ]
     if not user_reminders:
-        return "No active reminders."
+        return make_tool_result(
+            SUCCESS,
+            "No active reminders.",
+            data={"reminders": []},
+        )
 
     lines = []
     for r in user_reminders:
         time_part = f" (due: {r['remind_at']})" if r.get("remind_at") else ""
         lines.append(f"- [{r['id']}] {r['content']}{time_part}")
-    return "Active reminders:\n" + "\n".join(lines)
+    return make_tool_result(
+        SUCCESS,
+        "Active reminders:\n" + "\n".join(lines),
+        data={"reminders": user_reminders},
+    )
 
 
 @jarvis_tool(read_only=False)
@@ -93,8 +110,17 @@ def complete_reminder(reminder_id: str) -> str:
         if r.get("id") == reminder_id and r.get("user_id") == user_id:
             r["is_done"] = True
             _save(data)
-            return f"Reminder '{r['content']}' marked as done."
-    return f"Reminder {reminder_id} not found."
+            return make_tool_result(
+                SUCCESS,
+                f"Reminder '{r['content']}' marked as done.",
+                data={"reminder": r},
+            )
+    return make_tool_result(
+        FAILURE,
+        f"Reminder {reminder_id} not found.",
+        data={"reminder_id": reminder_id},
+        error_code="reminder_not_found",
+    )
 
 
 # ---------------------------------------------------------------------------

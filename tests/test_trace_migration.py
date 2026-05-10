@@ -79,7 +79,7 @@ class TestFreshInstall:
             assert "error" in cols
             assert "finish_reason" in cols
             assert "cost_usd" in cols
-            assert len(cols) == 32
+            assert len(cols) == 34
         finally:
             tl.close()
 
@@ -196,7 +196,9 @@ class TestV2ToV3Migration:
         migrate_trace_v2_to_v3(conn)
         cols = _column_names(conn, "trace")
         assert "user_id" in cols
-        assert len(cols) == 32
+        assert "mode" in cols
+        assert "input_device" in cols
+        assert len(cols) == 34
         conn.close()
 
     def test_indexes_present_after_migration(self, tmp_path):

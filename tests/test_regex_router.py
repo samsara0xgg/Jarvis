@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from core.regex_router import RegexMatch, RegexRouter
+from core.tool_result import FAILURE, SUCCESS, make_tool_result
 
 
 def _minimal_config() -> dict:
@@ -183,6 +184,7 @@ class TestContentCapturePatterns:
         m = self.router.match("记到inbox 想个新项目")
         assert m is not None
         assert m.pattern_id == "obsidian_inbox"
+        assert m.tool_name == "obsidian_add_to_inbox"
         assert m.tool_args == {"content": "想个新项目"}
 
     def test_cc_tell(self) -> None:
@@ -325,7 +327,7 @@ class TestCcSlashPatterns:
         self.router = RegexRouter(_minimal_config())
 
     def test_model_opus(self) -> None:
-        m = self.router.match("切到opus")
+        m = self.router.match("cc切到opus")
         assert m is not None
         assert m.pattern_id == "cc_slash_model"
         assert m.tool_name == "cc_slash"
@@ -333,25 +335,31 @@ class TestCcSlashPatterns:
         assert m.template_vars == {"arg": "opus"}
 
     def test_model_sonnet(self) -> None:
-        m = self.router.match("切到sonnet")
+        m = self.router.match("让cc切到sonnet")
         assert m is not None
         assert m.tool_args["args"] == "sonnet"
 
     def test_model_haiku(self) -> None:
-        m = self.router.match("切到haiku")
+        m = self.router.match("让 cc 切到haiku")
         assert m is not None
         assert m.tool_args["args"] == "haiku"
 
     def test_effort_xhigh(self) -> None:
-        m = self.router.match("effort xhigh")
+        m = self.router.match("cc effort xhigh")
         assert m is not None
         assert m.pattern_id == "cc_slash_effort"
         assert m.tool_args == {"command": "effort", "args": "xhigh"}
 
     def test_effort_medium(self) -> None:
-        m = self.router.match("effort medium")
+        m = self.router.match("让cc effort medium")
         assert m is not None
         assert m.tool_args["args"] == "medium"
+
+    def test_bare_model_switch_misses(self) -> None:
+        assert self.router.match("切到sonnet") is None
+
+    def test_bare_effort_misses(self) -> None:
+        assert self.router.match("effort medium") is None
 
     def test_miss_chinese_value(self) -> None:
         # "切到大模型" not in enum
@@ -399,8 +407,8 @@ class TestSceneActivatePattern:
         assert self.router.match("切到1") is None
 
     def test_scene_not_collide_with_cc_slash(self) -> None:
-        # "切到opus" must still hit cc_slash_model, not scene
-        m = self.router.match("切到opus")
+        # Explicit cc anchor must still hit cc_slash_model, not scene
+        m = self.router.match("cc切到opus")
         assert m is not None
         assert m.pattern_id == "cc_slash_model"
 
@@ -429,8 +437,25 @@ class TestRenderResponse:
             tool_name="get_current_time",
             template_key="get_current_time",
         )
-        out = self.router.render_response(match, "下午两点")
+        out = self.router.render_response(
+            match,
+            make_tool_result(SUCCESS, "下午两点"),
+        )
         assert out in ("现在下午两点。", "下午两点。")
+
+    def test_render_failure_uses_tool_message_not_success_template(self) -> None:
+        match = RegexMatch(
+            pattern_id="smart_home_turn_on",
+            intent="smart_home_control",
+            tool_name="smart_home_control",
+            template_key="smart_home_turn_on",
+            template_vars={"device": "灯"},
+        )
+        out = self.router.render_response(
+            match,
+            make_tool_result(FAILURE, "Device not found: all_lights"),
+        )
+        assert out == "Device not found: all_lights"
 
     def test_render_with_template_vars(self) -> None:
         match = RegexMatch(

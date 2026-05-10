@@ -14,6 +14,7 @@ def _make_config(**tts_overrides):
             "minimax_fallback_key": "",
             "minimax_voice": "Chinese (Mandarin)_ExplorativeGirl",
             "minimax_model": "speech-2.8-turbo",
+            "stream_player": {"enabled": False},
         }
     }
     base["tts"].update(tts_overrides)
@@ -142,8 +143,11 @@ class TestMiniMaxFallback:
         )
         tts = TTSEngine(config)
 
+        async def _fail_ws(*_args, **_kwargs):
+            raise RuntimeError("WS .io down")
+
         # Force WS path to raise; verify HTTP fallback called with .chat URL/key.
-        with patch("core.tts.asyncio.run", side_effect=RuntimeError("WS .io down")), \
+        with patch("core.tts._ws_collect_audio", side_effect=_fail_ws), \
              patch.object(tts, "_synth_minimax_http", return_value=b"\x00" * 32000) as mock_http:
             path, deletable = tts._synth_minimax("你好", "")
             mock_http.assert_called_once()
@@ -156,7 +160,10 @@ class TestMiniMaxFallback:
         config = _make_config(cache_dir=str(tmp_path), minimax_fallback_key="")
         tts = TTSEngine(config)
 
-        with patch("core.tts.asyncio.run", side_effect=RuntimeError("WS down")):
+        async def _fail_ws(*_args, **_kwargs):
+            raise RuntimeError("WS down")
+
+        with patch("core.tts._ws_collect_audio", side_effect=_fail_ws):
             try:
                 tts._synth_minimax("你好", "")
             except RuntimeError as exc:
