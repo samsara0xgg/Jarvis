@@ -408,6 +408,8 @@ final class NativeCardModelTests: XCTestCase {
     let markdown = """
     ### Details
     #### Small
+    ##### Tiny
+    ###### Smallest
     1. First
     2) Second
     """
@@ -417,6 +419,8 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertEqual(blocks, [
       .heading3("Details"),
       .heading4("Small"),
+      .heading5("Tiny"),
+      .heading6("Smallest"),
       .numbered("1.", "First"),
       .numbered("2.", "Second"),
     ])

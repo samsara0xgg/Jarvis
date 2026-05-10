@@ -528,6 +528,10 @@ struct NativeMarkdownText: View {
       inlineTextView(text, range: range, color: Color.white.opacity(0.55))
         .font(.system(size: 14, weight: .medium))
         .padding(.top, 8)
+    case .heading5(let text), .heading6(let text):
+      inlineTextView(text, range: range, color: Color.white.opacity(0.55))
+        .font(.system(size: 13, weight: .medium))
+        .padding(.top, 6)
     case .bullet(let text):
       HStack(alignment: .top, spacing: 8) {
         Text("•").foregroundStyle(Color.white.opacity(0.35))
@@ -869,6 +873,8 @@ enum NativeAnswerBlock: Equatable {
   case heading2(String)
   case heading3(String)
   case heading4(String)
+  case heading5(String)
+  case heading6(String)
   case bullet(String)
   case numbered(String, String)
   case code(String, language: String?)
@@ -976,6 +982,8 @@ enum NativeAnswerParser {
          .heading2(let text),
          .heading3(let text),
          .heading4(let text),
+         .heading5(let text),
+         .heading6(let text),
          .bullet(let text),
          .paragraph(let text),
          .muted(let text),
@@ -1066,6 +1074,10 @@ enum NativeAnswerParser {
         result.append(.heading3(String(line.dropFirst(4))))
       } else if line.hasPrefix("#### ") {
         result.append(.heading4(String(line.dropFirst(5))))
+      } else if line.hasPrefix("##### ") {
+        result.append(.heading5(String(line.dropFirst(6))))
+      } else if line.hasPrefix("###### ") {
+        result.append(.heading6(String(line.dropFirst(7))))
       } else if line.hasPrefix("- ") {
         result.append(.bullet(String(line.dropFirst(2))))
       } else if let ordered = orderedListItem(line) {
