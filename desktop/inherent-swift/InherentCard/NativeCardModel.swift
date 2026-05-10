@@ -110,9 +110,6 @@ final class NativeCardModel: ObservableObject {
   private var shownAnswer = ""
   private var visibleAnswerText = ""
   private var dripWork: DispatchWorkItem?
-  private var lastDripTick: Date?
-  private var lastDripLayout = Date.distantPast
-  private var dripCarry = 0.0
   private var fadeWork: DispatchWorkItem?
   private var popoverHideWork: DispatchWorkItem?
   private var attachmentEdgeFlashWork: DispatchWorkItem?
@@ -122,7 +119,7 @@ final class NativeCardModel: ObservableObject {
   private var enterHoldStarted = Date()
 
   private let imageMaxBytes = 15 * 1024 * 1024
-  private let dripMs: TimeInterval = 0.020
+  private let dripMs: TimeInterval = 0.030
   private let catchupMs: TimeInterval = 0.008
   private let catchupThreshold = 40
   private let followupEnterMs: TimeInterval = 0.240
@@ -825,9 +822,6 @@ final class NativeCardModel: ObservableObject {
   private func clearDrip() {
     dripWork?.cancel()
     dripWork = nil
-    lastDripTick = nil
-    lastDripLayout = .distantPast
-    dripCarry = 0
   }
 
   private func startDrip() {
@@ -837,36 +831,16 @@ final class NativeCardModel: ObservableObject {
         guard let self else { return }
         self.dripWork = nil
         guard self.shownAnswer.count < self.targetAnswer.count else { return }
-        let lag = self.targetAnswer.count - self.shownAnswer.count
-        let now = Date()
-        let perCharacter = lag > self.catchupThreshold ? self.catchupMs : self.dripMs
-        let elapsed = self.lastDripTick.map { now.timeIntervalSince($0) } ?? perCharacter
-        self.lastDripTick = now
-        self.dripCarry += max(elapsed, perCharacter) / perCharacter
-        var step = min(lag, max(1, Int(self.dripCarry.rounded(.down))))
-        if lag > self.catchupThreshold {
-          step = max(step, min(lag, 4))
-        }
-        self.dripCarry = max(0, self.dripCarry - Double(step))
-        let nextIndex = self.targetAnswer.index(self.targetAnswer.startIndex, offsetBy: self.shownAnswer.count + step)
+        let nextIndex = self.targetAnswer.index(self.targetAnswer.startIndex, offsetBy: self.shownAnswer.count + 1)
         self.shownAnswer = String(self.targetAnswer[..<nextIndex])
         self.setAnswerText(self.shownAnswer, animateCharacters: true)
-        let shouldMeasureLayout = now.timeIntervalSince(self.lastDripLayout) >= (1.0 / 30.0)
-          || self.shownAnswer.last == "\n"
-          || self.shownAnswer.count == self.targetAnswer.count
-        if shouldMeasureLayout {
-          self.lastDripLayout = now
-          self.requestLayout()
-        }
+        self.requestLayout()
         guard self.shownAnswer.count < self.targetAnswer.count else {
-          self.lastDripTick = nil
-          self.dripCarry = 0
           return
         }
         let remainingLag = self.targetAnswer.count - self.shownAnswer.count
         let nextPerCharacter = remainingLag > self.catchupThreshold ? self.catchupMs : self.dripMs
-        let delay = max(1.0 / 30.0, nextPerCharacter)
-        self.scheduleDrip(after: delay)
+        self.scheduleDrip(after: nextPerCharacter)
       }
     }
     dripWork = work
@@ -889,13 +863,8 @@ final class NativeCardModel: ObservableObject {
     var lag = max(0, remaining)
     var total = 0.0
     while lag > 0 {
-      if lag > catchupThreshold {
-        lag -= min(lag, 4)
-        total += catchupMs
-      } else {
-        lag -= 1
-        total += dripMs
-      }
+      total += lag > catchupThreshold ? catchupMs : dripMs
+      lag -= 1
     }
     return Int(ceil(total * 1000))
   }
