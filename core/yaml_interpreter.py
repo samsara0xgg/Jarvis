@@ -28,7 +28,7 @@ import re
 import subprocess
 import time
 import unicodedata
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -38,7 +38,7 @@ import yaml
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from core import cc_jsonl_reader
-from core.tool_result import SUCCESS, make_tool_result
+from core.tool_result import FAILURE, NEEDS_CLARIFICATION, SUCCESS, make_tool_result
 
 LOGGER = logging.getLogger(__name__)
 
@@ -96,6 +96,53 @@ _AEROSPACE_POLL_INTERVAL_S = 0.3
 _AEROSPACE_LIST_TIMEOUT_S = 2.0
 _AEROSPACE_LIST_FORMAT = "%{window-id}\t%{app-name}\t%{window-title}"
 
+_OPEN_METEO_GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
+_OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+_OPEN_METEO_CURRENT = (
+    "temperature_2m,relative_humidity_2m,apparent_temperature,"
+    "precipitation,rain,showers,snowfall,weather_code,cloud_cover,"
+    "wind_speed_10m,wind_gusts_10m"
+)
+_OPEN_METEO_HOURLY = (
+    "temperature_2m,apparent_temperature,precipitation_probability,"
+    "precipitation,weather_code,wind_speed_10m"
+)
+_OPEN_METEO_DAILY = (
+    "weather_code,temperature_2m_max,temperature_2m_min,"
+    "apparent_temperature_max,apparent_temperature_min,precipitation_sum,"
+    "precipitation_probability_max,wind_speed_10m_max"
+)
+_WEATHER_CODE_ZH: dict[int, str] = {
+    0: "晴朗",
+    1: "大部晴朗",
+    2: "局部多云",
+    3: "阴天",
+    45: "有雾",
+    48: "霜雾",
+    51: "小毛毛雨",
+    53: "毛毛雨",
+    55: "较强毛毛雨",
+    56: "冻毛毛雨",
+    57: "较强冻毛毛雨",
+    61: "小雨",
+    63: "中雨",
+    65: "大雨",
+    66: "冻雨",
+    67: "强冻雨",
+    71: "小雪",
+    73: "中雪",
+    75: "大雪",
+    77: "雪粒",
+    80: "阵雨",
+    81: "较强阵雨",
+    82: "强阵雨",
+    85: "阵雪",
+    86: "强阵雪",
+    95: "雷暴",
+    96: "雷暴伴小冰雹",
+    99: "雷暴伴强冰雹",
+}
+
 
 class _PaneNotFound(LookupError):
     """Raised when ``_resolve_zellij_pane`` finds no pane with the given title."""
@@ -103,6 +150,385 @@ class _PaneNotFound(LookupError):
 
 class _PollTimeout(TimeoutError):
     """Raised when ``_step_poll_window`` does not find a matching window in time."""
+
+
+class _WeatherLookupError(RuntimeError):
+    """Raised when the Open-Meteo weather path cannot produce scoped data."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.data = data or {}
+
+
+def _safe_int(value: Any, *, default: int) -> int:
+    """Parse an integer parameter without letting bad LLM input leak through."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _weather_num(value: Any, *, digits: int = 1) -> float | int | None:
+    """Return rounded weather numeric values while preserving missing data."""
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    rounded = round(num, digits)
+    if digits == 0:
+        return int(rounded)
+    return rounded
+
+
+def _weather_desc(code: Any) -> str:
+    """Map Open-Meteo WMO weather codes into concise Chinese labels."""
+    try:
+        return _WEATHER_CODE_ZH.get(int(code), f"天气代码{code}")
+    except (TypeError, ValueError):
+        return "未知天气"
+
+
+def _series_value(series: dict[str, Any], key: str, idx: int) -> Any:
+    values = series.get(key) or []
+    if not isinstance(values, list) or idx >= len(values):
+        return None
+    return values[idx]
+
+
+def _weather_min(values: list[Any]) -> float | None:
+    nums = [_weather_num(v) for v in values]
+    present = [v for v in nums if isinstance(v, (int, float))]
+    return min(present) if present else None
+
+
+def _weather_max(values: list[Any]) -> float | None:
+    nums = [_weather_num(v) for v in values]
+    present = [v for v in nums if isinstance(v, (int, float))]
+    return max(present) if present else None
+
+
+def _weather_sum(values: list[Any]) -> float | None:
+    nums = [_weather_num(v) for v in values]
+    present = [v for v in nums if isinstance(v, (int, float))]
+    return round(sum(present), 1) if present else None
+
+
+def _weather_display_location(location: dict[str, Any]) -> str:
+    parts = [location.get("name"), location.get("admin1"), location.get("country")]
+    return "，".join(str(part) for part in parts if part)
+
+
+def _contains_cjk(text: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in text)
+
+
+def _open_meteo_build_result(
+    location: dict[str, Any],
+    forecast: dict[str, Any],
+    *,
+    forecast_type: str,
+    target_date: str,
+    days: int,
+) -> dict[str, Any]:
+    """Build a scoped, renderer-friendly weather payload from Open-Meteo JSON."""
+    timezone = str(forecast.get("timezone") or location.get("timezone") or "UTC")
+    observed_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    location_data = {
+        "name": location.get("name"),
+        "admin1": location.get("admin1"),
+        "country": location.get("country"),
+        "country_code": location.get("country_code"),
+        "latitude": location.get("latitude"),
+        "longitude": location.get("longitude"),
+        "timezone": timezone,
+        "resolved_from": location.get("resolved_from"),
+        "resolved_query": location.get("resolved_query"),
+        "resolution_source": location.get("resolution_source"),
+    }
+    limitations = [
+        "This tool returns Open-Meteo forecast data only; it does not include official severe-weather alerts.",
+    ]
+
+    if forecast_type == "current":
+        return _open_meteo_current_result(
+            location_data,
+            forecast,
+            observed_at=observed_at,
+            limitations=limitations,
+        )
+    if forecast_type == "hourly":
+        return _open_meteo_hourly_result(
+            location_data,
+            forecast,
+            target_date=target_date,
+            days=days,
+            observed_at=observed_at,
+            limitations=limitations,
+        )
+    return _open_meteo_daily_result(
+        location_data,
+        forecast,
+        target_date=target_date,
+        days=days,
+        observed_at=observed_at,
+        limitations=limitations,
+    )
+
+
+def _open_meteo_base_data(
+    location_data: dict[str, Any],
+    *,
+    forecast_type: str,
+    start_time: str | None,
+    end_time: str | None,
+    observed_at: str,
+    limitations: list[str],
+    max_age_seconds: int,
+) -> dict[str, Any]:
+    return {
+        "location": location_data,
+        "scope": {
+            "type": "weather_forecast",
+            "location": location_data,
+            "coverage": {
+                "forecast_type": forecast_type,
+                "start_time": start_time,
+                "end_time": end_time,
+            },
+        },
+        "freshness": {
+            "observed_at": observed_at,
+            "timezone": location_data.get("timezone"),
+            "max_age_seconds": max_age_seconds,
+        },
+        "limitations": limitations,
+    }
+
+
+def _open_meteo_current_result(
+    location_data: dict[str, Any],
+    forecast: dict[str, Any],
+    *,
+    observed_at: str,
+    limitations: list[str],
+) -> dict[str, Any]:
+    current = forecast.get("current") or {}
+    if not current:
+        raise _WeatherLookupError(
+            "天气服务没有返回当前天气。",
+            code="missing_current_weather",
+            data={"location": location_data},
+        )
+
+    weather = {
+        "time": current.get("time"),
+        "condition": _weather_desc(current.get("weather_code")),
+        "weather_code": current.get("weather_code"),
+        "temperature_c": _weather_num(current.get("temperature_2m")),
+        "apparent_temperature_c": _weather_num(current.get("apparent_temperature")),
+        "relative_humidity_percent": _weather_num(
+            current.get("relative_humidity_2m"),
+            digits=0,
+        ),
+        "precipitation_mm": _weather_num(current.get("precipitation")),
+        "rain_mm": _weather_num(current.get("rain")),
+        "showers_mm": _weather_num(current.get("showers")),
+        "snowfall_cm": _weather_num(current.get("snowfall")),
+        "cloud_cover_percent": _weather_num(current.get("cloud_cover"), digits=0),
+        "wind_speed_kmh": _weather_num(current.get("wind_speed_10m")),
+        "wind_gusts_kmh": _weather_num(current.get("wind_gusts_10m")),
+    }
+    data = _open_meteo_base_data(
+        location_data,
+        forecast_type="current",
+        start_time=str(current.get("time") or ""),
+        end_time=str(current.get("time") or ""),
+        observed_at=observed_at,
+        limitations=limitations,
+        max_age_seconds=900,
+    )
+    data["weather"] = {"current": weather}
+    display_location = _weather_display_location(location_data)
+    message = (
+        f"{display_location}当前：{weather['condition']}，"
+        f"{weather['temperature_c']}°C（体感{weather['apparent_temperature_c']}°C），"
+        f"湿度{weather['relative_humidity_percent']}%，"
+        f"降水{weather['precipitation_mm']}mm，"
+        f"云量{weather['cloud_cover_percent']}%，"
+        f"风速{weather['wind_speed_kmh']}km/h，阵风{weather['wind_gusts_kmh']}km/h。"
+    )
+    return {"message": message, "data": data}
+
+
+def _open_meteo_hourly_result(
+    location_data: dict[str, Any],
+    forecast: dict[str, Any],
+    *,
+    target_date: str,
+    days: int,
+    observed_at: str,
+    limitations: list[str],
+) -> dict[str, Any]:
+    hourly = forecast.get("hourly") or {}
+    times = hourly.get("time") or []
+    if not times:
+        raise _WeatherLookupError(
+            "天气服务没有返回小时级预报。",
+            code="missing_hourly_weather",
+            data={"location": location_data, "target_date": target_date},
+        )
+
+    row_limit = min(len(times), 72 if not target_date else 24 * max(days, 1))
+    rows = [
+        {
+            "time": times[idx],
+            "condition": _weather_desc(_series_value(hourly, "weather_code", idx)),
+            "weather_code": _series_value(hourly, "weather_code", idx),
+            "temperature_c": _weather_num(_series_value(hourly, "temperature_2m", idx)),
+            "apparent_temperature_c": _weather_num(
+                _series_value(hourly, "apparent_temperature", idx),
+            ),
+            "precipitation_probability_percent": _weather_num(
+                _series_value(hourly, "precipitation_probability", idx),
+                digits=0,
+            ),
+            "precipitation_mm": _weather_num(
+                _series_value(hourly, "precipitation", idx),
+            ),
+            "wind_speed_kmh": _weather_num(_series_value(hourly, "wind_speed_10m", idx)),
+        }
+        for idx in range(row_limit)
+    ]
+    temps = [row["temperature_c"] for row in rows]
+    pops = [row["precipitation_probability_percent"] for row in rows]
+    precip = [row["precipitation_mm"] for row in rows]
+    winds = [row["wind_speed_kmh"] for row in rows]
+
+    data = _open_meteo_base_data(
+        location_data,
+        forecast_type="hourly",
+        start_time=str(rows[0]["time"]),
+        end_time=str(rows[-1]["time"]),
+        observed_at=observed_at,
+        limitations=limitations,
+        max_age_seconds=900,
+    )
+    data["weather"] = {
+        "hourly": rows,
+        "summary": {
+            "returned_hours": len(rows),
+            "temperature_min_c": _weather_min(temps),
+            "temperature_max_c": _weather_max(temps),
+            "precipitation_probability_max_percent": _weather_max(pops),
+            "precipitation_sum_mm": _weather_sum(precip),
+            "wind_speed_max_kmh": _weather_max(winds),
+        },
+    }
+    display_location = _weather_display_location(location_data)
+    summary = data["weather"]["summary"]
+    message = (
+        f"{display_location}小时预报覆盖{rows[0]['time']}至{rows[-1]['time']}："
+        f"气温{summary['temperature_min_c']}至{summary['temperature_max_c']}°C，"
+        f"最高降水概率{summary['precipitation_probability_max_percent']}%，"
+        f"预计降水{summary['precipitation_sum_mm']}mm，"
+        f"最大风速{summary['wind_speed_max_kmh']}km/h。"
+    )
+    return {"message": message, "data": data}
+
+
+def _open_meteo_daily_result(
+    location_data: dict[str, Any],
+    forecast: dict[str, Any],
+    *,
+    target_date: str,
+    days: int,
+    observed_at: str,
+    limitations: list[str],
+) -> dict[str, Any]:
+    daily = forecast.get("daily") or {}
+    dates = daily.get("time") or []
+    if not dates:
+        raise _WeatherLookupError(
+            "天气服务没有返回日级预报。",
+            code="missing_daily_weather",
+            data={"location": location_data, "target_date": target_date},
+        )
+
+    row_limit = min(len(dates), max(days, 1))
+    rows = [
+        {
+            "date": dates[idx],
+            "condition": _weather_desc(_series_value(daily, "weather_code", idx)),
+            "weather_code": _series_value(daily, "weather_code", idx),
+            "temperature_max_c": _weather_num(
+                _series_value(daily, "temperature_2m_max", idx),
+            ),
+            "temperature_min_c": _weather_num(
+                _series_value(daily, "temperature_2m_min", idx),
+            ),
+            "apparent_temperature_max_c": _weather_num(
+                _series_value(daily, "apparent_temperature_max", idx),
+            ),
+            "apparent_temperature_min_c": _weather_num(
+                _series_value(daily, "apparent_temperature_min", idx),
+            ),
+            "precipitation_sum_mm": _weather_num(
+                _series_value(daily, "precipitation_sum", idx),
+            ),
+            "precipitation_probability_max_percent": _weather_num(
+                _series_value(daily, "precipitation_probability_max", idx),
+                digits=0,
+            ),
+            "wind_speed_max_kmh": _weather_num(
+                _series_value(daily, "wind_speed_10m_max", idx),
+            ),
+        }
+        for idx in range(row_limit)
+    ]
+
+    data = _open_meteo_base_data(
+        location_data,
+        forecast_type="daily",
+        start_time=str(rows[0]["date"]),
+        end_time=str(rows[-1]["date"]),
+        observed_at=observed_at,
+        limitations=limitations,
+        max_age_seconds=3600,
+    )
+    data["weather"] = {"daily": rows}
+    display_location = _weather_display_location(location_data)
+    if len(rows) == 1:
+        row = rows[0]
+        message = (
+            f"{display_location}{row['date']}：{row['condition']}，"
+            f"最高{row['temperature_max_c']}°C，最低{row['temperature_min_c']}°C，"
+            f"体感最高{row['apparent_temperature_max_c']}°C，"
+            f"最高降水概率{row['precipitation_probability_max_percent']}%，"
+            f"预计降水{row['precipitation_sum_mm']}mm，"
+            f"最大风速{row['wind_speed_max_kmh']}km/h。"
+        )
+    else:
+        wettest = max(
+            rows,
+            key=lambda row: row["precipitation_probability_max_percent"] or 0,
+        )
+        message = (
+            f"{display_location}{len(rows)}日预报覆盖{rows[0]['date']}至{rows[-1]['date']}："
+            f"最高降水概率出现在{wettest['date']}（"
+            f"{wettest['precipitation_probability_max_percent']}%），"
+            f"温度范围{_weather_min([row['temperature_min_c'] for row in rows])}至"
+            f"{_weather_max([row['temperature_max_c'] for row in rows])}°C。"
+        )
+    return {"message": message, "data": data}
 
 
 def _format_relative_time(seconds: float) -> str:
@@ -307,6 +733,8 @@ class YAMLInterpreter:
             return self._execute_cc_read_state(skill, params)
         if atype == "aerospace_op":
             return self._execute_aerospace_op(skill, params)
+        if atype == "open_meteo_weather":
+            return self._execute_open_meteo_weather(skill, params)
 
         msg = f"Unsupported action type: {atype}"
         LOGGER.warning(msg)
@@ -348,6 +776,271 @@ class YAMLInterpreter:
         except Exception:
             LOGGER.exception("Response rendering failed for %s", skill.get("name"))
             return error_template if error_template else _FALLBACK_ERROR
+
+    def _execute_open_meteo_weather(self, skill: dict, params: dict) -> str:
+        """Open-Meteo weather path with geocoding, scope, and freshness."""
+        action = skill.get("action", {})
+        response_cfg = skill.get("response", {})
+        error_template = response_cfg.get("error_template") or "天气查询失败，请稍后再试。"
+
+        city = str(params.get("city") or action.get("default_city") or "Victoria").strip()
+        forecast_type = str(params.get("forecast_type") or "current").strip().lower()
+        if forecast_type not in {"current", "hourly", "daily"}:
+            return make_tool_result(
+                NEEDS_CLARIFICATION,
+                "天气查询类型只能是 current、hourly 或 daily。",
+                data={"forecast_type": forecast_type},
+                error_code="invalid_forecast_type",
+                outcome_type="failed",
+                verified=False,
+                verification_source="weather_provider",
+            )
+
+        target_date = str(params.get("target_date") or "").strip()
+        if target_date:
+            try:
+                date.fromisoformat(target_date)
+            except ValueError:
+                return make_tool_result(
+                    NEEDS_CLARIFICATION,
+                    "日期需要使用 YYYY-MM-DD 格式。",
+                    data={"target_date": target_date},
+                    error_code="invalid_target_date",
+                    outcome_type="failed",
+                    verified=False,
+                    verification_source="weather_provider",
+                )
+        days = _safe_int(params.get("days"), default=(1 if forecast_type == "hourly" else 7))
+        days = min(max(days, 1), 16)
+
+        try:
+            location = self._open_meteo_resolve_location(skill, action, city)
+            forecast = self._open_meteo_fetch_forecast(
+                skill,
+                action,
+                location,
+                forecast_type=forecast_type,
+                target_date=target_date,
+                days=days,
+            )
+            payload = _open_meteo_build_result(
+                location,
+                forecast,
+                forecast_type=forecast_type,
+                target_date=target_date,
+                days=days,
+            )
+            return make_tool_result(
+                SUCCESS,
+                str(payload["message"]),
+                data=payload["data"],
+                outcome_type="observed",
+                verified=True,
+                verification_source="weather_provider",
+                claim_policy={
+                    "allowed_claims": ["weather_observed_with_scope"],
+                    "forbidden_claims": ["weather_outside_scope"],
+                },
+            )
+        except _WeatherLookupError as exc:
+            LOGGER.warning("open_meteo_weather failed: %s", exc)
+            return make_tool_result(
+                FAILURE,
+                str(exc),
+                data=exc.data,
+                error_code=exc.code,
+                outcome_type="failed",
+                verified=False,
+                verification_source="weather_provider",
+            )
+        except Exception:
+            LOGGER.exception("open_meteo_weather unexpected failure for %s", city)
+            return error_template
+
+    def _open_meteo_resolve_location(
+        self,
+        skill: dict,
+        action: dict,
+        city: str,
+    ) -> dict[str, Any]:
+        """Resolve a city name into Open-Meteo latitude/longitude/timezone."""
+        if not city:
+            raise _WeatherLookupError(
+                "还缺城市名。",
+                code="missing_location",
+                data={},
+            )
+
+        geocoding_url = str(action.get("geocoding_url") or _OPEN_METEO_GEOCODING_URL)
+        aliases = action.get("location_aliases") or {}
+        lookup_terms = [str(aliases.get(city) or city)]
+        if city.endswith("市"):
+            lookup_terms.append(city[:-1])
+        if lookup_terms[0] != city:
+            lookup_terms.append(city)
+
+        result: dict[str, Any] = {}
+        matches: list[dict[str, Any]] = []
+        resolved_query = city
+        for lookup_term in dict.fromkeys(term for term in lookup_terms if term):
+            language = str(action.get("geocoding_language") or "auto").lower()
+            if language == "auto":
+                language = "zh" if _contains_cjk(lookup_term) else "en"
+            result = self._open_meteo_get_json(
+                skill,
+                action,
+                geocoding_url,
+                {
+                    "name": lookup_term,
+                    "count": _safe_int(action.get("geocoding_count"), default=10),
+                    "language": language,
+                    "format": "json",
+                },
+            )
+            matches = result.get("results") or []
+            if matches:
+                resolved_query = lookup_term
+                break
+
+        if not matches:
+            raise _WeatherLookupError(
+                f"没有找到城市：{city}",
+                code="location_not_found",
+                data={"city": city},
+            )
+        preferred_country = str(action.get("preferred_country_code") or "").upper()
+        match = next(
+            (
+                candidate
+                for candidate in matches
+                if str(candidate.get("country_code") or "").upper() == preferred_country
+            ),
+            matches[0],
+        )
+        return {
+            "name": match.get("name") or city,
+            "admin1": match.get("admin1") or "",
+            "country": match.get("country") or "",
+            "country_code": match.get("country_code") or "",
+            "latitude": match["latitude"],
+            "longitude": match["longitude"],
+            "timezone": match.get("timezone") or "auto",
+            "resolved_from": city,
+            "resolved_query": resolved_query,
+            "resolution_source": "open_meteo_geocoding",
+        }
+
+    def _open_meteo_fetch_forecast(
+        self,
+        skill: dict,
+        action: dict,
+        location: dict[str, Any],
+        *,
+        forecast_type: str,
+        target_date: str,
+        days: int,
+    ) -> dict[str, Any]:
+        """Fetch forecast JSON for a resolved Open-Meteo location."""
+        forecast_url = str(action.get("forecast_url") or _OPEN_METEO_FORECAST_URL)
+        query: dict[str, Any] = {
+            "latitude": location["latitude"],
+            "longitude": location["longitude"],
+            "timezone": location.get("timezone") or "auto",
+            "temperature_unit": "celsius",
+            "wind_speed_unit": "kmh",
+            "precipitation_unit": "mm",
+        }
+        if forecast_type == "current":
+            query["current"] = action.get("current") or _OPEN_METEO_CURRENT
+            query["forecast_days"] = 1
+        elif forecast_type == "hourly":
+            query["hourly"] = action.get("hourly") or _OPEN_METEO_HOURLY
+            if target_date:
+                query["start_date"] = target_date
+                query["end_date"] = target_date
+            else:
+                query["forecast_days"] = days
+        else:
+            query["daily"] = action.get("daily") or _OPEN_METEO_DAILY
+            if target_date:
+                query["start_date"] = target_date
+                query["end_date"] = target_date
+            else:
+                query["forecast_days"] = days
+
+        return self._open_meteo_get_json(skill, action, forecast_url, query)
+
+    def _open_meteo_get_json(
+        self,
+        skill: dict,
+        action: dict,
+        url: str,
+        query: dict[str, Any],
+    ) -> dict[str, Any]:
+        """GET JSON with the YAML HTTP retry/security policy."""
+        self._validate_external_url(skill, url)
+        timeout_s = _safe_int(action.get("timeout_ms"), default=10000) / 1000.0
+        retry_cfg = action.get("retry", {})
+        max_attempts = max(_safe_int(retry_cfg.get("max"), default=1), 1)
+        delay_s = _safe_int(retry_cfg.get("delay_ms"), default=1000) / 1000.0
+        backoff = retry_cfg.get("backoff", "exponential")
+        headers = dict(action.get("headers", {}))
+
+        last_exc: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                resp = requests.get(url, params=query, headers=headers, timeout=timeout_s)
+                if resp.ok:
+                    parsed = resp.json()
+                    if isinstance(parsed, dict) and parsed.get("error"):
+                        raise _WeatherLookupError(
+                            str(parsed.get("reason") or "天气服务返回错误。"),
+                            code="provider_error",
+                            data={"url": url, "query": query},
+                        )
+                    if not isinstance(parsed, dict):
+                        raise ValueError("Weather provider returned non-object JSON")
+                    return parsed
+                resp.raise_for_status()
+            except _WeatherLookupError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                LOGGER.warning(
+                    "Open-Meteo attempt %d/%d failed for %s: %s",
+                    attempt + 1,
+                    max_attempts,
+                    url,
+                    exc,
+                )
+                if attempt < max_attempts - 1:
+                    sleep_time = min(
+                        delay_s * (2 ** attempt if backoff == "exponential" else 1),
+                        5.0,
+                    )
+                    time.sleep(sleep_time)
+        raise _WeatherLookupError(
+            "天气服务暂时不可用。",
+            code="provider_unavailable",
+            data={"url": url, "query": query, "error": str(last_exc)},
+        )
+
+    def _validate_external_url(self, skill: dict, url: str) -> None:
+        """Apply the YAML allowed-domain/private-network checks to a URL."""
+        allowed = skill.get("security", {}).get("allowed_domains", [])
+        parsed = urlparse(url)
+        if allowed and parsed.hostname not in allowed:
+            raise _WeatherLookupError(
+                f"Domain not allowed: {parsed.hostname}",
+                code="domain_not_allowed",
+                data={"url": url},
+            )
+        if _is_private_url(url):
+            raise _WeatherLookupError(
+                f"Blocked: private/local address ({parsed.hostname})",
+                code="private_address_blocked",
+                data={"url": url},
+            )
 
     def _execute_file_write(self, skill: dict, params: dict) -> str:
         """File write path: render path/content under allowed_root, write."""

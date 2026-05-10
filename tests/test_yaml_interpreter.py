@@ -46,6 +46,51 @@ def _make_skill(**overrides) -> dict:
     return skill
 
 
+def _make_open_meteo_skill(**overrides) -> dict:
+    """Build a minimal Open-Meteo weather skill for executor tests."""
+    skill = {
+        "name": "get_weather",
+        "description": "查询天气",
+        "parameters": [
+            {"name": "city", "type": "string", "required": False, "default": "Victoria"},
+            {
+                "name": "forecast_type",
+                "type": "string",
+                "required": False,
+                "default": "current",
+            },
+            {"name": "target_date", "type": "string", "required": False, "default": ""},
+            {"name": "days", "type": "integer", "required": False, "default": 7},
+        ],
+        "action": {
+            "type": "open_meteo_weather",
+            "geocoding_url": "https://geocoding-api.open-meteo.com/v1/search",
+            "forecast_url": "https://api.open-meteo.com/v1/forecast",
+            "geocoding_count": 10,
+            "preferred_country_code": "CA",
+            "location_aliases": {"温哥华": "溫哥華", "东京": "東京"},
+            "timeout_ms": 10000,
+            "retry": {"max": 1, "delay_ms": 1, "backoff": "fixed"},
+        },
+        "response": {"error_template": "天气查询失败"},
+        "security": {
+            "allowed_domains": [
+                "geocoding-api.open-meteo.com",
+                "api.open-meteo.com",
+            ],
+        },
+    }
+    skill.update(overrides)
+    return skill
+
+
+def _mock_json_response(payload: dict) -> MagicMock:
+    resp = MagicMock()
+    resp.ok = True
+    resp.json.return_value = payload
+    return resp
+
+
 class TestToToolDefinition:
     def test_structure(self):
         interp = YAMLInterpreter()
@@ -267,6 +312,207 @@ class TestErrorTemplate:
         result = interp.execute(skill, {"city": "Victoria"})
         # Layer 3: fallback string
         assert "失败" in result or "fail" in result.lower() or "error" in result.lower()
+
+
+class TestOpenMeteoWeather:
+    @patch("core.yaml_interpreter.requests.get")
+    def test_current_weather_returns_scoped_structured_result(self, mock_get):
+        mock_get.side_effect = [
+            _mock_json_response(
+                {
+                    "results": [
+                        {
+                            "name": "Vitória",
+                            "admin1": "Espírito Santo",
+                            "country": "Brazil",
+                            "country_code": "BR",
+                            "latitude": -20.31,
+                            "longitude": -40.34,
+                            "timezone": "America/Sao_Paulo",
+                        },
+                        {
+                            "name": "Victoria",
+                            "admin1": "British Columbia",
+                            "country": "Canada",
+                            "country_code": "CA",
+                            "latitude": 48.43,
+                            "longitude": -123.36,
+                            "timezone": "America/Vancouver",
+                        }
+                    ]
+                }
+            ),
+            _mock_json_response(
+                {
+                    "timezone": "America/Vancouver",
+                    "current": {
+                        "time": "2026-05-10T13:00",
+                        "temperature_2m": 14.2,
+                        "relative_humidity_2m": 73,
+                        "apparent_temperature": 13.5,
+                        "precipitation": 0.0,
+                        "rain": 0.0,
+                        "showers": 0.0,
+                        "snowfall": 0.0,
+                        "weather_code": 2,
+                        "cloud_cover": 44,
+                        "wind_speed_10m": 11.4,
+                        "wind_gusts_10m": 22.0,
+                    },
+                }
+            ),
+        ]
+
+        result = YAMLInterpreter().execute(
+            _make_open_meteo_skill(),
+            {"city": "Victoria", "forecast_type": "current"},
+        )
+        parsed = parse_tool_result(result)
+
+        assert parsed["status"] == "success"
+        assert "Victoria" in parsed["message"]
+        assert "局部多云" in parsed["message"]
+        assert parsed["outcome"]["type"] == "observed"
+        assert parsed["outcome"]["verified"] is True
+        assert parsed["claim_policy"]["forbidden_claims"] == ["weather_outside_scope"]
+        data = parsed["data"]
+        forecast_query = mock_get.call_args_list[1].kwargs["params"]
+        assert forecast_query["latitude"] == 48.43
+        assert forecast_query["longitude"] == -123.36
+        assert data["scope"]["coverage"]["forecast_type"] == "current"
+        assert data["scope"]["coverage"]["start_time"] == "2026-05-10T13:00"
+        assert data["freshness"]["timezone"] == "America/Vancouver"
+        assert data["weather"]["current"]["precipitation_mm"] == 0.0
+        assert forecast_query["current"]
+
+    @patch("core.yaml_interpreter.requests.get")
+    def test_daily_target_date_uses_date_scope(self, mock_get):
+        mock_get.side_effect = [
+            _mock_json_response(
+                {
+                    "results": [
+                        {
+                            "name": "Victoria",
+                            "admin1": "British Columbia",
+                            "country": "Canada",
+                            "country_code": "CA",
+                            "latitude": 48.43,
+                            "longitude": -123.36,
+                            "timezone": "America/Vancouver",
+                        }
+                    ]
+                }
+            ),
+            _mock_json_response(
+                {
+                    "timezone": "America/Vancouver",
+                    "daily": {
+                        "time": ["2026-05-14"],
+                        "weather_code": [61],
+                        "temperature_2m_max": [16.1],
+                        "temperature_2m_min": [9.8],
+                        "apparent_temperature_max": [15.4],
+                        "apparent_temperature_min": [8.9],
+                        "precipitation_sum": [3.2],
+                        "precipitation_probability_max": [82],
+                        "wind_speed_10m_max": [18.6],
+                    },
+                }
+            ),
+        ]
+
+        result = YAMLInterpreter().execute(
+            _make_open_meteo_skill(),
+            {
+                "city": "Victoria",
+                "forecast_type": "daily",
+                "target_date": "2026-05-14",
+            },
+        )
+        parsed = parse_tool_result(result)
+        daily_query = mock_get.call_args_list[1].kwargs["params"]
+
+        assert parsed["status"] == "success"
+        assert "2026-05-14" in parsed["message"]
+        assert "最高降水概率82%" in parsed["message"]
+        assert daily_query["start_date"] == "2026-05-14"
+        assert daily_query["end_date"] == "2026-05-14"
+        data = parsed["data"]
+        assert data["scope"]["coverage"]["forecast_type"] == "daily"
+        assert data["scope"]["coverage"]["start_time"] == "2026-05-14"
+        assert data["weather"]["daily"][0]["precipitation_sum_mm"] == 3.2
+
+    def test_invalid_forecast_type_needs_clarification(self):
+        result = YAMLInterpreter().execute(
+            _make_open_meteo_skill(),
+            {"city": "Victoria", "forecast_type": "weekly"},
+        )
+        parsed = parse_tool_result(result)
+
+        assert parsed["status"] == "needs_clarification"
+        assert parsed["error_code"] == "invalid_forecast_type"
+
+    @patch("core.yaml_interpreter.requests.get")
+    def test_location_alias_normalizes_simplified_chinese(self, mock_get):
+        mock_get.side_effect = [
+            _mock_json_response(
+                {
+                    "results": [
+                        {
+                            "name": "溫哥華",
+                            "admin1": "不列颠哥伦比亚",
+                            "country": "加拿大",
+                            "country_code": "CA",
+                            "latitude": 49.25,
+                            "longitude": -123.12,
+                            "timezone": "America/Vancouver",
+                        }
+                    ]
+                }
+            ),
+            _mock_json_response(
+                {
+                    "timezone": "America/Vancouver",
+                    "daily": {
+                        "time": ["2026-05-10"],
+                        "weather_code": [3],
+                        "temperature_2m_max": [18],
+                        "temperature_2m_min": [11],
+                        "apparent_temperature_max": [17],
+                        "apparent_temperature_min": [10],
+                        "precipitation_sum": [1.0],
+                        "precipitation_probability_max": [40],
+                        "wind_speed_10m_max": [12],
+                    },
+                }
+            ),
+        ]
+
+        result = YAMLInterpreter().execute(
+            _make_open_meteo_skill(),
+            {"city": "温哥华", "forecast_type": "daily", "days": 1},
+        )
+        parsed = parse_tool_result(result)
+        geocode_query = mock_get.call_args_list[0].kwargs["params"]
+
+        assert parsed["status"] == "success"
+        assert geocode_query["name"] == "溫哥華"
+        assert parsed["data"]["location"]["resolved_from"] == "温哥华"
+        assert parsed["data"]["location"]["resolved_query"] == "溫哥華"
+
+    @patch("core.yaml_interpreter.requests.get")
+    def test_location_not_found_returns_failure_envelope(self, mock_get):
+        mock_get.return_value = _mock_json_response({})
+
+        result = YAMLInterpreter().execute(
+            _make_open_meteo_skill(),
+            {"city": "NoSuchPlace", "forecast_type": "current"},
+        )
+        parsed = parse_tool_result(result)
+
+        assert parsed["status"] == "failure"
+        assert parsed["error_code"] == "location_not_found"
+        assert "NoSuchPlace" in parsed["message"]
 
 
 class TestLoadSkill:

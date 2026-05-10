@@ -5,8 +5,9 @@ Reviewed at: 2026-05-10
 ## Scope
 
 Phase 2 defines lifecycle and exposure boundaries for Jarvis primitive skills.
-It does not change CC command behavior, rewrite weather, remove skills, or
-implement composite skill planning.
+It does not change CC command behavior, remove skills, or implement composite
+skill planning. Phase 3 has since completed the `get_weather` rewrite and
+promoted it back to `active`.
 
 Current YAML skills are treated as primitive skills. Future composite skills
 may orchestrate these primitives, so a primitive being unsuitable for direct
@@ -39,6 +40,7 @@ user exposure is not by itself a reason to delete it.
 | `list_reminders` | Low-risk read-only reminder query. |
 | `complete_reminder` | Low-risk when `reminder_id` is explicit. |
 | `obsidian_add_to_inbox` | Low-risk append-only capture. |
+| `get_weather` | Weather v2 uses Open-Meteo with explicit forecast type, coverage, location, timezone, freshness, and claim policy. |
 | `cc_tell` | Preserved by user request; delivery does not imply completion. |
 | `cc_slash` | Preserved by user request; command policy unchanged. |
 | `cc_interrupt` | Preserved by user request. |
@@ -48,7 +50,6 @@ user exposure is not by itself a reason to delete it.
 
 | Skill | Phase 3 Action |
 | --- | --- |
-| `get_weather` | Rewrite provider wrapper with explicit forecast type, coverage, location, timezone, and freshness. |
 | `mac_gui` | Split into smaller primitives or add per-action risk, target verification, and pre/post observations. |
 | `type_to_focused` | Verify focused target before typing; add confirmation for external/terminal/browser targets. |
 | `delete_todo` | Replace hard delete with soft-delete/archive and add undo/confirmation policy. |
@@ -67,9 +68,8 @@ None.
 
 ## Phase 3 Backlog
 
-1. Weather v2: scope/freshness, forecast type, provider reliability, and no future-weather claims from current-only data.
-2. Local control v2: target verification for `type_to_focused`; split or per-action policy for `mac_gui`.
-3. Todo delete v2: soft-delete/archive, undo, and confirmation for ambiguous or bulk delete.
-4. Smart home enhancements: entity registry, alias provenance, capabilities, and postcondition verification.
-5. Reminder/timer enhancements: timezone, due/fires-at timestamps, recurrence, missing-field clarification.
-6. Renderer improvements: voice/document split for long todo/reminder lists and raw IDs.
+1. Local control v2: target verification for `type_to_focused`; split or per-action policy for `mac_gui`.
+2. Todo delete v2: soft-delete/archive, undo, and confirmation for ambiguous or bulk delete.
+3. Smart home enhancements: entity registry, alias provenance, capabilities, and postcondition verification.
+4. Reminder/timer enhancements: timezone, due/fires-at timestamps, recurrence, missing-field clarification.
+5. Renderer improvements: voice/document split for long todo/reminder lists and raw IDs.

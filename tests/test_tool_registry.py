@@ -215,8 +215,8 @@ def test_default_registry_exposes_phase2_yaml_metadata():
     reg = ToolRegistry(config={})
     metadata = {m["name"]: m for m in reg.get_skill_metadata()}
 
-    assert metadata["get_weather"]["lifecycle"]["status"] == "rewrite_required"
-    assert metadata["get_weather"]["exposure"]["expose_to_llm"] == "limited"
+    assert metadata["get_weather"]["lifecycle"]["status"] == "active"
+    assert metadata["get_weather"]["exposure"]["expose_to_llm"] is True
     assert metadata["mac_gui"]["lifecycle"]["status"] == "rewrite_required"
     assert metadata["type_to_focused"]["classification"]["risk_level"] == "high"
     assert metadata["cc_tell"]["lifecycle"]["status"] == "active"

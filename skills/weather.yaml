@@ -1,16 +1,16 @@
 schema_version: jarvis.skill.v1
 name: get_weather
-description: "Get current weather for a city. Returns temperature, conditions, humidity, and wind."
+description: "Get scoped current, hourly, or daily weather for a city using Open-Meteo. Returns location, coverage, freshness, precipitation, wind, humidity/current details, and forecast limits."
 version: 1
 status: live
 lifecycle:
-  status: rewrite_required
-  reason: "Current implementation has weak forecast scope and freshness guarantees."
+  status: active
+  reason: "Weather v2 uses Open-Meteo with explicit forecast type, coverage, location, timezone, freshness, and conservative claim policy."
   reviewed_at: "2026-05-10"
-  phase3_action: "Rewrite weather provider wrapper with explicit forecast_type, coverage, location, timezone, and freshness."
+  phase3_action: "Monitor trace quality; add alerts/provider fallback later if needed."
   replacement: null
 exposure:
-  expose_to_llm: limited
+  expose_to_llm: true
   allow_regex: true
   allow_frontend_direct: false
 classification:
@@ -23,9 +23,24 @@ created_by: migrated
 parameters:
   - name: city
     type: string
-    description: "City name in English. Defaults to Victoria."
+    description: "City name. Defaults to Victoria."
     required: false
     default: Victoria
+  - name: forecast_type
+    type: string
+    description: "Weather scope: current, hourly, or daily. Use daily for future dates."
+    required: false
+    default: current
+  - name: target_date
+    type: string
+    description: "Optional target date in YYYY-MM-DD format for hourly or daily forecasts."
+    required: false
+    default: ""
+  - name: days
+    type: integer
+    description: "Optional forecast days to return when target_date is not set. Range is 1-16."
+    required: false
+    default: 7
 
 annotations:
   read_only: true
@@ -33,8 +48,20 @@ annotations:
   idempotent: true
 
 action:
-  type: http_get
-  url: "https://wttr.in/{{ city }}?format=j1"
+  type: open_meteo_weather
+  geocoding_url: "https://geocoding-api.open-meteo.com/v1/search"
+  forecast_url: "https://api.open-meteo.com/v1/forecast"
+  default_city: Victoria
+  geocoding_language: auto
+  geocoding_count: 10
+  preferred_country_code: CA
+  location_aliases:
+    温哥华: 溫哥華
+    维多利亚: 維多利亞
+    东京: 東京
+  current: "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,showers,snowfall,weather_code,cloud_cover,wind_speed_10m,wind_gusts_10m"
+  hourly: "temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,wind_speed_10m"
+  daily: "weather_code,temperature_2m_max,temperature_2m_min,apparent_temperature_max,apparent_temperature_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max"
   headers:
     Accept-Language: zh
   timeout_ms: 10000
@@ -46,16 +73,10 @@ action:
 response:
   envelope: true
   status: success
-  extract:
-    temp_c: "{{ result.current_condition[0].temp_C }}"
-    feels_like: "{{ result.current_condition[0].FeelsLikeC }}"
-    desc: "{{ result.current_condition[0].lang_zh[0].value }}"
-    humidity: "{{ result.current_condition[0].humidity }}"
-    wind: "{{ result.current_condition[0].windspeedKmph }}"
-  template: "{{ city }}当前天气：{{ desc }}，温度{{ temp_c }}°C（体感{{ feels_like }}°C），湿度{{ humidity }}%，风速{{ wind }}公里/时。"
   error_template: "天气查询失败，请稍后再试。"
 
 security:
   allowed_domains:
-    - wttr.in
+    - geocoding-api.open-meteo.com
+    - api.open-meteo.com
   requires_auth: false
