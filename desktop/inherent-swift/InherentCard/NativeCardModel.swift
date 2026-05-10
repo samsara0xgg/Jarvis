@@ -210,17 +210,8 @@ final class NativeCardModel: ObservableObject {
     isDropTarget = value
   }
 
-  func pasteFromClipboard() -> Bool {
-    let pasteboard = NSPasteboard.general
-    if stageImageFromPasteboard(pasteboard, source: "paste") {
-      return true
-    }
-    if let text = pasteboard.string(forType: .string), !text.isEmpty {
-      inputText += text
-      focusInput()
-      return true
-    }
-    return false
+  func stageImageFromClipboard() -> Bool {
+    stageImageFromPasteboard(NSPasteboard.general, source: "paste")
   }
 
   func handleDrop(providers: [NSItemProvider]) -> Bool {

@@ -543,7 +543,8 @@ final class NativeCardController: NSObject {
     localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
       guard let self else { return event }
       if self.isPasteShortcut(event) {
-        return self.model.pasteFromClipboard() ? nil : event
+        if self.isTextFieldFirstResponder { return event }
+        return self.model.stageImageFromClipboard() ? nil : event
       }
       if self.isCommandZero(event) {
         self.resetPosition()

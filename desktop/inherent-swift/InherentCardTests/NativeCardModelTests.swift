@@ -126,6 +126,39 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertEqual(model.stateLabel, "idle")
   }
 
+  func test_plainTextClipboardDoesNotBypassTextFieldPasteSemantics() {
+    let model = NativeCardModel()
+    model.inputText = "before"
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    defer { pasteboard.clearContents() }
+    pasteboard.setString(" after", forType: .string)
+
+    XCTAssertFalse(model.stageImageFromClipboard())
+    XCTAssertEqual(model.inputText, "before")
+  }
+
+  func test_imageClipboardStagesAttachment() async throws {
+    let model = NativeCardModel()
+    let image = NSImage(size: NSSize(width: 2, height: 2))
+    image.lockFocus()
+    NSColor.blue.setFill()
+    NSRect(x: 0, y: 0, width: 2, height: 2).fill()
+    image.unlockFocus()
+    guard let tiff = image.tiffRepresentation else {
+      return XCTFail("expected test image tiff")
+    }
+
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    defer { pasteboard.clearContents() }
+    pasteboard.setData(tiff, forType: .tiff)
+
+    XCTAssertTrue(model.stageImageFromClipboard())
+    XCTAssertEqual(model.stagedImage?.mime, "image/png")
+    XCTAssertEqual(model.stagedImage?.name, "screen.png")
+  }
+
   func test_answerParserRecognizesLegacyHtmlPrimitives() {
     let html = """
     <div class="tool done"><span class="tool-tag">hue</span><span class="tool-name">set bedroom lamp</span><span class="tool-status">done</span></div>

@@ -99,7 +99,7 @@ struct NativeCardView: View {
             onEnterDown: { model.handleEnterDown(shortAction: model.submitInputText) },
             onEnterUp: { model.handleEnterUp() },
             onEscape: { model.handleEscape() },
-            onPaste: { model.pasteFromClipboard() }
+            onPasteImage: { model.stageImageFromClipboard() }
           )
           .focused($inputFocused)
           .frame(height: 36)
@@ -1229,7 +1229,7 @@ struct NativeCardTextField: NSViewRepresentable {
   let onEnterDown: () -> Void
   let onEnterUp: () -> Void
   let onEscape: () -> Void
-  let onPaste: () -> Bool
+  let onPasteImage: () -> Bool
 
   func makeNSView(context: Context) -> NativeTextField {
     let field = NativeTextField()
@@ -1244,7 +1244,7 @@ struct NativeCardTextField: NSViewRepresentable {
     field.onEnterDown = onEnterDown
     field.onEnterUp = onEnterUp
     field.onEscape = onEscape
-    field.onPaste = onPaste
+    field.onPasteImage = onPasteImage
     return field
   }
 
@@ -1257,7 +1257,7 @@ struct NativeCardTextField: NSViewRepresentable {
     nsView.onEnterDown = onEnterDown
     nsView.onEnterUp = onEnterUp
     nsView.onEscape = onEscape
-    nsView.onPaste = onPaste
+    nsView.onPasteImage = onPasteImage
   }
 
   func makeCoordinator() -> Coordinator {
@@ -1282,7 +1282,7 @@ final class NativeTextField: NSTextField {
   var onEnterDown: (() -> Void)?
   var onEnterUp: (() -> Void)?
   var onEscape: (() -> Void)?
-  var onPaste: (() -> Bool)?
+  var onPasteImage: (() -> Bool)?
   private var enterWasDown = false
 
   override func keyDown(with event: NSEvent) {
@@ -1313,13 +1313,14 @@ final class NativeTextField: NSTextField {
     let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
     if event.charactersIgnoringModifiers?.lowercased() == "v",
        flags.contains(.command) || flags.contains(.control),
-       onPaste?() == true {
+       onPasteImage?() == true {
       return true
     }
     return super.performKeyEquivalent(with: event)
   }
 
   @objc func paste(_ sender: Any?) {
-    _ = onPaste?()
+    if onPasteImage?() == true { return }
+    currentEditor()?.paste(sender)
   }
 }
