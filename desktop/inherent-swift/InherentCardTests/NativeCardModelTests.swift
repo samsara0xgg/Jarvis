@@ -464,6 +464,22 @@ final class NativeCardModelTests: XCTestCase {
     ])
   }
 
+  func test_answerParserCombinesContiguousBlockquoteLines() {
+    let markdown = """
+    > first line
+    > second line
+    >
+    > fourth line
+
+    after
+    """
+
+    XCTAssertEqual(NativeAnswerParser.parse(markdown), [
+      .blockquote("first line\nsecond line\n\nfourth line"),
+      .paragraph("after"),
+    ])
+  }
+
   func test_answerParserCombinesContiguousParagraphLines() {
     let markdown = """
     bedroom · 客厅 22°  

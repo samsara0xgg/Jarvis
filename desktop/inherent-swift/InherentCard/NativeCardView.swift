@@ -1087,8 +1087,17 @@ enum NativeAnswerParser {
         result.append(.bullet(bullet))
       } else if let ordered = orderedListItem(line) {
         result.append(.numbered(ordered.marker, ordered.text))
-      } else if line.hasPrefix("> ") {
-        result.append(.blockquote(String(line.dropFirst(2))))
+      } else if let quote = blockquoteText(line) {
+        var quoteLines = [quote]
+        i += 1
+        while i < lines.count {
+          let next = lines[i].trimmingCharacters(in: .whitespaces)
+          guard let nextQuote = blockquoteText(next) else { break }
+          quoteLines.append(nextQuote)
+          i += 1
+        }
+        result.append(.blockquote(quoteLines.joined(separator: "\n")))
+        continue
       } else if line == "---" || line == "***" || line == "___" {
         result.append(.rule)
       } else {
@@ -1183,10 +1192,16 @@ enum NativeAnswerParser {
     return text.isEmpty ? nil : String(text)
   }
 
+  private static func blockquoteText(_ line: String) -> String? {
+    guard line.first == ">" else { return nil }
+    let text = line.dropFirst().drop { $0.isWhitespace }
+    return String(text)
+  }
+
   private static func isParagraphContinuation(_ line: String) -> Bool {
     if line.isEmpty { return false }
     if isHeadingLine(line) { return false }
-    if unorderedListItem(line) != nil || line.hasPrefix("> ") { return false }
+    if unorderedListItem(line) != nil || blockquoteText(line) != nil { return false }
     if isFenceLine(line) { return false }
     if line == "---" || line == "***" || line == "___" { return false }
     if orderedListItem(line) != nil { return false }
