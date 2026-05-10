@@ -480,6 +480,27 @@ final class NativeCardModelTests: XCTestCase {
     ])
   }
 
+  func test_answerParserRecognizesSetextHeadings() {
+    let markdown = """
+    Main title
+    ===
+
+    Sub title
+    ---
+
+    ***
+
+    Body
+    """
+
+    XCTAssertEqual(NativeAnswerParser.parse(markdown), [
+      .heading1("Main title"),
+      .heading2("Sub title"),
+      .rule,
+      .paragraph("Body"),
+    ])
+  }
+
   func test_answerParserCombinesContiguousParagraphLines() {
     let markdown = """
     bedroom · 客厅 22°  

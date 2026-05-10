@@ -1109,7 +1109,14 @@ enum NativeAnswerParser {
           paragraphLines.append(next)
           i += 1
         }
-        result.append(.paragraph(paragraphLines.joined(separator: "\n")))
+        let paragraph = paragraphLines.joined(separator: "\n")
+        if i < lines.count,
+           let headingLevel = setextHeadingLevel(lines[i].trimmingCharacters(in: .whitespaces)) {
+          result.append(headingLevel == 1 ? .heading1(paragraph) : .heading2(paragraph))
+          i += 1
+        } else {
+          result.append(.paragraph(paragraph))
+        }
         continue
       }
       i += 1
@@ -1145,6 +1152,13 @@ enum NativeAnswerParser {
     (1...6).contains { level in
       line.hasPrefix(String(repeating: "#", count: level) + " ")
     }
+  }
+
+  private static func setextHeadingLevel(_ line: String) -> Int? {
+    guard !line.isEmpty else { return nil }
+    if line.allSatisfy({ $0 == "=" }) { return 1 }
+    if line.allSatisfy({ $0 == "-" }) { return 2 }
+    return nil
   }
 
   private static func isTableHeader(_ line: String) -> Bool {
@@ -1201,6 +1215,7 @@ enum NativeAnswerParser {
   private static func isParagraphContinuation(_ line: String) -> Bool {
     if line.isEmpty { return false }
     if isHeadingLine(line) { return false }
+    if setextHeadingLevel(line) != nil { return false }
     if unorderedListItem(line) != nil || blockquoteText(line) != nil { return false }
     if isFenceLine(line) { return false }
     if line == "---" || line == "***" || line == "___" { return false }
