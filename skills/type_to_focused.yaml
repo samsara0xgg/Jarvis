@@ -15,9 +15,11 @@ description: |
     - User says "帮我输入到上一个" / "前一个" / "back to previous" →
       target="prev" (jarvis sends Cmd+Tab to flip back to whatever app was
       active before they triggered jarvis).
-    - User says "帮我输入：YYY" with no app mentioned → target="" (paste
-      lands wherever cursor currently is — user must keep target window
-      focused).
+    - User says "帮我输入：YYY" with no app mentioned → target="".
+      Runtime must observe and verify the focused input target before any
+      text is pasted. Unknown, external-message, terminal, browser form,
+      password, payment, or destructive targets are blocked or require
+      clarification instead of receiving text.
 
   Don't trigger on bare "记一下" / "保存" / "搜一下" — those are different
   intents (inbox / search). This action is destructive: text goes into the
@@ -28,13 +30,13 @@ description: |
 version: 2
 status: live
 lifecycle:
-  status: rewrite_required
-  reason: "Local text input needs runtime target verification before it is contract-complete."
+  status: active
+  reason: "Local text input now requires runtime focused-target verification before paste."
   reviewed_at: "2026-05-10"
-  phase3_action: "Resolve and verify focused target before typing; add confirmation for external message, terminal, and browser form targets."
+  phase3_action: "Monitor trace outcomes; add confirmation-token execution path later if needed."
   replacement: null
 exposure:
-  expose_to_llm: limited
+  expose_to_llm: true
   allow_regex: false
   allow_frontend_direct: false
 classification:
@@ -70,6 +72,9 @@ action:
   type: macos_paste
   text: "{{ text }}"
   target: "{{ target }}"
+  target_policy:
+    require_verified_target: true
+    min_confidence: 0.85
 
 response:
   template: "已输入{% if target %}（→ {{ target }}）{% endif %}：{{ text[:30] }}{% if text|length > 30 %}...{% endif %}"

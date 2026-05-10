@@ -1050,6 +1050,7 @@ class TestTypeToFocusedYAMLSkill:
         td = interp.to_tool_definition(skill)
         assert td["name"] == "type_to_focused"
         assert td["input_schema"]["required"] == ["text"]
+        assert skill["lifecycle"]["status"] == "active"
         # Trigger anchors documented in description
         desc = td["description"].lower()
         for anchor in ("帮我输入", "type this into cc"):
@@ -1057,31 +1058,137 @@ class TestTypeToFocusedYAMLSkill:
 
     def test_pastes_text_via_clipboard(self):
         interp, skill = self._load()
-        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+        with (
+            patch.object(
+                YAMLInterpreter,
+                "_observe_macos_focused_target",
+                return_value={
+                    "app": "Cursor",
+                    "window_title": "main.py",
+                    "field_role": "AXTextArea",
+                    "field_subrole": "",
+                    "field_description": "editor",
+                    "value_preview": "",
+                },
+            ),
+            patch("core.yaml_interpreter.subprocess.run") as mock_run,
+        ):
             mock_run.return_value = MagicMock(returncode=0)
             out = interp.execute(skill, {"text": "测试输入"})
+        parsed = parse_tool_result(out)
         assert mock_run.call_count == 2
         first = mock_run.call_args_list[0]
         assert first.args[0] == ["pbcopy"]
         assert first.kwargs["input"] == "测试输入"
-        assert "已输入" in out
+        assert parsed["status"] == "success"
+        assert parsed["outcome"]["verification_source"] == "focused_target_verified"
+        assert parsed["claim_policy"]["allowed_claims"] == ["text_inserted"]
+        assert parsed["data"]["target"]["app"] == "Cursor"
+        assert parsed["data"]["typed_text_length"] == 4
 
-    def test_long_text_truncated_in_response(self):
+    def test_long_text_not_echoed_in_structured_success(self):
         interp, skill = self._load()
         long_text = "a" * 100
-        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+        with (
+            patch.object(
+                YAMLInterpreter,
+                "_observe_macos_focused_target",
+                return_value={
+                    "app": "Obsidian",
+                    "window_title": "note.md",
+                    "field_role": "AXTextArea",
+                    "field_subrole": "",
+                    "field_description": "editor",
+                    "value_preview": "",
+                },
+            ),
+            patch("core.yaml_interpreter.subprocess.run") as mock_run,
+        ):
             mock_run.return_value = MagicMock(returncode=0)
             out = interp.execute(skill, {"text": long_text})
-        assert "..." in out
-        # Response is truncated to ~30 chars + ellipsis
-        assert len(out) < 80
+        parsed = parse_tool_result(out)
+        assert parsed["status"] == "success"
+        assert long_text not in parsed["message"]
+        assert parsed["data"]["typed_text_length"] == 100
 
-    def test_short_text_not_truncated(self):
+    def test_unknown_target_does_not_type(self):
         interp, skill = self._load()
-        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+        with (
+            patch.object(
+                YAMLInterpreter,
+                "_observe_macos_focused_target",
+                return_value={
+                    "app": "Finder",
+                    "window_title": "Downloads",
+                    "field_role": "",
+                    "field_subrole": "",
+                    "field_description": "",
+                    "value_preview": "",
+                },
+            ),
+            patch("core.yaml_interpreter.subprocess.run") as mock_run,
+        ):
             mock_run.return_value = MagicMock(returncode=0)
             out = interp.execute(skill, {"text": "hi"})
-        assert "..." not in out
+        parsed = parse_tool_result(out)
+        assert parsed["status"] == "needs_clarification"
+        assert parsed["error_code"] == "target_not_verified"
+        assert parsed["claim_policy"]["forbidden_claims"] == [
+            "text_inserted",
+            "typed",
+            "pasted",
+        ]
+        mock_run.assert_not_called()
+
+    def test_terminal_target_requires_confirmation_before_typing(self):
+        interp, skill = self._load()
+        with (
+            patch.object(
+                YAMLInterpreter,
+                "_observe_macos_focused_target",
+                return_value={
+                    "app": "Terminal",
+                    "window_title": "zsh",
+                    "field_role": "AXTextArea",
+                    "field_subrole": "",
+                    "field_description": "terminal text",
+                    "value_preview": "",
+                },
+            ),
+            patch("core.yaml_interpreter.subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"text": "rm -rf /tmp/x", "target": "Terminal"})
+        parsed = parse_tool_result(out)
+        assert parsed["status"] == "needs_clarification"
+        assert parsed["error_code"] == "confirmation_required"
+        assert parsed["data"]["target"]["risk_level"] == "high"
+        # Only the focus command is allowed; no pbcopy/paste happens.
+        assert mock_run.call_count == 1
+
+    def test_denied_target_does_not_type(self):
+        interp, skill = self._load()
+        with (
+            patch.object(
+                YAMLInterpreter,
+                "_observe_macos_focused_target",
+                return_value={
+                    "app": "Safari",
+                    "window_title": "Checkout",
+                    "field_role": "AXSecureTextField",
+                    "field_subrole": "",
+                    "field_description": "password",
+                    "value_preview": "",
+                },
+            ),
+            patch("core.yaml_interpreter.subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"text": "secret"})
+        parsed = parse_tool_result(out)
+        assert parsed["status"] == "failure"
+        assert parsed["error_code"] == "target_denied"
+        mock_run.assert_not_called()
 
 
 # ===========================================================================
@@ -1297,25 +1404,87 @@ class TestTypeToFocusedV2Target:
         td = interp.to_tool_definition(skill)
         assert "target" in td["input_schema"]["properties"]
         assert "target" not in td["input_schema"].get("required", [])
+        assert skill["action"]["target_policy"]["require_verified_target"] is True
 
-    def test_yaml_targets_iterm(self):
+    def test_yaml_targets_textedit_after_verification(self):
+        from core.yaml_interpreter import _APPLESCRIPT_PASTE
         interp, skill = self._load()
-        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+        with (
+            patch.object(
+                YAMLInterpreter,
+                "_observe_macos_focused_target",
+                return_value={
+                    "app": "TextEdit",
+                    "window_title": "Untitled",
+                    "field_role": "AXTextArea",
+                    "field_subrole": "",
+                    "field_description": "editor",
+                    "value_preview": "",
+                },
+            ),
+            patch("core.yaml_interpreter.subprocess.run") as mock_run,
+        ):
             mock_run.return_value = MagicMock(returncode=0)
-            out = interp.execute(skill, {"text": "x", "target": "iTerm"})
-        argv = mock_run.call_args_list[1].args[0]
-        assert argv[-1] == "iTerm"
-        assert "→ iTerm" in out
+            out = interp.execute(skill, {"text": "x", "target": "TextEdit"})
+        parsed = parse_tool_result(out)
+        assert parsed["status"] == "success"
+        assert parsed["data"]["target"]["app"] == "TextEdit"
+        assert mock_run.call_count == 3
+        focus_argv = mock_run.call_args_list[0].args[0]
+        paste_argv = mock_run.call_args_list[2].args[0]
+        assert focus_argv[-1] == "TextEdit"
+        assert paste_argv == ["osascript", "-e", _APPLESCRIPT_PASTE]
 
     def test_yaml_default_target_empty(self):
         from core.yaml_interpreter import _APPLESCRIPT_PASTE
         interp, skill = self._load()
-        with patch("core.yaml_interpreter.subprocess.run") as mock_run:
+        with (
+            patch.object(
+                YAMLInterpreter,
+                "_observe_macos_focused_target",
+                return_value={
+                    "app": "Visual Studio Code",
+                    "window_title": "contract.md",
+                    "field_role": "AXTextArea",
+                    "field_subrole": "",
+                    "field_description": "editor",
+                    "value_preview": "",
+                },
+            ),
+            patch("core.yaml_interpreter.subprocess.run") as mock_run,
+        ):
             mock_run.return_value = MagicMock(returncode=0)
             out = interp.execute(skill, {"text": "x"})
+        parsed = parse_tool_result(out)
         argv = mock_run.call_args_list[1].args[0]
         assert argv == ["osascript", "-e", _APPLESCRIPT_PASTE]
-        assert "→" not in out  # no target arrow when target empty
+        assert parsed["status"] == "success"
+        assert parsed["data"]["target"]["requested_target"] == ""
+
+    def test_browser_form_requires_confirmation(self):
+        interp, skill = self._load()
+        with (
+            patch.object(
+                YAMLInterpreter,
+                "_observe_macos_focused_target",
+                return_value={
+                    "app": "Safari",
+                    "window_title": "Search",
+                    "field_role": "AXTextField",
+                    "field_subrole": "",
+                    "field_description": "search field",
+                    "value_preview": "",
+                },
+            ),
+            patch("core.yaml_interpreter.subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            out = interp.execute(skill, {"text": "x"})
+        parsed = parse_tool_result(out)
+        assert parsed["status"] == "needs_clarification"
+        assert parsed["error_code"] == "confirmation_required"
+        assert parsed["data"]["target"]["risk_level"] == "medium"
+        mock_run.assert_not_called()
 
 
 # ===========================================================================

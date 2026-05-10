@@ -63,6 +63,36 @@ _APPLESCRIPT_CMDTAB = (
     'tell application "System Events" to keystroke tab using command down'
 )
 _APPLESCRIPT_DELAY = "delay 0.2"
+_APPLESCRIPT_OBSERVE_FOCUS = r'''
+tell application "System Events"
+    set frontApp to first application process whose frontmost is true
+    set appName to name of frontApp
+    set windowTitle to ""
+    try
+        set windowTitle to name of front window of frontApp
+    end try
+    set roleName to ""
+    set subroleName to ""
+    set descriptionName to ""
+    set valuePreview to ""
+    try
+        set focusedElement to value of attribute "AXFocusedUIElement" of frontApp
+        try
+            set roleName to role of focusedElement
+        end try
+        try
+            set subroleName to subrole of focusedElement
+        end try
+        try
+            set descriptionName to description of focusedElement
+        end try
+        try
+            set valuePreview to value of focusedElement as text
+        end try
+    end try
+    return appName & tab & windowTitle & tab & roleName & tab & subroleName & tab & descriptionName & tab & valuePreview
+end tell
+'''.strip()
 _PREV_KEYWORDS = {"prev", "previous", "上一个", "前一个"}
 _PBCOPY_TIMEOUT_S = 2.0
 _OSASCRIPT_TIMEOUT_S = 5.0
@@ -588,6 +618,55 @@ _ZELLIJ_KEYS_MAP: dict[str, str] = {
 }
 
 _APP_DIRS = ("/Applications", "/Applications/Utilities", "/System/Applications")
+_TEXT_EDITOR_APPS = {
+    "cursor",
+    "visual studio code",
+    "code",
+    "vscode",
+    "obsidian",
+    "textedit",
+    "notes",
+    "xcode",
+    "coteditor",
+    "sublime text",
+    "zed",
+}
+_TERMINAL_APPS = {"terminal", "iterm", "iterm2", "warp", "wezterm", "alacritty"}
+_EXTERNAL_MESSAGE_APPS = {
+    "messages",
+    "wechat",
+    "微信",
+    "slack",
+    "discord",
+    "telegram",
+    "whatsapp",
+    "mail",
+    "spark",
+    "outlook",
+}
+_BROWSER_APPS = {
+    "safari",
+    "google chrome",
+    "chrome",
+    "arc",
+    "firefox",
+    "microsoft edge",
+    "edge",
+    "brave browser",
+}
+_DENIED_TARGET_MARKERS = {
+    "password",
+    "secure text field",
+    "checkout",
+    "payment",
+    "delete",
+    "destructive",
+    "confirm",
+    "密码",
+    "支付",
+    "删除",
+    "确认删除",
+}
 
 
 def _resolve_app_name(target: str) -> str:
@@ -611,6 +690,142 @@ def _resolve_app_name(target: str) -> str:
             if entry.endswith(".app") and entry[:-4].lower() == target_lower:
                 return entry[:-4]
     return target
+
+
+def _normalize_focus_observation(raw: str) -> dict[str, Any]:
+    """Parse tab-separated AppleScript focus metadata."""
+    parts = (raw or "").rstrip("\n").split("\t")
+    while len(parts) < 6:
+        parts.append("")
+    app, window, role, subrole, description, value_preview = parts[:6]
+    return {
+        "app": app.strip(),
+        "window_title": window.strip(),
+        "field_role": role.strip(),
+        "field_subrole": subrole.strip(),
+        "field_description": description.strip(),
+        "value_preview": value_preview.strip()[:120],
+    }
+
+
+def _focus_text(obs: dict[str, Any]) -> str:
+    return " ".join(
+        str(obs.get(key) or "").lower()
+        for key in (
+            "app",
+            "window_title",
+            "field_role",
+            "field_subrole",
+            "field_description",
+        )
+    )
+
+
+def _role_looks_editable(obs: dict[str, Any]) -> bool:
+    text = _focus_text(obs)
+    return any(
+        marker in text
+        for marker in (
+            "text",
+            "textarea",
+            "text area",
+            "text field",
+            "textfield",
+            "editor",
+            "输入",
+            "文本",
+        )
+    )
+
+
+def _classify_focused_target(
+    obs: dict[str, Any],
+    *,
+    min_confidence: float,
+) -> dict[str, Any]:
+    """Classify focused input risk before text is pasted."""
+    app = str(obs.get("app") or "").strip()
+    app_l = app.lower()
+    focus_text = _focus_text(obs)
+    editable = _role_looks_editable(obs)
+    confidence = 0.92 if app and editable else 0.35
+
+    if not app or not editable or confidence < min_confidence:
+        return {
+            "allowed": False,
+            "status": NEEDS_CLARIFICATION,
+            "error_code": "target_not_verified",
+            "message": "我还没输入。当前没有确认到正确的输入位置。",
+            "risk_level": "unknown",
+            "confidence": confidence,
+            "required_confirmation": False,
+        }
+
+    if any(marker in focus_text for marker in _DENIED_TARGET_MARKERS):
+        return {
+            "allowed": False,
+            "status": FAILURE,
+            "error_code": "target_denied",
+            "message": "我没有输入。当前目标像是密码、支付或破坏性确认输入框。",
+            "risk_level": "critical",
+            "confidence": confidence,
+            "required_confirmation": False,
+        }
+
+    if app_l in _TERMINAL_APPS:
+        return {
+            "allowed": False,
+            "status": NEEDS_CLARIFICATION,
+            "error_code": "confirmation_required",
+            "message": "这是终端输入位置，需要你明确确认后我再输入。",
+            "risk_level": "high",
+            "confidence": confidence,
+            "required_confirmation": True,
+        }
+
+    if app_l in _EXTERNAL_MESSAGE_APPS:
+        return {
+            "allowed": False,
+            "status": NEEDS_CLARIFICATION,
+            "error_code": "confirmation_required",
+            "message": "这是外发消息或邮件输入位置，需要你确认后我再输入。",
+            "risk_level": "medium",
+            "confidence": confidence,
+            "required_confirmation": True,
+        }
+
+    if app_l in _BROWSER_APPS:
+        return {
+            "allowed": False,
+            "status": NEEDS_CLARIFICATION,
+            "error_code": "confirmation_required",
+            "message": "这是浏览器表单输入位置，需要你确认后我再输入。",
+            "risk_level": "medium",
+            "confidence": confidence,
+            "required_confirmation": True,
+        }
+
+    risk_level = "low" if app_l in _TEXT_EDITOR_APPS else "medium"
+    if risk_level != "low":
+        return {
+            "allowed": False,
+            "status": NEEDS_CLARIFICATION,
+            "error_code": "confirmation_required",
+            "message": f"当前输入目标是 {app}，需要你确认后我再输入。",
+            "risk_level": risk_level,
+            "confidence": confidence,
+            "required_confirmation": True,
+        }
+
+    return {
+        "allowed": True,
+        "status": SUCCESS,
+        "error_code": None,
+        "message": "",
+        "risk_level": risk_level,
+        "confidence": confidence,
+        "required_confirmation": False,
+    }
 
 
 def _is_private_url(url: str) -> bool:
@@ -1117,7 +1332,78 @@ class YAMLInterpreter:
         if not text:
             return "无内容可输入"
 
-        osascript_argv = self._build_paste_argv(target)
+        target_policy = action.get("target_policy") or {}
+        target_data: dict[str, Any] | None = None
+        if target_policy.get("require_verified_target"):
+            try:
+                focus_argv = self._build_focus_argv(target)
+                if focus_argv:
+                    subprocess.run(
+                        focus_argv,
+                        capture_output=True,
+                        check=True,
+                        timeout=_OSASCRIPT_TIMEOUT_S,
+                    )
+                target_obs = self._observe_macos_focused_target()
+            except FileNotFoundError:
+                LOGGER.warning("macos_paste: osascript not found during target verify")
+                return make_tool_result(
+                    FAILURE,
+                    error_template if error_template else "Not on macOS",
+                    error_code="target_observation_unavailable",
+                    outcome_type="failed",
+                    verified=False,
+                    verification_source="focused_target_verification",
+                    claim_policy={
+                        "allowed_claims": ["typing_not_performed"],
+                        "forbidden_claims": ["text_inserted", "typed", "pasted"],
+                    },
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                LOGGER.warning("macos_paste: target verification failed: %s", exc)
+                return make_tool_result(
+                    NEEDS_CLARIFICATION,
+                    "我还没输入。当前没有确认到正确的输入位置。",
+                    data={"target": {"requested_target": target}},
+                    error_code="target_not_verified",
+                    outcome_type="failed",
+                    verified=False,
+                    verification_source="focused_target_verification",
+                    claim_policy={
+                        "allowed_claims": ["typing_not_performed"],
+                        "forbidden_claims": ["text_inserted", "typed", "pasted"],
+                    },
+                )
+
+            min_confidence = float(target_policy.get("min_confidence", 0.85))
+            classification = _classify_focused_target(
+                target_obs,
+                min_confidence=min_confidence,
+            )
+            target_data = {
+                **target_obs,
+                "requested_target": target,
+                "confidence": classification["confidence"],
+                "risk_level": classification["risk_level"],
+                "required_confirmation": classification["required_confirmation"],
+            }
+            if not classification["allowed"]:
+                return make_tool_result(
+                    classification["status"],
+                    classification["message"],
+                    data={"target": target_data, "typed_text_length": 0},
+                    error_code=classification["error_code"],
+                    outcome_type="failed",
+                    verified=False,
+                    verification_source="focused_target_verification",
+                    claim_policy={
+                        "allowed_claims": ["typing_not_performed"],
+                        "forbidden_claims": ["text_inserted", "typed", "pasted"],
+                    },
+                )
+            osascript_argv = self._build_paste_argv("")
+        else:
+            osascript_argv = self._build_paste_argv(target)
 
         try:
             subprocess.run(
@@ -1142,6 +1428,26 @@ class YAMLInterpreter:
         except subprocess.CalledProcessError as exc:
             LOGGER.warning("macos_paste: subprocess failed: %s", exc)
             return error_template if error_template else _FALLBACK_ERROR
+
+        if target_data is not None:
+            app = target_data.get("app") or "当前应用"
+            window = target_data.get("window_title") or ""
+            destination = f"{app}（{window}）" if window else str(app)
+            return make_tool_result(
+                SUCCESS,
+                f"已输入到 {destination}。",
+                data={
+                    "target": target_data,
+                    "typed_text_length": len(text),
+                },
+                outcome_type="changed",
+                verified=True,
+                verification_source="focused_target_verified",
+                claim_policy={
+                    "allowed_claims": ["text_inserted"],
+                    "forbidden_claims": [],
+                },
+            )
 
         template = response_cfg.get("template", "已输入")
         try:
@@ -1737,6 +2043,38 @@ class YAMLInterpreter:
             "-e", "end run",
             canonical,
         ]
+
+    @staticmethod
+    def _build_focus_argv(target: str) -> list[str]:
+        """Return osascript argv that focuses a target without typing."""
+        if not target:
+            return []
+        if target.lower() in _PREV_KEYWORDS:
+            return [
+                "osascript",
+                "-e", _APPLESCRIPT_CMDTAB,
+                "-e", _APPLESCRIPT_DELAY,
+            ]
+        canonical = _resolve_app_name(target)
+        return [
+            "osascript",
+            "-e", "on run argv",
+            "-e", "tell application (item 1 of argv) to activate",
+            "-e", _APPLESCRIPT_DELAY,
+            "-e", "end run",
+            canonical,
+        ]
+
+    def _observe_macos_focused_target(self) -> dict[str, Any]:
+        """Observe the frontmost app and focused UI element via Accessibility."""
+        result = subprocess.run(
+            ["osascript", "-e", _APPLESCRIPT_OBSERVE_FOCUS],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=_OSASCRIPT_TIMEOUT_S,
+        )
+        return _normalize_focus_observation(result.stdout)
 
     # ------------------------------------------------------------------
     # Internal helpers

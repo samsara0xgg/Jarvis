@@ -218,6 +218,8 @@ def test_default_registry_exposes_phase2_yaml_metadata():
     assert metadata["get_weather"]["lifecycle"]["status"] == "active"
     assert metadata["get_weather"]["exposure"]["expose_to_llm"] is True
     assert metadata["mac_gui"]["lifecycle"]["status"] == "rewrite_required"
+    assert metadata["type_to_focused"]["lifecycle"]["status"] == "active"
+    assert metadata["type_to_focused"]["exposure"]["expose_to_llm"] is True
     assert metadata["type_to_focused"]["classification"]["risk_level"] == "high"
     assert metadata["cc_tell"]["lifecycle"]["status"] == "active"
     assert metadata["cc_tell"]["exposure"]["allow_frontend_direct"] is True
