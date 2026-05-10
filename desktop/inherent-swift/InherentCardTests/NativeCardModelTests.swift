@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import InherentCard
 
@@ -515,6 +516,67 @@ final class NativeCardModelTests: XCTestCase {
       .paragraph("bedroom · 客厅 22°\n_(via siri:open IPC)_"),
       .paragraph("next paragraph"),
     ])
+  }
+
+  func test_inlineMarkdownStylerKeepsWebInlineColorsAndLinks() {
+    let attributed = NativeInlineStyler.attributed(
+      markdown: "**Bold** *em* ~~gone~~ `code` [linked](https://example.com) https://plain.example",
+      baseColor: Color.white.opacity(0.92)
+    )
+
+    var seen: Set<String> = []
+    for run in attributed.runs {
+      let text = String(attributed[run.range].characters)
+      switch text {
+      case "Bold":
+        XCTAssertEqual(run.foregroundColor, NativeInlineStyler.strongColor)
+        seen.insert("strong")
+      case "em":
+        XCTAssertEqual(run.foregroundColor, NativeInlineStyler.emphasisColor)
+        seen.insert("emphasis")
+      case "gone":
+        XCTAssertEqual(run.foregroundColor, NativeInlineStyler.deletedColor)
+        seen.insert("deleted")
+      case "code":
+        XCTAssertEqual(run.foregroundColor, NativeInlineStyler.inlineCodeColor)
+        XCTAssertEqual(run.backgroundColor, NativeInlineStyler.inlineCodeBackgroundColor)
+        seen.insert("code")
+      case "linked":
+        XCTAssertEqual(run.link?.absoluteString, "https://example.com")
+        XCTAssertEqual(run.foregroundColor, NativeInlineStyler.linkColor)
+        seen.insert("markdown-link")
+      case "https://plain.example":
+        XCTAssertEqual(run.link?.absoluteString, "https://plain.example")
+        XCTAssertEqual(run.foregroundColor, NativeInlineStyler.linkColor)
+        seen.insert("bare-link")
+      default:
+        break
+      }
+    }
+
+    XCTAssertEqual(seen, ["strong", "emphasis", "deleted", "code", "markdown-link", "bare-link"])
+  }
+
+  func test_inlineMarkdownStylerKeepsRunColorDuringCharacterFade() {
+    let markdown = "[link](https://example.com) `code`"
+    let visibleCount = NativeAnswerParser.plainInlineText(markdown).count
+    let attributed = NativeInlineStyler.attributed(
+      markdown: markdown,
+      baseColor: Color.white.opacity(0.92),
+      range: 0..<visibleCount,
+      characterBirthTimes: Array(repeating: 9.875, count: visibleCount),
+      now: 10
+    )
+
+    for run in attributed.runs {
+      let text = String(attributed[run.range].characters)
+      if text == "link" {
+        XCTAssertEqual(run.foregroundColor, NativeInlineStyler.linkColor.opacity(0.5))
+      } else if text == "code" {
+        XCTAssertEqual(run.foregroundColor, NativeInlineStyler.inlineCodeColor.opacity(0.5))
+        XCTAssertEqual(run.backgroundColor, NativeInlineStyler.inlineCodeBackgroundColor)
+      }
+    }
   }
 
   private func settle(milliseconds: UInt64 = 20) async throws {

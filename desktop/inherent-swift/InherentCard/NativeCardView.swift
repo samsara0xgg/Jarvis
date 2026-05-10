@@ -624,14 +624,8 @@ struct NativeMarkdownText: View {
     }
   }
 
-  private func inlineText(_ value: String) -> Text {
-    if let attributed = try? AttributedString(
-      markdown: value,
-      options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-    ) {
-      return Text(attributed)
-    }
-    return Text(value)
+  private func inlineText(_ value: String, color: Color) -> Text {
+    Text(NativeInlineStyler.attributed(markdown: value, baseColor: color))
   }
 
   private func inlineTextView(_ value: String, range: Range<Int>?, color: Color) -> some View {
@@ -711,9 +705,8 @@ struct NativeMarkdownText: View {
   private func tableRow(_ cells: [String], isHeader: Bool) -> some View {
     HStack(alignment: .top, spacing: 0) {
       ForEach(cells.indices, id: \.self) { idx in
-        inlineText(cells[idx])
+        inlineText(cells[idx], color: isHeader ? Color.white.opacity(0.55) : Color.white.opacity(0.88))
           .font(.system(size: 13, weight: isHeader ? .medium : .regular))
-          .foregroundStyle(isHeader ? Color.white.opacity(0.55) : Color.white.opacity(0.88))
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(.vertical, 6)
           .padding(.horizontal, 10)
@@ -768,37 +761,129 @@ struct NativeAnimatedInlineText: View {
   let characterBirthTimes: [TimeInterval]
   let baseColor: Color
 
-  private let fadeDuration: TimeInterval = 0.250
-
   var body: some View {
     TimelineView(.animation) { timeline in
-      Text(attributedText(at: timeline.date.timeIntervalSinceReferenceDate))
+      Text(NativeInlineStyler.attributed(
+        markdown: markdown,
+        baseColor: baseColor,
+        range: range,
+        characterBirthTimes: characterBirthTimes,
+        now: timeline.date.timeIntervalSinceReferenceDate
+      ))
     }
   }
+}
 
-  private func attributedText(at now: TimeInterval) -> AttributedString {
+enum NativeInlineStyler {
+  static let linkColor = Color(red: 0.37, green: 0.78, blue: 1).opacity(0.92)
+  static let strongColor = Color.white.opacity(0.99)
+  static let emphasisColor = Color.white.opacity(0.55)
+  static let deletedColor = Color.white.opacity(0.35)
+  static let inlineCodeColor = Color(red: 1.0, green: 0.86, blue: 0.70).opacity(0.92)
+  static let inlineCodeBackgroundColor = Color.black.opacity(0.32)
+
+  private static let fadeDuration: TimeInterval = 0.250
+  private static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+
+  static func attributed(
+    markdown: String,
+    baseColor: Color,
+    range: Range<Int>? = nil,
+    characterBirthTimes: [TimeInterval] = [],
+    now: TimeInterval = 0
+  ) -> AttributedString {
     var attributed = (try? AttributedString(
       markdown: markdown,
       options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
     )) ?? AttributedString(markdown)
+    linkifyBareURLs(in: &attributed)
+
+    let styledRanges = attributed.runs.map { run in
+      StyledRun(range: run.range, style: inlineStyle(for: run, baseColor: baseColor))
+    }
 
     guard let range, !characterBirthTimes.isEmpty else {
-      attributed.foregroundColor = baseColor
+      for styled in styledRanges {
+        apply(styled.style, foregroundOpacity: 1, to: styled.range, in: &attributed)
+      }
       return attributed
     }
 
-    var index = attributed.startIndex
     var visibleOffset = range.lowerBound
-    while index < attributed.endIndex, visibleOffset < range.upperBound {
-      let next = attributed.index(afterCharacter: index)
-      let birth = visibleOffset < characterBirthTimes.count ? characterBirthTimes[visibleOffset] : now - fadeDuration
-      let age = max(0, now - birth)
-      let opacity = min(1, max(0, age / fadeDuration))
-      attributed[index..<next].foregroundColor = baseColor.opacity(opacity)
-      index = next
-      visibleOffset += 1
+    for styled in styledRanges {
+      var index = styled.range.lowerBound
+      while index < styled.range.upperBound, visibleOffset < range.upperBound {
+        let next = attributed.index(afterCharacter: index)
+        let birth = visibleOffset < characterBirthTimes.count ? characterBirthTimes[visibleOffset] : now - fadeDuration
+        let age = max(0, now - birth)
+        let opacity = min(1, max(0, age / fadeDuration))
+        apply(styled.style, foregroundOpacity: opacity, to: index..<next, in: &attributed)
+        index = next
+        visibleOffset += 1
+      }
     }
     return attributed
+  }
+
+  private static func inlineStyle(for run: AttributedString.Runs.Run, baseColor: Color) -> InlineStyle {
+    let intent = run.inlinePresentationIntent
+    var style = InlineStyle(foreground: baseColor)
+
+    if intent?.contains(.stronglyEmphasized) == true {
+      style.foreground = strongColor
+    }
+    if intent?.contains(.emphasized) == true {
+      style.foreground = emphasisColor
+    }
+    if intent?.contains(.strikethrough) == true {
+      style.foreground = deletedColor
+    }
+    if run.link != nil {
+      style.foreground = linkColor
+    }
+    if intent?.contains(.code) == true {
+      style.foreground = inlineCodeColor
+      style.background = inlineCodeBackgroundColor
+    }
+    return style
+  }
+
+  private static func apply(
+    _ style: InlineStyle,
+    foregroundOpacity: Double,
+    to range: Range<AttributedString.Index>,
+    in attributed: inout AttributedString
+  ) {
+    attributed[range].foregroundColor = foregroundOpacity >= 1 ? style.foreground : style.foreground.opacity(foregroundOpacity)
+    if let background = style.background {
+      attributed[range].backgroundColor = background
+      attributed[range].font = .system(.body, design: .monospaced)
+    }
+  }
+
+  private static func linkifyBareURLs(in attributed: inout AttributedString) {
+    guard let linkDetector else { return }
+    let text = String(attributed.characters)
+    let fullRange = NSRange(text.startIndex..<text.endIndex, in: text)
+    for match in linkDetector.matches(in: text, range: fullRange) {
+      guard let url = match.url,
+            let stringRange = Range(match.range, in: text),
+            let lowerBound = AttributedString.Index(stringRange.lowerBound, within: attributed),
+            let upperBound = AttributedString.Index(stringRange.upperBound, within: attributed) else { continue }
+      let attributedRange = lowerBound..<upperBound
+      guard !attributed[attributedRange].runs.contains(where: { $0.link != nil }) else { continue }
+      attributed[attributedRange].link = url
+    }
+  }
+
+  private struct StyledRun {
+    let range: Range<AttributedString.Index>
+    let style: InlineStyle
+  }
+
+  private struct InlineStyle {
+    var foreground: Color
+    var background: Color?
   }
 }
 
