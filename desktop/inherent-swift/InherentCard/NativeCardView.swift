@@ -649,7 +649,8 @@ struct NativeMarkdownText: View {
       .font(.system(size: 13.5))
       .foregroundStyle(Color.white.opacity(0.88))
     case .code(let code, let language):
-      let lineCount = max(1, code.components(separatedBy: .newlines).count)
+      let lineCount = code.isEmpty ? 0 : code.components(separatedBy: .newlines).count
+      let codeBlockHeight = lineCount == 0 ? 24 : CGFloat(lineCount * 2 - 1) * 19.575 + 24
       ScrollView(.horizontal, showsIndicators: false) {
         NativeCodeText(code: code, language: language)
           .font(.system(size: 12.5, weight: .regular, design: .monospaced))
@@ -658,7 +659,7 @@ struct NativeMarkdownText: View {
           .padding(.horizontal, 14)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .frame(minHeight: CGFloat(lineCount) * 27 + 41, alignment: .topLeading)
+      .frame(minHeight: codeBlockHeight, alignment: .topLeading)
       .background(
         RoundedRectangle(cornerRadius: 12, style: .continuous)
           .fill(Color.black.opacity(0.32))
