@@ -558,6 +558,7 @@ final class NativeCardModel: ObservableObject {
   private func stageImageFile(_ url: URL, source: String) -> Bool {
     guard canStageImage() else { return false }
     guard let mime = Self.imageMimeType(for: url) else {
+      if source == "drop" { return false }
       imageStageError("image only")
       return false
     }

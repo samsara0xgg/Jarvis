@@ -300,6 +300,23 @@ final class NativeCardModelTests: XCTestCase {
     XCTAssertEqual(model.stateLabel, "idle")
   }
 
+  func test_nonImageFileDropIsIgnoredLikeWeb() async throws {
+    let model = NativeCardModel()
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("jarvis-inherent-drop-\(UUID().uuidString).txt")
+    try Data("not an image".utf8).write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let provider = NSItemProvider(object: url as NSURL)
+
+    XCTAssertTrue(model.handleDrop(providers: [provider]))
+    try await settle(milliseconds: 300)
+
+    XCTAssertNil(model.stagedImage)
+    XCTAssertEqual(model.stateLabel, "")
+    XCTAssertEqual(model.phase, .idle)
+  }
+
   func test_plainTextClipboardDoesNotBypassTextFieldPasteSemantics() {
     let model = NativeCardModel()
     model.inputText = "before"
