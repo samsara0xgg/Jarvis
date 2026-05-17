@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.installed.cfg
+*.egg
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Runtime state — NEVER commit
+var/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Models live in ~/Models/ — should never appear in repo
+data/
+
+# Front-end build artifacts
+ui/inherent/dist/
+ui/inherent/node_modules/
+ui/desktop/dist/
+ui/desktop/node_modules/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# System tests output
+system_tests/reports/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/

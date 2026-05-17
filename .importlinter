@@ -1,0 +1,45 @@
+[importlinter]
+root_package = jarvis
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Contract 1 — vertical layer dependency direction.
+#
+# Higher entries may import lower entries; lower entries may NEVER import
+# higher entries. cli is the topmost (entry points), shared is the bottommost
+# (primitives). runtime is the only place allowed to wire across the middle
+# four layers (decision / execution / surface / deployment).
+#
+# The middle four are written on a single line with `|` to declare them as
+# independent siblings — they cannot import each other, but each may import
+# everything below (state, constitution, shared).
+# ─────────────────────────────────────────────────────────────────────────────
+[importlinter:contract:layers]
+name = 6-layer architecture: top-to-bottom imports only
+type = layers
+layers =
+    jarvis.cli
+    jarvis.runtime
+    jarvis.decision | jarvis.execution | jarvis.surface | jarvis.deployment
+    jarvis.state
+    jarvis.constitution
+    jarvis.shared
+containers =
+    jarvis
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Contract 2 — constitution must remain pure (imports nothing else).
+# ─────────────────────────────────────────────────────────────────────────────
+[importlinter:contract:constitution-pure]
+name = Constitution imports nothing from the codebase
+type = forbidden
+source_modules =
+    jarvis.constitution
+forbidden_modules =
+    jarvis.state
+    jarvis.decision
+    jarvis.execution
+    jarvis.surface
+    jarvis.deployment
+    jarvis.runtime
+    jarvis.cli
+    jarvis.shared

@@ -1,0 +1,3217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jarvis · canonical spec</title>
+<style>
+:root {
+  color-scheme: dark;
+  --fg:           #e6edf3;
+  --fg-strong:    #f0f6fc;
+  --fg-mute:      #8b949e;
+  --fg-faint:     #6e7681;
+  --bg:           #0d1117;
+  --bg-soft:      #161b22;
+  --bg-elev:      #1c2128;
+  --bg-code:      #1f2428;
+  --border:       #30363d;
+  --border-mute:  #21262d;
+  --accent:       #58a6ff;
+  --accent-hover: #79c0ff;
+  --warn:         #e3b341;
+  --good:         #3fb950;
+  --invariant-bg:    rgba(227, 179, 65, 0.09);
+  --note-bg:         rgba(88, 166, 255, 0.09);
+  --constitution-bg: rgba(63, 185, 80, 0.09);
+  --blockquote-bg:   rgba(88, 166, 255, 0.06);
+}
+* { box-sizing: border-box; }
+html { scrollbar-color: var(--border) var(--bg-soft); scrollbar-width: thin; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  margin: 0;
+  padding: 0;
+  color: var(--fg);
+  background: var(--bg);
+  line-height: 1.65;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.layout {
+  display: flex;
+  gap: 2.5em;
+  max-width: 1320px;
+  margin: 2em auto;
+  padding: 0 1.5em;
+  align-items: flex-start;
+}
+.sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 2em;
+  max-height: calc(100vh - 4em);
+  overflow-y: auto;
+}
+main {
+  flex: 1;
+  min-width: 0;
+  max-width: 960px;
+}
+@media (max-width: 900px) {
+  .layout { flex-direction: column; }
+  .sidebar { position: static; width: 100%; max-height: none; }
+}
+::selection { background: rgba(88, 166, 255, 0.35); color: var(--fg-strong); }
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: var(--bg-soft); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 2px solid var(--bg-soft); }
+::-webkit-scrollbar-thumb:hover { background: var(--fg-mute); }
+h1 { border-bottom: 2px solid var(--fg-mute); padding-bottom: 0.3em; margin-top: 0; font-size: 1.85em; color: var(--fg-strong); letter-spacing: 0.01em; }
+h2 { color: var(--fg-strong); margin-top: 2.4em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; font-size: 1.4em; }
+h3 { color: var(--accent); margin-top: 1.6em; font-size: 1.15em; }
+h4 { color: var(--fg-mute); margin-top: 1.2em; }
+p { color: var(--fg); }
+code { background: var(--bg-code); padding: 0.12em 0.4em; border-radius: 3px; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.9em; color: var(--fg-strong); border: 1px solid var(--border-mute); }
+pre { background: var(--bg-code); padding: 0.9em 1em; border-radius: 6px; overflow-x: auto; line-height: 1.45; border: 1px solid var(--border); }
+pre code { background: none; padding: 0; font-size: 0.85em; border: none; color: var(--fg); }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.93em; background: var(--bg); }
+th, td { border: 1px solid var(--border); padding: 0.55em 0.75em; text-align: left; vertical-align: top; }
+th { background: var(--bg-elev); font-weight: 600; color: var(--fg-strong); }
+tr:nth-child(even) td { background: rgba(255, 255, 255, 0.012); }
+blockquote { border-left: 4px solid var(--accent); padding: 0.7em 1em; margin: 1em 0; background: var(--blockquote-bg); color: var(--fg); border-radius: 0 4px 4px 0; }
+blockquote strong { color: var(--fg-strong); }
+.meta { color: var(--fg-mute); font-size: 0.88em; margin-bottom: 1.5em; }
+.tag { display: inline-block; background: var(--bg-elev); border: 1px solid var(--border); padding: 0.12em 0.65em; border-radius: 3px; font-size: 0.85em; margin-right: 0.4em; margin-bottom: 0.3em; color: var(--fg); }
+.invariant { background: var(--invariant-bg); padding: 0.7em 1em; border-left: 4px solid var(--warn); margin: 0.8em 0; border-radius: 0 4px 4px 0; }
+.invariant strong { color: var(--warn); }
+.note { background: var(--note-bg); padding: 0.7em 1em; border-left: 4px solid var(--accent); margin: 0.8em 0; border-radius: 0 4px 4px 0; }
+.constitution { background: var(--constitution-bg); padding: 0.7em 1em; border-left: 4px solid var(--good); margin: 0.5em 0; border-radius: 0 4px 4px 0; }
+.constitution strong { color: var(--good); }
+nav { background: var(--bg-soft); padding: 1em 1.4em; border-radius: 8px; border: 1px solid var(--border); }
+nav strong { display: block; text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.78em; color: var(--fg-strong); margin-bottom: 0.7em; padding-bottom: 0.55em; border-bottom: 1px solid var(--border-mute); }
+nav ol { margin: 0.4em 0; padding-left: 1.4em; font-size: 0.92em; }
+nav a { color: var(--accent); text-decoration: none; transition: color 0.12s ease; }
+nav a:hover { text-decoration: underline; color: var(--accent-hover); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); text-decoration: underline; }
+hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
+section { margin-bottom: 1em; }
+ul, ol { padding-left: 1.5em; }
+li { margin: 0.3em 0; }
+li::marker { color: var(--fg-mute); }
+dl dt { margin-top: 0.8em; color: var(--fg-strong); }
+dl dd { margin-left: 1.4em; margin-top: 0.2em; color: var(--fg); }
+strong { color: var(--fg-strong); }
+em { color: var(--fg); }
+header strong { color: var(--fg-strong); }
+@media print {
+  body { background: white; color: black; max-width: none; margin: 0; padding: 1em; }
+  a { color: black; }
+  .invariant, .note, .constitution, blockquote { background: #f5f5f5 !important; color: black; }
+  th { background: #eee !important; color: black; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<aside class="sidebar">
+<nav>
+<strong>Keyword Index</strong>
+<ol>
+<li><a href="#positioning">定位</a></li>
+<li><a href="#architecture">总架构</a></li>
+<li><a href="#six-layer-architecture">Six-Layer Architecture</a>
+  <ol>
+    <li><a href="#six-layer-map">Layer Map</a></li>
+    <li><a href="#layer-constitution">L1 Constitution</a></li>
+    <li><a href="#layer-state-object">L2 State Object</a></li>
+    <li><a href="#layer-runtime-decision">L3 Runtime Decision</a></li>
+    <li><a href="#layer-capability-execution">L4 Capability Execution</a></li>
+    <li><a href="#layer-surface-io">L5 Surface / IO</a></li>
+    <li><a href="#layer-deployment-domains">L6 Deployment Domains</a></li>
+    <li><a href="#cross-layer-invariants">Cross-Layer Invariants</a></li>
+  </ol>
+</li>
+<li><a href="#state-object">State Object</a></li>
+<li><a href="#event-log">Event Log</a></li>
+<li><a href="#projections">Projections</a></li>
+<li><a href="#task-ledger">Task Ledger</a></li>
+<li><a href="#evidence-model">Evidence Model</a></li>
+<li><a href="#memory-boundary">Memory Boundary</a></li>
+<li><a href="#situation-packet">Situation Packet</a></li>
+<li><a href="#policy-mode">Policy / Mode</a></li>
+<li><a href="#attention-policy">Attention Policy</a></li>
+<li><a href="#invariants">Invariant Gate</a></li>
+<li><a href="#tool-surface">Tool Surface</a></li>
+<li><a href="#agent-protocol">Agent Protocol</a></li>
+<li><a href="#federation">Federation</a></li>
+<li><a href="#intent-routing">Intent Routing</a></li>
+<li><a href="#surface-design">Surface Design</a></li>
+<li><a href="#io-adapters">IO Adapters</a></li>
+</ol>
+</nav>
+</aside>
+
+<main>
+<article>
+
+<header>
+<h1>Jarvis</h1>
+<p class="meta">
+<span class="tag">canonical spec</span>
+<span class="tag">living document</span>
+<span class="tag">decisions only · no process · no TBD</span>
+</p>
+<p>这份文档只承载已锁死的决策。任何 brainstorm 推理、替代方案、待确认事项、过程记录都不在这里——它们在 <code>refactor/2026-05-14-state-object-schema-v0.html</code>。</p>
+</header>
+
+<section id="positioning">
+<h2>1. 定位</h2>
+
+<blockquote>
+<strong>Jarvis 是 Allen 的私人 AI 运行时</strong>：安静常驻，持续维护 Allen 的工作、任务、agent、Mac 和房间状态；在 Allen 召唤时立刻恢复上下文；在必要时调度工具、agent 和硬件执行；所有重要行动都要可验证、可追溯。
+</blockquote>
+
+<h3>1.1 它不是</h3>
+<ul>
+<li>不是聊天机器人。</li>
+<li>不是普通 voice assistant。</li>
+<li>不是 Home Assistant 替代品。</li>
+<li>不是通用 agent framework。</li>
+<li>不是陪聊 companion 优先。</li>
+<li>不是为了服务多人或商业用户而设计的通用产品。</li>
+</ul>
+
+<h3>1.2 它是</h3>
+<ol>
+<li><strong>私人工作 cockpit</strong>——让你随时知道项目在哪里、agent 在干嘛、哪些任务没收尾、哪些结果需要审核。</li>
+<li><strong>上下文恢复器</strong>——你说"接着昨天那个继续"，它能找到 branch、commit、session note、trace、未验证项，而不是问你"昨天哪个"。</li>
+<li><strong>任务与 agent 总管</strong>——Codex / Claude Code / Hermes 都是 worker。Jarvis 记录任务、派工、监督、收结果、验证、排队给你审核。</li>
+<li><strong>Mac 操作层</strong>——它能读文件、看 git、看屏幕、管窗口、用 terminal、浏览器和 clipboard。原则：先观察，后行动，行动后验证。</li>
+<li><strong>个人记忆层</strong>——它记住你的偏好、项目决策、工作习惯、踩过的坑、常用路径和你对提醒/主动性的反馈。</li>
+<li><strong>房间身体</strong>——RPi5、XVF3800、ESP32、Hue、display 是它的感官和身体。它最终能根据你的位置、时间、光线、温湿度和当前 mode 调整环境。</li>
+</ol>
+
+<h3>1.3 核心价值</h3>
+<ol>
+<li><strong>减少重复解释上下文</strong>——你不用反复告诉它现在在哪个项目、昨天做到哪、哪个 agent 干了什么。</li>
+<li><strong>减少任务管理负担</strong>——它帮你记录、追踪、收尾、验证、交接，而不是让你在一堆 session 和 terminal 里手动找。</li>
+<li><strong>减少环境切换成本</strong>——你从写代码到 review，从桌前到卧室，从工作到休息，Jarvis 能调整工具、语气、界面和环境。</li>
+</ol>
+
+<h3>1.4 产品北极星</h3>
+<blockquote>
+Jarvis 不追求"替你做所有事"，而是追求"<strong>让你继续前进时几乎不需要重新装载上下文</strong>"。
+</blockquote>
+
+<h3>1.5 最高原则</h3>
+<div class="constitution"><strong>原则 1.</strong> 单用户优先——只为 Allen 优化，不为泛化牺牲体验。</div>
+<div class="constitution"><strong>原则 2.</strong> 状态优先于对话——Jarvis 的核心不是聊天记录，而是当前 state：工作状态、任务状态、agent 状态、Mac 状态、房间状态。</div>
+<div class="constitution"><strong>原则 3.</strong> 证据优先于自信——agent 说完成不等于完成；工具返回成功不等于目标达成；Jarvis 要区分 reported、changed、tested、verified。</div>
+<div class="constitution"><strong>原则 4.</strong> 安静优先于打扰——默认安静维护状态。主动打扰必须有足够理由。</div>
+<div class="constitution"><strong>原则 5.</strong> 工具和硬件是身体，不是炫技——Mac 和房间硬件只是让 Jarvis 能感知和执行；产品核心仍然是帮助你管理状态和推进任务。</div>
+
+<h3>1.6 最终形态</h3>
+<ul>
+<li>你坐到桌前，它知道你可能进入工作状态，灯光和界面准备好，但不烦你。</li>
+<li>你说"继续昨天那个"，它立刻恢复上下文。</li>
+<li>你让 agent 做事，它记录任务、跟踪进度、等你审核。</li>
+<li>agent 说完成，它不轻信，而是查 diff、test、log、session note。</li>
+<li>你问"我是不是跑偏了"，它基于 commit、session、task ledger 给判断。</li>
+<li>你离开或睡觉，它降低打扰，把未完成事项排队，必要时调整环境。</li>
+<li>它越来越懂什么该提醒你，什么只该默默记录。</li>
+</ul>
+
+<h3>1.7 产品类别</h3>
+<blockquote>
+<strong>Personal AI Runtime for Allen.</strong><br>
+不是 assistant app，不是 agent app，而是一个私人运行时。它把 memory、tools、agents、Mac、hardware、tasks、modes 都统一在一个状态系统里。
+</blockquote>
+</section>
+
+<section id="architecture">
+<h2>2. 总架构</h2>
+
+<blockquote>
+Jarvis 是 <strong>6-layer state-centric personal runtime</strong>。Identity 不在 LLM、prompt、mode、tools 或语音管线里——它在持续更新的 State Object 里。换 LLM、改 prompt、加 tool 都不动 identity。
+</blockquote>
+
+<p>本节给 <strong>temporal 视图</strong>：一次 turn 在 6 层间如何流动。<strong>Structural 视图</strong>（每层 own / not-own / key objects 的完整边界、cross-layer invariants）见 <a href="#six-layer-architecture">§3 Six-Layer Architecture</a>。</p>
+
+<table>
+<thead><tr><th>Layer</th><th>角色（一句话）</th></tr></thead>
+<tbody>
+<tr><td><strong><a href="#layer-constitution">L1 Constitution</a></strong></td><td>产品身份与不可变原则；不在 hot path 但 invariants 下穿所有层。</td></tr>
+<tr><td><strong><a href="#layer-state-object">L2 State Object</a></strong></td><td>Event Log + Projections；Jarvis 的脊柱与唯一真相源。</td></tr>
+<tr><td><strong><a href="#layer-runtime-decision">L3 Runtime Decision</a></strong></td><td>读 projection snapshot，组装 packet，做 policy / intent / attention，发出 gated ActionRequest。</td></tr>
+<tr><td><strong><a href="#layer-capability-execution">L4 Capability Execution</a></strong></td><td>执行 gated ActionRequest；返回 RawResult + lifecycle events。不自证完成。</td></tr>
+<tr><td><strong><a href="#layer-surface-io">L5 Surface / IO</a></strong></td><td>世界 ↔ Jarvis 的边界；input canonicalization、output rendering、physical surface 选择。</td></tr>
+<tr><td><strong><a href="#layer-deployment-domains">L6 Deployment Domains</a></strong></td><td>Mac / RPi / Edge / Cloud 物理 ownership 与跨域 transport；offline / sleep / migration。</td></tr>
+</tbody>
+</table>
+
+<h3>2.1 总览图（layer-annotated）</h3>
+
+<pre><code>              ════════════ INPUTS ════════════  [L5 Surface / IO]
+      Voice · Inherent · Mac observer · Sensor · Scheduler ·
+      Agent report · Feedback · Code commit · cross-domain import
+                              │  canonical events / artifact_refs
+                              │  (continuous append)
+                              ▼
+              ╔════════════════════════════════════╗
+              ║  [L2 State Object]  (脊柱)            ║
+              ║                                      ║
+              ║  Event Log (append-only, immutable)  ║
+              ║    每 event: type · actor · payload · ║
+              ║                evidence semantics    ║
+              ║    Schema 唯一来源: §5.4 Event Type   ║
+              ║                     Registry         ║
+              ║          ↓ continuous fold           ║
+              ║  Projections (belief, read-only):     ║
+              ║    Task Ledger · Status Board ·      ║
+              ║    Mode Runtime · Memory ·            ║
+              ║    Claim/Evidence · Entity · Drift   ║
+              ╚══════════════╤═════════════════════╝
+                             │  turn trigger: utterance.received /
+                             │  agent.reported (priority=high) /
+                             │  surface.user_intent /
+                             │  scheduler.fired / sensor.alert /
+                             │  cross_domain.response.received  (§3.4.1)
+                             ▼
+              ╔════════════════════════════════════╗
+              ║  [L3 Runtime Decision]  (judgement)  ║
+              ║                                      ║
+              ║   Situation Packet Assembler         ║
+              ║   Effective Policy Resolver          ║
+              ║   Intent Routing                     ║
+              ║     ─ Tier 0 regex   (closed pattern)║
+              ║     ─ Tier 1 surrogate (frozen)      ║
+              ║     ─ Tier 2 cloud LLM (default)     ║
+              ║   Attention Policy                   ║
+              ║   Pre-action Gate    (§3.4.8)        ║
+              ║     I1 · I5 · confirmation ·         ║
+              ║     autonomy_ceiling · entity check  ║
+              ║   Result Interpreter (§3.4.11)       ║
+              ║     raw → claim/evidence events       ║
+              ║   Pre-emit Gate      (§3.4.12)       ║
+              ║     I2 (claim ≤ evidence) · I7 ·     ║
+              ║     ResponsePlan output_risk_class   ║
+              ╚══════════════╤═════════════════════╝
+                             │  gated ActionRequest
+                             ▼
+              ╔════════════════════════════════════╗
+              ║  [L4 Capability Execution]  (hands)  ║
+              ║                                      ║
+              ║   ToolRegistry (per caller_principal)║
+              ║   SandboxPolicy reality check        ║
+              ║     (command / path / network)       ║
+              ║   AuthorizationLease enforcement     ║
+              ║   ActionLifecycle 8-state            ║
+              ║     proposed → authorized →          ║
+              ║     dispatched → running →           ║
+              ║     result_observed / failed /        ║
+              ║     timeout_assumed / cancelled      ║
+              ║   post_action_check chain (§3.5.7)   ║
+              ║   WorkerRun · LegacyAdapter ·         ║
+              ║   ArtifactStore                       ║
+              ╚══════════════╤═════════════════════╝
+                             │  RawResult + lifecycle events
+                             │  ┌─ cross-domain branch ──────────────┐
+                             │  │  L4 emit cross_domain.request.     │
+                             │  │     dispatched(action_type=...)     │
+                             │  │       ↕  via SyncBridge (MQTT/...) │
+                             │  │  [L6] target domain (RPi / Edge)   │
+                             │  │     local L4 executes              │
+                             │  │     emit result + state observation │
+                             │  │  → imported back to Mac L2          │
+                             │  └────────────────────────────────────┘
+                             ▼
+              ════════════ OUTPUTS ════════════  [L5 Surface / IO]
+      Voice TTS · Inherent panel · OLED · Notification ·
+      Hue / MQTT (via L6) · ambient · spawn worker ·
+      Defer · Suppress (AttentionRouting channels)
+                              │
+                              └── all observable effects emit back ──┐
+                                  as events to [L2] Event Log         │
+                                                                      │
+              (next decision 从 updated state 启动) ◀────────────────┘
+
+       ┌─ [L1 Constitution] shapes invariants for all of above ─────┐
+       │   C1 Allen-only · C2 State-Object identity ·               │
+       │   C3 Reduce context/task load ·                            │
+       │   C4 Supervisor not worker ·                               │
+       │   C5 Evidence-bound privilege ·                            │
+       │   C6 Surfaces replaceable, continuity not                  │
+       │                                                            │
+       │   Layer 内任何 box 都不能违反 C1-C6；axes of autonomy        │
+       │   (§3.2.6) 由 L3 EffectivePolicy 决定具体值。                │
+       └────────────────────────────────────────────────────────────┘</code></pre>
+
+<div class="note"><strong>读图：</strong> L2 (Event Log + Projections) 是<strong>持续</strong>更新的背景线；L3 → L4 链是 <strong>event-triggered 同步</strong>计算（trigger 列表见 <a href="#layer-runtime-decision">§3.4.1</a>）。L4 输出回 L2 作为 lifecycle events，下一次 decision 读 fresh projection（snapshot 语义见 <a href="#layer-runtime-decision">§3.4.3</a>）。跨 domain 动作通过 <code>cross_domain.request.dispatched</code> + <code>payload.action_type</code> discriminator 走 L6 SyncBridge（见 <a href="#layer-deployment-domains">§3.7.3</a>）。L1 Constitution 不在 hot path 但 invariants 下穿所有层。</div>
+
+<div class="note"><strong>命名约定（避免 "L_n_" 歧义）：</strong> 本 spec 中 <strong>Layer 1-6</strong> 指 architecture layers（本节 + §3）；<strong>Tier 0 / Tier 1 / Tier 2</strong> 指 intent-routing tier（<a href="#layer-runtime-decision">§3.4.6</a> + <a href="#intent-routing">§17</a>）；<strong>L0-L4</strong> 仅在 <a href="#tool-surface">§14.4</a> 指 tool risk levels（read / local reversible / local write / external irreversible / admin）。三套命名 namespace 不互通，遇到 "L_n_" 必须按上下文判断。</div>
+</section>
+
+<section id="six-layer-architecture">
+<h2>3. Six-Layer Architecture</h2>
+
+<blockquote>
+<strong>第一原则：</strong>Jarvis 是 state-centric personal runtime。它的 identity lives in durable State Object；其他层要么产生 events，要么读取 projections 做 decision，要么执行 gated action，要么把 state 呈现给 Allen。
+</blockquote>
+
+<p>这节是 Jarvis 的第一层产品架构。它不是 implementation order，也不是 MVP scope；它定义最终系统中每类对象属于哪一层，哪些能力不能越界。后续 schema、tool、surface、部署和 scenario 都必须回到这六层校验。</p>
+
+<pre><code>Jarvis = State-centric Personal Runtime
+
+1. Constitution / Identity
+2. State Object
+3. Runtime Decision
+4. Capability Execution Layer
+5. Surface / IO Adapters
+6. Deployment Domains</code></pre>
+
+<h3 id="six-layer-map">3.1 Layer Map</h3>
+
+<table>
+<thead><tr><th>Layer</th><th>Owns</th><th>Does not own</th><th>Key objects</th></tr></thead>
+<tbody>
+<tr><td><strong>1. Constitution / Identity</strong></td><td>产品身份、北极星、不可变原则、非目标、Jarvis 和 Allen 的关系</td><td>state schema、tool、UI、部署、prompt 细节</td><td>Product Constitution · Non-goals · User Contract · Autonomy Philosophy · Success Definition</td></tr>
+<tr><td><strong>2. State Object</strong></td><td>Event Log、Projections、Task / Run / AgentSession、Claim / Evidence、Mode Runtime State、Memory Projection、Entity Registry / Alias Projection</td><td>Situation Packet assembly、effective policy、mode preset table、prompt shape、tool execution、surface view model、physical deployment topology</td><td>Event · Projection · Task · Run · AgentSession · Claim · Evidence · ModeRuntimeState · MemoryItem · EntityRef</td></tr>
+<tr><td><strong>3. Runtime Decision</strong></td><td>Situation Packet assembly、Effective Policy、Intent Routing、Attention Policy、ActionRequest、ConfirmationRequest、Gate、Result Interpreter、ResponsePlan</td><td>Event storage、projection truth、tool execution、worker execution、physical surface routing、UI view model</td><td>SituationPacket · EffectivePolicy · Intent · DecisionInvocation · ActionRequest · ConfirmationRequest · ResponsePlan · GateResult</td></tr>
+<tr><td><strong>4. Capability Execution Layer</strong></td><td>Tool registry、adapters、worker execution、device calls、sandbox、lease、raw result、lifecycle receipt、artifact spill</td><td>permission decision、task truth、verified completion、natural language response、UI display</td><td>ToolDefinition · CallerPrincipal · AuthorizationLease · ActionAdapter · ExecutionReceipt · RawResult · WorkerRun · ArtifactRef</td></tr>
+<tr><td><strong>5. Surface / IO Adapters</strong></td><td>input capture、canonicalization、raw buffers、visual/voice/notification rendering、local UI state、surface fallback、multimodal staging</td><td>truth、policy、verification、tool permission、agent completion</td><td>InputAdapter · OutputSurface · AttentionRouting · PresentationIntent · UserResponse · RawCapture · ViewModel · FreshnessIndicator</td></tr>
+<tr><td><strong>6. Deployment Domains</strong></td><td>domain ownership、process placement、local durability、cross-domain transport、offline behavior、artifact stores、backup/replay/migration</td><td>state semantics、policy rules、tool permission、claim interpretation、product identity</td><td>Domain · LocalEventLog · ImportedEvent · CrossDomainRequest · DomainProjection · SyncBridge · AvailabilityState</td></tr>
+</tbody>
+</table>
+
+<h3 id="layer-constitution">3.2 Phase 1: Constitution / Identity</h3>
+
+<p>Constitution 层只回答 Jarvis 是什么、为什么存在、不能变成什么。它不负责字段、表、tool schema、UI layout、Mac/RPi 拓扑或 prompt wording。它的作用是给后续所有工程设计设定不可协商的方向。</p>
+
+<table>
+<thead><tr><th>Owns</th><th>Does not own</th><th>Key objects</th></tr></thead>
+<tbody>
+<tr><td>产品身份、北极星、不可变原则、非目标、Jarvis 和 Allen 的关系</td><td>state schema、projection 字段、tool implementation、surface layout、physical deployment、prompt 细节</td><td>Product Constitution · Non-goals · User Contract · Autonomy Philosophy · Success Definition</td></tr>
+</tbody>
+</table>
+
+<h4>3.2.1 Locked constitution</h4>
+
+<div class="constitution"><strong>C1. Allen-only personal runtime.</strong> Jarvis 永远先服务 Allen 单人，不为多人协作、商业化、通用 onboarding 或陌生用户可解释性牺牲私人化。它可以极度偏向 Allen 的项目、房间、Mac、习惯和表达方式。</div>
+<div class="constitution"><strong>C2. State Object is identity.</strong> Jarvis 的 identity 不在 LLM、prompt、router、agent loop、tool registry、voice pipeline 或 Inherent UI。它存在于持续维护的 Allen standing state。</div>
+<div class="constitution"><strong>C3. Reduce context load and task load.</strong> 核心价值不是泛化聊天，而是让 Allen 少重复解释：昨天做到哪、哪个 agent 在干嘛、哪些任务没收尾、哪些结果未验收、当前项目有没有跑偏、下一步先做什么。</div>
+<div class="constitution"><strong>C4. Supervisor, not primary worker.</strong> Jarvis 负责调度、监督、验收、整理状态。复杂工程执行主要交给 Codex / Claude Code / Hermes 等 worker。Jarvis 主 LLM 默认不应拿到 patch / write_file / terminal 这类 executor 工具。</div>
+<div class="constitution"><strong>C5. High privilege must be evidence-bound.</strong> Jarvis 可以拥有很高权限，但所有重要行动都必须受 policy、risk、confirmation、claim/evidence 和 invariant gate 约束。工具成功、agent 自报、LLM 自信都不能单独证明目标达成。</div>
+<div class="constitution"><strong>C6. Surfaces are replaceable; continuity is not.</strong> Voice、Inherent、browser UI、notification、OLED、ambient light 都只是 surface。今天可以换 voice provider，明天可以换 UI，但 State Object 里的 continuity 不能断。</div>
+
+<h4>3.2.2 Product non-goals</h4>
+
+<ul>
+<li>不是普通聊天机器人，也不是普通 voice assistant。</li>
+<li>不是 Home Assistant 替代品；home automation 是身体的一部分，不是产品本体。</li>
+<li>不是通用 agent framework；Codex / Claude Code / Hermes 是 worker，不是 Jarvis 的 identity。</li>
+<li>不是 Cursor / IDE 竞争者；Jarvis 99% 情况下不亲自写复杂代码。</li>
+<li>不是多人协作 SaaS；权限和 UX 优先服务 Allen 的 N=1 工作流。</li>
+<li>不是陪聊 companion 优先；语气和人格服务状态管理，不反过来支配系统设计。</li>
+</ul>
+
+<h4>3.2.3 Success definition</h4>
+
+<p>Jarvis 成功不是因为它“更像人”或“会更多工具”，而是因为 Allen 可以更少重新装载上下文、更少手动追踪任务、更少在 session / terminal / notes / agent report 之间找状态。</p>
+
+<pre><code>Success =
+  continuation without re-explaining
+  + task / agent state visible
+  + claims separated from evidence
+  + actions tracked to completion or timeout
+  + surfaces show freshness and uncertainty
+  + work/home domains degrade predictably</code></pre>
+
+<h4>3.2.4 Downstream constraints</h4>
+
+<ul>
+<li>所有模块都必须围绕 event / projection / evidence 设计，不能把聊天历史或单次 prompt 当系统本体。</li>
+<li>所有 executor 能力必须区分 supervisor scope（<code>jarvis_llm</code> + <code>observer</code>）和 worker scope（<code>worker_agent</code>）。Caller principal canonical list 见 <a href="#layer-capability-execution">§3.5.2</a> 和 <a href="#tool-surface">§14.3</a>。</li>
+<li>所有重要输出必须能降级成 “reported / observed / executed / verified / accepted” 这类证据语言。</li>
+<li>所有 UI 和 hardware 都只能读 projection、emit event 或执行 gated request；不能拥有 truth。</li>
+<li>所有长期学习都必须先通过 memory policy，不能把 current mutable state 写成 stable personal fact。</li>
+</ul>
+
+<h4>3.2.5 User Contract</h4>
+
+<p>Allen 跟 Jarvis 之间是有方向的隐性契约，不是 EULA，也不是 SLA。它约束 Jarvis 的 default behavior 和 Allen 的合理 expectation。</p>
+
+<p><strong>Jarvis 对 Allen 的承诺：</strong></p>
+
+<ul>
+<li><strong>安静优先：</strong>默认不打扰；主动开口必须有 evidence 和 reason。</li>
+<li><strong>状态可见：</strong>Allen 想知道任何当前 state（task、agent、mode、device、domain）都能查到，带 freshness。</li>
+<li><strong>不自证：</strong>完成 / verified / 可信都不被自然语言夸大；输出受 evidence 等级约束。</li>
+<li><strong>跨 session 不丢上下文：</strong>Allen 说 “接着昨天那个继续” 时不需要重新解释。</li>
+<li><strong>永远 N=1：</strong>所有 trade-off 优先 Allen 的工作流和习惯，不为通用化让路。</li>
+</ul>
+
+<p><strong>Allen 对 Jarvis 的承诺：</strong></p>
+
+<ul>
+<li><strong>持续给反馈：</strong>accept / reject / correct / dismiss 这些信号是 Jarvis 学习的唯一来源。</li>
+<li><strong>明示偏好：</strong>long-term preference 通过明确表达进入 Memory，不期待 Jarvis 凭对话猜。</li>
+<li><strong>接受 evidence-bound 措辞：</strong>“reported, not verified” 不是不确定，是诚实。</li>
+<li><strong>不期待泛化能力：</strong>不要求 Jarvis 在 stranger / multi-user / 陌生 domain 表现得专业。</li>
+</ul>
+
+<h4>3.2.6 Autonomy Philosophy</h4>
+
+<p>Jarvis 的自主性沿 5 个 axis 独立调节，不是一个 “autonomy slider”。</p>
+
+<table>
+<thead><tr><th>Axis</th><th>含义</th><th>Default</th></tr></thead>
+<tbody>
+<tr><td><strong>Proactivity</strong></td><td>主动开口 / 主动行动的频率</td><td>安静优先；候补行动必须有 evidence + reason</td></tr>
+<tr><td><strong>Confirmation</strong></td><td>哪些动作要先问 Allen</td><td>高风险 / 不可逆 / 外部副作用 / 低置信但有 value 的动作必须 confirm</td></tr>
+<tr><td><strong>Verification</strong></td><td>验收严格度</td><td>Agent 自报 ≠ verified；postcondition 必查或显式标 limitation</td></tr>
+<tr><td><strong>Execution</strong></td><td>主 LLM 能否亲自做 worker 的活</td><td>Default 不做；patch / write_file / terminal 属 worker scope</td></tr>
+<tr><td><strong>Memory write</strong></td><td>长期 fact 写入策略</td><td>Promotion 4 问 + supersede；不写 current mutable state</td></tr>
+</tbody>
+</table>
+
+<p>每个 axis 由 mode preset + lens + per-turn override 影响，但不能下穿 invariants。Constitution 层固定 axis 的存在和方向；Layer 3 EffectivePolicy 决定每轮具体值。</p>
+
+<h3 id="layer-state-object">3.3 Phase 2: State Object</h3>
+
+<p>State Object 是 Jarvis 的持久身体：它定义 Jarvis 能知道什么、相信什么、追踪什么、记住什么。它不负责推理和执行。</p>
+
+<h4>3.3.1 Event Log 是唯一持久事实入口</h4>
+
+<p>所有持久变化都必须通过 event 进入系统：voice input、agent report、tool result、git observation、mode switch、task update、user feedback、sensor event、surface response、cross-domain imported event。</p>
+
+<pre><code>No state without event.</code></pre>
+
+<p>不能出现 LLM 直接把 task 标成 done、Projection 直接改成 verified_complete、UI localStorage 变成 active_task truth。正确路径是 emit canonical events（e.g. <code>worker.reported</code>、<code>evidence.attached</code>、<code>task.verified</code>，完整 schema 见 <a href="#event-type-registry">§5.4 Event Type Registry</a>），再由 projection 推导当前信念。</p>
+
+<p><strong>Events 不可变。</strong>修正、反转、撤回必须通过 append 新事件表达（<code>correction.X</code>、<code>supersede.X</code>、<code>revoked.X</code>），原 event 永不被改写或删除。Projection fold 按 supersede 链生效；audit trail 始终完整。这保证 replay 一致、并发安全，不会因为后悔某条 event 把 history 改成另一个版本。</p>
+
+<h4>3.3.2 Projection 是只读派生信念</h4>
+
+<p>Projection 不是事实源，而是从 events fold 出来的 current belief。它可以 materialize、cache、rebuild、incrementally update，但不能被 LLM / tool / surface 直接写。</p>
+
+<table>
+<thead><tr><th>Projection</th><th>作用</th></tr></thead>
+<tbody>
+<tr><td><strong>Task Ledger</strong></td><td>当前 tasks、runs、agent sessions、review queue、active task。</td></tr>
+<tr><td><strong>Status Board</strong></td><td>Mac / home / action / tool / domain availability 的当前状态。</td></tr>
+<tr><td><strong>Mode Runtime State</strong></td><td>当前 durable mode、lenses、overrides。</td></tr>
+<tr><td><strong>Recent Trace</strong></td><td>最近 N turn 和相关 action / claim / event 的近因上下文。</td></tr>
+<tr><td><strong>Memory Projection</strong></td><td>长期稳定个人知识，包含 Allen profile view。</td></tr>
+<tr><td><strong>Claim / Evidence Projection</strong></td><td>claim set、evidence relation、status、scope、freshness。</td></tr>
+<tr><td><strong>Entity Registry / Alias Projection</strong></td><td>canonical entity IDs、aliases、resolver confidence。</td></tr>
+<tr><td><strong>Drift Watch</strong></td><td>项目是否跑偏、commit/task/session 是否偏离目标。</td></tr>
+</tbody>
+</table>
+
+<div class="note"><strong>边界：</strong>Situation Packet 不是 State Object 的原始 projection，而是 Runtime Decision 的 turn-time export；Personal Profile 是 Memory Projection 的一个 view；Mode Preset Table 是 config/spec，不是 State Object。</div>
+
+<h4>3.3.3 Claim / Evidence 是 event-derived records</h4>
+
+<p>本节明确排除 "Claim / Evidence 是和 Event Log 平级的 mutable table"。锁定方案是：Claim / Evidence are event-derived records。</p>
+
+<pre><code>claim.created
+evidence.attached
+claim.refuted
+claim.limited
+claim.superseded
+claim.accepted</code></pre>
+
+<p>Claim/Evidence 表可以存在，但只能是 rebuildable projection / index。任何 <code>attach_evidence(claim, evidence)</code> API 都只是语义糖：</p>
+
+<pre><code>attach_evidence(...) -> emit_event("evidence.attached", ...)</code></pre>
+
+<p>这样才能保证 replay、audit、invariant 一致：agent report 不能直接变成 verified；tool success 不能直接变成 postcondition。</p>
+
+<p><strong>Freshness 是 evidence 的内在属性。</strong>每条 evidence 在 projection 里携带 <code>observed_at</code> 和 freshness / TTL semantics。TTL 按 source domain 不同：device state 秒级、git branch / file state 分钟级、commit history 永久、Allen profile 月级、ImportedEvent 由 origin domain 标记。Projection fold 用 freshness 判断 evidence 是否仍支撑 claim；超 TTL 的 evidence 自动降级为 stale，相关 claim 触发 <code>stale_warning</code>。Memory 继承同一模型——Memory 是 hint，不是当前真理；超 TTL 的 memory 不能用作 current state authority（参见 <a href="#layer-deployment-domains">3.7.5</a> ImportedEvent freshness 字段，<a href="#layer-surface-io">3.6.9</a> surface freshness UX）。</p>
+
+<h4>3.3.4 Task / Session / Run</h4>
+
+<pre><code>Task     = 跨天、跨 session、跨 agent 的持久目标
+Session  = 一段交互 / 对话 / 工作片段
+Run      = 在某个 task 上的一次推进尝试</code></pre>
+
+<p>Task 是 work continuity 的主骨架，Session 不是。Task status 是派生字段，不能被 agent 直接写。<code>verified_complete</code> 只能从 required claims + verified/accepted evidence 推出。</p>
+
+<h4>3.3.5 Memory 是长期 projection，不是 current state</h4>
+
+<p>Memory 只保存长期稳定、可复用、能降低 Allen 重复解释成本的知识。它可以保存偏好、项目长期决策、工作流习惯、稳定 alias hint；它不保存当前 task 状态、当前 branch、当前 device state、agent 是否完成、raw transcript、raw sensor stream、未验证 claim、secret 或 full command output。</p>
+
+<p>Memory 写入不是 State Object 自己决定。Runtime Decision 产生 memory candidate，检查 memory policy、stability、evidence、secret boundary 后 emit event；State Object fold 成 Memory Projection。</p>
+
+<h4>3.3.6 Mode Runtime State vs Mode Preset Table</h4>
+
+<table>
+<thead><tr><th>对象</th><th>归属</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><strong>Mode Runtime State</strong></td><td>State Object</td><td>当前 mode / lens / override，来自 <code>mode.transitioned</code>、<code>lens.enabled</code>、<code>override.applied</code>。</td></tr>
+<tr><td><strong>Mode Preset Table</strong></td><td>Config / spec</td><td>Collaborate、Focus、Rest 等默认 policy bundle。改 preset 不需要 emit runtime state event。</td></tr>
+<tr><td><strong>Effective Policy</strong></td><td>Runtime Decision</td><td>每次 decision 由 runtime state + preset + overrides + invariants 计算。</td></tr>
+</tbody>
+</table>
+
+<h4>3.3.7 Entity Registry / Alias Projection</h4>
+
+<p>LLM 不能 invent entity IDs。真实 task、run、agent_session、device、project、file、room、mode、surface、domain IDs 必须来自 Event Log、Entity Registry、trusted resolver、tool observation、trusted config 或 imported cross-domain event。</p>
+
+<p>ASR correction / phonetic alias 属于 Voice adapter pre-emit canonicalization；entity alias 属于 Entity Registry / Alias Projection；Memory 可以提示 "Allen 常说大灯指 bedroom_lamp_main"，但真实 alias 映射必须是可审计 state。</p>
+
+<h4>3.3.8 State Object API 边界</h4>
+
+<pre><code>emit_event(event)
+read_projection(name, high_water_mark?)
+query_claims(subject_ref)
+query_evidence(claim_ref)
+resolve_entity(ref, context)
+rebuild_projection(name)
+get_projection_version()</code></pre>
+
+<p>State Object 不暴露 <code>assemble_situation_packet</code>、<code>resolve_effective_policy</code>、<code>execute_tool</code>、<code>render_surface_view</code>、<code>mark_task_verified</code>。</p>
+
+<h4>3.3.9 Feasibility notes</h4>
+<ul>
+<li>Event payload must be bounded；大 stdout、图片、audio、diff、screenshots 只能以 <code>artifact_ref</code> 进入事件。</li>
+<li>Projection rebuild must not dereference artifacts by default。</li>
+<li>Event type 和 payload schema 必须 versioned；cross-domain unknown event 必须 quarantine，不 crash。</li>
+<li>State Object 是 logical，不等于 single physical DB；物理归属由 Deployment Domains 定义。</li>
+<li>Runtime Decision 每次读取 projection high-water mark，保证 snapshot semantics。</li>
+</ul>
+
+<h3 id="layer-runtime-decision">3.4 Phase 3: Runtime Decision</h3>
+
+<p>Runtime Decision 是 Jarvis 的判断层。它读取 projection snapshots，组装 context，解析 policy，选择 route，决定 attention，提出 action，解释 result，并约束输出。它不拥有真相，也不直接执行副作用。</p>
+
+<h4>3.4.1 Event-triggered, not turn-bound</h4>
+
+<p>User turn 只是 trigger 的一种。Runtime Decision 也会被 <code>agent.reported</code>、<code>action.timeout_assumed</code>、<code>surface.user_intent</code>、<code>confirmation.accepted</code>、<code>sensor.alert</code>、<code>scheduler.fired</code>、<code>cross_domain.response.received</code>、<code>domain_availability.changed</code> 触发。</p>
+
+<h4>3.4.2 Stateless across invocations</h4>
+
+<p>Layer 3 不能把状态存在自己的内存里跨调用依赖。跨 invocation 的所有 state 必须回到 State Object、config/spec、artifact refs、domain availability 或可重建 cache。Layer 3 可以有 invocation scratchpad，但它不是 Jarvis identity。</p>
+
+<h4>3.4.3 Decision invocation model</h4>
+
+<pre><code>trigger event
+  -> load projection snapshot (high_water_mark=N)
+  -> assemble consumer-specific packet
+  -> resolve effective_policy
+  -> choose route / decision engine
+  -> produce plan / action proposal / text proposal
+  -> pre-action / pre-emit gates
+  -> dispatch gated ActionRequest to Layer 4 if needed
+  -> interpret raw result into claim/evidence/action lifecycle events
+  -> emit events</code></pre>
+
+<p>本次 decision 读取 projection version N；中途 read-only tool result 可进 working memory；side-effect action 必须写 durable lifecycle event；中途 append 的 events 不自动改变本次 decision 的 projection view。若需要 fresh state，必须显式 refresh 或开启下一次 decision。</p>
+
+<h4>3.4.4 Situation Packet belongs here</h4>
+
+<p>Situation Packet 是给 decision engine 的裁剪版 context export，不是 State Object 的原始 state。Runtime Decision 可以组装 LLM Situation Packet、Surrogate Feature Packet、Attention Candidate Packet、Verification Context、Memory Write Context。</p>
+
+<p>LLM Situation Packet 的 canonical 形式：</p>
+
+<pre><code>LLMSituationPacket:
+  turn_context:
+    time
+    surface_origin
+    input_source
+    mode_runtime
+    active_lenses
+    effective_policy_summary
+  active_task?:
+    task_id
+    goal
+    status
+    next_action
+    missing_evidence
+    recent_runs_summary
+  open_actions:                ActionLifecycleSummary[]
+  waiting_for_allen:           ConfirmationRequest[]
+  recent_agent_reports:        ReportClaim[]
+  recent_trace:                TurnSummary[]
+  evidence_summary:
+    verified:                  Claim[]
+    reported:                  Claim[]
+    missing:                   Claim[]
+    stale_warnings:            StaleEvidenceRef[]
+  available_tool_surface:      ToolDefinition[]
+  memory_hints:                MemoryItem[]
+  entity_candidates:           EntityRef[]
+  resolver_constraints:        ResolverHint[]
+  limitations:                 LimitationClaim[]</code></pre>
+
+<p>Surrogate Feature Packet、Attention Candidate Packet、Verification Context、Memory Write Context 各有自己的 schema，但都遵循同一规则：runtime assembler 装配，consumer 不能 invent missing fields；packet 不够时必须 refresh state 或 ask Allen，不允许假设。</p>
+
+<h4>3.4.5 Effective Policy Resolver</h4>
+
+<pre><code>effective_policy =
+  mode_runtime_state
+  + mode_preset_table
+  + active_lenses
+  + per_turn_overrides
+  + personal_overrides
+  + invariants</code></pre>
+
+<p>Effective Policy 输出 autonomy_ceiling、confirmation_threshold、allowed_tool_surface、output_form、verification_level、interrupt_policy、memory_write_policy、task_policy、attention_defaults。Mode 可以改变 defaults，但不能突破 invariant。Router 只选择 path，不授予权限。</p>
+
+<h4>3.4.6 Intent Routing</h4>
+
+<p>Tier 0 regex、Tier 1 surrogate、Tier 2 cloud LLM、direct event path 都只是 route。Tier 0 命中 "关灯" 后仍要 resolve entity、check effective_policy、maybe confirmation、emit ActionRequest。Tier 1 surrogate 当前不是主线；没有 truth data 和 eval harness 前不该抢 state / tools / evidence 的工程窗口。Tier 2 cloud LLM 是 stateless, untrusted calculator。<em>命名注：</em>Tier 0/1/2 是 intent-routing tier，与 §3 的 Layer 1-6 是不同 namespace（见 <a href="#architecture">§2 命名约定</a>）。</p>
+
+<h4>3.4.7 Attention Policy</h4>
+
+<p>Attention Policy 是事件级干预层，不是 durable mode classifier。它读取 candidate event、effective_policy、urgency、confidence、risk、reversibility、timing、interruption cost、annoyance history、user feedback、freshness 和 domain availability，输出 silent_log、review_queue、badge、suggestion、voice_notification、interrupt、ambient_action、confirmation_request 或 delegate_agent。</p>
+
+<p>Feasibility 决定：hard gates 必须 deterministic；channel scoring 可以是 local weighted formula；LLM-as-judge 只用于罕见边界情况；每个 candidate 都过 LLM 是 architectural fiction；Layer 3 做 attention candidate coalescing；physical surface mapping 在 Layer 5。</p>
+
+<h4>3.4.8 ActionRequest and ghost action prevention</h4>
+
+<pre><code>ActionRequest:
+  action_id
+  correlation_id / run_id
+  caller_principal
+  authorization_lease?
+  action_type
+  target_entity_ref
+  risk_level
+  result_expected_by
+  max_duration
+  timeout_policy
+  retry_policy
+  expected_postcondition</code></pre>
+
+<p>任何 side-effect action 都必须有 durable lifecycle：<code>action.proposed</code>、<code>action.authorized</code>、<code>action.dispatched</code>、<code>action.running</code>、<code>action.result_observed</code>、<code>action.failed</code>、<code>action.timeout_assumed</code>、<code>action.cancelled</code>。Scheduler / supervisor 必须扫 open actions，超过 <code>result_expected_by</code> 且无 terminal event 时 emit timeout/limitation。</p>
+
+<h4>3.4.9 Tool-use intermediate results</h4>
+
+<p>本次否决 "turn 结束才一次性 emit 所有结果" 的纯方案。Read-only tool result 可以在 decision working memory 暂存，end-of-invocation batch emit；side-effect action 必须先 durable record lifecycle，再执行；action result / failure / timeout 必须写 event；projection snapshot 不在同一 invocation 内自动刷新。</p>
+
+<h4>3.4.10 Entity hallucination repair protocol</h4>
+
+<ol>
+<li>Exact canonical id / trusted alias：pass。</li>
+<li>High-confidence fuzzy + read-only / low-risk：silent repair，emit resolver warning。</li>
+<li>Medium confidence 或 side-effect：ConfirmationRequest。</li>
+<li>No match：same-invocation retry 最多一次，带候选 IDs。</li>
+<li>Second failure：fail closed 或 ask Allen。</li>
+<li>High-risk action：不允许 silent fuzzy repair。</li>
+</ol>
+
+<h4>3.4.11 Result Interpreter</h4>
+
+<p>Layer 4 返回 raw result 后，Layer 3 负责解释成 claim/evidence events。但解释必须受 ToolDefinition 的 <code>result_semantics</code> 限制。</p>
+
+<table>
+<thead><tr><th>result_semantics</th><th>可支持</th></tr></thead>
+<tbody>
+<tr><td>ack</td><td>Execution Claim，level=executed</td></tr>
+<tr><td>observation</td><td>Artifact / State Claim，level=observed</td></tr>
+<tr><td>verification</td><td>Postcondition Claim，level=verified</td></tr>
+<tr><td>report</td><td>Report Claim，level=reported</td></tr>
+<tr><td>error</td><td>refute / limitation</td></tr>
+</tbody>
+</table>
+
+<h4>3.4.12 Pre-emit Gate 的可行边界</h4>
+
+<p><code>claim &lt;= evidence</code> 面对自由自然语言不可完全 enforce。本次锁定分阶段方案。</p>
+
+<ul>
+<li><strong>v0:</strong> 只 gate consequential claims：task status、agent completion、test result、device result、memory write、current mutable state。</li>
+<li><strong>v0:</strong> 使用 strong/weak language templates 和高风险关键词 pattern：完成、已完成、done、verified、tests passed、已经删了、已经发送、已经关了、没有问题。</li>
+<li><strong>v0:</strong> evidence 不够时强制降级措辞，例如 "Codex reported complete, but I have not verified it yet."</li>
+<li><strong>v1:</strong> structured claim plan：LLM 先输出 claims、required evidence、available evidence、allowed phrasing；runtime approve 后再生成 final answer。</li>
+</ul>
+
+<p>换句话说，v0 是 <strong>template + keyword risk guard</strong>；v1 升级到 constrained generation / structured claim block。</p>
+
+<p>不做 full natural-language NLP parser，不把每次输出都交给 LLM-as-judge，不只靠 prompt 说 "不要越界"。</p>
+
+<h4>3.4.13 ResponsePlan and voice streaming</h4>
+
+<pre><code>ResponsePlan:
+  output_risk_class: routine | consequential_claim | high_risk_claim
+  required_gate_mode: sentence | full_text | structured</code></pre>
+
+<p>Routine 可以 sentence-boundary streaming；consequential claim 需要 full text gate 或 approved structured claim block；high-risk claim 必须 full text gate，不做 speculative TTS。Surface 只执行 ResponsePlan，不自己判断 claim 风险。</p>
+
+<h4>3.4.14 Memory write decision</h4>
+
+<pre><code>event / feedback / decision
+  -> memory candidate
+  -> check memory policy
+  -> check stability / evidence / non-secret / supersession
+  -> emit memory.proposed or observation.added
+  -> State Object folds into Memory Projection</code></pre>
+
+<p>Memory write 不能超过 evidence；不能把 current mutable state 写成长期 fact。</p>
+
+<h4>3.4.15 ROI boundary</h4>
+
+<p>高 ROI：Situation Packet、Effective Policy Resolver、caller/tool surface gate、Action lifecycle + timeout、result-to-claim interpreter、consequential pre-emit guard。后置：full NLP claim parser、adaptive mode learning、every-candidate LLM attention judge、Tier 1 surrogate without truth data、complex autonomous planning。</p>
+
+<h3 id="layer-capability-execution">3.5 Phase 4: Capability Execution Layer</h3>
+
+<p>Capability Execution Layer 是 Jarvis 的手。它执行已经被 Runtime Decision gate 过的 ActionRequest，通过 tools、adapters、worker、device 改变世界，并返回 canonical raw result 和 lifecycle receipt。它不决定 permission，不拥有 task truth，也不能自证完成。</p>
+
+<table>
+<thead><tr><th>Owns</th><th>Does not own</th><th>Key objects</th></tr></thead>
+<tbody>
+<tr><td>tool registry、adapters、worker execution、device calls、sandbox、lease、raw result、async lifecycle、artifact spill</td><td>permission decision、task truth、verified completion、natural language response、UI display、memory write decision</td><td>ToolDefinition · CallerPrincipal · AuthorizationLease · ActionAdapter · ExecutionReceipt · RawResult · WorkerRun · SandboxPolicy · ArtifactRef</td></tr>
+</tbody>
+</table>
+
+<h4>3.5.1 Only gated ActionRequest may execute</h4>
+
+<p>Layer 4 不接受 LLM、surface、worker process、regex route 直接执行；它只接受 gated ActionRequest。Surface 的 user_intent 必须先经 Layer 3 转成 ActionRequest 才能下到 Layer 4。正确路径是：</p>
+
+<pre><code>LLM / router / surface proposes intent
+  -> Layer 3 builds ActionRequest
+  -> policy + entity + risk + confirmation gates
+  -> Layer 4 executes
+  -> raw result returns
+  -> Layer 3 interprets into claim/evidence
+  -> Layer 2 stores events / projections</code></pre>
+
+<div class="invariant"><strong>No direct LLM-to-tool execution.</strong> LLM 只能提出 tool call / plan；runtime gate 后才可能变成 ActionRequest。</div>
+<div class="invariant"><strong>No direct agent-to-state mutation.</strong> Worker 可以提交 report 和 artifact，不能改 Task truth。</div>
+<div class="invariant"><strong>No tool result self-verification.</strong> Tool success 不等于 postcondition；agent final message 不等于 verified completion。</div>
+
+<h4>3.5.2 Caller principals and AuthorizationLease</h4>
+
+<p><code>caller_scope</code>（旧名）/ <code>caller_principal</code>（新名）不表示临时授权，而表示真实 caller principal。之前把 caller 简化成 observer / jarvis_llm / worker_agent 三种是错误简化；regex_router、background_subscriber、system_maintenance 都有真实不同的 risk profile 和访问模式。</p>
+
+<pre><code>CallerPrincipal:
+  observer
+  regex_router
+  jarvis_llm
+  worker_agent
+  background_subscriber
+  system_maintenance</code></pre>
+
+<table>
+<thead><tr><th>Principal</th><th>真实场景</th><th>边界</th></tr></thead>
+<tbody>
+<tr><td>observer</td><td>git status、file read、clipboard read、screen observe、domain status</td><td>read-only observation；不写外部世界。</td></tr>
+<tr><td>regex_router</td><td>L0 fast path，如确定性 smart-home / time / reminder 命令</td><td>低延迟路径，但仍要过 entity / policy / risk gate。</td></tr>
+<tr><td>jarvis_llm</td><td>主对话 LLM 的 supervisor actions：query_situation、spawn_worker、queue_review、request_confirmation</td><td>默认不拿 patch / write_file / terminal executor 工具。</td></tr>
+<tr><td>worker_agent</td><td>Codex / Claude Code / Hermes 在 task-scoped run 里执行代码、测试、patch</td><td>可以执行，但不能 self-verify。</td></tr>
+<tr><td>background_subscriber</td><td>attention subscriber、scheduler、commit hook、domain health watcher</td><td>不是 LLM；只能做订阅器被授予的 scoped actions。</td></tr>
+<tr><td>system_maintenance</td><td>projection rebuild、schema migration、backup、self-update</td><td>admin 通道，不在常规对话路径暴露。</td></tr>
+</tbody>
+</table>
+
+<p><code>human_approved</code> 不是 caller principal；它是 <code>AuthorizationLease</code>。真实 caller 仍然是 <code>jarvis_llm</code> 或 <code>worker_agent</code>，只是本次拥有 Allen 明确批准的临时能力。</p>
+
+<pre><code>AuthorizationLease:
+  lease_id
+  granted_by: Allen
+  granted_to: caller_principal
+  allowed_tools
+  allowed_targets
+  expires_at
+  max_uses
+  reason
+  source_confirmation_event_id</code></pre>
+
+<p>这种拆法保留审计信息：不是“human_approved 调用了 patch”，而是“jarvis_llm 在 lease X 下调用 patch”。</p>
+
+<h4>3.5.3 ToolDefinition contract</h4>
+
+<pre><code>ToolDefinition:
+  name
+  description
+  input_schema
+  caller_principals_allowed
+  read_only
+  destructive
+  risk_level
+  action_type
+  result_semantics
+  timeout_default
+  required_entity_types
+  side_effect_domain
+  post_action_check?
+  max_output_default
+  artifact_policy</code></pre>
+
+<p>ToolDefinition 描述 intrinsic capability，不授予当前权限。EffectivePolicy 决定 caller 现在是否可用；Pre-action Gate 决定这次具体调用是否允许；Layer 4 sandbox 决定具体参数是否越界。</p>
+
+<h4>3.5.4 result_semantics is the Evidence interface</h4>
+
+<p><code>result_semantics</code> 是 Layer 4 和 Evidence Model 的核心接口。没有它，Layer 3 只能靠 tool 名字猜 evidence level，最后会变成不可维护的 if/else。</p>
+
+<table>
+<thead><tr><th>result_semantics</th><th>含义</th><th>Layer 3 可支持的 evidence</th><th>例子</th></tr></thead>
+<tbody>
+<tr><td>ack</td><td>tool/API 收到命令</td><td>Execution Claim，level=executed</td><td><code>hue_set_state</code> bridge accepted command</td></tr>
+<tr><td>observation</td><td>读取当前 artifact/state</td><td>Artifact / State Claim，level=observed</td><td><code>hue_get_state</code> returned current state</td></tr>
+<tr><td>verification</td><td>检查 postcondition</td><td>Postcondition Claim，level=verified</td><td>test parser confirms all targeted tests passed</td></tr>
+<tr><td>report</td><td>agent/worker 自报</td><td>Report Claim，level=reported</td><td>Codex says it completed task</td></tr>
+<tr><td>error</td><td>执行失败</td><td>refute / limitation evidence</td><td>command failed, device unreachable</td></tr>
+</tbody>
+</table>
+
+<p>最终 schema 可支持 per-output mapping，因为一个 tool 可能同时产生 execution、artifact、verification 三类结果。v0 可以先用单值，但 canonical contract 必须允许未来细化。</p>
+
+<h4>3.5.5 Layer 3 intent check vs Layer 4 reality check</h4>
+
+<p>Defense-in-depth 不是两层重复检查。Layer 3 看 intent / policy，Layer 4 看 concrete parameters / reality。</p>
+
+<p><strong>Layer 3 = INTENT check.</strong> 它判断这个 caller 在当前 mode / policy / task / risk 下是否允许“想做这件事”。<strong>Layer 4 = REALITY check.</strong> 它判断这个具体 tool call 的参数、路径、命令、网络和输出有没有越界。</p>
+
+<table>
+<thead><tr><th>Check</th><th>Layer 3</th><th>Layer 4</th></tr></thead>
+<tbody>
+<tr><td>caller 在当前 mode 下能否尝试此 tool 类别</td><td>yes</td><td>no</td></tr>
+<tr><td>specific entity_id 是否由 trusted resolver 得到</td><td>yes</td><td>no</td></tr>
+<tr><td>risk 是否需要 confirmation</td><td>yes</td><td>no</td></tr>
+<tr><td>command string 是否含 <code>rm -rf</code> / banned command</td><td>no</td><td>yes</td></tr>
+<tr><td>workdir / file path 是否在 allowed paths 内</td><td>no</td><td>yes</td></tr>
+<tr><td>secret path / config path 是否被触碰</td><td>no</td><td>yes</td></tr>
+<tr><td>network target domain 是否允许</td><td>no</td><td>yes</td></tr>
+<tr><td>AuthorizationLease 是否过期、target 是否越界</td><td>policy side</td><td>runtime enforcement</td></tr>
+</tbody>
+</table>
+
+<p>Layer 3 看不到 command string 内部；Layer 4 不应该理解 mode/policy 语义。两层各守自己的抽象边界。</p>
+
+<h4>3.5.6 ToolRegistry interface</h4>
+
+<pre><code>ToolRegistry.list_tools(caller_principal) -> ToolDefinition[]
+ToolRegistry.get_tool(name, caller_principal) -> ToolDefinition | None
+CapabilityExecutor.execute(gated_action_request) -> RawResultBundle</code></pre>
+
+<p>Layer 4 只按 intrinsic caller principal 过滤。Layer 3 再按 EffectivePolicy、AuthorizationLease、mode、task scope 做 contextual filter。最终交集进入 Situation Packet。Layer 4 不接收完整 mode_context，避免它开始理解 policy。</p>
+
+<h4>3.5.7 post_action_check</h4>
+
+<p>Execution is not postcondition。比如 <code>hue_set_state(on=false)</code> 返回 ack，只能证明命令被接受，不能证明灯真的关了。ToolDefinition 可以声明自动 post-action check：</p>
+
+<pre><code>post_action_check:
+  mode: inline | async | none
+  check_tool: tool_ref
+  expected_predicate
+  result_semantics_on_match: verification | observation
+  timeout_ms</code></pre>
+
+<p>Layer 4 可以按 recipe 自动 chain check；Layer 3 才解释 check result 是否支持 verified evidence。这样 smart-home、file-write、test-runner 等 tool 都能明确 ack / observed / verified 的边界。</p>
+
+<h4>3.5.8 Worker report enforcement</h4>
+
+<p>只靠 prompt 要求 worker 输出结构化报告不可靠。最终设计采用 <code>submit_report</code> tool + post-hoc artifact collection。</p>
+
+<pre><code>WorkerReport:
+  status
+  summary
+  changed_files
+  commands_run
+  tests_run
+  evidence_submitted
+  remaining_risks
+  needs_human_review
+  next_recommended_action</code></pre>
+
+<ul>
+<li>Worker wrapper 应注入 <code>submit_report</code> tool，要求 worker 用 tool call 交结构化 report。</li>
+<li>Layer 4 同时收集 git diff、changed files、command log、test output、artifact refs。</li>
+<li>如果 worker 没 call <code>submit_report</code>，记录 <code>worker.report_missing</code> 和 Limitation Claim。</li>
+<li>Worker report 永远只是 Report Claim；Jarvis 还要自己检查 artifact / test / postcondition。</li>
+</ul>
+
+<h4>3.5.9 Unified async lifecycle</h4>
+
+<p>Worker lifecycle 不应和 async action lifecycle 平行存在。Worker 是 async action 的特殊执行形态，同时也是 Task Run 的一种 runner。</p>
+
+<pre><code>ActionLifecycle:
+  proposed
+  authorized
+  dispatched
+  running
+  result_observed
+  failed
+  timeout_assumed
+  cancelled</code></pre>
+
+<p>Worker-specific events 是 running 期间的扩展：<code>worker.heartbeat</code>、<code>worker.artifact_observed</code>、<code>worker.reported</code>。它们通过同一个 action_id / run_id correlation 挂接，不另起第二套状态机。</p>
+
+<h4>3.5.10 LegacyAdapter and v2 contract</h4>
+
+<p>Layer 3 只看 canonical v2 ToolContract。Legacy tools 必须通过 LegacyAdapter 包成 v2 ToolDefinition + RawResult contract；legacy envelope 不外泄给 Runtime Decision 或 LLM prompt。</p>
+
+<pre><code>legacy smart_home.hue_set_state
+  -> LegacyAdapter
+  -> v2 ToolDefinition
+  -> canonical RawResult / ExecutionReceipt</code></pre>
+
+<p>这样避免 LLM-visible result 混入两种 envelope，避免 prompt 和 result interpreter hardcode 双 format。</p>
+
+<h4>3.5.11 RawResult, artifact_ref, and bounded event payloads</h4>
+
+<pre><code>RawResult:
+  summary
+  artifact_ref?
+  truncated
+  size_bytes
+  content_hash
+  mime_type
+  retention_policy</code></pre>
+
+<p>Terminal / test / worker 可能产生 10MB stdout 或大量日志。大输出不能进入 Event Log payload；Event payload 只存 bounded summary、artifact_ref、hash、size、mime、retention。Projection rebuild 默认不 dereference artifact bytes。</p>
+
+<h4>3.5.12 ExecutionLease / SandboxPolicy</h4>
+
+<pre><code>ExecutionLease:
+  action_id
+  caller_principal
+  authorization_lease?
+  allowed_workdir
+  allowed_tools
+  allowed_targets
+  expires_at
+  max_runtime
+  max_output
+  cancel_token</code></pre>
+
+<p>SandboxPolicy 必须能 deny destructive commands、secret paths、out-of-scope workdir、unexpected network target、unapproved push/delete/install/kill。即使 Layer 3 gate 过，Layer 4 仍要做 concrete safety enforcement。</p>
+
+<h3 id="layer-surface-io">3.6 Phase 5: Surface / IO Adapters</h3>
+
+<p>Surface / IO 是 Jarvis 和世界之间的边界层。Input Adapters 把世界信号和 Allen 交互变成 bounded canonical events 或 artifact refs；Output Surfaces 把 projections 和 PresentationIntent 渲染成 voice、visual、notification 或 ambient channel。Surface 可以拥有 presentation logic 和 local UI state，但不拥有 truth、policy、verification 或 tool execution。</p>
+
+<table>
+<thead><tr><th>Owns</th><th>Does not own</th><th>Key objects</th></tr></thead>
+<tbody>
+<tr><td>输入采集、输出呈现、surface interaction、channel-specific UX、raw capture handling、debounce、rate limit、local rendering、fallback、multimodal staging</td><td>state truth、task status、policy decision、tool permission、claim verification、agent completion</td><td>InputAdapter · OutputSurface · Channel · SurfaceEvent · AttentionRouting · PresentationIntent · UserResponse · RawCapture · ViewModel · FreshnessIndicator</td></tr>
+</tbody>
+</table>
+
+<h4>3.6.1 Input Adapter: raw / buffer / canonical</h4>
+
+<p>不是所有 raw signal 都能进 Event Log。Layer 5 必须把高噪声世界信号分成三层：</p>
+
+<pre><code>raw stream
+  -> adapter buffer
+  -> canonical event or artifact_ref</code></pre>
+
+<table>
+<thead><tr><th>Raw signal</th><th>Adapter buffer</th><th>Canonical output</th></tr></thead>
+<tbody>
+<tr><td>audio frames</td><td>VAD / ASR local buffer</td><td><code>utterance.received(transcript, confidence)</code></td></tr>
+<tr><td>screen frames</td><td>short-lived screenshot / OCR buffer</td><td>selected text / active app / artifact_ref when promoted</td></tr>
+<tr><td>sensor ticks</td><td>debounce / smoothing window</td><td><code>presence.inferred</code> or <code>sensor.observed</code> only when event-worthy</td></tr>
+<tr><td>pasted image</td><td>surface staging area</td><td><code>multimodal.staged(staged_item_id, artifact_ref)</code></td></tr>
+</tbody>
+</table>
+
+<p>Input Adapter 只能产生 observation / user-intent events，不做最终 intent decision。Voice adapter 不判断“这是关灯意图”；Inherent button 不直连 tool；Mac observer 不把 screen pattern 直接解释成 task status。</p>
+
+<h4>3.6.2 Adapter-internal canonicalization</h4>
+
+<p>Input adapters 可以做 pre-emit canonicalization，但不能偷偷拥有长期 truth。</p>
+
+<ul>
+<li>ASR corrections / phonetic aliases 属于 Voice adapter 内部，在生成 <code>utterance.received</code> 前应用。</li>
+<li>单位归一化、时间格式归一化、language metadata 可以在 adapter 内做。</li>
+<li>Entity aliases 不藏在 Voice layer；它们属于 Layer 2 Entity Registry / Alias Projection。</li>
+<li>Raw ASR output 可选以 artifact_ref 保留，用于 debug，不直接污染 prompt 或 memory。</li>
+</ul>
+
+<h4>3.6.3 AttentionRouting, PresentationIntent, UserResponse</h4>
+
+<p>Attention channel decision 和 surface rendering contract 必须分开，否则 Layer 3 会泄漏物理 surface 细节，或 Layer 5 会偷偷做 attention policy。</p>
+
+<table>
+<thead><tr><th>对象</th><th>方向</th><th>含义</th><th>字段</th></tr></thead>
+<tbody>
+<tr><td><strong>AttentionRouting</strong></td><td>Layer 3 -> Layer 5</td><td>channel 级决策</td><td>channel、subject_ref、urgency、expires_at、reason</td></tr>
+<tr><td><strong>PresentationIntent</strong></td><td>Layer 3 -> Layer 5</td><td>渲染契约，比 channel 更细</td><td>intent_type、surface_hint、subject_ref、content_hint、freshness_required</td></tr>
+<tr><td><strong>UserResponse</strong></td><td>Layer 5 -> Layer 2/3</td><td>Allen 对 surface 的回填</td><td>response_type、source_surface、source_event_id、payload</td></tr>
+</tbody>
+</table>
+
+<pre><code>AttentionRouting.channel:
+  silent_log | queue | badge | voice_notify | interrupt |
+  ambient_act | confirmation_request | delegate_agent
+
+PresentationIntent.intent_type:
+  emphasize | acknowledge | progress | stale_warn |
+  confirm_request | review_needed | error</code></pre>
+
+<div class="note"><strong>Contract vs Event:</strong> AttentionRouting 和 PresentationIntent 是 L3→L5 message contracts，不写入 Event Log。UserResponse 也是 contract object（L5→L2/3），不是 event；其 durable form 落成 canonical events：<code>surface.user_intent</code>、<code>confirmation.accepted</code>、<code>confirmation.rejected</code>、<code>surface.dismissed</code>、<code>surface.clarified</code>，schema 见 <a href="#event-type-registry">§5.4</a>。</div>
+
+<h4>3.6.4 Channel -> physical surface mapping</h4>
+
+<p>Layer 3 决定 channel class；Layer 5 在这个 channel 内选择具体 physical surface。Channel 到 surface 是 many-to-many：</p>
+
+<ul>
+<li><code>badge</code> 可以落在 Inherent、OLED、menu bar。</li>
+<li><code>voice_notify</code> 可以由 MiniMax TTS、Mac say fallback、notification fallback 承载。</li>
+<li><code>queue</code> 可以显示在 Inherent review queue 或 dashboard。</li>
+</ul>
+
+<p>Layer 5 依据 surface availability、freshness preference、recent activity、fallback chain、local focus state 选择承载物。它不能把 queue 升级成 interrupt，也不能在 Focus mode 自己决定 voice_notify；mode 约束已经由 Layer 3 的 AttentionRouting 表达。</p>
+
+<h4>3.6.5 Voice boundaries</h4>
+
+<p>Voice 同时是 input adapter 和 output surface，但两边都不能越界。</p>
+
+<ul>
+<li><strong>Input:</strong> audio -> VAD / ASR -> corrections -> <code>utterance.received</code>。Intent routing 不在 voice layer。</li>
+<li><strong>Output:</strong> TTS 只能播放经过 Layer 3 pre-emit gate 或 ResponsePlan 允许的文本。</li>
+<li><strong>Interrupt:</strong> Voice 只执行 speak、suppress、duck、stop、resume；“该不该打断 Allen”属于 Attention Policy。</li>
+<li><strong>Fallback:</strong> TTS provider failure 必须走 surface fallback chain，不应吞掉 message。</li>
+</ul>
+
+<h4>3.6.6 Streaming TTS and ResponsePlan</h4>
+
+<p>LLM streaming 和 TTS streaming 会和 Pre-emit Gate 冲突。解决方案不是让 Voice 自己判断风险，而是让 Runtime Decision 输出 ResponsePlan。</p>
+
+<pre><code>ResponsePlan:
+  output_risk_class: routine | consequential_claim | high_risk_claim
+  required_gate_mode: sentence | full_text | structured</code></pre>
+
+<table>
+<thead><tr><th>Risk class</th><th>TTS behavior</th><th>原因</th></tr></thead>
+<tbody>
+<tr><td>routine</td><td>sentence-boundary streaming</td><td>低延迟优先，风险低。</td></tr>
+<tr><td>consequential_claim</td><td>full text gate 或 structured claim block 后播放</td><td>涉及完成、测试、设备状态、agent result。</td></tr>
+<tr><td>high_risk_claim</td><td>full text gate，不做 speculative TTS</td><td>删除、发送、提交、支付、系统改动等不可轻率播出。</td></tr>
+</tbody>
+</table>
+
+<h4>3.6.7 Inherent boundaries</h4>
+
+<p>Inherent 是 visual cockpit，不是 state owner，也不是 tool executor。</p>
+
+<ul>
+<li>它显示 active task、agent runs、open actions、mode、claim/evidence、freshness、stale state。</li>
+<li>UI button 的正确路径是 <code>surface.user_intent</code> -> Layer 3 -> Layer 4 -> events -> projection -> re-render。</li>
+<li>它不能直接把 task 标成 done，不能直接触发 patch / terminal，不能相信 agent final message。</li>
+<li>它可以拥有 layout、scroll、expanded rows、selected tab、animation state 等 local UI state。</li>
+<li>Local UI state 不携带 truth，不影响 decision，不写回 State Object；丢失后不影响 Jarvis identity。</li>
+</ul>
+
+<h4>3.6.8 Multimodal staging</h4>
+
+<p>Multimodal input 是有状态 surface 子系统。图片或文件 bytes 不能塞进 Event Log，但后续 utterance 必须能 reference 它。</p>
+
+<pre><code>multimodal.staged:
+  staged_item_id
+  artifact_ref
+  thumbnail_ref
+  source_surface
+  mime_type
+  content_hash
+  created_at
+  expires_at
+  consumed_by_turn_id?
+  status: staged | consumed | dismissed | expired</code></pre>
+
+<p>Staging area 的 artifact bytes 留在 surface-side artifact store；State Object 只收到 staged_item_id、metadata、artifact_ref、TTL、consumption status。后续 “读这个图” 通过 staged_item_id 或 correlation_id 绑定。</p>
+
+<h4>3.6.9 Freshness / evidence / stale UX</h4>
+
+<p>State Object 是 Jarvis-observed belief，不是宇宙真理。Surface 必须把 freshness 和 evidence level 展示出来，否则 Allen 会误以为 UI 上每个状态都是实时事实。</p>
+
+<ul>
+<li>Hue state: RPi reported lamp off 4s ago。</li>
+<li>Agent status: last heartbeat 22m ago。</li>
+<li>Task status: reported_complete, not verified。</li>
+<li>Git state: refreshed just now / stale since wake。</li>
+<li>Home domain: offline, queued request pending。</li>
+</ul>
+
+<p>Surface view model 可以决定布局、排序、折叠和视觉强调；verified / reported / blocked / accepted 等语义必须来自 projection。</p>
+
+<h4>3.6.10 Presentation action vs world action</h4>
+
+<p>有些输出看起来像 action，尤其是 notification、voice、ambient light。必须分清：</p>
+
+<table>
+<thead><tr><th>类型</th><th>例子</th><th>边界</th></tr></thead>
+<tbody>
+<tr><td>Presentation action</td><td>show badge、speak、render panel、ambient hint</td><td>低风险，但仍受 AttentionRouting、rate limit、fallback 约束。</td></tr>
+<tr><td>World action</td><td>turn off light、send message、patch file、spawn worker</td><td>必须走 Layer 4 ActionRequest 和 full action lifecycle。</td></tr>
+</tbody>
+</table>
+
+<p>Hue 用作 ambient hint 和 Hue 真正改变房间状态不是同一件事；风险和 evidence 要分开记录。</p>
+
+<h4>3.6.11 Surface failure and fallback chain</h4>
+
+<pre><code>SurfaceFallbackChain:
+  primary
+  fallback_1
+  fallback_2
+  fallback_n
+  queue_policy
+  cooldown</code></pre>
+
+<p>每个 surface 声明 availability_probe、failure_threshold、cooldown、fallback_chain。影响 user-visible delivery 或 surface availability 的失败必须 emit <code>surface.failed(surface_id, reason, fallback_used)</code>。单次 transient retry 可以留本地 telemetry，不必刷 Event Log。</p>
+
+<h4>3.6.12 Backpressure and coalescing</h4>
+
+<p>Coalescing 分两层：</p>
+
+<ul>
+<li><strong>Layer 3:</strong> attention candidate coalescing。多个相似 heartbeat / report / sensor event 在短窗口内合成一个 routing decision。</li>
+<li><strong>Layer 5:</strong> render-level coalescing。同一 subject / same surface / short window 内只渲染最新或聚合版。</li>
+</ul>
+
+<p>Layer 5 可以防刷屏和优化视觉更新，但不能改变“是否该提醒”的 decision 等级。</p>
+
+<h3 id="layer-deployment-domains">3.7 Phase 6: Deployment Domains</h3>
+
+<p>Deployment Domains 定义 Jarvis 的逻辑系统实际跑在哪里，谁拥有哪部分 state / action / hardware，以及跨 Mac、RPi、ESP32、cloud、worker 时谁是真相源。它不是产品层，也不是 state schema 层；它负责 physical ownership、process placement、local durability、cross-domain transport、offline behavior、artifact store、backup / replay / migration。</p>
+
+<table>
+<thead><tr><th>Owns</th><th>Does not own</th><th>Key objects</th></tr></thead>
+<tbody>
+<tr><td>domain ownership、process placement、local durability、cross-domain transport、availability、artifact storage、backup/replay、offline behavior</td><td>产品身份、state 语义、policy 规则、tool permission、claim/evidence interpretation、surface semantics</td><td>Domain · DomainOwner · LocalEventLog · ImportedEvent · CrossDomainRequest · DomainProjection · ArtifactStore · SyncBridge · AvailabilityState</td></tr>
+</tbody>
+</table>
+
+<h4>3.7.1 Logical State Object, federated physical ownership</h4>
+
+<p>State Object 是 logical，本体不是 single physical database。物理实现按 ownership domain federation：</p>
+
+<pre><code>Logical State Object
+  = Mac domain event log + projections
+  + RPi/Home domain event log + projections
+  + imported cross-domain event mirrors</code></pre>
+
+<p>不做 single global DB，不做 leader brain，不做 CRDT-first shared mutable state，不在 Mac/RPi 之间共享同一份 mutable truth。每个 domain owns 自己的 truth；remote data 是 provenance-bearing imported evidence。</p>
+
+<h4>3.7.2 Domain ownership</h4>
+
+<table>
+<thead><tr><th>Domain</th><th>Owns</th><th>Does not own</th></tr></thead>
+<tbody>
+<tr><td><strong>Mac</strong></td><td>work projects、git/repo observations、tools_v2、worker agents、Inherent、clipboard、selected text、active app、Mac voice session、mac_events.db、Mac artifact store</td><td>Hue truth、ESP32 sensor truth、home ambient scheduler、RPi MQTT broker</td></tr>
+<tr><td><strong>RPi / Home</strong></td><td>Hue authority、MQTT broker、ESP32 sensor ingestion、presence inference、ambient home mode、bedroom_night、scheduled/deferred execution backup、home_events.db、home artifact store</td><td>Mac repo state、worker truth、Inherent UI truth、clipboard/screen state</td></tr>
+<tr><td><strong>Edge</strong></td><td>local sensor reading、firmware state、device-local config</td><td>Jarvis state truth、policy、long-term memory</td></tr>
+<tr><td><strong>Cloud calculator</strong></td><td>nothing durable</td><td>state、memory、task truth、authority、event ownership</td></tr>
+</tbody>
+</table>
+
+<p>Worker agents 不是 truth/topology domain。Codex / Claude Code / Hermes 通常是 Mac domain 内的 bounded execution contexts，共享 Mac 文件系统、Mac git、Mac network，但受 Layer 4 sandbox 和 ActionLifecycle 约束。Worker 的 authority boundary 很硬，但它没有独立 events.db 语义，也不拥有 Jarvis truth。</p>
+
+<h4>3.7.3 Cross-domain communication model</h4>
+
+<p>跨域模型是 request / event import，不是 shared state。</p>
+
+<pre><code>Mac wants Hue off
+  -> Mac emits cross_domain.request.dispatched(action_type=hue_control, ...)
+  -> RPi receives request
+  -> RPi applies local policy / sandbox
+  -> RPi executes Hue action
+  -> RPi emits action result + hue state observation
+  -> Mac imports result as remote event</code></pre>
+
+<div class="note"><strong>Discriminator pattern:</strong> <code>cross_domain.request.*</code> 不按 domain-action 分裂成多种 event type（避免 registry 爆炸）。Canonical = <code>cross_domain.request.dispatched</code> + <code>payload.action_type</code>（如 <code>hue_control</code>、<code>reminder_schedule</code>、<code>presence_query</code>）。同理 <code>cross_domain.response.*</code> 系列也按 payload 区分，不按 action 分裂。Schema 在 <a href="#event-type-registry">§5.4</a>。</div>
+
+<p>Imported event 是带 provenance 的 remote evidence。Mac 可以说 “RPi reported bedroom lamp off 4s ago”，不能无条件说 “I directly know the lamp is off”。</p>
+
+<h4>3.7.4 Cross-domain whitelist</h4>
+
+<p>不要 sync everything。只允许白名单 event / request 跨域。</p>
+
+<table>
+<thead><tr><th>Direction</th><th>Allowed examples</th><th>Forbidden by default</th></tr></thead>
+<tbody>
+<tr><td>Mac -> RPi</td><td>mac.awake/asleep hint、home action request、work/rest mode summary、reminder/deferred execution schedule、scheduler.cancelled、emergency quiet request</td><td>raw transcript、raw screen、full command stdout、full repo diff、secret/config、private clipboard content</td></tr>
+<tr><td>RPi -> Mac</td><td>presence.inferred、home mode changed、hue/device state observed、ambient action result、sensor alert、scheduler.fired/expired、surface availability</td><td>raw sensor streams、large logs without artifact_ref</td></tr>
+</tbody>
+</table>
+
+<h4>3.7.5 ImportedEvent metadata</h4>
+
+<pre><code>ImportedEvent:
+  event_uid
+  origin_domain
+  origin_event_uid
+  origin_ts
+  imported_at
+  transport
+  freshness
+  trust_level
+  correlation_id
+  schema_version</code></pre>
+
+<p>Remote event 的 freshness 和 trust 是 downstream consumer 必须看到的字段。Projection 和 Surface 不能把 remote reported state 渲染成 local direct truth。</p>
+
+<h4>3.7.6 Schema versioning and unknown event handling</h4>
+
+<p>Mac 和 RPi 会独立升级，schema 版本几乎一定不同步。Unknown cross-domain event 不能 crash ingest，也不能 silent drop。</p>
+
+<pre><code>cross_domain.event_quarantined:
+  origin_domain
+  origin_event_uid
+  type
+  schema_version
+  payload_summary
+  artifact_ref?
+  reason: unknown_type | unsupported_version</code></pre>
+
+<p>本域 projection 跳过 quarantined event；升级后可以选择 replay quarantine。Lower-version domain 是 best-effort consumer，不阻塞 higher-version domain 演化。</p>
+
+<h4>3.7.7 Cross-domain request lifecycle</h4>
+
+<p>MQTT / network reconnect 下不要承诺 exactly-once。正确模型是 at-least-once delivery + idempotent receiver。</p>
+
+<pre><code>sender:
+  cross_domain.request.dispatched(request_id, target_domain, expires_at)
+
+receiver:
+  cross_domain.request.received(request_id, origin_domain)
+  cross_domain.response.sent(request_id, result_ref)
+
+sender:
+  cross_domain.response.received(request_id, latency_ms)
+  OR cross_domain.request.expired(request_id)
+  OR cross_domain.response.late(request_id)</code></pre>
+
+<p><code>idempotency_key</code> 用于 retry 去重。Receiver 看到同一 key 已处理过时，不重复执行 side effect，直接重发上次 response。</p>
+
+<h4>3.7.8 Mac sleep / wake protocol</h4>
+
+<p>Mac sleep 是 deployment layer 的核心现实问题：Mac 睡眠时 worker、Inherent、local tools、Mac event mirror 都会受影响。</p>
+
+<ul>
+<li>Sleep 前 best-effort emit <code>mac.sleeping(reason, in_progress_actions)</code>，flush local events，并 cross-publish <code>mac_going_offline</code>。</li>
+<li>对 running worker / action 尝试 emit <code>worker.suspended_by_sleep</code> 或 action suspension events。</li>
+<li>Sleep hook 不可靠：没电、系统强制睡眠、进程被杀都可能绕过 before-sleep。</li>
+<li>Wake 后必须 emit <code>mac.awake(slept_for_ms)</code>，执行 mandatory reconciliation scan。</li>
+<li>所有跨 sleep window 的 dispatched/running action 若无 terminal event，必须 close lifecycle：<code>worker.terminated_by_sleep</code>、<code>action.timeout_assumed</code>、Limitation Claim。</li>
+<li>Wake 后 Layer 5 / Inherent / mirror cache 重新 rehydrate，并处理 RPi deferred queue。</li>
+</ul>
+
+<h4>3.7.9 Scheduler / deferred execution</h4>
+
+<p>“明天提醒我”不能依赖 Mac 一直醒着。Scheduler 是 cross-domain deferred execution 的特例。</p>
+
+<pre><code>DeferredExecution:
+  schedule_id
+  owner_domain
+  backup_domain
+  fire_at
+  payload_ref
+  idempotency_key
+  delivery_policy
+  expires_at</code></pre>
+
+<p>Mac 创建 reminder / deferred action 后可复制给 RPi。RPi 到点 fire；如果 Mac asleep，则按 delivery_policy queue、fallback 到 home surface，或等 Mac wake 后 flush。相关 events 包括 <code>scheduler.scheduled</code>、<code>scheduler.cancelled</code>、<code>scheduler.fired</code>、<code>scheduler.expired</code>。</p>
+
+<h4>3.7.10 IDs and event identity</h4>
+
+<p>Local SQLite 可以继续用 integer primary key 作为本地 row id，但跨域引用必须有 global sortable ID，例如 UUIDv7 / ULID。</p>
+
+<pre><code>local_id: domain-local integer
+event_uid: global sortable ID
+origin_domain: mac | rpi_home | edge_... | ...</code></pre>
+
+<p>Domain ownership 由 origin_domain 字段表达，不靠 ID prefix 推断。</p>
+
+<h4>3.7.11 Transport and network assumptions</h4>
+
+<p>当前假设 Mac 和 RPi 在同一个 trusted LAN，MQTT broker 在 RPi。MQTT 是 transport，不是真相。Rule: local commit first, then publish。</p>
+
+<p>Remote access、VPN、多网络 federation、手机远程访问都不是当前 scope。不要提前把系统拖进 NAT、remote auth、mobile push 的坑。</p>
+
+<h4>3.7.12 RPi inference and scoped home policy</h4>
+
+<p>RPi 负责 deterministic local inference rules 和 scoped Layer 3 mini for home decisions，不运行完整 Jarvis cognition stack。高频 presence / ambient 逻辑应规则化、低延迟、可解释；复杂判断可以 defer 或 request Mac/cloud。</p>
+
+<pre><code>RPi:
+  rule-based sensor inference
+  scoped Layer 3 mini / home policy evaluator
+  small home-only attention/action router
+  no full work-context cognition</code></pre>
+
+<h4>3.7.13 Artifact stores per domain</h4>
+
+<ul>
+<li>Mac artifact store: terminal output、test logs、screenshots、multimodal staged files、worker reports、diffs。</li>
+<li>RPi artifact store: sensor snapshots、device logs、必要 audio snippets。</li>
+<li>Event payload: summary、artifact_ref、content_hash、size_bytes、mime_type、retention_policy。</li>
+</ul>
+
+<p>Replay must not load artifact bytes by default。Artifacts may expire according to retention policy；event 仍存在，但 evidence scope 会改变为 artifact unavailable / summary retained。</p>
+
+<h4>3.7.14 Backup, replay, migration, maintenance</h4>
+
+<p>Projection rebuild / migration / backup 是 per-domain <code>system_maintenance</code> responsibility。Mac maintenance rebuilds Mac projections；RPi maintenance rebuilds RPi projections。Mac CLI 不能直接修改 RPi projection files；跨域 admin request 必须由 target domain 本地执行并记录。</p>
+
+<p>Config、mode preset、tool registry metadata、domain ownership map、surface fallback chain、MQTT endpoint、artifact retention policy 不是 runtime state。重要 config change 应 emit audit event，但不等于 current state 变化。</p>
+
+<h4>3.7.15 Offline / stale semantics</h4>
+
+<p>Domain offline / stale 是 first-class state：</p>
+
+<pre><code>domain_availability.changed
+domain_projection.stale
+cross_domain.request.deferred
+cross_domain.request.expired
+cross_domain.response.late</code></pre>
+
+<p>Mac asleep 时 Home domain 继续 ambient / sensor / Hue；RPi offline 时 Mac work cockpit 继续但 home control unavailable or queued；cloud LLM down 时 L0/local paths degrade；worker unavailable 时 task pending/blocked。Surface 必须显示 stale/offline，不假装 fresh。</p>
+
+<h3 id="cross-layer-invariants">3.8 Cross-Layer Invariants</h3>
+
+<div class="invariant"><strong>1. State flows through events.</strong> 任何持久变化都必须能追到 event。</div>
+<div class="invariant"><strong>2. Events are immutable.</strong> 已写入 event 不可改、不可删；corrections / supersession / revocation 通过 append 新 event 表达，audit trail 始终完整。</div>
+<div class="invariant"><strong>3. Belief is derived, not commanded.</strong> Projection 只能 fold / rebuild，不能被 LLM、tool、surface 直接改。</div>
+<div class="invariant"><strong>4. Decision reads snapshots.</strong> Runtime Decision 不把 working memory 当 truth。</div>
+<div class="invariant"><strong>5. Execution cannot self-verify.</strong> Tool success / worker report 不能直接变成 verified completion。</div>
+<div class="invariant"><strong>6. Surface never owns truth.</strong> UI 可以缓存 layout，不缓存 active_task / task status 作为 truth。</div>
+<div class="invariant"><strong>7. Domains own only bounded authority.</strong> Mac 不直接拥有 Hue truth；RPi 不拥有 Mac repo truth；cloud LLM 不拥有任何 state。</div>
+
+<div class="note"><strong>注：</strong>本节只列 cross-layer 通用约束。其他 invariant 嵌入在 layer 描述内：high-risk action 必须 confirm（<a href="#layer-runtime-decision">3.4.7</a> Attention + <a href="#layer-capability-execution">3.5.12</a> SandboxPolicy）、claim ≤ evidence（<a href="#layer-runtime-decision">3.4.12</a> Pre-emit Gate）、no entity_id invention（<a href="#layer-state-object">3.3.7</a> Entity Registry + <a href="#layer-capability-execution">3.5.12</a> sandbox）、no action without effective_policy（<a href="#layer-runtime-decision">3.4.5</a> Effective Policy Resolver）、no memory as current state（<a href="#layer-state-object">3.3.5</a> Memory）、event payload bounded（<a href="#layer-state-object">3.3.9</a> + <a href="#layer-capability-execution">3.5.11</a>）。这些不是不重要——它们是 layer 内规则，不是跨层约束。</div>
+
+<h3>3.9 一句定稿</h3>
+
+<blockquote>
+Jarvis is a state-centric personal runtime whose identity lives in a durable State Object. IO adapters convert the world into bounded events, Runtime Decision reads projection snapshots and produces policy-gated requests, Capability Execution performs those requests without self-verifying, Surfaces render projection-backed state without owning truth, and Deployment Domains federate physical ownership across Mac, RPi/Home, Edge, and cloud calculators without a single mutable global brain.
+</blockquote>
+
+<blockquote>
+Jarvis 是一个以 State Object 为本体的私人运行时。IO adapters 把世界变成有界 events；Runtime Decision 读取 projection snapshot 并产生 policy-gated requests；Capability Execution 执行请求但不能自证；Surfaces 展示 projection-backed state 但不拥有真相；Deployment Domains 把 Mac、RPi/Home、Edge 和 cloud calculator 的 physical authority 联邦起来，而不是构造一个全局可变大脑。
+</blockquote>
+</section>
+
+<section id="state-object">
+<h2>4. State Object</h2>
+
+<p>Jarvis 在时间里的 identity。物理实现 = Event Log + Projections。</p>
+
+<ul>
+<li><strong>Event Log</strong> 是事实源（knowledge 层）</li>
+<li><strong>Projections</strong> 是当前世界的解释（belief 层）</li>
+<li>所有其他模块（Policy Resolver、Intent、Action Layer、Gates）都是<strong>穿过 state 的计算</strong>，不持有 state</li>
+</ul>
+</section>
+
+<section id="event-log">
+<h2>5. Event Log</h2>
+
+<p>SQLite append-only 表，immutable。<strong>Jarvis-observed history 的事实源，不是宇宙真理</strong>——每条 event 是带 provenance 的 claim，不是 fact。</p>
+
+<h3>5.1 表 schema</h3>
+<pre><code>CREATE TABLE events (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts              TEXT NOT NULL,             -- ISO 8601 with timezone
+  ts_epoch_ms     INTEGER NOT NULL,          -- 排序 / 范围查询
+  type            TEXT NOT NULL,             -- e.g. "utterance.received"
+  schema_version  INTEGER NOT NULL,          -- 该 type 的 schema 版本
+  actor           TEXT NOT NULL,             -- "user"|"jarvis_llm"|"observer"|"esp32_bedroom_01"|...
+  source_event_id INTEGER,                   -- 触发本事件的上游 event（因果链）
+  correlation_id  TEXT,                      -- task_id / turn_id 跨 event 关联
+  payload_json    TEXT NOT NULL,             -- 事件内容（含 evidence semantics）
+  ingestion_node  TEXT NOT NULL              -- "mac"|"rpi_living"|"esp32_bedroom_01"
+);
+CREATE INDEX idx_events_type_ts       ON events(type, ts_epoch_ms);
+CREATE INDEX idx_events_correlation   ON events(correlation_id);
+CREATE INDEX idx_events_source        ON events(source_event_id);
+CREATE INDEX idx_events_actor_ts      ON events(actor, ts_epoch_ms);</code></pre>
+
+<div class="note"><strong>actor vs caller_principal:</strong> <code>actor</code> 是 event provenance（谁发出本 event）；<code>caller_principal</code>（见 <a href="#layer-capability-execution">§3.5.2</a>、<a href="#tool-surface">§14.3</a>）是 tool dispatch identity（谁要执行 action）。两者交集大但不等同——<code>actor</code> 还含 <code>user</code> 和 device IDs（<code>esp32_bedroom_01</code> 等），<code>caller_principal</code> 不含。</div>
+
+<h3>5.2 Event categories (high-level grouping)</h3>
+
+<div class="note">本节按主题分组列出 event types。<strong>Canonical per-event schema（payload、producer、consumer、evidence semantics、cross-domain policy）在 <a href="#event-type-registry">§5.4 Event Type Registry</a>。</strong>新增 event type 必须先入 registry，本节才能引用。</div>
+
+<ul>
+<li><strong>语音 / 输入</strong>：<code>utterance.received</code> · <code>intent.classified</code> · <code>entity.resolved</code> · <code>multimodal.staged</code></li>
+<li><strong>Action lifecycle (8-state, canonical)</strong>：<code>action.proposed</code> · <code>action.authorized</code> · <code>action.dispatched</code> · <code>action.running</code> · <code>action.result_observed</code> · <code>action.failed</code> · <code>action.timeout_assumed</code> · <code>action.cancelled</code></li>
+<li><strong>任务 / Run / Agent identity</strong>：<code>task.created</code> · <code>task.executor_assigned</code> · <code>task.executor_reported</code> · <code>task.activated</code> · <code>task.verified</code> · <code>task.archived</code> · <code>run.started</code> · <code>run.completed</code> · <code>run.aborted</code> · <code>agent.spawned</code> · <code>agent.terminated</code></li>
+<li><strong>Worker execution (running-time extensions)</strong>：<code>worker.heartbeat</code> · <code>worker.reported</code> · <code>worker.artifact_observed</code> · <code>worker.report_missing</code> · <code>worker.suspended_by_sleep</code> · <code>worker.terminated_by_sleep</code><br><em>Note:</em> worker.* 是 ActionLifecycle running 阶段的扩展，挂同一 action_id / run_id correlation。Event prefix 不与 agent.* 混用（见 <a href="#layer-capability-execution">§3.5.9</a>）。</li>
+<li><strong>Claim / Evidence</strong>：<code>claim.created</code> · <code>claim.refuted</code> · <code>claim.limited</code> · <code>claim.superseded</code> · <code>claim.accepted</code> · <code>evidence.attached</code></li>
+<li><strong>Memory / Learning</strong>：<code>memory.proposed</code> · <code>observation.added</code> · <code>feedback.received</code></li>
+<li><strong>Mode / 注意力</strong>：<code>mode.transitioned</code> · <code>focus.changed</code> · <code>lens.enabled</code> · <code>override.applied</code> · <code>confirmation.accepted</code> · <code>confirmation.rejected</code></li>
+<li><strong>感知 / 环境</strong>：<code>sensor.observed</code> · <code>sensor.alert</code> · <code>presence.inferred</code> · <code>environment.snapshot</code></li>
+<li><strong>Surface</strong>：<code>surface.user_intent</code> · <code>surface.failed</code> · <code>surface.dismissed</code> · <code>surface.clarified</code></li>
+<li><strong>Cross-domain (discriminator pattern)</strong>：<code>cross_domain.request.dispatched</code> · <code>cross_domain.request.received</code> · <code>cross_domain.request.deferred</code> · <code>cross_domain.request.expired</code> · <code>cross_domain.response.sent</code> · <code>cross_domain.response.received</code> · <code>cross_domain.response.late</code> · <code>cross_domain.event_quarantined</code><br><em>Note:</em> 具体 action 在 <code>payload.action_type</code> 区分，不分裂成多个 event type（见 <a href="#layer-deployment-domains">§3.7.3</a>）。</li>
+<li><strong>Deployment / Domain</strong>：<code>mac.sleeping</code> · <code>mac.awake</code> · <code>domain_availability.changed</code> · <code>domain_projection.stale</code></li>
+<li><strong>Scheduler</strong>：<code>scheduler.scheduled</code> · <code>scheduler.cancelled</code> · <code>scheduler.fired</code> · <code>scheduler.expired</code></li>
+<li><strong>Turn 生命周期</strong>：<code>turn.started</code> · <code>turn.ended</code></li>
+</ul>
+
+<div class="note"><strong>Deprecated（不再使用）：</strong><code>action.pre_emit</code>、<code>action.completed</code>、<code>state.changed</code>（2-state 旧模型）已被 Action lifecycle 8-state 替代；<code>agent.heartbeat</code>、<code>agent.reported</code> 已 rename 为 <code>worker.heartbeat</code>、<code>worker.reported</code>。</div>
+
+<h3>5.3 Evidence semantics</h3>
+<p>每条 event 的 payload 必须自带 evidence 语义。Projection 把 event 折进视图时，evidence 等级必须保留并向下游暴露——consumer（LLM、Inherent panel）才知道一个 claim 是 strong 还是 weak。</p>
+
+<h3 id="event-type-registry">5.4 Event Type Registry</h3>
+
+<p>Event Log（<a href="#event-log">§5.1</a>）是容器，<strong>Event Type Registry 是 schema 的单一来源</strong>。任何 <code>emit_event(...)</code> 调用必须先在 registry 注册 type。L3/L4/L5/L6 prose 或 <a href="#projections">§6</a> projection 表里出现的 event type 必须在本 registry 有对应条目；未注册的 event type 不能进 emit、projection fold、L3 dispatch 或跨域 import 路径。</p>
+
+<h4>5.4.1 Registry entry shape</h4>
+
+<pre><code>EventTypeRegistryEntry:
+  event_type            必填  e.g. "worker.reported"
+  owner_layer           必填  emit 归属层（L2 | L3 | L4 | L5 | L6）
+  producer              必填  哪个 caller_principal 或 component 发出
+  required_payload      必填  payload 必带字段
+  optional_payload      可选  payload 可选字段
+  correlation_fields    必填  常见 correlation key（task_id / run_id / action_id / turn_id / request_id 等）
+  projection_consumers  必填  哪些 projection 折用本 event
+  evidence_semantics    必填  ack | observation | verification | report | error | none
+  cross_domain_policy   必填  local_only | importable | exportable | bidirectional
+  artifact_policy       必填  inline_summary | artifact_ref_only | both | none
+  schema_version        必填  整数，从 1 起；不兼容变更必须 bump</code></pre>
+
+<h4>5.4.2 Example entries</h4>
+
+<pre><code>{
+  "event_type":            "worker.reported",
+  "owner_layer":           "L4",
+  "producer":              "worker_agent (via submit_report tool)",
+  "required_payload":      ["run_id", "action_id", "status", "summary"],
+  "optional_payload":      ["changed_files", "commands_run", "tests_run",
+                            "evidence_submitted", "remaining_risks",
+                            "needs_human_review", "next_recommended_action"],
+  "correlation_fields":    ["run_id", "action_id"],
+  "projection_consumers":  ["Task Ledger", "Claim/Evidence Projection",
+                            "Recent Trace"],
+  "evidence_semantics":    "report",
+  "cross_domain_policy":   "local_only",
+  "artifact_policy":       "artifact_ref_only",
+  "schema_version":        1
+}
+
+{
+  "event_type":            "cross_domain.request.dispatched",
+  "owner_layer":           "L6",
+  "producer":              "any layer via SyncBridge",
+  "required_payload":      ["request_id", "target_domain", "action_type",
+                            "idempotency_key", "expires_at"],
+  "optional_payload":      ["payload_ref", "lease_id", "correlation_id"],
+  "correlation_fields":    ["request_id", "correlation_id"],
+  "projection_consumers":  ["Status Board", "Recent Trace"],
+  "evidence_semantics":    "ack",
+  "cross_domain_policy":   "exportable",
+  "artifact_policy":       "inline_summary",
+  "schema_version":        1
+}
+
+{
+  "event_type":            "action.result_observed",
+  "owner_layer":           "L3",
+  "producer":              "Runtime Decision (after Layer 4 returns RawResult)",
+  "required_payload":      ["action_id", "result_summary", "result_semantics"],
+  "optional_payload":      ["artifact_ref", "raw_exit_code", "duration_ms"],
+  "correlation_fields":    ["action_id", "run_id", "turn_id"],
+  "projection_consumers":  ["Status Board", "Task Ledger",
+                            "Claim/Evidence Projection", "Recent Trace"],
+  "evidence_semantics":    "observation",
+  "cross_domain_policy":   "local_only",
+  "artifact_policy":       "both",
+  "schema_version":        1
+}</code></pre>
+
+<h4>5.4.3 Migration plan</h4>
+
+<p>本节为 spec lock；完整 registry 填充按以下优先级：</p>
+
+<ol>
+<li><strong>P0（Evidence Model 必需）：</strong>ActionLifecycle 8 events + <code>worker.*</code> 6 events + <code>claim.*</code> / <code>evidence.attached</code> 6 events。</li>
+<li><strong>P1（cross-domain 必需）：</strong><code>cross_domain.*</code> 8 events + <code>scheduler.*</code> 4 events + <code>mac.{sleeping,awake}</code> + <code>domain_availability.changed</code> / <code>domain_projection.stale</code>。</li>
+<li><strong>P2（surface / runtime trigger）：</strong>剩余 <a href="#event-log">§5.2</a> enumerated entries（<code>utterance.received</code>、<code>surface.*</code>、<code>multimodal.staged</code>、<code>sensor.alert</code>、<code>confirmation.*</code>、<code>memory.proposed</code>、<code>run.*</code>、<code>task.activated</code>）。</li>
+</ol>
+
+<p>Cross-domain unknown / unregistered event 走 <code>cross_domain.event_quarantined</code>（见 <a href="#layer-deployment-domains">§3.7.6</a>），不 crash ingest 也不 silent drop。Schema version 不匹配同走 quarantine。</p>
+
+<div class="note"><strong>Registry 落地形态：</strong>本节给出 spec-level shape。实际实现可以是 SQLite 表、JSON/YAML 文件或代码常量，但 single source of truth 性质不可让步——projection 折用、L4 dispatch、cross-domain transport 都必须 read 同一份 registry，不能各 layer 各自维护副本。</div>
+
+</section>
+
+<section id="projections">
+<h2>6. Projections</h2>
+
+<p><strong>只读派生物。</strong>任何对 state 的修改都必须通过 emit event，不能直接写 projection（I3）。</p>
+
+<table>
+<thead><tr><th>视图</th><th>来源 events</th><th>更新策略</th><th>主要消费者</th></tr></thead>
+<tbody>
+<tr><td><strong>Task Ledger</strong></td><td>task.* · run.*</td><td>实时增量</td><td>主对话 LLM · Inherent · supervisor（详见 <a href="#task-ledger">§7</a>）</td></tr>
+<tr><td><strong>Status Board</strong></td><td>action.dispatched · action.result_observed · action.failed · domain_availability.changed · domain_projection.stale</td><td>实时增量</td><td>Runtime Decision · Inherent · smart_home tools</td></tr>
+<tr><td><strong>Mode Runtime State</strong></td><td>mode.transitioned · lens.enabled · override.applied</td><td>实时</td><td>Effective Policy Resolver</td></tr>
+<tr><td><strong>Memory Projection</strong></td><td>observation.added · feedback.received · memory.* · action 历史统计</td><td>每日 batch + 触发式增量</td><td>Situation Packet memory/profile hints</td></tr>
+<tr><td><strong>Claim / Evidence Projection</strong></td><td>claim.created · evidence.attached · claim.refuted · claim.accepted</td><td>实时增量</td><td>Runtime Decision · Task Ledger · Inherent</td></tr>
+<tr><td><strong>Entity Registry / Alias Projection</strong></td><td>entity.* · alias.* · resolver feedback</td><td>实时增量</td><td>Runtime Decision · tool gates · surface canonicalization</td></tr>
+<tr><td><strong>Recent Trace</strong></td><td>turn.* + 关联 events</td><td>实时 ring buffer (最近 N turn)</td><td>Situation Packet 组装 · 调试 UI</td></tr>
+<tr><td><strong>Drift Watch</strong></td><td>project.commit_seen · task.* · observation tagged drift</td><td>每 commit 触发评估</td><td>"项目跑偏了吗" 主动告警</td></tr>
+</tbody>
+</table>
+
+<div class="note"><strong>边界：</strong>Situation Packet 不是 projection，而是 Runtime Decision 每次从 projections 装配出的 export format；Personal Profile 不是独立 truth store，而是 Memory Projection 的 profile view；Mode preset table 是配置，不是 runtime projection。</div>
+</section>
+
+<section id="task-ledger">
+<h2>7. Task Ledger</h2>
+
+<blockquote>
+<strong>Continuity should come from state, not from chat history.</strong>
+</blockquote>
+
+<p>Task 是 work cockpit 的核心组织单位。<strong>Session 不是主骨架</strong>——它只是交互容器；Task 才是持久的工作目标。</p>
+
+<h3>7.1 三个正交概念</h3>
+<dl>
+<dt><strong>Jarvis Runtime</strong></dt>
+<dd>长期常驻，永不"结束"。维护 State Object、Event Log 和所有 projection。</dd>
+<dt><strong>Task</strong></dt>
+<dd>持久目标，跨天、跨 session、跨 agent。Task Ledger 是 work cockpit 的核心。</dd>
+<dt><strong>Session / Episode</strong></dt>
+<dd>一次交互 / 对话 / 工作片段。保留近因上下文，不定义工作目标。</dd>
+<dt><strong>LLM context</strong></dt>
+<dd>每轮临时组装，可 compact，可丢弃。</dd>
+</dl>
+
+<h3>7.2 Task / Session / Run 关系</h3>
+<ul>
+<li>Session can touch many tasks.</li>
+<li>Task can span many sessions.</li>
+<li>A turn may bind to zero, one, or multiple tasks.</li>
+<li>Only one task is active by default.</li>
+</ul>
+
+<h3>7.3 Task 的属性</h3>
+<p>Task 记录：目标是什么 · 为什么做 · 当前状态 · 谁在做 · 哪些 agent / session / run 参与过 · 证据是什么 · 下一步是什么 · 是否需要 Allen review · 是否 verified complete。</p>
+
+<h3>7.4 Session 的属性</h3>
+<p>Session 记录：最近对话 transcript · 触发 surface (voice / Inherent / CLI) · 开始结束时间 · 本 session 触碰过的 task_id 列表 · session summary。</p>
+
+<p>Session 的作用是<strong>保留近因上下文，不是定义工作目标</strong>。</p>
+
+<h3>7.5 Run —— 任务推进的统一抽象</h3>
+<p>Run 是一次"在 task 上推进的尝试"。Runner 可能是 agent / Jarvis self / human。</p>
+
+<pre><code>run.started(run_id, task_id, runner_type={agent|jarvis|human}, runner_id, intent)
+run.completed(run_id, outcome, evidence_event_ids=[...])
+run.aborted(run_id, reason)</code></pre>
+
+<p>下属的 <code>agent.spawned</code> / <code>action.pre_emit</code> / <code>feedback.received</code> 通过 <code>correlation_id=run_id</code> 挂接到 Run。</p>
+
+<p>例：</p>
+<pre><code>Task: clipboard multimodal attach
+  Run 1: codex implements core/clipboard.py    (runner=agent)
+  Run 2: jarvis smoke test                      (runner=jarvis)
+  Run 3: allen manual review                    (runner=human)
+  Run 4: codex fix regression                   (runner=agent)</code></pre>
+
+<h3>7.6 Active Task slot</h3>
+<p>"Active task" 是 Situation Packet 里的一个 field，让 LLM 每轮明确知道现在主线在哪个 task 上：</p>
+<pre><code>"active_task": {
+  "task_id":           "task_xyz",
+  "entered_at":        "...",
+  "promotion_reason":  "user_explicit | urgent_agent_reported | mode_bound"
+}</code></pre>
+
+<p>切换 active task 由 3 种 event 之一触发：</p>
+<ul>
+<li><code>task.activated(task_id, reason=user_explicit)</code> ← Allen 说"切到 X"</li>
+<li><code>task.activated(task_id, reason=urgent_agent_reported)</code> ← agent.reported with priority=high</li>
+<li><code>task.activated(task_id, reason=mode_bound)</code> ← deep_work 等 mode 显式绑定一个 task</li>
+</ul>
+
+<h3>7.7 Turn ↔ Task 绑定</h3>
+<p>Turn-Task 绑定是<strong>派生</strong>的，不是 LLM 显式声明的。一个 turn 绑了哪些 task = 这个 turn_id 期间 emit 的所有 events 里出现的 task_id (correlation_id) 集合。</p>
+
+<h3>7.8 什么时候<em>不</em>需要 task</h3>
+<p>不是所有事情都该升格为 task。下面这些保留为 session-level ephemeral：</p>
+<ul>
+<li>"现在几点"</li>
+<li>"开灯"</li>
+<li>"读一下剪贴板"</li>
+<li>"解释这个词"</li>
+<li>"把音量调低"</li>
+</ul>
+
+<h3>7.9 Promotion criteria（session → task）</h3>
+<p>满足任意一条就应该升格为 task：</p>
+<ul>
+<li>跨多轮</li>
+<li>需要 agent</li>
+<li>需要文件修改</li>
+<li>需要 review</li>
+<li>需要明天继续</li>
+<li>有明确 done / blocked / verified 状态</li>
+<li>失败后需要追踪</li>
+<li>涉及项目方向或决策</li>
+</ul>
+
+<h3>7.10 Worker agent sessions 挂在 Task 下</h3>
+<p>Hermes / CC / Codex 的 session <strong>不是</strong> Jarvis 主 session。它们是 worker run，挂在 task 下：</p>
+
+<pre><code>Task: tools_v2 wire into chat path
+  AgentSession: codex-2026-05-16-a
+  AgentSession: claude-code-zellij-pane-3
+  Evidence:    git diff · test output · agent summary
+  Status:      reported_complete → needs_review → verified</code></pre>
+
+<h3>7.11 Task status</h3>
+<p>Task.status 是<strong>派生</strong>字段，由 claim 集合推出（详见 <a href="#evidence-model">§8 Evidence Model</a>）：</p>
+
+<ul>
+<li><code>running</code></li>
+<li><code>reported_complete</code></li>
+<li><code>evidence_collected</code></li>
+<li><code>needs_review</code></li>
+<li><code>verified_complete</code></li>
+<li><code>accepted</code></li>
+<li><code>blocked</code></li>
+</ul>
+
+<div class="invariant"><strong>铁律：</strong> Task.status 不能由 agent 自报直接置为 verified_complete。必须经 claim / evidence 推导（参见 <a href="#invariants">§13 I8</a>）。</div>
+</section>
+
+<section id="evidence-model">
+<h2>8. Evidence Model</h2>
+
+<blockquote>
+<strong>第一原则：</strong>Jarvis 的判断单位是 <strong>claim</strong>，不是 task。Evidence 用来<strong>支持 / 反驳 / 限制</strong> claim。
+</blockquote>
+
+<h3>8.1 Claim 是什么</h3>
+<p>Claim 是 Jarvis 准备相信、记录、汇报或行动依据的一句话。</p>
+
+<dl>
+<dt><strong>Task</strong></dt><dd>一组 claim 的容器</dd>
+<dt><strong>Session</strong></dt><dd>claim 出现的上下文</dd>
+<dt><strong>Evidence</strong></dt><dd>claim 的支撑</dd>
+</dl>
+
+<h3>8.2 7 类 Claim</h3>
+<table>
+<thead><tr><th>类型</th><th>含义</th><th>例</th></tr></thead>
+<tbody>
+<tr><td><strong>Report Claim</strong></td><td>谁说了什么</td><td>Codex reported complete · Allen said it's acceptable</td></tr>
+<tr><td><strong>Artifact Claim</strong></td><td>某个东西存在或改变</td><td>File X was modified · Commit Y exists · Session note Z written</td></tr>
+<tr><td><strong>Execution Claim</strong></td><td>某个动作被执行</td><td>pytest command ran · Hue command was sent · patch applied · agent was spawned</td></tr>
+<tr><td><strong>Postcondition Claim</strong></td><td>目标状态真的达成</td><td>Tests passed · light state is off after refresh · file content contains expected change</td></tr>
+<tr><td><strong>Coverage Claim</strong></td><td>验证范围</td><td>Only targeted tests ran · Full suite did not run · smoke test not run</td></tr>
+<tr><td><strong>Acceptance Claim</strong></td><td>Allen 接受了某结果</td><td>Allen approved this task · Allen wants to defer this</td></tr>
+<tr><td><strong>Limitation Claim</strong></td><td>明确缺什么证据</td><td>This is not live-smoked · agent output has not been reviewed · device state is stale</td></tr>
+</tbody>
+</table>
+
+<h3>8.3 Evidence 对 Claim 的 3 种 relation</h3>
+<dl>
+<dt><strong>supports</strong></dt><dd>支持这个 claim</dd>
+<dt><strong>refutes</strong></dt><dd>反驳这个 claim</dd>
+<dt><strong>limits</strong></dt><dd>限制这个 claim 的范围</dd>
+</dl>
+
+<p>例：<code>pytest tests/test_clipboard.py passed</code></p>
+<ul>
+<li><strong>supports</strong>：targeted tests passed</li>
+<li><strong>limits</strong>：does not support full suite passed</li>
+</ul>
+
+<p>例：<code>git diff exists</code></p>
+<ul>
+<li><strong>supports</strong>：file changed</li>
+<li>does not support：feature works</li>
+</ul>
+
+<h3>8.4 Evidence 等级</h3>
+<table>
+<thead><tr><th>level</th><th>含义</th></tr></thead>
+<tbody>
+<tr><td><strong>reported</strong></td><td>有人或 agent 声称。只能证明"它被报告了"。</td></tr>
+<tr><td><strong>observed</strong></td><td>Jarvis 观察到 artifact 或 state：diff、文件、日志、状态返回。</td></tr>
+<tr><td><strong>executed</strong></td><td>Jarvis 执行了动作且工具成功返回：命令 exit 0、patch applied、Hue command accepted。</td></tr>
+<tr><td><strong>verified</strong></td><td>Jarvis 检查了 postcondition：测试通过、重读文件确认、刷新设备状态确认。</td></tr>
+<tr><td><strong>accepted</strong></td><td>Allen 人工接受。最高层但仍有 scope——Allen 接受 UI 效果不代表代码无 bug。</td></tr>
+</tbody>
+</table>
+
+<h3>8.5 7 条核心规则</h3>
+<div class="invariant"><strong>规则 1.</strong> Agent self-report 只支持 Report Claim——agent 自报完成，<strong>不</strong>支持 verified completion。</div>
+<div class="invariant"><strong>规则 2.</strong> Tool success 只支持 Execution Claim——工具返回 success，<strong>不</strong>代表目标达成。</div>
+<div class="invariant"><strong>规则 3.</strong> Postcondition 是 verified claim 的必要条件——要说"达成"，必须有 postcondition 证据。</div>
+<div class="invariant"><strong>规则 4.</strong> 所有 evidence 都有 <strong>scope</strong>——target tests passed ≠ full suite passed。</div>
+<div class="invariant"><strong>规则 5.</strong> 所有 evidence 都有 <strong>freshness</strong>——旧状态不能证明当前状态。</div>
+<div class="invariant"><strong>规则 6.</strong> 缺证据本身要被记录为 Limitation Claim——不能默默忽略。</div>
+<div class="invariant"><strong>规则 7.</strong> Jarvis 输出不能超过支持的 claim——这是 pre-emit gate 的核心（对应 <a href="#invariants">§13 I10</a>）。</div>
+
+<h3>8.6 Evidence Record schema（最小字段）</h3>
+<pre><code>{
+  "evidence_id":   "ev_...",
+  "claim_id":      "cl_...",
+  "relation":      "supports | refutes | limits",
+  "level":         "reported | observed | executed | verified | accepted",
+  "source_type":   "agent | tool | git | test | device | user | system | note",
+  "source_id":     "...",
+  "observed_at":   "2026-05-16T...",
+  "freshness":     "...",
+  "scope":         "...",
+  "summary":       "...",
+  "artifact_ref":  "...",
+  "limitations":   "..."
+}</code></pre>
+
+<h3>8.7 Claim Record schema（最小字段）</h3>
+<pre><code>{
+  "claim_id":                "cl_...",
+  "subject_type":            "task | agent_run | file | device | project | session",
+  "subject_id":              "...",
+  "claim_type":              "Report | Artifact | Execution | Postcondition | Coverage | Acceptance | Limitation",
+  "statement":               "...",
+  "status":                  "open | supported | refuted | limited | superseded",
+  "required_for_completion": true | false,
+  "created_at":              "...",
+  "updated_at":              "..."
+}</code></pre>
+
+<h3>8.8 Task completion 的推导规则</h3>
+<p>Task 不直接存 <code>done=true</code>。它的状态由 claim set 推出：</p>
+
+<pre><code>Task.verified_complete  iff
+    所有 required_for_completion = true 的 claim
+        都有 ≥ 1 条 evidence with relation = supports
+                                    AND level ∈ {verified, accepted}
+    AND  没有 blocking 的 refute evidence
+    AND  所有 limitations 要么被 accepted，要么被显式标 out of scope</code></pre>
+
+<h3>8.9 四种常见任务的验收 claim 模板</h3>
+
+<h4>代码任务</h4>
+<p>最低 required claims：</p>
+<ul>
+<li>artifact changed（intended files touched）</li>
+<li>no obvious unrelated dirty diff</li>
+<li>targeted verification passed OR explicitly not run</li>
+</ul>
+<p>更严格：lint passed · targeted tests passed · full suite passed · manual review accepted。</p>
+
+<h4>Agent 任务</h4>
+<p>required claims：</p>
+<ul>
+<li>agent was assigned task</li>
+<li>agent reported result</li>
+<li>Jarvis inspected output / diff / artifacts</li>
+<li>required verification done OR limitation recorded</li>
+<li>Allen review queued or accepted</li>
+</ul>
+
+<h4>Mac 操作</h4>
+<p>required claims：</p>
+<ul>
+<li>target was verified before action（pre-target evidence）</li>
+<li>action executed</li>
+<li>postcondition observed if action claims a state change</li>
+</ul>
+
+<h4>Smart Home</h4>
+<p>required claims：</p>
+<ul>
+<li>entity resolved from trusted source</li>
+<li>command sent</li>
+<li>device / controller ack observed</li>
+<li>postcondition refresh observed（若声称 state change）</li>
+</ul>
+
+<p>只有 ack、没有 postcondition refresh 时：Jarvis 只能说"关灯指令已发送"，<strong>不能</strong>说"灯关了"。</p>
+
+<h3>8.10 输出语言的强弱区分</h3>
+
+<div class="note">
+<strong>Strong（有完整证据链）：</strong><br>
+"目标测试通过了，diff 也只在 clipboard 相关文件里。实现层面可以算 verified，但 live smoke 还没跑。"
+</div>
+
+<div class="note">
+<strong>Weak（只有 agent 自报）：</strong><br>
+"Codex 报告完成了，但我还没看 diff 和测试，不能算完成。"
+</div>
+
+<p>这是 Jarvis 跟普通 agent 的关键差异：<strong>普通 agent 讲"已完成"；Jarvis 讲"完成到什么证据等级"</strong>。</p>
+
+<h3>8.11 一句定稿</h3>
+
+<blockquote>
+Evidence Model is claim-centered. Tasks are not directly marked true or false; each task is represented by claims, and each claim is supported, refuted, or limited by scoped evidence. Agent reports only prove reporting. Execution only proves execution. Verified completion requires postcondition evidence. Jarvis must not output claims beyond supported evidence.
+</blockquote>
+
+<blockquote>
+证据模型以 claim 为中心。Task 不是直接被判定真假，而是由一组 claim 组成；每个 claim 由有范围、有来源、有新鲜度的 evidence 支持、反驳或限制。Agent 自报只证明"它报告了"，动作执行只证明"动作发生了"，真正完成必须有 postcondition 证据。Jarvis 的输出不能超过证据支持的 claim。
+</blockquote>
+</section>
+
+<section id="memory-boundary">
+<h2>9. Memory Boundary</h2>
+
+<blockquote>
+<strong>第一原则：</strong>Memory <strong>不是 Jarvis 的数据库</strong>。Memory 是 State Object 里的一个长期个人知识 projection——只保存<strong>能长期降低 Allen 重复解释成本的稳定个人知识</strong>。
+</blockquote>
+
+<p>它<strong>不</strong>保存当前状态，<strong>不</strong>保存任务进度，<strong>不</strong>保存原始事件，<strong>不</strong>保存完整对话，<strong>不</strong>保存 agent logs。</p>
+
+<blockquote>
+Memory 是从 Event Log、Task Ledger、Evidence、Obsidian、反馈历史中提炼出来的长期可复用 projection。它是 <strong>hint</strong>，不是 <strong>current truth</strong>。
+</blockquote>
+
+<h3>9.1 第一性原则</h3>
+
+<p>Jarvis 需要记忆，是为了解决一个问题：</p>
+
+<blockquote>
+Allen 不想每次重新解释自己是谁、项目怎么做、偏好是什么、之前踩过什么坑、Jarvis 该怎么配合。
+</blockquote>
+
+<p>所以 Memory 应该服务于：减少重复解释 · 减少错误假设 · 减少不必要确认 · 延续长期偏好 · 保留稳定决策 · 改善 Jarvis 行为。</p>
+
+<p>它<strong>不</strong>应该服务于：保存所有聊天 / 所有状态 / 所有任务 / 所有工具结果 / 所有 sensor 数据 / 所有 agent output——这些分别属于别的层。</p>
+
+<h3>9.2 Memory 和其他系统的边界</h3>
+
+<table>
+<thead><tr><th>系统</th><th>职责</th></tr></thead>
+<tbody>
+<tr><td><strong>Event Log</strong></td><td>记录历史，Jarvis 观察到什么</td></tr>
+<tr><td><strong>Task Ledger</strong></td><td>管工作目标和状态</td></tr>
+<tr><td><strong>Evidence Model</strong></td><td>管 claim 可信度</td></tr>
+<tr><td><strong>Session / Episode</strong></td><td>保留近期交互上下文</td></tr>
+<tr><td><strong>Obsidian</strong></td><td>人类可读的长期文档、研究、决策、产品宪法</td></tr>
+<tr><td><strong>Memory</strong></td><td>从上面这些提炼出来的长期个人化 projection</td></tr>
+</tbody>
+</table>
+
+<p>一句话：<strong>Event Log 记录历史，Task Ledger 管工作，Evidence Model 管可信度，Obsidian 管长文档，Memory 管长期个人化。</strong></p>
+
+<h4>跟 Event Log 的关系</h4>
+<p>Event Log 是原始观察历史；Memory 是从这些事件中提炼出的长期知识。</p>
+
+<pre><code>Event:
+  2026-05-16 Allen dismissed "daily summary" reminder three times.
+
+Memory:
+  Allen dislikes unsolicited daily-summary reminders during coding sessions.</code></pre>
+
+<p>Event Log 是证据链；Memory 是长期结论。<strong>Memory 必须能回指 source events，但不能替代 source events。</strong></p>
+
+<h4>跟 Task Ledger 的关系</h4>
+<p>Task Ledger 管工作目标和状态（reported_complete / verified / blocked）——这些<strong>不</strong>该进 Memory。但 Task 结束后可提炼可复用 lesson：</p>
+
+<pre><code>Task fact:
+  tools_v2 clipboard fallback was blocked because tools_v2 was not wired
+  into jarvis.py chat path.
+
+Memory:
+  For Jarvis tool work, verify whether a tool is registered in runtime
+  chat path, not only tools_v2 smoke path.</code></pre>
+
+<p>原则：<strong>task status stays in Task Ledger；reusable lesson may enter Memory。</strong></p>
+
+<h4>跟 Evidence Model 的关系</h4>
+<p>Memory <strong>不能比 evidence 更强</strong>。如果 evidence 只说明"agent reported"，Memory 不能写成"已完成"。</p>
+
+<p>错误：</p>
+<pre><code>Memory: clipboard fallback works in live runtime.</code></pre>
+<p>正确：</p>
+<pre><code>Memory: clipboard fallback implementation existed, but live runtime
+        reachability was previously blocked by tools_v2 chat-path wiring.</code></pre>
+
+<p>Memory 必须继承 evidence 的 scope 和 limitation。</p>
+
+<h4>跟 Session / Episode 的关系</h4>
+<p>Session 是交互窗口。Session summary 帮助恢复连续性，但<strong>不是</strong>长期 memory。只有当 session 中出现稳定结论，才提升为 memory。</p>
+
+<h4>跟 Obsidian 的关系</h4>
+<pre><code>Obsidian = canonical long-form knowledge
+Memory   = compact operational hint + pointer</code></pre>
+
+<p>产品宪法等长文档应该在 Obsidian / HTML / doc 里。Memory 只需要记 pointer：</p>
+<pre><code>Jarvis Product Constitution exists at docs/product/jarvis-product-constitution.html.
+Core positioning: Jarvis is Allen's private AI runtime.</code></pre>
+<p><strong>不要把整篇文档塞进 Memory。</strong></p>
+
+<h3>9.3 Memory 应该存什么（7 类）</h3>
+
+<h4>1. Allen Profile</h4>
+<p>稳定个人偏好和习惯：</p>
+<ul>
+<li>Allen prefers direct, concrete answers.</li>
+<li>Allen dislikes unnecessary proactive chatter.</li>
+<li>Allen wants Jarvis to be single-user and deeply personalized.</li>
+</ul>
+
+<h4>2. Jarvis Behavior Preferences</h4>
+<p>最重要的一类，直接改善 Jarvis 行为：</p>
+<ul>
+<li>Do not treat agent self-report as completion.</li>
+<li>Use commit history and hot notes over stale docs.</li>
+<li>Do not over-expand regex variants without data.</li>
+<li>Prefer quiet maintenance over frequent notifications.</li>
+</ul>
+
+<h4>3. Project Decisions</h4>
+<p>长期架构 / 产品决策，必须 scoped 到 project：</p>
+<pre><code>Project: jarvis
+Decision: State Object is the spine.
+Decision: Task is persistent work unit; Session is interaction context.
+Decision: Mode runtime state feeds policy; mode presets are config, not magic classifier.</code></pre>
+<p>可有 pointer 到 constitution doc。</p>
+
+<h4>4. Workflow Patterns</h4>
+<p>Allen 常用工作方式：</p>
+<ul>
+<li>Allen often uses Codex / Claude Code / Hermes as worker agents.</li>
+<li>Jarvis work should track reported_complete separately from verified_complete.</li>
+<li>Session wrap-up should produce a concise handoff.</li>
+</ul>
+
+<h4>5. Reusable Lessons</h4>
+<p>从踩坑里提炼出的经验：</p>
+<ul>
+<li>When adding a tools_v2 tool, verify both standalone smoke exposure and live jarvis chat-path exposure.</li>
+</ul>
+
+<h4>6. Entity Aliases / Stable References</h4>
+<p>谨慎存。项目路径、设备别名、房间名。但这类<strong>更适合 Entity Registry</strong>，Memory 只能作为 alias source 之一：</p>
+<ul>
+<li>Allen may refer to bedroom whitelamps as "大灯".</li>
+</ul>
+<p>最终控制设备仍要走 entity resolver。</p>
+
+<h4>7. Feedback-Derived Preferences</h4>
+<p>来自 Allen 显式 / 隐式反馈：</p>
+<ul>
+<li>Allen accepted ambient desk-light automation after sitting down.</li>
+<li>Allen dismissed daily summary prompts during Focus mode.</li>
+</ul>
+<p>用于 Attention Policy，不直接用于事实回答。</p>
+
+<h3>9.4 Memory <em>不</em>应该存什么</h3>
+
+<table>
+<thead><tr><th>类别</th><th>例子</th><th>原因 / 应该去哪</th></tr></thead>
+<tbody>
+<tr><td>Current state</td><td>current git status · current branch · current room state · current light state · current active app · current agent running state</td><td>属于 State Object projections，实时查</td></tr>
+<tr><td>Task progress</td><td>Codex is running · Task is blocked · Tests not run · Needs review</td><td>属于 Task Ledger / Evidence Model</td></tr>
+<tr><td>Raw conversation</td><td>完整聊天记录 · 长段 brainstorming · 中间推理过程 · 来回争论</td><td>属于 Session / Episode 或 Obsidian note</td></tr>
+<tr><td>Raw data</td><td>raw transcripts · raw logs · raw sensor data · full command output · large copied content</td><td>属于 Event Log 或工具按需读取</td></tr>
+<tr><td>Unverified claims</td><td>未验证 agent 自报当成事实</td><td>违反 I10 / I12</td></tr>
+<tr><td>Secrets</td><td>API keys / tokens / credentials</td><td>secret store，永不进 memory</td></tr>
+<tr><td>One-off mood inference</td><td>"Allen 看起来累了"</td><td>除非有明确表达，不要长期写</td></tr>
+<tr><td>Over-generalized preference</td><td>一次反馈变成永久偏好</td><td>等重复出现再提升</td></tr>
+</tbody>
+</table>
+
+<div class="invariant"><strong>最关键：</strong> Memory <strong>不能</strong>保存 current mutable state（灯现在是开的 / 当前 branch / Codex 正在跑）——这些必须来自 fresh state / tool，不是 memory（参见 <a href="#invariants">§13 I12</a>）。</div>
+
+<h3>9.5 Memory 写入流程（promotion，不是 dump）</h3>
+
+<p>不再用"每轮 LLM observer 随便抽 bullets"的模式。长期会膨胀、污染、互相矛盾。</p>
+
+<pre><code>event / session / task completed
+  -> memory candidate
+  -> classify type
+  -> attach source_event_ids / evidence
+  -> check scope
+  -> dedupe / supersede
+  -> decide store / ignore / ask Allen</code></pre>
+
+<h4>Memory Candidate 必须过 4 问</h4>
+<ol>
+<li><strong>未来会不会降低重复解释成本？</strong> 不会 → 不存。</li>
+<li><strong>它是稳定知识，还是临时状态？</strong> 临时 → 不存。</li>
+<li><strong>它有 source / evidence 吗？</strong> 没有 → 不能强写。</li>
+<li><strong>它应该存在哪里？</strong> Memory / Task Ledger / Event Log / Obsidian / Entity Registry / 不存。</li>
+</ol>
+
+<h3>9.6 Memory item 最小 schema</h3>
+
+<pre><code>{
+  "memory_id":          "mem_...",
+  "type":               "profile | behavior | decision | workflow | lesson | alias | feedback",
+  "statement":          "...",
+  "scope":              "global | project | mode | room | tool | agent",
+  "subject":            "...",
+  "source_event_ids":   ["evt_...", "evt_..."],
+  "evidence_level":     "reported | observed | executed | verified | accepted",
+  "confidence":         0.0,
+  "valid_from":         "...",
+  "last_confirmed_at":  "...",
+  "freshness_policy":   "...",
+  "status":             "active | superseded | deprecated",
+  "supersedes":         ["mem_..."],
+  "sensitivity":        "public | personal | sensitive",
+  "storage_policy":     "...",
+  "pointer_refs":       ["..."]
+}</code></pre>
+
+<p>最关键的字段：</p>
+<ul>
+<li><strong><code>scope</code></strong>：没有 scope，记忆会污染别的项目</li>
+<li><strong><code>source_event_ids</code></strong>：没有 source，记忆不可追溯</li>
+<li><strong><code>status</code></strong>：让 superseded 不消失，只标失效</li>
+<li><strong><code>supersedes</code></strong>：旧偏好可以被新偏好覆盖但留痕</li>
+</ul>
+
+<h3>9.7 Memory 和 Prompt 的关系</h3>
+
+<p>Memory <strong>不</strong>应该完整 dump 进 prompt。正确方式：</p>
+
+<pre><code>State Object / Memory projection
+  -> relevance filter
+  -> Situation Packet hints (block 6)
+  -> LLM</code></pre>
+
+<p>Memory 在 LLM prompt 里应该像这样出现：</p>
+
+<pre><code>Relevant stable preferences:
+- Allen wants concise voice and detailed document output.
+- For Jarvis project, commits are more authoritative than stale docs.
+- Agent self-report is not verified completion.</code></pre>
+
+<p><strong>不要塞</strong>"All observations from last 30 days..."。详见 <a href="#situation-packet">§10 Situation Packet</a> Block 6 Memory / Profile Hints。</p>
+
+<h3>9.8 Memory 的权威等级</h3>
+
+<p>Memory <strong>永远低于 fresh evidence</strong>。权威顺序：</p>
+
+<pre><code>current user instruction
+  > runtime policy / invariants
+  > fresh tool / state evidence
+  > Task Ledger / Evidence Model
+  > Obsidian canonical docs
+  > Memory
+  > general knowledge</code></pre>
+
+<p>具体：</p>
+<ul>
+<li>Memory <strong>不能</strong>覆盖当前 Allen 明确说的话</li>
+<li>Memory <strong>不能</strong>覆盖 fresh tool state</li>
+<li>Memory <strong>不能</strong>突破 invariant</li>
+</ul>
+
+<h3>9.9 冲突和更新</h3>
+
+<p>Memory <strong>必须支持 supersede，而不是简单删除</strong>。</p>
+
+<pre><code>Old memory:
+  Allen prefers daily summary reminders.
+
+New observation:
+  Allen finds unsolicited daily summaries annoying during coding.
+
+Result (old memory superseded or narrowed):
+  Daily summary reminders are acceptable only when explicitly
+  requested or during wrap-up.</code></pre>
+
+<p>这比"删掉旧记忆"更可审计。</p>
+
+<h3>9.10 不同 mode 下的 Memory 写入</h3>
+
+<dl>
+<dt><strong>Collaborate</strong></dt>
+<dd>记录技术决策、工作流偏好、agent 表现、可复用坑。</dd>
+<dt><strong>Focus</strong></dt>
+<dd>尽量少写，只记录明确反馈和重要状态事件。</dd>
+<dt><strong>Rest</strong></dt>
+<dd>记录生活 / 环境偏好，但不把临时情绪过度长期化。</dd>
+<dt><strong>Standby</strong></dt>
+<dd>只写结构化事件，不直接写自然语言 memory。</dd>
+<dt><strong>Assist</strong></dt>
+<dd>明确偏好、事实、纠正可以成为 candidate。</dd>
+</dl>
+
+<h3>9.11 最危险的三类记忆</h3>
+
+<div class="invariant"><strong>1. Mood inference.</strong> "Allen 看起来累了"、"Allen 不开心"——如果没有明确表达，<strong>不要</strong>长期写。</div>
+
+<div class="invariant"><strong>2. Unverified work state.</strong> "某任务完成了"——如果只是 agent 说的，<strong>不要</strong>写成事实（参见 <a href="#invariants">§13 I8, I10</a>）。</div>
+
+<div class="invariant"><strong>3. Over-generalized preference.</strong> 一次反馈不能变成永久偏好。"今天别提醒我"<strong>不能</strong>写成"Allen 不喜欢提醒"，只能写成"Allen suppressed reminders during this Focus session"。等重复出现后再提升为长期偏好。</div>
+
+<h3>9.12 一句定稿</h3>
+
+<blockquote>
+Memory Boundary: Memory stores stable, reusable personal knowledge that reduces Allen's future explanation burden. It is a derived projection from events, evidence, tasks, feedback, and canonical notes. It must not store current mutable state, raw logs, raw sensor data, task status, unverified claims, secrets, or full transcripts. Every memory item needs scope, provenance, evidence, freshness semantics, and supersession support. Memory informs Situation Packet as a hint; it is never current-state authority.
+</blockquote>
+
+<blockquote>
+Memory 只保存能长期降低 Allen 重复解释成本的稳定可复用个人知识。它是从 Event Log、Evidence、Task、反馈和 Obsidian 正典文档中提炼出的 projection，<strong>不</strong>保存当前可变状态、原始日志、原始传感器、任务状态、未验证 claim、secret 或完整 transcript。每条 memory 必须有 scope、来源、证据、新鲜度语义和 supersede 机制。Memory 进入 Situation Packet 时只是 hint，永远<strong>不是</strong> current-state authority。
+</blockquote>
+</section>
+
+<section id="situation-packet">
+<h2>10. Situation Packet</h2>
+
+<blockquote>
+<strong>第一原则：</strong>Situation Packet 不是 State Object 的摘要，而是<strong>本轮决策所需的最小可证据化上下文</strong>。
+</blockquote>
+
+<p>不是"把 Jarvis 知道的都压缩给 LLM"，而是"这轮要正确行动，LLM 最少需要知道什么"。</p>
+
+<h3>10.1 边界</h3>
+<pre><code>State Object projections  ──→  Runtime Decision assembler  ──→  Situation Packet  ──→  LLM</code></pre>
+<p>左边可以无限大；右边是 token-bounded 决策接口。Runtime Decision assembler 负责装配，<strong>LLM 不能自己编</strong>——packet 不够时 LLM 必须调 tool 或 ask，不能假设。</p>
+
+<h3>10.2 6 块结构</h3>
+
+<h4>1. Turn Context</h4>
+<p>这轮交互的基本事实：</p>
+<ul>
+<li>time / timezone</li>
+<li>surface: voice / inherent / background / agent_callback</li>
+<li>input_source</li>
+<li>user_presence</li>
+<li>current_mode</li>
+<li>turn_lens</li>
+<li>effective_policy_summary</li>
+</ul>
+
+<h4>2. Active Task Context</h4>
+<p>如果有 active task，给最小任务包（<strong>不</strong>塞完整 task 历史）：</p>
+<ul>
+<li>task_id · goal · current_status · owner · next_action · blocking_issue</li>
+<li>required_claims_summary · missing_evidence_summary</li>
+<li>recent_runs_summary</li>
+</ul>
+
+<h4>3. Current Environment Context</h4>
+<p>只放当前决策相关的状态，<strong>按需注入</strong>：</p>
+<ul>
+<li>Mac: active_app / focused_target / current_project / git_branch / dirty_state_summary</li>
+<li>Room: room / presence / light_state_summary / volume / output_device</li>
+</ul>
+<p>问代码任务不需要湿度，说睡觉不需要 git diff。</p>
+
+<h4>4. Recent Interaction Context</h4>
+<p>最近几轮的 continuity，不是完整 transcript：</p>
+<ul>
+<li>last_user_request</li>
+<li>last_assistant_action</li>
+<li>last_tool_results_summary</li>
+<li>pending_clarification</li>
+<li>recent_interruptions</li>
+</ul>
+
+<h4>5. Evidence Context</h4>
+<p>跟 <a href="#evidence-model">§8 Evidence Model</a> 的接口（让 LLM 不过度宣称完成）：</p>
+<ul>
+<li>relevant_supported_claims</li>
+<li>relevant_missing_claims</li>
+<li>latest_evidence</li>
+<li>stale_evidence_warning</li>
+<li>agent_reported_not_verified</li>
+</ul>
+
+<h4>6. Memory / Profile Hints</h4>
+<p>只放与当前任务相关的长期偏好。Memory 是 <em>hint</em>，不是当前事实：</p>
+<ul>
+<li>Allen prefers concise voice.</li>
+<li>Commit messages English.</li>
+<li>Do not push unless asked.</li>
+<li>Use rtk for shell commands.</li>
+<li>Allen dislikes unnecessary proactive chatter.</li>
+</ul>
+
+<h3>10.3 明确<em>不</em>包含的</h3>
+<ul>
+<li>raw event log · raw sensor stream</li>
+<li>full memory dump · full session transcript</li>
+<li>all tasks · all agent logs · all file diffs</li>
+<li>large command outputs</li>
+<li>unrelated room state · unrelated personal memories</li>
+</ul>
+<p>这些通过工具按需读取，或在 evidence / document 里引用。</p>
+
+<h3>10.4 形状：JSON-ish 而非 prose</h3>
+<pre><code>{
+  "turn": {
+    "time":    "2026-05-16T...",
+    "surface": "voice",
+    "mode":    "Collaborate",
+    "lens":    ["Build", "Audit"]
+  },
+  "policy": {
+    "autonomy_ceiling":   "suggest_or_delegate",
+    "verification_level": "strict",
+    "output_form":        "voice_short_document_rich",
+    "interrupt_policy":   "task_events_only"
+  },
+  "active_task": {
+    "task_id":          "clipboard-multimodal",
+    "goal":             "Wire clipboard multimodal attach through Jarvis runtime",
+    "status":           "reported_complete",
+    "next_action":      "verify tools_v2 chat path and run live smoke",
+    "missing_evidence": ["live_voice_smoke", "llm_tool_fallback_reachable"]
+  },
+  "current_state": {
+    "project": "jarvis",
+    "branch":  "feat/tools-v2",
+    "dirty":   true
+  },
+  "evidence": {
+    "agent_reports": ["clipboard worktree reported complete"],
+    "verified":      ["unit tests passed for clipboard helpers"],
+    "limitations":   ["live runtime fallback not verified"]
+  }
+}</code></pre>
+
+<h3>10.5 Cache 策略</h3>
+<p>Situation Packet 必须放在 <strong>prompt 后部，作为动态块</strong>。前面大段（Jarvis identity / mode policy table / tool policy / evidence policy / Allen stable profile）保持稳定，每轮变 packet 不破 prefix cache。</p>
+
+<h3>10.6 谁负责生成</h3>
+
+<pre><code>State Object projections
+  + effective_policy
+  + current input
+  + active task binding
+  + relevance filters
+= Situation Packet</code></pre>
+
+<p>由 Runtime Decision assembler 装配，<strong>不</strong>由 State Object 或 LLM 编。LLM 发现 packet 不够 → 调工具或反问；不允许"假设"。</p>
+
+<h3>10.7 不同 mode 的 packet 重点</h3>
+<dl>
+<dt><strong>Collaborate</strong></dt>
+<dd>active task · agent state · evidence · git / project state · next action</dd>
+
+<dt><strong>Assist</strong></dt>
+<dd>current request · minimal relevant state · available tools</dd>
+
+<dt><strong>Focus</strong></dt>
+<dd>interrupt queue · silent maintenance state · only critical context</dd>
+
+<dt><strong>Rest</strong></dt>
+<dd>room state · time · light / volume / reminder · suppressed work queue</dd>
+
+<dt><strong>Standby</strong></dt>
+<dd>通常无 LLM packet，除非 event 要求 policy decision</dd>
+</dl>
+
+<h3>10.8 一句定稿</h3>
+
+<blockquote>
+Situation Packet is the per-turn, runtime-built interface from State Object projections to the decision engine. It is not a summary of everything Jarvis knows; it is the smallest relevant, evidence-aware context needed for the current decision, shaped by effective_policy and active task binding. Raw logs, raw sensors, full memory, full transcripts, and unrelated state stay out.
+</blockquote>
+
+<blockquote>
+Situation Packet 是 Runtime Decision 从 State Object projections 组装给 decision engine 的每轮接口。它不是 Jarvis 全部知识的摘要，而是由 runtime 按 effective_policy 和 active task 组装出的<strong>最小相关、证据感知上下文</strong>。原始日志、原始传感器、完整记忆、完整 transcript 和无关状态不进入 packet。
+</blockquote>
+</section>
+
+<section id="policy-mode">
+<h2>11. Policy / Mode</h2>
+
+<p>Mode Runtime State 是 State Object projection；Mode Preset Table 是配置；Effective Policy 是 Runtime Decision 的纯函数输出。<strong>Policy Resolver 是纯函数</strong>：<code>(mode_runtime_state, mode_presets, lenses, overrides, invariants) → effective_policy</code>。它只解释 state 和 config，不创造 state——任何 runtime policy 改变要持久化都必须先 emit event。</p>
+
+<h3>11.1 9 维 policy</h3>
+<table>
+<thead><tr><th>#</th><th>维度</th><th>含义</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>idle_proactivity</code></td><td>空闲时主动开口频率</td></tr>
+<tr><td>2</td><td><code>interrupt_policy</code></td><td>有活在进行中是否打断</td></tr>
+<tr><td>3</td><td><code>autonomy_ceiling</code></td><td>自主能力上限</td></tr>
+<tr><td>4</td><td><code>confirmation_threshold</code></td><td>ceiling 内哪些动作仍要先问 Allen</td></tr>
+<tr><td>5</td><td><code>output_form</code></td><td>voice / document 输出比例</td></tr>
+<tr><td>6</td><td><code>verification_level</code></td><td>对 agent 输出验收严格度</td></tr>
+<tr><td>7</td><td><code>tool_surface</code></td><td>该 mode 暴露的工具子集（在 caller_principal、AuthorizationLease、task scope 内进一步收窄）</td></tr>
+<tr><td>8</td><td><code>task_policy</code></td><td>任务如何形成或绑定</td></tr>
+<tr><td>9</td><td><code>memory_policy</code></td><td>写入策略</td></tr>
+</tbody>
+</table>
+
+<h3>11.2 双轴 mode</h3>
+<table>
+<thead><tr><th>轴</th><th>mode 名单</th></tr></thead>
+<tbody>
+<tr><td>Work mode（Mac 拥有）</td><td><code>standby</code> · <code>assist</code> · <code>collaborate</code> · <code>deep_work</code> · <code>review</code> · <code>research</code> · <code>rest</code></td></tr>
+<tr><td>Home mode（RPi 拥有）</td><td><code>ambient_home</code> · <code>bedroom_night</code> · <code>host_guests</code> · <code>away</code> · <code>maintenance</code></td></tr>
+</tbody>
+</table>
+
+<h3>11.3 Lenses（临时叠加层，非 mode）</h3>
+<p><code>audit</code> · <code>confidential</code> · <code>verbose</code> · <code>quiet</code> · <code>dry_run</code></p>
+
+<h3>11.4 effective_policy 合成顺序</h3>
+<pre><code>effective_policy(turn) =
+    work_mode_preset
+  + home_mode_preset
+  + active_lenses
+  + per_turn_intent_overrides
+  + personal_overrides
+  then apply safety_invariants</code></pre>
+
+<div class="invariant"><strong>铁律：</strong> mode 只调 defaults，<strong>不能下穿 invariants</strong>。不可逆动作 / entity_id 伪造 / 无 pre_emit action / agent claim 直接当 verified 这类不允许任何 mode override。</div>
+</section>
+
+<section id="attention-policy">
+<h2>12. Attention Policy</h2>
+
+<blockquote>
+<strong>第一原则：</strong>Attention Policy <strong>不负责自动切 mode</strong>；它只负责<strong>对具体事件选择处理通道</strong>。
+</blockquote>
+
+<p>它不回答："Allen 现在是什么模式？"它回答："这个事件现在应该静默记录、排队、显示、提醒、询问、执行，还是打断？"</p>
+
+<h3>12.1 为什么它重要</h3>
+
+<p>Jarvis 会越来越多地观察世界：agent reported complete · tests failed · task blocked · 时间到了 · 灯没关 · Allen 坐到桌前 · Allen 离开房间 · commit hook 发现风险 · Codex 卡住 · sensor 状态变化 · Allen 连续忽略某类提醒...</p>
+
+<p>如果每个事件都说出来，Jarvis 会烦。如果什么都不说，Jarvis 没用。<strong>Attention Policy 就是中间层。</strong></p>
+
+<h3>12.2 核心架构</h3>
+
+<pre><code>event  ──→  subscriber  ──→  candidate intervention  ──→  attention policy  ──→  channel decision</code></pre>
+
+<p>不是全局 polling，不是自动切 mode——它是 per-event 的通道选择器。</p>
+
+<h3>12.3 输入字段（candidate intervention）</h3>
+
+<p>每个 candidate intervention 至少携带：</p>
+
+<ul>
+<li><code>event_type</code></li>
+<li><code>candidate_action</code></li>
+<li><code>subject</code></li>
+<li><code>confidence</code></li>
+<li><code>urgency</code></li>
+<li><code>relevance</code></li>
+<li><code>risk</code></li>
+<li><code>reversibility</code></li>
+<li><code>expiry</code></li>
+<li><code>current_mode</code></li>
+<li><code>active_task_id</code></li>
+<li><code>current_surface</code></li>
+<li><code>interruption_cost</code></li>
+<li><code>annoyance_history</code></li>
+<li><code>user_feedback</code></li>
+</ul>
+
+<p>这些<strong>不全是 0-1 分数</strong>。很多应该是 enum。</p>
+
+<h3>12.4 输出通道（10 类）</h3>
+
+<table>
+<thead><tr><th>通道</th><th>含义</th><th>适合场景</th></tr></thead>
+<tbody>
+<tr><td><code>silent_log</code></td><td>只记录，不提示</td><td>低价值状态变化 · 背景观察 · 重复事件</td></tr>
+<tr><td><code>queue_review</code></td><td>放进待 Allen 查看</td><td>agent reported complete · 非紧急风险 · 需要人工验收 · Focus / Rest 下的工作事件</td></tr>
+<tr><td><code>badge_card</code></td><td>Inherent panel / dashboard / OLED 轻提示，不出声</td><td>中价值但不紧急 · agent 状态变化 · task waiting</td></tr>
+<tr><td><code>soft_suggest</code></td><td>下次对话顺带说</td><td>习惯建议 · 低紧急改进 · 可能有帮助但不确定</td></tr>
+<tr><td><code>voice_notify</code></td><td>主动说一句</td><td>当前正在协作任务的重要变化 · Allen 明确允许提醒的事件 · 中高紧急且低打扰场景</td></tr>
+<tr><td><code>interrupt_now</code></td><td>立即打断</td><td><strong>只</strong>适合：高紧急 · 即将过期 · 会造成明显损失 · 安全 / 设备异常 · Allen 明确要求立刻提醒的任务。<strong>默认极少用。</strong></td></tr>
+<tr><td><code>ambient_act</code></td><td>静默执行可逆低风险动作</td><td>调灯 · 降音量 · 更新 OLED 状态 · 切换低干扰显示。前提：低风险、可逆、历史反馈支持。</td></tr>
+<tr><td><code>ask_confirm</code></td><td>请求确认</td><td>高风险动作 · 外部副作用 · 不可逆动作 · 低置信但可能有价值的动作</td></tr>
+<tr><td><code>delegate_agent</code></td><td>派 agent</td><td><strong>通常不应</strong>由 Attention Policy 直接做，除非：Collaborate mode + active task 明确 + 低风险或已授权 + 历史允许此类后台 delegation。否则只应 soft_suggest。</td></tr>
+<tr><td><code>suppress</code></td><td>主动抑制</td><td>历史上 Allen 反复拒绝此类事件</td></tr>
+</tbody>
+</table>
+
+<h3>12.5 决策规则：hard gates → channel scoring → feedback adjustment</h3>
+
+<p><strong>不要</strong>用单一总分。三段处理：</p>
+
+<h4>Hard gates（先过）</h4>
+<pre><code>if risk high                          -> ask_confirm, never auto-act
+if confidence low                     -> do not act; queue or ask
+if mode Focus                         -> suppress voice except critical
+if mode Rest                          -> suppress work events
+if user recently rejected similar     -> downgrade
+if no trusted entity_id               -> no action
+if action irreversible                -> no auto action</code></pre>
+
+<h4>Channel scoring（剩下候选）</h4>
+<pre><code>value = urgency + relevance + expiry + expected_helpfulness
+cost  = interruption_cost + annoyance_penalty + uncertainty + risk</code></pre>
+<p><strong>但不要暴露成用户配置。</strong></p>
+
+<h4>Feedback adjustment（每次主动行为后记录）</h4>
+<ul>
+<li><code>accepted</code></li>
+<li><code>ignored</code></li>
+<li><code>dismissed</code></li>
+<li><code>corrected</code></li>
+<li><code>annoyed</code></li>
+<li><code>useful</code></li>
+</ul>
+<p>同类事件下次自动调整通道。</p>
+
+<h3>12.6 不同 mode 下的默认策略</h3>
+
+<dl>
+<dt><strong>Collaborate</strong></dt>
+<dd>agent complete → badge or voice · blocked → voice or queue · test failed → voice if active task</dd>
+<dt><strong>Focus</strong></dt>
+<dd>agent complete → queue_review · blocked → queue_review unless urgent · environment → ambient_act only</dd>
+<dt><strong>Rest</strong></dt>
+<dd>work events → queue_tomorrow · home events → soft voice / ambient</dd>
+<dt><strong>Standby</strong></dt>
+<dd>mostly silent_log / queue</dd>
+<dt><strong>Assist</strong></dt>
+<dd>mostly reactive；proactive only if directly relevant</dd>
+</dl>
+
+<h3>12.7 场景例</h3>
+
+<h4>Codex reported complete</h4>
+<ul>
+<li>Collaborate: badge_card + maybe voice_notify</li>
+<li>Focus: queue_review</li>
+<li>Rest: queue_tomorrow</li>
+<li>Standby: queue_review</li>
+</ul>
+
+<h4>Allen 坐到桌前 + 光线低</h4>
+<ul>
+<li>high confidence + reversible + accepted before → <code>ambient_act</code> turn on desk scene</li>
+<li>medium confidence → <code>badge_card</code> or <code>soft_suggest</code></li>
+<li>recently manually turned off → <code>suppress</code></li>
+</ul>
+
+<h4>测试失败</h4>
+<ul>
+<li>active Collaborate task → <code>voice_notify</code> or <code>badge_card</code></li>
+<li>Focus → <code>queue_review</code> unless failure blocks current work</li>
+<li>Rest → <code>queue_tomorrow</code></li>
+</ul>
+
+<h4>卧室夜间灯还亮</h4>
+<ul>
+<li>Rest + presence bedroom + late → <code>soft_suggest</code> or <code>ambient_act</code> if accepted before</li>
+</ul>
+
+<h3>12.8 边界</h3>
+
+<table>
+<thead><tr><th>Attention Policy <em>不</em>应该</th><th>Attention Policy 应该</th></tr></thead>
+<tbody>
+<tr>
+<td>
+<ul>
+<li>自动判断 durable mode</li>
+<li>自动执行高风险动作</li>
+<li>靠 LLM 自由决定是否打扰</li>
+<li>把所有事件评分成一个全局主动性值</li>
+<li>每分钟 polling 一遍世界</li>
+</ul>
+</td>
+<td>
+<ul>
+<li>处理具体事件</li>
+<li>输出通道选择</li>
+<li>保守默认</li>
+<li>记录反馈</li>
+<li>可解释</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+
+<h3>12.9 一句定稿</h3>
+
+<blockquote>
+Attention Policy is Jarvis's event-level intervention layer. It does not infer or switch durable mode. For each candidate event, it chooses a handling channel such as silent log, review queue, badge, suggestion, voice notification, interruption, ambient action, confirmation request, or delegation. Decisions are constrained by mode, confidence, urgency, reversibility, risk, timing, interruption cost, annoyance history, and user feedback, with hard gates before scoring.
+</blockquote>
+
+<blockquote>
+Attention Policy 是 Jarvis 的事件级干预层。它<strong>不负责</strong>推断或切换 durable mode；它只针对具体候选事件选择处理通道：静默记录、排队、轻提示、建议、语音通知、立即打断、环境动作、请求确认或委派 agent。决策受 mode、置信度、紧急度、可逆性、风险、时机、打扰成本、烦扰历史和用户反馈约束，并<strong>先过硬规则再评分</strong>。
+</blockquote>
+</section>
+
+<section id="invariants">
+<h2>13. Invariant Gate</h2>
+
+<blockquote>
+<strong>第一原则：</strong>Invariant Gate 是 Jarvis 的<strong>非协商 runtime 边界</strong>。LLM、agent、prompt、mode、tool 都不能绕过它。
+</blockquote>
+
+<p>它不是 prompt 风格的提醒，也不是 LLM 应该"小心"的建议。它必须由 runtime 强制。任何未来能力升级，invariant 保持不变。</p>
+
+<h3>13.1 三段 Gate（应用位置）</h3>
+<table>
+<thead><tr><th>Gate</th><th>触发时机</th><th>主要检查</th></tr></thead>
+<tbody>
+<tr><td><strong>Pre-action Gate</strong></td><td><code>action.pre_emit</code> 之前</td><td>policy 是否允许 · caller 是否有 tool_surface 权限 · 是否绑定 active task · entity_id 是否可信 · 是否需要 confirmation · workdir 是否在 scope · 外部副作用 risk · precondition evidence 是否充分</td></tr>
+<tr><td><strong>Post-action Gate</strong></td><td>Tool 返回，写 <code>state.changed</code> 之前</td><td>结果归一化（ack vs executed vs verified） · artifact 记录 · limitations 记录 · claim / evidence 更新 · 不允许工具自标 verified_complete</td></tr>
+<tr><td><strong>Pre-emit Gate</strong></td><td>LLM 要输出给 Allen 之前</td><td>claim ≤ evidence · output_form 检查 · agent self-report 不能升级成 verified</td></tr>
+</tbody>
+</table>
+
+<h3>13.2 12 条 Invariants</h3>
+
+<div class="invariant"><strong>I1. No State Without Event.</strong> 任何持久状态变化必须来自 event。</div>
+<div class="invariant"><strong>I2. Event Is Immutable.</strong> 已写入 event 不可修改，只能 append correction / supersede event。</div>
+<div class="invariant"><strong>I3. Projection Is Read-Only.</strong> Projection 只能由 event rebuild / update，不能被 LLM / tool 直接改。</div>
+<div class="invariant"><strong>I4. No Action Without Effective Policy.</strong> 任何 action 必须绑定当前 effective_policy。</div>
+<div class="invariant"><strong>I5. Tool Surface Is Enforced.</strong> Caller 只能调用当前 policy 暴露的工具（参见 <a href="#tool-surface">§14 Tool Surface</a>）。</div>
+<div class="invariant"><strong>I6. Entity ID Cannot Be Invented.</strong> 设备、文件、task、agent、窗口等真实对象 ID 必须来自 trusted source 或 resolver。</div>
+<div class="invariant"><strong>I7. High-Risk Action Requires Confirmation.</strong> 删除、发送、push、merge、rebase、kill、install、secret / config / system 改动必须确认。</div>
+<div class="invariant"><strong>I8. Agent Report Is Not Verification.</strong> Agent 自报只能生成 reported evidence，不能生成 verified completion。</div>
+<div class="invariant"><strong>I9. Execution Is Not Postcondition.</strong> 工具执行成功不等于目标达成；verified claim 需要 postcondition evidence。</div>
+<div class="invariant"><strong>I10. Claim Must Not Exceed Evidence.</strong> Jarvis 的语音、document、task status、memory write 都不能超过 evidence 支持范围。</div>
+<div class="invariant"><strong>I11. Worker Cannot Self-Verify.</strong> Worker agent 不能把自己的任务标成 verified（参见 <a href="#agent-protocol">§15 Agent Protocol</a>）。</div>
+<div class="invariant"><strong>I12. Memory Is Not Current State.</strong> 长期 memory 不能证明当前 mutable state；当前状态必须来自 fresh tool / state evidence。</div>
+
+<h3>13.3 跟 Mode 的关系</h3>
+<p>Mode 可以降低或提高默认权限，但<strong>不能突破 invariant</strong>：</p>
+<ul>
+<li>Collaborate 可以允许 delegate agent，<strong>但不能</strong>允许 agent self-report → verified_complete</li>
+<li>Rest 可以允许关灯，<strong>但不能</strong>允许未解析 entity_id 就控制设备</li>
+</ul>
+
+<pre><code>mode / policy  ──→  changes defaults
+invariant      ──→  defines hard limits</code></pre>
+
+<h3>13.4 跟 Prompt 的关系</h3>
+<p>Prompt 可以告诉 LLM 规则，但 <strong>runtime 必须强制</strong>。Prompt 说"不要超过证据"不够——对 task status / completion / action result 这些关键表达，最终输出应经过 structured claim check 或模板化校验。</p>
+
+<h3>13.5 一句定稿</h3>
+
+<blockquote>
+Invariant Gate is Jarvis's non-negotiable runtime boundary. It enforces pre-action permission and entity checks, post-action evidence normalization, and pre-emit claim control. Modes and prompts may change behavior, but they cannot override invariants: no state without event, no invented entity IDs, no high-risk action without confirmation, no agent self-verification, no execution-as-verification, and no claim beyond evidence.
+</blockquote>
+
+<blockquote>
+Invariant Gate 是 Jarvis 的非协商 runtime 边界。它在行动前检查权限、风险和实体，在行动后归一化 evidence，在输出前限制 claim。Mode 和 prompt 可以改变行为偏好，<strong>但不能覆盖 invariant</strong>：无 event 不改 state，不伪造 entity_id，高风险动作必须确认，agent 不能自证完成，执行不等于验证，输出不能超过证据。
+</blockquote>
+</section>
+
+<section id="tool-surface">
+<h2>14. Tool Surface</h2>
+
+<blockquote>
+<strong>第一原则：</strong>Tool Surface 不是"所有可用工具列表"，而是 <strong>effective_policy 为当前主体、当前 mode、当前 task 和当前风险级别生成的最小能力面</strong>。
+</blockquote>
+
+<p>Jarvis 越强，越不能把所有工具都丢给同一个 LLM。Tool Surface 应该像 OS 一样按主体和上下文分配 capability。</p>
+
+<h3>14.1 工具按能力域分（不按文件分）</h3>
+<p><code>state_read</code> · <code>file_read</code> · <code>file_write</code> · <code>terminal</code> · <code>git</code> · <code>browser</code> · <code>screen</code> · <code>clipboard</code> · <code>mac_gui</code> · <code>smart_home</code> · <code>task_ledger</code> · <code>agent_control</code> · <code>memory</code> · <code>obsidian</code> · <code>notification</code> · <code>scheduler</code> · <code>hardware</code></p>
+
+<h3>14.2 每个 tool 必带的 metadata</h3>
+<pre><code>{
+  "tool_id":                "...",
+  "domain":                 "...",
+  "caller_principal":       ["observer" | "jarvis_llm" | "regex_router" | "worker_agent" | "background_subscriber" | "system_maintenance"],
+  "risk_level":             "L0 | L1 | L2 | L3 | L4",
+  "side_effect":            "none | local_state | external | destructive",
+  "result_semantics":       "ack | observation | verification | report | error",
+  "post_action_check":      null | {"check_tool": "...", "evidence_level_on_match": "..."},
+  "read_only":              true | false,
+  "requires_confirmation":  true | false,
+  "requires_entity":        true | false,
+  "requires_task_binding":  true | false,
+  "requires_evidence":      true | false,
+  "max_output_bytes":       8192,
+  "allowed_modes":          [...],
+  "allowed_surfaces":       [...]
+}</code></pre>
+
+<p>实际 Tool Surface = <code>filter(registry, by=(effective_policy, caller_principal, authorization_lease, mode, surface, active_task))</code>。LLM 看到的不是 registry 本身，是过滤后的子集。</p>
+
+<h3>14.3 6 个 caller principals + AuthorizationLease</h3>
+
+<h4>1. observer</h4>
+<p>只读。看世界，不行动。</p>
+<table>
+<thead><tr><th>可见</th><th>不可见</th></tr></thead>
+<tbody>
+<tr><td>state_read · git status · file search/read · screen observe · clipboard read · agent status · device status</td>
+<td>write · patch · terminal destructive · send · commit · smart_home_control · agent spawn</td></tr>
+</tbody>
+</table>
+
+<h4>2. jarvis_llm</h4>
+<p>主助手。能协调、建议、低风险执行。</p>
+<table>
+<thead><tr><th>可见</th><th>谨慎可见</th><th>不可默认可见</th></tr></thead>
+<tbody>
+<tr><td>query_state · task_ledger read/write · agent status · agent spawn with confirmation/policy · clipboard read · screen read · git read · file read/search · smart_home low-risk control · obsidian append · notification queue</td>
+<td>file write · mac_gui · terminal · browser action</td>
+<td>patch / write arbitrary files · commit / push · kill process · install deps · send external message · delete data</td></tr>
+</tbody>
+</table>
+
+<h4>3. regex_router</h4>
+<p>极小 fast path，只做高度确定、低风险、常用动作（参见 <a href="#intent-routing">§17 Intent Routing</a> L0）。</p>
+<p><strong>可见</strong>：time · timer · simple smart_home_control with resolved entity · scene activate · simple todo / reminder capture · clipboard hard trigger 可选</p>
+<p><strong>不应该</strong>看复杂工具。Regex 是快路径，不是通用执行器。</p>
+
+<h4>4. worker_agent</h4>
+<p>Codex / Claude Code / Hermes 一类 worker。可有更强 file / terminal / patch 能力，但<strong>必须被 task sandbox 约束</strong>。</p>
+<table>
+<thead><tr><th>可见</th><th>边界</th></tr></thead>
+<tbody>
+<tr><td>read_file · search_files · write_file · patch · terminal · git read · test / lint commands · task_status_update · evidence_submit</td>
+<td>requires active_task_id · workdir scoped · sensitive paths blocked · destructive commands blocked or confirmed · <strong>不能</strong> mark verified_complete · <strong>不能</strong> bypass Jarvis review</td></tr>
+</tbody>
+</table>
+<p>Worker 可提交 <code>reported_complete</code>，<strong>不能</strong>提交 <code>verified_complete</code>（参见 <a href="#invariants">§13 I11</a>）。</p>
+
+<h4>5. background_subscriber</h4>
+<p>用于主动性 / 事件订阅器。</p>
+<table>
+<thead><tr><th>可见</th><th>默认不能</th></tr></thead>
+<tbody>
+<tr><td>state query · task queue update · notification enqueue · low-risk ambient action if policy allows</td>
+<td>call LLM freely · write files · spawn agents · do irreversible actions</td></tr>
+</tbody>
+</table>
+
+<h4>AuthorizationLease: human_approved</h4>
+<p><code>human_approved</code> 不是 caller principal，而是 Allen 显式批准后的临时授权 lease。真实 caller 仍然是 <code>jarvis_llm</code>、<code>worker_agent</code> 或其他 principal；lease 只说明本次调用被 Allen 解锁了哪些 tool、risk ceiling、scope 和 expiry。</p>
+
+<h4>6. system_maintenance</h4>
+<p>Jarvis 自己升级 / projection rebuild / 数据迁移时使用的 admin 通道。不在常规对话路径上暴露。</p>
+
+<h3>14.4 L0-L4 风险层</h3>
+<table>
+<thead><tr><th>层</th><th>含义</th><th>例</th></tr></thead>
+<tbody>
+<tr><td><strong>L0</strong></td><td>Read / Observe</td><td>state · file read · search · git status · screen observe · clipboard read</td></tr>
+<tr><td><strong>L1</strong></td><td>Local reversible action</td><td>todo capture · reminder create · append note · low-risk mac UI · light scene</td></tr>
+<tr><td><strong>L2</strong></td><td>Local write / task action</td><td>file write · patch · terminal test / lint · agent spawn · task update</td></tr>
+<tr><td><strong>L3</strong></td><td>External / irreversible</td><td>send message · push · delete · install · kill · commit / merge / rebase</td></tr>
+<tr><td><strong>L4</strong></td><td>System / admin</td><td>config changes · secrets · permissions · daemon control</td></tr>
+</tbody>
+</table>
+
+<h3>14.5 caller × layer 默认</h3>
+<table>
+<thead><tr><th>caller</th><th>默认开放</th><th>升级条件</th></tr></thead>
+<tbody>
+<tr><td>jarvis_llm</td><td>L0-L1，部分 L2</td><td>L2 需 explicit task / policy；L3+ 需 AuthorizationLease(human_approved)</td></tr>
+<tr><td>worker_agent</td><td>L0-L2 task-scoped</td><td>L3+ 只能在 explicit AuthorizationLease + sandbox permit 下 case-by-case</td></tr>
+<tr><td>regex_router</td><td>tiny L0-L1</td><td>不升级</td></tr>
+<tr><td>background_subscriber</td><td>L0 + enqueue + 选定 ambient L1</td><td>不升级</td></tr>
+<tr><td>observer</td><td>L0 only</td><td>不升级</td></tr>
+<tr><td>system_maintenance</td><td>L4 specific tools</td><td>—</td></tr>
+</tbody>
+</table>
+
+<h3>14.6 6 条安全原则</h3>
+<div class="invariant"><strong>1. Least capability.</strong> 每轮只暴露最小工具面。</div>
+<div class="invariant"><strong>2. Caller-specific capability.</strong> Jarvis、worker、observer 看到不同工具。</div>
+<div class="invariant"><strong>3. Task-bound write capability.</strong> 写文件、patch、terminal 强能力必须绑定 task / workdir。</div>
+<div class="invariant"><strong>4. Risk-gated side effects.</strong> 外部、破坏性、不可逆动作必须 confirmation。</div>
+<div class="invariant"><strong>5. No self-verification by worker.</strong> Worker 不能自己把任务变 verified。</div>
+<div class="invariant"><strong>6. No generic execute_anything.</strong> 不能有万能执行工具绕过边界。</div>
+
+<h3>14.7 跟 Mode 的关系</h3>
+<p>Mode <strong>不直接开关工具</strong>，而是通过 effective_policy 影响 tool_surface 过滤结果。例：</p>
+<dl>
+<dt><strong>Collaborate</strong></dt>
+<dd>git / file / agent / task / evidence tools visible；worker delegation allowed</dd>
+<dt><strong>Focus</strong></dt>
+<dd>read / queue tools visible；agent completion → queue, not notify；write / delegate suppressed unless explicit</dd>
+<dt><strong>Rest</strong></dt>
+<dd>home / reminder / timer / light tools visible；coding-heavy tools hidden unless explicit</dd>
+<dt><strong>Standby</strong></dt>
+<dd>background subscribers only；no broad LLM tool surface</dd>
+</dl>
+
+<h3>14.8 跟 Situation Packet 的关系</h3>
+<p>Situation Packet 告诉 LLM "你能用哪些工具、有什么边界"——但<strong>实际强制在 runtime</strong>。LLM 不能因为 prompt 里"想要"就调用隐藏工具：registry 必须真的过滤（参见 <a href="#situation-packet">§10 Situation Packet</a>）。</p>
+
+<h3>14.9 一句定稿</h3>
+
+<blockquote>
+Tool Surface is the least-capability action surface generated from effective_policy for a specific caller, mode, task, and risk context. Tools are scoped by caller, domain, risk, side effect, entity requirements, and task binding. Jarvis LLM, regex, observer, worker agents, and background subscribers must not share one universal tool list.
+</blockquote>
+
+<blockquote>
+Tool Surface 是由 effective_policy 为特定调用主体、mode、task 和风险上下文生成的<strong>最小能力面</strong>。工具按主体、能力域、风险、副作用、实体要求和 task 绑定来暴露。Jarvis LLM、regex、observer、worker agent 和 background subscriber <strong>不能共享同一份万能工具列表</strong>。
+</blockquote>
+</section>
+
+<section id="agent-protocol">
+<h2>15. Agent Protocol</h2>
+
+<blockquote>
+<strong>第一原则：</strong>Agent 不是 Jarvis 的替代品，而是 Jarvis 为某个 Task 启动的 worker run。Agent 可以报告结果和提交 evidence，<strong>但不能自行验证完成</strong>。
+</blockquote>
+
+<p>Codex / Claude Code / Hermes 都不应该成为"另一个主脑"。它们是 worker。</p>
+
+<h3>15.1 三层对象</h3>
+<pre><code>Task
+  └─ Agent Run
+       └─ Agent Session</code></pre>
+
+<dl>
+<dt><strong>Task</strong></dt>
+<dd>持久目标（详见 <a href="#task-ledger">§7 Task Ledger</a>）。例："Wire tools_v2 into Jarvis chat path."</dd>
+<dt><strong>Agent Run</strong></dt>
+<dd>一次委派尝试。例："Codex run to inspect core/tool_registry and propose bridge."</dd>
+<dt><strong>Agent Session</strong></dt>
+<dd>底层执行容器。例：zellij pane · Claude Code jsonl session · Codex agent process · Hermes task id。</dd>
+</dl>
+
+<p>Jarvis 管 Task 和 Agent Run。Agent 自己拥有 Agent Session。</p>
+
+<h3>15.2 Agent Run 状态机</h3>
+<ul>
+<li><code>created</code></li>
+<li><code>assigned</code></li>
+<li><code>running</code></li>
+<li><code>waiting_for_input</code></li>
+<li><code>reported_complete</code></li>
+<li><code>reported_blocked</code></li>
+<li><code>failed</code></li>
+<li><code>cancelled</code></li>
+<li><code>expired</code></li>
+<li><code>verified_by_jarvis</code></li>
+<li><code>accepted_by_allen</code></li>
+<li><code>archived</code></li>
+</ul>
+
+<div class="invariant"><strong>铁律：</strong> <code>reported_complete</code> 和 <code>verified_by_jarvis</code> 是<strong>分开</strong>的状态，agent 永远只能推进到前者（参见 <a href="#invariants">§13 I8, I11</a>）。</div>
+
+<h3>15.3 Agent Context Package</h3>
+<p>派 agent 时<strong>不能</strong>只丢一句话。必须给完整上下文包：</p>
+
+<ul>
+<li>task_id</li>
+<li>goal</li>
+<li>scope</li>
+<li>allowed_files / workdir</li>
+<li>do_not_touch</li>
+<li>current known state</li>
+<li>relevant evidence</li>
+<li>acceptance claims</li>
+<li>verification commands if known</li>
+<li>output contract</li>
+<li>handoff format</li>
+</ul>
+
+<p>例：</p>
+<pre><code>Task:    tools_v2 chat wiring
+Goal:    Make read_clipboard tool visible in live Jarvis LLM path.
+Scope:   jarvis.py, core/tool_registry.py, tools_v2 registry bridge.
+Do not touch: data models, unrelated UI, memory schema.
+Evidence available: tools_v2 currently only used by phase1_smoke.
+Acceptance claims:
+  - tools_v2 tools exposed to chat path
+  - old tools still work
+  - clipboard fallback reachable
+  - tests pass
+Output:
+  - changed files
+  - verification run
+  - remaining risks</code></pre>
+
+<h3>15.4 Agent 权限（task-scoped）</h3>
+
+<table>
+<thead><tr><th>可见工具</th><th>边界</th></tr></thead>
+<tbody>
+<tr><td>read_file · search_files · patch · write_file · terminal · test / lint</td>
+<td>active_task_id required · workdir scoped · sensitive path blocked · destructive command blocked · no push · no <code>reset --hard</code> · no secret read unless explicitly allowed · <strong>cannot mark task verified</strong></td></tr>
+</tbody>
+</table>
+
+<p>Worker 能干活，但<strong>不能拥有最终裁判权</strong>（参见 <a href="#tool-surface">§14 Tool Surface</a> worker_agent scope）。</p>
+
+<h3>15.5 Agent 汇报格式</h3>
+<p>Agent 完成后<strong>不能只说"done"</strong>。必须提交 structured report：</p>
+
+<table>
+<thead><tr><th>字段</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>status</code></td><td>reported_complete / blocked / failed</td></tr>
+<tr><td><code>summary</code></td><td>本次 run 的 brief 描述</td></tr>
+<tr><td><code>changed_files</code></td><td>变动文件列表</td></tr>
+<tr><td><code>commands_run</code></td><td>执行过的命令</td></tr>
+<tr><td><code>tests_run</code></td><td>跑过的测试 + 结果</td></tr>
+<tr><td><code>evidence_submitted</code></td><td>提交的 evidence_id 列表</td></tr>
+<tr><td><code>remaining_risks</code></td><td>已知的 limitation / 剩余风险</td></tr>
+<tr><td><code>needs_human_review</code></td><td>bool</td></tr>
+<tr><td><code>next_recommended_action</code></td><td>建议的下一步</td></tr>
+</tbody>
+</table>
+
+<p>如果 <code>blocked</code>，还需要：</p>
+<ul>
+<li><code>blocker_type</code></li>
+<li><code>what_tried</code></li>
+<li><code>why_blocked</code></li>
+<li><code>question_for_allen_or_jarvis</code></li>
+</ul>
+
+<h3>15.6 Agent self-report 如何进入 Evidence Model</h3>
+<p>Agent 汇报本身生成：</p>
+<ul>
+<li><strong>Report Claim</strong>：<em>"agent X reported task complete"</em></li>
+<li><strong>Evidence level</strong>：<code>reported</code></li>
+</ul>
+
+<p>它<strong>不</strong>生成 verified_complete。Jarvis 接下来自己收集：git diff · file contents · test output · lint output · runtime smoke · session note，然后把 Task 推到 <code>needs_review</code> → <code>verified_by_jarvis</code> → <code>accepted_by_allen</code>（参见 <a href="#evidence-model">§8 Evidence Model</a>）。</p>
+
+<h3>15.7 Agent 卡住的协议</h3>
+<p>Agent Protocol 允许 worker 反向提问，<strong>不要瞎猜</strong>。</p>
+
+<p>状态：<code>waiting_for_input</code>。问题类型：</p>
+<ul>
+<li><code>needs_user_decision</code></li>
+<li><code>needs_scope_clarification</code></li>
+<li><code>needs_secret_or_permission</code></li>
+<li><code>needs_runtime_access</code></li>
+<li><code>conflicting_evidence</code></li>
+</ul>
+
+<p>Jarvis 处理方式：</p>
+<ul>
+<li>能从 state 找到答案 → 回答 agent</li>
+<li>需要 Allen 决策 → 排队或询问 Allen</li>
+<li>Agent 问了不该问的（超 scope）→ Jarvis 拒绝并重定向</li>
+</ul>
+
+<h3>15.8 Agent 之间的关系</h3>
+<p>默认<strong>不</strong>让 agent 互相直接协作。所有协调通过 Jarvis：</p>
+
+<pre><code>Agent A  ──report / evidence──→  Jarvis  ──context package──→  Agent B</code></pre>
+
+<p>这样 Jarvis 才能保持全局 task / evidence 账本。</p>
+
+<h3>15.9 什么时候派 agent / 什么时候不</h3>
+
+<table>
+<thead><tr><th>适合派</th><th>不适合派</th></tr></thead>
+<tbody>
+<tr>
+<td>
+<ul>
+<li>需要读很多文件</li>
+<li>需要改代码</li>
+<li>需要独立调研</li>
+<li>需要并行验证</li>
+<li>需要长时间跑测试 / 观察</li>
+<li>Jarvis 主循环不该阻塞</li>
+</ul>
+</td>
+<td>
+<ul>
+<li>简单问答</li>
+<li>低风险直接操作</li>
+<li>需要 Allen 即时口头交互</li>
+<li>高风险不可逆动作</li>
+<li>模糊到连目标都没定</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+
+<h3>15.10 三方所有权</h3>
+
+<pre><code>Jarvis  =  owner of task, policy, evidence, and final claim
+Agent   =  owner of a bounded run
+Allen   =  owner of final product judgment</code></pre>
+
+<ul>
+<li>Agent 可以<strong>报告</strong></li>
+<li>Jarvis 可以<strong>验证</strong></li>
+<li>Allen 可以<strong>接受 / 否决</strong></li>
+<li>没有人可以<strong>绕过 evidence</strong></li>
+</ul>
+
+<h3>15.11 一句定稿</h3>
+
+<blockquote>
+Agent Protocol treats Codex, Claude Code, Hermes, and future agents as task-scoped worker runs under Jarvis supervision. Agents receive bounded context packages, operate inside scoped tool surfaces, submit reports and evidence, and may request input when blocked. Agent self-report creates reported evidence only; Jarvis verifies postconditions, updates Task Ledger, and queues Allen review when needed.
+</blockquote>
+</section>
+
+<section id="federation">
+<h2>16. Federation</h2>
+
+<p>两个长跑节点，按 ownership domain 联邦。<strong>不共享 state，不做 CRDT，不做 leader election，不做 vector clocks</strong>。</p>
+
+<h3>16.1 节点划分</h3>
+<table>
+<thead><tr><th>节点</th><th>身份</th><th>events.db</th></tr></thead>
+<tbody>
+<tr><td><strong>HOME NODE</strong></td><td>RPi5, 24/7, systemd</td><td><code>home_events.db</code>（origin_domain=home）</td></tr>
+<tr><td><strong>MAC NODE</strong></td><td>Mac, when awake, launchd</td><td><code>mac_events.db</code>（origin_domain=mac）+ <code>home_events_mirror</code>（read-only）</td></tr>
+</tbody>
+</table>
+
+<h3>16.2 资源 master（每件东西只有一个 owner）</h3>
+<table>
+<thead><tr><th>资源</th><th>Master</th><th>另一节点的访问方式</th></tr></thead>
+<tbody>
+<tr><td>Hue</td><td>RPi</td><td>Mac 发 <code>request.hue_control</code> 经 MQTT</td></tr>
+<tr><td>MQTT broker</td><td>RPi (Mosquitto)</td><td>Mac 是 client</td></tr>
+<tr><td>ESP32 sensors</td><td>RPi（直接 publish）</td><td>Mac 不直连</td></tr>
+<tr><td>Agents (cc/codex/hermes)</td><td>Mac</td><td>RPi 只通过 task lifecycle 观察</td></tr>
+<tr><td>tools_v2</td><td>Mac</td><td>—</td></tr>
+<tr><td>Inherent Card</td><td>Mac</td><td>RPi 到 Inherent 走 Mac proxy</td></tr>
+</tbody>
+</table>
+
+<h3>16.3 跨域通信</h3>
+<p>只通过 MQTT 上的<strong>白名单 events</strong> 在 <code>xdomain/*</code> topic 发布。每个节点的 events.db 是自己 domain 的 single source of truth；另一域通过镜像只读读取。</p>
+
+<h3>16.4 失效行为</h3>
+<ul>
+<li>Mac 出门（睡眠/离家）：home_events_mirror 进入 stale；home 类请求进入 deferred queue，回家后 flush</li>
+<li>RPi 单点（永远不该发生）：home 自动化降级；Mac domain 不受影响</li>
+</ul>
+</section>
+
+<section id="intent-routing">
+<h2>17. Intent Routing</h2>
+
+<table>
+<thead><tr><th>Tier</th><th>实现</th><th>当前状态</th></tr></thead>
+<tbody>
+<tr><td><strong>Tier 0</strong></td><td>regex (17 pattern, <code>^...$</code> 全句锚)</td><td>active，命中即走</td></tr>
+<tr><td><strong>Tier 1</strong></td><td>surrogate ML (gpt-5.4-mini bench 100%)</td><td><strong>frozen</strong>，留位不进生产主路径</td></tr>
+<tr><td><strong>Tier 2</strong></td><td>cloud LLM (gpt-5.4-mini default)</td><td>current default，Tier 0 miss 即兜底</td></tr>
+</tbody>
+</table>
+
+<p>Tier 0 命中 → 直接 <code>tool_registry.execute</code>。Tier 0 miss → Tier 2 LLM 走 tool_use 循环。Tier 1 不在生产主路径，trace 数据在攒，将来作为 student 训练材料。<em>命名注：</em>Tier 0/1/2 是 intent-routing tier，与 §3 architecture Layer 1-6 不同 namespace（见 <a href="#architecture">§2 命名约定</a>）。</p>
+</section>
+
+<section id="surface-design">
+<h2>18. Surface Design</h2>
+
+<blockquote>
+<strong>第一原则：</strong>Surface Design 的核心<strong>不是展示更多信息</strong>，而是<strong>把信息放到打扰成本最低、可操作性最高的出口</strong>。
+</blockquote>
+
+<p>Jarvis 不是"每件事都说出来"。它应该根据事件价值、紧急度、mode、当前 surface、信息复杂度选择出口。</p>
+
+<p>Surface Design 跟 <a href="#attention-policy">§12 Attention Policy</a> 是配对：Attention 决定<strong>通道</strong>（channel：silent_log / queue / badge / voice / interrupt / ambient_act / ...），Surface Design 决定<strong>物理出口</strong>（哪个 surface）。Channel 到 surface 是多对多映射。</p>
+
+<h3>18.1 七个 surface + 一个特殊出口</h3>
+
+<table>
+<thead><tr><th>#</th><th>Surface</th><th>性质</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Voice</td><td>output，高打扰</td></tr>
+<tr><td>2</td><td>Inherent Panel</td><td>output + input，主视觉</td></tr>
+<tr><td>3</td><td>Mac Notification</td><td>output，中高打扰</td></tr>
+<tr><td>4</td><td>Dashboard / Cockpit</td><td>output，低打扰可浏览</td></tr>
+<tr><td>5</td><td>Obsidian / Document</td><td>output，持久人类可读</td></tr>
+<tr><td>6</td><td>OLED / Room Display</td><td>output，ambient</td></tr>
+<tr><td>7</td><td>Environment Action</td><td>output（状态而非文本）</td></tr>
+<tr><td>+</td><td>Agent / Worker Handoff</td><td>给 worker 的 surface，不是给 Allen</td></tr>
+</tbody>
+</table>
+
+<h3>18.2 Voice</h3>
+<p>最高打扰成本 surface。只承载：</p>
+<ul>
+<li>结论 / 状态 / 一句确认</li>
+<li>必要问题</li>
+<li>高价值提醒</li>
+<li>低复杂度环境 / 日常反馈</li>
+</ul>
+
+<p><strong>不</strong>适合：长日志 · 多路径 · 文件列表 · diff · 测试输出 · 长计划 · 复杂证据 · 多个任务状态。</p>
+
+<div class="note"><strong>规则：</strong> Speak only what Allen needs to hear now. Put durable detail elsewhere.</div>
+
+<p>例："Codex 报告完成了，我已经放到待审核里，还没验证。"——而不是把所有文件和测试读出来。</p>
+
+<h3>18.3 Inherent Panel</h3>
+<p>工作时最重要的视觉 surface。适合：</p>
+<ul>
+<li>当前 active task</li>
+<li>agent status</li>
+<li>evidence summary</li>
+<li>diff / test 摘要</li>
+<li>next action</li>
+<li>clipboard / image attach preview</li>
+<li>command result</li>
+<li>confirmation prompt</li>
+<li>short checklist</li>
+<li>mode / state pill</li>
+</ul>
+
+<p>它是 voice 的搭档：</p>
+<pre><code>voice  =  conclusion
+panel  =  evidence and action controls</code></pre>
+
+<p>work cockpit 里，Inherent Panel 应该是<strong>主</strong>实时 UI。</p>
+
+<h3>18.4 Mac Notification</h3>
+<p>打扰成本高于 Panel，低于 Voice。适合：</p>
+<ul>
+<li>非语音场景下的中高重要提醒</li>
+<li>long-running agent 完成</li>
+<li>timer / deadline</li>
+<li>task needs review</li>
+<li>system health problem</li>
+</ul>
+
+<p><strong>不</strong>适合：普通状态变化 · 低价值建议 · every agent log · 可等下次交互的东西。</p>
+
+<p>Notification <strong>必须 rate limit</strong>。</p>
+
+<h3>18.5 Dashboard / Cockpit</h3>
+<p>低打扰、可浏览的状态面。适合：</p>
+<ul>
+<li>Task Ledger</li>
+<li>agent runs</li>
+<li>pending review</li>
+<li>evidence status</li>
+<li>current project state</li>
+<li>blocked tasks</li>
+<li>queue</li>
+<li>mode / history</li>
+<li>recent events</li>
+</ul>
+
+<p>Dashboard <strong>不是</strong> chat。它是"我现在有哪些事"的地图。</p>
+
+<p>当 Allen 问"我现在还有什么没收尾？"——Jarvis 可以 voice 给一句总结，dashboard 展示全量。</p>
+
+<h3>18.6 Obsidian / Document</h3>
+<p>长期人类可读知识库。适合：</p>
+<ul>
+<li>session note</li>
+<li>research note</li>
+<li>product constitution</li>
+<li>architecture decision</li>
+<li>handoff</li>
+<li>postmortem</li>
+<li>weekly summary</li>
+<li>decision record</li>
+</ul>
+
+<p><strong>不</strong>适合：raw event log · current task state · transient notifications · sensor state · every tool result。</p>
+
+<p>Obsidian 保存"值得以后读"的东西，<strong>不是 runtime 状态</strong>。</p>
+
+<h3>18.7 OLED / Room Display</h3>
+<p>Ambient low-bandwidth surface。适合：</p>
+<ul>
+<li>当前 mode</li>
+<li>timer</li>
+<li>active task 简短名</li>
+<li>agent running / needs review indicator</li>
+<li>room state</li>
+<li>muted / listening / standby</li>
+<li>simple icons / status</li>
+</ul>
+
+<p><strong>不</strong>适合：长文本 · evidence · logs · 多任务列表 · 复杂选择。</p>
+
+<p>价值是<strong>低打扰存在感</strong>。</p>
+
+<h3>18.8 Environment Action</h3>
+<p>Hue、音量、灯光、屏幕亮度也是 surface——它们不是信息文本，但<strong>表达状态</strong>。</p>
+
+<p>适合：</p>
+<ul>
+<li>进入 Focus / Collaborate 的灯光场景</li>
+<li>Rest / Night 的暖光低亮</li>
+<li>agent running 的轻微 status indicator（谨慎）</li>
+<li>勿扰 / 静音反馈</li>
+</ul>
+
+<div class="note"><strong>原则：</strong> Environment should support state, not announce everything.</div>
+
+<h3>18.9 Agent / Worker Handoff（特殊出口）</h3>
+<p>给 worker 的 surface，<strong>不是给 Allen</strong>。适合：</p>
+<ul>
+<li>task context package</li>
+<li>scope</li>
+<li>acceptance claims</li>
+<li>constraints</li>
+<li>evidence so far</li>
+<li>output contract</li>
+</ul>
+
+<p>详见 <a href="#agent-protocol">§15 Agent Protocol</a>。"输出给 agent"的质量直接决定 agent 是否跑偏，所以也是 Surface Design 的一部分。</p>
+
+<h3>18.10 Surface 选择规则（3 维）</h3>
+
+<table>
+<thead><tr><th>组合</th><th>首选 surface</th></tr></thead>
+<tbody>
+<tr><td>高 urgent + 低 complexity</td><td>Voice / Notification</td></tr>
+<tr><td>低 urgent + 高 complexity</td><td>Panel / Dashboard / Obsidian</td></tr>
+<tr><td>高 durability</td><td>Obsidian / Task Ledger</td></tr>
+<tr><td>低 durability</td><td>Panel / Badge / Queue</td></tr>
+<tr><td>ambient reversible</td><td>Environment</td></tr>
+<tr><td>worker execution</td><td>Agent Handoff</td></tr>
+</tbody>
+</table>
+
+<h3>18.11 Mode × Surface 默认</h3>
+
+<dl>
+<dt><strong>Collaborate</strong></dt>
+<dd>voice short · panel rich · dashboard active · notifications allowed for task events</dd>
+<dt><strong>Focus</strong></dt>
+<dd>voice suppressed · notification suppressed · panel / badge / queue preferred · environment quiet</dd>
+<dt><strong>Rest</strong></dt>
+<dd>voice short and soft · panel minimal · work notifications queued · home / environment surfaces allowed</dd>
+<dt><strong>Standby</strong></dt>
+<dd>mostly dashboard / queue / OLED · no voice</dd>
+<dt><strong>Assist</strong></dt>
+<dd>voice response + optional panel detail</dd>
+</dl>
+
+<h3>18.12 7 条硬规则</h3>
+
+<div class="invariant"><strong>1. Voice never carries dense evidence.</strong> 证据放 panel / document。</div>
+<div class="invariant"><strong>2. Panel is the default work surface.</strong> 工作状态优先 panel，不优先 voice。</div>
+<div class="invariant"><strong>3. Obsidian is for durable knowledge, not runtime state.</strong></div>
+<div class="invariant"><strong>4. Notifications are rate-limited.</strong> 只用于 time-sensitive 或 review-worthy 事件。</div>
+<div class="invariant"><strong>5. OLED / display is ambient state only.</strong></div>
+<div class="invariant"><strong>6. Environment actions should be reversible and low-noise.</strong></div>
+<div class="invariant"><strong>7. Every surface emission should trace back to an event or decision.</strong></div>
+
+<h3>18.13 一句定稿</h3>
+
+<blockquote>
+Surface Design assigns each Jarvis output to the lowest-interruption surface that can still support the required action. Voice carries immediate conclusions, questions, and urgent low-complexity notices. Inherent Panel carries work evidence, task state, and controls. Dashboard carries persistent operational state. Obsidian carries durable human-readable knowledge. OLED and environment surfaces carry ambient state. Mac notifications are rate-limited exceptions, not the default.
+</blockquote>
+
+<blockquote>
+Surface Design 负责把 Jarvis 的输出放到<strong>打扰成本最低且足够可操作的出口</strong>。Voice 只承载即时结论、必要问题和低复杂度紧急提醒；Inherent Panel 承载工作证据、任务状态和操作控件；Dashboard 承载持久 operational state；Obsidian 承载长期人类可读知识；OLED 和环境动作承载 ambient state；Mac notification 是受限例外，<strong>不是默认出口</strong>。
+</blockquote>
+</section>
+
+<section id="io-adapters">
+<h2>19. IO Adapters</h2>
+
+<p>Jarvis 的感官和执行体。<strong>所有 adapter 都只是 IO，不持 state</strong>——它们把外部世界翻译成 events，或把 events 翻译成外部世界动作。</p>
+
+<table>
+<thead><tr><th>Adapter</th><th>方向</th><th>载体</th><th>所属节点</th></tr></thead>
+<tbody>
+<tr><td>Voice in</td><td>in</td><td>Mac mic / RPi mic 阵 (XVF3800)</td><td>Mac / RPi</td></tr>
+<tr><td>Voice out</td><td>out</td><td>Mac speaker / RPi speaker</td><td>Mac / RPi</td></tr>
+<tr><td>Inherent Card</td><td>in + out</td><td>Swift native + WKWebView</td><td>Mac</td></tr>
+<tr><td>Mac Observer</td><td>in</td><td>focus / clipboard / screen / window / git</td><td>Mac</td></tr>
+<tr><td>ESP32 sensors</td><td>in</td><td>motion / temp / humidity / optical</td><td>RPi</td></tr>
+<tr><td>Hue</td><td>out</td><td>Philips Hue bridge</td><td>RPi</td></tr>
+<tr><td>Worker agents</td><td>out + in</td><td>cc / codex / hermes in zellij pane</td><td>Mac</td></tr>
+<tr><td>OLED display</td><td>out</td><td>low-bandwidth status surface</td><td>RPi</td></tr>
+<tr><td>Mac notification</td><td>out</td><td>macOS native notification</td><td>Mac</td></tr>
+<tr><td>Code commit hook</td><td>in</td><td>git post-commit hook</td><td>Mac</td></tr>
+</tbody>
+</table>
+</section>
+
+</article>
+</main>
+
+</div>
+</body>
+</html>

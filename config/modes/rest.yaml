@@ -1,0 +1,21 @@
+# Rest mode — Allen is off-clock; Jarvis runs at minimum surface.
+#
+# Observers may continue (git, system), but no proactive output to Allen.
+# Workers are not spawned. Only Allen-initiated interactions get response.
+
+name: rest
+
+policy:
+  autonomy_ceiling: minimal            # observers only; no side-effect tools by default
+  confirmation_threshold: maximum      # everything consequential needs confirm
+  allowed_tool_surface:
+    - observer
+    - jarvis_llm                       # respond when asked
+  output_form: minimal                 # 1-2 sentence answers
+  verification_level: standard
+  interrupt_policy: silent             # no voice-notify, no badges
+  memory_write_policy: off             # no memory writes in rest
+  task_policy: pause                   # no drift watch, no proactive task surfacing
+  attention_defaults:
+    proactive: off
+    badge_threshold: never

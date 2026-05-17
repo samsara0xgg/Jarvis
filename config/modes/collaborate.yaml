@@ -1,0 +1,28 @@
+# Collaborate mode — default working mode.
+#
+# Allen is actively working; Jarvis is available, helpful, can take initiative
+# within the autonomy ceiling. Worker spawning is permitted with confirmation.
+#
+# 9-dimension policy fields are placeholders — final schema lands at M0
+# (Event Registry + Policy contracts freeze).
+
+name: collaborate
+
+policy:
+  autonomy_ceiling: medium             # spawn workers ok, requires confirm for high-risk
+  confirmation_threshold: medium       # consequential or external side-effects require confirm
+  allowed_tool_surface:
+    - observer
+    - jarvis_llm
+    - worker_agent
+    - background_subscriber
+  output_form: conversational          # full sentences, evidence-graded
+  verification_level: standard         # postcondition checks for consequential claims
+  interrupt_policy: respectful         # voice-notify for high-urgency, badge for medium
+  memory_write_policy: promotion_gated # 4-question filter applies
+  task_policy: active_supervision      # Jarvis tracks open actions, surfaces drift
+  attention_defaults:
+    proactive: low                     # speak when there's evidence + reason
+    badge_threshold: medium
+
+# Lenses and per-turn overrides further modify this preset. See spec §11.

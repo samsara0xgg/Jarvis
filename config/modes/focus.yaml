@@ -1,0 +1,22 @@
+# Focus mode — Allen is deep-working; minimise interruption.
+#
+# Jarvis still observes and queues, but voice-notify is suppressed unless
+# urgency is high. Worker spawn requires explicit invocation.
+
+name: focus
+
+policy:
+  autonomy_ceiling: low                # avoid spawning workers unprompted
+  confirmation_threshold: high         # confirm anything with side-effects
+  allowed_tool_surface:
+    - observer
+    - jarvis_llm
+    - background_subscriber            # worker_agent removed unless lens enabled
+  output_form: terse                   # short, scannable
+  verification_level: standard
+  interrupt_policy: silent_unless_critical
+  memory_write_policy: promotion_gated
+  task_policy: background_track        # no proactive drift surfacing
+  attention_defaults:
+    proactive: off                     # do not speak unprompted
+    badge_threshold: high              # only critical badges visible
