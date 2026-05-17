@@ -7,68 +7,21 @@ name = "jarvis"
 version = "0.1.0"
 description = "Allen's state-centric personal runtime."
 requires-python = ">=3.12"
-license = { text = "Proprietary" }
-authors = [{ name = "Allen Shi" }]
-readme = "README.md"
-
-# Core runtime dependencies. ML / audio deps are added in optional groups so
-# the base install stays light. See docs/spec.html for what each layer needs.
-dependencies = [
-    "pydantic>=2.6",
-    "pyyaml>=6.0",
-    "typer>=0.12",
-]
 
 [project.optional-dependencies]
-# Each group maps to a layer / capability. Install with: uv pip install -e ".[voice]"
-voice = [
-    "sherpa-onnx>=1.10",
-    "sounddevice>=0.4",
-    "numpy>=1.26",
-    "soxr>=0.3",
-    "onnxruntime>=1.17",
-    "openwakeword>=0.6",
-]
-llm = [
-    # Tier 2 cloud LLM client(s) — provider-specific deps go here.
-]
-inherent = [
-    "fastapi>=0.110",
-    "uvicorn>=0.27",
-    "websockets>=12",
-]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "import-linter>=2.0",
-    "ruff>=0.4",
-    "mypy>=1.9",
+    "pytest",
+    "import-linter",
+    "ruff",
+    "mypy",
 ]
-
-[project.scripts]
-jarvis = "jarvis.cli.main:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["jarvis"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "N", "S", "C4", "SIM", "RUF"]
-ignore = ["S101"]  # allow assert in tests
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S106"]
-
-[tool.mypy]
-python_version = "3.12"
-strict = true
-warn_unused_ignores = true
-warn_redundant_casts = true
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-asyncio_mode = "auto"
-addopts = "-ra -q"
