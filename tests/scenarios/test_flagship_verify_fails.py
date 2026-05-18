@@ -90,6 +90,123 @@ _COMPLETION_PATTERNS: tuple[str, ...] = (
 _I3_TOLERANCE: int = 2
 
 
+# --- F5 sentence-level negation-frame helpers -----------------------------
+#
+# The ADR § F5 clause is: response "MUST NOT match any of
+# ``_COMPLETION_PATTERNS`` outside an explicit 'agent reported' frame".
+# We interpret "frame" as a sentence-level negation/limitation context.
+# A sentence is "framed" iff it contains any of ``_NEGATION_MARKERS``.
+# Only the concatenation of UNframed sentences is F5-checked. This
+# preserves the verbatim ADR regex set in :data:`_COMPLETION_PATTERNS`
+# while correctly handling LLM outputs like "agent reported 已完成,
+# but not verified" or "cannot call it done without evidence".
+
+# Sentence delimiter: split on ``.`` / ``!`` / ``?`` (ASCII end-of-
+# sentence) followed by whitespace, on CJK ``。`` plus fullwidth bang/
+# question (the bytes are load-bearing — the LLM emits these), or on a
+# bare newline.
+_SENTENCE_SPLIT_RE: re.Pattern[str] = re.compile(
+    r"(?<=[.!?。！？])\s+|\n"  # noqa: RUF001
+)
+
+# Negation / limitation markers. If any marker matches inside a
+# sentence (case-insensitive ``re.search``), that sentence is treated
+# as inside an "agent reported / limitation" frame for F5 purposes.
+_NEGATION_MARKERS: tuple[str, ...] = (
+    # English negation / limitation lexicon ------------------------------
+    r"\bnot\b",
+    r"\bno\b",
+    r"\bnot\s+yet\b",
+    r"\bcannot\b",
+    r"\bcan't\b",
+    r"\bcouldn't\b",
+    r"\bwon't\b",
+    r"\bdo\s+not\b",
+    r"\bdon't\b",
+    r"\bunable\b",
+    r"\bdoesn'?t\b",
+    r"\bfailed\b",
+    r"\bfailure\b",
+    r"\berror\b",
+    r"\bwithout\b",
+    r"\blimitation\b",
+    r"\bunverified\b",
+    r"\bagent\s+reported\b",
+    r"\bworker\s+reported\b",
+    r"\breport(?:ed|s)\s+but\b",
+    # Chinese negation / limitation lexicon ------------------------------
+    r"不能",
+    r"没能",
+    r"未能",
+    r"未\b",
+    r"未\s",
+    r"没有",
+    r"没\s",
+    r"不可",
+    r"不准",
+    r"不会",
+    r"还没",
+    r"还未",
+    r"失败",
+    r"未通过",
+    r"未验证",
+    r"没验证",
+    r"还没验",
+    r"未完成",
+    r"没完成",
+    r"暂不",
+    r"暂未",
+    r"目前不能",
+    r"不能当作",
+    r"不能把.*当作",
+    r"agent[\s_]*报告",
+    r"worker[\s_]*报告",
+    r"报告完成.*但",
+    r"limitation",
+    r"报告\s*[完成|结束|完结]",
+)
+
+
+def _has_negation_marker(sentence: str) -> bool:
+    """Return ``True`` iff ``sentence`` contains any negation/limitation marker.
+
+    Case-insensitive ``re.search`` against :data:`_NEGATION_MARKERS`.
+    """
+    return any(
+        re.search(pattern, sentence, flags=re.IGNORECASE)
+        for pattern in _NEGATION_MARKERS
+    )
+
+
+def _bare_completion_violations(text: str) -> list[str]:
+    """Return the list of ``_COMPLETION_PATTERNS`` that match ``text`` outside a frame.
+
+    Splits ``text`` into sentences (see :data:`_SENTENCE_SPLIT_RE`),
+    drops any sentence that carries a negation/limitation marker, then
+    runs the verbatim ADR-fixed :data:`_COMPLETION_PATTERNS` regex set
+    via ``re.search`` against the concatenated "bare" residue. The
+    return value is the set of patterns that actually matched (empty
+    list means F5-clean).
+    """
+    sentences = _SENTENCE_SPLIT_RE.split(text)
+    bare_text = " ".join(s for s in sentences if not _has_negation_marker(s))
+    return [pat for pat in _COMPLETION_PATTERNS if re.search(pat, bare_text)]
+
+
+# Self-check fixtures for the sentence-level helper. These are pure
+# string-literal cases — NO LLM is invoked. They exercise both
+# directions (must-flag and must-pass) so the assertion machinery
+# itself is guarded against regression.
+_F5_SANITY_VIOLATING: tuple[str, ...] = (
+    "任务已完成",       # F5 violation — bare 已完成, no negation context.
+    "It's done.",      # F5 violation — bare \bdone\b.
+)
+_F5_SANITY_CLEAN: tuple[str, ...] = (
+    "agent reported 已完成,但没有验证",  # negation context (没有/但)
+    "cannot call it done",                # negation context (cannot)
+)
+
+
 # --- Module-scoped live runs -----------------------------------------------
 
 
@@ -363,71 +480,48 @@ def test_negative_response_no_bare_completion(
 ) -> None:
     r"""ADR § Acceptance F5 — CLI output must NOT match completion regex set.
 
-    Per ADR § F5, each pattern is asserted to NOT match via
-    :func:`re.search` **outside an explicit "agent reported" frame**.
-    The matches in :data:`_COMPLETION_PATTERNS` are verbatim from the
-    ADR; the negative-lookahead in ``r"已完成(?!\s*报告)"`` already
-    carves out the "agent reported done" Chinese frame.
+    Per ADR § F5, each pattern in :data:`_COMPLETION_PATTERNS` is
+    asserted to NOT match via :func:`re.search` **outside an explicit
+    "agent reported" frame**. The verbatim ADR regex set is unchanged
+    (the negative-lookahead in ``r"已完成(?!\s*报告)"`` only excludes
+    the literal "已完成报告" suffix; it does NOT cover the general
+    "agent reported / cannot call it done / 不能当作已完成" frames the
+    LLM actually emits).
 
-    For the English/CJK negation case (``not verified`` / ``not done``
-    / ``未验证`` / ``没验证``), we strip the F4 limitation phrases from
-    the text before checking F5. That way:
+    We implement the ADR's "frame" clause at the SENTENCE level: split
+    the response text on sentence boundaries, mark any sentence
+    containing a negation/limitation marker (English + CJK lexicon, see
+    :data:`_NEGATION_MARKERS`) as "framed", and only F5-check the
+    concatenation of UNframed sentences. A literal ``verified`` /
+    ``done`` / ``完成`` / ``已完成`` in a sentence with no negation
+    context is still a violation. See :func:`_bare_completion_violations`
+    for the helper.
 
-    - ``"Status: reported, not verified"`` — F4 hit "reported, not
-      verified" is stripped; remaining text has no bare ``verified``.
-    - ``"not verified"`` and ``"未验证"`` likewise get stripped.
-
-    A literal ``verified``/``done``/``完成``/``已完成`` in the residue
-    is still a violation. This implements the "outside an explicit
-    'agent reported' frame" clause from ADR § F5.
+    Sanity guards (pure-string, no LLM) below the live-LLM assertion
+    confirm the helper's both directions: bare completion is flagged,
+    framed completion is allowed through.
     """
+    # Pure-string sanity guards — must hold regardless of the live LLM
+    # output. These exercise the assertion machinery itself.
+    for sample in _F5_SANITY_VIOLATING:
+        assert _bare_completion_violations(sample), (
+            f"F5 sanity (must-flag): bare completion sample passed "
+            f"silently: {sample!r}"
+        )
+    for sample in _F5_SANITY_CLEAN:
+        assert not _bare_completion_violations(sample), (
+            f"F5 sanity (must-pass): framed completion sample was "
+            f"flagged: {sample!r}"
+        )
+
     result: RunTurnResult = live_fail_path_run["result"]
     text = result.response_text
 
-    # Strip every F4 limitation phrase (and a small set of explicit
-    # negation frames around the completion keywords) so the residue
-    # is what we F5-check. The ADR's "outside an explicit 'agent
-    # reported' frame" clause is implemented by this strip step. The
-    # canonical limitation phrasings the gate retry / forced template
-    # produce fall into a handful of forms: "(agent) reported, not
-    # verified"; "not verified" / 未验证 / 没验证 / 测试...没过 / 还没验;
-    # "no verified ... evidence" (the gate's reason string); and
-    # "do not (mark as|claim) complete/done/verified" (LLM-voluntary
-    # directive style observed in retry text).
-    residue = text
-    strip_patterns: tuple[str, ...] = (
-        *_LIMITATION_PATTERNS,
-        # Negation frames around the F5 keywords (English + CJK).
-        r"not\s+verified",
-        r"not\s+yet\s+verified",
-        r"no\s+verified",
-        r"not\s+done",
-        r"not\s+yet\s+done",
-        # Greedy on purpose so a single "Do not claim: completed,
-        # accepted, passed, or done" frame strips both keywords in one
-        # bite. ``[^.\n]*`` keeps us inside one sentence/line.
-        r"do\s+not\s+mark[^.\n]*\b(done|verified|complete[d]?)\b",
-        r"do\s+not\s+claim[^.\n]*\b(done|verified|complete[d]?)\b",
-        r"未\s*verified",
-        r"还没\s*verified",
-        r"未\s*完成",
-        r"未\s*done",
-        # The gate's own retry-system-note phrasing: "not verified" is
-        # already covered; we also strip the literal "verified Postcondition
-        # evidence" phrase the gate's reason text uses so a faithful LLM
-        # echo doesn't violate F5.
-        r"verified\s+Postcondition\s+evidence",
-    )
-    for pat in strip_patterns:
-        residue = re.sub(pat, "[LIMITATION-FRAME]", residue, flags=re.IGNORECASE)
-
-    violations: list[str] = [
-        pattern for pattern in _COMPLETION_PATTERNS if re.search(pattern, residue)
-    ]
+    violations = _bare_completion_violations(text)
     assert not violations, (
         f"F5: completion pattern(s) matched the response outside any "
         f"limitation frame: {violations!r}. "
-        f"residue={residue!r}; original={text!r}"
+        f"original={text!r}"
     )
 
 

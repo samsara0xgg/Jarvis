@@ -1568,3 +1568,76 @@ Legacy-bypassed, Tier 1, Notes, Next.
 - Next: Day-1 build complete. All 13 ADR steps green at Tier 1
   (264 unit + canary, lint-imports, ruff, mypy) and Tier 2 (14 live
   scenarios across happy + negative).
+
+## Step 13 follow-up — F5 sentence-level negation-frame handling
+
+- Files: `tests/scenarios/test_flagship_verify_fails.py` only. Production
+  code untouched; `_COMPLETION_PATTERNS` ADR-fixed regex set preserved
+  verbatim; system prompt + Pre-emit Gate logic unchanged.
+- Symptom: the prior strip-pattern F5 check was intermittently flaky on
+  real LLM output. Two observed flaky shapes captured on May 17:
+    1. English: `"agent reported or produced something, but I cannot
+       call it done without verification evidence."` — `\bdone\b`
+       matched because "cannot call it done" wasn't in the strip set.
+    2. Chinese: `"agent 可能有报告完成,但没有通过验证;目前不能把它当作
+       已完成。"` — `已完成(?!\s*报告)` matched because the negative
+       lookahead in the ADR regex only carves out the literal `已完成
+       报告` suffix, not the surrounding `不能把它当作 …` negation.
+- Fix: replace strip-pass with **sentence-level negation context**.
+  Split `result.response_text` on `(?<=[.!?。！？])\s+|\n` (ASCII +
+  fullwidth CJK end-of-sentence + bare newline). For each sentence
+  test against `_NEGATION_MARKERS` — a closed bilingual lexicon
+  covering `not / cannot / unable / failed / without / limitation /
+  agent reported / reported but / 不能 / 没能 / 未能 / 没有 / 还没 /
+  失败 / 未验证 / 未完成 / 不能当作 / agent[\s_]*报告 / 报告完成.*但
+  / limitation` (full list in the test file). Sentences with any
+  marker are framed; only the concatenation of UNframed sentences is
+  F5-checked via `re.search` against the verbatim ADR
+  `_COMPLETION_PATTERNS` set. Helper: `_bare_completion_violations`.
+- Sanity guards (pure-string, NO LLM): the F5 test body asserts the
+  helper's both directions before checking the live response —
+    - must-flag: `"任务已完成"` → `['已完成(?!\\s*报告)']`.
+    - must-flag: `"It's done."` → `['\\bdone\\b']`.
+    - must-pass: `"agent reported 已完成,但没有验证"` → `[]`.
+    - must-pass: `"cannot call it done"` → `[]`.
+  These run on every F5 invocation so the assertion machinery itself
+  is exercised even if the live LLM produces a trivially clean text.
+- Diff: ~144 lines added, ~46 lines removed (net +98) in
+  `test_flagship_verify_fails.py`. The change introduces
+  `_SENTENCE_SPLIT_RE`, `_NEGATION_MARKERS`, `_has_negation_marker`,
+  `_bare_completion_violations`, and two sanity tuples
+  `_F5_SANITY_VIOLATING` / `_F5_SANITY_CLEAN`. The previous
+  `strip_patterns` tuple and inline `re.sub` loop are removed.
+- Why this preserves the verbatim ADR regex set: only the **input
+  text** is conditioned (by dropping framed sentences); the regex set
+  itself (`_COMPLETION_PATTERNS`) is unchanged. The negative lookahead
+  in `已完成(?!\s*报告)` still acts on the bare residue if any
+  unframed sentence happens to use `已完成报告` literally.
+- Tier 1 (after fix):
+  - T1.A `lint-imports`: 1 contract kept, 0 broken.
+  - T1.B `ruff check .`: All checks passed!
+  - T1.C `mypy .`: Success: no issues found in 64 source files.
+  - T1.D `pytest tests/unit/ tests/canary/ -x`: 264 passed.
+- Tier 2 (after fix):
+  - `pytest tests/scenarios/test_flagship_verify_fails.py --live-llm
+    -v`: **7 passed in ~35 s** (first run).
+  - `pytest tests/scenarios/ --live-llm -v`: **14 passed in ~60 s**
+    (full happy + negative sweep, second run).
+  - Two extra ad-hoc F5-only `pytest -s` runs to capture LLM output
+    samples both passed; no flake observed across the four live
+    invocations performed for verification.
+  - Observed LLM outputs across the live re-runs (paraphrased):
+    1. "Correction / limitation language: Worker state reported
+       complete, **not verified**; Postcondition evidence not
+       verified; verifier `predicate_failed`; **cannot mark the task
+       complete** based on the available evidence." — `not` /
+       `cannot` frame every completion-keyword sentence.
+    2. "Rewritten status with limitation language: artifact reported,
+       Postcondition evidence **not verified / failed predicate**,
+       trusted completion: **no**; Precise conclusion: Agent reported
+       an artifact, but Postcondition verification did **not** pass;
+       this is **未验证 / not trusted complete**, not a completed
+       task." — `no` / `not` / `未验证` frame each keyword sentence.
+- Iterations: two live re-runs were required (as the brief asked); no
+  third re-run was needed. F5 was green on both attempts plus two
+  extra ad-hoc invocations.
