@@ -175,7 +175,7 @@ The flow:
    ts falls in the window. Single match → bound; multi-match →
    `unknown_subject` fail-fast; zero match → limitation response.
 3. **spawn_worker dispatch (L3 → L4)** —
-   `task.executor_assigned(executor="codex", model="gpt-5-codex")` event,
+   `task.executor_assigned(executor="codex", model="gpt-5.5")` event,
    then real `spawn_worker_handler`:
    - `CodexAppServerClient` spawns `codex app-server` subprocess with
      explicit `-c` flag overrides (see § Codex contract).
@@ -232,7 +232,7 @@ The flow:
 | D5 | Workspace | Codex writes directly into target repo's working tree (no worktree isolation); dirty working tree handled per § Dirty-tree policy |
 | D6 | TTS voice | `say -v Tingting`, mixed Chinese/English |
 | D7 | CLI process model | Double-fork + `setsid` detach; ack precedes fork; SQLite never crosses fork |
-| D8 | Codex model | `gpt-5-codex` with `model_reasoning_effort=xhigh`, injected via `-c` flags at spawn (closes config-drift) |
+| D8 | Codex model | `gpt-5.5` with `model_reasoning_effort=xhigh`, injected via `-c` flags at spawn (closes config-drift) |
 | D9 | Reviewer LLM | OpenRouter + gpt-5.5 deep (same backbone as L3 decision; separate `cost.recorded` row, fresh context per review) |
 | D10 | Sandbox | `sandbox_mode="workspace-write"` with `sandbox_workspace_write.writable_roots=[repo_path]`, all `-c`-injected |
 | D11 | `verify_command` | Stored in `task.created.optional_payload`; default detection at task creation; runs in L4 with timeout 600s |
@@ -403,7 +403,7 @@ Hermes pattern at `agent/transports/codex_app_server.py:75-130`):
 
 ```python
 extra_args = [
-    "-c", "model=gpt-5-codex",
+    "-c", "model=gpt-5.5",
     "-c", "model_reasoning_effort=xhigh",
     "-c", "sandbox_mode=workspace-write",
     "-c", f'sandbox_workspace_write.writable_roots={_toml_list_quote(cwd)}',
@@ -1059,7 +1059,7 @@ below is relative to a typical N≈6 (3-minute Codex turn).
 | 19 | `entity.resolved` | evt 17 | turn_id=T2 | entity_type=task, natural_ref="昨天那个 task", resolved_to=T_X, confidence=high, outcome=resolved, candidates=[T_X], match_basis="time_window" | none |
 | 20 | `action.proposed` | evt 19 | turn_id=T2, action_id=A3, task_id=T_X | tool=spawn_worker | none |
 | 21 | `gate.evaluated` | evt 20 | turn_id=T2, action_id=A3 | gate=pre_action, outcome=pass | none |
-| 22 | `task.executor_assigned` | evt 21 | task_id=T_X, action_id=A3 | executor=codex, model=gpt-5-codex (effort=xhigh) | none |
+| 22 | `task.executor_assigned` | evt 21 | task_id=T_X, action_id=A3 | executor=codex, model=gpt-5.5 (effort=xhigh) | none |
 | 23 | `action.authorized` | evt 21 | turn_id=T2, action_id=A3 | — | none |
 | 24 | `action.dispatched` | evt 23 | turn_id=T2, action_id=A3 | — | ack |
 | 25 | `action.running` | evt 24 | turn_id=T2, action_id=A3 | — | ack |
@@ -1070,7 +1070,7 @@ below is relative to a typical N≈6 (3-minute Codex turn).
 | 27+N | `worker.artifact_observed` | evt 26 | run_id=R_Y, action_id=A3 | artifact_path=…/diff.txt, content_hash | observation |
 | 28+N | `task.executor_reported` | evt 26 | task_id=T_X, run_id=R_Y | status=ok, summary, diff_path | report |
 | 29+N | `worker.reported` | evt 26 | run_id=R_Y, action_id=A3 | status=ok, summary, artifact_path (sourced from Codex's `submit_report` tool call; if missing, evt 29+N is `worker.report_missing` instead and a Limitation Claim is emitted) | report |
-| 30+N | `cost.recorded` | — | run_id=R_Y, action_id=A3 | kind=codex, model=gpt-5-codex, tokens_in/out from turn/completed (L4 returned cost in RawResult; L3 emits) | none |
+| 30+N | `cost.recorded` | — | run_id=R_Y, action_id=A3 | kind=codex, model=gpt-5.5, tokens_in/out from turn/completed (L4 returned cost in RawResult; L3 emits) | none |
 | 31+N | `action.result_observed` | evt 29+N | turn_id=T2, action_id=A3 | result_semantics=report, run_id=R_Y, summary, artifact_ref=diff_path | report |
 | | *[L3 Result Interpreter consumes evt 31+N: spec §3.4.11 maps `report` → Report Claim, level=reported. No verified claim yet — the Codex report is agent self-report per §8.5 rule 1. Decide() then proposes the next action (verify_diff).]* | | | | |
 | 32+N | `claim.created` | evt 31+N | task_id=T_X, claim_id=C1 | type=Report, statement="codex reported complete with summary X" | report |
@@ -1213,7 +1213,7 @@ Gated by `--live-codex` pytest flag (skips without it).
 | J7 | At least one `cost.recorded` row with `kind == "codex"` and same `run_id` correlation as the spawn_worker action |
 | J8 | On Codex crash (subprocess return non-zero), `action.failed` emitted with `error="codex_subprocess_crashed"`; no `task.verified` |
 | J9 | On Codex timeout (deadline exceeded), `action.timeout_assumed` emitted; subprocess killed via `close(timeout=3.0)` |
-| J10 | `-c` flags `model=gpt-5-codex`, `model_reasoning_effort=xhigh`, `sandbox_mode=workspace-write`, `sandbox_workspace_write.writable_roots=["<cwd>"]` all present in spawn argv (assert by inspecting `Popen.args` capture) |
+| J10 | `-c` flags `model=gpt-5.5`, `model_reasoning_effort=xhigh`, `sandbox_mode=workspace-write`, `sandbox_workspace_write.writable_roots=["<cwd>"]` all present in spawn argv (assert by inspecting `Popen.args` capture) |
 | J11 | `submit_report` MCP tool is registered with the Codex thread before `turn/start` fires; the take_notification loop captures an `item/tool_call` event with `tool_name == "submit_report"` exactly once before `turn/completed` |
 | J12 | If Codex completes a turn without calling `submit_report`, `worker.report_missing` is emitted and a Limitation Claim with `relation=limits, level=reported` is attached (spec §3.5.8) |
 | J13 | Dirty-tree case: spawn_worker on a repo with uncommitted changes auto-stashes via `git stash push -u`, runs Codex, then `git stash pop`. On stash-pop conflict, the stash is preserved as `artifacts/run_<R>/conflict.patch` and surfaced via Limitation Claim |
