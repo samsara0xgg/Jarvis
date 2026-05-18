@@ -96,7 +96,7 @@ class FakeClient:
         if method == "thread/start":
             if self.thread_start_raises is not None:
                 raise self.thread_start_raises
-            return {"threadId": self.thread_id}
+            return {"thread": {"id": self.thread_id}}
         if method == "turn/start":
             if self.turn_start_raises is not None:
                 raise self.turn_start_raises
@@ -394,6 +394,31 @@ def test_run_codex_action_no_submit_report_call_leaves_none(
     assert result.error is None
     assert result.submit_report is None
     assert result.submit_report_calls == ()
+
+
+# ---------------------------------------------------------------------------
+# _extract_thread_id — protocol-parse semantics (B-0002).
+# ---------------------------------------------------------------------------
+
+
+def test_extract_thread_id_prefers_nested_codex_0130_shape() -> None:
+    """Codex 0.130 returns ``{"thread": {"id": ...}}`` — must be preferred."""
+    result = {"thread": {"id": "tid-nested"}, "threadId": "tid-flat-stale"}
+    assert ca._extract_thread_id(result) == "tid-nested"  # noqa: SLF001 — protocol-parse helper is module-private by design
+
+
+def test_extract_thread_id_falls_back_to_flat_legacy_shapes() -> None:
+    """Older flat shapes still parse if the nested ``thread`` envelope is absent."""
+    assert ca._extract_thread_id({"threadId": "tid-flat"}) == "tid-flat"  # noqa: SLF001 — protocol-parse helper is module-private by design
+    assert ca._extract_thread_id({"thread_id": "tid-snake"}) == "tid-snake"  # noqa: SLF001 — protocol-parse helper is module-private by design
+
+
+def test_extract_thread_id_raises_on_empty_or_missing_id() -> None:
+    """Empty dict, or ``thread`` envelope missing ``id``, must raise ``_ProtocolError``."""
+    with pytest.raises(ca._ProtocolError, match="thread/start response missing threadId"):  # noqa: SLF001 — exception is module-private by design
+        ca._extract_thread_id({})  # noqa: SLF001 — protocol-parse helper is module-private by design
+    with pytest.raises(ca._ProtocolError, match="thread/start response missing threadId"):  # noqa: SLF001 — exception is module-private by design
+        ca._extract_thread_id({"thread": {}})  # noqa: SLF001 — protocol-parse helper is module-private by design
 
 
 # ---------------------------------------------------------------------------

@@ -228,12 +228,22 @@ class _ProtocolError(RuntimeError):
 
 
 def _extract_thread_id(result: Mapping[str, Any]) -> str:
-    """Return ``threadId`` from a ``thread/start`` response."""
+    """Return ``threadId`` from a ``thread/start`` response.
+
+    Codex 0.130 returns the id nested as ``result["thread"]["id"]``. Older
+    flat shapes (``threadId`` / ``thread_id``) are accepted as defensive
+    fallbacks in case the schema changes again.
+    """
+    thread = result.get("thread")
+    if isinstance(thread, Mapping):
+        nested = thread.get("id")
+        if isinstance(nested, str):
+            return nested
     tid = result.get("threadId") or result.get("thread_id")
-    if not isinstance(tid, str):
-        msg = f"thread/start response missing threadId: {result!r}"
-        raise _ProtocolError(msg)
-    return tid
+    if isinstance(tid, str):
+        return tid
+    msg = f"thread/start response missing threadId: {result!r}"
+    raise _ProtocolError(msg)
 
 
 def _capture_diff(cwd: Path) -> str:
