@@ -7,6 +7,11 @@ name = "jarvis"
 version = "0.1.0"
 description = "Allen's state-centric personal runtime."
 requires-python = ">=3.12"
+dependencies = [
+    "openai",
+    "anthropic",
+    "PyYAML",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -14,6 +19,7 @@ dev = [
     "import-linter",
     "ruff",
     "mypy",
+    "types-PyYAML",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -21,7 +27,39 @@ packages = ["jarvis"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "live_llm: scenario test that calls the real cloud LLM (real network)",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "D100",  # missing module docstring — many small modules don't need one
+    "D104",  # missing docstring in public package — __init__.py files
+    "D203",  # one-blank-line-before-class — conflicts with D211
+    "D212",  # multi-line-summary-first-line — conflicts with D213
+    "COM812",  # trailing comma — conflicts with ruff format
+    "ISC001",  # implicit string concatenation — conflicts with ruff format
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+disallow_untyped_defs = true
+disallow_any_explicit = false  # too noisy with TypedDict + sqlite Row
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false

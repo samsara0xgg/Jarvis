@@ -9,10 +9,10 @@ root_package = jarvis
 name = 6-layer architecture
 type = layers
 layers =
-    jarvis.cli
-    jarvis.runtime
-    jarvis.decision | jarvis.execution | jarvis.surface | jarvis.deployment
-    jarvis.state
-    jarvis.constitution | jarvis.shared
+    cli
+    runtime
+    decision | execution | surface | deployment
+    state
+    constitution | shared
 containers =
     jarvis
