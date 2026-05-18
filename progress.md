@@ -111,3 +111,80 @@ Legacy-bypassed, Tier 1, Notes, Next.
     `retry_policy`, `expected_postcondition`); deferred to Step 6 when
     L4 lifecycle / scheduler actually consume them.
 - Next: Step 3 (L6 deployment with `JARVIS_RUNTIME_ROOT`).
+
+---
+
+## Step 3 — L6 Deployment (`JARVIS_RUNTIME_ROOT` bootstrap)
+
+- Files:
+  - `jarvis/deployment/__init__.py` (121 LOC) — `RuntimePaths` frozen
+    dataclass (`root`, `event_log`, `artifacts_root`, `registry` +
+    `artifact_dir_for_run(run_id)` method) and `bootstrap_runtime(root)`
+    function. Stdlib only (`os`, `pathlib`, `dataclasses`); no imports
+    from any `jarvis.*` sibling. Single canonical home for the
+    `"~/.jarvis"` literal lives in module constant
+    `_DEFAULT_RUNTIME_ROOT_LITERAL` — canary H8 (Step 11) will scan
+    `jarvis/` for that string outside this module.
+  - `tests/unit/test_deployment.py` (160 LOC, 14 tests) — covers
+    explicit-arg precedence, env-var override, default expansion via
+    HOME redirect (no real `~/.jarvis/` touched), empty-env fallback,
+    path shape, `mkdir` for `root` + `artifacts_root` (but not
+    `mac_events.db` or `registry.json`), idempotency (twice),
+    frozen-dataclass enforcement, `artifact_dir_for_run` lazy-create,
+    per-run isolation, absolute paths, no env mutation, and direct
+    `RuntimePaths` construction.
+- Legacy consulted:
+  - `jarvis-legacy/core/scheduler.py:26-27` — the
+    `Path(...).parent.mkdir(parents=True, exist_ok=True)` pattern for
+    SQLite db paths. Same idiom reused; only one line of borrowed
+    shape.
+- Legacy-bypassed:
+  - `Legacy-bypass: jarvis-legacy/core/scheduler.py — hardcodes
+    "data/scheduler.db" / "data/memory/jarvis_memory.db" relative paths
+    inline; Day-1 routes all runtime state through
+    JARVIS_RUNTIME_ROOT-derived RuntimePaths per ADR § Configurable
+    paths. Skeleton not reusable.`
+  - `Legacy-bypass: jarvis-legacy/core/_paths.py — a denylist/allowlist
+    sandbox helper for user-file tools; not a runtime-root bootstrap.
+    Reusable in Stage 2 when real file tools land, not Day-1.`
+- Tier 1 (available subset T1.A–T1.D before Step 11):
+  - T1.A `lint-imports`: 1 contract kept, 0 broken. 10 files analyzed.
+  - T1.B `ruff check .`: All checks passed.
+  - T1.C `mypy .` (strict): Success: no issues found in 16 source
+    files.
+  - T1.D `pytest tests/unit/ -x`: 31 passed in 0.04s
+    (constitution 9 + deployment 14 + shared_types 8).
+- Notes:
+  - **Env-var resolution.** Order is (1) explicit `root=` argument
+    (used by tests / runtime composition root override), (2)
+    `JARVIS_RUNTIME_ROOT` env var if set AND non-empty (empty string
+    falls through to default — guards against shells that leak
+    `JARVIS_RUNTIME_ROOT=`), (3) built-in default `~/.jarvis` expanded
+    via `Path.expanduser()`. All resolved paths are absolute
+    (`Path.resolve()`).
+  - **`artifact_dir_for_run` is lazy-create.** Per ADR Step-3 Q4
+    ("creates lazily and returns, or returns the Path without creating
+    — pick one and document"), the chosen behavior is lazy: the
+    `${artifacts_root}/run_<run_id>/` directory is created on each
+    call with `exist_ok=True`. This means L4 `spawn_worker` (Step 6)
+    can call `paths.artifact_dir_for_run(R1).joinpath("diff.json")`
+    and write directly without re-mkdir'ing. Tested idempotent via
+    drop-a-file-then-recall.
+  - **Bootstrap creates `root` and `artifacts_root` only.**
+    `mac_events.db` and `registry.json` are owned by L2 at write
+    time; L6 only declares where they live. Avoids overlap with
+    Step 4 SQLite open / Step 4 (optional) file-backed registry.
+  - **No `jarvis.state` import.** Confirmed by grep over the module:
+    only `os`, `pathlib.Path`, `dataclasses.dataclass`. Canary H13
+    (Step 11) will enforce this via AST scan; Day-1's stricter L6
+    rule (ADR § Six-layer boundary contract) is satisfied by
+    construction.
+  - **No `os.environ[...] =` writes.** L6 only reads
+    `JARVIS_RUNTIME_ROOT`. Asserted by
+    `test_bootstrap_does_not_mutate_env`.
+  - **Single home for `~/.jarvis`.** `grep -rn '~/.jarvis' jarvis/`
+    shows the literal only inside `jarvis/deployment/__init__.py`
+    (constant `_DEFAULT_RUNTIME_ROOT_LITERAL` + 3 docstring
+    references; canary H8 will be string-literal-only in the AST scan
+    sense). Other layers go through `RuntimePaths`.
+- Next: Step 4 (L2 `event_log.py` — SQLite append-only + EventTypeRegistry).
