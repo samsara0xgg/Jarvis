@@ -9,10 +9,20 @@ contract):
 - The single canonical location for the literal `"~/.jarvis"` default
   (canary H8 scans `jarvis/` for that string outside this module).
 
-Does NOT own: event semantics, projection mutation, policy decisions, claim
-interpretation, surface rendering. Day-1 is stricter than the generic layer
-DAG — `jarvis.deployment` MUST NOT import `jarvis.state` (canary H13).
-This module sticks to stdlib only.
+Does NOT own: projection mutation, policy decisions, claim interpretation,
+surface rendering. The `jarvis.deployment.__init__` runtime/bootstrap entry
+sticks to stdlib only.
+
+Day-2 ADR-0002 § Sleep/wake protocol introduces
+`jarvis.deployment.sleep_wake`, which DOES import
+`jarvis.state.event_log` to emit `mac.sleeping` / `mac.awake` /
+`worker.suspended_by_sleep` / `worker.terminated_by_sleep` /
+`action.timeout_assumed` events per spec §3.7.8. H13's narrow
+exception for `sleep_wake.py` is documented in
+`tests/canary/test_layer_ownership_boundaries.py`. The Day-1 stricter
+rule "no jarvis.state import" still holds for everything else under
+`jarvis/deployment/` (path resolution, runtime root selection,
+artifact placement).
 """
 
 from __future__ import annotations

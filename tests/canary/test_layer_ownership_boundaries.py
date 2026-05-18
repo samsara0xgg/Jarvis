@@ -20,6 +20,13 @@ Note: import-linter's DAG-style layer rule permits ``jarvis.deployment``
 to import ``jarvis.shared`` / ``jarvis.constitution`` (they sit below
 deployment). H13 is stricter: it also forbids the sibling cross-import
 edges mentioned above.
+
+Day-2 ADR-0002 § Sleep/wake protocol (Step 16) introduces a narrow,
+file-scoped exception: ``jarvis/deployment/sleep_wake.py`` may import
+``jarvis.state.event_log`` to emit ``mac.sleeping`` / ``mac.awake`` /
+``worker.suspended_by_sleep`` / ``worker.terminated_by_sleep`` /
+``action.timeout_assumed`` per spec §3.7.8. The rest of
+``jarvis/deployment/`` still respects the Day-1 ban.
 """
 
 from __future__ import annotations
@@ -33,6 +40,15 @@ _FORBIDDEN_BY_LAYER: dict[str, frozenset[str]] = {
     "deployment": frozenset({"jarvis.state"}),
     "surface": frozenset({"jarvis.decision", "jarvis.execution"}),
     "execution": frozenset({"jarvis.decision", "jarvis.surface"}),
+}
+
+# Narrow per-file exceptions to the deployment-imports-jarvis.state ban.
+# Day-2 ADR-0002 Step 16: sleep_wake.py must emit mac.* + worker.* +
+# action.timeout_assumed events directly so the spec §3.7.8 fail-closed
+# reconciliation path stays self-contained inside L6. The rest of
+# jarvis/deployment/ still respects the Day-1 stricter rule.
+_PER_FILE_EXCEPTIONS: dict[tuple[str, str], frozenset[str]] = {
+    ("deployment", "jarvis/deployment/sleep_wake.py"): frozenset({"jarvis.state"}),
 }
 
 
@@ -81,10 +97,14 @@ def test_h13_layer_ownership_boundaries() -> None:
         if layer is None or layer not in _FORBIDDEN_BY_LAYER:
             continue
         forbidden = _FORBIDDEN_BY_LAYER[layer]
+        # Apply narrow per-file exception (e.g. sleep_wake.py imports
+        # jarvis.state.event_log per ADR-0002 § Sleep/wake protocol).
+        exception = _PER_FILE_EXCEPTIONS.get((layer, rel), frozenset())
+        effective_forbidden = forbidden - exception
         module = parse(path)
         for lineno, imp in _collect_imports(module):
             target_top = _top_level_layer(imp)
-            if target_top in forbidden:
+            if target_top in effective_forbidden:
                 violations.append(
                     f"{rel}:{lineno}: jarvis.{layer} imports {imp!r}; "
                     f"forbidden by H13 ({sorted(forbidden)!r})"
