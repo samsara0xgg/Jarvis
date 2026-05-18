@@ -31,7 +31,7 @@ def test_assemble_packet_returns_frozen_situation_packet(tmp_path: Path) -> None
         )
         trigger = emit_event(
             conn,
-            type="utterance.received",
+            type="surface.user_intent",
             payload={"transcript": "hello", "turn_id": "T1"},
             correlation={"turn_id": "T1"},
         )
@@ -52,7 +52,7 @@ def test_assemble_packet_is_frozen(tmp_path: Path) -> None:
     with closing(open_event_log(db_path)) as conn:
         trigger = emit_event(
             conn,
-            type="utterance.received",
+            type="surface.user_intent",
             payload={"transcript": "hi", "turn_id": "T1"},
             correlation={"turn_id": "T1"},
         )

@@ -92,14 +92,14 @@ def test_bootstrap_runtime_app_raises_on_missing_prompt(tmp_path: Path) -> None:
 
 
 def _seed_utterance(conn: sqlite3.Connection) -> int:
-    """Append an utterance.received row + return its SQLite id.
+    """Append a surface.user_intent row + return its SQLite id.
 
     Used as the ``after_id`` anchor for the trigger poll — we only
     want to see rows that landed AFTER this seed.
     """
     emit_event(
         conn,
-        type="utterance.received",
+        type="surface.user_intent",
         payload={"transcript": "seed", "turn_id": "T_seed"},
         correlation={"turn_id": "T_seed"},
     )

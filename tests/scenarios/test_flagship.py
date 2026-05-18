@@ -276,7 +276,7 @@ def test_flagship_event_log_invariants(live_happy_path_run: dict[str, Any]) -> N
     canonical = {
         "task.created",
         "turn.started",
-        "utterance.received",
+        "surface.user_intent",
         "entity.resolved",
         "action.proposed",
         "gate.evaluated",
@@ -872,7 +872,7 @@ def test_flagship_replay_determinism(
     backbone = {
         "task.created",
         "turn.started",
-        "utterance.received",
+        "surface.user_intent",
         "action.proposed",
         "action.authorized",
         "action.dispatched",

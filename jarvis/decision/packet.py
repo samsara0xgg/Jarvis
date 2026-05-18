@@ -41,7 +41,7 @@ class SituationPacket:
 
     Attributes:
         trigger_event: The single event that re-entered L3 (e.g.
-            ``utterance.received``, ``worker.reported``,
+            ``surface.user_intent``, ``worker.reported``,
             ``action.result_observed``).
         recent_trace: Frozen tuple of the most recent events (oldest
             first; same order as Recent Trace projection iteration).

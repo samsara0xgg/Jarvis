@@ -17,10 +17,10 @@ from jarvis.state.projections import ClaimEvidenceProjection, TaskLedger
 
 
 def _utterance_event(*, turn_id: str = "T1") -> Event:
-    """Build an utterance.received trigger."""
+    """Build a surface.user_intent trigger."""
     return Event(
         event_uid="utt-uid-1",
-        type="utterance.received",
+        type="surface.user_intent",
         schema_version=1,
         ts_epoch_ms=1_000_000,
         payload={"transcript": "hi", "turn_id": turn_id},

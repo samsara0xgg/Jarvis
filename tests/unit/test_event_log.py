@@ -276,7 +276,7 @@ def test_iter_events_is_deterministic_across_appends(tmp_path: Path) -> None:
         )
         e2 = emit_event(
             conn,
-            type="utterance.received",
+            type="surface.user_intent",
             payload={"transcript": "hi", "turn_id": "T1"},
             ts_epoch_ms=2,
             event_uid="u2",
@@ -416,7 +416,7 @@ def test_emit_event_accepts_valid_source_event_id(tmp_path: Path) -> None:
         )
         child = emit_event(
             conn,
-            type="utterance.received",
+            type="surface.user_intent",
             payload={"transcript": "hi", "turn_id": "T1"},
             source_event_id=parent.event_uid,
             ts_epoch_ms=1,

@@ -14,7 +14,7 @@ Responsibilities (Day-1):
    return a frozen :class:`JarvisRuntime`. No LLM call happens during
    bootstrap.
 2. :func:`run_turn` — drive ONE conversation turn end-to-end:
-   emit ``utterance.received`` (L5), call :func:`jarvis.decision.decide`
+   emit ``surface.user_intent`` (L5), call :func:`jarvis.decision.decide`
    (re-entering as more triggers arrive), record the Pre-emit token,
    and render the final ``ResponsePlan`` to stdout (L5).
 3. :func:`_wait_for_next_trigger` — poll the event log for the next
@@ -50,7 +50,7 @@ from jarvis.state.event_log import open_event_log
 from jarvis.surface.cli import (
     PreEmitTokenError,
     SurfaceState,
-    emit_utterance_received,
+    emit_surface_user_intent,
     record_pre_emit_token,
     write_output,
 )
@@ -417,7 +417,7 @@ def run_turn(
 
     1. Mint or accept a ``turn_id`` (composition root owns this; L3
        sees the same id on the trace correlation).
-    2. Emit ``utterance.received`` via L5 surface adapter — this is
+    2. Emit ``surface.user_intent`` via L5 surface adapter — this is
        the first trigger event.
     3. Call :func:`jarvis.decision.decide`. If it returns a
        :class:`ResponsePlan`, finalize immediately.
@@ -446,7 +446,7 @@ def run_turn(
     """
     effective_turn_id = turn_id if turn_id is not None else _new_turn_id()
 
-    utterance_event = emit_utterance_received(
+    utterance_event = emit_surface_user_intent(
         runtime.conn,
         transcript=utterance,
         turn_id=effective_turn_id,
@@ -466,7 +466,7 @@ def run_turn(
         system_prompt=runtime.system_prompt,
     )
 
-    # SQLite row id of the utterance.received event — used as the
+    # SQLite row id of the surface.user_intent event — used as the
     # "after_id" anchor for the trigger poll loop.
     last_seen_id = _latest_row_id(runtime.conn)
 

@@ -3,7 +3,7 @@
 Covers:
 - ``parse_response_channels`` byte-equivalence with the legacy parser
   across the canonical input shapes.
-- ``emit_utterance_received`` writes a well-formed ``utterance.received``
+- ``emit_surface_user_intent`` writes a well-formed ``surface.user_intent``
   row with the expected payload + correlation.
 - ``write_output`` renders the document side of a channel-split
   response and refuses on a missing / mismatched Pre-emit token.
@@ -23,7 +23,7 @@ from jarvis.surface.cli import (
     PreEmitTokenError,
     ResponseChannels,
     SurfaceState,
-    emit_utterance_received,
+    emit_surface_user_intent,
     parse_response_channels,
     record_pre_emit_token,
     write_output,
@@ -116,19 +116,19 @@ def test_parse_malformed_channels_fall_through_to_raw() -> None:
     assert result.document == text.strip()
 
 
-# --- emit_utterance_received -------------------------------------------------
+# --- emit_surface_user_intent ------------------------------------------------
 
 
-def test_emit_utterance_received_writes_row(tmp_path: Path) -> None:
-    """The L5 emission lands as one ``utterance.received`` row with payload + correlation."""
+def test_emit_surface_user_intent_writes_row(tmp_path: Path) -> None:
+    """The L5 emission lands as one ``surface.user_intent`` row with payload + correlation."""
     db_path = tmp_path / "events.db"
     with closing(open_event_log(db_path)) as conn:
-        event = emit_utterance_received(
+        event = emit_surface_user_intent(
             conn,
             transcript="今晚去吃点啥",
             turn_id="T12345678",
         )
-        assert event.type == "utterance.received"
+        assert event.type == "surface.user_intent"
         assert event.payload["transcript"] == "今晚去吃点啥"
         assert event.payload["turn_id"] == "T12345678"
         assert event.payload["channel"] == "cli_stdin"
@@ -139,14 +139,14 @@ def test_emit_utterance_received_writes_row(tmp_path: Path) -> None:
         # Confirm it's queryable.
         cursor = conn.execute("SELECT type, schema_version FROM events ORDER BY id ASC")
         rows = cursor.fetchall()
-        assert rows == [("utterance.received", 1)]
+        assert rows == [("surface.user_intent", 1)]
 
 
-def test_emit_utterance_received_custom_channel_language(tmp_path: Path) -> None:
+def test_emit_surface_user_intent_custom_channel_language(tmp_path: Path) -> None:
     """Channel + language flags flow through into the payload."""
     db_path = tmp_path / "events.db"
     with closing(open_event_log(db_path)) as conn:
-        event = emit_utterance_received(
+        event = emit_surface_user_intent(
             conn,
             transcript="hi",
             turn_id="T11111111",

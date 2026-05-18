@@ -36,7 +36,7 @@ def test_tier_0_match_is_callable_no_op():
     """Day-1 Tier 0 has no deterministic shortcuts; the call is a no-op."""
     trigger = Event(
         event_uid="utt-1",
-        type="utterance.received",
+        type="surface.user_intent",
         schema_version=1,
         ts_epoch_ms=1,
         payload={"transcript": "hi", "turn_id": "T1"},
@@ -48,10 +48,10 @@ def test_tier_0_match_is_callable_no_op():
 
 
 def test_build_llm_messages_passes_transcript_for_utterance():
-    """utterance.received → single user message with transcript content."""
+    """surface.user_intent → single user message with transcript content."""
     trigger = Event(
         event_uid="utt-2",
-        type="utterance.received",
+        type="surface.user_intent",
         schema_version=1,
         ts_epoch_ms=1,
         payload={"transcript": "review yesterday's task", "turn_id": "T1"},
@@ -94,7 +94,7 @@ def test_build_llm_messages_explicit_utterance_overrides_trigger():
     """An explicit utterance kwarg trumps the trigger payload."""
     trigger = Event(
         event_uid="any-1",
-        type="utterance.received",
+        type="surface.user_intent",
         schema_version=1,
         ts_epoch_ms=1,
         payload={"transcript": "ignored", "turn_id": "T1"},

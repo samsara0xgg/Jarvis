@@ -6,9 +6,11 @@ Per spec.html §3.4 / §18 (voice + document channels) and ADR 0001
 
 Day-1 responsibilities:
 
-1. ``emit_utterance_received`` — canonical L5 -> L2 event emission for a
+1. ``emit_surface_user_intent`` — canonical L5 -> L2 event emission for a
    raw stdin transcript. This is the entry point for one conversational
-   turn.
+   turn. Per spec §3.4.1 trigger taxonomy, the CLI surface emits
+   ``surface.user_intent``; the legacy voice-surface event type stays
+   reserved in the registry (see ``jarvis.state.event_log``).
 2. ``record_pre_emit_token`` — the surface holds the latest
    ``ResponsePlan.response_hash`` the Pre-emit Gate stamped. The runtime
    composition root calls this after :func:`jarvis.decision.decide`
@@ -151,7 +153,7 @@ class ResponsePlanLike(Protocol):
 # --- Public API -------------------------------------------------------------
 
 
-def emit_utterance_received(
+def emit_surface_user_intent(
     conn: sqlite3.Connection,
     *,
     transcript: str,
@@ -159,11 +161,14 @@ def emit_utterance_received(
     channel: str = "cli_stdin",
     language: str = "zh-CN",
 ) -> Event:
-    """Emit the canonical ``utterance.received`` event for a CLI utterance.
+    """Emit the canonical ``surface.user_intent`` event for a CLI utterance.
 
-    This is the L5 trigger event for one conversation turn — the
-    composition root then feeds the returned :class:`Event` into
-    :func:`jarvis.decision.decide` as the first trigger.
+    Per spec §3.4.1 trigger taxonomy: the CLI surface emits
+    ``surface.user_intent`` as the L5 -> L3 trigger for one conversation
+    turn — the composition root then feeds the returned :class:`Event`
+    into :func:`jarvis.decision.decide` as the first trigger. The
+    legacy voice-surface event type stays reserved in the registry
+    (Day-2 ADR-0002 Step 2 rename).
 
     Args:
         conn: Open Event Log connection.
@@ -180,7 +185,7 @@ def emit_utterance_received(
     """
     return emit_event(
         conn,
-        type="utterance.received",
+        type="surface.user_intent",
         payload={
             "transcript": transcript,
             "turn_id": turn_id,
@@ -278,7 +283,7 @@ __all__ = [
     "ResponseChannels",
     "ResponsePlanLike",
     "SurfaceState",
-    "emit_utterance_received",
+    "emit_surface_user_intent",
     "parse_response_channels",
     "record_pre_emit_token",
     "write_output",

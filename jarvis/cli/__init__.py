@@ -31,7 +31,7 @@ LOGGER = logging.getLogger("jarvis.cli")
 _PROG = "python -m jarvis"
 _DESC = (
     "Allen's state-centric personal runtime — Day-1 single-shot CLI. "
-    "Pass an utterance string; Jarvis emits utterance.received, drives the "
+    "Pass an utterance string; Jarvis emits surface.user_intent, drives the "
     "decide() loop, and writes the document-channel response to stdout."
 )
 

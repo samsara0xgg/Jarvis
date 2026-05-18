@@ -65,7 +65,7 @@ def build_llm_messages(
 
     Day-1 messages list is minimal:
 
-    - For an ``utterance.received`` trigger: one ``{"role":"user",
+    - For a ``surface.user_intent`` trigger: one ``{"role":"user",
       "content": <utterance>}`` message.
     - For a re-entry (``worker.reported`` / ``action.result_observed``):
       one ``{"role":"user", "content": <summary>}`` describing the
@@ -77,7 +77,7 @@ def build_llm_messages(
     Args:
         packet: Current SituationPacket.
         utterance: Explicit user utterance text. When None and the
-            trigger is ``utterance.received``, the function reads
+            trigger is ``surface.user_intent``, the function reads
             ``packet.trigger_event.payload["transcript"]``.
 
     Returns:
@@ -87,7 +87,7 @@ def build_llm_messages(
         return [{"role": "user", "content": utterance}]
 
     trigger = packet.trigger_event
-    if trigger.type == "utterance.received":
+    if trigger.type == "surface.user_intent":
         transcript = trigger.payload.get("transcript", "")
         return [{"role": "user", "content": str(transcript)}]
 

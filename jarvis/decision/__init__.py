@@ -374,7 +374,7 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
     See the module docstring for the canonical event trace. The
     branches handled Day-1:
 
-    - **``utterance.received``**: emit ``turn.started``, run Tier 0
+    - **``surface.user_intent``**: emit ``turn.started``, run Tier 0
       (returns None Day-1), then drive the Tier 2 LLM tool-use loop.
       Each tool call goes through the Resolver (if it has a task_id
       argument), the Pre-action Gate, dispatch, and either the
@@ -406,7 +406,7 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
     packet = assemble_packet(trigger, ctx.conn)
     policy = effective_policy(_allowed_tools_per_caller(ctx.tool_registry))
 
-    if trigger.type == "utterance.received":
+    if trigger.type == "surface.user_intent":
         return _handle_utterance(packet, policy, ctx, scratch)
     if trigger.type == "worker.reported":
         return _handle_worker_reported(packet, policy, ctx, scratch)
@@ -424,7 +424,7 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
     )
 
 
-# --- utterance.received branch ---------------------------------------------
+# --- surface.user_intent branch --------------------------------------------
 
 
 def _handle_utterance(
@@ -433,7 +433,7 @@ def _handle_utterance(
     ctx: DecideContext,
     scratch: _Scratch,
 ) -> DecideResult:
-    """Process an ``utterance.received`` trigger end-to-end (Day-1)."""
+    """Process a ``surface.user_intent`` trigger end-to-end (Day-1)."""
     trigger = packet.trigger_event
     turn_id = packet.current_turn_id or _new_turn_id()
     scratch.turn_id = turn_id
@@ -903,7 +903,7 @@ def _handle_result_observed(
     Day-1 this branch is only used when the runtime feeds a freshly
     appended ``action.result_observed`` back into ``decide()`` outside
     of the tool-use loop. The happy path produces verified evidence
-    via the inline loop in ``utterance.received``; this branch covers
+    via the inline loop in ``surface.user_intent``; this branch covers
     Stage 2 scenarios where the surface drives multi-step planning
     asynchronously.
     """
