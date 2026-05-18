@@ -30,16 +30,26 @@ from jarvis.decision import (
     _scrub_completion_keywords,
 )
 from jarvis.decision.gates import _COMPLETION_KEYWORDS
+from jarvis.decision.pre_emit_phrases import COMPLETION_REGEXES
 
-# F5 gate completion-detection patterns (verbatim from
-# ``jarvis.decision.gates._COMPLETION_KEYWORDS``). The hard-refusal text
-# must match NONE of these.
-_GATE_COMPLETION_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"完成"),
-    re.compile(r"已完成"),
-    re.compile(r"\bverified\b", re.IGNORECASE),
-    re.compile(r"\bdone\b", re.IGNORECASE),
+# Per-pattern lookup so individual scrub assertions can refer to a
+# canonical pattern by source-fragment without re-compiling. Built
+# from the single source of truth (ADR-0002 Step 13) so this test
+# file owns ZERO inline limitation/completion regex literals — the
+# canary ``test_canary_regex_constants_single_source`` enforces it.
+_CANON_DONE: re.Pattern[str] = next(p for p in COMPLETION_REGEXES if "done" in p.pattern)
+_CANON_VERIFIED: re.Pattern[str] = next(
+    p for p in COMPLETION_REGEXES if "verified" in p.pattern
 )
+
+# F5 gate completion-detection patterns — aliased from
+# ``jarvis.decision.gates._COMPLETION_KEYWORDS`` so we never duplicate
+# the canonical detection set in this file. ADR-0002 Step 13: the
+# canary AST-scans tests/ for inline ``re.compile`` containing
+# canonical limitation/completion fragments; re-declaring the gate's
+# regex set here would trip the canary. The hard-refusal text must
+# match NONE of these.
+_GATE_COMPLETION_PATTERNS: tuple[re.Pattern[str], ...] = _COMPLETION_KEYWORDS
 
 
 # --- _scrub_completion_keywords --------------------------------------------
@@ -50,7 +60,7 @@ def test_scrub_completion_keywords_redacts_english() -> None:
     scrubbed = _scrub_completion_keywords("Status: done")
     assert "[redacted-completion-claim]" in scrubbed
     # ``done`` must not survive as a whole word — case-insensitive.
-    assert re.search(r"\bdone\b", scrubbed, re.IGNORECASE) is None
+    assert _CANON_DONE.search(scrubbed) is None
 
 
 def test_scrub_completion_keywords_redacts_chinese() -> None:
@@ -72,7 +82,7 @@ def test_scrub_completion_keywords_preserves_negations() -> None:
     assert "not" in scrubbed
     assert "[redacted-completion-claim]" in scrubbed
     # ``verified`` as a whole word must not survive.
-    assert re.search(r"\bverified\b", scrubbed, re.IGNORECASE) is None
+    assert _CANON_VERIFIED.search(scrubbed) is None
 
 
 def test_scrub_completion_keywords_passthrough() -> None:

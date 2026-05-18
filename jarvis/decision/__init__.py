@@ -72,6 +72,7 @@ from jarvis.decision.intent import (
 )
 from jarvis.decision.packet import SituationPacket, assemble_packet
 from jarvis.decision.policy import EffectivePolicy, effective_policy
+from jarvis.decision.pre_emit_phrases import COMPLETION_REGEXES
 from jarvis.decision.resolver import (
     ResolverConfidence,
     ResolverResult,
@@ -125,18 +126,21 @@ _FORCED_LIMITATION_TEMPLATE = (
 # locks in the mapping — every new gate keyword must declare an
 # explicit scrub counterpart there.
 #
-# Bare `完成` is anchored with `^` rather than scrubbed mid-text because
-# CJK has no `\b` word boundary and unrooted `完成` mid-string false-
-# matches phrases like `完成度` / `完成情况`. If the gate trips on
-# mid-text `完成`, the forced template still trips and `_hard_refusal_plan`
-# is the final defense.
+# ADR-0002 Step 13: the canonical completion regex patterns live in
+# :mod:`jarvis.decision.pre_emit_phrases` (``COMPLETION_REGEXES``). The
+# scrub consumes the canonical source-text via ``.pattern`` (so
+# ``re.sub(..., flags=re.IGNORECASE)`` is applied uniformly here) and
+# appends two scrub-only synonyms the gate doesn't detect today —
+# ``completed`` / ``finished`` — so the forced template doesn't leak
+# them. Bare `完成` is canonical-anchored with `^` rather than scrubbed
+# mid-text because CJK has no `\b` word boundary and unrooted `完成`
+# mid-string false-matches phrases like `完成度` / `完成情况`. If the
+# gate trips on mid-text `完成`, the forced template still trips and
+# `_hard_refusal_plan` is the final defense.
 _COMPLETION_SCRUB_PATTERNS: Final[tuple[str, ...]] = (
-    r"已完成(?!\s*报告)",  # Day-1 completion claim, except "已完成报告"
-    r"^完成",               # see comment above re: CJK word boundary
-    r"\bverified\b",
-    r"\bdone\b",
-    r"\bcompleted\b",       # add common synonyms the gate might miss
-    r"\bfinished\b",
+    *tuple(pat.pattern for pat in COMPLETION_REGEXES),
+    r"\bcompleted\b",       # scrub-only synonym (gate doesn't detect)
+    r"\bfinished\b",        # scrub-only synonym (gate doesn't detect)
 )
 
 _COMPLETION_REDACTION_MARKER: Final[str] = "[redacted-completion-claim]"

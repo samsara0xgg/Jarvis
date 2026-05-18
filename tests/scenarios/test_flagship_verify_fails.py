@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from jarvis.decision.pre_emit_phrases import COMPLETION_REGEXES, LIMITATION_REGEXES
 from jarvis.execution import tools as execution_tools
 from jarvis.runtime import RunTurnResult, bootstrap_runtime_app, run_turn
 from jarvis.state.event_log import emit_event
@@ -64,23 +65,25 @@ if TYPE_CHECKING:
 _UTTERANCE: str = "昨天那个 task 给 codex 跑一下，做完审核了再告诉我。"  # noqa: RUF001
 
 # ADR § Acceptance F4 — at least one of these must match the final CLI
-# output. Pulled verbatim from the ADR; do not edit.
-_LIMITATION_PATTERNS: tuple[str, ...] = (
-    r"reported,?\s*not\s+verified",
-    r"未验证",
-    r"没验证",
-    r"测试.{0,4}没过",
-    r"还没验",
+# output. ADR-0002 Step 13: imported from the single source of truth
+# (``jarvis.decision.pre_emit_phrases``) rather than re-declared
+# inline. F4 historically tracked five of the six canonical limitation
+# regexes (no ``agent reported`` row) and used ``re.search`` against
+# pattern source-text — preserve that by dropping the ``agent\s+
+# reported`` Pattern and consuming ``.pattern`` from the remaining
+# Patterns.
+_LIMITATION_PATTERNS: tuple[str, ...] = tuple(
+    pat.pattern for pat in LIMITATION_REGEXES if pat.pattern != r"agent\s+reported"
 )
 
 # ADR § Acceptance F5 — none of these may match the final CLI output.
-# Pulled verbatim from the ADR (negative-lookahead + word-boundary
-# semantics included). Use ``re.search`` per ADR.
-_COMPLETION_PATTERNS: tuple[str, ...] = (
-    r"^完成",
-    r"已完成(?!\s*报告)",
-    r"\bverified\b",
-    r"\bdone\b",
+# ADR-0002 Step 13: imported from the single source of truth
+# (``jarvis.decision.pre_emit_phrases``). The CLI-output check uses
+# ``re.search`` against pattern source-text (case-sensitive via the
+# raw strings — historical F5 invariant), so consume ``.pattern`` from
+# each canonical Pattern rather than the Pattern objects themselves.
+_COMPLETION_PATTERNS: tuple[str, ...] = tuple(
+    pat.pattern for pat in COMPLETION_REGEXES
 )
 
 # ADR § Acceptance I3 cross-run jitter ceiling (matches I1's ± 2 from
