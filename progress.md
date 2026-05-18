@@ -1641,3 +1641,52 @@ Legacy-bypassed, Tier 1, Notes, Next.
 - Iterations: two live re-runs were required (as the brief asked); no
   third re-run was needed. F5 was green on both attempts plus two
   extra ad-hoc invocations.
+
+---
+
+## Day-1 Final Acceptance
+
+ADR 0001 (Mac-only Flagship Scenario) — all 13 build steps complete.
+
+### Tier 1 (no LLM, every-iteration gate)
+
+- T1.A `lint-imports`: 1 contract kept, 0 broken (64 source files).
+- T1.B `ruff check .`: All checks passed.
+- T1.C `mypy . --strict`: 64 source files, 0 issues.
+- T1.D `pytest tests/unit/ tests/canary/`: **264 passed** (241 unit
+  + 23 canary across H1-H13) in 0.82 s.
+- T1.E wall-clock for the unit + canary suite: well under the 30 s
+  budget.
+
+### Tier 2 (real OpenRouter + gpt-5.5)
+
+`pytest tests/scenarios/ --live-llm -v` → **14 passed in 63.76 s**:
+
+- Happy path (test_flagship.py, 7 tests) — covers A1-A8, B1-B4,
+  C1-C5, D1-D5, E1-E4, G1-G5, I1-I2.
+- Negative case (test_flagship_verify_fails.py, 7 tests) — covers
+  F1-F6, I3.
+- All 9 acceptance categories (A/B/C/D/E/F/G/H/I) green; H is the
+  Tier 1 canary suite.
+
+### Module map vs ADR
+
+Every source file ADR § Module map enumerated exists and is populated.
+`jarvis.runtime` is the sole multi-sibling importer; layer DAG enforced
+by `.importlinter` plus the stricter H13 canary.
+
+### Surgical fixes recorded across steps
+
+- Step 11 H8: `_DEFAULT_RUNTIME_ROOT_LITERAL` → `DEFAULT_RUNTIME_ROOT_LITERAL`,
+  consumed by `jarvis.cli` instead of repeating the literal.
+- Step 12 follow-ups to Step 9 (L3): open-tasks system note,
+  target_entity_ref inheritance, entity_trusted widened to any
+  ledger task (not only open), turn_id propagation across the Timer
+  boundary in worker.reported correlation.
+- Step 13 follow-up: F5 sentence-level negation-frame handling
+  (verbatim ADR regex set preserved; sentence boundary +
+  bilingual negation-marker set added in the test).
+
+Day-1 stop-line reached. Stage 2 ADR will plan real Codex / pytest
+integration, sleep/wake protocol, memory system, multi-task
+disambiguation, streaming surfaces, additional output channels.
