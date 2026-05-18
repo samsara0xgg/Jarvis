@@ -1040,3 +1040,178 @@ Legacy-bypassed, Tier 1, Notes, Next.
 - Next: Step 10 (L5 surface/cli.py + composition root + jarvis/cli
   entry point). Will consume L3's `decide()` + `DecideContext` and
   drive the runtime loop across multi-trigger turns.
+
+## Step 10 — L5 surface adapter + composition root + CLI entry
+
+- Files:
+  - `jarvis/surface/cli.py` (285 LOC) — L5 adapter. Embeds verbatim
+    legacy `core/response_channels.py` (regex pattern + parse loop +
+    `ResponseChannels` dataclass + bare-text fallback are
+    byte-equivalent). Exposes `emit_utterance_received`,
+    `record_pre_emit_token`, `write_output`, `parse_response_channels`,
+    `SurfaceState`, `PreEmitTokenError`. `write_output` enforces the
+    Pre-emit token (canary H3 runtime check): raises on missing or
+    mismatched `state.last_gate_response_hash` vs
+    `response_plan.response_hash`, writes the document side of the
+    channel-split (falling back to voice when document is empty),
+    appends a trailing newline, and returns a fresh `SurfaceState`
+    with the token consumed. Layer surface: stdlib + `jarvis.shared`
+    (transitively via state) + `jarvis.state.event_log`. L5 never
+    imports L3/L4/L6/runtime/cli; `ResponsePlan` is consumed via a
+    local `ResponsePlanLike` Protocol.
+  - `jarvis/runtime/__init__.py` (535 LOC) — composition root. The
+    SINGLE place in the codebase that imports `jarvis.decision`,
+    `jarvis.execution`, `jarvis.surface`, `jarvis.deployment`
+    together. Exports `JarvisRuntime` (frozen) + `RunTurnResult`
+    (frozen) + `bootstrap_runtime_app(...)` + `run_turn(...)` +
+    `RuntimeBootstrapError` + `TriggerWaitTimeout`. `bootstrap_runtime_app`
+    wires L6 paths -> L2 event log -> L4 default registry + lifecycle
+    -> L3 LLM client -> empty L5 `SurfaceState`. `run_turn` emits
+    `utterance.received`, drives the multi-trigger loop via
+    `_wait_for_next_trigger(conn, after_id, timeout)` (10ms poll with
+    `time.sleep`; `worker.reported` / `action.result_observed` are
+    the Day-1 trigger types — see Notes), records the Pre-emit
+    token, and renders the document side of the channel-split via
+    `write_output`. `decide()` re-entries each contribute an
+    iteration count and append to the events tuple. `cast` is used
+    at the L3-protocol boundary because the L4 `ToolRegistry.dispatch`
+    return type (concrete `RawResult`) is stricter than the L3
+    `ToolRegistryLike.dispatch` Protocol (returns `RawResultLike`).
+  - `jarvis/cli/__init__.py` (120 LOC) — argparse-driven entry. One
+    positional (`utterance`) plus three flags (`--config`, `--prompt`,
+    `--runtime-root`). On success: bootstrap, `run_turn`, return 0.
+    On failure: write a one-line stderr message and return 1.
+    `runtime.conn.close()` lands in a `finally` so the SQLite handle
+    is released even on `PreEmitTokenError` / `TriggerWaitTimeout`.
+  - `jarvis/cli/__main__.py` (7 LOC) — `python -m jarvis.cli` entry.
+  - `jarvis/__main__.py` (13 LOC) — top-level entry so
+    `python -m jarvis "<utterance>"` works (ADR § Module map
+    expectation). Both `__main__` files dispatch to `jarvis.cli.main`.
+  - `tests/unit/test_surface_cli.py` (233 LOC, 16 tests) — parser
+    coverage (bare / voice-only / document-only / both / case+DOTALL
+    / first-wins / empty / malformed), `emit_utterance_received`
+    writes a well-formed row + custom channel/language flags, token
+    recording supersedes prior tokens, channel rendering (document
+    side; falls back to voice), token mismatch + missing-token
+    `PreEmitTokenError` paths. Uses `_PlanStub` to avoid importing
+    `jarvis.decision.ResponsePlan` (the L5 module also avoids it via
+    `ResponsePlanLike`).
+  - `tests/unit/test_runtime_composition.py` (189 LOC, 5 tests) —
+    `bootstrap_runtime_app` against the real `config/jarvis.yaml`
+    + `prompts/jarvis_v1.md` returns a populated `JarvisRuntime`
+    with all attributes present (no LLM call), bogus config /
+    prompt paths raise `RuntimeBootstrapError`,
+    `_wait_for_next_trigger` returns a `worker.reported` emitted
+    from a background `threading.Thread` (and verifies the new
+    `after_id`), and times out cleanly with `TriggerWaitTimeout`
+    when no trigger arrives.
+  - `tests/unit/test_cli_main.py` (39 LOC, 2 tests) — `main(["--help"])`
+    prints argparse help and exits 0; `main(["--config", missing, "x"])`
+    returns nonzero with `"bootstrap failed"` in stderr. No LLM call.
+- Legacy consulted:
+  - `jarvis-legacy/core/response_channels.py` (52 LOC) — embedded
+    VERBATIM into `jarvis/surface/cli.py` per ADR § Reference
+    sources. The regex pattern (`<(?P<tag>voice|document)>\s*(?P<body>.*?)\s*</(?P=tag)>`
+    with `IGNORECASE | DOTALL`), the parse loop (first-occurrence
+    wins per tag), the `ResponseChannels` dataclass shape (`raw`,
+    `voice`, `document`, `has_channels`), and the bare-text
+    fallback (strip + has_channels=False + voice==document) are
+    byte-equivalent. No Legacy-bypass annotation needed.
+  - `jarvis-legacy/jarvis.py` `JarvisApp.__init__` — consulted as
+    pattern reference only. Day-1 picks a frozen dataclass
+    (`JarvisRuntime`) over a single class so the composition root
+    stays append-only and the cross-layer wiring stays inspectable.
+- Legacy-bypassed: none.
+- Tier 1:
+  - T1.A `lint-imports`: 1 contract kept, 0 broken (23 files, 38
+    deps). Confirmed `jarvis.runtime` is the SINGLE module that
+    imports `jarvis.decision`, `jarvis.execution`, `jarvis.surface`,
+    `jarvis.deployment` together; `jarvis.cli` imports only
+    `jarvis.runtime`; `jarvis.surface.cli` imports only stdlib +
+    `jarvis.state.event_log`.
+  - T1.B `ruff check .`: clean (45 source files including 3 new
+    test modules).
+  - T1.C `mypy --strict .`: clean (45 source files). Two `cast`
+    sites in `run_turn` pin the L3-Protocol -> L4-concrete boundary
+    (`ToolRegistryLike` / `LifecycleLike`); mypy's invariance over
+    Protocol attribute return types treats the stricter L4 returns
+    as a conflict.
+  - T1.D `pytest tests/unit/`: 241 passed (was 218; +23 new tests
+    across surface/runtime/cli). Wall-clock 0.53s total — well under
+    30s.
+- Notes:
+  - **Verbatim `parse_response_channels`:** embedded inline at the
+    top of `jarvis/surface/cli.py` with a module docstring note per
+    ADR § Reference sources. The legacy 52-LOC file maps 1:1 onto
+    lines 50-95 of the new module (regex constant + dataclass +
+    function body). No semantic change.
+  - **Pre-emit token mechanism (canary H3 runtime):** `SurfaceState`
+    is frozen and carries `last_gate_response_hash: str | None`.
+    `record_pre_emit_token(state, hash)` returns a fresh state with
+    the new hash. `write_output(state, plan)` refuses if the hash
+    is `None` or mismatches `plan.response_hash`, then writes, then
+    returns a fresh state with `last_gate_response_hash=None`
+    (consumed). The runtime composition root primes the token via
+    `record_pre_emit_token` IMMEDIATELY before `write_output` so a
+    stale token from a prior turn cannot leak.
+  - **Polling loop primitive:** `_wait_for_next_trigger` uses
+    `time.sleep(0.01)` between SQL polls. The "no `time.sleep`"
+    rule applies to L3/L4 gate machinery (which must not block on
+    wall-clock); the runtime composition root is explicitly the
+    place that polls across thread boundaries per spec §3.4.1, so
+    `time.sleep` IS the cleanest primitive here. Documented in the
+    function docstring. The poll selects rows with
+    `id > after_id AND type IN ('worker.reported',
+    'action.result_observed')` ordered by `id ASC LIMIT 1` — only
+    NEW rows after the caller's anchor are returned, so a stale
+    Timer firing late does not double-trigger.
+  - **`bootstrap_runtime_app` signature:** all three path overrides
+    (`config_path`, `prompt_path`, `runtime_root`) are keyword-only
+    `Path | None` arguments. Default config/prompt resolution walks
+    up from the runtime module's parent directory looking for
+    `config/jarvis.yaml` (so the function works whether invoked
+    from a test, the CLI, or a notebook). `runtime_root=None`
+    delegates to `jarvis.deployment.bootstrap_runtime` (env var ->
+    `~/.jarvis`).
+  - **`run_turn` iteration handling:** opens with `iterations=0,
+    response_plan=None`. Each iteration `decide()` returns a
+    `DecideResult`; if `result.response_plan is None` (async pause),
+    the loop polls for the next L4 trigger event with
+    `_wait_for_next_trigger` (5s default timeout) and re-enters.
+    Hard ceiling `max_iterations=50` raises `RuntimeBootstrapError`
+    if exhausted. Day-1 happy path uses 2 iterations
+    (utterance.received -> worker.reported); the negative path
+    (`verify_diff` predicate fails) also resolves in 2 iterations
+    because `decide()`'s tool-use loop drives the verify-result
+    inline after the worker.reported re-entry. Events emitted by
+    every iteration are concatenated into `RunTurnResult.events_emitted`.
+  - **CLI argparse shape:** one positional (`utterance`) + three
+    optional flags (`--config`, `--prompt`, `--runtime-root`). All
+    flags accept `pathlib.Path` (argparse `type=Path`). `--help`
+    exits 0 with the program-level description; bogus config /
+    prompt paths exit 1 with `"jarvis: bootstrap failed: ..."` to
+    stderr. `runtime.conn.close()` lands in a `finally` so the
+    SQLite handle is released even on errors.
+  - **Stale `worker.reported` events:** the poll filter is
+    `id > after_id`. Each iteration of `run_turn` advances
+    `last_seen_id` to the row id of the just-returned trigger; a
+    stale `worker.reported` from a previous turn (i.e. id <=
+    after_id) is skipped. The `_RUNTIME_TRIGGER_TYPES` tuple is
+    a module-level constant, so the SQL placeholders interpolation
+    is over a hard-coded type set, not user input (a `noqa: S608`
+    documents this).
+  - **Cross-thread DB safety:** `_wait_for_next_trigger` uses the
+    SAME `sqlite3.Connection` the composition root opened — only
+    the main thread reads via this connection. The Timer callback
+    in `jarvis.execution.tools._emit_worker_reported` opens its
+    OWN connection per `check_same_thread=True`, so the poll loop
+    reading the main connection sees the row only after the
+    background commit lands.
+  - **`run_turn` exhaustion:** if `decide()` keeps returning
+    `response_plan=None` and the trigger poll times out, the
+    exception propagates out (no swallowing). The 50-iteration
+    ceiling is a separate guard — when hit, raises
+    `RuntimeBootstrapError`. Day-1 production never hits either.
+- Bonus verification: `./.venv/bin/python -m jarvis --help` prints
+  the expected argparse usage / description / flag list.
+- Next: Step 11 (`tests/canary/` H1-H13 anti-bypass suite).
