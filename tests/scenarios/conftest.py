@@ -1,13 +1,38 @@
-"""Tier 2 scenario fixtures (real cloud LLM).
+"""Tier 2 scenario fixtures (real cloud LLM + real Codex subprocess).
 
-Per ADR 0001 § Tier 2 invocation command + Step 12 brief.
+Per ADR 0001 § Tier 2 invocation command + ADR 0002 Step 20 brief.
 
 Responsibilities:
 
-- ``pytest_addoption`` — register the ``--live-llm`` CLI flag.
+- ``pytest_addoption`` — register the ``--live-llm`` and
+  ``--live-codex`` CLI flags. ``--live-llm`` gates real cloud LLM
+  calls (OpenRouter, $ per run); ``--live-codex`` additionally gates
+  tests that spawn a real ``codex app-server`` subprocess on Allen's
+  Mac ($$ per run, slow).
+- ``pytest_configure`` — register both markers in the ini-section to
+  silence pytest warnings about unknown markers.
 - ``pytest_collection_modifyitems`` — skip every ``live_llm``-marked
-  item unless ``--live-llm`` is on. Running ``pytest tests/`` therefore
-  never reaches the cloud LLM.
+  item unless ``--live-llm`` is on, and every ``live_codex``-marked
+  item unless ``--live-codex`` is on. Running ``pytest tests/``
+  therefore never reaches the cloud LLM and never spawns Codex.
+
+Tier-2 invocation
+-----------------
+
+Run the full Tier-2 J/K/L sweep on a Mac with a real OpenRouter key
+and Codex CLI installed::
+
+    uv run pytest tests/scenarios --live-codex --live-llm
+
+Required environment (Step 20):
+
+- ``codex`` CLI >= 0.125.0 on PATH (J1 preflight gate).
+- ``OPENROUTER_PROXY_KEY`` env var set to a real key (> 20 chars,
+  not a stub value — enforced by ``verify_api_key_present``).
+
+Cost envelope (ADR 0002 Open Question 11): a single Tier-2 J-sweep
+invocation costs approximately $4 - $15 in real Codex + OpenRouter
+spend. The default CI path (no flags) costs $0.
 - ``verify_api_key_present`` — autouse, ensures
   ``OPENROUTER_PROXY_KEY`` is set to a non-stub value before any
   scenario fixture instantiates a runtime / LLM client (acceptance G3).
@@ -65,12 +90,18 @@ _FORBIDDEN_PATH_SUBSTRINGS: tuple[str, ...] = ("cassette", "recording")
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Register the ``--live-llm`` flag (default: off)."""
+    """Register the ``--live-llm`` and ``--live-codex`` flags (default: off)."""
     parser.addoption(
         "--live-llm",
         action="store_true",
         default=False,
         help="Run scenarios that call the real cloud LLM (real network).",
+    )
+    parser.addoption(
+        "--live-codex",
+        action="store_true",
+        default=False,
+        help="Run Tier-2 tests that spawn real Codex app-server subprocesses ($$$).",
     )
 
 
@@ -78,15 +109,26 @@ def pytest_collection_modifyitems(
     config: pytest.Config,
     items: list[pytest.Item],
 ) -> None:
-    """Skip every ``live_llm``-marked item unless ``--live-llm`` is set."""
-    if config.getoption("--live-llm"):
-        return
-    skip_marker = pytest.mark.skip(
-        reason="live_llm scenario; pass --live-llm to enable real cloud calls.",
+    """Skip ``live_llm`` / ``live_codex`` items unless the matching flag is on.
+
+    Both markers are independent: a test marked ``live_codex`` but not
+    ``live_llm`` will run under ``--live-codex`` alone, and vice versa.
+    A test marked with BOTH (the common Tier-2 J/K/L case) needs both
+    flags to run; either flag missing → the item is skipped.
+    """
+    skip_llm = pytest.mark.skip(
+        reason="live_llm scenario; pass --live-llm to enable real cloud LLM calls.",
     )
+    skip_codex = pytest.mark.skip(
+        reason="live_codex scenario; pass --live-codex to spawn real Codex subprocess.",
+    )
+    want_llm = config.getoption("--live-llm")
+    want_codex = config.getoption("--live-codex")
     for item in items:
-        if "live_llm" in item.keywords:
-            item.add_marker(skip_marker)
+        if "live_llm" in item.keywords and not want_llm:
+            item.add_marker(skip_llm)
+        if "live_codex" in item.keywords and not want_codex:
+            item.add_marker(skip_codex)
 
 
 # --- API key precondition -------------------------------------------------

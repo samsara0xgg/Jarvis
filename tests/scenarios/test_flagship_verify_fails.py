@@ -57,6 +57,19 @@ if TYPE_CHECKING:
     from jarvis.runtime import JarvisRuntime
 
 
+# ADR-0002 Step 20: this Day-1 negative-case file now requires
+# --live-codex in addition to --live-llm. The ``_SPAWN_WORKER_ARTIFACT_STATUS``
+# monkeypatch knob it depends on was removed when Day-2's real
+# ``spawn_worker_handler`` replaced the Day-1 Timer stub
+# (``jarvis/execution/tools.py`` no longer defines the symbol); the
+# L3 verify-fail ladder is now exercised end-to-end through a real
+# Codex round-trip + a fixture repo whose ``verify_command`` exits
+# non-zero. Gating by both flags ensures the file stays a no-op in
+# the default Tier-1 path. The per-test ``@pytest.mark.live_llm``
+# decorators remain as in-source documentation.
+pytestmark = pytest.mark.live_codex
+
+
 # The single utterance the ADR § Tier 2 invocation command pins —
 # identical to Step 12 so the LLM's view of the world is the same;
 # only the artifact knob flips. The CJK fullwidth punctuation is

@@ -52,6 +52,17 @@ if TYPE_CHECKING:
     from jarvis.runtime import JarvisRuntime
 
 
+# ADR-0002 Step 20: this Day-1 happy-path file now requires --live-codex
+# in addition to --live-llm because Day-2's ``spawn_worker_handler``
+# spawns a real Codex subprocess (the Day-1 ``_TEST_MODE_THREAD_CAPTURE``
+# / ``_SPAWN_WORKER_ARTIFACT_STATUS`` stub knobs no longer exist in
+# ``jarvis/execution/tools.py``). The module-level ``pytestmark`` gates
+# every test in the file by both flags; the existing per-test
+# ``@pytest.mark.live_llm`` decorators remain as in-source documentation
+# of the LLM dependency and are additive with this marker.
+pytestmark = pytest.mark.live_codex
+
+
 # The single utterance the ADR § Tier 2 invocation command pins. The
 # CJK fullwidth punctuation is verbatim from the ADR — RUF001 would
 # flag it as ambiguous but here the bytes are load-bearing (the LLM

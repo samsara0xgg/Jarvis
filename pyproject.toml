@@ -29,6 +29,7 @@ packages = ["jarvis"]
 testpaths = ["tests"]
 markers = [
     "live_llm: scenario test that calls the real cloud LLM (real network)",
+    "live_codex: scenario test that spawns a real Codex CLI subprocess (costs $$, slow)",
 ]
 
 [tool.ruff]
@@ -58,6 +59,21 @@ ignore = [
     "ANN201",   # test functions return None; verbose annotation noise
     "PLR2004",  # magic value comparisons are the assertion target
     "S108",     # /tmp paths in literal test data are not insecure
+]
+# Tier-2 J/K/L scenario scaffolds (ADR-0002 Step 20). Each file spawns
+# `git` against a tmp_path fixture repo and carries multi-line
+# invariant docstrings that exceed the 100-char line budget; both are
+# load-bearing for the test scaffold and intentional.
+"tests/scenarios/test_real_codex_*.py" = [
+    "S603",     # subprocess with controlled argv (git on tmp_path fixture repo)
+    "S607",     # `git` resolved via PATH is intentional
+    "E501",     # multi-line invariant docstrings copy ADR-0002 J/K/L wording verbatim
+    "D301",     # docstring backslash escapes for regex literals (raw strings would hurt readability)
+    "D416",     # "Note" section name shape preferred over Google "Note:"
+    "D412",     # blank line after "Note" header is intentional readability
+    "ARG001",   # fixture args triggered by name; the bodies skip pending live-codex impl
+    "PT022",    # generator fixtures even when teardown is implicit; matches surrounding style
+    "RUF002",   # CJK fullwidth punctuation in docstrings is verbatim from ADR scenario
 ]
 # Vendored from Hermes (MIT) per ADR-0002 § Reference sources.
 # Upstream-sync only — do not lint-fix in place.
