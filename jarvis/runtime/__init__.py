@@ -54,8 +54,8 @@ from jarvis.surface.cli import (
     SurfaceState,
     emit_surface_user_intent,
     record_pre_emit_token,
-    write_output,
 )
+from jarvis.surface.cli_render import render_response
 
 if TYPE_CHECKING:
     import sqlite3
@@ -124,7 +124,8 @@ class JarvisRuntime:
     Per spec §3.6.7 (Inherent boundaries), local surface state has no
     truth, doesn't survive across turns, and doesn't affect decisions —
     so ``run_turn`` allocates a fresh empty :class:`SurfaceState`
-    locally each invocation and discards it after :func:`write_output`.
+    locally each invocation and discards it after
+    :func:`jarvis.surface.cli_render.render_response`.
 
     Attributes:
         config: Raw parsed YAML config (read-only mapping form).
@@ -164,6 +165,9 @@ class RunTurnResult:
             path with one ``worker.reported`` re-entry).
         events_emitted: Frozen tuple of every Event the decide()
             invocations emitted (concatenated across iterations).
+        attention_channel: L3 Attention Policy verdict from the final
+            decide() invocation. Drives the Step-18 surface-render
+            dispatch in :func:`jarvis.surface.cli_render.render_response`.
     """
 
     response_text: str
@@ -171,6 +175,7 @@ class RunTurnResult:
     turn_id: str
     iterations: int
     events_emitted: tuple[Event, ...]
+    attention_channel: str
 
 
 # --- bootstrap_runtime_app --------------------------------------------------
@@ -431,8 +436,11 @@ def run_turn(
        ``worker.reported`` / ``action.result_observed`` row, re-enter
        decide() with that trigger, repeat.
     5. Record the Pre-emit token on the surface state, then call
-       :func:`write_output` which both renders the document side of
-       the channel split AND enforces the token check (canary H3).
+       :func:`jarvis.surface.cli_render.render_response` which routes
+       the channel-split text across the L3 attention channel's
+       physical surfaces (say / banner / stdout when attached) AND
+       enforces the Pre-emit token check (canary H3) AND emits the
+       audit ``surface.response_emitted`` event.
 
     The Pre-emit token check protects against a runtime that
     accidentally re-uses an old plan or fails to refresh the token —
@@ -478,6 +486,13 @@ def run_turn(
     collected_events: list[Event] = []
     trigger_event: Event = utterance_event
     response_plan: ResponsePlan | None = None
+    # Track the attention_channel from the final decide() iteration so
+    # we can route the response to the right surfaces in Step 18.
+    # Default ``"voice_notify"`` covers the flagship ADR-0002 scenario
+    # when an L3 branch returns a plan without explicitly setting the
+    # field; the L3 Attention Policy emits one of the 9 channels for
+    # canonical branches today.
+    final_attention_channel: str = "voice_notify"
     iterations = 0
 
     while response_plan is None and iterations < max_iterations:
@@ -486,6 +501,7 @@ def run_turn(
         collected_events.extend(result.events_emitted)
         response_plan = result.response_plan
         if response_plan is not None:
+            final_attention_channel = result.attention_channel
             break
 
         # No final plan -> decide() paused on an async tool. Wait for the
@@ -517,24 +533,37 @@ def run_turn(
         turn_id=effective_turn_id,
     )
 
-    # L5 emission. The Pre-emit token guard inside write_output() is
-    # the canary H3 runtime check — calling record_pre_emit_token()
-    # then write_output() in this order is the only legal path.
+    # L5 emission (Step 18 — channel-split + multi-surface dispatch).
+    # The Pre-emit token guard inside render_response() preserves the
+    # canary H3 runtime check — calling record_pre_emit_token() then
+    # render_response() in this order is the only legal path.
     # SurfaceState is allocated fresh per turn (spec §3.6.7 — local
     # surface state owns no truth and doesn't survive across turns)
-    # and discarded once write_output returns the cleared state.
+    # and discarded once render_response returns the cleared state.
     surface_state = SurfaceState(last_gate_response_hash=None)
     primed_state = record_pre_emit_token(surface_state, response_plan.response_hash)
 
-    # Capture the rendered text so we can both echo it to the operator
-    # console (sys.stdout) and return it to the caller for tests /
-    # programmatic clients. write_output() handles the channel split
-    # and the Pre-emit token check.
+    # The in-memory capture stream serves two ends at once. First the
+    # operator console: render_response() writes the cli_stdout slice
+    # into it so the runtime can re-emit the same bytes to the real
+    # sys.stdout. Second the test / programmatic caller: the returned
+    # RunTurnResult.response_text is the captured string. Beyond
+    # stdout, render_response also routes voice text to say and
+    # document text to the notify banner per the channel mapping, and
+    # emits the audit surface.response_emitted event itself.
     capture: io.StringIO = io.StringIO()
-    write_output(primed_state, response_plan, stream=capture)
+    _, render_event = render_response(
+        primed_state,
+        response_plan,
+        conn=runtime.conn,
+        turn_id=effective_turn_id,
+        attention_channel=final_attention_channel,
+        stream=capture,
+    )
     rendered = capture.getvalue()
     sys.stdout.write(rendered)
     sys.stdout.flush()
+    collected_events.append(render_event)
 
     return RunTurnResult(
         response_text=rendered,
@@ -542,6 +571,7 @@ def run_turn(
         turn_id=effective_turn_id,
         iterations=iterations,
         events_emitted=tuple(collected_events),
+        attention_channel=final_attention_channel,
     )
 
 
