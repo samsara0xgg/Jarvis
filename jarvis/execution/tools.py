@@ -548,12 +548,39 @@ def verify_diff_handler(
     emits the appropriate `action.result_observed` event, transitions
     lifecycle `running → result_observed`, and returns the `RawResult`.
 
-    Three outcomes:
+    Cross-task isolation (Finding 1, follow-up to Step 6):
+        When `action_request.target_entity_ref` is non-None, the artifact's
+        recorded `task_id` MUST match. Without this check an LLM-supplied
+        (or hallucinated) `run_id` could point to a different task's
+        successful diff and produce a false `verified_complete` on the
+        active task (spec §3.4.11 violation: "verification must verify
+        *this* action's postcondition").
+
+    Five outcomes (ordered: structural before predicate):
 
     - Artifact missing → `semantics="error"`, `error="artifact_missing"`.
+    - Artifact lacks a `task_id` field while `target_entity_ref` is set →
+      `semantics="error"`, `error="artifact_missing_task_id"`. Day-1
+      hardness call: artifacts that don't declare their owner are not
+      trustworthy targets.
+    - Artifact `task_id` mismatches `target_entity_ref` →
+      `semantics="error"`, `error="cross_task_artifact"`. This is the
+      C5 evidence-binding defense.
     - Predicate matches → `semantics="verification"` with `content_hash`
       and `predicate` in the payload.
     - Predicate fails → `semantics="error"`, `error="predicate_failed"`.
+
+    When `target_entity_ref` is None (defensive path): skip the task_id
+    check — cannot validate without a target. Day-1 callers always pass a
+    target; this branch exists only for defense.
+
+    Error context fields (`expected_task_id`, `actual_task_id`,
+    `artifact_path`, `predicate`, `run_id`) are carried inside the
+    `tool_output` JSON string AND nested under a single `error_payload`
+    key on the emitted `action.result_observed` event (the Day-1
+    EventTypeRegistry `optional_payload` list does not include the
+    per-error-class fields by name and registry changes are Step 4's
+    territory — strict-mode flip will accept `error_payload` as one key).
     """
     run_id = action_request.arguments["run_id"]
     if not isinstance(run_id, str):
@@ -581,6 +608,44 @@ def verify_diff_handler(
     content_hash = hashlib.sha256(raw_bytes).hexdigest()
     data = json.loads(raw_bytes.decode("utf-8"))
     actual_status = data.get("status") if isinstance(data, dict) else None
+    actual_task_id = data.get("task_id") if isinstance(data, dict) else None
+    expected_task_id = action_request.target_entity_ref
+
+    # Cross-task artifact isolation: validate BEFORE predicate evaluation.
+    # When the caller declared a target_entity_ref (Day-1 always does), the
+    # artifact's recorded task_id must match. A None target_entity_ref is the
+    # defensive branch — cannot validate without a target.
+    if expected_task_id is not None:
+        if not isinstance(data, dict) or "task_id" not in data:
+            return _verify_diff_emit_error(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_request.action_id,
+                source_event_id=running_event_uid,
+                run_id=run_id,
+                payload={
+                    "artifact_path": str(diff_path),
+                    "predicate": "status==ok",
+                    "expected_task_id": expected_task_id,
+                    "actual_task_id": None,
+                },
+                error_code="artifact_missing_task_id",
+            )
+        if actual_task_id != expected_task_id:
+            return _verify_diff_emit_error(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_request.action_id,
+                source_event_id=running_event_uid,
+                run_id=run_id,
+                payload={
+                    "artifact_path": str(diff_path),
+                    "predicate": "status==ok",
+                    "expected_task_id": expected_task_id,
+                    "actual_task_id": actual_task_id,
+                },
+                error_code="cross_task_artifact",
+            )
 
     if actual_status == "ok":
         verification_payload: dict[str, Any] = {
@@ -637,21 +702,36 @@ def _verify_diff_emit_error(  # noqa: PLR0913 — all kwargs are part of the can
     """Emit an `action.result_observed(semantics=error)` and return a RawResult.
 
     Single point of error-path construction for `verify_diff_handler` —
-    both the missing-artifact branch and the predicate-failed branch
-    share this code path, so the event shape, lifecycle transition, and
-    `RawResult.error` tag stay consistent.
+    all four error branches (`artifact_missing`, `artifact_missing_task_id`,
+    `cross_task_artifact`, `predicate_failed`) share this code path, so
+    the event shape, lifecycle transition, and `RawResult.error` tag
+    stay consistent.
+
+    For the task-isolation error codes (`cross_task_artifact` and
+    `artifact_missing_task_id`) the per-error context fields
+    (`expected_task_id`, `actual_task_id`, `artifact_path`, `predicate`)
+    are nested into the emitted event under a single `error_payload`
+    key. This shape (a) carries the diagnostic context for the Result
+    Interpreter / observer, (b) keeps the registered top-level payload
+    keys to the existing `action.result_observed` set (`action_id`,
+    `semantics`, `tool_output`, `error`, `run_id`) plus exactly one new
+    additive key, and (c) survives a future strict-mode flip on the
+    registry with at most one new `optional_payload` entry.
     """
     tool_output = tool_error(error_code, code=error_code, **dict(payload))
+    event_payload: dict[str, Any] = {
+        "action_id": action_id,
+        "semantics": "error",
+        "tool_output": tool_output,
+        "error": error_code,
+        "run_id": run_id,
+    }
+    if error_code in {"cross_task_artifact", "artifact_missing_task_id"}:
+        event_payload["error_payload"] = dict(payload)
     emit_event(
         conn,
         type="action.result_observed",
-        payload={
-            "action_id": action_id,
-            "semantics": "error",
-            "tool_output": tool_output,
-            "error": error_code,
-            "run_id": run_id,
-        },
+        payload=event_payload,
         source_event_id=source_event_id,
         correlation={"action_id": action_id, "run_id": run_id},
     )
