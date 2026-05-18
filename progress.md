@@ -648,3 +648,185 @@ Legacy-bypassed, Tier 1, Notes, Next.
   - `config/jarvis.yaml` is `llm:`-only Day-1; Step 8's
     `decision/llm.py` reads it via `yaml.safe_load`.
 - Next: Step 8 (L3 `decision/llm.py` — adapt legacy `core/llm.py`).
+
+---
+
+## Step 8 — L3 LLM client (`jarvis/decision/llm.py`)
+
+- Files:
+  - `jarvis/decision/llm.py` (699 LOC, adapted from legacy
+    `core/llm.py` 1650 LOC) — multi-provider LLM client. Public
+    surface per ADR § Acceptance G1: `LLMClient` (init takes
+    `Mapping[str, Any]` + `tracker: object | None = None`); read-only
+    properties `provider` / `model` / `base_url` / `max_tokens` /
+    `active_preset` / `last_input_tokens` / `last_output_tokens` /
+    `last_finish_reason` / `last_metadata`; methods `get_presets()` /
+    `switch_model(name)` / `chat(*, messages, system, tools=None,
+    tool_choice="auto")` / `chat_stream(*, messages, system,
+    tools=None)`. Frozen dataclasses: `ChatResult(text, tool_calls,
+    finish_reason, input_tokens, output_tokens, raw)`, `ToolCall(
+    call_id, name, arguments_json)`, `ChatStreamChunk(text, is_final,
+    finish_reason)`. Module-level helper `load_llm_config(path) ->
+    Mapping[str, Any]` returns the `["llm"]` block from a YAML file.
+    Typed exceptions: `MissingLLMSectionError`, `UnknownPresetError`,
+    `MissingAPIKeyError`. `Provider = Literal["openai", "anthropic"]`.
+  - `tests/unit/test_llm_client_config.py` (241 LOC, 15 tests) —
+    LLM-free unit tests: `load_llm_config` happy path + two
+    missing-section error paths; constructor reads default preset
+    (`provider == "openai"`, `model == "gpt-5.5"`, `base_url`
+    contains `"openrouter"`, `max_tokens == 32768`); `last_*`
+    accessors return None / empty-state metadata before any call;
+    `last_metadata` is a defensive copy (tamper-safe); `get_presets`
+    exposes `fast` + `deep`; `switch_model("fast")` returns
+    `"gpt-5.4-mini"` and updates `model` / `max_tokens` /
+    `active_preset`; `switch_model("nonexistent")` raises
+    `UnknownPresetError`; `api_key_env` resolution via
+    `monkeypatch.setenv` (sentinel never logged); missing env →
+    `_api_key is None`; invalid provider raises `ValueError`;
+    frozen-dataclass enforcement for `ChatResult` / `ToolCall`;
+    `ChatStreamChunk` minimum shape.
+- Legacy consulted:
+  - `jarvis-legacy/core/llm.py` (1650 LOC) — primary reference.
+    Adopted: provider switch (`openai` / `anthropic`), preset shape +
+    `_apply_preset` + `switch_model` + `get_presets`, `api_key_env`
+    resolution via `os.environ.get`, metadata-reset-per-call
+    discipline, last_input_tokens / last_output_tokens /
+    last_finish_reason / last_metadata public accessors,
+    `_tools_to_openai` translator (Anthropic → OpenAI function
+    format), `max_completion_tokens` vs `max_tokens` switch for
+    gpt-5.* family, tool-call shape difference between providers
+    (OpenAI `assistant_msg.tool_calls[*].function.{name, arguments}`
+    string vs Anthropic `content[*].{type=tool_use, id, name,
+    input=dict}`).
+- Legacy-bypassed:
+  - `Legacy-bypass: jarvis-legacy/core/llm.py — internal 10-iteration
+    tool-use loop in chat() / _chat_openai / _chat_anthropic /
+    _stream_openai / _stream_anthropic. Day-1's chat() is ONE
+    provider round trip; Step 9 decide() drives the loop
+    turn-by-turn so the Pre-action Gate can inspect each tool call
+    before execution. Streaming variants are preserved as
+    chat_stream() skeletons (compile + type-check, no test) but the
+    fallback-to-non-streaming-on-empty-stream + sentence-splitter
+    + abbreviation-guard + faster-first-response stack is dropped
+    Day-1 (no TTS surface).`
+  - `Legacy-bypass: jarvis-legacy/core/llm.py — _truncate_history,
+    _estimate_message_chars, _CHARS_PER_TOKEN, _call_with_retry,
+    _xai_cache_headers, _openai_cache_retention_kwargs,
+    _grok_conv_id, _stored_user_content, _personalize_system,
+    _history_to_openai, _serialize_anthropic_content. Token-budget
+    math is unnecessary Day-1 (short flagship trace fits the deep
+    preset's 32 768-token ceiling), retries are deferred to a Stage
+    2 reliability story, xAI sticky-routing / OpenAI 24h cache
+    headers belong to provider-specific tuning we don't run Day-1,
+    the multimodal _stored_user_content branch is dead because
+    voice/image surfaces ship in Stage 2, _personalize_system was
+    the legacy personality fallback (Xiaoyue persona is explicitly
+    discarded per ADR § Identity), and _history_to_openai existed
+    only to translate stored Anthropic-shape conversation history
+    into OpenAI shape — Day-1's decide() owns conversation history
+    so no shape translation is needed at the client surface.`
+  - `Legacy-bypass: jarvis-legacy/core/personality.py — Xiaoyue
+    persona builders (build_identity_block, build_situation_block).
+    ADR § Identity discards Xiaoyue; L3 takes only a system: str
+    parameter (ADR Q3 option (a)).`
+  - `Legacy-bypass: jarvis-legacy/memory/hot/assembler.py —
+    PromptContext.to_anthropic_system / to_openai_system_str. Day-1
+    has no hot-memory assembler; jarvis.shared.PromptContext exists
+    as a forward-compat shape but the LLM client takes plain
+    system: str.`
+- Tier 1:
+  - T1.A `lint-imports`: 1 contract kept, 0 broken (analyzed 14
+    files, 5 dependencies).
+  - T1.B `ruff check .`: All checks passed.
+  - T1.C `mypy .` (strict): no issues found in 25 source files.
+  - T1.D `pytest tests/unit/ -x`: 172 passed in 0.31s (15 new in
+    `test_llm_client_config.py` plus 157 from prior steps).
+  - T1.E wall-clock for all four gates: 0.98s (well under the 30s
+    ADR ceiling).
+- Notes:
+  - **Public API decomposition.** Legacy `chat()` returned a
+    `tuple[str, list[dict]]` (final text + mutated message history)
+    and ran the tool-use loop internally. Day-1's
+    `chat() -> ChatResult` exposes either `text` OR `tool_calls`
+    OR both (rare); the caller (Step 9 `decide()`) decides whether
+    to continue the loop. This is the central architectural shift
+    forced by ADR § Acceptance — every tool call must traverse the
+    Pre-action Gate before execution, which is impossible if the
+    LLM client dispatches tools itself.
+  - **`tracker: object | None = None`** with `if tracker is not
+    None` gating at the call sites. The legacy `HealthTracker`
+    integration with `_tracker.record_success(component)` /
+    `_tracker.record_failure(component)` is preserved structurally
+    (so Stage 2 can wire a real tracker in), but Day-1 passes
+    `None` and the conditional makes that a no-op. Calls go via
+    `# type: ignore[attr-defined]` because `object` has no
+    `record_*` method — Stage 2 introduces a `Protocol`.
+  - **Lazy SDK construction** documented in module docstring. The
+    `openai` / `anthropic` SDK clients live in
+    `self._openai_client` / `self._anthropic_client` and are built
+    on first `chat()` via `_get_openai_client` /
+    `_get_anthropic_client`. Two payoffs: (a) unit tests can
+    exercise `LLMClient(config)` + every public property without
+    any network or SDK init; (b) `switch_model()` can re-target
+    OpenAI ↔ Anthropic mid-process by zeroing both handles so the
+    next chat() rebuilds against the correct provider. The legacy
+    file built the SDK lazily too, but only inside
+    `_get_<provider>_client`; Day-1 inherits that pattern verbatim.
+    Local SDK imports carry `# noqa: PLC0415` with a justification
+    comment so ruff doesn't object.
+  - **Tool-call shape difference between providers.** OpenAI returns
+    `assistant_msg.tool_calls[*].function.{name, arguments}` where
+    `arguments` is already a JSON string; Anthropic returns
+    `content[*]` blocks with `type=tool_use, id, name, input` where
+    `input` is a parsed dict. The `ToolCall.arguments_json`
+    contract is "raw JSON string from the LLM" — OpenAI flows
+    straight through, Anthropic gets `json.dumps(input,
+    ensure_ascii=False)` applied so the contract holds for the
+    caller. `ensure_ascii=False` because Allen's traffic is bilingual
+    and we don't want gratuitous `\uXXXX` escapes in the audit log.
+  - **`switch_model` exception type** is `UnknownPresetError`
+    (subclass of `KeyError`). Legacy raised plain `ValueError`;
+    Day-1 specialises for the failure mode so Step 9 / Step 10 can
+    `except UnknownPresetError` without catching generic
+    `ValueError`. `MissingLLMSectionError` (subclass of `KeyError`)
+    and `MissingAPIKeyError` (subclass of `RuntimeError`) follow the
+    same pattern. The whitelist of provider strings in `__init__` /
+    `_apply_preset` still uses plain `ValueError` because the
+    failure shape "unsupported provider literal" is a type-level
+    invariant violation, not a runtime configuration concern.
+  - **Metadata-state-bag invariants.** `last_metadata` is reset to a
+    fresh `_empty_metadata()` dict at the top of every `chat()` /
+    `chat_stream()` call so stale values from turn N never bleed
+    into N+1. The returned mapping is a `dict(self._last_metadata)`
+    copy so callers can't mutate internal state via the read-only
+    accessor (test
+    `test_client_last_metadata_is_isolated_copy` asserts this). Key
+    set Day-1: `{provider, response_id, preset, model, streaming}`.
+    Stage 2 will widen to include `conv_id` (xAI sticky-routing) /
+    `cache_creation_input_tokens` (Anthropic prompt-cache stats)
+    when those features come online.
+  - **`chat_stream` is unused Day-1** but its skeleton compiles +
+    type-checks. The OpenAI variant iterates
+    `client.chat.completions.create(stream=True)` chunks and
+    yields `ChatStreamChunk(text=..., is_final=False)` for each
+    content delta then a terminal `is_final=True` chunk with
+    `finish_reason`. The Anthropic variant uses
+    `client.messages.stream(**kwargs)` as a context manager and
+    pattern-matches on `content_block_delta` / `message_delta`
+    event types. Streaming carries no tool-call accumulation
+    Day-1; Stage 2's TTS pipeline will add that when the surface
+    needs it.
+  - **`PromptContext` is imported nowhere.** Day-1's `system: str`
+    parameter is so simple that the L3 client doesn't need the
+    `jarvis.shared.PromptContext` dataclass. The shared type still
+    exists (per Step 2) for L3 sibling code that wants to thread
+    a structured context object through `decide()`, but the LLM
+    client surface stays string-typed for compositional simplicity.
+  - **Line count vs target.** ADR § Reference sources sets a Day-1
+    target of 400-700 LOC after trimming (from 1650). Final
+    measurement: 699 LOC including the module docstring, dataclass
+    docstrings, and ~200 lines of comments / blank lines. Code-only
+    is ~480 lines. Inside the 700 ceiling.
+- Next: Step 9 (L3 `decision/__init__.py` — `decide()` entry +
+  Situation Packet + Effective Policy Resolver + Intent Router +
+  Resolver + 3 Gates + Result Interpreter).
