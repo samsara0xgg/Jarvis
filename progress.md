@@ -1339,3 +1339,115 @@ Legacy-bypassed, Tier 1, Notes, Next.
     `unittest.mock`, no VCR, no recorded LLM fixtures anywhere.
 - Next: Step 12 (`tests/scenarios/test_flagship.py`, happy path
   with real LLM).
+
+---
+
+## Step 12 — `tests/scenarios/test_flagship.py` (happy path, real LLM)
+
+- Files:
+  - `tests/scenarios/__init__.py` (11 LOC) — package marker + Tier 2
+    invocation note.
+  - `tests/scenarios/conftest.py` (226 LOC) — registers `--live-llm`
+    CLI flag, skip-by-default on `live_llm` marker
+    (`pytest_collection_modifyitems`), autouse
+    `verify_api_key_present` (G3) and `open_audit_hook` (H7 Part B /
+    G4) fixtures, function-scoped `seed_one_open_task` fixture, and
+    the `write_llm_use_artifact` helper that lands one
+    `tests/_artifacts/llm_use_<ts>.json` per scenario run (G5).
+  - `tests/scenarios/test_flagship.py` (900 LOC) — seven
+    `live_llm`-marked test functions sharing two module-scoped live
+    runs:
+    - `live_happy_path_run` — drives `run_turn(utterance)` once
+      against `gpt-5.5` and stashes the runtime + result + DB path
+      + main thread + captured worker threads.
+    - `live_replay_run` — second independent live run (fresh tmp
+      runtime, identical seed) used by `test_flagship_replay_determinism`.
+    - `thread_capture` — installs `_TEST_MODE_THREAD_CAPTURE` for B4.
+    Acceptance coverage:
+    - `test_flagship_event_log_invariants` — A1-A8.
+    - `test_flagship_lifecycle_completeness` — B1-B4 (uses the
+      `_TEST_MODE_THREAD_CAPTURE` hook from Step 6 for B4 since the
+      DB stores no thread metadata).
+    - `test_flagship_gate_enforcement` — C1-C5.
+    - `test_flagship_task_status_derivation` — D1-D5 (D4 walks
+      `dataclasses.fields(TaskLedgerRecord)` for the absent
+      `status` field).
+    - `test_flagship_claim_evidence_integrity` — E1-E4.
+    - `test_flagship_llm_is_real` — G1, G3, G5 in-process; G2 is
+      already statically asserted by Tier 1 canary
+      `test_no_recorded_llm.py` (H7 Part A scans `tests/**/*.py`); G4
+      is enforced on every scenario teardown by the conftest's
+      `open_audit_hook` fixture.
+    - `test_flagship_replay_determinism` — I1, I2 (with ± 2 jitter
+      tolerance per ADR § Risks).
+- Step 9 / Step 10 follow-up surgical fixes (documented per ADR §
+  Hard constraints "minimal surgical fixes"):
+  - **Step 9 (`jarvis/decision/__init__.py`):** the `_run_tool_use_loop`
+    builder now prepends a `[system context]` user message listing
+    open tasks (rendered by new helper `_format_open_tasks_note`) so
+    the LLM can pick the correct `task_id` for natural references
+    like "昨天那个 task". Without this surface the LLM was asking
+    Allen for a task_id the runtime already owns and the turn ended
+    before any tool dispatch happened (0 action.proposed events).
+    This was the ADR's flagged risk; the fix is the minimum that
+    exposes the Task Ledger snapshot the Resolver already builds.
+  - **Step 9 (`jarvis/decision/__init__.py`):** `_dispatch_one_tool_call`
+    now inherits `target_entity_ref` from `scratch.active_subject_ref`
+    when the tool itself does not carry a `task_id` argument
+    (verify_diff is keyed on `run_id`). Without this inheritance,
+    the Postcondition Claim's `subject_ref` was the synthetic
+    action_id, so `task.verified` never fired and the Pre-emit Gate
+    could not find verified evidence for the active subject.
+  - **Step 9 (`jarvis/decision/gates.py`):** the Pre-action Gate's
+    `entity_trusted` check now treats any task in the Task Ledger
+    (open OR reported_complete OR verified_complete) as trusted,
+    rather than only `open` tasks. The previous check refused
+    verify_diff mid-turn because task_X had already advanced to
+    `reported_complete` after worker.reported.
+  - **Step 6 (`jarvis/execution/tools.py`):** `_emit_worker_reported`
+    now accepts `turn_id` and propagates it into the
+    `worker.reported.correlation`. The Timer-closure capture in
+    `spawn_worker_handler` was missing `turn_id` so
+    `scratch.turn_id` was None in the worker.reported branch and
+    `turn.ended` was never emitted on the happy path.
+- Legacy consulted: none — Step 12 is fresh test code; the four
+  Step 9 / Step 10 surgical fixes are derived from the canonical event
+  trace in the ADR's § Acceptance section.
+- Legacy-bypassed: none.
+- Tier 1:
+  - T1.A `lint-imports`: 1 contract kept, 0 broken.
+  - T1.B `ruff check .`: All checks passed.
+  - T1.C `mypy .`: Success: no issues found in 63 source files.
+  - T1.D `pytest tests/unit/ tests/canary/ -x`: 264 passed.
+- Tier 2:
+  - `pytest tests/scenarios/test_flagship.py -v --live-llm`: 7
+    passed in ~25 s (real OpenRouter `gpt-5.5` call).
+  - LLM nondeterminism: observed 24-25 events per run, well within
+    the ADR's 22-28 window (A1) and the ± 2 cross-run drift
+    tolerance (I1). No retries needed across multiple consecutive
+    runs once the Step 9 / Step 6 follow-ups landed.
+  - G5 token-use sample (most recent run):
+    `{"model": "gpt-5.5", "input_tokens": 2307, "output_tokens": 213,
+    "finish_reason": "stop", "ts_epoch_ms": <epoch>}`. Two LLM calls
+    per turn (utterance → tool-calls, worker.reported → final text),
+    so this is the cumulative last-call total stored by
+    `LLMClient.last_input_tokens` / `last_output_tokens`.
+- Notes:
+  - **No mocks / VCR / recorded fixtures anywhere.** Static (H7
+    Part A) plus runtime (H7 Part B / conftest open audit) coverage
+    is dual-defended; the canary scans every `tests/**/*.py` and
+    the conftest wraps `builtins.open` for the duration of each
+    `live_llm`-marked test.
+  - **`--live-llm` discipline.** `pytest tests/` (no flag) leaves
+    scenarios skipped; only `--live-llm` enables real network. The
+    autouse `verify_api_key_present` fixture explicitly fails when
+    the key is missing / stub-valued so a misconfigured shell does
+    not silently emit a 0-token "success".
+  - **Module-scoped LLM run.** Both happy-path and replay runs are
+    module-scoped — the cloud LLM is hit exactly twice across the
+    seven assertions, keeping Tier 2 wall-clock under 30 s while
+    every assertion reads from the frozen DB / `RunTurnResult`
+    captured at fixture teardown.
+- Next: Step 13 (`tests/scenarios/test_flagship_verify_fails.py`,
+  negative case — monkeypatches `_SPAWN_WORKER_ARTIFACT_STATUS` to
+  drive verify_diff into the predicate_failed branch).

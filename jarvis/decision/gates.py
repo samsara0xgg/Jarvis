@@ -171,11 +171,17 @@ def pre_action_gate(
         entity_trusted = True
         reasons.append("entity_trusted: no target_entity_ref to check")
     else:
-        open_task_ids = {record.task_id for record in ledger_snapshot.open_tasks()}
-        entity_trusted = action_request.target_entity_ref in open_task_ids
+        # A task is "trusted" when it appears in the Task Ledger at
+        # all — open OR reported_complete (mid-turn verify must still
+        # pass) OR verified_complete (re-verify after the fact). The
+        # ledger is the gate's universe of known entities; rejecting
+        # reported_complete tasks would break the verify_diff leg of
+        # the Day-1 happy path. (Step 12 follow-up.)
+        known_task_ids = set(ledger_snapshot.records_by_task_id.keys())
+        entity_trusted = action_request.target_entity_ref in known_task_ids
         reasons.append(
             f"entity_trusted: target_entity_ref={action_request.target_entity_ref!r} "
-            f"{'is' if entity_trusted else 'is NOT'} in open tasks"
+            f"{'is' if entity_trusted else 'is NOT'} in Task Ledger"
         )
     checks["entity_trusted"] = entity_trusted
 

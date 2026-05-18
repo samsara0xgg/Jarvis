@@ -17,6 +17,9 @@ var/
 *.db
 *.db-*
 
+# Per-run Tier 2 artifacts (token-use JSON, scenario LLM logs).
+tests/_artifacts/
+
 # Secrets
 .env
 .env.*

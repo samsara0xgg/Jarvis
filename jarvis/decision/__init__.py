@@ -392,6 +392,16 @@ def _run_tool_use_loop(
 ) -> DecideResult:
     """Drive the Tier 2 LLM tool-use loop until text or limit."""
     messages = build_llm_messages(packet)
+    # Surface the Task Ledger snapshot as an explicit system note so
+    # the LLM can resolve natural references like "昨天那个 task" to
+    # the canonical task_id. Without this hint the LLM has no
+    # visibility into open tasks and may stall asking Allen for an ID
+    # the runtime already owns. Day-1 ADR § Situation Packet expects
+    # L3 to render this context for the LLM; this is the minimum
+    # surgical surface that delivers it. (Step 12 follow-up.)
+    open_tasks_note = _format_open_tasks_note(packet)
+    if open_tasks_note is not None:
+        messages.insert(0, {"role": "user", "content": open_tasks_note})
     tools = tool_definitions_for_llm(
         [_tool_to_dict(t) for t in ctx.tool_registry.for_caller(CallerPrincipal.JARVIS_LLM)],
     )
@@ -521,6 +531,15 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0913, PLR0915 — single-pass orc
     # run_id forward.
     if "run_id" in arguments and scratch.last_run_id is not None:
         arguments["run_id"] = arguments.get("run_id") or scratch.last_run_id
+
+    # If the tool did not carry a task_id argument (e.g. verify_diff
+    # is keyed on run_id), inherit the active subject from scratch so
+    # the resulting Postcondition Claim's subject_ref is the canonical
+    # task_id rather than the synthetic action_id. Without this, the
+    # Pre-emit Gate cannot find the verified evidence for the active
+    # subject and task.verified is never emitted. (Step 12 follow-up.)
+    if target_entity_ref is None and scratch.active_subject_ref is not None:
+        target_entity_ref = scratch.active_subject_ref
 
     action_id = _new_action_id()
     action_request = ActionRequest(
@@ -999,6 +1018,31 @@ def _pre_emit_reasons(plan: ResponsePlan) -> tuple[str, ...]:
 
 
 # --- Helpers ----------------------------------------------------------------
+
+
+def _format_open_tasks_note(packet: SituationPacket) -> str | None:
+    """Render the open-task snapshot as a system note string, or None.
+
+    Returns None when there are no open tasks (no signal to give the
+    LLM). Otherwise a short bullet list of ``task_id: goal`` entries
+    plus a directive instructing the LLM to use the matching task_id
+    when the user references a task by natural language. This is the
+    Day-1 minimum that lets the LLM consume the Task Ledger snapshot
+    without requiring a full Situation Packet rendering.
+    """
+    if not packet.open_tasks:
+        return None
+    bullets = "\n".join(
+        f"- task_id={record.task_id!r}, goal={record.goal!r}"
+        for record in packet.open_tasks
+    )
+    return (
+        "[system context] Current open tasks (Task Ledger snapshot):\n"
+        f"{bullets}\n"
+        "When the user references a task by natural language (e.g. "
+        "'昨天那个 task'), pass the matching `task_id` from this list "
+        "to any tool that needs one. Do not invent task_ids."
+    )
 
 
 def _new_turn_id() -> str:

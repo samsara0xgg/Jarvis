@@ -403,6 +403,7 @@ def _emit_worker_reported(  # noqa: PLR0913 — Timer-closure-safe captures: eac
     task_id: str,
     source_event_id: str,
     diff_path_str: str,
+    turn_id: str | None = None,
 ) -> None:
     """Timer callback — opens its OWN sqlite3 connection, emits `worker.reported`, closes.
 
@@ -421,6 +422,14 @@ def _emit_worker_reported(  # noqa: PLR0913 — Timer-closure-safe captures: eac
     if _TEST_MODE_THREAD_CAPTURE is not None:
         _TEST_MODE_THREAD_CAPTURE.append(threading.current_thread())
 
+    correlation: dict[str, str] = {
+        "action_id": action_id,
+        "run_id": run_id,
+        "task_id": task_id,
+    }
+    if turn_id is not None:
+        correlation["turn_id"] = turn_id
+
     conn = open_event_log(db_path)
     try:
         emit_event(
@@ -434,7 +443,7 @@ def _emit_worker_reported(  # noqa: PLR0913 — Timer-closure-safe captures: eac
                 "artifact_path": diff_path_str,
             },
             source_event_id=source_event_id,
-            correlation={"action_id": action_id, "run_id": run_id, "task_id": task_id},
+            correlation=correlation,
         )
     finally:
         conn.close()
@@ -510,6 +519,7 @@ def spawn_worker_handler(
             task_id,
             running_event_uid,
             str(diff_path),
+            action_request.turn_id,
         ),
     )
     # `daemon=True` so a test that forgets to join doesn't hang the suite.
