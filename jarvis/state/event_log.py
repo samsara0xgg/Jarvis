@@ -145,10 +145,18 @@ class EventTypeSchema:
 # payload shape and the spec §5.4 owner-layer rules.
 _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
+        # owner_layer is L4 per ADR-0002 § Day-2 EventTypeRegistry
+        # extensions: in Day-1 the only emit-site was a hand-seeded test
+        # fixture (L2); Day-2 Step 4 lands the `create_task` L4 tool, at
+        # which point this declaration first becomes load-bearing.
         event_type="task.created",
-        owner_layer="L2",
+        owner_layer="L4",
         required_payload=("task_id", "goal"),
-        optional_payload=("source", "deadline"),
+        # `repo_path` + `verify_command` are populated by the Day-2
+        # `create_task` L4 tool (ADR-0002 Step 4) from the JARVIS_LLM
+        # ActionRequest; stored verbatim so L4 can later pass
+        # `verify_command` to `/bin/sh -c` (Step 11).
+        optional_payload=("source", "deadline", "repo_path", "verify_command"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -303,6 +311,123 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L2",
         required_payload=("task_id", "by"),
         optional_payload=(),
+        schema_version=1,
+    ),
+    # --- Day-2 extensions (ADR-0002 § Day-2 EventTypeRegistry extensions) ---
+    #
+    # Eight Day-2 originals (worker.* heartbeat/artifact_observed/
+    # report_missing, task.executor_assigned/reported, cost.recorded,
+    # surface.user_intent/response_emitted) plus four sleep/wake events
+    # (mac.sleeping/awake, worker.suspended_by_sleep/terminated_by_sleep).
+    # Schema lifted verbatim from ADR-0002 lines 1162-1262.
+    EventTypeSchema(
+        event_type="worker.heartbeat",
+        owner_layer="L4",
+        required_payload=("run_id", "action_id"),
+        optional_payload=("elapsed_ms", "last_log_line", "summary"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="worker.artifact_observed",
+        owner_layer="L4",
+        required_payload=("run_id", "action_id", "artifact_path"),
+        optional_payload=("content_hash", "kind"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="worker.report_missing",
+        owner_layer="L4",
+        required_payload=("run_id", "action_id"),
+        optional_payload=("reason",),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="task.executor_assigned",
+        owner_layer="L3",
+        required_payload=("task_id", "executor", "action_id"),
+        optional_payload=("model",),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="task.executor_reported",
+        owner_layer="L4",
+        required_payload=("task_id", "run_id", "status"),
+        optional_payload=("summary", "diff_path"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        # owner_layer is L3 per spec §5.4.1 (single-value owner_layer).
+        # L4 returns cost data inside RawResult.metadata["cost"] (codex
+        # turn tokens come from Codex's turn/completed payload, attached
+        # to spawn_worker's RawResult); L3 reads that and emits
+        # cost.recorded. L4 never emits this event directly — see spec
+        # §5.4.2 pattern where L4 returns RawResult and L3 emits
+        # action.result_observed.
+        event_type="cost.recorded",
+        owner_layer="L3",
+        required_payload=("kind", "model"),
+        optional_payload=(
+            "tokens_in",
+            "tokens_out",
+            "cache_read_in",
+            "cache_write_in",
+            "cost_usd",
+            "run_id",
+        ),
+        schema_version=1,
+    ),
+    # F6: surface.user_intent — spec.html §5.4 line 1442 canonical;
+    # missing from Day-1 registry, restored here.
+    EventTypeSchema(
+        event_type="surface.user_intent",
+        owner_layer="L5",
+        required_payload=("transcript", "turn_id"),
+        optional_payload=("channel", "language"),
+        schema_version=1,
+    ),
+    # F6: surface.response_emitted — NOT in spec §5.4 canonical list
+    # (deviation V1); Day-2 audit field for delivered_via +
+    # attention_channel.
+    EventTypeSchema(
+        event_type="surface.response_emitted",
+        owner_layer="L5",
+        required_payload=("turn_id", "text"),
+        optional_payload=(
+            "delivered_via",
+            "attention_channel",
+            "voice_text",
+            "document_text",
+            "response_hash",
+        ),
+        schema_version=1,
+    ),
+    # Sleep/wake events per spec §3.7.8 — L6 owned (Deployment Domain).
+    EventTypeSchema(
+        event_type="mac.sleeping",
+        owner_layer="L6",
+        required_payload=("ts_epoch_ms",),
+        optional_payload=("reason", "in_progress_action_ids"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="mac.awake",
+        owner_layer="L6",
+        required_payload=("ts_epoch_ms", "slept_for_ms"),
+        optional_payload=("reconciliation_summary",),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="worker.suspended_by_sleep",
+        owner_layer="L6",
+        required_payload=("run_id", "action_id"),
+        optional_payload=("last_heartbeat_ts",),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="worker.terminated_by_sleep",
+        owner_layer="L6",
+        required_payload=("run_id", "action_id"),
+        optional_payload=("reason",),
         schema_version=1,
     ),
 )

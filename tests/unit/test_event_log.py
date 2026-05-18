@@ -96,9 +96,103 @@ def test_registry_get_returns_none_for_unregistered():
 
 
 def test_registry_requires_and_optional_round_trip():
-    """`requires` / `optional` expose the registered tuples verbatim."""
+    """`requires` / `optional` expose the registered tuples verbatim.
+
+    `task.created.optional_payload` was extended in ADR-0002 Step 1 with
+    `repo_path` + `verify_command`; required_payload is unchanged.
+    """
     assert EventTypeRegistry.requires("task.created") == ("task_id", "goal")
-    assert EventTypeRegistry.optional("task.created") == ("source", "deadline")
+    assert EventTypeRegistry.optional("task.created") == (
+        "source",
+        "deadline",
+        "repo_path",
+        "verify_command",
+    )
+
+
+# --- Day-2 registry extensions (ADR-0002 Step 1) ----------------------------
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        "worker.heartbeat",
+        "worker.artifact_observed",
+        "worker.report_missing",
+        "task.executor_assigned",
+        "task.executor_reported",
+        "cost.recorded",
+        "surface.user_intent",
+        "surface.response_emitted",
+        "mac.sleeping",
+        "mac.awake",
+        "worker.suspended_by_sleep",
+        "worker.terminated_by_sleep",
+    ],
+)
+def test_day2_event_type_registered(event_type: str) -> None:
+    """All 12 ADR-0002 Day-2 event types must be in the registry."""
+    schema = EventTypeRegistry.get(event_type)
+    assert schema is not None, f"{event_type!r} not in EventTypeRegistry"
+    assert schema.event_type == event_type
+    assert schema.schema_version == 1
+
+
+def test_registry_task_created_required_payload_unchanged() -> None:
+    """ADR-0002 F7: `task.created.required_payload` stays `(task_id, goal)`."""
+    schema = EventTypeRegistry.get("task.created")
+    assert schema is not None
+    assert schema.required_payload == ("task_id", "goal")
+
+
+def test_registry_task_created_optional_payload_extended() -> None:
+    """ADR-0002 F7: optional_payload gains `repo_path` + `verify_command`."""
+    schema = EventTypeRegistry.get("task.created")
+    assert schema is not None
+    assert "repo_path" in schema.optional_payload
+    assert "verify_command" in schema.optional_payload
+    # Day-1 optional fields preserved.
+    assert "source" in schema.optional_payload
+    assert "deadline" in schema.optional_payload
+
+
+def test_registry_action_result_observed_optional_payload_has_error_payload() -> None:
+    """ADR-0001 F1 tail / ADR-0002 amendment: `error_payload` is optional."""
+    schema = EventTypeRegistry.get("action.result_observed")
+    assert schema is not None
+    assert "error_payload" in schema.optional_payload
+    # Day-1 optional fields preserved.
+    assert "tool_output" in schema.optional_payload
+    assert "error" in schema.optional_payload
+    assert "run_id" in schema.optional_payload
+
+
+def test_registry_evidence_attached_required_payload_day1() -> None:
+    """`evidence.attached.required_payload` still matches Day-1 shape.
+
+    ADR-0002 F8 mandates a `relation` field, but applying it here would
+    immediately break the Day-1 L3 Result Interpreter emit-site (which
+    has no plumbing for `relation` yet). The `+relation` amendment lands
+    with Step 12 (Result Interpreter dual-slot) where the emit-site
+    plumbs `relation` from spec §8.6 vocabulary. Step 1 keeps the Day-1
+    contract intact to preserve Tier-1 green; see Step 1 commit body
+    "Deviations" trailer.
+    """
+    schema = EventTypeRegistry.get("evidence.attached")
+    assert schema is not None
+    assert schema.required_payload == ("evidence_id", "claim_id", "level")
+
+
+def test_registry_cost_recorded_is_l3_owned() -> None:
+    """ADR-0002 lines 1198-1212: cost.recorded.owner_layer is L3.
+
+    L4 returns cost data inside RawResult.metadata["cost"]; L3 is the
+    sole emit-site (Step 3 wires this).
+    """
+    schema = EventTypeRegistry.get("cost.recorded")
+    assert schema is not None
+    assert schema.owner_layer == "L3"
+    assert schema.required_payload == ("kind", "model")
 
 
 # --- emit_event happy path --------------------------------------------------
