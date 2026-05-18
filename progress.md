@@ -1215,3 +1215,127 @@ Legacy-bypassed, Tier 1, Notes, Next.
 - Bonus verification: `./.venv/bin/python -m jarvis --help` prints
   the expected argparse usage / description / flag list.
 - Next: Step 11 (`tests/canary/` H1-H13 anti-bypass suite).
+
+---
+
+## Step 11 — `tests/canary/` H1-H13 anti-bypass suite
+
+- Files:
+  - `tests/canary/__init__.py` (empty marker).
+  - `tests/canary/_helpers.py` — `repo_root()`, `iter_jarvis_py_files()`,
+    `iter_all_py_files()`, `parse(path)`, `relative_to_repo(path)`.
+    All canary files import from this module; no `unittest.mock`,
+    no VCR-style libraries anywhere in the suite.
+  - `tests/canary/test_no_projection_writes.py` (H1) — AST + regex
+    scan over every `jarvis/*.py` string literal; allows
+    `INSERT INTO events` only in `jarvis/state/event_log.py`,
+    rejects every UPDATE/DELETE elsewhere. Strategy (a) from the
+    ADR: strings containing `RAISE(ABORT,` (the trigger DDL) are
+    exempted because they declare append-only guards, not statements.
+    Case-sensitive uppercase keyword matching avoids prose
+    false-positives (e.g. the docstring "INSERT into the events
+    table" no longer trips the regex).
+  - `tests/canary/test_emit_event_registered.py` (H2) — AST walk
+    over `jarvis/` + `tests/`; every `emit_event(type="X", ...)` and
+    `emit_event(conn, "X", ...)` literal value is asserted to be in
+    `EventTypeRegistry.iter_types()`.
+  - `tests/canary/test_pre_emit_required.py` (H3) — three runtime
+    checks against `jarvis.surface.cli.write_output(...)` with a real
+    `ResponsePlan`: (a) `state.last_gate_response_hash=None` raises
+    `PreEmitTokenError`; (b) stale hash raises; (c) matching hash
+    succeeds and the returned state has the token cleared.
+  - `tests/canary/test_no_llm_substitution.py` (H4) — runtime check:
+    `jarvis.decision.llm.LLMClient` is a `type`, its `__module__`
+    equals `"jarvis.decision.llm"`, its metaclass is not
+    `Mock`/`MagicMock`/`NonCallableMock`, and the module attribute
+    `is` the published class.
+  - `tests/canary/test_layer_imports.py` (H5) — runs
+    `.venv/bin/lint-imports` as a subprocess and asserts exit 0;
+    on failure dumps stdout + stderr.
+  - `tests/canary/test_lint_ignores_justified.py` (H6) — line-by-line
+    scan of `pyproject.toml` for `[tool.ruff.lint] ignore = [...]`
+    and `[tool.ruff.lint.per-file-ignores]`; every rule must have an
+    inline trailing `# ...` comment OR a `#` comment line immediately
+    above. The inline-list shape (`"path" = ["RUF001"]`) is also
+    accepted when justified by an above-comment block.
+  - `tests/canary/test_no_recorded_llm.py` (H7) — Part A only: AST
+    walk for forbidden imports `vcrpy` / `vcr` / `responses` /
+    `betamax` / `pytest_recording` (any submodule). Part B (open()
+    audit for `cassette`/`recording` paths) is documented to live in
+    Step 12's scenario conftest where it can plug into the live run.
+  - `tests/canary/test_no_hardcoded_runtime_root.py` (H8) — AST scan
+    for the literal `"~/.jarvis"` in any string constant under
+    `jarvis/`; only files under `jarvis/deployment/` may carry it.
+  - `tests/canary/test_decide_not_substituted.py` (H9) — runtime
+    check: `decide.__module__ == "jarvis.decision"`,
+    `getattr(decide, "__wrapped__", None) is None`, module attribute
+    `is` the imported function.
+  - `tests/canary/test_resolver_purity.py` (H10) — Part A: AST scan
+    of `jarvis/decision/resolver.py` for imports / calls referencing
+    `jarvis.decision.llm`. Part B: drive `resolve_task_ref` against
+    empty / single / multi-task snapshots; assert non-empty
+    `candidates` whenever the outcome is `resolved`/`ambiguous`,
+    and the universal `resolved_to is not None ⇒ candidates non-empty`
+    invariant.
+  - `tests/canary/test_status_not_stored.py` (H11) — AST scan of
+    `jarvis/state/projections.py`: no `Assign`/`AugAssign`/`AnnAssign`
+    targets a `status` subscript or attribute, and no string literal
+    contains `UPDATE \w+ SET status`. Nodes inside any `derive_status`
+    or `_derive_status` FunctionDef body are excluded.
+  - `tests/canary/test_gate_contracts.py` (H12) — AST scan of
+    `gates.py` and `result_interpreter.py`: each gate FunctionDef
+    body references the MUST-check primitives via substring match
+    across `Name.id`, `Attribute.attr`, argument names, and string
+    literals (`caller_principal`, `risk_level`,
+    entity/target_entity_ref/lease for pre_action; claim/evidence +
+    permission for pre_emit; semantics + claim + evidence for
+    result_interpreter).
+  - `tests/canary/test_layer_ownership_boundaries.py` (H13) — AST
+    scan: deployment never imports `jarvis.state`; surface never
+    imports `jarvis.decision` or `jarvis.execution`; execution never
+    imports `jarvis.decision` or `jarvis.surface`. Companion test:
+    only `jarvis.runtime.*` may import more than one middle-layer
+    sibling; self-imports inside the same layer's package are
+    exempt.
+- Legacy consulted: none — canaries are pure scanners over the
+  Day-1 module surface.
+- Legacy-bypassed: none.
+- Tier 1:
+  - T1.A `lint-imports`: 6-layer architecture KEPT; 1 contract,
+    0 broken.
+  - T1.B `ruff check .`: All checks passed.
+  - T1.C `mypy .`: Success: no issues found in 60 source files.
+  - T1.D `pytest tests/unit/ tests/canary/ -x`: 264 passed (241
+    unit + 23 canary).
+  - T1.E unit wall-clock: 0.49s, well under 30s.
+- Notes:
+  - **H8 source-fix sub-commit.** The cli help text in
+    `jarvis/cli/__init__.py` carried a literal `"~/.jarvis"` string
+    inside the `--runtime-root` argparse help, outside
+    `jarvis/deployment/`. Per the ADR § H stricter rule ("FIX THE
+    SOURCE FILE in a TINY separate sub-commit … do NOT relax the
+    canary"), the deployment module's private
+    `_DEFAULT_RUNTIME_ROOT_LITERAL` was promoted to a public
+    `DEFAULT_RUNTIME_ROOT_LITERAL` constant, and the cli help text
+    interpolates that constant. Sub-commit:
+    `fix(deployment+cli): satisfy canary H8 — route ~/.jarvis through
+    DEFAULT_RUNTIME_ROOT_LITERAL`. No semantic change to runtime
+    resolution; the constant retains the same value, just a public
+    name. The canary remains authoritative.
+  - **Trigger DDL exemption.** `event_log.py` contains the
+    `BEFORE UPDATE` / `BEFORE DELETE` trigger DDL strings — these
+    *declare* the append-only guards (`RAISE(ABORT, ...)`), they are
+    not INSERT/UPDATE/DELETE statements. The H1 canary skips any
+    string containing `RAISE(ABORT,` (strategy (a) from the ADR).
+    Combined with case-sensitive uppercase keyword matching, the
+    canary cleanly classifies real SQL vs. prose.
+  - **H7 Part B deferred.** The runtime open()-audit half of H7 is
+    deferred to Step 12's scenario `conftest.py` where it can hook
+    into the live test run; Step 11 ships only Part A (static AST
+    import scan). The canary docstring documents this split.
+  - **Canaries stay self-contained.** Every canary runs as
+    `pytest tests/canary/test_*.py -x` without the scenario tests
+    in place. Helpers live in `tests/canary/_helpers.py`. No
+    `unittest.mock`, no VCR, no recorded LLM fixtures anywhere.
+- Next: Step 12 (`tests/scenarios/test_flagship.py`, happy path
+  with real LLM).
