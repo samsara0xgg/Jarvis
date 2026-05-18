@@ -336,3 +336,136 @@ Legacy-bypassed, Tier 1, Notes, Next.
     `jarvis.runtime`, `jarvis.cli`. `lint-imports` confirms.
 - Next: Step 5 (L2 `projections.py` — Task Ledger + Recent Trace +
   Claim/Evidence pure fold).
+
+---
+
+## Step 5 — L2 Projections (Task Ledger + Recent Trace + Claim/Evidence)
+
+- Files:
+  - `jarvis/state/projections.py` (638 LOC) — three pure-fold
+    projections plus a `ProjectionSet` bundle. All public dataclasses
+    `frozen=True`: `TaskLedgerRecord`, `TaskLedger`, `TaskLedgerSnapshot`,
+    `RecentTrace`, `ClaimEvidenceProjection`, `ProjectionSet`. Public
+    `TaskStatus` Literal of 6 values (`open`, `reported_complete`,
+    `verified_complete`, `failed`, `cancelled`, `unverifiable`) — Day-1
+    fold rules produce the first three. `derive_status(task_id)` is the
+    single status-derivation function (no `status` column; H11 will AST
+    scan this file). `rebuild_projections(conn)` reads via
+    `iter_events(conn)` (no SQL writes) and returns a deep-equal
+    `ProjectionSet` on repeat calls. `make_snapshot(conn)` is the
+    L3-facing alias (Day-1 identical). Stdlib only (`collections.deque`,
+    `dataclasses`, `typing`) plus `jarvis.shared` (`Claim`, `ClaimType`,
+    `Evidence`, `EvidenceLevel`) and `jarvis.state.event_log`
+    (`iter_events`).
+  - `tests/unit/test_projections.py` (701 LOC, 28 tests). Seeds events
+    through `emit_event` against `tmp_path` SQLite — never touches
+    `~/.jarvis`.
+- Legacy consulted:
+  - `jarvis-legacy/memory/hot/conversation.py` — sliding-window store,
+    not a projection over events. Pattern inspected; nothing reusable
+    for fold-from-events semantics.
+  - `jarvis-legacy/core/tool_result.py` — vocabulary will be borrowed
+    in Step 9 (Result Interpreter); the projection module only consumes
+    the resulting `claim.created` / `evidence.attached` events.
+- Legacy-bypassed:
+  - `Legacy-bypass: jarvis-legacy/memory/hot/conversation.py — Day-1
+    Recent Trace is a pure event-log fold (ring buffer over Event
+    sequence), not a sliding window over Allen-Jarvis conversation
+    turns. Legacy class is a different abstraction (chat-history
+    centric, not event-centric); not reusable without distorting the
+    spec §6 contract.`
+- Tier 1 (available subset T1.A–T1.E before Step 11):
+  - T1.A `lint-imports`: 1 contract kept, 0 broken. 12 files analyzed.
+    `jarvis.state.projections` imports `jarvis.shared` (Claim,
+    ClaimType, Evidence, EvidenceLevel) and `jarvis.state.event_log`
+    (iter_events); both within-layer or downward, no cross-sibling.
+  - T1.B `ruff check .`: All checks passed.
+  - T1.C `mypy .` (strict): Success: no issues found in 20 source
+    files.
+  - T1.D `pytest tests/unit/ -x`: 81 passed in 0.21s
+    (constitution 9 + deployment 14 + event_log 22 + projections 28 +
+    shared_types 8).
+  - T1.E elapsed wall-clock for `tests/unit/`: 0.17s (well under 30s
+    bound).
+- Notes:
+  - **Status is computed, not stored.** `TaskLedgerRecord` has no
+    `status` / `derived_status` field. The single source of truth is
+    `_derive_status(records_by_task_id, claim_evidence, task_id)`, a
+    module-level helper consumed by both `TaskLedger.derive_status` and
+    `TaskLedgerSnapshot.derive_status`. Both call sites produce
+    identical results (asserted by
+    `test_snapshot_derive_status_matches_ledger`). Step 11 canary H11
+    will AST-scan this file for `task["status"] = ...` /
+    `task.status = ...` / SQL `UPDATE ... SET status = ...` outside
+    `derive_status()` — by construction there are zero such
+    assignments (status is a function return value, not a stored
+    attribute).
+  - **Status derivation rules** (ADR § Acceptance D + F):
+    - `verified_complete` requires BOTH a `task.verified` event for
+      this `task_id` AND a Postcondition Claim with
+      `evidence.level in {verified, accepted}` whose `subject_ref`
+      equals the `task_id`. Either alone is insufficient (catches
+      regressions in either direction —
+      `test_derive_status_not_verified_without_postcondition_evidence`
+      and `test_derive_status_not_verified_without_task_verified_event`).
+    - `reported_complete` requires at least one `worker.reported`
+      under any run of the task (via `run.started`-bridged
+      `run_id → task_id` correlation), AND the verified condition
+      above is NOT met.
+    - `open` otherwise (including unknown `task_id` —
+      `test_derive_status_unknown_task_id_is_open`).
+  - **worker.reported correlation challenge.** The
+    `worker.reported` event payload carries `(run_id, action_id,
+    status)` but NOT `task_id`. The fold bridges through
+    `run.started(run_id, task_id)` events to build a
+    `run_id → task_id` map, then re-keys subsequent
+    `worker.reported` events into the right Task Ledger row. Tests
+    seed both events; the
+    `test_derive_status_reported_complete_after_worker_report` case
+    is the canonical fixture for this code path. If a
+    `worker.reported` arrives with no matching prior `run.started`,
+    the fold silently skips it (ADR § Acceptance D path requires
+    `run.started` first; spec §7.5 names Run as the canonical
+    correlation unit).
+  - **subject_ref ↔ task_id correlation.** Per canonical-trace
+    evt 20 (`claim.created(type=Postcondition, subject_ref=task_X)`),
+    a Postcondition Claim's `subject_ref` IS the `task_id` of the task
+    being verified. The fold therefore uses raw equality
+    (`claim.subject_ref == task_id`) — no aliasing, no entity-registry
+    indirection Day-1. Stage 2 multi-entity scenarios will route
+    through the Entity Registry projection (deferred per ADR §
+    Stub strategy L2 row).
+  - **Evidence ladder.** Frozen module-private `_EVIDENCE_LADDER` and
+    `_EVIDENCE_RANK` per spec §8.4 (`reported < observed < executed <
+    verified < accepted`). `strongest_level_for(subject_ref)` walks
+    every claim for the subject, every evidence on each claim, and
+    returns `max(...)` keyed by ladder rank. `None` when no evidence
+    exists. Used by Pre-emit Gate (Step 9) per ADR § Gate contracts.
+  - **Recent Trace is oldest-first.** `RecentTrace.iter()` yields
+    events in append order (the oldest within the ring-buffer window
+    first). Implementation uses `collections.deque(maxlen=...)` for
+    O(n) folds; the deque does not escape — the result is frozen as a
+    tuple on construction. Default `max_size=200`; `max_size=0` yields
+    an empty trace; negative `max_size` raises `ValueError`.
+  - **Frozen dataclasses with mutable contents.** `TaskLedger` /
+    `TaskLedgerSnapshot` / `ClaimEvidenceProjection` carry `dict` /
+    `tuple` fields. Frozen-dataclass equality is structural, so two
+    rebuilds with the same input dict contents compare equal —
+    `test_rebuild_projections_is_idempotent` asserts deep equality
+    across two consecutive rebuilds. Step 11 canary H11 / H1 do not
+    require these projections to be deeply immutable; the contract is
+    "no SQL writes, status is derived", both met by construction.
+  - **No L3/L4/L5/L6 imports.** `grep -rn 'import' jarvis/state/projections.py`
+    shows: `collections.deque`, `dataclasses`, `typing.{TYPE_CHECKING,
+    Final, Literal, cast}`, `jarvis.shared.{Claim, ClaimType, Evidence,
+    EvidenceLevel}`, `jarvis.state.event_log.iter_events`, plus
+    TYPE_CHECKING-only `sqlite3`, `collections.abc`, and
+    `jarvis.shared.Event`. `lint-imports` confirms boundary contract
+    KEPT.
+  - **Single L3 surface.** `make_snapshot(conn)` is the L3-facing
+    name (per Step 5 spec). `rebuild_projections(conn)` is the
+    Day-1 internal alias; Day-1 they are byte-identical. Stage 2 may
+    introduce snapshot-vs-rebuild differentiation (e.g., high-water-mark
+    caching per spec §3.3.6) without touching the L3 call sites.
+- Next: Step 6 (L4 `tools.py` — registry + 8-state lifecycle +
+  spawn_worker / verify_diff stubs).
