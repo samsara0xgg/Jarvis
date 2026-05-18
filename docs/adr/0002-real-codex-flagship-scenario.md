@@ -194,13 +194,19 @@ The flow:
 4. **verify_diff (L4 observation, real)** — handler returns
    **raw observations only** (no reviewer call, no verdict). Captures:
    `diff_text` (from artifact file), `diff_nonempty`, `verify_command`
-   (from `task.created.payload`, may be None), `verify_command_exit`,
+   (plumbed via `ActionRequest.payload["verify_command"]`, may be
+   None — see § Verify_command plumbing), `verify_command_exit`,
    `verify_command_stdout_tail`, `verify_command_duration_ms`. No
    `git apply --check` — Codex already applied the changes; re-applying
-   the captured patch to the same tree fails. The handler returns
-   `RawResult` with `result_semantics="observation"` per spec §3.4.11
-   (canonical enum: ack | observation | verification | report | error);
-   L3 emits `action.result_observed` from that RawResult.
+   the captured patch to the same tree fails. The handler returns a
+   `RawResultBundle` containing one or two `RawResult` slots: slot 1
+   carries `result_semantics="observation"` (the diff capture) per spec
+   §3.4.11; slot 2 carries `result_semantics="verification"` (or
+   `"error"`) per spec §3.5.7 only when `verify_command` is non-None.
+   L3 emits one `action.result_observed` per slot (spec §5.4.2). The
+   `RawResultBundle` shape is described in detail in § RawResultBundle
+   contract; single-slot tools (e.g. `spawn_worker`) continue to return
+   a bare `RawResult` and the L4 dispatcher transparently wraps it.
 5. **Result interpretation (L3)** — the L3 Result Interpreter consumes
    `action.result_observed` (carrying `result_semantics="observation"`
    from the verify_diff RawResult). It calls the L3 reviewer
@@ -235,7 +241,7 @@ The flow:
 | D8 | Codex model | `gpt-5.5` with `model_reasoning_effort=xhigh`, injected via `-c` flags at spawn (closes config-drift) |
 | D9 | Reviewer LLM | OpenRouter + gpt-5.5 deep (same backbone as L3 decision; separate `cost.recorded` row, fresh context per review) |
 | D10 | Sandbox | `sandbox_mode="workspace-write"` with `sandbox_workspace_write.writable_roots=[repo_path]`, all `-c`-injected |
-| D11 | `verify_command` | Stored in `task.created.optional_payload`; default detection at task creation; runs in L4 with timeout 600s |
+| D11 | `verify_command` | Stored in `task.created.optional_payload`; default detection at task creation emits one of four pinned strings — `"uv run pytest -x"` (Python) / `"cargo test"` (Rust) / `"npx jest --bail"` (JS) / `"make test"` (make) — runs in L4 with timeout 600s via `/bin/sh -c`. See Step 4 for the detection rules |
 | D12 | Reviewer layer | L3 (not L4) — reviewer takes `LLMClient` which is L3-owned; locating reviewer in L4 violates `.importlinter` |
 | D13 | Cost recording | One `cost.recorded` event per LLM call + per Codex turn; pricing table lifted verbatim from jarvis-legacy |
 | D14 | Task creation | Natural-language path through L3 calling the new `create_task` L4 tool. No separate `jarvis task add` CLI |
@@ -286,12 +292,33 @@ or two claims (Postcondition + optional Limitation):
 | " " (same condition, second evidence row) | reviewer LLM | Limitation | limits | reported | — |
 | `diff_nonempty == False` (Codex produced nothing) | spawn_worker run (Execution Claim, executed) | Execution | supports | executed | no |
 | " " (same condition, second evidence row — §8.5 rule 6) | absence of diff artifact | Limitation | limits | reported | — |
+| `verify_command` present AND `diff_nonempty == False` AND `verify_command` exits 0 (paradox — Codex produced nothing, postcondition already true) | spawn_worker run | Execution | supports | executed | no |
+| " " (same condition, second evidence row) | `verify_command` (slot 2, `result_semantics=verification`) | Postcondition | supports | **verified** | **yes** |
+| " " (same condition, third row — §8.5 rule 6 records the paradox) | absence of diff artifact | Limitation | limits | reported | — |
+| `verify_command` present AND `diff_nonempty == False` AND `verify_command` exits ≠ 0 (no progress, postcondition still false) | spawn_worker run | Execution | supports | executed | no |
+| " " (same condition, second evidence row) | `verify_command` (slot 2, `result_semantics=error`) | Limitation | limits | executed | no |
+| " " (same condition, third row — §8.5 rule 6) | absence of diff artifact | Limitation | limits | reported | — |
 
 Notes:
 - A Postcondition Claim at `level=verified` **only** comes from a
   RawResult whose `result_semantics="verification"` — i.e. the
   `verify_command` exit-code predicate inside the post_action_check
   chain. No other path can lift the level.
+- **Empty-diff + verify_command-passes paradox.** When Codex produces
+  nothing (`diff_nonempty == False`) but the `verify_command` exits
+  zero, the cleanest reading is that the postcondition was already
+  true before the turn started (Codex correctly judged the task
+  complete). Day-2 honors this: the Execution Claim sits at
+  `level=executed` (Codex ran but added nothing), and the Postcondition
+  Claim still reaches `level=verified` from the verify_command slot
+  because the predicate is a true postcondition signal regardless of
+  diff content. `task.verified` fires. An additional §8.5 rule-6
+  Limitation row records the missing-diff anomaly so the audit chain
+  retains the "no work was produced" signal — Allen sees the
+  Limitation alongside the verified completion and can sanity-check
+  the run. The matched `verify_command exits ≠ 0` row is the
+  non-paradoxical case: both signals agree the postcondition is not
+  met.
 - When `verify_command` is absent, no Postcondition Claim is emitted;
   the strongest available evidence is an Artifact Claim at
   `level=observed` from the diff observation slot. `task.verified` is
@@ -581,6 +608,18 @@ SUBMIT_REPORT_TOOL = {
 # from that moment on `submit_report` is selectable inside the turn.
 ```
 
+**Subprocess lifetime.** Codex spawns and owns the
+`codex_mcp_tools.py` subprocess for the lifetime of the Codex
+app-server — one MCP child per `run_codex_action` invocation, no
+per-turn restart. The MCP child exits when Codex itself exits, and
+`CodexAppServerClient.close()` (called by L4 on `turn/completed`,
+timeout, or crash) triggers Codex's shutdown, which cleanly tears
+down the MCP child via SIGTERM. Day-2 spawns Codex once per
+`run_codex_action` (one turn per spawn — `turn/start` followed by
+exactly one `turn/completed`), so each flagship run pairs with
+exactly one MCP child lifetime. Jarvis never spawns or directly
+manages the MCP child itself.
+
 **Why injection is config-flag, not runtime RPC.** Codex 0.125+'s
 app-server has a closed, declarative protocol surface
 (`initialize | thread/start | turn/start | turn/interrupt` — confirmed
@@ -639,16 +678,39 @@ def isolate_pretask_changes(cwd: Path) -> str | None:
     """
 
 def restore_pretask_changes(cwd: Path, stash_ref: str | None) -> None:
-    """Pop the stash after Codex completes. On conflict, write the
+    """Pop the stash AFTER both diff_capture AND any downstream
+    verify_diff action have read the tree. On conflict, write the
     stash as a patch artifact (~/.jarvis/artifacts/run_<R>/conflict.patch)
-    and emit worker.artifact_observed with kind=stash_conflict."""
+    and emit worker.artifact_observed with kind=stash_conflict.
+
+    Ordering contract (critical): `restore_pretask_changes` MUST NOT be
+    called inside `spawn_worker_handler` before `verify_diff_handler`
+    has exited. The verify path's `verify_command` (e.g. `pytest`) runs
+    with `cwd=repo_path` and would otherwise see Allen's stashed work
+    layered on top of Codex's changes — polluting the postcondition
+    predicate. The L3 / runtime composition owns this ordering and is
+    responsible for calling `restore_pretask_changes` only AFTER
+    `verify_diff_handler` has produced its RawResultBundle.
+    """
 ```
 
-The stash is the auto-restored after `diff_capture` runs (the diff
-already reflects only Codex's changes because the working tree was
-clean at spawn-time). If `git stash pop` conflicts, the stash is
-preserved as an artifact and surfaced via Limitation Claim — Allen
-manually reconciles. **Never silently overwrite Allen's work.**
+The stash is auto-restored AFTER `verify_diff_handler` exits (i.e.
+after both the diff observation slot and the post_action_check
+verification slot have been captured), NOT inside `spawn_worker_handler`.
+The diff already reflects only Codex's changes because the working
+tree was clean at spawn-time, and the verify_command runs against the
+same clean+Codex tree so its exit code is a true postcondition signal.
+If `git stash pop` conflicts, the stash is preserved as an artifact
+and surfaced via Limitation Claim — Allen manually reconciles.
+**Never silently overwrite Allen's work.**
+
+The ordering is enforced statically by canary
+`test_canary_stash_pop_after_verify` (AST scan: no
+`restore_pretask_changes(...)` call appears inside
+`spawn_worker_handler`'s body; the runtime composition is the only
+permitted call site, and it must call `verify_diff_handler(...)`
+strictly before `restore_pretask_changes(...)` in the linearized
+source of `jarvis/runtime/__init__.py`).
 
 ### Reviewer contract (L3 helper)
 
@@ -764,10 +826,21 @@ class VerifyCommandSlot:
 def verify_diff_handler(action_request: ActionRequest) -> RawResultBundle:
     """L4 observation handler with inline post_action_check chain.
 
+    Stash-pop ordering (critical, §Dirty-tree policy):
+    `verify_diff_handler` runs with `cwd=repo_path` and the
+    `verify_command` subprocess therefore sees the working tree exactly
+    as Codex left it. The L3 / runtime composition MUST NOT call
+    `restore_pretask_changes(...)` (the stash-pop) until AFTER
+    `verify_diff_handler` returns its `RawResultBundle`; otherwise
+    Allen's stashed pre-task changes would be layered back on top of
+    the tree mid-verify and pollute the verify_command's exit code.
+
     1) Read diff.txt artifact → DiffObservationSlot
        (result_semantics="observation"). NO `git apply --check`
        (Codex already applied the patch in-place).
-    2) If task.verify_command is non-None, run it INLINE:
+    2) Read `verify_command` from `action_request.payload.get("verify_command")`
+       (L3 plumbs it from the Task Ledger projection — see §Verify_command
+       plumbing below). If non-None, run it INLINE:
          subprocess.run(
              ["/bin/sh", "-c", verify_command],
              cwd=repo_path,
@@ -799,6 +872,36 @@ Gate's `caller_principal` check, and `verify_command` strings on
 imported tasks must be quarantined (refused or re-authored locally)
 before the verify_diff handler ever sees them.
 
+**Verify_command plumbing (Task Ledger → ActionRequest → handler).**
+The `verify_command` string is **not** part of the L4 ToolDefinition;
+it is per-task state. The flow is:
+
+1. **Step 4 (D-1)** — `create_task_handler` stores `verify_command` in
+   `task.created.optional_payload["verify_command"]` (registry entry
+   per § Day-2 EventTypeRegistry extensions).
+2. **L2 projection** — the Task Ledger projection folds `task.created`
+   and exposes `verify_command` on the per-task record (alongside
+   `goal`, `repo_path`).
+3. **Step 12 (D-day, L3 Result Interpreter)** — after the resolver
+   binds `task_id=T_X`, when L3 proposes the `verify_diff` action it
+   reads `verify_command` from the Task Ledger projection (NOT
+   directly from the event log) and attaches it to the ActionRequest:
+
+       action_request.payload["verify_command"] = task_record.verify_command
+       # str | None — None when D-1 detection returned None.
+
+4. **L4 (Step 11)** — `verify_diff_handler` reads
+   `action_request.payload.get("verify_command")`. If `None`, slot 2
+   is omitted from the returned `RawResultBundle`; otherwise slot 2
+   carries the subprocess result.
+
+The payload key is exactly `"verify_command"` (string), and the value
+is exactly the string stored on `task.created.optional_payload`
+(no transformation). Canary
+`test_canary_verify_command_plumbed_to_action_request` AST-scans the
+L3 Result Interpreter for the read site and asserts the same literal
+key reaches L4.
+
 L3 Result Interpreter consumes both `action.result_observed` events
 for this action — one with `result_semantics="observation"` (diff
 slot), one with `result_semantics="verification"` or `"error"`
@@ -808,13 +911,93 @@ F2 ladder (one evidence row per source). The verification-slot row is
 the **only** path that can produce a Postcondition Claim at
 `level=verified`, in keeping with spec §3.4.11.
 
+### RawResultBundle contract
+
+`RawResultBundle` is a Day-2 addition that sits alongside the existing
+Day-1 `RawResult` type — both live in `jarvis/shared/__init__.py` so
+both L3 (Result Interpreter) and L4 (handler return shape) can import
+them without crossing the layer DAG. Concrete shape:
+
+```python
+# jarvis/shared/__init__.py — Day-2 addition (alongside Day-1 RawResult)
+@dataclass(frozen=True)
+class RawResultBundle:
+    """A sequence of RawResult slots returned by one L4 handler.
+
+    Day-1 tools returned a single RawResult. Day-2 introduces
+    `RawResultBundle` so that tools declaring a `post_action_check`
+    (spec §3.5.7) can return TWO slots in one call — slot 1 for the
+    primary observation, slot 2 for the chained verification/error.
+    Each slot carries its own `result_semantics` per spec §3.4.11; L3
+    emits one `action.result_observed` event per slot (spec §5.4.2).
+
+    Invariant: at least one slot. Two slots maximum Day-2 (one primary
+    + one post_action_check). Multi-stage chains are out of scope.
+    """
+
+    slots: tuple[RawResult, ...]   # 1 or 2 entries
+```
+
+**Wrapping rule for single-slot tools.** Tools that do NOT declare a
+`post_action_check` (the Day-1 majority: `spawn_worker`, `create_task`,
+the `response` synthetic tool, etc.) continue to return a bare
+`RawResult` from their handler. The L4 dispatcher (in
+`jarvis/execution/tools.py`'s registry path) wraps the bare result in
+a single-slot `RawResultBundle(slots=(result,))` before handing back
+to L3, so L3 always sees the bundle shape. This keeps the dispatcher
+signature uniform (`Callable[..., RawResultBundle]`) and avoids a
+union return type in L3's call sites — at the cost of one extra
+allocation per dispatch, which is negligible. Defended over the
+alternative (L3 unions `RawResult | RawResultBundle`) because the
+union forces a type-narrow at every L3 consumer; the wrap-on-dispatch
+approach narrows once at the boundary and frees every interpreter
+branch from the check.
+
 Implementation note: jarvis uses `RawResultBundle` (a tuple of
 RawResult slots) rather than a single flattened RawResult so that the
 two slots can carry distinct `result_semantics` values into distinct
 `action.result_observed` events — spec §3.5.4 line 864 explicitly
 allows "per-output mapping" and §3.5.7 inline chaining requires it.
-The single-RawResult shape used by ack-only tools is unchanged; the
-bundle is only used by tools that declare `post_action_check`.
+The single-RawResult shape used by ack-only tools is unchanged on the
+handler side; the dispatcher wrap-on-return preserves backwards
+compatibility for every Day-1 handler.
+
+### RawResult.metadata extension
+
+Day-1's `RawResult` (in `jarvis/shared/__init__.py`) carries
+`action_id`, `semantics`, `payload`, `tool_output`, `error`. Day-2
+adds one field:
+
+```python
+# jarvis/shared/__init__.py — additive Day-2 edit on the existing
+# RawResult dataclass (frozen, so the new field is appended at the
+# end with a default so Day-1 call sites continue to construct
+# RawResult without touching the new field).
+metadata: Mapping[str, Any] | None = None
+```
+
+The `metadata` mapping is L4's side-channel for data that is **not**
+part of the canonical RawResult payload (which is shaped per
+`result_semantics`) but must still travel back to L3 so L3 can emit
+correlated events. Day-2 uses exactly one key:
+
+- `metadata["cost"]` — dict carrying
+  `{"kind": "codex", "model": str, "tokens_in": int, "tokens_out": int,
+  optional "cache_read_in", "cache_write_in"}`. L4's
+  `spawn_worker_handler` populates this from Codex's `turn/completed`
+  payload. The L3 Result Interpreter reads
+  `raw_result.metadata["cost"]` and emits `cost.recorded` (the L3-only
+  emit-site per spec §5.4.1 owner_layer).
+
+The key vocabulary is small and Day-2-fixed: `"cost"` is the only key
+in use. Future kinds (e.g. retry telemetry, sandbox observations) get
+their own key without breaking the contract. The mapping is read-only
+(typed as `Mapping`, not `dict`), so neither layer mutates the other's
+view.
+
+This addition lives in `jarvis/shared/__init__.py` per § Edits to
+existing files; the field is purely additive (default `None`) so
+every Day-1 RawResult construction stays valid without changes.
 
 ### Notification contract (L5)
 
@@ -923,8 +1106,21 @@ deferred, see deviation V4):
 
 ```python
 # jarvis/deployment/sleep_wake.py (sketch)
-def install_power_observer(event_log: EventLog) -> PowerObserver:
+def install_power_observer(
+    event_log: EventLog,
+    *,
+    observer_factory: Callable[[], PowerObserver] | None = None,
+) -> PowerObserver:
     """Register macOS IOPM notification handler.
+
+    `observer_factory` defaults to the real macOS IOPM-backed observer
+    (constructed via Cocoa / ctypes bindings). K7 / K8 Tier-2 invariants
+    inject a stub factory whose `simulate_sleep()` / `simulate_wake()`
+    methods fire the IOPM callbacks deterministically without touching
+    actual system power events — this is the injection point that lets
+    integration tests against live Codex still drive sleep/wake
+    transitions reproducibly. Unit tests (Step 16,
+    `tests/unit/test_sleep_wake.py`) use the same factory parameter.
 
     Before-sleep callback (best-effort, may not fire if power is yanked):
       - emit mac.sleeping(reason, in_progress_actions=[...]) per §3.7.8
@@ -1003,9 +1199,10 @@ EventTypeSchema(
     # owner_layer is L3 per spec §5.4.1 (single-value owner_layer).
     # L4 returns cost data inside RawResult (codex turn tokens come from
     # Codex's turn/completed payload, attached to spawn_worker's
-    # RawResult.metadata.cost); L3 reads that and emits cost.recorded.
-    # L4 never emits this event directly — see spec §5.4.2 pattern where
-    # L4 returns RawResult and L3 emits action.result_observed.
+    # `RawResult.metadata["cost"]` — see § RawResult.metadata extension).
+    # L3 reads that and emits cost.recorded. L4 never emits this event
+    # directly — see spec §5.4.2 pattern where L4 returns RawResult and
+    # L3 emits action.result_observed.
     event_type="cost.recorded",
     owner_layer="L3",
     required_payload=("kind", "model"),
@@ -1105,8 +1302,8 @@ optional_payload=("source_type", "source_id", "observed_at",
 | Path | Lines | Source |
 |---|---|---|
 | `jarvis/execution/codex_client.py` | ~399 | Lift from Hermes |
-| `jarvis/execution/codex_action.py` | ~120 | New (incl. submit_report injection via `-c mcp_servers.jarvis-tools.*` spawn flags) |
-| `jarvis/execution/codex_mcp_tools.py` | ~80 | New — stdio MCP server subprocess exposing one tool (`submit_report`). Hand-rolled JSON-RPC stdio framing, follows Hermes' `agent/transports/hermes_tools_mcp_server.py` pattern. Spawned by Codex itself per the `-c mcp_servers.jarvis-tools.*` injection (see § submit_report tool injection). No third-party `mcp` PyPI dependency |
+| `jarvis/execution/codex_action.py` | ~120 | New — Codex one-shot driver. **Injection only**: builds the `-c mcp_servers.jarvis-tools.*` flag list (four flags) and passes it to `CodexAppServerClient`. Does NOT implement the MCP server; the server impl lives in `codex_mcp_tools.py` (next row) and runs as its own subprocess spawned by Codex |
+| `jarvis/execution/codex_mcp_tools.py` | ~80 | New — **MCP server implementation**: stdio MCP server subprocess exposing one tool (`submit_report`). Hand-rolled JSON-RPC stdio framing, follows Hermes' `agent/transports/hermes_tools_mcp_server.py` pattern. Spawned by Codex itself per the `-c mcp_servers.jarvis-tools.*` injection emitted by `codex_action.py` (see § submit_report tool injection). No third-party `mcp` PyPI dependency |
 | `jarvis/decision/reviewer.py` | ~100 | New (**L3** per F4) |
 | `jarvis/decision/pre_emit_phrases.py` | ~30 | New (single source of regexes) |
 | `jarvis/execution/diff_capture.py` | ~80 | New (incl. dirty-tree auto-stash) |
@@ -1120,9 +1317,19 @@ optional_payload=("source_type", "source_id", "observed_at",
 
 **Edits to existing files:**
 
-- `jarvis/state/event_log.py` — register 12 new event types + amend
-  optional/required_payload tuples for `action.result_observed`,
-  `task.created`, `evidence.attached`.
+- `jarvis/shared/__init__.py` — additive Day-2 type edits per § RawResultBundle
+  contract + § RawResult.metadata extension + § ResponsePlan schema extension:
+  (1) add a `RawResultBundle` frozen dataclass wrapping a tuple of
+  `RawResult` slots (1 or 2); (2) extend `RawResult` with a trailing
+  `metadata: Mapping[str, Any] | None = None` field carrying the
+  Codex-turn `cost` dict; (3) extend `ResponsePlan` with
+  `output_risk_class: Literal["routine","consequential_claim",
+  "high_risk_claim"]` and `required_gate_mode: Literal["sentence",
+  "full_text","structured"]` per spec §3.4.13. All three are additive
+  (defaulted or new types); Day-1 call sites stay valid.
+- `jarvis/state/event_log.py` — register 12 new event types (8 Day-2
+  originals + 4 sleep/wake) + amend optional/required_payload tuples
+  for `action.result_observed`, `task.created`, `evidence.attached`.
 - `jarvis/state/projections.py` — Task Ledger projection gains
   `tasks_in_window(since_ts, until_ts) -> list[TaskId]` method so L3
   resolver can query by time window via the projection API (spec
@@ -1139,8 +1346,8 @@ optional_payload=("source_type", "source_id", "observed_at",
   §3.5.7; **no reviewer call inside L4**; register new
   `create_task_handler` with `verify_command` detection.
 - `jarvis/decision/__init__.py` — emit `cost.recorded` after every LLM
-  call in `decide()`; consume RawResult.metadata.cost from L4 and emit
-  `cost.recorded(kind=codex)` there too (L3 is the sole emit-site per
+  call in `decide()`; consume `RawResult.metadata["cost"]` from L4 and
+  emit `cost.recorded(kind=codex)` there too (L3 is the sole emit-site per
   registry owner_layer=L3); wire the **dual-slot** Result Interpreter
   for `verify_diff` — for each `action.result_observed` event tagged
   with the relevant action_id, branch on `result_semantics`:
@@ -1242,8 +1449,8 @@ optional_payload=("source_type", "source_id", "observed_at",
   on whichever claim is active (never raises level). Forms Evidence
   `(relation, level)` per the F2 ladder, one row per source. Emits
   `cost.recorded` for both decision LLM rounds and Codex turns (L4
-  returns cost in RawResult.metadata). ResponsePlan carries canonical
-  `output_risk_class` + `required_gate_mode` per spec §3.4.13.
+  returns cost in `RawResult.metadata["cost"]`). ResponsePlan carries
+  canonical `output_risk_class` + `required_gate_mode` per spec §3.4.13.
 - **L4 Execution** — `codex_client.py` (vendored), `codex_action.py`
   (incl. submit_report MCP server injection via `-c
   mcp_servers.jarvis-tools.*` spawn flags per spec §3.5.8),
@@ -1317,7 +1524,7 @@ below is relative to a typical N≈6 (3-minute Codex turn).
 | 27+N | `worker.artifact_observed` | evt 26 | run_id=R_Y, action_id=A3 | artifact_path=…/diff.txt, content_hash | observation |
 | 28+N | `task.executor_reported` | evt 26 | task_id=T_X, run_id=R_Y | status=ok, summary, diff_path | report |
 | 29+N | `worker.reported` | evt 26 | run_id=R_Y, action_id=A3 | status=ok, summary, artifact_path (sourced from Codex's `submit_report` tool call; if missing, evt 29+N is `worker.report_missing` instead and a Limitation Claim is emitted) | report |
-| 30+N | `cost.recorded` | — | run_id=R_Y, action_id=A3 | kind=codex, model=gpt-5.5, tokens_in/out from turn/completed (L4 returned cost in RawResult; L3 emits) | none |
+| 30+N | `cost.recorded` | — | run_id=R_Y, action_id=A3 | kind=codex, model=gpt-5.5, tokens_in/out from turn/completed (L4 returned cost in `RawResult.metadata["cost"]`; L3 emits) | none |
 | 31+N | `action.result_observed` | evt 29+N | turn_id=T2, action_id=A3 | result_semantics=report, run_id=R_Y, summary, artifact_ref=diff_path | report |
 | | *[L3 Result Interpreter consumes evt 31+N: spec §3.4.11 maps `report` → Report Claim, level=reported. No verified claim yet — the Codex report is agent self-report per §8.5 rule 1. Decide() then proposes the next action (verify_diff).]* | | | | |
 | 32+N | `claim.created` | evt 31+N | task_id=T_X, claim_id=C1 | type=Report, statement="codex reported complete with summary X" | report |
@@ -1342,14 +1549,23 @@ below is relative to a typical N≈6 (3-minute Codex turn).
 | 50+N | `surface.response_emitted` | evt 49+N | turn_id=T2 | text, voice_text, document_text, delivered_via=["voice","banner","stdout"], attention_channel=voice_notify | none |
 | 51+N | `turn.ended` | evt 16 | turn_id=T2 | duration_ms | none |
 
-Total Phase-2 events (excluding heartbeats): 30 + N (was 28+N before
-the §3.5.7 correction split the verify_diff `action.result_observed`
-into two semantically-distinct slots — observation + verification —
-and split the resulting `evidence.attached` rows by source so the
-verify_command-derived verified row and the reviewer-LLM-derived
-reported row attach independently to the same Postcondition Claim).
-For N=6 → 36 events. **Tier-2 acceptance count tolerance: A1 widens
-to [32, 44] for the Phase-2 run.**
+Total Phase-2 events (excluding heartbeats): **36 fixed events** —
+the count is constant in N because heartbeats are the only N-scaled
+row. Re-derived by row-by-row count of the table above: 11 fixed
+rows in [16, 26] inclusive + N heartbeat rows in [27, 27+N-1] + 25
+fixed rows in [27+N, 51+N] inclusive = 36 fixed + N heartbeat. For
+N=6 → 36 fixed + 6 heartbeats = 42 total. The prior "30 + N" formula
+double-counted heartbeats into the fixed bucket and was off by 6;
+this revision is constant-in-N because the verify_diff dual-slot
+split, the reviewer-row split, and the explicit Report Claim / pair
+for `worker.reported` are all fixed-position rows — they don't
+scale with sleep length. **Tier-2 acceptance count tolerance: A1
+widens to [34, 38] for Phase-2 fixed events (excluding heartbeats)
+— ±2 slack absorbs an extra `cost.recorded` round if the L3 decision
+LLM fires a follow-up token-count clean-up call, or a missing one
+if the reviewer is skipped on a degenerate path. Heartbeats are
+counted separately: at least `floor(elapsed_s / 30)` heartbeats per
+spawn_worker action, no upper bound enforced.**
 
 ### Negative-path appendix
 
@@ -1391,7 +1607,7 @@ response says "Codex 超时，未完成"; level remains `reported`.
 
 | Tier | Cost | Day-1 (A–I) | Day-2 additions |
 |---|---|---|---|
-| 1 | LLM-free, < 75s wall | Inherited | + cost-recorded canary; + codex_version preflight unit test; + ladder mapping unit test; + ack-before-fork canary; + 12 new event types in registry |
+| 1 | LLM-free, < 75s wall | Inherited | + cost-recorded canary; + codex_version preflight unit test; + ladder mapping unit test; + ack-before-fork canary; + 12 new event types (8 Day-2 originals + 4 sleep/wake) in registry |
 | 2 | Real LLM + real Codex (`--live-codex`) | Inherited | + **J. Real Codex round-trip** + **K. Real notification side-effects** + **L. Evidence ladder enforcement** |
 
 ### Tier 1 (LLM-free)
@@ -1412,7 +1628,7 @@ All Day-1 Tier-1 gates remain. New additions:
     "cost.recorded", ...)` follows every `llm_client.chat(...)` site.
   - `test_canary_cost_recorded_l3_only` — AST scan: no `emit_event(...,
     type="cost.recorded")` call appears under `jarvis/execution/`. L4
-    returns cost in `RawResult.metadata.cost`; only L3 emits the event.
+    returns cost in `RawResult.metadata["cost"]`; only L3 emits the event.
   - `test_canary_daemon_ack_before_fork` — AST scan ensures
     `fork_detach()` is preceded by a `print(...)` + `sys.stdout.flush()`
     + that no `bootstrap_runtime_app(...)` precedes the fork in the
@@ -1473,6 +1689,27 @@ All Day-1 Tier-1 gates remain. New additions:
   - `test_canary_pricing_at_shared` — AST scan: no `from jarvis.state
     import pricing` or equivalent; pricing lives under
     `jarvis/shared/`.
+  - `test_canary_stash_pop_after_verify` — AST scan: the symbol
+    `restore_pretask_changes` does NOT appear inside the body of
+    `spawn_worker_handler` in `jarvis/execution/tools.py`; the only
+    call site is `jarvis/runtime/__init__.py`, where the linearized
+    source orders `verify_diff_handler(...)` strictly before
+    `restore_pretask_changes(...)` along the happy path. Enforces the
+    § Dirty-tree policy ordering contract — the stash-pop must not
+    pollute the tree that `verify_command` reads.
+  - `test_canary_verify_command_plumbed_to_action_request` — AST scan:
+    the L3 Result Interpreter site that constructs the
+    `verify_diff` ActionRequest assigns
+    `payload["verify_command"] = task_record.verify_command` (literal
+    key match); ensures the Task Ledger projection's
+    `verify_command` reaches L4 unchanged. The complementary L4-side
+    read (`action_request.payload.get("verify_command")`) is asserted
+    in the same canary.
+  - `test_canary_response_plan_carries_gate_mode` — AST scan: every
+    `ResponsePlan(...)` instantiation under `jarvis/decision/` sets
+    both `output_risk_class` and `required_gate_mode` keyword
+    arguments (or the equivalent dataclass field assignment); ensures
+    spec §3.4.13 fields are populated rather than defaulted.
 
 Wall-time budget: < 75s (was < 30s Day-1; +45s amortized across:
 the larger AST canary suite ~15s; sleep_wake fake-clock fixtures ~5s;
@@ -1507,7 +1744,7 @@ Gated by `--live-codex` pytest flag (skips without it).
 | J8 | On Codex crash (subprocess return non-zero), `action.failed` emitted with `error="codex_subprocess_crashed"`; no `task.verified` |
 | J9 | On Codex timeout (deadline exceeded), `action.timeout_assumed` emitted; subprocess killed via `close(timeout=3.0)` |
 | J10 | `-c` flags `model=gpt-5.5`, `model_reasoning_effort=xhigh`, `sandbox_mode=workspace-write`, `sandbox_workspace_write.writable_roots=["<cwd>"]` all present in spawn argv (assert by inspecting `Popen.args` capture) |
-| J11 | `submit_report` MCP tool is reachable in the Codex thread (registered via `-c mcp_servers.jarvis-tools.*` spawn flags, NOT via runtime JSON-RPC) before `turn/start` fires; verified by inspecting the spawn `Popen.args` to confirm all four `mcp_servers.jarvis-tools.{command,args,startup_timeout_sec,tool_timeout_sec}` flags are present AND by Codex's MCP `tools/list` handshake returning `submit_report`; the take_notification loop captures an `item/tool_call` event with `tool_name == "submit_report"` exactly once before `turn/completed` |
+| J11 | `submit_report` MCP tool is reachable in the Codex thread (registered via `-c mcp_servers.jarvis-tools.*` spawn flags, NOT via runtime JSON-RPC) before `turn/start` fires; verified by inspecting the spawn `Popen.args` to confirm all four `mcp_servers.jarvis-tools.{command,args,startup_timeout_sec,tool_timeout_sec}` flags are present, AND by the take_notification loop capturing an `item/tool_call` notification with `tool_name == "submit_report"` exactly once before `turn/completed`. (The MCP `tools/list` reply is internal to the Codex subprocess and not observable from jarvis; the captured `item/tool_call` is the real reachability proof — Codex cannot call a tool it could not list.) |
 | J12 | If Codex completes a turn without calling `submit_report`, `worker.report_missing` is emitted and a Limitation Claim with `relation=limits, level=reported` is attached (spec §3.5.8) |
 | J13 | Dirty-tree case: spawn_worker on a repo with uncommitted changes auto-stashes via `git stash push -u`, runs Codex, then `git stash pop`. On stash-pop conflict, the stash is preserved as `artifacts/run_<R>/conflict.patch` and surfaced via Limitation Claim |
 
@@ -1542,12 +1779,16 @@ A–I from ADR 0001 stay, with these specific updates:
 
 - **A. Event Log structural** — registry now has Day-1 count + 12 new
   entries (8 Day-2 originals + 4 sleep/wake); A1 event-count tolerance
-  widens to **[32, 44]** for Phase-2 (was [28, 40]; +2 covers the
-  newly-explicit Report Claim + evidence_attached pair after
-  worker.reported plus the corrected terminal action.result_observed
-  for spawn_worker; +2 more covers the §3.5.7 dual-slot split for
-  verify_diff — two `action.result_observed` events instead of one,
-  and two `evidence.attached` rows instead of one).
+  tightens to **[34, 38]** for Phase-2 fixed events (excluding
+  heartbeats), down from Day-1's N-scaled [28, 40] range — the new
+  formula is constant-in-N (36 fixed events) because all of the
+  Day-2 additions (the Report Claim + evidence_attached pair after
+  worker.reported, the corrected terminal action.result_observed for
+  spawn_worker, the §3.5.7 dual-slot split for verify_diff producing
+  two `action.result_observed` events instead of one, and two
+  `evidence.attached` rows instead of one) are fixed-position rows.
+  Heartbeats are asserted separately: `count(worker.heartbeat) >=
+  floor(elapsed_s / 30)` per spawn_worker action with no upper bound.
 - **B. ActionLifecycle 8-state** — Per spec §3.5.9 (unified async
   lifecycle), spawn_worker's action stays in `running` while
   worker.heartbeat / worker.artifact_observed / worker.reported fire;
@@ -1590,13 +1831,15 @@ A–I from ADR 0001 stay, with these specific updates:
   `jarvis/decision/pre_emit_phrases.py:LIMITATION_REGEXES` constant.
 - **G. LLM is real, not mocked** — Codex is real too; reviewer LLM is
   real too. Mocks only in unit tier.
-- **H. Anti-bypass canaries** — fourteen new entries (cost-recorded
+- **H. Anti-bypass canaries** — seventeen new entries (cost-recorded
   emitted, cost-recorded L3-only, ack-before-fork, reviewer-in-L3,
   reviewer-fresh-context, no apply-check, resolver-uses-projection-api,
   surface-user-intent-swap, evidence-relation-required,
   submit-report-injection, mcp-injection-via-c-flags,
   verify-diff-post-action-check, regex-constants-single-source,
-  pricing-at-shared).
+  pricing-at-shared, stash-pop-after-verify,
+  verify-command-plumbed-to-action-request,
+  response-plan-carries-gate-mode).
 - **I. Replay determinism** — Codex's `turn_id` is recorded; replay
   tolerance widens because Codex output is non-deterministic
   (acknowledged, not enforced equality).
@@ -1613,10 +1856,10 @@ Verification).
 | Step | What | References | Verification |
 |---|---|---|---|
 | **0** | Lift `codex_client.py` + `pricing.py` (to `jarvis/shared/`) + `_helpers.py` + `refresh_pricing.py` + `pricing.json`. Add attribution headers. No wiring. | Hermes `agent/transports/codex_app_server.py` (verbatim); legacy `memory/cold/pricing.py`, `scripts/refresh_pricing.py`, `tools_v2/helpers.py` | Tier 1 T1.A–T1.C clean; `lint-imports` exempts vendored `codex_client.py`; canary `test_canary_pricing_at_shared` passes |
-| 1 | EventTypeRegistry: register 12 new types (worker.heartbeat, worker.artifact_observed, worker.report_missing, task.executor_assigned, task.executor_reported, cost.recorded, surface.user_intent, surface.response_emitted, mac.sleeping, mac.awake, worker.suspended_by_sleep, worker.terminated_by_sleep); amend `action.result_observed.optional_payload`, `task.created.optional_payload` (+ `repo_path`, + `verify_command`), and `evidence.attached.required_payload` (+ `relation`) | spec.html §5.4 lines 1435–1450, §3.7.8 sleep/wake events, §8.6 evidence schema; F6 + F7 + F8 | Unit test: registry has 12 new entries; `evidence.attached.required_payload` contains `relation`; `task.created.required_payload == ("task_id","goal")` unchanged |
+| 1 | EventTypeRegistry: register 12 new types (8 Day-2 originals — worker.heartbeat, worker.artifact_observed, worker.report_missing, task.executor_assigned, task.executor_reported, cost.recorded, surface.user_intent, surface.response_emitted — + 4 sleep/wake — mac.sleeping, mac.awake, worker.suspended_by_sleep, worker.terminated_by_sleep); amend `action.result_observed.optional_payload`, `task.created.optional_payload` (+ `repo_path`, + `verify_command`), and `evidence.attached.required_payload` (+ `relation`) | spec.html §5.4 lines 1435–1450, §3.7.8 sleep/wake events, §8.6 evidence schema; F6 + F7 + F8 | Unit test: registry has 12 new entries; `evidence.attached.required_payload` contains `relation`; `task.created.required_payload == ("task_id","goal")` unchanged |
 | 2 | Surface.user_intent swap: refactor `jarvis/surface/cli.py` to emit `surface.user_intent` instead of `utterance.received`; update `jarvis/decision/__init__.py`, `intent.py`, `packet.py`, `runtime/__init__.py`, and all trigger fixtures under `tests/unit/`. `utterance.received` stays in registry (reserved for future voice surface) but is unused on the CLI path | spec.html §3.4.1 trigger taxonomy | Canary `test_canary_surface_user_intent_swap`; existing unit tests pass with renamed trigger |
 | 3 | `cost.recorded` emission wired from `decide()` (every LLM call) and from L3 consuming RawResult.metadata.cost returned by L4 (codex turn cost). `LLMClient` metadata returned from `chat()`. **L3 is the sole emit-site** | legacy `memory/cold/pricing.py`; spec §5.4.1 owner_layer | Canary `test_canary_cost_recorded_emitted_per_llm_call` + `test_canary_cost_recorded_l3_only`; pricing table parametrized |
-| 4 | `create_task` L4 tool: schema, handler with `verify_command` auto-detection (look for `pyproject.toml + tests/`, `pytest.ini` for Python; `Cargo.toml + tests/` for Rust; `package.json + jest.config` for JS; `Makefile + test target` for make-based). Returns `None` if no framework detected (downgrade path: Limitation Claim, no auto-verified). Registered for JARVIS_LLM caller | Day-1 `jarvis/execution/tools.py` (ADAPT); legacy `tools_v2/registry.py` for ToolEntry shape | Unit test: `test_create_task`; detection unit test parametrized over directory shapes (Python / Rust / JS / make / unknown) |
+| 4 | `create_task` L4 tool: schema, handler with `verify_command` auto-detection. Detection rules + the exact command string each rule emits (pinned so L4's `/bin/sh -c <verify_command>` is deterministic): Python (`pyproject.toml + tests/` or `pytest.ini` exists) → `"uv run pytest -x"` (Allen-standard launcher per global CLAUDE.md; `-x` for first-failure exit so the exit-code predicate is clean); Rust (`Cargo.toml + tests/` or any `#[test]` discoverable) → `"cargo test"` (no `--fail-fast` flag — cargo defaults to bail on first failing crate); JavaScript (`package.json + jest.config.{js,ts,json}`) → `"npx jest --bail"` (`--bail` mirrors `pytest -x`); make-based (`Makefile` with a `test` target) → `"make test"`. Returns `None` if no framework detected (downgrade path: Limitation Claim, no auto-verified). Registered for JARVIS_LLM caller. The string is stored verbatim in `task.created.optional_payload["verify_command"]` and is what L4 will eventually pass to `/bin/sh -c` — the trade-off across all four is first-failure exit, which makes the `exit_code == 0` predicate a tight pass/fail signal rather than a partial-credit blob | Day-1 `jarvis/execution/tools.py` (ADAPT); legacy `tools_v2/registry.py` for ToolEntry shape; global CLAUDE.md (uv launcher) | Unit test: `test_create_task`; detection unit test parametrized over directory shapes (Python / Rust / JS / make / unknown) and asserting the exact command string each rule emits |
 | 5 | Task Ledger projection: add `tasks_in_window(since_ts, until_ts) -> list[TaskId]` method. Time-window resolver: L3 LLM emits `{since_ts, until_ts}` (anchored to current epoch_ms via system prompt); resolver calls projection API — **no direct SQL** | Day-1 `jarvis/decision/resolver.py`; spec §3.4.3 (L3 reads L2 via projection snapshots only) | Canary `test_canary_resolver_uses_projection_api`; unit test: `test_resolver_time_window`; seeded event log + multiple windows |
 | 6 | `codex_mcp_tools.py`: standalone Python stdio MCP server exposing one tool (`submit_report`) with the WorkerReport schema. Hand-rolled JSON-RPC stdio framing per Hermes' `hermes_tools_mcp_server.py` pattern. No third-party `mcp` PyPI dependency. Speaks `initialize` / `tools/list` / `tools/call`. Subprocess is spawned by Codex (NOT by jarvis directly) at app-server startup per the `-c mcp_servers.jarvis-tools.*` injection in the next step | spec §3.5.8 for submit_report contract; Hermes `agent/transports/hermes_tools_mcp_server.py` for stdio JSON-RPC framing pattern; Hermes `hermes_cli/codex_runtime_plugin_migration.py:557-605` for canonical MCP server entry shape | Unit test: spawn the module as a subprocess, drive `initialize` → `tools/list` → assert `submit_report` is returned with the right `input_schema`; drive `tools/call` → assert structured payload echoes back |
 | 7 | `codex_action.py` one-shot driver around `codex_client`; include `-c` flag injection for sandbox (`model`, `model_reasoning_effort`, `sandbox_mode`, `writable_roots` via `_toml_list_quote`) AND for `submit_report` MCP server (`mcp_servers.jarvis-tools.command`, `args`, `startup_timeout_sec`, `tool_timeout_sec` — the four flags that point Codex at the Step-6 subprocess); capture `item/tool_call` events with `tool_name == "submit_report"` in the take_notification loop | Hermes `codex_app_server.py:75-130` for `-c` pattern (sandbox + MCP-server flags both); spec §3.5.8 for submit_report; § submit_report tool injection in this ADR | Canary `test_canary_submit_report_injection` + `test_canary_mcp_injection_via_c_flags`; unit test (mocked JSON-RPC): assert all eight `-c` flags appear in spawn flow AND the take_notification loop captures `submit_report` tool calls |
@@ -1624,14 +1867,14 @@ Verification).
 | 9 | `jarvis/decision/reviewer.py` (L3): structured-output LLM call, fresh-context system prompt (via `LLMClient.fresh_context()`), `ReviewerVerdict` dataclass | F4; spec.html §13.2 I10 ("claim ≤ evidence") | Canary `test_canary_reviewer_in_l3` + `test_canary_reviewer_fresh_context`; unit test (mocked LLM): `tests/unit/test_reviewer.py` covers ok / fail / malformed JSON / token recording / fresh-context |
 | 10 | Replace `spawn_worker_handler` stub: real Codex flow + submit_report MCP server injection (via the eight `-c` flags from Step 7) + heartbeat loop + diff capture (with dirty-tree stash from Step 8) + `worker.*` event emission + `task.executor_assigned` / `task.executor_reported`. On missing submit_report → emit `worker.report_missing` + Limitation Claim per spec §3.5.8. Returns RawResult with `result_semantics="report"` and `metadata.cost` populated from Codex turn tokens | Day-1 `jarvis/execution/tools.py` `spawn_worker` stub; Hermes `codex_app_server_session.py` | Unit test (mocked subprocess + clock): `test_spawn_worker_real`; missing-submit-report path; J-tier covers live path |
 | 11 | Replace `verify_diff_handler` with the **dual-slot observation + post_action_check** handler: declare `VERIFY_DIFF_TOOL_DEF.post_action_check` per spec §3.5.7 (`mode="inline"`, `check_tool="verify_command"`, `expected_predicate="exit_code == 0"`, `result_semantics_on_match="verification"`, `timeout_ms=600_000`); handler returns `RawResultBundle` with slot 1 carrying the diff observation (`result_semantics="observation"`) AND, when `task.verify_command` is non-None, slot 2 carrying the verify_command result (`result_semantics="verification"` on exit 0; `result_semantics="error"` on non-zero). L4 runs verify_command inline (`subprocess.run(...)` with 600s timeout, `cwd=repo_path`). **No** reviewer call. **No** apply-check | F3, F4; spec §3.4.11 result_semantics enum; spec §3.5.7 post_action_check | Canary `test_canary_no_apply_check` + `test_canary_verify_diff_post_action_check`; unit test: `tests/unit/test_verify_diff_observation.py` covers `verify_command` present/absent, exit 0/non-zero, timeout; assert RawResultBundle has both slots with correct `result_semantics` per branch |
-| 12 | L3 Result Interpreter: **per spec §5.4.2** emit ONE `action.result_observed` per RawResult slot returned by Step-11 verify_diff. Observation slot → call `jarvis.decision.reviewer.review_diff(...)` and form an Artifact Claim at `level=observed` (diff source) PLUS a Report-grade evidence row from the reviewer; Verification slot (`result_semantics="verification"`) → form a Postcondition Claim at `level=verified` and emit `task.verified`; Verification-error slot (`result_semantics="error"`) → form a Limitation Claim at `level=executed` (the tool ran, the postcondition predicate refuted); never emit `task.verified` outside the verified branch. The reviewer's verdict attaches as a SEPARATE Report-level evidence row on whichever claim is active; it never raises the level. Per spec §8.5 rule 6, missing verify_command itself produces a Limitation Claim at `level=reported`. ResponsePlan carries `output_risk_class` + `required_gate_mode` per spec §3.4.13 | F4, F2 ladder; spec.html §3.4.11 + §3.5.7 + §5.4.2 + §8.4 + §8.5 + §8.6 + §3.4.13 | Canary `test_canary_evidence_relation_required`; unit test (LLM-free): `tests/unit/test_result_interpreter_ladder.py` parametrized over all ladder rows; assert dual-slot consumption produces independent evidence rows per source (verify_command vs reviewer vs diff) |
+| 12 | L3 Result Interpreter: **per spec §5.4.2** emit ONE `action.result_observed` per RawResult slot returned by Step-11 verify_diff. **Plumb `verify_command`** from the Task Ledger projection onto `ActionRequest.payload["verify_command"]` when L3 proposes the `verify_diff` action (§ Verify_command plumbing). Observation slot → call `jarvis.decision.reviewer.review_diff(...)` and form an Artifact Claim at `level=observed` (diff source) PLUS a Report-grade evidence row from the reviewer; Verification slot (`result_semantics="verification"`) → form a Postcondition Claim at `level=verified` and emit `task.verified`; Verification-error slot (`result_semantics="error"`) → form a Limitation Claim at `level=executed` (the tool ran, the postcondition predicate refuted); never emit `task.verified` outside the verified branch. The reviewer's verdict attaches as a SEPARATE Report-level evidence row on whichever claim is active; it never raises the level. Per spec §8.5 rule 6, missing verify_command itself produces a Limitation Claim at `level=reported`. ResponsePlan carries `output_risk_class` + `required_gate_mode` per spec §3.4.13 (Day-2 extends the ResponsePlan dataclass per § ResponsePlan schema extension). | F4, F2 ladder; spec.html §3.4.11 + §3.5.7 + §5.4.2 + §8.4 + §8.5 + §8.6 + §3.4.13 | Canary `test_canary_evidence_relation_required` + `test_canary_verify_command_plumbed_to_action_request` + `test_canary_response_plan_carries_gate_mode`; unit test (LLM-free): `tests/unit/test_result_interpreter_ladder.py` parametrized over all ladder rows; assert dual-slot consumption produces independent evidence rows per source (verify_command vs reviewer vs diff) |
 | 13 | `pre_emit_phrases.py`: single source of truth for `LIMITATION_REGEXES` + `COMPLETION_REGEXES`; ADR-0001 F4 / F5, ADR-0002 K5 / L3 all reference these constants | § Canonical limitation phrasing | Canary `test_canary_regex_constants_single_source`; unit test: regex constants compile + match seeded text samples |
 | 14 | `notify.py` (`say` + `osascript`); document-channel banner truncation at 240 chars; explicit Attention Channel → Physical Surface mapping per § Notification contract | legacy `core/media_ducking.py:151-159` (osascript shape); spec §3.4.7 + §12.4 | Unit test (mocked subprocess): `test_notify`; truncation + escaping; channel-mapping table parametrized |
 | 15 | `daemon.py` fork-detach: double-fork + setsid; child stdin/stdout/stderr → /dev/null; cwd=/ | POSIX double-fork pattern | Unit test (platform-skipped on non-Mac): `test_daemon`; parent returns "parent" immediately, child returns "child" with redirected fds |
-| 16 | `sleep_wake.py`: install macOS IOPM notification observer; before-sleep + on-wake callbacks emit `mac.sleeping` / `worker.suspended_by_sleep` / `mac.awake` / run reconcile_after_wake() per spec §3.7.8. Idempotent reconciliation | spec §3.7.8; Mac-only architecture | Unit test (stubbed observer + fake clock): induced sleep/wake cycle emits the four-event sequence; reconcile_after_wake() is idempotent (K7 / K8) |
+| 16 | `sleep_wake.py`: install macOS IOPM notification observer via `install_power_observer(event_log, *, observer_factory=None)` — `observer_factory` defaults to the real IOPM observer but is overridable by unit/integration tests (K7 / K8 reuse the same injection point against live Codex); before-sleep + on-wake callbacks emit `mac.sleeping` / `worker.suspended_by_sleep` / `mac.awake` / run reconcile_after_wake() per spec §3.7.8. Idempotent reconciliation | spec §3.7.8; Mac-only architecture | Unit test (stubbed observer factory + fake clock): induced sleep/wake cycle emits the four-event sequence; reconcile_after_wake() is idempotent (K7 / K8) |
 | 17 | CLI entry point: regex classifier (`_LONG_RUN_RE`), ack-before-fork, fork-detach, child re-bootstrap (incl. `install_power_observer(...)`). **No** SQLite open before fork. **No** task-bound check in classifier | F5; spec §3.7.8 (child must install power observer) | Canary `test_canary_daemon_ack_before_fork`; integration: parent exits within 100ms; child's bootstrap registers sleep observer |
 | 18 | Surface render: voice → `say`, document → `notify`; populate `delivered_via` (physical) + `attention_channel` (logical L3 channel) on `surface.response_emitted` | F6; § Attention channel mapping | Unit test: payload populated correctly for all-channel and partial cases |
-| 19 | Full Tier 1 canary sweep (14 new canaries from § Tier 1 list: original 12 + `test_canary_mcp_injection_via_c_flags` + `test_canary_verify_diff_post_action_check`) | ADR-0001 H series canary style | Full Tier 1 green (< 75s) |
+| 19 | Full Tier 1 canary sweep (17 new canaries from § Tier 1 list: 14 from v3.1 + `test_canary_stash_pop_after_verify` + `test_canary_verify_command_plumbed_to_action_request` + `test_canary_response_plan_carries_gate_mode`) | ADR-0001 H series canary style | Full Tier 1 green (< 75s) |
 | 20 | Tier 2 J + K + L acceptance tests (gated by `--live-codex` + `--live-llm`); includes D-1 fixture seeding + D-day happy path + verify-fail + empty-diff + crash + timeout + simulated sleep/wake + missing-submit-report | this ADR § Acceptance | All J (1-13) / K (1-8) / L (1-5) invariants pass on Allen's Mac |
 | 21 | `docs/progress.md` ADR-0002 acceptance summary; update CLAUDE.md anchor if needed | ADR-0001 build-order convention | Doc-only; Tier 1 docs-only |
 
@@ -1649,11 +1892,12 @@ convention same as ADR-0001 (`worktree-claude-adr0002` or similar).
   delivery (voice + banner), real cost tracking.
 - Day-1 architecture (6 layers, event spine, three gates,
   ActionLifecycle) validated against actual work.
-- 12 new canonical event types fill gaps spec.html §5.4 flagged (most
-  notably `surface.user_intent`, which was in the spec but missing from
-  Day-1 registry; plus the four sleep/wake events `mac.sleeping`,
-  `mac.awake`, `worker.suspended_by_sleep`, `worker.terminated_by_sleep`
-  per spec §3.7.8).
+- 12 new event types (8 Day-2 originals + 4 sleep/wake) fill gaps
+  spec.html §5.4 flagged (most notably `surface.user_intent`, which
+  was in the spec but missing from Day-1 registry; plus the four
+  sleep/wake events `mac.sleeping`, `mac.awake`,
+  `worker.suspended_by_sleep`, `worker.terminated_by_sleep` per spec
+  §3.7.8).
 - Hermes Codex client lifted with attribution → easy upstream sync if
   Hermes evolves.
 - jarvis-legacy pricing module rescued from legacy graveyard with no
@@ -1697,12 +1941,13 @@ convention same as ADR-0001 (`worktree-claude-adr0002` or similar).
 - All ADR-0001 invariants (claim ≤ evidence, no entity_id invention, no
   direct agent-to-state mutation, no action without effective_policy) —
   unchanged.
-- Tier 1 < 30s budget is loosened to < 75s (was 45s in the draft; +45s
-  for sleep/wake + submit_report stdio-subprocess unit + dual-slot
-  verify_diff matrix + relation-column + dirty-tree fixtures). If this
-  slips, the subprocess-spawning units (`test_codex_mcp_tools`,
-  `test_sleep_wake` fake clock) are the prime suspects — they are the
-  only Tier-1 entries with real `Popen` round-trips.
+- Tier 1 < 30s budget (Day-1 baseline) is loosened to < 75s — a single
+  +45s budget delta amortized across: sleep/wake fake-clock fixtures +
+  submit_report stdio-subprocess unit + dual-slot verify_diff matrix +
+  relation-column + dirty-tree fixtures. If this slips, the
+  subprocess-spawning units (`test_codex_mcp_tools`, `test_sleep_wake`
+  fake clock) are the prime suspects — they are the only Tier-1
+  entries with real `Popen` round-trips.
 
 ---
 
@@ -1781,6 +2026,18 @@ convention same as ADR-0001 (`worktree-claude-adr0002` or similar).
     every LLM call (decision rounds + reviewer + Codex turns), but **no
     per-task ceiling is enforced Day-2** — Allen's prior call. Day-N
     adds budget gates if usage runs hot.
+    **One full Tier-2 J sweep cost estimate.** Tier-2 J + K + L
+    together exercise five live scenario tests
+    (`test_real_codex_flagship` happy path, `verify_fail`, `empty_diff`,
+    `no_submit_report`, `sleep_during_turn`) — each spawning a real
+    Codex turn (3 decision LLM rounds + 1 reviewer LLM call + 1 Codex
+    turn). Per-test cost ≈ $0.75–$3.00 (Codex turn dominates); full
+    five-test sweep ≈ **$4–$15 per CI run** on Allen's account at
+    current OpenRouter + Codex prices. The `no_submit_report` test
+    may be cheaper (Codex turn aborted early). Running J sweep on
+    every PR is the upper bound; Day-2 runs it only when invoked
+    explicitly via `pytest --live-codex --live-llm`. Day-N adds a
+    daily budget cap if Allen wires it into a `launchd` plist.
 
 ---
 
