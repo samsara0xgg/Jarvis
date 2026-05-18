@@ -128,7 +128,11 @@ def test_dispatch_emits_task_created_with_goal_and_default_source(
         req = _build_action_request(arguments={"goal": "ship the thing"})
         _seed_lifecycle(lifecycle, req.action_id)
 
-        result = registry.dispatch(req, conn, paths, lifecycle)
+        # Day-2 § RawResultBundle wrap: dispatcher returns a one-slot
+        # bundle for single-slot tools like create_task.
+        bundle = registry.dispatch(req, conn, paths, lifecycle)
+        assert len(bundle.slots) == 1
+        result = bundle.slots[0]
 
         assert isinstance(result, RawResult)
         assert result.semantics == "ack"
@@ -170,7 +174,11 @@ def test_dispatch_propagates_optional_fields(tmp_path: Path) -> None:
         )
         _seed_lifecycle(lifecycle, req.action_id)
 
-        result = registry.dispatch(req, conn, paths, lifecycle)
+        # Day-2 § RawResultBundle wrap: dispatcher returns a one-slot
+        # bundle for single-slot tools like create_task.
+        bundle = registry.dispatch(req, conn, paths, lifecycle)
+        assert len(bundle.slots) == 1
+        result = bundle.slots[0]
         assert result.semantics == "ack"
 
         with closing(open_event_log(paths.event_log)) as ro_conn:
@@ -202,7 +210,11 @@ def test_dispatch_auto_detects_verify_command_when_repo_path_supplied(
         )
         _seed_lifecycle(lifecycle, req.action_id)
 
-        result = registry.dispatch(req, conn, paths, lifecycle)
+        # Day-2 § RawResultBundle wrap: dispatcher returns a one-slot
+        # bundle for single-slot tools like create_task.
+        bundle = registry.dispatch(req, conn, paths, lifecycle)
+        assert len(bundle.slots) == 1
+        result = bundle.slots[0]
         assert result.payload["verify_command"] == "uv run pytest -x"
 
         with closing(open_event_log(paths.event_log)) as ro_conn:
@@ -230,7 +242,11 @@ def test_dispatch_unknown_repo_omits_verify_command(tmp_path: Path) -> None:
         )
         _seed_lifecycle(lifecycle, req.action_id)
 
-        result = registry.dispatch(req, conn, paths, lifecycle)
+        # Day-2 § RawResultBundle wrap: dispatcher returns a one-slot
+        # bundle for single-slot tools like create_task.
+        bundle = registry.dispatch(req, conn, paths, lifecycle)
+        assert len(bundle.slots) == 1
+        result = bundle.slots[0]
         assert "verify_command" not in result.payload
 
         with closing(open_event_log(paths.event_log)) as ro_conn:

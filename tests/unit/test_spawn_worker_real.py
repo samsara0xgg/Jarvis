@@ -123,7 +123,11 @@ def _dispatch(
     req = _build_request(task_id=task_id)
     lifecycle.register(req.action_id)
     lifecycle.transition(req.action_id, "authorized")
-    result = registry.dispatch(req, conn, paths, lifecycle)
+    # Day-2 § RawResultBundle wrap: dispatcher returns a single-slot
+    # bundle for spawn_worker; unwrap so the tests keep their Day-1
+    # ``RawResult.semantics`` / ``.metadata`` assertions intact.
+    bundle = registry.dispatch(req, conn, paths, lifecycle)
+    result = bundle.slots[0]
     return result, lifecycle, req
 
 

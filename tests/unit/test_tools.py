@@ -16,7 +16,6 @@ in this file stay focused on the registry envelope.
 from __future__ import annotations
 
 import dataclasses
-import json
 from contextlib import closing
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
@@ -140,16 +139,29 @@ def test_default_registry_spawn_worker_shape() -> None:
 
 
 def test_default_registry_verify_diff_shape() -> None:
-    """verify_diff is L0, sync, verification semantics, LLM+OBSERVER scope."""
+    """verify_diff is L0, sync, observation semantics (Day-2), LLM+OBSERVER scope.
+
+    Step 11 flips ``result_semantics`` from Day-1's ``"verification"`` to
+    Day-2's ``"observation"`` per ADR-0002 § Verify_diff contract — the
+    primary slot is the diff capture; the chained verification slot is
+    declared via ``post_action_check`` (canary
+    ``test_canary_verify_diff_post_action_check`` enforces).
+    """
     registry = build_default_registry()
     (verify,) = (d for d in registry.get_definitions() if d.name == "verify_diff")
     assert verify.risk_level == "L0"
-    assert verify.result_semantics == "verification"
+    assert verify.result_semantics == "observation"
     assert verify.is_async is False
     assert verify.allowed_callers == frozenset(
         {CallerPrincipal.JARVIS_LLM, CallerPrincipal.OBSERVER}
     )
     assert verify.input_schema["required"] == ["run_id"]
+    assert verify.post_action_check is not None
+    assert verify.post_action_check.mode == "inline"
+    assert verify.post_action_check.check_tool == "verify_command"
+    assert verify.post_action_check.expected_predicate == "exit_code == 0"
+    assert verify.post_action_check.result_semantics_on_match == "verification"
+    assert verify.post_action_check.timeout_ms == 600_000
 
 
 def test_for_caller_filters_by_principal() -> None:
@@ -311,7 +323,11 @@ def test_spawn_worker_returns_ack_with_cost_metadata(tmp_path: Path) -> None:
                 return_value=None,
             ),
         ):
-            result = registry.dispatch(req, conn, paths, lifecycle)
+            bundle = registry.dispatch(req, conn, paths, lifecycle)
+        # Day-2 § RawResultBundle: dispatcher wraps single-slot
+        # spawn_worker into a one-slot bundle.
+        assert len(bundle.slots) == 1
+        result = bundle.slots[0]
         assert isinstance(result, RawResult)
         assert result.semantics == "ack"
         assert result.error is None
@@ -324,83 +340,46 @@ def test_spawn_worker_returns_ack_with_cost_metadata(tmp_path: Path) -> None:
         conn.close()
 
 
-# --- verify_diff happy path ------------------------------------------------
+# --- verify_diff registry envelope (Day-2 dispatcher integration) ----------
+#
+# The Day-2 verify_diff handler returns a RawResultBundle (one or two
+# slots). The exhaustive observation/verification/error/timeout matrix is
+# covered by `tests/unit/test_verify_diff_observation.py`. The two tests
+# below assert the dispatcher envelope: the registry-level dispatch path
+# wraps + propagates the bundle correctly through L4.
 
 
-def _write_artifact(
-    paths: RuntimePaths, run_id: str, status: str = "ok", *, task_id: str = "task_X"
+def _write_diff_artifact_for_test(
+    paths: RuntimePaths, run_id: str, diff_text: str = "diff --git a/x b/x\n+hi\n"
 ) -> None:
-    """Pre-write a diff.json artifact for verify_diff to read."""
+    """Pre-write a Day-2 diff.txt under the per-run artifact dir."""
     run_dir = paths.artifact_dir_for_run(run_id)
-    payload = {"status": status, "run_id": run_id, "task_id": task_id}
-    (run_dir / "diff.json").write_text(json.dumps(payload, sort_keys=True))
+    (run_dir / "diff.txt").write_text(diff_text, encoding="utf-8")
 
 
-def test_verify_diff_match_emits_verification(tmp_path: Path) -> None:
-    """verify_diff with status==ok emits verification semantics + content hash."""
+def test_verify_diff_dispatch_returns_observation_bundle(tmp_path: Path) -> None:
+    """Day-2 verify_diff (no verify_command in payload) → one-slot bundle."""
     paths, conn = _open_runtime(tmp_path)
     try:
-        run_id = "R00000001"
-        _write_artifact(paths, run_id, status="ok")
+        run_id = "R_obs"
+        _write_diff_artifact_for_test(paths, run_id)
 
         registry = build_default_registry()
         lifecycle = ActionLifecycle()
         req = _build_action_request(
             tool_name="verify_diff",
-            action_id="A2",
+            action_id="A_obs",
             arguments={"run_id": run_id},
             risk_level="L0",
         )
         _seed_lifecycle(lifecycle, req.action_id)
-        result = registry.dispatch(req, conn, paths, lifecycle)
+        bundle = registry.dispatch(req, conn, paths, lifecycle)
 
-        assert result.semantics == "verification"
-        assert result.error is None
-        assert result.payload["predicate"] == "status==ok"
-        assert isinstance(result.payload["content_hash"], str)
-        assert len(result.payload["content_hash"]) == 64  # SHA-256 hex
-
-        # Lifecycle terminal.
-        assert lifecycle.state_of(req.action_id) == "result_observed"
-        assert lifecycle.is_terminal(req.action_id) is True
-
-        # Event emitted with semantics=verification.
-        with closing(open_event_log(paths.event_log)) as ro_conn:
-            results = [
-                e
-                for e in iter_events(ro_conn)
-                if e.type == "action.result_observed"
-                and e.payload.get("action_id") == req.action_id
-            ]
-        assert len(results) == 1
-        assert results[0].payload["semantics"] == "verification"
-    finally:
-        conn.close()
-
-
-def test_verify_diff_predicate_fail_emits_error(tmp_path: Path) -> None:
-    """verify_diff with status==fail emits error semantics + predicate_failed."""
-    paths, conn = _open_runtime(tmp_path)
-    try:
-        run_id = "R00000002"
-        _write_artifact(paths, run_id, status="fail")
-
-        registry = build_default_registry()
-        lifecycle = ActionLifecycle()
-        req = _build_action_request(
-            tool_name="verify_diff",
-            action_id="A2",
-            arguments={"run_id": run_id},
-            risk_level="L0",
-        )
-        _seed_lifecycle(lifecycle, req.action_id)
-        result = registry.dispatch(req, conn, paths, lifecycle)
-
-        assert result.semantics == "error"
-        assert result.error == "predicate_failed"
-        assert result.payload["actual_status"] == "fail"
-
-        assert lifecycle.state_of(req.action_id) == "result_observed"
+        assert len(bundle.slots) == 1
+        observation = bundle.slots[0]
+        assert observation.semantics == "observation"
+        assert observation.payload["diff_nonempty"] is True
+        assert observation.payload["artifact_ref"].endswith("diff.txt")
         assert lifecycle.is_terminal(req.action_id) is True
 
         with closing(open_event_log(paths.event_log)) as ro_conn:
@@ -411,239 +390,41 @@ def test_verify_diff_predicate_fail_emits_error(tmp_path: Path) -> None:
                 and e.payload.get("action_id") == req.action_id
             ]
         assert len(results) == 1
-        assert results[0].payload["semantics"] == "error"
-        assert results[0].payload["error"] == "predicate_failed"
+        assert results[0].payload["semantics"] == "observation"
     finally:
         conn.close()
 
 
-def test_verify_diff_missing_artifact_emits_error(tmp_path: Path) -> None:
-    """verify_diff without an artifact emits error with code=artifact_missing."""
-    paths, conn = _open_runtime(tmp_path)
-    try:
-        run_id = "R00000003"
-        # Note: do NOT write any artifact. The artifact_dir_for_run call
-        # in the handler creates the directory; that's fine, no diff.json
-        # exists.
-
-        registry = build_default_registry()
-        lifecycle = ActionLifecycle()
-        req = _build_action_request(
-            tool_name="verify_diff",
-            action_id="A2",
-            arguments={"run_id": run_id},
-            risk_level="L0",
-        )
-        _seed_lifecycle(lifecycle, req.action_id)
-        result = registry.dispatch(req, conn, paths, lifecycle)
-
-        assert result.semantics == "error"
-        assert result.error == "artifact_missing"
-        assert lifecycle.is_terminal(req.action_id) is True
-    finally:
-        conn.close()
-
-
-# --- verify_diff cross-task isolation (Finding 1 follow-up) ----------------
-
-
-def _write_raw_artifact(
-    paths: RuntimePaths, run_id: str, payload: dict[str, Any]
+def test_verify_diff_dispatch_missing_artifact_returns_empty_observation(
+    tmp_path: Path,
 ) -> None:
-    """Pre-write an artifact with an arbitrary payload (no auto-injected task_id)."""
-    run_dir = paths.artifact_dir_for_run(run_id)
-    (run_dir / "diff.json").write_text(json.dumps(payload, sort_keys=True))
+    """Missing diff artifact → one-slot observation with ``diff_nonempty=False``.
 
-
-def test_verify_diff_rejects_cross_task_artifact(tmp_path: Path) -> None:
-    """An artifact owned by task_B may not satisfy a verify_diff targeting task_A.
-
-    Repro of Finding 1: task_B's spawn_worker produced
-    `run_B/diff.json = {"status":"ok","run_id":"R_B","task_id":"task_B"}`.
-    A verify_diff dispatched with `target_entity_ref="task_A"` and
-    `arguments={"run_id":"R_B"}` must NOT satisfy task_A's postcondition —
-    it must surface `cross_task_artifact` error semantics so L3 Result
-    Interpreter never produces a verified-evidence claim on task_A.
+    Day-2 drops Day-1's ``artifact_missing`` error: a no-op diff is a
+    real outcome (Codex completed but did not edit), and L3's reviewer
+    / verify_command path will treat ``diff_nonempty=False`` accordingly.
     """
     paths, conn = _open_runtime(tmp_path)
     try:
-        run_id = "R_B"
-        _write_raw_artifact(
-            paths,
-            run_id,
-            {"status": "ok", "run_id": run_id, "task_id": "task_B"},
-        )
-
+        run_id = "R_missing"
+        # Don't write any artifact; the handler should still produce a
+        # bundle with diff_nonempty=False rather than raising.
         registry = build_default_registry()
         lifecycle = ActionLifecycle()
         req = _build_action_request(
             tool_name="verify_diff",
-            action_id="A_cross",
+            action_id="A_missing",
             arguments={"run_id": run_id},
-            target_entity_ref="task_A",
             risk_level="L0",
         )
         _seed_lifecycle(lifecycle, req.action_id)
-        result = registry.dispatch(req, conn, paths, lifecycle)
+        bundle = registry.dispatch(req, conn, paths, lifecycle)
 
-        assert result.semantics == "error"
-        assert result.error == "cross_task_artifact"
-        assert result.payload["expected_task_id"] == "task_A"
-        assert result.payload["actual_task_id"] == "task_B"
-        # Predicate is documented even on the isolation error path so the
-        # tool_output JSON reads the same as the predicate_failed branch.
-        assert result.payload["predicate"] == "status==ok"
-
-        # Lifecycle terminal at result_observed (NOT failed / cancelled).
-        assert lifecycle.state_of(req.action_id) == "result_observed"
+        assert len(bundle.slots) == 1
+        observation = bundle.slots[0]
+        assert observation.semantics == "observation"
+        assert observation.payload["diff_nonempty"] is False
         assert lifecycle.is_terminal(req.action_id) is True
-
-        # Event row carries the matching error semantics + error_payload
-        # nesting (registry-safe shape — see _verify_diff_emit_error).
-        with closing(open_event_log(paths.event_log)) as ro_conn:
-            results = [
-                e
-                for e in iter_events(ro_conn)
-                if e.type == "action.result_observed"
-                and e.payload.get("action_id") == req.action_id
-            ]
-        assert len(results) == 1
-        evt = results[0]
-        assert evt.payload["semantics"] == "error"
-        assert evt.payload["error"] == "cross_task_artifact"
-        nested = evt.payload["error_payload"]
-        assert nested["expected_task_id"] == "task_A"
-        assert nested["actual_task_id"] == "task_B"
-        # tool_output also carries the diagnostic context (legacy clients
-        # parse this JSON string verbatim).
-        tool_output = json.loads(evt.payload["tool_output"])
-        assert tool_output["code"] == "cross_task_artifact"
-        assert tool_output["expected_task_id"] == "task_A"
-        assert tool_output["actual_task_id"] == "task_B"
-    finally:
-        conn.close()
-
-
-def test_verify_diff_rejects_artifact_missing_task_id(tmp_path: Path) -> None:
-    """An artifact that does not declare its owner is not a trustworthy target.
-
-    Day-1 hardness call: even if `status==ok`, an artifact without a
-    `task_id` field cannot be bound to `target_entity_ref`. The handler
-    surfaces `artifact_missing_task_id` BEFORE the predicate check.
-    """
-    paths, conn = _open_runtime(tmp_path)
-    try:
-        run_id = "R_naked"
-        _write_raw_artifact(paths, run_id, {"status": "ok"})
-
-        registry = build_default_registry()
-        lifecycle = ActionLifecycle()
-        req = _build_action_request(
-            tool_name="verify_diff",
-            action_id="A_naked",
-            arguments={"run_id": run_id},
-            target_entity_ref="task_A",
-            risk_level="L0",
-        )
-        _seed_lifecycle(lifecycle, req.action_id)
-        result = registry.dispatch(req, conn, paths, lifecycle)
-
-        assert result.semantics == "error"
-        assert result.error == "artifact_missing_task_id"
-        assert result.payload["expected_task_id"] == "task_A"
-        assert result.payload["actual_task_id"] is None
-
-        assert lifecycle.state_of(req.action_id) == "result_observed"
-
-        with closing(open_event_log(paths.event_log)) as ro_conn:
-            results = [
-                e
-                for e in iter_events(ro_conn)
-                if e.type == "action.result_observed"
-                and e.payload.get("action_id") == req.action_id
-            ]
-        assert len(results) == 1
-        evt = results[0]
-        assert evt.payload["error"] == "artifact_missing_task_id"
-        nested = evt.payload["error_payload"]
-        assert nested["expected_task_id"] == "task_A"
-        assert nested["actual_task_id"] is None
-    finally:
-        conn.close()
-
-
-def test_verify_diff_accepts_matching_artifact(tmp_path: Path) -> None:
-    """Happy path: artifact task_id matches target_entity_ref → verification."""
-    paths, conn = _open_runtime(tmp_path)
-    try:
-        run_id = "R_match"
-        _write_raw_artifact(
-            paths,
-            run_id,
-            {"status": "ok", "run_id": run_id, "task_id": "task_A"},
-        )
-
-        registry = build_default_registry()
-        lifecycle = ActionLifecycle()
-        req = _build_action_request(
-            tool_name="verify_diff",
-            action_id="A_match",
-            arguments={"run_id": run_id},
-            target_entity_ref="task_A",
-            risk_level="L0",
-        )
-        _seed_lifecycle(lifecycle, req.action_id)
-        result = registry.dispatch(req, conn, paths, lifecycle)
-
-        assert result.semantics == "verification"
-        assert result.error is None
-        assert result.payload["predicate"] == "status==ok"
-        # The matching task_id is NOT echoed back into the success payload —
-        # the registry-safe shape only carries diagnostic context on the
-        # error path. Sanity-check the artifact actually carries task_A.
-        artifact = json.loads(
-            (paths.artifact_dir_for_run(run_id) / "diff.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        assert artifact["task_id"] == "task_A"
-    finally:
-        conn.close()
-
-
-def test_verify_diff_skips_check_when_no_target_entity_ref(tmp_path: Path) -> None:
-    """Defensive branch: with target_entity_ref=None the task_id check is skipped.
-
-    Day-1 callers always pass a target, but this branch exists so a
-    legacy / observer call that lacks one falls through to the predicate
-    check rather than spurious-erroring on the (now-unverifiable) task
-    binding. The artifact's task_id is intentionally a stranger ("task_Z")
-    to prove the check did not fire.
-    """
-    paths, conn = _open_runtime(tmp_path)
-    try:
-        run_id = "R_notarget"
-        _write_raw_artifact(
-            paths,
-            run_id,
-            {"status": "ok", "run_id": run_id, "task_id": "task_Z"},
-        )
-
-        registry = build_default_registry()
-        lifecycle = ActionLifecycle()
-        req = _build_action_request(
-            tool_name="verify_diff",
-            action_id="A_notarget",
-            arguments={"run_id": run_id},
-            target_entity_ref=None,
-            risk_level="L0",
-        )
-        _seed_lifecycle(lifecycle, req.action_id)
-        result = registry.dispatch(req, conn, paths, lifecycle)
-
-        # Predicate evaluated normally → verification semantics.
-        assert result.semantics == "verification"
-        assert result.error is None
     finally:
         conn.close()
 

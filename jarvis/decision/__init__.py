@@ -84,6 +84,7 @@ from jarvis.shared import (
     CallerPrincipal,
     Event,
     RawResult,
+    RawResultBundle,
 )
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.state.event_log import emit_event
@@ -407,8 +408,14 @@ class ToolRegistryLike(Protocol):
         conn: sqlite3.Connection,
         runtime_paths: RuntimePathsLike,
         lifecycle: LifecycleLike,
-    ) -> RawResult:
-        """Dispatch one ActionRequest and return its RawResult."""
+    ) -> RawResultBundle:
+        """Dispatch one ActionRequest and return its RawResultBundle.
+
+        Day-2 § RawResultBundle contract: the L4 dispatcher uniformly
+        returns ``RawResultBundle``. Bare ``RawResult`` returns from
+        single-slot handlers are wrapped at the L4 boundary; multi-slot
+        tools (``verify_diff``) return a bundle directly.
+        """
         ...
 
 
@@ -879,21 +886,25 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     # 6. Dispatch via L4 ToolRegistry (emits action.dispatched +
     #    action.running internally; handler emits run.started for
     #    spawn_worker and action.result_observed for sync tools).
-    raw_result = ctx.tool_registry.dispatch(
+    #    Day-2 § RawResultBundle contract: dispatcher returns a bundle
+    #    uniformly; single-slot tools are wrapped at the L4 boundary.
+    bundle = ctx.tool_registry.dispatch(
         action_request,
         ctx.conn,
         ctx.runtime_paths,
         ctx.lifecycle,
     )
+    primary_slot = bundle.slots[0]
 
     # 6b. ADR-0002 Step 3: when L4 returns RawResult.metadata["cost"]
     #     (populated by spawn_worker from Codex's turn/completed once
     #     Step 10 wires it), emit cost.recorded(kind="codex") from L3.
     #     L3 is the sole emit-site per spec §5.4.1; L4 only places the
-    #     payload on metadata. Dormant until Step 10 — Day-1 handlers
-    #     return metadata=None so this is a no-op.
+    #     payload on metadata. Cost lives on slot 1 (spawn_worker single
+    #     slot or verify_diff observation slot) — multi-slot tools do
+    #     not populate cost on the chained verification slot.
     cost_event = _emit_cost_recorded_from_metadata(
-        ctx, raw_result, turn_id=scratch.turn_id,
+        ctx, primary_slot, turn_id=scratch.turn_id,
     )
     if cost_event is not None:
         scratch.events.append(cost_event)
@@ -905,51 +916,90 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
         scratch.in_flight_target_ref = target_entity_ref
         scratch.in_flight_turn_id = scratch.turn_id
         # Capture the run_id so verify_diff can refer to it.
-        run_id_from_raw = raw_result.payload.get("run_id")
+        run_id_from_raw = primary_slot.payload.get("run_id")
         if isinstance(run_id_from_raw, str):
             scratch.last_run_id = run_id_from_raw
         return False
 
-    # 7b. Sync tools (verify_diff): the handler emitted
-    #     ``action.result_observed`` itself. Find that event in the
-    #     freshly-folded log so we have a source_event_id for the
-    #     claim+evidence pair the Result Interpreter is about to emit.
+    # 7b. Sync tools (verify_diff Day-2 dual-slot, create_task single
+    #     slot): the handler emitted ``action.result_observed`` itself.
+    #     Find that event in the freshly-folded log so we have a
+    #     source_event_id for the claim+evidence pair(s) the Result
+    #     Interpreter is about to emit. Iterate over EVERY slot so
+    #     multi-slot tools (verify_diff) produce one claim+evidence pair
+    #     per slot — Step 12's L3 Result Interpreter refinement will
+    #     branch the F2 ladder per slot's semantics; Step 11 just makes
+    #     the iteration plumbing work without breaking Day-1 behavior.
     result_observed_uid = _latest_event_uid_of_type(
         ctx.conn,
         event_type="action.result_observed",
     )
-    interpreted_events = result_interpreter(
-        raw_result,
-        source_event_id=result_observed_uid or proposed_event.event_uid,
-        action_request=action_request,
-        conn=ctx.conn,
-        subject_ref_override=target_entity_ref,
-    )
-    scratch.events.extend(interpreted_events)
+    source_event_for_interpreter = result_observed_uid or proposed_event.event_uid
 
-    # If this verify produced a verified Postcondition for the active
-    # task, emit task.verified per ADR § Canonical event trace evt 22.
-    if raw_result.semantics == "verification" and target_entity_ref is not None:
-        _claim_event, evidence_event = interpreted_events
+    last_interpreted_evidence: Event | None = None
+    saw_verification_for_target = False
+    for slot in bundle.slots:
+        interpreted_events = result_interpreter(
+            slot,
+            source_event_id=source_event_for_interpreter,
+            action_request=action_request,
+            conn=ctx.conn,
+            subject_ref_override=target_entity_ref,
+        )
+        scratch.events.extend(interpreted_events)
+        last_interpreted_evidence = interpreted_events[1]
+        if slot.semantics == "verification" and target_entity_ref is not None:
+            saw_verification_for_target = True
+
+    # If any slot produced a verified Postcondition for the active task,
+    # emit task.verified per ADR § Canonical event trace evt 22. Source
+    # the cause-chain off the last evidence event the interpreter wrote.
+    if saw_verification_for_target and last_interpreted_evidence is not None:
         task_verified_event = emit_event(
             ctx.conn,
             type="task.verified",
             payload={"task_id": target_entity_ref, "by": "jarvis"},
-            source_event_id=evidence_event.event_uid,
+            source_event_id=last_interpreted_evidence.event_uid,
             correlation=_action_correlation(action_request),
         )
         scratch.events.append(task_verified_event)
         scratch.active_subject_ref = target_entity_ref
 
     # 8. Append the tool result back into the messages list so the LLM
-    #    can see it on the next iteration.
+    #    can see it on the next iteration. Multi-slot returns: render
+    #    the bundle as a JSON object so the LLM sees both outputs.
     messages.append(
         _tool_result_message(
             call_id=call_id,
-            content=raw_result.tool_output or json.dumps(dict(raw_result.payload)),
+            content=_render_bundle_for_llm(bundle),
         )
     )
     return True
+
+
+def _render_bundle_for_llm(bundle: RawResultBundle) -> str:
+    """Serialize a :class:`RawResultBundle` for the LLM tool-result message.
+
+    Single-slot bundles render exactly as the Day-1 ``raw_result.tool_output``
+    (or a JSON projection of ``raw_result.payload`` when ``tool_output``
+    is None) so existing prompt expectations stay stable. Multi-slot
+    bundles (Day-2 ``verify_diff`` with a chained ``verify_command``)
+    render as a JSON object keyed by slot semantics — the LLM sees both
+    the observation diff preview AND the verify_command exit code in
+    one tool-result, which Step 12's prompt asset will explicitly call
+    out.
+    """
+    if len(bundle.slots) == 1:
+        slot = bundle.slots[0]
+        return slot.tool_output or json.dumps(dict(slot.payload))
+    rendered: dict[str, Any] = {}
+    for slot in bundle.slots:
+        rendered[slot.semantics] = (
+            json.loads(slot.tool_output)
+            if slot.tool_output
+            else dict(slot.payload)
+        )
+    return json.dumps(rendered, ensure_ascii=False)
 
 
 # --- worker.reported branch ------------------------------------------------

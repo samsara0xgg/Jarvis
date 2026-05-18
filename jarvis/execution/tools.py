@@ -81,7 +81,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,7 +100,14 @@ from jarvis.execution.diff_capture import (
     write_diff_artifact,
 )
 from jarvis.execution.verify_command_detect import detect_verify_command
-from jarvis.shared import ActionRequest, CallerPrincipal, RawResult, ResultSemantics, RiskLevel
+from jarvis.shared import (
+    ActionRequest,
+    CallerPrincipal,
+    RawResult,
+    RawResultBundle,
+    ResultSemantics,
+    RiskLevel,
+)
 from jarvis.state.event_log import emit_event, iter_events
 
 if TYPE_CHECKING:
@@ -306,8 +315,45 @@ class ActionLifecycle:
 if TYPE_CHECKING:
     ToolHandler = Callable[
         [ActionRequest, "sqlite3.Connection", RuntimePathsLike, ActionLifecycle],
-        RawResult,
+        RawResult | RawResultBundle,
     ]
+
+
+@dataclass(frozen=True)
+class PostActionCheck:
+    """Per-tool inline post_action_check declaration (spec §3.5.7).
+
+    Day-2 uses one variant: the inline ``verify_command`` chained
+    predicate on ``verify_diff``. The handler runs an inline subprocess
+    after the primary observation slot and decides the chained slot's
+    ``result_semantics`` based on ``expected_predicate``. Mismatch slot
+    semantics defaults to ``"error"`` per spec §3.4.11.
+
+    Attributes:
+        mode: ``"inline"`` — chained in the same L4 invocation. Day-2's
+            only supported mode; future modes (e.g. ``"deferred"``) are
+            out of scope.
+        check_tool: Sentinel name for the inline subprocess; NOT a tool
+            reference (no dispatcher round-trip). Day-2 value:
+            ``"verify_command"``.
+        expected_predicate: Pass/fail expression evaluated against the
+            chained result. Day-2 value: ``"exit_code == 0"``. The
+            handler reads this string but the comparison logic is
+            hard-coded — the field exists for the AST canary and audit
+            trail, not for late-binding evaluation.
+        result_semantics_on_match: ``ResultSemantics`` tag the chained
+            slot carries when ``expected_predicate`` matches. Day-2:
+            ``"verification"``. Mismatch path: handler assigns
+            ``"error"`` per spec §3.4.11.
+        timeout_ms: Per-check wall-clock timeout in milliseconds. Day-2
+            default: ``600_000`` (10 minutes).
+    """
+
+    mode: Literal["inline"]
+    check_tool: str
+    expected_predicate: str
+    result_semantics_on_match: ResultSemantics
+    timeout_ms: int
 
 
 @dataclass(frozen=True)
@@ -334,6 +380,11 @@ class ToolDefinition:
         input_schema: JSON schema describing the tool's arguments
             (Anthropic-style `{type, properties, required}` shape).
         handler: The callable that actually executes the tool.
+        post_action_check: Optional inline post-action chained check
+            (spec §3.5.7). ``None`` for Day-1 / single-slot tools;
+            Day-2 ``verify_diff`` declares one so the handler can chain
+            an inline ``verify_command`` subprocess into the second
+            ``RawResultBundle`` slot.
     """
 
     name: str
@@ -344,6 +395,7 @@ class ToolDefinition:
     is_async: bool
     input_schema: Mapping[str, Any]
     handler: ToolHandler
+    post_action_check: PostActionCheck | None = None
 
 
 # --- JSON serializers (adapted from legacy tools_v2/helpers.py) -------------
@@ -834,210 +886,354 @@ def spawn_worker_handler(
     )
 
 
+_VERIFY_COMMAND_TIMEOUT_S: Final[float] = 600.0
+"""Per-check wall-clock timeout (seconds) for the inline verify_command
+subprocess. Mirrors :attr:`PostActionCheck.timeout_ms` (600_000ms) on
+:data:`VERIFY_DIFF_TOOL_DEF`. Module-level so unit tests can patch it
+without monkeypatching the standard library.
+"""
+
+_VERIFY_COMMAND_TIMEOUT_EXIT_CODE: Final[int] = 124
+"""Convention: exit_code=124 maps to GNU ``timeout(1)``'s timeout
+exit. The handler synthesizes this when ``subprocess.TimeoutExpired``
+fires so the chained slot's payload stays uniform with the happy /
+non-zero paths.
+"""
+
+_OUTPUT_TAIL_BYTES: Final[int] = 2048
+"""Maximum stdout/stderr tail to retain on the chained slot. Keeps the
+event payload bounded; the full output would balloon the SQLite row
+for `npm test`-style verify commands.
+"""
+
+_DIFF_PREVIEW_BYTES: Final[int] = 500
+"""Maximum prefix of diff text to embed on the observation slot.
+The full diff lives at ``artifact_ref``; the preview is for the LLM
+context window only.
+"""
+
+
 def verify_diff_handler(
     action_request: ActionRequest,
     conn: sqlite3.Connection,
     runtime_paths: RuntimePathsLike,
     lifecycle: ActionLifecycle,
-) -> RawResult:
-    """L0 `verify_diff` stub — sync lifecycle (ADR § Verification is real predicate).
+) -> RawResultBundle:
+    """L4 observation handler with inline post_action_check chain.
 
-    Reads the artifact `${run_dir}/diff.json`, checks `data["status"] == "ok"`,
-    emits the appropriate `action.result_observed` event, transitions
-    lifecycle `running → result_observed`, and returns the `RawResult`.
+    Per ADR-0002 § Verify_diff contract (lines 763-913, spec §3.4.11 +
+    §3.5.7). Returns a :class:`RawResultBundle` with one or two slots:
 
-    Cross-task isolation (Finding 1, follow-up to Step 6):
-        When `action_request.target_entity_ref` is non-None, the artifact's
-        recorded `task_id` MUST match. Without this check an LLM-supplied
-        (or hallucinated) `run_id` could point to a different task's
-        successful diff and produce a false `verified_complete` on the
-        active task (spec §3.4.11 violation: "verification must verify
-        *this* action's postcondition").
+    Slot 1 (mandatory, ``result_semantics="observation"``)
+        The diff artifact capture — read the diff text from the path
+        on ``action_request.arguments["artifact_path"]`` (Day-2 L3
+        plumbs this from the worker's run); fall back to
+        ``runtime_paths.artifact_dir_for_run(run_id) / "diff.txt"``
+        when only ``run_id`` is supplied. The slot's payload carries
+        a bounded ``diff_text_preview`` plus a ``diff_nonempty`` flag
+        and the absolute ``artifact_ref``. NO ``git apply --check``:
+        Codex already applied the patch in place upstream
+        (``spawn_worker``).
+    Slot 2 (conditional, ``result_semantics="verification" | "error"``)
+        Only present when ``action_request.payload`` carries a
+        non-None ``verify_command`` string (L3 reads this from the
+        Task Ledger projection at Step 12). The handler runs the
+        command via ``subprocess.run(["/bin/sh", "-c", cmd],
+        cwd=repo_path, timeout=600, ...)`` and assigns the slot's
+        semantics based on the predicate ``exit_code == 0`` from
+        ``post_action_check.expected_predicate``. Non-zero exit / timeout
+        → ``"error"`` per spec §3.4.11. Timeout uses exit_code=124 by
+        convention (matches GNU ``timeout(1)``) and sets
+        ``timed_out=True`` on the payload.
 
-    Five outcomes (ordered: structural before predicate):
+    Trust model: ``verify_command`` is Allen-authored at ``task.created``
+    time (D-1 session) via the natural-language ``create_task`` path;
+    Day-2 has no untrusted ingest path. ``/bin/sh -c`` is therefore
+    trusted-by-Allen, the same class as the repo's local test command
+    (ADR § Trust model).
 
-    - Artifact missing → `semantics="error"`, `error="artifact_missing"`.
-    - Artifact lacks a `task_id` field while `target_entity_ref` is set →
-      `semantics="error"`, `error="artifact_missing_task_id"`. Day-1
-      hardness call: artifacts that don't declare their owner are not
-      trustworthy targets.
-    - Artifact `task_id` mismatches `target_entity_ref` →
-      `semantics="error"`, `error="cross_task_artifact"`. This is the
-      C5 evidence-binding defense.
-    - Predicate matches → `semantics="verification"` with `content_hash`
-      and `predicate` in the payload.
-    - Predicate fails → `semantics="error"`, `error="predicate_failed"`.
+    Stash-pop ordering (CRITICAL, § Dirty-tree policy lines 663-713):
+    this handler runs with ``cwd=repo_path`` and the ``verify_command``
+    subprocess therefore reads the working tree exactly as Codex left
+    it. The runtime composition (Step 17) MUST pop the pre-task stash
+    AFTER this handler returns; calling early would layer Allen's
+    pre-task changes back onto the verify cwd mid-check and pollute
+    the exit code. Static guarantee: ``test_canary_stash_pop_after_verify``.
 
-    When `target_entity_ref` is None (defensive path): skip the task_id
-    check — cannot validate without a target. Day-1 callers always pass a
-    target; this branch exists only for defense.
+    NO reviewer call inside this handler (L3 / Step 12 owns
+    :func:`jarvis.decision.reviewer.review_diff`). NO ``git apply
+    --check`` (Codex applied in place). NO ``restore_pretask_changes``
+    (runtime composition's job per Step 17).
 
-    Error context fields (`expected_task_id`, `actual_task_id`,
-    `artifact_path`, `predicate`, `run_id`) are carried inside the
-    `tool_output` JSON string AND nested under a single `error_payload`
-    key on the emitted `action.result_observed` event. `error_payload`
-    is the registered `optional_payload` entry for these per-error-class
-    fields (see `jarvis.state.event_log` registry entry for
-    `action.result_observed`).
+    Lifecycle terminal transition (``running -> result_observed``) is
+    emitted INSIDE this handler so the L4 sync-handler invariant
+    (`spec § Acceptance B`) still holds. The transition fires once the
+    bundle is fully built, just before return; this means a single
+    ``action.result_observed`` event is emitted here per slot pair,
+    carrying the slot 1 semantics for backward compat; Step 12's L3
+    Result Interpreter will fan out into one event per slot.
     """
-    run_id = action_request.arguments["run_id"]
-    if not isinstance(run_id, str):
-        msg = f"verify_diff: run_id must be a string (got {type(run_id).__name__})"
-        raise TypeError(msg)
-
-    diff_path = runtime_paths.artifact_dir_for_run(run_id) / "diff.json"
+    diff_path = _resolve_diff_artifact_path(
+        action_request=action_request,
+        runtime_paths=runtime_paths,
+    )
     running_event_uid = _get_running_event_uid(conn, action_request.action_id)
 
-    if not diff_path.exists():
-        return _verify_diff_emit_error(
+    observation_slot = _build_observation_slot(
+        action_id=action_request.action_id,
+        diff_path=diff_path,
+    )
+
+    verify_command_raw = (
+        action_request.payload.get("verify_command")
+        if action_request.payload is not None
+        else None
+    )
+    verify_command = verify_command_raw if isinstance(verify_command_raw, str) else None
+
+    if verify_command is None:
+        _emit_verify_diff_result_event(
             conn=conn,
             lifecycle=lifecycle,
             action_id=action_request.action_id,
             source_event_id=running_event_uid,
-            run_id=run_id,
-            payload={
-                "artifact_path": str(diff_path),
-                "predicate": "status==ok",
-            },
-            error_code="artifact_missing",
+            slot=observation_slot,
         )
+        return RawResultBundle(slots=(observation_slot,))
 
-    raw_bytes = diff_path.read_bytes()
-    content_hash = hashlib.sha256(raw_bytes).hexdigest()
-    data = json.loads(raw_bytes.decode("utf-8"))
-    actual_status = data.get("status") if isinstance(data, dict) else None
-    actual_task_id = data.get("task_id") if isinstance(data, dict) else None
-    expected_task_id = action_request.target_entity_ref
-
-    # Cross-task artifact isolation: validate BEFORE predicate evaluation.
-    # When the caller declared a target_entity_ref (Day-1 always does), the
-    # artifact's recorded task_id must match. A None target_entity_ref is the
-    # defensive branch — cannot validate without a target.
-    if expected_task_id is not None:
-        if not isinstance(data, dict) or "task_id" not in data:
-            return _verify_diff_emit_error(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_request.action_id,
-                source_event_id=running_event_uid,
-                run_id=run_id,
-                payload={
-                    "artifact_path": str(diff_path),
-                    "predicate": "status==ok",
-                    "expected_task_id": expected_task_id,
-                    "actual_task_id": None,
-                },
-                error_code="artifact_missing_task_id",
-            )
-        if actual_task_id != expected_task_id:
-            return _verify_diff_emit_error(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_request.action_id,
-                source_event_id=running_event_uid,
-                run_id=run_id,
-                payload={
-                    "artifact_path": str(diff_path),
-                    "predicate": "status==ok",
-                    "expected_task_id": expected_task_id,
-                    "actual_task_id": actual_task_id,
-                },
-                error_code="cross_task_artifact",
-            )
-
-    if actual_status == "ok":
-        verification_payload: dict[str, Any] = {
-            "artifact_path": str(diff_path),
-            "content_hash": content_hash,
-            "predicate": "status==ok",
-        }
-        emit_event(
-            conn,
-            type="action.result_observed",
-            payload={
-                "action_id": action_request.action_id,
-                "semantics": "verification",
-                "tool_output": tool_result(verification_payload),
-                "run_id": run_id,
-            },
-            source_event_id=running_event_uid,
-            correlation={"action_id": action_request.action_id, "run_id": run_id},
-        )
-        lifecycle.transition(action_request.action_id, "result_observed")
-        return RawResult(
-            action_id=action_request.action_id,
-            semantics="verification",
-            payload=verification_payload,
-            tool_output=tool_result(verification_payload),
-            error=None,
-        )
-
-    return _verify_diff_emit_error(
+    repo_path = _resolve_repo_path(action_request)
+    verification_slot = _build_verification_slot(
+        action_id=action_request.action_id,
+        verify_command=verify_command,
+        repo_path=repo_path,
+    )
+    _emit_verify_diff_result_event(
         conn=conn,
         lifecycle=lifecycle,
         action_id=action_request.action_id,
         source_event_id=running_event_uid,
-        run_id=run_id,
-        payload={
-            "artifact_path": str(diff_path),
-            "actual_status": actual_status,
-            "predicate": "status==ok",
-        },
-        error_code="predicate_failed",
+        slot=observation_slot,
+    )
+    return RawResultBundle(slots=(observation_slot, verification_slot))
+
+
+def _resolve_diff_artifact_path(
+    *,
+    action_request: ActionRequest,
+    runtime_paths: RuntimePathsLike,
+) -> Path:
+    """Pick the diff artifact path from ``arguments``.
+
+    Preference order:
+        1. ``arguments["artifact_path"]`` (Day-2 L3 plumbing) — used as-is.
+        2. ``arguments["run_id"]`` → ``runtime_paths.artifact_dir_for_run(
+           run_id) / "diff.txt"`` (legacy / unit-test path; matches
+           spawn_worker's :func:`write_diff_artifact` output).
+
+    Raises ``KeyError`` only if neither is present (the LLM tool schema
+    declares ``run_id`` required at Day-2 registration, so this is
+    defense-in-depth).
+    """
+    args = action_request.arguments
+    artifact_path_arg = args.get("artifact_path")
+    if isinstance(artifact_path_arg, str) and artifact_path_arg:
+        return Path(artifact_path_arg)
+    run_id = args.get("run_id")
+    if isinstance(run_id, str) and run_id:
+        return runtime_paths.artifact_dir_for_run(run_id) / "diff.txt"
+    msg = (
+        "verify_diff: arguments must carry either 'artifact_path' (Day-2) "
+        "or 'run_id' (legacy)"
+    )
+    raise KeyError(msg)
+
+
+def _resolve_repo_path(action_request: ActionRequest) -> Path:
+    """Return the repo cwd for the verify_command subprocess.
+
+    Order: ``action_request.payload["repo_path"]`` (preferred — L3 plumbs
+    it from the Task Ledger), then ``arguments["repo_path"]`` (test /
+    direct call), then :func:`Path.cwd`. The cwd fallback keeps Day-2
+    unit tests using ``tmp_path`` for the artifact while letting the
+    verify_command runs in the same dir succeed.
+    """
+    payload_repo = (
+        action_request.payload.get("repo_path")
+        if action_request.payload is not None
+        else None
+    )
+    if isinstance(payload_repo, str) and payload_repo:
+        return Path(payload_repo)
+    args_repo = action_request.arguments.get("repo_path")
+    if isinstance(args_repo, str) and args_repo:
+        return Path(args_repo)
+    return Path.cwd()
+
+
+def _build_observation_slot(*, action_id: str, diff_path: Path) -> RawResult:
+    """Read the diff artifact and shape slot 1 (``observation``).
+
+    Missing files fall through to ``diff_text=""`` /
+    ``diff_nonempty=False`` rather than raising — the spec treats a
+    no-op diff as a real Day-2 outcome (Codex completed but did not
+    edit), not an artifact-missing error. The C5 cross-task isolation
+    check from Day-1 is intentionally dropped (Day-2 L3 owns the
+    artifact-binding from spawn_worker's run_id correlation).
+    """
+    diff_text = diff_path.read_text(encoding="utf-8") if diff_path.exists() else ""
+    diff_nonempty = bool(diff_text.strip())
+    payload: dict[str, Any] = {
+        "diff_text_preview": diff_text[:_DIFF_PREVIEW_BYTES],
+        "diff_nonempty": diff_nonempty,
+        "artifact_ref": str(diff_path),
+    }
+    return RawResult(
+        action_id=action_id,
+        semantics="observation",
+        payload=payload,
+        tool_output=tool_result(
+            diff_path=str(diff_path), diff_nonempty=diff_nonempty,
+        ),
+        error=None,
+        metadata=None,
     )
 
 
-def _verify_diff_emit_error(  # noqa: PLR0913 — all kwargs are part of the canonical error-event shape.
+def _build_verification_slot(
+    *,
+    action_id: str,
+    verify_command: str,
+    repo_path: Path,
+) -> RawResult:
+    """Run ``verify_command`` inline and shape slot 2.
+
+    ``cwd=repo_path`` MUST stay as Codex left the tree (see § Dirty-tree
+    policy stash-pop ordering on :func:`verify_diff_handler`). The
+    predicate ``exit_code == 0`` from :class:`PostActionCheck` is
+    evaluated HERE — the handler picks ``"verification"`` on match,
+    ``"error"`` otherwise.
+
+    Timeout: ``subprocess.TimeoutExpired`` synthesizes
+    ``exit_code=124`` (GNU ``timeout(1)`` convention) and
+    ``timed_out=True`` on the slot payload; the slot's
+    ``RawResult.error`` carries ``"verify_command_timeout"`` for the
+    Limitation Claim ladder (spec §3.4.11).
+    """
+    start_mono = time.monotonic()
+    try:
+        proc = subprocess.run(  # noqa: S603 — Allen-authored trust class per ADR § Trust model.
+            ["/bin/sh", "-c", verify_command],
+            cwd=str(repo_path),
+            timeout=_VERIFY_COMMAND_TIMEOUT_S,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        duration_ms = int((time.monotonic() - start_mono) * 1000)
+        stdout_tail = _decode_tail(exc.stdout)
+        stderr_tail = "timeout"
+        exit_code = _VERIFY_COMMAND_TIMEOUT_EXIT_CODE
+        payload: dict[str, Any] = {
+            "verify_command": verify_command,
+            "exit_code": exit_code,
+            "stdout_tail": stdout_tail,
+            "stderr_tail": stderr_tail,
+            "duration_ms": duration_ms,
+            "timed_out": True,
+        }
+        return RawResult(
+            action_id=action_id,
+            semantics="error",
+            payload=payload,
+            tool_output=tool_result(
+                verify_command=verify_command,
+                exit_code=exit_code,
+                duration_ms=duration_ms,
+                timed_out=True,
+            ),
+            error="verify_command_timeout",
+            metadata=None,
+        )
+
+    duration_ms = int((time.monotonic() - start_mono) * 1000)
+    stdout_tail = (proc.stdout or "")[-_OUTPUT_TAIL_BYTES:]
+    stderr_tail = (proc.stderr or "")[-_OUTPUT_TAIL_BYTES:]
+    exit_code = proc.returncode
+    semantics_on_chain: ResultSemantics = (
+        "verification" if exit_code == 0 else "error"
+    )
+    payload = {
+        "verify_command": verify_command,
+        "exit_code": exit_code,
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
+        "duration_ms": duration_ms,
+        "timed_out": False,
+    }
+    return RawResult(
+        action_id=action_id,
+        semantics=semantics_on_chain,
+        payload=payload,
+        tool_output=tool_result(
+            verify_command=verify_command,
+            exit_code=exit_code,
+            duration_ms=duration_ms,
+        ),
+        error=None if exit_code == 0 else f"verify_command_exit_{exit_code}",
+        metadata=None,
+    )
+
+
+def _decode_tail(stdout: object) -> str:
+    """Render a ``TimeoutExpired.stdout`` value as a bounded text tail.
+
+    ``subprocess.TimeoutExpired.stdout`` is ``bytes`` when ``text=False``
+    and ``str`` when ``text=True``; both shapes appear in the wild on
+    different Python versions. Coerce to ``str``, trim to
+    :data:`_OUTPUT_TAIL_BYTES`, and tolerate non-UTF-8 bytes via the
+    ``replace`` error handler.
+    """
+    if stdout is None:
+        return ""
+    if isinstance(stdout, bytes):
+        return stdout[-_OUTPUT_TAIL_BYTES:].decode("utf-8", errors="replace")
+    if isinstance(stdout, str):
+        return stdout[-_OUTPUT_TAIL_BYTES:]
+    return ""
+
+
+def _emit_verify_diff_result_event(
     *,
     conn: sqlite3.Connection,
     lifecycle: ActionLifecycle,
     action_id: str,
     source_event_id: str,
-    run_id: str,
-    payload: Mapping[str, Any],
-    error_code: str,
-) -> RawResult:
-    """Emit an `action.result_observed(semantics=error)` and return a RawResult.
+    slot: RawResult,
+) -> None:
+    """Emit a single ``action.result_observed`` event + transition lifecycle.
 
-    Single point of error-path construction for `verify_diff_handler` —
-    all four error branches (`artifact_missing`, `artifact_missing_task_id`,
-    `cross_task_artifact`, `predicate_failed`) share this code path, so
-    the event shape, lifecycle transition, and `RawResult.error` tag
-    stay consistent.
-
-    For the task-isolation error codes (`cross_task_artifact` and
-    `artifact_missing_task_id`) the per-error context fields
-    (`expected_task_id`, `actual_task_id`, `artifact_path`, `predicate`)
-    are nested into the emitted event under a single `error_payload`
-    key. `error_payload` is registered as an `optional_payload` entry
-    on `action.result_observed`, so a future strict-mode registry flip
-    keeps these error events legal.
+    Day-2 Step 11 keeps the L4 sync-handler invariant (one
+    ``action.result_observed`` per dispatch + terminal lifecycle
+    transition before return) by emitting the event for the observation
+    slot only. Step 12's L3 Result Interpreter will fan out one
+    ``action.result_observed`` per :class:`RawResultBundle` slot when it
+    consumes the bundle, so the verification-slot event lands at that
+    layer. Day-2 unit tests assert the bundle shape directly; they do not
+    rely on two L4-emitted events.
     """
-    tool_output = tool_error(error_code, code=error_code, **dict(payload))
-    event_payload: dict[str, Any] = {
-        "action_id": action_id,
-        "semantics": "error",
-        "tool_output": tool_output,
-        "error": error_code,
-        "run_id": run_id,
-    }
-    if error_code in {"cross_task_artifact", "artifact_missing_task_id"}:
-        event_payload["error_payload"] = dict(payload)
     emit_event(
         conn,
         type="action.result_observed",
-        payload=event_payload,
+        payload={
+            "action_id": action_id,
+            "semantics": slot.semantics,
+            "tool_output": slot.tool_output,
+        },
         source_event_id=source_event_id,
-        correlation={"action_id": action_id, "run_id": run_id},
+        correlation={"action_id": action_id},
     )
     lifecycle.transition(action_id, "result_observed")
-    return RawResult(
-        action_id=action_id,
-        semantics="error",
-        payload=payload,
-        tool_output=tool_output,
-        error=error_code,
-    )
 
 
 # --- create_task handler (ADR-0002 Step 4) ----------------------------------
@@ -1282,8 +1478,19 @@ class ToolRegistry:
         conn: sqlite3.Connection,
         runtime_paths: RuntimePathsLike,
         lifecycle: ActionLifecycle,
-    ) -> RawResult:
-        """Dispatch one ActionRequest.
+    ) -> RawResultBundle:
+        """Dispatch one ActionRequest and return its :class:`RawResultBundle`.
+
+        Day-2 (ADR-0002 § RawResultBundle contract wrapping rule): the
+        dispatcher uniformly returns ``RawResultBundle`` to L3.
+        Single-slot tools (``spawn_worker``, ``create_task``) return a
+        bare :class:`RawResult` from their handler; the dispatcher wraps
+        them in ``RawResultBundle(slots=(result,))`` on return.
+        Multi-slot tools (``verify_diff`` per spec §3.5.7) return
+        :class:`RawResultBundle` directly and pass through. This keeps
+        the dispatcher signature uniform (``Callable[..., RawResultBundle]``)
+        and avoids a union return type at every L3 call site — narrows
+        once at this boundary.
 
         Preconditions:
             - `action_request.tool_name` is registered → else `UnknownToolError`.
@@ -1304,10 +1511,10 @@ class ToolRegistry:
                `source_event_id` for `run.started` /
                `action.result_observed`.
 
-        The handler then runs and returns a `RawResult`. The handler is
-        responsible for any further lifecycle transitions (sync tools
-        terminal-transition before returning; async tools leave the
-        lifecycle at `running`).
+        The handler then runs and returns a `RawResult` or
+        `RawResultBundle`. The handler is responsible for any further
+        lifecycle transitions (sync tools terminal-transition before
+        returning; async tools leave the lifecycle at `running`).
         """
         with self._lock:
             tool_def = self._tools.get(action_request.tool_name)
@@ -1357,9 +1564,19 @@ class ToolRegistry:
         # synchronous handoff point between dispatch and the handler.
         _set_running_event_uid(conn, action_request.action_id, running_event.event_uid)
         try:
-            return tool_def.handler(action_request, conn, runtime_paths, lifecycle)
+            handler_result = tool_def.handler(
+                action_request, conn, runtime_paths, lifecycle,
+            )
         finally:
             _clear_running_event_uid(conn, action_request.action_id)
+
+        # § RawResultBundle wrapping rule. Multi-slot tools
+        # (`verify_diff` Day-2) already return RawResultBundle; bare
+        # RawResult returns from single-slot tools get wrapped here so
+        # L3 always sees the bundle shape.
+        if isinstance(handler_result, RawResultBundle):
+            return handler_result
+        return RawResultBundle(slots=(handler_result,))
 
 
 # --- running_event_uid handoff (dispatcher → handler) -----------------------
@@ -1443,11 +1660,46 @@ _VERIFY_DIFF_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
     "properties": {
         "run_id": {
             "type": "string",
-            "description": "run whose diff.json to verify",
+            "description": "run whose diff.txt to read (legacy / fallback)",
+        },
+        "artifact_path": {
+            "type": "string",
+            "description": (
+                "Absolute path to the worker's diff.txt artifact "
+                "(Day-2 L3 plumbs this directly; optional when run_id "
+                "is supplied)"
+            ),
         },
     },
     "required": ["run_id"],
 }
+
+
+# `verify_diff`'s ToolDefinition is bound at module scope so the
+# Tier-1 canary `test_canary_verify_diff_post_action_check` can locate
+# the `post_action_check=...` kwarg statically (AST scan).
+VERIFY_DIFF_TOOL_DEF: Final[ToolDefinition] = ToolDefinition(
+    name="verify_diff",
+    description=(
+        "Read the worker's diff artifact and (optionally) run a verify "
+        "command to check postcondition. Dual-slot per spec §3.5.7: "
+        "slot 1 is the diff observation; slot 2 is the verify_command "
+        "exit predicate when the bound task carries a verify_command."
+    ),
+    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM, CallerPrincipal.OBSERVER}),
+    risk_level="L0",
+    result_semantics="observation",
+    is_async=False,
+    input_schema=_VERIFY_DIFF_INPUT_SCHEMA,
+    handler=verify_diff_handler,
+    post_action_check=PostActionCheck(
+        mode="inline",
+        check_tool="verify_command",
+        expected_predicate="exit_code == 0",
+        result_semantics_on_match="verification",
+        timeout_ms=600_000,
+    ),
+)
 
 # create_task is L1 — risk floor for ledger writes per ADR-0002 Step 4
 # build-order row. The schema mirrors ADR-0002 § Step 4 ("required:
@@ -1503,21 +1755,7 @@ def build_default_registry() -> ToolRegistry:
             handler=spawn_worker_handler,
         )
     )
-    registry.register(
-        ToolDefinition(
-            name="verify_diff",
-            description=(
-                "Verify a worker's diff.json artifact against a predicate; "
-                "returns verification semantics on match, error on miss."
-            ),
-            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM, CallerPrincipal.OBSERVER}),
-            risk_level="L0",
-            result_semantics="verification",
-            is_async=False,
-            input_schema=_VERIFY_DIFF_INPUT_SCHEMA,
-            handler=verify_diff_handler,
-        )
-    )
+    registry.register(VERIFY_DIFF_TOOL_DEF)
     registry.register(
         ToolDefinition(
             name="create_task",
@@ -1537,12 +1775,15 @@ def build_default_registry() -> ToolRegistry:
 
 
 __all__ = [
+    "VERIFY_DIFF_TOOL_DEF",
     "ActionLifecycle",
     "CallerNotAllowedError",
     "DuplicateToolError",
     "IllegalLifecycleTransition",
     "LifecycleState",
+    "PostActionCheck",
     "RawResult",
+    "RawResultBundle",
     "ResultSemantics",
     "RuntimePathsLike",
     "ToolDefinition",
