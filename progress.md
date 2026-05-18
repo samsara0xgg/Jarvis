@@ -1451,3 +1451,120 @@ Legacy-bypassed, Tier 1, Notes, Next.
 - Next: Step 13 (`tests/scenarios/test_flagship_verify_fails.py`,
   negative case — monkeypatches `_SPAWN_WORKER_ARTIFACT_STATUS` to
   drive verify_diff into the predicate_failed branch).
+
+---
+
+## Step 13 — `tests/scenarios/test_flagship_verify_fails.py` (negative case)
+
+- Files:
+  - `tests/scenarios/test_flagship_verify_fails.py` (398 LOC) —
+    seven `live_llm`-marked test functions sharing two module-scoped
+    live runs:
+    - `live_fail_path_run` — drives `run_turn(utterance)` once
+      against `gpt-5.5` with `_SPAWN_WORKER_ARTIFACT_STATUS`
+      monkeypatched to `"fail"` for the duration of the turn
+      (via `pytest.MonkeyPatch.context()` because the per-test
+      `monkeypatch` fixture is function-scoped). Stashes runtime +
+      result + DB path.
+    - `live_fail_replay_run` — second independent fail-path live run
+      (fresh tmp runtime, identical seed, same flipped artifact
+      status) used by `test_negative_replay_determinism`.
+    Acceptance coverage:
+    - `test_negative_verify_diff_error_semantics` — F1 (semantics=
+      "error" present; zero `task.verified` rows).
+    - `test_negative_task_status_reported_complete` — F2 (Task Ledger
+      derives `reported_complete`).
+    - `test_negative_limitation_claim_emitted` — F3 (Limitation
+      claim with reported evidence chains back to an
+      `action.result_observed(semantics=error)` row).
+    - `test_negative_response_has_limitation_language` — F4 (verbatim
+      `_LIMITATION_PATTERNS` regex set; ≥ 1 match across
+      `result.response_text` / `result.response_plan.text`).
+    - `test_negative_response_no_bare_completion` — F5 (verbatim
+      `_COMPLETION_PATTERNS` regex set; zero matches *after* striping
+      F4 limitation frames + negation frames per ADR's "outside an
+      explicit 'agent reported' frame" clause; see Notes).
+    - `test_negative_projection_idempotent` — F6 (two consecutive
+      `rebuild_projections` calls produce deep-equal claim /
+      evidence / task-ledger projections; derived status stable).
+    - `test_negative_replay_determinism` — I3 (event-count drift
+      ≤ ± 2; derived `task_X` status `reported_complete` on both
+      runs).
+  - `tests/scenarios/conftest.py` (small surgical change) —
+    `write_llm_use_artifact` grew an optional `suffix` kwarg so the
+    negative-case run writes `llm_use_fail_<ts>.json` distinct from
+    the happy-path file. Step 12's call site is unchanged
+    (positional, default empty suffix).
+- Legacy consulted: none — Step 13 is fresh test code shaped on the
+  template Step 12 established.
+- Legacy-bypassed: none.
+- Tier 1:
+  - T1.A `lint-imports`: 1 contract kept, 0 broken.
+  - T1.B `ruff check .`: All checks passed.
+  - T1.C `mypy .`: Success: no issues found in 64 source files.
+  - T1.D `pytest tests/unit/ tests/canary/ -x`: 264 passed.
+- Tier 2:
+  - `pytest tests/scenarios/ --live-llm -v`: **14 passed in ~58 s**
+    (7 happy + 7 negative against real OpenRouter `gpt-5.5`).
+  - LLM nondeterminism: the negative path retried-text varied across
+    runs. Two observed shapes:
+      1. The LLM voluntarily produced limitation language ("Status:
+         reported, not verified.\n...no verified Postcondition
+         evidence...do not mark as complete") which satisfied F4
+         via the canonical `r"reported,?\s*not\s+verified"` regex
+         but still contained literal `verified` / `done` tokens
+         inside negation/limitation frames.
+      2. The LLM produced a "Current limitation:\n... Do not claim:
+         completed, accepted, passed, or done" enumeration, again
+         satisfying F4 and again containing `done` inside a "do not
+         claim" frame.
+    No run hit the `_FORCED_LIMITATION_TEMPLATE` path Day-1.
+  - G5 token-use sample (most recent fail-path run):
+    `{"model": "gpt-5.5", "input_tokens": 2242, "output_tokens": 113,
+    "finish_reason": "stop"}`.
+- Notes:
+  - **F5 "agent reported" frame implementation.** The verbatim ADR
+    `_COMPLETION_PATTERNS` would false-positive on the LLM's
+    limitation phrasings ("...not verified", "...do not mark
+    complete or done", "verified Postcondition evidence" inside the
+    gate's own reason text echo). Per ADR § F5's "outside an
+    explicit 'agent reported' frame" clause, the F5 assertion strips
+    a closed set of limitation/negation frames *first* and asserts
+    zero `re.search` hits on the residue. The strip patterns are
+    enumerated in the test docstring and exercise greedy semantics
+    so "Do not claim: completed, accepted, passed, or done" peels
+    the whole phrase out in one bite. The verbatim ADR regex set is
+    preserved unchanged in `_COMPLETION_PATTERNS`; only the input
+    text is conditioned by the frame strip.
+  - **Pre-emit Gate template untouched.** The forced limitation
+    template (`_FORCED_LIMITATION_TEMPLATE`) in
+    `jarvis/decision/__init__.py` was NOT modified — Day-1's two
+    observed LLM-voluntary limitation shapes both clear F4 directly,
+    so the template downgrade path was not exercised. The template
+    text (containing "未验证") still satisfies F4 by construction
+    against the ADR's canonical regex set; it stays as Step 9 wrote
+    it.
+  - **Module-scoped monkeypatch.** Pytest's per-test `monkeypatch`
+    fixture is function-scoped, so the fail-path fixture drives the
+    patch manually via `pytest.MonkeyPatch.context()` inside the
+    fixture body. The patch is active only for the `run_turn(...)`
+    call; the module-scope fixture then yields the captured result
+    + DB path for all six F-acceptance tests to read.
+  - **conftest surgical change.** `write_llm_use_artifact` grew a
+    keyword-only `suffix=""` argument so happy-path and fail-path
+    artifacts land in distinct filenames; Step 12's positional
+    `write_llm_use_artifact(runtime)` call is byte-equivalent.
+  - **F1-I3 acceptance coverage table:**
+
+    | Acceptance | Test                                              | Status |
+    |------------|---------------------------------------------------|--------|
+    | F1         | test_negative_verify_diff_error_semantics         | green  |
+    | F2         | test_negative_task_status_reported_complete       | green  |
+    | F3         | test_negative_limitation_claim_emitted            | green  |
+    | F4         | test_negative_response_has_limitation_language    | green  |
+    | F5         | test_negative_response_no_bare_completion         | green  |
+    | F6         | test_negative_projection_idempotent               | green  |
+    | I3         | test_negative_replay_determinism                  | green  |
+- Next: Day-1 build complete. All 13 ADR steps green at Tier 1
+  (264 unit + canary, lint-imports, ruff, mypy) and Tier 2 (14 live
+  scenarios across happy + negative).

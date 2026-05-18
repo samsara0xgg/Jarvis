@@ -199,8 +199,12 @@ def seed_one_open_task(
 # --- Token-use artifact writer (G5) ---------------------------------------
 
 
-def write_llm_use_artifact(runtime: JarvisRuntime) -> Path:
-    """Write ``tests/_artifacts/llm_use_<ts>.json`` summarising the last LLM call.
+def write_llm_use_artifact(
+    runtime: JarvisRuntime,
+    *,
+    suffix: str = "",
+) -> Path:
+    """Write ``tests/_artifacts/llm_use[_<suffix>]_<ts>.json`` for the last LLM call.
 
     Acceptance G5 just requires the file exists with the expected
     keys; token counts are informational, not gated.
@@ -208,6 +212,9 @@ def write_llm_use_artifact(runtime: JarvisRuntime) -> Path:
     Args:
         runtime: The :class:`JarvisRuntime` whose ``llm_client`` was
             just exercised.
+        suffix: Optional filename suffix that distinguishes the
+            happy-path and negative-case runs in the artifacts
+            directory (e.g. ``"happy"`` / ``"fail"``).
 
     Returns:
         The path of the artifact written.
@@ -221,6 +228,7 @@ def write_llm_use_artifact(runtime: JarvisRuntime) -> Path:
         "finish_reason": runtime.llm_client.last_finish_reason,
         "ts_epoch_ms": ts_epoch_ms,
     }
-    artifact_path = _ARTIFACTS_DIR / f"llm_use_{ts_epoch_ms}.json"
+    tag = f"_{suffix}" if suffix else ""
+    artifact_path = _ARTIFACTS_DIR / f"llm_use{tag}_{ts_epoch_ms}.json"
     artifact_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     return artifact_path
