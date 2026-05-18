@@ -43,11 +43,13 @@ Protocols that the runtime composition root satisfies structurally.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from jarvis.decision.gates import (
     AttentionChannel,
@@ -105,6 +107,60 @@ _DEFAULT_MAX_TOOL_ITERATIONS = 5
 _FORCED_LIMITATION_TEMPLATE = (
     "tool result: {draft}\n— Pre-emit Gate forced limitation framing (unverified / 未验证)."
 )
+
+# Completion-keyword scrub set. Mirrors the gate's _COMPLETION_PATTERNS in
+# spirit; the gate decides whether to FORCE downgrade, this scrub decides
+# what text to render once the forced template fires. Kept separate from
+# the gate's regex set so spec changes can evolve independently (the gate
+# adds/removes detection patterns; the scrub adds/removes redaction
+# patterns).
+_COMPLETION_SCRUB_PATTERNS: Final[tuple[str, ...]] = (
+    r"已完成(?!\s*报告)",  # Day-1 completion claim, except "已完成报告"
+    r"^完成",
+    r"\bverified\b",
+    r"\bdone\b",
+    r"\bcompleted\b",       # add common synonyms the gate might miss
+    r"\bfinished\b",
+)
+
+_COMPLETION_REDACTION_MARKER: Final[str] = "[redacted-completion-claim]"
+
+
+def _scrub_completion_keywords(text: str) -> str:
+    """Replace completion-class keywords with a redaction marker.
+
+    Used by the forced limitation template when the LLM's retry still
+    claims completion — the embedded draft must not carry bare
+    completion words to the surface. Case-insensitive by default.
+    """
+    out = text
+    for pat in _COMPLETION_SCRUB_PATTERNS:
+        out = re.sub(pat, _COMPLETION_REDACTION_MARKER, out, flags=re.IGNORECASE)
+    return out
+
+
+def _hard_refusal_plan(active_subject: str) -> ResponsePlan:
+    r"""Build a fixed limitation ResponsePlan with no LLM-supplied text.
+
+    Used as the last line of defense when both the LLM retry and the
+    scrubbed forced template still trip the Pre-emit Gate. The text
+    uses ``未验证 / unverified`` (F4 limitation regex hit via ``未验证``
+    in ``_LIMITATION_PATTERNS`` and the ``\bunverified\b`` negation
+    marker, NOT bare ``\bverified\b``) and avoids every completion
+    keyword the gate detects, so it is scrub-safe by construction.
+    """
+    text = (
+        f"agent reported, status unverified (未验证) — Pre-emit Gate "
+        f"refused completion language for subject {active_subject} "
+        f"(no Postcondition evidence)."
+    )
+    return ResponsePlan(
+        text=text,
+        permission="force_limitation_language",
+        downgrade_required=False,  # this text is scrub-safe by construction
+        active_claim_levels=(),
+        response_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    )
 
 
 # --- Public Protocols (avoid sibling-layer imports) ------------------------
@@ -963,14 +1019,23 @@ def _finalize_response(
         if not retry_plan.downgrade_required:
             plan = retry_plan
         else:
-            forced = _FORCED_LIMITATION_TEMPLATE.format(draft=retry_text or draft_text)
+            forced = _FORCED_LIMITATION_TEMPLATE.format(
+                draft=_scrub_completion_keywords(retry_text or draft_text),
+            )
             forced_plan = pre_emit_gate(forced, projections.claim_evidence, active_subject)
-            # The forced template uses "未验证" so the surface output
-            # carries explicit limitation language; the verdict surface
-            # is still ``force_limitation_language`` but
-            # ``downgrade_required`` is now False because the text no
-            # longer contains completion claims.
-            plan = forced_plan
+            # Defense in depth:
+            #   (a) scrub completion keywords from the LLM draft so the
+            #       embedded text can't carry bare completion claims to
+            #       the surface.
+            #   (b) if the scrubbed-and-templated text STILL trips the
+            #       gate (e.g. a completion synonym the scrub regex
+            #       doesn't cover), fall back to a fixed
+            #       _hard_refusal_plan that is scrub-safe by
+            #       construction.
+            if forced_plan.downgrade_required:
+                plan = _hard_refusal_plan(active_subject)
+            else:
+                plan = forced_plan
 
     # Emit gate.evaluated(pre_emit).
     gate_event = emit_event(
