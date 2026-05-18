@@ -43,12 +43,15 @@ Protocols that the runtime composition root satisfies structurally.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from jarvis.decision.gates import (
@@ -80,15 +83,14 @@ from jarvis.shared import (
     Event,
     RawResult,
 )
+from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.state.event_log import emit_event
 from jarvis.state.projections import make_snapshot
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Mapping
-    from pathlib import Path
 
-    from jarvis.decision.llm import LLMClient
+    from jarvis.decision.llm import ChatResult, LLMClient
     from jarvis.shared import EvidenceLevel, RiskLevel
 
 LOGGER = logging.getLogger(__name__)
@@ -177,6 +179,157 @@ def _hard_refusal_plan(
         downgrade_required=False,  # this text is scrub-safe by construction
         active_claim_levels=active_claim_levels,
         response_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    )
+
+
+# --- Pricing table loader (ADR-0002 Step 3 § cost.recorded plumbing) ------
+
+
+def _repo_data_pricing_json() -> Path:
+    """Return the absolute path to ``<repo>/data/pricing.json``.
+
+    The shared pricing module defaults to a cwd-relative path
+    (``Path("data/pricing.json")``), which breaks when ``decide()`` runs
+    from a daemon cwd. Decision computes the path off ``__file__`` so the
+    same pricing table is consulted regardless of process cwd.
+    """
+    return Path(__file__).resolve().parents[2] / "data" / "pricing.json"
+
+
+@functools.lru_cache(maxsize=1)
+def _pricing_table() -> Mapping[str, Mapping[str, float]]:
+    """Return the flattened pricing table, loaded at most once per process.
+
+    Cached because every ``cost.recorded`` emit reads it and the table
+    contents are static for a process lifetime (refreshed by
+    ``scripts/refresh_pricing.py`` between runs). Missing / malformed
+    JSON falls through to an empty dict — the per-model lookup then
+    returns ``None`` from :func:`compute_cost_usd` and the event still
+    emits, just with ``cost_usd=None`` (honest unknown vs. raising).
+    """
+    return load_pricing_table(_repo_data_pricing_json())
+
+
+def _emit_cost_recorded(
+    ctx: DecideContext,
+    chat_result: ChatResult,
+    *,
+    kind: str,
+    turn_id: str | None,
+    run_id: str | None = None,
+) -> Event:
+    """Emit one ``cost.recorded`` event for an L3 LLM turn.
+
+    L3 is the SOLE emit-site per spec §5.4.1 (owner_layer=L3 on the
+    ``cost.recorded`` registry entry). Called after every
+    ``ctx.llm_client.chat(...)`` site in :mod:`jarvis.decision` so the
+    audit trail can sum per-turn spend without trawling provider logs.
+
+    Args:
+        ctx: Live :class:`DecideContext` (for the open SQLite conn).
+        chat_result: The ChatResult just returned by ``llm_client.chat``.
+        kind: ``"decision"`` for the L3 decide() / finalize loop;
+            ``"reviewer"`` later (Step 9) for the reviewer LLM; ``"codex"``
+            when consuming RawResult.metadata["cost"] from L4.
+        turn_id: The active turn correlation (when within a turn).
+        run_id: Worker run id (only set when the turn is part of a
+            worker run; ``cost.recorded`` carries it as an optional
+            correlation field so per-run cost rollups are possible).
+    """
+    cost_usd = compute_cost_usd(
+        chat_result.model_used or None,
+        chat_result.tokens_in,
+        chat_result.tokens_out,
+        chat_result.cache_read_in,
+        chat_result.cache_write_in,
+        dict(_pricing_table()),
+    )
+    payload: dict[str, Any] = {
+        "kind": kind,
+        "model": chat_result.model_used,
+        "tokens_in": chat_result.tokens_in,
+        "tokens_out": chat_result.tokens_out,
+        "cache_read_in": chat_result.cache_read_in,
+        "cache_write_in": chat_result.cache_write_in,
+        "cost_usd": cost_usd,
+    }
+    if run_id is not None:
+        payload["run_id"] = run_id
+    correlation: dict[str, str] = {}
+    if turn_id is not None:
+        correlation["turn_id"] = turn_id
+    if run_id is not None:
+        correlation["run_id"] = run_id
+    return emit_event(
+        ctx.conn,
+        type="cost.recorded",
+        payload=payload,
+        correlation=correlation or None,
+    )
+
+
+def _emit_cost_recorded_from_metadata(
+    ctx: DecideContext,
+    raw_result: RawResult,
+    *,
+    turn_id: str | None,
+) -> Event | None:
+    """Emit ``cost.recorded`` from L4-returned RawResult.metadata["cost"].
+
+    Per ADR-0002 § RawResult.metadata extension: L4's spawn_worker
+    handler populates ``raw_result.metadata["cost"]`` from Codex's
+    ``turn/completed`` payload. L3 is the sole emit-site, so this
+    function reads the side-channel and emits the event from L3.
+    Returns the emitted Event, or ``None`` when no cost metadata is
+    present (the common case until Step 10 wires spawn_worker for real).
+    """
+    metadata = raw_result.metadata
+    if metadata is None:
+        return None
+    cost = metadata.get("cost")
+    if not isinstance(cost, Mapping):
+        return None
+    model = cost.get("model")
+    if not isinstance(model, str) or not model:
+        # No model → cost.recorded would fail the required-field check.
+        return None
+    tokens_in = int(cost.get("tokens_in", 0) or 0)
+    tokens_out = int(cost.get("tokens_out", 0) or 0)
+    cache_read_in = int(cost.get("cache_read_in", 0) or 0)
+    cache_write_in = int(cost.get("cache_write_in", 0) or 0)
+    cost_usd = compute_cost_usd(
+        model,
+        tokens_in,
+        tokens_out,
+        cache_read_in,
+        cache_write_in,
+        dict(_pricing_table()),
+    )
+    kind_raw = cost.get("kind", "codex")
+    kind = kind_raw if isinstance(kind_raw, str) and kind_raw else "codex"
+    run_id_raw = cost.get("run_id")
+    run_id = run_id_raw if isinstance(run_id_raw, str) else None
+    payload: dict[str, Any] = {
+        "kind": kind,
+        "model": model,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cache_read_in": cache_read_in,
+        "cache_write_in": cache_write_in,
+        "cost_usd": cost_usd,
+    }
+    if run_id is not None:
+        payload["run_id"] = run_id
+    correlation: dict[str, str] = {}
+    if turn_id is not None:
+        correlation["turn_id"] = turn_id
+    if run_id is not None:
+        correlation["run_id"] = run_id
+    return emit_event(
+        ctx.conn,
+        type="cost.recorded",
+        payload=payload,
+        correlation=correlation or None,
     )
 
 
@@ -485,6 +638,15 @@ def _run_tool_use_loop(
         chat_result = ctx.llm_client.chat(
             messages=messages, system=ctx.system_prompt, tools=tools,
         )
+        # ADR-0002 Step 3: emit cost.recorded for the L3 decision turn.
+        # L3 is the sole emit-site per spec §5.4.1; this is one of two
+        # ctx.llm_client.chat(...) sites in this module — see the
+        # cost.recorded-per-llm-call canary for the static guard.
+        scratch.events.append(
+            _emit_cost_recorded(
+                ctx, chat_result, kind="decision", turn_id=scratch.turn_id,
+            ),
+        )
 
         if chat_result.tool_calls:
             # Append the assistant turn (with tool_calls) so the next
@@ -699,6 +861,18 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0913, PLR0915 — single-pass orc
         ctx.runtime_paths,
         ctx.lifecycle,
     )
+
+    # 6b. ADR-0002 Step 3: when L4 returns RawResult.metadata["cost"]
+    #     (populated by spawn_worker from Codex's turn/completed once
+    #     Step 10 wires it), emit cost.recorded(kind="codex") from L3.
+    #     L3 is the sole emit-site per spec §5.4.1; L4 only places the
+    #     payload on metadata. Dormant until Step 10 — Day-1 handlers
+    #     return metadata=None so this is a no-op.
+    cost_event = _emit_cost_recorded_from_metadata(
+        ctx, raw_result, turn_id=scratch.turn_id,
+    )
+    if cost_event is not None:
+        scratch.events.append(cost_event)
 
     # 7a. Async tools (spawn_worker): leave lifecycle at running and
     #     pause. ``worker.reported`` will re-enter decide() later.
@@ -1067,6 +1241,13 @@ def _finalize_response(
             messages=retry_messages,
             system=ctx.system_prompt,
             tools=None,
+        )
+        # ADR-0002 Step 3: emit cost.recorded for the Pre-emit retry
+        # LLM turn (the second of two L3 chat() sites in this module).
+        scratch.events.append(
+            _emit_cost_recorded(
+                ctx, retry_result, kind="decision", turn_id=scratch.turn_id,
+            ),
         )
         retry_text = retry_result.text or ""
         retry_plan = pre_emit_gate(retry_text, projections.claim_evidence, active_subject)

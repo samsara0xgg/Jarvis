@@ -91,6 +91,25 @@ class ChatResult:
         input_tokens: Prompt tokens, or ``None``.
         output_tokens: Completion tokens, or ``None``.
         raw: Read-only provider raw response (for audit / debug).
+        model_used: Concrete model id this turn ran on (e.g.
+            ``"gpt-5.5"``). Mirrors ``LLMClient.model`` at call time so
+            ``cost.recorded`` can attribute the spend per spec §5.4.1
+            (ADR-0002 Step 3 § cost.recorded plumbing). Day-2 additive
+            field; defaults to ``""`` so existing tests that hand-build
+            a :class:`ChatResult` keep compiling.
+        tokens_in: Non-None alias for :attr:`input_tokens` defaulted
+            to ``0`` for cost arithmetic. The ``input_tokens | None``
+            field stays for backwards compatibility; ``tokens_in`` is
+            the field the L3 cost emitter reads. Equal to
+            ``input_tokens or 0`` when populated by the SDK.
+        tokens_out: Non-None alias for :attr:`output_tokens`, same
+            rationale.
+        cache_read_in: Prompt tokens served from the provider prompt
+            cache (billed at the cache_read rate). Defaults to ``0``
+            when the provider response omits the field.
+        cache_write_in: Prompt tokens written into the provider prompt
+            cache this turn (billed at the cache_write rate). Defaults
+            to ``0`` when the provider response omits the field.
     """
 
     text: str | None
@@ -99,6 +118,11 @@ class ChatResult:
     input_tokens: int | None
     output_tokens: int | None
     raw: Mapping[str, Any]
+    model_used: str = ""
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cache_read_in: int = 0
+    cache_write_in: int = 0
 
 
 @dataclass(frozen=True)
@@ -457,6 +481,19 @@ class LLMClient:
         self._last_input_tokens = getattr(usage, "prompt_tokens", None) if usage else None
         self._last_output_tokens = getattr(usage, "completion_tokens", None) if usage else None
 
+        # ADR-0002 Step 3: surface cache token counts on ChatResult so
+        # the L3 cost emitter can bill at cache rates. OpenAI/OpenRouter
+        # expose cached prompt tokens via usage.prompt_tokens_details
+        # (.cached_tokens). chat completions does not expose a per-turn
+        # cache-write count, so cache_write_in stays 0 here.
+        cache_read_in = 0
+        if usage is not None:
+            details = getattr(usage, "prompt_tokens_details", None)
+            if details is not None:
+                cached = getattr(details, "cached_tokens", None)
+                if cached is not None:
+                    cache_read_in = int(cached)
+
         text_part = (assistant_msg.content or "").strip() or None
         tool_calls: tuple[ToolCall, ...] = ()
         if assistant_msg.tool_calls:
@@ -477,6 +514,11 @@ class LLMClient:
             input_tokens=self._last_input_tokens,
             output_tokens=self._last_output_tokens,
             raw=raw,
+            model_used=self._model,
+            tokens_in=self._last_input_tokens or 0,
+            tokens_out=self._last_output_tokens or 0,
+            cache_read_in=cache_read_in,
+            cache_write_in=0,
         )
 
     def _chat_stream_openai(
@@ -568,6 +610,19 @@ class LLMClient:
         self._last_input_tokens = getattr(usage, "input_tokens", None) if usage else None
         self._last_output_tokens = getattr(usage, "output_tokens", None) if usage else None
 
+        # ADR-0002 Step 3: Anthropic exposes both cache_read and
+        # cache_creation token counts on usage. Surface both on
+        # ChatResult so the L3 cost emitter bills at the correct rate.
+        cache_read_in_anth = 0
+        cache_write_in_anth = 0
+        if usage is not None:
+            cr = getattr(usage, "cache_read_input_tokens", None)
+            if cr is not None:
+                cache_read_in_anth = int(cr)
+            cw = getattr(usage, "cache_creation_input_tokens", None)
+            if cw is not None:
+                cache_write_in_anth = int(cw)
+
         text_parts: list[str] = []
         tool_calls_list: list[ToolCall] = []
         for block in getattr(response, "content", []) or []:
@@ -599,6 +654,11 @@ class LLMClient:
             input_tokens=self._last_input_tokens,
             output_tokens=self._last_output_tokens,
             raw=raw,
+            model_used=self._model,
+            tokens_in=self._last_input_tokens or 0,
+            tokens_out=self._last_output_tokens or 0,
+            cache_read_in=cache_read_in_anth,
+            cache_write_in=cache_write_in_anth,
         )
 
     def _chat_stream_anthropic(

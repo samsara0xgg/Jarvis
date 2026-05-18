@@ -219,9 +219,35 @@ def test_chatresult_is_frozen_and_hashable() -> None:
         input_tokens=10,
         output_tokens=2,
         raw={},
+        # ADR-0002 Step 3 cost fields (defaulted, but exercised here so
+        # the canary that requires them present can be satisfied by a
+        # hand-built test ChatResult as well).
+        model_used="gpt-5.5",
+        tokens_in=10,
+        tokens_out=2,
+        cache_read_in=0,
+        cache_write_in=0,
     )
     with pytest.raises((AttributeError, Exception)):
         result.text = "mutated"  # type: ignore[misc]
+
+
+def test_chatresult_defaults_for_cost_fields() -> None:
+    """ChatResult's ADR-0002 Step 3 cost fields default safely (additive)."""
+    result = ChatResult(
+        text=None,
+        tool_calls=(),
+        finish_reason="stop",
+        input_tokens=None,
+        output_tokens=None,
+        raw={},
+    )
+    # Defaulted so legacy call sites (Day-1 unit tests) still compile.
+    assert result.model_used == ""
+    assert result.tokens_in == 0
+    assert result.tokens_out == 0
+    assert result.cache_read_in == 0
+    assert result.cache_write_in == 0
 
 
 def test_toolcall_is_frozen() -> None:
