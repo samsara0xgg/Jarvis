@@ -23,15 +23,24 @@ import re
 from tests.canary._helpers import iter_jarvis_py_files, parse, relative_to_repo
 
 # Three alternations; named groups capture the table name from whichever
-# alternative matches. The keywords are matched **case-sensitively** as
-# uppercase to discriminate real SQL (`INSERT INTO events`,
-# `UPDATE foo SET ...`) from English prose in docstrings ("INSERT into
-# the events table"). Every SQL string literal in the codebase uses the
-# all-caps SQL convention; mixed-case prose stays out of scope.
+# alternative matches. Case-insensitive so `insert into events` lower-case
+# cannot bypass H1. Each form is also tightened with a SQL-syntax tail so
+# English prose like "INSERT into the events table" does not false-trip:
+#
+# - INSERT INTO <table> must be followed by `(` / VALUES / SELECT /
+#   DEFAULT / SET, or be at end-of-string (a bare fragment like
+#   `INSERT INTO events` as the entire literal still counts).
+# - UPDATE <table> SET is already structural — `\s+SET\b` is not a
+#   common English bigram.
+# - DELETE FROM <table> must be followed by WHERE / ORDER / LIMIT /
+#   RETURNING / `;` / end-of-string / `)`.
 _SQL_WRITE_RE = re.compile(
-    r"\bINSERT\s+INTO\s+(?P<insert_table>\w+)"
+    r"\bINSERT\s+INTO\s+(?P<insert_table>\w+)\s*"
+    r"(?:\(|VALUES\b|SELECT\b|DEFAULT\b|SET\b|$)"
     r"|\bUPDATE\s+(?P<update_table>\w+)\s+SET\b"
-    r"|\bDELETE\s+FROM\s+(?P<delete_table>\w+)"
+    r"|\bDELETE\s+FROM\s+(?P<delete_table>\w+)\s*"
+    r"(?:WHERE\b|ORDER\b|LIMIT\b|RETURNING\b|;|\)|$)",
+    re.IGNORECASE,
 )
 
 

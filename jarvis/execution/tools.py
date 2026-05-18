@@ -577,10 +577,10 @@ def verify_diff_handler(
     Error context fields (`expected_task_id`, `actual_task_id`,
     `artifact_path`, `predicate`, `run_id`) are carried inside the
     `tool_output` JSON string AND nested under a single `error_payload`
-    key on the emitted `action.result_observed` event (the Day-1
-    EventTypeRegistry `optional_payload` list does not include the
-    per-error-class fields by name and registry changes are Step 4's
-    territory — strict-mode flip will accept `error_payload` as one key).
+    key on the emitted `action.result_observed` event. `error_payload`
+    is the registered `optional_payload` entry for these per-error-class
+    fields (see `jarvis.state.event_log` registry entry for
+    `action.result_observed`).
     """
     run_id = action_request.arguments["run_id"]
     if not isinstance(run_id, str):
@@ -711,12 +711,9 @@ def _verify_diff_emit_error(  # noqa: PLR0913 — all kwargs are part of the can
     `artifact_missing_task_id`) the per-error context fields
     (`expected_task_id`, `actual_task_id`, `artifact_path`, `predicate`)
     are nested into the emitted event under a single `error_payload`
-    key. This shape (a) carries the diagnostic context for the Result
-    Interpreter / observer, (b) keeps the registered top-level payload
-    keys to the existing `action.result_observed` set (`action_id`,
-    `semantics`, `tool_output`, `error`, `run_id`) plus exactly one new
-    additive key, and (c) survives a future strict-mode flip on the
-    registry with at most one new `optional_payload` entry.
+    key. `error_payload` is registered as an `optional_payload` entry
+    on `action.result_observed`, so a future strict-mode registry flip
+    keeps these error events legal.
     """
     tool_output = tool_error(error_code, code=error_code, **dict(payload))
     event_payload: dict[str, Any] = {

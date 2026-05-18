@@ -226,7 +226,11 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         event_type="action.result_observed",
         owner_layer="L4",
         required_payload=("action_id", "semantics"),
-        optional_payload=("tool_output", "error", "run_id"),
+        # `error_payload` carries the L4 error-context dict for the
+        # task-isolation error codes (`cross_task_artifact`,
+        # `artifact_missing_task_id`); see
+        # `jarvis.execution.tools._verify_diff_emit_error`.
+        optional_payload=("tool_output", "error", "run_id", "error_payload"),
         schema_version=1,
     ),
     EventTypeSchema(
