@@ -46,6 +46,20 @@ ignore = [
     "ISC001",  # implicit string concatenation — conflicts with ruff format
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# L1 Constitution carries canonical Chinese principle/non-goal text copied
+# verbatim from spec §3.2; fullwidth CJK punctuation is intentional, not a
+# transcription mistake. RUF001 flags those characters.
+"jarvis/constitution/__init__.py" = ["RUF001"]
+# Tests use bare `assert` (pytest), don't need return-type annotations, and
+# carry magic numbers in assertion targets by design.
+"tests/**/*.py" = [
+    "S101",     # bare asserts are how pytest reports failures
+    "ANN201",   # test functions return None; verbose annotation noise
+    "PLR2004",  # magic value comparisons are the assertion target
+    "S108",     # /tmp paths in literal test data are not insecure
+]
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
