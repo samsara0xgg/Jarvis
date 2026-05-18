@@ -108,12 +108,12 @@ def _wait_for_event_type(
 # --- Default registry shape ------------------------------------------------
 
 
-def test_default_registry_registers_spawn_worker_and_verify_diff() -> None:
-    """`build_default_registry()` registers exactly the two Day-1 tools."""
+def test_default_registry_registers_day1_and_day2_step4_tools() -> None:
+    """`build_default_registry()` registers the Day-1 pair + Day-2 Step-4 create_task."""
     registry = build_default_registry()
     defs = registry.get_definitions()
     names = sorted(d.name for d in defs)
-    assert names == ["spawn_worker", "verify_diff"]
+    assert names == ["create_task", "spawn_worker", "verify_diff"]
 
 
 def test_default_registry_spawn_worker_shape() -> None:
@@ -142,12 +142,12 @@ def test_default_registry_verify_diff_shape() -> None:
 
 
 def test_for_caller_filters_by_principal() -> None:
-    """OBSERVER only sees verify_diff; JARVIS_LLM sees both."""
+    """OBSERVER only sees verify_diff; JARVIS_LLM sees all three."""
     registry = build_default_registry()
     llm_tools = {d.name for d in registry.for_caller(CallerPrincipal.JARVIS_LLM)}
     observer_tools = {d.name for d in registry.for_caller(CallerPrincipal.OBSERVER)}
     worker_tools = {d.name for d in registry.for_caller(CallerPrincipal.WORKER_AGENT)}
-    assert llm_tools == {"spawn_worker", "verify_diff"}
+    assert llm_tools == {"spawn_worker", "verify_diff", "create_task"}
     assert observer_tools == {"verify_diff"}
     assert worker_tools == set()
 

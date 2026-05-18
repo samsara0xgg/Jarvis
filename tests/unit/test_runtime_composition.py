@@ -61,9 +61,9 @@ def test_bootstrap_runtime_app_returns_populated_runtime(tmp_path: Path) -> None
         assert isinstance(runtime.lifecycle, ActionLifecycle)
         assert runtime.system_prompt  # non-empty prompt text loaded
         assert "llm" in runtime.config
-        # Day-1 default registry has both Day-1 tools.
+        # Default registry has the Day-1 pair plus Day-2 Step 4's create_task.
         tool_names = {t.name for t in runtime.tool_registry.get_definitions()}
-        assert tool_names == {"spawn_worker", "verify_diff"}
+        assert tool_names == {"spawn_worker", "verify_diff", "create_task"}
     finally:
         runtime.conn.close()
 

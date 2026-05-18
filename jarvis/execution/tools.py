@@ -81,15 +81,16 @@ import json
 import threading
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
+from jarvis.execution.verify_command_detect import detect_verify_command
 from jarvis.shared import ActionRequest, CallerPrincipal, RawResult, ResultSemantics, RiskLevel
 from jarvis.state.event_log import emit_event, open_event_log
 
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Mapping
-    from pathlib import Path
 
 
 # --- Controllable knobs ------------------------------------------------------
@@ -719,6 +720,179 @@ def _verify_diff_emit_error(  # noqa: PLR0913 — all kwargs are part of the can
     )
 
 
+# --- create_task handler (ADR-0002 Step 4) ----------------------------------
+
+
+def _new_task_id() -> str:
+    """Mint a fresh task id (`"T_" + 8-hex`).
+
+    Day-2 Step 4: task ids are LLM-visible and used as `target_entity_ref`
+    on follow-up actions (spawn_worker / verify_diff). Eight hex chars is
+    the same width as `run_id` / `action_id` for visual symmetry in the
+    event trace.
+    """
+    return "T_" + uuid.uuid4().hex[:8]
+
+
+@dataclass(frozen=True)
+class _CreateTaskArgs:
+    """Parsed + validated arguments for `create_task_handler`."""
+
+    goal: str
+    repo_path: str | None
+    deadline: str | None
+    source: str
+
+
+def _parse_create_task_args(arguments: Mapping[str, Any]) -> _CreateTaskArgs:
+    """Validate `create_task` arguments and return a typed bundle.
+
+    Raises ``KeyError`` if `goal` is absent (the registered tool schema
+    declares it required, but the handler defends in depth so the L3
+    Pre-action Gate is not the only place enforcing schema). Raises
+    ``TypeError`` if any provided field is the wrong type.
+    """
+    goal = arguments["goal"]
+    if not isinstance(goal, str):
+        msg = f"create_task: goal must be a string (got {type(goal).__name__})"
+        raise TypeError(msg)
+
+    repo_path_arg = arguments.get("repo_path")
+    if repo_path_arg is not None and not isinstance(repo_path_arg, str):
+        msg = (
+            f"create_task: repo_path must be a string or None "
+            f"(got {type(repo_path_arg).__name__})"
+        )
+        raise TypeError(msg)
+
+    deadline = arguments.get("deadline")
+    if deadline is not None and not isinstance(deadline, str):
+        msg = (
+            f"create_task: deadline must be a string or None "
+            f"(got {type(deadline).__name__})"
+        )
+        raise TypeError(msg)
+
+    source = arguments.get("source", "manual")
+    if not isinstance(source, str):
+        msg = f"create_task: source must be a string (got {type(source).__name__})"
+        raise TypeError(msg)
+
+    return _CreateTaskArgs(
+        goal=goal,
+        repo_path=repo_path_arg,
+        deadline=deadline,
+        source=source,
+    )
+
+
+def create_task_handler(
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — kept for handler signature uniformity.
+    lifecycle: ActionLifecycle,
+) -> RawResult:
+    """L1 `create_task` stub — sync lifecycle, emits one `task.created`.
+
+    Per ADR-0002 § D14 ("Natural-language path through L3 calling the
+    new `create_task` L4 tool") + § Step 4 build order.
+
+    Steps:
+        1. Mint `task_id = _new_task_id()`.
+        2. Parse args via `_parse_create_task_args`:
+           - `goal` (required)
+           - `repo_path` (optional)
+           - `deadline` (optional)
+           - `source` (optional; defaults to `"manual"`)
+        3. If `repo_path` is provided, call `detect_verify_command(
+           Path(repo_path))` to pick the verify_command string per the
+           four pinned detection rules (or `None` if no framework matches
+           — Limitation-Claim downgrade path).
+        4. Emit `task.created` with required (`task_id`, `goal`) +
+           non-None optional (`source`, `deadline`, `repo_path`,
+           `verify_command`). Source defaults to `"manual"`.
+        5. Emit `action.result_observed(semantics="ack")` and transition
+           lifecycle `running → result_observed` (Day-1 sync-handler
+           pattern; see `verify_diff_handler` for the canonical sequence).
+        6. Return `RawResult(semantics="ack", payload={"task_id": ...,
+           "verify_command": ...})`.
+
+    No CLI side door: per D14 there is no `jarvis task add` subcommand;
+    task creation flows exclusively through the L3 LLM dispatching this
+    tool. The handler emits `task.created` itself — production code
+    elsewhere must NOT mint `task.created` rows (tests can seed the
+    event log directly).
+    """
+    args = _parse_create_task_args(action_request.arguments)
+
+    task_id = _new_task_id()
+    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+
+    verify_command: str | None = None
+    if args.repo_path is not None:
+        verify_command = detect_verify_command(Path(args.repo_path))
+
+    # Build the task.created payload with non-None optional fields only,
+    # so the registry's optional_payload contract stays tight (no None
+    # sentinel values masquerading as data).
+    task_created_payload: dict[str, Any] = {
+        "task_id": task_id,
+        "goal": args.goal,
+        "source": args.source,
+    }
+    if args.deadline is not None:
+        task_created_payload["deadline"] = args.deadline
+    if args.repo_path is not None:
+        task_created_payload["repo_path"] = args.repo_path
+    if verify_command is not None:
+        task_created_payload["verify_command"] = verify_command
+
+    task_correlation: dict[str, str] = {
+        "task_id": task_id,
+        "action_id": action_request.action_id,
+    }
+    if action_request.turn_id is not None:
+        task_correlation["turn_id"] = action_request.turn_id
+
+    emit_event(
+        conn,
+        type="task.created",
+        payload=task_created_payload,
+        source_event_id=running_event_uid,
+        correlation=task_correlation,
+    )
+
+    # Sync handler: emit action.result_observed(ack) + terminal-transition.
+    ack_payload: dict[str, Any] = {"task_id": task_id}
+    if verify_command is not None:
+        ack_payload["verify_command"] = verify_command
+    tool_output_str = tool_result(ack_payload)
+
+    emit_event(
+        conn,
+        type="action.result_observed",
+        payload={
+            "action_id": action_request.action_id,
+            "semantics": "ack",
+            "tool_output": tool_output_str,
+        },
+        source_event_id=running_event_uid,
+        correlation={
+            "action_id": action_request.action_id,
+            "task_id": task_id,
+        },
+    )
+    lifecycle.transition(action_request.action_id, "result_observed")
+
+    return RawResult(
+        action_id=action_request.action_id,
+        semantics="ack",
+        payload=ack_payload,
+        tool_output=tool_output_str,
+        error=None,
+    )
+
+
 # --- ToolRegistry ------------------------------------------------------------
 
 
@@ -955,9 +1129,40 @@ _VERIFY_DIFF_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
     "required": ["run_id"],
 }
 
+# create_task is L1 — risk floor for ledger writes per ADR-0002 Step 4
+# build-order row. The schema mirrors ADR-0002 § Step 4 ("required:
+# goal; optional: repo_path, deadline, source"). Source is enumerated
+# rather than free-form so the Task Ledger projection can index by it
+# without a separate normalization step.
+_CREATE_TASK_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "goal": {
+            "type": "string",
+            "description": "Plain-language task description",
+        },
+        "repo_path": {
+            "type": "string",
+            "description": "Absolute path to the target repo (optional)",
+        },
+        "deadline": {
+            "type": "string",
+            "description": "ISO date or natural-language deadline (optional)",
+        },
+        "source": {
+            "type": "string",
+            "description": (
+                "Origin of the task: manual|automated|imported "
+                "(optional, default 'manual')"
+            ),
+        },
+    },
+    "required": ["goal"],
+}
+
 
 def build_default_registry() -> ToolRegistry:
-    """Assemble the Day-1 ToolRegistry (`spawn_worker` + `verify_diff`).
+    """Assemble the Day-1 ToolRegistry (`spawn_worker` + `verify_diff` + `create_task`).
 
     The composition root (`jarvis.runtime`, Step 10) calls this once at
     startup and passes the registry to L3 + L4.
@@ -993,6 +1198,21 @@ def build_default_registry() -> ToolRegistry:
             handler=verify_diff_handler,
         )
     )
+    registry.register(
+        ToolDefinition(
+            name="create_task",
+            description=(
+                "Record a new task in the Task Ledger. Use when Allen says "
+                "'帮我做 X' / '今天/明天给我 Y' / similar."
+            ),
+            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            risk_level="L1",
+            result_semantics="ack",
+            is_async=False,
+            input_schema=_CREATE_TASK_INPUT_SCHEMA,
+            handler=create_task_handler,
+        )
+    )
     return registry
 
 
@@ -1010,6 +1230,7 @@ __all__ = [
     "ToolRegistryError",
     "UnknownToolError",
     "build_default_registry",
+    "create_task_handler",
     "spawn_worker_handler",
     "tool_error",
     "tool_result",
