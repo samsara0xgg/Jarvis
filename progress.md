@@ -620,3 +620,31 @@ Legacy-bypassed, Tier 1, Notes, Next.
     invariant we need (B4 readiness) holds regardless of stragglers.
 - Next: Step 7 (`prompts/jarvis_v1.md` + `config/jarvis.yaml`
   verbatim copies from legacy).
+
+---
+
+## Step 7 — prompts/jarvis_v1.md + config/jarvis.yaml (verbatim)
+
+- Files:
+  - `prompts/jarvis_v1.md` — verbatim copy of
+    `/Users/alllllenshi/Projects/jarvis-legacy/prompts/phase1/v1.md`
+    (164 lines, byte-equal per `diff -u`).
+  - `config/jarvis.yaml` — verbatim slice of legacy `config.yaml` lines
+    277–301 (the `llm:` block: OpenRouter + gpt-5.5 deep preset, 25
+    lines, byte-equal per `diff -u`).
+- Legacy consulted: `prompts/phase1/v1.md`, `config.yaml`.
+- Legacy-bypassed: none — Step 7's whole point is verbatim reuse.
+- Tier 1:
+  - T1.A `lint-imports`: 1 contract kept.
+  - T1.B `ruff check .`: passed.
+  - T1.C `mypy .` (strict): clean on 23 source files.
+  - T1.D `pytest tests/unit/`: 157 passed.
+- Notes:
+  - Legacy LLM block carries `# 小月 AI 助手（LLM 大脑）` comments. Per
+    ADR § Identity, the Xiaoyue persona (legacy `core/personality.py`)
+    is discarded; comments inside the config-file LLM section are not
+    the persona itself and are preserved by the verbatim mandate.
+    Stage 2 may trim these.
+  - `config/jarvis.yaml` is `llm:`-only Day-1; Step 8's
+    `decision/llm.py` reads it via `yaml.safe_load`.
+- Next: Step 8 (L3 `decision/llm.py` — adapt legacy `core/llm.py`).
