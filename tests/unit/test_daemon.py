@@ -43,11 +43,28 @@ def _drive_script(body: str) -> str:
 
 
 def _wait_for_marker(path: Path, *, timeout_s: float = 2.0) -> None:
-    """Poll until ``path`` exists or the timeout elapses; assert presence."""
+    """Poll until ``path`` exists with non-empty content; assert content.
+
+    Closes a subtle race: the grandchild's ``with open(path, "w") as fh:
+    fh.write(...)`` creates the file (so ``path.exists()`` becomes True)
+    before the buffered write is flushed to disk on ``__exit__``. An
+    existence-only poll could catch the file mid-write and the caller's
+    ``read_text()`` would return an empty string. Waiting for
+    ``st_size > 0`` is sufficient here because every marker in this
+    module writes a non-empty payload.
+    """
     deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline and not path.exists():
+    while time.monotonic() < deadline:
+        try:
+            if path.stat().st_size > 0:
+                return
+        except FileNotFoundError:
+            pass
         time.sleep(0.05)
     assert path.exists(), f"marker file {path!s} never appeared within {timeout_s}s"
+    assert path.stat().st_size > 0, (
+        f"marker file {path!s} exists but stayed empty within {timeout_s}s"
+    )
 
 
 @skip_windows
