@@ -239,7 +239,7 @@ The flow:
 | D12 | Reviewer layer | L3 (not L4) — reviewer takes `LLMClient` which is L3-owned; locating reviewer in L4 violates `.importlinter` |
 | D13 | Cost recording | One `cost.recorded` event per LLM call + per Codex turn; pricing table lifted verbatim from jarvis-legacy |
 | D14 | Task creation | Natural-language path through L3 calling the new `create_task` L4 tool. No separate `jarvis task add` CLI |
-| D15 | Worktree isolation | **NOT used** Day-2. Per spec.html §3.5 line 1207, workers share Mac filesystem; isolation is enforced by L4 SandboxPolicy + Codex's own `workspace-write` sandbox |
+| D15 | Worktree isolation | **NOT used** Day-2. Per spec.html §3.7.2 line 1207 (Domain ownership — "workers 是 Mac domain 内的 bounded execution contexts, 共享 Mac 文件系统"), workers share Mac filesystem; isolation is enforced by L4 SandboxPolicy + Codex's own `workspace-write` sandbox |
 
 ### Evidence ladder (verify outcome → evidence (relation, level))
 
@@ -691,9 +691,12 @@ the diff/verify slots already produced, with `level=reported` and
 `relation` set to `supports` (verdict=ok) or `refutes` (verdict=fail).
 It never modulates the `level` of the verify_command-sourced row, nor
 of the diff-observation-sourced row. This aligns with spec §13.2 I8
-("evidence sources are typed; agent reports cannot promote tool
-verification") and §13.2 I11 ("level is bounded by source class").
-See § Evidence ladder for the full per-source mapping.
+("Agent Report Is Not Verification — agent 自报只能生成 reported
+evidence, 不能生成 verified completion") and §13.2 I10 ("Claim Must
+Not Exceed Evidence"). The reviewer is an LLM, i.e. a Report-grade
+source per spec §8.5 rule 1; lifting its verdict to `level=verified`
+would violate both invariants. See § Evidence ladder for the full
+per-source mapping.
 
 ### Verify_diff contract (L4 observation + post_action_check chain, per spec §3.4.11 + §3.5.7)
 
