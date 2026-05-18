@@ -117,6 +117,17 @@ class TaskLedgerRecord:
         task_verified_event_uids: `event_uid` of every `task.verified`
             event targeting this `task_id`. Empty when no verification
             event has fired.
+        verify_command: Verbatim `verify_command` string stored on
+            `task.created.optional_payload["verify_command"]` (ADR-0002
+            Step 4 — `create_task_handler` writes it). Step 12 L3 reads
+            this off the projection and plumbs it onto
+            `ActionRequest.payload["verify_command"]` when proposing the
+            `verify_diff` action. `None` when the D-1 detection returned
+            no match.
+        repo_path: Verbatim `repo_path` string stored on
+            `task.created.optional_payload["repo_path"]`. Step 12 L3
+            plumbs it onto `ActionRequest.payload["repo_path"]` so the
+            L4 `verify_command` subprocess runs with the right cwd.
     """
 
     task_id: str
@@ -127,6 +138,8 @@ class TaskLedgerRecord:
     action_ids: tuple[str, ...] = field(default_factory=tuple)
     worker_reported_statuses: tuple[str, ...] = field(default_factory=tuple)
     task_verified_event_uids: tuple[str, ...] = field(default_factory=tuple)
+    verify_command: str | None = None
+    repo_path: str | None = None
 
 
 # --- ClaimEvidenceProjection -------------------------------------------------
@@ -451,6 +464,10 @@ def _fold_task_ledger_records(events: Iterable[Event]) -> dict[str, TaskLedgerRe
     statuses_by_task: dict[str, list[str]] = {}
     # task_id → list of task.verified event_uid
     verified_event_uids_by_task: dict[str, list[str]] = {}
+    # task_id → optional verify_command + repo_path lifted from
+    # task.created.optional_payload (ADR-0002 § Verify_command plumbing).
+    verify_command_by_task: dict[str, str | None] = {}
+    repo_path_by_task: dict[str, str | None] = {}
     # run_id → task_id (built from run.started)
     run_to_task: dict[str, str] = {}
 
@@ -463,6 +480,18 @@ def _fold_task_ledger_records(events: Iterable[Event]) -> dict[str, TaskLedgerRe
             action_ids_by_task.setdefault(task_id, [])
             statuses_by_task.setdefault(task_id, [])
             verified_event_uids_by_task.setdefault(task_id, [])
+            # Day-2 (ADR-0002 Step 12) — surface optional verify_command
+            # / repo_path so the L3 Result Interpreter can plumb them
+            # onto ActionRequest.payload for verify_diff. Read verbatim
+            # off the task.created payload; no transformation.
+            verify_command_raw = evt.payload.get("verify_command")
+            verify_command_by_task[task_id] = (
+                verify_command_raw if isinstance(verify_command_raw, str) else None
+            )
+            repo_path_raw = evt.payload.get("repo_path")
+            repo_path_by_task[task_id] = (
+                repo_path_raw if isinstance(repo_path_raw, str) else None
+            )
         elif evt.type == "run.started":
             run_id = str(evt.payload["run_id"])
             task_id = str(evt.payload["task_id"])
@@ -499,6 +528,8 @@ def _fold_task_ledger_records(events: Iterable[Event]) -> dict[str, TaskLedgerRe
             action_ids=tuple(action_ids_by_task.get(task_id, [])),
             worker_reported_statuses=tuple(statuses_by_task.get(task_id, [])),
             task_verified_event_uids=tuple(verified_event_uids_by_task.get(task_id, [])),
+            verify_command=verify_command_by_task.get(task_id),
+            repo_path=repo_path_by_task.get(task_id),
         )
     return records
 

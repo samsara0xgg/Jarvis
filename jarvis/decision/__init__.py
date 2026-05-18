@@ -78,7 +78,11 @@ from jarvis.decision.resolver import (
     resolve_task_ref,
     resolve_task_ref_by_window,
 )
-from jarvis.decision.result_interpreter import result_interpreter
+from jarvis.decision.result_interpreter import (
+    interpret_verify_diff_bundle,
+    result_interpreter,
+)
+from jarvis.decision.reviewer import ReviewerVerdict, review_diff
 from jarvis.shared import (
     ActionRequest,
     CallerPrincipal,
@@ -176,12 +180,16 @@ def _hard_refusal_plan(
         f"refused completion language for subject {active_subject} "
         f"(no Postcondition evidence)."
     )
+    # Hard refusal is always routine — by construction it carries no
+    # completion claim, so spec §3.4.13's risk class is the floor.
     return ResponsePlan(
         text=text,
         permission="force_limitation_language",
         downgrade_required=False,  # this text is scrub-safe by construction
         active_claim_levels=active_claim_levels,
         response_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        output_risk_class="routine",
+        required_gate_mode="sentence",
     )
 
 
@@ -807,6 +815,27 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     if target_entity_ref is None and scratch.active_subject_ref is not None:
         target_entity_ref = scratch.active_subject_ref
 
+    # ADR-0002 Step 12 § Verify_command plumbing (lines 875-913):
+    # when L3 proposes the ``verify_diff`` action, lift the task's
+    # ``verify_command`` and ``repo_path`` off the Task Ledger
+    # projection and stash them on ``ActionRequest.payload`` using the
+    # EXACT literal keys ``"verify_command"`` / ``"repo_path"`` so the
+    # L4 ``verify_diff_handler`` reads them via
+    # ``action_request.payload.get("verify_command")``. The values are
+    # passed through verbatim — no transformation. Canary
+    # ``test_canary_verify_command_plumbed_to_action_request`` AST-checks
+    # both ends.
+    action_payload: Mapping[str, Any] | None = None
+    if name == "verify_diff" and target_entity_ref is not None:
+        task_record = packet.task_ledger_snapshot.get(target_entity_ref)
+        if task_record is not None:
+            payload_dict: dict[str, Any] = {
+                "verify_command": task_record.verify_command,
+            }
+            if task_record.repo_path is not None:
+                payload_dict["repo_path"] = task_record.repo_path
+            action_payload = payload_dict
+
     action_id = _new_action_id()
     action_request = ActionRequest(
         action_id=action_id,
@@ -818,6 +847,7 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
         authorization_lease=None,
         run_id=scratch.last_run_id if "run_id" in arguments else None,
         turn_id=scratch.turn_id,
+        payload=action_payload,
     )
 
     # 3. action.proposed
@@ -925,35 +955,50 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     #     slot): the handler emitted ``action.result_observed`` itself.
     #     Find that event in the freshly-folded log so we have a
     #     source_event_id for the claim+evidence pair(s) the Result
-    #     Interpreter is about to emit. Iterate over EVERY slot so
-    #     multi-slot tools (verify_diff) produce one claim+evidence pair
-    #     per slot — Step 12's L3 Result Interpreter refinement will
-    #     branch the F2 ladder per slot's semantics; Step 11 just makes
-    #     the iteration plumbing work without breaking Day-1 behavior.
+    #     Interpreter is about to emit. For verify_diff, route through
+    #     the Day-2 F2 ladder (Step 12 § Evidence ladder) which calls
+    #     :func:`review_diff` once on the captured diff text and emits
+    #     per-slot, per-source Claim/Evidence rows per the ADR table.
+    #     Other tools continue to use the Day-1 single-slot path.
     result_observed_uid = _latest_event_uid_of_type(
         ctx.conn,
         event_type="action.result_observed",
     )
     source_event_for_interpreter = result_observed_uid or proposed_event.event_uid
 
-    last_interpreted_evidence: Event | None = None
-    saw_verification_for_target = False
-    for slot in bundle.slots:
-        interpreted_events = result_interpreter(
-            slot,
-            source_event_id=source_event_for_interpreter,
-            action_request=action_request,
-            conn=ctx.conn,
-            subject_ref_override=target_entity_ref,
+    if name == "verify_diff":
+        last_interpreted_evidence, saw_verification_for_target = (
+            _route_verify_diff_bundle(
+                bundle=bundle,
+                ctx=ctx,
+                scratch=scratch,
+                action_request=action_request,
+                target_entity_ref=target_entity_ref,
+                fallback_source_event_id=source_event_for_interpreter,
+            )
         )
-        scratch.events.extend(interpreted_events)
-        last_interpreted_evidence = interpreted_events[1]
-        if slot.semantics == "verification" and target_entity_ref is not None:
-            saw_verification_for_target = True
+    else:
+        last_interpreted_evidence = None
+        saw_verification_for_target = False
+        for slot in bundle.slots:
+            interpreted_events = result_interpreter(
+                slot,
+                source_event_id=source_event_for_interpreter,
+                action_request=action_request,
+                conn=ctx.conn,
+                subject_ref_override=target_entity_ref,
+            )
+            scratch.events.extend(interpreted_events)
+            last_interpreted_evidence = interpreted_events[1]
+            if slot.semantics == "verification" and target_entity_ref is not None:
+                saw_verification_for_target = True
 
     # If any slot produced a verified Postcondition for the active task,
     # emit task.verified per ADR § Canonical event trace evt 22. Source
     # the cause-chain off the last evidence event the interpreter wrote.
+    # Spec hard rule (ADR-0002 § Evidence ladder): task.verified fires
+    # ONLY from the verification slot of verify_diff — every other path
+    # leaves the bit cleared.
     if saw_verification_for_target and last_interpreted_evidence is not None:
         task_verified_event = emit_event(
             ctx.conn,
@@ -975,6 +1020,227 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
         )
     )
     return True
+
+
+def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are all load-bearing per ADR-0002 § Verify_command plumbing.
+    *,
+    bundle: RawResultBundle,
+    ctx: DecideContext,
+    scratch: _Scratch,
+    action_request: ActionRequest,
+    target_entity_ref: str | None,
+    fallback_source_event_id: str,
+) -> tuple[Event | None, bool]:
+    """Drive the F2 ladder for a ``verify_diff`` :class:`RawResultBundle`.
+
+    Per ADR-0002 Step 12 (§ Evidence ladder lines 250-339):
+
+    1. Looks up the ``action.result_observed`` event_uid per slot from
+       the freshly-folded log so the F2 ladder rows hang off the right
+       cause-chain row.
+    2. Calls :func:`review_diff` once on the captured diff text (slot
+       1) — wrapped in :meth:`LLMClient.fresh_context` per
+       § Reviewer contract (line 738). Skipped when slot 1 has
+       ``diff_nonempty == False``.
+    3. Emits ``cost.recorded(kind="reviewer", ...)`` from the same
+       function body so the per-LLM-call cost canary is satisfied
+       (the reviewer module itself does not emit; Step 12 owns the
+       caller-side emit per § Reviewer contract line 743+).
+    4. Delegates to :func:`interpret_verify_diff_bundle` to emit the
+       Claim + Evidence rows per the ladder.
+
+    Returns ``(last_evidence_event, did_verify)`` so the caller emits
+    ``task.verified`` only when the verification slot fired.
+    """
+    if target_entity_ref is None:
+        # No canonical subject → fall back to the Day-1 single-slot
+        # path; ladder rows need a subject_ref to be useful.
+        last_evidence: Event | None = None
+        verified = False
+        for slot in bundle.slots:
+            interpreted_events = result_interpreter(
+                slot,
+                source_event_id=fallback_source_event_id,
+                action_request=action_request,
+                conn=ctx.conn,
+                subject_ref_override=target_entity_ref,
+            )
+            scratch.events.extend(interpreted_events)
+            last_evidence = interpreted_events[1]
+        return last_evidence, verified
+
+    # Per spec §5.4.2 + ADR-0002 § Verify_command plumbing line 905,
+    # L3 emits one ``action.result_observed`` per slot. Step 11's
+    # handler emits the slot-1 (observation) event itself for backward
+    # compat; the slot-2 (verification | error) event is L3's job and
+    # lands here. We then collect the freshly-folded event_uids so the
+    # F2 ladder rows hang off the right cause-chain row.
+    if len(bundle.slots) > 1:
+        slot2 = bundle.slots[1]
+        scratch.events.append(
+            emit_event(
+                ctx.conn,
+                type="action.result_observed",
+                payload={
+                    "action_id": action_request.action_id,
+                    "semantics": slot2.semantics,
+                    "tool_output": slot2.tool_output,
+                    "error": slot2.error,
+                    "run_id": action_request.run_id,
+                },
+                source_event_id=fallback_source_event_id,
+                correlation=_action_correlation(action_request),
+            ),
+        )
+
+    source_event_ids_by_semantics = _collect_recent_result_observed_uids(
+        ctx.conn,
+        action_id=action_request.action_id,
+        fallback=fallback_source_event_id,
+    )
+
+    observation_slot = bundle.slots[0]
+    diff_nonempty = bool(observation_slot.payload.get("diff_nonempty", False))
+    diff_text = observation_slot.payload.get("diff_text_preview")
+    task_goal = _task_goal_for_subject(ctx, target_entity_ref)
+
+    reviewer_verdict: ReviewerVerdict | None = None
+    if diff_nonempty and isinstance(diff_text, str) and diff_text:
+        # Step 9 + Step 12: call the reviewer LLM in fresh-context.
+        # ``review_diff`` itself wraps the ``.chat()`` call inside the
+        # context manager (canary
+        # ``test_canary_reviewer_fresh_context`` enforces).
+        reviewer_verdict = review_diff(
+            task_goal=task_goal,
+            diff_text=diff_text,
+            llm_client=ctx.llm_client,
+        )
+        # ADR-0002 § Reviewer contract line 743: the reviewer module
+        # returns token counts on :class:`ReviewerVerdict`; this
+        # function — the L3 caller — emits the matching
+        # ``cost.recorded(kind="reviewer", ...)`` so the
+        # per-LLM-call canary is satisfied without putting the emit
+        # inside ``reviewer.py``.
+        scratch.events.append(
+            _emit_cost_recorded_from_verdict(
+                ctx,
+                verdict=reviewer_verdict,
+                turn_id=scratch.turn_id,
+                action_id=action_request.action_id,
+            ),
+        )
+
+    emitted, did_verify = interpret_verify_diff_bundle(
+        bundle,
+        source_event_ids_by_semantics=source_event_ids_by_semantics,
+        action_request=action_request,
+        conn=ctx.conn,
+        subject_ref=target_entity_ref,
+        task_goal=task_goal,
+        reviewer_verdict=reviewer_verdict,
+    )
+    scratch.events.extend(emitted)
+
+    # Find the last evidence.attached event so the caller can hang
+    # task.verified off it (cause-chain — Acceptance H10).
+    last_evidence = next(
+        (e for e in reversed(emitted) if e.type == "evidence.attached"),
+        None,
+    )
+    return last_evidence, did_verify
+
+
+def _collect_recent_result_observed_uids(
+    conn: sqlite3.Connection,
+    *,
+    action_id: str,
+    fallback: str,
+) -> dict[str, str]:
+    """Return the most recent ``action.result_observed.event_uid`` per slot semantics.
+
+    Step 11's ``verify_diff_handler`` emits one ``action.result_observed``
+    per slot (observation + verification | error). Step 12 hangs the
+    F2 ladder rows off the right cause-chain row by keying on the
+    payload's ``semantics`` field. When no row matches a semantics, the
+    caller's ``fallback`` value is returned for that key so the
+    interpreter still emits.
+    """
+    cursor = conn.execute(
+        "SELECT event_uid, payload_json "
+        "FROM events "
+        "WHERE type = 'action.result_observed' "
+        "ORDER BY id DESC LIMIT 4",
+    )
+    by_semantics: dict[str, str] = {}
+    for event_uid, payload_json in cursor.fetchall():
+        try:
+            payload = json.loads(payload_json)
+        except (TypeError, ValueError):
+            continue
+        if payload.get("action_id") != action_id:
+            continue
+        semantics = payload.get("semantics")
+        if isinstance(semantics, str) and semantics not in by_semantics:
+            by_semantics[semantics] = event_uid
+    if not by_semantics:
+        by_semantics["observation"] = fallback
+    return by_semantics
+
+
+def _task_goal_for_subject(
+    ctx: DecideContext,
+    subject_ref: str,
+) -> str:
+    """Return the goal text for ``subject_ref`` from the live Task Ledger."""
+    snapshot = make_snapshot(ctx.conn)
+    record = snapshot.task_ledger.get(subject_ref)
+    if record is not None:
+        return record.goal
+    # Conservative fallback: the LLM may still produce a usable review
+    # against an empty goal (it will just see no goal context).
+    return ""
+
+
+def _emit_cost_recorded_from_verdict(
+    ctx: DecideContext,
+    *,
+    verdict: ReviewerVerdict,
+    turn_id: str | None,
+    action_id: str,
+) -> Event:
+    """Emit ``cost.recorded(kind="reviewer", ...)`` from a :class:`ReviewerVerdict`.
+
+    Mirror of :func:`_emit_cost_recorded` but reads the token counts
+    off the reviewer verdict (the reviewer module returns these so
+    the caller can emit without re-reading the LLM client's last
+    ChatResult, which would race with another call).
+    """
+    cost_usd = compute_cost_usd(
+        verdict.model,
+        verdict.tokens_in,
+        verdict.tokens_out,
+        0,
+        0,
+        dict(_pricing_table()),
+    )
+    payload: dict[str, Any] = {
+        "kind": "reviewer",
+        "model": verdict.model,
+        "tokens_in": verdict.tokens_in,
+        "tokens_out": verdict.tokens_out,
+        "cache_read_in": 0,
+        "cache_write_in": 0,
+        "cost_usd": cost_usd,
+    }
+    correlation: dict[str, str] = {"action_id": action_id}
+    if turn_id is not None:
+        correlation["turn_id"] = turn_id
+    return emit_event(
+        ctx.conn,
+        type="cost.recorded",
+        payload=payload,
+        correlation=correlation,
+    )
 
 
 def _render_bundle_for_llm(bundle: RawResultBundle) -> str:

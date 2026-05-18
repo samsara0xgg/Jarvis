@@ -111,6 +111,7 @@ def _seed_verified_task(conn: sqlite3.Connection, base_ts: int = 1) -> None:
         payload={
             "evidence_id": "E2",
             "claim_id": "C2",
+            "relation": "supports",
             "level": "verified",
             "artifact_path": "/tmp/diff.json",
         },
@@ -246,6 +247,7 @@ def test_derive_status_not_verified_without_task_verified_event(tmp_path: Path) 
             payload={
                 "evidence_id": "E2",
                 "claim_id": "C2",
+                "relation": "supports",
                 "level": "verified",
             },
             ts_epoch_ms=11,
@@ -493,7 +495,12 @@ def test_strongest_level_for_returns_ladder_max(tmp_path: Path) -> None:
         emit_event(
             conn,
             type="evidence.attached",
-            payload={"evidence_id": "E1", "claim_id": "C1", "level": "reported"},
+            payload={
+                "evidence_id": "E1",
+                "claim_id": "C1",
+                "relation": "supports",
+                "level": "reported",
+            },
             ts_epoch_ms=3,
             event_uid="evidence-reported",
         )
@@ -514,7 +521,12 @@ def test_strongest_level_for_returns_ladder_max(tmp_path: Path) -> None:
         emit_event(
             conn,
             type="evidence.attached",
-            payload={"evidence_id": "E2", "claim_id": "C2", "level": "verified"},
+            payload={
+                "evidence_id": "E2",
+                "claim_id": "C2",
+                "relation": "supports",
+                "level": "verified",
+            },
             ts_epoch_ms=5,
             event_uid="evidence-verified-2",
         )
@@ -577,6 +589,7 @@ def test_claim_evidence_projection_carries_optional_payload(tmp_path: Path) -> N
             payload={
                 "evidence_id": "E2",
                 "claim_id": "C2",
+                "relation": "supports",
                 "level": "verified",
                 "artifact_path": "/tmp/diff.json",
                 "content_hash": "deadbeef",

@@ -302,8 +302,26 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="evidence.attached",
         owner_layer="L3",
-        required_payload=("evidence_id", "claim_id", "level"),
-        optional_payload=("artifact_path", "content_hash", "scope", "freshness_ms"),
+        # ADR-0002 F8 / Step 12: `relation` added to required_payload so
+        # every Evidence Record carries the (relation, level) pair from
+        # spec §8.6. Deferred from Step 1 because the Day-1 emit-sites in
+        # the Result Interpreter / unit fixtures had no relation
+        # plumbing; Step 12 lifts every emit-site to derive relation
+        # from the F2 ladder and amends the registry here.
+        required_payload=("evidence_id", "claim_id", "relation", "level"),
+        optional_payload=(
+            "artifact_path",
+            "content_hash",
+            "scope",
+            "freshness_ms",
+            "source_type",
+            "source_id",
+            "observed_at",
+            "freshness",
+            "summary",
+            "artifact_ref",
+            "limitations",
+        ),
         schema_version=1,
     ),
     EventTypeSchema(

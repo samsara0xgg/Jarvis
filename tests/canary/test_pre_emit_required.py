@@ -36,6 +36,8 @@ def _make_plan(text: str) -> ResponsePlan:
         downgrade_required=False,
         active_claim_levels=("verified",),
         response_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        output_risk_class="consequential_claim",
+        required_gate_mode="full_text",
     )
 
 

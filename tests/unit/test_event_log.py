@@ -167,20 +167,24 @@ def test_registry_action_result_observed_optional_payload_has_error_payload() ->
     assert "run_id" in schema.optional_payload
 
 
-def test_registry_evidence_attached_required_payload_day1() -> None:
-    """`evidence.attached.required_payload` still matches Day-1 shape.
+def test_registry_evidence_attached_required_payload_day2() -> None:
+    """`evidence.attached.required_payload` carries the F8 `relation` field.
 
-    ADR-0002 F8 mandates a `relation` field, but applying it here would
-    immediately break the Day-1 L3 Result Interpreter emit-site (which
-    has no plumbing for `relation` yet). The `+relation` amendment lands
-    with Step 12 (Result Interpreter dual-slot) where the emit-site
-    plumbs `relation` from spec §8.6 vocabulary. Step 1 keeps the Day-1
-    contract intact to preserve Tier-1 green; see Step 1 commit body
-    "Deviations" trailer.
+    ADR-0002 F8 / Step 12 lifts the Day-1 `(evidence_id, claim_id, level)`
+    tuple to the Day-2 `(evidence_id, claim_id, relation, level)` shape now
+    that every emit-site in the L3 Result Interpreter derives `relation`
+    from the F2 ladder (spec §8.6). Step 1 deferred this amendment to
+    keep Day-1 Tier-1 green; Step 12 lands it after the emit-sites are
+    updated. See Step 12 commit body.
     """
     schema = EventTypeRegistry.get("evidence.attached")
     assert schema is not None
-    assert schema.required_payload == ("evidence_id", "claim_id", "level")
+    assert schema.required_payload == (
+        "evidence_id",
+        "claim_id",
+        "relation",
+        "level",
+    )
 
 
 def test_registry_cost_recorded_is_l3_owned() -> None:

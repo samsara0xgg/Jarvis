@@ -46,6 +46,33 @@ PreEmitPermission = Literal["allow_completion_language", "force_limitation_langu
 """Pre-emit Gate verdict (ADR § Gate contracts)."""
 
 
+OutputRiskClass = Literal["routine", "consequential_claim", "high_risk_claim"]
+"""ResponsePlan output risk class per spec §3.4.13.
+
+ADR-0002 Step 12 lands the field on every ResponsePlan construction:
+
+- ``routine`` — default for non-consequential acks (no Postcondition
+  Claim at level=verified backing the response).
+- ``consequential_claim`` — response references a Postcondition Claim
+  at level=verified (e.g. "task done, verified by pytest").
+- ``high_risk_claim`` — response asserts completion of a high-risk
+  task (reserved Day-2; nothing in the canonical scenario fits, so
+  the field is defined but no Day-2 site emits it).
+"""
+
+
+RequiredGateMode = Literal["sentence", "full_text", "structured"]
+"""ResponsePlan required gate mode per spec §3.4.13.
+
+Day-2 mapping:
+
+- ``sentence`` — routine paths gate per-sentence (default).
+- ``full_text`` — gate the entire response (anything riskier than
+  routine).
+- ``structured`` — reserved for future structured-output gating.
+"""
+
+
 @dataclass(frozen=True)
 class GateResult:
     """Output of the Pre-action Gate.
@@ -92,6 +119,16 @@ class ResponsePlan:
             downgrade). Stamped onto the ``gate.evaluated`` event so
             Acceptance C3 can check the surface uses the same token
             it was gated on.
+        output_risk_class: spec §3.4.13 risk classification per
+            ADR-0002 § ResponsePlan schema extension. Day-2 defaults
+            to ``"routine"`` for non-consequential acks; lifts to
+            ``"consequential_claim"`` when the response references a
+            Postcondition Claim at ``level=verified``. The Pre-emit
+            Gate is the sole derivation site (Step 12 wires it).
+        required_gate_mode: spec §3.4.13 required gate mode. Defaults
+            to ``"sentence"`` for routine acks; lifts to
+            ``"full_text"`` when ``output_risk_class != "routine"``.
+            ``"structured"`` is reserved for Stage 2.
     """
 
     text: str
@@ -99,6 +136,8 @@ class ResponsePlan:
     downgrade_required: bool
     active_claim_levels: tuple[EvidenceLevel, ...]
     response_hash: str
+    output_risk_class: OutputRiskClass
+    required_gate_mode: RequiredGateMode
 
 
 # --- Pre-action Gate --------------------------------------------------------
@@ -354,6 +393,17 @@ def pre_emit_gate(
 
     downgrade_required = permission == "force_limitation_language" and has_completion
 
+    # ADR-0002 Step 12 (spec §3.4.13): when the response is allowed to
+    # carry completion language for a Postcondition Claim backed by
+    # verified/accepted evidence, classify the output as
+    # ``consequential_claim`` and lift the gate mode to ``full_text``
+    # so the surface gates the whole response, not just per-sentence.
+    # Routine acks default to ``routine`` / ``sentence``.
+    output_risk_class, required_gate_mode = _derive_output_risk(
+        strongest=strongest,
+        has_postcondition=has_postcondition_for_subject,
+    )
+
     # Day-1: the gate does NOT rewrite the text. ``decide()`` reads the
     # ResponsePlan and either re-prompts the LLM (preferred) or
     # template-downgrades on the second attempt. Returning ``text``
@@ -365,7 +415,33 @@ def pre_emit_gate(
         downgrade_required=downgrade_required,
         active_claim_levels=tuple(levels),
         response_hash=_response_hash(draft_text),
+        output_risk_class=output_risk_class,
+        required_gate_mode=required_gate_mode,
     )
+
+
+def _derive_output_risk(
+    *,
+    strongest: EvidenceLevel | None,
+    has_postcondition: bool,
+) -> tuple[OutputRiskClass, RequiredGateMode]:
+    """Return ``(output_risk_class, required_gate_mode)`` per spec §3.4.13.
+
+    Day-2 rule (ADR-0002 § ResponsePlan schema extension):
+
+    - Verified/accepted Postcondition Claim backing the subject →
+      ``("consequential_claim", "full_text")``. The response is
+      asserting a real-world completion fact; gate the entire text.
+    - Otherwise → ``("routine", "sentence")``. Routine acks gate
+      per-sentence so the LLM keeps natural cadence.
+
+    ``high_risk_claim`` is reserved Day-2; nothing in the flagship
+    scenario fits and the field stays available for Stage 2 high-risk
+    operators.
+    """
+    if strongest in ("verified", "accepted") and has_postcondition:
+        return "consequential_claim", "full_text"
+    return "routine", "sentence"
 
 
 # --- Attention Policy (Day-1 minimal) ---------------------------------------
@@ -435,7 +511,9 @@ __all__ = [
     "AttentionChannel",
     "GateOutcome",
     "GateResult",
+    "OutputRiskClass",
     "PreEmitPermission",
+    "RequiredGateMode",
     "ResponsePlan",
     "attention_policy",
     "pre_action_gate",

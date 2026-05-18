@@ -76,7 +76,12 @@ def _evidence_event(evidence_id: str, claim_id: str, level: str) -> Event:
         type="evidence.attached",
         schema_version=1,
         ts_epoch_ms=1_000_003,
-        payload={"evidence_id": evidence_id, "claim_id": claim_id, "level": level},
+        payload={
+            "evidence_id": evidence_id,
+            "claim_id": claim_id,
+            "relation": "supports",
+            "level": level,
+        },
         source_event_id=f"claim-uid-{claim_id}",
         correlation=None,
     )

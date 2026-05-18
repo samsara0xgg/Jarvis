@@ -67,6 +67,7 @@ def _evidence_event(
         payload={
             "evidence_id": evidence_id,
             "claim_id": claim_id,
+            "relation": "supports",
             "level": level,
         },
         source_event_id=f"claim-uid-{claim_id}",
