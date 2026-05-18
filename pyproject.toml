@@ -59,6 +59,18 @@ ignore = [
     "PLR2004",  # magic value comparisons are the assertion target
     "S108",     # /tmp paths in literal test data are not insecure
 ]
+# Vendored from Hermes (MIT) per ADR-0002 § Reference sources.
+# Upstream-sync only — do not lint-fix in place.
+"jarvis/execution/codex_client.py" = ["ALL"]
+# Vendored from jarvis-legacy per ADR-0002 § Reference sources.
+# Upstream-sync only — do not lint-fix in place.
+"jarvis/shared/pricing.py" = ["ALL"]
+# Vendored from jarvis-legacy per ADR-0002 § Reference sources.
+# Upstream-sync only — do not lint-fix in place.
+"scripts/refresh_pricing.py" = ["ALL"]
+# Vendored from jarvis-legacy per ADR-0002 § Reference sources.
+# Upstream-sync only — do not lint-fix in place.
+"jarvis/execution/_helpers.py" = ["ALL"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
