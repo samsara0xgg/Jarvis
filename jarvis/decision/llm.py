@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -422,6 +423,37 @@ class LLMClient:
         if self._provider == "openai":
             return self._chat_stream_openai(messages=messages, system=system, tools=tools)
         return self._chat_stream_anthropic(messages=messages, system=system, tools=tools)
+
+    # ---- fresh-context contextmanager (ADR-0002 Step 9) ---------------
+
+    @contextmanager
+    def fresh_context(self) -> Iterator[LLMClient]:
+        """Yield a view of self that does NOT carry parent session history.
+
+        Day-2 reviewer use case (ADR-0002 § Reviewer contract): when L3's
+        Result Interpreter calls :func:`jarvis.decision.reviewer.review_diff`,
+        the reviewer's chat call must NOT see the decision LLM's prior
+        turns; the reviewer evaluates the diff against the goal in
+        isolation (a Report-grade verdict per spec §8.5 rule 1).
+        ``test_canary_reviewer_fresh_context`` enforces that every
+        reviewer ``.chat(...)`` call site is wrapped in
+        ``with llm_client.fresh_context() as fresh:``.
+        Why this is currently a structural no-op:
+        :meth:`chat` is fully stateless — the caller owns the ``messages``
+        list, the system prompt is passed per-call, and ``LLMClient`` keeps
+        zero conversation state across :meth:`chat` invocations (only
+        per-call ``_last_*`` metadata is stored, and that is reset at the
+        top of every :meth:`chat` call before any provider work). So a
+        downstream chat inside this contextmanager already CANNOT see any
+        earlier turn's content. The contextmanager is the architectural
+        marker the canary enforces; should :meth:`chat` ever gain
+        cross-call conversation state (e.g. cached message history),
+        this is the single place to clear and restore it.
+        Yields ``self`` directly: callers may invoke any method on the
+        yielded client identically to the parent. The contract is
+        "fresh", not "different object".
+        """
+        yield self
 
     # ---- OpenAI backend -----------------------------------------------
 

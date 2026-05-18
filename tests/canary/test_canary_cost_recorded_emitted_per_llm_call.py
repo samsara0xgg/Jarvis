@@ -6,12 +6,23 @@ must be followed by an ``emit_event(..., type="cost.recorded", ...)`` call
 in the same function body. Forgetting the emit on any site silently drops
 spend attribution for that turn — a regression the canary catches statically.
 
-This canary AST-scans :mod:`jarvis.decision.__init__` (and, when present,
-:mod:`jarvis.decision.reviewer` — added in Step 9) and walks every function
-body. Inside each function it pairs every ``chat`` call site with the
-function's ``cost.recorded`` emit sites; if the function performs a chat
-call but has zero ``emit_event(..., type="cost.recorded", ...)`` calls,
-the function is flagged.
+This canary AST-scans :mod:`jarvis.decision.__init__` and walks every
+function body. Inside each function it pairs every ``chat`` call site
+with the function's ``cost.recorded`` emit sites; if the function
+performs a chat call but has zero ``emit_event(..., type="cost.recorded", ...)``
+calls, the function is flagged.
+
+:mod:`jarvis.decision.reviewer` is **exempt** by design: per ADR-0002
+§ Reviewer contract + Step 12, the reviewer module returns the chat's
+token counts on :class:`ReviewerVerdict` and the L3 Result Interpreter
+(``jarvis/decision/__init__.py``) emits ``cost.recorded(kind="reviewer",
+tokens_in=verdict.tokens_in, tokens_out=verdict.tokens_out, ...)``
+itself, in the same function that consumes the verdict. The cost-recorded
+emit therefore lives one frame up from the ``review_diff(...)`` chat —
+still in L3, still per-call — but not inside ``reviewer.py``. This split
+keeps the reviewer module a pure helper and lets it be reused later by
+non-Result-Interpreter call sites (the cost emit chases the caller, not
+the helper).
 
 The "same function body" pairing is conservative: the canary does not
 require strict adjacency, only co-presence within the same function (or
@@ -38,12 +49,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 # Modules in scope: every Python file under ``jarvis/decision/`` that is
-# part of the L3 LLM caller surface. Step 9 lands ``reviewer.py``; if the
-# module exists we scan it too.
-_DECISION_LLM_CALLER_MODULES = (
-    "jarvis/decision/__init__.py",
-    "jarvis/decision/reviewer.py",
-)
+# part of the L3 LLM caller surface. ``jarvis/decision/reviewer.py`` is
+# intentionally excluded — see module docstring for the contract that
+# Step 12 emits the reviewer's ``cost.recorded`` from the Result
+# Interpreter using :class:`ReviewerVerdict` token counts.
+_DECISION_LLM_CALLER_MODULES = ("jarvis/decision/__init__.py",)
 
 
 def _modules_in_scope() -> list[Path]:
