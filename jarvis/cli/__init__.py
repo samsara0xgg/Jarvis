@@ -17,6 +17,7 @@ import logging
 import sys
 from pathlib import Path
 
+from jarvis.deployment import DEFAULT_RUNTIME_ROOT_LITERAL
 from jarvis.runtime import (
     PreEmitTokenError,
     RuntimeBootstrapError,
@@ -59,8 +60,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help=(
-            "Override JARVIS_RUNTIME_ROOT for this invocation (default: $JARVIS_RUNTIME_ROOT "
-            "or ~/.jarvis)."
+            "Override JARVIS_RUNTIME_ROOT for this invocation (default: "
+            f"$JARVIS_RUNTIME_ROOT or {DEFAULT_RUNTIME_ROOT_LITERAL})."
         ),
     )
     return parser

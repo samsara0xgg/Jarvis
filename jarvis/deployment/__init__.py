@@ -22,9 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Single canonical home for the `~/.jarvis` literal. Every other file in
-# `jarvis/` referencing the runtime root must go through `bootstrap_runtime`
-# or `RuntimePaths`. Canary H8 enforces this by AST scan.
-_DEFAULT_RUNTIME_ROOT_LITERAL = "~/.jarvis"
+# `jarvis/` referencing the runtime root must go through `bootstrap_runtime`,
+# `RuntimePaths`, or this exported constant. Canary H8 enforces this by AST
+# scan of jarvis/ for the literal string outside this module.
+DEFAULT_RUNTIME_ROOT_LITERAL = "~/.jarvis"
 _ENV_VAR = "JARVIS_RUNTIME_ROOT"
 
 
@@ -80,7 +81,7 @@ def _resolve_root(root: Path | None) -> Path:
     env_value = os.environ.get(_ENV_VAR)
     if env_value:
         return Path(env_value).expanduser().resolve()
-    return Path(_DEFAULT_RUNTIME_ROOT_LITERAL).expanduser().resolve()
+    return Path(DEFAULT_RUNTIME_ROOT_LITERAL).expanduser().resolve()
 
 
 def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
