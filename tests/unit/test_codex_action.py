@@ -397,6 +397,78 @@ def test_run_codex_action_no_submit_report_call_leaves_none(
 
 
 # ---------------------------------------------------------------------------
+# CODEX_HOME isolation (P-0009).
+# ---------------------------------------------------------------------------
+
+
+def test_run_codex_action_injects_isolated_codex_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spawn env must carry CODEX_HOME pointing at a per-spawn empty dir.
+
+    P-0009: the spawned ``codex app-server`` inherits ``CODEX_HOME``
+    from its env. Default ``~/.codex/`` causes Allen's personal
+    ``AGENTS.md`` (which imports ``RTK.md``) to contaminate every
+    shell command the worker issues. The fix is to inject a per-spawn
+    empty ``CODEX_HOME`` so user-local config cannot leak into the
+    worker. This test pins the structural property without spawning
+    real Codex.
+    """
+    template = FakeClient(
+        notifications=[{"method": "turn/completed", "params": {}}],
+    )
+    holder: list[FakeClient] = [template]
+    _patch_client(monkeypatch, holder)
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error is None
+    client = holder[0]
+    assert client.env is not None
+    codex_home = client.env.get("CODEX_HOME")
+    assert codex_home, "CODEX_HOME must be set in the spawn env"
+    # Critical: must NOT be the user-default ~/.codex.
+    assert Path(codex_home).resolve() != Path("~/.codex").expanduser().resolve()
+    # And it must be a real, currently-empty directory at spawn time.
+    # (It is removed in the _result closure on close(); we only assert the
+    # prefix here, since the dir is gone by the time we get here.)
+    assert ca._CODEX_HOME_PREFIX in codex_home  # noqa: SLF001 - test of private constant
+
+
+def test_run_codex_action_respects_caller_provided_codex_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If caller pre-sets ``CODEX_HOME`` on ``env``, the driver must not override it.
+
+    Lets future callers point at a stable hermetic dir (e.g. for replay
+    debugging) without the driver creating + tearing down a temp dir
+    on every spawn.
+    """
+    template = FakeClient(
+        notifications=[{"method": "turn/completed", "params": {}}],
+    )
+    holder: list[FakeClient] = [template]
+    _patch_client(monkeypatch, holder)
+    _patch_diff_capture(monkeypatch)
+
+    explicit_home = str(tmp_path / "explicit-codex-home")
+    result = ca.run_codex_action(
+        task_goal="t",
+        cwd=tmp_path,
+        timeout_s=5.0,
+        env={"CODEX_HOME": explicit_home},
+    )
+
+    assert result.error is None
+    client = holder[0]
+    assert client.env is not None
+    assert client.env.get("CODEX_HOME") == explicit_home
+
+
+# ---------------------------------------------------------------------------
 # _extract_thread_id — protocol-parse semantics (B-0002).
 # ---------------------------------------------------------------------------
 

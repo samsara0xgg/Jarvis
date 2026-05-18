@@ -28,8 +28,10 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -64,6 +66,15 @@ _HEARTBEAT_INTERVAL_S: float = 30.0
 # heartbeat checks have <250 ms latency, long enough that the reader
 # thread isn't busy-spinning.
 _POLL_INTERVAL_S: float = 0.25
+
+# Prefix for the per-spawn empty ``CODEX_HOME`` directory created in
+# :func:`run_codex_action`. The directory exists for the lifetime of a
+# single Codex turn and is removed in the result-finalize path. Its sole
+# purpose is to isolate the spawned ``codex app-server`` from Allen's
+# personal ``~/.codex/AGENTS.md`` / ``config.toml`` so that worker
+# behavior is determined entirely by the spawn-time ``-c`` flags +
+# MCP-injected tools (P-0009 in ``docs/live-run-bugs.md``).
+_CODEX_HOME_PREFIX: str = "jarvis-codex-home-"
 
 
 class CodexVersionTooLowError(RuntimeError):
@@ -303,7 +314,7 @@ def ensure_codex_version_supported(codex_bin: str = "codex") -> None:
         raise CodexVersionTooLowError(msg)
 
 
-def run_codex_action(  # noqa: C901, PLR0913, PLR0915 - one-shot driver is naturally branchy and parameter-heavy; spec calls for 8 kwargs; splitting hurts readability
+def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver is naturally branchy and parameter-heavy; spec calls for 8 kwargs; splitting hurts readability
     *,
     task_goal: str,
     cwd: Path,
@@ -343,7 +354,10 @@ def run_codex_action(  # noqa: C901, PLR0913, PLR0915 - one-shot driver is natur
         model: ``-c model=<name>`` flag value.
         reasoning_effort: ``-c model_reasoning_effort=<level>`` flag value.
         env: Optional environment overrides. ``RUST_LOG=warn`` is set if
-            absent (matches Hermes' default).
+            absent (matches Hermes' default). ``CODEX_HOME`` is set to a
+            per-spawn empty temp dir if absent, so user-local Codex
+            config (``~/.codex/AGENTS.md``) cannot contaminate the
+            worker (P-0009). Pre-set ``CODEX_HOME`` to override.
 
     Returns:
         :class:`CodexActionResult` with at least ``error`` and ``interrupted``
@@ -353,6 +367,17 @@ def run_codex_action(  # noqa: C901, PLR0913, PLR0915 - one-shot driver is natur
 
     env_dict = os.environ.copy() if env is None else env.copy()
     env_dict.setdefault("RUST_LOG", "warn")
+
+    # Per-spawn empty CODEX_HOME -- isolates the worker from
+    # ~/.codex/AGENTS.md and ~/.codex/config.toml so user-local Codex
+    # config cannot contaminate the worker's instruction stream
+    # (P-0009). If the caller pre-set CODEX_HOME on ``env`` we respect
+    # that and skip the temp dir; otherwise we create one and tear it
+    # down in the result-finalize path.
+    codex_home_dir: str | None = None
+    if env_dict.get("CODEX_HOME") in (None, ""):
+        codex_home_dir = tempfile.mkdtemp(prefix=_CODEX_HOME_PREFIX)
+        env_dict["CODEX_HOME"] = codex_home_dir
 
     start_mono = time.monotonic()
     client = CodexAppServerClient(codex_bin=codex_bin, extra_args=extra_args, env=env_dict)
@@ -375,6 +400,11 @@ def run_codex_action(  # noqa: C901, PLR0913, PLR0915 - one-shot driver is natur
         # Close best-effort; never let close() failure clobber the real outcome.
         with contextlib.suppress(Exception):
             client.close(timeout=3.0)
+        # Remove the per-spawn empty CODEX_HOME if we created one.
+        # ``ignore_errors=True`` ensures a stuck file (e.g. NFS lock) never
+        # masks the real result; the dir is a few bytes empty in steady state.
+        if codex_home_dir is not None:
+            shutil.rmtree(codex_home_dir, ignore_errors=True)
         # ``thread_id`` is unused in the result but kept in the signature
         # so the closure is documented (Step 10 may want it for events).
         del thread_id
