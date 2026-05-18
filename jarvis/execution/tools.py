@@ -1,45 +1,34 @@
-"""L4 Capability Execution — ToolRegistry + ActionLifecycle + Day-1 stubs.
+"""L4 Capability Execution — ToolRegistry + ActionLifecycle + handlers.
 
 This module is the SINGLE place in `jarvis/` allowed to:
 
 - dispatch L4 tool handlers,
-- schedule `threading.Timer` worker reports,
 - write artifact files into `${runtime_paths.artifacts_root}/run_<run_id>/`.
 
 Per spec.html §3.4 (`ActionRequest` / lifecycle / ToolRegistry) +
 spec.html §3.5 (CallerPrincipal scoping) + ADR 0001 § Stub strategy L4
 rows + § Canonical event trace evt 04..21 + § Acceptance B (lifecycle).
 
-Day-1 ships two tools:
+Day-2 (post Step 10) ships three tools:
 
-- `spawn_worker` — ASYNC L2 task action. Synchronously emits
-  `action.dispatched` → `action.running`, writes a real diff artifact
-  (`${run_dir}/diff.json` with `{"status": _SPAWN_WORKER_ARTIFACT_STATUS}`),
-  then schedules `worker.reported` via `threading.Timer` (true async
-  re-entry per ADR § Async lifecycle pattern). Lifecycle is left at
-  `running`; L3's Result Interpreter (Step 9) emits
-  `action.result_observed(semantics=report)` later, in response to the
-  `worker.reported` row.
+- `spawn_worker` — ASYNC-shaped L2 task action backed by a synchronous
+  Codex turn. The dispatcher emits `action.dispatched` → `action.running`;
+  the handler then runs the full Codex flow (pre-flight version check,
+  dirty-tree stash, `run_codex_action`, heartbeat loop, diff capture,
+  artifact persistence, `worker.*` event emission) and returns a
+  `RawResult(semantics="ack")`. The handler emits `worker.reported`
+  itself, on the SAME thread, but the lifecycle is intentionally left
+  at `running`. L3's `_handle_worker_reported` (the Day-1 re-entry
+  branch) consumes the `worker.reported` event on the next decide()
+  cycle and transitions lifecycle `running → result_observed` via the
+  synthetic-RawResult path — that flow is unchanged from Day-1, so
+  Day-2 keeps the same `result_semantics="ack"` on the ToolDefinition.
 - `verify_diff` — SYNC L0 read. Reads the artifact, checks predicate
   `data["status"] == "ok"`, emits `action.result_observed` with
   `semantics="verification"` (match) or `semantics="error"` (miss),
   transitioning lifecycle `running → result_observed`.
-
-Controllable artifact knob:
-    `_SPAWN_WORKER_ARTIFACT_STATUS` is a module-level constant. The Step 13
-    negative scenario fixture monkeypatches it to `"fail"` so `verify_diff`
-    fails the predicate. The LLM never sees this knob — `spawn_worker`'s
-    `input_schema` only exposes `task_id`.
-
-Thread safety:
-    `threading.Timer` runs the callback on a worker thread. `sqlite3`
-    connections default to `check_same_thread=True`, so the callback
-    opens its OWN connection from the DB path (a `Path`, captured by
-    value into the closure). `check_same_thread=False` is intentionally
-    NOT used. The DB path, action_id, run_id, task_id,
-    source_event_id, and the diff path string are the only values the
-    closure captures; no `sqlite3.Connection` or `ActionLifecycle`
-    instance crosses the thread boundary.
+- `create_task` — SYNC L1. Records `task.created` with optional
+  `verify_command` auto-detection (Step 4).
 
 `tool_result` / `tool_error` JSON serializers are adapted verbatim from
 `/Users/alllllenshi/Projects/jarvis-legacy/tools_v2/helpers.py` per
@@ -49,7 +38,7 @@ ADR § Reference sources.
 (see below) so this module does NOT import `jarvis.deployment` — that
 would violate the `.importlinter` middle-layer sibling rule (execution
 and deployment are independent siblings in `decision | execution |
-surface | deployment`). `jarvis.runtime` (the composition root, Step 10)
+surface | deployment`). `jarvis.runtime` (the composition root, Step 17)
 passes a real `jarvis.deployment.RuntimePaths` into the registry; it
 structurally satisfies the Protocol.
 
@@ -70,8 +59,22 @@ A `ToolHandler` is::
 
 The handler MUST emit any async events itself; for sync handlers it
 also transitions the lifecycle to a terminal state before returning.
-For async handlers the lifecycle is left at `running` and a worker
-thread / callback transitions it terminal once a result arrives.
+For async-shaped handlers (`spawn_worker`) the lifecycle is left at
+`running` and L3's `_handle_worker_reported` branch transitions it
+terminal once it folds the worker.reported event into a synthetic
+RawResult.
+
+Dirty-tree stash ordering (ADR-0002 § Dirty-tree policy, lines 663-713)
+=====================================================================
+
+`spawn_worker_handler` calls `isolate_pretask_changes` BEFORE Codex
+runs and forwards the resulting `stash_ref` on the returned
+`RawResult.metadata["stash_ref"]`. It MUST NOT call
+`restore_pretask_changes` itself — the runtime composition (Step 17)
+pops the stash AFTER `verify_diff_handler` exits, so the verify path's
+working tree reflects only Codex's edits. Canary
+`test_canary_stash_pop_after_verify` AST-scans this file to enforce
+the no-call invariant.
 """
 
 from __future__ import annotations
@@ -84,34 +87,34 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
+from jarvis.execution.codex_action import (
+    CodexActionResult,
+    CodexVersionTooLowError,
+    ensure_codex_version_supported,
+    run_codex_action,
+)
+from jarvis.execution.diff_capture import (
+    isolate_pretask_changes,
+    write_diff_artifact,
+)
 from jarvis.execution.verify_command_detect import detect_verify_command
 from jarvis.shared import ActionRequest, CallerPrincipal, RawResult, ResultSemantics, RiskLevel
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.event_log import emit_event, iter_events
 
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Mapping
 
 
-# --- Controllable knobs ------------------------------------------------------
+# --- Codex execution defaults ------------------------------------------------
 
-# Step 13 monkeypatches this to "fail" to drive the negative scenario.
-# `spawn_worker_handler` writes this value into `diff.json["status"]`.
-# Kept module-level (not an `ActionRequest.arguments` field) so the LLM's
-# input_schema for `spawn_worker` stays schematically clean (only `task_id`).
-_SPAWN_WORKER_ARTIFACT_STATUS: str = "ok"
-
-# Delay before the spawn_worker Timer fires `worker.reported`. 10 ms is
-# enough for the dispatcher to return and the test to start polling, but
-# small enough to keep Tier 1 wall-clock well under 30 s. Module-level so
-# tests can monkeypatch if needed (default works for current Tier 1).
-_TIMER_DELAY_SECONDS: float = 0.01
-
-# Test hook: when set to a list, `_emit_worker_reported` appends the
-# `threading.current_thread()` of the callback. Used by acceptance B4 readiness
-# to assert the worker callback runs on a thread distinct from the main flow.
-# Module-level (not part of public API); tests set + clear.
-_TEST_MODE_THREAD_CAPTURE: list[threading.Thread] | None = None
+# Codex executor identity emitted on `task.executor_assigned`. Day-2 Mac-only
+# flagship targets `codex` (the OpenAI Codex app-server CLI) running the
+# `gpt-5.5` model per ADR-0002 § Codex contract. The literals appear on
+# events so trace consumers can filter by executor / model without crossing
+# back into L4.
+_CODEX_EXECUTOR_NAME: Final[str] = "codex"
+_CODEX_DEFAULT_MODEL: Final[str] = "gpt-5.5"
 
 
 # --- Public type aliases -----------------------------------------------------
@@ -126,15 +129,29 @@ class RuntimePathsLike(Protocol):
     """Structural view of `jarvis.deployment.RuntimePaths` used by L4.
 
     L4 cannot import L6 (sibling layers in `.importlinter`). The composition
-    root (`jarvis.runtime`, Step 10) passes a real `RuntimePaths` instance;
-    it satisfies this Protocol structurally. Day-1 only needs `event_log`
-    (DB path for the Timer callback) and `artifact_dir_for_run` (per-run
-    artifact directory).
+    root (`jarvis.runtime`, Step 17) passes a real `RuntimePaths` instance;
+    it satisfies this Protocol structurally.
+
+    Surface:
+        - ``event_log`` — DB path (still consumed by the dispatcher's
+          source-event-uid handshake; Day-2 handlers also walk events
+          via :func:`iter_events` to find ``task.created`` records).
+        - ``artifacts_root`` — root artifact dir; Day-2 spawn_worker
+          passes this to :func:`write_diff_artifact` which builds the
+          ``run_<run_id>/diff.txt`` path itself.
+        - ``artifact_dir_for_run`` — convenience for sync tools
+          (``verify_diff``) that need the per-run dir without going
+          through :mod:`diff_capture`.
     """
 
     @property
     def event_log(self) -> Path:
-        """Path to the SQLite Event Log file (used by Timer callback)."""
+        """Path to the SQLite Event Log file."""
+        ...
+
+    @property
+    def artifacts_root(self) -> Path:
+        """Root artifact directory; per-run subdirs live underneath."""
         ...
 
     def artifact_dir_for_run(self, run_id: str) -> Path:
@@ -374,143 +391,446 @@ def tool_result(data: Mapping[str, Any] | None = None, **kwargs: object) -> str:
 # --- spawn_worker / verify_diff handlers ------------------------------------
 
 
-def _emit_worker_reported(  # noqa: PLR0913 — Timer-closure-safe captures: each arg is an immutable id/path; bundling them would require capturing a stateful object.
-    db_path: Path,
+def _load_task_record(conn: sqlite3.Connection, task_id: str) -> Mapping[str, Any] | None:
+    """Return the most recent ``task.created`` payload for ``task_id``, or None.
+
+    L4 is allowed to read L2 (event_log) per `.importlinter`; this walk
+    is the L4-internal lookup for ``goal`` and ``repo_path`` that the
+    Codex spawn needs. The Task Ledger projection's TaskLedgerRecord
+    only carries ``goal``; ``repo_path`` lives on the raw event payload.
+    Walking the (small Day-2) event log here keeps the projection's
+    public surface minimal and avoids a write to Step 5's projection
+    contract from inside a Day-2 build step.
+    """
+    latest: Mapping[str, Any] | None = None
+    for evt in iter_events(conn):
+        if evt.type != "task.created":
+            continue
+        if evt.payload.get("task_id") == task_id:
+            latest = evt.payload
+    return latest
+
+
+def _emit_worker_heartbeat_factory(  # noqa: PLR0913 — all kwargs are immutable correlation ids; bundling them defeats the point of a closure factory.
+    *,
+    conn: sqlite3.Connection,
     action_id: str,
     run_id: str,
     task_id: str,
     source_event_id: str,
-    diff_path_str: str,
-    turn_id: str | None = None,
-) -> None:
-    """Timer callback — opens its OWN sqlite3 connection, emits `worker.reported`, closes.
+    turn_id: str | None,
+) -> Callable[[dict[str, Any]], None]:
+    """Build the ``on_heartbeat`` closure for :func:`run_codex_action`.
 
-    Captures only immutable values (paths as `Path` / `str`, ids as
-    `str`). No `sqlite3.Connection` or `ActionLifecycle` instance
-    crosses the thread boundary, so `check_same_thread=True` (default)
-    stays honored.
-
-    Top-level (not nested in `spawn_worker_handler`) so it is unit-testable
-    in isolation and so the Timer closure stays minimal.
+    The closure emits one ``worker.heartbeat`` event per call with the
+    payload Codex's poll loop already shapes (``summary``,
+    ``elapsed_ms``, ``last_item_summary``). Top-level (not nested in
+    the handler) for clarity; the closure captures only immutable
+    correlation ids plus the live ``conn`` (handler-thread bound).
     """
-    # Acceptance B4 readiness: capture the worker thread when the test
-    # mode hook is set. The `is not None` check is the only side effect
-    # in normal (non-test) operation; the list mutation only happens in
-    # tests that explicitly opt in.
-    if _TEST_MODE_THREAD_CAPTURE is not None:
-        _TEST_MODE_THREAD_CAPTURE.append(threading.current_thread())
-
-    correlation: dict[str, str] = {
-        "action_id": action_id,
-        "run_id": run_id,
-        "task_id": task_id,
-    }
+    correlation: dict[str, str] = {"action_id": action_id, "run_id": run_id, "task_id": task_id}
     if turn_id is not None:
         correlation["turn_id"] = turn_id
 
-    conn = open_event_log(db_path)
-    try:
+    def _emit(payload: dict[str, Any]) -> None:
         emit_event(
             conn,
-            type="worker.reported",
+            type="worker.heartbeat",
             payload={
                 "run_id": run_id,
                 "action_id": action_id,
-                "status": "reported_complete",
-                "summary": "codex stub wrote diff artifact",
-                "artifact_path": diff_path_str,
+                "elapsed_ms": int(payload.get("elapsed_ms", 0)),
+                "last_log_line": str(payload.get("last_item_summary", "")),
+                "summary": str(payload.get("summary", "codex turn in progress")),
             },
             source_event_id=source_event_id,
             correlation=correlation,
         )
-    finally:
-        conn.close()
+
+    return _emit
+
+
+def _spawn_worker_emit_terminal_failure(  # noqa: PLR0913 — Day-2 failure paths fold seven correlation ids + a typed event-type discriminator; combining them masks the action.failed / action.timeout_assumed split.
+    *,
+    conn: sqlite3.Connection,
+    lifecycle: ActionLifecycle,
+    action_id: str,
+    task_id: str | None,
+    run_id: str | None,
+    source_event_id: str,
+    error_code: str,
+    error_message: str,
+    event_type: Literal["action.failed", "action.timeout_assumed"],
+    stash_ref: str | None,
+    cost: Mapping[str, Any] | None,
+    turn_id: str | None,
+) -> RawResult:
+    """Emit the terminal failure event + transition lifecycle running -> terminal.
+
+    Also emits an end-of-run ``task.executor_reported`` so the Task
+    Ledger projection records a failed/timeout run, then assembles a
+    ``RawResult(semantics="error")`` with cost + stash_ref metadata
+    forwarded so the runtime composition can plumb them (cost recording
+    in L3, stash pop in Step 17 -- both unchanged by the failure path).
+    """
+    correlation: dict[str, str] = {"action_id": action_id}
+    if run_id is not None:
+        correlation["run_id"] = run_id
+    if task_id is not None:
+        correlation["task_id"] = task_id
+    if turn_id is not None:
+        correlation["turn_id"] = turn_id
+
+    emit_event(
+        conn,
+        type=event_type,
+        payload={
+            "action_id": action_id,
+            "error": error_code,
+            "reason": error_message,
+        },
+        source_event_id=source_event_id,
+        correlation=correlation,
+    )
+
+    executor_status = "failed" if event_type == "action.failed" else "timeout"
+    if task_id is not None and run_id is not None:
+        # The Task Ledger projection bridges through run.started for
+        # task_id; emit task.executor_reported with a failure status so
+        # the projection sees a terminal report on this run.
+        emit_event(
+            conn,
+            type="task.executor_reported",
+            payload={
+                "task_id": task_id,
+                "run_id": run_id,
+                "status": executor_status,
+                "summary": error_message,
+            },
+            source_event_id=source_event_id,
+            correlation=correlation,
+        )
+    terminal_state: LifecycleState = (
+        "failed" if event_type == "action.failed" else "timeout_assumed"
+    )
+    if lifecycle.state_of(action_id) == "running":
+        lifecycle.transition(action_id, terminal_state)
+
+    metadata: dict[str, Any] = {}
+    if cost is not None:
+        metadata["cost"] = dict(cost)
+    metadata["stash_ref"] = stash_ref
+
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "status": executor_status,
+        "error": error_code,
+    }
+    return RawResult(
+        action_id=action_id,
+        semantics="error",
+        payload=payload,
+        tool_output=tool_error(error_message, code=error_code),
+        error=error_code,
+        metadata=metadata,
+    )
 
 
 def spawn_worker_handler(
     action_request: ActionRequest,
     conn: sqlite3.Connection,
     runtime_paths: RuntimePathsLike,
-    lifecycle: ActionLifecycle,  # noqa: ARG001 — kept for signature uniformity; async handlers don't terminal-transition.
+    lifecycle: ActionLifecycle,
 ) -> RawResult:
-    """L2 `spawn_worker` stub — async lifecycle (ADR § Async lifecycle pattern).
+    """L2 ``spawn_worker`` -- real Codex flow (ADR-0002 D-day step 3 + Codex contract).
 
-    Steps:
-        1. Pull `task_id` from `action_request.arguments`.
-        2. Mint `run_id = "R" + uuid.uuid4().hex[:8]`.
-        3. Emit `run.started(run_id, task_id, runner="codex_stub")` with
-           `source_event_id` = the `action.running` event uid (registered
-           by `ToolRegistry.dispatch` and stashed on the connection as
-           `_jarvis_running_event_uid`; see `dispatch`).
-        4. Write `${run_dir}/diff.json` with
-           `{"status": _SPAWN_WORKER_ARTIFACT_STATUS, "run_id", "task_id"}`.
-        5. Schedule `threading.Timer(_TIMER_DELAY_SECONDS, _emit_worker_reported, ...)`.
-        6. Return `RawResult(semantics="ack", ...)`. Lifecycle stays at
-           `running`; L3 Result Interpreter (Step 9) transitions to
-           terminal once `worker.reported` is observed.
+    Replaces the Day-1 ``threading.Timer`` + hardcoded
+    ``{"status":"ok"}`` stub with the full Codex flow:
 
-    The controllable artifact knob `_SPAWN_WORKER_ARTIFACT_STATUS` is
-    written verbatim into `diff.json["status"]`; tests monkeypatch the
-    module-level constant for negative cases.
+    1. Pre-flight: :func:`ensure_codex_version_supported` (>= 0.125.0).
+       On :class:`CodexVersionTooLowError` -> emit ``action.failed``,
+       lifecycle ``running -> failed``, return RawResult(semantics=error).
+    2. Mint ``run_id = "R" + uuid.hex[:8]``. Load the task record
+       (goal + repo_path) from the Event Log.
+    3. Emit ``task.executor_assigned(executor="codex", model="gpt-5.5")``.
+    4. Emit ``run.started(runner="codex")``.
+    5. Dirty-tree stash via :func:`isolate_pretask_changes` BEFORE
+       Codex runs; the resulting ``stash_ref`` (``"stash@{0}"`` or
+       ``None``) travels back on ``RawResult.metadata["stash_ref"]``
+       for the runtime composition to pop AFTER verify_diff exits
+       (ADR-0002 Dirty-tree policy).
+    6. :func:`run_codex_action` with an ``on_heartbeat`` closure that
+       emits ``worker.heartbeat`` per 30s.
+    7. Branch on the :class:`CodexActionResult`:
+       - timeout/interrupted -> ``action.timeout_assumed`` +
+         ``task.executor_reported(status="timeout")``.
+       - crash (any other ``error``) -> ``action.failed`` +
+         ``task.executor_reported(status="failed")``.
+       - ``submit_report is None`` -> emit ``worker.report_missing``
+         (Limitation Claim signal per spec 3.5.8); fall through to a
+         degraded ``worker.reported`` with ``status="report_missing"``.
+       - Happy path: persist diff via :func:`write_diff_artifact`,
+         emit ``worker.artifact_observed`` (content_hash =
+         sha256(diff_text)), emit ``worker.reported`` using the
+         submit_report payload as authoritative, emit
+         ``task.executor_reported``.
+    8. Return ``RawResult(semantics="ack", ...)``. Lifecycle is left at
+       ``running`` on the happy + report-missing path so L3's
+       ``_handle_worker_reported`` re-entry (Day-1 mechanism) folds
+       worker.reported into a synthetic RawResult and transitions
+       ``running -> result_observed`` on the next decide() cycle.
+
+    ``RawResult.metadata`` carries:
+        - ``"cost"`` -- ``{kind, model, tokens_in, tokens_out, run_id}``
+          for L3 to emit ``cost.recorded`` (single emit-site per spec
+          5.4.1).
+        - ``"stash_ref"`` -- stash ref forwarded to runtime composition
+          (Step 17) so it can call ``restore_pretask_changes`` AFTER
+          verify_diff exits. ADR-0002 Dirty-tree policy: this handler
+          MUST NOT call ``restore_pretask_changes`` itself; canary
+          ``test_canary_stash_pop_after_verify`` AST-scans the body.
     """
     task_id = action_request.arguments["task_id"]
     if not isinstance(task_id, str):
         msg = f"spawn_worker: task_id must be a string (got {type(task_id).__name__})"
         raise TypeError(msg)
 
-    run_id = "R" + uuid.uuid4().hex[:8]
-
-    # `ToolRegistry.dispatch` stashed the action.running event_uid here
-    # before calling us; that's the canonical source_event_id per the
-    # canonical trace (evt 09 source = evt 08).
     running_event_uid = _get_running_event_uid(conn, action_request.action_id)
 
-    emit_event(
-        conn,
-        type="run.started",
-        payload={"run_id": run_id, "task_id": task_id, "runner": "codex_stub"},
-        source_event_id=running_event_uid,
-        correlation={
-            "action_id": action_request.action_id,
-            "run_id": run_id,
-            "task_id": task_id,
-        },
-    )
+    # 1. Pre-flight: codex --version >= 0.125.0. On failure the dispatcher
+    # has already transitioned lifecycle authorized -> dispatched -> running;
+    # we close the loop with action.failed + lifecycle running -> failed.
+    try:
+        ensure_codex_version_supported()
+    except CodexVersionTooLowError as exc:
+        return _spawn_worker_emit_terminal_failure(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_request.action_id,
+            task_id=None,
+            run_id=None,
+            source_event_id=running_event_uid,
+            error_code="codex_version_too_low",
+            error_message=str(exc),
+            event_type="action.failed",
+            stash_ref=None,
+            cost=None,
+            turn_id=action_request.turn_id,
+        )
 
-    run_dir = runtime_paths.artifact_dir_for_run(run_id)
-    diff_path = run_dir / "diff.json"
-    diff_payload = {
-        "status": _SPAWN_WORKER_ARTIFACT_STATUS,
+    # 2. Mint run_id + load task record.
+    run_id = "R" + uuid.uuid4().hex[:8]
+    task_record = _load_task_record(conn, task_id)
+    goal = (
+        str(task_record["goal"])
+        if task_record is not None and "goal" in task_record
+        else task_id
+    )
+    repo_path_str = (
+        str(task_record["repo_path"])
+        if task_record is not None and task_record.get("repo_path") is not None
+        else None
+    )
+    repo_path = Path(repo_path_str) if repo_path_str is not None else Path.cwd()
+
+    correlation: dict[str, str] = {
+        "action_id": action_request.action_id,
         "run_id": run_id,
         "task_id": task_id,
     }
-    diff_path.write_text(json.dumps(diff_payload, sort_keys=True), encoding="utf-8")
+    if action_request.turn_id is not None:
+        correlation["turn_id"] = action_request.turn_id
 
-    db_path = runtime_paths.event_log
-    timer = threading.Timer(
-        _TIMER_DELAY_SECONDS,
-        _emit_worker_reported,
-        args=(
-            db_path,
-            action_request.action_id,
-            run_id,
-            task_id,
-            running_event_uid,
-            str(diff_path),
-            action_request.turn_id,
-        ),
+    # 3. task.executor_assigned (executor=codex, model=gpt-5.5).
+    emit_event(
+        conn,
+        type="task.executor_assigned",
+        payload={
+            "task_id": task_id,
+            "executor": _CODEX_EXECUTOR_NAME,
+            "action_id": action_request.action_id,
+            "model": _CODEX_DEFAULT_MODEL,
+        },
+        source_event_id=running_event_uid,
+        correlation=correlation,
     )
-    # `daemon=True` so a test that forgets to join doesn't hang the suite.
-    timer.daemon = True
-    timer.start()
 
-    payload: dict[str, Any] = {"run_id": run_id, "status": "dispatched"}
+    # 4. run.started(runner="codex"). The Day-1 "codex_stub" label is retired.
+    emit_event(
+        conn,
+        type="run.started",
+        payload={"run_id": run_id, "task_id": task_id, "runner": _CODEX_EXECUTOR_NAME},
+        source_event_id=running_event_uid,
+        correlation=correlation,
+    )
+
+    # 5. Dirty-tree stash BEFORE Codex. The stash_ref is forwarded on
+    # RawResult.metadata; the runtime composition (Step 17) pops it
+    # AFTER verify_diff exits (ADR-0002 Dirty-tree policy).
+    stash_ref = isolate_pretask_changes(repo_path, run_id=run_id)
+
+    # 6. Run Codex with the heartbeat closure.
+    on_heartbeat = _emit_worker_heartbeat_factory(
+        conn=conn,
+        action_id=action_request.action_id,
+        run_id=run_id,
+        task_id=task_id,
+        source_event_id=running_event_uid,
+        turn_id=action_request.turn_id,
+    )
+    codex_result: CodexActionResult = run_codex_action(
+        task_goal=goal,
+        cwd=repo_path,
+        on_heartbeat=on_heartbeat,
+    )
+    cost: dict[str, Any] = {
+        "kind": _CODEX_EXECUTOR_NAME,
+        "model": _CODEX_DEFAULT_MODEL,
+        "tokens_in": int(codex_result.tokens_in),
+        "tokens_out": int(codex_result.tokens_out),
+        "run_id": run_id,
+    }
+
+    # 7a. Timeout -- turn/interrupt was issued by the driver. Emit
+    # action.timeout_assumed and end here (no worker.reported).
+    if codex_result.interrupted or codex_result.error == "codex_turn_timeout":
+        return _spawn_worker_emit_terminal_failure(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_request.action_id,
+            task_id=task_id,
+            run_id=run_id,
+            source_event_id=running_event_uid,
+            error_code="codex_turn_timeout",
+            error_message=codex_result.error or "codex turn timed out",
+            event_type="action.timeout_assumed",
+            stash_ref=stash_ref,
+            cost=cost,
+            turn_id=action_request.turn_id,
+        )
+
+    # 7b. Crash (initialize / thread/start / turn/start / subprocess). The
+    # canonical tags are "codex_initialize_failed", "codex_thread_start_failed",
+    # "codex_turn_start_failed", "codex_subprocess_crashed". All map to
+    # action.failed with the upstream tag preserved.
+    if codex_result.error is not None:
+        return _spawn_worker_emit_terminal_failure(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_request.action_id,
+            task_id=task_id,
+            run_id=run_id,
+            source_event_id=running_event_uid,
+            error_code=codex_result.error.split(":", 1)[0],
+            error_message=codex_result.error,
+            event_type="action.failed",
+            stash_ref=stash_ref,
+            cost=cost,
+            turn_id=action_request.turn_id,
+        )
+
+    # 8. Happy path (codex completed turn; submit_report may or may not
+    # be present). Persist the diff artifact.
+    diff_artifact_path = write_diff_artifact(
+        codex_result.diff_text,
+        artifact_dir=runtime_paths.artifacts_root,
+        run_id=run_id,
+    )
+    content_hash = hashlib.sha256(codex_result.diff_text.encode("utf-8")).hexdigest()
+
+    # 9. worker.artifact_observed for the diff.
+    emit_event(
+        conn,
+        type="worker.artifact_observed",
+        payload={
+            "run_id": run_id,
+            "action_id": action_request.action_id,
+            "artifact_path": str(diff_artifact_path),
+            "content_hash": content_hash,
+            "kind": "diff",
+        },
+        source_event_id=running_event_uid,
+        correlation=correlation,
+    )
+
+    # 10. worker.report_missing branch when Codex never called submit_report.
+    report_missing = codex_result.submit_report is None
+    if report_missing:
+        emit_event(
+            conn,
+            type="worker.report_missing",
+            payload={
+                "run_id": run_id,
+                "action_id": action_request.action_id,
+                "reason": "codex completed turn without calling submit_report tool",
+            },
+            source_event_id=running_event_uid,
+            correlation=correlation,
+        )
+
+    # 11. worker.reported -- use the submit_report payload as authoritative
+    # when present; otherwise emit a degraded report with status=report_missing.
+    submit_report = codex_result.submit_report or {}
+    report_status = str(submit_report.get("status", "report_missing"))
+    submit_summary = submit_report.get("summary")
+    if isinstance(submit_summary, str) and submit_summary:
+        report_summary = submit_summary
+    elif report_missing:
+        report_summary = "(no summary -- submit_report missing)"
+    else:
+        report_summary = ""
+    emit_event(
+        conn,
+        type="worker.reported",
+        payload={
+            "run_id": run_id,
+            "action_id": action_request.action_id,
+            "status": report_status,
+            "summary": report_summary,
+            "artifact_path": str(diff_artifact_path),
+        },
+        source_event_id=running_event_uid,
+        correlation=correlation,
+    )
+
+    # 12. task.executor_reported -- projection-side terminal signal for
+    # this run.
+    emit_event(
+        conn,
+        type="task.executor_reported",
+        payload={
+            "task_id": task_id,
+            "run_id": run_id,
+            "status": report_status,
+            "summary": report_summary,
+            "diff_path": str(diff_artifact_path),
+        },
+        source_event_id=running_event_uid,
+        correlation=correlation,
+    )
+
+    # 13. Build the RawResult. Lifecycle stays at `running` per Day-1's
+    # async-shape pattern -- L3's _handle_worker_reported branch transitions
+    # to result_observed once it consumes the worker.reported row.
+    _ = lifecycle  # async-shape: lifecycle terminal-transition is L3's job.
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "status": report_status,
+        "summary": report_summary,
+        "artifact_path": str(diff_artifact_path),
+        "stash_ref": stash_ref,
+    }
+    metadata: dict[str, Any] = {
+        "cost": cost,
+        "stash_ref": stash_ref,
+    }
     return RawResult(
         action_id=action_request.action_id,
         semantics="ack",
         payload=payload,
         tool_output=tool_result(payload),
         error=None,
+        metadata=metadata,
     )
 
 

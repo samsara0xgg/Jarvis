@@ -1,28 +1,30 @@
-"""Unit tests for `jarvis.execution.tools` (ADR § Acceptance B, Step 6).
+"""Unit tests for `jarvis.execution.tools` (ADR-0001 Acceptance B + ADR-0002 Step 10).
 
 Covers:
     - Default registry shape (names + caller scope + risk + semantics + async flag).
-    - `spawn_worker` happy path — artifact written, lifecycle stays at running,
-      `worker.reported` row appears (off the main thread).
-    - `spawn_worker` negative — `_SPAWN_WORKER_ARTIFACT_STATUS = "fail"` flows
-      through to the artifact file.
+    - `spawn_worker` dispatcher events (dispatched + running + run.started)
+      with the Day-2 Codex path mocked.
     - `verify_diff` three paths (match / fail / missing).
     - Caller scoping (CallerNotAllowedError), UnknownToolError,
       DuplicateToolError, dispatch precondition (lifecycle == authorized).
+
+The Day-2 spawn_worker happy / negative / timeout / version-too-low / dirty-tree
+chains live in ``tests/unit/test_spawn_worker_real.py`` so the dispatcher tests
+in this file stay focused on the registry envelope.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
-import threading
 from contextlib import closing
 from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
 
 import pytest
 
 from jarvis.deployment import RuntimePaths, bootstrap_runtime
-from jarvis.execution import tools as tools_module
+from jarvis.execution.codex_action import CodexActionResult
 from jarvis.execution.tools import (
     ActionLifecycle,
     CallerNotAllowedError,
@@ -84,25 +86,34 @@ def _seed_lifecycle(lifecycle: ActionLifecycle, action_id: str) -> None:
     lifecycle.transition(action_id, "authorized")
 
 
-def _wait_for_event_type(
-    db_path: Path, event_type: str, *, timeout: float = 2.0, poll: float = 0.01
-) -> int:
-    """Poll the event log until at least one row of `event_type` exists.
-
-    Returns the count. Raises AssertionError if `timeout` elapses with
-    none found. Uses `threading.Event.wait` for non-blocking sleep (the
-    project bans `time.sleep`).
-    """
-    sentinel = threading.Event()
-    deadline_iters = int(timeout / poll) + 1
-    for _ in range(deadline_iters):
-        with closing(open_event_log(db_path)) as conn:
-            count = sum(1 for e in iter_events(conn) if e.type == event_type)
-        if count > 0:
-            return count
-        sentinel.wait(timeout=poll)
-    msg = f"event type {event_type!r} never appeared within {timeout}s"
-    raise AssertionError(msg)
+def _stub_codex_result(  # noqa: PLR0913 — six kwargs map 1-to-1 to CodexActionResult fixture knobs; collapsing them defeats the per-test override pattern.
+    *,
+    submit_report: dict[str, Any] | None = None,
+    error: str | None = None,
+    interrupted: bool = False,
+    diff_text: str = "diff --git a/x b/x\n+hello\n",
+    tokens_in: int = 10,
+    tokens_out: int = 12,
+) -> CodexActionResult:
+    """Return a CodexActionResult with sensible Day-2 defaults for happy path."""
+    report = submit_report if submit_report is not None else {
+        "status": "ok",
+        "summary": "codex completed the task",
+        "changed_files": ["x"],
+    }
+    return CodexActionResult(
+        final_text="codex did the thing",
+        diff_text=diff_text,
+        diff_path=None,
+        turn_id="TID-1",
+        error=error,
+        interrupted=interrupted,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        elapsed_ms=12_000,
+        submit_report=report if (not interrupted and error is None) else None,
+        submit_report_calls=((report,) if (not interrupted and error is None) else ()),
+    )
 
 
 # --- Default registry shape ------------------------------------------------
@@ -213,63 +224,16 @@ def test_dispatch_lifecycle_must_be_authorized(tmp_path: Path) -> None:
         conn.close()
 
 
-# --- spawn_worker happy path -----------------------------------------------
-
-
-def test_spawn_worker_writes_artifact_and_returns_ack(tmp_path: Path) -> None:
-    """spawn_worker writes diff.json with the configured status and returns ack."""
-    paths, conn = _open_runtime(tmp_path)
-    try:
-        registry = build_default_registry()
-        lifecycle = ActionLifecycle()
-        req = _build_action_request(
-            tool_name="spawn_worker",
-            arguments={"task_id": "task_X"},
-        )
-        _seed_lifecycle(lifecycle, req.action_id)
-
-        result = registry.dispatch(req, conn, paths, lifecycle)
-
-        assert isinstance(result, RawResult)
-        assert result.semantics == "ack"
-        assert result.error is None
-        run_id = result.payload["run_id"]
-        assert isinstance(run_id, str)
-        assert run_id.startswith("R")
-
-        # Artifact file written with the configured status.
-        diff_path = paths.artifact_dir_for_run(run_id) / "diff.json"
-        assert diff_path.exists()
-        data = json.loads(diff_path.read_text(encoding="utf-8"))
-        assert data["status"] == "ok"  # default _SPAWN_WORKER_ARTIFACT_STATUS
-        assert data["run_id"] == run_id
-        assert data["task_id"] == "task_X"
-    finally:
-        conn.close()
-
-
-def test_spawn_worker_leaves_lifecycle_at_running(tmp_path: Path) -> None:
-    """Immediately after dispatch, lifecycle is `running` (async pattern)."""
-    paths, conn = _open_runtime(tmp_path)
-    try:
-        registry = build_default_registry()
-        lifecycle = ActionLifecycle()
-        req = _build_action_request(
-            tool_name="spawn_worker",
-            arguments={"task_id": "task_X"},
-        )
-        _seed_lifecycle(lifecycle, req.action_id)
-        registry.dispatch(req, conn, paths, lifecycle)
-        # State is `running` — NOT terminal yet (worker.reported delivery
-        # is what L3 Result Interpreter, Step 9, transitions to terminal).
-        assert lifecycle.state_of(req.action_id) == "running"
-        assert lifecycle.is_terminal(req.action_id) is False
-    finally:
-        conn.close()
+# --- spawn_worker dispatcher events (Day-2 Codex path mocked) --------------
 
 
 def test_spawn_worker_emits_dispatched_running_run_started(tmp_path: Path) -> None:
-    """The dispatcher + handler emit dispatched + running + run.started in order."""
+    """Dispatcher + handler emit dispatched + running + task.executor_assigned + run.started.
+
+    Day-2 spawn_worker (Step 10) is synchronous; the test mocks
+    :func:`run_codex_action` and :func:`ensure_codex_version_supported`
+    so the dispatcher envelope can be asserted without a live Codex.
+    """
     paths, conn = _open_runtime(tmp_path)
     try:
         registry = build_default_registry()
@@ -279,37 +243,54 @@ def test_spawn_worker_emits_dispatched_running_run_started(tmp_path: Path) -> No
             arguments={"task_id": "task_X"},
         )
         _seed_lifecycle(lifecycle, req.action_id)
-        registry.dispatch(req, conn, paths, lifecycle)
+
+        with (
+            patch("jarvis.execution.tools.ensure_codex_version_supported"),
+            patch(
+                "jarvis.execution.tools.run_codex_action",
+                return_value=_stub_codex_result(),
+            ),
+            patch(
+                "jarvis.execution.tools.isolate_pretask_changes",
+                return_value=None,
+            ),
+        ):
+            registry.dispatch(req, conn, paths, lifecycle)
         conn.commit()
 
         with closing(open_event_log(paths.event_log)) as ro_conn:
-            seen = [e for e in iter_events(ro_conn) if e.type in {
-                "action.dispatched", "action.running", "run.started"
-            }]
+            seen = [
+                e
+                for e in iter_events(ro_conn)
+                if e.type in {
+                    "action.dispatched",
+                    "action.running",
+                    "task.executor_assigned",
+                    "run.started",
+                }
+            ]
         types = [e.type for e in seen]
-        assert types == ["action.dispatched", "action.running", "run.started"]
-        # source chain: running ← dispatched; run.started ← running.
+        assert types == [
+            "action.dispatched",
+            "action.running",
+            "task.executor_assigned",
+            "run.started",
+        ]
+        # source chain: running <- dispatched; everything after running <- running.
         assert seen[1].source_event_id == seen[0].event_uid
         assert seen[2].source_event_id == seen[1].event_uid
-        # run.started payload carries runner=codex_stub and the new run_id.
-        assert seen[2].payload["runner"] == "codex_stub"
-        assert seen[2].payload["task_id"] == "task_X"
+        assert seen[3].source_event_id == seen[1].event_uid
+        # Day-2 runner / executor labels.
+        assert seen[3].payload["runner"] == "codex"
+        assert seen[3].payload["task_id"] == "task_X"
+        assert seen[2].payload["executor"] == "codex"
+        assert seen[2].payload["model"] == "gpt-5.5"
     finally:
         conn.close()
 
 
-def test_spawn_worker_emits_worker_reported_on_separate_thread(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """worker.reported is delivered by a different thread than the main flow.
-
-    Implements ADR acceptance B4 readiness. Uses the module-level
-    `_TEST_MODE_THREAD_CAPTURE` hook to record the callback's thread,
-    then asserts it differs from the dispatcher's thread.
-    """
-    captured: list[threading.Thread] = []
-    monkeypatch.setattr(tools_module, "_TEST_MODE_THREAD_CAPTURE", captured)
-
+def test_spawn_worker_returns_ack_with_cost_metadata(tmp_path: Path) -> None:
+    """The Day-2 happy path returns RawResult(semantics="ack") with cost metadata."""
     paths, conn = _open_runtime(tmp_path)
     try:
         registry = build_default_registry()
@@ -319,76 +300,28 @@ def test_spawn_worker_emits_worker_reported_on_separate_thread(
             arguments={"task_id": "task_X"},
         )
         _seed_lifecycle(lifecycle, req.action_id)
-        main_thread = threading.current_thread()
-        baseline_capture_len = len(captured)
-        registry.dispatch(req, conn, paths, lifecycle)
+        with (
+            patch("jarvis.execution.tools.ensure_codex_version_supported"),
+            patch(
+                "jarvis.execution.tools.run_codex_action",
+                return_value=_stub_codex_result(),
+            ),
+            patch(
+                "jarvis.execution.tools.isolate_pretask_changes",
+                return_value=None,
+            ),
+        ):
+            result = registry.dispatch(req, conn, paths, lifecycle)
+        assert isinstance(result, RawResult)
+        assert result.semantics == "ack"
+        assert result.error is None
+        assert result.metadata is not None
+        assert result.metadata["cost"]["kind"] == "codex"
+        assert result.metadata["cost"]["model"] == "gpt-5.5"
+        # Stash ref forwarded (None when the tree was clean).
+        assert result.metadata["stash_ref"] is None
     finally:
         conn.close()
-
-    # Wait until at least this dispatch's worker.reported event lands.
-    _wait_for_event_type(paths.event_log, "worker.reported", timeout=2.0)
-    # Acceptance B4: at least one captured thread is NOT the main thread.
-    # Stragglers from prior tests' Timers may also append, so we don't
-    # assert `len(captured) == 1`; the load-bearing invariant is that no
-    # entry equals `main_thread`.
-    assert len(captured) >= baseline_capture_len + 1
-    assert all(t is not main_thread for t in captured)
-
-
-def test_spawn_worker_worker_reported_payload_shape(tmp_path: Path) -> None:
-    """worker.reported carries run_id / action_id / status / summary / artifact_path."""
-    paths, conn = _open_runtime(tmp_path)
-    try:
-        registry = build_default_registry()
-        lifecycle = ActionLifecycle()
-        req = _build_action_request(
-            tool_name="spawn_worker",
-            arguments={"task_id": "task_X"},
-        )
-        _seed_lifecycle(lifecycle, req.action_id)
-        result = registry.dispatch(req, conn, paths, lifecycle)
-        run_id = result.payload["run_id"]
-    finally:
-        conn.close()
-
-    _wait_for_event_type(paths.event_log, "worker.reported", timeout=2.0)
-    with closing(open_event_log(paths.event_log)) as ro_conn:
-        wr = [e for e in iter_events(ro_conn) if e.type == "worker.reported"]
-    assert len(wr) == 1
-    payload = wr[0].payload
-    assert payload["run_id"] == run_id
-    assert payload["action_id"] == req.action_id
-    assert payload["status"] == "reported_complete"
-    assert "diff.json" in payload["artifact_path"]
-    # source_event_id chain rooted in action.running event (per dispatcher).
-    assert wr[0].source_event_id is not None
-
-
-# --- spawn_worker negative path --------------------------------------------
-
-
-def test_spawn_worker_writes_fail_when_constant_flipped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Monkeypatching `_SPAWN_WORKER_ARTIFACT_STATUS = "fail"` flows through."""
-    monkeypatch.setattr(tools_module, "_SPAWN_WORKER_ARTIFACT_STATUS", "fail")
-    paths, conn = _open_runtime(tmp_path)
-    try:
-        registry = build_default_registry()
-        lifecycle = ActionLifecycle()
-        req = _build_action_request(
-            tool_name="spawn_worker",
-            arguments={"task_id": "task_X"},
-        )
-        _seed_lifecycle(lifecycle, req.action_id)
-        result = registry.dispatch(req, conn, paths, lifecycle)
-        run_id = result.payload["run_id"]
-        diff_path = paths.artifact_dir_for_run(run_id) / "diff.json"
-        data = json.loads(diff_path.read_text(encoding="utf-8"))
-    finally:
-        conn.close()
-    assert data["status"] == "fail"
-    _wait_for_event_type(paths.event_log, "worker.reported", timeout=2.0)
 
 
 # --- verify_diff happy path ------------------------------------------------
