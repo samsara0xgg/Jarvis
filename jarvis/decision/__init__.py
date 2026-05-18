@@ -108,15 +108,25 @@ _FORCED_LIMITATION_TEMPLATE = (
     "tool result: {draft}\n— Pre-emit Gate forced limitation framing (unverified / 未验证)."
 )
 
-# Completion-keyword scrub set. Mirrors the gate's _COMPLETION_PATTERNS in
-# spirit; the gate decides whether to FORCE downgrade, this scrub decides
-# what text to render once the forced template fires. Kept separate from
-# the gate's regex set so spec changes can evolve independently (the gate
-# adds/removes detection patterns; the scrub adds/removes redaction
-# patterns).
+# Completion-keyword scrub set. Mirrors the gate's _COMPLETION_KEYWORDS
+# (in `jarvis.decision.gates`) in spirit; the gate decides whether to
+# FORCE downgrade, this scrub decides what text to render once the
+# forced template fires. Kept separate from the gate's regex set so spec
+# changes can evolve independently (the gate adds/removes detection
+# patterns; the scrub adds/removes redaction patterns). The
+# coverage drift guard
+# `tests/unit/test_pre_emit_forced_template.py::test_completion_scrub_covers_every_gate_keyword`
+# locks in the mapping — every new gate keyword must declare an
+# explicit scrub counterpart there.
+#
+# Bare `完成` is anchored with `^` rather than scrubbed mid-text because
+# CJK has no `\b` word boundary and unrooted `完成` mid-string false-
+# matches phrases like `完成度` / `完成情况`. If the gate trips on
+# mid-text `完成`, the forced template still trips and `_hard_refusal_plan`
+# is the final defense.
 _COMPLETION_SCRUB_PATTERNS: Final[tuple[str, ...]] = (
     r"已完成(?!\s*报告)",  # Day-1 completion claim, except "已完成报告"
-    r"^完成",
+    r"^完成",               # see comment above re: CJK word boundary
     r"\bverified\b",
     r"\bdone\b",
     r"\bcompleted\b",       # add common synonyms the gate might miss

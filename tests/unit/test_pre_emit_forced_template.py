@@ -24,10 +24,12 @@ from pathlib import Path
 
 import jarvis.decision as decision_pkg
 from jarvis.decision import (
+    _COMPLETION_SCRUB_PATTERNS,
     ResponsePlan,
     _hard_refusal_plan,
     _scrub_completion_keywords,
 )
+from jarvis.decision.gates import _COMPLETION_KEYWORDS
 
 # F5 gate completion-detection patterns (verbatim from
 # ``jarvis.decision.gates._COMPLETION_KEYWORDS``). The hard-refusal text
@@ -145,4 +147,90 @@ def test_finalize_response_wires_scrub_and_hard_refusal() -> None:
         "F2 regression: _finalize_response no longer falls back to "
         "_hard_refusal_plan when the scrubbed forced text still trips "
         "the Pre-emit Gate."
+    )
+
+
+# --- Completion-keyword coverage drift guard -------------------------------
+#
+# Two completion-keyword regex lists live in the codebase by design:
+#
+# - ``jarvis.decision.gates._COMPLETION_KEYWORDS`` — what the gate
+#   detects to decide whether to force limitation language.
+# - ``jarvis.decision._COMPLETION_SCRUB_PATTERNS`` — what the forced
+#   template scrubs out before re-embedding the LLM draft.
+#
+# Detection and rendering are different responsibilities (the gate may
+# want to detect synonyms it doesn't itself redact; the scrub may want
+# to redact synonyms the gate doesn't detect because they're stylistic
+# variants). To keep that intentional asymmetry honest, every gate
+# pattern must have an explicit scrub-coverage decision below. Adding
+# a new gate keyword without updating this mapping fails Tier 1.
+
+_GATE_TO_SCRUB_COVERAGE: dict[str, str] = {
+    # Bare ``完成`` — gate detects mid-text; scrub only redacts at the
+    # start of the string because CJK has no ``\b`` word boundary and
+    # mid-text ``完成`` is a false-positive magnet ("完成度", "完成情况").
+    # Asymmetric by design: when the gate trips on mid-text ``完成``, the
+    # forced template re-trips and ``_hard_refusal_plan`` is the final
+    # defense.
+    r"完成": r"^完成",
+    # ``已完成`` with a "报告" allowance — identical on both sides.
+    r"已完成": r"已完成(?!\s*报告)",
+    # English completion keywords — symmetric.
+    r"\bverified\b": r"\bverified\b",
+    r"\bdone\b": r"\bdone\b",
+}
+
+# Scrub patterns with no gate counterpart — synonyms the scrub redacts
+# defensively even though the gate's detection set doesn't trigger on
+# them. Adding patterns here is the explicit "scrub-only by design"
+# decision the drift guard requires.
+_SCRUB_ONLY_PATTERNS: frozenset[str] = frozenset(
+    {
+        # English completion synonyms the gate doesn't detect today but
+        # the scrub redacts anyway so the forced template doesn't carry
+        # them through to the surface verbatim.
+        r"\bcompleted\b",
+        r"\bfinished\b",
+    },
+)
+
+
+def test_completion_scrub_covers_every_gate_keyword() -> None:
+    """Every gate completion keyword must declare a scrub-coverage decision."""
+    gate_pattern_strings = {pat.pattern for pat in _COMPLETION_KEYWORDS}
+    scrub_pattern_strings = set(_COMPLETION_SCRUB_PATTERNS)
+
+    # 1) Every gate pattern is declared in the coverage table.
+    undeclared_gate = gate_pattern_strings - _GATE_TO_SCRUB_COVERAGE.keys()
+    assert not undeclared_gate, (
+        "_COMPLETION_KEYWORDS added these patterns without scrub-coverage "
+        f"decision: {sorted(undeclared_gate)!r}. Update "
+        "`_GATE_TO_SCRUB_COVERAGE` in this test to declare whether each "
+        "new gate keyword should be scrubbed identically, scrubbed via a "
+        "variant, or deliberately not scrubbed (in which case the entry "
+        "should still exist with a documenting comment)."
+    )
+
+    # 2) Every declared counterpart actually lives in the scrub set.
+    declared_scrub = set(_GATE_TO_SCRUB_COVERAGE.values())
+    missing_scrub = declared_scrub - scrub_pattern_strings
+    assert not missing_scrub, (
+        "_COMPLETION_SCRUB_PATTERNS is missing the declared "
+        f"counterparts: {sorted(missing_scrub)!r}. The drift guard's "
+        "coverage table got ahead of the runtime list — sync them."
+    )
+
+    # 3) Every scrub pattern is either a declared gate counterpart or
+    #    in the documented scrub-only set. A new scrub entry without
+    #    one of those two homes is an undeclared addition — could be
+    #    intentional, but must be made explicit.
+    accounted_for = declared_scrub | _SCRUB_ONLY_PATTERNS
+    undeclared_scrub = scrub_pattern_strings - accounted_for
+    assert not undeclared_scrub, (
+        "_COMPLETION_SCRUB_PATTERNS contains undeclared entries: "
+        f"{sorted(undeclared_scrub)!r}. Each scrub pattern must either "
+        "(a) appear in `_GATE_TO_SCRUB_COVERAGE` as a gate counterpart, "
+        "or (b) appear in `_SCRUB_ONLY_PATTERNS` with a comment "
+        "documenting why it's scrub-only."
     )

@@ -276,6 +276,12 @@ def _lease_scope_permits(
 # canonical keyword set: ``完成`` / ``已完成`` / ``verified`` / ``done``.
 # Match case-insensitively. ``\b`` for English so a stray ``redone`` does
 # not trigger; the CJK forms are stripped of word-boundary requirement.
+#
+# Mirror set: ``_COMPLETION_SCRUB_PATTERNS`` in `jarvis.decision.__init__`.
+# Every new entry here must declare its scrub counterpart in
+# `tests/unit/test_pre_emit_forced_template.py::_GATE_TO_SCRUB_COVERAGE`
+# (drift guard) — adding a gate keyword without a scrub decision will
+# fail Tier 1.
 _COMPLETION_KEYWORDS: tuple[re.Pattern[str], ...] = (
     re.compile(r"完成"),
     re.compile(r"已完成"),
