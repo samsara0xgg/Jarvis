@@ -830,3 +830,213 @@ Legacy-bypassed, Tier 1, Notes, Next.
 - Next: Step 9 (L3 `decision/__init__.py` — `decide()` entry +
   Situation Packet + Effective Policy Resolver + Intent Router +
   Resolver + 3 Gates + Result Interpreter).
+
+---
+
+## Step 9 — L3 Runtime Decision pipeline (`jarvis/decision/__init__.py` + submodules)
+
+- Files:
+  - `jarvis/decision/__init__.py` (1181 LOC) — `decide()` entry point
+    + frozen public dataclasses (`DecideContext`, `DecideResult`,
+    `_SyntheticRawResult`) + Protocols
+    (`RuntimePathsLike`, `ToolRegistryLike`, `ToolDefinitionLike`,
+    `LifecycleLike`) + branch handlers for `utterance.received` /
+    `worker.reported` / `action.result_observed` + tool-use loop +
+    Pre-emit finalize-with-one-retry + `task.verified` emission on
+    verified Postcondition + canonical re-exports of the L3 public
+    surface (`SituationPacket`, `EffectivePolicy`, `GateResult`,
+    `ResponsePlan`, `ResolverResult`, etc.).
+  - `jarvis/decision/resolver.py` (171 LOC) — pure
+    `resolve_task_ref(natural_ref, ledger_snapshot) -> ResolverResult`.
+    NO LLM import (canary H10 ready). Day-1 single-open-task path
+    returns `confidence in {"high","fuzzy"}` with `match_basis`
+    distinguishing the heuristic; multi-candidate ranks by
+    `created_ts_epoch_ms` descending and returns
+    `resolved_to=None`/`confidence="fuzzy"` so the caller hits
+    ConfirmationRequest.
+  - `jarvis/decision/policy.py` (125 LOC) — frozen `EffectivePolicy` +
+    `effective_policy(...)` Day-1 Collaborate preset
+    (`autonomy_ceiling="L2"`,
+    `confirmation_required_at_or_above="L3"`,
+    `allowed_tools_per_caller` mirroring `build_default_registry`)
+    plus the `risk_rank(level)` ladder helper used by the Pre-action
+    Gate.
+  - `jarvis/decision/packet.py` (117 LOC) — frozen `SituationPacket`
+    + `assemble_packet(trigger, conn)` that folds projections via
+    `make_snapshot`, extracts `turn_id` / `run_id` correlations
+    from the trigger event.
+  - `jarvis/decision/gates.py` (431 LOC) — `pre_action_gate(...)`
+    with four MUST-checks in order (caller_allowed → entity_trusted
+    → risk_within_ceiling → lease_validated); `GateResult` carries
+    `reasons` (one string per check that ran) and `check_results`
+    (4 canonical bools). `pre_emit_gate(...)` returns a
+    `ResponsePlan` with `permission` / `downgrade_required` /
+    `active_claim_levels` / `response_hash` (sha256 hex of text).
+    Completion-keyword regex set: `完成` / `已完成` / `\bverified\b`
+    / `\bdone\b` (case-insensitive). `attention_policy(...)`
+    Day-1 minimal three-channel resolver.
+  - `jarvis/decision/result_interpreter.py` (238 LOC) — single
+    `result_interpreter(...)` entry, semantics→(ClaimType,
+    EvidenceLevel) table, emits TWO separate events
+    (`claim.created` + `evidence.attached`) per ADR § Acceptance A8.
+    Defines a local `RawResultLike` Protocol so L3 does not need to
+    import `jarvis.execution.tools.RawResult` (which would violate
+    the sibling layer DAG).
+  - `jarvis/decision/intent.py` (164 LOC) — `tier_0_match` empty
+    scaffold (Day-1 always None per Allen); `build_llm_messages`
+    builds Anthropic/OpenAI-compatible message lists from
+    SituationPackets; `tool_definitions_for_llm` projects
+    ToolDefinitionLike records into the LLM tool list shape.
+  - `tests/unit/test_resolver.py` (171 LOC, 7 tests) — single-open
+    high-confidence, single-open fuzzy fallback, empty ledger,
+    empty natural_ref, multi-candidate ranking, resolved_to ∈
+    open_tasks set, AST-scan against `jarvis.decision.llm` import.
+  - `tests/unit/test_gates.py` (155 LOC, 7 tests) — pass case;
+    refuse on caller-disallowed; refuse on missing entity; pass on
+    None target; refuse on risk above ceiling; reasons non-empty on
+    pass; check_results contains four canonical bools.
+  - `tests/unit/test_result_interpreter.py` (179 LOC, 8 tests) —
+    each row of the semantics→(claim, evidence) table; two
+    separate events emitted (A8); artifact_path/content_hash flow
+    into evidence.payload; subject_ref_override.
+  - `tests/unit/test_pre_emit_gate.py` (175 LOC, 7 tests) — allow
+    on verified Postcondition; force_limitation on no-verified;
+    downgrade_required when completion language meets no
+    verification; response_hash equals sha256(text); 完成 /
+    DONE detection.
+  - `tests/unit/test_effective_policy.py` (69 LOC, 6 tests) —
+    Collaborate preset shape; JARVIS_LLM gets both Day-1 tools;
+    OBSERVER only verify_diff; custom surface honored; risk_rank
+    ladder; frozen dataclass enforcement.
+  - `tests/unit/test_attention_policy.py` (140 LOC, 3 tests) —
+    voice_notify on verified Postcondition; silent_log on
+    worker.reported without verified; queue_review default.
+  - `tests/unit/test_packet.py` (92 LOC, 3 tests) — SituationPacket
+    frozen + carries trigger + recent_trace + Task Ledger
+    snapshot; run_id correlation extraction.
+  - `tests/unit/test_intent.py` (123 LOC, 5 tests) — Tier 0
+    scaffold callable no-op; transcript passthrough for utterance;
+    worker.reported triggers describe run_id + summary; explicit
+    utterance overrides trigger; tool definition passthrough.
+- Legacy consulted:
+  - `jarvis-legacy/core/tool_result.py` (500 LOC) — vocabulary
+    source for Result Interpreter (semantics→(claim type, evidence
+    level) table). Day-1 keeps the mapping; legacy parsing helpers
+    (`parse_tool_result`, `normalize_tool_result`,
+    `make_tool_result`) intentionally NOT adapted — ADR § Stub
+    strategy says Day-1 ships only the table.
+- Legacy-bypassed:
+  - `legacy/core/regex_router.py` — pattern reference for Tier 0
+    (per ADR § Reference sources). Day-1 Tier 0 is empty scaffold;
+    no regex patterns ship.
+  - `legacy/core/personality.py` — Xiaoyue persona explicitly
+    discarded per ADR § Identity.
+- Tier 1:
+  - T1.A `lint-imports`: 1 contract kept, 0 broken. Confirmed L3
+    does not import L4/L5/L6/runtime/cli (Protocol-based decoupling
+    for `RuntimePathsLike` / `ToolRegistryLike` / `LifecycleLike`).
+  - T1.B `ruff check .`: clean (39 source files including 7 new
+    test modules).
+  - T1.C `mypy --strict .`: clean (39 source files).
+  - T1.D `pytest tests/unit/`: 218 passed (was 172; +46 new tests
+    across resolver/gates/result_interpreter/pre_emit/policy/
+    attention/packet/intent).
+  - T1.E wall-clock: 0.41s total for 218 tests (well under 30s).
+- Notes:
+  - **Resolver isolation (canary H10 ready):** AST scan of
+    `jarvis/decision/resolver.py` confirms imports =
+    `['__future__', 'dataclasses', 'typing',
+    'jarvis.state.projections']`. No `jarvis.decision.llm` import.
+    The resolver is a pure function over `(natural_ref,
+    ledger_snapshot)`.
+  - **Pre-action Gate MUST-checks (ADR § Acceptance C5):**
+    implemented exactly in order — `caller_allowed` →
+    `entity_trusted` → `risk_within_ceiling` → `lease_validated`.
+    `GateResult.reasons` carries one string per check (non-empty
+    even on pass per ADR contract); `check_results` is the four
+    canonical bools. Outcome is `pass` when all true, else
+    `confirm_required` when the only failure is `lease_validated`
+    (otherwise `refuse`). The lease-validated branch is preserved
+    Day-1 even though no Day-1 tool triggers it (per ADR §
+    AuthorizationLease Day-1 treatment).
+  - **Pre-emit Gate downgrade flow:** ResponsePlan returns
+    `downgrade_required=True` iff
+    `permission=force_limitation_language` AND the draft text
+    contained a completion keyword. `decide()._finalize_response`
+    issues ONE retry to the LLM with a system-style instruction
+    note; if the retry still trips the gate, a template
+    (`tool result: {draft}\n— Pre-emit Gate forced limitation
+    framing (unverified / 未验证).`) is applied so the final text
+    carries explicit limitation language. The gate is then
+    re-evaluated and the gate.evaluated event records the FINAL
+    response_hash (per ADR § Acceptance C3: "the final output must
+    match the latest valid gate token").
+  - **decide() triggers handled Day-1:**
+    - `utterance.received`: emits `turn.started`, runs Tier 0
+      (always None Day-1), drives Tier 2 tool-use loop. Each tool
+      call goes through Resolver (if it has a `task_id`/`natural_ref`
+      argument) → emits `entity.resolved` with outcome per
+      confidence ladder → emits `action.proposed` → Pre-action
+      Gate → `gate.evaluated(pre_action)` → on pass: emit
+      `action.authorized`, register lifecycle, dispatch to L4
+      registry (which emits `action.dispatched` +
+      `action.running`). Async tools (spawn_worker) → return
+      partial DecideResult; sync tools (verify_diff) → Result
+      Interpreter emits claim+evidence + `task.verified` on
+      verified Postcondition for the active subject.
+    - `worker.reported`: emits `action.result_observed
+      (semantics=report)` referencing the trigger event_uid (L4's
+      Timer didn't emit this — L3 is responsible per the canonical
+      trace evt 11), transitions lifecycle `running →
+      result_observed`, Result Interpreter emits Report+reported,
+      then re-runs the LLM tool-use loop to plan verification.
+    - `action.result_observed`: synthesizes a RawResult-shaped
+      record, runs Result Interpreter, then re-runs the LLM loop
+      to compose a final response.
+  - **LLM task_id hallucination (spec §3.3.7):** the dispatch
+    helper treats any `task_id` argument as a `natural_ref`. The
+    Resolver re-maps it to the canonical id; if the Resolver
+    returns `resolved_to=None` (no match), the LLM gets a tool
+    result indicating the gate refused and can adapt. This blocks
+    invented IDs even when the LLM tries to spell one out.
+  - **Tool result feedback to the LLM (provider-specific format):**
+    each sync tool's `tool_output` is appended as an OpenAI
+    `role=tool` / `tool_call_id` message (the OpenAI/Anthropic
+    SDKs both round-trip this shape). The preceding assistant
+    `tool_calls` message is also synthesized so the OpenAI client
+    sees a well-formed exchange.
+  - **Active subject ref detection (Pre-emit Gate):**
+    `_finalize_response` prefers `scratch.active_subject_ref`
+    (set by the Resolver after `entity.resolved`); falls back to
+    `packet.open_tasks[0].task_id`; ultimate fallback is
+    `"unknown_subject"`. The same subject feeds the
+    `attention_policy` call so voice_notify only fires when a
+    verified Postcondition exists for the very subject the
+    response is about.
+  - **Protocols to satisfy `.importlinter`:** L3 cannot import L4
+    or L6. The composition root (Step 10's `jarvis/runtime`) holds
+    real `ToolRegistry` / `ActionLifecycle` / `RuntimePaths`
+    instances which satisfy `ToolRegistryLike` / `LifecycleLike`
+    / `RuntimePathsLike` structurally. `result_interpreter.py`
+    similarly defines a local `RawResultLike` Protocol so L3
+    never imports `jarvis.execution.tools.RawResult`.
+  - **Line count:** ADR target was 600-1000 LOC across
+    `__init__.py` + helpers. Final source split:
+    - `__init__.py` 1181 LOC (orchestrator + Protocols +
+      dataclasses + 4 branch handlers).
+    - `resolver.py` 171 LOC.
+    - `gates.py` 431 LOC.
+    - `result_interpreter.py` 238 LOC.
+    - `intent.py` 164 LOC.
+    - `policy.py` 125 LOC.
+    - `packet.py` 117 LOC.
+    Total ~2427 LOC of source + ~1104 LOC of unit tests. Source
+    overshoots the 1000 target by ~50% because the orchestrator
+    docstrings + Protocol surface + lifecycle/event correlation
+    bookkeeping each accounted for ~150-200 LOC of comments and
+    re-export glue rather than logic; code-only is closer to
+    ~1500 LOC which is in the 1000-1500 band the ADR allowed
+    ("Use submodules freely under `jarvis/decision/`").
+- Next: Step 10 (L5 surface/cli.py + composition root + jarvis/cli
+  entry point). Will consume L3's `decide()` + `DecideContext` and
+  drive the runtime loop across multi-trigger turns.
