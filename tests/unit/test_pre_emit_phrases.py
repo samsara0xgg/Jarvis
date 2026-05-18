@@ -131,8 +131,13 @@ def test_constants_are_tuples() -> None:
 
 
 def test_constants_have_expected_arity() -> None:
-    """Pinned arity — the ADR's canonical sets are 6 + 4."""
-    assert len(LIMITATION_REGEXES) == 6
+    """Pinned arity — the ADR's canonical sets are 8 + 4.
+
+    B-0003c added two limitation patterns for the spawn_worker terminal
+    failure paths (``超时.{0,4}未完成`` / ``跑挂``), lifting the
+    LIMITATION_REGEXES arity from 6 to 8.
+    """
+    assert len(LIMITATION_REGEXES) == 8
     assert len(COMPLETION_REGEXES) == 4
 
 

@@ -314,7 +314,11 @@ def _lease_scope_permits(
 # Completion-class language detection. ADR § Gate contracts spells out the
 # canonical keyword set: ``完成`` / ``已完成`` / ``verified`` / ``done``.
 # Match case-insensitively. ``\b`` for English so a stray ``redone`` does
-# not trigger; the CJK forms are stripped of word-boundary requirement.
+# not trigger; the CJK forms carry a negative lookbehind ``(?<![未没不])``
+# so explicit negations (``未完成`` / ``没完成`` / ``不完成``) are NOT
+# treated as completion language — they are limitation phrasings. ADR-0002
+# Negative-path appendix pins ``"Codex 超时,未完成"`` as canonical
+# limitation text; without the lookbehind that text trips the gate.
 #
 # Mirror set: ``_COMPLETION_SCRUB_PATTERNS`` in `jarvis.decision.__init__`.
 # Every new entry here must declare its scrub counterpart in
@@ -322,8 +326,8 @@ def _lease_scope_permits(
 # (drift guard) — adding a gate keyword without a scrub decision will
 # fail Tier 1.
 _COMPLETION_KEYWORDS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"完成"),
-    re.compile(r"已完成"),
+    re.compile(r"(?<![未没不])完成"),
+    re.compile(r"(?<![未没不])已完成"),
     re.compile(r"\bverified\b", re.IGNORECASE),
     re.compile(r"\bdone\b", re.IGNORECASE),
 )

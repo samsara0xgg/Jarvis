@@ -24,6 +24,8 @@ LIMITATION_REGEXES: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"没验证"),
     re.compile(r"测试.{0,4}没过"),
     re.compile(r"还没验"),
+    re.compile(r"超时.{0,4}未完成"),
+    re.compile(r"跑挂"),
 )
 
 COMPLETION_REGEXES: Final[tuple[re.Pattern[str], ...]] = (

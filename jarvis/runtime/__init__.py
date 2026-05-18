@@ -18,11 +18,12 @@ Responsibilities (Day-1):
    (re-entering as more triggers arrive), record the Pre-emit token,
    and render the final ``ResponsePlan`` to stdout (L5).
 3. :func:`_wait_for_next_trigger` — poll the event log for the next
-   L3 trigger event (``worker.reported`` or ``action.result_observed``)
-   produced by L4's ``threading.Timer`` worker thread. ``time.sleep``
-   is intentional here per spec §3.4.1: the composition root polls
-   across thread boundaries; the "no time.sleep" rule applies only
-   to L3 / L4 gate machinery.
+   L3 trigger event (``worker.reported``, ``action.result_observed``,
+   ``action.timeout_assumed``, or ``action.failed``) produced by L4's
+   ``threading.Timer`` worker thread. ``time.sleep`` is intentional
+   here per spec §3.4.1: the composition root polls across thread
+   boundaries; the "no time.sleep" rule applies only to L3 / L4 gate
+   machinery.
 
 Layer rules: ``jarvis.runtime`` may import everything below it. It is
 imported by ``jarvis.cli`` only.
@@ -75,12 +76,23 @@ LOGGER = logging.getLogger("jarvis.runtime")
 _DEFAULT_CONFIG_FILENAME = Path("config") / "jarvis.yaml"
 _DEFAULT_PROMPT_FILENAME = Path("prompts") / "jarvis_v1.md"
 
-# Trigger event types the runtime loop expects from L4 async paths. Day-1
-# only ``worker.reported`` (from the spawn_worker Timer) and
-# ``action.result_observed`` (defensive — sync tools emit this inline so
-# decide() consumes it within one invocation, but we accept it here so a
-# late-firing scheduled re-entry does not deadlock the poll loop).
-_RUNTIME_TRIGGER_TYPES: tuple[str, ...] = ("worker.reported", "action.result_observed")
+# Trigger event types the runtime loop expects from L4 async paths.
+# ``worker.reported`` is the spawn_worker happy-path Timer event.
+# ``action.result_observed`` is defensive — sync tools emit it inline
+# so decide() consumes it within one invocation, but we accept it here
+# so a late-firing scheduled re-entry does not deadlock the poll loop.
+# ``action.timeout_assumed`` and ``action.failed`` are the spawn_worker
+# terminal failure events (B-0003b): the Codex turn timed out or the
+# subprocess crashed; the runtime must wake decide() so L3 can fold a
+# Limitation Claim onto the trace and emit a canonical limitation
+# response. Without these in the trigger set the runtime waiter would
+# deadlock and the user would see silence after a 10-min Codex hang.
+_RUNTIME_TRIGGER_TYPES: tuple[str, ...] = (
+    "worker.reported",
+    "action.result_observed",
+    "action.timeout_assumed",
+    "action.failed",
+)
 
 # Default polling cadence for ``_wait_for_next_trigger``. 10 ms balances
 # CPU usage with first-byte latency once the Timer fires.
@@ -360,11 +372,15 @@ def _wait_for_next_trigger(
 ) -> tuple[Event, int]:
     """Poll the event log for the next L3 trigger event after ``after_id``.
 
-    Day-1 trigger types: ``worker.reported`` (spawn_worker Timer
-    thread) and ``action.result_observed`` (defensive — sync tools
-    emit this inline so decide() already absorbed it, but a late
-    re-entry from a stale Timer is accepted to keep the poll loop
-    drainable).
+    Trigger types: ``worker.reported`` (spawn_worker happy-path
+    Timer thread), ``action.result_observed`` (defensive — sync
+    tools emit this inline so decide() already absorbed it, but a
+    late re-entry from a stale Timer is accepted to keep the poll
+    loop drainable), and ``action.timeout_assumed`` /
+    ``action.failed`` (B-0003b — spawn_worker terminal failures
+    emitted by the L4 handler when the Codex turn times out or the
+    subprocess crashes; the runtime waiter must wake decide() so L3
+    can fold a Limitation Claim).
 
     The runtime composition root explicitly polls across thread
     boundaries; ``time.sleep`` is the cleanest primitive here. The

@@ -142,6 +142,35 @@ def test_pre_emit_downgrade_not_required_when_no_completion_keyword():
     assert plan.downgrade_required is False
 
 
+def test_pre_emit_negation_lookbehind_treats_negated_completion_as_limitation():
+    """Negated ``完成`` MUST NOT trip the completion detector.
+
+    B-0003 fix: the gate's bare ``完成`` pattern previously matched the
+    substring inside ``未完成``, downgrading canonical limitation
+    phrasings like ``"Codex 超时,未完成"`` (ADR-0002 Negative-path
+    appendix). The ``(?<![未没不])`` lookbehind restores the
+    "negation = limitation" semantics.
+    """
+    projection = _make_projection(
+        _claim_event(claim_id="C1", subject_ref="task_X", claim_type="Limitation"),
+        _evidence_event(evidence_id="E1", claim_id="C1", level="reported"),
+    )
+    for limitation_text in (
+        "Codex 超时，未完成",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+        "任务还没完成",
+        "Codex 不完成验证",
+    ):
+        plan = pre_emit_gate(
+            limitation_text,
+            projection,
+            active_subject_ref="task_X",
+        )
+        assert plan.downgrade_required is False, (
+            f"text={limitation_text!r} unexpectedly tripped the completion "
+            "detector despite the ``(?<![未没不])`` negative lookbehind."
+        )
+
+
 def test_pre_emit_response_hash_matches_sha256_of_text():
     """response_hash MUST equal sha256 hex of the draft text."""
     projection = _make_projection()

@@ -183,9 +183,9 @@ _GATE_TO_SCRUB_COVERAGE: dict[str, str] = {
     # Asymmetric by design: when the gate trips on mid-text ``完成``, the
     # forced template re-trips and ``_hard_refusal_plan`` is the final
     # defense.
-    r"完成": r"^完成",
+    r"(?<![未没不])完成": r"^完成",
     # ``已完成`` with a "报告" allowance — identical on both sides.
-    r"已完成": r"已完成(?!\s*报告)",
+    r"(?<![未没不])已完成": r"已完成(?!\s*报告)",
     # English completion keywords — symmetric.
     r"\bverified\b": r"\bverified\b",
     r"\bdone\b": r"\bdone\b",

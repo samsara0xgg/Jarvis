@@ -586,6 +586,8 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
         return _handle_worker_reported(packet, policy, ctx, scratch)
     if trigger.type == "action.result_observed":
         return _handle_result_observed(packet, policy, ctx, scratch)
+    if trigger.type in ("action.timeout_assumed", "action.failed"):
+        return _handle_action_terminal_failure(packet, policy, ctx, scratch)
 
     # Unknown trigger: emit nothing, return an empty plan. Stage 2 may
     # widen; Day-1 every trigger we care about is one of the three.
@@ -1476,6 +1478,156 @@ def _handle_result_observed(
         ctx,
         scratch,
     )
+
+
+# --- action.timeout_assumed / action.failed branch -------------------------
+
+# Canonical user-facing limitation phrasings for the spawn_worker
+# terminal-failure paths (B-0003c / ADR-0002 Negative-path appendix
+# lines 1593-1600). Both strings are matched by their respective
+# patterns in ``jarvis.decision.pre_emit_phrases.LIMITATION_REGEXES``
+# (``r"超时.{0,4}未完成"`` / ``r"跑挂"``); the ``未完成`` substring is
+# allowed past ``_COMPLETION_KEYWORDS`` by the ``(?<![未没不])``
+# negative lookbehind, so the gate's attempt-0 verdict is
+# ``force_limitation_language`` with ``downgrade_required=False`` —
+# no LLM retry round-trip.
+_TIMEOUT_LIMITATION_TEXT: Final[str] = "Codex 超时，未完成"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+_FAILED_LIMITATION_TEXT: Final[str] = "Codex 跑挂了，没新 diff"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+
+
+def _handle_action_terminal_failure(
+    packet: SituationPacket,
+    policy: EffectivePolicy,  # noqa: ARG001 — kept for branch-signature uniformity with the other _handle_* dispatchers.
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> DecideResult:
+    """Process an ``action.timeout_assumed`` / ``action.failed`` re-entry.
+
+    Per B-0003c + ADR-0002 Negative-path appendix:
+
+    1. Recover correlation (``turn_id``, ``run_id``, ``task_id``,
+       ``action_id``) from the trigger correlation/payload. Look up
+       the spawning ``action.proposed`` event to recover the original
+       ``tool_name``; default to ``"spawn_worker"`` when missing.
+    2. Synthesize a :class:`RawResult` with ``semantics="error"`` and
+       a :class:`ActionRequest` whose ``tool_name`` matches the
+       proposed event. Feed both to
+       :func:`jarvis.decision.result_interpreter.result_interpreter`,
+       which emits ``claim.created(type=Limitation)`` +
+       ``evidence.attached(relation=limits, level=reported)`` per the
+       ``_SEMANTICS_TO_CLAIM["error"]`` row.
+    3. Pick the canonical user-facing limitation text for the trigger
+       type and feed it to :func:`_finalize_response`, which runs the
+       Pre-emit Gate and emits ``turn.ended``.
+
+    The canonical limitation strings (``"Codex 超时,未完成"`` /
+    ``"Codex 跑挂了,没新 diff"``) are matched by the corresponding
+    patterns in :mod:`jarvis.decision.pre_emit_phrases.LIMITATION_REGEXES`
+    so the gate's attempt-0 verdict is force_limitation_language with
+    ``downgrade_required=False`` — no LLM retry round-trip.
+    """
+    trigger = packet.trigger_event
+    action_id = trigger.payload.get("action_id")
+    error = trigger.payload.get("error")
+    reason = trigger.payload.get("reason")
+
+    correlation = trigger.correlation or {}
+    turn_id_corr = correlation.get("turn_id") or packet.current_turn_id
+    run_id_corr = correlation.get("run_id")
+    task_id_corr = correlation.get("task_id")
+
+    scratch.turn_id = turn_id_corr if isinstance(turn_id_corr, str) else None
+    if isinstance(run_id_corr, str):
+        scratch.last_run_id = run_id_corr
+    if isinstance(task_id_corr, str):
+        scratch.active_subject_ref = task_id_corr
+
+    # Look up the original spawning action.proposed event so the
+    # synthetic ActionRequest carries the same tool_name (typically
+    # "spawn_worker"). Falling back to "spawn_worker" keeps the
+    # handler degradation-safe when the proposed event was emitted in
+    # a previous process or the action_id is otherwise unrecoverable.
+    tool_name = _tool_name_for_action_id(
+        ctx.conn,
+        action_id if isinstance(action_id, str) else None,
+    )
+
+    if not isinstance(action_id, str):
+        LOGGER.warning(
+            "%s missing action_id payload — emitting limitation without "
+            "claim/evidence",
+            trigger.type,
+        )
+    else:
+        synthetic_request = ActionRequest(
+            action_id=action_id,
+            tool_name=tool_name,
+            target_entity_ref=scratch.active_subject_ref,
+            caller_principal=CallerPrincipal.JARVIS_LLM,
+            risk_level="L2",
+            arguments={},
+            authorization_lease=None,
+            run_id=run_id_corr if isinstance(run_id_corr, str) else None,
+            turn_id=scratch.turn_id,
+        )
+        synthetic_raw = RawResult(
+            action_id=action_id,
+            semantics="error",
+            payload={
+                "action_id": action_id,
+                "error": error,
+                "reason": reason,
+            },
+            tool_output=None,
+            error=error if isinstance(error, str) else None,
+        )
+        interpreted = result_interpreter(
+            synthetic_raw,
+            source_event_id=trigger.event_uid,
+            action_request=synthetic_request,
+            conn=ctx.conn,
+            subject_ref_override=scratch.active_subject_ref,
+        )
+        scratch.events.extend(interpreted)
+
+    canonical_text = (
+        _TIMEOUT_LIMITATION_TEXT
+        if trigger.type == "action.timeout_assumed"
+        else _FAILED_LIMITATION_TEXT
+    )
+
+    return _finalize_response(canonical_text, packet, ctx, scratch)
+
+
+def _tool_name_for_action_id(
+    conn: sqlite3.Connection,
+    action_id: str | None,
+) -> str:
+    """Look up the ``tool_name`` from the spawning ``action.proposed`` row.
+
+    Returns the tool name on the action.proposed event keyed by
+    ``payload.action_id == action_id``. Falls back to
+    ``"spawn_worker"`` when no proposed event is found — the
+    handler's degradation path per B-0003c.
+    """
+    if action_id is None:
+        return "spawn_worker"
+    cursor = conn.execute(
+        "SELECT payload_json FROM events WHERE type = ? "
+        "ORDER BY id DESC",
+        ("action.proposed",),
+    )
+    for row in cursor:
+        try:
+            payload = json.loads(row[0])
+        except (TypeError, ValueError):
+            continue
+        if payload.get("action_id") == action_id:
+            tool = payload.get("tool_name")
+            if isinstance(tool, str) and tool:
+                return tool
+            break
+    return "spawn_worker"
 
 
 # --- Finalization (Pre-emit Gate + turn.ended) -----------------------------
