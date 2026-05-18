@@ -188,3 +188,151 @@ Legacy-bypassed, Tier 1, Notes, Next.
     references; canary H8 will be string-literal-only in the AST scan
     sense). Other layers go through `RuntimePaths`.
 - Next: Step 4 (L2 `event_log.py` — SQLite append-only + EventTypeRegistry).
+
+---
+
+## Step 4 — L2 Event Log + EventTypeRegistry
+
+- Files:
+  - `jarvis/state/event_log.py` (605 LOC) — single `events` SQLite table
+    with append-only triggers (`events_no_update` /
+    `events_no_delete`, both `BEFORE` triggers calling
+    `RAISE(ABORT, ...)`), three indexes on `(type)` /
+    `(source_event_id)` / `(ts_epoch_ms)`, in-module
+    `EventTypeRegistry` covering the 19 Day-1 event types
+    (`MappingProxyType` over frozen `EventTypeSchema` dataclasses,
+    `get` / `requires` / `optional` / `iter_types` API),
+    `emit_event(conn, *, type, payload, source_event_id?,
+    correlation?, ts_epoch_ms?, schema_version?, event_uid?) -> Event`
+    keyword-only API with validation order
+    (registry → schema_version → required-payload → dangling source
+    FK), four typed exceptions (`UnregisteredEventTypeError`,
+    `SchemaVersionMismatchError`, `MissingPayloadFieldError`,
+    `DanglingSourceEventError`) under one base `EventLogError`,
+    `open_event_log(path)` idempotent connect, `iter_events(conn)` /
+    `get_event(conn, uid)` readers. Stdlib only (`sqlite3`, `json`,
+    `time`, `uuid`, `types`, `dataclasses`, `typing`, `pathlib`) plus
+    `jarvis.shared.Event`.
+  - `tests/unit/test_event_log.py` (414 LOC, 22 tests) — registry
+    coverage (19 canonical types, `gate.evaluated` schema verbatim,
+    `get` returns None for unknown, `requires` / `optional`
+    round-trip), `emit_event` happy paths (round-trip via
+    `iter_events`, uid uniqueness + 32-char hex shape, `get_event`
+    round-trip + None on miss, deterministic ordering with
+    source-chain integrity, optional-payload-absent acceptance,
+    nested-payload JSON survival), validation rejections (unregistered
+    type, missing required field, schema_version mismatch + matching
+    accepted, dangling source_event_id + valid accepted), append-only
+    trigger enforcement (UPDATE raises, DELETE raises), idempotent
+    `open_event_log` (two opens preserve data + triggers still fire +
+    `sqlite_master` shows each trigger exactly once), shared.Event
+    isinstance check.
+- Legacy consulted:
+  - `jarvis-legacy/core/mcp_server.py:26-100` — read-only sqlite3
+    connection helper + Row factory. Pattern noted but not reused
+    Day-1: legacy uses `sqlite3.Row` factory and JSON-column
+    deserialization helper; Day-1 sticks with positional tuple unpack
+    in `_row_to_event` because the column set is fixed and small
+    (8 columns), so Row → dict overhead isn't justified Day-1.
+  - `jarvis-legacy/jarvis/` and `jarvis-legacy/core/` — searched for
+    `CREATE TABLE events`, `event_log`, `emit_event`; no L2 event log
+    found. ADR Step 4 reference sources note this: legacy was
+    memory-based, no clean L2 spine exists.
+- Legacy-bypassed:
+  - `Legacy-bypass: jarvis-legacy/core/mcp_server.py — RO sqlite
+    helper for MCP exposure of memory observations; not a write-side
+    L2 event log. Day-1 writes its own connect + schema + triggers
+    inline because mcp_server only opens RO and never installs
+    schema/triggers.`
+- Tier 1 (available subset T1.A–T1.D before Step 11):
+  - T1.A `lint-imports`: 1 contract kept, 0 broken (11 files
+    analyzed). State sibling `jarvis.state.event_log` only imports
+    `jarvis.shared` from within `jarvis.*`; no cross-sibling links.
+  - T1.B `ruff check .`: All checks passed (stdlib-only +
+    `from __future__ import annotations`; messages assigned to local
+    `msg` per `EM102`; `emit_event` carries `# noqa: PLR0913` with
+    spec-§5.1 justification on the line; bare SQL literals avoid the
+    S608 false positive).
+  - T1.C `mypy .` (strict): Success: no issues found in 18 source
+    files.
+  - T1.D `pytest tests/unit/ -x`: 53 passed in 0.08s
+    (constitution 9 + deployment 14 + event_log 22 +
+    shared_types 8). Tests use `tmp_path` exclusively — `~/.jarvis`
+    is never touched.
+- Notes:
+  - **Append-only enforcement is trigger-level**, not advisory. Two
+    `BEFORE` triggers on `events` (`events_no_update` /
+    `events_no_delete`) call `RAISE(ABORT, '<message>')` so any
+    raw-SQL `UPDATE events SET ...` / `DELETE FROM events WHERE ...`
+    surfaces as `sqlite3.IntegrityError` to the Python caller,
+    regardless of how the connection is opened. Acceptance criterion
+    A6 (Tier 2) literally attempts both inside the test — satisfied
+    by construction here. Triggers are created with
+    `IF NOT EXISTS` so the idempotency invariant on
+    `open_event_log` holds.
+  - **Connection / commit lifecycle.** Default `isolation_level`
+    (deferred transactions). `emit_event` commits per successful
+    INSERT — one event per transaction. Caller does not need to call
+    `conn.commit()`. The schema-install path in `open_event_log` also
+    commits before returning. This was a binary choice (autocommit
+    via `isolation_level=None` vs explicit commit-per-write); explicit
+    commit was picked because it lets validation errors short-circuit
+    cleanly without partial state, and it makes the "one event = one
+    durable row" boundary explicit. Documented in the `emit_event`
+    docstring.
+  - **`PRAGMA foreign_keys = ON` intentionally NOT set.** The
+    `source_event_id` FK is `TEXT` pointing at `events.event_uid` (a
+    UNIQUE column rather than a primary key). Application-side
+    validation in `_validate_source_event_id` does a SELECT-LIMIT-1
+    pre-check before INSERT — this also gives us the typed
+    `DanglingSourceEventError` for caller match instead of an opaque
+    SQLite integrity message. The append-only triggers run
+    independently of any FK pragma.
+  - **uuid generation.** `uuid.uuid4().hex` Day-1 (32-char lowercase
+    hex). Python 3.12 stdlib has no UUIDv7 — the
+    `jarvis.shared.Event` docstring already says "UUIDv7-ish hex
+    string" so the contract surface is unchanged. Stage 2 can swap to
+    UUIDv7 (or `uuid6`-package) without touching the table schema —
+    `event_uid` is `TEXT NOT NULL UNIQUE`, format is opaque to SQLite.
+  - **Payload JSON serialization.** `json.dumps(dict(payload),
+    sort_keys=True, separators=(",", ":"))` — coercion to plain
+    `dict` first means non-dict `Mapping` subclasses
+    (`MappingProxyType`, custom subclasses) round-trip without
+    `TypeError: Object of type ... is not JSON serializable`. Tests
+    cover nested list / dict payloads (entity.resolved candidates
+    list) end-to-end.
+  - **Single canonical "events" literal site.** The table name
+    string `"events"` appears only in this module — schema DDL,
+    trigger DDL, both read queries, the INSERT statement, and one
+    docstring reference. Step 11 canary H1 will whitelist
+    `jarvis/state/event_log.py` as the only INSERT site (grep over
+    `INSERT INTO events`).
+  - **EventTypeRegistry is in-module.** Spec §5.4 calls for a single
+    source of truth; ADR § Configurable paths says
+    `${JARVIS_RUNTIME_ROOT}/registry.json` is OPTIONAL Day-1 (L6 places
+    the path; L2 doesn't have to populate it). Day-1 ships the
+    registry as a frozen `MappingProxyType` over
+    `EventTypeSchema` dataclasses so tests are self-contained and
+    canary H2 (AST scan for `emit_event("<type>", ...)` literals
+    referencing unregistered types) sees a deterministic constant.
+  - **`gate.evaluated` schema is copied verbatim from ADR
+    § Day-1 EventTypeRegistry extensions** — required
+    `(gate, outcome, reasons)`, optional
+    `(action_id, response_hash, claim_levels, check_results)`,
+    `owner_layer="L3"`, `schema_version=1`. Test asserts this
+    explicitly.
+  - **19 event types registered** (one more than the 16 ADR canonical
+    list — three terminal lifecycle states `action.failed` /
+    `action.timeout_assumed` / `action.cancelled` are explicitly
+    enumerated in the ADR Step 4 spec block but not on the happy-path
+    trace; they're registered Day-1 so the negative-path test
+    (Step 13) and the lifecycle gate (Step 6) can emit them without
+    a registry edit).
+  - **Layer boundary.** Imports: `json`, `sqlite3`, `time`, `uuid`,
+    `dataclasses`, `types`, `typing`, `pathlib` (TYPE_CHECKING only),
+    `collections.abc` (TYPE_CHECKING only), `jarvis.shared.Event`.
+    No imports from `jarvis.constitution`, `jarvis.decision`,
+    `jarvis.execution`, `jarvis.surface`, `jarvis.deployment`,
+    `jarvis.runtime`, `jarvis.cli`. `lint-imports` confirms.
+- Next: Step 5 (L2 `projections.py` — Task Ledger + Recent Trace +
+  Claim/Evidence pure fold).
