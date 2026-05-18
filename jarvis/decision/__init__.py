@@ -73,15 +73,12 @@ from jarvis.decision.resolver import (
     ResolverResult,
     resolve_task_ref,
 )
-from jarvis.decision.result_interpreter import (
-    RawResultLike,
-    ResultSemantics,
-    result_interpreter,
-)
+from jarvis.decision.result_interpreter import result_interpreter
 from jarvis.shared import (
     ActionRequest,
     CallerPrincipal,
     Event,
+    RawResult,
 )
 from jarvis.state.event_log import emit_event
 from jarvis.state.projections import make_snapshot
@@ -255,7 +252,7 @@ class ToolRegistryLike(Protocol):
         conn: sqlite3.Connection,
         runtime_paths: RuntimePathsLike,
         lifecycle: LifecycleLike,
-    ) -> RawResultLike:
+    ) -> RawResult:
         """Dispatch one ActionRequest and return its RawResult."""
         ...
 
@@ -870,43 +867,26 @@ def _synthesize_raw_for_worker_report(
     action_id: str,
     artifact_path: object,
     summary: object,
-) -> _SyntheticRawResult:
+) -> RawResult:
     """Build a synthetic RawResult for the worker.reported trigger.
 
     The worker.reported event is not a tool's ``RawResult`` — it is an
-    asynchronous report from L4's Timer thread. L3 fabricates a
-    RawResult-shaped object so the Result Interpreter sees a uniform
-    interface.
+    asynchronous report from L4's Timer thread. L3 fabricates a real
+    ``RawResult`` so the Result Interpreter sees a uniform shape. Step 0b
+    of ADR-0002 collapsed the prior ``_SyntheticRawResult`` helper into a
+    direct ``RawResult`` construction now that the type lives in
+    ``jarvis.shared``.
     """
     payload: dict[str, Any] = {}
     if isinstance(artifact_path, str):
         payload["artifact_path"] = artifact_path
-    return _SyntheticRawResult(
+    return RawResult(
         action_id=action_id,
         semantics="report",
         payload=payload,
         tool_output=str(summary) if summary is not None else None,
         error=None,
     )
-
-
-@dataclass(frozen=True)
-class _SyntheticRawResult:
-    """Internal RawResult-shaped struct for worker.reported re-entry.
-
-    Frozen + structural: satisfies ``RawResultLike`` so the Result
-    Interpreter accepts it without an isinstance check. ``semantics``
-    is widened to :data:`ResultSemantics` (not just ``"report"``)
-    because the ``action.result_observed`` branch reuses this dataclass
-    for sync re-entries and passes the observed semantics directly to
-    the constructor.
-    """
-
-    action_id: str
-    semantics: ResultSemantics
-    payload: Mapping[str, Any]
-    tool_output: str | None
-    error: str | None
 
 
 # --- action.result_observed branch -----------------------------------------
@@ -953,7 +933,7 @@ def _handle_result_observed(
         run_id=payload_run_id if isinstance(payload_run_id, str) else None,
         turn_id=scratch.turn_id,
     )
-    synthetic_raw = _SyntheticRawResult(
+    synthetic_raw = RawResult(
         action_id=action_id,
         semantics=semantics,
         payload=dict(trigger.payload),

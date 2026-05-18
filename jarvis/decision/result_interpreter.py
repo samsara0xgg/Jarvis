@@ -28,7 +28,7 @@ from sibling layers and no import of ``jarvis.decision.llm``.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any
 
 from jarvis.state.event_log import emit_event
 
@@ -36,47 +36,22 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Mapping
 
-    from jarvis.shared import ActionRequest, ClaimType, Event, EvidenceLevel
+    from jarvis.shared import (
+        ActionRequest,
+        ClaimType,
+        Event,
+        EvidenceLevel,
+        RawResult,
+        ResultSemantics,
+    )
 
 
-ResultSemantics = Literal["ack", "observation", "verification", "report", "error"]
-"""Local mirror of L4 ``ResultSemantics`` (lint-imports forbids importing L4)."""
-
-
-class RawResultLike(Protocol):
-    """Structural view of L4 ``RawResult`` used by the Result Interpreter.
-
-    Importing :class:`jarvis.execution.tools.RawResult` would violate the
-    sibling layer DAG (`decision | execution | surface | deployment`
-    are independent siblings per ``.importlinter``). The Protocol lets
-    L3 read the fields it cares about without the import; the L4
-    dataclass satisfies it structurally.
-    """
-
-    @property
-    def action_id(self) -> str:
-        """Originating action_id."""
-        ...
-
-    @property
-    def semantics(self) -> ResultSemantics:
-        """Result semantics (ack / observation / verification / report / error)."""
-        ...
-
-    @property
-    def payload(self) -> Mapping[str, Any]:
-        """Tool-specific structured data."""
-        ...
-
-    @property
-    def tool_output(self) -> str | None:
-        """Optional JSON-serialised tool output."""
-        ...
-
-    @property
-    def error(self) -> str | None:
-        """Optional short error tag."""
-        ...
+# Step 0b note: ``RawResult`` and ``ResultSemantics`` now live in
+# ``jarvis.shared`` (below L3 in the layer DAG), so the Day-1
+# ``RawResult`` Protocol — needed when ``RawResult`` lived in L4 and L3
+# could not import it — is no longer required. L4 handlers continue to
+# return ``RawResult`` directly; the Result Interpreter consumes the same
+# type without a structural shim.
 
 
 # --- Semantics -> (ClaimType, EvidenceLevel) table -------------------------
@@ -104,7 +79,7 @@ _STATEMENT_TEMPLATES: dict[ResultSemantics, str] = {
 # --- result_interpreter -----------------------------------------------------
 
 
-def _evidence_payload_extras(raw: RawResultLike) -> dict[str, Any]:
+def _evidence_payload_extras(raw: RawResult) -> dict[str, Any]:
     """Pull ``artifact_path`` / ``content_hash`` / ``scope`` from raw.payload.
 
     These optional fields surface in the ``evidence.attached`` payload so
@@ -123,7 +98,7 @@ def _evidence_payload_extras(raw: RawResultLike) -> dict[str, Any]:
 
 def _render_statement(
     semantics: ResultSemantics,
-    raw: RawResultLike,
+    raw: RawResult,
     action_request: ActionRequest,
 ) -> str:
     """Render a short statement string for the claim payload."""
@@ -136,7 +111,7 @@ def _render_statement(
 
 
 def result_interpreter(  # noqa: PLR0913 — Result Interpreter signature is a public contract per ADR § Gate contracts.
-    raw: RawResultLike,
+    raw: RawResult,
     source_event_id: str,
     action_request: ActionRequest,
     conn: sqlite3.Connection,

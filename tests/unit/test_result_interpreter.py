@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.decision.result_interpreter import ResultSemantics, result_interpreter
-from jarvis.shared import ActionRequest, CallerPrincipal, Event
+from jarvis.decision.result_interpreter import result_interpreter
+from jarvis.shared import ActionRequest, CallerPrincipal, Event, ResultSemantics
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
 
 if TYPE_CHECKING:

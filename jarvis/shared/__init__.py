@@ -27,6 +27,17 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 
+# --- ResultSemantics (relocated from jarvis.execution.tools in Step 0b) -----
+
+ResultSemantics = Literal["ack", "observation", "verification", "report", "error"]
+"""Day-1 `result_semantics` vocabulary (ADR § Gate contracts, Result Interpreter table).
+
+Relocated from :mod:`jarvis.execution.tools` in Step 0b of ADR-0002 so L3
+(Result Interpreter) and L4 (handler return shape) can both reference it
+without crossing the layer DAG.
+"""
+
+
 class CallerPrincipal(enum.Enum):
     """Real caller identity used by the Pre-action Gate (spec §3.5.2).
 
@@ -207,6 +218,13 @@ class ActionRequest:
         run_id: Correlation key for the worker run the action belongs to.
         turn_id: Correlation key for the conversation turn that produced
             the action.
+        payload: Per-action L3-side data attached to the request (e.g.
+            ``verify_command`` from the Task Ledger projection per
+            ADR-0002 § Verify_command plumbing). Distinct from
+            ``arguments``, which carries the LLM-supplied tool arguments.
+            Defaulted to ``None`` so every Day-1 construction stays
+            valid; Day-2 (Step 12) populates the key
+            ``payload["verify_command"]``.
     """
 
     action_id: str
@@ -218,6 +236,7 @@ class ActionRequest:
     authorization_lease: AuthorizationLease | None
     run_id: str | None
     turn_id: str | None
+    payload: Mapping[str, Any] | None = None
 
 
 # --- PromptContext (ADR § Reference sources Q3 option (a)) ------------------
@@ -238,6 +257,88 @@ class PromptContext:
     system: str
 
 
+# --- RawResult (relocated from jarvis.execution.tools in Step 0b) -----------
+
+
+@dataclass(frozen=True)
+class RawResult:
+    """One handler's return value — fed to L3 Result Interpreter.
+
+    Relocated from :mod:`jarvis.execution.tools` in Step 0b of ADR-0002
+    so L3 (which consumes RawResults) can import the type directly
+    without crossing the layer DAG. L4 handlers continue to construct
+    and return ``RawResult`` instances; the Day-2 dispatcher wrap
+    (Step 11) will wrap bare single-slot returns into a
+    :class:`RawResultBundle` at the L4/L3 boundary.
+
+    Attributes:
+        action_id: The ActionRequest's ``action_id`` (round-tripped so
+            the interpreter can join back to the lifecycle / event
+            chain).
+        semantics: One of ``ack`` / ``observation`` / ``verification`` /
+            ``report`` / ``error`` per ADR § Gate contracts table. The
+            Result Interpreter maps this to a claim type + evidence
+            level.
+        payload: Tool-specific structured data (e.g. ``{"run_id": ...}``
+            for ack, ``{"artifact_path": ..., "content_hash": ...}`` for
+            verification). Read-only mapping.
+        tool_output: Optional JSON string of the form produced by
+            ``tool_result(...)`` / ``tool_error(...)``. Day-1 L3 records
+            this verbatim into ``action.result_observed.payload.tool_output``
+            so legacy clients have a string they can show.
+        error: Optional short error tag (``artifact_missing``,
+            ``predicate_failed``, etc.). None on success.
+        metadata: L4's side-channel for data not part of the canonical
+            RawResult payload but must travel back to L3 so L3 can emit
+            correlated events. Day-2 uses exactly one key:
+            ``metadata["cost"]`` — dict carrying ``{kind, model,
+            tokens_in, tokens_out, optional cache_read_in /
+            cache_write_in}`` (per ADR-0002 § RawResult.metadata
+            extension). Defaulted to ``None`` so every Day-1 RawResult
+            construction stays valid; Step 10/12 populate it from the
+            Codex ``turn/completed`` payload.
+    """
+
+    action_id: str
+    semantics: ResultSemantics
+    payload: Mapping[str, Any]
+    tool_output: str | None
+    error: str | None
+    metadata: Mapping[str, Any] | None = None
+
+
+# --- RawResultBundle (Day-2 addition per ADR-0002 § RawResultBundle contract)
+
+
+@dataclass(frozen=True)
+class RawResultBundle:
+    """A sequence of RawResult slots returned by one L4 handler.
+
+    Day-1 tools returned a single RawResult. Day-2 introduces
+    RawResultBundle so tools declaring a ``post_action_check``
+    (spec §3.5.7) can return TWO slots in one call — slot 1 for the
+    primary observation, slot 2 for the chained verification/error.
+    Each slot carries its own ``result_semantics`` per spec §3.4.11;
+    L3 emits one ``action.result_observed`` event per slot (spec
+    §5.4.2).
+
+    Invariant: at least one slot. Two slots maximum Day-2 (one primary
+    + one post_action_check). Multi-stage chains are out of scope.
+
+    Step 0b note: the type is defined here so Day-2 steps (11 / 12) can
+    wire the dispatcher-wrap and the dual-slot interpreter without a
+    second relocation. No production call site constructs a bundle yet.
+    """
+
+    slots: tuple[RawResult, ...]
+
+    def __post_init__(self) -> None:
+        """Enforce the 1..2 slot invariant at construction time."""
+        if not (1 <= len(self.slots) <= 2):  # noqa: PLR2004 — the 1..2 bound IS the contract per spec §3.5.7.
+            msg = f"RawResultBundle requires 1-2 slots, got {len(self.slots)}"
+            raise ValueError(msg)
+
+
 __all__ = [
     "ActionRequest",
     "AuthorizationLease",
@@ -248,5 +349,8 @@ __all__ = [
     "Evidence",
     "EvidenceLevel",
     "PromptContext",
+    "RawResult",
+    "RawResultBundle",
+    "ResultSemantics",
     "RiskLevel",
 ]

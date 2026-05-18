@@ -83,7 +83,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
-from jarvis.shared import ActionRequest, CallerPrincipal, RiskLevel
+from jarvis.shared import ActionRequest, CallerPrincipal, RawResult, ResultSemantics, RiskLevel
 from jarvis.state.event_log import emit_event, open_event_log
 
 if TYPE_CHECKING:
@@ -115,8 +115,10 @@ _TEST_MODE_THREAD_CAPTURE: list[threading.Thread] | None = None
 
 # --- Public type aliases -----------------------------------------------------
 
-ResultSemantics = Literal["ack", "observation", "verification", "report", "error"]
-"""Day-1 `result_semantics` vocabulary (ADR § Gate contracts, Result Interpreter table)."""
+# `RawResult` and `ResultSemantics` live in `jarvis.shared` since Step 0b of
+# ADR-0002 (so L3 can import them without crossing the layer DAG). They are
+# re-exported via `__all__` below for backward compatibility with Day-1
+# callers that imported them from `jarvis.execution.tools`.
 
 
 class RuntimePathsLike(Protocol):
@@ -277,35 +279,10 @@ class ActionLifecycle:
             return state in _TERMINAL_STATES
 
 
-# --- RawResult / ToolDefinition dataclasses ---------------------------------
-
-
-@dataclass(frozen=True)
-class RawResult:
-    """One handler's return value — fed to L3 Result Interpreter (Step 9).
-
-    Attributes:
-        action_id: The ActionRequest's `action_id` (round-tripped so the
-            interpreter can join back to the lifecycle / event chain).
-        semantics: One of `ack` / `observation` / `verification` /
-            `report` / `error` per ADR § Gate contracts table. The Result
-            Interpreter maps this to a claim type + evidence level.
-        payload: Tool-specific structured data (e.g. `{"run_id": ...}`
-            for ack, `{"artifact_path": ..., "content_hash": ...}` for
-            verification). Read-only mapping.
-        tool_output: Optional JSON string of the form produced by
-            `tool_result(...)` / `tool_error(...)`. Day-1 L3 records this
-            verbatim into `action.result_observed.payload.tool_output`
-            so legacy clients have a string they can show.
-        error: Optional short error tag ("artifact_missing",
-            "predicate_failed", etc.). None on success.
-    """
-
-    action_id: str
-    semantics: ResultSemantics
-    payload: Mapping[str, Any]
-    tool_output: str | None
-    error: str | None
+# --- ToolDefinition dataclass -----------------------------------------------
+#
+# `RawResult` (and `ResultSemantics`) live in `jarvis.shared` since Step 0b;
+# they are imported at the top of this module and re-exported via `__all__`.
 
 
 if TYPE_CHECKING:
