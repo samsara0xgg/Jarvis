@@ -92,7 +92,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.decision.llm import LLMClient
-    from jarvis.shared import RiskLevel
+    from jarvis.shared import EvidenceLevel, RiskLevel
 
 LOGGER = logging.getLogger(__name__)
 
@@ -139,7 +139,11 @@ def _scrub_completion_keywords(text: str) -> str:
     return out
 
 
-def _hard_refusal_plan(active_subject: str) -> ResponsePlan:
+def _hard_refusal_plan(
+    active_subject: str,
+    *,
+    active_claim_levels: tuple[EvidenceLevel, ...] = (),
+) -> ResponsePlan:
     r"""Build a fixed limitation ResponsePlan with no LLM-supplied text.
 
     Used as the last line of defense when both the LLM retry and the
@@ -148,6 +152,12 @@ def _hard_refusal_plan(active_subject: str) -> ResponsePlan:
     in ``_LIMITATION_PATTERNS`` and the ``\bunverified\b`` negation
     marker, NOT bare ``\bverified\b``) and avoids every completion
     keyword the gate detects, so it is scrub-safe by construction.
+
+    ``active_claim_levels`` is carried through from the last Pre-emit
+    Gate verdict (typically ``forced_plan.active_claim_levels``) so the
+    final ResponsePlan still records what evidence levels the subject
+    actually held. Defaults to ``()`` only for direct unit-test calls
+    that don't have a gate verdict to thread through.
     """
     text = (
         f"agent reported, status unverified (未验证) — Pre-emit Gate "
@@ -158,7 +168,7 @@ def _hard_refusal_plan(active_subject: str) -> ResponsePlan:
         text=text,
         permission="force_limitation_language",
         downgrade_required=False,  # this text is scrub-safe by construction
-        active_claim_levels=(),
+        active_claim_levels=active_claim_levels,
         response_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
     )
 
@@ -878,8 +888,8 @@ class _SyntheticRawResult:
     Interpreter accepts it without an isinstance check. ``semantics``
     is widened to :data:`ResultSemantics` (not just ``"report"``)
     because the ``action.result_observed`` branch reuses this dataclass
-    for sync re-entries (mutating via ``object.__setattr__`` to slot
-    in the observed semantics).
+    for sync re-entries and passes the observed semantics directly to
+    the constructor.
     """
 
     action_id: str
@@ -935,13 +945,11 @@ def _handle_result_observed(
     )
     synthetic_raw = _SyntheticRawResult(
         action_id=action_id,
-        semantics="report",  # placeholder; reassigned below
+        semantics=semantics,
         payload=dict(trigger.payload),
         tool_output=trigger.payload.get("tool_output"),
         error=trigger.payload.get("error"),
     )
-    # Re-bind semantics via object.__setattr__ (dataclass is frozen).
-    object.__setattr__(synthetic_raw, "semantics", semantics)
 
     interpreted = result_interpreter(
         synthetic_raw,
@@ -965,6 +973,38 @@ def _handle_result_observed(
 # --- Finalization (Pre-emit Gate + turn.ended) -----------------------------
 
 
+def _emit_pre_emit_gate_event(
+    ctx: DecideContext,
+    scratch: _Scratch,
+    *,
+    plan: ResponsePlan,
+    attempt: int,
+) -> Event:
+    """Emit one ``gate.evaluated(pre_emit)`` event for a Pre-emit verdict.
+
+    ``attempt`` is the retry index — 0 for the initial draft, 1 for the
+    LLM retry, 2 for the forced template. Every Pre-emit Gate verdict
+    along the retry chain gets its own event so the audit trail can
+    reconstruct the full path, not just the final ResponsePlan
+    (spec § Invariant 1: state flows through events).
+    """
+    gate_event = emit_event(
+        ctx.conn,
+        type="gate.evaluated",
+        payload={
+            "gate": "pre_emit",
+            "outcome": plan.permission,
+            "reasons": list(_pre_emit_reasons(plan)),
+            "response_hash": plan.response_hash,
+            "claim_levels": list(plan.active_claim_levels),
+            "attempt": attempt,
+        },
+        correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
+    )
+    scratch.events.append(gate_event)
+    return gate_event
+
+
 def _finalize_response(
     draft_text: str,
     packet: SituationPacket,
@@ -973,29 +1013,53 @@ def _finalize_response(
 ) -> DecideResult:
     """Apply the Pre-emit Gate to a draft, emit gate + turn.ended, return.
 
-    Implements the one-retry rule per ADR § Gate contracts:
+    Implements the one-retry rule per ADR § Gate contracts. Each
+    ``pre_emit_gate(...)`` call emits its own ``gate.evaluated`` event
+    with a distinct ``attempt`` index (0 / 1 / 2) so the audit trail
+    captures every verdict, not just the final one:
 
-    - If ``downgrade_required`` is True on the first plan, re-prompt
-      the LLM once with a system note instructing it to switch to
-      limitation language. Day-1 uses a short follow-up turn.
-    - If the second attempt still downgrades, forcibly rewrite the
-      response via ``_FORCED_LIMITATION_TEMPLATE`` and emit the gate
-      event with the second hash.
+    - attempt 0 — initial verdict on the LLM draft. If
+      ``downgrade_required`` is False, ship that plan.
+    - attempt 1 — re-prompt the LLM once with a limitation-language
+      system note; gate the retry text.
+    - attempt 2 — if the retry still trips the gate, rewrite the draft
+      via ``_FORCED_LIMITATION_TEMPLATE`` (with completion-keyword
+      scrub on the embedded text) and gate that. If even this trips,
+      fall back to a fixed :func:`_hard_refusal_plan` that is
+      scrub-safe by construction (no extra gate event — it is a
+      deterministic bailout, not a gate verdict).
+
+    ``turn.ended.source_event_id`` references the LAST gate event in
+    the chain regardless of which branch was taken.
     """
     active_subject = scratch.active_subject_ref
     if active_subject is None and packet.open_tasks:
         active_subject = packet.open_tasks[0].task_id
     if active_subject is None:
+        # No scratch.active_subject_ref AND no open tasks — the gate
+        # will see an empty claim set and force_limitation_language
+        # by construction. Log so the failure mode is visible on
+        # ``jarvis`` stderr; otherwise the limitation path is silent.
+        LOGGER.warning(
+            "_finalize_response: no active_subject_ref and no open tasks; "
+            "falling back to 'unknown_subject' (turn_id=%r). The Pre-emit "
+            "Gate will force limitation framing.",
+            scratch.turn_id,
+        )
         active_subject = "unknown_subject"
 
     # Always refresh the projection so the gate sees the latest
     # claim/evidence rows.
     projections = make_snapshot(ctx.conn)
+
+    # Attempt 0 — initial verdict on the raw LLM draft.
     plan = pre_emit_gate(draft_text, projections.claim_evidence, active_subject)
+    last_gate_event = _emit_pre_emit_gate_event(ctx, scratch, plan=plan, attempt=0)
 
     if plan.downgrade_required:
-        # Single retry. Append a system-style instruction and re-run
-        # the LLM ONCE; do not pull tools this time — we want text.
+        # Attempt 1 — single LLM retry. Append a system-style
+        # instruction and re-run the LLM ONCE; do not pull tools this
+        # time — we want text.
         retry_messages: list[dict[str, Any]] = [
             {"role": "user", "content": packet.trigger_event.payload.get("transcript", "")},
             _assistant_text_message(draft_text),
@@ -1016,14 +1080,13 @@ def _finalize_response(
         )
         retry_text = retry_result.text or ""
         retry_plan = pre_emit_gate(retry_text, projections.claim_evidence, active_subject)
+        last_gate_event = _emit_pre_emit_gate_event(
+            ctx, scratch, plan=retry_plan, attempt=1,
+        )
         if not retry_plan.downgrade_required:
             plan = retry_plan
         else:
-            forced = _FORCED_LIMITATION_TEMPLATE.format(
-                draft=_scrub_completion_keywords(retry_text or draft_text),
-            )
-            forced_plan = pre_emit_gate(forced, projections.claim_evidence, active_subject)
-            # Defense in depth:
+            # Attempt 2 — forced template. Defense in depth:
             #   (a) scrub completion keywords from the LLM draft so the
             #       embedded text can't carry bare completion claims to
             #       the surface.
@@ -1032,33 +1095,33 @@ def _finalize_response(
             #       doesn't cover), fall back to a fixed
             #       _hard_refusal_plan that is scrub-safe by
             #       construction.
+            forced = _FORCED_LIMITATION_TEMPLATE.format(
+                draft=_scrub_completion_keywords(retry_text or draft_text),
+            )
+            forced_plan = pre_emit_gate(forced, projections.claim_evidence, active_subject)
+            last_gate_event = _emit_pre_emit_gate_event(
+                ctx, scratch, plan=forced_plan, attempt=2,
+            )
             if forced_plan.downgrade_required:
-                plan = _hard_refusal_plan(active_subject)
+                # Thread the gate's last computed claim_levels through
+                # so the hard-refusal plan still reports the subject's
+                # actual evidence state (typically empty / reported
+                # only — that's WHY the gate kept refusing).
+                plan = _hard_refusal_plan(
+                    active_subject,
+                    active_claim_levels=forced_plan.active_claim_levels,
+                )
             else:
                 plan = forced_plan
 
-    # Emit gate.evaluated(pre_emit).
-    gate_event = emit_event(
-        ctx.conn,
-        type="gate.evaluated",
-        payload={
-            "gate": "pre_emit",
-            "outcome": plan.permission,
-            "reasons": list(_pre_emit_reasons(plan)),
-            "response_hash": plan.response_hash,
-            "claim_levels": list(plan.active_claim_levels),
-        },
-        correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
-    )
-    scratch.events.append(gate_event)
-
-    # turn.ended.
+    # turn.ended. ``source_event_id`` references the last gate verdict
+    # on the chain (attempt 0 / 1 / 2 depending on how far retry went).
     if scratch.turn_id is not None:
         ended_event = emit_event(
             ctx.conn,
             type="turn.ended",
             payload={"turn_id": scratch.turn_id, "final_response_hash": plan.response_hash},
-            source_event_id=gate_event.event_uid,
+            source_event_id=last_gate_event.event_uid,
             correlation={"turn_id": scratch.turn_id},
         )
         scratch.events.append(ended_event)

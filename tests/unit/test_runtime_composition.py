@@ -34,7 +34,6 @@ from jarvis.runtime import (
     bootstrap_runtime_app,
 )
 from jarvis.state.event_log import emit_event, open_event_log
-from jarvis.surface.cli import SurfaceState
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_PATH = _REPO_ROOT / "config" / "jarvis.yaml"
@@ -60,8 +59,6 @@ def test_bootstrap_runtime_app_returns_populated_runtime(tmp_path: Path) -> None
         assert isinstance(runtime.conn, sqlite3.Connection)
         assert isinstance(runtime.tool_registry, ToolRegistry)
         assert isinstance(runtime.lifecycle, ActionLifecycle)
-        assert isinstance(runtime.surface_state, SurfaceState)
-        assert runtime.surface_state.last_gate_response_hash is None
         assert runtime.system_prompt  # non-empty prompt text loaded
         assert "llm" in runtime.config
         # Day-1 default registry has both Day-1 tools.

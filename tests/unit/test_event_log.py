@@ -77,11 +77,14 @@ def test_registry_gate_evaluated_schema_matches_adr():
     schema = EventTypeRegistry.get("gate.evaluated")
     assert schema is not None
     assert schema.required_payload == ("gate", "outcome", "reasons")
+    # `attempt` is the Pre-emit Gate retry index (0=initial, 1=LLM
+    # retry, 2=forced template); see `jarvis.decision._finalize_response`.
     assert schema.optional_payload == (
         "action_id",
         "response_hash",
         "claim_levels",
         "check_results",
+        "attempt",
     )
     assert schema.owner_layer == "L3"
     assert schema.schema_version == 1

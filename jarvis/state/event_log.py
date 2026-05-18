@@ -198,7 +198,17 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         event_type="gate.evaluated",
         owner_layer="L3",
         required_payload=("gate", "outcome", "reasons"),
-        optional_payload=("action_id", "response_hash", "claim_levels", "check_results"),
+        # `attempt` carries the Pre-emit Gate retry index (0=initial,
+        # 1=LLM retry, 2=forced template) so the audit trail captures
+        # every verdict on the way to the final ResponsePlan, not just
+        # the last one. Pre-action gate events omit it.
+        optional_payload=(
+            "action_id",
+            "response_hash",
+            "claim_levels",
+            "check_results",
+            "attempt",
+        ),
         schema_version=1,
     ),
     EventTypeSchema(

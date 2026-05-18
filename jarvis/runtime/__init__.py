@@ -115,6 +115,12 @@ class JarvisRuntime:
     ``conn`` field is the only mutable resource by nature
     (``sqlite3.Connection``); everything else is immutable values.
 
+    L5 :class:`SurfaceState` is deliberately not a field here.
+    Per spec §3.6.7 (Inherent boundaries), local surface state has no
+    truth, doesn't survive across turns, and doesn't affect decisions —
+    so ``run_turn`` allocates a fresh empty :class:`SurfaceState`
+    locally each invocation and discards it after :func:`write_output`.
+
     Attributes:
         config: Raw parsed YAML config (read-only mapping form).
         runtime_paths: Bootstrapped L6 layout (root + event_log +
@@ -126,9 +132,6 @@ class JarvisRuntime:
         llm_client: L3 multi-provider LLM client.
         system_prompt: Rendered system prompt string (verbatim
             content of ``prompts/jarvis_v1.md``).
-        surface_state: L5 surface state. Starts empty; recycled per
-            turn through :func:`record_pre_emit_token` /
-            :func:`write_output`.
     """
 
     config: Mapping[str, Any]
@@ -138,7 +141,6 @@ class JarvisRuntime:
     lifecycle: ActionLifecycle
     llm_client: LLMClient
     system_prompt: str
-    surface_state: SurfaceState
 
 
 @dataclass(frozen=True)
@@ -214,7 +216,10 @@ def bootstrap_runtime_app(
     4. L3 LLM client — :class:`jarvis.decision.llm.LLMClient` reads the
        ``llm:`` block from the YAML config. Lazy SDK construction —
        no network call until ``run_turn`` actually invokes ``chat``.
-    5. L5 surface state — empty :class:`SurfaceState` with no token.
+
+    L5 :class:`SurfaceState` is allocated per turn inside :func:`run_turn`
+    (spec §3.6.7 — local surface state owns no truth and doesn't survive
+    across turns), so the composition root does not wire it here.
 
     Args:
         config_path: Optional explicit path to ``config/jarvis.yaml``.
@@ -265,9 +270,8 @@ def bootstrap_runtime_app(
     llm_config = load_llm_config(config_path)
     llm_client = LLMClient(llm_config)
 
-    # 5. Prompt + surface state.
+    # 5. Prompt.
     system_prompt = prompt_path.read_text(encoding="utf-8")
-    surface_state = SurfaceState(last_gate_response_hash=None)
 
     return JarvisRuntime(
         config=full_config,
@@ -277,7 +281,6 @@ def bootstrap_runtime_app(
         lifecycle=lifecycle,
         llm_client=llm_client,
         system_prompt=system_prompt,
-        surface_state=surface_state,
     )
 
 
@@ -499,21 +502,21 @@ def run_turn(
     # L5 emission. The Pre-emit token guard inside write_output() is
     # the canary H3 runtime check — calling record_pre_emit_token()
     # then write_output() in this order is the only legal path.
-    primed_state = record_pre_emit_token(runtime.surface_state, response_plan.response_hash)
+    # SurfaceState is allocated fresh per turn (spec §3.6.7 — local
+    # surface state owns no truth and doesn't survive across turns)
+    # and discarded once write_output returns the cleared state.
+    surface_state = SurfaceState(last_gate_response_hash=None)
+    primed_state = record_pre_emit_token(surface_state, response_plan.response_hash)
 
     # Capture the rendered text so we can both echo it to the operator
     # console (sys.stdout) and return it to the caller for tests /
     # programmatic clients. write_output() handles the channel split
     # and the Pre-emit token check.
     capture: io.StringIO = io.StringIO()
-    cleared_state = write_output(primed_state, response_plan, stream=capture)
+    write_output(primed_state, response_plan, stream=capture)
     rendered = capture.getvalue()
     sys.stdout.write(rendered)
     sys.stdout.flush()
-
-    # Refresh the runtime's surface_state via object.__setattr__ — the
-    # dataclass is frozen but the composition root owns the lifecycle.
-    object.__setattr__(runtime, "surface_state", cleared_state)
 
     return RunTurnResult(
         response_text=rendered,
