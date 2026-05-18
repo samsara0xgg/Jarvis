@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import sys
 import time
 import uuid
@@ -44,9 +45,10 @@ import yaml
 from jarvis.decision import DecideContext, LifecycleLike, ToolRegistryLike, decide
 from jarvis.decision.llm import LLMClient, load_llm_config
 from jarvis.deployment import RuntimePaths, bootstrap_runtime
+from jarvis.execution.diff_capture import StashError, restore_pretask_changes
 from jarvis.execution.tools import ActionLifecycle, ToolRegistry, build_default_registry
 from jarvis.shared import Event
-from jarvis.state.event_log import open_event_log
+from jarvis.state.event_log import iter_events, open_event_log
 from jarvis.surface.cli import (
     PreEmitTokenError,
     SurfaceState,
@@ -60,6 +62,9 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from jarvis.decision import ResponsePlan
+
+
+LOGGER = logging.getLogger("jarvis.runtime")
 
 
 # --- Defaults ---------------------------------------------------------------
@@ -499,6 +504,19 @@ def run_turn(
         )
         raise RuntimeBootstrapError(msg)
 
+    # --- Stash-pop finalizer (ADR-0002 § Dirty-tree policy lines 663-713).
+    # The decide() loop above has already dispatched verify_diff_handler
+    # for every action in the turn (L4 sync semantics); pop the
+    # pre-task stash here, STRICTLY AFTER verify_diff exits, so the
+    # verify_command saw exactly Codex's tree. This call MUST live in
+    # the composition root and MUST come after the dispatch site —
+    # canary ``test_canary_stash_pop_after_verify`` enforces both.
+    _pop_pending_stashes(
+        runtime.conn,
+        artifacts_root=runtime.runtime_paths.artifacts_root,
+        turn_id=effective_turn_id,
+    )
+
     # L5 emission. The Pre-emit token guard inside write_output() is
     # the canary H3 runtime check — calling record_pre_emit_token()
     # then write_output() in this order is the only legal path.
@@ -525,6 +543,113 @@ def run_turn(
         iterations=iterations,
         events_emitted=tuple(collected_events),
     )
+
+
+# --- Stash-pop finalizer (ADR-0002 § Dirty-tree policy) --------------------
+
+
+def _task_repo_path(conn: sqlite3.Connection, task_id: str) -> Path | None:
+    """Look up the ``repo_path`` payload from the latest ``task.created`` event.
+
+    Walks the event log directly (L2 read is allowed from the
+    composition root per ``.importlinter``); returns ``None`` when the
+    task_id is unknown or carries no ``repo_path``. The stash-pop helper
+    treats ``None`` as "skip this run" — we never `git -C` into a
+    nonexistent dir.
+    """
+    latest_repo: str | None = None
+    for evt in iter_events(conn):
+        if evt.type != "task.created":
+            continue
+        if evt.payload.get("task_id") != task_id:
+            continue
+        raw = evt.payload.get("repo_path")
+        if isinstance(raw, str) and raw:
+            latest_repo = raw
+    return Path(latest_repo) if latest_repo is not None else None
+
+
+def _pop_pending_stashes(
+    conn: sqlite3.Connection,
+    *,
+    artifacts_root: Path,
+    turn_id: str,
+) -> None:
+    """Pop every pre-task stash recorded by ``worker.reported`` in this turn.
+
+    Walks the event log for ``worker.reported`` events whose
+    ``correlation.turn_id`` matches ``turn_id``; each row carries the
+    ``run_id`` plus a ``stash_ref`` (forwarded by
+    :func:`jarvis.execution.tools.spawn_worker_handler` on
+    ``RawResult.metadata["stash_ref"]`` and then placed into the
+    payload by L3's Result Interpreter). For each match we call
+    :func:`jarvis.execution.diff_capture.restore_pretask_changes` with
+    the repo cwd resolved from ``task.created.repo_path``.
+
+    This call is the SOLE legitimate site for
+    ``restore_pretask_changes``; canary
+    ``test_canary_stash_pop_after_verify`` enforces that L4 never pops
+    the stash and that L3 / runtime own the order (verify_diff first,
+    pop second).
+
+    Args:
+        conn: Open Event Log connection.
+        artifacts_root: ``RuntimePaths.artifacts_root`` — conflict
+            patches land at ``<artifacts_root>/run_<run_id>/conflict.patch``.
+        turn_id: The composition root's turn correlation id. Only
+            ``worker.reported`` events tagged with this turn are popped.
+
+    Returns:
+        None. Conflict artifacts are surfaced inside
+        :func:`restore_pretask_changes` (it writes them to the artifact
+        dir); this helper logs any non-conflict :class:`StashError` and
+        continues so a single stuck stash doesn't mask the user-facing
+        response.
+    """
+    seen_run_ids: set[str] = set()
+    for evt in iter_events(conn):
+        if evt.type != "worker.reported":
+            continue
+        if evt.correlation is None or evt.correlation.get("turn_id") != turn_id:
+            continue
+        run_id_raw = evt.payload.get("run_id")
+        stash_ref_raw = evt.payload.get("stash_ref")
+        task_id_raw = (
+            evt.correlation.get("task_id") if evt.correlation is not None else None
+        )
+        if not isinstance(run_id_raw, str) or run_id_raw in seen_run_ids:
+            continue
+        seen_run_ids.add(run_id_raw)
+        # stash_ref may be None on a clean tree at spawn-time — pass
+        # through; restore_pretask_changes is a no-op for None.
+        stash_ref: str | None = (
+            stash_ref_raw if isinstance(stash_ref_raw, str) else None
+        )
+        if stash_ref is None:
+            continue
+        if not isinstance(task_id_raw, str):
+            continue
+        repo_path = _task_repo_path(conn, task_id_raw)
+        if repo_path is None:
+            continue
+        try:
+            restore_pretask_changes(
+                repo_path,
+                stash_ref,
+                artifact_dir=artifacts_root,
+                run_id=run_id_raw,
+            )
+        except StashError:
+            # Don't propagate — the conflict path inside
+            # restore_pretask_changes already preserved a patch
+            # artifact. A non-conflict error here means git itself
+            # failed (e.g. stash ref vanished); log and continue so
+            # the user-facing response is not held hostage.
+            LOGGER.exception(
+                "runtime: failed to pop stash %s for run %s",
+                stash_ref,
+                run_id_raw,
+            )
 
 
 __all__ = [
