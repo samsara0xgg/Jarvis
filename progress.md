@@ -469,3 +469,154 @@ Legacy-bypassed, Tier 1, Notes, Next.
     caching per spec §3.3.6) without touching the L3 call sites.
 - Next: Step 6 (L4 `tools.py` — registry + 8-state lifecycle +
   spawn_worker / verify_diff stubs).
+
+---
+
+## Step 6 — L4 tools.py (ToolRegistry + ActionLifecycle + stubs)
+
+- Files:
+  - `jarvis/execution/tools.py` (953 LOC) — public surface:
+    `ActionLifecycle` (8-state FSM with RLock), `ToolRegistry`
+    (register / for_caller / get_definitions / dispatch),
+    `ToolDefinition` + `RawResult` frozen dataclasses,
+    `RuntimePathsLike` Protocol (structural view of
+    `jarvis.deployment.RuntimePaths` — keeps L4 sibling-clean per
+    `.importlinter`), `build_default_registry()`,
+    `spawn_worker_handler` (async, L2, ack semantics) +
+    `verify_diff_handler` (sync, L0, verification semantics), plus
+    `tool_result` / `tool_error` JSON serializers adapted from
+    legacy `tools_v2/helpers.py`. Exceptions:
+    `DuplicateToolError`, `UnknownToolError`, `CallerNotAllowedError`,
+    `IllegalLifecycleTransition`.
+  - `tests/unit/test_lifecycle.py` (272 LOC, 55 tests) — every valid
+    transition + every illegal-transition negative case + terminal
+    rejects all outgoing (parametrized 4 terminals × 8 targets = 32
+    cases) + thread-safety smoke (2 threads × 50 actions).
+  - `tests/unit/test_tools.py` (594 LOC, 21 tests) — default registry
+    shape, caller filtering, dispatch precondition, both handlers'
+    happy / negative / missing paths, async-thread B4 readiness via
+    `_TEST_MODE_THREAD_CAPTURE` hook, frozen-dataclass invariants.
+- Legacy consulted:
+  - `jarvis-legacy/tools_v2/registry.py` (178 LOC) — adapted shape
+    (name → entry table, register / dispatch / get_definitions,
+    `threading.RLock`-guarded). Day-1 diverges: raises
+    `DuplicateToolError` instead of legacy's overwrite-with-warn;
+    raises `CallerNotAllowedError` instead of legacy's JSON-error
+    return; uses `frozenset[CallerPrincipal]` enum instead of
+    `set[str]` string labels.
+  - `jarvis-legacy/tools_v2/helpers.py` (59 LOC) — `tool_result` and
+    `tool_error` adapted (function bodies near-verbatim; signature
+    tightened to `Mapping[str, Any]` + accept a typed `code` kwarg
+    for the error tag).
+  - `hermes-agent/repo/tools/registry.py` (563 LOC) — consulted for
+    threading + dispatch error envelope; Day-1 stays much simpler
+    (no toolsets / check_fn TTL / OpenAI ↔ Anthropic conversion).
+- Legacy-bypassed:
+  - Legacy `ToolEntry.schema: dict[str, Any]` with `"parameters"`
+    key + double conversion at `get_definitions()` — replaced with a
+    typed `ToolDefinition.input_schema: Mapping[str, Any]` that is
+    already in Anthropic shape.
+  - Legacy `set[str]` caller_scope — replaced with
+    `frozenset[CallerPrincipal]` typed enum per ADR § Module map.
+  - Legacy `dispatch` JSON-error envelope on caller-mismatch /
+    handler exception — Day-1 raises typed exceptions so the L3
+    Pre-action Gate + Result Interpreter can decide policy
+    explicitly. The `tool_result` / `tool_error` JSON envelope still
+    exists for `RawResult.tool_output` (the string the LLM sees).
+  - No `ActionLifecycle` in legacy. Day-1 builds it from spec §3.4
+    + ADR § Acceptance B verbatim.
+- Tier 1:
+  - T1.A `lint-imports`: 6-layer architecture KEPT, 0 broken
+    (`tools.py` imports only `jarvis.shared` + `jarvis.state`;
+    `RuntimePaths` is consumed via the `RuntimePathsLike` Protocol,
+    no `jarvis.deployment` import).
+  - T1.B `ruff check .`: All checks passed (5 narrow `noqa` in
+    `tools.py` for spec-named exception + spec-required signatures;
+    1 `noqa` in `test_tools.py` for `_build_action_request` arg
+    count).
+  - T1.C `mypy .` (strict): no issues in 23 source files.
+  - T1.D `pytest tests/unit/`: 157 passed in 0.28s wall-clock
+    (76 of which are Step 6 — 55 lifecycle + 21 tools). Slowest
+    test 0.03 s (spawn_worker async-Timer wait).
+  - T1.E: Tier 2 scenarios not yet in scope (Steps 12-13).
+- Notes:
+  - **Async vs sync dispatch.** `ToolRegistry.dispatch` always emits
+    `action.dispatched(action_id)` then `action.running(action_id)`
+    and transitions `authorized → dispatched → running`. From there
+    the handler is responsible: `spawn_worker_handler` (async)
+    writes the artifact, schedules a `threading.Timer` to emit
+    `worker.reported`, and RETURNS with lifecycle still at `running`
+    — L3 Result Interpreter (Step 9) will transition to terminal
+    once it observes `worker.reported`. `verify_diff_handler`
+    (sync) reads + hashes the artifact, emits
+    `action.result_observed(semantics=verification|error)`,
+    transitions `running → result_observed`, and returns. This
+    preserves the ADR canonical-event-trace split between A1
+    (evt 04..13 — async, ends at evt 13 with the Report Claim) and
+    A2 (evt 14..21 — sync, ends inside L4).
+  - **Threading + sqlite.** The Timer closure captures only
+    immutable values: `db_path: Path`, `action_id: str`,
+    `run_id: str`, `task_id: str`, `source_event_id: str`,
+    `diff_path_str: str`. `_emit_worker_reported` opens its OWN
+    `sqlite3.Connection` from `db_path` via
+    `jarvis.state.event_log.open_event_log`, emits
+    `worker.reported`, closes. **`check_same_thread=False` is NOT
+    used** anywhere — the connection that was opened on the main
+    thread never crosses the boundary. Verified by inspection +
+    `test_spawn_worker_emits_worker_reported_on_separate_thread`
+    which monkeypatches the `_TEST_MODE_THREAD_CAPTURE` hook and
+    asserts no captured thread equals `threading.current_thread()`
+    on the main thread (acceptance B4 readiness).
+  - **Controllable-artifact mechanism.** Picked the PREFERRED
+    option: module-level constant `_SPAWN_WORKER_ARTIFACT_STATUS:
+    str = "ok"`. The Step 13 fixture will
+    `monkeypatch.setattr(tools_module, "_SPAWN_WORKER_ARTIFACT_STATUS",
+    "fail")` for the negative scenario. The LLM's
+    `input_schema` for `spawn_worker` only exposes `task_id`, so
+    this knob never enters the LLM contract. Documented in the
+    module docstring + the handler docstring. Asserted by
+    `test_spawn_worker_writes_fail_when_constant_flipped` in
+    `test_tools.py`.
+  - **RuntimePaths abstraction = Protocol, not primitives.**
+    L4 cannot import L6 (siblings in the `.importlinter` middle
+    layer). Solution: `RuntimePathsLike(Protocol)` with `event_log`
+    property + `artifact_dir_for_run(run_id) -> Path` method.
+    `jarvis.deployment.RuntimePaths` structurally satisfies the
+    Protocol; the composition root (`jarvis.runtime`, Step 10)
+    will pass the real instance. `lint-imports` confirms the
+    boundary holds.
+  - **`running_event_uid` handoff.** The dispatcher needs to pass
+    the `event_uid` of the just-emitted `action.running` event to
+    the handler so the handler can use it as `source_event_id` for
+    `run.started` / `action.result_observed`. `sqlite3.Connection`
+    forbids arbitrary attribute assignment, so a `dict[str, str]`
+    keyed by `action_id` guarded by `threading.Lock` is used at
+    module level; the dispatcher `set`s in a `try` and `clear`s in
+    a `finally`. Per-`action_id` keying is safe because the
+    lifecycle FSM rejects re-dispatch of a known `action_id`.
+    `test_handlers_callable_directly_through_registry_only`
+    confirms that calling a handler outside `dispatch` raises
+    `IllegalLifecycleTransition` (no stashed uid).
+  - **ToolHandler signature** documented in the module docstring:
+    `Callable[[ActionRequest, sqlite3.Connection, RuntimePathsLike,
+    ActionLifecycle], RawResult]`. Defined under `TYPE_CHECKING`
+    so it doesn't add a runtime import of `sqlite3` /
+    `collections.abc`.
+  - **8-state FSM** transitions hardcoded in
+    `_VALID_TRANSITIONS: Mapping[LifecycleState,
+    frozenset[LifecycleState]]`. Terminal states have empty
+    outgoing sets, so the same `if new_state not in allowed` check
+    rejects both "skipped state" and "post-terminal" attempts. The
+    class is event-emission-free — callers (dispatcher + L3 Result
+    Interpreter) emit alongside transitions, so the lifecycle
+    object never reaches into L2.
+  - **Per-test Timer leak.** Each
+    `spawn_worker` test schedules a `threading.Timer(0.01)`; daemon
+    threads ensure pytest doesn't hang, but stragglers can still
+    append to a later test's `_TEST_MODE_THREAD_CAPTURE` list.
+    `test_spawn_worker_emits_worker_reported_on_separate_thread`
+    records `baseline_capture_len` before its dispatch and asserts
+    `(len ≥ baseline + 1) and all(t is not main_thread)` — the
+    invariant we need (B4 readiness) holds regardless of stragglers.
+- Next: Step 7 (`prompts/jarvis_v1.md` + `config/jarvis.yaml`
+  verbatim copies from legacy).
