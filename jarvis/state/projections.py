@@ -52,6 +52,10 @@ if TYPE_CHECKING:
 
 # --- Public types ------------------------------------------------------------
 
+TaskId = str
+"""Canonical task identifier (alias kept open so Stage 2 can swap to NewType)."""
+
+
 TaskStatus = Literal[
     "open",
     "reported_complete",
@@ -235,6 +239,26 @@ class TaskLedgerSnapshot:
             if self.derive_status(task_id) == "open"
         )
 
+    def tasks_in_window(self, since_ts: int, until_ts: int) -> list[TaskId]:
+        """Return task_ids whose `task.created.ts_epoch_ms` falls in the window.
+
+        Per ADR-0002 § Module Map (`projections.py` edits) and spec
+        §3.4.3: L3's time-window resolver consults this method instead of
+        running a SELECT against the events table directly. Day-2 returns
+        bare task_ids; richer fields (goal, repo_path, verify_command)
+        remain accessible via :meth:`get`.
+
+        Args:
+            since_ts: Lower bound (inclusive), epoch milliseconds.
+            until_ts: Upper bound (inclusive), epoch milliseconds.
+
+        Returns:
+            List of `task_id`s whose ``created_ts_epoch_ms`` satisfies
+            ``since_ts <= ts <= until_ts``. Sorted ascending by ts
+            (oldest first); ties broken by task_id for determinism.
+        """
+        return _tasks_in_window(self.records_by_task_id, since_ts, until_ts)
+
 
 # --- TaskLedger --------------------------------------------------------------
 
@@ -289,6 +313,29 @@ def _derive_status(
         return "reported_complete"
 
     return "open"
+
+
+def _tasks_in_window(
+    records_by_task_id: dict[str, TaskLedgerRecord],
+    since_ts: int,
+    until_ts: int,
+) -> list[TaskId]:
+    """Filter folded records by `created_ts_epoch_ms` window (inclusive).
+
+    Shared between :meth:`TaskLedger.tasks_in_window` and
+    :meth:`TaskLedgerSnapshot.tasks_in_window` so the live ledger and a
+    frozen snapshot agree byte-for-byte (mirror of `_derive_status`).
+    Ordering: ascending by ``created_ts_epoch_ms``; ties broken by
+    ``task_id`` so the resolver's "single match" path is deterministic
+    even when two tasks share a clock tick.
+    """
+    matched = [
+        record
+        for record in records_by_task_id.values()
+        if since_ts <= record.created_ts_epoch_ms <= until_ts
+    ]
+    matched.sort(key=lambda r: (r.created_ts_epoch_ms, r.task_id))
+    return [record.task_id for record in matched]
 
 
 @dataclass(frozen=True)
@@ -356,6 +403,15 @@ class TaskLedger:
             for task_id, record in self.records_by_task_id.items()
             if self.derive_status(task_id) == "open"
         )
+
+    def tasks_in_window(self, since_ts: int, until_ts: int) -> list[TaskId]:
+        """Return task_ids whose creation ts falls in ``[since_ts, until_ts]``.
+
+        Mirror of :meth:`TaskLedgerSnapshot.tasks_in_window` (shared
+        helper :func:`_tasks_in_window`). See that docstring for the
+        contract.
+        """
+        return _tasks_in_window(self.records_by_task_id, since_ts, until_ts)
 
     def snapshot(self) -> TaskLedgerSnapshot:
         """Return a frozen immutable view of this ledger.
@@ -629,6 +685,7 @@ __all__ = [
     "ClaimEvidenceProjection",
     "ProjectionSet",
     "RecentTrace",
+    "TaskId",
     "TaskLedger",
     "TaskLedgerRecord",
     "TaskLedgerSnapshot",

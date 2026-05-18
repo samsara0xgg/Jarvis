@@ -47,6 +47,7 @@ import functools
 import hashlib
 import json
 import logging
+import math
 import re
 import uuid
 from collections.abc import Mapping
@@ -75,6 +76,7 @@ from jarvis.decision.resolver import (
     ResolverConfidence,
     ResolverResult,
     resolve_task_ref,
+    resolve_task_ref_by_window,
 )
 from jarvis.decision.result_interpreter import result_interpreter
 from jarvis.shared import (
@@ -698,7 +700,7 @@ def _run_tool_use_loop(
     return _finalize_response(fallback, packet, ctx, scratch)
 
 
-def _dispatch_one_tool_call(  # noqa: C901, PLR0913, PLR0915 — single-pass orchestration of resolver + gate + dispatch + interpreter; splitting muddles the audit trace.
+def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single-pass orchestration of resolver (Day-1 + Day-2 time-window) + gate + dispatch + interpreter; splitting muddles the audit trace.
     *,
     tool_call: object,
     packet: SituationPacket,
@@ -724,11 +726,33 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0913, PLR0915 — single-pass orc
 
     # 1. Resolver. Tools that accept a ``task_id`` go through the
     #    resolver; LLM-supplied ``task_id`` is treated as a natural ref
-    #    (per spec §3.3.7: LLM must not invent entity IDs).
+    #    (per spec §3.3.7: LLM must not invent entity IDs). When the LLM
+    #    additionally emits a structured ``{since_ts, until_ts}`` pair
+    #    on the action arguments (ADR-0002 Step 5: L3 LLM translates
+    #    natural-language time windows like "昨天" into epoch-ms bounds),
+    #    we route through ``resolve_task_ref_by_window`` so the resolver
+    #    queries the projection via :meth:`TaskLedgerSnapshot.tasks_in_window`
+    #    — no direct SQL from L3 per spec §3.4.3.
     target_entity_ref: str | None = None
-    natural_ref = arguments.get("task_id") or arguments.get("natural_ref") or ""
-    if isinstance(natural_ref, str) and natural_ref:
+    natural_ref_raw = arguments.get("task_id") or arguments.get("natural_ref") or ""
+    natural_ref = natural_ref_raw if isinstance(natural_ref_raw, str) else ""
+    since_ts = _coerce_epoch_ms(arguments.get("since_ts"))
+    until_ts = _coerce_epoch_ms(arguments.get("until_ts"))
+    resolver_result: ResolverResult | None = None
+    if since_ts is not None and until_ts is not None:
+        resolver_result = resolve_task_ref_by_window(
+            natural_ref,
+            packet.task_ledger_snapshot,
+            since_ts=since_ts,
+            until_ts=until_ts,
+        )
+        # Window-resolution args are consumed here; do not leak into the
+        # L4 tool call (L4 tools don't understand them).
+        arguments.pop("since_ts", None)
+        arguments.pop("until_ts", None)
+    elif natural_ref:
         resolver_result = resolve_task_ref(natural_ref, packet.task_ledger_snapshot)
+    if resolver_result is not None:
         scratch.events.append(
             _emit_entity_resolved(
                 ctx,
@@ -1319,6 +1343,24 @@ def _pre_emit_reasons(plan: ResponsePlan) -> tuple[str, ...]:
 # --- Helpers ----------------------------------------------------------------
 
 
+def _coerce_epoch_ms(value: object) -> int | None:
+    """Return ``value`` as int when it looks like an epoch-ms; else None.
+
+    The LLM emits ``since_ts`` / ``until_ts`` as part of the tool-call
+    arguments JSON (ADR-0002 Step 5 § Time-window resolver). JSON has no
+    integer/float distinction, so accept both and coerce. Anything that
+    is not a finite numeric value is treated as missing (the resolver
+    then falls back to the natural-ref path).
+    """
+    if isinstance(value, bool):  # bool is an int subclass — reject explicitly.
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return int(value)
+    return None
+
+
 def _format_open_tasks_note(packet: SituationPacket) -> str | None:
     """Render the open-task snapshot as a system note string, or None.
 
@@ -1340,7 +1382,11 @@ def _format_open_tasks_note(packet: SituationPacket) -> str | None:
         f"{bullets}\n"
         "When the user references a task by natural language (e.g. "
         "'昨天那个 task'), pass the matching `task_id` from this list "
-        "to any tool that needs one. Do not invent task_ids."
+        "to any tool that needs one. Do not invent task_ids. When the "
+        "user references a task by a time window (e.g. 'yesterday'), you "
+        "may instead pass `since_ts` and `until_ts` (epoch milliseconds) "
+        "as extra arguments — the resolver runs a time-window query "
+        "against the Task Ledger. Yesterday = [now - 86400000, now]."
     )
 
 
@@ -1520,5 +1566,6 @@ __all__ = [
     "pre_action_gate",
     "pre_emit_gate",
     "resolve_task_ref",
+    "resolve_task_ref_by_window",
     "result_interpreter",
 ]
