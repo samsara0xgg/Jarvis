@@ -392,31 +392,37 @@ delivery picked only `stdout` (the runtime's log file). Allen
 received zero audio and zero banner notification — and stdout in
 `--no-detach` mode is just the terminal where jarvis was launched.
 
-**ADR contract violated:** Per ADR-0002 § Negative-path appendix
-("Codex 超时，未完成"), Limitation utterances on failure paths
-**MUST** be delivered via voice + banner so Allen knows the task
-ended without success even when not at the terminal.
+**Re-classification (2026-05-18 evening after re-reading ADR
+§ "Attention channel → physical surface mapping" line 1017-1044):**
+this is **NOT an ADR violation** — it is a **spec/ADR gap**.
 
-**Distinct from B-0006** (handoff-prompt-named, separate entry
-pending): B-0006 is `attention_channel="silent_log"`
-`delivered_via=[]` — total silence, claim chain present.
-B-0005 is `attention_channel="queue_review"` `delivered_via=["stdout"]`
-— partial delivery, voice + banner missing. Two different L3
-Attention Policy routing branches both under-deliver against the
-ADR's Negative-path requirements.
+ADR line 1027-1028 defines `queue_review → cli_stdout` only (no
+banner, no voice) as the channel's correct physical surface set.
+So `delivered_via=["stdout"]` is literally what ADR specifies for
+`queue_review`. The mismatch with Allen's expectation isn't at the
+channel-delivery layer — it's that the **Attention Policy chose
+`queue_review` for a Limitation claim** when arguably `voice_notify`
+(ADR line 1031, "the flagship channel for the scenario") would
+match the user's mental model better. ADR does not say which
+channel a `Limitation` claim type must route to.
 
-**Suspect surface:** L3 Attention Policy (`jarvis/decision/`
-attention-policy table) or the SurfaceResponseRenderer wiring —
-the `Limitation` claim type maps to a `queue_review` attention
-channel and the channel's `delivered_via` set excludes
-`voice`/`banner`.
+**Distinct from B-0006** (same family — see entry below): both are
+the same gap in L3 Attention Policy routing for Limitation claims;
+B-0005 is the timeout-path observation, B-0006 is the verify-fail
+path. Both `queue_review` and `silent_log` channels themselves are
+behaving per ADR-0002 spec; the open question is which channel
+Limitation should target.
 
-**Fix scope:** TBD — audit the attention-policy table against
-ADR § Negative-path requirements, then either
-(a) re-route `Limitation` to a `voice+banner` channel, or
-(b) extend `queue_review`'s delivery set to include `voice` and
-`banner`. Choice (a) keeps `queue_review` semantics intact;
-choice (b) collapses two channels.
+**Suspect surface:** L3 Attention Policy table — the mapping from
+`claim_type=Limitation × source=spawn_worker` to attention channel
+is not pinned by ADR.
+
+**Disposition (under Allen X decision, see P-0010 update below):**
+**spec/ADR gap, not a bug.** Resolution requires either an ADR-0002
+amendment that pins Limitation→voice_notify (or another channel
+with voice+banner physical surfaces), or a spec.html edit clarifying
+Attention Policy defaults for Limitation claims. Out of scope for
+this session.
 
 ---
 
@@ -500,6 +506,80 @@ regardless.
 
 **Fix scope:** TBD. After P-0009 is mitigated, re-run A3 and check
 whether Codex emits a `function_call` with `name == "submit_report"`.
+
+**2026-05-18 evening update (after B-0004 fix + second A3 retry):**
+
+P-0009 was implicitly mitigated by the per-spawn `CODEX_HOME`
+isolation (commit `2841ad8`), so RTK is no longer wrapping Codex's
+shell calls. We re-ran A3 (17:23-17:33 PDT) and got hard data:
+
+- 9 × `function_call` total
+- 9 × `exec_command`, **0 × `submit_report`**
+- MCP `tools/list` handshake confirmed submit_report was advertised
+  (Codex KNEW the tool existed)
+- Codex completed the implementation (rate_limiter.py +41, 3/3
+  pytest pass) but chose `exec_command` throughout, never invoked
+  the MCP tool, never signalled completion
+
+This eliminated cause (a) (server-not-reachable) and confirmed
+cause (b): Codex with no completion-signalling instruction in its
+base_instructions + a sparse task prompt does not autonomously
+call submit_report.
+
+**Allen X decision (2026-05-18 ~19:30 PDT):** **By-design under
+ADR-0002 Negative-path appendix line 1596-1600.** When Codex
+doesn't call submit_report, J11 (exactly-once call) is not
+applicable; J12 fires (`worker.report_missing` + Limitation Claim
+at `level=reported`). Current behavior is ADR-aligned. No code fix.
+
+**Latent issue deferred:** Tier-2 J flagship-happy test
+(`test_real_codex_flagship.py::happy_path`, currently skipped)
+asserts J11 unconditionally. When that test is un-stubbed, real
+Codex's actual behavior will keep failing it. Three forward paths
+(all deferred to a future session):
+  (1) Re-state J11 as conditional ("when submit_report IS called,
+      it must be called exactly once").
+  (2) Find a way to make real Codex call submit_report (e.g.
+      tighter task prompt, structured spec injection — bounded by
+      `feedback_no_prompt_patches`).
+  (3) Accept Tier-2 J:happy cannot be fully validated with real
+      Codex 0.130 + sparse prompts.
+
+**Status:** **By-design (closed for this session)**, with J11
+un-stub problem deferred.
+
+---
+
+## B-0006 · Verify-fail path routes to `silent_log` — total surface silence
+
+**Discovered:** 2026-05-18 from prior session work
+(observation 11005/11016). Not reproduced live in this session;
+recorded here as the verify-fail-path companion to B-0005 above.
+
+**Symptom (recorded, not live-reproduced):** On the verify-fail
+path (Codex completed, diff exists, but `verify_command` returned
+non-zero), `surface.response_emitted` payload had
+`attention_channel="silent_log"` and `delivered_via=[]`. Allen
+received zero notification despite the full claim chain being
+present (claim.created + evidence.attached + gate.evaluated).
+
+**Re-classification (2026-05-18 evening, same analysis as B-0005):**
+ADR line 1027 defines `silent_log → (none)` — event appended, no
+user-visible side-effect. So `delivered_via=[]` is literally the
+correct behavior for `silent_log`. The mismatch is again at the
+Attention Policy routing level: `Limitation` claims on verify-fail
+paths are routed to `silent_log` when arguably they should go to
+`voice_notify`.
+
+**Distinct from B-0005:** different terminal state of `spawn_worker`
+action — B-0005 is `action.timeout_assumed`, B-0006 is `verify_diff`
+with non-zero exit code. Both produce Limitation Claims but the
+Attention Policy picks different channels. The underlying spec gap
+(which channel does Limitation belong to?) is identical.
+
+**Disposition (under Allen X decision):** **spec/ADR gap, not a
+bug.** Same resolution path as B-0005: would require an ADR-0002
+amendment or spec.html edit. Out of scope for this session.
 
 ---
 
