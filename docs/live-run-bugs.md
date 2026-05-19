@@ -343,9 +343,80 @@ the pre-fix failure mode on a fresh machine).
   when source exists, silent skip when source absent, skip when
   caller pre-sets `CODEX_HOME`.
 
-**Status:** Fixed (this commit). Unit tests structurally verify
-the seed; live A3 retry pending to confirm the websocket connects
-with the seeded auth.
+**Status:** Fixed (commit `e006ed6`) — **verified live 2026-05-18
+17:23-17:33 PDT** via second A3 retry under the same
+`/tmp/jarvis-codex-debug` `CODEX_HOME` debug override (manually
+pre-seeded with `~/.codex/auth.json` before the run).
+
+Live verification numbers from `/tmp/jarvis-codex-debug/logs_2.sqlite`:
+
+| | Before fix (16:40 run) | After fix (17:23 run) |
+|---|---|---|
+| `auth_header_attached` | `false` | `true` |
+| `auth_mode` | `""` | `"Chatgpt"` |
+| 401 `Unauthorized` count | 7 | 0 |
+| `function_call` items | 0 | 9 |
+| Codex turn duration | 17 s (crash) | 600 s (timeout) |
+| Fixture `pytest` result | n/a (no diff) | **3/3 pass** |
+
+The websocket transport now attaches the Authorization header from
+the seeded `auth.json`. Codex actually completed the TokenBucket
+implementation (`/tmp/jarvis-day2-fixture/demo/rate_limiter.py`,
++41 LOC) before jarvis's 600 s budget tripped. P-0010 reproduces
+on the same run (next entry); B-0005 surfaced from this run.
+
+---
+
+## B-0005 · Limitation surface emission delivers via `stdout` only — voice + banner missing
+
+**Discovered:** 2026-05-18 17:33 PDT from second A3 retry (the
+post-B-0004 run that produced the verification numbers above).
+
+**Symptom:** After Codex hit the 600 s budget, the L3 → claim chain
+fired correctly (B-0003 fix held), then:
+
+```
+35 claim.created          type=Limitation
+                          statement="tool spawn_worker reported limitation: codex_turn_timeout"
+36 evidence.attached      level=reported relation=limits
+39 surface.response_emitted attention_channel=queue_review
+                            delivered_via=["stdout"]
+                            text="Codex 超时，未完成"
+                            voice_text="Codex 超时，未完成"
+```
+
+`attention_channel="queue_review"` and `delivered_via=["stdout"]` —
+the response *did* emit (so this is NOT a B-0006-style total
+silence), and the `voice_text` field is populated, but the actual
+delivery picked only `stdout` (the runtime's log file). Allen
+received zero audio and zero banner notification — and stdout in
+`--no-detach` mode is just the terminal where jarvis was launched.
+
+**ADR contract violated:** Per ADR-0002 § Negative-path appendix
+("Codex 超时，未完成"), Limitation utterances on failure paths
+**MUST** be delivered via voice + banner so Allen knows the task
+ended without success even when not at the terminal.
+
+**Distinct from B-0006** (handoff-prompt-named, separate entry
+pending): B-0006 is `attention_channel="silent_log"`
+`delivered_via=[]` — total silence, claim chain present.
+B-0005 is `attention_channel="queue_review"` `delivered_via=["stdout"]`
+— partial delivery, voice + banner missing. Two different L3
+Attention Policy routing branches both under-deliver against the
+ADR's Negative-path requirements.
+
+**Suspect surface:** L3 Attention Policy (`jarvis/decision/`
+attention-policy table) or the SurfaceResponseRenderer wiring —
+the `Limitation` claim type maps to a `queue_review` attention
+channel and the channel's `delivered_via` set excludes
+`voice`/`banner`.
+
+**Fix scope:** TBD — audit the attention-policy table against
+ADR § Negative-path requirements, then either
+(a) re-route `Limitation` to a `voice+banner` channel, or
+(b) extend `queue_review`'s delivery set to include `voice` and
+`banner`. Choice (a) keeps `queue_review` semantics intact;
+choice (b) collapses two channels.
 
 ---
 
