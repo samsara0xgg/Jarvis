@@ -288,6 +288,67 @@ Limitation utterance via voice + banner.
 
 ---
 
+## B-0004 · P-0009 isolation strips `auth.json` → Codex websocket transport 401s on every request
+
+**Discovered:** 2026-05-18 from A3 retry at 16:40 PDT (session
+`/tmp/jarvis-codex-debug/sessions/2026/05/18/rollout-2026-05-18T16-40-25-*.jsonl`,
+Codex logs DB `/tmp/jarvis-codex-debug/logs_2.sqlite`).
+
+**Symptom:** Codex spawned, ran 17s, emitted `turn/completed` with
+zero `function_calls`. `diff.txt` was 0 bytes (sha256 of empty
+string), `/tmp/jarvis-day2-fixture/demo/rate_limiter.py` unchanged.
+`worker.report_missing` fired (P-0010 reproduced).
+
+**Smoking gun in `logs_2.sqlite`:** 7 sequential `codex_api::endpoint::responses_websocket`
+ERRORs (ids 170, 243, 298, 361, 417, 473, 529), each with body
+`failed to connect to websocket: HTTP error: 401 Unauthorized, url:
+wss://api.openai.com/v1/responses`. The matching `feedback_tags`
+INFO line (id=173) is decisive:
+
+```
+endpoint="/responses" auth_header_attached=false auth_header_name=""
+auth_mode="" auth_env_openai_api_key_present=true
+auth_env_codex_api_key_present=false auth_env_codex_api_key_enabled=false
+```
+
+`OPENAI_API_KEY` is in the spawned process's env (`auth_env_openai_api_key_present=true`),
+but Codex chose `auth_mode=""` (none) and attached no Authorization
+header (`auth_header_attached=false`). The auth-recovery path then
+declined to retry: `auth.mode="managed"` `auth.outcome="recovery_not_run"`
+`auth.recovery_reason="not_chatgpt_auth"` (id=174). All 7 retries
+hit the same 401, then `turn/completed` fired with empty output.
+
+**Root cause:** Codex 0.130's `responses_websocket` transport reads
+credentials from `$CODEX_HOME/auth.json`, **not** from the
+`OPENAI_API_KEY` env var. The P-0009 fix (commit 2841ad8) created
+a per-spawn empty `CODEX_HOME` tmpdir to isolate `AGENTS.md` /
+`config.toml`, which also removed the only auth path the websocket
+transport reads. Hermes works because it does not isolate
+`CODEX_HOME` at all — Codex inherits the user's default `~/.codex/`
+which has `auth.json`.
+
+**Fix:** In `jarvis/execution/codex_action.py:run_codex_action`,
+after creating the per-spawn `CODEX_HOME` tmpdir, copy
+`~/.codex/auth.json` into it. P-0009's isolation intent
+(`AGENTS.md` / `config.toml`) is preserved — only the credentials
+file is seeded. Source-missing case is a silent skip (the worker
+will 401, but the driver itself returns cleanly — same shape as
+the pre-fix failure mode on a fresh machine).
+
+**Files touched:**
+- `jarvis/execution/codex_action.py` — promote `Path` from
+  `TYPE_CHECKING` to runtime, add 4-line seed step after the
+  `mkdtemp` in the isolation branch.
+- `tests/unit/test_codex_action.py` — 3 new tests: seed copies
+  when source exists, silent skip when source absent, skip when
+  caller pre-sets `CODEX_HOME`.
+
+**Status:** Fixed (this commit). Unit tests structurally verify
+the seed; live A3 retry pending to confirm the websocket connects
+with the seeded auth.
+
+---
+
 ## P-0009 · Cross-contamination: ~/.codex/AGENTS.md instructs the spawned Codex worker to use RTK
 
 **Where:** `/Users/alllllenshi/.codex/AGENTS.md` line 1:

@@ -468,6 +468,117 @@ def test_run_codex_action_respects_caller_provided_codex_home(
     assert client.env.get("CODEX_HOME") == explicit_home
 
 
+def test_run_codex_action_seeds_auth_json_into_isolated_codex_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B-0004: per-spawn CODEX_HOME must contain a copy of ``~/.codex/auth.json``.
+
+    Codex 0.130's ``responses_websocket`` transport reads credentials from
+    ``$CODEX_HOME/auth.json``, not from ``OPENAI_API_KEY``. Without this
+    seed, the isolated tmpdir is empty and every request 401s
+    (live-verified: 7 retries, zero tool calls, empty diff).
+    """
+    fake_home = tmp_path / "home"
+    (fake_home / ".codex").mkdir(parents=True)
+    fake_auth = fake_home / ".codex" / "auth.json"
+    fake_auth.write_text('{"OPENAI_API_KEY":"sk-test"}')
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    copy_calls: list[tuple[str, str]] = []
+
+    def recording_copy(src: object, dst: object) -> None:
+        copy_calls.append((str(src), str(dst)))
+
+    monkeypatch.setattr("jarvis.execution.codex_action.shutil.copy2", recording_copy)
+
+    template = FakeClient(
+        notifications=[{"method": "turn/completed", "params": {}}],
+    )
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error is None
+    assert len(copy_calls) == 1
+    src, dst = copy_calls[0]
+    assert src == str(fake_auth)
+    assert dst.endswith("/auth.json")
+    assert ca._CODEX_HOME_PREFIX in dst  # noqa: SLF001 — test of private constant
+
+
+def test_run_codex_action_skips_auth_json_seed_when_source_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``~/.codex/auth.json`` -> silent skip, driver must not raise.
+
+    Keeps the failure mode identical to pre-B-0004 behavior on fresh
+    machines: the worker may 401, but the driver itself returns cleanly.
+    """
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()  # No .codex/ underneath.
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    copy_calls: list[tuple[str, str]] = []
+
+    def recording_copy(src: object, dst: object) -> None:
+        copy_calls.append((str(src), str(dst)))
+
+    monkeypatch.setattr("jarvis.execution.codex_action.shutil.copy2", recording_copy)
+
+    template = FakeClient(
+        notifications=[{"method": "turn/completed", "params": {}}],
+    )
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error is None
+    assert copy_calls == []
+
+
+def test_run_codex_action_skips_auth_seed_when_caller_provides_codex_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-set ``CODEX_HOME`` -> driver does not seed auth.json (caller's job).
+
+    The pre-set-home escape hatch is for callers managing their own home
+    dir; auto-seeding their auth.json would be a surprise side effect.
+    """
+    fake_home = tmp_path / "home"
+    (fake_home / ".codex").mkdir(parents=True)
+    (fake_home / ".codex" / "auth.json").write_text("{}")
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    copy_calls: list[tuple[str, str]] = []
+
+    def recording_copy(src: object, dst: object) -> None:
+        copy_calls.append((str(src), str(dst)))
+
+    monkeypatch.setattr("jarvis.execution.codex_action.shutil.copy2", recording_copy)
+
+    template = FakeClient(
+        notifications=[{"method": "turn/completed", "params": {}}],
+    )
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    explicit_home = str(tmp_path / "explicit-codex-home")
+    result = ca.run_codex_action(
+        task_goal="t",
+        cwd=tmp_path,
+        timeout_s=5.0,
+        env={"CODEX_HOME": explicit_home},
+    )
+
+    assert result.error is None
+    assert copy_calls == []
+
+
 # ---------------------------------------------------------------------------
 # _extract_thread_id — protocol-parse semantics (B-0002).
 # ---------------------------------------------------------------------------

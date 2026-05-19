@@ -35,13 +35,13 @@ import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jarvis.execution.codex_client import CodexAppServerClient
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
 # Minimum codex CLI version we accept. Bumping is a one-line edit. The
 # Step-7 module exposes :func:`ensure_codex_version_supported` as a helper;
@@ -378,6 +378,13 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
     if env_dict.get("CODEX_HOME") in (None, ""):
         codex_home_dir = tempfile.mkdtemp(prefix=_CODEX_HOME_PREFIX)
         env_dict["CODEX_HOME"] = codex_home_dir
+        # Codex 0.130 responses_websocket reads auth from
+        # $CODEX_HOME/auth.json, not OPENAI_API_KEY (B-0004 live-verified:
+        # empty home -> 401 on every request). Seed the isolated dir so
+        # the worker can reach api.openai.com.
+        source_auth = Path("~/.codex/auth.json").expanduser()
+        if source_auth.is_file():
+            shutil.copy2(source_auth, Path(codex_home_dir) / "auth.json")
 
     start_mono = time.monotonic()
     client = CodexAppServerClient(codex_bin=codex_bin, extra_args=extra_args, env=env_dict)
