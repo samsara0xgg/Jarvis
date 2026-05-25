@@ -635,4 +635,133 @@ prompt instruction.
 
 ---
 
+## B-0007 · jarvis-tools MCP wire schema field naming + protocol version
+
+**Where:** `jarvis/execution/codex_mcp_tools.py:54` (`_PROTOCOL_VERSION`)
+and `jarvis/execution/codex_mcp_tools.py:77` (`SUBMIT_REPORT_TOOL`
+schema key).
+
+**Symptom (A4 r1-r6):** Codex 0.130 app-server reported the
+jarvis-tools MCP server `status=failed` with `error="MCP startup
+failed: Unexpected response type"`. Codex never offered
+`submit_report` as a callable tool; the worker either ignored the
+goal or fell back to shell, producing `worker.report_missing` every
+run. Misdiagnosed for two sessions as "codex app-server ignores
+external MCP servers from config.toml" until a probe (2026-05-25)
+captured the full `mcpServer/startupStatus` stream and surfaced the
+real error string.
+
+**Root cause:** jarvis-tools advertised the older MCP wire format —
+`protocolVersion: "2024-11-05"` and the snake_case key
+`input_schema` on `SUBMIT_REPORT_TOOL`. Codex 0.130 negotiates
+MCP `protocolVersion: 2025-06-18` and expects the camelCase
+`inputSchema` key per the 2025-06-18 spec; the snake_case key
+caused Codex's MCP client to reject the `tools/list` payload as
+"Unexpected response type" and abort startup.
+
+**Fix landed (commit b62fd13):** Rename schema key
+`input_schema` → `inputSchema`; bump `_PROTOCOL_VERSION` to
+`"2025-06-18"`. Post-fix isolated probe shows `jarvis-tools` going
+`starting → ready` and Codex emitting an `item/tool_call` for
+`submit_report` during the turn. The downstream dispatch path
+still hangs — see B-0013.
+
+**Related:** ADR-0002 § Step 6 / Step 7 code example and test
+contract were aligned to the camelCase key in the same commit so
+the canonical doc matches what Codex actually consumes.
+
+---
+
+## B-0008 · Codex pycache cleanup deadlocks under approval_policy=on-request
+
+**Where:** `jarvis/execution/codex_action.py:_build_extra_args`.
+Before commit 373c0fb the driver did not pass `approval_policy`,
+so Codex 0.130 used its default value `on-request`.
+
+**Symptom (A4 r7-r8, live-verified from preserved rollout JSONL):**
+After Codex completed the TokenBucket implementation and the
+visible tests passed, the model attempted
+`rm -r demo/__pycache__ tests/__pycache__` to keep the diff
+minimal. Codex 0.130 classifies `rm -r` as escalation-required and
+emitted `function_call` with
+`sandbox_permissions="require_escalated"` and a `justification`
+prompt asking the operator to approve. In a non-interactive jarvis
+spawn no operator exists, the function_call stalled, and jarvis's
+600s turn budget timed out the run 540s later. r8 rollout item
+[56] is the deadlocked exec_command; item [58]
+function_call_output reads `"aborted by user after 542.7s"`.
+
+**Fix landed (commit 373c0fb):** Add `-c approval_policy=never` to
+the spawn flag set. With `never`, Codex auto-denies escalation
+requests instead of blocking; the model receives the denial, skips
+the destructive command, and continues to `submit_report`. r9-r11
+rollout JSONL confirms `0` `require_escalated` function_calls.
+
+**Note:** B-0008 is independent of B-0007. The two stacked because
+r7 was the first run where the inputSchema fix actually let Codex
+*find* submit_report — which made the model behave as a "real
+worker" (clean diff, run tests, clean up), which surfaced the
+escalation path that the pre-fix runs never reached.
+
+---
+
+## B-0013 · Codex 0.130 receives MCP function_call but never dispatches to subprocess (OPEN)
+
+**Where:** Codex 0.130 internal MCP dispatch path. Reproduced
+deterministically in A4 r9, r10, r11 (after B-0007 + B-0008 fixes).
+Not a jarvis bug per se — the jarvis-tools subprocess is correctly
+spawned, reaches `status=ready`, and responds to direct
+`tools/call` requests in 0.2s (verified by isolated stdio probe).
+
+**Symptom:** OpenAI returns a `response.output_item.done` for a
+`function_call` with `name=submit_report`,
+`namespace="mcp__jarvis_tools__"`, and a fully-formed
+`status=ok` + `summary=...` argument payload. Codex's app-server
+emits exactly one `item/started` notification for this call and
+then sits idle for 521-573s — no `item/completed`, no second
+OpenAI websocket round, no `turn/completed`. The 600s jarvis
+turn budget eventually fires `turn/interrupt`; Codex synthesizes
+a `function_call_output` reading `"aborted by user after 521.7s"`
+and the conversation never resumes. `codex_otel.trace_safe`
+reports `model_needs_follow_up=true` and `needs_follow_up=true`,
+confirming Codex knows the turn is not done — yet no MCP
+dispatch ever happens. `logs_2.sqlite` has 0 ERROR rows and the
+24 WARN rows in r11 are unrelated skill-icon noise.
+
+**Ruled out:**
+
+  (a) jarvis-tools server bug — direct stdio probe round-trips
+      `initialize` + `tools/call submit_report` in 0.2s.
+  (b) MCP protocolVersion mismatch — bumped 2024-11-05 →
+      2025-06-18 in B-0007; behaviour unchanged in r10.
+  (c) approval-policy block — `approval_policy=never` (B-0008 fix)
+      eliminates `require_escalated`; behaviour unchanged in r9.
+  (d) Missing Codex feature flags — enabling
+      `features.enable_mcp_apps=true` and
+      `features.builtin_mcp=true` (Codex 0.130 "under development"
+      MCP feature gates) in r11 did NOT change the dispatch
+      behaviour. We left both flags on as defensible alignment.
+
+**Remaining hypotheses to test next session (cheap, no LLM burn):**
+
+  1. Hermes uses the same `codex_app_server` transport — does
+     Hermes hit this wall too, or does it have configuration we
+     haven't replicated? Compare `agent/transports/codex_app_server.py`
+     and the spawn-flag set.
+  2. The `apps_mcp_path_override` feature flag (still under
+     development) might be the third needed gate.
+  3. `dangerously-bypass-approvals-and-sandbox` (or its
+     `-c`-equivalent) might lift a deeper gate that
+     `approval_policy=never` doesn't reach.
+  4. Codex source code (locally available via `codex --version`
+     binary path) might show the exact dispatch precondition.
+
+**Impact:** Belt-and-suspenders is degraded to suspenders only.
+The ADR-0002 §3.5.8 evidence ladder still works (r6 demonstrated
+this end-to-end with `task.verified` via subprocess exit-0), so
+the production happy path is intact via fallback. submit_report
+remains the desired ideal but not blocking for DoD.
+
+---
+
 
