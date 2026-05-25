@@ -12,7 +12,7 @@ Coverage:
 * TOML escape helpers (``_toml_str`` / ``_toml_list_quote``) against
   weird-path fixtures: spaces, single/double quotes, backslashes,
   non-ASCII.
-* Driver happy path: all 8 ``-c`` flags appear in ``extra_args``;
+* Driver happy path: all 11 ``-c`` flags appear in ``extra_args``;
   ``submit_report`` capture surfaces the structured args; ``turn_id`` /
   tokens flow through.
 * Multi-call capture: when the queue carries multiple submit_report tool
@@ -215,19 +215,19 @@ def test_toml_list_quote_handles_weird_chars() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _build_extra_args — the 8 -c flag slice.
+# _build_extra_args — the 11 -c flag slice.
 # ---------------------------------------------------------------------------
 
 
-def test_build_extra_args_has_eight_c_flags(tmp_path: Path) -> None:
-    """``_build_extra_args`` emits exactly 8 ``-c`` flag pairs (16 argv tokens)."""
+def test_build_extra_args_has_eleven_c_flags(tmp_path: Path) -> None:
+    """``_build_extra_args`` emits exactly 11 ``-c`` flag pairs (22 argv tokens)."""
     args = ca._build_extra_args(  # noqa: SLF001 - test of private helper
         cwd=tmp_path,
         model="gpt-5.5",
         reasoning_effort="xhigh",
     )
-    assert args.count("-c") == 8
-    assert len(args) == 16
+    assert args.count("-c") == 11
+    assert len(args) == 22
 
 
 def test_build_extra_args_carries_all_required_keys(tmp_path: Path) -> None:
@@ -241,6 +241,9 @@ def test_build_extra_args_carries_all_required_keys(tmp_path: Path) -> None:
     for key in (
         "model=gpt-5.5",
         "model_reasoning_effort=xhigh",
+        "approval_policy=never",
+        "features.enable_mcp_apps=true",
+        "features.builtin_mcp=true",
         "sandbox_mode=workspace-write",
         "sandbox_workspace_write.writable_roots=",
         "mcp_servers.jarvis-tools.command=",
@@ -302,8 +305,8 @@ def test_run_codex_action_happy_path_captures_submit_report(
     # FakeClient instance is captured in holder[0] post-construction.
     client = holder[0]
     assert client.codex_bin == "codex"
-    assert client.extra_args.count("-c") == 8
-    # The 8 spec keys appear in the captured extra_args.
+    assert client.extra_args.count("-c") == 11
+    # The 11 spec keys appear in the captured extra_args.
     joined = "\n".join(client.extra_args)
     assert "mcp_servers.jarvis-tools.command=" in joined
     assert "mcp_servers.jarvis-tools.args=" in joined
