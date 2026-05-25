@@ -199,6 +199,93 @@ def test_registry_cost_recorded_is_l3_owned() -> None:
     assert schema.required_payload == ("kind", "model")
 
 
+# --- ADR-0003 Inherent Text Surface registry extensions --------------------
+
+
+def test_registry_turn_failed_registered() -> None:
+    """ADR-0003 D7: `turn.failed` is the watcher-level catch-all event.
+
+    Registered Day-2 so emit_event(type="turn.failed", ...) is callable;
+    the emit-site lands in Step 8 inside runtime/inherent_loop.py's
+    _user_intent_watcher when drive_turn raises uncaught.
+    """
+    schema = EventTypeRegistry.get("turn.failed")
+    assert schema is not None, "turn.failed must be in EventTypeRegistry per ADR-0003 D7"
+    assert schema.event_type == "turn.failed"
+    assert schema.owner_layer == "L5"
+    assert schema.required_payload == ("turn_id", "exception_repr")
+    assert schema.optional_payload == ("trigger_event_id",)
+    assert schema.schema_version == 1
+
+
+def test_emit_turn_failed_happy_path(tmp_path: Path) -> None:
+    """emit_event with the minimum required payload succeeds and round-trips."""
+    with closing(_open(tmp_path)) as conn:
+        evt = emit_event(
+            conn,
+            type="turn.failed",
+            payload={
+                "turn_id": "T1",
+                "exception_repr": "RuntimeError('boom')",
+            },
+            ts_epoch_ms=0,
+        )
+    assert evt.type == "turn.failed"
+    assert evt.schema_version == 1
+    assert evt.payload == {
+        "turn_id": "T1",
+        "exception_repr": "RuntimeError('boom')",
+    }
+
+
+def test_emit_turn_failed_accepts_optional_trigger_event_id(tmp_path: Path) -> None:
+    """`trigger_event_id` is optional; supplying it round-trips through payload."""
+    with closing(_open(tmp_path)) as conn:
+        parent = emit_event(
+            conn,
+            type="surface.user_intent",
+            payload={"transcript": "hi", "turn_id": "T1"},
+            ts_epoch_ms=0,
+        )
+        evt = emit_event(
+            conn,
+            type="turn.failed",
+            payload={
+                "turn_id": "T1",
+                "exception_repr": "RuntimeError('boom')",
+                "trigger_event_id": parent.event_uid,
+            },
+            ts_epoch_ms=1,
+        )
+    assert evt.payload["trigger_event_id"] == parent.event_uid
+
+
+def test_emit_turn_failed_rejects_missing_turn_id(tmp_path: Path) -> None:
+    """Missing `turn_id` raises MissingPayloadFieldError; nothing written."""
+    with closing(_open(tmp_path)) as conn:
+        with pytest.raises(MissingPayloadFieldError):
+            emit_event(
+                conn,
+                type="turn.failed",
+                payload={"exception_repr": "RuntimeError('boom')"},
+                ts_epoch_ms=0,
+            )
+        assert list(iter_events(conn)) == []
+
+
+def test_emit_turn_failed_rejects_missing_exception_repr(tmp_path: Path) -> None:
+    """Missing `exception_repr` raises MissingPayloadFieldError; nothing written."""
+    with closing(_open(tmp_path)) as conn:
+        with pytest.raises(MissingPayloadFieldError):
+            emit_event(
+                conn,
+                type="turn.failed",
+                payload={"turn_id": "T1"},
+                ts_epoch_ms=0,
+            )
+        assert list(iter_events(conn)) == []
+
+
 # --- emit_event happy path --------------------------------------------------
 
 

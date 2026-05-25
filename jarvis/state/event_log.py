@@ -448,6 +448,24 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("reason",),
         schema_version=1,
     ),
+    # --- ADR-0003 Inherent Text Surface extensions ---
+    EventTypeSchema(
+        # Watcher-level catch-all when drive_turn raises uncaught
+        # (registered Day-2 per ADR-0003 D7; emit-site lands in Step 8
+        # inside runtime/inherent_loop.py's _user_intent_watcher).
+        # Records the meta-failure as a durable fact per spec §3.3.1.
+        # No Day-2 projection consumer; the future task / claim ladder
+        # may fold this into Limitation Claims (spec §3.4.11).
+        # owner_layer is L5 because Inherent surface output is L5 and
+        # turn.failed is the surface-layer's meta-record of a failed
+        # turn; runtime/inherent_loop is the composition root, not a
+        # numbered spec layer.
+        event_type="turn.failed",
+        owner_layer="L5",
+        required_payload=("turn_id", "exception_repr"),
+        optional_payload=("trigger_event_id",),
+        schema_version=1,
+    ),
 )
 
 
