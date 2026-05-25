@@ -76,6 +76,34 @@ _POLL_INTERVAL_S: float = 0.25
 # MCP-injected tools (P-0009 in ``docs/live-run-bugs.md``).
 _CODEX_HOME_PREFIX: str = "jarvis-codex-home-"
 
+# ADR-0002 §643-646 mandates that codex_action.py repeat the
+# submit_report rule as a system prompt (Prompt-pressure source 2).
+# In Codex 0.130 the only working channel for jarvis-side instructions
+# is ``$CODEX_HOME/AGENTS.md`` -- it is the lone path the app-server
+# reports in ``instructionSources`` on ``thread/start``. The schema-
+# declared ``ThreadStartParams.developerInstructions`` and
+# ``baseInstructions`` fields are accepted but silently dropped
+# (live-verified 2026-05-18: setting them leaves ``instructionSources``
+# empty and ``turn_context.developer_instructions`` null).
+# Per-spawn ``CODEX_HOME`` isolation (P-0009) means we own this file
+# outright: we write the text below into the isolated tempdir at spawn
+# time, so the AGENTS.md below is the entire developer-role instruction
+# stream the worker sees. Content is the direct translation of ADR §643
+# and the ``SUBMIT_REPORT_TOOL.description`` in
+# ``codex_mcp_tools.py:73-76``; it adds no architectural elements
+# beyond what ADR-0002 § submit_report tool injection already pins.
+_JARVIS_AGENTS_MD: str = (
+    "You are running a task on behalf of Jarvis. "
+    "You MUST call the `submit_report` tool exactly once before ending the turn. "
+    "The report is how Jarvis reads your result; without it the run is marked "
+    "report_missing and treated as a failure.\n\n"
+    "Required submit_report fields:\n"
+    "- status: one of ok, partial, failed, blocked\n"
+    "- summary: short description of what you did\n\n"
+    "After completing the task (or determining you cannot complete it), "
+    "call submit_report with the appropriate status."
+)
+
 
 class CodexVersionTooLowError(RuntimeError):
     """Raised when ``codex --version`` parses below :data:`_MIN_VERSION`."""
@@ -385,6 +413,33 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
         source_auth = Path("~/.codex/auth.json").expanduser()
         if source_auth.is_file():
             shutil.copy2(source_auth, Path(codex_home_dir) / "auth.json")
+        # Inject the jarvis-controlled AGENTS.md (ADR-0002 §644
+        # "system prompt in codex_action.py repeats the rule"). This is
+        # the only working instruction-source channel in Codex 0.130
+        # (see ``_JARVIS_AGENTS_MD`` for the live-verification note).
+        # The per-spawn isolated home means the user's
+        # ``~/.codex/AGENTS.md`` cannot leak in and our file is the
+        # entire developer-role instruction stream.
+        (Path(codex_home_dir) / "AGENTS.md").write_text(_JARVIS_AGENTS_MD)
+        # B-0007 fix: register the jarvis-tools MCP server via
+        # config.toml. Codex 0.130 silently ignores
+        # ``mcp_servers.X.Y=Z`` dotted keys passed via ``-c`` flags;
+        # the MCP registry is populated only from
+        # ``[mcp_servers."<name>"]`` table headers in config.toml
+        # (Hermes pattern, see
+        # ``agent/transports/hermes_tools_mcp_server.py``). Without
+        # this write the spawned worker only sees Codex's 15 built-in
+        # tools and can never call submit_report -- live-verified
+        # 2026-05-21: 0 ``jarvis-tools`` mentions in the 4MB session
+        # log, 15-tool API requests across A4 r1-r5.
+        config_toml = (
+            '[mcp_servers."jarvis-tools"]\n'
+            f"command = {_toml_str(sys.executable)}\n"
+            'args = ["-m", "jarvis.execution.codex_mcp_tools"]\n'
+            "startup_timeout_sec = 30.0\n"
+            "tool_timeout_sec = 600.0\n"
+        )
+        (Path(codex_home_dir) / "config.toml").write_text(config_toml)
 
     start_mono = time.monotonic()
     client = CodexAppServerClient(codex_bin=codex_bin, extra_args=extra_args, env=env_dict)
@@ -410,8 +465,14 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
         # Remove the per-spawn empty CODEX_HOME if we created one.
         # ``ignore_errors=True`` ensures a stuck file (e.g. NFS lock) never
         # masks the real result; the dir is a few bytes empty in steady state.
+        # ``JARVIS_PRESERVE_CODEX_HOME=1`` keeps the dir on disk for
+        # post-mortem inspection (rollout JSONL, ``AGENTS.md``,
+        # ``instructionSources`` in ``logs.sqlite``) -- debug only.
         if codex_home_dir is not None:
-            shutil.rmtree(codex_home_dir, ignore_errors=True)
+            if os.environ.get("JARVIS_PRESERVE_CODEX_HOME"):
+                sys.stderr.write(f"[jarvis] preserved CODEX_HOME={codex_home_dir}\n")
+            else:
+                shutil.rmtree(codex_home_dir, ignore_errors=True)
         # ``thread_id`` is unused in the result but kept in the signature
         # so the closure is documented (Step 10 may want it for events).
         del thread_id
@@ -439,7 +500,11 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
             thread_id=None,
         )
 
-    # Step 3: thread/start.
+    # Step 3: thread/start. The submit_report prompt-pressure layer is
+    # delivered via ``$CODEX_HOME/AGENTS.md`` (written above) -- the
+    # only working instruction-source channel in Codex 0.130
+    # (live-verified 2026-05-18). Passing ``developerInstructions`` /
+    # ``baseInstructions`` here is a no-op so we omit them.
     try:
         ts_result = client.request("thread/start", {"cwd": str(cwd)})
         thread_id = _extract_thread_id(ts_result)
