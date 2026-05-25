@@ -125,7 +125,7 @@ def test_tools_list_returns_submit_report() -> None:
     assert tool["name"] == "submit_report"
     assert "MUST call this exactly once" in tool["description"]
 
-    schema = tool["input_schema"]
+    schema = tool["inputSchema"]
     assert schema["type"] == "object"
     assert schema["required"] == ["status", "summary"]
 

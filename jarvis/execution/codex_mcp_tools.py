@@ -51,7 +51,7 @@ JsonRpcId = str | int | float | None
 # Protocol version Codex's MCP client negotiates on ``initialize``. The
 # value below mirrors what Codex's reference MCP servers report; clients
 # tolerate version skew gracefully.
-_PROTOCOL_VERSION = "2024-11-05"
+_PROTOCOL_VERSION = "2025-06-18"
 
 _SERVER_NAME = "jarvis-tools"
 _SERVER_VERSION = "0.1.0"
@@ -74,7 +74,7 @@ SUBMIT_REPORT_TOOL: dict[str, Any] = {
         "once before ending the turn. The report is how Jarvis reads "
         "your result; without it the run is marked report_missing."
     ),
-    "input_schema": {
+    "inputSchema": {
         "type": "object",
         "required": ["status", "summary"],
         "properties": {
