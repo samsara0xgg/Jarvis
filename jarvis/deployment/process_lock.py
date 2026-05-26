@@ -190,13 +190,23 @@ def _open_and_acquire(lock_path: Path) -> int:
 
 @contextmanager
 def acquire_exclusive(lock_path: Path) -> Iterator[None]:
-    """Acquire an exclusive flock on lock_path; write our pid; cleanup on exit.
+    """Acquire an exclusive flock on lock_path; write our pid; release on exit.
 
     On contention, reads the existing pid; if it points at a live
     process raises ``ProcessLockHeld``. If the holder is dead (stale
     lock), unlinks the file and retries the flock acquisition exactly
     once. If the retry still fails, raises ``ProcessLockHeld`` with the
     best-effort holder pid (0 if unreadable).
+
+    On exit the fd is closed (which atomically releases the flock per
+    POSIX). The lock file itself is intentionally NOT unlinked: keeping
+    the on-disk inode stable closes the TOCTOU window where a concurrent
+    acquirer could open the path between our flock release and our
+    unlink, then a third acquirer would ``O_CREAT`` a fresh inode and
+    both would believe they hold the lock. New acquirers always
+    ``O_RDWR | O_CREAT`` the same inode and flock serializes per-inode.
+    The stale pid left in the file is reclaimed by the stale-recovery
+    branch in ``_open_and_acquire``.
     """
     fd = _open_and_acquire(lock_path)
     try:
@@ -206,14 +216,10 @@ def acquire_exclusive(lock_path: Path) -> Iterator[None]:
         _write_pid(fd)
         yield
     finally:
-        # Best-effort cleanup: release flock (closing fd does it),
-        # then unlink the lock file. Both failures are swallowed.
-        with contextlib.suppress(OSError):
-            fcntl.flock(fd, fcntl.LOCK_UN)
+        # Release flock by closing the fd (POSIX-atomic). Do NOT unlink
+        # the lock_path — see the TOCTOU rationale in the docstring above.
         with contextlib.suppress(OSError):
             os.close(fd)
-        with contextlib.suppress(OSError):
-            lock_path.unlink()
 
 
 __all__ = [

@@ -153,20 +153,30 @@ def test_is_held_returns_false_on_unexpected_flock_error(
 # --- acquire_exclusive happy path ------------------------------------------
 
 
-def test_acquire_exclusive_writes_pid_and_unlinks_on_exit(tmp_path: Path) -> None:
-    """Happy path: pid is written during the with-block, file gone after."""
+def test_acquire_exclusive_writes_pid_and_retains_file_on_exit(tmp_path: Path) -> None:
+    """Happy path: pid is written during the with-block, file persists after.
+
+    Per the TOCTOU-fix invariant, the lock file is NOT unlinked on release —
+    the same inode must remain on disk so future acquirers ``O_CREAT`` open
+    it and flock the same inode (flock is per-inode). The stale pid left
+    in the file is harmless: subsequent acquirers either flock-contend with
+    a live holder, or run stale-pid recovery against a dead one.
+    """
     p = tmp_path / "happy.lock"
     with acquire_exclusive(p):
         assert p.exists()
         assert holder_pid(p) == os.getpid()
-    assert not p.exists()
+    assert p.exists()
+    assert holder_pid(p) == os.getpid()
 
 
 def test_acquire_exclusive_releases_flock_on_exception(tmp_path: Path) -> None:
-    """Exception inside the with-block still releases the flock + cleans up.
+    """Exception inside the with-block still releases the flock.
 
     After the exception bubbles, a second acquire on the same path must
-    succeed (proves the fd was closed and the file unlinked / re-acquirable).
+    succeed (proves the fd was closed and the flock released). The file
+    itself is allowed to persist — the post-fix contract is "release-only,
+    no unlink" — so we only assert the second acquire works.
     """
     p = tmp_path / "boom.lock"
 
@@ -178,9 +188,8 @@ def test_acquire_exclusive_releases_flock_on_exception(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="boom"):
         _enter_and_raise()
-    # File should be unlinked even on exception path.
-    assert not p.exists()
-    # Second acquire works — fd was released.
+    # Second acquire works — fd was released. File may or may not exist;
+    # what matters is the flock is released so a fresh acquire succeeds.
     with acquire_exclusive(p):
         assert holder_pid(p) == os.getpid()
 
@@ -194,8 +203,7 @@ def test_acquire_exclusive_releases_fd_on_write_failure(
     Simulates a full / quota-exceeded ~/.jarvis by making os.ftruncate
     raise ENOSPC on the first acquire. Then:
       1. acquire_exclusive propagates the OSError.
-      2. The lock file is unlinked (best-effort cleanup ran).
-      3. A fresh acquire on the same path succeeds, proving the previous
+      2. A fresh acquire on the same path succeeds, proving the previous
          fd was closed + flock released — no leak.
     """
     p = tmp_path / "nospace.lock"
@@ -213,11 +221,76 @@ def test_acquire_exclusive_releases_fd_on_write_failure(
     with pytest.raises(OSError, match="no space"), acquire_exclusive(p):
         pytest.fail("should not enter the with-block when _write_pid fails")
 
-    # Cleanup ran even though we never yielded.
-    assert not p.exists()
     # Fresh acquire on the same path works — the prior fd was released.
     with acquire_exclusive(p):
         assert holder_pid(p) == os.getpid()
+
+
+def test_release_does_not_unlink_lock_file(tmp_path: Path) -> None:
+    """TOCTOU invariant: lock_path must persist on disk after release.
+
+    Closes the window where daemon B opens the path (same inode) while A
+    is mid-release, then A unlinks and daemon C ``O_CREAT``s a fresh inode
+    — B and C end up flocking different inodes and both claim ownership.
+    The fix: never unlink on release. New acquirers always see the same
+    inode and flock serializes correctly.
+    """
+    p = tmp_path / "persist.lock"
+    with acquire_exclusive(p):
+        assert p.exists()
+    assert p.exists(), "lock file must remain on disk to preserve flock inode identity"
+
+
+def test_concurrent_daemon_acquire_serializes(tmp_path: Path) -> None:
+    """Two acquirers on the same lock path: second must raise ProcessLockHeld.
+
+    Spawns a holder process that flocks the file and blocks on a release
+    event. While the holder is alive, a second ``acquire_exclusive`` from
+    THIS test process must raise ``ProcessLockHeld`` with the holder's pid
+    — proving the flock serializes acquirers across processes even when
+    the lock file exists from a prior session (post-fix: it always does).
+    """
+    p = tmp_path / "concurrent.lock"
+    ready = multiprocessing.Event()
+    release = multiprocessing.Event()
+    proc = multiprocessing.Process(
+        target=_hold_lock_until_released,
+        args=(str(p), ready, release),
+    )
+    proc.start()
+    try:
+        assert ready.wait(timeout=5.0), "holder failed to acquire lock"
+
+        def _attempt() -> None:
+            with acquire_exclusive(p):
+                pytest.fail("second acquire must not succeed while holder is alive")
+
+        with pytest.raises(ProcessLockHeld) as exc_info:
+            _attempt()
+        assert exc_info.value.holder_pid == proc.pid
+    finally:
+        release.set()
+        proc.join(timeout=5.0)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=5.0)
+
+
+def test_stale_lock_persists_after_recovered_acquire(tmp_path: Path) -> None:
+    """Stale-pid recovery + post-fix release: file still on disk after exit.
+
+    Complements ``test_acquire_exclusive_recovers_from_stale_pid``. The
+    stale-recovery branch internally unlinks the dead lock file, retries
+    flock, and writes our pid. On exit the lock file must STILL exist
+    (no unlink-on-release) so subsequent acquirers see the same inode.
+    """
+    dead_pid = _spawn_short_lived_child_and_wait()
+    p = tmp_path / "stale-persist.lock"
+    p.write_text(str(dead_pid), encoding="utf-8")
+    with acquire_exclusive(p):
+        assert holder_pid(p) == os.getpid()
+    assert p.exists(), "lock file must persist after stale-recovery release"
+    assert holder_pid(p) == os.getpid()
 
 
 # --- acquire_exclusive contended path --------------------------------------
@@ -263,7 +336,6 @@ def test_acquire_exclusive_recovers_from_stale_pid(tmp_path: Path) -> None:
     with acquire_exclusive(p):
         # Recovered: our pid is now written into the file.
         assert holder_pid(p) == os.getpid()
-    assert not p.exists()
 
 
 # --- helpers ---------------------------------------------------------------
