@@ -16,11 +16,24 @@ passed at spawn:
   ``codex_mcp_tools.py`` stdio server so the ``submit_report`` tool is
   discoverable via the standard MCP ``tools/list`` handshake.
 
-The ``take_notification`` loop captures every ``item/tool_call`` event where
-``tool_name == "submit_report"`` and surfaces the structured arguments in
-:class:`CodexActionResult`. The actual ``spawn_worker_handler`` wiring
-(event-log emission, dirty-tree stash, artifact write) is Step 10's concern;
-this module is the pure driver with no L2 access.
+The notification poll loop captures submit_report from two protocol shapes
+to span Codex 0.125-0.130+:
+
+* **Codex 0.125-0.129** — ``item/tool_call`` notification with
+  ``params.toolName == "submit_report"`` and ``params.arguments``.
+* **Codex 0.130+** — ``item/completed`` notification with
+  ``params.item.type == "mcpToolCall"`` and ``params.item.tool ==
+  "submit_report"``; args are at ``params.item.arguments``.
+
+Codex 0.130 also gates every external-MCP tool call behind a
+server-initiated ``mcpServer/elicitation/request`` JSON-RPC. The poll
+loop drains :py:meth:`CodexAppServerClient.take_server_request` on every
+iteration and auto-accepts elicitations / approvals so the tool actually
+executes (B-0013: leaving these unanswered hangs the turn forever).
+
+The actual ``spawn_worker_handler`` wiring (event-log emission, dirty-tree
+stash, artifact write) is Step 10's concern; this module is the pure
+driver with no L2 access.
 """
 
 from __future__ import annotations
@@ -266,6 +279,87 @@ def _extract_turn_id(params: Mapping[str, Any]) -> str | None:
     if isinstance(snake, str):
         return snake
     return None
+
+
+# JSON-RPC method-not-found code (matches the spec used by codex
+# app-server's own error replies). Used when we cannot service an
+# unknown server-initiated request and need to fail it explicitly so
+# Codex doesn't sit waiting on a reply we'll never send.
+_METHOD_NOT_FOUND: int = -32601
+
+
+def _extract_completed_mcp_tool(
+    params: Mapping[str, Any],
+) -> tuple[str | None, Mapping[str, Any]] | None:
+    """Return ``(tool_name, arguments)`` for a Codex 0.130 ``item/completed`` mcpToolCall.
+
+    Returns ``None`` if the payload is not an mcpToolCall item. The
+    Codex 0.130 schema (live-verified via probe v4) is::
+
+        params.item = {
+            "type": "mcpToolCall",
+            "server": "jarvis-tools",
+            "tool": "submit_report",
+            "status": "completed",
+            "arguments": {...},
+            "result": {...},
+        }
+    """
+    item = params.get("item")
+    if not isinstance(item, Mapping):
+        return None
+    if item.get("type") != "mcpToolCall":
+        return None
+    tool_name = item.get("tool")
+    args = item.get("arguments")
+    if not isinstance(args, Mapping):
+        args = {}
+    return (tool_name if isinstance(tool_name, str) else None, args)
+
+
+def _auto_respond_server_request(
+    client: CodexAppServerClient, req: Mapping[str, Any]
+) -> None:
+    """Auto-respond to Codex server-initiated JSON-RPC so the turn doesn't hang.
+
+    Codex 0.130 sends ``mcpServer/elicitation/request`` for every
+    external-MCP tool call when the ``tool_call_mcp_elicitation``
+    feature is on (always-on as of 0.130). Without a reply the tool
+    never executes and the turn hangs to the timeout (B-0013).
+
+    ``approval_policy=never`` (set in :func:`_build_extra_args`)
+    suppresses *exec* approvals, but MCP elicitation is a separate gate
+    that ``never`` does not cover, so we still receive elicitation
+    requests for ``submit_report`` and must answer them. We auto-accept
+    because the only MCP tool exposed is ``submit_report`` (a
+    jarvis-injected report sink) and the worker already runs inside
+    Codex's ``workspace-write`` sandbox.
+
+    Unknown methods get a JSON-RPC ``method not found`` error so Codex
+    doesn't sit waiting on a reply that will never come.
+    """
+    req_id = req.get("id")
+    method_obj = req.get("method")
+    method = method_obj if isinstance(method_obj, str) else ""
+    if req_id is None:
+        # Malformed request (no id) — nothing to respond to.
+        return
+    # Suppress send failures: if codex died mid-turn the next
+    # take_notification tick handles the bailout cleanly; we don't want
+    # a broken pipe here to mask the real timeout/crash error.
+    with contextlib.suppress(Exception):
+        if method == "mcpServer/elicitation/request":
+            client.respond(
+                req_id, {"action": "accept", "content": None, "_meta": None}
+            )
+        elif "approval" in method:
+            client.respond(req_id, {"decision": "approve"})
+        else:
+            client.respond_error(
+                req_id,
+                code=_METHOD_NOT_FOUND,
+                message=f"method not implemented: {method}",
+            )
 
 
 class _ProtocolError(RuntimeError):
@@ -551,6 +645,16 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
             error = "codex_turn_timeout"
             break
 
+        # Drain pending server-initiated requests first so an
+        # outstanding mcpServer/elicitation/request can't block the next
+        # tool dispatch (B-0013). Non-blocking — we only act on what's
+        # already queued; if none, fall through to the notification poll.
+        while True:
+            req = client.take_server_request(timeout=0.0)
+            if req is None:
+                break
+            _auto_respond_server_request(client, req)
+
         notif = client.take_notification(timeout=_POLL_INTERVAL_S)
         if notif is None:
             # No notification this tick — check heartbeat cadence.
@@ -570,10 +674,24 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
         params: Mapping[str, Any] = raw_params if isinstance(raw_params, Mapping) else {}
 
         if method == "item/tool_call":
+            # Legacy Codex 0.125-0.129 schema; kept as a back-compat fallback.
             tool_name = _extract_tool_name(params)
             if tool_name == "submit_report":
                 submit_report_calls.append(_extract_tool_arguments(params))
             last_item_summary = f"tool_call:{tool_name or 'unknown'}"
+
+        elif method == "item/completed":
+            mcp = _extract_completed_mcp_tool(params)
+            if mcp is not None:
+                tool_name, args = mcp
+                if tool_name == "submit_report":
+                    submit_report_calls.append(args)
+                last_item_summary = f"tool_call:{tool_name or 'unknown'}"
+            else:
+                text = _extract_text_item(params)
+                if text:
+                    final_text_parts.append(text)
+                last_item_summary = method
 
         elif method.startswith("item/"):
             text = _extract_text_item(params)
@@ -586,8 +704,7 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
             turn_id_out = _extract_turn_id(params)
             break
 
-        # Other notifications (server-initiated requests, unknown methods) are
-        # surfaced via the client's separate queues; this driver ignores them
-        # since Step 7 does not implement approval bridging.
+        # Unknown notification methods are ignored on purpose; the
+        # server-request queue is drained at the top of every iteration.
 
     return _result(error=error, interrupted=interrupted, thread_id=thread_id)

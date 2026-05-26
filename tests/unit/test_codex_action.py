@@ -69,7 +69,10 @@ class FakeClient:
     extra_args: list[str] = field(default_factory=list)
     env: dict[str, str] | None = None
     notifications: list[dict[str, Any]] = field(default_factory=list)
+    server_requests: list[dict[str, Any]] = field(default_factory=list)
     request_log: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    respond_log: list[tuple[object, dict[str, Any]]] = field(default_factory=list)
+    respond_error_log: list[tuple[object, int, str]] = field(default_factory=list)
     initialize_raises: Exception | None = None
     thread_start_raises: Exception | None = None
     turn_start_raises: Exception | None = None
@@ -114,6 +117,28 @@ class FakeClient:
             return self.notifications.pop(0)
         return None
 
+    def take_server_request(self, timeout: float = 0.0) -> dict[str, Any] | None:
+        """Pop the next pre-canned server-initiated request, or ``None``."""
+        del timeout
+        if self.server_requests:
+            return self.server_requests.pop(0)
+        return None
+
+    def respond(self, request_id: object, result: dict[str, Any]) -> None:
+        """Record a reply sent to a server-initiated request."""
+        self.respond_log.append((request_id, dict(result)))
+
+    def respond_error(
+        self,
+        request_id: object,
+        code: int,
+        message: str,
+        data: object = None,
+    ) -> None:
+        """Record an error reply sent to a server-initiated request."""
+        del data
+        self.respond_error_log.append((request_id, code, message))
+
     def close(self, timeout: float = 3.0) -> None:
         """Mark the client closed (no-op stand-in for subprocess teardown)."""
         del timeout
@@ -145,6 +170,7 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, client_holder: list[FakeClien
         if client_holder:
             template = client_holder[0]
             client.notifications = list(template.notifications)
+            client.server_requests = list(template.server_requests)
             client.initialize_raises = template.initialize_raises
             client.thread_start_raises = template.thread_start_raises
             client.turn_start_raises = template.turn_start_raises
@@ -745,6 +771,256 @@ def test_run_codex_action_heartbeat_fires(
         assert "summary" in hb
         assert "elapsed_ms" in hb
         assert "last_item_summary" in hb
+
+
+# ---------------------------------------------------------------------------
+# B-0013 — Codex 0.130 item/completed mcpToolCall capture + elicitation drain.
+# ---------------------------------------------------------------------------
+
+
+def test_run_codex_action_captures_submit_report_from_item_completed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex 0.130 schema: ``item/completed`` with ``type=mcpToolCall`` surfaces submit_report."""
+    submit_args = {
+        "status": "ok",
+        "summary": "did the thing",
+        "changed_files": ["a.py"],
+        "commands_run": ["uv run pytest"],
+    }
+    template = FakeClient(
+        notifications=[
+            {
+                "method": "item/started",
+                "params": {
+                    "item": {
+                        "type": "mcpToolCall",
+                        "id": "call_xyz",
+                        "server": "jarvis-tools",
+                        "tool": "submit_report",
+                        "status": "inProgress",
+                        "arguments": submit_args,
+                        "result": None,
+                    }
+                },
+            },
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "mcpToolCall",
+                        "id": "call_xyz",
+                        "server": "jarvis-tools",
+                        "tool": "submit_report",
+                        "status": "completed",
+                        "arguments": submit_args,
+                        "result": {
+                            "content": [
+                                {"type": "text", "text": "submit_report accepted"}
+                            ],
+                            "structuredContent": submit_args,
+                            "_meta": None,
+                        },
+                    }
+                },
+            },
+            {
+                "method": "turn/completed",
+                "params": {
+                    "turnId": "turn-0130",
+                    "usage": {"input_tokens": 42, "output_tokens": 7},
+                },
+            },
+        ],
+    )
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error is None
+    assert result.submit_report == submit_args
+    assert result.submit_report_calls == (submit_args,)
+    assert result.turn_id == "turn-0130"
+
+
+def test_run_codex_action_ignores_item_completed_for_other_mcp_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``item/completed`` for an mcpToolCall that is NOT submit_report is skipped."""
+    template = FakeClient(
+        notifications=[
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "mcpToolCall",
+                        "server": "jarvis-tools",
+                        "tool": "some_other_tool",
+                        "status": "completed",
+                        "arguments": {"k": "v"},
+                        "result": {"structuredContent": {}},
+                    }
+                },
+            },
+            {"method": "turn/completed", "params": {}},
+        ],
+    )
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error is None
+    assert result.submit_report is None
+    assert result.submit_report_calls == ()
+
+
+def test_run_codex_action_item_completed_non_mcp_falls_back_to_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``item/completed`` without an mcpToolCall item still surfaces text into ``final_text``."""
+    template = FakeClient(
+        notifications=[
+            {
+                "method": "item/completed",
+                "params": {"text": "hello from completed item"},
+            },
+            {"method": "turn/completed", "params": {}},
+        ],
+    )
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error is None
+    assert "hello from completed item" in result.final_text
+
+
+def test_run_codex_action_auto_accepts_mcp_elicitation_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B-0013: pending ``mcpServer/elicitation/request`` is auto-accepted before tool dispatch.
+
+    Models Codex 0.130 sending an elicitation request immediately before
+    the submit_report tool actually executes. The driver must reply
+    ``{action: accept, content: None, _meta: None}`` so the tool
+    proceeds; otherwise the turn hangs to its 60s budget.
+    """
+    template = FakeClient(
+        server_requests=[
+            {
+                "id": 42,
+                "method": "mcpServer/elicitation/request",
+                "params": {
+                    "threadId": "t1",
+                    "turnId": "turn-1",
+                    "serverName": "jarvis-tools",
+                    "mode": "form",
+                    "_meta": {
+                        "codex_approval_kind": "mcp_tool_call",
+                        "tool_description": "submit_report",
+                    },
+                },
+            },
+        ],
+        notifications=[
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "mcpToolCall",
+                        "server": "jarvis-tools",
+                        "tool": "submit_report",
+                        "status": "completed",
+                        "arguments": {"status": "ok", "summary": "done"},
+                        "result": {"structuredContent": {}},
+                    }
+                },
+            },
+            {"method": "turn/completed", "params": {}},
+        ],
+    )
+    holder: list[FakeClient] = [template]
+    _patch_client(monkeypatch, holder)
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error is None
+    assert result.submit_report == {"status": "ok", "summary": "done"}
+    # Driver must have responded to the elicitation with action=accept.
+    client = holder[0]
+    assert len(client.respond_log) == 1
+    req_id, payload = client.respond_log[0]
+    assert req_id == 42
+    assert payload == {"action": "accept", "content": None, "_meta": None}
+    # No error replies on the happy path.
+    assert client.respond_error_log == []
+
+
+def test_run_codex_action_auto_approves_approval_server_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any server request whose method contains ``approval`` is auto-approved."""
+    template = FakeClient(
+        server_requests=[
+            {
+                "id": 7,
+                "method": "exec/applyPatch/approval",
+                "params": {"patch": "diff..."},
+            },
+        ],
+        notifications=[{"method": "turn/completed", "params": {}}],
+    )
+    holder: list[FakeClient] = [template]
+    _patch_client(monkeypatch, holder)
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error is None
+    client = holder[0]
+    assert client.respond_log == [(7, {"decision": "approve"})]
+    assert client.respond_error_log == []
+
+
+def test_run_codex_action_replies_method_not_found_for_unknown_server_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown server-initiated requests get an explicit method-not-found error reply.
+
+    Codex would otherwise sit waiting for a response that never comes.
+    We tell it explicitly that we cannot service the request so the
+    transport can fail-fast / surface the failure.
+    """
+    template = FakeClient(
+        server_requests=[
+            {"id": 99, "method": "totally/unknown", "params": {}},
+        ],
+        notifications=[{"method": "turn/completed", "params": {}}],
+    )
+    holder: list[FakeClient] = [template]
+    _patch_client(monkeypatch, holder)
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error is None
+    client = holder[0]
+    assert client.respond_log == []
+    assert len(client.respond_error_log) == 1
+    req_id, code, msg = client.respond_error_log[0]
+    assert req_id == 99
+    assert code == -32601
+    assert "totally/unknown" in msg
 
 
 # ---------------------------------------------------------------------------
