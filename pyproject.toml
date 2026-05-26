@@ -13,6 +13,7 @@ dependencies = [
     "PyYAML",
     "fastapi",            # ADR-0003 — Inherent FastAPI server in Step 7
     "uvicorn[standard]",  # ADR-0003 — uvloop + httptools + websockets for the daemon in Step 8
+    "numpy",              # ADR-0005 — L5 voice surface (PCM math, RMS, recognizer audio)
 ]
 
 [project.optional-dependencies]
@@ -61,6 +62,11 @@ ignore = [
 # Sentence splitter tests assert on those same CJK literals end-to-end;
 # same RUF001/RUF002/RUF003 justification applies.
 "tests/unit/test_sentence_splitter.py" = ["RUF001", "RUF002", "RUF003"]
+# voice_asr carries (a) the SenseVoice misplaced-period regex `[。，]` and
+# (b) the unified empty-filter CJK punctuation set; both target real CJK
+# characters that ASR output contains, so the ambiguous-char lints are
+# noise here (same rationale as sentence_splitter).
+"jarvis/surface/voice_asr.py" = ["RUF001", "RUF003"]
 # Tests use bare `assert` (pytest), don't need return-type annotations, and
 # carry magic numbers in assertion targets by design.
 "tests/**/*.py" = [

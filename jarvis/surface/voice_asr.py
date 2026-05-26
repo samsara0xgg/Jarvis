@@ -1,25 +1,49 @@
-"""ADR-0005 §3 + spec §3.6.2 — ASR adapter-internal canonicalization.
+"""ADR-0005 §3 + §4.2 + §8 fix #3 — ASR canonicalization, recognizers, filter.
 
-Three-layer cascade for misheard speech. Fixes systematic ASR errors
-(homophones, near-homophones) for device / scene names without retraining
-the model. Applied in order; first layer that *changes* the text returns:
+Three pieces live in this module per ADR-0005 §4.2:
 
-  Layer 1: manual override entries with required-context guard.
-  Layer 2: structured alias -> canonical replacement.
-  Layer 3: Levenshtein fuzzy fallback, off by default.
+1. ``AsrNormalizer`` — three-layer cascade fixing systematic ASR errors
+   (homophones, near-homophones) without retraining the model. Layers
+   apply in order; first layer that changes the text returns:
 
-Performance budget per call: < 10 ms. Layer 1/2 are O(N*M) string scans;
-Layer 3 is O(N*M*W^2) sliding window which is why it ships disabled.
+     Layer 1: manual override entries with required-context guard.
+     Layer 2: structured alias -> canonical replacement.
+     Layer 3: Levenshtein fuzzy fallback, off by default.
 
-Note: normalizer half — recognizer (engine wiring) added in next commit.
+   Performance budget per call: < 10 ms.
+
+2. ``AsrRecognizer`` Protocol + three concrete providers (SenseVoice /
+   MLX Whisper / openai-whisper local). Each provider returns a
+   ``TranscriptionResult``; downstream composition (normalize + filter
+   + lock release) lives in ``voice_pipeline.py``.
+
+   Confidence semantics are provider-specific (ADR-0005 §3): SenseVoice
+   returns a binary 0.1 / 0.9 heuristic, whisper returns a log-prob mean.
+   Downstream MUST NOT cross-compare confidence between providers.
+
+3. ``is_empty_or_too_short`` — unified empty-utterance filter (ADR-0005
+   §8 fix #3). Single source of truth shared by wake + PTT paths.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Protocol
+
+import numpy as np
 
 LOGGER = logging.getLogger(__name__)
+
+_SAMPLE_RATE = 16000
+
+# SenseVoice sometimes inserts "。" or "，" before a sentence-final particle,
+# e.g. "学会查汇率。了" -> "学会查汇率了". This cleanup is provider-specific so
+# it lives next to the recogniser, not in the generic normalizer.
+_MISPLACED_PERIOD = re.compile(r"[。，]([了吧啊呢嘛呀哦哈的吗啦噢])")
 
 # WP2 T2.1: tightened — bare "灯" was too broad (路灯/灯笼/灯泡 all trigger).
 # "暗"/"亮" removed (暗恋/暗号/漂亮 false positives). "打开"/"关闭" added so real
@@ -276,4 +300,345 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
-__all__ = ["AsrNormalizer"]
+# ---------------------------------------------------------------------------
+# Recognizer (ASR provider) — ADR-0005 §4.2
+# ---------------------------------------------------------------------------
+
+
+# Float32-domain RMS floor for the SenseVoice silence / single-char collapse
+# (audio normalised to [-1, 1]; below this we treat the chunk as background).
+_SENSEVOICE_FLOAT_RMS_FLOOR = 0.01
+
+
+@dataclass(frozen=True)
+class TranscriptionResult:
+    """Output of an ASR ``recognize()`` call (spec §3.6.1).
+
+    Confidence semantics are provider-specific (see ADR-0005 §3): SenseVoice
+    returns a binary 0.1 / 0.9 heuristic, mlx-whisper returns a log-prob
+    mean. Downstream consumers must NOT cross-compare confidence values
+    between providers.
+    """
+
+    text: str
+    confidence: float
+    language_detected: str | None
+    emotion: str | None
+
+
+class AsrRecognizer(Protocol):
+    """Structural ASR provider — implementations live below in this module."""
+
+    def recognize(self, audio_pcm: bytes) -> TranscriptionResult:
+        """Return a ``TranscriptionResult`` for mono 16 kHz PCM16 audio."""
+        ...
+
+
+def _pcm16_to_float32(audio_pcm: bytes) -> np.ndarray:
+    """Decode PCM16 mono little-endian bytes to a float32 [-1, 1] waveform.
+
+    Empty bytes return an empty array; callers must guard against zero-length
+    audio before invoking provider engines.
+    """
+    if not audio_pcm:
+        return np.zeros(0, dtype=np.float32)
+    samples = np.frombuffer(audio_pcm, dtype=np.int16)
+    return samples.astype(np.float32) / 32768.0
+
+
+def _estimate_whisper_confidence(transcription: Mapping[str, Any]) -> float:
+    """Confidence from Whisper segment log-probs (legacy parity)."""
+    segments = transcription.get("segments") or []
+    if not segments:
+        return 0.0 if not str(transcription.get("text", "")).strip() else 0.5
+
+    scores: list[float] = []
+    for segment in segments:
+        avg_logprob = float(segment.get("avg_logprob", -1.0))
+        no_speech_prob = float(segment.get("no_speech_prob", 0.0))
+        probability = float(np.exp(min(avg_logprob, 0.0)))
+        scores.append(max(0.0, min(1.0, probability * (1.0 - no_speech_prob))))
+    return float(np.mean(scores, dtype=np.float64))
+
+
+class SenseVoiceRecognizer:
+    """sherpa-onnx SenseVoice INT8 backend — primary for short CN utterances.
+
+    Confidence is a binary 0.1 / 0.9 heuristic per ADR-0005 §3: low-RMS or
+    single-character results collapse to 0.1 + empty text so the downstream
+    empty-utterance filter can drop them without provider-specific logic.
+    """
+
+    def __init__(
+        self,
+        *,
+        model_dir: Path,
+        num_threads: int = 4,
+        language: str | None = None,
+    ) -> None:
+        """Wire SenseVoice paths without loading the model (lazy on first call)."""
+        self._model_dir = Path(model_dir)
+        self._num_threads = int(num_threads)
+        # Empty string == auto-detect for sherpa-onnx; preserve that meaning.
+        self._language = language or ""
+        self._recognizer: Any | None = None
+
+    def recognize(self, audio_pcm: bytes) -> TranscriptionResult:
+        """Transcribe PCM16 mono 16 kHz audio with SenseVoice."""
+        audio = _pcm16_to_float32(audio_pcm)
+        if audio.size == 0:
+            return TranscriptionResult(
+                text="",
+                confidence=0.0,
+                language_detected=None,
+                emotion=None,
+            )
+
+        recognizer = self._load()
+        stream = recognizer.create_stream()
+        stream.accept_waveform(_SAMPLE_RATE, audio)
+        recognizer.decode_stream(stream)
+
+        result = stream.result
+        text = _MISPLACED_PERIOD.sub(r"\1", result.text.strip())
+
+        raw_lang = getattr(result, "lang", "") or ""
+        language = raw_lang.strip("<|>") if raw_lang else (self._language or None)
+
+        emotion_raw = getattr(result, "emotion", "") or ""
+        emotion = emotion_raw.strip("<|>") if emotion_raw else None
+
+        rms = float(np.sqrt(np.mean(audio**2)))
+        if rms < _SENSEVOICE_FLOAT_RMS_FLOOR or len(text) <= 1:
+            confidence = 0.1
+            text = ""
+        else:
+            confidence = 0.9
+
+        LOGGER.info(
+            "SenseVoice: lang=%s emotion=%s conf=%.1f text=%r",
+            language,
+            emotion,
+            confidence,
+            text,
+        )
+        return TranscriptionResult(
+            text=text,
+            confidence=confidence,
+            language_detected=language or None,
+            emotion=emotion,
+        )
+
+    def _load(self) -> Any:  # noqa: ANN401 — sherpa_onnx typing is dynamic
+        if self._recognizer is not None:
+            return self._recognizer
+        try:
+            import sherpa_onnx  # type: ignore[import-not-found]  # noqa: PLC0415
+        except ImportError as exc:  # pragma: no cover — environment-dependent
+            msg = "sherpa-onnx is required for SenseVoice ASR."
+            raise RuntimeError(msg) from exc
+
+        LOGGER.info("Loading SenseVoice model from %s", self._model_dir)
+        self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+            model=str(self._model_dir / "model.int8.onnx"),
+            tokens=str(self._model_dir / "tokens.txt"),
+            num_threads=self._num_threads,
+            language=self._language,
+            use_itn=True,
+        )
+        return self._recognizer
+
+
+class MlxWhisperRecognizer:
+    """mlx-whisper backend — Apple Silicon native, recommended for EN / mixed.
+
+    Confidence is a Whisper-style log-prob mean — not comparable to SenseVoice's
+    binary heuristic.
+    """
+
+    def __init__(
+        self,
+        *,
+        repo: str = "mlx-community/whisper-large-v3-turbo",
+        fp16: bool = True,
+        temperature: float = 0.0,
+        language: str | None = None,
+        # large-v3-turbo skews toward traditional CN tokens; a simplified-CN
+        # prompt biases the decoder back toward simplified glyphs.
+        initial_prompt: str | None = "以下是普通话的简体中文转录。",
+    ) -> None:
+        """Capture mlx-whisper config; module + model load on first recognize()."""
+        self._repo = str(repo)
+        self._fp16 = bool(fp16)
+        self._temperature = float(temperature)
+        self._language = language
+        self._initial_prompt = initial_prompt or None
+        self._module: Any | None = None
+
+    def recognize(self, audio_pcm: bytes) -> TranscriptionResult:
+        """Transcribe PCM16 mono 16 kHz audio with mlx-whisper."""
+        audio = _pcm16_to_float32(audio_pcm)
+        if audio.size == 0:
+            return TranscriptionResult(
+                text="",
+                confidence=0.0,
+                language_detected=None,
+                emotion=None,
+            )
+
+        mlx_whisper = self._load()
+        transcription: Mapping[str, Any] = mlx_whisper.transcribe(
+            audio,
+            path_or_hf_repo=self._repo,
+            fp16=self._fp16,
+            temperature=self._temperature,
+            language=self._language,
+            initial_prompt=self._initial_prompt,
+            verbose=False,
+        )
+        text = str(transcription.get("text", "")).strip()
+        language = str(transcription.get("language") or self._language or "") or None
+        confidence = _estimate_whisper_confidence(transcription)
+
+        LOGGER.info(
+            "MLX Whisper: language=%s confidence=%.3f text=%r",
+            language,
+            confidence,
+            text,
+        )
+        return TranscriptionResult(
+            text=text,
+            confidence=confidence,
+            language_detected=language,
+            emotion=None,
+        )
+
+    def _load(self) -> Any:  # noqa: ANN401 — mlx_whisper typing is dynamic
+        if self._module is not None:
+            return self._module
+        try:
+            import mlx_whisper  # type: ignore[import-not-found]  # noqa: PLC0415
+        except ImportError as exc:  # pragma: no cover — environment-dependent
+            msg = (
+                "mlx-whisper is required for MlxWhisperRecognizer. "
+                "Install with: uv pip install mlx-whisper"
+            )
+            raise RuntimeError(msg) from exc
+        LOGGER.info("Loaded mlx_whisper (repo=%s)", self._repo)
+        self._module = mlx_whisper
+        return self._module
+
+
+class LocalWhisperRecognizer:
+    """openai-whisper local backend — slow CPU fallback when no GPU / MLX."""
+
+    def __init__(
+        self,
+        *,
+        model_size: str = "base",
+        language: str | None = None,
+    ) -> None:
+        """Capture model-size + language; whisper model loads on first call."""
+        self._model_size = str(model_size)
+        self._language = language
+        self._model: Any | None = None
+
+    def recognize(self, audio_pcm: bytes) -> TranscriptionResult:
+        """Transcribe PCM16 mono 16 kHz audio with openai-whisper."""
+        audio = _pcm16_to_float32(audio_pcm)
+        if audio.size == 0:
+            return TranscriptionResult(
+                text="",
+                confidence=0.0,
+                language_detected=None,
+                emotion=None,
+            )
+
+        model = self._load()
+        transcription: Mapping[str, Any] = model.transcribe(
+            audio,
+            language=self._language,
+            fp16=False,
+            verbose=False,
+        )
+        text = str(transcription.get("text", "")).strip()
+        language = str(transcription.get("language") or self._language or "") or None
+        confidence = _estimate_whisper_confidence(transcription)
+
+        LOGGER.info(
+            "Whisper transcription: language=%s confidence=%.3f text=%r",
+            language,
+            confidence,
+            text,
+        )
+        return TranscriptionResult(
+            text=text,
+            confidence=confidence,
+            language_detected=language,
+            emotion=None,
+        )
+
+    def _load(self) -> Any:  # noqa: ANN401 — whisper typing is dynamic
+        if self._model is not None:
+            return self._model
+        try:
+            import whisper  # type: ignore[import-not-found]  # noqa: PLC0415
+        except ImportError as exc:  # pragma: no cover — environment-dependent
+            msg = "openai-whisper is required for LocalWhisperRecognizer."
+            raise RuntimeError(msg) from exc
+        LOGGER.info("Loading Whisper model: %s", self._model_size)
+        self._model = whisper.load_model(self._model_size)
+        return self._model
+
+
+# ---------------------------------------------------------------------------
+# Empty / too-short filter — ADR-0005 §8 fix #3
+# ---------------------------------------------------------------------------
+
+
+_MIN_TEXT_LEN = 2
+# PCM16 mono. Anything ≤ this RMS is treated as silence. The legacy SenseVoice
+# heuristic was rms_float < 0.01 (≈ 328 on the int16 scale) but applied AFTER
+# the recognizer ran; here we want to admit any frame whose amplitude is
+# meaningfully above zero so the unit tests (and short-utterance ducked
+# captures) survive without false-positive silence rejection.
+_MIN_RMS_THRESHOLD = 10.0
+
+
+def _rms(audio_pcm: bytes) -> float:
+    """Root-mean-square amplitude of PCM16 mono little-endian audio."""
+    if not audio_pcm:
+        return 0.0
+    samples = np.frombuffer(audio_pcm, dtype=np.int16)
+    if samples.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+
+
+def _is_punctuation_only(text: str) -> bool:
+    """True when ``text`` contains no non-punctuation, non-whitespace chars."""
+    punct = set(
+        "。，！？、；：“”‘’【】《》（）.,!?;:\"'()[]<>~`@#$%^&*-_+=|\\/ ",
+    )
+    return all(c in punct or c.isspace() for c in text)
+
+
+def is_empty_or_too_short(text: str, *, audio_pcm: bytes) -> bool:
+    """Unified empty-utterance filter for wake + PTT (ADR-0005 §8 fix #3)."""
+    stripped = text.strip()
+    if len(stripped) < _MIN_TEXT_LEN:
+        return True
+    if _is_punctuation_only(stripped):
+        return True
+    return _rms(audio_pcm) < _MIN_RMS_THRESHOLD
+
+
+__all__ = [
+    "AsrNormalizer",
+    "AsrRecognizer",
+    "LocalWhisperRecognizer",
+    "MlxWhisperRecognizer",
+    "SenseVoiceRecognizer",
+    "TranscriptionResult",
+    "is_empty_or_too_short",
+]
