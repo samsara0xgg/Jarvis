@@ -292,9 +292,8 @@ or two claims (Postcondition + optional Limitation):
 | " " (same condition, second evidence row) | reviewer LLM | Limitation | limits | reported | — |
 | `diff_nonempty == False` (Codex produced nothing) | spawn_worker run (Execution Claim, executed) | Execution | supports | executed | no |
 | " " (same condition, second evidence row — §8.5 rule 6) | absence of diff artifact | Limitation | limits | reported | — |
-| `verify_command` present AND `diff_nonempty == False` AND `verify_command` exits 0 (paradox — Codex produced nothing, postcondition already true) | spawn_worker run | Execution | supports | executed | no |
-| " " (same condition, second evidence row) | `verify_command` (slot 2, `result_semantics=verification`) | Postcondition | supports | **verified** | **yes** |
-| " " (same condition, third row — §8.5 rule 6 records the paradox) | absence of diff artifact | Limitation | limits | reported | — |
+| `verify_command` present AND `diff_nonempty == False` AND `verify_command` exits 0 (paradox — Codex produced nothing; no artifact-change signal) | spawn_worker run | Execution | supports | executed | no (emit `task.no_op` — Fix 2 Option A) |
+| " " (same condition, second evidence row — §8.5 rule 6 records the paradox) | absence of diff artifact | Limitation | limits | reported | — |
 | `verify_command` present AND `diff_nonempty == False` AND `verify_command` exits ≠ 0 (no progress, postcondition still false) | spawn_worker run | Execution | supports | executed | no |
 | " " (same condition, second evidence row) | `verify_command` (slot 2, `result_semantics=error`) | Limitation | limits | executed | no |
 | " " (same condition, third row — §8.5 rule 6) | absence of diff artifact | Limitation | limits | reported | — |
@@ -304,21 +303,28 @@ Notes:
   RawResult whose `result_semantics="verification"` — i.e. the
   `verify_command` exit-code predicate inside the post_action_check
   chain. No other path can lift the level.
-- **Empty-diff + verify_command-passes paradox.** When Codex produces
-  nothing (`diff_nonempty == False`) but the `verify_command` exits
-  zero, the cleanest reading is that the postcondition was already
-  true before the turn started (Codex correctly judged the task
-  complete). Day-2 honors this: the Execution Claim sits at
-  `level=executed` (Codex ran but added nothing), and the Postcondition
-  Claim still reaches `level=verified` from the verify_command slot
-  because the predicate is a true postcondition signal regardless of
-  diff content. `task.verified` fires. An additional §8.5 rule-6
-  Limitation row records the missing-diff anomaly so the audit chain
-  retains the "no work was produced" signal — Allen sees the
-  Limitation alongside the verified completion and can sanity-check
-  the run. The matched `verify_command exits ≠ 0` row is the
-  non-paradoxical case: both signals agree the postcondition is not
-  met.
+- **Empty-diff + verify_command-passes paradox (amended by Fix 2
+  Option A).** When Codex produces nothing (`diff_nonempty == False`)
+  but the `verify_command` exits zero, the original ADR text fired
+  `task.verified` on the theory that the postcondition was already
+  true before the turn started. That reading leaks a false-positive
+  completion to the surface: Allen sees "task complete" UX while
+  `git diff` is empty, with no way to distinguish "Codex did the
+  work and pytest agrees" from "Codex sat on its hands and pytest
+  happened to be green". Per spec §8.9 a code task requires BOTH an
+  artifact-change signal AND verification passed; the verify_command
+  alone cannot supply the artifact-change half, so the level
+  promotion was unsound. Day-2 (Fix 2 Option A) instead emits a new
+  `task.no_op` event (`owner_layer=L3`, payload `task_id` + optional
+  `reason` / `verify_command`) and suppresses the Postcondition
+  Claim entirely. The Execution Claim at `level=executed` and the
+  §8.5 rule-6 missing-diff Limitation still land, so the audit trail
+  retains the "no work was produced + predicate already true" signal
+  in a shape that names what actually happened. The matched
+  `verify_command exits ≠ 0` row is unchanged: both signals agree
+  the postcondition is not met. Reviewer rows attach to the
+  Execution Claim under this branch (paradox contrast logic still
+  applies on the parallel `task.verified` path).
 - When `verify_command` is absent, no Postcondition Claim is emitted;
   the strongest available evidence is an Artifact Claim at
   `level=observed` from the diff observation slot. `task.verified` is
