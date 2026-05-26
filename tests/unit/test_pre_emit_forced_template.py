@@ -30,10 +30,14 @@ from jarvis.decision import (
     _COMPLETION_SCRUB_PATTERNS,
     ResponsePlan,
     _hard_refusal_plan,
+    _no_task_to_refer_to,
     _scrub_completion_keywords,
 )
 from jarvis.decision.gates import _COMPLETION_KEYWORDS
+from jarvis.decision.packet import SituationPacket
 from jarvis.decision.pre_emit_phrases import COMPLETION_REGEXES
+from jarvis.shared import Event
+from jarvis.state.projections import ClaimEvidenceProjection, TaskLedgerRecord, TaskLedgerSnapshot
 
 if TYPE_CHECKING:
     from jarvis.shared import EvidenceLevel
@@ -161,6 +165,107 @@ def test_hard_refusal_plan_text_variants(
             f"{plan.text!r}"
         )
     assert plan.permission == "force_limitation_language"
+
+
+# --- _no_task_to_refer_to (F1 deterministic short-circuit) ------------------
+
+
+def _empty_snapshot() -> TaskLedgerSnapshot:
+    return TaskLedgerSnapshot(
+        records_by_task_id={},
+        claim_evidence=ClaimEvidenceProjection(
+            claims_by_id={},
+            evidence_by_claim_id={},
+            claim_ids_by_subject_ref={},
+        ),
+    )
+
+
+def _packet_with_transcript(transcript: str) -> SituationPacket:
+    trigger = Event(
+        event_uid="evt-test",
+        type="surface.user_intent",
+        schema_version=1,
+        ts_epoch_ms=0,
+        payload={"transcript": transcript},
+        source_event_id=None,
+        correlation=None,
+    )
+    return SituationPacket(
+        trigger_event=trigger,
+        recent_trace=(),
+        task_ledger_snapshot=_empty_snapshot(),
+        open_tasks=(),
+        current_turn_id=None,
+        current_run_id=None,
+    )
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "昨天那个 task 给 Codex 跑一下",
+        "刚才那个任务跑完了吗",
+        "上次那个项目怎么样了",
+        "今天的 task 进度",
+    ],
+)
+def test_no_task_to_refer_to_demonstrative_match(transcript: str) -> None:
+    """Demonstrative pronoun / temporal anchor + task noun → True.
+
+    These transcripts all reference a specific existing task that does
+    NOT exist in the ledger. F1's branch-1 hard refusal must fire
+    deterministically so the surface carries the canonical "找不到
+    对应的 task (未验证 / unverified)" text, not an LLM paraphrase.
+    """
+    assert _no_task_to_refer_to(_packet_with_transcript(transcript)) is True
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "hello",
+        "what tasks do I have",  # 'task' present, no demonstrative anchor.
+        "create a new task for me",  # creation, not a reference.
+        "",
+    ],
+)
+def test_no_task_to_refer_to_no_demonstrative(transcript: str) -> None:
+    """No demonstrative anchor → False (let the LLM handle it normally)."""
+    assert _no_task_to_refer_to(_packet_with_transcript(transcript)) is False
+
+
+def test_no_task_to_refer_to_false_when_open_tasks_exist() -> None:
+    """Even with demonstrative + task noun, non-empty open_tasks → False.
+
+    The Resolver may still find the referenced task by ID/temporal
+    proximity; the short-circuit only fires when there's literally
+    nothing to refer to.
+    """
+    record = TaskLedgerRecord(
+        task_id="task-X",
+        goal="seeded",
+        created_event_uid="evt-seed",
+        created_ts_epoch_ms=0,
+    )
+    trigger = Event(
+        event_uid="evt-test",
+        type="surface.user_intent",
+        schema_version=1,
+        ts_epoch_ms=0,
+        payload={"transcript": "昨天那个 task 跑一下"},
+        source_event_id=None,
+        correlation=None,
+    )
+    packet = SituationPacket(
+        trigger_event=trigger,
+        recent_trace=(),
+        task_ledger_snapshot=_empty_snapshot(),
+        open_tasks=(record,),
+        current_turn_id=None,
+        current_run_id=None,
+    )
+    assert _no_task_to_refer_to(packet) is False
 
 
 # --- _finalize_response wiring (AST verification) --------------------------

@@ -159,6 +159,44 @@ def _scrub_completion_keywords(text: str) -> str:
     return out
 
 
+# Demonstrative + task-noun reference detector. When the user's utterance
+# clearly refers to a specific existing task ("昨天那个 task", "刚才的任务")
+# but the Resolver finds no matching subject AND the ledger has no open
+# tasks, the canonical surface response IS the F1 branch-1 hard refusal
+# text ("找不到对应的 task"), not an LLM-generated paraphrase via the
+# list_tasks tool. _no_task_to_refer_to() drives the deterministic
+# short-circuit in :func:`_run_tool_use_loop`. The pattern is intentionally
+# permissive — false positives degrade to the same correct text, false
+# negatives just fall through to the normal LLM path.
+_DEMONSTRATIVE_TASK_RE: Final[re.Pattern[str]] = re.compile(
+    r"(那个|那些|这个|这些|刚才|上次|昨天|今天|明天).{0,30}(task|任务|项目)",
+)
+
+
+def _no_task_to_refer_to(packet: SituationPacket) -> bool:
+    """True iff the user demonstratively referenced a task that doesn't exist.
+
+    Conditions (all must hold):
+        - ``packet.open_tasks`` is empty (no resolvable target).
+        - ``packet.trigger_event.payload['transcript']`` matches
+          :data:`_DEMONSTRATIVE_TASK_RE` (demonstrative pronoun /
+          temporal anchor + task noun).
+
+    Used by :func:`_run_tool_use_loop` to short-circuit to the F1
+    branch-1 hard refusal before the LLM round-trip -- guarantees the
+    canonical "找不到对应的 task (未验证 / unverified)" surface on the
+    "user refers to a task that does not exist" path, irrespective of
+    whether the LLM would otherwise dispatch ``list_tasks`` and produce
+    a paraphrase.
+    """
+    if packet.open_tasks:
+        return False
+    transcript = packet.trigger_event.payload.get("transcript", "") or ""
+    if not isinstance(transcript, str):
+        return False
+    return _DEMONSTRATIVE_TASK_RE.search(transcript) is not None
+
+
 def _hard_refusal_plan(
     active_subject: str,
     *,
@@ -658,6 +696,38 @@ def _run_tool_use_loop(
     scratch: _Scratch,
 ) -> DecideResult:
     """Drive the Tier 2 LLM tool-use loop until text or limit."""
+    # F1 deterministic short-circuit: when the user demonstratively
+    # references a task that doesn't exist in the ledger, emit the
+    # canonical "找不到对应的 task (未验证 / unverified)" hard refusal
+    # directly. Without this the LLM may dispatch ``list_tasks`` and
+    # paraphrase ("open tasks 为空"); the F1 branch-1 text carries the
+    # bilingual unverified marker the surface gate guarantees on the
+    # "user referenced a nonexistent task" path. Skipping the LLM
+    # round-trip also collapses turn latency for this dead-end case.
+    if _no_task_to_refer_to(packet):
+        plan = _hard_refusal_plan(
+            active_subject="unknown_subject",
+            active_claim_levels=(),
+        )
+        if scratch.turn_id is not None:
+            ended_event = emit_event(
+                ctx.conn,
+                type="turn.ended",
+                payload={
+                    "turn_id": scratch.turn_id,
+                    "final_response_hash": plan.response_hash,
+                },
+                source_event_id=packet.trigger_event.event_uid,
+                correlation={"turn_id": scratch.turn_id},
+            )
+            scratch.events.append(ended_event)
+        return DecideResult(
+            response_plan=plan,
+            events_emitted=tuple(scratch.events),
+            turn_id=scratch.turn_id,
+            attention_channel="queue_review",
+        )
+
     messages = build_llm_messages(packet)
     # Surface the Task Ledger snapshot as an explicit system note so
     # the LLM can resolve natural references like "昨天那个 task" to
