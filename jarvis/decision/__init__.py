@@ -178,12 +178,30 @@ def _hard_refusal_plan(
     final ResponsePlan still records what evidence levels the subject
     actually held. Defaults to ``()`` only for direct unit-test calls
     that don't have a gate verdict to thread through.
+
+    F1: branch the user-facing text on what evidence the subject
+    actually holds, so Allen sees "找不到 task" / "verify 没过" /
+    "没有 diff" instead of operator-facing gate jargon. Branch-4 (the
+    catch-all) keeps the original wording. All branches must contain
+    both "未验证" and "unverified" and must NOT match any pattern in
+    :data:`jarvis.decision.gates._COMPLETION_KEYWORDS` (scrub-safe by
+    construction — see ``test_hard_refusal_plan_text_variants``).
     """
-    text = (
-        f"agent reported, status unverified (未验证) — Pre-emit Gate "
-        f"refused completion language for subject {active_subject} "
-        f"(no Postcondition evidence)."
-    )
+    if not active_claim_levels:
+        text = "找不到对应的 task（未验证 / unverified）。"  # noqa: RUF001 — intentional Chinese punctuation.
+    elif "executed" in active_claim_levels:
+        text = (
+            "Codex 跑了但 verify 没过（未验证 / unverified），"  # noqa: RUF001 — intentional Chinese punctuation.
+            "verify_command 返回非 0。"
+        )
+    elif tuple(active_claim_levels) == ("reported",):
+        text = "Codex 报告了但没产生可验证的 diff（未验证 / unverified）。"  # noqa: RUF001 — intentional Chinese punctuation.
+    else:
+        text = (
+            f"agent reported, status unverified (未验证) — Pre-emit Gate "
+            f"refused completion language for subject {active_subject} "
+            f"(no Postcondition evidence)."
+        )
     # Hard refusal is always routine — by construction it carries no
     # completion claim, so spec §3.4.13's risk class is the floor.
     return ResponsePlan(

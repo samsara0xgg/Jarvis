@@ -21,6 +21,9 @@ import ast
 import hashlib
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+import pytest
 
 import jarvis.decision as decision_pkg
 from jarvis.decision import (
@@ -31,6 +34,9 @@ from jarvis.decision import (
 )
 from jarvis.decision.gates import _COMPLETION_KEYWORDS
 from jarvis.decision.pre_emit_phrases import COMPLETION_REGEXES
+
+if TYPE_CHECKING:
+    from jarvis.shared import EvidenceLevel
 
 # Per-pattern lookup so individual scrub assertions can refer to a
 # canonical pattern by source-fragment without re-compiling. Built
@@ -121,6 +127,40 @@ def test_hard_refusal_plan_shape() -> None:
     assert len(plan.response_hash) == 64
     assert re.fullmatch(r"[0-9a-f]{64}", plan.response_hash) is not None
     assert plan.response_hash == hashlib.sha256(plan.text.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "levels",
+    [
+        (),
+        ("executed",),
+        ("reported",),
+    ],
+)
+def test_hard_refusal_plan_text_variants(
+    levels: tuple[EvidenceLevel, ...],
+) -> None:
+    """F1: hard-refusal text branches on ``active_claim_levels``.
+
+    Three branches are exercised here — empty (no task found),
+    ``executed`` present (Codex ran but verify failed), and
+    ``("reported",)`` exactly (Codex reported but no diff). All three
+    must (a) carry the bilingual ``未验证 / unverified`` marker so the
+    surface still reads as a limitation, and (b) be scrub-safe — match
+    none of the gate's completion-detection patterns — so the hard
+    refusal would not itself be flagged as a completion claim if
+    re-evaluated through the Pre-emit Gate.
+    """
+    plan = _hard_refusal_plan("task_X", active_claim_levels=levels)
+
+    assert "未验证" in plan.text
+    assert "unverified" in plan.text
+    for pat in _GATE_COMPLETION_PATTERNS:
+        assert pat.search(plan.text) is None, (
+            f"hard-refusal text matched completion pattern {pat.pattern!r}: "
+            f"{plan.text!r}"
+        )
+    assert plan.permission == "force_limitation_language"
 
 
 # --- _finalize_response wiring (AST verification) --------------------------
