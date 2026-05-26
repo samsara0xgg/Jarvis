@@ -120,8 +120,21 @@ _DEFAULT_BANNER_TITLE = "Jarvis"
 # downstream TTS treats it as silence on macOS.
 _BELL_MARKER = "\a"
 
+# Default Day-1 physical surfaces fired by the CLI path. The new Inherent
+# daemon (ADR-0003) overrides this with frozenset() so the daemon's
+# physical delivery channel (WebSocket push from Step 6 InherentBroadcaster)
+# is the sole observable side-effect of a turn. Match the literal surface
+# IDs in ATTENTION_CHANNEL_TO_SURFACES' codomain (jarvis/surface/notify.py).
+_CLI_DEFAULT_SURFACES: frozenset[str] = frozenset({
+    "say",
+    "say_bell",
+    "osascript_banner",
+    "osascript_banner_title_only",
+    "cli_stdout",
+})
 
-def render_response(  # noqa: C901, PLR0912, PLR0913 — closed dispatch over 5 fixed surfaces; argument set is the L5 boundary contract and intentionally explicit.
+
+def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatch over 5 fixed surfaces; argument set is the L5 boundary contract and intentionally explicit.
     state: SurfaceState,
     response_plan: ResponsePlanLike,
     *,
@@ -129,6 +142,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913 — closed dispatch over 5 
     turn_id: str,
     attention_channel: str,
     stream: IO[str] | None = None,
+    available_surfaces: frozenset[str] | None = None,
 ) -> tuple[SurfaceState, Event]:
     """Render an approved ResponsePlan across all surfaces for ``attention_channel``.
 
@@ -150,6 +164,10 @@ def render_response(  # noqa: C901, PLR0912, PLR0913 — closed dispatch over 5 
        surface; when the stream is not a TTY the stdout write is
        skipped and the ``stdout`` entry is omitted from
        ``delivered_via`` (partial delivery on a detached parent).
+       Before dispatching any individual surface, the loop applies the
+       ``available_surfaces`` filter (ADR-0003 D3): a surface ID not
+       in the effective set is skipped silently so the audit event
+       still emits with the remaining (possibly empty) ``delivered_via``.
     5. Emits exactly one ``surface.response_emitted`` event carrying
        ``text`` + ``voice_text`` + ``document_text`` +
        ``delivered_via`` (PHYSICAL surface list) +
@@ -171,6 +189,12 @@ def render_response(  # noqa: C901, PLR0912, PLR0913 — closed dispatch over 5 
             TTY check only runs when ``stream is None`` (default
             ``sys.stdout``); explicit streams are always written to
             (tests pass an ``io.StringIO``).
+        available_surfaces: When provided, only surfaces whose ID appears
+            in this set are fired. Default ``None`` resolves to
+            ``_CLI_DEFAULT_SURFACES`` (the full 5-surface CLI set, day-1
+            behaviour). Daemon callers pass ``frozenset()`` to suppress
+            all physical surfaces; the audit ``surface.response_emitted``
+            event STILL emits with ``delivered_via=[]``.
 
     Returns:
         ``(next_state, event)`` — the :class:`SurfaceState` with the
@@ -214,7 +238,12 @@ def render_response(  # noqa: C901, PLR0912, PLR0913 — closed dispatch over 5 
 
     # 4. Dispatch. Track delivered_via in declaration order (per the
     #    ADR table) but de-dup since ``say`` + ``say_bell`` both fold
-    #    into a single ``"voice"`` physical surface.
+    #    into a single ``"voice"`` physical surface. The ADR-0003 D3
+    #    filter only gates physical fires below — the audit event STILL
+    #    emits because the L5 channel pick already happened (§3.6.4).
+    effective_surfaces = (
+        available_surfaces if available_surfaces is not None else _CLI_DEFAULT_SURFACES
+    )
     delivered_via: list[str] = []
 
     def _record_physical(name: str) -> None:
@@ -230,6 +259,8 @@ def render_response(  # noqa: C901, PLR0912, PLR0913 — closed dispatch over 5 
     )
 
     for surface in surfaces:
+        if surface not in effective_surfaces:
+            continue
         if surface == "say":
             deliver_voice(voice_text)
             if voice_text.strip():

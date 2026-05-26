@@ -488,6 +488,7 @@ def drive_turn(
     runtime: JarvisRuntime,
     *,
     user_intent_event: Event,
+    available_surfaces: frozenset[str] | None = None,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     trigger_timeout_s: float = _DEFAULT_TRIGGER_TIMEOUT_S,
 ) -> RunTurnResult:
@@ -535,6 +536,9 @@ def drive_turn(
         user_intent_event: The already-emitted ``surface.user_intent``
             :class:`Event`. Its ``payload["turn_id"]`` is the
             canonical turn id used through this turn.
+        available_surfaces: Passed through to
+            :func:`jarvis.surface.cli_render.render_response`; daemon
+            callers use ``frozenset()`` to suppress physical surfaces.
         max_iterations: Hard ceiling on decide() invocations.
         trigger_timeout_s: Per-trigger wait timeout.
 
@@ -638,6 +642,7 @@ def drive_turn(
         turn_id=effective_turn_id,
         attention_channel=final_attention_channel,
         stream=capture,
+        available_surfaces=available_surfaces,
     )
     rendered = capture.getvalue()
     sys.stdout.write(rendered)
