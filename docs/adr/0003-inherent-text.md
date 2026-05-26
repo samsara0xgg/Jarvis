@@ -14,7 +14,10 @@
   (`chat_stream` per-token + per-sentence gate + `op:reset`) is
   deferred to **ADR-0008**. Replaces Step 1's simplified envelopes;
   Step 1's shipped code is amended (not re-shipped) as part of Step 2
-  build order. Pending Allen review.
+  build order. **Approved 2026-05-26** — DoD §5 manual smoke green
+  on all 3 wire paths (routine sentence / consequential full_text /
+  CLI sync); final E2E reviewer Ready-to-merge with 3 non-blocking
+  Important items tracked as FT-1/2/3 below.
 
 This ADR continues to scope **text-only**: image, ASR, streaming TTS,
 fallback chain remain in follow-on ADRs (see § Out of Scope).
@@ -1244,6 +1247,50 @@ explicitly NOT addressed by Step 2:
 - Backpressure / slow-client timeout on WS send — separate ADR if
   observed in practice.
 - Replay queue for client reconnect mid-stream — Step 5 / ADR-0007.
+
+## Step 2 Follow-up Tickets
+
+Non-blocking items surfaced by the final E2E reviewer on 2026-05-25.
+Step 2 is ship-able as-is; these are tracked for follow-up after
+merge. Severity is Important per reviewer — not Critical.
+
+### FT-1 · ADR D16 / BO #5 vs implementation: `asyncio.Lock` retention
+
+D16 (line 1003-1008) and Build Order #5 (line 1178) both direct
+"drop `asyncio.Lock` (single caller)". The implementation at
+`jarvis/surface/inherent_output.py:82` KEEPT the lock with a
+documented rationale (module docstring lines 24-30, `_send_all`
+body lines 162-176): the lock now guards the `_clients` set against
+concurrent `register` / `unregister` from FastAPI WebSocket
+endpoint tasks — NOT to serialize broadcasts. The implementation is
+more correct than the literal ADR directive, but the directive is
+now false on its face. Resolution: amend D16 + BO #5 to read "lock
+retained for `_clients` set membership mutation, not for broadcast
+serialization".
+
+### FT-2 · Integration smoke not parametrized over gate modes
+
+BO #6 (line 1188-1190) promises "end-to-end open / append / done
+verify for both `sentence` and `full_text` gate modes". The current
+`tests/integration/test_serve_inherent_smoke.py` runs one round-trip
+with a single prompt and only asserts envelope SHAPE, not chunk
+COUNT per gate mode. A regression that conflates the two paths
+(always-split, or always-single-chunk) would slip past the smoke.
+Resolution: parametrize over a routine prompt (multiple sentences
+expected) and a Postcondition-verified subject (single chunk
+expected). Alternative: accept DoD §5 manual Swift card smoke as
+the covering verification and amend BO #6 wording.
+
+### FT-3 · `_send_all` bare-except hides non-WS bugs
+
+`jarvis/surface/inherent_output.py:193` catches `Exception` to
+absorb the WS transport's many `errno` / type variants. It also
+silently swallows downstream bugs (e.g. `json.dumps` failure on a
+non-serializable payload). Step 2 payloads are all strings so risk
+is low, but Step 3 (ADR-0005) may add binary / custom-typed
+payloads where silent drop will hide real bugs. Resolution: log
+the exception type explicitly so an operator can distinguish
+`WebSocketDisconnect` from `TypeError in json.dumps`.
 
 ## References
 
