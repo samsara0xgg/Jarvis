@@ -286,6 +286,150 @@ def test_emit_turn_failed_rejects_missing_exception_repr(tmp_path: Path) -> None
         assert list(iter_events(conn)) == []
 
 
+# --- ADR-0003 Step 2 chunked-response registry extensions ------------------
+
+
+def test_registry_surface_response_open_registered() -> None:
+    """ADR-0003 Step 2 D10: `surface.response_open` is the turn-level header.
+
+    Emitted once per turn by render_response BEFORE any chunk; carries the
+    user transcript (`query`) and the surface kind (always `"text"` in
+    Step 2). Triggers the WS `op:open` envelope at the broadcaster.
+    """
+    schema = EventTypeRegistry.get("surface.response_open")
+    assert schema is not None, (
+        "surface.response_open must be in EventTypeRegistry per ADR-0003 Step 2 D10"
+    )
+    assert schema.event_type == "surface.response_open"
+    assert schema.owner_layer == "L5"
+    assert schema.required_payload == ("turn_id", "query", "kind")
+    assert schema.optional_payload == ()
+    assert schema.schema_version == 1
+
+
+def test_registry_surface_response_chunk_registered() -> None:
+    """ADR-0003 Step 2 D10: `surface.response_chunk` is the per-chunk event.
+
+    Emitted by render_response once per sentence (`sentence` gate mode) or
+    once total (`full_text` / `structured` mode). Triggers the WS
+    `op:append` envelope at the broadcaster.
+    """
+    schema = EventTypeRegistry.get("surface.response_chunk")
+    assert schema is not None, (
+        "surface.response_chunk must be in EventTypeRegistry per ADR-0003 Step 2 D10"
+    )
+    assert schema.event_type == "surface.response_chunk"
+    assert schema.owner_layer == "L5"
+    assert schema.required_payload == ("turn_id", "text")
+    assert schema.optional_payload == ()
+    assert schema.schema_version == 1
+
+
+def test_emit_surface_response_open_happy_path(tmp_path: Path) -> None:
+    """emit_event with the minimum required payload succeeds and round-trips."""
+    with closing(_open(tmp_path)) as conn:
+        evt = emit_event(
+            conn,
+            type="surface.response_open",
+            payload={
+                "turn_id": "T1",
+                "query": "what's on my plate today?",
+                "kind": "text",
+            },
+            ts_epoch_ms=0,
+        )
+        fetched = list(iter_events(conn))
+    assert evt.type == "surface.response_open"
+    assert evt.schema_version == 1
+    assert evt.payload == {
+        "turn_id": "T1",
+        "query": "what's on my plate today?",
+        "kind": "text",
+    }
+    assert fetched == [evt]
+
+
+def test_emit_surface_response_chunk_happy_path(tmp_path: Path) -> None:
+    """emit_event with the minimum required payload succeeds and round-trips."""
+    with closing(_open(tmp_path)) as conn:
+        evt = emit_event(
+            conn,
+            type="surface.response_chunk",
+            payload={"turn_id": "T1", "text": "First sentence."},
+            ts_epoch_ms=0,
+        )
+        fetched = list(iter_events(conn))
+    assert evt.type == "surface.response_chunk"
+    assert evt.schema_version == 1
+    assert evt.payload == {"turn_id": "T1", "text": "First sentence."}
+    assert fetched == [evt]
+
+
+def test_emit_surface_response_open_rejects_missing_turn_id(tmp_path: Path) -> None:
+    """Missing `turn_id` raises MissingPayloadFieldError; nothing written."""
+    with closing(_open(tmp_path)) as conn:
+        with pytest.raises(MissingPayloadFieldError):
+            emit_event(
+                conn,
+                type="surface.response_open",
+                payload={"query": "hi", "kind": "text"},
+                ts_epoch_ms=0,
+            )
+        assert list(iter_events(conn)) == []
+
+
+def test_emit_surface_response_open_rejects_missing_query(tmp_path: Path) -> None:
+    """Missing `query` raises MissingPayloadFieldError; nothing written."""
+    with closing(_open(tmp_path)) as conn:
+        with pytest.raises(MissingPayloadFieldError):
+            emit_event(
+                conn,
+                type="surface.response_open",
+                payload={"turn_id": "T1", "kind": "text"},
+                ts_epoch_ms=0,
+            )
+        assert list(iter_events(conn)) == []
+
+
+def test_emit_surface_response_open_rejects_missing_kind(tmp_path: Path) -> None:
+    """Missing `kind` raises MissingPayloadFieldError; nothing written."""
+    with closing(_open(tmp_path)) as conn:
+        with pytest.raises(MissingPayloadFieldError):
+            emit_event(
+                conn,
+                type="surface.response_open",
+                payload={"turn_id": "T1", "query": "hi"},
+                ts_epoch_ms=0,
+            )
+        assert list(iter_events(conn)) == []
+
+
+def test_emit_surface_response_chunk_rejects_missing_turn_id(tmp_path: Path) -> None:
+    """Missing `turn_id` raises MissingPayloadFieldError; nothing written."""
+    with closing(_open(tmp_path)) as conn:
+        with pytest.raises(MissingPayloadFieldError):
+            emit_event(
+                conn,
+                type="surface.response_chunk",
+                payload={"text": "hello"},
+                ts_epoch_ms=0,
+            )
+        assert list(iter_events(conn)) == []
+
+
+def test_emit_surface_response_chunk_rejects_missing_text(tmp_path: Path) -> None:
+    """Missing `text` raises MissingPayloadFieldError; nothing written."""
+    with closing(_open(tmp_path)) as conn:
+        with pytest.raises(MissingPayloadFieldError):
+            emit_event(
+                conn,
+                type="surface.response_chunk",
+                payload={"turn_id": "T1"},
+                ts_epoch_ms=0,
+            )
+        assert list(iter_events(conn)) == []
+
+
 # --- emit_event happy path --------------------------------------------------
 
 

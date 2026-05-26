@@ -419,6 +419,25 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         ),
         schema_version=1,
     ),
+    # ADR-0003 Step 2 — chunked Inherent text response (D10).
+    # Emit order per turn: surface.response_open → surface.response_chunk*
+    # (1..N) → surface.response_emitted. The single response watcher
+    # in runtime/inherent_loop.py polls all three types in one cursor
+    # (WHERE type IN (...) ORDER BY id) and dispatches by event.type.
+    EventTypeSchema(
+        event_type="surface.response_open",
+        owner_layer="L5",
+        required_payload=("turn_id", "query", "kind"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="surface.response_chunk",
+        owner_layer="L5",
+        required_payload=("turn_id", "text"),
+        optional_payload=(),
+        schema_version=1,
+    ),
     # Sleep/wake events per spec §3.7.8 — L6 owned (Deployment Domain).
     EventTypeSchema(
         event_type="mac.sleeping",
