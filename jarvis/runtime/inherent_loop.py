@@ -537,12 +537,23 @@ async def _tts_watcher(
                     turn_id = str(ev.payload.get("turn_id", ""))
                     if ev.type == "surface.response_open":
                         gate_mode = ev.payload.get("required_gate_mode", "sentence")
-                        pipeline.begin_turn(turn_id, gate_mode=gate_mode)  # type: ignore[attr-defined]
+                        await asyncio.to_thread(
+                            pipeline.begin_turn,  # type: ignore[attr-defined]
+                            turn_id,
+                            gate_mode=gate_mode,
+                        )
                     elif ev.type == "surface.response_chunk":
                         text = str(ev.payload.get("text", ""))
-                        pipeline.handle_chunk(turn_id, text)  # type: ignore[attr-defined]
+                        await asyncio.to_thread(
+                            pipeline.handle_chunk,  # type: ignore[attr-defined]
+                            turn_id,
+                            text,
+                        )
                     elif ev.type == "surface.response_emitted":
-                        pipeline.handle_emitted(turn_id)  # type: ignore[attr-defined]
+                        await asyncio.to_thread(
+                            pipeline.handle_emitted,  # type: ignore[attr-defined]
+                            turn_id,
+                        )
                 except Exception as exc:  # noqa: BLE001 — log + continue; TTS must not crash watcher.
                     LOGGER.warning(
                         "tts_watcher: dispatch raised on %s turn_id=%s: %r",
