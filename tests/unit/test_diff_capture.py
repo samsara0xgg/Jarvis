@@ -9,6 +9,8 @@ budget given there are only a handful of tests.
 
 from __future__ import annotations
 
+import logging
+import re
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _GIT_USER_FLAGS = ["-c", "user.email=t@t", "-c", "user.name=t"]
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -71,7 +74,8 @@ def test_dirty_tree_isolate_stashes_tracked(tmp_path: Path) -> None:
 
     ref = isolate_pretask_changes(repo, run_id="R2")
 
-    assert ref == "stash@{0}"
+    assert ref is not None
+    assert _SHA_RE.match(ref), f"expected 40-char hex SHA, got {ref!r}"
     porcelain = subprocess.run(  # noqa: S603 — fixed git argv, no shell, test fixture.
         ["git", "-C", str(repo), "status", "--porcelain=v1"],  # noqa: S607 — git on PATH by design.
         capture_output=True,
@@ -89,7 +93,8 @@ def test_dirty_tree_isolate_stashes_untracked(tmp_path: Path) -> None:
 
     ref = isolate_pretask_changes(repo, run_id="R3")
 
-    assert ref == "stash@{0}"
+    assert ref is not None
+    assert _SHA_RE.match(ref), f"expected 40-char hex SHA, got {ref!r}"
     assert not (repo / "new.tmp").exists()
 
 
@@ -118,7 +123,8 @@ def test_dirty_tree_clean_pop_restores(tmp_path: Path) -> None:
     (repo / "a.txt").write_text("hello\n")  # untracked file
 
     ref = isolate_pretask_changes(repo, run_id="R5")
-    assert ref == "stash@{0}"
+    assert ref is not None
+    assert _SHA_RE.match(ref), f"expected 40-char hex SHA, got {ref!r}"
     # Codex no-op: tree stays untouched. Pop should restore "a.txt".
     art = restore_pretask_changes(
         repo,
@@ -142,7 +148,8 @@ def test_dirty_tree_conflict_pop_writes_artifact(tmp_path: Path) -> None:
     (repo / "a.txt").write_text("allen edit\n")
 
     ref = isolate_pretask_changes(repo, run_id="R6")
-    assert ref == "stash@{0}"
+    assert ref is not None
+    assert _SHA_RE.match(ref), f"expected 40-char hex SHA, got {ref!r}"
 
     # Codex simulates a conflicting edit, then commits it.
     (repo / "a.txt").write_text("codex edit\n")
@@ -234,3 +241,105 @@ def test_write_diff_artifact_empty_diff_is_persisted(tmp_path: Path) -> None:
     art = tmp_path / "art"
     path = write_diff_artifact("", artifact_dir=art, run_id="R8")
     assert path.read_text() == ""
+
+
+# ---- B-0011 SHA-as-handle regression ----------------------------------------
+
+
+def test_isolate_returns_sha_not_stack_ref(tmp_path: Path) -> None:
+    """B-0011 regression: isolate returns SHA, not 'stash@{0}'."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.txt").write_text("hello\n")
+
+    ref = isolate_pretask_changes(repo, run_id="R-sha")
+
+    assert ref is not None
+    assert ref != "stash@{0}"
+    assert _SHA_RE.match(ref), f"expected 40-char hex SHA, got {ref!r}"
+    rev = subprocess.run(  # noqa: S603 — fixed git argv, no shell, test fixture.
+        ["git", "-C", str(repo), "rev-parse", "stash@{0}"],  # noqa: S607 — git on PATH by design.
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert rev.stdout.strip() == ref
+
+
+def test_restore_finds_stash_by_sha_after_user_stash_pushed(tmp_path: Path) -> None:
+    """B-0011 regression: user pushing a concurrent stash does not corrupt restore."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.txt").write_text("base\n")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-q", "-m", "b")
+    (repo / "a.txt").write_text("jarvis pretask edit\n")
+
+    ref = isolate_pretask_changes(repo, run_id="R-race")
+    assert ref is not None
+    assert _SHA_RE.match(ref), f"expected 40-char hex SHA, got {ref!r}"
+
+    # User pushes a separate stash (new untracked file).
+    (repo / "user_wip.txt").write_text("user concurrent work\n")
+    _git(repo, "stash", "push", "-u", "-m", "user-wip")
+
+    listing_before = subprocess.run(  # noqa: S603 — fixed git argv, no shell, test fixture.
+        ["git", "-C", str(repo), "stash", "list"],  # noqa: S607 — git on PATH by design.
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    lines_before = listing_before.stdout.strip().splitlines()
+    assert len(lines_before) == 2
+    assert "user-wip" in lines_before[0]
+    assert "jarvis-pre-codex-R-race" in lines_before[1]
+
+    art = restore_pretask_changes(
+        repo,
+        ref,
+        artifact_dir=tmp_path / "art",
+        run_id="R-race",
+    )
+
+    assert art is None
+    assert (repo / "a.txt").read_text() == "jarvis pretask edit\n"
+    listing_after = subprocess.run(  # noqa: S603 — fixed git argv, no shell, test fixture.
+        ["git", "-C", str(repo), "stash", "list"],  # noqa: S607 — git on PATH by design.
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    lines_after = listing_after.stdout.strip().splitlines()
+    assert len(lines_after) == 1
+    assert "user-wip" in lines_after[0]
+    assert "jarvis-pre-codex-R-race" not in listing_after.stdout
+    assert not (repo / "user_wip.txt").exists()
+
+
+def test_restore_handles_sha_not_found(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """User manually dropped jarvis stash -> warning + no-op, no raise."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.txt").write_text("hello\n")
+
+    ref = isolate_pretask_changes(repo, run_id="R-gone")
+    assert ref is not None
+
+    _git(repo, "stash", "drop", "stash@{0}")
+
+    with caplog.at_level(logging.WARNING, logger="jarvis.execution.diff_capture"):
+        art = restore_pretask_changes(
+            repo,
+            ref,
+            artifact_dir=tmp_path / "art",
+            run_id="R-gone",
+        )
+
+    assert art is None
+    assert any(ref in rec.getMessage() for rec in caplog.records), (
+        f"expected warning mentioning SHA {ref}, got "
+        f"{[r.getMessage() for r in caplog.records]}"
+    )
