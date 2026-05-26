@@ -439,13 +439,22 @@ def _main_oneshot(argv: list[str]) -> int:
     path fires before the regex classifier / fork-detach machinery —
     otherwise a long-run utterance would fork-detach into a child that
     then races the running daemon on the same SQLite event log.
+
+    B-NEW-5: additionally fail-fast when the user passes
+    ``--runtime-root <other>`` while a daemon holds the default (home)
+    runtime root's lock. Without this guard the one-shot CLI silently
+    forks into a parallel SQLite state — the daemon and the ad-hoc
+    run drive separate event logs and the operator only sees one of
+    them. The check uses the same :func:`process_lock.is_held` machinery
+    as the D4 probe but targets the default-root lock specifically.
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
 
     # ADR-0003 D4 / F2 — CLI refuses to run when the daemon owns the
     # lock to avoid double-driving on the same SQLite event log.
-    lock_path = _resolve_runtime_root(args.runtime_root) / "daemon.lock"
+    requested_root = _resolve_runtime_root(args.runtime_root)
+    lock_path = requested_root / "daemon.lock"
     if process_lock.is_held(lock_path):
         pid = process_lock.holder_pid(lock_path)
         sys.stderr.write(
@@ -453,6 +462,22 @@ def _main_oneshot(argv: list[str]) -> int:
             f"stop it or POST to http://127.0.0.1:8006/inherent/submit\n"
         )
         return 2
+
+    # B-NEW-5 — when the user explicitly overrides the runtime root but
+    # a daemon already owns the DEFAULT (home) runtime root, refuse with
+    # a clear error rather than silently forking into a parallel state.
+    home_root = Path(DEFAULT_RUNTIME_ROOT_LITERAL).expanduser().resolve()
+    if requested_root != home_root:
+        home_lock = home_root / "daemon.lock"
+        if process_lock.is_held(home_lock):
+            pid = process_lock.holder_pid(home_lock)
+            sys.stderr.write(
+                f"jarvis: daemon at {home_root} holds the default runtime "
+                f"root (pid {pid}); --runtime-root {requested_root} would "
+                f"create a conflicting parallel state. Stop the daemon or "
+                f"omit --runtime-root.\n"
+            )
+            return 2
 
     return main_with_detach(
         args.utterance,
