@@ -1,9 +1,11 @@
-"""ADR-0003 Step 9 smoke — end-to-end /submit -> WS open+done round-trip.
+"""ADR-0003 Step 2 smoke — end-to-end /submit -> WS open+append*+done round-trip.
 
 Spawns ``python -m jarvis serve`` on an ephemeral port, opens a
-WebSocket, POSTs ``/inherent/submit``, and asserts the
-``open`` + ``done`` envelopes round-trip back through the daemon's
-watchers (which invoke the REAL LLM).
+WebSocket, POSTs ``/inherent/submit``, and asserts the three-envelope
+Step-2 wire schema (``open`` + N ``append`` + ``done``) round-trips
+back through the daemon's watchers (which invoke the REAL LLM). See
+ADR-0003 § Step 2 D11 (``docs/adr/0003-inherent-text.md``) for the
+canonical envelope mapping.
 
 Marked ``live_llm`` because :func:`jarvis.runtime.drive_turn` issues a
 real LLM call inside the daemon's user_intent_watcher thread; the test
@@ -52,7 +54,7 @@ def _wait_for_port(port: int, *, deadline_s: float = 10.0) -> None:
 
 
 def test_daemon_submit_to_ws_round_trip(tmp_path: Path) -> None:
-    """Spawn the daemon, POST a submit, receive open+done on WS."""
+    """Spawn the daemon, POST a submit, receive open + append* + done on WS."""
     port = _pick_free_port()
 
     proc = subprocess.Popen(  # noqa: S603 — sys.executable is trusted; argv is fully controlled.
@@ -95,18 +97,42 @@ def test_daemon_submit_to_ws_round_trip(tmp_path: Path) -> None:
                 body = json.loads(resp.read().decode())
                 assert body == {"status": "accepted"}
 
-            # 3. Receive open + done. Daemon must complete a full turn
-            #    (real LLM call!) before pushing the response.
+            # 3. Receive open + N appends + done. Daemon must complete a
+            #    full turn (real LLM call) before the first envelope
+            #    arrives; subsequent envelopes are emitted back-to-back.
             open_msg = json.loads(ws.recv(timeout=120))
-            done_msg = json.loads(ws.recv(timeout=10))
+            assert open_msg["op"] == "open", open_msg
+            assert open_msg["payload"] == {
+                "content": "",
+                "streaming": True,
+                "kind": "text",
+                "q": "hi",
+            }
 
-        assert open_msg["op"] == "open"
-        assert open_msg["payload"]["streaming"] is False
-        assert isinstance(open_msg["payload"]["content"], str)
-        assert open_msg["payload"]["content"]  # non-empty response
+            appends: list[str] = []
+            done_msg: dict[str, object] | None = None
+            # 10s is generous for a small handful of envelopes over
+            # loopback WS; 64 is a hard cap so a daemon bug can't hang
+            # the test.
+            for _ in range(64):
+                msg = json.loads(ws.recv(timeout=10))
+                if msg["op"] == "append":
+                    token = msg["payload"]["token"]
+                    assert isinstance(token, str), msg
+                    assert token, msg
+                    appends.append(token)
+                elif msg["op"] == "done":
+                    done_msg = msg
+                    break
+                else:
+                    pytest.fail(f"unexpected WS envelope: {msg!r}")
+            else:
+                pytest.fail(f"daemon emitted >64 envelopes without done; got appends={appends!r}")
 
-        assert done_msg["op"] == "done"
-        assert done_msg["payload"] == {}
+        assert done_msg is not None
+        assert done_msg == {"op": "done", "payload": {"fadeMs": 5000}}
+        assert appends, "daemon emitted no append envelopes"
+        assert "".join(appends), "daemon emitted empty appends"
 
     finally:
         proc.terminate()
