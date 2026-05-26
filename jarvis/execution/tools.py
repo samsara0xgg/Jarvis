@@ -109,6 +109,7 @@ from jarvis.shared import (
     RiskLevel,
 )
 from jarvis.state.event_log import emit_event, iter_events
+from jarvis.state.projections import make_snapshot
 
 if TYPE_CHECKING:
     import sqlite3
@@ -1409,6 +1410,163 @@ def create_task_handler(
     )
 
 
+# --- list_tasks handler (F6 — read-only L0 observation tool) ----------------
+
+
+_LIST_TASKS_VALID_STATUSES: Final[frozenset[str]] = frozenset({"open", "verified", "all"})
+"""Allowed ``status`` filter values for `list_tasks`.
+
+Mirrors the `enum` on `_LIST_TASKS_INPUT_SCHEMA` so the handler can
+defend in depth without re-listing the values inline. Internal triple
+(`open` / `reported_complete` / `verified_complete`) stays in
+`TaskLedgerSnapshot.derive_status`; the LLM only sees the collapsed
+binary `{open, verified}` plus the catch-all `all`.
+"""
+
+_LIST_TASKS_DEFAULT_LIMIT: Final[int] = 10
+"""Default maximum number of task rows the handler returns when the LLM
+does not specify `limit` in `arguments`.
+"""
+
+_LIST_TASKS_STATUS_TO_SURFACE: Final[Mapping[str, str]] = {
+    "open": "open",
+    "verified_complete": "verified",
+    "reported_complete": "reported",
+}
+"""Map the internal derived status triple onto the JSON `status` string
+the LLM sees. `reported_complete` is surfaced as `reported` so a future
+LLM-side prompt can distinguish a worker self-report from a verified
+completion; today's filter only branches on `open` vs `verified`.
+"""
+
+
+_LIST_TASKS_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["open", "verified", "all"],
+            "description": (
+                "Filter by derived task status. 'open' = task.created with "
+                "no task.verified yet. 'verified' = task.verified + verified "
+                "Postcondition Claim. 'all' = no filter. Default 'open'."
+            ),
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of tasks to return. Default 10.",
+        },
+    },
+    "required": [],
+}
+
+
+def list_tasks_handler(
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
+    lifecycle: ActionLifecycle,
+) -> RawResult:
+    """L0 read-only ``list_tasks`` — return Task Ledger filtered by derived status.
+
+    Answers Allen's "我有哪些 open task?" / "show my open work" via a
+    fold of the live Event Log into :class:`TaskLedgerSnapshot` plus a
+    derived-status filter. Read-only — no events emitted beyond the
+    mandatory single ``action.result_observed(semantics="observation")``.
+
+    Arguments (all optional):
+        status: ``"open"`` (default) | ``"verified"`` | ``"all"``.
+            Invalid values short-circuit to a ``semantics="error"``
+            slot with ``code="invalid_argument"`` — defense-in-depth
+            for the LLM's schema (the schema's ``enum`` should catch
+            this first).
+        limit: positive integer; default 10. The schema enforces
+            ``minimum: 1`` on the LLM side; the handler clamps to
+            ``max(1, limit)`` so a zero/negative slipped through is
+            normalized rather than silently yielding an empty list.
+
+    Returns:
+        ``RawResult(semantics="observation", payload={"tasks": [...]})``
+        where each entry is
+        ``{"task_id": str, "goal": str, "status": str}``. Status is
+        surfaced via :data:`_LIST_TASKS_STATUS_TO_SURFACE` so the LLM
+        only sees ``open``/``verified``/``reported`` rather than the
+        internal ``verified_complete``/``reported_complete`` triple.
+
+    Iteration order: ``records_by_task_id`` preserves insertion order
+    (Python 3.7+ dict guarantee), so tasks appear in the order their
+    originating ``task.created`` was emitted.
+    """
+    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+
+    status_arg = action_request.arguments.get("status", "open")
+    if not isinstance(status_arg, str) or status_arg not in _LIST_TASKS_VALID_STATUSES:
+        valid = sorted(_LIST_TASKS_VALID_STATUSES)
+        error_msg = f"invalid 'status' (got {status_arg!r}); must be one of {valid!r}"
+        tool_output_str = tool_error(error_msg, code="invalid_argument")
+        emit_event(
+            conn,
+            type="action.result_observed",
+            payload={
+                "action_id": action_request.action_id,
+                "semantics": "error",
+                "tool_output": tool_output_str,
+                "error": "invalid_argument",
+            },
+            source_event_id=running_event_uid,
+            correlation={"action_id": action_request.action_id},
+        )
+        lifecycle.transition(action_request.action_id, "result_observed")
+        return RawResult(
+            action_id=action_request.action_id,
+            semantics="error",
+            payload={"error": "invalid_argument"},
+            tool_output=tool_output_str,
+            error="invalid_argument",
+        )
+
+    limit_arg = action_request.arguments.get("limit", _LIST_TASKS_DEFAULT_LIMIT)
+    limit = max(1, int(limit_arg))
+
+    snapshot = make_snapshot(conn).task_ledger
+    out: list[dict[str, Any]] = []
+    for task_id, record in snapshot.records_by_task_id.items():
+        derived = snapshot.derive_status(task_id)
+        if status_arg == "open" and derived != "open":
+            continue
+        if status_arg == "verified" and derived != "verified_complete":
+            continue
+        status_str = _LIST_TASKS_STATUS_TO_SURFACE.get(derived, derived)
+        out.append({"task_id": record.task_id, "goal": record.goal, "status": status_str})
+        if len(out) >= limit:
+            break
+
+    payload: dict[str, Any] = {"tasks": out}
+    tool_output_str = tool_result(payload)
+
+    emit_event(
+        conn,
+        type="action.result_observed",
+        payload={
+            "action_id": action_request.action_id,
+            "semantics": "observation",
+            "tool_output": tool_output_str,
+        },
+        source_event_id=running_event_uid,
+        correlation={"action_id": action_request.action_id},
+    )
+    lifecycle.transition(action_request.action_id, "result_observed")
+
+    return RawResult(
+        action_id=action_request.action_id,
+        semantics="observation",
+        payload=payload,
+        tool_output=tool_output_str,
+        error=None,
+    )
+
+
 # --- ToolRegistry ------------------------------------------------------------
 
 
@@ -1771,6 +1929,23 @@ def build_default_registry() -> ToolRegistry:
             handler=create_task_handler,
         )
     )
+    registry.register(
+        ToolDefinition(
+            name="list_tasks",
+            description=(
+                "Return a list of tasks from the Task Ledger filtered by "
+                "derived status. Read-only — emits no claim, only "
+                "observation. Use when Allen asks 'what tasks do I have' "
+                "or 'show my open work'."
+            ),
+            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            risk_level="L0",
+            result_semantics="observation",
+            is_async=False,
+            input_schema=_LIST_TASKS_INPUT_SCHEMA,
+            handler=list_tasks_handler,
+        )
+    )
     return registry
 
 
@@ -1792,6 +1967,7 @@ __all__ = [
     "UnknownToolError",
     "build_default_registry",
     "create_task_handler",
+    "list_tasks_handler",
     "spawn_worker_handler",
     "tool_error",
     "tool_result",
