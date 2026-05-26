@@ -437,30 +437,25 @@ def run_turn(
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     trigger_timeout_s: float = _DEFAULT_TRIGGER_TIMEOUT_S,
 ) -> RunTurnResult:
-    """Drive one conversation turn end-to-end.
+    """Drive one conversation turn end-to-end (CLI / scenario entrypoint).
 
     Steps (spec §3.4.1 multi-trigger loop):
 
     1. Mint or accept a ``turn_id`` (composition root owns this; L3
        sees the same id on the trace correlation).
-    2. Emit ``surface.user_intent`` via L5 surface adapter — this is
-       the first trigger event.
-    3. Call :func:`jarvis.decision.decide`. If it returns a
-       :class:`ResponsePlan`, finalize immediately.
-    4. Otherwise, the decide() call paused on an async tool
-       (spawn_worker); poll the event log for the next
-       ``worker.reported`` / ``action.result_observed`` row, re-enter
-       decide() with that trigger, repeat.
-    5. Record the Pre-emit token on the surface state, then call
-       :func:`jarvis.surface.cli_render.render_response` which routes
-       the channel-split text across the L3 attention channel's
-       physical surfaces (say / banner / stdout when attached) AND
-       enforces the Pre-emit token check (canary H3) AND emits the
-       audit ``surface.response_emitted`` event.
+    2. Emit ``surface.user_intent`` via L5 surface adapter (spec
+       §3.6.1) — this is the first trigger event.
+    3. Delegate the post-emit body to :func:`drive_turn`, which drives
+       the L3 decide loop, runs the stash-pop finalizer, and renders
+       the final :class:`ResponsePlan` across the surfaces dictated by
+       the L3 Attention Policy.
 
-    The Pre-emit token check protects against a runtime that
-    accidentally re-uses an old plan or fails to refresh the token —
-    :class:`PreEmitTokenError` propagates out.
+    The split into :func:`run_turn` (emit + delegate) and
+    :func:`drive_turn` (post-emit body) exists so non-CLI surfaces can
+    drive a turn without re-emitting ``surface.user_intent``. The
+    daemon HTTP handler (ADR-0003 Step 7) writes the intent event from
+    the request body, and the daemon watcher (Step 8) picks it up and
+    calls :func:`drive_turn` directly — both bypass :func:`run_turn`.
 
     Args:
         runtime: Assembled :class:`JarvisRuntime`.
@@ -481,6 +476,74 @@ def run_turn(
         turn_id=effective_turn_id,
     )
 
+    return drive_turn(
+        runtime,
+        user_intent_event=utterance_event,
+        max_iterations=max_iterations,
+        trigger_timeout_s=trigger_timeout_s,
+    )
+
+
+def drive_turn(
+    runtime: JarvisRuntime,
+    *,
+    user_intent_event: Event,
+    max_iterations: int = _DEFAULT_MAX_ITERATIONS,
+    trigger_timeout_s: float = _DEFAULT_TRIGGER_TIMEOUT_S,
+) -> RunTurnResult:
+    """Drive the post-emit body of one turn from an already-emitted intent event.
+
+    Same body as the pre-extract ``run_turn`` (decide loop + finalize +
+    render). The ``surface.user_intent`` event is supplied externally;
+    :func:`drive_turn` does NOT re-emit it. The effective ``turn_id``
+    is read from ``user_intent_event.payload["turn_id"]``.
+
+    The caller is responsible for emitting ``surface.user_intent``
+    first. This function exists so non-CLI surfaces — specifically the
+    ADR-0003 daemon HTTP handler (writes the intent) and the daemon
+    watcher (picks it up and drives) — can drive a turn from a
+    pre-emitted event without double-emitting and looping the watcher.
+
+    Steps (spec §3.4.1 multi-trigger loop):
+
+    1. Call :func:`jarvis.decision.decide` with ``user_intent_event``
+       as the first trigger. If it returns a :class:`ResponsePlan`,
+       finalize immediately.
+    2. Otherwise the decide() call paused on an async tool
+       (spawn_worker); poll the event log for the next
+       ``worker.reported`` / ``action.result_observed`` /
+       ``action.timeout_assumed`` / ``action.failed`` row, re-enter
+       decide() with that trigger, repeat.
+    3. Run the stash-pop finalizer (ADR-0002 § Dirty-tree policy) — by
+       construction this lives strictly after the last ``decide(...)``
+       call so the ``verify_command`` subprocess saw exactly Codex's
+       tree. Canary ``test_canary_stash_pop_after_verify`` enforces
+       this ordering inside :func:`drive_turn`.
+    4. Record the Pre-emit token on a fresh :class:`SurfaceState`, then
+       call :func:`jarvis.surface.cli_render.render_response` which
+       routes the channel-split text across the L3 attention channel's
+       physical surfaces (say / banner / stdout when attached) AND
+       enforces the Pre-emit token check (canary H3) AND emits the
+       audit ``surface.response_emitted`` event.
+
+    The Pre-emit token check protects against a runtime that
+    accidentally re-uses an old plan or fails to refresh the token —
+    :class:`PreEmitTokenError` propagates out.
+
+    Args:
+        runtime: Assembled :class:`JarvisRuntime`.
+        user_intent_event: The already-emitted ``surface.user_intent``
+            :class:`Event`. Its ``payload["turn_id"]`` is the
+            canonical turn id used through this turn.
+        max_iterations: Hard ceiling on decide() invocations.
+        trigger_timeout_s: Per-trigger wait timeout.
+
+    Returns:
+        Frozen :class:`RunTurnResult` describing what was written and
+        the events emitted.
+    """
+    effective_turn_id = str(user_intent_event.payload["turn_id"])
+
     decide_ctx = DecideContext(
         conn=runtime.conn,
         runtime_paths=runtime.runtime_paths,
@@ -500,7 +563,7 @@ def run_turn(
     last_seen_id = _latest_row_id(runtime.conn)
 
     collected_events: list[Event] = []
-    trigger_event: Event = utterance_event
+    trigger_event: Event = user_intent_event
     response_plan: ResponsePlan | None = None
     # Track the attention_channel from the final decide() iteration so
     # we can route the response to the right surfaces in Step 18.
@@ -531,7 +594,7 @@ def run_turn(
 
     if response_plan is None:
         msg = (
-            f"run_turn: exhausted max_iterations={max_iterations} without a final "
+            f"drive_turn: exhausted max_iterations={max_iterations} without a final "
             f"ResponsePlan (turn_id={effective_turn_id!r})."
         )
         raise RuntimeBootstrapError(msg)
@@ -705,5 +768,6 @@ __all__ = [
     "RuntimeBootstrapError",
     "TriggerWaitTimeout",
     "bootstrap_runtime_app",
+    "drive_turn",
     "run_turn",
 ]

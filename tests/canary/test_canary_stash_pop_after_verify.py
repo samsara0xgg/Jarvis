@@ -28,7 +28,7 @@ Implementation: this canary is the conservative half of the contract.
   isolation, the only legitimate caller is the runtime composition.
 
 The dispatch site for ``verify_diff`` is the L3 ``decide(...)`` call
-inside ``run_turn``; lexically that call appears in the source before
+inside ``drive_turn``; lexically that call appears in the source before
 the ``restore_pretask_changes(...)`` finalizer. We assert the line-
 number ordering as a hardening on top of the import + presence checks.
 """
@@ -44,7 +44,7 @@ _VERIFY_DISPATCH_CALL_NAME: str = "decide"
 _TOOLS_MODULE_RELPATH: str = "jarvis/execution/tools.py"
 _RUNTIME_MODULE_RELPATH: str = "jarvis/runtime/__init__.py"
 _SPAWN_HANDLER_NAME: str = "spawn_worker_handler"
-_RUN_TURN_NAME: str = "run_turn"
+_DRIVE_TURN_NAME: str = "drive_turn"
 
 
 def _find_function_def(module: ast.Module, *, name: str) -> ast.FunctionDef | None:
@@ -159,32 +159,32 @@ def test_canary_runtime_calls_restore_pretask_changes_after_decide() -> None:
     )
 
 
-def test_canary_run_turn_orders_pop_inside_function_body() -> None:
-    """Within ``run_turn``, the pop site MUST come after the decide loop."""
+def test_canary_drive_turn_orders_pop_inside_function_body() -> None:
+    """Within ``drive_turn``, the pop site MUST come after the decide loop."""
     module = parse(repo_root() / _RUNTIME_MODULE_RELPATH)
-    run_turn = _find_function_def(module, name=_RUN_TURN_NAME)
-    assert run_turn is not None, (
-        f"{_RUNTIME_MODULE_RELPATH} must define a top-level {_RUN_TURN_NAME!r}."
+    drive_turn_def = _find_function_def(module, name=_DRIVE_TURN_NAME)
+    assert drive_turn_def is not None, (
+        f"{_RUNTIME_MODULE_RELPATH} must define a top-level {_DRIVE_TURN_NAME!r}."
     )
 
     # The runtime delegates the actual call to a private helper
     # (`_pop_pending_stashes`); that helper, in turn, calls
-    # `restore_pretask_changes`. We assert run_turn invokes the helper
+    # `restore_pretask_changes`. We assert drive_turn invokes the helper
     # AFTER `decide(...)` to keep the line-number ordering meaningful
     # even when the canonical pop site is one indirection away.
-    helper_calls = _iter_calls_with_name(run_turn, name="_pop_pending_stashes")
-    decide_calls = _iter_calls_with_name(run_turn, name=_VERIFY_DISPATCH_CALL_NAME)
+    helper_calls = _iter_calls_with_name(drive_turn_def, name="_pop_pending_stashes")
+    decide_calls = _iter_calls_with_name(drive_turn_def, name=_VERIFY_DISPATCH_CALL_NAME)
     assert helper_calls, (
-        f"{_RUN_TURN_NAME}: no `_pop_pending_stashes(...)` call found — the "
+        f"{_DRIVE_TURN_NAME}: no `_pop_pending_stashes(...)` call found — the "
         "finalizer is the in-function bridge to the stash-pop site."
     )
     assert decide_calls, (
-        f"{_RUN_TURN_NAME}: no `{_VERIFY_DISPATCH_CALL_NAME}(...)` call found."
+        f"{_DRIVE_TURN_NAME}: no `{_VERIFY_DISPATCH_CALL_NAME}(...)` call found."
     )
     earliest_helper = min(call.lineno for call in helper_calls)
     latest_decide = max(call.lineno for call in decide_calls)
     assert latest_decide < earliest_helper, (
-        f"{_RUN_TURN_NAME}: `_pop_pending_stashes(...)` at line "
+        f"{_DRIVE_TURN_NAME}: `_pop_pending_stashes(...)` at line "
         f"{earliest_helper} must come after the last `decide(...)` call at "
         f"line {latest_decide}. ADR-0002 § Dirty-tree policy."
     )
