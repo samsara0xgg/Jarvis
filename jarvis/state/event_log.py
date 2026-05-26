@@ -449,7 +449,11 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         event_type="surface.response_open",
         owner_layer="L5",
         required_payload=("turn_id", "query", "kind"),
-        optional_payload=(),
+        # ADR-0005 §7: L5 TTS consumers read ``required_gate_mode`` from the
+        # open header to route between sentence-streaming and full-text TTS
+        # playback per spec §3.6.6. Optional so legacy emitters (and the
+        # event-log unit tests that emit directly via emit_event) keep working.
+        optional_payload=("required_gate_mode",),
         schema_version=1,
     ),
     EventTypeSchema(

@@ -142,17 +142,27 @@ def _emit_response_open(
     *,
     turn_id: str,
     query: str,
+    response_plan: ResponsePlanLike,
 ) -> None:
     """Emit the ADR-0003 Step 2 ``surface.response_open`` event.
 
     Single emission per turn. Payload carries ``turn_id``, ``query``
     (the user transcript that triggered the turn — empty string allowed),
-    and ``kind`` (always ``"text"`` for A1).
+    ``kind`` (always ``"text"`` for A1), and ``required_gate_mode``
+    (ADR-0005 §7: L5 TTS consumers read this off the open header to
+    route between sentence-streaming and full-text TTS playback per
+    spec §3.6.6 — the same plan field already drives chunk-splitting
+    in :func:`_emit_response_chunks`).
     """
     emit_event(
         conn,
         type="surface.response_open",
-        payload={"turn_id": turn_id, "query": query, "kind": "text"},
+        payload={
+            "turn_id": turn_id,
+            "query": query,
+            "kind": "text",
+            "required_gate_mode": response_plan.required_gate_mode,
+        },
         correlation={"turn_id": turn_id},
     )
 
@@ -370,7 +380,12 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     #    open -> chunk(s) -> emitted so a downstream watcher with a single
     #    cursor over the three types sees the sequence per turn.
     if streaming_enabled:
-        _emit_response_open(conn, turn_id=turn_id, query=query)
+        _emit_response_open(
+            conn,
+            turn_id=turn_id,
+            query=query,
+            response_plan=response_plan,
+        )
         _emit_response_chunks(conn, turn_id=turn_id, response_plan=response_plan)
 
     # 6. Audit event. The payload preserves the Day-1 ``text`` field +

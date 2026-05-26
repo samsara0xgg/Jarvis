@@ -373,7 +373,10 @@ def test_registry_surface_response_open_registered() -> None:
     assert schema.event_type == "surface.response_open"
     assert schema.owner_layer == "L5"
     assert schema.required_payload == ("turn_id", "query", "kind")
-    assert schema.optional_payload == ()
+    # ADR-0005 §7: ``required_gate_mode`` lifted onto the open header so
+    # L5 TTS consumers can route between sentence-streaming and full-text
+    # playback per spec §3.6.6.
+    assert schema.optional_payload == ("required_gate_mode",)
     assert schema.schema_version == 1
 
 

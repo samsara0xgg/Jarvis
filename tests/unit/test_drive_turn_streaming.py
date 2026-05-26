@@ -212,6 +212,7 @@ def test_drive_turn_streaming_enabled_true_emits_three_event_taxonomy(
         "turn_id": "T_stream",
         "query": "你好世界",
         "kind": "text",
+        "required_gate_mode": "sentence",
     }, f"surface.response_open payload mismatch: {open_payload!r}"
 
 
@@ -252,6 +253,7 @@ def test_drive_turn_streaming_with_missing_transcript_defaults_query_to_empty(
         "turn_id": "T_no_transcript",
         "query": "",
         "kind": "text",
+        "required_gate_mode": "sentence",
     }, f"surface.response_open payload mismatch: {open_payload!r}"
 
 

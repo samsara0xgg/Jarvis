@@ -177,7 +177,12 @@ def test_streaming_sentence_mode_emits_open_two_chunks_then_emitted(
 
     # Open payload + correlation.
     open_row = rows[0]
-    assert open_row.payload == {"turn_id": "T_stream_sent", "query": "hi", "kind": "text"}
+    assert open_row.payload == {
+        "turn_id": "T_stream_sent",
+        "query": "hi",
+        "kind": "text",
+        "required_gate_mode": "sentence",
+    }
     assert open_row.correlation == {"turn_id": "T_stream_sent"}
 
     # Chunk payloads match the splitter output in order.
@@ -327,6 +332,7 @@ def test_streaming_with_empty_query_still_emits_open(
         "turn_id": "T_empty_query",
         "query": "",
         "kind": "text",
+        "required_gate_mode": "sentence",
     }
 
 
