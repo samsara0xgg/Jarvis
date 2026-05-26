@@ -50,6 +50,8 @@ from jarvis.surface import voice_pipeline
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from jarvis.surface import voice_ducking
+
 
 LOGGER = logging.getLogger("jarvis.surface.voice_wake")
 
@@ -250,6 +252,12 @@ class WakeListener:
             engine's mock decides detections regardless of content).
             Production wires this to an ``sd.RawInputStream`` reader via
             :meth:`runtime/inherent_loop.serve_inherent`.
+        ducker: optional :class:`voice_ducking.SystemAudioDucker`. When
+            wired, the listener mutes system output (refcounted via
+            :meth:`SystemAudioDucker.duck`) before invoking
+            ``capture_callable`` and restores it after — ADR §5.1
+            prevents the assistant's own TTS bleed-back into the mic.
+            Ducker failures are logged at DEBUG and never break wake.
     """
 
     def __init__(  # noqa: PLR0913 — keyword-only deps form the composition boundary.
@@ -263,6 +271,7 @@ class WakeListener:
         is_speaking_callable: Callable[[], bool] | None = None,
         model_name: str = "hey_jarvis_v0.1",
         frame_factory: Callable[[], bytes] | None = None,
+        ducker: voice_ducking.SystemAudioDucker | None = None,
     ) -> None:
         """Wire one listener. See class docstring for semantics."""
         self._engine = engine
@@ -273,6 +282,7 @@ class WakeListener:
         self._is_speaking_callable = is_speaking_callable
         self._model_name = model_name
         self._frame_factory = frame_factory or _zero_frame
+        self._ducker = ducker
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -372,12 +382,9 @@ class WakeListener:
         turn_id = "T" + secrets.token_hex(4)
         self._broadcast("listening", turn_id=turn_id)
 
-        # 6. Capture.
-        try:
-            audio_bytes = self._capture_callable()
-        except Exception:
-            LOGGER.exception("wake: capture failed; turn_id=%s", turn_id)
-            self._broadcast("error", turn_id=turn_id, reason="capture_error")
+        # 6. Capture under ducking (ADR §5.1 — prevents speaker bleed).
+        audio_bytes = self._capture_with_ducking(turn_id=turn_id)
+        if audio_bytes is None:
             return
 
         # 7. Transcribe + emit. The pipeline broadcasts accepted/empty itself.
@@ -409,6 +416,33 @@ class WakeListener:
                 self._engine.reset()
             except Exception:  # noqa: BLE001 — reset is best-effort
                 LOGGER.debug("wake: engine.reset() failed", exc_info=True)
+
+    def _capture_with_ducking(self, *, turn_id: str) -> bytes | None:
+        """Capture one utterance with system output ducked (ADR §5.1).
+
+        Returns the captured PCM bytes, or ``None`` if capture failed
+        (an ``error`` envelope was already broadcast). Ducker failures
+        are logged at DEBUG and never block capture.
+        """
+        ducked = False
+        if self._ducker is not None:
+            try:
+                ducked = bool(self._ducker.duck())
+            except Exception:  # noqa: BLE001 — ducker errors must not kill wake
+                LOGGER.debug("wake: ducker.duck() failed", exc_info=True)
+        try:
+            try:
+                return self._capture_callable()
+            except Exception:
+                LOGGER.exception("wake: capture failed; turn_id=%s", turn_id)
+                self._broadcast("error", turn_id=turn_id, reason="capture_error")
+                return None
+        finally:
+            if ducked and self._ducker is not None:
+                try:
+                    self._ducker.restore()
+                except Exception:  # noqa: BLE001 — ducker errors must not kill wake
+                    LOGGER.debug("wake: ducker.restore() failed", exc_info=True)
 
 
 def _zero_frame() -> bytes:

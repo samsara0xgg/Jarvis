@@ -90,6 +90,7 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.surface import (
     voice_asr,
     voice_audio,
+    voice_ducking,
     voice_pipeline,
     voice_tts,
     voice_wake,
@@ -156,6 +157,13 @@ _DEFAULT_WAKE_THRESHOLD: float = 0.5
 _DEFAULT_CAPTURE_MAX_DURATION_S: float = 5.0
 _DEFAULT_CAPTURE_MIN_VOICED_S: float = 1.0
 _DEFAULT_TTS_SAMPLE_RATE_HZ: int = 32000  # matches MiniMax default; see Task 15.
+
+# Wake input stream params — ADR §5.1 (openwakeword expects 16 kHz mono PCM16
+# at 1280-sample / 80 ms blocks). A SEPARATE stream from the recorder's per
+# legacy ``core/inherent_wake_listener.py`` parity (the recorder's 32-ms VAD
+# chunks would force openwakeword to buffer across reads).
+_WAKE_SAMPLE_RATE_HZ: int = 16000
+_WAKE_FRAME_SAMPLES: int = 1280
 
 
 def _voice_models_preflight(
@@ -600,6 +608,8 @@ def _build_voice_pipeline(
 
 def _build_tts_pipeline(
     broadcaster: InherentBroadcaster,
+    *,
+    ducker: voice_ducking.SystemAudioDucker | None = None,
 ) -> voice_tts.TTSPipeline | None:
     """Build the TTS subsystem when ``MINIMAX_API_KEY`` is present.
 
@@ -609,6 +619,11 @@ def _build_tts_pipeline(
     fallback is a per-call escape hatch from inside
     :class:`TTSPipeline`, not a standalone path, so wiring it on its
     own would lie about what the daemon can actually do.
+
+    The optional ``ducker`` is the same :class:`SystemAudioDucker`
+    instance shared with the WakeListener — refcounted nesting means
+    wake-capture + TTS-playback can both demand mute simultaneously
+    without stomping each other's restore.
     """
     api_key = os.environ.get("MINIMAX_API_KEY")
     if not api_key:
@@ -623,6 +638,7 @@ def _build_tts_pipeline(
         player=player,
         fallback=voice_tts.macos_say_fallback,
         broadcaster=broadcaster,
+        ducker=ducker,
     )
 
 
@@ -648,21 +664,70 @@ def _build_voice_pipeline_callable(
     return _call
 
 
+def _open_wake_input_stream() -> Any:  # noqa: ANN401 — sounddevice stream is untyped third-party API
+    """Open the persistent 16 kHz / 1280-sample PortAudio input stream.
+
+    Module-level so tests can :func:`unittest.mock.patch.object` it
+    without needing PortAudio. ``sounddevice`` is lazy-imported so this
+    module remains importable in environments without the wheel.
+
+    The returned stream is the WakeListener's frame source — every
+    frame_factory call does ``stream.read(_WAKE_FRAME_SAMPLES)[0]`` to
+    pull exactly one 80 ms PCM16 frame. Legacy parity:
+    ``core/inherent_wake_listener.py`` opens the same shape.
+    """
+    import sounddevice as sd  # type: ignore[import-not-found]  # noqa: PLC0415
+
+    stream = sd.RawInputStream(
+        samplerate=_WAKE_SAMPLE_RATE_HZ,
+        channels=1,
+        dtype="int16",
+        blocksize=_WAKE_FRAME_SAMPLES,
+    )
+    stream.start()
+    return stream
+
+
 def _spawn_wake_listener(
     *,
     pipeline: voice_pipeline.VoicePipeline,
     broadcaster: InherentBroadcaster,
     silero_path: Path,
     tts: voice_tts.TTSPipeline | None,
-) -> voice_wake.WakeListener:
+    ducker: voice_ducking.SystemAudioDucker | None = None,
+) -> tuple[voice_wake.WakeListener, Any | None] | None:
     """Construct + start a :class:`WakeListener` daemon thread.
 
     ADR-0005 §5.1 — the listener owns its own SileroVad (record mode)
     and a partial-bound :func:`voice_audio.capture_utterance`; both
     are constructed here so the L5 modules stay free of L6 wiring.
-    Returns the started listener so the daemon shutdown path can call
-    :meth:`WakeListener.request_stop`.
+
+    Also opens the 16 kHz / 80 ms PortAudio input stream that backs the
+    listener's ``frame_factory``. Without this stream the listener
+    reads silent zero frames and openwakeword's probability never
+    crosses threshold — wake silently never fires in production.
+
+    Returns ``(listener, stream)`` on success so the daemon shutdown
+    path can both :meth:`WakeListener.request_stop` AND
+    :meth:`stream.close` (in that order). If the PortAudio stream
+    fails to open (no audio device in CI / headless test env), logs
+    ERROR and returns ``None`` — text path stays healthy. For
+    test-only callers that patch ``_open_wake_input_stream`` to return
+    a mock stream, this still works because the mock answers ``read``.
     """
+    try:
+        stream = _open_wake_input_stream()
+    except Exception:
+        LOGGER.exception(
+            "wake: failed to open PortAudio input stream; skipping wake listener.",
+        )
+        return None
+
+    def _read_wake_frame() -> bytes:
+        """Pull one 80 ms PCM16 frame from the persistent wake stream."""
+        data, _overflow = stream.read(_WAKE_FRAME_SAMPLES)
+        return bytes(data)
+
     engine = voice_wake.WakeEngine(model_name="hey_jarvis_v0.1")
     silero_vad = voice_audio.SileroVad(mode="record", model_path=silero_path)
     capture_callable = functools.partial(
@@ -678,12 +743,14 @@ def _spawn_wake_listener(
         capture_callable=capture_callable,
         threshold=_DEFAULT_WAKE_THRESHOLD,
         is_speaking_callable=(tts.is_speaking if tts is not None else None),
+        frame_factory=_read_wake_frame,
+        ducker=ducker,
     )
     listener.start()
-    return listener
+    return listener, stream
 
 
-async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring branch necessarily inflates the body length.
+async def serve_inherent(  # noqa: PLR0913, PLR0915, PLR0912, C901 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring branch necessarily inflates body length + branch count.
     runtime: JarvisRuntime,
     *,
     host: str = "127.0.0.1",
@@ -788,7 +855,13 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
         voice_pipe: voice_pipeline.VoicePipeline | None = None
         tts_pipe: voice_tts.TTSPipeline | None = None
         wake_listener: voice_wake.WakeListener | None = None
+        wake_stream: Any | None = None
         voice_pipeline_callable: Any | None = None
+        # ADR-0005 §5.1 / §5.3: ONE shared SystemAudioDucker between
+        # wake-capture and TTS-playback so the refcount nests correctly.
+        shared_ducker: voice_ducking.SystemAudioDucker = (
+            voice_ducking.SystemAudioDucker()
+        )
 
         models_ok, missing = _voice_models_preflight(
             sensevoice_dir=sensevoice_dir,
@@ -807,18 +880,21 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
                     sensevoice_dir=sensevoice_dir,
                 )
                 voice_pipeline_callable = _build_voice_pipeline_callable(voice_pipe)
-                tts_pipe = _build_tts_pipeline(broadcaster)
+                tts_pipe = _build_tts_pipeline(broadcaster, ducker=shared_ducker)
                 if os.environ.get("JARVIS_VOICE_DISABLE_WAKE") == "1":
                     LOGGER.info(
                         "JARVIS_VOICE_DISABLE_WAKE=1; skipping WakeListener spawn.",
                     )
                 else:
-                    wake_listener = _spawn_wake_listener(
+                    spawn_result = _spawn_wake_listener(
                         pipeline=voice_pipe,
                         broadcaster=broadcaster,
                         silero_path=silero_path,
                         tts=tts_pipe,
+                        ducker=shared_ducker,
                     )
+                    if spawn_result is not None:
+                        wake_listener, wake_stream = spawn_result
             except Exception:
                 LOGGER.exception(
                     "voice subsystem construction failed; running text-only.",
@@ -827,6 +903,7 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
                 voice_pipeline_callable = None
                 tts_pipe = None
                 wake_listener = None
+                wake_stream = None
 
         deps = InherentDeps(
             submit_callable=submit_callable,
@@ -872,6 +949,18 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
             LOGGER.info("serve_inherent: shutting down watchers")
             if wake_listener is not None:
                 wake_listener.request_stop()
+            if wake_stream is not None:
+                try:
+                    wake_stream.stop()
+                    wake_stream.close()
+                except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
+                    LOGGER.debug("wake_stream close failed", exc_info=True)
+            # Force-restore output volume in case a duck escaped a finally
+            # block on the way down (best-effort; idempotent if depth == 0).
+            try:
+                shared_ducker.restore_all()
+            except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
+                LOGGER.debug("shared_ducker.restore_all failed", exc_info=True)
             for w in watchers:
                 w.cancel()
             await asyncio.gather(*watchers, return_exceptions=True)

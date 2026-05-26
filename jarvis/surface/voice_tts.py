@@ -30,6 +30,8 @@ import numpy as np
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
+    from jarvis.surface import voice_ducking
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -812,6 +814,7 @@ class TTSPipeline:
         player: AudioStreamPlayer,
         fallback: Callable[[str], None],
         broadcaster: object | None = None,
+        ducker: voice_ducking.SystemAudioDucker | None = None,
     ) -> None:
         """Wire the synthesis provider, audio player and macOS-say fallback.
 
@@ -823,11 +826,19 @@ class TTSPipeline:
             broadcaster: Optional object exposing
                 ``broadcast_voice_sync(phase, *, turn_id)`` — the pipeline
                 emits ``"spoken"`` at end-of-turn for UI feedback.
+            ducker: Optional :class:`voice_ducking.SystemAudioDucker`.
+                When wired, system output is muted (refcounted) around
+                each synth+play call so the assistant's OWN playback is
+                not picked up by an open mic — ADR §5.3. Sharing one
+                ducker instance between the wake listener and the TTS
+                pipeline ensures the refcount nests correctly when both
+                paths want output muted simultaneously.
         """
         self._provider = provider
         self._player = player
         self._fallback = fallback
         self._broadcaster = broadcaster
+        self._ducker = ducker
         self._turn_id: str | None = None
         self._gate_mode: GateMode = "sentence"
         self._buffer: list[str] = []
@@ -880,6 +891,11 @@ class TTSPipeline:
     def _speak(self, text: str) -> None:
         """Synthesize ``text`` and push the PCM bytes to the player.
 
+        ADR §5.3: while the synth + write hits the speakers, mute system
+        output (refcounted) so any other macOS audio source does not
+        layer on top. Ducker failures are logged at DEBUG and never
+        break TTS — the synth path itself must keep working.
+
         On :class:`MiniMaxUnavailableError` (both endpoints down) or any
         unexpected synth/playback exception, route the cleaned text to
         the macOS ``say`` fallback. F7 is the terminal leaf — failures
@@ -888,21 +904,34 @@ class TTSPipeline:
         cleaned = _preprocess_for_speech(text)
         if not cleaned:
             return
+        ducked = False
+        if self._ducker is not None:
+            try:
+                ducked = bool(self._ducker.duck())
+            except Exception:  # noqa: BLE001 — ducker errors must not kill TTS
+                LOGGER.debug("TTS: ducker.duck() failed", exc_info=True)
         try:
-            pcm = asyncio.run(self._provider.synthesize(cleaned))
-            self._player.write(pcm)
-        except MiniMaxUnavailableError:
-            LOGGER.warning(
-                "MiniMax unavailable; falling back to macos_say for: %r",
-                cleaned,
-            )
-            self._fallback(cleaned)
-        except Exception:
-            # TTS path must never crash the daemon; F7 fallback.
-            LOGGER.exception(
-                "TTS synth failed for turn_id=%s", self._turn_id,
-            )
-            self._fallback(cleaned)
+            try:
+                pcm = asyncio.run(self._provider.synthesize(cleaned))
+                self._player.write(pcm)
+            except MiniMaxUnavailableError:
+                LOGGER.warning(
+                    "MiniMax unavailable; falling back to macos_say for: %r",
+                    cleaned,
+                )
+                self._fallback(cleaned)
+            except Exception:
+                # TTS path must never crash the daemon; F7 fallback.
+                LOGGER.exception(
+                    "TTS synth failed for turn_id=%s", self._turn_id,
+                )
+                self._fallback(cleaned)
+        finally:
+            if ducked and self._ducker is not None:
+                try:
+                    self._ducker.restore()
+                except Exception:  # noqa: BLE001 — ducker errors must not kill TTS
+                    LOGGER.debug("TTS: ducker.restore() failed", exc_info=True)
 
 
 def macos_say_fallback(text: str, *, voice: str = "Tingting") -> None:
