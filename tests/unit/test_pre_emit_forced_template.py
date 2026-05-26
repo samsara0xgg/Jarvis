@@ -160,6 +160,50 @@ def test_finalize_response_wires_scrub_and_hard_refusal() -> None:
     )
 
 
+def test_finalize_response_promotes_silent_log_on_hard_refusal() -> None:
+    """B-NEW-1: hard-refusal path must not be swallowed by ``silent_log``.
+
+    AST walk verifies ``_finalize_response`` contains the override
+    clause that flips ``attention`` from ``silent_log`` to
+    ``queue_review`` when the hard refusal fired. Without this, the
+    operator-facing surface payload carries ``delivered_via=[]`` and
+    a 2-minute wait yields zero stdout (regression observed by S2 /
+    S6 scenario runs on 2026-05-25 against the fixture
+    ``/tmp/jarvis-day2-fixture``).
+    """
+    source_path = Path(decision_pkg.__file__)
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+    finalize_fn: ast.FunctionDef | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_finalize_response":
+            finalize_fn = node
+            break
+    assert finalize_fn is not None, "_finalize_response not found in module AST"
+
+    string_constants: set[str] = set()
+    name_loads: set[str] = set()
+    for sub in ast.walk(finalize_fn):
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+            string_constants.add(sub.value)
+        elif isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+            name_loads.add(sub.id)
+
+    assert "hard_refusal_used" in name_loads, (
+        "B-NEW-1 regression: _finalize_response no longer reads "
+        "hard_refusal_used. The silent_log → queue_review override would "
+        "never fire."
+    )
+    assert "silent_log" in string_constants, (
+        "B-NEW-1 regression: _finalize_response no longer references "
+        "'silent_log' — the override gate is gone."
+    )
+    assert "queue_review" in string_constants, (
+        "B-NEW-1 regression: _finalize_response no longer references "
+        "'queue_review' — the override target is gone."
+    )
+
+
 # --- Completion-keyword coverage drift guard -------------------------------
 #
 # Two completion-keyword regex lists live in the codebase by design:

@@ -1692,6 +1692,7 @@ def _finalize_response(
     ``turn.ended.source_event_id`` references the LAST gate event in
     the chain regardless of which branch was taken.
     """
+    hard_refusal_used = False
     active_subject = scratch.active_subject_ref
     if active_subject is None and packet.open_tasks:
         active_subject = packet.open_tasks[0].task_id
@@ -1778,6 +1779,7 @@ def _finalize_response(
                     active_subject,
                     active_claim_levels=forced_plan.active_claim_levels,
                 )
+                hard_refusal_used = True
             else:
                 plan = forced_plan
 
@@ -1794,6 +1796,16 @@ def _finalize_response(
         scratch.events.append(ended_event)
 
     attention = attention_policy(packet, projections.claim_evidence)
+    # The attention_policy verdict reflects evidence state at the trigger
+    # event (worker.reported + no verified Postcondition → silent_log per
+    # ``test_attention_silent_log_on_worker_reported_without_verified``).
+    # When the Pre-emit Gate retry chain exhausted to _hard_refusal_plan,
+    # the fixed limitation text IS the user-facing surface — swallowing it
+    # to silent_log strands the operator after a long wait. Promote to
+    # queue_review so cli_stdout fires; the message itself still uses
+    # limitation language so the "审核了再告诉我" spirit holds.
+    if hard_refusal_used and attention == "silent_log":
+        attention = "queue_review"
 
     return DecideResult(
         response_plan=plan,
