@@ -58,9 +58,18 @@ def _make_deps(pipeline_callable: Callable[[bytes, str, str, str], Event]) -> In
 
 
 def test_asr_submit_happy_path_returns_transcript() -> None:
-    """Happy path: WAV in → 200 + normalized transcript + server-minted turn_id."""
+    """Happy path: WAV in → 200 with the legacy ``{status, text, emotion}`` shape.
+
+    The inherent-swift client (``BridgeBackend.swift:345``) reads the
+    ``text`` and ``emotion`` JSON fields — NOT ``transcript`` — when
+    decoding the response. ADR-0005 §5.2 originally specified
+    ``transcript`` but that diverged silently from the legacy
+    ``ui/web/server.py:1268`` contract, leaving Swift with
+    ``text=nil`` → the inherent card displayed "No Speech" with no
+    user-transcript echo. ``turn_id`` is preserved as a Day-1 add.
+    """
     fake_event = MagicMock()
-    fake_event.payload = {"transcript": "你好"}
+    fake_event.payload = {"transcript": "你好", "emotion": "HAPPY"}
 
     def fake_pipeline(
         audio_bytes: bytes,  # noqa: ARG001 — fake echoes a fixed event
@@ -82,7 +91,8 @@ def test_asr_submit_happy_path_returns_transcript() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "accepted"
-    assert body["transcript"] == "你好"
+    assert body["text"] == "你好"
+    assert body["emotion"] == "HAPPY"
     assert body["turn_id"].startswith("T")
 
 

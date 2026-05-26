@@ -637,7 +637,13 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
     packet = assemble_packet(trigger, ctx.conn)
     policy = effective_policy(_allowed_tools_per_caller(ctx.tool_registry))
 
-    if trigger.type == "surface.user_intent":
+    # ``utterance.received`` is the voice-surface twin of
+    # ``surface.user_intent``: ADR-0005 §5.1 — the ASR pipeline owns the
+    # audit / normalize step and emits ``utterance.received`` (carrying
+    # the same ``turn_id`` + ``transcript`` payload contract), so the
+    # voice path must take the same handler. Without this widening,
+    # every voice turn no-ops here and the watcher times out 5 s later.
+    if trigger.type in ("surface.user_intent", "utterance.received"):
         return _handle_utterance(packet, policy, ctx, scratch)
     if trigger.type == "worker.reported":
         return _handle_worker_reported(packet, policy, ctx, scratch)

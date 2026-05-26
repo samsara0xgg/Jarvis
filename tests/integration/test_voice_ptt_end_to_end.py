@@ -91,7 +91,10 @@ def test_ptt_end_to_end_creates_utterance_received_row(tmp_path: Path) -> None:
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["transcript"] == "你好"
+    # Wire shape matches legacy ui/web/server.py:1268 — Swift reads "text"
+    # and "emotion" fields, not "transcript". See Bug 2a fix in ADR-0005
+    # smoke run for the post-mortem.
+    assert body["text"] == "你好"
     assert body["status"] == "accepted"
     assert body["turn_id"].startswith("T")
 

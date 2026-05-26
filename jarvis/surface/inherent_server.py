@@ -243,9 +243,14 @@ async def _run_asr_submit(
         LOGGER.exception("asr_submit failed for turn_id=%s", turn_id)
         raise HTTPException(status_code=500, detail="internal") from None
 
+    # Wire shape matches legacy ui/web/server.py:1268 — the inherent-swift
+    # client (BridgeBackend.swift:345) reads ``text`` and ``emotion`` fields.
+    # ADR-0005 §5.2 listed ``transcript`` but that diverged from the existing
+    # Swift contract; the Day-1 add ``turn_id`` rides alongside.
     return {
         "status": "accepted",
-        "transcript": str(ev.payload.get("transcript", "")),
+        "text": str(ev.payload.get("transcript", "")),
+        "emotion": str(ev.payload.get("emotion", "") or ""),
         "turn_id": turn_id,
     }
 
