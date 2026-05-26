@@ -134,7 +134,7 @@ def test_install_returns_registered_observer(tmp_path: Path) -> None:
 def test_install_rejects_none_event_log() -> None:
     """install_power_observer fails fast on None event_log."""
     with pytest.raises(ValueError, match="non-None event_log"):
-        install_power_observer(None, observer_factory=StubPowerObserver)  # type: ignore[arg-type]
+        install_power_observer(None, observer_factory=StubPowerObserver)
 
 
 def test_observer_factory_default_uses_protocol_only(tmp_path: Path) -> None:
@@ -268,7 +268,7 @@ def test_reconcile_after_wake_skips_already_terminated_actions(
 def test_reconcile_after_wake_rejects_none_event_log() -> None:
     """reconcile_after_wake fails fast on None event_log."""
     with pytest.raises(ValueError, match="non-None event_log"):
-        reconcile_after_wake(None)  # type: ignore[arg-type]
+        reconcile_after_wake(None)
 
 
 # --- K7 full cycle --------------------------------------------------------

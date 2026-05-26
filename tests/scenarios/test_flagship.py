@@ -39,14 +39,12 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.execution import tools as execution_tools
 from jarvis.runtime import RunTurnResult, bootstrap_runtime_app, run_turn
 from jarvis.state.event_log import EventTypeRegistry, emit_event
 from jarvis.state.projections import TaskLedgerRecord, rebuild_projections
 from tests.scenarios.conftest import write_llm_use_artifact
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
     from pathlib import Path
 
     from jarvis.runtime import JarvisRuntime
@@ -80,20 +78,18 @@ _I1_TOLERANCE: int = 2
 
 
 @pytest.fixture(scope="module")
-def thread_capture() -> Iterator[list[threading.Thread]]:
-    """Install the L4 worker-thread capture hook for the duration of the module.
+def thread_capture() -> list[threading.Thread]:
+    """Day-1 worker-thread capture hook (retired in Day-2).
 
-    The hook (``jarvis.execution.tools._TEST_MODE_THREAD_CAPTURE``) is
-    a module-level optional list — when non-None the Timer callback
-    appends ``threading.current_thread()`` so acceptance B4 can assert
-    the worker callback ran off the main thread.
+    The hook ``execution_tools._TEST_MODE_THREAD_CAPTURE`` was a Day-1
+    test-only seam on the Timer-based spawn_worker stub. ADR-0002 Step
+    10 replaced spawn_worker with the real Codex JSON-RPC subprocess
+    flow, removing the seam (and the Timer thread it observed). The
+    fixture survives as a no-op shell so consumers keep their
+    parameter signature; the Day-1 B4 invariant ("worker callback ran
+    off main thread") is obsolete for the Day-2 trace.
     """
-    bucket: list[threading.Thread] = []
-    execution_tools._TEST_MODE_THREAD_CAPTURE = bucket  # noqa: SLF001
-    try:
-        yield bucket
-    finally:
-        execution_tools._TEST_MODE_THREAD_CAPTURE = None  # noqa: SLF001
+    return []
 
 
 @pytest.fixture(scope="module")
