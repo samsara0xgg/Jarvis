@@ -31,13 +31,15 @@ the four siblings.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import re
 import sys
 from pathlib import Path
 
-from jarvis.deployment import DEFAULT_RUNTIME_ROOT_LITERAL
+from jarvis.deployment import DEFAULT_RUNTIME_ROOT_LITERAL, process_lock
+from jarvis.deployment.process_lock import ProcessLockHeld
 from jarvis.runtime import (
     PreEmitTokenError,
     RuntimeBootstrapError,
@@ -45,6 +47,7 @@ from jarvis.runtime import (
     bootstrap_runtime_app,
     run_turn,
 )
+from jarvis.runtime.inherent_loop import serve_inherent
 
 LOGGER = logging.getLogger("jarvis.cli")
 
@@ -324,24 +327,133 @@ def _child_run(
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry. Returns 0 on success, non-zero on failure.
+def _resolve_runtime_root(arg: Path | None) -> Path:
+    """Pick the runtime root the same way :func:`jarvis.deployment.bootstrap_runtime` does.
 
-    Day-2: parses argv and routes through :func:`main_with_detach`.
-    The argparse / exit-code contract is unchanged from Day-1 so
-    existing tests (``tests/unit/test_cli_main.py``) keep passing.
+    Explicit arg > ``JARVIS_RUNTIME_ROOT`` env var > built-in default.
+    Mirrors :func:`jarvis.deployment._resolve_root` BUT without creating
+    any directories — the lock probe must be a pure read so a missing
+    runtime root doesn't get materialized as a side effect of running
+    ``jarvis "hello"`` in a fresh shell.
 
     Args:
-        argv: argv-style list (without the program name). Default:
-            ``sys.argv[1:]``.
+        arg: ``--runtime-root`` argparse value (None if not passed).
 
     Returns:
-        Exit code: 0 on a clean turn, 1 on
-        :class:`jarvis.runtime.PreEmitTokenError` or other runtime
-        errors, 2 on argument-parsing failures (argparse default).
+        Resolved absolute path (``expanduser().resolve()``); does NOT
+        create the directory.
+    """
+    if arg is not None:
+        return arg.expanduser().resolve()
+    env_value = os.environ.get("JARVIS_RUNTIME_ROOT")
+    if env_value:
+        return Path(env_value).expanduser().resolve()
+    return Path(DEFAULT_RUNTIME_ROOT_LITERAL).expanduser().resolve()
+
+
+def _main_serve(argv: list[str]) -> int:
+    """Parse serve-mode args, bootstrap runtime, call :func:`serve_inherent`.
+
+    Owns the daemon process lifecycle (ADR-0003 Step 1). The
+    ``acquire_exclusive`` call is INSIDE ``serve_inherent`` so the lock
+    file is the OUTERMOST scope of the daemon's resource ladder.
+
+    Returns:
+        0 on clean shutdown, 1 on bootstrap failure, 2 if another live
+        daemon already owns the per-runtime-root lock.
+    """
+    parser = argparse.ArgumentParser(
+        prog=f"{_PROG} serve",
+        description="Run the Inherent (text-only) daemon on localhost:8006 by default.",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="Bind address.")
+    parser.add_argument("--port", type=int, default=8006, help="Bind port.")
+    parser.add_argument(
+        "--runtime-root",
+        type=Path,
+        default=None,
+        help=(
+            "Override JARVIS_RUNTIME_ROOT (default: "
+            f"$JARVIS_RUNTIME_ROOT or {DEFAULT_RUNTIME_ROOT_LITERAL})."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to jarvis.yaml (default: ${repo}/config/jarvis.yaml).",
+    )
+    parser.add_argument(
+        "--prompt",
+        type=Path,
+        default=None,
+        help="Path to system prompt markdown.",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        runtime = bootstrap_runtime_app(
+            config_path=args.config,
+            prompt_path=args.prompt,
+            runtime_root=args.runtime_root,
+        )
+    except RuntimeBootstrapError as exc:
+        sys.stderr.write(f"jarvis serve: bootstrap failed: {exc}\n")
+        return 1
+
+    lock_path = runtime.runtime_paths.root / "daemon.lock"
+
+    try:
+        asyncio.run(
+            serve_inherent(
+                runtime,
+                host=args.host,
+                port=args.port,
+                lock_path=lock_path,
+            )
+        )
+    except ProcessLockHeld as exc:
+        sys.stderr.write(f"jarvis serve: daemon already running at pid {exc.holder_pid}\n")
+        return 2
+    except KeyboardInterrupt:
+        # SIGINT during serve — serve_inherent's finally block cancels
+        # watchers and releases the lock; we just surface the interrupt
+        # to the operator and exit cleanly.
+        sys.stderr.write("jarvis serve: interrupted\n")
+    finally:
+        # Single close site (sqlite3.Connection.close raises ProgrammingError
+        # if called twice; suppress only the documented OSError path that
+        # the synchronous helpers above also catch).
+        try:
+            runtime.conn.close()
+        except OSError:
+            LOGGER.exception("failed to close Event Log connection on serve exit")
+
+    return 0
+
+
+def _main_oneshot(argv: list[str]) -> int:
+    """Existing one-shot flow with the ADR-0003 D4 lock-probe prepended.
+
+    The probe runs BEFORE :func:`main_with_detach` so the daemon-refusal
+    path fires before the regex classifier / fork-detach machinery —
+    otherwise a long-run utterance would fork-detach into a child that
+    then races the running daemon on the same SQLite event log.
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    # ADR-0003 D4 / F2 — CLI refuses to run when the daemon owns the
+    # lock to avoid double-driving on the same SQLite event log.
+    lock_path = _resolve_runtime_root(args.runtime_root) / "daemon.lock"
+    if process_lock.is_held(lock_path):
+        pid = process_lock.holder_pid(lock_path)
+        sys.stderr.write(
+            f"jarvis: daemon running at pid {pid}; "
+            f"stop it or POST to http://127.0.0.1:8006/inherent/submit\n"
+        )
+        return 2
+
     return main_with_detach(
         args.utterance,
         config_path=args.config,
@@ -349,6 +461,30 @@ def main(argv: list[str] | None = None) -> int:
         runtime_root=args.runtime_root,
         no_detach=args.no_detach,
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry. Routes ``serve`` to the daemon; otherwise to one-shot.
+
+    Dispatch is purely positional: ``serve`` as the first argv element
+    routes to :func:`_main_serve`; everything else goes through
+    :func:`_main_oneshot` (which preserves the Day-1 argparse contract
+    so existing tests in ``tests/unit/test_cli_main.py`` keep passing).
+
+    Args:
+        argv: argv-style list (without the program name). Default:
+            ``sys.argv[1:]``.
+
+    Returns:
+        Exit code: 0 on a clean turn, 1 on bootstrap / runtime errors,
+        2 on argument-parsing failures (argparse default) or on a
+        daemon-lock refusal (ADR-0003 D4).
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "serve":
+        return _main_serve(argv[1:])
+    return _main_oneshot(argv)
 
 
 __all__ = [
