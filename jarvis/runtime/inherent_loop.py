@@ -69,25 +69,34 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import functools
 import json
 import logging
+import os
 import sqlite3
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import uvicorn
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.runtime import JarvisRuntime, _new_turn_id, drive_turn
 from jarvis.shared import Event
 from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.surface import (
+    voice_asr,
+    voice_audio,
+    voice_pipeline,
+    voice_tts,
+    voice_wake,
+)
 from jarvis.surface.cli import emit_surface_user_intent
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
 
@@ -132,6 +141,50 @@ _SELECT_RESPONSE_EVENTS_AFTER_ID_SQL = (
     "'surface.response_emitted'"
     ") ORDER BY id ASC"
 )
+
+
+# Default on-disk locations for the voice ASR / VAD model artifacts.
+# ADR-0005 §12 (pre-flight) — ``serve_inherent`` checks these BEFORE
+# spawning the WakeListener so a missing wheel surfaces as a single
+# log line instead of a crashed daemon thread on first wake. Tests pin
+# their own paths via :func:`_voice_models_preflight` kwargs.
+_DEFAULT_SENSEVOICE_DIR = Path("data/sensevoice-small-int8")
+_DEFAULT_SILERO_PATH = Path("data/silero_vad.onnx")
+
+# Default voice ASR / capture knobs (ADR-0005 §5.1).
+_DEFAULT_WAKE_THRESHOLD: float = 0.5
+_DEFAULT_CAPTURE_MAX_DURATION_S: float = 5.0
+_DEFAULT_CAPTURE_MIN_VOICED_S: float = 1.0
+_DEFAULT_TTS_SAMPLE_RATE_HZ: int = 32000  # matches MiniMax default; see Task 15.
+
+
+def _voice_models_preflight(
+    *,
+    sensevoice_dir: Path,
+    silero_path: Path,
+) -> tuple[bool, list[str]]:
+    """Verify on-disk model artifacts before spawning wake listener.
+
+    ADR-0005 §12 — pre-flight semantic: do NOT attempt to construct a
+    SenseVoice recognizer or Silero VAD when the underlying ``.onnx``
+    files are not present. Returning ``(False, [...])`` lets
+    :func:`serve_inherent` log one ERROR and keep the text path
+    running; the alternative (constructing the recognizer eagerly)
+    would let the wake thread crash on its first inference frame and
+    pollute the daemon log with an unhelpful traceback.
+
+    Returns ``(all_ok, missing_paths_list)``.
+    """
+    missing: list[str] = []
+    sv_model = sensevoice_dir / "model.int8.onnx"
+    sv_tokens = sensevoice_dir / "tokens.txt"
+    if not sv_model.exists():
+        missing.append(f"sensevoice-small-int8 model.int8.onnx (expected at {sv_model})")
+    if not sv_tokens.exists():
+        missing.append(f"sensevoice-small-int8 tokens.txt (expected at {sv_tokens})")
+    if not silero_path.exists():
+        missing.append(f"silero_vad.onnx (expected at {silero_path})")
+    return (not missing, missing)
 
 
 def _latest_id(conn: sqlite3.Connection) -> int:
@@ -503,15 +556,133 @@ async def _tts_watcher(
         raise
 
 
-async def serve_inherent(
+def _build_voice_pipeline(
+    runtime: JarvisRuntime,
+    *,
+    broadcaster: InherentBroadcaster,
+    sensevoice_dir: Path,
+) -> voice_pipeline.VoicePipeline:
+    """Construct the L5 :class:`VoicePipeline` with a fresh-conn factory.
+
+    ADR-0005 §4.2 / §5.1 — the pipeline runs on the wake or PTT worker
+    thread, never the event loop, so the conn factory MUST open a new
+    SQLite connection per call (``check_same_thread`` invariant). The
+    L3 normalizer ships empty-population by default; config-driven
+    aliases / corrections land in a follow-up.
+    """
+    recognizer = voice_asr.SenseVoiceRecognizer(model_dir=sensevoice_dir)
+    normalizer = voice_asr.AsrNormalizer(
+        corrections=[],
+        aliases={},
+        fuzzy_enabled=False,
+    )
+    db_path = runtime.runtime_paths.event_log
+    artifacts_dir = runtime.runtime_paths.artifacts_root / "voice_artifacts"
+    return voice_pipeline.VoicePipeline(
+        conn_factory=lambda: open_event_log(db_path),
+        recognizer=recognizer,
+        normalizer=normalizer,
+        broadcaster=broadcaster,
+        artifacts_dir=artifacts_dir,
+    )
+
+
+def _build_tts_pipeline(
+    broadcaster: InherentBroadcaster,
+) -> voice_tts.TTSPipeline | None:
+    """Build the TTS subsystem when ``MINIMAX_API_KEY`` is present.
+
+    ADR-0005 §5.3 — the env var is the sole credential source for the
+    MiniMax WebSocket. Without it we skip the entire TTS pipeline
+    (instead of falling through to ``macos_say_fallback`` only): the
+    fallback is a per-call escape hatch from inside
+    :class:`TTSPipeline`, not a standalone path, so wiring it on its
+    own would lie about what the daemon can actually do.
+    """
+    api_key = os.environ.get("MINIMAX_API_KEY")
+    if not api_key:
+        LOGGER.warning(
+            "MINIMAX_API_KEY unset; skipping TTS subsystem (text path only).",
+        )
+        return None
+    provider = voice_tts.MiniMaxWSClient(api_key=api_key)
+    player = voice_tts.AudioStreamPlayer(sample_rate_hz=_DEFAULT_TTS_SAMPLE_RATE_HZ)
+    return voice_tts.TTSPipeline(
+        provider=provider,
+        player=player,
+        fallback=voice_tts.macos_say_fallback,
+        broadcaster=broadcaster,
+    )
+
+
+def _build_voice_pipeline_callable(
+    pipeline: voice_pipeline.VoicePipeline,
+) -> Callable[[bytes, str, str, str], Event]:
+    """Adapt :meth:`VoicePipeline.run_turn` to the InherentDeps callable shape.
+
+    ``InherentDeps.voice_pipeline_callable`` takes positional
+    ``(audio_bytes, turn_id, channel, language)`` and returns the
+    emitted ``utterance.received`` :class:`Event`; the pipeline
+    itself is keyword-only, so this thin closure does the rewrite.
+    """
+
+    def _call(audio_bytes: bytes, turn_id: str, channel: str, language: str) -> Event:
+        return pipeline.run_turn(
+            audio_bytes=audio_bytes,
+            turn_id=turn_id,
+            channel=channel,
+            language=language,
+        )
+
+    return _call
+
+
+def _spawn_wake_listener(
+    *,
+    pipeline: voice_pipeline.VoicePipeline,
+    broadcaster: InherentBroadcaster,
+    silero_path: Path,
+    tts: voice_tts.TTSPipeline | None,
+) -> voice_wake.WakeListener:
+    """Construct + start a :class:`WakeListener` daemon thread.
+
+    ADR-0005 §5.1 — the listener owns its own SileroVad (record mode)
+    and a partial-bound :func:`voice_audio.capture_utterance`; both
+    are constructed here so the L5 modules stay free of L6 wiring.
+    Returns the started listener so the daemon shutdown path can call
+    :meth:`WakeListener.request_stop`.
+    """
+    engine = voice_wake.WakeEngine(model_name="hey_jarvis_v0.1")
+    silero_vad = voice_audio.SileroVad(mode="record", model_path=silero_path)
+    capture_callable = functools.partial(
+        voice_audio.capture_utterance,
+        vad=silero_vad,
+        max_duration_s=_DEFAULT_CAPTURE_MAX_DURATION_S,
+        min_voiced_s=_DEFAULT_CAPTURE_MIN_VOICED_S,
+    )
+    listener = voice_wake.WakeListener(
+        engine=engine,
+        pipeline=pipeline,
+        broadcaster=broadcaster,
+        capture_callable=capture_callable,
+        threshold=_DEFAULT_WAKE_THRESHOLD,
+        is_speaking_callable=(tts.is_speaking if tts is not None else None),
+    )
+    listener.start()
+    return listener
+
+
+async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring branch necessarily inflates the body length.
     runtime: JarvisRuntime,
     *,
     host: str = "127.0.0.1",
     port: int = _DEFAULT_PORT,
     lock_path: Path,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+    sensevoice_dir: Path = _DEFAULT_SENSEVOICE_DIR,
+    silero_path: Path = _DEFAULT_SILERO_PATH,
 ) -> None:
-    """Run the Inherent Step-1 daemon. Blocks until SIGINT / SIGTERM.
+    """Run the Inherent daemon (text + voice). Blocks until SIGINT / SIGTERM.
 
     Lifecycle (the ``acquire_exclusive`` context manager is the
     OUTERMOST scope so the lock release is the very LAST cleanup step):
@@ -519,27 +690,48 @@ async def serve_inherent(
     1. :func:`acquire_exclusive` — raises
        :class:`jarvis.deployment.process_lock.ProcessLockHeld` if
        another live daemon already holds it.
-    2. Build :class:`InherentBroadcaster` and ``submit_callable``
-       (binds to :func:`emit_surface_user_intent` with a fresh
-       ``turn_id`` per HTTP submit).
-    3. Build the FastAPI app via :func:`create_app` with
-       :class:`InherentDeps`.
-    4. Configure :class:`uvicorn.Config` (``lifespan="off"`` because
+    2. Build :class:`InherentBroadcaster` and attach the running
+       event loop via :meth:`InherentBroadcaster.attach_loop` (ADR-0005
+       §4.2 worker-thread → broadcaster bridge); bind
+       ``submit_callable`` to :func:`emit_surface_user_intent` with a
+       fresh ``turn_id`` per HTTP submit.
+    3. ADR-0005 §12 pre-flight — call :func:`_voice_models_preflight`
+       on the configured SenseVoice + Silero paths. When models are
+       present, construct :class:`VoicePipeline`, optionally
+       :class:`TTSPipeline` (if ``MINIMAX_API_KEY`` is set), and (when
+       ``JARVIS_VOICE_DISABLE_WAKE`` is unset) start a
+       :class:`WakeListener` thread. Missing models or any construction
+       failure: log ERROR and continue text-only — the text path stays
+       healthy.
+    4. Build the FastAPI app via :func:`create_app` with
+       :class:`InherentDeps` (carries ``voice_pipeline_callable`` so
+       ``/inherent/asr-submit`` can do PTT ASR even without a wake
+       listener; falls through to 501 when the pipeline is None).
+    5. Configure :class:`uvicorn.Config` (``lifespan="off"`` because
        this module owns the lifecycle, ``log_level="warning"`` to
        avoid uvicorn's per-request stdout noise drowning the watcher
        logs).
-    5. Spawn :func:`_user_intent_watcher` and :func:`_response_watcher`
+    6. Spawn :func:`_user_intent_watcher` and :func:`_response_watcher`
        as background tasks BEFORE :meth:`uvicorn.Server.serve` so an
-       early intent post is observed. ``_response_watcher`` polls all
+       early intent post is observed; add :func:`_tts_watcher` when
+       a TTS pipeline was constructed. ``_response_watcher`` polls all
        three Step-2 response event types in a single cursor and
-       dispatches to the per-type broadcaster methods (D16).
-    6. ``await server.serve()`` — blocks until uvicorn returns (signal
+       dispatches to the per-type broadcaster methods (D16); the
+       ``_tts_watcher`` (parallel cursor) dispatches the same three
+       types into the TTS state machine (ADR-0005 §5.3).
+    7. ``await server.serve()`` — blocks until uvicorn returns (signal
        received).
-    7. ``finally``: cancel both watchers and ``await`` them with
+    8. ``finally``: request the wake listener stop (if running), cancel
+       every watcher task, and ``await`` them with
        ``return_exceptions=True`` so a watcher that crashed during
        runtime does not mask the shutdown path. Then the
        ``acquire_exclusive`` context manager unwinds and releases the
        lock file.
+
+    Env vars:
+        ``MINIMAX_API_KEY``         — gates the TTS subsystem.
+        ``JARVIS_VOICE_DISABLE_WAKE`` — when ``"1"``, skip the wake
+            thread even if models are present (CI / smoke tests).
 
     Args:
         runtime: Assembled :class:`JarvisRuntime`.
@@ -548,6 +740,8 @@ async def serve_inherent(
         lock_path: Per-runtime-root daemon lock file. Resolved by
             ``cli/__main__.py`` (Step 9) to ``${runtime_root}/jarvis.lock``.
         poll_interval_s: Watcher poll cadence (default 10 ms).
+        sensevoice_dir: SenseVoice INT8 model directory (pre-flight).
+        silero_path: Silero VAD ONNX path (pre-flight).
 
     Raises:
         jarvis.deployment.process_lock.ProcessLockHeld: Another daemon
@@ -555,6 +749,7 @@ async def serve_inherent(
     """
     with acquire_exclusive(lock_path):
         broadcaster = InherentBroadcaster()
+        broadcaster.attach_loop(asyncio.get_running_loop())
 
         def submit_callable(text: str) -> None:
             """Bound at daemon-start time. Mints a fresh ``turn_id`` per call.
@@ -576,9 +771,56 @@ async def serve_inherent(
                 with contextlib.suppress(sqlite3.Error):
                     inner_conn.close()
 
+        # ADR-0005 §12 pre-flight + voice subsystem wiring. Any failure
+        # downgrades the daemon to text-only — text path must stay
+        # healthy when models / SDKs / mics are missing (CI default).
+        voice_pipe: voice_pipeline.VoicePipeline | None = None
+        tts_pipe: voice_tts.TTSPipeline | None = None
+        wake_listener: voice_wake.WakeListener | None = None
+        voice_pipeline_callable: Any | None = None
+
+        models_ok, missing = _voice_models_preflight(
+            sensevoice_dir=sensevoice_dir,
+            silero_path=silero_path,
+        )
+        if not models_ok:
+            LOGGER.error(
+                "voice models missing; running text-only. Missing: %s",
+                "; ".join(missing),
+            )
+        else:
+            try:
+                voice_pipe = _build_voice_pipeline(
+                    runtime,
+                    broadcaster=broadcaster,
+                    sensevoice_dir=sensevoice_dir,
+                )
+                voice_pipeline_callable = _build_voice_pipeline_callable(voice_pipe)
+                tts_pipe = _build_tts_pipeline(broadcaster)
+                if os.environ.get("JARVIS_VOICE_DISABLE_WAKE") == "1":
+                    LOGGER.info(
+                        "JARVIS_VOICE_DISABLE_WAKE=1; skipping WakeListener spawn.",
+                    )
+                else:
+                    wake_listener = _spawn_wake_listener(
+                        pipeline=voice_pipe,
+                        broadcaster=broadcaster,
+                        silero_path=silero_path,
+                        tts=tts_pipe,
+                    )
+            except Exception:
+                LOGGER.exception(
+                    "voice subsystem construction failed; running text-only.",
+                )
+                voice_pipe = None
+                voice_pipeline_callable = None
+                tts_pipe = None
+                wake_listener = None
+
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
+            voice_pipeline_callable=voice_pipeline_callable,
         )
         app = create_app(deps)
 
@@ -601,11 +843,24 @@ async def serve_inherent(
                 name="response_watcher",
             ),
         ]
+        if tts_pipe is not None:
+            watchers.append(
+                asyncio.create_task(
+                    _tts_watcher(
+                        conn=runtime.conn,
+                        pipeline=tts_pipe,
+                        poll_interval_s=poll_interval_s,
+                    ),
+                    name="tts_watcher",
+                ),
+            )
 
         try:
             await server.serve()
         finally:
             LOGGER.info("serve_inherent: shutting down watchers")
+            if wake_listener is not None:
+                wake_listener.request_stop()
             for w in watchers:
                 w.cancel()
             await asyncio.gather(*watchers, return_exceptions=True)
