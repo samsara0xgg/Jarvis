@@ -1,14 +1,25 @@
-# ADR 0003 — Inherent Text Surface (Step 1)
+# ADR 0003 — Inherent Text Surface
 
 ## Status
 
-Proposed 2026-05-25. Pending Allen review. First incremental step toward
-porting the legacy Inherent backend (Electron + Swift desktop card) onto
-the new state-centric runtime built under ADR-0001 / ADR-0002. Scope is
-deliberately **text-only**: image, ASR, and streaming TTS are sequenced
-into follow-on ADRs (see § Out of Scope).
+- **Step 1** (non-streaming text + minimal wire): Proposed 2026-05-25,
+  implemented + Tier-1 green 2026-05-25 (commit stack 2bea0a7..09b925f
+  on `worktree-claude-adr0001`). Pending Allen smoke + flip to Approved.
+- **Step 2** (sentence-chunked text + full legacy wire compat,
+  **post-hoc replay model**): Proposed 2026-05-25, revised 2026-05-25
+  to (a) commit to post-hoc replay (A1) over real-time streaming, (b)
+  collapse three response-event watchers into one race-free watcher,
+  (c) drop the redundant `seq` field and the unneeded
+  `MAX_SENTENCE_CHARS` safety valve. Real-time streaming
+  (`chat_stream` per-token + per-sentence gate + `op:reset`) is
+  deferred to **ADR-0008**. Replaces Step 1's simplified envelopes;
+  Step 1's shipped code is amended (not re-shipped) as part of Step 2
+  build order. Pending Allen review.
 
-## Context
+This ADR continues to scope **text-only**: image, ASR, streaming TTS,
+fallback chain remain in follow-on ADRs (see § Out of Scope).
+
+## Step 1 Context
 
 ### What exists today
 
@@ -81,7 +92,7 @@ Spec sections this ADR aligns with:
     delivered_via, attention_channel, response_hash }
   ```
 
-## Decision
+## Step 1 Decision
 
 ### D1. Trigger model: outer event-loop watcher
 
@@ -546,7 +557,7 @@ composition root (not a spec layer).
 | F11 | `/submit` with empty body | Pydantic 422 OR my 400 (empty after strip) | swift client `BridgeBackend.classify` reports `http_422` / `http_400` | — |
 | F12 | Two CLI invocations race when daemon down | TOCTOU on `is_held` probe | Both bootstrap; each is independent turn (own turn_id); SQLite WAL serializes writes | Acceptable Step-1 limitation; documented |
 
-## Consequences
+## Step 1 Consequences
 
 ### Tier-1 gate budget impact
 
@@ -582,7 +593,7 @@ composition root (not a spec layer).
 
 None. Allen remains the sole operator; no new actor introduced.
 
-## Build Order
+## Step 1 Build Order
 
 Land in this order — each step independently green on Tier-1 before the
 next begins. Each step = one commit per project commit rules.
@@ -611,9 +622,9 @@ next begins. Each step = one commit per project commit rules.
 9. **`cli/__main__.py` `serve` subcommand + lock probe + integration
    tests**. End-to-end smoke + lock-refusal subprocess test.
 
-## Definition of Done
+## Step 1 Definition of Done
 
-All items must be green before this ADR flips Status → Approved.
+All items must be green before Step 1 flips Status → Approved.
 
 1. `lint-imports` reports KEPT (1/1). Layer DAG unbroken.
 2. `ruff check` + `ruff format --check` clean across all changed files.
@@ -637,7 +648,7 @@ All items must be green before this ADR flips Status → Approved.
 7. ADR-0003 spec self-review pass: placeholder scan, internal
    consistency, scope check, ambiguity check.
 
-## Out of Scope (Step 1 boundaries)
+## Step 1 Out of Scope
 
 | Item | Why deferred | Successor ADR |
 |---|---|---|
@@ -653,14 +664,602 @@ All items must be green before this ADR flips Status → Approved.
 | WS inbound from swift client (e.g. ctrl messages) | Spec §3.6.7 — Inherent does NOT trigger tools directly; UI button must round-trip via `/submit` → `surface.user_intent` | Not planned |
 | Daemon auto-restart on crash | Out of scope for in-process design; launchd plist or similar belongs to L6 deployment ADR | Separate ADR |
 
+## Step 2 Context
+
+### What changes vs Step 1
+
+Step 1 ships simplified WS envelopes:
+- `open{streaming:false, content:<full text>}` + `done{}` (no `append`)
+- Single `surface.response_emitted` event drives both envelopes
+
+This works for the inherent-swift client (its `siriOpen` tolerates
+`content` in the open frame) but **diverges from the legacy wire
+schema**:
+- `open{content:"", streaming:true, kind:"text", q:<query>}`
+- `append{token:<chunk>}` (zero or more)
+- `done{fadeMs:5000}`
+
+Step 2 brings the daemon to byte-level wire compatibility with legacy
+AND chunks routine responses sentence-by-sentence on the wire so the
+card's frontend drip animation paces the reveal naturally.
+
+### Streaming model: post-hoc replay (A1)
+
+Pre-emit Gate (`decision/gates.pre_emit_gate`) needs the **full LLM
+text** before it can derive `output_risk_class` and decide
+`required_gate_mode`. Two streaming models were considered:
+
+1. **Real-time streaming** (legacy-style): LLM streams via
+   `chat_stream`; chunks emit to the WS as sentences form; gate runs
+   per-sentence; downgrade triggers a new `surface.response_reset`
+   event + `op:reset` envelope and re-stream. Latency win on first
+   sentence (~300-800ms instead of full LLM duration). Cost: ~400-500
+   prod LOC, new event type + wire envelope, potential reset flicker
+   on gate retry.
+
+2. **Post-hoc replay** (A1, this ADR): LLM runs **non-streaming** via
+   `chat()`; Pre-emit Gate runs on full text via existing
+   `_finalize_response` (unchanged); `render_response` splits the
+   gated text into sentences and emits N `surface.response_chunk`
+   events back-to-back. The card's frontend drip animation paces the
+   visual reveal. **No latency win** — first chunk arrives after full
+   LLM + gate time — but the wire is legacy-compatible, gate
+   semantics stay clean, and no `op:reset` flicker exists.
+
+Step 2 takes the **post-hoc replay** path. Rationale:
+
+- The flagship scenario's text emits are mostly post-`worker.reported`
+  (consequential claims with verified Postcondition evidence) — these
+  would fall back to non-streaming anyway under real-time. The
+  latency benefit applies only to routine acks where the LLM finishes
+  in 1-2s to begin with.
+- Spec §3.4.13 is silent on real-time vs replay; both satisfy
+  "sentence-boundary streaming for routine".
+- Real-time's reset-flicker UX risk is harder to validate at this
+  stage than its latency benefit is to demonstrate.
+- `LLMClient.chat_stream()` stays in tree (unused) for **ADR-0008**
+  real-time streaming, if telemetry justifies it later.
+
+Deferred to **ADR-0008** (real-time streaming): per-token LLM
+streaming inside `decide()`, per-sentence gate, the
+`surface.response_reset` event type, and the wire `op:reset` envelope.
+
+### Spec touchpoints (new vs Step 1)
+
+- **§3.4.13** — Pre-emit Gate output schema. A1's post-hoc replay
+  satisfies both spec arms:
+  - `required_gate_mode == "sentence"` → `render_response` splits and
+    emits one `surface.response_chunk` per sentence.
+  - `required_gate_mode == "full_text"` or `"structured"` →
+    `render_response` emits a single `surface.response_chunk` with the
+    full text (no speculative streaming).
+- **§3.6.6** — Surface honors ResponsePlan; surface NEVER decides risk
+  independently. `render_response` reads `required_gate_mode` but does
+  not re-derive it.
+- **§3.3.1** (re-confirm) — Every observable state change emits a
+  durable event. Each chunk arrival is an observable state change;
+  one `surface.response_chunk` event per chunk.
+
+### What's already in place
+
+- `decision/gates.py:99` `ResponsePlan` carries `output_risk_class` +
+  `required_gate_mode` derived by the Pre-emit Gate. Step 2 consumes
+  `required_gate_mode` in `render_response`; **no schema change** to
+  `ResponsePlan`.
+- `decision/__init__.py:1716` `_finalize_response` runs Pre-emit Gate
+  on full text and owns the retry chain. **Unchanged in Step 2** — A1
+  preserves the gate's input shape (full text) and the gate's call
+  site.
+- `decision/llm.py:411` `chat_stream()` is implemented for both
+  OpenAI and Anthropic backends but **unused in Step 2** (A1 uses
+  `chat()`). Preserved for ADR-0008.
+- `surface/inherent_output.py` Step 1 broadcaster framework reused;
+  the translator methods are rewritten (D13).
+
+### What's verbatim-portable from legacy
+
+- `jarvis-legacy/core/llm.py:1025-1095` (`_find_split_point` +
+  `_possible_abbreviation_prefix`) — sentence boundary scanner +
+  decimal/abbreviation guards. **Ported in Step 2 D14** as a pure
+  function over the full text. Legacy's stateful streaming buffer
+  (`_flush_sentences` lines 971-1003) is NOT ported — A1 operates on
+  the full LLM text, so no incremental buffer is needed.
+- `jarvis-legacy/ui/web/server.py:357-414` — `_broadcast_inherent` +
+  `_on_response_{start,chunk,final}` is the canonical envelope-mapping
+  reference. Step 2 broadcaster mirrors it byte-for-byte (D11).
+
+## Step 2 Decision
+
+### D10. Three-event taxonomy for chunked responses
+
+Three L2 event types drive every Inherent text response (single-chunk
+or sentence-chunked):
+
+| Event type | Payload | When emitted |
+|---|---|---|
+| `surface.response_open` | `{turn_id, query, kind:"text"}` | Once per turn, BEFORE first chunk |
+| `surface.response_chunk` | `{turn_id, text}` | Once per sentence (`sentence` mode) or once total (`full_text` / `structured` mode) |
+| `surface.response_emitted` | (existing, unchanged) | Once per turn, AFTER all chunks. Audit-bearer. |
+
+Rationale (spec §3.3.1 — one event per observable state change).
+Conflating into a single `surface.response_event {kind:...}` was
+rejected:
+- Event-type-based filtering (watcher `WHERE type = ?`) gets messy
+  when same type carries different payloads.
+- Replay / audit tools that group events by type lose granularity.
+- `surface.response_emitted` already exists; reusing-with-kind would
+  amend its current consumers (cli_render, scenario tests).
+
+The `query` field on `response_open` is the user's original
+transcript, lifted from the trigger
+`surface.user_intent.payload.transcript` (D15 plumbs it through
+`drive_turn` → `render_response`). The wire envelope's `q` field
+requires it.
+
+**No `seq` field on `response_chunk`**: SQLite `id` is the monotonic
+sequence and the watcher's `ORDER BY id` cursor already preserves
+per-turn order. A turn-local `seq` would be redundant audit
+metadata.
+
+### D11. Wire envelope mapping (verbatim legacy)
+
+Broadcaster translates 1-to-1, no aggregation:
+
+```
+surface.response_open    -> {"op":"open",   "payload":{"content":"", "streaming":True, "kind":"text", "q":<query>}}
+surface.response_chunk   -> {"op":"append", "payload":{"token":<text>}}
+surface.response_emitted -> {"op":"done",   "payload":{"fadeMs":5000}}
+```
+
+`fadeMs:5000` is the legacy default
+(`jarvis-legacy/ui/web/server.py:404`). Swift card uses it to drive
+`FadeController`'s alpha animation timer; mismatching alters card
+on-screen duration vs what the user is used to.
+
+`streaming:true` is ALWAYS set, even in `full_text` mode (only one
+append). The flag means "expect appends", which is true in both modes
+(`full_text` = exactly one append, then done). Card UX is identical
+from the user's POV — the single append fills the bubble; the
+frontend's per-char drip paces the visual reveal regardless of how
+many appends arrived.
+
+`content` is ALWAYS empty in the open envelope; chunk content arrives
+via `append`. This deviates from Step 1's `open{content:<full text>}`
+pattern; the Step 1 broadcaster is rewritten (D13).
+
+### D12. Streaming trigger condition
+
+`render_response` (in `surface/cli_render.py`) gains a
+`streaming_enabled: bool = False` kwarg and a `query: str = ""`
+kwarg. The chunked emission is gated thus:
+
+```python
+if streaming_enabled:
+    _emit_surface_response_open(conn, turn_id=turn_id, query=query)
+    if response_plan.required_gate_mode == "sentence":
+        chunks = split_into_sentences(response_plan.text)
+    else:  # "full_text" or "structured"
+        chunks = [response_plan.text]
+    for chunk in chunks:
+        _emit_surface_response_chunk(conn, turn_id=turn_id, text=chunk)
+
+# existing path: physical-surface dispatch + surface.response_emitted
+...
+```
+
+When `streaming_enabled=False` (CLI default), only the existing
+`surface.response_emitted` is emitted — Step-1 behavior preserved
+byte-for-byte for the CLI path.
+
+Daemon mode passes `streaming_enabled=True` from
+`_user_intent_watcher` → `drive_turn` → `render_response`.
+
+Note: `required_gate_mode` is the canonical surface-facing field per
+spec §3.4.13; `output_risk_class` is NOT consulted independently
+(Pre-emit Gate already derives one from the other).
+
+### D13. Step 1 envelope refactor (supersede simplified path)
+
+Step 1's `InherentBroadcaster.broadcast(event)` reads
+`event.payload["text"]` and emits `open{content,streaming:false}` +
+`done{}` for every `surface.response_emitted`. **This is replaced**,
+not extended:
+
+After Step 2:
+- `InherentBroadcaster` exposes three async methods:
+  `broadcast_open(event)`, `broadcast_chunk(event)`,
+  `broadcast_done(event)` — one per event type.
+- The single response watcher (D16) dispatches by `event.type`.
+- Step 1's `open{content:full text}` wire shape no longer exists.
+
+This is wire-breaking for any external consumer depending on Step 1's
+exact envelopes. The only known consumer is the inherent-swift card,
+which already speaks the legacy schema and is happier with this
+change than with Step 1's simplification.
+
+Tests in `tests/unit/test_inherent_output.py` and
+`tests/integration/test_serve_inherent_smoke.py` are updated in-place;
+no Step 1 commit is reverted.
+
+### D14. Sentence boundary detection — pure function in `surface/sentence_splitter.py`
+
+New module `surface/sentence_splitter.py` (~50 LOC) exposes a pure,
+stateless function:
+
+```python
+def split_into_sentences(text: str) -> list[str]:
+    """Split `text` into sentences at sentence-ending punctuation.
+
+    Boundaries: ASCII ``.!?``, CJK ``。！？``, newline.
+
+    Guards (ported from
+    ``jarvis-legacy/core/llm.py:1025-1095``):
+    - Decimals: ``3.14`` does NOT split on the inner ``.``.
+    - Abbreviations: ``Dr.``, ``e.g.``, ``Mrs.``, ``Mr.``, ``Ms.``,
+      ``Prof.``, ``i.e.``, ``Jr.``, ``Sr.``, ``St.``, ``Rd.``,
+      ``Inc.``, ``Ltd.``, ``vs.`` do NOT split.
+
+    Returns a list of non-empty sentence strings (whitespace
+    trimmed). If `text` has no sentence-ending punctuation, returns
+    ``[text.strip()]`` unchanged (a single-sentence list). Empty
+    intermediate sentences are dropped.
+    """
+```
+
+Because A1 operates on the **full LLM text** (not a streaming
+buffer), the function is stateless and has **no `MAX_SENTENCE_CHARS`
+safety valve** — a degenerate LLM output without punctuation simply
+yields one sentence (the whole text). Legacy's `force=True` flush at
+stream end is not needed under A1.
+
+Layer placement: **`jarvis/surface/`**, not `jarvis/decision/`.
+`surface` and `decision` are siblings in the `.importlinter` DAG
+(`cli > runtime > {decision | execution | surface | deployment} >
+state`); a cross-sibling import would break the contract. The
+splitter is a presentation-layer concern (rendering text into wire
+chunks), not a decision/gate concern, so `surface/` is the correct
+home. If a future ADR (e.g. ADR-0008 real-time streaming) needs the
+splitter inside `decide()`, it can be promoted to `shared/` at that
+time.
+
+Test: `tests/unit/test_sentence_splitter.py` — Chinese punctuation,
+English punctuation, mixed-language, decimal-guard, abbreviation-
+guard for each abbreviation, no-punctuation single-sentence, empty
+input, multi-newline, leading/trailing whitespace.
+
+### D15. `render_response` owns chunking; `decide()` unchanged
+
+`decide()` and `_finalize_response` are **unchanged** in Step 2.
+`ResponsePlan` schema is **unchanged** (no new field). The Pre-emit
+Gate continues to run on the full LLM text via
+`LLMClient.chat()`.
+
+Chunking happens in
+`surface/cli_render.py::render_response`:
+
+```python
+def render_response(
+    state, response_plan, *, conn, turn_id, attention_channel,
+    stream=None,
+    available_surfaces=_CLI_DEFAULT_SURFACES,
+    streaming_enabled: bool = False,   # NEW
+    query: str = "",                    # NEW
+) -> tuple[SurfaceState, Event]:
+    if streaming_enabled:
+        _emit_surface_response_open(conn, turn_id=turn_id, query=query)
+        chunks = (
+            split_into_sentences(response_plan.text)
+            if response_plan.required_gate_mode == "sentence"
+            else [response_plan.text]
+        )
+        for chunk_text in chunks:
+            _emit_surface_response_chunk(conn, turn_id=turn_id, text=chunk_text)
+
+    # existing path unchanged: physical-surface dispatch +
+    # surface.response_emitted emit
+    ...
+```
+
+`drive_turn` (in `runtime/__init__.py`) gains a `streaming_enabled:
+bool = False` kwarg, lifts `query` from
+`user_intent_event.payload["transcript"]`, and passes both into
+`render_response`. The daemon watcher path
+(`runtime/inherent_loop.py::_user_intent_watcher` →
+`_drive_turn_in_worker_thread`) overrides
+`streaming_enabled=True`; the CLI path (`runtime.run_turn`) keeps
+the default `False`.
+
+Rejected alternative — **`decide()` does the streaming**: needed
+only if real-time streaming was desired (A2/A3). Under A1, no
+benefit; would complicate `decide()` with chunk accumulation it
+never uses; would add `stream_chunks: tuple[str, ...] | None` to
+`ResponsePlan` for no current consumer.
+
+### D16. Single response watcher (race-free by construction)
+
+`surface/inherent_output.py` `InherentBroadcaster` gains three async
+methods (one per event type) and drops Step 1's `broadcast(event)`:
+
+```python
+class InherentBroadcaster:
+    async def register(self, ws): ...
+    async def unregister(self, ws): ...
+
+    async def broadcast_open(self, event: Event) -> None:
+        payload = {"content": "", "streaming": True, "kind": "text",
+                   "q": event.payload.get("query", "")}
+        await self._send_all({"op": "open", "payload": payload}, event)
+
+    async def broadcast_chunk(self, event: Event) -> None:
+        text = event.payload.get("text", "") or ""
+        if not text:
+            return  # mirror legacy _on_response_chunk empty-suppression
+        await self._send_all({"op": "append",
+                              "payload": {"token": text}}, event)
+
+    async def broadcast_done(self, event: Event) -> None:
+        await self._send_all({"op": "done",
+                              "payload": {"fadeMs": 5000}}, event)
+
+    async def _send_all(self, msg: dict, event: Event) -> None:
+        # F4 dead-client tracking, F5 no-client logging. No asyncio.Lock
+        # needed — the single response watcher (below) is the sole
+        # caller, so per-call serialization is implicit.
+```
+
+`runtime/inherent_loop.py` replaces Step 1's `_response_broadcaster`
+with a **single** response watcher that polls all three event types
+in one cursor and dispatches by `event.type`:
+
+```python
+_SELECT_RESPONSE_EVENTS_AFTER_ID_SQL = (
+    "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
+    "payload_json, source_event_id, correlation_json "
+    "FROM events WHERE id > ? AND type IN "
+    "('surface.response_open', 'surface.response_chunk', "
+    "'surface.response_emitted') "
+    "ORDER BY id ASC"
+)
+
+async def _response_watcher(
+    runtime, broadcaster, *, poll_interval_s,
+) -> None:
+    after_id = _latest_id(runtime.conn)
+    while True:
+        rows = _fetch_response_events_after(runtime.conn, after_id=after_id)
+        for row_id, ev in rows:
+            after_id = max(after_id, row_id)
+            if ev.type == "surface.response_open":
+                await broadcaster.broadcast_open(ev)
+            elif ev.type == "surface.response_chunk":
+                await broadcaster.broadcast_chunk(ev)
+            else:  # surface.response_emitted
+                await broadcaster.broadcast_done(ev)
+        await asyncio.sleep(poll_interval_s)
+```
+
+The Step 1 `_user_intent_watcher` is unchanged except its call to
+`drive_turn` now passes `streaming_enabled=True`.
+
+Rejected alternative — **three concurrent watchers (one per event
+type)**: with three sibling asyncio tasks polling SQLite at 10 ms,
+asyncio's scheduler does NOT guarantee wakeup order between them.
+A chunk-watcher that wakes before the open-watcher can race
+`op:append` ahead of `op:open` on the WS — the swift card discards
+the orphan append, breaking the turn. Single watcher with `WHERE
+type IN (...) ORDER BY id` eliminates the race **by construction**.
+The SQL cost is one IN clause over the existing `(id > ?)`
+predicate; no new index needed (the `id` column is the primary
+key).
+
+### D17. Module touch list
+
+| Layer | File | Change | LOC (net) |
+|---|---|---|---|
+| L5 | `surface/sentence_splitter.py` | new | ~50 |
+| L2 | `state/event_log.py` | register `surface.response_open` + `surface.response_chunk` | ~+20 |
+| L5 | `surface/cli_render.py` | add `streaming_enabled` + `query` kwargs; conditional open/chunk emit; import `split_into_sentences` | ~+30 |
+| L5 | `surface/inherent_output.py` | broadcaster rewrite (3 methods; drop old `broadcast`); drop `asyncio.Lock` | ~+30 |
+| comp | `runtime/__init__.py` | add `streaming_enabled` kwarg to `drive_turn`; thread `query` from intent event into `render_response` | ~+15 |
+| comp | `runtime/inherent_loop.py` | single response watcher (replaces `_response_broadcaster`); `streaming_enabled=True` in `drive_turn` call | ~+30 |
+| — | `tests/unit/test_sentence_splitter.py` | new | ~80 |
+| — | `tests/unit/test_event_log_response_types.py` | new (or extend existing event-log tests) | ~30 |
+| — | `tests/unit/test_cli_render_streaming.py` | new | ~80 |
+| — | `tests/unit/test_drive_turn_streaming.py` | new (or extend existing `test_drive_turn.py`) | ~40 |
+| — | `tests/unit/test_inherent_output.py` | rewrite (3 broadcaster paths) | ~+30 |
+| — | `tests/unit/test_inherent_loop.py` | single-watcher coverage | ~+40 |
+| — | `tests/integration/test_serve_inherent_smoke.py` | end-to-end open/append/done verify | ~+30 |
+
+Estimated net new prod LOC ~175, net new test LOC ~330. Total ~505.
+
+`decision/__init__.py`, `decision/gates.py`, and `decision/llm.py`
+are **not** modified by Step 2 (vs the original revision of this
+ADR which proposed `decide()` streaming and a new `ResponsePlan`
+field).
+
+### D18. Layer-boundary verification
+
+All new imports respect `.importlinter`. The contract orders layers
+top-to-bottom as `cli > runtime > {decision | execution | surface |
+deployment} > state > {constitution | shared}`; siblings cannot
+import each other.
+
+| From | To | Allowed? |
+|---|---|---|
+| `surface/cli_render.py` | `surface.sentence_splitter.split_into_sentences` | Yes (intra-package, same layer) |
+| `surface/cli_render.py` | `state.event_log.emit_event` | Yes (existing, surface → state downward) |
+| `surface/inherent_output.py` | `state.event_log.Event` (type-only) | Yes (existing) |
+| `runtime/inherent_loop.py` | `surface.inherent_output.InherentBroadcaster` (extended) | Yes (existing) |
+| `runtime/__init__.py` | `surface.cli_render.render_response` (extended kwargs) | Yes (existing) |
+
+No new cross-sibling edges. The original revision's
+`surface/cli_render.py → decision.sentence_splitter` edge would have
+violated the sibling rule; placing the splitter in
+`surface/sentence_splitter.py` removes the violation.
+
+### D19. Failure modes (Step 2 additions)
+
+Step 1's F1-F12 carry over unchanged. New / amended:
+
+| # | Trigger | Detection | Behavior | Note |
+|---|---|---|---|---|
+| F13 | LLM `chat()` raises during the turn | existing `_finalize_response` retry chain (Step 1 F3 path catches at the watcher level) | Emit `turn.failed`; no `surface.response_*` events emitted → broadcaster sees nothing → card 30 s watchdog issues `op:reset` locally | Spec-compliant; matches Step 1 F3 |
+| F14 | LLM returns text without any sentence-ending punctuation | `split_into_sentences` returns `[text.strip()]` | Single chunk emitted; UX = one `append` then `done` | Stateless splitter; no overflow valve needed under A1 |
+| F15 | `streaming_enabled=True` but gate returns `required_gate_mode == "full_text"` | `render_response` falls through to the single-chunk branch | Emits `open` + 1 `chunk` (full text) + `done` | Spec-compliant gate downgrade |
+| F16 (amends F5) | `surface.response_*` fires while 0 WS clients | broadcaster F5 path (`_send_all` early return on empty registry) | All 3 envelopes dropped (was 2 in Step 1); same warning log per event | Inherits Step 1 deviation (Step 5 / ADR-0007) |
+
+## Step 2 Consequences
+
+### Tier-1 gate budget impact
+
+- Net new prod ~175 LOC + net new test ~330 LOC = ~505 LOC.
+- No new third-party deps.
+- `mypy --strict`, `ruff`, `lint-imports`, `pytest -q` must stay green.
+- Wall < 30s for `pytest -q` continues to apply.
+
+### Canary impact
+
+- `test_canary_stash_pop_after_verify`: no change (Step 1 already set
+  `_RUN_TURN_NAME = "drive_turn"`).
+- `test_canary_runtime_trigger_types`: confirm `surface.response_open`
+  + `surface.response_chunk` should NOT appear in
+  `_RUNTIME_TRIGGER_TYPES` (they trigger only the L5 broadcaster, not
+  the L3 decide loop). Verification = read canary, confirm
+  non-membership, leave as-is.
+- `test_canary_surface_user_intent_swap`: unaffected.
+- `test_canary_daemon_ack_before_fork`: unaffected.
+
+### Spec deviations declared
+
+- **F16 (amends Step 1's F5 / F10)**: Step 1's `surface.failed`
+  deviation continues; Step 2 amplifies (3 envelope types vs 1
+  dropped on no clients). Same compensating action: documented +
+  Step 5 / ADR-0007 closes.
+
+### Open against the user contract
+
+None. Allen remains sole operator.
+
+## Step 2 Build Order
+
+Six commits. Each independently green on Tier-1 before the next
+begins. Each commit owns one logical concern; the wire-breaking pair
+(broadcaster + watcher rewrite) is intentionally bundled into a
+single commit because half-landed state would leave the daemon
+emitting nothing.
+
+1. **`surface/sentence_splitter.py` + `tests/unit/test_sentence_splitter.py`**
+   — pure CPU, no other-module deps; standalone. Layer: L5.
+
+2. **`state/event_log.py` register `surface.response_open` +
+   `surface.response_chunk`** + emit/read-back tests
+   (`tests/unit/test_event_log_response_types.py` or extension to
+   existing event-log tests). No consumer yet — durable schema
+   ready for D15's emit sites.
+
+3. **`surface/cli_render.py` `streaming_enabled` + `query` kwargs +
+   conditional open/chunk emit** + `tests/unit/test_cli_render_streaming.py`.
+   CLI default (`streaming_enabled=False`) preserves Step-1 emit
+   shape byte-for-byte. The daemon path is still not yet wired
+   (drive_turn doesn't pass `True` yet), so this commit changes
+   nothing observable from the daemon side; it lays the rails.
+
+4. **`runtime/__init__.py` `drive_turn` gets `streaming_enabled` +
+   passes `query` from `user_intent_event`** + `tests/unit/test_drive_turn_streaming.py`
+   (or extension to existing `test_drive_turn.py`). Daemon's existing
+   `drive_turn` call site in `runtime/inherent_loop.py` still omits
+   the new kwarg, defaulting to `False` — so daemon still emits
+   Step-1 envelopes through the OLD broadcaster. Tier-1 green
+   through this step is "Step-1 daemon still works".
+
+5. **PAIRED COMMIT — wire-breaking**: 
+   - `surface/inherent_output.py` broadcaster rewrite: drop
+     `broadcast(event)`; add `broadcast_open` / `broadcast_chunk` /
+     `broadcast_done`; drop `asyncio.Lock` (single caller); rewrite
+     `tests/unit/test_inherent_output.py`.
+   - `runtime/inherent_loop.py`: replace `_response_broadcaster`
+     with `_response_watcher` (single watcher, `WHERE type IN (...)
+     ORDER BY id`, dispatch by `event.type`); change
+     `_user_intent_watcher`'s `drive_turn` call to pass
+     `streaming_enabled=True`; extend `tests/unit/test_inherent_loop.py`.
+   - Daemon now emits the legacy 3-envelope wire end-to-end. Step-1
+     `open{content:full text}` shape ceases to exist.
+
+6. **`tests/integration/test_serve_inherent_smoke.py` end-to-end
+   open / append / done verify** for both `sentence` and `full_text`
+   gate modes; manual Swift card smoke per DoD §5.
+
+(The original 9-step Build Order in this ADR's first revision was
+collapsed to 6 once `decide()` / `gates.py` / `ResponsePlan` /
+`runtime.run_turn` were taken out of scope by A1's post-hoc replay
+design and Issue B's single-watcher refactor.)
+
+## Step 2 Definition of Done
+
+All items green before Step 2 flips Status → Approved:
+
+1. `lint-imports` KEPT (1/1).
+2. `ruff check` + `ruff format --check` clean.
+3. `mypy --strict` clean.
+4. `pytest -q` green; wall < 30 s.
+5. Manual smoke (daemon running, Swift card connected):
+   - **Routine prompt** (`required_gate_mode == "sentence"` because
+     no Postcondition Claim exists for the active subject — e.g. a
+     fresh runtime root + the prompt "你好，介绍一下自己。三句话以
+     上。"). Card shows multiple sentences arriving in sequence (one
+     `append` per sentence on the wire).
+   - **Consequential prompt** (`required_gate_mode == "full_text"`
+     — requires a verified Postcondition Claim in the projection;
+     easiest reproduction is the flagship "task done" path:
+     `worker.reported` → `verify_diff` →
+     `claim.postcondition(verified)` then a user follow-up prompt
+     that asks about the verified task, e.g. "刚才那个 task 怎么样
+     了？"). Card shows the full reply as a single `append`.
+   - WS frames inspected (browser devtools or `websocat
+     ws://127.0.0.1:8006/inherent/ws`) show the legacy schema:
+     `open{streaming:true,kind:"text",q:<query>}` then
+     `append{token:<chunk>}*N` then `done{fadeMs:5000}` in that
+     exact order.
+6. CLI sync mode unchanged: `jarvis "hello"` prints final text once,
+   no intermediate output, no `surface.response_*` rows in the event
+   log for that turn (only the existing `surface.response_emitted`).
+7. ADR-0003 Step 2 spec self-review: placeholder scan, internal
+   consistency, scope check, ambiguity check.
+
+## Step 2 Out of Scope
+
+Step 1's Out-of-Scope table carries forward unchanged. Items
+explicitly NOT addressed by Step 2:
+
+- **Real-time streaming** (per-token LLM stream + per-sentence gate
+  + `surface.response_reset` event + `op:reset` wire envelope) —
+  **ADR-0008** if telemetry on Step 2's post-hoc replay justifies
+  the latency win.
+- Streaming TTS (audio sentence streaming with MiniMax WS) — Step 4
+  / ADR-0006.
+- Per-sentence emotion / voice_text overrides (legacy
+  `on_sentence(text, emotion=, voice_text=)` signature) — Step 4 /
+  ADR-0006.
+- `op:voice` envelope (voice state updates) — Step 3 / ADR-0005.
+- Backpressure / slow-client timeout on WS send — separate ADR if
+  observed in practice.
+- Replay queue for client reconnect mid-stream — Step 5 / ADR-0007.
+
 ## References
 
-- `spec.html` §3.3.1, §3.4.1, §3.4.2, §3.4.11, §3.6.1, §3.6.3, §3.6.4,
-  §3.6.7, §3.6.11, §3.6.12, §3.7.2
+- `spec.html` §3.3.1, §3.4.1, §3.4.2, §3.4.11, §3.4.13, §3.6.1,
+  §3.6.3, §3.6.4, §3.6.6, §3.6.7, §3.6.11, §3.6.12, §3.7.2
 - ADR-0001 — Mac-only Flagship Scenario
-- ADR-0002 — Real Codex Flagship Scenario (the `surface.response_emitted`
-  accepted-deviation precedent; daemon / CLI contract for fork_detach)
+- ADR-0002 — Real Codex Flagship Scenario (the
+  `surface.response_emitted` accepted-deviation precedent; daemon /
+  CLI contract for fork_detach)
 - Legacy: `jarvis-legacy/ui/web/server.py` (1374 LOC) — endpoint shape
-  reference, not reused
+  reference; Step 1 did not reuse; Step 2 mirrors lines 357-414
+  envelope mapping byte-for-byte
+- Legacy: `jarvis-legacy/core/llm.py:993, 1001` — sentence boundary
+  heuristic (ported in Step 2 D14)
+- Legacy: `jarvis-legacy/core/tts_preprocessor.py` — text cleanup
+  (Step 2 may consume; otherwise deferred to TTS step)
 - Legacy: `jarvis-legacy/desktop/inherent-swift/InherentCard/BridgeBackend.swift`
-  (398 LOC) — wire contract source; client is preserved unchanged
+  (398 LOC) — wire contract source; client preserved unchanged through
+  both Step 1 and Step 2
