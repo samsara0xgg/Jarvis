@@ -11,6 +11,8 @@ dependencies = [
     "openai",
     "anthropic",
     "PyYAML",
+    "fastapi",            # ADR-0003 — Inherent FastAPI server in Step 7
+    "uvicorn[standard]",  # ADR-0003 — uvloop + httptools + websockets for the daemon in Step 8
 ]
 
 [project.optional-dependencies]
