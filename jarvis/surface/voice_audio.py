@@ -1,6 +1,4 @@
-"""ADR-0005 §4.2 + spec §3.6.1 — voice_audio: Silero VAD state machine.
-
-VAD half — recorder (``capture_utterance``) added in next commit (Task 8).
+"""ADR-0005 §4.2 + spec §3.6.1 — voice_audio: Silero VAD + PortAudio recorder.
 
 Direct onnxruntime Silero VAD with frame-level probability + dBFS gating.
 Replaces sherpa-onnx's segment-level wrapper so wake / PTT paths can react
@@ -11,7 +9,9 @@ Public surface:
   - :data:`SILERO_CHUNK_SAMPLES`           module constant (= 512)
   - :class:`VadEvent`                     per-frame classification enum
   - :class:`SileroVad`                    state machine + ONNX runner
+  - :func:`capture_utterance`             VAD-gated PortAudio recorder
   - :func:`_load_silero_session`          lazy session factory (test-patchable)
+  - :func:`_open_input_stream`            lazy PortAudio factory (test-patchable)
 
 ONNX I/O (pre-v4 silero_vad.onnx shipped with sherpa-onnx)::
 
@@ -286,3 +286,71 @@ def _chunk_db(chunk: np.ndarray) -> float:
     """Approximate per-frame dBFS (epsilon floor avoids ``-inf``)."""
     rms = float(np.sqrt(np.mean(chunk * chunk)))
     return 20.0 * float(np.log10(rms + 1e-10))
+
+
+# --- Recorder (PortAudio + VAD-gated end-of-speech) ----------------------
+
+
+def _open_input_stream(*, sample_rate_hz: int, blocksize: int) -> Any:  # noqa: ANN401
+    """Open a blocking PortAudio input stream.
+
+    Module-level so tests can :func:`unittest.mock.patch.object` it without
+    needing PortAudio installed. ``sounddevice`` is imported lazily so the
+    surrounding module stays importable in environments where it isn't
+    available (CI, headless test runners).
+    """
+    import sounddevice as sd  # type: ignore[import-not-found]  # noqa: PLC0415
+
+    return sd.RawInputStream(
+        samplerate=sample_rate_hz,
+        channels=1,
+        dtype="int16",
+        blocksize=blocksize,
+    )
+
+
+def capture_utterance(
+    *,
+    vad: SileroVad,
+    max_duration_s: float,
+    min_voiced_s: float,
+    sample_rate_hz: int = 16000,
+) -> bytes:
+    """VAD-gated capture from the default input device.
+
+    Reads PCM16 mono frames of :data:`SILERO_CHUNK_SAMPLES` each (32 ms at
+    16 kHz). Feeds each frame into the VAD; once at least ``min_voiced_s``
+    worth of voiced frames have been seen AND the VAD's :meth:`empty` flag
+    becomes ``True`` (post-speech silence), the recording ends.
+
+    Hard cap: ``max_duration_s`` enforced via frame-count.
+
+    Returns the concatenated raw PCM16 little-endian bytes.
+
+    Args:
+        vad: a constructed :class:`SileroVad` in ``"record"`` mode.
+        max_duration_s: hard upper bound (ADR-0005 §5.1 default 5.0).
+        min_voiced_s: minimum voiced duration before VAD-cut allowed
+            (ADR-0005 §5.1 default 1.0).
+        sample_rate_hz: capture rate; MUST match VAD's expected rate
+            (Silero ships 16 kHz).
+    """
+    blocksize = SILERO_CHUNK_SAMPLES
+    seconds_per_frame = blocksize / sample_rate_hz
+    max_frames = int(max_duration_s / seconds_per_frame) + 1
+    min_voiced_frames = int(min_voiced_s / seconds_per_frame)
+
+    audio_bytes = bytearray()
+    voiced_frames = 0
+
+    with _open_input_stream(sample_rate_hz=sample_rate_hz, blocksize=blocksize) as stream:
+        for _frame_idx in range(max_frames):
+            frame, _overflowed = stream.read(blocksize)
+            audio_bytes.extend(frame)
+            event = vad.feed(bytes(frame))
+            if event == VadEvent.SPEECH_ACTIVE:
+                voiced_frames += 1
+            if voiced_frames >= min_voiced_frames and vad.empty():
+                break
+
+    return bytes(audio_bytes)
