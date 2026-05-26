@@ -20,9 +20,10 @@ import contextlib
 import json
 import logging
 import re
+import subprocess
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
@@ -764,9 +765,170 @@ def _decode_audio_hex(audio_hex: str, carry: bytes) -> tuple[np.ndarray, bytes]:
     return pcm_f32, new_carry
 
 
+# --- TTS Pipeline (gate-mode routing + fallback chain) -----------------------
+#
+# ADR-0005 §5.3 / §10 F6-F7. The pipeline is event-driven: `_tts_watcher`
+# (runtime layer) dispatches `surface.response_*` events into `begin_turn`,
+# `handle_chunk`, `handle_emitted`. The pipeline owns gate-mode routing
+# (spec §3.6.6: `sentence` plays each chunk immediately; `full_text` and
+# `structured` buffer until the response is emitted) and the MiniMax →
+# `macos_say` fallback chain (§3.6.11).
+#
+# This file's prior layers are pure ports (preprocessor, AudioStreamPlayer,
+# MiniMaxWSClient). The pipeline is the orchestrator that L4/L5 events talk to.
+
+GateMode = Literal["sentence", "full_text", "structured"]
+
+
+class TTSPipeline:
+    """Event-driven TTS playback per ADR-0005 §5.3.
+
+    Lifecycle (one turn):
+
+    * ``begin_turn(turn_id, gate_mode)`` — called on ``surface.response_open``;
+      records the routing mode and clears any partial buffer from the prior
+      turn.
+    * ``handle_chunk(turn_id, text)`` — called on ``surface.response_chunk``.
+      In ``sentence`` mode the chunk is synthesized and queued for playback
+      immediately; in ``full_text`` / ``structured`` mode the chunk is
+      appended to a per-turn buffer with no synthesis.
+    * ``handle_emitted(turn_id)`` — called on ``surface.response_emitted``.
+      In buffered modes the joined buffer is now synthesized in one shot,
+      then ``end_turn`` runs.
+    * ``end_turn(turn_id)`` — broadcasts the optional ``spoken`` voice phase
+      and clears per-turn state. Safe to call on its own (sentence mode
+      uses this directly from the watcher when the response is emitted).
+
+    Sample rate alignment: callers should construct ``provider`` and
+    ``player`` at the same rate (default 32 kHz). When they differ, the
+    provider's ``soxr`` path resamples internally — see
+    :class:`MiniMaxWSClient` for the contract.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: MiniMaxWSClient,
+        player: AudioStreamPlayer,
+        fallback: Callable[[str], None],
+        broadcaster: object | None = None,
+    ) -> None:
+        """Wire the synthesis provider, audio player and macOS-say fallback.
+
+        Args:
+            provider: WebSocket-backed TTS source (MiniMax).
+            player: PCM sink with a queue (drives ``is_speaking`` + ducking).
+            fallback: Called with cleaned text when the provider is down;
+                use :func:`macos_say_fallback` in production.
+            broadcaster: Optional object exposing
+                ``broadcast_voice_sync(phase, *, turn_id)`` — the pipeline
+                emits ``"spoken"`` at end-of-turn for UI feedback.
+        """
+        self._provider = provider
+        self._player = player
+        self._fallback = fallback
+        self._broadcaster = broadcaster
+        self._turn_id: str | None = None
+        self._gate_mode: GateMode = "sentence"
+        self._buffer: list[str] = []
+
+    def begin_turn(self, turn_id: str, *, gate_mode: GateMode | None) -> None:
+        """Called on ``surface.response_open``. Resets buffer + routing mode."""
+        self._turn_id = turn_id
+        self._gate_mode = gate_mode or "sentence"
+        self._buffer.clear()
+
+    def handle_chunk(self, turn_id: str, text: str) -> None:
+        """Called on ``surface.response_chunk``."""
+        if turn_id != self._turn_id:
+            LOGGER.warning(
+                "TTSPipeline: chunk for unknown turn_id=%s (current=%s)",
+                turn_id,
+                self._turn_id,
+            )
+            return
+        if self._gate_mode == "sentence":
+            self._speak(text)
+        else:
+            self._buffer.append(text)
+
+    def handle_emitted(self, turn_id: str) -> None:
+        """Called on ``surface.response_emitted``. Flushes buffered modes."""
+        if turn_id != self._turn_id:
+            return
+        if self._gate_mode != "sentence":
+            joined = "".join(self._buffer)
+            if joined:
+                self._speak(joined)
+        self.end_turn(turn_id)
+
+    def end_turn(self, turn_id: str) -> None:
+        """Broadcast ``spoken`` (if a broadcaster is wired) and clear state."""
+        broadcast = getattr(self._broadcaster, "broadcast_voice_sync", None)
+        if callable(broadcast):
+            try:
+                broadcast("spoken", turn_id=turn_id)
+            except Exception as exc:  # noqa: BLE001 — broadcast must not crash TTS
+                LOGGER.warning("broadcast_voice_sync(spoken) failed: %r", exc)
+        self._turn_id = None
+        self._buffer.clear()
+
+    def is_speaking(self) -> bool:
+        """True iff the player still has queued bytes (drives wake suppression)."""
+        return self._player.bytes_pending() > 0
+
+    def _speak(self, text: str) -> None:
+        """Synthesize ``text`` and push the PCM bytes to the player.
+
+        On :class:`MiniMaxUnavailableError` (both endpoints down) or any
+        unexpected synth/playback exception, route the cleaned text to
+        the macOS ``say`` fallback. F7 is the terminal leaf — failures
+        beyond that are logged only (assistant response goes silent).
+        """
+        cleaned = _preprocess_for_speech(text)
+        if not cleaned:
+            return
+        try:
+            pcm = asyncio.run(self._provider.synthesize(cleaned))
+            self._player.write(pcm)
+        except MiniMaxUnavailableError:
+            LOGGER.warning(
+                "MiniMax unavailable; falling back to macos_say for: %r",
+                cleaned,
+            )
+            self._fallback(cleaned)
+        except Exception:
+            # TTS path must never crash the daemon; F7 fallback.
+            LOGGER.exception(
+                "TTS synth failed for turn_id=%s", self._turn_id,
+            )
+            self._fallback(cleaned)
+
+
+def macos_say_fallback(text: str, *, voice: str = "Tingting") -> None:
+    """ADR-0005 §10 F7 fallback: macOS ``say`` subprocess.
+
+    Log-only on failure; the assistant response is silent but the daemon
+    stays up. ADR-0007 will eventually replace this leaf with a
+    ``surface.failed`` event.
+    """
+    try:
+        subprocess.run(  # noqa: S603 — `say` is the macOS API contract.
+            ["say", "-v", voice, text],  # noqa: S607 — PATH lookup is the contract.
+            check=False,
+            timeout=30,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        LOGGER.warning(
+            "macos_say_fallback failed: %r — response remains silent", exc,
+        )
+
+
 __all__ = [
     "AudioStreamPlayer",
     "MiniMaxUnavailableError",
     "MiniMaxWSClient",
+    "TTSPipeline",
     "_preprocess_for_speech",
+    "macos_say_fallback",
 ]
