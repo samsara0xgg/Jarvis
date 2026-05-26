@@ -1699,9 +1699,11 @@ def _finalize_response(
     if active_subject is None:
         # No scratch.active_subject_ref AND no open tasks — the gate
         # will see an empty claim set and force_limitation_language
-        # by construction. Log so the failure mode is visible on
-        # ``jarvis`` stderr; otherwise the limitation path is silent.
-        LOGGER.warning(
+        # by construction. Demoted to debug: the hard-refusal text now
+        # carries a user-facing "找不到对应的 task" branch (F1), so the
+        # failure mode reaches the operator via the surface rather than
+        # via stderr noise.
+        LOGGER.debug(
             "_finalize_response: no active_subject_ref and no open tasks; "
             "falling back to 'unknown_subject' (turn_id=%r). The Pre-emit "
             "Gate will force limitation framing.",
