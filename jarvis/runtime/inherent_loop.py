@@ -651,6 +651,13 @@ def _build_voice_pipeline_callable(
     ``(audio_bytes, turn_id, channel, language)`` and returns the
     emitted ``utterance.received`` :class:`Event`; the pipeline
     itself is keyword-only, so this thin closure does the rewrite.
+
+    The closure forces ``broadcast=False`` — this callable is the PTT
+    path (``/inherent/asr-submit``), and per ADR-0005 §6 the inherent-
+    swift card drives its state from the HTTP response body, not from
+    WS ``op:voice`` envelopes. The shared :class:`VoicePipeline`
+    instance keeps its broadcaster wired for the wake path; this
+    adapter just silences phase envelopes for PTT.
     """
 
     def _call(audio_bytes: bytes, turn_id: str, channel: str, language: str) -> Event:
@@ -659,6 +666,7 @@ def _build_voice_pipeline_callable(
             turn_id=turn_id,
             channel=channel,
             language=language,
+            broadcast=False,
         )
 
     return _call

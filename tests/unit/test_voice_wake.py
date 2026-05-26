@@ -1,6 +1,7 @@
 """ADR-0005 voice_wake — wake listener orchestration (mocked openwakeword)."""
 from __future__ import annotations
 
+import threading
 import time
 from unittest.mock import MagicMock
 
@@ -96,3 +97,59 @@ def test_wake_listener_drops_detection_when_lock_busy() -> None:
         voice_pipeline.VOICE_INPUT_LOCK.release()
     fake_capture.assert_not_called()
     fake_pipeline.run_turn.assert_not_called()
+
+
+def test_wake_listener_holds_lock_across_capture_phase() -> None:
+    """Wake listener must hold VOICE_INPUT_LOCK across capture.
+
+    ADR-0005 §8 fix #2 review: peek-and-release leaves the mic
+    unguarded during capture; the lock must span the whole turn.
+    """
+    captured_lock_state: list[bool] = []
+    capture_done = threading.Event()
+
+    def _check_lock_held_during_capture() -> bytes:
+        # The wake daemon thread should be holding the module-global lock
+        # at this point — peek-and-release would show it as free.
+        captured_lock_state.append(voice_pipeline.VOICE_INPUT_LOCK.locked())
+        capture_done.set()
+        return b"\x10\x00" * 16000
+
+    fake_engine = MagicMock()
+    # Only the first poll fires; subsequent polls below threshold so we
+    # do not retrigger after the test signals stop.
+    detections = iter([0.9, 0.0, 0.0, 0.0, 0.0])
+    fake_engine.predict.side_effect = (
+        lambda _frame: {"hey_jarvis_v0.1": next(detections, 0.0)}
+    )
+
+    fake_pipeline = MagicMock()
+    fake_pipeline.run_turn.return_value = MagicMock(payload={"transcript": "你好"})
+
+    listener = voice_wake.WakeListener(
+        engine=fake_engine,
+        pipeline=fake_pipeline,
+        broadcaster=MagicMock(),
+        capture_callable=_check_lock_held_during_capture,
+        threshold=0.5,
+    )
+    listener.start()
+    # Wait deterministically until capture has been called once.
+    assert capture_done.wait(timeout=1.0), "capture_callable never fired"
+    _stop_and_assert_dead(listener)
+
+    # During capture, the lock MUST be held.
+    assert any(captured_lock_state), (
+        f"VOICE_INPUT_LOCK was NOT held during capture; states={captured_lock_state}"
+    )
+    # And run_turn must have been invoked with lock_already_held=True
+    # (the listener owns the lock for the duration; the pipeline must not
+    # try to re-acquire a non-reentrant Lock).
+    _args, kwargs = fake_pipeline.run_turn.call_args
+    assert kwargs.get("lock_already_held") is True, (
+        f"run_turn must be called with lock_already_held=True; got kwargs={kwargs!r}"
+    )
+    # After the listener exited, the lock must be free again (no leak).
+    assert not voice_pipeline.VOICE_INPUT_LOCK.locked(), (
+        "wake listener leaked VOICE_INPUT_LOCK after shutdown"
+    )

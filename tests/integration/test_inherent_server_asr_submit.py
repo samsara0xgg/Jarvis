@@ -17,12 +17,15 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.surface import voice_pipeline
+from jarvis.runtime import inherent_loop
+from jarvis.state.event_log import open_event_log
+from jarvis.surface import voice_asr, voice_pipeline
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from jarvis.shared import Event
 
@@ -194,3 +197,50 @@ def test_asr_submit_returns_415_on_wrong_content_type() -> None:
     )
 
     assert resp.status_code == 415
+
+
+def test_asr_submit_ptt_path_does_not_broadcast_phases(tmp_path: Path) -> None:
+    """PTT HTTP path must not emit op:voice phase envelopes (ADR-0005 §6).
+
+    Swift drives the card state from the HTTP response body, NOT from
+    WS envelopes. Wiring a shared VoicePipeline between wake + PTT used
+    to incorrectly fan ``voice("accepted", ...)`` / ``voice("empty", ...)``
+    envelopes onto the WS for PTT, causing duplicate / unexpected UI
+    transitions. The PTT-specific adapter constructed by the runtime
+    must pass ``broadcast=False`` to the real :class:`VoicePipeline`,
+    silencing the phase broadcasts while keeping the WS hot for the
+    wake path on the same pipeline instance.
+    """
+    recognizer = MagicMock(spec=voice_asr.AsrRecognizer)
+    recognizer.recognize.return_value = voice_asr.TranscriptionResult(
+        text="你好", confidence=0.9, language_detected=None, emotion=None,
+    )
+    normalizer = voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False)
+    broadcaster = MagicMock(spec=InherentBroadcaster)
+
+    db_path = tmp_path / "events.db"
+    pipeline = voice_pipeline.VoicePipeline(
+        conn_factory=lambda: open_event_log(db_path),
+        recognizer=recognizer,
+        normalizer=normalizer,
+        broadcaster=broadcaster,  # broadcaster wired — but PTT adapter must silence it
+        artifacts_dir=tmp_path,
+    )
+
+    ptt_callable = inherent_loop._build_voice_pipeline_callable(pipeline)  # noqa: SLF001
+    deps = InherentDeps(
+        submit_callable=_noop_submit,
+        broadcaster=broadcaster,
+        voice_pipeline_callable=ptt_callable,
+    )
+    client = TestClient(create_app(deps))
+    wav = _build_wav_bytes()
+
+    resp = client.post(
+        "/inherent/asr-submit",
+        files={"audio": ("u.wav", wav, "audio/wav")},
+    )
+
+    assert resp.status_code == 200
+    # NO phase broadcasts should have fired for the PTT path.
+    broadcaster.broadcast_voice_sync.assert_not_called()

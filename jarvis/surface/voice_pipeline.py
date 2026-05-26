@@ -78,7 +78,7 @@ class VoicePipeline:
         self._artifacts_dir = artifacts_dir
         self._sample_rate_hz = sample_rate_hz
 
-    def run_turn(
+    def run_turn(  # noqa: C901, PLR0913 — wake/PTT toggles widen the signature; splitting would shred the single locked critical section.
         self,
         *,
         audio_bytes: bytes,
@@ -86,28 +86,52 @@ class VoicePipeline:
         channel: str,
         language: str,
         lock_acquire_timeout_s: float = 2.0,
+        lock_already_held: bool = False,
+        broadcast: bool = True,
     ) -> Event:
         """Execute one voice turn end-to-end. Returns the emitted Event row.
 
+        Args:
+            audio_bytes: Captured PCM16 little-endian mono audio.
+            turn_id: Server-minted turn id (``T<hex>``).
+            channel: ``"inherent_wake"`` or ``"inherent_ptt"``.
+            language: Spoken language hint (e.g. ``"zh-CN"``).
+            lock_acquire_timeout_s: Timeout for the internal
+                ``VOICE_INPUT_LOCK`` acquire when ``lock_already_held``
+                is False. Ignored when the caller already owns the lock.
+            lock_already_held: When True, the caller already holds
+                :data:`VOICE_INPUT_LOCK` for the full capture+ASR turn
+                (wake listener path — ADR-0005 §8 fix #2). The pipeline
+                must NOT try to acquire / release it (``threading.Lock``
+                is non-reentrant — same-thread re-acquire would deadlock).
+            broadcast: When False, suppress the ``voice("accepted", ...)``
+                and ``voice("empty", ...)`` phase envelopes. PTT path
+                passes False (ADR-0005 §6 — Swift drives the card from
+                the HTTP response, not WS envelopes); wake path passes
+                True (default) so the WS-driven card sees the phase
+                transitions.
+
         Raises:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
+                Only raised when ``lock_already_held`` is False.
             VoicePipelineEmptyError: transcript empty / too short / silent.
             Exception: any unexpected ASR failure (caller decides reaction).
         """
-        acquired = VOICE_INPUT_LOCK.acquire(timeout=lock_acquire_timeout_s)
-        if not acquired:
-            msg = (
-                f"VOICE_INPUT_LOCK busy after {lock_acquire_timeout_s}s; "
-                f"turn_id={turn_id}"
-            )
-            raise VoiceInputBusyError(msg)
+        if not lock_already_held:
+            acquired = VOICE_INPUT_LOCK.acquire(timeout=lock_acquire_timeout_s)
+            if not acquired:
+                msg = (
+                    f"VOICE_INPUT_LOCK busy after {lock_acquire_timeout_s}s; "
+                    f"turn_id={turn_id}"
+                )
+                raise VoiceInputBusyError(msg)
         try:
             # 1. Recognize (sync ASR call).
             tr = self._recognizer.recognize(audio_bytes)
 
             # 2. Empty / too-short filter — ADR §8 fix #3 (unified).
             if voice_asr.is_empty_or_too_short(tr.text, audio_pcm=audio_bytes):
-                if self._broadcaster is not None:
+                if broadcast and self._broadcaster is not None:
                     self._broadcaster.broadcast_voice_sync(
                         "empty", turn_id=turn_id, reason="no_speech",
                     )
@@ -148,9 +172,9 @@ class VoicePipeline:
                     correlation={"turn_id": turn_id},
                 )
 
-            # 6. Wake-path UI notify (PTT broadcaster is None — caller
-            # handles UI via HTTP response).
-            if self._broadcaster is not None:
+            # 6. Wake-path UI notify (PTT path passes broadcast=False so
+            # Swift drives the card from the HTTP response, not WS).
+            if broadcast and self._broadcaster is not None:
                 accepted_payload: dict[str, object] = {"transcript": normalized}
                 if tr.emotion:
                     accepted_payload["emotion"] = tr.emotion
@@ -159,7 +183,8 @@ class VoicePipeline:
                 )
             return ev
         finally:
-            VOICE_INPUT_LOCK.release()
+            if not lock_already_held:
+                VOICE_INPUT_LOCK.release()
 
 
 __all__ = [

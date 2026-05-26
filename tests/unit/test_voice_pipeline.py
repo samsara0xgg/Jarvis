@@ -119,3 +119,88 @@ def test_run_turn_releases_lock_on_exception(tmp_path: Path) -> None:
         language="zh-CN",
     )
     assert ev.payload["transcript"] == "你好"
+
+
+def test_run_turn_skips_inner_acquire_when_lock_held_by_caller(tmp_path: Path) -> None:
+    """ADR-0005 §8 fix #2 review: caller may hold the lock; run_turn must skip its inner acquire."""
+    norm = voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False)
+    recognizer = MagicMock(spec=voice_asr.AsrRecognizer)
+    recognizer.recognize.return_value = voice_asr.TranscriptionResult(
+        text="你好", confidence=0.9, language_detected=None, emotion=None,
+    )
+    pipeline = voice_pipeline.VoicePipeline(
+        conn_factory=lambda: open_event_log(tmp_path / "events.db"),
+        recognizer=recognizer,
+        normalizer=norm,
+        broadcaster=None,
+        artifacts_dir=tmp_path,
+    )
+
+    # Caller holds the lock; run_turn must NOT try to acquire (would deadlock).
+    voice_pipeline.VOICE_INPUT_LOCK.acquire()
+    try:
+        ev = pipeline.run_turn(
+            audio_bytes=b"\x10\x00" * 16000,
+            turn_id="T9",
+            channel="inherent_wake",
+            language="zh-CN",
+            lock_already_held=True,
+        )
+        assert ev.payload["transcript"] == "你好"
+        # Lock should STILL be held after run_turn returns (caller owns the release).
+        assert voice_pipeline.VOICE_INPUT_LOCK.locked()
+    finally:
+        voice_pipeline.VOICE_INPUT_LOCK.release()
+
+
+def test_run_turn_skips_broadcast_when_broadcast_disabled(tmp_path: Path) -> None:
+    """PTT path: caller passes broadcast=False so phase envelopes don't fire (ADR §6)."""
+    norm = voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False)
+    broadcaster = MagicMock()
+    recognizer = MagicMock(spec=voice_asr.AsrRecognizer)
+    recognizer.recognize.return_value = voice_asr.TranscriptionResult(
+        text="你好", confidence=0.9, language_detected=None, emotion=None,
+    )
+    pipeline = voice_pipeline.VoicePipeline(
+        conn_factory=lambda: open_event_log(tmp_path / "events.db"),
+        recognizer=recognizer,
+        normalizer=norm,
+        broadcaster=broadcaster,
+        artifacts_dir=tmp_path,
+    )
+
+    pipeline.run_turn(
+        audio_bytes=b"\x10\x00" * 16000,
+        turn_id="T10",
+        channel="inherent_ptt",
+        language="zh-CN",
+        broadcast=False,
+    )
+    broadcaster.broadcast_voice_sync.assert_not_called()
+
+
+def test_run_turn_skips_broadcast_empty_when_broadcast_disabled(tmp_path: Path) -> None:
+    """PTT path: even the empty-utterance branch must not broadcast (ADR §6)."""
+    norm = voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False)
+    broadcaster = MagicMock()
+    recognizer = MagicMock(spec=voice_asr.AsrRecognizer)
+    recognizer.recognize.return_value = voice_asr.TranscriptionResult(
+        text="你好", confidence=0.9, language_detected=None, emotion=None,
+    )
+    pipeline = voice_pipeline.VoicePipeline(
+        conn_factory=lambda: open_event_log(tmp_path / "events.db"),
+        recognizer=recognizer,
+        normalizer=norm,
+        broadcaster=broadcaster,
+        artifacts_dir=tmp_path,
+    )
+
+    with pytest.raises(voice_pipeline.VoicePipelineEmptyError):
+        pipeline.run_turn(
+            audio_bytes=b"\x00" * 2000,  # zero RMS -> empty filter trips
+            turn_id="T11",
+            channel="inherent_ptt",
+            language="zh-CN",
+            broadcast=False,
+        )
+    broadcaster.broadcast_voice_sync.assert_not_called()

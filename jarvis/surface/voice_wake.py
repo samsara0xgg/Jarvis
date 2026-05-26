@@ -15,16 +15,20 @@ Per ADR §5.1, on detection the listener:
 
 1. Tries a **non-blocking** acquire of ``VOICE_INPUT_LOCK``. On failure
    (PTT mid-turn) it logs INFO and drops the detection — ADR §F5 wake side.
-2. Releases the lock immediately (peek-only); the pipeline re-acquires
-   internally for the full turn duration.
+2. **Holds** the lock for the entire capture + ASR span (ADR-0005 §8
+   fix #2 — "one input stream at a time"). The lock is released in
+   the wake side's ``finally``; the pipeline is invoked with
+   ``lock_already_held=True`` so it skips its own acquire (which would
+   deadlock on a non-reentrant ``threading.Lock``).
 3. Broadcasts ``voice("listening", turn_id=...)`` via the injected
    broadcaster's worker-thread bridge.
-4. Calls ``capture_callable()`` to record one utterance.
+4. Calls ``capture_callable()`` to record one utterance — under the
+   lock so PTT cannot reach the mic mid-capture.
 5. Broadcasts ``voice("transcribing", turn_id=...)``.
 6. Calls ``pipeline.run_turn(audio, turn_id, channel="inherent_wake",
-   language="zh-CN")`` which handles normalize / empty filter / emit and
-   broadcasts ``voice("accepted", ...)`` or ``voice("empty", ...)``
-   internally.
+   language="zh-CN", lock_already_held=True)`` which handles normalize /
+   empty filter / emit and broadcasts ``voice("accepted", ...)`` or
+   ``voice("empty", ...)`` internally.
 
 Per ADR §2 (no barge-in this ADR), the loop suspends while
 ``is_speaking_callable()`` returns ``True``.
@@ -77,7 +81,13 @@ class _EnginePort(Protocol):
 
 
 class _PipelinePort(Protocol):
-    """Subset of :class:`voice_pipeline.VoicePipeline` the listener drives."""
+    """Subset of :class:`voice_pipeline.VoicePipeline` the listener drives.
+
+    ``lock_already_held`` is the wake-side toggle for the ADR-0005 §8
+    fix #2 invariant: the listener owns ``VOICE_INPUT_LOCK`` for the
+    full capture + ASR span (see :meth:`WakeListener._run_one_iter`),
+    so the pipeline must skip its inner acquire / release.
+    """
 
     def run_turn(
         self,
@@ -86,6 +96,7 @@ class _PipelinePort(Protocol):
         turn_id: str,
         channel: str,
         language: str,
+        lock_already_held: bool = ...,
     ) -> object: ...
 
 
@@ -372,50 +383,53 @@ class WakeListener:
         LOGGER.info("wake: detection prob=%.3f", prob)
 
         # 4. Non-blocking lock acquire. Drop if busy (ADR §F5 wake side).
+        #    Hold the lock for the FULL capture + ASR span — ADR-0005 §8
+        #    fix #2: "one input stream at a time". The legacy
+        #    core/inherent_wake_listener.py holds across record+transcribe
+        #    too; releasing here and reacquiring inside run_turn would
+        #    open a window where PTT could grab the mic mid-capture.
         if not voice_pipeline.VOICE_INPUT_LOCK.acquire(blocking=False):
             LOGGER.info("wake: VOICE_INPUT_LOCK busy; dropping detection")
             return
-        # Peek-only — pipeline.run_turn re-acquires for the full turn.
-        voice_pipeline.VOICE_INPUT_LOCK.release()
 
-        # 5. Mint turn id + broadcast listening.
-        turn_id = "T" + secrets.token_hex(4)
-        self._broadcast("listening", turn_id=turn_id)
-
-        # 6. Capture under ducking (ADR §5.1 — prevents speaker bleed).
-        audio_bytes = self._capture_with_ducking(turn_id=turn_id)
-        if audio_bytes is None:
-            return
-
-        # 7. Transcribe + emit. The pipeline broadcasts accepted/empty itself.
-        self._broadcast("transcribing", turn_id=turn_id)
         try:
-            self._pipeline.run_turn(
-                audio_bytes=audio_bytes,
-                turn_id=turn_id,
-                channel="inherent_wake",
-                language="zh-CN",
-            )
-        except voice_pipeline.VoicePipelineEmptyError:
-            # Pipeline already broadcast voice("empty", ...) internally.
-            LOGGER.info("wake: empty utterance; turn_id=%s", turn_id)
-        except voice_pipeline.VoiceInputBusyError:
-            # Race with PTT after our peek released the lock. Drop.
-            LOGGER.info(
-                "wake: VOICE_INPUT_LOCK contention inside run_turn; turn_id=%s",
-                turn_id,
-            )
-        except Exception:
-            LOGGER.exception("wake: pipeline error; turn_id=%s", turn_id)
-            self._broadcast("error", turn_id=turn_id, reason="asr_error")
-        finally:
-            # Reset the engine's accumulated features so the next utterance
-            # starts clean (legacy parity — process_frame returns True only
-            # after model.reset()).
+            # 5. Mint turn id + broadcast listening.
+            turn_id = "T" + secrets.token_hex(4)
+            self._broadcast("listening", turn_id=turn_id)
+
+            # 6. Capture under ducking (ADR §5.1 — prevents speaker bleed).
+            audio_bytes = self._capture_with_ducking(turn_id=turn_id)
+            if audio_bytes is None:
+                return
+
+            # 7. Transcribe + emit. The pipeline broadcasts accepted/empty
+            #    itself. Pass lock_already_held=True so the (non-reentrant)
+            #    VOICE_INPUT_LOCK is not re-acquired on the same thread.
+            self._broadcast("transcribing", turn_id=turn_id)
             try:
-                self._engine.reset()
-            except Exception:  # noqa: BLE001 — reset is best-effort
-                LOGGER.debug("wake: engine.reset() failed", exc_info=True)
+                self._pipeline.run_turn(
+                    audio_bytes=audio_bytes,
+                    turn_id=turn_id,
+                    channel="inherent_wake",
+                    language="zh-CN",
+                    lock_already_held=True,
+                )
+            except voice_pipeline.VoicePipelineEmptyError:
+                # Pipeline already broadcast voice("empty", ...) internally.
+                LOGGER.info("wake: empty utterance; turn_id=%s", turn_id)
+            except Exception:
+                LOGGER.exception("wake: pipeline error; turn_id=%s", turn_id)
+                self._broadcast("error", turn_id=turn_id, reason="asr_error")
+            finally:
+                # Reset the engine's accumulated features so the next utterance
+                # starts clean (legacy parity — process_frame returns True only
+                # after model.reset()).
+                try:
+                    self._engine.reset()
+                except Exception:  # noqa: BLE001 — reset is best-effort
+                    LOGGER.debug("wake: engine.reset() failed", exc_info=True)
+        finally:
+            voice_pipeline.VOICE_INPUT_LOCK.release()
 
     def _capture_with_ducking(self, *, turn_id: str) -> bytes | None:
         """Capture one utterance with system output ducked (ADR §5.1).
