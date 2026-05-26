@@ -1,0 +1,98 @@
+"""ADR-0005 voice_wake — wake listener orchestration (mocked openwakeword)."""
+from __future__ import annotations
+
+import time
+from unittest.mock import MagicMock
+
+from jarvis.surface import voice_pipeline, voice_wake
+
+
+def _stop_and_assert_dead(listener: voice_wake.WakeListener) -> None:
+    """Tell the listener to stop and fail loudly if it doesn't exit in time."""
+    listener.request_stop()
+    listener.join(timeout_s=1.0)
+    assert not listener.is_alive(), "wake thread did not stop"
+
+
+def test_wake_listener_calls_pipeline_on_detect() -> None:
+    """When openwakeword fires, the listener captures + runs the pipeline."""
+    fake_pipeline = MagicMock()
+    fake_pipeline.run_turn.return_value = MagicMock(payload={"transcript": "你好"})
+    fake_broadcaster = MagicMock()
+
+    fake_engine = MagicMock()
+    # First poll: detection (prob 0.9). Then return low values to stop further
+    # detections (prevents repeated triggers).
+    detections = iter([0.9, 0.0, 0.0, 0.0, 0.0])
+    fake_engine.predict.side_effect = (
+        lambda _frame: {"hey_jarvis_v0.1": next(detections, 0.0)}
+    )
+
+    fake_capture = MagicMock(return_value=b"\x10\x00" * 16000)
+
+    listener = voice_wake.WakeListener(
+        engine=fake_engine,
+        pipeline=fake_pipeline,
+        broadcaster=fake_broadcaster,
+        capture_callable=fake_capture,
+        threshold=0.5,
+    )
+    listener.start()
+    # Let it iterate a few times.
+    time.sleep(0.1)
+    _stop_and_assert_dead(listener)
+
+    # Capture + pipeline both fired exactly on the detection iteration.
+    fake_capture.assert_called()
+    fake_pipeline.run_turn.assert_called_once()
+
+
+def test_wake_listener_skips_when_tts_is_speaking() -> None:
+    """Per ADR §2 no-barge-in rule: wake suspends while TTS is speaking."""
+    fake_engine = MagicMock()
+    fake_engine.predict.return_value = {"hey_jarvis_v0.1": 0.9}
+
+    fake_pipeline = MagicMock()
+    fake_broadcaster = MagicMock()
+    fake_capture = MagicMock(return_value=b"\x10\x00" * 16000)
+
+    tts_state = {"speaking": True}
+    listener = voice_wake.WakeListener(
+        engine=fake_engine,
+        pipeline=fake_pipeline,
+        broadcaster=fake_broadcaster,
+        capture_callable=fake_capture,
+        threshold=0.5,
+        is_speaking_callable=lambda: tts_state["speaking"],
+    )
+    listener.start()
+    time.sleep(0.05)
+    _stop_and_assert_dead(listener)
+    fake_pipeline.run_turn.assert_not_called()
+    fake_capture.assert_not_called()
+
+
+def test_wake_listener_drops_detection_when_lock_busy() -> None:
+    """If VOICE_INPUT_LOCK is held by PTT, wake detection is dropped (not blocked)."""
+    fake_engine = MagicMock()
+    fake_engine.predict.return_value = {"hey_jarvis_v0.1": 0.9}
+    fake_pipeline = MagicMock()
+    fake_broadcaster = MagicMock()
+    fake_capture = MagicMock(return_value=b"\x10\x00" * 16000)
+
+    voice_pipeline.VOICE_INPUT_LOCK.acquire()
+    try:
+        listener = voice_wake.WakeListener(
+            engine=fake_engine,
+            pipeline=fake_pipeline,
+            broadcaster=fake_broadcaster,
+            capture_callable=fake_capture,
+            threshold=0.5,
+        )
+        listener.start()
+        time.sleep(0.05)
+        _stop_and_assert_dead(listener)
+    finally:
+        voice_pipeline.VOICE_INPUT_LOCK.release()
+    fake_capture.assert_not_called()
+    fake_pipeline.run_turn.assert_not_called()
