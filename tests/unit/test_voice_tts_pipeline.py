@@ -28,19 +28,91 @@ def _noop_fallback(_text: str) -> None:
     """Discarding fallback used by tests that don't observe say invocations."""
 
 
-def test_sentence_mode_speaks_each_chunk_immediately(
+def test_sentence_mode_aggregates_voice_region_into_one_synth_call(
     fake_provider: MagicMock, fake_player: MagicMock,
 ) -> None:
-    """``sentence`` mode synthesizes every chunk at arrival (no buffering)."""
+    """``sentence`` mode: per ``<voice>...</voice>`` region, ONE MiniMax call.
+
+    Bug 3 (post-ADR-0005 smoke): previously every chunk arrival triggered
+    a fresh ``asyncio.run(provider.synthesize)`` — a new WebSocket
+    connect + handshake + close per chunk. For a 3-sentence voice
+    response that's 3 round trips with 1-3s of WS-connect overhead
+    each, audible as the "5-second bursts" the user reported. The new
+    contract aggregates everything inside a ``<voice>...</voice>``
+    region and synthesizes once when the closing tag arrives.
+    """
     pipeline = voice_tts.TTSPipeline(
         provider=fake_provider, player=fake_player, fallback=_noop_fallback,
     )
     pipeline.begin_turn("T1", gate_mode="sentence")
-    pipeline.handle_chunk("T1", "你好。")
-    pipeline.handle_chunk("T1", "今天天气怎么样?")
+    pipeline.handle_chunk("T1", "<voice>")
+    pipeline.handle_chunk("T1", "在的,Allen。")
+    pipeline.handle_chunk("T1", "我在。")
+    pipeline.handle_chunk("T1", "你要我看什么?")
+    pipeline.handle_chunk("T1", "</voice>")
     pipeline.end_turn("T1")
-    # synthesize called once per sentence (2 chunks total).
-    assert fake_provider.synthesize.await_count == 2
+    assert fake_provider.synthesize.await_count == 1
+    args, _ = fake_provider.synthesize.await_args
+    sent = args[0]
+    assert "在的" in sent
+    assert "我在" in sent
+    assert "看什么" in sent
+    # Tags must be stripped — synthesizing literal "<voice>" produces the
+    # garbled "less-than voice greater-than" speech the user heard.
+    assert "<voice>" not in sent
+    assert "</voice>" not in sent
+
+
+def test_sentence_mode_skips_document_region_entirely(
+    fake_provider: MagicMock, fake_player: MagicMock,
+) -> None:
+    """``<document>...</document>`` carries visual content; TTS must NOT speak it.
+
+    The render layer interleaves ``<voice>`` (spoken) and ``<document>``
+    (displayed) regions in the same chunk stream. The pipeline must
+    extract only the voice portion so the document body does not bleed
+    into synthesis.
+    """
+    pipeline = voice_tts.TTSPipeline(
+        provider=fake_provider, player=fake_player, fallback=_noop_fallback,
+    )
+    pipeline.begin_turn("T2", gate_mode="sentence")
+    pipeline.handle_chunk("T2", "<voice>")
+    pipeline.handle_chunk("T2", "hi")
+    pipeline.handle_chunk("T2", "</voice>")
+    pipeline.handle_chunk("T2", "<document>")
+    pipeline.handle_chunk("T2", "this is doc content")
+    pipeline.handle_chunk("T2", "</document>")
+    pipeline.end_turn("T2")
+
+    assert fake_provider.synthesize.await_count == 1
+    args, _ = fake_provider.synthesize.await_args
+    sent = args[0]
+    assert "hi" in sent
+    assert "this is doc content" not in sent
+    assert "<document>" not in sent
+    assert "</document>" not in sent
+
+
+def test_sentence_mode_flushes_unclosed_voice_on_end_turn(
+    fake_provider: MagicMock, fake_player: MagicMock,
+) -> None:
+    """If ``</voice>`` never arrives, ``end_turn`` flushes whatever was buffered.
+
+    Defensive: a streaming response that gets truncated mid-region
+    should still produce audible output for what was emitted, not
+    silently swallow it.
+    """
+    pipeline = voice_tts.TTSPipeline(
+        provider=fake_provider, player=fake_player, fallback=_noop_fallback,
+    )
+    pipeline.begin_turn("T3", gate_mode="sentence")
+    pipeline.handle_chunk("T3", "<voice>")
+    pipeline.handle_chunk("T3", "你好")
+    pipeline.end_turn("T3")
+    assert fake_provider.synthesize.await_count == 1
+    args, _ = fake_provider.synthesize.await_args
+    assert "你好" in args[0]
 
 
 def test_full_text_mode_buffers_until_emitted(
@@ -87,6 +159,7 @@ def test_missing_gate_mode_defaults_to_sentence(
     )
     pipeline.begin_turn("T4", gate_mode=None)
     pipeline.handle_chunk("T4", "hi.")
+    pipeline.end_turn("T4")  # Sentence-mode now flushes at end_turn (Bug 3 aggregation).
     assert fake_provider.synthesize.await_count == 1
 
 

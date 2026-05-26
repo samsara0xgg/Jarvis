@@ -75,6 +75,51 @@ def _preprocess_for_speech(text: str) -> str:
     return out.strip()
 
 
+# --- Voice / document tag extraction (spec §3.6.6 structured response) -----
+#
+# Render-layer emits structured responses with ``<voice>...</voice>`` (spoken)
+# and ``<document>...</document>`` (displayed) regions in one chunk stream.
+# Without filtering, the pipeline synthesises tag characters literally
+# (garbled "less-than voice greater-than" speech) and the document body bleeds
+# into TTS. Bug 3 fix from post-ADR-0005 smoke.
+
+_VOICE_REGION_RE = re.compile(r"<voice>(.*?)</voice>", re.DOTALL)
+_UNCLOSED_VOICE_RE = re.compile(r"<voice>(.*)\Z", re.DOTALL)
+_DOCUMENT_REGION_RE = re.compile(r"<document>.*?</document>", re.DOTALL)
+
+
+def _extract_voice_content(text: str) -> str:
+    """Return the concatenated content inside ``<voice>...</voice>`` regions.
+
+    - When the joined chunk stream contains zero ``<voice>`` tags, returns
+      ``text`` unchanged (legacy compat for plain-text unit fixtures);
+      isolated ``<document>`` content yields ``""`` so the pipeline does
+      not speak displayed-only content.
+    - When the stream contains one or more closed ``<voice>...</voice>``
+      regions, returns their joined inner text.
+    - When the stream contains an *unclosed* ``<voice>`` (truncated mid-
+      region), returns everything from ``<voice>`` to end. The TTSPipeline
+      flushes on close OR ``end_turn``; the latter is the path that hits
+      this case.
+    Nested ``<document>`` regions inside the matched voice content are
+    stripped before return so a misordered surface emission can't leak
+    document chars into TTS.
+    """
+    if "<voice>" not in text:
+        if "<document>" in text:
+            return ""
+        return text
+    parts = _VOICE_REGION_RE.findall(text)
+    if not parts:
+        m = _UNCLOSED_VOICE_RE.search(text)
+        if m is None:
+            return ""
+        parts = [m.group(1)]
+    joined = "".join(parts)
+    joined = _DOCUMENT_REGION_RE.sub("", joined)
+    return joined.strip()
+
+
 # --- Audio stream playback (ported from legacy core/audio_stream_player.py) ---
 #
 # Persistent-stream PCM player — replaces per-sentence subprocess playback. A
@@ -223,7 +268,7 @@ def _open_output_stream(  # noqa: PLR0913 — passthrough to sd.OutputStream
     surrounding module stays importable in environments where it isn't
     available (CI, headless test runners).
     """
-    import sounddevice as sd  # type: ignore[import-not-found]  # noqa: PLC0415
+    import sounddevice as sd  # type: ignore[import-untyped]  # noqa: PLC0415
 
     return sd.OutputStream(
         samplerate=sample_rate_hz,
@@ -850,7 +895,17 @@ class TTSPipeline:
         self._buffer.clear()
 
     def handle_chunk(self, turn_id: str, text: str) -> None:
-        """Called on ``surface.response_chunk``."""
+        """Called on ``surface.response_chunk``.
+
+        Sentence mode: every chunk is accumulated; a ``</voice>`` close
+        tag in the chunk flushes the buffer through synth. Multiple
+        ``<voice>...</voice>`` regions in one turn each flush at their
+        own close. This batches the WS-connect overhead — one MiniMax
+        round trip per voice region instead of one per chunk — and
+        eliminates literal tag-text from being synthesised.
+        Full_text / structured: accumulate as before, flush on
+        ``handle_emitted``.
+        """
         if turn_id != self._turn_id:
             LOGGER.warning(
                 "TTSPipeline: chunk for unknown turn_id=%s (current=%s)",
@@ -858,23 +913,24 @@ class TTSPipeline:
                 self._turn_id,
             )
             return
-        if self._gate_mode == "sentence":
-            self._speak(text)
-        else:
-            self._buffer.append(text)
+        self._buffer.append(text)
+        if self._gate_mode == "sentence" and "</voice>" in text:
+            self._flush_buffer()
 
     def handle_emitted(self, turn_id: str) -> None:
-        """Called on ``surface.response_emitted``. Flushes buffered modes."""
+        """Called on ``surface.response_emitted``. Flushes any pending buffer."""
         if turn_id != self._turn_id:
             return
-        if self._gate_mode != "sentence":
-            joined = "".join(self._buffer)
-            if joined:
-                self._speak(joined)
         self.end_turn(turn_id)
 
     def end_turn(self, turn_id: str) -> None:
-        """Broadcast ``spoken`` (if a broadcaster is wired) and clear state."""
+        """Flush any remaining buffer, broadcast ``spoken``, clear state.
+
+        Defensive flush covers truncated streams (``</voice>`` never
+        arrived) and the tests that drive the pipeline directly without
+        a full ``handle_emitted`` event.
+        """
+        self._flush_buffer()
         broadcast = getattr(self._broadcaster, "broadcast_voice_sync", None)
         if callable(broadcast):
             try:
@@ -883,6 +939,15 @@ class TTSPipeline:
                 LOGGER.warning("broadcast_voice_sync(spoken) failed: %r", exc)
         self._turn_id = None
         self._buffer.clear()
+
+    def _flush_buffer(self) -> None:
+        """Synth whatever is in the buffer (if any), then clear it."""
+        if not self._buffer:
+            return
+        joined = "".join(self._buffer)
+        self._buffer.clear()
+        if joined:
+            self._speak(joined)
 
     def is_speaking(self) -> bool:
         """True iff the player still has queued bytes (drives wake suppression)."""
@@ -901,7 +966,14 @@ class TTSPipeline:
         the macOS ``say`` fallback. F7 is the terminal leaf — failures
         beyond that are logged only (assistant response goes silent).
         """
-        cleaned = _preprocess_for_speech(text)
+        # Extract <voice>...</voice> regions BEFORE preprocessing so the
+        # downstream MiniMax call never sees literal tag chars (which
+        # synthesise as "less-than voice greater-than" gibberish) and so
+        # any <document>...</document> region is silently dropped from
+        # synthesis. See ``_extract_voice_content`` for fallback rules
+        # when the text has no tags (legacy plain-text path).
+        voice_only = _extract_voice_content(text)
+        cleaned = _preprocess_for_speech(voice_only)
         if not cleaned:
             return
         ducked = False

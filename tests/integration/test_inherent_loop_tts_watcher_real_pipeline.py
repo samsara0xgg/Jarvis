@@ -72,6 +72,15 @@ def test_tts_watcher_drives_real_tts_pipeline_without_asyncio_run_crash(
             payload={"turn_id": "T1", "text": "你好。"},
             correlation={"turn_id": "T1"},
         )
+        # Sentence-mode now aggregates inside <voice>...</voice> regions and
+        # flushes on close OR end_turn (Bug 3 fix); a plain-text chunk with
+        # no closing tag waits for response_emitted to flush.
+        emit_event(
+            conn,
+            type="surface.response_emitted",
+            payload={"turn_id": "T1", "text": "你好。"},
+            correlation={"turn_id": "T1"},
+        )
         await asyncio.sleep(0.3)  # generous; allow to_thread + synth + write
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

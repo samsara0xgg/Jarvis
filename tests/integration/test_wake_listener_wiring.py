@@ -160,6 +160,10 @@ def test_tts_pipeline_ducks_around_speak() -> None:
     )
     pipeline.begin_turn("T1", gate_mode="sentence")
     pipeline.handle_chunk("T1", "你好")
+    # Sentence-mode aggregates inside <voice>...</voice> regions and flushes
+    # on close OR end_turn (Bug 3 fix); a plain-text chunk waits for
+    # end_turn to flush, so the duck/restore bracket only fires here.
+    pipeline.end_turn("T1")
 
     # Must have ducked before synth.
     assert ducker_calls == ["duck", "restore"], (
