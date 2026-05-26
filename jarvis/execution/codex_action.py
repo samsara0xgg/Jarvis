@@ -506,43 +506,58 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
     if env_dict.get("CODEX_HOME") in (None, ""):
         codex_home_dir = tempfile.mkdtemp(prefix=_CODEX_HOME_PREFIX)
         env_dict["CODEX_HOME"] = codex_home_dir
-        # Codex 0.130 responses_websocket reads auth from
-        # $CODEX_HOME/auth.json, not OPENAI_API_KEY (B-0004 live-verified:
-        # empty home -> 401 on every request). Seed the isolated dir so
-        # the worker can reach api.openai.com.
-        source_auth = Path("~/.codex/auth.json").expanduser()
-        if source_auth.is_file():
-            shutil.copy2(source_auth, Path(codex_home_dir) / "auth.json")
-        # Inject the jarvis-controlled AGENTS.md (ADR-0002 §644
-        # "system prompt in codex_action.py repeats the rule"). This is
-        # the only working instruction-source channel in Codex 0.130
-        # (see ``_JARVIS_AGENTS_MD`` for the live-verification note).
-        # The per-spawn isolated home means the user's
-        # ``~/.codex/AGENTS.md`` cannot leak in and our file is the
-        # entire developer-role instruction stream.
-        (Path(codex_home_dir) / "AGENTS.md").write_text(_JARVIS_AGENTS_MD)
-        # B-0007 fix: register the jarvis-tools MCP server via
-        # config.toml. Codex 0.130 silently ignores
-        # ``mcp_servers.X.Y=Z`` dotted keys passed via ``-c`` flags;
-        # the MCP registry is populated only from
-        # ``[mcp_servers."<name>"]`` table headers in config.toml
-        # (Hermes pattern, see
-        # ``agent/transports/hermes_tools_mcp_server.py``). Without
-        # this write the spawned worker only sees Codex's 15 built-in
-        # tools and can never call submit_report -- live-verified
-        # 2026-05-21: 0 ``jarvis-tools`` mentions in the 4MB session
-        # log, 15-tool API requests across A4 r1-r5.
-        config_toml = (
-            '[mcp_servers."jarvis-tools"]\n'
-            f"command = {_toml_str(sys.executable)}\n"
-            'args = ["-m", "jarvis.execution.codex_mcp_tools"]\n'
-            "startup_timeout_sec = 30.0\n"
-            "tool_timeout_sec = 600.0\n"
-        )
-        (Path(codex_home_dir) / "config.toml").write_text(config_toml)
 
     start_mono = time.monotonic()
-    client = CodexAppServerClient(codex_bin=codex_bin, extra_args=extra_args, env=env_dict)
+    # Seed the isolated CODEX_HOME and construct the client inside a try
+    # block so a PermissionError / OSError / FileNotFoundError during
+    # seeding or client construction does not leak the tempdir (which
+    # contains a copy of ~/.codex/auth.json -- OpenAI session
+    # credentials). See observation 12561. ``BaseException`` so
+    # ``KeyboardInterrupt`` during a long copy still cleans. Bare
+    # ``raise`` preserves the original traceback for
+    # ``spawn_worker_handler``'s ``action.failed`` emission.
+    try:
+        if codex_home_dir is not None:
+            # Codex 0.130 responses_websocket reads auth from
+            # $CODEX_HOME/auth.json, not OPENAI_API_KEY (B-0004 live-verified:
+            # empty home -> 401 on every request). Seed the isolated dir so
+            # the worker can reach api.openai.com.
+            source_auth = Path("~/.codex/auth.json").expanduser()
+            if source_auth.is_file():
+                shutil.copy2(source_auth, Path(codex_home_dir) / "auth.json")
+            # Inject the jarvis-controlled AGENTS.md (ADR-0002 §644
+            # "system prompt in codex_action.py repeats the rule"). This is
+            # the only working instruction-source channel in Codex 0.130
+            # (see ``_JARVIS_AGENTS_MD`` for the live-verification note).
+            # The per-spawn isolated home means the user's
+            # ``~/.codex/AGENTS.md`` cannot leak in and our file is the
+            # entire developer-role instruction stream.
+            (Path(codex_home_dir) / "AGENTS.md").write_text(_JARVIS_AGENTS_MD)
+            # B-0007 fix: register the jarvis-tools MCP server via
+            # config.toml. Codex 0.130 silently ignores
+            # ``mcp_servers.X.Y=Z`` dotted keys passed via ``-c`` flags;
+            # the MCP registry is populated only from
+            # ``[mcp_servers."<name>"]`` table headers in config.toml
+            # (Hermes pattern, see
+            # ``agent/transports/hermes_tools_mcp_server.py``). Without
+            # this write the spawned worker only sees Codex's 15 built-in
+            # tools and can never call submit_report -- live-verified
+            # 2026-05-21: 0 ``jarvis-tools`` mentions in the 4MB session
+            # log, 15-tool API requests across A4 r1-r5.
+            config_toml = (
+                '[mcp_servers."jarvis-tools"]\n'
+                f"command = {_toml_str(sys.executable)}\n"
+                'args = ["-m", "jarvis.execution.codex_mcp_tools"]\n'
+                "startup_timeout_sec = 30.0\n"
+                "tool_timeout_sec = 600.0\n"
+            )
+            (Path(codex_home_dir) / "config.toml").write_text(config_toml)
+
+        client = CodexAppServerClient(codex_bin=codex_bin, extra_args=extra_args, env=env_dict)
+    except BaseException:
+        if codex_home_dir is not None:
+            shutil.rmtree(codex_home_dir, ignore_errors=True)
+        raise
 
     final_text_parts: list[str] = []
     submit_report_calls: list[Mapping[str, Any]] = []

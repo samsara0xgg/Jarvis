@@ -1117,3 +1117,90 @@ def test_capture_diff_returns_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
     proc = _make_completed_proc(stdout="diff --git a/x b/x\n+line\n")
     monkeypatch.setattr(ca.subprocess, "run", lambda *_a, **_k: proc)
     assert ca._capture_diff(Path("/tmp")) == "diff --git a/x b/x\n+line\n"  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# Observation 12561 - tempdir cleanup on seed/construction failure.
+# ---------------------------------------------------------------------------
+
+
+def _snapshot_codex_home_tempdirs() -> set[Path]:
+    """Return the current set of jarvis-codex-home-* dirs in the tempdir."""
+    import tempfile  # noqa: PLC0415
+
+    return set(Path(tempfile.gettempdir()).glob(f"{ca._CODEX_HOME_PREFIX}*"))  # noqa: SLF001
+
+
+def test_codex_action_cleans_tempdir_on_auth_copy_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """shutil.copy2 raising during auth.json seed -> tempdir removed, error re-raised."""
+    fake_home = tmp_path / "home"
+    (fake_home / ".codex").mkdir(parents=True)
+    (fake_home / ".codex" / "auth.json").write_text('{"OPENAI_API_KEY":"sk-test"}')
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    def _raise_permission(*_a: object, **_k: object) -> None:
+        msg = "denied"
+        raise PermissionError(msg)
+
+    monkeypatch.setattr("jarvis.execution.codex_action.shutil.copy2", _raise_permission)
+
+    before = _snapshot_codex_home_tempdirs()
+    with pytest.raises(PermissionError, match="denied"):
+        ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+    after = _snapshot_codex_home_tempdirs()
+
+    assert after - before == set()
+
+
+def test_codex_action_cleans_tempdir_on_write_text_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Path.write_text raising during AGENTS.md/config.toml seed -> tempdir removed."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    original_write_text = Path.write_text
+
+    def _selective_raise(self: Path, *args: object, **kwargs: object) -> int:
+        if self.name in ("AGENTS.md", "config.toml"):
+            msg = "disk full"
+            raise OSError(msg)
+        return original_write_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _selective_raise)
+
+    before = _snapshot_codex_home_tempdirs()
+    with pytest.raises(OSError, match="disk full"):
+        ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+    after = _snapshot_codex_home_tempdirs()
+
+    assert after - before == set()
+
+
+def test_codex_action_cleans_tempdir_on_client_init_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CodexAppServerClient(...) raising -> tempdir removed, original exc re-raised."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    class _RaisingClient:
+        def __init__(self, **_kwargs: object) -> None:
+            msg = "codex binary missing"
+            raise FileNotFoundError(msg)
+
+    monkeypatch.setattr(ca, "CodexAppServerClient", _RaisingClient)
+
+    before = _snapshot_codex_home_tempdirs()
+    with pytest.raises(FileNotFoundError, match="codex binary missing"):
+        ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+    after = _snapshot_codex_home_tempdirs()
+
+    assert after - before == set()
