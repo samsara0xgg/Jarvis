@@ -331,6 +331,20 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    # Fix 2 Option A — empty-diff + verify-pass paradox now emits
+    # `task.no_op` instead of `task.verified`. Absent an artifact-change
+    # Postcondition signal, the verify_command alone cannot support
+    # `task.verified` (spec §8.9 — code task requires artifact changed +
+    # verification passed). L3 emits this from
+    # `_dispatch_one_tool_call` when the Result Interpreter signals
+    # no_op. See amended ADR-0002 § Evidence ladder paradox row.
+    EventTypeSchema(
+        event_type="task.no_op",
+        owner_layer="L3",
+        required_payload=("task_id",),
+        optional_payload=("reason", "verify_command"),
+        schema_version=1,
+    ),
     # --- Day-2 extensions (ADR-0002 § Day-2 EventTypeRegistry extensions) ---
     #
     # Eight Day-2 originals (worker.* heartbeat/artifact_observed/

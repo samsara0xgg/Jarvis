@@ -201,6 +201,74 @@ def test_registry_cost_recorded_is_l3_owned() -> None:
     assert schema.required_payload == ("kind", "model")
 
 
+# --- Fix 2 Option A: task.no_op registry extension -------------------------
+
+
+def test_registry_task_no_op_registered() -> None:
+    """Fix 2 Option A: `task.no_op` is the empty-diff + verify-pass event.
+
+    Per amended ADR-0002 § Evidence ladder paradox row: when Codex
+    produces no diff but the verify_command exits 0, L3 emits
+    `task.no_op` instead of `task.verified`. Absent an
+    artifact-change Postcondition signal the verify_command alone
+    cannot support `task.verified` (spec §8.9 — code task requires
+    artifact changed + verification passed).
+    """
+    schema = EventTypeRegistry.get("task.no_op")
+    assert schema is not None, "task.no_op must be in EventTypeRegistry per Fix 2 Option A"
+    assert schema.event_type == "task.no_op"
+    assert schema.owner_layer == "L3"
+    assert schema.required_payload == ("task_id",)
+    assert schema.optional_payload == ("reason", "verify_command")
+    assert schema.schema_version == 1
+
+
+def test_emit_task_no_op_happy_path(tmp_path: Path) -> None:
+    """emit_event with the minimum required payload succeeds and round-trips."""
+    with closing(_open(tmp_path)) as conn:
+        evt = emit_event(
+            conn,
+            type="task.no_op",
+            payload={"task_id": "task_X"},
+            ts_epoch_ms=0,
+        )
+    assert evt.type == "task.no_op"
+    assert evt.schema_version == 1
+    assert evt.payload == {"task_id": "task_X"}
+
+
+def test_emit_task_no_op_accepts_optional_reason_and_verify_command(
+    tmp_path: Path,
+) -> None:
+    """`reason` + `verify_command` are optional; supplying them round-trips."""
+    with closing(_open(tmp_path)) as conn:
+        evt = emit_event(
+            conn,
+            type="task.no_op",
+            payload={
+                "task_id": "task_X",
+                "reason": "diff_nonempty=False + verify_command exit 0",
+                "verify_command": "uv run pytest -x",
+            },
+            ts_epoch_ms=0,
+        )
+    assert evt.payload["reason"] == "diff_nonempty=False + verify_command exit 0"
+    assert evt.payload["verify_command"] == "uv run pytest -x"
+
+
+def test_emit_task_no_op_rejects_missing_task_id(tmp_path: Path) -> None:
+    """Missing `task_id` raises MissingPayloadFieldError; nothing written."""
+    with closing(_open(tmp_path)) as conn:
+        with pytest.raises(MissingPayloadFieldError):
+            emit_event(
+                conn,
+                type="task.no_op",
+                payload={"reason": "no diff"},
+                ts_epoch_ms=0,
+            )
+        assert list(iter_events(conn)) == []
+
+
 # --- ADR-0003 Inherent Text Surface registry extensions --------------------
 
 
