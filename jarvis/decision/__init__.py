@@ -80,6 +80,7 @@ from jarvis.decision.resolver import (
     resolve_task_ref_by_window,
 )
 from jarvis.decision.result_interpreter import (
+    VerifyVerdict,
     interpret_verify_diff_bundle,
     result_interpreter,
 )
@@ -1083,20 +1084,20 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     )
     source_event_for_interpreter = result_observed_uid or proposed_event.event_uid
 
+    last_interpreted_evidence: Event | None
+    verify_verdict: VerifyVerdict
     if name == "verify_diff":
-        last_interpreted_evidence, saw_verification_for_target = (
-            _route_verify_diff_bundle(
-                bundle=bundle,
-                ctx=ctx,
-                scratch=scratch,
-                action_request=action_request,
-                target_entity_ref=target_entity_ref,
-                fallback_source_event_id=source_event_for_interpreter,
-            )
+        last_interpreted_evidence, verify_verdict = _route_verify_diff_bundle(
+            bundle=bundle,
+            ctx=ctx,
+            scratch=scratch,
+            action_request=action_request,
+            target_entity_ref=target_entity_ref,
+            fallback_source_event_id=source_event_for_interpreter,
         )
     else:
         last_interpreted_evidence = None
-        saw_verification_for_target = False
+        verify_verdict = "neither"
         for slot in bundle.slots:
             interpreted_events = result_interpreter(
                 slot,
@@ -1108,15 +1109,24 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
             scratch.events.extend(interpreted_events)
             last_interpreted_evidence = interpreted_events[1]
             if slot.semantics == "verification" and target_entity_ref is not None:
-                saw_verification_for_target = True
+                verify_verdict = "verified"
 
-    # If any slot produced a verified Postcondition for the active task,
-    # emit task.verified per ADR § Canonical event trace evt 22. Source
-    # the cause-chain off the last evidence event the interpreter wrote.
-    # Spec hard rule (ADR-0002 § Evidence ladder): task.verified fires
-    # ONLY from the verification slot of verify_diff — every other path
-    # leaves the bit cleared.
-    if saw_verification_for_target and last_interpreted_evidence is not None:
+    # Trailing completion event per the F2 ladder + Fix 2 Option A
+    # amendment. Three branches keyed on the Result Interpreter's
+    # verdict:
+    #
+    # - verdict="verified" → task.verified per ADR § Canonical event
+    #   trace evt 22. Canonical happy path: diff_nonempty AND
+    #   verify_command exit 0. Cause-chain sources the last evidence
+    #   event the interpreter emitted.
+    # - verdict="no_op" → task.no_op (Fix 2 Option A). Empty diff +
+    #   verify_command exit 0: the verify_command alone cannot promote
+    #   to level=verified absent an artifact-change signal (spec §8.9).
+    #   No evidence event to chain off of, so source the cause-chain
+    #   off the action.proposed row.
+    # - verdict="neither" → emit nothing (verify failed, no verify
+    #   slot, or no canonical subject).
+    if verify_verdict == "verified" and last_interpreted_evidence is not None:
         task_verified_event = emit_event(
             ctx.conn,
             type="task.verified",
@@ -1125,6 +1135,25 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
             correlation=_action_correlation(action_request),
         )
         scratch.events.append(task_verified_event)
+        scratch.active_subject_ref = target_entity_ref
+    elif verify_verdict == "no_op" and target_entity_ref is not None:
+        no_op_payload: dict[str, Any] = {"task_id": target_entity_ref}
+        if action_payload is not None:
+            verify_command = action_payload.get("verify_command")
+            if isinstance(verify_command, str) and verify_command:
+                no_op_payload["verify_command"] = verify_command
+        no_op_payload["reason"] = (
+            "diff_nonempty=False + verify_command exit 0; "
+            "no artifact-change signal to support task.verified (spec §8.9)"
+        )
+        task_no_op_event = emit_event(
+            ctx.conn,
+            type="task.no_op",
+            payload=no_op_payload,
+            source_event_id=proposed_event.event_uid,
+            correlation=_action_correlation(action_request),
+        )
+        scratch.events.append(task_no_op_event)
         scratch.active_subject_ref = target_entity_ref
 
     # 8. Append the tool result back into the messages list so the LLM
@@ -1147,10 +1176,11 @@ def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are 
     action_request: ActionRequest,
     target_entity_ref: str | None,
     fallback_source_event_id: str,
-) -> tuple[Event | None, bool]:
+) -> tuple[Event | None, VerifyVerdict]:
     """Drive the F2 ladder for a ``verify_diff`` :class:`RawResultBundle`.
 
-    Per ADR-0002 Step 12 (§ Evidence ladder lines 250-339):
+    Per ADR-0002 Step 12 (§ Evidence ladder lines 250-339), amended by
+    Fix 2 Option A for the empty-diff paradox row:
 
     1. Looks up the ``action.result_observed`` event_uid per slot from
        the freshly-folded log so the F2 ladder rows hang off the right
@@ -1166,14 +1196,15 @@ def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are 
     4. Delegates to :func:`interpret_verify_diff_bundle` to emit the
        Claim + Evidence rows per the ladder.
 
-    Returns ``(last_evidence_event, did_verify)`` so the caller emits
-    ``task.verified`` only when the verification slot fired.
+    Returns ``(last_evidence_event, verdict)`` where ``verdict`` is
+    one of :data:`VerifyVerdict`: ``"verified"`` → caller emits
+    ``task.verified``; ``"no_op"`` → caller emits ``task.no_op``;
+    ``"neither"`` → caller emits nothing.
     """
     if target_entity_ref is None:
         # No canonical subject → fall back to the Day-1 single-slot
         # path; ladder rows need a subject_ref to be useful.
         last_evidence: Event | None = None
-        verified = False
         for slot in bundle.slots:
             interpreted_events = result_interpreter(
                 slot,
@@ -1184,7 +1215,7 @@ def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are 
             )
             scratch.events.extend(interpreted_events)
             last_evidence = interpreted_events[1]
-        return last_evidence, verified
+        return last_evidence, "neither"
 
     # Per spec §5.4.2 + ADR-0002 § Verify_command plumbing line 905,
     # L3 emits one ``action.result_observed`` per slot. Step 11's
@@ -1247,7 +1278,7 @@ def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are 
             ),
         )
 
-    emitted, did_verify = interpret_verify_diff_bundle(
+    emitted, verdict = interpret_verify_diff_bundle(
         bundle,
         source_event_ids_by_semantics=source_event_ids_by_semantics,
         action_request=action_request,
@@ -1264,7 +1295,7 @@ def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are 
         (e for e in reversed(emitted) if e.type == "evidence.attached"),
         None,
     )
-    return last_evidence, did_verify
+    return last_evidence, verdict
 
 
 def _collect_recent_result_observed_uids(

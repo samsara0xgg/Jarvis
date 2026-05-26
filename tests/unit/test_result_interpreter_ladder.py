@@ -148,7 +148,7 @@ def test_ladder_verify_pass_reviewer_ok(tmp_path: Path) -> None:
                 _verification_slot(semantics="verification", exit_code=0),
             )
         )
-        events, did_verify = interpret_verify_diff_bundle(
+        events, verdict = interpret_verify_diff_bundle(
             bundle,
             source_event_ids_by_semantics={
                 "observation": obs_uid,
@@ -161,7 +161,7 @@ def test_ladder_verify_pass_reviewer_ok(tmp_path: Path) -> None:
             reviewer_verdict=_FakeVerdict(verdict="ok"),
         )
 
-    assert did_verify is True
+    assert verdict == "verified"
     claims = _claim_rows(events)
     evidences = _evidence_rows(events)
     assert any(c["type"] == "Artifact" for c in claims)
@@ -196,7 +196,7 @@ def test_ladder_verify_pass_reviewer_fail(tmp_path: Path) -> None:
                 _verification_slot(semantics="verification", exit_code=0),
             )
         )
-        events, did_verify = interpret_verify_diff_bundle(
+        events, verdict = interpret_verify_diff_bundle(
             bundle,
             source_event_ids_by_semantics={
                 "observation": obs_uid,
@@ -209,7 +209,7 @@ def test_ladder_verify_pass_reviewer_fail(tmp_path: Path) -> None:
             reviewer_verdict=_FakeVerdict(verdict="fail"),
         )
 
-    assert did_verify is True  # verify_command exit is canonical (ladder note)
+    assert verdict == "verified"  # verify_command exit is canonical (ladder note)
     evidences = _evidence_rows(events)
     # Reviewer row carries relation=refutes, level=reported.
     assert any(
@@ -237,7 +237,7 @@ def test_ladder_verify_fail(tmp_path: Path) -> None:
                 _verification_slot(semantics="error", exit_code=1),
             )
         )
-        events, did_verify = interpret_verify_diff_bundle(
+        events, verdict = interpret_verify_diff_bundle(
             bundle,
             source_event_ids_by_semantics={
                 "observation": obs_uid,
@@ -250,7 +250,7 @@ def test_ladder_verify_fail(tmp_path: Path) -> None:
             reviewer_verdict=_FakeVerdict(verdict="fail"),
         )
 
-    assert did_verify is False
+    assert verdict == "neither"
     evidences = _evidence_rows(events)
     assert any(
         ev["relation"] == "limits"
@@ -278,7 +278,7 @@ def test_ladder_no_verify_command_diff_present_reviewer_ok(tmp_path: Path) -> No
         bundle = RawResultBundle(
             slots=(_observation_slot(diff_nonempty=True),),
         )
-        events, did_verify = interpret_verify_diff_bundle(
+        events, verdict = interpret_verify_diff_bundle(
             bundle,
             source_event_ids_by_semantics={"observation": obs_uid},
             action_request=_action_request(),
@@ -288,7 +288,7 @@ def test_ladder_no_verify_command_diff_present_reviewer_ok(tmp_path: Path) -> No
             reviewer_verdict=_FakeVerdict(verdict="ok"),
         )
 
-    assert did_verify is False
+    assert verdict == "neither"
     claims = _claim_rows(events)
     evidences = _evidence_rows(events)
     assert any(c["type"] == "Artifact" for c in claims)
@@ -328,7 +328,7 @@ def test_ladder_no_verify_command_diff_present_reviewer_fail(
         bundle = RawResultBundle(
             slots=(_observation_slot(diff_nonempty=True),),
         )
-        events, did_verify = interpret_verify_diff_bundle(
+        events, verdict = interpret_verify_diff_bundle(
             bundle,
             source_event_ids_by_semantics={"observation": obs_uid},
             action_request=_action_request(),
@@ -338,7 +338,7 @@ def test_ladder_no_verify_command_diff_present_reviewer_fail(
             reviewer_verdict=_FakeVerdict(verdict="fail"),
         )
 
-    assert did_verify is False
+    assert verdict == "neither"
     evidences = _evidence_rows(events)
     assert any(
         ev["relation"] == "refutes"
@@ -358,7 +358,7 @@ def test_ladder_empty_diff_no_verify_command(tmp_path: Path) -> None:
         bundle = RawResultBundle(
             slots=(_observation_slot(diff_nonempty=False),),
         )
-        events, did_verify = interpret_verify_diff_bundle(
+        events, verdict = interpret_verify_diff_bundle(
             bundle,
             source_event_ids_by_semantics={"observation": obs_uid},
             action_request=_action_request(),
@@ -368,7 +368,7 @@ def test_ladder_empty_diff_no_verify_command(tmp_path: Path) -> None:
             reviewer_verdict=None,  # caller skips reviewer on empty diff
         )
 
-    assert did_verify is False
+    assert verdict == "neither"
     claims = _claim_rows(events)
     assert any(c["type"] == "Execution" for c in claims)
     assert any(c["type"] == "Limitation" for c in claims)
@@ -390,7 +390,15 @@ def test_ladder_empty_diff_no_verify_command(tmp_path: Path) -> None:
 
 
 def test_ladder_empty_diff_verify_command_passes(tmp_path: Path) -> None:
-    """ADR rows 295-297 — Postcondition verified fires; Execution + missing-diff Limitation also recorded."""  # noqa: E501 - row label.
+    """Amended ADR-0002 rows 295-297 (Fix 2 Option A) — no Postcondition verified, no task.verified; verdict='no_op'.
+
+    Absent an artifact-change Postcondition signal (diff_nonempty=False),
+    the verify_command exit alone cannot support task.verified
+    (spec §8.9 — code task requires artifact changed + verification
+    passed). Result Interpreter emits Execution Claim + missing-diff
+    Limitation and returns verdict='no_op' so the caller emits
+    task.no_op instead of task.verified.
+    """  # noqa: E501 - row label.
     with closing(open_event_log(tmp_path / "events.db")) as conn:
         obs_uid = _seed_observation_event(conn)
         ver_uid = _seed_verification_event(conn, semantics="verification")
@@ -400,7 +408,7 @@ def test_ladder_empty_diff_verify_command_passes(tmp_path: Path) -> None:
                 _verification_slot(semantics="verification", exit_code=0),
             )
         )
-        events, did_verify = interpret_verify_diff_bundle(
+        events, verdict = interpret_verify_diff_bundle(
             bundle,
             source_event_ids_by_semantics={
                 "observation": obs_uid,
@@ -413,15 +421,109 @@ def test_ladder_empty_diff_verify_command_passes(tmp_path: Path) -> None:
             reviewer_verdict=None,
         )
 
-    assert did_verify is True
+    assert verdict == "no_op"
     claims = _claim_rows(events)
+    # Execution Claim from spawn_worker still recorded.
     assert any(c["type"] == "Execution" for c in claims)
-    assert any(c["type"] == "Postcondition" for c in claims)
-    # §8.5 rule 6 missing-diff row still recorded for audit.
+    # NO Postcondition Claim — the verify_command alone cannot promote
+    # to level=verified absent an artifact-change signal.
+    assert not any(c["type"] == "Postcondition" for c in claims)
     evidences = _evidence_rows(events)
+    # NO verified-level evidence from verify_command.
+    assert not any(
+        ev.get("source_id") == "verify_command"
+        and ev["level"] == "verified"
+        for ev in evidences
+    )
+    # §8.5 rule 6 missing-diff row still recorded for audit.
     assert any(
         ev.get("source_id") == "missing_diff_artifact"
         and ev["relation"] == "limits"
+        for ev in evidences
+    )
+
+
+# --- Fix 2 Option A: explicit no_op + happy-path regression ---------------
+
+
+def test_empty_diff_passing_verify_emits_task_no_op(tmp_path: Path) -> None:
+    """Fix 2 Option A: empty diff + verify-pass returns verdict='no_op'.
+
+    Distinct from `test_ladder_empty_diff_verify_command_passes` (which
+    asserts the absence of Postcondition rows): this test pins the
+    verdict signal the L3 dispatcher consumes to emit task.no_op rather
+    than task.verified. Two assertions are load-bearing: verdict is the
+    literal "no_op" string AND no task.verified appears in the emitted
+    events.
+    """
+    with closing(open_event_log(tmp_path / "events.db")) as conn:
+        obs_uid = _seed_observation_event(conn)
+        ver_uid = _seed_verification_event(conn, semantics="verification")
+        bundle = RawResultBundle(
+            slots=(
+                _observation_slot(diff_nonempty=False),
+                _verification_slot(semantics="verification", exit_code=0),
+            )
+        )
+        events, verdict = interpret_verify_diff_bundle(
+            bundle,
+            source_event_ids_by_semantics={
+                "observation": obs_uid,
+                "verification": ver_uid,
+            },
+            action_request=_action_request(),
+            conn=conn,
+            subject_ref=_SUBJECT,
+            task_goal=_GOAL,
+            reviewer_verdict=None,
+        )
+
+    assert verdict == "no_op"
+    # The Result Interpreter never emits task.verified itself (the
+    # dispatcher does); confirm no task.verified row leaked into the
+    # interpreter's output either.
+    assert "task.verified" not in _types_of(events)
+
+
+def test_nonempty_diff_passing_verify_still_emits_task_verified(
+    tmp_path: Path,
+) -> None:
+    """Regression: nonempty diff + verify-pass remains verdict='verified'.
+
+    Fix 2 Option A only narrows the empty-diff paradox; the
+    canonical happy path (Codex produced a diff + verify_command
+    exits 0) MUST still return verdict='verified' so the dispatcher
+    emits task.verified per ADR-0002 § Evidence ladder row 281.
+    """
+    with closing(open_event_log(tmp_path / "events.db")) as conn:
+        obs_uid = _seed_observation_event(conn)
+        ver_uid = _seed_verification_event(conn, semantics="verification")
+        bundle = RawResultBundle(
+            slots=(
+                _observation_slot(diff_nonempty=True),
+                _verification_slot(semantics="verification", exit_code=0),
+            )
+        )
+        events, verdict = interpret_verify_diff_bundle(
+            bundle,
+            source_event_ids_by_semantics={
+                "observation": obs_uid,
+                "verification": ver_uid,
+            },
+            action_request=_action_request(),
+            conn=conn,
+            subject_ref=_SUBJECT,
+            task_goal=_GOAL,
+            reviewer_verdict=_FakeVerdict(verdict="ok"),
+        )
+
+    assert verdict == "verified"
+    claims = _claim_rows(events)
+    assert any(c["type"] == "Postcondition" for c in claims)
+    evidences = _evidence_rows(events)
+    assert any(
+        ev.get("source_id") == "verify_command"
+        and ev["level"] == "verified"
         for ev in evidences
     )
 
@@ -440,7 +542,7 @@ def test_ladder_empty_diff_verify_command_fails(tmp_path: Path) -> None:
                 _verification_slot(semantics="error", exit_code=2),
             )
         )
-        events, did_verify = interpret_verify_diff_bundle(
+        events, verdict = interpret_verify_diff_bundle(
             bundle,
             source_event_ids_by_semantics={
                 "observation": obs_uid,
@@ -453,7 +555,7 @@ def test_ladder_empty_diff_verify_command_fails(tmp_path: Path) -> None:
             reviewer_verdict=None,
         )
 
-    assert did_verify is False
+    assert verdict == "neither"
     evidences = _evidence_rows(events)
     # verify_command level=executed Limitation.
     assert any(

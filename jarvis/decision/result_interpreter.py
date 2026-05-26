@@ -286,6 +286,23 @@ def _build_correlation(action_request: ActionRequest) -> Mapping[str, str]:
 # --- Day-2 F2 ladder (verify_diff dual-slot) -------------------------------
 
 
+VerifyVerdict = Literal["verified", "no_op", "neither"]
+"""Tri-state outcome the dispatcher uses to pick the trailing event.
+
+- ``"verified"`` — verification slot produced a Postcondition Claim at
+  ``level=verified``; caller emits ``task.verified``.
+- ``"no_op"`` — verification slot's exit code passed but
+  ``diff_nonempty == False``. Per Fix 2 Option A (amended ADR-0002
+  § Evidence ladder paradox row), the verify_command alone cannot
+  promote to ``level=verified`` absent an artifact-change signal
+  (spec §8.9 — code task requires artifact changed + verification
+  passed). Caller emits ``task.no_op`` to record the honest "no work
+  done" outcome.
+- ``"neither"`` — verify failed, no verify slot, or no subject; caller
+  emits neither completion event.
+"""
+
+
 def interpret_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder inputs are all load-bearing per ADR-0002 lines 279-301.
     bundle: RawResultBundle,
     *,
@@ -295,26 +312,27 @@ def interpret_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder inputs are all lo
     subject_ref: str,
     task_goal: str,
     reviewer_verdict: ReviewerVerdictLike | None,
-) -> tuple[tuple[Event, ...], bool]:
+) -> tuple[tuple[Event, ...], VerifyVerdict]:
     """Interpret a ``verify_diff`` :class:`RawResultBundle` per the F2 ladder.
 
-    Implements ADR-0002 § Evidence ladder lines 279-301: each row of
-    the ladder maps a (slot semantics, side condition) tuple to one or
-    more (Claim, Evidence) pairs. The bundle is iterated in-order; the
-    reviewer verdict (one verdict per bundle, fed by the caller because
-    the reviewer LLM lives outside this module's import surface)
-    attaches a SEPARATE Report-grade evidence row to whichever claim
-    the diff/verify slots produced.
+    Implements ADR-0002 § Evidence ladder lines 279-301 (amended by
+    Fix 2 Option A for the empty-diff + verify-pass paradox row).
+    Each row of the ladder maps a (slot semantics, side condition)
+    tuple to one or more (Claim, Evidence) pairs. The bundle is
+    iterated in-order; the reviewer verdict (one verdict per bundle,
+    fed by the caller because the reviewer LLM lives outside this
+    module's import surface) attaches a SEPARATE Report-grade
+    evidence row to whichever claim the diff/verify slots produced.
 
     The function decomposes into three private helpers — one per ladder
     section (observation slot, verification slot, reviewer row) — so
     each branch is small enough to read and the F2 table maps line-for-
     line onto the helper bodies.
 
-    Returns ``(events, did_verify)`` — ``did_verify`` is True iff the
-    verification slot produced a Postcondition Claim at
-    ``level=verified``. ``task.verified`` is emitted by the CALLER and
-    only when this is True.
+    Returns ``(events, verdict)`` — ``verdict`` is a :data:`VerifyVerdict`
+    literal the dispatcher uses to pick the trailing completion event:
+    ``"verified"`` → ``task.verified``, ``"no_op"`` → ``task.no_op``,
+    ``"neither"`` → nothing.
     """
     ctx = _BundleCtx(
         action_request=action_request,
@@ -341,7 +359,7 @@ def interpret_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder inputs are all lo
     )
 
     # === Verification slot row(s) ========================================
-    active_claim_id, active_relation, did_verify = _emit_verification_rows(
+    active_claim_id, active_relation, verdict = _emit_verification_rows(
         ctx=ctx,
         verification_slot=verification_slot,
         diff_nonempty=diff_nonempty,
@@ -356,11 +374,11 @@ def interpret_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder inputs are all lo
             reviewer_verdict=reviewer_verdict,
             active_claim_id=active_claim_id,
             active_relation=active_relation,
-            did_verify=did_verify,
+            did_verify=verdict == "verified",
             emitted=emitted,
         )
 
-    return tuple(emitted), did_verify
+    return tuple(emitted), verdict
 
 
 @dataclass(frozen=True)
@@ -461,13 +479,22 @@ def _emit_verification_rows(
     diff_nonempty: bool,
     observation_active_claim_id: str | None,
     emitted: list[Event],
-) -> tuple[str | None, Literal["supports", "refutes", "limits"], bool]:
-    """Emit the verification-slot row(s); return ``(active_claim_id, active_relation, did_verify)``.
+) -> tuple[str | None, Literal["supports", "refutes", "limits"], VerifyVerdict]:
+    """Emit the verification-slot row(s); return ``(active_claim_id, active_relation, verdict)``.
 
     Spec §3.4.11 maps verification semantics to ``level=verified`` AND
     error semantics to ``level=executed`` — the verify_command ran in
-    both cases; only the predicate differs. ``task.verified`` is allowed
-    ONLY on the ``verification`` branch.
+    both cases; only the predicate differs.
+
+    Fix 2 Option A (amended ADR-0002 § Evidence ladder paradox row):
+    when the verification slot exits 0 BUT ``diff_nonempty == False``
+    (Codex produced no artifact), do NOT emit a Postcondition Claim
+    at ``level=verified``. Spec §8.9 requires both an artifact-change
+    signal AND verification for a code task to be ``task.verified``;
+    the verify_command alone cannot supply the artifact-change half.
+    Return ``verdict="no_op"`` so the dispatcher emits ``task.no_op``
+    instead — an honest "no work done" event that preserves audit
+    clarity without leaking a false-positive completion claim.
     """
     if verification_slot is None:
         # No verify_command on the task. §8.5 rule 6 contrast Limitation
@@ -490,9 +517,18 @@ def _emit_verification_rows(
                 source_id="missing_verify_command",
             )
             emitted.extend((missing_claim, missing_evidence))
-        return observation_active_claim_id, "supports", False
+        return observation_active_claim_id, "supports", "neither"
 
     if verification_slot.semantics == "verification":
+        # Fix 2 Option A short-circuit: verify_command exited 0 but
+        # Codex produced no diff. Suppress the Postcondition Claim and
+        # signal no_op so the dispatcher emits task.no_op rather than
+        # task.verified. The Execution Claim + §8.5 rule-6 missing-diff
+        # Limitation row from the observation branch already record the
+        # "tool ran but produced nothing" audit trail.
+        if not diff_nonempty:
+            return observation_active_claim_id, "supports", "no_op"
+
         postcondition_claim, postcondition_evidence = _emit_claim_and_evidence(
             conn=ctx.conn,
             source_event_id=ctx.source_event_id("verification"),
@@ -509,7 +545,7 @@ def _emit_verification_rows(
             evidence_payload_extras=_verify_evidence_extras(verification_slot),
         )
         emitted.extend((postcondition_claim, postcondition_evidence))
-        return str(postcondition_claim.payload["claim_id"]), "supports", True
+        return str(postcondition_claim.payload["claim_id"]), "supports", "verified"
 
     # exit_code != 0 or timeout — semantics="error". Limitation Claim at
     # level=executed: tool DID run; predicate failed.
@@ -533,7 +569,7 @@ def _emit_verification_rows(
         evidence_payload_extras=_verify_evidence_extras(verification_slot),
     )
     emitted.extend((limitation_claim, limitation_evidence))
-    return str(limitation_claim.payload["claim_id"]), "limits", False
+    return str(limitation_claim.payload["claim_id"]), "limits", "neither"
 
 
 def _emit_reviewer_rows(  # noqa: PLR0913 - reviewer row needs (ctx + verdict + active-claim trio + emitted accumulator).
@@ -671,6 +707,7 @@ class ReviewerVerdictLike(Protocol):
 
 __all__ = [
     "ReviewerVerdictLike",
+    "VerifyVerdict",
     "interpret_verify_diff_bundle",
     "result_interpreter",
 ]
