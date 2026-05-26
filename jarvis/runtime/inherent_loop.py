@@ -426,6 +426,83 @@ async def _response_watcher(
         raise
 
 
+async def _tts_watcher(
+    *,
+    conn: sqlite3.Connection,
+    pipeline: object,  # voice_tts.TTSPipeline protocol; loosely typed to avoid cycles
+    poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+) -> None:
+    """Background task: feed every surface.response_* row into the TTSPipeline.
+
+    Single cursor, three dispatch targets (``begin_turn`` / ``handle_chunk`` /
+    ``handle_emitted``) per ADR-0005 §5.3 + §4.3 row ``_tts_watcher``. Runs
+    in parallel with :func:`_response_watcher`; both are read-only polls on
+    the same event stream so the D16 race-elimination argument that motivates
+    a single in-order cursor for the broadcaster applies here verbatim — TTS
+    must observe ``open`` before ``chunk`` and ``chunk`` before ``emitted``,
+    which the single-cursor + monotonic SQLite row id gives us by construction.
+
+    The ``pipeline`` parameter is typed as :class:`object` (rather than
+    ``voice_tts.TTSPipeline``) so this composition-root module stays free
+    of an L5 import cycle; the three method calls below pin the structural
+    contract the watcher actually depends on.
+
+    Dispatch by ``event.type``:
+
+    - ``surface.response_open``    -> ``pipeline.begin_turn(turn_id, gate_mode=...)``
+      (``required_gate_mode`` from the payload, default ``"sentence"`` so a
+      missing field — older event rows or non-voice-aware emitters — falls
+      back to the safe full-sentence path).
+    - ``surface.response_chunk``   -> ``pipeline.handle_chunk(turn_id, text)``
+    - ``surface.response_emitted`` -> ``pipeline.handle_emitted(turn_id)``
+
+    Per-event dispatch is wrapped in a catch-all: a misbehaving TTS pipeline
+    (e.g. MiniMax WebSocket drop, ``say`` subprocess error) must NOT crash
+    the watcher because that would stall every subsequent turn. We log a
+    warning and continue; the surface broadcaster keeps running on the
+    parallel cursor, so the UI is unaffected.
+
+    Cancellation: re-raises :class:`asyncio.CancelledError` so the daemon
+    shutdown path (Task 19) can await the watcher cleanly.
+    """
+    after_id = _latest_id(conn)
+    LOGGER.info("tts_watcher started (after_id=%d)", after_id)
+    try:
+        while True:
+            new_events = _fetch_events_after(
+                conn,
+                after_id=after_id,
+                event_types=(
+                    "surface.response_open",
+                    "surface.response_chunk",
+                    "surface.response_emitted",
+                ),
+            )
+            for row_id, ev in new_events:
+                after_id = max(after_id, row_id)
+                try:
+                    turn_id = str(ev.payload.get("turn_id", ""))
+                    if ev.type == "surface.response_open":
+                        gate_mode = ev.payload.get("required_gate_mode", "sentence")
+                        pipeline.begin_turn(turn_id, gate_mode=gate_mode)  # type: ignore[attr-defined]
+                    elif ev.type == "surface.response_chunk":
+                        text = str(ev.payload.get("text", ""))
+                        pipeline.handle_chunk(turn_id, text)  # type: ignore[attr-defined]
+                    elif ev.type == "surface.response_emitted":
+                        pipeline.handle_emitted(turn_id)  # type: ignore[attr-defined]
+                except Exception as exc:  # noqa: BLE001 — log + continue; TTS must not crash watcher.
+                    LOGGER.warning(
+                        "tts_watcher: dispatch raised on %s turn_id=%s: %r",
+                        ev.type,
+                        ev.payload.get("turn_id"),
+                        exc,
+                    )
+            await asyncio.sleep(poll_interval_s)
+    except asyncio.CancelledError:
+        LOGGER.info("tts_watcher cancelled")
+        raise
+
+
 async def serve_inherent(
     runtime: JarvisRuntime,
     *,
