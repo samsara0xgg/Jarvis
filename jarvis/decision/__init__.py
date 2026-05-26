@@ -709,6 +709,29 @@ def _run_tool_use_loop(
             active_subject="unknown_subject",
             active_claim_levels=(),
         )
+        # Emit entity.resolved with outcome="not_found" so the audit
+        # chain records the resolution attempt — without this, the
+        # F1 short-circuit returns a hard refusal without any trace of
+        # which natural ref we tried to resolve. The synthetic
+        # ResolverResult mirrors what resolve_task_ref would have
+        # returned against an empty ledger.
+        transcript_raw = packet.trigger_event.payload.get("transcript", "")
+        natural_ref = transcript_raw if isinstance(transcript_raw, str) else ""
+        synthetic_result = ResolverResult(
+            resolved_to=None,
+            confidence="none",
+            candidates=(),
+            match_basis="no task to refer to (F1 short-circuit)",
+        )
+        scratch.events.append(
+            _emit_entity_resolved(
+                ctx,
+                natural_ref=natural_ref,
+                result=synthetic_result,
+                turn_id=scratch.turn_id,
+                source_event_id=packet.trigger_event.event_uid,
+            )
+        )
         if scratch.turn_id is not None:
             ended_event = emit_event(
                 ctx.conn,
@@ -2017,7 +2040,9 @@ def _emit_entity_resolved(
 def _resolver_outcome(result: ResolverResult) -> str:
     """Map ResolverResult.confidence -> entity.resolved.outcome.
 
-    Per ADR § Resolver contract table.
+    Per ADR § Resolver contract table. The ladder is
+    ``{"resolved", "ambiguous", "not_found"}`` — ``"not_found"`` is the
+    canonical 0-candidate outcome (formerly ``"failed"``).
     """
     if result.confidence in ("exact", "high"):
         return "resolved"
@@ -2025,7 +2050,7 @@ def _resolver_outcome(result: ResolverResult) -> str:
         if result.resolved_to is not None:
             return "resolved"
         return "ambiguous"
-    return "failed"
+    return "not_found"
 
 
 def _find_tool_def(

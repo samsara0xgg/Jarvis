@@ -131,6 +131,8 @@ def _outcome_from(result: ResolverResult) -> str:
     The canary does not import the private ``_resolver_outcome`` helper
     (it's intentionally underscore-prefixed); we replicate the table
     here so the canary stays self-contained per ADR § H stricter rules.
+    The 0-candidate outcome is ``"not_found"`` per ADR § Resolver
+    contract (ladder = ``{resolved, ambiguous, not_found}``).
     """
     if result.confidence in ("exact", "high"):
         return "resolved"
@@ -138,7 +140,7 @@ def _outcome_from(result: ResolverResult) -> str:
         if result.resolved_to is not None:
             return "resolved"
         return "ambiguous"
-    return "failed"
+    return "not_found"
 
 
 def test_resolver_emits_non_empty_candidates_on_resolved_or_ambiguous() -> None:
