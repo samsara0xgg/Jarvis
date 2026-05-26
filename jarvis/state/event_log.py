@@ -177,7 +177,14 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         event_type="utterance.received",
         owner_layer="L5",
         required_payload=("transcript", "turn_id"),
-        optional_payload=("channel", "language"),
+        optional_payload=(
+            "channel",
+            "language",
+            "confidence",
+            "language_detected",
+            "emotion",
+            "audio_artifact_ref",
+        ),
         schema_version=1,
     ),
     EventTypeSchema(
