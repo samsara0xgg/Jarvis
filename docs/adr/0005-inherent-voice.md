@@ -1,6 +1,6 @@
 # ADR-0005 — Inherent Voice Surface (wake · PTT · TTS)
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-26
 **Supersedes:** the `POST /inherent/asr-submit` 501 stub in `jarvis/surface/inherent_server.py` (placeholder reserved by ADR-0003 Step 1).
 **Depends on:** ADR-0003 (Inherent text surface — FastAPI app, broadcaster, watchers, process lock).
