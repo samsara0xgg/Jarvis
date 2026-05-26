@@ -731,11 +731,34 @@ def spawn_worker_handler(
         source_event_id=running_event_uid,
         turn_id=action_request.turn_id,
     )
-    codex_result: CodexActionResult = run_codex_action(
-        task_goal=goal,
-        cwd=repo_path,
-        on_heartbeat=on_heartbeat,
-    )
+    # run_codex_action can raise PermissionError / OSError /
+    # FileNotFoundError after a08c4a2 (codex_home rmtree-then-raise on
+    # seed or client-init failure). Route those into action.failed
+    # explicitly — 7a/7b below only handle the `codex_result.error`
+    # branch, so an unhandled raise would leave the lifecycle stuck in
+    # `running` with zero terminal event on the log. `except Exception`
+    # so KeyboardInterrupt / SystemExit still propagate.
+    try:
+        codex_result: CodexActionResult = run_codex_action(
+            task_goal=goal,
+            cwd=repo_path,
+            on_heartbeat=on_heartbeat,
+        )
+    except Exception as exc:  # noqa: BLE001 — any Codex spawn failure folds into one action.failed.
+        return _spawn_worker_emit_terminal_failure(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_request.action_id,
+            task_id=task_id,
+            run_id=run_id,
+            source_event_id=running_event_uid,
+            error_code="codex_spawn_failed",
+            error_message=f"{type(exc).__name__}: {exc}",
+            event_type="action.failed",
+            stash_ref=stash_ref,
+            cost=None,
+            turn_id=action_request.turn_id,
+        )
     cost: dict[str, Any] = {
         "kind": _CODEX_EXECUTOR_NAME,
         "model": _CODEX_DEFAULT_MODEL,

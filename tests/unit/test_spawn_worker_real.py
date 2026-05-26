@@ -351,6 +351,104 @@ def test_spawn_worker_codex_timeout_emits_action_timeout_assumed(tmp_path: Path)
     assert lifecycle.is_terminal(req.action_id) is True
 
 
+# --- Codex spawn-time raise (FT-A) -----------------------------------------
+
+
+def test_spawn_worker_emits_action_failed_on_codex_action_permission_error(
+    tmp_path: Path,
+) -> None:
+    """``run_codex_action`` raising ``PermissionError`` -> action.failed.
+
+    Fix 1 (a08c4a2) wraps ``run_codex_action``'s seed + client-init
+    in try/except BaseException with rmtree-then-bare-raise. Without
+    a matching try/except in spawn_worker_handler around the
+    ``run_codex_action`` call, that re-raised ``PermissionError``
+    propagates out of the handler before 7a/7b emit any terminal
+    event — lifecycle stays in ``running`` forever and no
+    ``action.failed`` lands on the log.
+    """
+    paths, conn = _open_runtime(tmp_path)
+    try:
+        _seed_task(conn, task_id="task_X", repo_path=str(tmp_path))
+        sha = "a" * 40
+        with (
+            patch("jarvis.execution.tools.ensure_codex_version_supported"),
+            patch(
+                "jarvis.execution.tools.run_codex_action",
+                side_effect=PermissionError("denied: auth.json copy"),
+            ),
+            patch(
+                "jarvis.execution.tools.isolate_pretask_changes",
+                return_value=sha,
+            ),
+        ):
+            result, lifecycle, req = _dispatch(paths, conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    types = _types(paths.event_log)
+    assert "action.failed" in types
+    assert "worker.reported" not in types
+    # task.executor_reported still emitted with status=failed so the
+    # projection has a terminal row for this run.
+    assert "task.executor_reported" in types
+
+    assert result.semantics == "error"
+    assert result.error == "codex_spawn_failed"
+    # stash_ref forwards even on failure so the runtime composition
+    # can pop it once verify_diff has exited (or been skipped).
+    assert result.metadata is not None
+    assert result.metadata["stash_ref"] == sha
+    # No cost — Codex never produced tokens.
+    assert result.metadata.get("cost") is None
+
+    # Lifecycle moved running -> failed (NOT stuck in 'running').
+    assert lifecycle.state_of(req.action_id) == "failed"
+    assert lifecycle.is_terminal(req.action_id) is True
+
+
+def test_spawn_worker_emits_action_failed_on_codex_action_oserror(
+    tmp_path: Path,
+) -> None:
+    """``run_codex_action`` raising ``OSError`` (ENOSPC class) -> action.failed.
+
+    Symmetric guard for the broader I/O-failure class (disk full
+    during AGENTS.md/config.toml seed, ``FileNotFoundError`` from a
+    missing codex binary, etc). All ``Exception`` subclasses raised
+    inside the ``run_codex_action`` callsite must route through
+    ``action.failed`` + lifecycle terminal, not escape the handler.
+    """
+    paths, conn = _open_runtime(tmp_path)
+    try:
+        _seed_task(conn, task_id="task_X", repo_path=str(tmp_path))
+        with (
+            patch("jarvis.execution.tools.ensure_codex_version_supported"),
+            patch(
+                "jarvis.execution.tools.run_codex_action",
+                side_effect=OSError("disk full during AGENTS.md write"),
+            ),
+            patch(
+                "jarvis.execution.tools.isolate_pretask_changes",
+                return_value=None,
+            ),
+        ):
+            result, lifecycle, req = _dispatch(paths, conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    types = _types(paths.event_log)
+    assert "action.failed" in types
+    assert "worker.reported" not in types
+
+    assert result.semantics == "error"
+    assert result.error == "codex_spawn_failed"
+
+    assert lifecycle.state_of(req.action_id) == "failed"
+    assert lifecycle.is_terminal(req.action_id) is True
+
+
 # --- Version pre-flight ----------------------------------------------------
 
 
