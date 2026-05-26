@@ -14,6 +14,7 @@ dependencies = [
     "fastapi",            # ADR-0003 — Inherent FastAPI server in Step 7
     "uvicorn[standard]",  # ADR-0003 — uvloop + httptools + websockets for the daemon in Step 8
     "numpy",              # ADR-0005 — L5 voice surface (PCM math, RMS, recognizer audio)
+    "python-multipart",   # ADR-0005 §5.2 — /inherent/asr-submit multipart WAV upload
 ]
 
 [project.optional-dependencies]

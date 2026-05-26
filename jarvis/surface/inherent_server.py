@@ -1,10 +1,11 @@
-"""Inherent FastAPI app factory — Step 7 of ADR-0003.
+"""Inherent FastAPI app factory — ADR-0003 Step 7 + ADR-0005 §5.2.
 
 L5 surface module. Hosts the daemon's HTTP+WS endpoints the
-inherent-swift client (legacy ``desktop/inherent-swift/``) speaks. Step
-1 (ADR-0003) is text-only; image / ASR / streaming TTS endpoints are
-stubs that return HTTP 501 with the successor-ADR reference so the
-client can render a "deferred" hint instead of a generic error.
+inherent-swift client (legacy ``desktop/inherent-swift/``) speaks. The
+ADR-0003 wave shipped text + WS. ADR-0005 §5.2 lights up the
+``/inherent/asr-submit`` endpoint with a real handler (multipart WAV in,
+normalized transcript out); ``/inherent/image-submit`` remains a 501
+stub until ADR-0004 lands.
 
 The runtime wires this app via ``runtime/inherent_loop.serve_inherent``
 in Step 8, injecting an :class:`InherentDeps` with:
@@ -21,12 +22,14 @@ in Step 8, injecting an :class:`InherentDeps` with:
   here registers / unregisters connecting clients.
 
 Layer rules (L5): may import from stdlib, ``fastapi`` / ``pydantic`` /
-``starlette``, and ``jarvis.surface.inherent_output`` (intra-layer
-sibling). Never names :mod:`jarvis.runtime`, :mod:`jarvis.decision`,
+``starlette``, and the L5 siblings ``jarvis.surface.inherent_output``
+and ``jarvis.surface.voice_pipeline`` (intra-layer — the ASR endpoint
+catches the pipeline's typed exceptions to map to HTTP status codes).
+Never names :mod:`jarvis.runtime`, :mod:`jarvis.decision`,
 :mod:`jarvis.execution`, or :mod:`jarvis.deployment`. The
-``submit_callable`` is **injected** so the module never needs to import
-:mod:`jarvis.state` either — runtime is the only place wiring across
-layers.
+``submit_callable`` and ``voice_pipeline_callable`` are **injected**
+so the module never needs to import :mod:`jarvis.state` either —
+runtime is the only place wiring across layers.
 
 Wire contract (preserved from legacy ``ui/web/server.py`` so the
 inherent-swift client's ``BridgeBackend`` keeps working unchanged):
@@ -35,22 +38,36 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
 - ``WS  /inherent/ws``           — outbound-only; client receives ``{"op", "payload"}`` envelopes
 - ``GET /api/health``            — liveness; ``{"status": "ok"}``
 - ``POST /inherent/image-submit`` — Step 2 / ADR-0004 stub (501)
-- ``POST /inherent/asr-submit``   — Step 3 / ADR-0005 stub (501)
+- ``POST /inherent/asr-submit``   — ADR-0005 §5.2; multipart WAV in, transcript out.
+  Falls back to 501 when ``InherentDeps.voice_pipeline_callable`` is unset
+  (preserves the ADR-0003 text-only smoke test path).
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import secrets
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+
+from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmptyError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from jarvis.shared import Event
     from jarvis.surface.inherent_output import InherentBroadcaster
+
+
+LOGGER = logging.getLogger("jarvis.surface.inherent_server")
+
+# ADR-0005 §5.2: hard cap on uploaded WAV size for /inherent/asr-submit.
+_ASR_MAX_BYTES = 5 * 1024 * 1024
+_ASR_ACCEPTED_CONTENT_TYPES = frozenset({"audio/wav", "audio/wave", "audio/x-wav"})
 
 
 class SubmitRequest(BaseModel):
@@ -88,10 +105,89 @@ class InherentDeps:
             ``surface.response_{open,chunk,emitted}`` types, dispatched
             by ``event.type``); the WS endpoint here registers /
             unregisters client sockets on connect / disconnect.
+        voice_pipeline_callable: ADR-0005 §5.2 — bound to
+            ``voice_pipeline.VoicePipeline.run_turn`` (keyword args
+            packed into positional ``(audio_bytes, turn_id, channel,
+            language)``). Returns the emitted ``utterance.received``
+            :class:`Event` row. Defaults to ``None`` so ADR-0003
+            text-only fixtures stay backward compatible — when unset
+            the ``/inherent/asr-submit`` handler 501s instead of
+            attempting ASR.
     """
 
     submit_callable: Callable[[str], None]
     broadcaster: InherentBroadcaster
+    voice_pipeline_callable: Callable[[bytes, str, str, str], Event] | None = None
+
+
+async def _run_asr_submit(
+    deps: InherentDeps,
+    audio: UploadFile | None,
+    language: str,
+) -> dict[str, str]:
+    """ADR-0005 §5.2 — body of ``POST /inherent/asr-submit``.
+
+    Split out of ``create_app`` so the closure stays under ruff's
+    cyclomatic-complexity cap. The handler validates the multipart
+    upload, mints the ``turn_id``, and offloads
+    ``voice_pipeline_callable`` to a worker thread.
+
+    Status codes (per ADR §5.2):
+
+    - 200 — ``{"status": "accepted", "transcript": <normalized>,
+      "turn_id": "T<hex>"}``.
+    - 400 — empty body / missing audio field.
+    - 413 — audio above the 5 MB cap.
+    - 415 — unsupported content type.
+    - 422 — ASR returned empty after the unified filter
+      (``VoicePipelineEmptyError``).
+    - 500 — internal error (logged with ``turn_id``).
+    - 501 — ``deps.voice_pipeline_callable`` not wired (text-only
+      deployments such as the ADR-0003 smoke tests).
+    - 503 — ``VOICE_INPUT_LOCK`` busy (wake listener mid-turn).
+    """
+    if deps.voice_pipeline_callable is None:
+        raise HTTPException(
+            status_code=501,
+            detail="asr voice pipeline not wired (ADR-0005)",
+        )
+    if audio is None:
+        raise HTTPException(status_code=400, detail="audio file required")
+    if audio.content_type not in _ASR_ACCEPTED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"unsupported content type: {audio.content_type}",
+        )
+
+    body = await audio.read()
+    if len(body) > _ASR_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="audio too large (max 5MB)")
+    if not body:
+        raise HTTPException(status_code=400, detail="empty body")
+
+    # ADR §5.2: server-mint turn_id, ignore any client-supplied value (Day-1 trust posture).
+    turn_id = "T" + secrets.token_hex(4)
+    try:
+        ev = await asyncio.to_thread(
+            deps.voice_pipeline_callable,
+            body,
+            turn_id,
+            "inherent_ptt",
+            language,
+        )
+    except VoicePipelineEmptyError:
+        raise HTTPException(status_code=422, detail="empty") from None
+    except VoiceInputBusyError:
+        raise HTTPException(status_code=503, detail="busy") from None
+    except Exception:
+        LOGGER.exception("asr_submit failed for turn_id=%s", turn_id)
+        raise HTTPException(status_code=500, detail="internal") from None
+
+    return {
+        "status": "accepted",
+        "transcript": str(ev.payload.get("transcript", "")),
+        "turn_id": turn_id,
+    }
 
 
 def create_app(deps: InherentDeps) -> FastAPI:
@@ -176,13 +272,18 @@ def create_app(deps: InherentDeps) -> FastAPI:
             detail="image not implemented in step 1 (ADR-0004)",
         )
 
-    @app.post("/inherent/asr-submit", status_code=501)
-    async def asr_submit() -> None:
-        """Step 1 stub — ASR input lands in Step 3 (ADR-0005)."""
-        raise HTTPException(
-            status_code=501,
-            detail="asr not implemented in step 1 (ADR-0005)",
-        )
+    @app.post("/inherent/asr-submit", status_code=200)
+    async def asr_submit(
+        audio: Annotated[UploadFile | None, File()] = None,
+        language: Annotated[str, Form()] = "zh-CN",
+    ) -> dict[str, str]:
+        """ADR-0005 §5.2 — PTT WAV in, normalized transcript out.
+
+        See :func:`_run_asr_submit` for the full status-code contract.
+        Split out so ``create_app`` stays under the cyclomatic-complexity
+        cap; the route handler only forwards to the helper.
+        """
+        return await _run_asr_submit(deps, audio, language)
 
     return app
 
