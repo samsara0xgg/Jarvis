@@ -80,6 +80,24 @@ class InherentBroadcaster:
         """Create an empty registry."""
         self._clients: set[WebSocket] = set()
         self._lock = asyncio.Lock()
+        # Daemon's event loop, set by ``attach_loop`` at composition root
+        # (``runtime/inherent_loop.serve_inherent``). Used by the
+        # ``broadcast_voice_sync`` worker-thread bridge. ``None`` until
+        # attached → ``broadcast_voice_sync`` becomes a WARN + no-op so
+        # unit tests of ``voice_pipeline`` that pass a bare broadcaster
+        # stay loop-free.
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Store the daemon's event loop for the worker-thread → broadcaster bridge.
+
+        Composition-root call (``runtime/inherent_loop.serve_inherent``).
+        Idempotent: calling twice replaces the reference. The loop is
+        only consulted by :meth:`broadcast_voice_sync`; the async
+        ``broadcast_*`` methods run on whichever loop is current and
+        ignore this attribute.
+        """
+        self._loop = loop
 
     async def register(self, ws: WebSocket) -> None:
         """Add a connected WS client to the registry. Idempotent."""
@@ -115,7 +133,7 @@ class InherentBroadcaster:
                 "q": query,
             },
         }
-        await self._send_all(msg, event)
+        await self._send_all(msg, turn_id=str(event.payload.get("turn_id", "<unknown>")))
 
     async def broadcast_chunk(self, event: Event) -> None:
         """Translate ``surface.response_chunk`` into the ``append`` wire envelope.
@@ -137,7 +155,7 @@ class InherentBroadcaster:
             "op": "append",
             "payload": {"token": text},
         }
-        await self._send_all(msg, event)
+        await self._send_all(msg, turn_id=str(event.payload.get("turn_id", "<unknown>")))
 
     async def broadcast_done(self, event: Event) -> None:
         """Translate ``surface.response_emitted`` into the ``done`` wire envelope.
@@ -157,9 +175,88 @@ class InherentBroadcaster:
             "op": "done",
             "payload": {"fadeMs": 5000},
         }
-        await self._send_all(msg, event)
+        await self._send_all(msg, turn_id=str(event.payload.get("turn_id", "<unknown>")))
 
-    async def _send_all(self, msg: dict[str, object], event: Event) -> None:
+    async def broadcast_voice(
+        self,
+        phase: str,
+        *,
+        turn_id: str,
+        **payload: object,
+    ) -> None:
+        """Translate an ADR-0005 §6 voice phase into the ``voice`` wire envelope.
+
+        ADR-0005 §6 wire schema::
+
+            {"op": "voice",
+             "payload": {"phase": <str>, "turn_id": <str>, ...extras}}
+
+        ``phase`` is one of the inherent-voice phases (e.g.,
+        ``"listening"``, ``"accepted"``, ``"speaking"``, ``"idle"``);
+        the exact set is defined by the daemon's voice watchers (Tasks
+        17/18). Extra kwargs (``transcript``, ``emotion``, ...) flow
+        into the payload verbatim so the surface can extend the wire
+        without bumping this method.
+
+        Mirrors the F4/F5 behavior of :meth:`broadcast_open` /
+        :meth:`broadcast_chunk` / :meth:`broadcast_done` via the shared
+        :meth:`_send_all` snapshot path.
+
+        Args:
+            phase: The voice phase label sent verbatim on the wire.
+            turn_id: Correlation id for the F5 log path.
+            **payload: Optional extras merged into ``payload`` (e.g.,
+                ``transcript``, ``emotion``).
+        """
+        msg_payload: dict[str, object] = {"phase": phase, "turn_id": turn_id}
+        msg_payload.update(payload)
+        msg: dict[str, object] = {"op": "voice", "payload": msg_payload}
+        await self._send_all(msg, turn_id=turn_id)
+
+    def broadcast_voice_sync(
+        self,
+        phase: str,
+        *,
+        turn_id: str,
+        **payload: object,
+    ) -> None:
+        """Worker-thread → broadcaster bridge for ADR-0005 §6 voice envelopes.
+
+        The voice pipeline (Task 9) runs ASR / VAD on a daemon worker
+        thread that does NOT have a running event loop. It calls this
+        method to schedule :meth:`broadcast_voice` on the daemon's
+        event loop via :func:`asyncio.run_coroutine_threadsafe`.
+
+        If :meth:`attach_loop` has not been called (composition root
+        wiring is the daemon's job in
+        ``runtime/inherent_loop.serve_inherent``), the call is a no-op
+        + WARN log. This keeps the ``voice_pipeline`` unit tests
+        loop-free: they construct a bare broadcaster and let each
+        ``broadcast_voice_sync`` call emit a single WARN apiece without
+        needing an asyncio loop.
+
+        Args:
+            phase: Voice phase label, forwarded to
+                :meth:`broadcast_voice`.
+            turn_id: Correlation id, forwarded to
+                :meth:`broadcast_voice`.
+            **payload: Optional extras, forwarded verbatim.
+        """
+        loop = self._loop
+        if loop is None:
+            LOGGER.warning(
+                "InherentBroadcaster.broadcast_voice_sync called before "
+                "attach_loop; envelope dropped (phase=%s, turn_id=%s).",
+                phase,
+                turn_id,
+            )
+            return
+        asyncio.run_coroutine_threadsafe(
+            self.broadcast_voice(phase, turn_id=turn_id, **payload),
+            loop,
+        )
+
+    async def _send_all(self, msg: dict[str, object], *, turn_id: str) -> None:
         """Send ``msg`` to every registered WS; handle F4 + F5 failure modes.
 
         Snapshot pattern: acquire the lock just long enough to copy the
@@ -167,6 +264,11 @@ class InherentBroadcaster:
         client's ``send_json`` doesn't block ``register`` /
         ``unregister`` calls from new connections. Dead clients are
         re-collected and dropped under the lock at the end.
+
+        ``turn_id`` is passed explicitly (vs. the Step-1 shape that
+        pulled it off an ``Event``) so callers that don't already have
+        an ``Event`` in hand — most notably
+        :meth:`broadcast_voice` — can still produce the F5 log line.
 
         Single-caller invariant (``_response_watcher``) means no two
         ``_send_all`` invocations can overlap on this broadcaster
@@ -176,7 +278,6 @@ class InherentBroadcaster:
         """
         async with self._lock:
             if not self._clients:
-                turn_id = event.payload.get("turn_id", "<unknown>")
                 LOGGER.warning(
                     "InherentBroadcaster: no clients connected for turn_id=%s "
                     "op=%s; envelope dropped (ADR-0003 F5, deferred to ADR-0007).",
