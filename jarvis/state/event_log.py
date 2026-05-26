@@ -649,9 +649,7 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
         msg = f"event type {type!r} is not registered"
         raise UnregisteredEventTypeError(msg)
 
-    effective_schema_version = (
-        schema.schema_version if schema_version is None else schema_version
-    )
+    effective_schema_version = schema.schema_version if schema_version is None else schema_version
     if effective_schema_version != schema.schema_version:
         msg = (
             f"schema_version={schema_version!r} for type={type!r} does not match "
@@ -675,9 +673,7 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
     # round-trip through dict() cleanly without JSONEncoder having to know
     # about Mapping protocol.
     payload_dict: dict[str, Any] = dict(payload)
-    correlation_dict: dict[str, str] | None = (
-        None if correlation is None else dict(correlation)
-    )
+    correlation_dict: dict[str, str] | None = None if correlation is None else dict(correlation)
 
     payload_json = json.dumps(payload_dict, sort_keys=True, separators=(",", ":"))
     correlation_json = (

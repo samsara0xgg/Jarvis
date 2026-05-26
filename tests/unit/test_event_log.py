@@ -724,9 +724,7 @@ def test_open_event_log_does_not_duplicate_triggers(tmp_path: Path) -> None:
     with closing(open_event_log(db_path)):
         pass
     with closing(open_event_log(db_path)) as conn:
-        cursor = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name"
-        )
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")
         names = [row[0] for row in cursor]
     assert names == ["events_no_delete", "events_no_update"]
 
