@@ -1,10 +1,17 @@
-"""Unit tests for ``jarvis.surface.inherent_server.create_app`` — Step 7 of ADR-0003.
+"""Unit tests for ``jarvis.surface.inherent_server.create_app`` — ADR-0003.
 
 LLM-free; uses FastAPI's ``TestClient`` (and its embedded
 ``WebSocketTestSession``) to exercise every endpoint. The async
-``InherentBroadcaster.broadcast`` for test 11 is dispatched onto the
-server's event loop via the WS session's blocking portal so the
-registered WS client actually receives the envelopes.
+``InherentBroadcaster.broadcast_*`` calls for the WS round-trip tests
+are dispatched onto the server's event loop via the WS session's
+blocking portal so the registered WS client actually receives the
+envelopes.
+
+Step 2 wire schema: the broadcaster exposes three per-event-type
+methods (``broadcast_open`` / ``broadcast_chunk`` / ``broadcast_done``).
+The round-trip tests exercise the ``done`` envelope (``fadeMs:5000``)
+because it has no payload-read guard, which keeps the test fixtures
+minimal while still proving the WS endpoint is wired to the registry.
 """
 
 from __future__ import annotations
@@ -58,7 +65,12 @@ def client(spy_and_broadcaster: tuple[_SubmitSpy, InherentBroadcaster]) -> TestC
 
 
 def _make_event(*, text: str = "hi", turn_id: str = "T-test-001") -> Event:
-    """Build a minimal ``surface.response_emitted``-shaped Event."""
+    """Build a minimal ``surface.response_emitted``-shaped Event.
+
+    Used by ``broadcast_done`` calls in the round-trip tests below.
+    ``broadcast_done`` ignores the payload, so the fields are stub
+    values; only the event's existence matters.
+    """
     return Event(
         event_uid="evt-test-1",
         type="surface.response_emitted",
@@ -220,6 +232,10 @@ def test_ws_endpoint_registers_then_unregisters_on_disconnect(
     while connected lands on the WS client, and a broadcast made AFTER
     disconnect goes to no-one (which the broadcaster handles by logging
     and returning — the test would otherwise hang on ``receive_json``).
+
+    Uses ``broadcast_done`` (no payload-read guard, always fires the
+    envelope) so this test is decoupled from the per-type payload
+    contract — that's covered exhaustively by ``test_inherent_output``.
     """
     _, broadcaster = spy_and_broadcaster
 
@@ -228,73 +244,63 @@ def test_ws_endpoint_registers_then_unregisters_on_disconnect(
         # The WS endpoint runs ``await broadcaster.register(ws)`` inside
         # the server's event loop. Drive a broadcast on that same loop
         # via the session's portal so the registered ws receives it.
-        ws.portal.call(broadcaster.broadcast, _make_event(text="round-trip"))
+        ws.portal.call(broadcaster.broadcast_done, _make_event(text="round-trip"))
 
-        # Two envelopes (open + done) confirm the client is in the registry.
-        open_msg = ws.receive_json()
+        # The ``done`` envelope confirms the client is in the registry.
         done_msg = ws.receive_json()
-        assert open_msg["op"] == "open"
         assert done_msg["op"] == "done"
 
     # Phase 2: after the context manager exits, the WS endpoint's
-    # ``finally`` ran and unregistered the client. A fresh broadcaster
-    # with no clients must NOT raise — register() leaves no stragglers.
-    # We can re-enter the broadcaster from the test thread directly
-    # (no server loop needed) since no clients are connected.
+    # ``finally`` ran and unregistered the client. A broadcast on an
+    # empty registry must NOT raise — it logs F5 and returns. We can
+    # re-enter the broadcaster from the test thread directly (no server
+    # loop needed) since no clients are connected.
     import asyncio  # noqa: PLC0415 — local import keeps the module surface lean.
 
-    asyncio.run(broadcaster.broadcast(_make_event(text="post-disconnect")))
+    asyncio.run(broadcaster.broadcast_done(_make_event(text="post-disconnect")))
 
 
 def test_ws_endpoint_broadcast_round_trip(
     client: TestClient,
     spy_and_broadcaster: tuple[_SubmitSpy, InherentBroadcaster],
 ) -> None:
-    """End-to-end: connect WS, trigger broadcast, receive open+done envelopes.
+    """End-to-end: connect WS, trigger broadcast, receive the legacy ``done`` envelope.
 
-    Exercises the full Step 7 wiring contract — the WS endpoint accepts,
+    Exercises the full wiring contract — the WS endpoint accepts,
     registers with the shared broadcaster, and the broadcaster's exact
-    legacy wire envelopes ({'op':'open',...} then {'op':'done',...})
-    reach the connected client unchanged.
+    legacy wire envelope ({'op':'done','payload':{'fadeMs':5000}})
+    reaches the connected client unchanged. The per-type envelope
+    contract for ``open`` / ``append`` is covered by
+    ``test_inherent_output`` against ``_FakeWebSocket``.
     """
     _, broadcaster = spy_and_broadcaster
 
     with client.websocket_connect("/inherent/ws") as ws:
-        ws.portal.call(broadcaster.broadcast, _make_event(text="hello world"))
+        ws.portal.call(broadcaster.broadcast_done, _make_event(text="hello world"))
 
-        open_msg = ws.receive_json()
         done_msg = ws.receive_json()
 
-    assert open_msg == {
-        "op": "open",
-        "payload": {"streaming": False, "content": "hello world"},
-    }
-    assert done_msg == {"op": "done", "payload": {}}
+    assert done_msg == {"op": "done", "payload": {"fadeMs": 5000}}
 
 
 def test_ws_endpoint_multiple_clients_each_receive_envelopes(
     client: TestClient,
     spy_and_broadcaster: tuple[_SubmitSpy, InherentBroadcaster],
 ) -> None:
-    """Two concurrent WS clients both receive the same broadcast envelopes."""
+    """Two concurrent WS clients both receive the same broadcast envelope."""
     _, broadcaster = spy_and_broadcaster
 
     with (
         client.websocket_connect("/inherent/ws") as ws_a,
         client.websocket_connect("/inherent/ws") as ws_b,
     ):
-        ws_a.portal.call(broadcaster.broadcast, _make_event(text="fanout"))
+        ws_a.portal.call(broadcaster.broadcast_done, _make_event(text="fanout"))
 
-        a_open = ws_a.receive_json()
         a_done = ws_a.receive_json()
-        b_open = ws_b.receive_json()
         b_done = ws_b.receive_json()
 
-    expected_open = {"op": "open", "payload": {"streaming": False, "content": "fanout"}}
-    expected_done: dict[str, object] = {"op": "done", "payload": {}}
-    assert a_open == expected_open
+    expected_done: dict[str, object] = {"op": "done", "payload": {"fadeMs": 5000}}
     assert a_done == expected_done
-    assert b_open == expected_open
     assert b_done == expected_done
 
 

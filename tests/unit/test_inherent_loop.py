@@ -1,15 +1,21 @@
-"""Unit tests for ``jarvis.runtime.inherent_loop`` — Step 8 of ADR-0003.
+"""Unit tests for ``jarvis.runtime.inherent_loop`` — ADR-0003 Step 1 + Step 2.
 
 LLM-free pure-asyncio tests covering the two background watchers
-(``_user_intent_watcher``, ``_response_broadcaster``) plus the daemon
+(``_user_intent_watcher``, ``_response_watcher``) plus the daemon
 entrypoint's ``ProcessLockHeld`` surfacing path.
 
 The watchers are exercised with a real on-disk SQLite Event Log (via
 :func:`jarvis.state.event_log.open_event_log`) and a monkeypatched
 ``drive_turn`` / a fake :class:`InherentBroadcaster`. The full
 ``serve_inherent`` lifecycle (uvicorn boot + watcher coordination on
-shutdown) is covered by Step 9's integration test; here we only assert
-that ``ProcessLockHeld`` propagates when the lock is pre-held.
+shutdown) is covered by the Step 1 / Step 2 integration smoke tests;
+here we only assert that ``ProcessLockHeld`` propagates when the lock
+is pre-held.
+
+Step 2 (D16): ``_response_watcher`` is a SINGLE cursor over the three
+``surface.response_{open,chunk,emitted}`` event types, dispatched to
+``broadcast_open`` / ``broadcast_chunk`` / ``broadcast_done`` by
+``event.type``.
 """
 
 from __future__ import annotations
@@ -30,7 +36,7 @@ from jarvis.runtime import JarvisRuntime, inherent_loop
 from jarvis.runtime.inherent_loop import (
     _fetch_events_after,
     _latest_id,
-    _response_broadcaster,
+    _response_watcher,
     _user_intent_watcher,
 )
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
@@ -40,6 +46,8 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Iterator
     from pathlib import Path
+
+    import uvicorn
 
     from jarvis.shared import Event
 
@@ -51,17 +59,23 @@ if TYPE_CHECKING:
 
 @dataclass
 class _FakeBroadcaster:
-    """Records every ``broadcast()`` call. Stand-in for InherentBroadcaster.
+    """Records every ``broadcast_*`` call. Stand-in for InherentBroadcaster.
 
-    Only the ``broadcast`` coroutine is implemented because the watcher
-    only calls that. Hashable-by-identity so ``set`` semantics from real
-    broadcaster don't matter to the test.
+    The watcher calls one of three methods per event row; the spy
+    captures ``(method_name, event)`` tuples so tests can assert both
+    dispatch correctness AND ordering across mixed event types.
     """
 
-    received: list[Event] = field(default_factory=list)
+    received: list[tuple[str, Event]] = field(default_factory=list)
 
-    async def broadcast(self, event: Event) -> None:
-        self.received.append(event)
+    async def broadcast_open(self, event: Event) -> None:
+        self.received.append(("open", event))
+
+    async def broadcast_chunk(self, event: Event) -> None:
+        self.received.append(("chunk", event))
+
+    async def broadcast_done(self, event: Event) -> None:
+        self.received.append(("done", event))
 
 
 def _make_runtime(tmp_path: Path) -> JarvisRuntime:
@@ -115,6 +129,36 @@ def _seed_response_emitted(
     )
 
 
+def _seed_response_open(
+    conn: sqlite3.Connection,
+    *,
+    turn_id: str = "T-open",
+    query: str = "hi",
+) -> Event:
+    """Emit one surface.response_open and return the persisted Event."""
+    return emit_event(
+        conn,
+        type="surface.response_open",
+        payload={"turn_id": turn_id, "query": query, "kind": "text"},
+        correlation={"turn_id": turn_id},
+    )
+
+
+def _seed_response_chunk(
+    conn: sqlite3.Connection,
+    *,
+    turn_id: str = "T-chunk",
+    text: str = "tok",
+) -> Event:
+    """Emit one surface.response_chunk and return the persisted Event."""
+    return emit_event(
+        conn,
+        type="surface.response_chunk",
+        payload={"turn_id": turn_id, "text": text},
+        correlation={"turn_id": turn_id},
+    )
+
+
 # ---------------------------------------------------------------------------
 # _user_intent_watcher
 # ---------------------------------------------------------------------------
@@ -136,7 +180,7 @@ async def _cancel_and_await(task: asyncio.Task[Any]) -> None:
 def test_user_intent_watcher_drives_turn_on_surface_user_intent(
     runtime: JarvisRuntime,
 ) -> None:
-    """A new surface.user_intent triggers drive_turn with that event + frozenset()."""
+    """A new surface.user_intent triggers drive_turn with frozenset() + streaming_enabled=True."""
     captured: list[dict[str, Any]] = []
 
     def _stub_drive_turn(
@@ -144,6 +188,7 @@ def test_user_intent_watcher_drives_turn_on_surface_user_intent(
         *,
         user_intent_event: Event,
         available_surfaces: frozenset[str] | None = None,
+        streaming_enabled: bool = False,
         **_: object,
     ) -> None:
         captured.append(
@@ -151,6 +196,7 @@ def test_user_intent_watcher_drives_turn_on_surface_user_intent(
                 "runtime_id": id(rt),
                 "user_intent_event": user_intent_event,
                 "available_surfaces": available_surfaces,
+                "streaming_enabled": streaming_enabled,
             },
         )
 
@@ -168,6 +214,10 @@ def test_user_intent_watcher_drives_turn_on_surface_user_intent(
             call = captured[0]
             assert call["user_intent_event"].event_uid == seeded.event_uid
             assert call["available_surfaces"] == frozenset()
+            # ADR-0003 Step 2: the daemon watcher MUST pass
+            # streaming_enabled=True so render_response emits the
+            # 3-event Inherent taxonomy before the audit event.
+            assert call["streaming_enabled"] is True
 
     asyncio.run(_body())
 
@@ -302,41 +352,90 @@ def test_user_intent_watcher_only_processes_events_after_startup_cursor(
 
 
 # ---------------------------------------------------------------------------
-# _response_broadcaster
+# _response_watcher — single cursor, type-dispatch (ADR-0003 D16)
 # ---------------------------------------------------------------------------
 
 
-def test_response_broadcaster_calls_broadcast_on_surface_response_emitted(
+def test_response_watcher_dispatches_response_open_to_broadcast_open(
     runtime: JarvisRuntime,
 ) -> None:
-    """A new surface.response_emitted is forwarded to broadcaster.broadcast()."""
+    """A new surface.response_open is forwarded to ``broadcast_open``."""
     fake = _FakeBroadcaster()
 
     async def _body() -> None:
         task = asyncio.create_task(
-            _response_broadcaster(runtime, fake, poll_interval_s=0.001),
+            _response_watcher(runtime, fake, poll_interval_s=0.001),  # type: ignore[arg-type]
         )
         await asyncio.sleep(0.02)
-        seeded = _seed_response_emitted(runtime.conn, turn_id="T-br", text="hi")
+        seeded = _seed_response_open(runtime.conn, turn_id="T-o", query="hi there")
         await _spin_briefly()
         await _cancel_and_await(task)
 
         assert len(fake.received) == 1
-        assert fake.received[0].event_uid == seeded.event_uid
-        assert fake.received[0].payload["text"] == "hi"
+        method, ev = fake.received[0]
+        assert method == "open"
+        assert ev.event_uid == seeded.event_uid
+        assert ev.payload["query"] == "hi there"
 
     asyncio.run(_body())
 
 
-def test_response_broadcaster_skips_other_event_types(
+def test_response_watcher_dispatches_response_chunk_to_broadcast_chunk(
     runtime: JarvisRuntime,
 ) -> None:
-    """Events of other types never reach broadcaster.broadcast()."""
+    """A new surface.response_chunk is forwarded to ``broadcast_chunk``."""
     fake = _FakeBroadcaster()
 
     async def _body() -> None:
         task = asyncio.create_task(
-            _response_broadcaster(runtime, fake, poll_interval_s=0.001),
+            _response_watcher(runtime, fake, poll_interval_s=0.001),  # type: ignore[arg-type]
+        )
+        await asyncio.sleep(0.02)
+        seeded = _seed_response_chunk(runtime.conn, turn_id="T-c", text="tok")
+        await _spin_briefly()
+        await _cancel_and_await(task)
+
+        assert len(fake.received) == 1
+        method, ev = fake.received[0]
+        assert method == "chunk"
+        assert ev.event_uid == seeded.event_uid
+        assert ev.payload["text"] == "tok"
+
+    asyncio.run(_body())
+
+
+def test_response_watcher_dispatches_response_emitted_to_broadcast_done(
+    runtime: JarvisRuntime,
+) -> None:
+    """A new surface.response_emitted is forwarded to ``broadcast_done``."""
+    fake = _FakeBroadcaster()
+
+    async def _body() -> None:
+        task = asyncio.create_task(
+            _response_watcher(runtime, fake, poll_interval_s=0.001),  # type: ignore[arg-type]
+        )
+        await asyncio.sleep(0.02)
+        seeded = _seed_response_emitted(runtime.conn, turn_id="T-d", text="final")
+        await _spin_briefly()
+        await _cancel_and_await(task)
+
+        assert len(fake.received) == 1
+        method, ev = fake.received[0]
+        assert method == "done"
+        assert ev.event_uid == seeded.event_uid
+
+    asyncio.run(_body())
+
+
+def test_response_watcher_skips_other_event_types(
+    runtime: JarvisRuntime,
+) -> None:
+    """Events of other types never reach any broadcast_* method."""
+    fake = _FakeBroadcaster()
+
+    async def _body() -> None:
+        task = asyncio.create_task(
+            _response_watcher(runtime, fake, poll_interval_s=0.001),  # type: ignore[arg-type]
         )
         await asyncio.sleep(0.02)
         emit_event(
@@ -362,27 +461,113 @@ def test_response_broadcaster_skips_other_event_types(
     asyncio.run(_body())
 
 
-def test_response_broadcaster_only_processes_events_after_startup_cursor(
+def test_response_watcher_only_processes_events_after_startup_cursor(
     runtime: JarvisRuntime,
 ) -> None:
-    """A pre-startup surface.response_emitted is NOT replayed."""
+    """Pre-startup response_{open,chunk,emitted} rows are NOT replayed."""
     fake = _FakeBroadcaster()
 
     async def _body() -> None:
-        # Seed BEFORE the watcher starts.
-        _seed_response_emitted(runtime.conn, turn_id="T-pre", text="old")
+        # Seed BEFORE the watcher starts (all three types).
+        _seed_response_open(runtime.conn, turn_id="T-pre", query="old-q")
+        _seed_response_chunk(runtime.conn, turn_id="T-pre", text="old-tok")
+        _seed_response_emitted(runtime.conn, turn_id="T-pre", text="old-final")
 
         task = asyncio.create_task(
-            _response_broadcaster(runtime, fake, poll_interval_s=0.001),
+            _response_watcher(runtime, fake, poll_interval_s=0.001),  # type: ignore[arg-type]
         )
         await asyncio.sleep(0.02)
         # Now seed AFTER startup.
-        _seed_response_emitted(runtime.conn, turn_id="T-post", text="new")
+        _seed_response_emitted(runtime.conn, turn_id="T-post", text="new-final")
         await _spin_briefly()
         await _cancel_and_await(task)
 
         assert len(fake.received) == 1
-        assert fake.received[0].payload["turn_id"] == "T-post"
+        method, ev = fake.received[0]
+        assert method == "done"
+        assert ev.payload["turn_id"] == "T-post"
+
+    asyncio.run(_body())
+
+
+def test_response_watcher_single_cursor_preserves_l2_insertion_order(
+    runtime: JarvisRuntime,
+) -> None:
+    """Mixed open/chunk/chunk/done rows are dispatched in their SQLite-id order.
+
+    ADR-0003 D16: three sibling watchers (one per type) would race
+    against asyncio's wakeup order; a single cursor + monotonic SQLite
+    row id eliminates the race by construction. This test seeds all
+    four rows in fast succession and asserts the broadcast_* method
+    calls land in that exact ``[open, chunk, chunk, done]`` order.
+    """
+    fake = _FakeBroadcaster()
+
+    async def _body() -> None:
+        task = asyncio.create_task(
+            _response_watcher(runtime, fake, poll_interval_s=0.001),  # type: ignore[arg-type]
+        )
+        await asyncio.sleep(0.02)
+        # Fast succession, all on the watcher's runtime.conn (same
+        # event-loop thread as the watcher's polling SELECTs).
+        _seed_response_open(runtime.conn, turn_id="T-seq", query="hi")
+        _seed_response_chunk(runtime.conn, turn_id="T-seq", text="hello ")
+        _seed_response_chunk(runtime.conn, turn_id="T-seq", text="world")
+        _seed_response_emitted(runtime.conn, turn_id="T-seq", text="hello world")
+        await _spin_briefly()
+        await _cancel_and_await(task)
+
+        methods = [m for m, _ev in fake.received]
+        assert methods == ["open", "chunk", "chunk", "done"]
+        # Each event has the same turn_id so the dispatch belongs to one logical turn.
+        for _m, ev in fake.received:
+            assert ev.payload["turn_id"] == "T-seq"
+
+    asyncio.run(_body())
+
+
+# ---------------------------------------------------------------------------
+# serve_inherent — task naming + watcher set
+# ---------------------------------------------------------------------------
+
+
+def test_serve_inherent_spawns_response_watcher_under_named_task(
+    runtime: JarvisRuntime,
+    tmp_path: Path,
+) -> None:
+    """``serve_inherent`` spawns ``_response_watcher`` (NOT ``_response_broadcaster``).
+
+    Stubs ``uvicorn.Server.serve`` to a fast no-op so the entrypoint
+    completes its setup, registers the named task, and then unwinds
+    cleanly. Asserts the task name is ``"response_watcher"`` (not
+    ``"response_broadcaster"``) and that ``_response_watcher`` is the
+    target coroutine.
+    """
+    lock_path = tmp_path / "test-jarvis.lock"
+    observed_task_names: list[str] = []
+
+    async def _noop_serve(_self: uvicorn.Server) -> None:
+        # Capture every running task whose name starts with a watcher
+        # prefix, then return so the entrypoint's `finally` block tears
+        # them down.
+        for t in asyncio.all_tasks():
+            name = t.get_name()
+            if name in {"user_intent_watcher", "response_watcher", "response_broadcaster"}:
+                observed_task_names.append(name)
+
+    async def _body() -> None:
+        with patch("uvicorn.Server.serve", _noop_serve):
+            await inherent_loop.serve_inherent(
+                runtime,
+                host="127.0.0.1",
+                port=0,
+                lock_path=lock_path,
+                poll_interval_s=0.001,
+            )
+
+        assert "response_watcher" in observed_task_names
+        assert "user_intent_watcher" in observed_task_names
+        assert "response_broadcaster" not in observed_task_names
 
     asyncio.run(_body())
 

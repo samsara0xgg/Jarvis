@@ -1,28 +1,40 @@
-"""Daemon entrypoint: serve the Inherent Step-1 FastAPI app + watcher tasks.
+"""Daemon entrypoint: serve the Inherent FastAPI app + watcher tasks.
 
 Composition root (``runtime/``). Owns the daemon lifecycle for the
-text-only Inherent surface introduced by ADR-0003 Step 1:
+text Inherent surface introduced by ADR-0003 Step 1 (single-envelope)
+and rewired for Step 2 (three-envelope ``open`` / ``append`` x N /
+``done`` wire schema):
 
 1. Acquire the per-runtime-root process lock via
    :func:`jarvis.deployment.process_lock.acquire_exclusive` (ADR-0003
    D4 — refuses if another daemon already holds it).
 2. Build the shared :class:`jarvis.surface.inherent_output.InherentBroadcaster`
-   (Step 6) and a sync ``submit_callable`` bound to
+   and a sync ``submit_callable`` bound to
    :func:`jarvis.surface.cli.emit_surface_user_intent` (mints a fresh
    ``turn_id`` per call).
 3. Build the FastAPI app via
-   :func:`jarvis.surface.inherent_server.create_app` (Step 7).
+   :func:`jarvis.surface.inherent_server.create_app`.
 4. Spawn two background async tasks:
 
    - :func:`_user_intent_watcher` — polls the Event Log for new
      ``surface.user_intent`` rows; for each, drives the turn via
-     :func:`jarvis.runtime.drive_turn` on a worker thread. ADR-0003
-     D9 F3: an uncaught exception from ``drive_turn`` is caught, logged,
-     and recorded as a ``turn.failed`` audit event; the watcher keeps
-     polling.
-   - :func:`_response_broadcaster` — polls the Event Log for new
-     ``surface.response_emitted`` rows; for each, awaits
-     :meth:`InherentBroadcaster.broadcast`.
+     :func:`jarvis.runtime.drive_turn` on a worker thread with
+     ``streaming_enabled=True`` so :func:`render_response` emits the
+     ADR-0003 Step 2 three-event Inherent taxonomy
+     (``surface.response_open`` + ``surface.response_chunk`` x N) before
+     the audit ``surface.response_emitted``. ADR-0003 D9 F3: an uncaught
+     exception from ``drive_turn`` is caught, logged, and recorded as a
+     ``turn.failed`` audit event; the watcher keeps polling.
+   - :func:`_response_watcher` — polls the Event Log for new
+     ``surface.response_{open,chunk,emitted}`` rows in ONE cursor
+     (``WHERE type IN (...) ORDER BY id``) and dispatches to
+     :meth:`InherentBroadcaster.broadcast_open` /
+     :meth:`InherentBroadcaster.broadcast_chunk` /
+     :meth:`InherentBroadcaster.broadcast_done` based on ``event.type``.
+     Per ADR-0003 D16, three sibling watchers would race against
+     asyncio's wakeup order and could send ``append`` before ``open``;
+     a single-cursor + monotonic SQLite row id eliminates the race by
+     construction.
 
 5. Run :meth:`uvicorn.Server.serve` (blocks until SIGINT / SIGTERM).
 6. On exit: cancel both watchers, await with ``return_exceptions=True``,
@@ -99,6 +111,21 @@ _SELECT_AFTER_ID_OF_TYPE_SQL = (
     "FROM events WHERE id > ? AND type = ? ORDER BY id ASC"
 )
 
+# Single-cursor SELECT for the three Step-2 Inherent response event
+# types. Static type list (no placeholders): asyncio's wakeup order
+# does NOT guarantee that three sibling watchers (one per type) would
+# fire in L2-insertion order, so we fold all three types into ONE
+# cursor ordered by SQLite row id — D16 race elimination by
+# construction.
+_SELECT_RESPONSE_EVENTS_AFTER_ID_SQL = (
+    "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
+    "payload_json, source_event_id, correlation_json "
+    "FROM events WHERE id > ? AND type IN ("
+    "'surface.response_open', 'surface.response_chunk', "
+    "'surface.response_emitted'"
+    ") ORDER BY id ASC"
+)
+
 
 def _latest_id(conn: sqlite3.Connection) -> int:
     """Return MAX(events.id) or 0 if the table is empty.
@@ -167,6 +194,21 @@ def _fetch_events_after(
     return [_row_to_id_event(row) for row in cursor]
 
 
+def _fetch_response_events_after(
+    conn: sqlite3.Connection,
+    *,
+    after_id: int,
+) -> list[tuple[int, Event]]:
+    """SELECT every ``surface.response_{open,chunk,emitted}`` with ``id > after_id``.
+
+    Returns ``(id, Event)`` tuples oldest-first, ordered by SQLite row
+    id so the three event types are interleaved in their L2-insertion
+    order — see :func:`_response_watcher` for the D16 rationale.
+    """
+    cursor = conn.execute(_SELECT_RESPONSE_EVENTS_AFTER_ID_SQL, (after_id,))
+    return [_row_to_id_event(row) for row in cursor]
+
+
 def _emit_turn_failed(
     conn: sqlite3.Connection,
     *,
@@ -220,6 +262,7 @@ def _drive_turn_in_worker_thread(
             worker_runtime,
             user_intent_event=user_intent_event,
             available_surfaces=frozenset(),
+            streaming_enabled=True,
         )
     finally:
         with contextlib.suppress(sqlite3.Error):
@@ -286,34 +329,55 @@ async def _user_intent_watcher(
         raise
 
 
-async def _response_broadcaster(
+async def _response_watcher(
     runtime: JarvisRuntime,
     broadcaster: InherentBroadcaster,
     *,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
 ) -> None:
-    """Background task: forward every new ``surface.response_emitted`` to broadcaster.
+    """Background task: forward every new response event to the broadcaster.
 
-    Cursor anchoring mirrors :func:`_user_intent_watcher`. Each row's
-    Event is passed through to
-    :meth:`InherentBroadcaster.broadcast`, which handles the wire
-    envelope translation (open/done) and the F4/F5 failure modes.
+    Single watcher with ONE cursor (``WHERE type IN
+    ('surface.response_open', 'surface.response_chunk',
+    'surface.response_emitted') ORDER BY id``) so the three event
+    types are dispatched in their L2-insertion order. Per ADR-0003
+    Step 2 D16: three sibling watchers would race against asyncio's
+    wakeup order and could send ``op:append`` before ``op:open``;
+    single-cursor + monotonic SQLite row id eliminates the race by
+    construction.
+
+    Dispatch by ``event.type``:
+
+    - ``surface.response_open``    -> :meth:`InherentBroadcaster.broadcast_open`
+    - ``surface.response_chunk``   -> :meth:`InherentBroadcaster.broadcast_chunk`
+    - ``surface.response_emitted`` -> :meth:`InherentBroadcaster.broadcast_done`
+
+    The broadcaster handles per-envelope wire translation and the F4 /
+    F5 failure modes (per-client send failure isolation + no-clients
+    warning).
+
+    Cursor anchoring mirrors :func:`_user_intent_watcher` — events
+    that landed BEFORE this watcher started are not replayed.
     """
     after_id = _latest_id(runtime.conn)
-    LOGGER.info("response_broadcaster started (after_id=%d)", after_id)
+    LOGGER.info("response_watcher started (after_id=%d)", after_id)
     try:
         while True:
-            new_events = _fetch_events_after(
+            new_events = _fetch_response_events_after(
                 runtime.conn,
                 after_id=after_id,
-                event_type="surface.response_emitted",
             )
             for row_id, ev in new_events:
                 after_id = max(after_id, row_id)
-                await broadcaster.broadcast(ev)
+                if ev.type == "surface.response_open":
+                    await broadcaster.broadcast_open(ev)
+                elif ev.type == "surface.response_chunk":
+                    await broadcaster.broadcast_chunk(ev)
+                else:  # surface.response_emitted
+                    await broadcaster.broadcast_done(ev)
             await asyncio.sleep(poll_interval_s)
     except asyncio.CancelledError:
-        LOGGER.info("response_broadcaster cancelled")
+        LOGGER.info("response_watcher cancelled")
         raise
 
 
@@ -333,18 +397,20 @@ async def serve_inherent(
     1. :func:`acquire_exclusive` — raises
        :class:`jarvis.deployment.process_lock.ProcessLockHeld` if
        another live daemon already holds it.
-    2. Build :class:`InherentBroadcaster` (Step 6) and ``submit_callable``
+    2. Build :class:`InherentBroadcaster` and ``submit_callable``
        (binds to :func:`emit_surface_user_intent` with a fresh
        ``turn_id`` per HTTP submit).
-    3. Build the FastAPI app via :func:`create_app` (Step 7) with
+    3. Build the FastAPI app via :func:`create_app` with
        :class:`InherentDeps`.
     4. Configure :class:`uvicorn.Config` (``lifespan="off"`` because
        this module owns the lifecycle, ``log_level="warning"`` to
        avoid uvicorn's per-request stdout noise drowning the watcher
        logs).
-    5. Spawn :func:`_user_intent_watcher` and :func:`_response_broadcaster`
+    5. Spawn :func:`_user_intent_watcher` and :func:`_response_watcher`
        as background tasks BEFORE :meth:`uvicorn.Server.serve` so an
-       early intent post is observed.
+       early intent post is observed. ``_response_watcher`` polls all
+       three Step-2 response event types in a single cursor and
+       dispatches to the per-type broadcaster methods (D16).
     6. ``await server.serve()`` — blocks until uvicorn returns (signal
        received).
     7. ``finally``: cancel both watchers and ``await`` them with
@@ -409,8 +475,8 @@ async def serve_inherent(
                 name="user_intent_watcher",
             ),
             asyncio.create_task(
-                _response_broadcaster(runtime, broadcaster, poll_interval_s=poll_interval_s),
-                name="response_broadcaster",
+                _response_watcher(runtime, broadcaster, poll_interval_s=poll_interval_s),
+                name="response_watcher",
             ),
         ]
 

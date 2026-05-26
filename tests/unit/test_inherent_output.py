@@ -2,7 +2,13 @@
 
 LLM-free pure-asyncio tests. Uses a duck-typed ``_FakeWebSocket`` spy
 instead of the FastAPI ``TestClient`` — the WS endpoint wiring is
-covered by Step 7's tests, not this one.
+covered by ``test_inherent_server.py``, not this one.
+
+Covers the ADR-0003 Step 2 three-method API:
+``broadcast_open`` / ``broadcast_chunk`` / ``broadcast_done``. Each
+method translates the corresponding ``surface.response_{open,chunk,emitted}``
+event into the legacy Inherent wire envelope (mirrored verbatim from
+``jarvis-legacy/ui/web/server.py:357-414``).
 """
 
 from __future__ import annotations
@@ -51,14 +57,40 @@ class _FakeWebSocket:
         return self is other
 
 
-def _make_event(*, text: str = "hi", turn_id: str = "T-test-001") -> Event:
-    """Build a minimal ``surface.response_emitted``-shaped Event."""
+def _make_open_event(*, query: str = "hello", turn_id: str = "T-open-001") -> Event:
+    """Build a ``surface.response_open``-shaped Event."""
     return Event(
-        event_uid="evt-test-1",
-        type="surface.response_emitted",
+        event_uid="evt-open-1",
+        type="surface.response_open",
         schema_version=1,
         ts_epoch_ms=1_700_000_000_000,
+        payload={"turn_id": turn_id, "query": query, "kind": "text"},
+        source_event_id=None,
+        correlation={"turn_id": turn_id},
+    )
+
+
+def _make_chunk_event(*, text: str = "world", turn_id: str = "T-chunk-001") -> Event:
+    """Build a ``surface.response_chunk``-shaped Event."""
+    return Event(
+        event_uid="evt-chunk-1",
+        type="surface.response_chunk",
+        schema_version=1,
+        ts_epoch_ms=1_700_000_000_001,
         payload={"turn_id": turn_id, "text": text},
+        source_event_id=None,
+        correlation={"turn_id": turn_id},
+    )
+
+
+def _make_done_event(*, turn_id: str = "T-done-001") -> Event:
+    """Build a ``surface.response_emitted``-shaped Event."""
+    return Event(
+        event_uid="evt-done-1",
+        type="surface.response_emitted",
+        schema_version=1,
+        ts_epoch_ms=1_700_000_000_002,
+        payload={"turn_id": turn_id, "text": "ignored-by-done"},
         source_event_id=None,
         correlation={"turn_id": turn_id},
     )
@@ -70,11 +102,15 @@ def _make_event(*, text: str = "hi", turn_id: str = "T-test-001") -> Event:
 
 
 def test_broadcaster_starts_empty() -> None:
-    """A fresh broadcaster has no registered clients."""
+    """A fresh broadcaster has no registered clients.
+
+    Probed via the no-clients path on ``broadcast_done`` — by design the
+    broadcaster exposes no peek accessor; ``broadcast_done`` always
+    fires the F5 path when empty (no payload guard) so it's the
+    cleanest empty-registry probe.
+    """
     bc = InherentBroadcaster()
-    # Broadcasting with no clients must not raise; the no-clients path is
-    # the canonical "empty registry" probe (no peek accessor by design).
-    asyncio.run(bc.broadcast(_make_event()))
+    asyncio.run(bc.broadcast_done(_make_done_event()))
 
 
 def test_register_adds_client() -> None:
@@ -83,9 +119,10 @@ def test_register_adds_client() -> None:
     ws = _FakeWebSocket(name="ws1")
 
     asyncio.run(bc.register(ws))
-    asyncio.run(bc.broadcast(_make_event(text="hello")))
+    asyncio.run(bc.broadcast_done(_make_done_event()))
 
-    assert len(ws.sent_messages) == 2  # open + done
+    assert len(ws.sent_messages) == 1
+    assert ws.sent_messages[0]["op"] == "done"
 
 
 def test_register_is_idempotent() -> None:
@@ -95,11 +132,11 @@ def test_register_is_idempotent() -> None:
 
     asyncio.run(bc.register(ws))
     asyncio.run(bc.register(ws))
-    asyncio.run(bc.broadcast(_make_event(text="hi")))
+    asyncio.run(bc.broadcast_done(_make_done_event()))
 
-    # Two messages total (open + done) — NOT four. Duplicate registration
-    # collapsed because the registry is a set.
-    assert len(ws.sent_messages) == 2
+    # One message total — NOT two. Duplicate registration collapsed
+    # because the registry is a set.
+    assert len(ws.sent_messages) == 1
 
 
 def test_unregister_removes_client() -> None:
@@ -109,7 +146,7 @@ def test_unregister_removes_client() -> None:
 
     asyncio.run(bc.register(ws))
     asyncio.run(bc.unregister(ws))
-    asyncio.run(bc.broadcast(_make_event(text="hi")))
+    asyncio.run(bc.broadcast_done(_make_done_event()))
 
     assert ws.sent_messages == []
 
@@ -124,49 +161,142 @@ def test_unregister_unknown_client_is_idempotent() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Broadcast — empty paths
+# broadcast_open — envelope + payload semantics
 # ---------------------------------------------------------------------------
 
 
-def test_broadcast_with_no_clients_logs_warning_and_returns(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """No registered clients -> warning mentioning the turn_id, no crash.
+def test_broadcast_open_pushes_legacy_envelope() -> None:
+    """``broadcast_open`` -> legacy open envelope with content/streaming/kind/q.
 
-    ADR-0003 F5: Step-1 explicit deviation from spec §3.6.11
-    ``surface.failed``. The audit event already landed in the L2 log;
-    the daemon just has nothing to physically deliver, so the broadcaster
-    logs a warning instead of escalating.
-    """
-    bc = InherentBroadcaster()
-
-    with caplog.at_level(logging.WARNING, logger="jarvis.surface.inherent_output"):
-        asyncio.run(bc.broadcast(_make_event(text="abc", turn_id="T-no-clients-001")))
-
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1
-    # The warning must carry the turn_id so log scrapers can correlate it
-    # back to the audit event.
-    assert "T-no-clients-001" in warnings[0].getMessage()
-
-
-def test_broadcast_with_empty_text_returns_silently() -> None:
-    """Empty ``text`` -> no messages, no warning.
-
-    The audit ``surface.response_emitted`` event already exists in the L2
-    Event Log (emitted by ``render_response`` with ``delivered_via=[]``);
-    the broadcaster has nothing meaningful to push so it returns early.
+    Mirrors legacy ``_on_response_start`` at
+    ``jarvis-legacy/ui/web/server.py:381-389`` — except that Step 2
+    ALWAYS includes ``q`` (even empty) so the wire is predictable.
     """
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
     asyncio.run(bc.register(ws))
 
-    asyncio.run(bc.broadcast(_make_event(text="")))
+    asyncio.run(bc.broadcast_open(_make_open_event(query="what time is it")))
+
+    assert ws.sent_messages == [
+        {
+            "op": "open",
+            "payload": {
+                "content": "",
+                "streaming": True,
+                "kind": "text",
+                "q": "what time is it",
+            },
+        },
+    ]
+
+
+def test_broadcast_open_with_empty_query_sets_q_to_empty_string() -> None:
+    """Empty ``query`` -> ``q=""`` (not skipped).
+
+    Legacy server.py:386-389 SKIPPED the q key on empty; Step 2 sets
+    ``q=""`` so the wire is predictable. The swift card tolerates
+    empty ``q`` just fine.
+    """
+    bc = InherentBroadcaster()
+    ws = _FakeWebSocket(name="ws1")
+    asyncio.run(bc.register(ws))
+
+    asyncio.run(bc.broadcast_open(_make_open_event(query="")))
+
+    assert len(ws.sent_messages) == 1
+    assert ws.sent_messages[0]["payload"]["q"] == ""
+
+
+def test_broadcast_open_with_missing_query_key_sets_q_to_empty_string() -> None:
+    """Payload lacking a ``query`` key -> ``q=""`` (same as empty)."""
+    bc = InherentBroadcaster()
+    ws = _FakeWebSocket(name="ws1")
+    asyncio.run(bc.register(ws))
+
+    event = Event(
+        event_uid="evt-open-no-q",
+        type="surface.response_open",
+        schema_version=1,
+        ts_epoch_ms=1_700_000_000_000,
+        payload={"turn_id": "T-no-q", "kind": "text"},  # no "query"
+        source_event_id=None,
+        correlation={"turn_id": "T-no-q"},
+    )
+    asyncio.run(bc.broadcast_open(event))
+
+    assert ws.sent_messages == [
+        {
+            "op": "open",
+            "payload": {
+                "content": "",
+                "streaming": True,
+                "kind": "text",
+                "q": "",
+            },
+        },
+    ]
+
+
+def test_broadcast_open_with_no_clients_logs_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No clients -> F5 warning mentioning the turn_id; no crash."""
+    bc = InherentBroadcaster()
+
+    with caplog.at_level(logging.WARNING, logger="jarvis.surface.inherent_output"):
+        asyncio.run(
+            bc.broadcast_open(_make_open_event(query="abc", turn_id="T-open-noc-001")),
+        )
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "T-open-noc-001" in warnings[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# broadcast_chunk — envelope + empty-text suppression
+# ---------------------------------------------------------------------------
+
+
+def test_broadcast_chunk_pushes_legacy_envelope() -> None:
+    """``broadcast_chunk`` -> ``{op:append, payload:{token:<text>}}``.
+
+    Mirrors legacy ``_on_response_chunk`` at
+    ``jarvis-legacy/ui/web/server.py:392-400``.
+    """
+    bc = InherentBroadcaster()
+    ws = _FakeWebSocket(name="ws1")
+    asyncio.run(bc.register(ws))
+
+    asyncio.run(bc.broadcast_chunk(_make_chunk_event(text="hello ")))
+
+    assert ws.sent_messages == [
+        {"op": "append", "payload": {"token": "hello "}},
+    ]
+
+
+def test_broadcast_chunk_with_empty_text_returns_silently(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Empty ``text`` -> no envelope, NO F5 warning (legacy line 398-399).
+
+    Empty-text suppression happens BEFORE the no-clients check so a
+    spurious empty chunk doesn't trigger the F5 log.
+    """
+    bc = InherentBroadcaster()
+    ws = _FakeWebSocket(name="ws1")
+    asyncio.run(bc.register(ws))
+
+    with caplog.at_level(logging.WARNING, logger="jarvis.surface.inherent_output"):
+        asyncio.run(bc.broadcast_chunk(_make_chunk_event(text="")))
 
     assert ws.sent_messages == []
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings == []
 
 
-def test_broadcast_with_missing_text_key_returns_silently() -> None:
+def test_broadcast_chunk_with_missing_text_key_returns_silently() -> None:
     """Payload without a ``text`` key behaves the same as empty text."""
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
@@ -174,63 +304,159 @@ def test_broadcast_with_missing_text_key_returns_silently() -> None:
 
     event = Event(
         event_uid="evt-no-text",
-        type="surface.response_emitted",
+        type="surface.response_chunk",
         schema_version=1,
         ts_epoch_ms=1_700_000_000_000,
-        payload={"turn_id": "T-no-text-001"},  # no "text" key
+        payload={"turn_id": "T-no-text"},  # no "text" key
         source_event_id=None,
-        correlation={"turn_id": "T-no-text-001"},
+        correlation={"turn_id": "T-no-text"},
     )
-    asyncio.run(bc.broadcast(event))
+    asyncio.run(bc.broadcast_chunk(event))
 
     assert ws.sent_messages == []
 
 
+def test_broadcast_chunk_with_no_clients_logs_warning_when_text_nonempty(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Non-empty text + no clients -> F5 warning mentioning the turn_id."""
+    bc = InherentBroadcaster()
+
+    with caplog.at_level(logging.WARNING, logger="jarvis.surface.inherent_output"):
+        asyncio.run(
+            bc.broadcast_chunk(_make_chunk_event(text="hi", turn_id="T-chunk-noc-001")),
+        )
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "T-chunk-noc-001" in warnings[0].getMessage()
+
+
 # ---------------------------------------------------------------------------
-# Broadcast — wire contract
+# broadcast_done — envelope (always sends, no payload guard)
 # ---------------------------------------------------------------------------
 
 
-def test_broadcast_pushes_open_then_done_to_single_client() -> None:
-    """One client -> exactly ``[open, done]`` envelopes in that order."""
+def test_broadcast_done_pushes_legacy_envelope() -> None:
+    """``broadcast_done`` -> ``{op:done, payload:{fadeMs:5000}}``.
+
+    Mirrors legacy ``_on_response_final`` at
+    ``jarvis-legacy/ui/web/server.py:402-404``. ``fadeMs:5000`` is the
+    legacy default — the swift card's ``FadeController`` uses this to
+    drive the alpha animation timer.
+    """
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
     asyncio.run(bc.register(ws))
 
-    asyncio.run(bc.broadcast(_make_event(text="hi")))
+    asyncio.run(bc.broadcast_done(_make_done_event()))
 
     assert ws.sent_messages == [
-        {"op": "open", "payload": {"streaming": False, "content": "hi"}},
-        {"op": "done", "payload": {}},
+        {"op": "done", "payload": {"fadeMs": 5000}},
     ]
 
 
-def test_broadcast_pushes_to_multiple_clients() -> None:
-    """Three clients each receive both envelopes."""
+def test_broadcast_done_always_sends_no_payload_guard() -> None:
+    """``done`` ignores the event payload — empty payload still fires the envelope."""
+    bc = InherentBroadcaster()
+    ws = _FakeWebSocket(name="ws1")
+    asyncio.run(bc.register(ws))
+
+    event = Event(
+        event_uid="evt-done-empty",
+        type="surface.response_emitted",
+        schema_version=1,
+        ts_epoch_ms=1_700_000_000_000,
+        payload={"turn_id": "T-done-empty"},  # no extra fields
+        source_event_id=None,
+        correlation={"turn_id": "T-done-empty"},
+    )
+    asyncio.run(bc.broadcast_done(event))
+
+    assert ws.sent_messages == [
+        {"op": "done", "payload": {"fadeMs": 5000}},
+    ]
+
+
+def test_broadcast_done_with_no_clients_logs_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No clients -> F5 warning mentioning the turn_id; no crash."""
+    bc = InherentBroadcaster()
+
+    with caplog.at_level(logging.WARNING, logger="jarvis.surface.inherent_output"):
+        asyncio.run(bc.broadcast_done(_make_done_event(turn_id="T-done-noc-001")))
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "T-done-noc-001" in warnings[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# Multiple clients
+# ---------------------------------------------------------------------------
+
+
+def test_broadcast_open_pushes_to_multiple_clients() -> None:
+    """Three clients each receive the open envelope."""
     bc = InherentBroadcaster()
     clients = [_FakeWebSocket(name=f"ws{i}") for i in range(3)]
     for ws in clients:
         asyncio.run(bc.register(ws))
 
-    asyncio.run(bc.broadcast(_make_event(text="hello world")))
+    asyncio.run(bc.broadcast_open(_make_open_event(query="multi")))
 
     expected = [
-        {"op": "open", "payload": {"streaming": False, "content": "hello world"}},
-        {"op": "done", "payload": {}},
+        {
+            "op": "open",
+            "payload": {
+                "content": "",
+                "streaming": True,
+                "kind": "text",
+                "q": "multi",
+            },
+        },
     ]
     for ws in clients:
         assert ws.sent_messages == expected
 
 
+def test_full_open_chunk_done_sequence_to_single_client() -> None:
+    """Three sequential broadcasts produce the legacy open/append/done sequence."""
+    bc = InherentBroadcaster()
+    ws = _FakeWebSocket(name="ws1")
+    asyncio.run(bc.register(ws))
+
+    asyncio.run(bc.broadcast_open(_make_open_event(query="hi", turn_id="T-seq")))
+    asyncio.run(bc.broadcast_chunk(_make_chunk_event(text="hello ", turn_id="T-seq")))
+    asyncio.run(bc.broadcast_chunk(_make_chunk_event(text="world", turn_id="T-seq")))
+    asyncio.run(bc.broadcast_done(_make_done_event(turn_id="T-seq")))
+
+    assert ws.sent_messages == [
+        {
+            "op": "open",
+            "payload": {
+                "content": "",
+                "streaming": True,
+                "kind": "text",
+                "q": "hi",
+            },
+        },
+        {"op": "append", "payload": {"token": "hello "}},
+        {"op": "append", "payload": {"token": "world"}},
+        {"op": "done", "payload": {"fadeMs": 5000}},
+    ]
+
+
 # ---------------------------------------------------------------------------
-# Broadcast — dead-client cleanup (ADR-0003 F4)
+# Dead-client cleanup (ADR-0003 F4)
 # ---------------------------------------------------------------------------
 
 
-def test_broadcast_dead_client_removed_others_succeed(
+def test_broadcast_open_dead_client_removed_others_succeed(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Dead client gets removed; healthy clients still receive; a 2nd broadcast confirms removal.
+    """Dead client gets removed; healthy clients still receive; 2nd broadcast confirms removal.
 
     ADR-0003 F4: per-client ``send_json`` failure is isolated — log the
     failure, mark for removal, continue serving the others.
@@ -248,37 +474,89 @@ def test_broadcast_dead_client_removed_others_succeed(
     asyncio.run(bc.register(ws_b))
 
     with caplog.at_level(logging.WARNING, logger="jarvis.surface.inherent_output"):
-        asyncio.run(bc.broadcast(_make_event(text="first")))
+        asyncio.run(bc.broadcast_open(_make_open_event(query="first")))
 
-    # The two healthy clients received both envelopes.
+    # The two healthy clients each received the open envelope.
     expected_first = [
-        {"op": "open", "payload": {"streaming": False, "content": "first"}},
-        {"op": "done", "payload": {}},
+        {
+            "op": "open",
+            "payload": {
+                "content": "",
+                "streaming": True,
+                "kind": "text",
+                "q": "first",
+            },
+        },
     ]
     assert ws_a.sent_messages == expected_first
     assert ws_b.sent_messages == expected_first
 
     # A warning was logged for the failure.
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("ws_dead" in w.getMessage() or "disconnected" in w.getMessage().lower()
-               for w in warnings), (
-        f"expected a warning mentioning the dead client; got: "
-        f"{[w.getMessage() for w in warnings]}"
-    )
+    assert any(
+        "ws_dead" in w.getMessage() or "disconnected" in w.getMessage().lower() for w in warnings
+    ), f"expected a warning mentioning the dead client; got: {[w.getMessage() for w in warnings]}"
 
     # Second broadcast — the dead client should have been removed, so it
     # must not be invoked again. Flip ``raise_on_send`` off; if the
-    # broadcaster still holds a reference, the new message would now land
-    # in ``sent_messages``.
+    # broadcaster still holds a reference, the new message would now
+    # land in ``sent_messages``.
     ws_dead.raise_on_send = None
-    asyncio.run(bc.broadcast(_make_event(text="second")))
+    asyncio.run(bc.broadcast_done(_make_done_event(turn_id="T-second")))
 
-    expected_second_for_alive = [
-        {"op": "open", "payload": {"streaming": False, "content": "second"}},
-        {"op": "done", "payload": {}},
-    ]
-    assert ws_a.sent_messages == expected_first + expected_second_for_alive
-    assert ws_b.sent_messages == expected_first + expected_second_for_alive
+    expected_done = [{"op": "done", "payload": {"fadeMs": 5000}}]
+    assert ws_a.sent_messages == expected_first + expected_done
+    assert ws_b.sent_messages == expected_first + expected_done
     assert ws_dead.sent_messages == [], (
         "dead client should have been removed after the first broadcast"
     )
+
+
+def test_broadcast_chunk_dead_client_removed_others_succeed() -> None:
+    """F4 isolation also applies to ``broadcast_chunk``."""
+    bc = InherentBroadcaster()
+    ws_dead = _FakeWebSocket(
+        name="ws_dead",
+        raise_on_send=RuntimeError("boom"),
+    )
+    ws_healthy = _FakeWebSocket(name="ws_healthy")
+
+    asyncio.run(bc.register(ws_dead))
+    asyncio.run(bc.register(ws_healthy))
+
+    asyncio.run(bc.broadcast_chunk(_make_chunk_event(text="tok")))
+
+    assert ws_healthy.sent_messages == [
+        {"op": "append", "payload": {"token": "tok"}},
+    ]
+
+    # Confirm the dead client was dropped: a second broadcast lands only
+    # on the healthy client.
+    ws_dead.raise_on_send = None
+    asyncio.run(bc.broadcast_chunk(_make_chunk_event(text="tok2")))
+    assert ws_dead.sent_messages == []
+    assert ws_healthy.sent_messages == [
+        {"op": "append", "payload": {"token": "tok"}},
+        {"op": "append", "payload": {"token": "tok2"}},
+    ]
+
+
+def test_broadcast_done_dead_client_removed_others_succeed() -> None:
+    """F4 isolation also applies to ``broadcast_done``."""
+    bc = InherentBroadcaster()
+    ws_dead = _FakeWebSocket(name="ws_dead", raise_on_send=RuntimeError("boom"))
+    ws_healthy = _FakeWebSocket(name="ws_healthy")
+
+    asyncio.run(bc.register(ws_dead))
+    asyncio.run(bc.register(ws_healthy))
+
+    asyncio.run(bc.broadcast_done(_make_done_event()))
+
+    assert ws_healthy.sent_messages == [
+        {"op": "done", "payload": {"fadeMs": 5000}},
+    ]
+
+    ws_dead.raise_on_send = None
+    asyncio.run(bc.broadcast_done(_make_done_event()))
+    assert ws_dead.sent_messages == []
+    assert len(ws_healthy.sent_messages) == 2

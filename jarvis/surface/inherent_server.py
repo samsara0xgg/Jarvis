@@ -14,10 +14,11 @@ in Step 8, injecting an :class:`InherentDeps` with:
   (L5 input adapter per spec §3.6.1). The handler wraps the sync call
   in ``asyncio.to_thread`` so the SQLite write does not block the
   event loop.
-- ``broadcaster`` — the shared :class:`InherentBroadcaster` from Step 6.
-  Step 8's background ``_response_broadcaster`` task pushes envelopes
-  into it; the WS endpoint here registers / unregisters connecting
-  clients.
+- ``broadcaster`` — the shared :class:`InherentBroadcaster`. The
+  runtime's background ``_response_watcher`` task polls the L2 Event
+  Log for ``surface.response_{open,chunk,emitted}`` rows and
+  dispatches to the broadcaster's per-type methods; the WS endpoint
+  here registers / unregisters connecting clients.
 
 Layer rules (L5): may import from stdlib, ``fastapi`` / ``pydantic`` /
 ``starlette``, and ``jarvis.surface.inherent_output`` (intra-layer
@@ -82,10 +83,11 @@ class InherentDeps:
             offloads the call via ``asyncio.to_thread`` so the event
             loop stays unblocked.
         broadcaster: Shared :class:`InherentBroadcaster` instance.
-            Step 8's ``_response_broadcaster`` task pushes envelopes
-            into it from the background; the WS endpoint here
-            registers / unregisters client sockets on connect /
-            disconnect.
+            The runtime's ``_response_watcher`` task pushes envelopes
+            into it from the background (one cursor over the three
+            ``surface.response_{open,chunk,emitted}`` types, dispatched
+            by ``event.type``); the WS endpoint here registers /
+            unregisters client sockets on connect / disconnect.
     """
 
     submit_callable: Callable[[str], None]
@@ -131,7 +133,7 @@ def create_app(deps: InherentDeps) -> FastAPI:
 
     @app.websocket("/inherent/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
-        """Outbound-only push channel for ``surface.response_emitted`` envelopes.
+        """Outbound-only push channel for Inherent wire envelopes.
 
         Lifecycle:
 
