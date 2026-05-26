@@ -46,11 +46,14 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import secrets
+import wave
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated
 
+import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
@@ -68,6 +71,55 @@ LOGGER = logging.getLogger("jarvis.surface.inherent_server")
 # ADR-0005 §5.2: hard cap on uploaded WAV size for /inherent/asr-submit.
 _ASR_MAX_BYTES = 5 * 1024 * 1024
 _ASR_ACCEPTED_CONTENT_TYPES = frozenset({"audio/wav", "audio/wave", "audio/x-wav"})
+_ASR_TARGET_SAMPLE_RATE_HZ = 16000
+_PCM16_SAMPLE_WIDTH_BYTES = 2
+
+
+def _decode_wav_to_pcm16_mono_16k(wav_bytes: bytes) -> bytes:
+    """Decode a WAV upload into raw PCM16 mono little-endian @ 16 kHz.
+
+    The recognizer expects raw PCM16 frames (``np.frombuffer(...,
+    dtype=np.int16)``); a multipart upload contains the full WAV
+    container (RIFF header + PCM data) and the inherent-swift client
+    may record at the device's native sample rate (commonly 44.1 / 48
+    kHz). This helper strips the header, mixes multi-channel to mono,
+    and resamples to 16 kHz via linear interpolation.
+
+    Raises:
+        HTTPException(415): malformed WAV or unsupported sample width.
+    """
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wav:
+            n_channels = wav.getnchannels()
+            sample_width = wav.getsampwidth()
+            framerate = wav.getframerate()
+            n_frames = wav.getnframes()
+            pcm = wav.readframes(n_frames)
+    except wave.Error as exc:
+        raise HTTPException(status_code=415, detail=f"invalid WAV: {exc}") from None
+
+    if sample_width != _PCM16_SAMPLE_WIDTH_BYTES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"WAV must be PCM16 (got sample_width={sample_width})",
+        )
+
+    samples = np.frombuffer(pcm, dtype=np.int16)
+    if n_channels > 1:
+        # Mix down to mono by averaging channels.
+        samples = samples.reshape(-1, n_channels).mean(axis=1).astype(np.int16)
+
+    if framerate != _ASR_TARGET_SAMPLE_RATE_HZ:
+        if framerate <= 0 or samples.size == 0:
+            return b""
+        target_len = int(samples.size * _ASR_TARGET_SAMPLE_RATE_HZ / framerate)
+        if target_len <= 0:
+            return b""
+        indices = np.linspace(0, samples.size - 1, target_len)
+        resampled = np.interp(indices, np.arange(samples.size), samples.astype(np.float32))
+        samples = resampled.astype(np.int16)
+
+    return samples.tobytes()
 
 
 class SubmitRequest(BaseModel):
@@ -165,12 +217,20 @@ async def _run_asr_submit(
     if not body:
         raise HTTPException(status_code=400, detail="empty body")
 
+    # WAV container → raw PCM16 mono 16 kHz (the recognizer's expected
+    # input format). Without this the entire WAV (RIFF header + PCM)
+    # is treated as raw int16 samples, which either raises ValueError
+    # on odd-length files or recognizes garbage on even-length ones.
+    pcm = _decode_wav_to_pcm16_mono_16k(body)
+    if not pcm:
+        raise HTTPException(status_code=400, detail="empty audio after decode")
+
     # ADR §5.2: server-mint turn_id, ignore any client-supplied value (Day-1 trust posture).
     turn_id = "T" + secrets.token_hex(4)
     try:
         ev = await asyncio.to_thread(
             deps.voice_pipeline_callable,
-            body,
+            pcm,
             turn_id,
             "inherent_ptt",
             language,

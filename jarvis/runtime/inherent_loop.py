@@ -632,7 +632,14 @@ def _build_tts_pipeline(
         )
         return None
     provider = voice_tts.MiniMaxWSClient(api_key=api_key)
-    player = voice_tts.AudioStreamPlayer(sample_rate_hz=_DEFAULT_TTS_SAMPLE_RATE_HZ)
+    # lazy_open=False so the PortAudio OutputStream is up before the first
+    # MiniMax chunk lands; otherwise `write()` would fill the ring and
+    # never drain, leaving `is_speaking()` permanently True and starving
+    # the wake listener.
+    player = voice_tts.AudioStreamPlayer(
+        sample_rate_hz=_DEFAULT_TTS_SAMPLE_RATE_HZ,
+        lazy_open=False,
+    )
     return voice_tts.TTSPipeline(
         provider=provider,
         player=player,
@@ -684,7 +691,7 @@ def _open_wake_input_stream() -> Any:  # noqa: ANN401 — sounddevice stream is 
     pull exactly one 80 ms PCM16 frame. Legacy parity:
     ``core/inherent_wake_listener.py`` opens the same shape.
     """
-    import sounddevice as sd  # type: ignore[import-not-found]  # noqa: PLC0415
+    import sounddevice as sd  # type: ignore[import-untyped]  # noqa: PLC0415
 
     stream = sd.RawInputStream(
         samplerate=_WAKE_SAMPLE_RATE_HZ,
