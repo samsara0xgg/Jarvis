@@ -484,13 +484,14 @@ def run_turn(
     )
 
 
-def drive_turn(
+def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set is the cross-surface contract (CLI + daemon watcher) and intentionally explicit.
     runtime: JarvisRuntime,
     *,
     user_intent_event: Event,
     available_surfaces: frozenset[str] | None = None,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     trigger_timeout_s: float = _DEFAULT_TRIGGER_TIMEOUT_S,
+    streaming_enabled: bool = False,
 ) -> RunTurnResult:
     """Drive the post-emit body of one turn from an already-emitted intent event.
 
@@ -525,7 +526,13 @@ def drive_turn(
        routes the channel-split text across the L3 attention channel's
        physical surfaces (say / banner / stdout when attached) AND
        enforces the Pre-emit token check (canary H3) AND emits the
-       audit ``surface.response_emitted`` event.
+       audit ``surface.response_emitted`` event. When
+       ``streaming_enabled=True`` (daemon path, ADR-0003 Step 2),
+       render_response ALSO emits ``surface.response_open`` plus N
+       ``surface.response_chunk`` rows BEFORE the audit
+       ``surface.response_emitted``; the user transcript (lifted from
+       ``user_intent_event.payload["transcript"]``) lands on the open
+       payload as ``query``.
 
     The Pre-emit token check protects against a runtime that
     accidentally re-uses an old plan or fails to refresh the token —
@@ -541,6 +548,11 @@ def drive_turn(
             callers use ``frozenset()`` to suppress physical surfaces.
         max_iterations: Hard ceiling on decide() invocations.
         trigger_timeout_s: Per-trigger wait timeout.
+        streaming_enabled: Forwarded to
+            :func:`jarvis.surface.cli_render.render_response`; the
+            daemon watcher (ADR-0003 Step 2 Build 5) passes ``True``
+            so the renderer emits the 3-event Inherent taxonomy.
+            Default ``False`` preserves CLI single-emit semantics.
 
     Returns:
         Frozen :class:`RunTurnResult` describing what was written and
@@ -635,6 +647,8 @@ def drive_turn(
     # document text to the notify banner per the channel mapping, and
     # emits the audit surface.response_emitted event itself.
     capture: io.StringIO = io.StringIO()
+    transcript_raw = user_intent_event.payload.get("transcript", "")
+    query = transcript_raw if isinstance(transcript_raw, str) else ""
     _, render_event = render_response(
         primed_state,
         response_plan,
@@ -643,6 +657,8 @@ def drive_turn(
         attention_channel=final_attention_channel,
         stream=capture,
         available_surfaces=available_surfaces,
+        streaming_enabled=streaming_enabled,
+        query=query,
     )
     rendered = capture.getvalue()
     sys.stdout.write(rendered)
@@ -728,17 +744,13 @@ def _pop_pending_stashes(
             continue
         run_id_raw = evt.payload.get("run_id")
         stash_ref_raw = evt.payload.get("stash_ref")
-        task_id_raw = (
-            evt.correlation.get("task_id") if evt.correlation is not None else None
-        )
+        task_id_raw = evt.correlation.get("task_id") if evt.correlation is not None else None
         if not isinstance(run_id_raw, str) or run_id_raw in seen_run_ids:
             continue
         seen_run_ids.add(run_id_raw)
         # stash_ref may be None on a clean tree at spawn-time — pass
         # through; restore_pretask_changes is a no-op for None.
-        stash_ref: str | None = (
-            stash_ref_raw if isinstance(stash_ref_raw, str) else None
-        )
+        stash_ref: str | None = stash_ref_raw if isinstance(stash_ref_raw, str) else None
         if stash_ref is None:
             continue
         if not isinstance(task_id_raw, str):
