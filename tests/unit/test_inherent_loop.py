@@ -618,7 +618,13 @@ def test_serve_inherent_raises_process_lock_held_when_lock_taken(
 def test_fetch_events_after_returns_only_matching_type_in_id_order(
     runtime: JarvisRuntime,
 ) -> None:
-    """_fetch_events_after filters by type and respects after_id."""
+    """_fetch_events_after filters by type tuple and respects after_id.
+
+    ADR-0005 §5.1: the helper now accepts ``event_types: tuple[str, ...]``
+    so the inherent-loop user-intent watcher can fold both
+    ``surface.user_intent`` and ``utterance.received`` into one cursor.
+    A single-element tuple preserves the original single-type behavior.
+    """
     e1 = emit_event(
         runtime.conn,
         type="surface.user_intent",
@@ -648,7 +654,7 @@ def test_fetch_events_after_returns_only_matching_type_in_id_order(
     results = _fetch_events_after(
         runtime.conn,
         after_id=0,
-        event_type="surface.user_intent",
+        event_types=("surface.user_intent",),
     )
     assert [ev.event_uid for _id, ev in results] == [e1.event_uid, e2.event_uid]
     # id values are positive and strictly increasing.
@@ -664,6 +670,6 @@ def test_fetch_events_after_returns_only_matching_type_in_id_order(
     only_second = _fetch_events_after(
         runtime.conn,
         after_id=latest - 1,
-        event_type="surface.user_intent",
+        event_types=("surface.user_intent",),
     )
     assert [ev.event_uid for _id, ev in only_second] == [e2.event_uid]

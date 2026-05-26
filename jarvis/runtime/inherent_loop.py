@@ -104,11 +104,18 @@ _DEFAULT_PORT: int = 8006
 
 # Watcher cursor SELECT — placeholders only, no user-controlled
 # interpolation. Mirrors the column order of
-# ``jarvis.state.event_log._SELECT_ALL_ORDERED_SQL``.
-_SELECT_AFTER_ID_OF_TYPE_SQL = (
+# ``jarvis.state.event_log._SELECT_ALL_ORDERED_SQL``. The type filter
+# is an ``IN (...)`` list with a dynamically-built placeholder run so
+# the watcher can fold multiple event types into one cursor (ADR-0005
+# §5.1: the inherent-loop user-intent watcher folds BOTH
+# ``surface.user_intent`` (keyboard) and ``utterance.received`` (voice)
+# into one driver path). Placeholder count is interpolated from the
+# tuple length passed in by the caller; tuple contents go through
+# placeholders, never interpolation.
+_SELECT_AFTER_ID_OF_TYPES_SQL_TEMPLATE = (
     "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
     "payload_json, source_event_id, correlation_json "
-    "FROM events WHERE id > ? AND type = ? ORDER BY id ASC"
+    "FROM events WHERE id > ? AND type IN ({placeholders}) ORDER BY id ASC"
 )
 
 # Single-cursor SELECT for the three Step-2 Inherent response event
@@ -178,19 +185,26 @@ def _fetch_events_after(
     conn: sqlite3.Connection,
     *,
     after_id: int,
-    event_type: str,
+    event_types: tuple[str, ...],
 ) -> list[tuple[int, Event]]:
-    """SELECT every event of ``event_type`` with ``id > after_id``, oldest first.
+    """SELECT every event whose type is in ``event_types`` with ``id > after_id``.
+
+    ADR-0005 §5.1: callers may pass multiple event types so a single
+    cursor can drive turns from both keyboard
+    (``surface.user_intent``) and voice (``utterance.received``)
+    surfaces with one polling loop. The SQL ``IN (...)`` placeholder
+    list is built from ``len(event_types)``; the type values
+    themselves pass through SQLite placeholders (no string
+    interpolation of user data).
 
     Returns a materialized list of ``(id, Event)`` tuples (not an
     iterator) because the watcher loop folds the cursor before its next
     poll; lifetime safety beats streaming for ~tens of rows. The ``id``
     is the SQLite row id used to advance the cursor.
     """
-    cursor = conn.execute(
-        _SELECT_AFTER_ID_OF_TYPE_SQL,
-        (after_id, event_type),
-    )
+    placeholders = ",".join("?" * len(event_types))
+    sql = _SELECT_AFTER_ID_OF_TYPES_SQL_TEMPLATE.format(placeholders=placeholders)
+    cursor = conn.execute(sql, (after_id, *event_types))
     return [_row_to_id_event(row) for row in cursor]
 
 
@@ -269,19 +283,50 @@ def _drive_turn_in_worker_thread(
             worker_conn.close()
 
 
+# Event types the inherent-loop user-intent watcher folds into ONE
+# cursor. Per ADR-0005 §5.1 "Important wiring detail", both the
+# keyboard surface (``surface.user_intent`` from cli/__main__.py and
+# the daemon /inherent/submit handler) AND the voice surface
+# (``utterance.received`` from the ASR pipeline / wake listener) drive
+# a turn through the same composition-root code path. The downstream
+# ``drive_turn`` (and thus L3 / L4 / L5) is identical regardless of
+# which event type arrived — the watcher passes the event verbatim as
+# ``user_intent_event`` to :func:`drive_turn`, which reads
+# ``payload["transcript"]`` and ``payload["turn_id"]`` (both schemas
+# require these keys per the L2 event registry).
+_USER_INTENT_TRIGGER_TYPES: tuple[str, ...] = (
+    "surface.user_intent",
+    "utterance.received",
+)
+
+
 async def _user_intent_watcher(
     runtime: JarvisRuntime,
     *,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
 ) -> None:
-    """Background task: drive a turn for each new ``surface.user_intent`` row.
+    """Background task: drive a turn for each new user-intent row.
+
+    Folds two event types into one cursor — ADR-0005 §5.1
+    "Important wiring detail":
+
+    - ``surface.user_intent``  — keyboard surface (cli/__main__.py
+      and the daemon /inherent/submit HTTP handler).
+    - ``utterance.received``    — voice surface (the ASR pipeline /
+      wake listener emits this after VAD-segmented audio is
+      normalized).
+
+    Both events carry ``transcript`` + ``turn_id`` in their payload
+    (event-log registry requirement), so :func:`drive_turn` accepts
+    either verbatim as ``user_intent_event``; the L3 / L4 / L5
+    downstream is identical regardless of input channel.
 
     Lifecycle:
 
     1. Anchor the cursor at ``MAX(events.id)`` so events that landed
        before the watcher started are not replayed.
-    2. Poll every ``poll_interval_s`` seconds. For each new
-       ``surface.user_intent`` row, dispatch
+    2. Poll every ``poll_interval_s`` seconds. For each new row of
+       either trigger type, dispatch
        :func:`_drive_turn_in_worker_thread` via
        :func:`asyncio.to_thread`. The thread offload is mandatory:
        ``drive_turn`` blocks on :func:`jarvis.runtime._wait_for_next_trigger`'s
@@ -302,7 +347,7 @@ async def _user_intent_watcher(
             new_events = _fetch_events_after(
                 runtime.conn,
                 after_id=after_id,
-                event_type="surface.user_intent",
+                event_types=_USER_INTENT_TRIGGER_TYPES,
             )
             for row_id, ev in new_events:
                 after_id = max(after_id, row_id)
