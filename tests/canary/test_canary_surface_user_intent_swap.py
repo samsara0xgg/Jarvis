@@ -1,15 +1,16 @@
-"""Surface-user-intent swap canary: no production ``emit_event`` site uses ``utterance.received``.
+"""Surface-user-intent swap canary: only the voice surface emits ``utterance.received``.
 
-Day-2 CLI emits ``surface.user_intent`` per spec §3.4.1 trigger taxonomy.
-``utterance.received`` is reserved for a future voice surface and remains
-in the registry (``jarvis.state.event_log``), but no production emit site
-may use it Day-2.
+The Day-2 CLI emits ``surface.user_intent`` per spec §3.4.1 trigger taxonomy.
+``utterance.received`` is the voice-surface event (ADR-0005 §4.2,
+``jarvis/surface/voice_pipeline.py``) — every OTHER production emit site
+must use ``surface.user_intent`` instead so the CLI/voice swap stays clean.
 
 This canary AST-scans every ``.py`` file under ``jarvis/`` and asserts
-ZERO calls of the form ``emit_event(..., type="utterance.received", ...)``.
-The string literal can still appear in other contexts — e.g. the registry
-definition in ``event_log.py`` keeping the event type registered — so the
-scan is narrowly scoped to ``emit_event`` callsites with a ``type=`` keyword.
+that the only file calling ``emit_event(..., type="utterance.received", ...)``
+is the ADR-0005 voice pipeline. The string literal can still appear in
+other contexts — e.g. the registry definition in ``event_log.py`` keeping
+the event type registered — so the scan is narrowly scoped to ``emit_event``
+callsites with a ``type=`` keyword.
 
 Scope note: uses :func:`iter_jarvis_py_files` (not ``iter_all_py_files``)
 because the canary guards production emit sites, not test fixtures.
@@ -20,6 +21,12 @@ from __future__ import annotations
 import ast
 
 from tests.canary._helpers import iter_jarvis_py_files, parse, relative_to_repo
+
+# ADR-0005 §4.2: the voice pipeline is the canonical emit site for
+# ``utterance.received``. Adding new emit sites requires a separate ADR.
+_VOICE_EMIT_ALLOWLIST: frozenset[str] = frozenset(
+    {"jarvis/surface/voice_pipeline.py"},
+)
 
 
 def _is_emit_event_call(node: ast.AST) -> bool:
@@ -54,22 +61,24 @@ def _format_violation(rel: str, lineno: int) -> str:
     return (
         f'{rel}:{lineno}: emit_event(..., type="utterance.received", ...) '
         "— Day-2 CLI emits surface.user_intent per spec §3.4.1 trigger taxonomy. "
-        "utterance.received is reserved for a future voice surface and stays in "
-        "the registry, but no production emit site may use it Day-2."
+        "Only the ADR-0005 voice pipeline (jarvis/surface/voice_pipeline.py) "
+        "may emit utterance.received."
     )
 
 
 def test_canary_surface_user_intent_swap() -> None:
-    """Fail if any ``.py`` under ``jarvis/`` calls emit_event with type=utterance.received."""
+    """Fail if any non-voice ``.py`` under ``jarvis/`` emits utterance.received."""
     violations: list[str] = [
-        _format_violation(relative_to_repo(path), getattr(node, "lineno", 0))
+        _format_violation(rel, getattr(node, "lineno", 0))
         for path in iter_jarvis_py_files()
+        for rel in (relative_to_repo(path),)
+        if rel not in _VOICE_EMIT_ALLOWLIST
         for node in ast.walk(parse(path))
         if _is_emit_event_call(node) and _type_kwarg_is_legacy_utterance(node)
     ]
 
     assert not violations, (
-        "surface-user-intent-swap canary — Day-2 CLI emits surface.user_intent "
-        "(utterance.received remains reserved in the registry for a future voice "
-        "surface but no production emit site may use it):\n  " + "\n  ".join(violations)
+        "surface-user-intent-swap canary — Day-2 CLI emits surface.user_intent; "
+        "only jarvis/surface/voice_pipeline.py (ADR-0005 §4.2) may emit "
+        "utterance.received:\n  " + "\n  ".join(violations)
     )
