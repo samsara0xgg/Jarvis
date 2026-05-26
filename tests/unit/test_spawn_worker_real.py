@@ -510,7 +510,7 @@ def test_spawn_worker_dirty_tree_forwards_stash_ref_via_metadata(tmp_path: Path)
             ),
             patch(
                 "jarvis.execution.tools.isolate_pretask_changes",
-                return_value="stash@{0}",
+                return_value="a" * 40,
             ),
         ):
             result, _lifecycle, _req = _dispatch(paths, conn)
@@ -519,10 +519,10 @@ def test_spawn_worker_dirty_tree_forwards_stash_ref_via_metadata(tmp_path: Path)
         conn.close()
 
     assert result.metadata is not None
-    assert result.metadata["stash_ref"] == "stash@{0}"
+    assert result.metadata["stash_ref"] == "a" * 40
     # Also surfaced via the success payload so legacy clients reading
     # tool_output can see the stash handle.
-    assert result.payload["stash_ref"] == "stash@{0}"
+    assert result.payload["stash_ref"] == "a" * 40
 
 
 # --- Static no-pop invariant -----------------------------------------------

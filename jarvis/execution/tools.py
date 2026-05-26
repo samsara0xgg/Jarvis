@@ -608,7 +608,7 @@ def spawn_worker_handler(
     3. Emit ``task.executor_assigned(executor="codex", model="gpt-5.5")``.
     4. Emit ``run.started(runner="codex")``.
     5. Dirty-tree stash via :func:`isolate_pretask_changes` BEFORE
-       Codex runs; the resulting ``stash_ref`` (``"stash@{0}"`` or
+       Codex runs; the resulting ``stash_ref`` (40-char commit SHA or
        ``None``) travels back on ``RawResult.metadata["stash_ref"]``
        for the runtime composition to pop AFTER verify_diff exits
        (ADR-0002 Dirty-tree policy).

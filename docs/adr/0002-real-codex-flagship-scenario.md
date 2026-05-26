@@ -672,9 +672,13 @@ pollution. L4 handles this with a deterministic auto-stash:
 def isolate_pretask_changes(cwd: Path) -> str | None:
     """Stash any uncommitted changes before Codex runs.
 
-    Returns the stash ref (e.g. "stash@{0}") if anything was stashed,
-    else None. Spawn_worker stashes via:
+    Returns the 40-char commit SHA (e.g. "e3b0c44…") of the just-
+    created stash entry if anything was stashed, else None.
+    Spawn_worker stashes via:
         git -C cwd stash push -u -m "jarvis-pre-codex-<run_id>"
+    The SHA — not the stack ref ``stash@{0}`` — is the returned
+    handle, so a concurrent user stash cannot bump our entry out
+    from under the restore path (see B-0011).
     """
 
 def restore_pretask_changes(cwd: Path, stash_ref: str | None) -> None:
