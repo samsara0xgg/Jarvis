@@ -80,6 +80,7 @@ from jarvis.surface.notify import (
     deliver_banner,
     deliver_voice,
 )
+from jarvis.surface.sentence_splitter import split_into_sentences
 
 if TYPE_CHECKING:
     import sqlite3
@@ -102,11 +103,11 @@ _PHYSICAL_STDOUT = "stdout"
 # L3-channel-label -> physical surface name. Keys are the entries that
 # appear inside ATTENTION_CHANNEL_TO_SURFACES tuples.
 _L3_SURFACE_TO_PHYSICAL: dict[str, str] = {
-    "say":                          _PHYSICAL_VOICE,
-    "say_bell":                     _PHYSICAL_VOICE,
-    "osascript_banner":             _PHYSICAL_BANNER,
-    "osascript_banner_title_only":  _PHYSICAL_BANNER,
-    "cli_stdout":                   _PHYSICAL_STDOUT,
+    "say": _PHYSICAL_VOICE,
+    "say_bell": _PHYSICAL_VOICE,
+    "osascript_banner": _PHYSICAL_BANNER,
+    "osascript_banner_title_only": _PHYSICAL_BANNER,
+    "cli_stdout": _PHYSICAL_STDOUT,
 }
 
 # Default Day-2 banner title for ``osascript_banner`` (the document-text
@@ -125,13 +126,64 @@ _BELL_MARKER = "\a"
 # physical delivery channel (WebSocket push from Step 6 InherentBroadcaster)
 # is the sole observable side-effect of a turn. Match the literal surface
 # IDs in ATTENTION_CHANNEL_TO_SURFACES' codomain (jarvis/surface/notify.py).
-_CLI_DEFAULT_SURFACES: frozenset[str] = frozenset({
-    "say",
-    "say_bell",
-    "osascript_banner",
-    "osascript_banner_title_only",
-    "cli_stdout",
-})
+_CLI_DEFAULT_SURFACES: frozenset[str] = frozenset(
+    {
+        "say",
+        "say_bell",
+        "osascript_banner",
+        "osascript_banner_title_only",
+        "cli_stdout",
+    }
+)
+
+
+def _emit_response_open(
+    conn: sqlite3.Connection,
+    *,
+    turn_id: str,
+    query: str,
+) -> None:
+    """Emit the ADR-0003 Step 2 ``surface.response_open`` event.
+
+    Single emission per turn. Payload carries ``turn_id``, ``query``
+    (the user transcript that triggered the turn — empty string allowed),
+    and ``kind`` (always ``"text"`` for A1).
+    """
+    emit_event(
+        conn,
+        type="surface.response_open",
+        payload={"turn_id": turn_id, "query": query, "kind": "text"},
+        correlation={"turn_id": turn_id},
+    )
+
+
+def _emit_response_chunks(
+    conn: sqlite3.Connection,
+    *,
+    turn_id: str,
+    response_plan: ResponsePlanLike,
+) -> None:
+    """Emit one or more ADR-0003 Step 2 ``surface.response_chunk`` events.
+
+    Chunking gated by ``response_plan.required_gate_mode`` per spec §3.4.13:
+
+    - ``"sentence"`` -> :func:`split_into_sentences` on the plan text;
+      one event per non-empty chunk in source order.
+    - any other value (``"full_text"`` / ``"structured"``) -> a single
+      event carrying the full plan text verbatim (no speculative splitting).
+    """
+    if response_plan.required_gate_mode == "sentence":
+        chunks = split_into_sentences(response_plan.text)
+    else:
+        chunks = [response_plan.text]
+
+    for chunk_text in chunks:
+        emit_event(
+            conn,
+            type="surface.response_chunk",
+            payload={"turn_id": turn_id, "text": chunk_text},
+            correlation={"turn_id": turn_id},
+        )
 
 
 def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatch over 5 fixed surfaces; argument set is the L5 boundary contract and intentionally explicit.
@@ -143,6 +195,8 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     attention_channel: str,
     stream: IO[str] | None = None,
     available_surfaces: frozenset[str] | None = None,
+    streaming_enabled: bool = False,
+    query: str = "",
 ) -> tuple[SurfaceState, Event]:
     """Render an approved ResponsePlan across all surfaces for ``attention_channel``.
 
@@ -168,7 +222,18 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
        ``available_surfaces`` filter (ADR-0003 D3): a surface ID not
        in the effective set is skipped silently so the audit event
        still emits with the remaining (possibly empty) ``delivered_via``.
-    5. Emits exactly one ``surface.response_emitted`` event carrying
+    5. When ``streaming_enabled=True`` (ADR-0003 Step 2, A1 daemon path),
+       emits the 3-event Inherent taxonomy before the audit event:
+       one ``surface.response_open`` (carrying ``query`` + ``kind="text"``),
+       then one-or-more ``surface.response_chunk`` events gated by
+       ``response_plan.required_gate_mode`` (``"sentence"`` -> one chunk
+       per :func:`split_into_sentences` output; ``"full_text"`` /
+       ``"structured"`` / anything else -> a single chunk carrying the
+       full plan text). Default ``streaming_enabled=False`` (CLI path)
+       preserves Step-1 single-emit semantics byte-for-byte. All three
+       Inherent event types share ``correlation={"turn_id": turn_id}``
+       with the audit event below.
+    6. Emits exactly one ``surface.response_emitted`` event carrying
        ``text`` + ``voice_text`` + ``document_text`` +
        ``delivered_via`` (PHYSICAL surface list) +
        ``attention_channel`` (L3 logical channel) + ``response_hash``.
@@ -195,6 +260,13 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
             behaviour). Daemon callers pass ``frozenset()`` to suppress
             all physical surfaces; the audit ``surface.response_emitted``
             event STILL emits with ``delivered_via=[]``.
+        streaming_enabled: When ``True`` (ADR-0003 Step 2 daemon path),
+            emit the 3-event Inherent taxonomy (``surface.response_open``
+            + ``surface.response_chunk`` * N) before the audit event.
+            Default ``False`` (CLI path) emits only the audit event.
+        query: User transcript that triggered this turn. Lands on the
+            ``surface.response_open`` payload; only consulted when
+            ``streaming_enabled=True``. Empty string allowed.
 
     Returns:
         ``(next_state, event)`` — the :class:`SurfaceState` with the
@@ -294,7 +366,14 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
                 attention_channel,
             )
 
-    # 5. Audit event. The payload preserves the Day-1 ``text`` field +
+    # 5. ADR-0003 Step 2 Inherent taxonomy (daemon path only). Order is
+    #    open -> chunk(s) -> emitted so a downstream watcher with a single
+    #    cursor over the three types sees the sequence per turn.
+    if streaming_enabled:
+        _emit_response_open(conn, turn_id=turn_id, query=query)
+        _emit_response_chunks(conn, turn_id=turn_id, response_plan=response_plan)
+
+    # 6. Audit event. The payload preserves the Day-1 ``text`` field +
     #    adds Day-2 channel + delivery fields. ``response_hash`` is the
     #    plan's hash (the Pre-emit token) so downstream auditors can
     #    correlate this surface emission with the gate that approved it.

@@ -149,6 +149,18 @@ class ResponsePlanLike(Protocol):
         """SHA-256 hex of ``text`` stamped on ``gate.evaluated(pre_emit)``."""
         ...
 
+    @property
+    def required_gate_mode(self) -> str:
+        """Spec §3.4.13 required gate mode (``"sentence"`` / ``"full_text"`` / ``"structured"``).
+
+        Drives ADR-0003 Step 2 chunked-emission policy in
+        :func:`jarvis.surface.cli_render.render_response`: ``"sentence"``
+        splits the response into sentence-sized chunks before emit;
+        ``"full_text"`` / ``"structured"`` emit a single chunk with the
+        full text (no speculative splitting).
+        """
+        ...
+
 
 # --- Public API -------------------------------------------------------------
 
