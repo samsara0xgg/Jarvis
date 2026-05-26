@@ -744,6 +744,21 @@ def _spawn_wake_listener(
         return bytes(data)
 
     engine = voice_wake.WakeEngine(model_name="hey_jarvis_v0.1")
+    # Without start(), the underlying openwakeword Model is never loaded:
+    # predict() silently returns {} and the listener's threshold check is
+    # always 0.0 — wake never fires. ADR §F1: a failure here downgrades to
+    # text-only (no audio device / wheel missing in CI).
+    try:
+        engine.start()
+    except Exception:
+        LOGGER.exception(
+            "wake: WakeEngine.start() failed; skipping wake listener.",
+        )
+        try:
+            stream.close()
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            LOGGER.debug("wake: stream close after engine start failure failed", exc_info=True)
+        return None
     silero_vad = voice_audio.SileroVad(mode="record", model_path=silero_path)
     capture_callable = functools.partial(
         voice_audio.capture_utterance,

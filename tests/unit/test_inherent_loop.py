@@ -25,7 +25,7 @@ import contextlib
 import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -673,3 +673,56 @@ def test_fetch_events_after_returns_only_matching_type_in_id_order(
         event_types=("surface.user_intent",),
     )
     assert [ev.event_uid for _id, ev in only_second] == [e2.event_uid]
+
+
+def test_spawn_wake_listener_starts_engine(tmp_path: Path) -> None:
+    """``_spawn_wake_listener`` MUST call ``engine.start()`` before listener.start().
+
+    Regression for the post-ADR-0005 smoke bug: without ``engine.start()``
+    the underlying openwakeword Model is never loaded, so
+    :meth:`WakeEngine.predict` returns ``{}`` on every frame and the
+    listener's threshold check is always 0.0 — wake silently never fires.
+    """
+    mock_engine_instance = MagicMock()
+    mock_listener_instance = MagicMock()
+    mock_stream = MagicMock()
+
+    # Spy on constructors so we can verify both the engine got .start()'d
+    # AND the engine that got started is the same one handed to the listener.
+    captured: dict[str, object] = {}
+
+    def _fake_wake_engine(**_kw: object) -> object:
+        return mock_engine_instance
+
+    def _fake_wake_listener(**kw: object) -> object:
+        captured["listener_engine"] = kw.get("engine")
+        return mock_listener_instance
+
+    monkeypatch_ctx = pytest.MonkeyPatch()
+    try:
+        monkeypatch_ctx.setattr(
+            inherent_loop.voice_wake, "WakeEngine", _fake_wake_engine,
+        )
+        monkeypatch_ctx.setattr(
+            inherent_loop.voice_wake, "WakeListener", _fake_wake_listener,
+        )
+        monkeypatch_ctx.setattr(
+            inherent_loop.voice_audio, "SileroVad", lambda **_kw: MagicMock(),
+        )
+        monkeypatch_ctx.setattr(
+            inherent_loop, "_open_wake_input_stream", lambda: mock_stream,
+        )
+
+        result = inherent_loop._spawn_wake_listener(  # noqa: SLF001 — testing module-private wiring.
+            pipeline=MagicMock(),
+            broadcaster=MagicMock(),
+            silero_path=tmp_path / "silero.onnx",
+            tts=None,
+        )
+    finally:
+        monkeypatch_ctx.undo()
+
+    assert result is not None, "_spawn_wake_listener returned None unexpectedly"
+    # The engine the listener was wired with must have been started.
+    assert captured["listener_engine"] is mock_engine_instance
+    mock_engine_instance.start.assert_called_once()
