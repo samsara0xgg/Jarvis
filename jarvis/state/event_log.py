@@ -535,6 +535,20 @@ def open_event_log(path: Path) -> sqlite3.Connection:
 
     Connection behavior:
         - Default `isolation_level` (deferred transactions).
+        - `PRAGMA journal_mode = WAL` enables reader/writer concurrency.
+          The mode persists in the db file once set; reapplying on every
+          open is a no-op. Required because the daemon touches the event
+          log from multiple threads (file-watcher, worker, ephemeral
+          submit_report connection, idle-sweep Timer).
+        - `PRAGMA busy_timeout = 5000` makes contending writers retry for
+          up to 5 s instead of raising
+          `OperationalError("database is locked")` immediately.
+          Per-connection; must be reissued each open.
+        - `PRAGMA synchronous = NORMAL` is the standard WAL pairing —
+          fsync at checkpoint instead of every commit. A crash within the
+          last second of writes may lose those commits; the db file
+          itself stays consistent. Acceptable for an append-only event
+          log.
         - `PRAGMA foreign_keys = ON` is intentionally NOT set — the
           `source_event_id` FK is application-validated by `emit_event`
           (the column is `TEXT` and references `events.event_uid`, a
@@ -555,6 +569,13 @@ def open_event_log(path: Path) -> sqlite3.Connection:
         `contextlib.closing`).
     """
     conn = sqlite3.connect(path)
+    # Concurrency / durability PRAGMAs. Order matters: journal_mode
+    # first (persisted in db file), then per-connection busy_timeout
+    # and synchronous. fetchall() drains the result row from
+    # journal_mode so the cursor doesn't leak open.
+    conn.execute("PRAGMA journal_mode = WAL").fetchall()
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute(_CREATE_TABLE_SQL)
     for index_sql in _CREATE_INDEXES_SQL:
         conn.execute(index_sql)

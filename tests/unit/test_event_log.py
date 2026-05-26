@@ -11,6 +11,8 @@ Uses `tmp_path` for the DB file; never touches `~/.jarvis`.
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time as _time
 from contextlib import closing
 from typing import TYPE_CHECKING
 
@@ -742,3 +744,83 @@ def test_emit_event_returns_shared_event_dataclass(tmp_path: Path) -> None:
             ts_epoch_ms=0,
         )
     assert isinstance(evt, Event)
+
+
+# --- Concurrency / durability PRAGMAs (Fix 2) -------------------------------
+
+
+def test_open_event_log_enables_wal_mode(tmp_path: Path) -> None:
+    """open_event_log must set PRAGMA journal_mode = WAL."""
+    with closing(open_event_log(tmp_path / "mac_events.db")) as conn:
+        mode_row = conn.execute("PRAGMA journal_mode").fetchone()
+    assert mode_row is not None
+    assert mode_row[0].lower() == "wal", f"expected WAL, got {mode_row[0]!r}"
+
+
+def test_open_event_log_sets_busy_timeout(tmp_path: Path) -> None:
+    """open_event_log must set busy_timeout >= 5000 ms."""
+    with closing(open_event_log(tmp_path / "mac_events.db")) as conn:
+        timeout_row = conn.execute("PRAGMA busy_timeout").fetchone()
+    assert timeout_row is not None
+    assert timeout_row[0] >= 5000, f"expected >= 5000 ms, got {timeout_row[0]!r}"
+
+
+def test_concurrent_emit_does_not_raise_database_locked(tmp_path: Path) -> None:
+    """A second writer must wait for the first instead of raising instantly.
+
+    Determinism: conn A holds an explicit BEGIN IMMEDIATE for ~100 ms;
+    conn B (with busy_timeout >= 5000 ms) must wait and then succeed.
+    Without the fix B raises OperationalError immediately.
+    """
+    db_path = tmp_path / "mac_events.db"
+    # Pre-create schema so both connections see the table.
+    with closing(open_event_log(db_path)):
+        pass
+
+    barrier = threading.Barrier(2)
+    b_error: list[BaseException] = []
+
+    def writer_a() -> None:
+        with closing(open_event_log(db_path)) as conn_a:
+            conn_a.execute("BEGIN IMMEDIATE")
+            conn_a.execute(
+                "INSERT INTO events (event_uid, type, schema_version, "
+                "ts_epoch_ms, payload_json) VALUES (?, ?, ?, ?, ?)",
+                ("uid_a", "turn.started", 1, 0, '{"turn_id":"A"}'),
+            )
+            barrier.wait()
+            _time.sleep(0.1)
+            conn_a.commit()
+
+    def writer_b() -> None:
+        try:
+            with closing(open_event_log(db_path)) as conn_b:
+                barrier.wait()
+                emit_event(
+                    conn_b,
+                    type="turn.started",
+                    payload={"turn_id": "B"},
+                    ts_epoch_ms=1,
+                    event_uid="uid_b",
+                )
+        except BaseException as exc:  # noqa: BLE001
+            b_error.append(exc)
+
+    thread_a = threading.Thread(target=writer_a)
+    thread_b = threading.Thread(target=writer_b)
+    thread_a.start()
+    thread_b.start()
+    thread_a.join(timeout=10.0)
+    thread_b.join(timeout=10.0)
+
+    assert not thread_a.is_alive(), "writer A timed out"
+    assert not thread_b.is_alive(), "writer B timed out (busy_timeout < 5 s?)"
+    assert not b_error, (
+        f"writer B raised under contention: {b_error[0]!r}; "
+        "expected busy_timeout retry path to succeed"
+    )
+
+    with closing(open_event_log(db_path)) as conn_check:
+        events = list(iter_events(conn_check))
+    assert len(events) == 2
+    assert {e.event_uid for e in events} == {"uid_a", "uid_b"}
