@@ -8,14 +8,16 @@ Layer rules: imports only stdlib, third-party (`websockets`, `sounddevice`,
 `jarvis.runtime`, or `jarvis.cli`.
 
 This file lands in 4 commits per ADR-0005 §14:
-  Task 13: _preprocess_for_speech (this one)
+  Task 13: _preprocess_for_speech
   Task 14: AudioStreamPlayer
-  Task 15: MiniMaxWSClient + MiniMaxUnavailableError
+  Task 15: MiniMaxWSClient + MiniMaxUnavailableError (this one)
   Task 16: TTSPipeline + macos_say_fallback
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import json
 import logging
 import re
 import threading
@@ -25,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable
 
 LOGGER = logging.getLogger(__name__)
 
@@ -494,4 +496,277 @@ class AudioStreamPlayer:
         self._gain.apply(view)
 
 
-__all__ = ["AudioStreamPlayer", "_preprocess_for_speech"]
+# --- MiniMax T2A WebSocket client (ported from legacy core/tts_minimax_ws.py) ---
+#
+# Protocol (https://platform.minimax.io/docs/guides/speech-t2a-websocket):
+#
+#     connect → connected_success → task_start → task_started
+#         → task_continue → audio chunks (hex pcm) → is_final
+#         → task_finish → close
+#
+# Audio frames carry hex-encoded int16 LE PCM at ``sample_rate_in`` (32 kHz by
+# default). The client decodes hex → int16 → float32 mono and returns the
+# concatenated bytes — the same float32 PCM bytes the
+# :class:`AudioStreamPlayer` consumes.
+#
+# Two intentional deviations from the legacy port (ADR-0005 §14 Task 15):
+#   1. ``websockets.connect`` is wrapped by a module-level ``_ws_connect`` seam
+#      so tests can :func:`unittest.mock.patch.object` it without standing up a
+#      real server.
+#   2. Primary / fallback endpoint logic lives in :meth:`synthesize` itself —
+#      one ``OSError`` on the primary triggers a fresh connect to the fallback.
+#      If both fail, :class:`MiniMaxUnavailableError` bubbles to Task 16's
+#      fallback chain (F7 macos-say).
+
+
+class MiniMaxUnavailableError(RuntimeError):
+    """Both primary and fallback MiniMax endpoints are unreachable."""
+
+
+class _MiniMaxProtocolError(RuntimeError):
+    """Server returned a non-zero status_code in ``base_resp``."""
+
+
+async def _ws_connect(url: str, *, additional_headers: dict[str, str]) -> Any:  # noqa: ANN401
+    """Open a websocket connection.
+
+    Module-level so tests can :func:`unittest.mock.patch.object` it without
+    standing up a real server. ``websockets`` is imported lazily so the module
+    stays importable even when the dependency is absent in some CI runners.
+    """
+    import websockets  # noqa: PLC0415
+
+    return await websockets.connect(url, additional_headers=additional_headers)
+
+
+def _base_to_ws_url(base_url: str) -> str:
+    """Rewrite ``https://host`` → ``wss://host/ws/v1/t2a_v2`` (legacy convention)."""
+    cleaned = base_url.rstrip("/")
+    cleaned = cleaned.replace("https://", "wss://").replace("http://", "ws://")
+    return cleaned + "/ws/v1/t2a_v2"
+
+
+class MiniMaxWSClient:
+    """One-shot MiniMax TTS WebSocket client with primary/fallback endpoint.
+
+    Public surface required by ADR-0005 §4.2:
+
+    * :meth:`synthesize` — text → concatenated float32 mono PCM bytes
+    * :meth:`synthesize_stream` — async iterator yielding PCM chunks as bytes
+
+    Defaults match the legacy ``core/tts_minimax_ws.py`` constants. The
+    ``sample_rate_in`` / ``sample_rate_out`` pair stays equal (32 kHz) by
+    default so no ``soxr`` resampling is needed; callers that want 48 kHz
+    output must install ``soxr`` and pass ``sample_rate_out=48000``.
+    """
+
+    _CONNECT_TIMEOUT = 3.0
+    _TASK_START_TIMEOUT = 3.0
+    _FIRST_CHUNK_TIMEOUT = 8.0
+    _BETWEEN_CHUNK_TIMEOUT = 5.0
+
+    def __init__(  # noqa: PLR0913 — keyword-only audio + endpoint config
+        self,
+        *,
+        api_key: str,
+        voice: str = "Chinese (Mandarin)_ExplorativeGirl",
+        primary_endpoint: str = "https://api-uw.minimax.io",
+        fallback_endpoint: str = "https://api.minimax.chat",
+        model: str = "speech-2.8-turbo",
+        volume: int = 5,
+        sample_rate_in: int = 32000,
+        sample_rate_out: int = 32000,
+        connect_timeout_s: float = 3.0,
+    ) -> None:
+        """Configure endpoints, voice and audio shape; does not connect yet."""
+        self._api_key = api_key
+        self._voice = voice
+        self._primary_endpoint = primary_endpoint
+        self._fallback_endpoint = fallback_endpoint
+        self._model = model
+        self._volume = int(volume)
+        self._sr_in = int(sample_rate_in)
+        self._sr_out = int(sample_rate_out)
+        self._connect_timeout = float(connect_timeout_s)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    async def synthesize(self, text: str) -> bytes:
+        """Return float32 mono PCM bytes for ``text``.
+
+        Tries the primary endpoint first; on ``OSError`` / ``TimeoutError`` /
+        websockets error, falls back to the secondary endpoint. If both fail,
+        raises :class:`MiniMaxUnavailableError`.
+        """
+        chunks = [chunk async for chunk in self.synthesize_stream(text)]
+        return b"".join(chunks)
+
+    async def synthesize_stream(self, text: str) -> AsyncIterator[bytes]:
+        """Yield float32 PCM chunks as bytes as they arrive from MiniMax."""
+        last_exc: BaseException | None = None
+        for endpoint in (self._primary_endpoint, self._fallback_endpoint):
+            try:
+                async for chunk in self._stream_one_endpoint(endpoint, text):
+                    yield chunk
+            except (OSError, TimeoutError, _MiniMaxProtocolError) as exc:
+                LOGGER.warning("MiniMax endpoint %s failed: %s", endpoint, exc)
+                last_exc = exc
+                continue
+            except Exception as exc:
+                # websockets raises subclasses of Exception (not OSError); we
+                # treat any WS-layer failure as a connect/protocol failure for
+                # fallback, and re-raise anything outside that namespace.
+                if not type(exc).__module__.startswith("websockets"):
+                    raise
+                LOGGER.warning(
+                    "MiniMax endpoint %s failed (%s): %s",
+                    endpoint,
+                    type(exc).__name__,
+                    exc,
+                )
+                last_exc = exc
+                continue
+            else:
+                return
+
+        msg = "both primary and fallback MiniMax endpoints failed"
+        raise MiniMaxUnavailableError(msg) from last_exc
+
+    # ------------------------------------------------------------------
+    # Internals — one session against a single endpoint
+    # ------------------------------------------------------------------
+
+    async def _stream_one_endpoint(
+        self, endpoint: str, text: str,
+    ) -> AsyncIterator[bytes]:
+        ws_url = _base_to_ws_url(endpoint)
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+
+        conn = await asyncio.wait_for(
+            _ws_connect(ws_url, additional_headers=headers),
+            timeout=self._connect_timeout,
+        )
+        try:
+            await self._handshake(conn, text)
+            resampler = self._make_resampler()
+            async for chunk_bytes in self._stream_audio(conn, resampler):
+                yield chunk_bytes
+            # task_finish — best-effort, server may already be closing
+            with contextlib.suppress(Exception):
+                await conn.send(json.dumps({"event": "task_finish"}))
+        finally:
+            with contextlib.suppress(Exception):
+                await conn.close()
+
+    async def _handshake(self, conn: Any, text: str) -> None:  # noqa: ANN401
+        """Drive ``connected_success → task_start → task_started → task_continue``."""
+        # 1. connected_success
+        await asyncio.wait_for(conn.recv(), timeout=self._connect_timeout)
+
+        # 2. task_start
+        task_start = {
+            "event": "task_start",
+            "model": self._model,
+            "voice_setting": {
+                "voice_id": self._voice,
+                "speed": 1.0,
+                "vol": self._volume,
+                "pitch": 0,
+            },
+            "audio_setting": {
+                "format": "pcm",
+                "sample_rate": self._sr_in,
+                "bitrate": 128000,
+                "channel": 1,
+            },
+        }
+        await conn.send(json.dumps(task_start))
+        ts = await asyncio.wait_for(conn.recv(), timeout=self._TASK_START_TIMEOUT)
+        ts_obj = json.loads(ts)
+        status = ts_obj.get("base_resp", {}).get("status_code", 0)
+        if status != 0:
+            msg = f"task_start rejected: {ts_obj.get('base_resp')}"
+            raise _MiniMaxProtocolError(msg)
+
+        # 3. task_continue
+        await conn.send(json.dumps({"event": "task_continue", "text": text}))
+
+    async def _stream_audio(
+        self, conn: Any, resampler: Any | None,  # noqa: ANN401
+    ) -> AsyncIterator[bytes]:
+        """Loop ``conn.recv`` until ``is_final``; yield float32 PCM byte chunks."""
+        carry: bytes = b""
+        first = True
+        while True:
+            timeout = self._FIRST_CHUNK_TIMEOUT if first else self._BETWEEN_CHUNK_TIMEOUT
+            msg_raw = await asyncio.wait_for(conn.recv(), timeout=timeout)
+            obj = json.loads(msg_raw)
+
+            audio_hex = obj.get("data", {}).get("audio", "") or ""
+            if audio_hex:
+                pcm_f32, carry = _decode_audio_hex(audio_hex, carry)
+                if resampler is not None and pcm_f32.size:
+                    pcm_f32 = resampler.resample_chunk(pcm_f32)
+                if pcm_f32.size:
+                    first = False
+                    yield pcm_f32.astype(np.float32).tobytes()
+
+            if obj.get("is_final"):
+                if resampler is not None:
+                    tail = resampler.resample_chunk(
+                        np.zeros(0, dtype=np.float32), last=True,
+                    )
+                    if tail.size:
+                        yield tail.astype(np.float32).tobytes()
+                return
+
+    def _make_resampler(self) -> Any | None:  # noqa: ANN401
+        """Return a ``soxr.ResampleStream`` when sr_in != sr_out, else ``None``.
+
+        ``soxr`` is imported lazily so the surrounding module stays importable
+        in environments without it; the failure mode is a clear runtime error
+        only when resampling is actually required.
+        """
+        if self._sr_in == self._sr_out:
+            return None
+        try:
+            import soxr  # type: ignore[import-not-found]  # noqa: PLC0415
+        except ImportError as exc:
+            msg = (
+                f"sample_rate_in={self._sr_in} != sample_rate_out={self._sr_out} "
+                "requires the optional 'soxr' dependency"
+            )
+            raise RuntimeError(msg) from exc
+        return soxr.ResampleStream(
+            self._sr_in, self._sr_out, 1, dtype="float32", quality="HQ",
+        )
+
+
+def _decode_audio_hex(audio_hex: str, carry: bytes) -> tuple[np.ndarray, bytes]:
+    """Decode a hex-encoded int16-LE PCM frame to float32 mono PCM in [-1, 1].
+
+    Carries a trailing odd byte forward into the next frame so int16 reshape
+    never sees an unaligned buffer. Ported from
+    ``core/tts_minimax_ws.MinimaxWSClient.feed``.
+    """
+    if len(audio_hex) % 2:
+        audio_hex = audio_hex[:-1]
+    raw = carry + bytes.fromhex(audio_hex)
+    aligned_len = (len(raw) // 2) * 2
+    new_carry = raw[aligned_len:]
+    raw = raw[:aligned_len]
+    if not raw:
+        return np.zeros(0, dtype=np.float32), new_carry
+    pcm_i16 = np.frombuffer(raw, dtype=np.int16).copy()
+    pcm_f32 = pcm_i16.astype(np.float32) / 32768.0
+    return pcm_f32, new_carry
+
+
+__all__ = [
+    "AudioStreamPlayer",
+    "MiniMaxUnavailableError",
+    "MiniMaxWSClient",
+    "_preprocess_for_speech",
+]
