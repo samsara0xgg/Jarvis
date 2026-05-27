@@ -16,6 +16,7 @@ dependencies = [
     "websockets",         # ADR-0005 §4.2 — MiniMaxWSClient streaming WS provider
     "numpy",              # ADR-0005 — L5 voice surface (PCM math, RMS, recognizer audio)
     "python-multipart",   # ADR-0005 §5.2 — /inherent/asr-submit multipart WAV upload
+    "soxr",               # ADR-0005 §5.3 — MiniMax 32 kHz → OutputStream 48 kHz resample
 ]
 
 [project.optional-dependencies]
