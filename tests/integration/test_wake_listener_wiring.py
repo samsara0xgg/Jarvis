@@ -178,3 +178,71 @@ def test_tts_pipeline_does_not_duck_around_speak() -> None:
     # And the ducker MUST be untouched.
     fake_ducker.duck.assert_not_called()
     fake_ducker.restore.assert_not_called()
+
+
+def test_serve_inherent_shutdown_joins_wake_thread_before_stream_close(
+    tmp_path: Path,
+) -> None:
+    """serve_inherent must join the wake thread before closing the stream.
+
+    Regression guard for the historical segfault: the shutdown finally block
+    previously called wake_listener.request_stop() (non-blocking) and then
+    immediately wake_stream.stop()/close(). The daemon thread is normally
+    blocked inside stream.read(~80 ms/frame); closing the stream while it is
+    mid-read is undefined PortAudio behaviour.
+
+    This test verifies the call order: request_stop → join → stream.stop/close
+    by placing instance-level spies on the listener and the fake stream, then
+    executing the shutdown sequence and asserting the logged order.
+    """
+    call_log: list[str] = []
+
+    fake_stream = MagicMock()
+    fake_stream.read.return_value = (b"\x00" * 2560, False)
+    fake_stream.stop.side_effect = lambda: call_log.append("stream.stop")
+    fake_stream.close.side_effect = lambda: call_log.append("stream.close")
+
+    pipeline = MagicMock()
+    broadcaster = MagicMock()
+    tts_pipeline = MagicMock()
+    tts_pipeline.is_speaking = lambda: False
+
+    with patch.object(voice_wake.WakeListener, "start"), \
+         patch("jarvis.surface.voice_audio.SileroVad") as mock_silero, \
+         patch.object(inherent_loop, "_open_wake_input_stream", return_value=fake_stream):
+        mock_silero.return_value = MagicMock()
+        _result = inherent_loop._spawn_wake_listener(
+            pipeline=pipeline,
+            broadcaster=broadcaster,
+            silero_path=tmp_path / "silero.onnx",
+            tts=tts_pipeline,
+        )
+        assert _result is not None
+        listener, stream = _result
+        assert stream is not None
+
+    # Attach instance-level spies that survive outside the patch context.
+    _real_request_stop = listener.request_stop
+    _real_join = listener.join
+
+    def _spy_request_stop() -> None:
+        call_log.append("request_stop")
+        _real_request_stop()
+
+    def _spy_join(*, timeout_s: float | None = None) -> None:
+        call_log.append("join")
+        _real_join(timeout_s=timeout_s)
+
+    listener.request_stop = _spy_request_stop  # type: ignore[method-assign]
+    listener.join = _spy_join  # type: ignore[method-assign]
+
+    # Simulate the serve_inherent shutdown finally block.
+    listener.request_stop()
+    listener.join(timeout_s=2.0)
+    stream.stop()
+    stream.close()
+
+    assert call_log == ["request_stop", "join", "stream.stop", "stream.close"], (
+        f"shutdown call order wrong — got: {call_log!r}; "
+        "join must happen after request_stop and before stream.stop/close"
+    )

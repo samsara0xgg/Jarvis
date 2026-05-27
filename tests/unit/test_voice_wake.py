@@ -197,6 +197,94 @@ def test_engine_reset_called_when_capture_returns_none() -> None:
     )
 
 
+def test_join_returns_after_stop_and_thread_is_dead() -> None:
+    """join(timeout_s=...) must return promptly and thread must be dead.
+
+    Regression guard for the shutdown-ordering bug: request_stop() only sets
+    an event; the thread exits asynchronously. join() is what guarantees the
+    thread has actually exited before the caller closes the audio stream.
+
+    This test blocks the frame_factory with a threading.Event, signals stop,
+    unblocks the factory, then verifies that join() returns within timeout and
+    that is_alive() is False.
+    """
+    read_gate = threading.Event()
+    read_gate.set()  # start unblocked
+
+    def _blocking_frame_factory() -> bytes:
+        # Block until the gate is open, checking frequently so stop propagates.
+        read_gate.wait()
+        return b"\x00" * voice_wake._FRAME_BYTES  # noqa: SLF001
+
+    fake_engine = MagicMock()
+    fake_engine.predict.return_value = {"hey_jarvis_v0.1": 0.0}  # never detect
+    fake_pipeline = MagicMock()
+
+    listener = voice_wake.WakeListener(
+        engine=fake_engine,
+        pipeline=fake_pipeline,
+        broadcaster=None,
+        capture_callable=MagicMock(return_value=b"\x00" * 32),
+        threshold=0.5,
+        frame_factory=_blocking_frame_factory,
+    )
+    listener.start()
+    assert listener.is_alive(), "thread should be alive after start()"
+
+    # Signal stop then immediately join — thread must exit within 1 s.
+    listener.request_stop()
+    read_gate.set()  # unblock any in-progress read
+    listener.join(timeout_s=1.0)
+
+    assert not listener.is_alive(), (
+        "wake thread still alive after request_stop() + join(timeout_s=1.0); "
+        "shutdown ordering is broken"
+    )
+
+
+def test_join_before_stream_close_does_not_crash() -> None:
+    """Verify the canonical shutdown sequence: stop → join → close stream.
+
+    Simulates the serve_inherent shutdown pattern. The 'stream' here is a
+    MagicMock; what matters is that join() returns before close() is called,
+    i.e. the thread is dead by the time the stream goes away.
+    """
+    call_log: list[str] = []
+
+    def _frame_factory() -> bytes:
+        return b"\x00" * voice_wake._FRAME_BYTES  # noqa: SLF001
+
+    fake_engine = MagicMock()
+    fake_engine.predict.return_value = {"hey_jarvis_v0.1": 0.0}
+
+    fake_stream = MagicMock()
+    fake_stream.stop.side_effect = lambda: call_log.append("stream.stop")
+    fake_stream.close.side_effect = lambda: call_log.append("stream.close")
+
+    listener = voice_wake.WakeListener(
+        engine=fake_engine,
+        pipeline=MagicMock(),
+        broadcaster=None,
+        capture_callable=MagicMock(return_value=b"\x00" * 32),
+        threshold=0.5,
+        frame_factory=_frame_factory,
+    )
+    listener.start()
+
+    # Canonical shutdown: request_stop → join → close stream.
+    listener.request_stop()
+    listener.join(timeout_s=1.0)
+    assert not listener.is_alive(), "thread must be dead before stream close"
+
+    # Now close the stream — thread is confirmed dead, no race possible.
+    fake_stream.stop()
+    fake_stream.close()
+
+    assert call_log == ["stream.stop", "stream.close"], (
+        f"unexpected call order: {call_log!r}"
+    )
+
+
 def test_engine_reset_called_exactly_once_on_success() -> None:
     """engine.reset() must be called exactly once on the successful capture path.
 

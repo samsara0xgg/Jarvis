@@ -997,6 +997,20 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915, PLR0912, C901 — compositi
             LOGGER.info("serve_inherent: shutting down watchers")
             if wake_listener is not None:
                 wake_listener.request_stop()
+                # Join the wake thread BEFORE closing the stream. The daemon
+                # thread is normally blocked inside stream.read(~80 ms/frame);
+                # closing the stream while it is mid-read is undefined
+                # PortAudio behaviour and was the historical segfault root cause
+                # (see jarvis-legacy/core/inherent_wake_listener.py:73-78).
+                _wake_join_timeout_s = 2.0
+                wake_listener.join(timeout_s=_wake_join_timeout_s)
+                if wake_listener.is_alive():
+                    LOGGER.warning(
+                        "wake listener thread did not exit within %.1f s; "
+                        "proceeding with stream close (segfault risk reduced "
+                        "but not eliminated)",
+                        _wake_join_timeout_s,
+                    )
             if wake_stream is not None:
                 try:
                     wake_stream.stop()
