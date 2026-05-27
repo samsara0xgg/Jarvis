@@ -2,7 +2,8 @@
 
 **Date:** 2026-05-27
 **Branch:** `worktree-claude-adr0001`
-**Spec basis:** `docs/spec.html` §3.4.12 (Pre-emit Gate 的可行边界), §13 I10 (Claim Must Not Exceed Evidence)
+**Spec basis (primary):** `docs/spec.html` §3.4.12 (Pre-emit Gate 的可行边界 — v0 scope rule), §3.4.4 (LLMSituationPacket — `active_task?` optional)
+**Spec basis (corroborative):** §3.4.13 + §3.6.6 (ResponsePlan + routine streaming), §13.1 (Pre-emit Gate's three checks), §13 I10 (Claim ≤ Evidence)
 **Companion ADR:** ADR-0002 v3.1 (Pre-emit Gate is a core mechanism of the §3.5 verification ladder)
 **Status:** Draft — awaiting Allen review before handoff to writing-plans
 
@@ -42,7 +43,9 @@ The retry chain is correctly implemented per ADR-0002 §3.5.8, but it is being e
 
 > 只 gate consequential claims：task status、agent completion、test result、device result、memory write、current mutable state。
 
-A self-introduction containing the verb "完成" is none of those. Invariant I10 (`§13`) restricts to "语音、document、task status、memory write" — capability statements in conversational replies are not in that list.
+A self-introduction containing the verb "完成" is none of those. Invariant I10 (§13) restricts to "语音、document、task status、memory write" — capability statements in conversational replies are not in that list.
+
+Independently, §3.4.4 (LLMSituationPacket) marks `active_task?` as optional — the spec explicitly admits the case where no task is in scope. The implementation invented the magic string `"unknown_subject"` to coerce that legitimate empty case into the gate's failure path, which is exactly backwards.
 
 The implementation gates strictly more than the spec authorises.
 
@@ -125,6 +128,14 @@ The three `pre_emit_gate(...)` call sites at lines 1867 / 1900 / 1919 accept the
 - F1 short-circuit in `decide()` (entity.resolved hard-refusal path for empty-ledger demonstrative references)
 - `gate.evaluated` event emission for attempt 0; attempts 1 and 2 only fire when a subject exists and triggers downgrade
 
+### 3.5 §13.1 three-checks preservation
+
+Spec §13.1 specifies the Pre-emit Gate's three checks: (a) `claim ≤ evidence`, (b) `output_form` check, (c) agent self-report cannot upgrade to verified. The None branch:
+
+- (a) **vacuously satisfied** — no claim is being made about any subject, so the inequality holds trivially.
+- (b) **preserved** — the branch returns `output_risk_class="routine"`, `required_gate_mode="sentence"`, matching §3.6.6 row 1 ("routine: sentence-boundary streaming, 低延迟优先，风险低"). Surface still receives a ResponsePlan and gates accordingly.
+- (c) **vacuously satisfied** — no agent report is being interpreted; this check operates on Result Interpreter output (§3.4.11), which is upstream and unaffected.
+
 ---
 
 ## 4. Why this is the optimal fix
@@ -156,11 +167,12 @@ The three `pre_emit_gate(...)` call sites at lines 1867 / 1900 / 1919 accept the
 
 If the LLM produces "我已经把灯关了" while `active_subject_ref` is `None`, the gate now passes it through. The current implementation also fails to gate this correctly — it would catch the keyword but apply the wrong remediation (force limitation language without a corresponding tracked subject).
 
-The correct enforcement point is upstream:
-- Pre-action Gate (`action.pre_emit`) should fire before any state-changing action.
-- Post-action Gate normalises tool returns into evidence keyed to the action's subject, lifting that subject into `active_subject_ref` so the Pre-emit Gate then has something to evaluate.
+The correct enforcement point is upstream, by spec:
 
-A separate design (likely a v0.1 / v1 follow-up) should cover "LLM claims a real-world fact without a corresponding action event". Out of scope here.
+- §13.1 Pre-action Gate (fires before `action.pre_emit`) — checks "是否绑定 active task". An LLM claiming "灯关了" without dispatching an ActionRequest never reaches this gate, so the LLM cannot create a real-world effect; the claim is at most fictitious.
+- §3.5.7 `post_action_check` — when an action IS dispatched, the tool's declared `result_semantics` and `post_action_check` recipe normalise the result into the correct evidence level (ack / observed / verified). The subject is then in scope; the Pre-emit Gate's str branch catches the unsupported claim.
+
+A separate design (likely a v0.1 / v1 follow-up) should cover "LLM claims a real-world fact without any action event at all". The spec's structural answer is "no action event ⇒ no state changed ⇒ the claim is detectably false against the State Object" — verifying this at gate time would require draft-vs-state cross-checking that v0 explicitly defers (§3.4.12 v1 "structured claim plan"). Out of scope here.
 
 ### 5.2 What if the LLM volunteers "task X is done" with no task in scope
 
@@ -241,9 +253,20 @@ None at the design level. All decisions are pinned to spec §3.4.12 v0 literal t
 
 ## 10. References
 
-- `docs/spec.html` §3.4.12 (Pre-emit Gate scope), §3.4.13 (ResponsePlan), §13 I10 (Claim ≤ Evidence)
-- `docs/adr/0002-real-codex-flagship-scenario.md` §3.5.8 (verification ladder)
-- `jarvis/decision/gates.py:312-424` (current Pre-emit Gate implementation)
-- `jarvis/decision/__init__.py:1820-1965` (`_finalize_response` retry chain)
-- Prior memory: S2840 / S2841 / S2842 (root cause traced, two fix options proposed but not applied)
+**Spec (primary):**
+- §3.4.12 — Pre-emit Gate 的可行边界 (v0 scope rule, the literal authority for this fix)
+- §3.4.4 — LLMSituationPacket schema with `active_task?` optional
+
+**Spec (corroborative):**
+- §3.4.13 — ResponsePlan (`output_risk_class`, `required_gate_mode`)
+- §3.6.6 — Streaming TTS and ResponsePlan (routine = sentence-boundary streaming)
+- §3.4.11 — Result Interpreter (`result_semantics` table — orthogonal but adjacent)
+- §3.5.7 — `post_action_check` (the structural enforcement point for §5.1 gap)
+- §13.1 — Pre-emit Gate three checks; §13 I10 — Claim ≤ Evidence
+
+**ADR and prior work:**
+- `docs/adr/0002-real-codex-flagship-scenario.md` §3.5.8 — verification ladder
+- `jarvis/decision/gates.py:312-424` — current Pre-emit Gate implementation
+- `jarvis/decision/__init__.py:1820-1965` — `_finalize_response` retry chain
+- Prior memory: S2840 / S2841 / S2842 — root cause traced, two fix options proposed but not applied
 - Related working fix: F1 short-circuit (B-NEW-4, commits `8305c41` + `f11713c`) — same "if nothing to gate, don't engage" principle applied at the entity resolver layer
