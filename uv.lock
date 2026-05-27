@@ -347,6 +347,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "pyyaml" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
@@ -372,6 +373,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "types-pyyaml", marker = "extra == 'dev'" },
     { name = "uvicorn", extras = ["standard"] },
+    { name = "websockets" },
 ]
 provides-extras = ["dev"]
 
