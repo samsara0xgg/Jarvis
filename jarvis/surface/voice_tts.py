@@ -268,7 +268,7 @@ def _open_output_stream(  # noqa: PLR0913 — passthrough to sd.OutputStream
     surrounding module stays importable in environments where it isn't
     available (CI, headless test runners).
     """
-    import sounddevice as sd  # type: ignore[import-untyped]  # noqa: PLC0415
+    import sounddevice as sd  # noqa: PLC0415
 
     return sd.OutputStream(
         samplerate=sample_rate_hz,
@@ -780,7 +780,7 @@ class MiniMaxWSClient:
         if self._sr_in == self._sr_out:
             return None
         try:
-            import soxr  # type: ignore[import-not-found]  # noqa: PLC0415
+            import soxr  # noqa: PLC0415
         except ImportError as exc:
             msg = (
                 f"sample_rate_in={self._sr_in} != sample_rate_out={self._sr_out} "
@@ -976,34 +976,28 @@ class TTSPipeline:
         cleaned = _preprocess_for_speech(voice_only)
         if not cleaned:
             return
-        ducked = False
-        if self._ducker is not None:
-            try:
-                ducked = bool(self._ducker.duck())
-            except Exception:  # noqa: BLE001 — ducker errors must not kill TTS
-                LOGGER.debug("TTS: ducker.duck() failed", exc_info=True)
+        # NOTE: do NOT wrap synth+write in SystemAudioDucker. That ducker
+        # zeroes the macOS master output volume — which silences the TTS
+        # output stream itself for the duration of write() (write blocks
+        # while the ring drains, up to its 10 s timeout). Legacy used a
+        # PCM-level gain duck inside the player for barge-in; the
+        # OS-level master-volume duck only belongs on the wake-capture
+        # path (mute speakers while the mic is open).
         try:
-            try:
-                pcm = asyncio.run(self._provider.synthesize(cleaned))
-                self._player.write(pcm)
-            except MiniMaxUnavailableError:
-                LOGGER.warning(
-                    "MiniMax unavailable; falling back to macos_say for: %r",
-                    cleaned,
-                )
-                self._fallback(cleaned)
-            except Exception:
-                # TTS path must never crash the daemon; F7 fallback.
-                LOGGER.exception(
-                    "TTS synth failed for turn_id=%s", self._turn_id,
-                )
-                self._fallback(cleaned)
-        finally:
-            if ducked and self._ducker is not None:
-                try:
-                    self._ducker.restore()
-                except Exception:  # noqa: BLE001 — ducker errors must not kill TTS
-                    LOGGER.debug("TTS: ducker.restore() failed", exc_info=True)
+            pcm = asyncio.run(self._provider.synthesize(cleaned))
+            self._player.write(pcm)
+        except MiniMaxUnavailableError:
+            LOGGER.warning(
+                "MiniMax unavailable; falling back to macos_say for: %r",
+                cleaned,
+            )
+            self._fallback(cleaned)
+        except Exception:
+            # TTS path must never crash the daemon; F7 fallback.
+            LOGGER.exception(
+                "TTS synth failed for turn_id=%s", self._turn_id,
+            )
+            self._fallback(cleaned)
 
 
 def macos_say_fallback(text: str, *, voice: str = "Tingting") -> None:

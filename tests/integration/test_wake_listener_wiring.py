@@ -140,13 +140,23 @@ def test_wake_listener_uses_ducker_around_capture() -> None:
     assert any("duck" in s for s in capture_log)
 
 
-def test_tts_pipeline_ducks_around_speak() -> None:
-    """When TTSPipeline._speak runs, voice_ducking.duck() / restore() bracket the synth+play."""
-    ducker_calls: list[str] = []
-    fake_ducker = MagicMock(spec=voice_ducking.SystemAudioDucker)
-    fake_ducker.duck.side_effect = lambda: ducker_calls.append("duck") or True
-    fake_ducker.restore.side_effect = lambda: ducker_calls.append("restore")
+def test_tts_pipeline_does_not_duck_around_speak() -> None:
+    """``_speak`` MUST NOT call ``SystemAudioDucker.duck()`` around synth+play.
 
+    Regression guard for the post-ADR-0005 smoke fix that dropped the
+    OS-master-volume duck from the TTS path. Rationale (see
+    ``voice_tts.TTSPipeline._speak``): the ducker zeroes macOS master
+    output volume, which silences the TTS output stream itself for the
+    duration of ``player.write()`` (write blocks up to its 10 s timeout
+    while the ring drains). The OS-level master-volume duck is for the
+    wake-capture path only (mute speakers while the mic is open). A
+    PCM-level gain duck inside the player is what legacy used for
+    barge-in attenuation.
+
+    This test inverts the original ``test_tts_pipeline_ducks_around_speak``
+    bracket assertion — touching the ducker from ``_speak`` is now a bug.
+    """
+    fake_ducker = MagicMock(spec=voice_ducking.SystemAudioDucker)
     provider = MagicMock(spec=voice_tts.MiniMaxWSClient)
     provider.synthesize = AsyncMock(return_value=b"\x00" * 960)
     player = MagicMock(spec=voice_tts.AudioStreamPlayer)
@@ -159,13 +169,12 @@ def test_tts_pipeline_ducks_around_speak() -> None:
         ducker=fake_ducker,
     )
     pipeline.begin_turn("T1", gate_mode="sentence")
-    pipeline.handle_chunk("T1", "你好")
-    # Sentence-mode aggregates inside <voice>...</voice> regions and flushes
-    # on close OR end_turn (Bug 3 fix); a plain-text chunk waits for
-    # end_turn to flush, so the duck/restore bracket only fires here.
+    pipeline.handle_chunk("T1", "<voice>你好</voice>")
     pipeline.end_turn("T1")
 
-    # Must have ducked before synth.
-    assert ducker_calls == ["duck", "restore"], (
-        f"expected duck->restore bracket; got {ducker_calls!r}"
-    )
+    # Synth must have happened (the smoke fix only dropped the ducker, not the synth).
+    provider.synthesize.assert_awaited_once()
+    player.write.assert_called_once()
+    # And the ducker MUST be untouched.
+    fake_ducker.duck.assert_not_called()
+    fake_ducker.restore.assert_not_called()
