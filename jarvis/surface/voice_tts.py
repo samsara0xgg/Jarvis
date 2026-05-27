@@ -949,6 +949,16 @@ class TTSPipeline:
         if joined:
             self._speak(joined)
 
+    def close(self) -> None:
+        """Stop the audio player and release the PortAudio device.
+
+        Idempotent — safe to call multiple times or when the player is
+        already stopped. Delegates to :meth:`AudioStreamPlayer.stop` which
+        guards on ``self._stream is None``. The MiniMax WS provider needs
+        no teardown (it opens a fresh connection per ``synthesize`` call).
+        """
+        self._player.stop()
+
     def is_speaking(self) -> bool:
         """True iff the player still has queued bytes (drives wake suppression)."""
         return self._player.bytes_pending() > 0

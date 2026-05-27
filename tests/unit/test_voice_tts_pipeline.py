@@ -193,3 +193,26 @@ def test_is_speaking_returns_true_while_buffer_nonempty() -> None:
     assert pipeline.is_speaking() is True
     player.bytes_pending.return_value = 0
     assert pipeline.is_speaking() is False
+
+
+def test_close_stops_player(fake_player: MagicMock) -> None:
+    """``close()`` must delegate to ``player.stop()``."""
+    pipeline = voice_tts.TTSPipeline(
+        provider=MagicMock(spec=voice_tts.MiniMaxWSClient),
+        player=fake_player,
+        fallback=_noop_fallback,
+    )
+    pipeline.close()
+    fake_player.stop.assert_called_once()
+
+
+def test_close_is_idempotent(fake_player: MagicMock) -> None:
+    """``close()`` must be safe to call multiple times without raising."""
+    pipeline = voice_tts.TTSPipeline(
+        provider=MagicMock(spec=voice_tts.MiniMaxWSClient),
+        player=fake_player,
+        fallback=_noop_fallback,
+    )
+    pipeline.close()
+    pipeline.close()
+    assert fake_player.stop.call_count == 2

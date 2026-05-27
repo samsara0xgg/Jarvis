@@ -245,3 +245,21 @@ def test_serve_inherent_shutdown_joins_wake_thread_before_stream_close(
         f"shutdown call order wrong — got: {call_log!r}; "
         "join must happen after request_stop and before stream.stop/close"
     )
+
+
+def test_shutdown_tts_closes_player() -> None:
+    """``_shutdown_tts`` must call ``tts_pipe.close()`` to release the PortAudio device."""
+    player = MagicMock(spec=voice_tts.AudioStreamPlayer)
+    player.bytes_pending.return_value = 0
+    tts_pipe = voice_tts.TTSPipeline(
+        provider=MagicMock(spec=voice_tts.MiniMaxWSClient),
+        player=player,
+        fallback=lambda _text: None,
+    )
+    inherent_loop._shutdown_tts(tts_pipe)
+    player.stop.assert_called_once()
+
+
+def test_shutdown_tts_none_is_noop() -> None:
+    """``_shutdown_tts(None)`` must not raise (voice subsystem may be absent)."""
+    inherent_loop._shutdown_tts(None)  # must not raise

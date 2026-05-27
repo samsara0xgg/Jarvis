@@ -799,6 +799,23 @@ def _spawn_wake_listener(
     return listener, stream
 
 
+def _shutdown_tts(tts_pipe: voice_tts.TTSPipeline | None) -> None:
+    """Stop the TTS pipeline's audio player and release the PortAudio device.
+
+    Idempotent. The AudioStreamPlayer is constructed with lazy_open=False,
+    so its OutputStream + PortAudio callback thread are live as soon as
+    _build_tts_pipeline runs. Without this teardown the device handle
+    leaks past daemon exit, blocking clean re-launch and matching the
+    historical bare-pytest segfault pattern.
+    """
+    if tts_pipe is None:
+        return
+    try:
+        tts_pipe.close()
+    except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
+        LOGGER.debug("tts pipeline close failed", exc_info=True)
+
+
 def _shutdown_wake(
     wake_listener: voice_wake.WakeListener | None,
     wake_stream: Any | None,  # noqa: ANN401 — sounddevice stream is untyped third-party API
@@ -1027,6 +1044,7 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
         finally:
             LOGGER.info("serve_inherent: shutting down watchers")
             _shutdown_wake(wake_listener, wake_stream)
+            _shutdown_tts(tts_pipe)
             # Force-restore output volume in case a duck escaped a finally
             # block on the way down (best-effort; idempotent if depth == 0).
             try:
