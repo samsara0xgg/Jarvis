@@ -346,7 +346,7 @@ def _response_hash(text: str) -> str:
 def pre_emit_gate(
     draft_text: str,
     claim_evidence: ClaimEvidenceProjection,
-    active_subject_ref: str,
+    active_subject_ref: str | None,
 ) -> ResponsePlan:
     """Evaluate the draft response per ADR § Gate contracts.
 
@@ -366,13 +366,35 @@ def pre_emit_gate(
         draft_text: LLM's draft response (output of the tool-use loop).
         claim_evidence: Folded Claim/Evidence projection.
         active_subject_ref: Subject the response is "about" — Day-1
-            this is the active ``task_id``.
+            this is the active ``task_id``. ``None`` signals no subject
+            is in scope (spec §3.4.4 LLMSituationPacket admits this as
+            ``active_task?`` optional); the gate then short-circuits to
+            a routine pass-through per §3.4.12 v0.
 
     Returns:
         Frozen :class:`ResponsePlan` carrying the verdict + final
         text (which equals the draft Day-1 — ``decide()`` does any
         rewriting after observing the verdict).
     """
+    # Spec §3.4.12 v0: only gate consequential claims. When the caller
+    # has no subject in scope, no claim is being made about any tracked
+    # entity — the gate has nothing to enforce. Pass the draft through
+    # unchanged with a routine ResponsePlan (matches §3.4.13 / §3.6.6
+    # routine = sentence-boundary streaming). §13.1 three checks are
+    # vacuously satisfied: (a) claim ≤ evidence trivially holds (no
+    # claim), (b) output_form is routine, (c) no agent report is being
+    # interpreted (Result Interpreter §3.4.11 is upstream).
+    if active_subject_ref is None:
+        return ResponsePlan(
+            text=draft_text,
+            permission="allow_completion_language",
+            downgrade_required=False,
+            active_claim_levels=(),
+            response_hash=_response_hash(draft_text),
+            output_risk_class="routine",
+            required_gate_mode="sentence",
+        )
+
     strongest = claim_evidence.strongest_level_for(active_subject_ref)
     has_postcondition_for_subject = any(
         claim.type == "Postcondition"

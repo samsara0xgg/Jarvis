@@ -203,3 +203,35 @@ def test_pre_emit_detects_done_keyword_case_insensitive():
     plan = pre_emit_gate("All DONE here", projection, active_subject_ref="task_X")
 
     assert plan.downgrade_required is True
+
+
+# --- None subject pass-through (§3.4.12 v0: only gate consequential claims) ---
+
+
+def test_pre_emit_passes_through_when_no_active_subject():
+    """``active_subject_ref=None`` → pass through unchanged.
+
+    Per spec §3.4.12 v0 the Pre-emit Gate only gates consequential
+    claims (task status, agent completion, test result, device result,
+    memory write, current mutable state). When the caller signals no
+    subject (None), there is no consequential claim being made about
+    anyone — the gate has nothing to enforce. The draft is shipped
+    verbatim with ``permission=allow_completion_language`` and
+    ``downgrade_required=False``. §13.1 three checks are vacuously
+    satisfied (no claim, routine output_form, no agent self-report).
+
+    Mirrors the §3.4.4 LLMSituationPacket schema where ``active_task?``
+    is optional — None at the gate boundary is the structural reflection
+    of an empty packet, not a failure mode.
+    """
+    projection = _make_projection()  # empty
+    draft = "我可以帮你完成各种任务。"  # contains "完成" — would trip the str branch
+    plan = pre_emit_gate(draft, projection, active_subject_ref=None)
+
+    assert plan.text == draft, "draft must be shipped verbatim"
+    assert plan.permission == "allow_completion_language"
+    assert plan.downgrade_required is False
+    assert plan.active_claim_levels == ()
+    assert plan.output_risk_class == "routine"
+    assert plan.required_gate_mode == "sentence"
+    assert plan.response_hash == hashlib.sha256(draft.encode("utf-8")).hexdigest()
