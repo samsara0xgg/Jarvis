@@ -124,16 +124,21 @@ check_untyped_defs = true
 module = "tests.*"
 disallow_untyped_defs = false
 
-# Optional voice-hardware wheels are intentionally excluded from
+# Voice-hardware wheels: sounddevice / onnxruntime / sherpa-onnx /
+# openwakeword / mlx-whisper / whisper are intentionally excluded from
 # ``[project].dependencies`` (ADR-0005 §12 — daemon downgrades to
 # text-only when missing). When a developer installs them locally
-# (``uv pip install sounddevice onnxruntime sherpa-onnx openwakeword
-# soxr``) mypy promotes the error code from ``import-not-found`` to
+# (``uv pip install sounddevice onnxruntime sherpa-onnx openwakeword``)
+# mypy promotes the error code from ``import-not-found`` to
 # ``import-untyped`` because the wheels carry no ``py.typed`` marker.
 # Listing them here as ``ignore_missing_imports`` collapses both states
 # so the per-call-site ``# type: ignore[import-not-found]`` works the
 # same in CI (wheels absent) and in dev (wheels present), without
 # flipping ``warn_unused_ignores`` for the rest of the codebase.
+#
+# soxr is a hard runtime dependency (see ``[project].dependencies``)
+# and is kept in the override below ONLY because its wheel ships no
+# ``py.typed`` marker — same mypy concern, different install posture.
 [[tool.mypy.overrides]]
 module = [
     "sounddevice",

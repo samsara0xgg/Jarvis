@@ -1043,6 +1043,10 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
             await server.serve()
         finally:
             LOGGER.info("serve_inherent: shutting down watchers")
+            # Shutdown order is load-bearing: wake first (releases the mic so
+            # any ducker bracket the listener held is unwound), TTS second
+            # (releases the speaker / PortAudio output stream), ducker last
+            # (force-restore in case a duck escaped on the way down).
             _shutdown_wake(wake_listener, wake_stream)
             _shutdown_tts(tts_pipe)
             # Force-restore output volume in case a duck escaped a finally

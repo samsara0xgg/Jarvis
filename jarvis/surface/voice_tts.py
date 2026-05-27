@@ -773,9 +773,11 @@ class MiniMaxWSClient:
     def _make_resampler(self) -> Any | None:  # noqa: ANN401
         """Return a ``soxr.ResampleStream`` when sr_in != sr_out, else ``None``.
 
-        ``soxr`` is imported lazily so the surrounding module stays importable
-        in environments without it; the failure mode is a clear runtime error
-        only when resampling is actually required.
+        ``soxr`` is a hard runtime dependency (listed in ``pyproject.toml``
+        ``[project].dependencies``) and the import is lazy purely to keep the
+        surrounding module's import cost minimal. An ``ImportError`` here means
+        the install environment is broken (``uv sync`` should have pulled
+        soxr); the raised ``RuntimeError`` surfaces that misconfiguration.
         """
         if self._sr_in == self._sr_out:
             return None
@@ -784,7 +786,7 @@ class MiniMaxWSClient:
         except ImportError as exc:
             msg = (
                 f"sample_rate_in={self._sr_in} != sample_rate_out={self._sr_out} "
-                "requires the optional 'soxr' dependency"
+                "requires 'soxr' (a hard runtime dep — env is broken if missing)"
             )
             raise RuntimeError(msg) from exc
         return soxr.ResampleStream(
