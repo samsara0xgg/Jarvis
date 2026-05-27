@@ -54,6 +54,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated
 
 import numpy as np
+import soxr
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
@@ -83,7 +84,7 @@ def _decode_wav_to_pcm16_mono_16k(wav_bytes: bytes) -> bytes:
     container (RIFF header + PCM data) and the inherent-swift client
     may record at the device's native sample rate (commonly 44.1 / 48
     kHz). This helper strips the header, mixes multi-channel to mono,
-    and resamples to 16 kHz via linear interpolation.
+    and resamples to 16 kHz via soxr (HQ quality, with anti-alias filter).
 
     Raises:
         HTTPException(415): malformed WAV or unsupported sample width.
@@ -112,12 +113,9 @@ def _decode_wav_to_pcm16_mono_16k(wav_bytes: bytes) -> bytes:
     if framerate != _ASR_TARGET_SAMPLE_RATE_HZ:
         if framerate <= 0 or samples.size == 0:
             return b""
-        target_len = int(samples.size * _ASR_TARGET_SAMPLE_RATE_HZ / framerate)
-        if target_len <= 0:
-            return b""
-        indices = np.linspace(0, samples.size - 1, target_len)
-        resampled = np.interp(indices, np.arange(samples.size), samples.astype(np.float32))
-        samples = resampled.astype(np.int16)
+        pcm_f32 = samples.astype(np.float32) / 32768.0
+        resampled_f32 = soxr.resample(pcm_f32, framerate, _ASR_TARGET_SAMPLE_RATE_HZ, quality="HQ")
+        samples = (resampled_f32 * 32767.0).astype(np.int16)
 
     return samples.tobytes()
 
