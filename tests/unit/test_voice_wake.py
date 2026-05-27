@@ -153,3 +153,85 @@ def test_wake_listener_holds_lock_across_capture_phase() -> None:
     assert not voice_pipeline.VOICE_INPUT_LOCK.locked(), (
         "wake listener leaked VOICE_INPUT_LOCK after shutdown"
     )
+
+
+def test_engine_reset_called_when_capture_returns_none() -> None:
+    """engine.reset() must run even when _capture_with_ducking returns None.
+
+    Regression: previously the early `return` after `audio_bytes is None`
+    skipped reset(), leaving openwakeword's 16-frame feature window primed
+    near the wake threshold and causing a spurious re-fire on near-silence.
+    """
+    reset_done = threading.Event()
+
+    fake_engine = MagicMock()
+    # Fire on the first poll only; subsequent polls return 0.0.
+    detections = iter([0.9, 0.0, 0.0, 0.0, 0.0])
+    fake_engine.predict.side_effect = (
+        lambda _frame: {"hey_jarvis_v0.1": next(detections, 0.0)}
+    )
+    # Signal the event without calling back into the mock (avoids recursion).
+    fake_engine.reset.side_effect = lambda: reset_done.set()
+
+    # Capture returns None — simulates mic disconnect / VAD timeout.
+    fake_capture = MagicMock(return_value=None)
+    fake_pipeline = MagicMock()
+
+    listener = voice_wake.WakeListener(
+        engine=fake_engine,
+        pipeline=fake_pipeline,
+        broadcaster=MagicMock(),
+        capture_callable=fake_capture,
+        threshold=0.5,
+    )
+    listener.start()
+    assert reset_done.wait(timeout=1.0), "engine.reset() was not called after capture returned None"
+    _stop_and_assert_dead(listener)
+
+    fake_engine.reset.assert_called()
+    # Pipeline must NOT have been invoked — capture failed.
+    fake_pipeline.run_turn.assert_not_called()
+    # Lock must not be leaked.
+    assert not voice_pipeline.VOICE_INPUT_LOCK.locked(), (
+        "VOICE_INPUT_LOCK leaked after capture-failure path"
+    )
+
+
+def test_engine_reset_called_exactly_once_on_success() -> None:
+    """engine.reset() must be called exactly once on the successful capture path.
+
+    Guards against a regression where reset() is double-called (e.g. once
+    inside the pipeline try/finally and once in the outer finally).
+    """
+    reset_done = threading.Event()
+
+    fake_engine = MagicMock()
+    detections = iter([0.9, 0.0, 0.0, 0.0, 0.0])
+    fake_engine.predict.side_effect = (
+        lambda _frame: {"hey_jarvis_v0.1": next(detections, 0.0)}
+    )
+    # Signal without calling back into the mock (avoids infinite recursion).
+    fake_engine.reset.side_effect = lambda: reset_done.set()
+
+    fake_capture = MagicMock(return_value=b"\x10\x00" * 16000)
+    fake_pipeline = MagicMock()
+    fake_pipeline.run_turn.return_value = MagicMock(payload={"transcript": "你好"})
+
+    listener = voice_wake.WakeListener(
+        engine=fake_engine,
+        pipeline=fake_pipeline,
+        broadcaster=MagicMock(),
+        capture_callable=fake_capture,
+        threshold=0.5,
+    )
+    listener.start()
+    assert reset_done.wait(timeout=1.0), "engine.reset() was not called on success path"
+    _stop_and_assert_dead(listener)
+
+    assert fake_engine.reset.call_count == 1, (
+        f"engine.reset() called {fake_engine.reset.call_count} times; expected exactly 1"
+    )
+    # Lock must not be leaked.
+    assert not voice_pipeline.VOICE_INPUT_LOCK.locked(), (
+        "VOICE_INPUT_LOCK leaked after successful capture path"
+    )

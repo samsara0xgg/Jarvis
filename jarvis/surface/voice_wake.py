@@ -420,15 +420,16 @@ class WakeListener:
             except Exception:
                 LOGGER.exception("wake: pipeline error; turn_id=%s", turn_id)
                 self._broadcast("error", turn_id=turn_id, reason="asr_error")
-            finally:
-                # Reset the engine's accumulated features so the next utterance
-                # starts clean (legacy parity — process_frame returns True only
-                # after model.reset()).
-                try:
-                    self._engine.reset()
-                except Exception:  # noqa: BLE001 — reset is best-effort
-                    LOGGER.debug("wake: engine.reset() failed", exc_info=True)
         finally:
+            # Reset the engine's accumulated features so the next utterance
+            # starts clean — this must run on EVERY exit path (capture
+            # failure, pipeline error, or success) so openwakeword's
+            # 16-frame window is never left primed near the wake threshold
+            # (legacy parity: core/inherent_wake_listener.py:117).
+            try:
+                self._engine.reset()
+            except Exception:  # noqa: BLE001 — reset is best-effort
+                LOGGER.debug("wake: engine.reset() failed", exc_info=True)
             voice_pipeline.VOICE_INPUT_LOCK.release()
 
     def _capture_with_ducking(self, *, turn_id: str) -> bytes | None:
