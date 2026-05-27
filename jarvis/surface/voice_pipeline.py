@@ -174,8 +174,13 @@ class VoicePipeline:
 
             # 6. Wake-path UI notify (PTT path passes broadcast=False so
             # Swift drives the card from the HTTP response, not WS).
+            # Wire field is "text" to match the PTT HTTP contract
+            # (inherent_server.py maps transcript -> text) and the Swift
+            # voiceState handler which reads payload["text"]. Without
+            # this rename the Swift card sees text=nil and falls into
+            # the "no speech" branch even when ASR transcribed cleanly.
             if broadcast and self._broadcaster is not None:
-                accepted_payload: dict[str, object] = {"transcript": normalized}
+                accepted_payload: dict[str, object] = {"text": normalized}
                 if tr.emotion:
                     accepted_payload["emotion"] = tr.emotion
                 self._broadcaster.broadcast_voice_sync(
