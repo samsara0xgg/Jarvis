@@ -604,8 +604,8 @@ class MiniMaxWSClient:
 
     Defaults match the legacy ``core/tts_minimax_ws.py`` constants. The
     ``sample_rate_in`` / ``sample_rate_out`` pair stays equal (32 kHz) by
-    default so no ``soxr`` resampling is needed; callers that want 48 kHz
-    output must install ``soxr`` and pass ``sample_rate_out=48000``.
+    default so no ``soxr`` resampling is needed; pass
+    ``sample_rate_out=48000`` to engage the resampler.
     """
 
     _CONNECT_TIMEOUT = 3.0
