@@ -87,7 +87,12 @@ def build_llm_messages(
         return [{"role": "user", "content": utterance}]
 
     trigger = packet.trigger_event
-    if trigger.type == "surface.user_intent":
+    # ADR-0005 §5.1: voice/PTT path emits ``utterance.received`` carrying the
+    # same ``transcript`` payload contract as ``surface.user_intent``; both
+    # must reach the LLM as the user's actual words, not the system-trigger
+    # fallback (which made wake turns answer "this is a system reentry, no
+    # new task" instead of replying to what the user said).
+    if trigger.type in ("surface.user_intent", "utterance.received"):
         transcript = trigger.payload.get("transcript", "")
         return [{"role": "user", "content": str(transcript)}]
 
