@@ -8,6 +8,16 @@ which keeps ``python -m jarvis.cli`` working).
 
 from __future__ import annotations
 
-from jarvis.cli import main
+import logging
+import os
+
+_LEVEL = os.environ.get("JARVIS_LOG_LEVEL", "").upper()
+if _LEVEL:
+    logging.basicConfig(
+        level=getattr(logging, _LEVEL, logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+from jarvis.cli import main  # noqa: E402 — log setup must run before importing jarvis.cli
 
 raise SystemExit(main())
