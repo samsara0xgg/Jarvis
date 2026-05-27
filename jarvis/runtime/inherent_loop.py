@@ -156,7 +156,10 @@ _DEFAULT_SILERO_PATH = Path("data/silero_vad.onnx")
 _DEFAULT_WAKE_THRESHOLD: float = 0.5
 _DEFAULT_CAPTURE_MAX_DURATION_S: float = 5.0
 _DEFAULT_CAPTURE_MIN_VOICED_S: float = 1.0
-_DEFAULT_TTS_SAMPLE_RATE_HZ: int = 32000  # matches MiniMax default; see Task 15.
+# macOS built-in default rate; MiniMax 32 kHz is resampled to 48 kHz via soxr
+# (see ``_build_tts_pipeline``) so the OutputStream runs at the device-native
+# rate and CoreAudio does not force a hardware-rate switch on every play.
+_DEFAULT_TTS_SAMPLE_RATE_HZ: int = 48000
 
 # Wake input stream params — ADR §5.1 (openwakeword expects 16 kHz mono PCM16
 # at 1280-sample / 80 ms blocks). A SEPARATE stream from the recorder's per
@@ -631,13 +634,28 @@ def _build_tts_pipeline(
             "MINIMAX_API_KEY unset; skipping TTS subsystem (text path only).",
         )
         return None
-    provider = voice_tts.MiniMaxWSClient(api_key=api_key)
+    # OutputStream runs at the macOS native rate (48 kHz). MiniMax is
+    # asked for 32 kHz PCM in (highest it natively produces in our
+    # config) and resampled to 48 kHz on the way out via soxr — running
+    # the device at the system-native rate prevents CoreAudio from
+    # forcing a hardware-rate switch on every play, which was producing
+    # audible pops/clicks for any other app sharing the speaker.
+    provider = voice_tts.MiniMaxWSClient(
+        api_key=api_key,
+        sample_rate_in=32000,
+        sample_rate_out=_DEFAULT_TTS_SAMPLE_RATE_HZ,
+    )
     # lazy_open=False so the PortAudio OutputStream is up before the first
     # MiniMax chunk lands; otherwise `write()` would fill the ring and
     # never drain, leaving `is_speaking()` permanently True and starving
     # the wake listener.
     player = voice_tts.AudioStreamPlayer(
         sample_rate_hz=_DEFAULT_TTS_SAMPLE_RATE_HZ,
+        # 30 s of headroom so the full-buffer write() of a long response
+        # (typical 5-30 s of f32 PCM at 48 kHz) lands in one shot — the
+        # 2 s default forces write() to block on the drain and hit its
+        # 10 s timeout, dropping the tail of any response > ~10 s.
+        ring_seconds=30.0,
         lazy_open=False,
     )
     return voice_tts.TTSPipeline(
@@ -691,7 +709,7 @@ def _open_wake_input_stream() -> Any:  # noqa: ANN401 — sounddevice stream is 
     pull exactly one 80 ms PCM16 frame. Legacy parity:
     ``core/inherent_wake_listener.py`` opens the same shape.
     """
-    import sounddevice as sd  # type: ignore[import-untyped]  # noqa: PLC0415
+    import sounddevice as sd  # noqa: PLC0415
 
     stream = sd.RawInputStream(
         samplerate=_WAKE_SAMPLE_RATE_HZ,
