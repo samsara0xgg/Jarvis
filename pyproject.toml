@@ -122,3 +122,26 @@ check_untyped_defs = true
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
+
+# Optional voice-hardware wheels are intentionally excluded from
+# ``[project].dependencies`` (ADR-0005 §12 — daemon downgrades to
+# text-only when missing). When a developer installs them locally
+# (``uv pip install sounddevice onnxruntime sherpa-onnx openwakeword
+# soxr``) mypy promotes the error code from ``import-not-found`` to
+# ``import-untyped`` because the wheels carry no ``py.typed`` marker.
+# Listing them here as ``ignore_missing_imports`` collapses both states
+# so the per-call-site ``# type: ignore[import-not-found]`` works the
+# same in CI (wheels absent) and in dev (wheels present), without
+# flipping ``warn_unused_ignores`` for the rest of the codebase.
+[[tool.mypy.overrides]]
+module = [
+    "sounddevice",
+    "onnxruntime",
+    "sherpa_onnx",
+    "openwakeword",
+    "openwakeword.*",
+    "soxr",
+    "mlx_whisper",
+    "whisper",
+]
+ignore_missing_imports = true

@@ -152,11 +152,11 @@ class WakeEngine:
         from pathlib import Path  # noqa: PLC0415
 
         import numpy as np  # noqa: PLC0415
-        import openwakeword  # type: ignore[import-not-found]  # noqa: PLC0415
-        from openwakeword.model import (  # type: ignore[import-not-found]  # noqa: PLC0415
+        import openwakeword  # noqa: PLC0415
+        from openwakeword.model import (  # noqa: PLC0415
             Model,
         )
-        from openwakeword.utils import (  # type: ignore[import-not-found]  # noqa: PLC0415
+        from openwakeword.utils import (  # noqa: PLC0415
             download_models,
         )
 

@@ -84,7 +84,7 @@ def _load_silero_session(
         model_path: optional override; ``None`` uses the project default
             location (resolved by the recorder wiring in Task 8).
     """
-    import onnxruntime as ort  # type: ignore[import-not-found]  # noqa: PLC0415
+    import onnxruntime as ort  # noqa: PLC0415
 
     if model_path is None:
         msg = "Silero model_path must be supplied (wired in surface.voice_audio recorder)"
@@ -299,7 +299,7 @@ def _open_input_stream(*, sample_rate_hz: int, blocksize: int) -> Any:  # noqa: 
     surrounding module stays importable in environments where it isn't
     available (CI, headless test runners).
     """
-    import sounddevice as sd  # type: ignore[import-not-found]  # noqa: PLC0415
+    import sounddevice as sd  # noqa: PLC0415
 
     return sd.RawInputStream(
         samplerate=sample_rate_hz,

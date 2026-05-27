@@ -433,7 +433,7 @@ class SenseVoiceRecognizer:
         if self._recognizer is not None:
             return self._recognizer
         try:
-            import sherpa_onnx  # type: ignore[import-not-found]  # noqa: PLC0415
+            import sherpa_onnx  # noqa: PLC0415
         except ImportError as exc:  # pragma: no cover — environment-dependent
             msg = "sherpa-onnx is required for SenseVoice ASR."
             raise RuntimeError(msg) from exc
@@ -517,7 +517,7 @@ class MlxWhisperRecognizer:
         if self._module is not None:
             return self._module
         try:
-            import mlx_whisper  # type: ignore[import-not-found]  # noqa: PLC0415
+            import mlx_whisper  # noqa: PLC0415
         except ImportError as exc:  # pragma: no cover — environment-dependent
             msg = (
                 "mlx-whisper is required for MlxWhisperRecognizer. "
@@ -582,7 +582,7 @@ class LocalWhisperRecognizer:
         if self._model is not None:
             return self._model
         try:
-            import whisper  # type: ignore[import-not-found]  # noqa: PLC0415
+            import whisper  # noqa: PLC0415
         except ImportError as exc:  # pragma: no cover — environment-dependent
             msg = "openai-whisper is required for LocalWhisperRecognizer."
             raise RuntimeError(msg) from exc
