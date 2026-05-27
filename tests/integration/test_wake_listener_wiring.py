@@ -236,11 +236,10 @@ def test_serve_inherent_shutdown_joins_wake_thread_before_stream_close(
     listener.request_stop = _spy_request_stop  # type: ignore[method-assign]
     listener.join = _spy_join  # type: ignore[method-assign]
 
-    # Simulate the serve_inherent shutdown finally block.
-    listener.request_stop()
-    listener.join(timeout_s=2.0)
-    stream.stop()
-    stream.close()
+    # Drive the production shutdown helper directly — if someone reorders the
+    # calls inside _shutdown_wake this test will catch it, unlike hand-rolling
+    # the sequence here.
+    inherent_loop._shutdown_wake(listener, stream)
 
     assert call_log == ["request_stop", "join", "stream.stop", "stream.close"], (
         f"shutdown call order wrong — got: {call_log!r}; "

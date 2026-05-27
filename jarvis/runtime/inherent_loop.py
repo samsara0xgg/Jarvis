@@ -167,6 +167,7 @@ _DEFAULT_TTS_SAMPLE_RATE_HZ: int = 48000
 # chunks would force openwakeword to buffer across reads).
 _WAKE_SAMPLE_RATE_HZ: int = 16000
 _WAKE_FRAME_SAMPLES: int = 1280
+_WAKE_JOIN_TIMEOUT_S: float = 2.0
 
 
 def _voice_models_preflight(
@@ -798,7 +799,37 @@ def _spawn_wake_listener(
     return listener, stream
 
 
-async def serve_inherent(  # noqa: PLR0913, PLR0915, PLR0912, C901 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring branch necessarily inflates body length + branch count.
+def _shutdown_wake(
+    wake_listener: voice_wake.WakeListener | None,
+    wake_stream: Any | None,  # noqa: ANN401 — sounddevice stream is untyped third-party API
+) -> None:
+    """Stop wake listener and close its input stream in the safe order.
+
+    Order MUST be: request_stop -> join -> stream.stop -> stream.close.
+    Closing the stream before the listener thread exits its blocking
+    stream.read() is undefined PortAudio behaviour and was the historical
+    segfault root cause (see jarvis-legacy/core/inherent_wake_listener.py:73-78).
+    """
+    if wake_listener is None:
+        return
+    wake_listener.request_stop()
+    wake_listener.join(timeout_s=_WAKE_JOIN_TIMEOUT_S)
+    if wake_listener.is_alive():
+        LOGGER.warning(
+            "wake listener thread did not exit within %.1f s; "
+            "proceeding with stream close (segfault risk reduced "
+            "but not eliminated)",
+            _WAKE_JOIN_TIMEOUT_S,
+        )
+    if wake_stream is not None:
+        try:
+            wake_stream.stop()
+            wake_stream.close()
+        except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
+            LOGGER.debug("wake_stream close failed", exc_info=True)
+
+
+async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring branch necessarily inflates body length + branch count.
     runtime: JarvisRuntime,
     *,
     host: str = "127.0.0.1",
@@ -995,28 +1026,7 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915, PLR0912, C901 — compositi
             await server.serve()
         finally:
             LOGGER.info("serve_inherent: shutting down watchers")
-            if wake_listener is not None:
-                wake_listener.request_stop()
-                # Join the wake thread BEFORE closing the stream. The daemon
-                # thread is normally blocked inside stream.read(~80 ms/frame);
-                # closing the stream while it is mid-read is undefined
-                # PortAudio behaviour and was the historical segfault root cause
-                # (see jarvis-legacy/core/inherent_wake_listener.py:73-78).
-                _wake_join_timeout_s = 2.0
-                wake_listener.join(timeout_s=_wake_join_timeout_s)
-                if wake_listener.is_alive():
-                    LOGGER.warning(
-                        "wake listener thread did not exit within %.1f s; "
-                        "proceeding with stream close (segfault risk reduced "
-                        "but not eliminated)",
-                        _wake_join_timeout_s,
-                    )
-            if wake_stream is not None:
-                try:
-                    wake_stream.stop()
-                    wake_stream.close()
-                except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
-                    LOGGER.debug("wake_stream close failed", exc_info=True)
+            _shutdown_wake(wake_listener, wake_stream)
             # Force-restore output volume in case a duck escaped a finally
             # block on the way down (best-effort; idempotent if depth == 0).
             try:

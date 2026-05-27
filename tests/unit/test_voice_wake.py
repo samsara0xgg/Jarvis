@@ -204,15 +204,16 @@ def test_join_returns_after_stop_and_thread_is_dead() -> None:
     an event; the thread exits asynchronously. join() is what guarantees the
     thread has actually exited before the caller closes the audio stream.
 
-    This test blocks the frame_factory with a threading.Event, signals stop,
-    unblocks the factory, then verifies that join() returns within timeout and
-    that is_alive() is False.
+    The gate starts cleared so _blocking_frame_factory genuinely blocks.
+    After request_stop() the gate is set, which unblocks the factory so the
+    thread can observe the stop event and exit; join() must then return within
+    the timeout.
     """
     read_gate = threading.Event()
-    read_gate.set()  # start unblocked
+    # Gate starts CLEARED — frame_factory will block until we set it after stop.
 
     def _blocking_frame_factory() -> bytes:
-        # Block until the gate is open, checking frequently so stop propagates.
+        # Block until the gate is open, then return one silent frame.
         read_gate.wait()
         return b"\x00" * voice_wake._FRAME_BYTES  # noqa: SLF001
 
@@ -231,9 +232,9 @@ def test_join_returns_after_stop_and_thread_is_dead() -> None:
     listener.start()
     assert listener.is_alive(), "thread should be alive after start()"
 
-    # Signal stop then immediately join — thread must exit within 1 s.
+    # Signal stop, then unblock the factory so the thread can observe it and exit.
     listener.request_stop()
-    read_gate.set()  # unblock any in-progress read
+    read_gate.set()  # unblock the in-progress read_gate.wait()
     listener.join(timeout_s=1.0)
 
     assert not listener.is_alive(), (
