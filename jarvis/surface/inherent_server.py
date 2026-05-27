@@ -115,6 +115,7 @@ def _decode_wav_to_pcm16_mono_16k(wav_bytes: bytes) -> bytes:
             return b""
         pcm_f32 = samples.astype(np.float32) / 32768.0
         resampled_f32 = soxr.resample(pcm_f32, framerate, _ASR_TARGET_SAMPLE_RATE_HZ, quality="HQ")
+        resampled_f32 = np.clip(resampled_f32, -1.0, 1.0)
         samples = (resampled_f32 * 32767.0).astype(np.int16)
 
     return samples.tobytes()

@@ -202,3 +202,48 @@ def test_non_pcm16_wav_raises_415() -> None:
         _decode_wav_to_pcm16_mono_16k(buf.getvalue())
 
     assert exc_info.value.status_code == 415
+
+
+# ---------------------------------------------------------------------------
+# Clip defense: soxr HQ ringing must not wrap int16
+# ---------------------------------------------------------------------------
+
+
+def test_overshoot_does_not_wrap_int16() -> None:
+    """Defense-in-depth: soxr HQ filter ringing past +-1.0 must not wrap int16.
+
+    soxr HQ filter ringing past +-1.0 on full-scale transients must not
+    wrap to negative int16. Without np.clip the intended +35552 wraps to
+    -29984 -- a transient pop.
+
+    Construction: a DC step at int16 max (full-scale square wave) at 48 kHz
+    triggers the worst-case ringing on the soxr HQ anti-alias filter.
+    After resampling to 16 kHz, every output sample must stay within
+    the valid int16 range [-32768, 32767] -- no wrap-around.
+    """
+    # Build a 48 kHz WAV with full-scale DC step: first half at +32767,
+    # second half at -32767.  This is the worst-case transient for filter
+    # ringing (maximises the overshoot the soxr HQ filter can produce).
+    n_samples = 4800  # 0.1 s at 48 kHz — long enough for filter transient
+    half = n_samples // 2
+    pcm_i16 = np.empty(n_samples, dtype=np.int16)
+    pcm_i16[:half] = 32767
+    pcm_i16[half:] = -32767
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes(pcm_i16.tobytes())
+
+    result = _decode_wav_to_pcm16_mono_16k(buf.getvalue())
+
+    assert len(result) > 0, "decoder returned empty bytes for a valid WAV"
+    out = np.frombuffer(result, dtype=np.int16)
+    # If np.clip is missing, soxr ringing (measured ~1.085x on a DC step)
+    # wraps int16: intended +35552 becomes -29984 -- a large negative spike
+    # present alongside large positive values.  With clip, every sample is
+    # bounded to the PCM16 range.
+    assert int(out.max()) <= 32767, f"sample above int16 max: {int(out.max())}"
+    assert int(out.min()) >= -32768, f"sample below int16 min: {int(out.min())}"
