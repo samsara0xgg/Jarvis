@@ -1841,23 +1841,22 @@ def _finalize_response(
     the chain regardless of which branch was taken.
     """
     hard_refusal_used = False
-    active_subject = scratch.active_subject_ref
+    active_subject: str | None = scratch.active_subject_ref
     if active_subject is None and packet.open_tasks:
         active_subject = packet.open_tasks[0].task_id
     if active_subject is None:
-        # No scratch.active_subject_ref AND no open tasks — the gate
-        # will see an empty claim set and force_limitation_language
-        # by construction. Demoted to debug: the hard-refusal text now
-        # carries a user-facing "找不到对应的 task" branch (F1), so the
-        # failure mode reaches the operator via the surface rather than
-        # via stderr noise.
+        # Spec §3.4.12 v0 + §3.4.4 LLMSituationPacket: no subject in
+        # scope is a first-class case, not a failure mode. Pass None to
+        # the gate; it short-circuits to a routine pass-through (see
+        # pre_emit_gate's None branch). The retry chain (attempts 1
+        # and 2) and _hard_refusal_plan remain reachable only when a
+        # real subject is in scope and downgrade_required fires.
         LOGGER.debug(
-            "_finalize_response: no active_subject_ref and no open tasks; "
-            "falling back to 'unknown_subject' (turn_id=%r). The Pre-emit "
-            "Gate will force limitation framing.",
+            "_finalize_response: no active_subject_ref and no open tasks "
+            "(turn_id=%r); passing None to pre_emit_gate for §3.4.12 v0 "
+            "pass-through (no consequential claim to gate).",
             scratch.turn_id,
         )
-        active_subject = "unknown_subject"
 
     # Always refresh the projection so the gate sees the latest
     # claim/evidence rows.
@@ -1867,7 +1866,12 @@ def _finalize_response(
     plan = pre_emit_gate(draft_text, projections.claim_evidence, active_subject)
     last_gate_event = _emit_pre_emit_gate_event(ctx, scratch, plan=plan, attempt=0)
 
-    if plan.downgrade_required:
+    # The ``active_subject is not None`` clause is redundant at runtime —
+    # pre_emit_gate's None branch returns downgrade_required=False
+    # unconditionally (spec §3.4.12 v0), so plan.downgrade_required
+    # already implies active_subject is not None. It is present to
+    # narrow the type for _hard_refusal_plan below (attempt 2).
+    if plan.downgrade_required and active_subject is not None:
         # Attempt 1 — single LLM retry. Append a system-style
         # instruction and re-run the LLM ONCE; do not pull tools this
         # time — we want text.
