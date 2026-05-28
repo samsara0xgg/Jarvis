@@ -189,29 +189,35 @@ No spec deviation. Strictly more aligned than the status quo.
 
 The Day-1 test stack (unit + canary + integration) covers the touched modules. New / modified tests:
 
+A grep over the worktree found **13 files** that reference `surface.response_chunk` (6 in `jarvis/`, 7 in `tests/`). 6 of the source-file refs are pure docstring text — they need updating for hygiene but won't break runtime if missed. All 7 test files need real changes.
+
 ### 5.1 Unit (L5)
 
-- `tests/unit/test_cli_render.py` — for each `required_gate_mode` value and for each ResponsePlan.text shape in the §3.2 matrix:
+- `tests/unit/test_cli_render_streaming.py` — for each `required_gate_mode` value and for each ResponsePlan.text shape in the §3.2 matrix:
   - Exactly the expected count of `surface.response_voice_chunk` and `surface.response_document_chunk` events emitted.
   - Each chunk's `text` field contains no `<voice>` / `<document>` / `</voice>` / `</document>` substring.
   - Order: voice-chunks first, then document-chunks (per §6.1 recommendation).
+- `tests/unit/test_drive_turn_streaming.py` — driver-level streaming assertions migrated to the two new chunk types.
+- `tests/unit/test_inherent_loop.py` — watcher dispatch fixture updated for new event types.
 - `tests/unit/test_inherent_output.py` — `broadcast_chunk` test fixture event type updated to `surface.response_document_chunk`; wire envelope shape regression assertion unchanged.
 - `tests/unit/test_voice_tts.py` — `handle_chunk` test fixture event type updated to `surface.response_voice_chunk`; remove the now-obsolete `_extract_voice_content` test cases (mark for deletion).
+- `tests/unit/test_event_log.py` — registry canary updated to assert new entries + absence of `surface.response_chunk`.
 
-### 5.2 Canary
+### 5.2 Integration
 
-- `tests/canary/test_event_log_registry.py` (if exists; else add) — asserts `surface.response_chunk` no longer in registry; `surface.response_voice_chunk` and `surface.response_document_chunk` both present.
+- `tests/integration/test_inherent_loop_tts_watcher.py` and `test_inherent_loop_tts_watcher_real_pipeline.py` — drive turns end-to-end, assert TTS watcher consumes only `.response_voice_chunk`, broadcaster consumes only `.response_document_chunk`, and `surface.response_emitted` retains `voice_text` / `document_text` (regression).
 
-### 5.3 Integration
+### 5.3 Live smoke (post-implementation)
 
-- `tests/integration/test_inherent_turn_streaming.py` — end-to-end through `render_response` with `streaming_enabled=True`:
-  - Assert event log contains the two new chunk types in the expected counts.
-  - Assert `surface.response_chunk` rows are absent.
-  - Assert `surface.response_emitted` still carries the same `voice_text` / `document_text` (regression).
+Drive a turn through the running daemon with an utterance that produces a non-trivial both-channel response (e.g., "介绍一下你自己"). Verify via WS client that the `append` envelopes contain no tag bytes and via `~/.jarvis/mac_events.db` that the new event types appear with the expected counts. Daemon must be restarted to pick up the new code.
 
-### 5.4 Live smoke (post-implementation)
+### 5.4 Source-file docstring sweep
 
-Drive a turn through the running daemon with an utterance that produces a non-trivial both-channel response (e.g., "介绍一下你自己"). Verify via WS client that the `append` envelopes contain no tag bytes and via `~/.jarvis/mac_events.db` that the new event types appear with the expected counts.
+Update the following non-emit-site docstrings so they describe the new event types (no code change, hygiene only):
+
+- `jarvis/runtime/__init__.py:532` — response-watcher overview block
+- `jarvis/surface/inherent_output.py:20, 139, 148` — broadcaster module + method docstrings
+- `jarvis/surface/voice_tts.py:840, 900` — pipeline protocol + `handle_chunk` docstring
 
 ---
 
@@ -240,19 +246,26 @@ Yes. They are the only audit fields that capture the final post-split text. The 
 
 ## 7. Migration / blast radius
 
+Worktree grep `surface\.response_chunk\b` → 13 files touched (6 in `jarvis/`, 7 in `tests/`).
+
 | File | Change | Lines (approx.) |
 |---|---|---|
-| `jarvis/state/event_log.py` | +2 registry entries, -1 entry | +14 / -7 |
+| `jarvis/state/event_log.py` | +2 registry entries, -1 entry, comment cleanup | +14 / -7 |
 | `jarvis/surface/cli_render.py` | `_emit_response_chunks` rewrite + plumb `channels` | +25 / -15 |
-| `jarvis/surface/voice_tts.py` | Drop `_extract_voice_content` + the three regex constants; `handle_chunk` no longer calls extractor | -35 / +5 |
-| `jarvis/surface/inherent_output.py` | None (consumer is event-type-agnostic at body level) | 0 |
-| `jarvis/runtime/inherent_loop.py` | Two `WHERE type IN (...)` lists updated; two `elif ev.type` branches renamed | +6 / -6 |
-| `tests/unit/test_cli_render.py` | Matrix-driven channel-typed assertions | +60 / -30 |
-| `tests/unit/test_voice_tts.py` | Drop `_extract_voice_content` cases; update chunk event type | +15 / -50 |
+| `jarvis/surface/voice_tts.py` | Drop `_extract_voice_content` + three regex constants; `handle_chunk` no longer extracts; docstring sweep | -40 / +5 |
+| `jarvis/surface/inherent_output.py` | Docstring sweep only — consumer is event-type-agnostic at body level | +3 / -3 |
+| `jarvis/runtime/inherent_loop.py` | Two `WHERE type IN (...)` lists; two `elif ev.type` branches; docstring sweep | +10 / -10 |
+| `jarvis/runtime/__init__.py` | Response-watcher docstring sweep | +2 / -2 |
+| `tests/unit/test_cli_render_streaming.py` | Matrix-driven channel-typed assertions | +60 / -30 |
+| `tests/unit/test_drive_turn_streaming.py` | Update chunk event types | +10 / -10 |
+| `tests/unit/test_inherent_loop.py` | Update watcher dispatch fixtures | +10 / -10 |
 | `tests/unit/test_inherent_output.py` | Update chunk event type | +5 / -5 |
-| `tests/integration/test_inherent_turn_streaming.py` | Update event-type expectations | +20 / -10 |
+| `tests/unit/test_voice_tts.py` | Drop `_extract_voice_content` cases; update chunk event type | +15 / -50 |
+| `tests/unit/test_event_log.py` | Registry assertions for the new types and absence of the old | +8 / -3 |
+| `tests/integration/test_inherent_loop_tts_watcher.py` | Update event-type expectations | +10 / -10 |
+| `tests/integration/test_inherent_loop_tts_watcher_real_pipeline.py` | Update event-type expectations | +10 / -10 |
 
-Net: < 200 lines of churn. No cross-layer signature change. ADR-0003 wire envelope unchanged.
+Net: ~250 lines of churn. No cross-layer signature change. ADR-0003 wire envelope unchanged. Daemon needs restart to pick up new code.
 
 ---
 
