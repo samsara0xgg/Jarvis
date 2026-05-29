@@ -1907,3 +1907,26 @@ OpenRouter. Design: `docs/superpowers/specs/2026-05-28-real-codex-tier2-jkl-burn
   reviewer-refutes veto task.verified, or is verify-predicate-wins correct?
 - No `jarvis/` source changes; Tier-1 (unit+canary, ruff/mypy jarvis/,
   lint-imports) unaffected.
+
+### Increment-1 follow-up — `_capture_diff` untracked-file fix (B-0014, 2026-05-28)
+
+Adjudicated the FINDING above with a 3-phase multi-agent investigation +
+on-disk verification. Conclusion: "verify-predicate-wins, reviewer does
+NOT veto `task.verified`" is **design_intent** (ADR § Evidence ladder
+rows 283-285 + Reviewer contract §757-771 grounded in spec I8/I10 +
+`result_interpreter` deriving the verdict before the reviewer is even
+invoked) — NOT a bug. The burn's reviewer refute ("NOTES.md was not
+created") was a **hallucination**, not a real under-delivery: `NOTES.md`
+was created (untracked on disk) but `codex_action._capture_diff` ran
+tracked-only `git diff`, so the new file never reached the diff artifact
+the reviewer reads. `task.verified` was therefore a true positive.
+
+Real bug = `_capture_diff` omitting untracked files (logged as B-0014 in
+`docs/live-run-bugs.md`): induces deterministic false reviewer refutes
+for new-file deliverables AND a latent `task.no_op` false-negative for
+untracked-only runs. Fixed (commit `e599b8e`) — `_capture_diff` is now
+untracked-aware via read-only `git diff --no-index`, spec-aligned with
+§8.9 ("artifact changed — intended files touched"). RED→GREEN unit test
++ Tier-1 green (876). The 7 filled Increment-1 scenario tests are
+reviewer-verdict-independent and stay green (no re-burn required; an
+optional re-burn would refresh the frozen trace).

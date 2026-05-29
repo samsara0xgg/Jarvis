@@ -764,4 +764,63 @@ remains the desired ideal but not blocking for DoD.
 
 ---
 
+## B-0014 · `_capture_diff` omits untracked files → lossy diff artifact induces false reviewer refutes + latent `task.no_op` false-negative
+
+**Where:** `jarvis/execution/codex_action.py::_capture_diff` — the live
+producer of `CodexActionResult.diff_text`, written to the diff artifact
+and later read by `verify_diff` / the reviewer. Surfaced by the
+Increment-1 Tier-2 happy-path live burn (2026-05-28).
+
+**Symptom:** The happy-path task asked Codex to add a docstring AND
+create a top-level `NOTES.md`. Codex did both — `NOTES.md` exists on
+disk (untracked, 307 B). Yet the reviewer attached a `refutes`/Limitation
+row "NOTES.md was not created". The diff artifact (`diff.txt`) held only
+the tracked docstring hunk; the new untracked `NOTES.md` was absent, so
+the reviewer — which reads only the artifact — hallucinated under-
+delivery. `task.verified` still fired correctly (verify_command exit 0 +
+non-empty diff; the ladder ignores a reported-level refute by design —
+ADR § Evidence ladder rows 283-285), so the OUTCOME was a true positive.
+The defect is the false audit row, not the verdict.
+
+**Root cause:** `_capture_diff` ran plain `git -C cwd diff`, which
+reports tracked-file changes only and omits untracked (newly created)
+files. Asymmetric with `diff_capture.isolate_pretask_changes`, which
+already uses `git stash push -u` (untracked-aware). Two consequences:
+  1. the reviewer reviews a lossy artifact → deterministic false
+     "file-not-created" refutes for any new-file deliverable (the root
+     cause behind the reviewer-hallucination class tracked as B-0010 in
+     session memory);
+  2. `diff_nonempty` is derived from the same diff → a Codex run that
+     creates ONLY untracked files would register `diff_nonempty=False`
+     → Fix-2 Option A short-circuits to `task.no_op` despite real work
+     (latent false-negative).
+
+**Spec alignment:** spec.html §8.9 lists "artifact changed (intended
+files touched)" as a minimum code-task claim, and §8.5 maps
+`git diff exists → file changed`; a newly created file is an intended
+touch, so the capture must include it.
+
+**Fix:** `_capture_diff` now appends each untracked file (enumerated via
+`git ls-files --others --exclude-standard -z`) as a proper new-file
+unified diff (`git diff --no-index -- /dev/null <file>`). Read-only — no
+index mutation, so the surrounding stash/restore machinery is untouched;
+`--exclude-standard` keeps gitignored build junk (e.g. `__pycache__`)
+out. Regression tests in `tests/unit/test_codex_action.py`:
+`test_capture_diff_includes_untracked_new_file` (RED→GREEN) plus a
+real-git tracked-modification guard that replaces the former single-call
+`subprocess.run` mock.
+
+**Follow-up (not on the live path):** `diff_capture.capture_diff` is a
+dead duplicate (no production caller in `jarvis/`) carrying the same
+tracked-only defect — left untouched to keep this fix surgical; consider
+consolidating onto a single untracked-aware capture later.
+
+**Status:** Fixed (commit `e599b8e`). Unit-proven (RED→GREEN) + Tier-1
+green (876 unit/canary, ruff/mypy `jarvis/`, lint-imports). Not yet
+re-burned live — the 7 filled Increment-1 tests are reviewer-verdict-
+independent and stay green; an optional re-burn would refresh the frozen
+trace to show the reviewer agreeing.
+
+---
+
 
