@@ -1979,5 +1979,70 @@ filled bodies.
 - No `jarvis/` source changes. Static gates first (ruff clean, regex
   canary green, no-flag run skips → no accidental burn), then 1 live burn.
 
-Remaining Increment-2 variants (own fixtures, one burn each): J12
-no_submit_report, K5 reviewer_fail_no_verify, L1 empty_diff.
+### Variant 4 — L1 no_verify_command (observation-only), GREEN (1 burn, 152s)
+
+`tests/scenarios/test_real_codex_empty_diff.py`: replaced the skeleton
+with a module-scoped `live_real_codex_no_verify` fixture + filled body.
+Implements the **no-verify_command** manifestation of L1 (the design doc
+defines this file as "no verify_command OR empty diff"); chosen over the
+true-empty-diff route because `verify_command` absence is seed-controlled
+(deterministic) whereas inducing Codex to produce zero diff is a
+Codex-behaviour gamble.
+
+- **Fixture**: seeds `task.created` WITHOUT a `verify_command`, benign
+  additive NOTES.md goal. Codex makes a non-empty diff but the
+  `verify_diff` bundle is observation-only (handler returns 1 slot when
+  `verify_command is None`, tools.py:1018-1026).
+- **`test_l1_no_verify_command_observation_only_no_task_verified`**:
+  exactly ONE `observation` verify_diff slot (no verification / error);
+  an `Artifact` claim for the diff; a `Limitation` claim with
+  `evidence(level=reported, relation=limits,
+  source_id=missing_verify_command)` (result_interpreter.py:503-519);
+  NO `Postcondition` / NO `verified` evidence; NO `task.verified` AND NO
+  `task.no_op` (F2 verdict `"neither"`); pre_emit
+  `outcome=force_limitation_language`; surface carries no completion
+  language.
+- **Burn trace** (frozen, gitignored): `worker.reported` ok (NOTES.md);
+  2 `result_observed` (report / observation only); 3 claims
+  (Report / Artifact / Limitation); evidence `reported/limits/
+  missing_verify_command`; 0 `task.verified` / 0 `task.no_op`; surface
+  fell through to the hard-refusal text "agent reported, status
+  unverified (未验证) — Pre-emit Gate refused completion language".
+- No `jarvis/` source changes. Static gates first (ruff, regex canary,
+  no-flag skip), then 1 live burn.
+
+### Variant 2 — J12 no_submit_report: investigation + recommendation (NOT burned)
+
+Investigated whether a live J12 burn is feasible. Findings (opus subagent
++ on-disk verification):
+
+- The hardcoded `_JARVIS_AGENTS_MD` "You MUST call submit_report" prompt
+  (codex_action.py:108-118) was added in commit `502968e` as a
+  developer-instruction *channel* fix (Codex 0.130 silently drops
+  `developerInstructions`/`baseInstructions`; `$CODEX_HOME/AGENTS.md` is
+  the only channel that lands). Its *content* is the ADR-0002 §644
+  prompt-pressure rule. It was **not** the B-0013 fix (B-0013 is an MCP
+  dispatch *hang*, fixed by elicitation-drain, not a prompt).
+- spec §3.5.8 explicitly says prompt-only enforcement is unreliable and
+  mandates two things: inject the `submit_report` tool, and on zero
+  captures emit `worker.report_missing` + a Limitation Claim. The
+  prompt-pressure is an ADR-0002 layer-1 *soft nudge*; the load-bearing
+  requirement is the deterministic post-turn guard (layer 2) — already
+  proven by `tests/unit/test_spawn_worker_real.py:240`
+  (`test_spawn_worker_submit_report_missing_emits_report_missing`).
+- Every historical *live* `worker.report_missing` came from a broken
+  precondition (B-0004 auth, B-0007 MCP startup, P-0010 sparse prompt),
+  never an organic refusal by a fully-wired Codex. Allen's own P-0010
+  X-decision already ruled report_missing **by-design** and deferred the
+  live J12 validation ("cannot be fully validated with real Codex 0.130 +
+  sparse prompts").
+- **Recommendation**: defer the live J12 burn; keep
+  `test_real_codex_no_submit_report.py` skeleton + a TODO citing the unit
+  test as binding §3.5.8 coverage; leave the production prompt untouched.
+  If a live burn is later wanted, induce report_missing via a real broken
+  precondition (G2-clean spawn-time config), never via a prompt toggle
+  (would contradict the never-patch-prompts rule). Awaiting Allen.
+
+Remaining: K5 reviewer_fail_no_verify (reviewer verdict is LLM-dependent;
+no-task.verified is guaranteed via no-verify, the reviewer-fail assertion
+is the soft part).
