@@ -2047,6 +2047,48 @@ Investigated whether a live J12 burn is feasible. Findings (opus subagent
   documented deferred skip citing the unit test as binding §3.5.8
   coverage.
 
-Remaining: K5 reviewer_fail_no_verify (reviewer verdict is LLM-dependent;
-no-task.verified is guaranteed via no-verify, the reviewer-fail assertion
-is the soft part).
+### Variant 3 — K5 reviewer_fail + no_verify_command, GREEN (1 burn, 290s)
+
+`tests/scenarios/test_real_codex_reviewer_fail_no_verify.py`: replaced the
+skeleton with a module-scoped `live_real_codex_reviewer_fail` fixture +
+filled body. Seeds `task.created` WITHOUT a `verify_command` and with an
+ambitious, unverifiable-from-static-diff goal (thread-safe kvstore +
+"100% coverage / all tests pass" guarantees) to elicit reviewer
+`verdict="fail"` via the reviewer's uncertain→fail rule.
+
+- **Deterministic contract (verdict-independent)**: one `observation`
+  verify_diff slot (no verification/error); Artifact + §8.5-rule-6
+  missing-verify Limitation; no Postcondition / no verified evidence; NO
+  `task.verified` AND NO `task.no_op` (verdict `"neither"`); reviewer
+  evidence stays `level=reported` (never `verified`, spec §13.2 I10);
+  pre_emit `force_limitation_language`; no completion language.
+- **Reviewer-verdict-specific** (goal-tuned, Allen-acknowledged soft): a
+  reviewer `evidence.attached(level=reported, relation=refutes,
+  source_id=reviewer, source_type=llm)` row.
+- **Burn trace** (frozen, gitignored): worker.reported ok (KeyValueStore
+  implemented); observation-only slot; claims Report/Artifact/Limitation;
+  reviewer row `reported/refutes/reviewer` with a genuine reason ("diff is
+  truncated and incomplete, cannot assess tests or implementation" — real
+  uncertain→fail, not gamed); 0 task.verified / 0 task.no_op; surface
+  hard-refusal "未验证". Proves the reviewer-advisory dual of the happy
+  path: a reviewer refute is recorded as advisory reported evidence and
+  cannot create verified evidence or `task.verified`.
+- No `jarvis/` source changes. Static gates first, then 1 live burn.
+
+### Increment 2 — summary
+
+Negative-variant real-Codex acceptance, prove-then-expand, one burn each:
+
+| Variant | File | Status |
+|---|---|---|
+| verify_fail (L3) | test_real_codex_verify_fail.py | GREEN (1 burn) |
+| L1 no_verify_command | test_real_codex_empty_diff.py | GREEN (1 burn) |
+| K5 reviewer_fail + no_verify | test_real_codex_reviewer_fail_no_verify.py | GREEN (1 burn) |
+| J12 no_submit_report | test_real_codex_no_submit_report.py | DEFERRED (by design; unit-covered) |
+
+3 live burns (~62s / 152s / 290s), all green; no `jarvis/` source changes;
+Tier-1 unaffected. Each variant corrected stale skeleton field-name guesses
+against the real emitted schema (semantics, evidence vs claim fields,
+pre_emit `outcome`, reviewer evidence is a row not a Limitation claim). The
+true-empty-diff (route A, Execution claim) and the live J12 broken-precondition
+seam remain documented TODOs.
