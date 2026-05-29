@@ -386,23 +386,63 @@ def _extract_thread_id(result: Mapping[str, Any]) -> str:
 
 
 def _capture_diff(cwd: Path) -> str:
-    """Return ``git -C cwd diff`` stdout, or empty string on failure.
+    """Return the working-tree diff for ``cwd``, INCLUDING untracked new files.
 
+    Day-2 verifies Codex's in-place edits. A plain ``git diff`` reports
+    only tracked-file changes, so a Codex deliverable that is a NEW file
+    (e.g. creating ``NOTES.md``) would be invisible — under-reporting the
+    spec §8.9 "artifact changed (intended files touched)" signal, feeding
+    the reviewer a lossy artifact (the B-0010 reviewer-hallucination root
+    cause) and mis-deriving ``diff_nonempty``. The pre-task stash
+    (:func:`jarvis.execution.diff_capture.isolate_pretask_changes`, ``-u``)
+    removes any pre-existing untracked files, so every untracked path
+    present post-Codex is Codex's own new work and is safe to include.
+
+    Read-only: tracked changes via ``git diff``; each untracked file via
+    ``git diff --no-index -- /dev/null <file>`` (emits a proper new-file
+    unified diff, exit code 1 on difference — expected). No index
+    mutation, so the surrounding stash/restore machinery is untouched.
     Step 7 captures the diff text only; Step 8 owns the artifact-write and
     dirty-tree stash handling. We swallow git failures here (return empty)
     because the driver must not raise — it returns a structured result.
     """
     try:
-        proc = subprocess.run(  # noqa: S603 - trusted argv, no shell
+        tracked = subprocess.run(  # noqa: S603 - trusted argv, no shell
             ["git", "-C", str(cwd), "diff"],  # noqa: S607 - git on PATH by design
             capture_output=True,
             text=True,
             check=False,
             timeout=10,
-        )
+        ).stdout
+        listing = subprocess.run(  # noqa: S603 - trusted argv, no shell
+            # -z: NUL-separated raw names (space/unicode safe); --exclude-standard
+            # honours .gitignore so build junk (e.g. __pycache__) stays out.
+            ["git", "-C", str(cwd), "ls-files", "--others", "--exclude-standard", "-z"],  # noqa: S607 - git on PATH by design
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        ).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
-    return proc.stdout
+
+    parts: list[str] = [tracked] if tracked else []
+    for rel in listing.split("\x00"):
+        if not rel:
+            continue
+        try:
+            shown = subprocess.run(  # noqa: S603 - trusted argv, no shell
+                ["git", "-C", str(cwd), "diff", "--no-index", "--", os.devnull, rel],  # noqa: S607 - git on PATH by design
+                capture_output=True,
+                text=True,
+                check=False,  # --no-index exits 1 when files differ (the normal case)
+                timeout=10,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if shown:
+            parts.append(shown)
+    return "".join(parts)
 
 
 def ensure_codex_version_supported(codex_bin: str = "codex") -> None:

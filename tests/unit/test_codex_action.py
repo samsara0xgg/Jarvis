@@ -29,6 +29,7 @@ Coverage:
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -1112,11 +1113,72 @@ def test_capture_diff_returns_empty_on_git_error(monkeypatch: pytest.MonkeyPatch
     assert ca._capture_diff(Path("/tmp")) == ""  # noqa: SLF001
 
 
-def test_capture_diff_returns_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """On a successful ``git diff`` call, the stdout text is returned verbatim."""
-    proc = _make_completed_proc(stdout="diff --git a/x b/x\n+line\n")
-    monkeypatch.setattr(ca.subprocess, "run", lambda *_a, **_k: proc)
-    assert ca._capture_diff(Path("/tmp")) == "diff --git a/x b/x\n+line\n"  # noqa: SLF001
+_GIT_USER_FLAGS = ["-c", "user.email=t@t", "-c", "user.name=t"]
+
+
+def _init_repo_with_tracked_file(repo: Path) -> None:
+    """Create a real git repo with one committed tracked file ``a.txt``.
+
+    Real git (no mocks): untracked-file inclusion is git-internal, so a
+    mock would diverge from production — same rationale as
+    ``tests/unit/test_diff_capture.py``.
+    """
+    repo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(  # noqa: S603 — fixed git argv, no shell, test fixture.
+        ["git", "init", "-q", "-b", "main", str(repo)],  # noqa: S607 — git on PATH by design.
+        check=True,
+        capture_output=True,
+    )
+    (repo / "a.txt").write_text("base\n")
+    subprocess.run(  # noqa: S603 — fixed git argv, no shell, test fixture.
+        ["git", "-C", str(repo), *_GIT_USER_FLAGS, "add", "a.txt"],  # noqa: S607 — git on PATH by design.
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(  # noqa: S603 — fixed git argv, no shell, test fixture.
+        ["git", "-C", str(repo), *_GIT_USER_FLAGS, "commit", "-q", "-m", "init"],  # noqa: S607 — git on PATH by design.
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_capture_diff_includes_tracked_modification(tmp_path: Path) -> None:
+    """A modified tracked file appears in the captured diff (real git, no mock).
+
+    Replaces the former ``subprocess.run`` single-call mock test: the
+    untracked-aware capture now issues multiple git calls, so the old
+    one-call mock no longer reflects the contract. Real git keeps the
+    test honest (see ``tests/unit/test_diff_capture.py``).
+    """
+    repo = tmp_path / "repo"
+    _init_repo_with_tracked_file(repo)
+    (repo / "a.txt").write_text("edited\n")
+
+    diff = ca._capture_diff(repo)  # noqa: SLF001 — private capture under test.
+
+    assert "a.txt" in diff
+    assert "+edited" in diff
+
+
+def test_capture_diff_includes_untracked_new_file(tmp_path: Path) -> None:
+    """A NEW (untracked) file Codex creates must appear in the captured diff.
+
+    Regression guard for the B-0010 reviewer-hallucination root cause: a
+    plain ``git diff`` reports only tracked-file changes, so a created
+    ``NOTES.md`` was invisible to the reviewer and to ``diff_nonempty``.
+    Spec §8.9 counts "artifact changed (intended files touched)"; a new
+    file is an intended touch, so the capture must include it.
+    """
+    repo = tmp_path / "repo"
+    _init_repo_with_tracked_file(repo)
+    (repo / "a.txt").write_text("edited\n")  # tracked modification
+    (repo / "NOTES.md").write_text("# Notes\nbody\n")  # untracked Codex deliverable
+
+    diff = ca._capture_diff(repo)  # noqa: SLF001 — private capture under test.
+
+    assert "a.txt" in diff, "tracked modification must remain captured"
+    assert "NOTES.md" in diff, "untracked new file must be captured"
+    assert "# Notes" in diff, "new-file content must be captured"
 
 
 # ---------------------------------------------------------------------------
