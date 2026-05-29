@@ -1878,3 +1878,32 @@ disambiguation beyond the single-task scenario, real memory system,
 streaming surfaces, budget enforcement at the Pre-action Gate, and
 launchd promotion of the fork-detached daemon.
 
+
+## Increment 1 — Tier-2 J/K/L real-Codex burn (2026-05-28)
+
+Filled deferred ADR-0002 Step 20 skeletons against live Codex 0.130 + live
+OpenRouter. Design: `docs/superpowers/specs/2026-05-28-real-codex-tier2-jkl-burn-design.md`.
+
+- New module-scoped fixture `live_real_codex_happy` in
+  `tests/scenarios/test_real_codex_flagship.py`: seeds `task.created` with
+  `repo_path` + `verify_command` (the P-0003 fix), runs the D-day flagship turn
+  ONCE against real Codex, freezes the 42-event trace.
+- 7 invariants GREEN under `--live-codex --live-llm` (2 burns): J1 (preflight),
+  J2 (initialize succeeded), J5 (reported ok + non-empty diff), J7
+  (cost.recorded kind=codex), J11 (submit_report reachable — indirect via
+  status=ok / no worker.report_missing), K6 (delivered_via + attention_channel),
+  L2 (observation+verification slots, Postcondition+verified evidence,
+  task.verified). 14 still skip.
+- Deferred to Increment-1b (need spawn-argv capture seam, not event-log
+  observable): J3 (thread/start.cwd), J10 (-c flags), J11 argv half, K1/K2
+  (say/osascript argv).
+- Deferred to Increment 2 (own variant fixtures, ~5 burns): verify_fail,
+  no_submit_report, reviewer_fail, empty_diff/L1.
+- FINDING (NOT fixed — touches reviewer contract, flagged per large-change-pause):
+  Codex under-delivered on the happy run (added docstring, skipped NOTES.md).
+  verify_command (pytest) passed -> verified evidence; reviewer attached a
+  refutes/Limitation at reported level; `task.verified` STILL fired (verified >
+  reported per the evidence model). Open question for Allen: should a
+  reviewer-refutes veto task.verified, or is verify-predicate-wins correct?
+- No `jarvis/` source changes; Tier-1 (unit+canary, ruff/mypy jarvis/,
+  lint-imports) unaffected.
