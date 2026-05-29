@@ -8,6 +8,29 @@ Ordered by discovery time. Open bugs at the bottom.
 
 ---
 
+## Reconciliation snapshot (2026-05-28, post Increment-2 route-A burn)
+
+Merge-gate status of every tracked code bug. No code bug remains open.
+
+| ID | Disposition | Evidence |
+|---|---|---|
+| B-0001 | env collision, no code fix | `JARVIS_RUNTIME_ROOT` redirect |
+| B-0002 | FIXED | commit (nested `thread.id` parse) |
+| B-0003 a/b/c | **FIXED** | `_RUNTIME_TRIGGER_TYPES` includes `action.timeout_assumed`+`action.failed` (runtime/__init__.py:90-95); `decision/__init__.py:652` timeout/failed branch; surface emits per B-0005 trace |
+| B-0004 | FIXED, live-verified | commit `e006ed6` (seed `auth.json`) |
+| B-0005 / B-0006 | spec/ADR gap, **not a bug** | Limitation→channel routing unpinned by ADR; needs ADR-0002 amendment, deferred |
+| B-0007 | FIXED | commit `b62fd13` (`inputSchema` + protocolVersion) |
+| B-0008 | FIXED | commit `373c0fb` (`approval_policy=never`) |
+| B-0013 | **FIXED, live-confirmed** | commit `dc0abb4` (elicitation-drain); 4 Increment burns all `worker.report_missing=0` / `worker.reported.status=ok` → submit_report dispatched |
+| B-0014 | FIXED, live-covered | commit `e599b8e`; Increment-2 burns exercise both untracked-capture (NOTES.md) and empty-diff (route A) paths |
+| C23 / stash_ref gap | CLOSED | `stash_ref` forwarded on `worker.reported` payload (tools.py:897) |
+
+Remaining non-bug work: B-0005/B-0006 Attention-channel routing (design
+decision, needs ADR/spec edit); Tier-2 skeleton skips (capture-seam +
+explicit-defer scenarios, see `docs/progress.md`).
+
+---
+
 ## B-0001 · `~/.jarvis/mac_events.db` schema incompatible with claude-adr0001
 
 **Discovered:** 2026-05-18 during Deliverable A1 (CLI bootstrap smoke).
@@ -283,8 +306,23 @@ Limitation utterance via voice + banner.
    surface render path. Currently the code path drops the turn
    entirely on waiter timeout.
 
-**Fix scope:** TBD — all three are real bugs and at least one
-(B-0003b) is the surface-of-no-emission Allen explicitly tested for.
+**Fix scope:** all three RESOLVED (verified in code 2026-05-28):
+
+- **B-0003a** (no Limitation Claim on timeout): `decision/__init__.py:652`
+  routes `action.timeout_assumed` / `action.failed` re-entry into a
+  dedicated branch (`decision/__init__.py:1631-1743`) that emits the
+  Limitation claim chain.
+- **B-0003b** (waiter missing the `task.executor_reported` synonym):
+  `_RUNTIME_TRIGGER_TYPES` (runtime/__init__.py:90-95) now lists
+  `worker.reported`, `action.result_observed`, `action.timeout_assumed`
+  and `action.failed`, so the waiter wakes on the timeout path instead
+  of timing out at 5s.
+- **B-0003c** (surface drops the turn on waiter timeout): with the
+  waiter now triggering on `action.timeout_assumed`, the turn no longer
+  drops — the B-0005 entry below records the timeout path emitting a
+  full claim chain + `surface.response_emitted` ("Codex 超时，未完成").
+  The residual question there (which Attention channel) is the
+  B-0005/B-0006 spec gap, not this bug.
 
 ---
 
@@ -705,7 +743,7 @@ escalation path that the pre-fix runs never reached.
 
 ---
 
-## B-0013 · Codex 0.130 receives MCP function_call but never dispatches to subprocess (OPEN)
+## B-0013 · Codex 0.130 receives MCP function_call but never dispatches to subprocess (FIXED — commit dc0abb4, live-confirmed 2026-05-28)
 
 **Where:** Codex 0.130 internal MCP dispatch path. Reproduced
 deterministically in A4 r9, r10, r11 (after B-0007 + B-0008 fixes).
@@ -756,11 +794,38 @@ dispatch ever happens. `logs_2.sqlite` has 0 ERROR rows and the
   4. Codex source code (locally available via `codex --version`
      binary path) might show the exact dispatch precondition.
 
-**Impact:** Belt-and-suspenders is degraded to suspenders only.
-The ADR-0002 §3.5.8 evidence ladder still works (r6 demonstrated
-this end-to-end with `task.verified` via subprocess exit-0), so
-the production happy path is intact via fallback. submit_report
-remains the desired ideal but not blocking for DoD.
+**Impact (at discovery):** Belt-and-suspenders was degraded to
+suspenders only. The ADR-0002 §3.5.8 evidence ladder still worked (r6
+demonstrated this end-to-end with `task.verified` via subprocess
+exit-0), so the production happy path stayed intact via fallback.
+submit_report was the desired ideal but not blocking for DoD.
+
+**Resolution (commit `dc0abb4` "drain MCP elicitation + capture
+item/completed", live-confirmed 2026-05-28):**
+
+Root cause was hypothesis (1)-adjacent but more specific: Codex 0.130
+sends a `mcpServer/elicitation/request` JSON-RPC for *every*
+external-MCP tool call. `approval_policy=never` (the B-0008 fix)
+suppresses *exec* approvals but does NOT cover the MCP elicitation
+gate, so the `submit_report` dispatch blocked waiting on an elicitation
+reply that never came — exactly the "one `item/started`, then 521-573s
+silence, no `item/completed`" symptom.
+
+The fix drains `CodexAppServerClient.take_server_request` on every poll
+iteration and auto-accepts elicitations/approvals
+(`codex_action.py:29-31`, `325-351`, `704`, `763`), so the tool call
+actually round-trips. Belt-and-suspenders is restored.
+
+**Live confirmation:** all four Increment-1/Increment-2 burns
+(happy / no_verify route-B / reviewer_fail K5 / route-A empty-diff)
+froze traces with `worker.report_missing == 0` and
+`worker.reported.status == "ok"`. Since `worker.report_missing` fires
+iff `codex_result.submit_report is None` (tools.py:833) and the `ok`
+status comes from the submit_report payload itself
+(`submit_report.get("status", "report_missing")`, tools.py:850),
+both signals together prove `submit_report` was called AND its
+`item/completed` was captured on every run — the dispatch no longer
+stalls.
 
 ---
 
@@ -816,10 +881,17 @@ tracked-only defect — left untouched to keep this fix surgical; consider
 consolidating onto a single untracked-aware capture later.
 
 **Status:** Fixed (commit `e599b8e`). Unit-proven (RED→GREEN) + Tier-1
-green (876 unit/canary, ruff/mypy `jarvis/`, lint-imports). Not yet
-re-burned live — the 7 filled Increment-1 tests are reviewer-verdict-
-independent and stay green; an optional re-burn would refresh the frozen
-trace to show the reviewer agreeing.
+green (876 unit/canary, ruff/mypy `jarvis/`, lint-imports).
+
+**Live-covered (2026-05-28, Increment-2 burns):** the fix is now
+exercised live in both directions. The no_verify (route B) and K5
+reviewer_fail burns ask Codex to create an untracked top-level NOTES.md
+and both froze an Artifact claim over a non-empty diff — proving the
+untracked-capture half works against real Codex. The route-A empty-diff
+burn (strictly read-only goal) froze `diff_nonempty=False` with NO
+spurious untracked capture — proving the fix does not over-report.
+Together these close the latent `diff_nonempty` false-negative concern
+without a dedicated re-burn.
 
 ---
 
