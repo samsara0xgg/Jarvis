@@ -345,6 +345,44 @@ def test_run_codex_action_happy_path_captures_submit_report(
     assert methods == ["thread/start", "turn/start"]
 
 
+def test_run_codex_action_thread_start_cwd_matches_repo_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """J3: the ``thread/start`` ``cwd`` param equals the ``cwd`` arg byte-for-byte.
+
+    The cwd lives on the Codex ``thread/start`` JSON-RPC request, which is
+    internal to the subprocess and never mirrored into the Event Log — so
+    the Tier-2 scenario stub
+    (``test_real_codex_flagship.py::test_j3_thread_start_cwd_matches_repo_path``)
+    defers here, where the FakeClient ``request_log`` makes the outgoing
+    param observable without spawning a real Codex.
+    """
+    template = FakeClient(
+        notifications=[
+            {
+                "method": "turn/completed",
+                "params": {
+                    "turnId": "turn-j3",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            },
+        ],
+    )
+    holder: list[FakeClient] = [template]
+    _patch_client(monkeypatch, holder)
+    _patch_diff_capture(monkeypatch, text="diff --git a/x b/x\n")
+
+    ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    client = holder[0]
+    thread_start_params = [
+        params for method, params in client.request_log if method == "thread/start"
+    ]
+    assert thread_start_params, "thread/start was never sent"
+    assert thread_start_params[0]["cwd"] == str(tmp_path)
+
+
 def test_run_codex_action_captures_multiple_submit_report_calls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

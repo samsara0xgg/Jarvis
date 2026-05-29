@@ -280,17 +280,20 @@ def test_j2_codex_initialize_within_5s(live_real_codex_happy: dict[str, Any]) ->
 
 
 def test_j3_thread_start_cwd_matches_repo_path() -> None:
-    """J3: ``thread/start.cwd`` equals ``task.created.payload["repo_path"]`` byte-for-byte.
+    """J3: ``thread/start.cwd`` equals the run ``cwd`` byte-for-byte.
 
     The cwd is set on the Codex ``thread/start`` JSON-RPC request, which
-    is internal to the subprocess and not mirrored into the Event Log.
-    Asserting it byte-for-byte requires a spawn-argv capture seam —
-    deferred to Increment-1b (see the burn design doc). No fixture
-    dependency so this skip never triggers a live burn.
+    is internal to the subprocess and not mirrored into the Event Log, so
+    it cannot be asserted from a scenario trace. It IS proven at the
+    spawn-argv boundary by the unit test
+    ``tests/unit/test_codex_action.py::test_run_codex_action_thread_start_cwd_matches_repo_path``
+    (the FakeClient ``request_log`` captures the outgoing ``cwd`` param
+    without a live spawn). This stub keeps J3 in the Tier-2 enumeration.
     """
     pytest.skip(
-        "J3 cwd lives on the Codex thread/start RPC, not the Event Log; "
-        "needs a spawn-argv capture seam (Increment-1b follow-up).",
+        "J3 thread/start cwd is not Event-Log-observable; proven by "
+        "tests/unit/test_codex_action.py::"
+        "test_run_codex_action_thread_start_cwd_matches_repo_path.",
     )
 
 
@@ -347,8 +350,20 @@ def test_j9_codex_timeout_emits_timeout_assumed(real_python_repo: Path) -> None:
 
 
 def test_j10_all_four_sandbox_c_flags_present_in_popen_args(real_python_repo: Path) -> None:
-    """J10: spawn argv contains all four ``-c`` flags: model, reasoning_effort, sandbox_mode, writable_roots."""
-    pytest.skip(_SKELETON_SKIP)
+    """J10: spawn argv contains all four ``-c`` flags: model, reasoning_effort, sandbox_mode, writable_roots.
+
+    The ``-c`` flag slice is built by ``_build_extra_args`` and not mirrored
+    into the Event Log. It IS proven at the spawn-argv boundary by the unit
+    tests ``tests/unit/test_codex_action.py::test_build_extra_args_carries_all_required_keys``
+    (asserts model / reasoning_effort / sandbox_mode / writable_roots, plus
+    the MCP keys) and ``::test_build_extra_args_has_eleven_c_flags``. This
+    stub keeps J10 in the Tier-2 enumeration.
+    """
+    pytest.skip(
+        "J10 -c flags are not Event-Log-observable; proven by "
+        "tests/unit/test_codex_action.py::test_build_extra_args_carries_all_required_keys "
+        "(+ ::test_build_extra_args_has_eleven_c_flags).",
+    )
 
 
 def test_j11_submit_report_mcp_tool_reachable(live_real_codex_happy: dict[str, Any]) -> None:
@@ -361,8 +376,9 @@ def test_j11_submit_report_mcp_tool_reachable(live_real_codex_happy: dict[str, A
     the absence of any ``worker.report_missing`` event is therefore the
     real reachability proof — Codex could not have produced an ``ok``
     report through a tool it could not list and call. The byte-level
-    ``mcp_servers.jarvis-tools`` argv check is a spawn-argv-seam
-    follow-up (Increment-1b), like J10.
+    ``mcp_servers.jarvis-tools`` argv check is proven separately by
+    ``tests/unit/test_codex_action.py::test_build_extra_args_carries_all_required_keys``
+    (same spawn-argv boundary as J10).
     """
     reported = _payloads(live_real_codex_happy, "worker.reported")
     assert reported
@@ -391,13 +407,36 @@ def test_j13_dirty_tree_stash_pop_conflict_emits_conflict_patch(real_python_repo
 
 
 def test_k1_say_subprocess_invoked_with_voice_flag(real_python_repo: Path) -> None:
-    """K1: ``say`` subprocess started with ``-v Tingting`` (or configured voice) + voice-channel text as last arg."""
-    pytest.skip(_SKELETON_SKIP)
+    """K1: ``say`` subprocess started with ``-v Tingting`` (or configured voice) + voice-channel text as last arg.
+
+    The ``say`` argv is built inside ``notify.deliver_voice`` and not
+    mirrored into the Event Log. It IS proven at the subprocess boundary by
+    ``tests/unit/test_notify.py::test_deliver_voice_spawns_say_with_tingting``
+    (asserts ``["say", "-v", "Tingting", <text>]``). This stub keeps K1 in
+    the Tier-2 enumeration.
+    """
+    pytest.skip(
+        "K1 say argv is not Event-Log-observable; proven by "
+        "tests/unit/test_notify.py::test_deliver_voice_spawns_say_with_tingting.",
+    )
 
 
 def test_k2_osascript_notification_truncated_at_240(real_python_repo: Path) -> None:
-    """K2: ``osascript -e 'display notification ...'`` invoked exactly once per emission; body truncated at 240 chars."""
-    pytest.skip(_SKELETON_SKIP)
+    """K2: ``osascript -e 'display notification ...'`` invoked exactly once per emission; body truncated at 240 chars.
+
+    The ``osascript`` argv + 240-char truncation are built inside
+    ``notify.deliver_banner`` and not mirrored into the Event Log. They ARE
+    proven at the subprocess boundary by
+    ``tests/unit/test_notify.py::test_deliver_banner_short_body`` (one
+    ``/usr/bin/osascript -e`` call) and ``::test_deliver_banner_truncates_at_240``
+    (body > 240 → 239 chars + ellipsis). This stub keeps K2 in the Tier-2
+    enumeration.
+    """
+    pytest.skip(
+        "K2 osascript argv/truncation is not Event-Log-observable; proven by "
+        "tests/unit/test_notify.py::test_deliver_banner_short_body "
+        "(+ ::test_deliver_banner_truncates_at_240).",
+    )
 
 
 def test_k3_cli_parent_exits_within_100ms_no_sqlite_write(real_python_repo: Path) -> None:
