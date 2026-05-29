@@ -2075,6 +2075,42 @@ ambitious, unverifiable-from-static-diff goal (thread-safe kvstore +
   cannot create verified evidence or `task.verified`.
 - No `jarvis/` source changes. Static gates first, then 1 live burn.
 
+### Variant 5 — route A true empty diff (L1), GREEN (1 burn, 37s)
+
+`tests/scenarios/test_real_codex_empty_diff.py`: added a SECOND
+module-scoped fixture `live_real_codex_empty_diff` + filled body
+(`test_l1_empty_diff_execution_claim_and_missing_diff_limitation`)
+coexisting with the route-B no_verify test. This is the distinct
+§8.5-rule-6 **empty-diff** path (`result_interpreter` lines 438-472):
+Codex completes a turn but produces NO diff, so the observation handler
+emits an Execution Claim instead of an Artifact Claim, plus a
+`missing_diff_artifact` Limitation.
+
+- **Inducement**: seeds `task.created` WITHOUT a `verify_command` and a
+  STRICTLY read-only goal ("Do NOT create/modify/delete any file; only
+  describe the project in your report"). No `verify_command` is the
+  load-bearing seed: empty diff + verify-pass would take the Fix-2
+  `task.no_op` path (line 529), NOT the verdict-`"neither"` route A wants.
+- **Deterministic contract**: ONE `observation` verify_diff slot whose
+  `tool_output` carries `diff_nonempty == False`; an `Execution` claim
+  with `evidence(level=executed, relation=supports, source_id=spawn_worker)`;
+  a `Limitation` claim with `evidence(level=reported, relation=limits,
+  source_id=missing_diff_artifact)`; NO `missing_verify_command` row
+  anywhere (the route-A vs route-B discriminator — line 503 `if
+  diff_nonempty:` is False so that row is skipped); no Postcondition / no
+  verified evidence; NO `task.verified` AND NO `task.no_op` (verdict
+  `"neither"`); pre_emit `force_limitation_language`; no completion language.
+- **Burn trace** (frozen, gitignored, 34 events): `worker.reported` ok,
+  `report_missing=0` (Codex called submit_report); observation
+  `diff_nonempty=False`; claims Report/Execution/Limitation; evidence
+  `executed/supports/spawn_worker` + `reported/limits/missing_diff_artifact`;
+  0 `task.verified` / 0 `task.no_op`; surface honest limitation "这个 worker
+  只是做了只读检查，没有产生代码改动；diff 是空的… 不能说'已测试通过'".
+- Static-confirmed event shape first (`worker.artifact_observed` still
+  fires on empty diff with `content_hash=sha256("")`; `diff_nonempty`
+  lives in the verify_diff observation slot's `tool_output`, not on
+  `worker.artifact_observed`), then 1 live burn. No `jarvis/` source changes.
+
 ### Increment 2 — summary
 
 Negative-variant real-Codex acceptance, prove-then-expand, one burn each:
@@ -2082,13 +2118,14 @@ Negative-variant real-Codex acceptance, prove-then-expand, one burn each:
 | Variant | File | Status |
 |---|---|---|
 | verify_fail (L3) | test_real_codex_verify_fail.py | GREEN (1 burn) |
-| L1 no_verify_command | test_real_codex_empty_diff.py | GREEN (1 burn) |
+| L1 no_verify_command (route B) | test_real_codex_empty_diff.py | GREEN (1 burn) |
+| L1 true empty diff (route A) | test_real_codex_empty_diff.py | GREEN (1 burn) |
 | K5 reviewer_fail + no_verify | test_real_codex_reviewer_fail_no_verify.py | GREEN (1 burn) |
 | J12 no_submit_report | test_real_codex_no_submit_report.py | DEFERRED (by design; unit-covered) |
 
-3 live burns (~62s / 152s / 290s), all green; no `jarvis/` source changes;
-Tier-1 unaffected. Each variant corrected stale skeleton field-name guesses
-against the real emitted schema (semantics, evidence vs claim fields,
+4 live burns (~62s / 152s / 290s / 37s), all green; no `jarvis/` source
+changes; Tier-1 unaffected. Each variant corrected stale skeleton field-name
+guesses against the real emitted schema (semantics, evidence vs claim fields,
 pre_emit `outcome`, reviewer evidence is a row not a Limitation claim). The
-true-empty-diff (route A, Execution claim) and the live J12 broken-precondition
-seam remain documented TODOs.
+live J12 broken-precondition seam remains a documented TODO (the
+true-empty-diff route A is now covered — Variant 5 above).
