@@ -2041,7 +2041,11 @@ Investigated whether a live J12 burn is feasible. Findings (opus subagent
   test as binding §3.5.8 coverage; leave the production prompt untouched.
   If a live burn is later wanted, induce report_missing via a real broken
   precondition (G2-clean spawn-time config), never via a prompt toggle
-  (would contradict the never-patch-prompts rule). Awaiting Allen.
+  (would contradict the never-patch-prompts rule).
+- **Decision (Allen, 2026-05-28)**: maintain defer + TODO. Production
+  prompt untouched; `test_real_codex_no_submit_report.py` updated to a
+  documented deferred skip citing the unit test as binding §3.5.8
+  coverage.
 
 Remaining: K5 reviewer_fail_no_verify (reviewer verdict is LLM-dependent;
 no-task.verified is guaranteed via no-verify, the reviewer-fail assertion
