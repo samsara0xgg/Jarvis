@@ -1930,3 +1930,54 @@ untracked-aware via read-only `git diff --no-index`, spec-aligned with
 + Tier-1 green (876). The 7 filled Increment-1 scenario tests are
 reviewer-verdict-independent and stay green (no re-burn required; an
 optional re-burn would refresh the frozen trace).
+
+
+## Increment 2 — Tier-2 negative variants, real-Codex burn (2026-05-28)
+
+Prove-then-expand, one variant per burn (design doc Increment 2 §). Each
+variant is its own module-scoped fixture that runs the scenario ONCE
+against live Codex 0.130 + live OpenRouter and freezes the trace, mirroring
+`live_real_codex_happy`.
+
+### Variant 1 — verify_fail (L3), GREEN (1 burn, 62s)
+
+`tests/scenarios/test_real_codex_verify_fail.py`: replaced the two L3
+skeletons with a module-scoped `live_real_codex_verify_fail` fixture +
+filled bodies.
+
+- **Fixture**: seeds a repo with a PERMANENTLY-RED test (`assert False`)
+  and a benign additive goal ("create NOTES.md at root, do NOT touch
+  `tests/`"). Codex produces a non-empty diff (untracked NOTES.md,
+  captured via the B-0014 fix) while `verify_command` (`pytest -x`) stays
+  exit 1 — driving the F2 verify-fail row deterministically without
+  relying on Codex writing buggy code (per the design-doc strategy).
+- **`test_l3_verify_fail_emits_limitation_at_executed`**: `verify_diff`
+  emits observation + error slots (NO verification slot); a `Limitation`
+  claim with `evidence(level=executed, relation=limits,
+  source_id=verify_command, scope=exit_code=1)`; NO `Postcondition` claim
+  / NO `verified` evidence; NO `task.verified` AND NO `task.no_op`
+  (F2 verdict `"neither"`); surface text carries no completion language.
+- **`test_l3_pre_emit_gate_verdict_force_limitation_language`**: the
+  `gate.evaluated(pre_emit).outcome == "force_limitation_language"` (all
+  3 attempts; `claim_levels` never reached `"verified"`); surface text
+  matches a `LIMITATION_REGEXES` pattern. Regex constants are imported
+  from `jarvis.decision.pre_emit_phrases` (the
+  `test_canary_regex_constants_single_source` canary forbids inline
+  literals in tests).
+- **Skeleton corrections** (the Step-20 stub predated any live run): the
+  `action.result_observed` field is `semantics` not `result_semantics`;
+  `level`/`relation`/`source_id` live on `evidence.attached`, not
+  `claim.created`; the verify-fail evidence level is `executed` (the
+  command ran; the predicate failed); the pre_emit field is `outcome`
+  (carrying `plan.permission`), not `verdict`.
+- **Burn trace** (frozen, gitignored): `worker.reported` ok with NOTES.md
+  only ("No files under tests touched"); 3 `result_observed`
+  (report / observation / error=`verify_command_exit_1`); 3 claims
+  (Report / Artifact / Limitation); evidence `executed/limits`; 0
+  `task.verified` / 0 `task.no_op`; surface "Codex 跑了但 verify 没过
+  （未验证 / unverified）...".
+- No `jarvis/` source changes. Static gates first (ruff clean, regex
+  canary green, no-flag run skips → no accidental burn), then 1 live burn.
+
+Remaining Increment-2 variants (own fixtures, one burn each): J12
+no_submit_report, K5 reviewer_fail_no_verify, L1 empty_diff.
