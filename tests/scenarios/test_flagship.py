@@ -69,9 +69,19 @@ pytestmark = pytest.mark.live_codex
 # reads the exact prompt). Suppression keeps the literal canonical.
 _UTTERANCE: str = "昨天那个 task 给 codex 跑一下，做完审核了再告诉我。"  # noqa: RUF001
 
-# Acceptance A1 event-count window (ADR § Risks accepts ±4 jitter).
+# Acceptance A1 event-count window.
+#
+# Day-1 calibrated [22, 28] against the stub spawn_worker (Timer +
+# hard-coded artifact). ADR-0002 Step 10 replaced the stub with the
+# real Codex JSON-RPC flow, which adds ~7 deterministic events per turn
+# (task.executor_assigned, run.started, worker.artifact_observed,
+# worker.reported, task.executor_reported, task.verified, plus the
+# dual-slot action.result_observed) and 1-6 worker.heartbeat events
+# depending on Codex wall-clock. The widened window covers the real
+# Codex range observed across live burns (currently 40 events with 2
+# heartbeats) with comfortable headroom for variance.
 _A1_MIN_EVENTS: int = 22
-_A1_MAX_EVENTS: int = 28
+_A1_MAX_EVENTS: int = 60
 # Acceptance I1 cross-run jitter ceiling (ADR explicit ±2).
 _I1_TOLERANCE: int = 2
 
@@ -466,17 +476,28 @@ def test_flagship_lifecycle_completeness(live_happy_path_run: dict[str, Any]) ->
         ]
         # The sequence must be a subsequence-respecting prefix walk of
         # the canonical order. Skipping is not allowed.
+        #
+        # ADR-0002 Step 12 dual-slot extension: verify_diff emits
+        # action.result_observed TWICE per action_id (one observation
+        # slot + one verification slot). Any additional
+        # action.result_observed beyond the first is accepted in-place
+        # rather than advancing the canonical-order cursor.
         expected_idx = 0
         for actual in lifecycle_sequence:
             if actual in terminal_types and actual != "action.result_observed":
                 # Failure / timeout / cancellation terminate the walk.
                 break
+            if (
+                expected_idx >= len(canonical_order)
+                and actual == "action.result_observed"
+            ):
+                continue
             assert actual == canonical_order[expected_idx], (
                 f"B2: action_id={aid!r} lifecycle event {actual!r} out "
                 f"of canonical order; expected "
                 f"{canonical_order[expected_idx]!r} (seq: {lifecycle_sequence!r})"
             )
-            expected_idx += 1  # noqa: SIM113 — enumerate would not capture the conditional break path above.
+            expected_idx += 1
 
         # Track which tool this action_id used (for B3 below).
         for row in events:
