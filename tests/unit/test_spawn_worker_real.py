@@ -524,6 +524,13 @@ def test_spawn_worker_dirty_tree_forwards_stash_ref_via_metadata(tmp_path: Path)
     # tool_output can see the stash handle.
     assert result.payload["stash_ref"] == "a" * 40
 
+    with closing(open_event_log(paths.event_log)) as ro_conn:
+        worker_reported = [
+            e for e in iter_events(ro_conn) if e.type == "worker.reported"
+        ]
+    assert len(worker_reported) == 1
+    assert worker_reported[0].payload["stash_ref"] == "a" * 40
+
 
 # --- Static no-pop invariant -----------------------------------------------
 

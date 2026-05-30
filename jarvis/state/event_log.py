@@ -290,7 +290,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         event_type="worker.reported",
         owner_layer="L4",
         required_payload=("run_id", "action_id", "status"),
-        optional_payload=("summary", "artifact_path"),
+        optional_payload=("summary", "artifact_path", "stash_ref"),
         schema_version=1,
     ),
     EventTypeSchema(

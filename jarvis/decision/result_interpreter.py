@@ -361,6 +361,7 @@ def interpret_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder inputs are all lo
     # === Verification slot row(s) ========================================
     active_claim_id, active_relation, verdict = _emit_verification_rows(
         ctx=ctx,
+        observation_slot=observation_slot,
         verification_slot=verification_slot,
         diff_nonempty=diff_nonempty,
         observation_active_claim_id=active_claim_id,
@@ -472,9 +473,10 @@ def _emit_observation_rows(
     return str(execution_claim.payload["claim_id"])
 
 
-def _emit_verification_rows(
+def _emit_verification_rows(  # noqa: PLR0913 - verification ladder needs ctx, observation, verification, diff state, active claim, and accumulator.
     *,
     ctx: _BundleCtx,
+    observation_slot: RawResult,
     verification_slot: RawResult | None,
     diff_nonempty: bool,
     observation_active_claim_id: str | None,
@@ -542,7 +544,10 @@ def _emit_verification_rows(
             level="verified",
             source_type="tool",
             source_id="verify_command",
-            evidence_payload_extras=_verify_evidence_extras(verification_slot),
+            evidence_payload_extras=_verify_evidence_extras(
+                verification_slot,
+                observation_slot=observation_slot,
+            ),
         )
         emitted.extend((postcondition_claim, postcondition_evidence))
         return str(postcondition_claim.payload["claim_id"]), "supports", "verified"
@@ -566,7 +571,10 @@ def _emit_verification_rows(
         level="executed",
         source_type="tool",
         source_id="verify_command",
-        evidence_payload_extras=_verify_evidence_extras(verification_slot),
+        evidence_payload_extras=_verify_evidence_extras(
+            verification_slot,
+            observation_slot=observation_slot,
+        ),
     )
     emitted.extend((limitation_claim, limitation_evidence))
     return str(limitation_claim.payload["claim_id"]), "limits", "neither"
@@ -651,15 +659,29 @@ def _diff_evidence_extras(observation_slot: RawResult) -> dict[str, Any]:
     artifact_ref = observation_slot.payload.get("artifact_ref")
     if isinstance(artifact_ref, str):
         extras["artifact_ref"] = artifact_ref
+        extras["artifact_path"] = artifact_ref
+    artifact_path = observation_slot.payload.get("artifact_path")
+    if isinstance(artifact_path, str):
+        extras["artifact_path"] = artifact_path
+    content_hash = observation_slot.payload.get("content_hash")
+    if isinstance(content_hash, str):
+        extras["content_hash"] = content_hash
     return extras
 
 
-def _verify_evidence_extras(verification_slot: RawResult) -> dict[str, Any]:
+def _verify_evidence_extras(
+    verification_slot: RawResult,
+    *,
+    observation_slot: RawResult | None = None,
+) -> dict[str, Any]:
     """Pull useful verify_command metadata onto the Evidence payload."""
     extras: dict[str, Any] = {}
     exit_code = verification_slot.payload.get("exit_code")
     if isinstance(exit_code, int):
         extras["scope"] = f"exit_code={exit_code}"
+    if observation_slot is not None:
+        for key, value in _diff_evidence_extras(observation_slot).items():
+            extras.setdefault(key, value)
     return extras
 
 

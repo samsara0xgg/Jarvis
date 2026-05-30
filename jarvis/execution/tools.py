@@ -864,6 +864,7 @@ def spawn_worker_handler(
             "status": report_status,
             "summary": report_summary,
             "artifact_path": str(diff_artifact_path),
+            "stash_ref": stash_ref,
         },
         source_event_id=running_event_uid,
         correlation=correlation,
@@ -1106,17 +1107,22 @@ def _build_observation_slot(*, action_id: str, diff_path: Path) -> RawResult:
     """
     diff_text = diff_path.read_text(encoding="utf-8") if diff_path.exists() else ""
     diff_nonempty = bool(diff_text.strip())
+    content_hash = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
     payload: dict[str, Any] = {
         "diff_text_preview": diff_text[:_DIFF_PREVIEW_BYTES],
         "diff_nonempty": diff_nonempty,
+        "artifact_path": str(diff_path),
         "artifact_ref": str(diff_path),
+        "content_hash": content_hash,
     }
     return RawResult(
         action_id=action_id,
         semantics="observation",
         payload=payload,
         tool_output=tool_result(
-            diff_path=str(diff_path), diff_nonempty=diff_nonempty,
+            diff_path=str(diff_path),
+            diff_nonempty=diff_nonempty,
+            content_hash=content_hash,
         ),
         error=None,
         metadata=None,

@@ -97,7 +97,9 @@ def test_verify_diff_observation_only_no_verify_command(tmp_path: Path) -> None:
         observation = bundle.slots[0]
         assert observation.semantics == "observation"
         assert observation.payload["diff_nonempty"] is True
+        assert observation.payload["artifact_path"] == str(artifact)
         assert observation.payload["artifact_ref"] == str(artifact)
+        assert observation.payload["content_hash"]
         assert "hello world" in observation.payload["diff_text_preview"]
         assert observation.error is None
     finally:

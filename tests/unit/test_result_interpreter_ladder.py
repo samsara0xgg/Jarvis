@@ -77,7 +77,9 @@ def _observation_slot(*, diff_nonempty: bool) -> RawResult:
         payload={
             "diff_text_preview": "diff --git a/x b/x\n" if diff_nonempty else "",
             "diff_nonempty": diff_nonempty,
+            "artifact_path": "/tmp/diff.txt",
             "artifact_ref": "/tmp/diff.txt",
+            "content_hash": "sha256-test",
         },
         tool_output=None,
         error=None,
@@ -171,6 +173,8 @@ def test_ladder_verify_pass_reviewer_ok(tmp_path: Path) -> None:
         ev["relation"] == "supports"
         and ev["level"] == "verified"
         and ev.get("source_id") == "verify_command"
+        and ev.get("artifact_path") == "/tmp/diff.txt"
+        and ev.get("content_hash") == "sha256-test"
         for ev in evidences
     )
     # Reviewer-reported row, supports relation.
