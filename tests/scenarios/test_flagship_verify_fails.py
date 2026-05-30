@@ -1,21 +1,22 @@
-"""Tier 2 negative-case scenario test (ADR 0001 Step 13) — real cloud LLM.
+"""Tier 2 negative-case scenario test (ADR 0001 Step 13) — real cloud LLM + real Codex.
 
-Same flagship Mac scenario as Step 12, but the L4 ``spawn_worker`` stub
-flips its artifact write to ``{"status": "fail"}``. The downstream
-``verify_diff`` handler reads the artifact, sees the status mismatch,
-and emits ``action.result_observed(semantics=error)``. ``task.verified``
-never fires; the Task Ledger derives ``reported_complete``; the Result
-Interpreter emits a Limitation Claim with reported evidence; and the
-Pre-emit Gate refuses any completion-class language in the final CLI
-output (forcing limitation framing instead).
+Same flagship Mac scenario as the happy path, but the L4 verify step
+fails: ``repo_path`` points at a fixture git repo whose seeded
+``pytest -x`` predicate is permanently red, so after Codex's benign
+NOTES.md round-trip the ``verify_command`` exits non-zero and
+``verify_diff`` reports a verify-fail row. ``task.verified`` never
+fires; the Task Ledger derives ``reported_complete``; the Result
+Interpreter emits a Limitation Claim carrying the verify_command
+evidence; and the Pre-emit Gate refuses any completion-class language
+in the final CLI output (forcing limitation framing instead).
 
 Architecture
 ------------
 
 Two module-scoped fixtures (``live_fail_path_run`` +
-``live_fail_replay_run``) wrap the ``_SPAWN_WORKER_ARTIFACT_STATUS``
-monkeypatch and call :func:`run_turn` exactly once each — so we burn
-the cloud LLM twice across the full F1-F6 + I3 acceptance walk.
+``live_fail_replay_run``) call :func:`run_turn` exactly once each
+against an independent fixture repo + runtime — so we burn the cloud
+LLM + Codex twice across the full F1-F6 + I3 acceptance walk.
 
 Acceptance coverage:
 
@@ -38,13 +39,14 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
+import sys
 import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from jarvis.decision.pre_emit_phrases import COMPLETION_REGEXES, LIMITATION_REGEXES
-from jarvis.execution import tools as execution_tools
 from jarvis.runtime import RunTurnResult, bootstrap_runtime_app, run_turn
 from jarvis.state.event_log import emit_event
 from jarvis.state.projections import rebuild_projections
@@ -71,11 +73,48 @@ pytestmark = pytest.mark.live_codex
 
 
 # The single utterance the ADR § Tier 2 invocation command pins —
-# identical to Step 12 so the LLM's view of the world is the same;
-# only the artifact knob flips. The CJK fullwidth punctuation is
-# verbatim from the ADR — RUF001 would flag it as ambiguous but the
-# bytes are load-bearing here too (the LLM reads it).
+# identical to the happy-path utterance so the LLM's view of the world
+# is the same; the verify_command on the seeded task is what flips the
+# outcome. The CJK fullwidth punctuation is verbatim from the ADR —
+# RUF001 would flag it as ambiguous but the bytes are load-bearing here
+# too (the LLM reads it).
 _UTTERANCE: str = "昨天那个 task 给 codex 跑一下，做完审核了再告诉我。"  # noqa: RUF001
+
+# ADR-0002 Step 20 migration: the negative-path fixture is now
+# verify_command-driven (real Codex + a permanently-red predicate)
+# instead of the retired Day-1 ``_SPAWN_WORKER_ARTIFACT_STATUS`` knob.
+# Pattern mirrors ``tests/scenarios/test_real_codex_verify_fail.py``
+# (Increment-2 live-green): benign additive goal so the diff is
+# non-empty, plus a seeded test module whose red fixture test pins
+# ``pytest -x`` exit code != 0.
+_VERIFY_FAIL_GOAL: str = (
+    "Create a top-level NOTES.md file at the repository root that briefly "
+    "describes this demo project. Do NOT modify, fix, create, or delete any "
+    "file under the tests/ directory — leave every existing test exactly as "
+    "it is, including any test that currently fails. Your only change must "
+    "be adding NOTES.md."
+)
+
+# Seeded test module: one passing test plus one intentional permanent
+# failure. The red test guarantees ``pytest -x`` exits non-zero; the goal
+# instructs Codex to leave it untouched.
+_FIXTURE_TEST_MODULE: str = '''\
+"""Demo tests for the F-section verify-fail acceptance fixture.
+
+Contains one passing test and one PERMANENTLY-RED test. The red test is
+an intentional fixture for the verify_command-fail path and must never
+be repaired.
+"""
+
+
+def test_truthy() -> None:
+    assert True
+
+
+def test_known_failing_fixture_do_not_fix() -> None:
+    """Intentional permanent failure — do not modify or repair."""
+    assert False, "intentional failure: F-section verify_command-fail acceptance fixture"
+'''
 
 # ADR § Acceptance F4 — at least one of these must match the final CLI
 # output. ADR-0002 Step 13: imported from the single source of truth
@@ -226,11 +265,41 @@ _F5_SANITY_CLEAN: tuple[str, ...] = (
 # --- Module-scoped live runs -----------------------------------------------
 
 
-def _seed_and_run(root: Path) -> JarvisRuntime:
-    """Bootstrap a runtime against ``root`` and seed one open task, identical to Step 12.
+def _git(repo: Path, *args: str) -> None:
+    """Run a git subcommand in ``repo`` (test-fixture helper)."""
+    # S603 — controlled argv on tmp_path fixture repo (no user input).
+    # S607 — `git` resolved via PATH is intentional, same as test_real_codex_*.
+    subprocess.run(["git", "-C", str(repo), *args], check=True)  # noqa: S603, S607
 
-    Returns the assembled :class:`JarvisRuntime`. The caller is
-    responsible for running the turn (and closing the connection).
+
+def _init_verify_fail_repo(repo: Path) -> None:
+    """Initialize ``repo`` as a git repo whose ``pytest -x`` is permanently red.
+
+    Mirrors :func:`tests.scenarios.test_real_codex_verify_fail` —
+    pyproject.toml plus a ``tests/test_demo.py`` with one passing test
+    and one intentional permanent failure, then ``git add`` + commit so
+    Codex sees a clean working tree.
+    """
+    _git(repo, "init", "-q")
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname = 'demo'\nversion = '0.0.1'\nrequires-python = '>=3.12'\n",
+        encoding="utf-8",
+    )
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_demo.py").write_text(_FIXTURE_TEST_MODULE, encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+
+def _seed_and_run(root: Path, repo: Path) -> JarvisRuntime:
+    """Bootstrap a runtime against ``root`` and seed one open task whose verify_command is red.
+
+    Replaces the Day-1 stub-artifact-knob seed: ``repo_path`` points at
+    a git repo prepared by :func:`_init_verify_fail_repo`, and
+    ``verify_command`` runs ``pytest -x`` whose intentional red fixture
+    test guarantees exit code != 0 — driving the L3 verify-fail ladder
+    end-to-end through a real Codex round-trip. Caller runs the turn
+    and is responsible for closing the connection.
     """
     os.environ["JARVIS_RUNTIME_ROOT"] = str(root)
     runtime = bootstrap_runtime_app(runtime_root=root)
@@ -240,8 +309,10 @@ def _seed_and_run(root: Path) -> JarvisRuntime:
         type="task.created",
         payload={
             "task_id": "task_X",
-            "goal": "Implement Day-1 verify pipeline",
+            "goal": _VERIFY_FAIL_GOAL,
             "source": "manual",
+            "repo_path": str(repo),
+            "verify_command": f"{sys.executable} -m pytest -x -q",
         },
         ts_epoch_ms=yesterday_ms,
     )
@@ -252,25 +323,26 @@ def _seed_and_run(root: Path) -> JarvisRuntime:
 def live_fail_path_run(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[dict[str, Any]]:
-    """Drive the negative-case flagship turn ONCE under monkeypatched artifact status.
+    """Drive the negative-case flagship turn ONCE against a real Codex + verify-fail repo.
 
-    Module-scoped so F1-F6 share a single cloud LLM call. The artifact
-    knob ``_SPAWN_WORKER_ARTIFACT_STATUS`` is flipped via
-    :func:`pytest.MonkeyPatch.context` for the lifetime of the turn —
-    pytest's per-test ``monkeypatch`` fixture is function-scoped, so we
-    drive the patch manually here.
+    Module-scoped so F1-F6 share a single cloud LLM + Codex round-trip.
+    ADR-0002 Step 20 migration: the Day-1 ``_SPAWN_WORKER_ARTIFACT_STATUS``
+    monkeypatch knob is gone (real spawn_worker handles Codex JSON-RPC);
+    the negative path is now triggered by a seeded ``verify_command``
+    (``pytest -x``) whose permanently-red fixture test guarantees exit
+    code != 0 after Codex's benign NOTES.md change.
     """
     pytest.importorskip("openai")  # Defensive — the runtime needs it.
 
+    repo = tmp_path_factory.mktemp("flagship_fail_repo")
+    _init_verify_fail_repo(repo)
     root = tmp_path_factory.mktemp("flagship_fail")
-    runtime = _seed_and_run(root)
+    runtime = _seed_and_run(root, repo)
 
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(execution_tools, "_SPAWN_WORKER_ARTIFACT_STATUS", "fail")
-        result = run_turn(runtime, utterance=_UTTERANCE)
-    # Wait briefly so any straggling Timer callback finalizes its emit
-    # before we snapshot. Day-1 Timer delay is ~10 ms.
-    time.sleep(0.2)
+    result = run_turn(runtime, utterance=_UTTERANCE)
+    # Wait briefly so any straggling executor emit finalizes before the
+    # snapshot.
+    time.sleep(0.3)
 
     artifact_path = write_llm_use_artifact(runtime, suffix="fail")
 
@@ -293,13 +365,13 @@ def live_fail_replay_run(
     """Second independent negative-case run for replay determinism (I3)."""
     pytest.importorskip("openai")
 
+    repo = tmp_path_factory.mktemp("flagship_fail_replay_repo")
+    _init_verify_fail_repo(repo)
     root = tmp_path_factory.mktemp("flagship_fail_replay")
-    runtime = _seed_and_run(root)
+    runtime = _seed_and_run(root, repo)
 
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(execution_tools, "_SPAWN_WORKER_ARTIFACT_STATUS", "fail")
-        result = run_turn(runtime, utterance=_UTTERANCE)
-    time.sleep(0.2)
+    result = run_turn(runtime, utterance=_UTTERANCE)
+    time.sleep(0.3)
 
     captured: dict[str, Any] = {
         "runtime": runtime,
