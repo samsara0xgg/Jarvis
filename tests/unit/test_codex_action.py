@@ -536,6 +536,46 @@ def test_run_codex_action_respects_caller_provided_codex_home(
     assert client.env.get("CODEX_HOME") == explicit_home
 
 
+def test_run_codex_action_ignores_ambient_codex_home_when_env_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ambient parent-process ``CODEX_HOME`` must NOT defeat per-spawn isolation.
+
+    Regression: pre-fix the override gate read ``env_dict.get("CODEX_HOME")``
+    where ``env_dict`` was ``os.environ.copy()`` when the caller passed
+    ``env=None``. An ambient ``CODEX_HOME`` (e.g. exported in the parent
+    shell of the calling agent) would then skip the tempdir branch and
+    inherit the ambient home unseeded — defeating both P-0009
+    (instruction contamination via the parent's ``AGENTS.md``) and B-0004
+    (auth.json seeding skipped because no tempdir was created). The fix
+    narrows the override predicate to an explicit ``env={CODEX_HOME: ...}``
+    argument only; only the ``env`` parameter counts.
+    """
+    poison_home = tmp_path / "ambient-poison"
+    poison_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(poison_home))
+
+    template = FakeClient(
+        notifications=[{"method": "turn/completed", "params": {}}],
+    )
+    holder: list[FakeClient] = [template]
+    _patch_client(monkeypatch, holder)
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error is None
+    client = holder[0]
+    assert client.env is not None
+    codex_home = client.env.get("CODEX_HOME")
+    assert codex_home, "CODEX_HOME must be set in the spawn env"
+    # Critical: ambient poison must be ignored, not propagated to the worker.
+    assert codex_home != str(poison_home)
+    # And the spawned worker must get a fresh isolation tempdir.
+    assert ca._CODEX_HOME_PREFIX in codex_home  # noqa: SLF001 — test of private constant
+
+
 def test_run_codex_action_seeds_auth_json_into_isolated_codex_home(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

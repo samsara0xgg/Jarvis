@@ -523,9 +523,10 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
         reasoning_effort: ``-c model_reasoning_effort=<level>`` flag value.
         env: Optional environment overrides. ``RUST_LOG=warn`` is set if
             absent (matches Hermes' default). ``CODEX_HOME`` is set to a
-            per-spawn empty temp dir if absent, so user-local Codex
-            config (``~/.codex/AGENTS.md``) cannot contaminate the
-            worker (P-0009). Pre-set ``CODEX_HOME`` to override.
+            per-spawn empty temp dir unless explicitly supplied in this
+            ``env`` mapping, so user-local or parent-process Codex config
+            cannot contaminate the worker (P-0009). Pass
+            ``env={"CODEX_HOME": ...}`` to override.
 
     Returns:
         :class:`CodexActionResult` with at least ``error`` and ``interrupted``
@@ -539,11 +540,13 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
     # Per-spawn empty CODEX_HOME -- isolates the worker from
     # ~/.codex/AGENTS.md and ~/.codex/config.toml so user-local Codex
     # config cannot contaminate the worker's instruction stream
-    # (P-0009). If the caller pre-set CODEX_HOME on ``env`` we respect
-    # that and skip the temp dir; otherwise we create one and tear it
-    # down in the result-finalize path.
+    # (P-0009). Only an explicit CODEX_HOME in the function's ``env``
+    # parameter is an override. An ambient parent-process CODEX_HOME is
+    # ignored, otherwise Jarvis would inherit this agent's own home and
+    # skip the auth/tool seeding required for the verify pipeline.
     codex_home_dir: str | None = None
-    if env_dict.get("CODEX_HOME") in (None, ""):
+    explicit_codex_home = env is not None and env.get("CODEX_HOME") not in (None, "")
+    if not explicit_codex_home:
         codex_home_dir = tempfile.mkdtemp(prefix=_CODEX_HOME_PREFIX)
         env_dict["CODEX_HOME"] = codex_home_dir
 
