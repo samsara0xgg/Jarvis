@@ -960,6 +960,16 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
                 payload_dict["repo_path"] = task_record.repo_path
             action_payload = payload_dict
 
+    # Idempotence guard (spec §3.4.3/§3.4.4 decide-from-state + §3.4.6
+    # untrusted LLM): a verify_diff for a task already verify-proposed this
+    # turn is redundant — re-verifying the same artifact yields no new
+    # evidence and risks a duplicate task.verified. Computed BEFORE this
+    # action.proposed is emitted so the query sees only prior proposals;
+    # enforced as a Pre-action Gate refusal below.
+    redundant_verify_diff = name == "verify_diff" and _verify_diff_already_proposed_this_turn(
+        ctx.conn, turn_id=scratch.turn_id, task_id=target_entity_ref,
+    )
+
     action_id = _new_action_id()
     action_request = ActionRequest(
         action_id=action_id,
@@ -993,13 +1003,21 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
 
     # 4. Pre-action Gate
     gate = pre_action_gate(action_request, policy, packet.task_ledger_snapshot)
+    gate_outcome = gate.outcome
+    gate_reasons = list(gate.reasons)
+    if redundant_verify_diff and gate_outcome == "pass":
+        # Refuse the redundant verify_diff (spec §3.4.3/§3.4.4 + §3.4.6) so
+        # the existing refuse path injects a tool-result and the LLM settles
+        # into a response instead of re-verifying an already-settled task.
+        gate_outcome = "refuse"
+        gate_reasons = ["redundant_verify_diff_this_turn"]
     gate_event = emit_event(
         ctx.conn,
         type="gate.evaluated",
         payload={
             "gate": "pre_action",
-            "outcome": gate.outcome,
-            "reasons": list(gate.reasons),
+            "outcome": gate_outcome,
+            "reasons": gate_reasons,
             "check_results": dict(gate.check_results),
             "action_id": action_id,
         },
@@ -1008,7 +1026,7 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     )
     scratch.events.append(gate_event)
 
-    if gate.outcome != "pass":
+    if gate_outcome != "pass":
         # Refuse / confirm — inject a tool result explaining the refusal
         # and let the LLM adapt. Day-1 scenario should not hit this.
         messages.append(
@@ -1017,8 +1035,8 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
                 content=json.dumps(
                     {
                         "error": "gate refused",
-                        "outcome": gate.outcome,
-                        "reasons": list(gate.reasons),
+                        "outcome": gate_outcome,
+                        "reasons": gate_reasons,
                     }
                 ),
             )
@@ -2179,6 +2197,41 @@ def _latest_event_uid_of_type(
     if row is None:
         return None
     return str(row[0])
+
+
+def _verify_diff_already_proposed_this_turn(
+    conn: sqlite3.Connection,
+    *,
+    turn_id: str | None,
+    task_id: str | None,
+) -> bool:
+    """True if a ``verify_diff`` was already proposed for ``task_id`` this turn.
+
+    Deterministic idempotence signal for the decision loop. The untrusted
+    Tier-2 LLM (spec §3.4.6) may re-propose ``verify_diff`` for a task whose
+    verification was already settled this turn — re-verifying the same
+    artifact yields no new evidence and risks a duplicate ``task.verified``.
+    Spec §3.4.3/§3.4.4 put ``open_actions`` in the Situation Packet precisely
+    so the decision engine picks the next action from current state rather
+    than redundantly re-acting; this query is the deterministic backstop the
+    Pre-action Gate consults to refuse the redundant proposal.
+
+    Turn- and task-scoped: a verify_diff in another turn, or for another task,
+    does not count. ``None`` turn/task fails open (treated as not-redundant),
+    so the first proposal of a turn always proceeds.
+    """
+    if turn_id is None or task_id is None:
+        return False
+    cursor = conn.execute(
+        "SELECT 1 FROM events "
+        "WHERE type = 'action.proposed' "
+        "AND json_extract(payload_json, '$.tool_name') = 'verify_diff' "
+        "AND json_extract(payload_json, '$.target_entity_ref') = ? "
+        "AND json_extract(payload_json, '$.turn_id') = ? "
+        "LIMIT 1",
+        (task_id, turn_id),
+    )
+    return cursor.fetchone() is not None
 
 
 # --- Public re-exports ------------------------------------------------------
