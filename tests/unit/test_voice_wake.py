@@ -171,7 +171,7 @@ def test_engine_reset_called_when_capture_returns_none() -> None:
         lambda _frame: {"hey_jarvis_v0.1": next(detections, 0.0)}
     )
     # Signal the event without calling back into the mock (avoids recursion).
-    fake_engine.reset.side_effect = lambda: reset_done.set()
+    fake_engine.reset.side_effect = reset_done.set
 
     # Capture returns None — simulates mic disconnect / VAD timeout.
     fake_capture = MagicMock(return_value=None)
@@ -300,7 +300,7 @@ def test_engine_reset_called_exactly_once_on_success() -> None:
         lambda _frame: {"hey_jarvis_v0.1": next(detections, 0.0)}
     )
     # Signal without calling back into the mock (avoids infinite recursion).
-    fake_engine.reset.side_effect = lambda: reset_done.set()
+    fake_engine.reset.side_effect = reset_done.set
 
     fake_capture = MagicMock(return_value=b"\x10\x00" * 16000)
     fake_pipeline = MagicMock()

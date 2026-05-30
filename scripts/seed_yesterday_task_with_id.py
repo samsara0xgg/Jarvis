@@ -14,8 +14,12 @@ from pathlib import Path
 from jarvis.deployment import bootstrap_runtime
 from jarvis.state.event_log import emit_event, open_event_log
 
+# argv layout: [script, REPO_PATH, GOAL, TASK_ID] — all four required.
+_REQUIRED_ARGV_LEN = 4
+
 
 def _yesterday_21_local_epoch_ms() -> int:
+    """Yesterday 21:00 in the local timezone -> epoch milliseconds."""
     now_local = dt.datetime.now().astimezone()
     yesterday_local = now_local - dt.timedelta(days=1)
     target = yesterday_local.replace(hour=21, minute=0, second=0, microsecond=0)
@@ -23,7 +27,8 @@ def _yesterday_21_local_epoch_ms() -> int:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 4:
+    """Seed the backdated ``task.created`` event with a caller-supplied task_id."""
+    if len(argv) < _REQUIRED_ARGV_LEN:
         sys.stderr.write(
             "usage: seed_yesterday_task_with_id.py REPO_PATH GOAL TASK_ID\n",
         )

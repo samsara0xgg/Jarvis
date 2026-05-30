@@ -23,6 +23,9 @@ from pathlib import Path
 from jarvis.deployment import bootstrap_runtime
 from jarvis.state.event_log import emit_event, open_event_log
 
+# argv layout: [script, REPO_PATH, GOAL?]; GOAL is optional at index 2.
+_GOAL_ARGV_INDEX = 2
+
 
 def _yesterday_21_local_epoch_ms() -> int:
     """Yesterday 21:00 in the local timezone -> epoch milliseconds."""
@@ -33,11 +36,12 @@ def _yesterday_21_local_epoch_ms() -> int:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2:
+    """Seed the backdated ``task.created`` event and print its event_uid."""
+    if len(argv) < _GOAL_ARGV_INDEX:
         sys.stderr.write("usage: seed_yesterday_task.py REPO_PATH [GOAL]\n")
         return 2
     repo_path = Path(argv[1]).resolve()
-    goal = argv[2] if len(argv) > 2 else "implement-rate-limiter"
+    goal = argv[_GOAL_ARGV_INDEX] if len(argv) > _GOAL_ARGV_INDEX else "implement-rate-limiter"
 
     paths = bootstrap_runtime()
     conn = open_event_log(paths.event_log)
