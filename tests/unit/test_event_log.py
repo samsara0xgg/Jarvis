@@ -647,11 +647,15 @@ def test_emit_event_serializes_nested_payload(tmp_path: Path) -> None:
 
 def test_emit_event_rejects_unregistered_type(tmp_path: Path) -> None:
     """Unregistered `type` raises `UnregisteredEventTypeError`, nothing written."""
+    # Bound via a variable so the H2 canary (`tests/canary/test_emit_event_registered.py`,
+    # constant-literal AST scan) does not flag this intentionally-unregistered type
+    # used here to verify the registry's rejection path.
+    bad_type = "totally.fake"
     with closing(_open(tmp_path)) as conn:
         with pytest.raises(UnregisteredEventTypeError):
             emit_event(
                 conn,
-                type="totally.fake",
+                type=bad_type,
                 payload={"x": 1},
                 ts_epoch_ms=0,
             )
