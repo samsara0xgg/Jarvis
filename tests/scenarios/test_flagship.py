@@ -521,18 +521,20 @@ def test_flagship_lifecycle_completeness(live_happy_path_run: dict[str, Any]) ->
         f"{len(result_observed_rows)}"
     )
 
-    # B4 — worker callback ran on a separate thread.
-    main_thread = live_happy_path_run["main_thread"]
-    worker_threads = live_happy_path_run["worker_threads"]
-    assert worker_threads, (
-        "B4: no Timer callback threads were captured; "
-        "spawn_worker may have run synchronously."
-    )
-    cross_thread = [t for t in worker_threads if t.ident != main_thread.ident]
-    assert cross_thread, (
-        f"B4: all worker callback threads share the main thread ident "
-        f"{main_thread.ident}; expected cross-thread emission "
-        f"(captured: {[t.ident for t in worker_threads]!r})"
+    # B4 — spawn_worker observably drove an external worker.
+    #
+    # Day-1 invariant was "callback fires on a Timer thread (off
+    # main)". ADR-0002 Step 10 replaced the Timer stub with the real
+    # Codex JSON-RPC subprocess, so the Timer / thread-capture seam is
+    # gone (see thread_capture fixture — now a documented no-op). The
+    # Day-2 analog is "the worker emitted observable progress signals"
+    # — proved by worker.heartbeat rows from the polling loop. The
+    # subprocess itself is OS-isolated, not thread-isolated, so the
+    # original cross-thread-ident check has no Day-2 equivalent.
+    heartbeats = [r for r in rows if r["type"] == "worker.heartbeat"]
+    assert heartbeats, (
+        "B4: no worker.heartbeat events emitted; the Codex polling "
+        "loop never observed the worker."
     )
 
 
