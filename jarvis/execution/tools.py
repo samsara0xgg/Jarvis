@@ -81,6 +81,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import subprocess
 import threading
 import time
@@ -116,6 +118,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 # --- Codex execution defaults ------------------------------------------------
 
 # Codex executor identity emitted on `task.executor_assigned`. Day-2 Mac-only
@@ -125,6 +130,38 @@ if TYPE_CHECKING:
 # back into L4.
 _CODEX_EXECUTOR_NAME: Final[str] = "codex"
 _CODEX_DEFAULT_MODEL: Final[str] = "gpt-5.5"
+
+# Per-turn Codex wall-clock budget (spec §3.4.8 timeout_policy backstop —
+# the synchronous driver deadline in `run_codex_action`, NOT the absent
+# supervisor sweep over `result_expected_by`). Defaults to 600s (the
+# canonical "Codex 10-min turn timeout"); `JARVIS_CODEX_TURN_TIMEOUT_S`
+# overrides it so the J9 timeout lifecycle is exercisable live in seconds
+# (and as an operator turn-length cap). Read at dispatch time, not import,
+# so a per-run override takes effect without re-importing the module.
+_CODEX_TURN_TIMEOUT_ENV: Final[str] = "JARVIS_CODEX_TURN_TIMEOUT_S"
+_CODEX_TURN_TIMEOUT_DEFAULT_S: Final[float] = 600.0
+
+
+def _resolve_codex_turn_timeout_s() -> float:
+    """Return the per-turn Codex budget from the env override or the default.
+
+    A malformed ``JARVIS_CODEX_TURN_TIMEOUT_S`` falls back to the 600s
+    default rather than crashing the worker spawn — a bad ops knob must
+    not turn every task into an ``action.failed``.
+    """
+    raw = os.environ.get(_CODEX_TURN_TIMEOUT_ENV)
+    if raw is None:
+        return _CODEX_TURN_TIMEOUT_DEFAULT_S
+    try:
+        return float(raw)
+    except ValueError:
+        LOGGER.warning(
+            "%s=%r is not a number; using %.0fs default turn budget",
+            _CODEX_TURN_TIMEOUT_ENV,
+            raw,
+            _CODEX_TURN_TIMEOUT_DEFAULT_S,
+        )
+        return _CODEX_TURN_TIMEOUT_DEFAULT_S
 
 
 # --- Public type aliases -----------------------------------------------------
@@ -742,6 +779,7 @@ def spawn_worker_handler(
         codex_result: CodexActionResult = run_codex_action(
             task_goal=goal,
             cwd=repo_path,
+            timeout_s=_resolve_codex_turn_timeout_s(),
             on_heartbeat=on_heartbeat,
         )
     except Exception as exc:  # noqa: BLE001 — any Codex spawn failure folds into one action.failed.

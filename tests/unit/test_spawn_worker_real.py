@@ -351,6 +351,104 @@ def test_spawn_worker_codex_timeout_emits_action_timeout_assumed(tmp_path: Path)
     assert lifecycle.is_terminal(req.action_id) is True
 
 
+# --- Turn-timeout budget seam (J9 live-controllability) --------------------
+
+
+def test_spawn_worker_threads_env_turn_timeout_into_run_codex_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``JARVIS_CODEX_TURN_TIMEOUT_S`` overrides the run_codex_action turn budget.
+
+    The default 600s turn budget cannot be exercised live without a
+    10-minute wait, so the J9 timeout scenario needs a controllable
+    seam. The handler reads ``JARVIS_CODEX_TURN_TIMEOUT_S`` and threads
+    it into ``run_codex_action(timeout_s=...)``; this asserts the wiring
+    without a live Codex spawn.
+    """
+    monkeypatch.setenv("JARVIS_CODEX_TURN_TIMEOUT_S", "5")
+    paths, conn = _open_runtime(tmp_path)
+    try:
+        _seed_task(conn, task_id="task_X", repo_path=str(tmp_path))
+        with (
+            patch("jarvis.execution.tools.ensure_codex_version_supported"),
+            patch(
+                "jarvis.execution.tools.run_codex_action",
+                return_value=_stub_result(submit_report={"status": "ok", "summary": "ok"}),
+            ) as mock_codex,
+            patch(
+                "jarvis.execution.tools.isolate_pretask_changes",
+                return_value=None,
+            ),
+        ):
+            _dispatch(paths, conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert mock_codex.call_args is not None
+    assert mock_codex.call_args.kwargs["timeout_s"] == 5.0
+
+
+def test_spawn_worker_turn_timeout_defaults_to_600_when_env_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Absent ``JARVIS_CODEX_TURN_TIMEOUT_S`` keeps the 600s default budget."""
+    monkeypatch.delenv("JARVIS_CODEX_TURN_TIMEOUT_S", raising=False)
+    paths, conn = _open_runtime(tmp_path)
+    try:
+        _seed_task(conn, task_id="task_X", repo_path=str(tmp_path))
+        with (
+            patch("jarvis.execution.tools.ensure_codex_version_supported"),
+            patch(
+                "jarvis.execution.tools.run_codex_action",
+                return_value=_stub_result(submit_report={"status": "ok", "summary": "ok"}),
+            ) as mock_codex,
+            patch(
+                "jarvis.execution.tools.isolate_pretask_changes",
+                return_value=None,
+            ),
+        ):
+            _dispatch(paths, conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert mock_codex.call_args is not None
+    assert mock_codex.call_args.kwargs["timeout_s"] == 600.0
+
+
+def test_spawn_worker_malformed_turn_timeout_env_falls_back_to_600(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-numeric ``JARVIS_CODEX_TURN_TIMEOUT_S`` must not crash the spawn.
+
+    A bad operator turn-budget knob falls back to the 600s default rather
+    than turning every task into an ``action.failed``.
+    """
+    monkeypatch.setenv("JARVIS_CODEX_TURN_TIMEOUT_S", "not-a-number")
+    paths, conn = _open_runtime(tmp_path)
+    try:
+        _seed_task(conn, task_id="task_X", repo_path=str(tmp_path))
+        with (
+            patch("jarvis.execution.tools.ensure_codex_version_supported"),
+            patch(
+                "jarvis.execution.tools.run_codex_action",
+                return_value=_stub_result(submit_report={"status": "ok", "summary": "ok"}),
+            ) as mock_codex,
+            patch(
+                "jarvis.execution.tools.isolate_pretask_changes",
+                return_value=None,
+            ),
+        ):
+            _dispatch(paths, conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert mock_codex.call_args is not None
+    assert mock_codex.call_args.kwargs["timeout_s"] == 600.0
+
+
 # --- Codex spawn-time raise (FT-A) -----------------------------------------
 
 
