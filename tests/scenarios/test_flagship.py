@@ -32,6 +32,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import fields
@@ -73,6 +75,49 @@ _A1_MAX_EVENTS: int = 28
 # Acceptance I1 cross-run jitter ceiling (ADR explicit ±2).
 _I1_TOLERANCE: int = 2
 
+# ADR-0002 Step 20 migration: the Day-1 stub spawn_worker (Timer +
+# hard-coded {"status":"ok"} artifact) was replaced by the real Codex
+# JSON-RPC subprocess flow. The happy-path fixture now seeds a real
+# git repo + a verify_command whose ``pytest -x`` is permanently green,
+# so the happy path reaches ``task.verified`` end-to-end. Pattern
+# mirrors ``tests/scenarios/test_real_codex_flagship.py`` (Increment-1
+# live-green). Additive goal so Codex's edit produces a non-empty diff
+# without touching the test logic.
+_HAPPY_GOAL: str = (
+    "Add a module-level docstring to tests/test_demo.py explaining what it "
+    "verifies, and create a top-level NOTES.md describing the demo project. "
+    "Do not change any test logic; all existing tests must still pass."
+)
+
+# Single passing test ensures ``pytest -x`` exit 0 after Codex's
+# benign edit.
+_FIXTURE_TEST_MODULE: str = "def test_truthy() -> None:\n    assert True\n"
+
+
+def _git(repo: Path, *args: str) -> None:
+    """Run a git subcommand in ``repo`` (test-fixture helper)."""
+    # S603 — controlled argv on tmp_path fixture repo (no user input).
+    # S607 — `git` resolved via PATH is intentional, same as test_real_codex_*.
+    subprocess.run(["git", "-C", str(repo), *args], check=True)  # noqa: S603, S607
+
+
+def _init_happy_repo(repo: Path) -> None:
+    """Initialize ``repo`` as a git repo whose ``pytest -x`` is permanently green.
+
+    pyproject.toml + a ``tests/test_demo.py`` with a single passing
+    test; clean working tree after the initial commit so Codex's
+    benign additive edit produces a non-empty diff.
+    """
+    _git(repo, "init", "-q")
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname = 'demo'\nversion = '0.0.1'\nrequires-python = '>=3.12'\n",
+        encoding="utf-8",
+    )
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_demo.py").write_text(_FIXTURE_TEST_MODULE, encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
 
 # --- Module-scoped live runs -----------------------------------------------
 
@@ -106,6 +151,8 @@ def live_happy_path_run(
     """
     pytest.importorskip("openai")  # Defensive — the runtime is going to need it.
 
+    repo = tmp_path_factory.mktemp("flagship_happy_repo")
+    _init_happy_repo(repo)
     root = tmp_path_factory.mktemp("flagship_happy")
     os.environ["JARVIS_RUNTIME_ROOT"] = str(root)
 
@@ -116,17 +163,19 @@ def live_happy_path_run(
         type="task.created",
         payload={
             "task_id": "task_X",
-            "goal": "Implement Day-1 verify pipeline",
+            "goal": _HAPPY_GOAL,
             "source": "manual",
+            "repo_path": str(repo),
+            "verify_command": f"{sys.executable} -m pytest -x -q",
         },
         ts_epoch_ms=yesterday_ms,
     )
 
     main_thread = threading.current_thread()
     result = run_turn(runtime, utterance=_UTTERANCE)
-    # Wait briefly so any straggling Timer callback finalizes its emit
-    # before we snapshot. Day-1 Timer delay is ~10 ms.
-    time.sleep(0.2)
+    # Wait briefly so any straggling executor emit finalizes before the
+    # snapshot.
+    time.sleep(0.3)
 
     artifact_path = write_llm_use_artifact(runtime)
 
@@ -156,6 +205,8 @@ def live_replay_run(
     """
     pytest.importorskip("openai")
 
+    repo = tmp_path_factory.mktemp("flagship_replay_repo")
+    _init_happy_repo(repo)
     root = tmp_path_factory.mktemp("flagship_replay")
     os.environ["JARVIS_RUNTIME_ROOT"] = str(root)
 
@@ -166,14 +217,16 @@ def live_replay_run(
         type="task.created",
         payload={
             "task_id": "task_X",
-            "goal": "Implement Day-1 verify pipeline",
+            "goal": _HAPPY_GOAL,
             "source": "manual",
+            "repo_path": str(repo),
+            "verify_command": f"{sys.executable} -m pytest -x -q",
         },
         ts_epoch_ms=yesterday_ms,
     )
 
     result = run_turn(runtime, utterance=_UTTERANCE)
-    time.sleep(0.2)
+    time.sleep(0.3)
 
     captured: dict[str, Any] = {
         "runtime": runtime,
