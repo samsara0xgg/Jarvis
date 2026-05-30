@@ -1,0 +1,25 @@
+llm:
+  # LLM 提供商：openai（兼容 xAI/Kimi/DeepSeek）或 anthropic。
+  provider: openai
+
+  # 运行时可切换的模型预设（"小月，快速模式" / "小月，深度模式"）
+  default_preset: deep
+
+  presets:
+    fast:
+      model: gpt-5.4-mini
+      base_url: "https://openrouter.icu/v1"
+      api_key_env: OPENROUTER_PROXY_KEY
+      max_tokens: 2048
+    deep:
+      model: gpt-5.5
+      base_url: "https://openrouter.icu/v1"
+      api_key_env: OPENROUTER_PROXY_KEY
+      max_tokens: 32768
+
+  # 流式回复的句子切分调优
+  sentence_divider:
+    # 首句遇逗号即切（更早 ship 给 TTS，首字延迟 -50%~)
+    faster_first_response: true
+    # 保护英文缩写不在 Dr./e.g./vs. 等处误切
+    abbreviation_protect: true

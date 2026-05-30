@@ -7,6 +7,17 @@ name = "jarvis"
 version = "0.1.0"
 description = "Allen's state-centric personal runtime."
 requires-python = ">=3.12"
+dependencies = [
+    "openai",
+    "anthropic",
+    "PyYAML",
+    "fastapi",            # ADR-0003 — Inherent FastAPI server in Step 7
+    "uvicorn[standard]",  # ADR-0003 — uvloop + httptools + websockets for the daemon in Step 8
+    "websockets",         # ADR-0005 §4.2 — MiniMaxWSClient streaming WS provider
+    "numpy",              # ADR-0005 — L5 voice surface (PCM math, RMS, recognizer audio)
+    "python-multipart",   # ADR-0005 §5.2 — /inherent/asr-submit multipart WAV upload
+    "soxr",               # ADR-0005 §5.3 — MiniMax 32 kHz → OutputStream 48 kHz resample
+]
 
 [project.optional-dependencies]
 dev = [
@@ -14,6 +25,7 @@ dev = [
     "import-linter",
     "ruff",
     "mypy",
+    "types-PyYAML",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -21,7 +33,121 @@ packages = ["jarvis"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "live_llm: scenario test that calls the real cloud LLM (real network)",
+    "live_codex: scenario test that spawns a real Codex CLI subprocess (costs $$, slow)",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "D100",  # missing module docstring — many small modules don't need one
+    "D104",  # missing docstring in public package — __init__.py files
+    "D203",  # one-blank-line-before-class — conflicts with D211
+    "D212",  # multi-line-summary-first-line — conflicts with D213
+    "COM812",  # trailing comma — conflicts with ruff format
+    "ISC001",  # implicit string concatenation — conflicts with ruff format
+]
+
+[tool.ruff.lint.per-file-ignores]
+# L1 Constitution carries canonical Chinese principle/non-goal text copied
+# verbatim from spec §3.2; fullwidth CJK punctuation is intentional, not a
+# transcription mistake. RUF001 flags those characters.
+"jarvis/constitution/__init__.py" = ["RUF001"]
+# Sentence splitter (ADR-0003 Step 2) needs CJK ``。！？`` literals as part
+# of its boundary detection contract: RUF001/RUF002/RUF003 ambiguous-char
+# warnings are the whole point of the module and must be silenced.
+"jarvis/surface/sentence_splitter.py" = ["RUF001", "RUF002", "RUF003"]
+# Sentence splitter tests assert on those same CJK literals end-to-end;
+# same RUF001/RUF002/RUF003 justification applies.
+"tests/unit/test_sentence_splitter.py" = ["RUF001", "RUF002", "RUF003"]
+# voice_asr carries (a) the SenseVoice misplaced-period regex `[。，]` and
+# (b) the unified empty-filter CJK punctuation set; both target real CJK
+# characters that ASR output contains, so the ambiguous-char lints are
+# noise here (same rationale as sentence_splitter).
+"jarvis/surface/voice_asr.py" = ["RUF001", "RUF003"]
+# Tests use bare `assert` (pytest), don't need return-type annotations, and
+# carry magic numbers in assertion targets by design.
+"tests/**/*.py" = [
+    "S101",     # bare asserts are how pytest reports failures
+    "ANN201",   # test functions return None; verbose annotation noise
+    "PLR2004",  # magic value comparisons are the assertion target
+    "S108",     # /tmp paths in literal test data are not insecure
+]
+# Tier-2 J/K/L scenario scaffolds (ADR-0002 Step 20). Each file spawns
+# `git` against a tmp_path fixture repo and carries multi-line
+# invariant docstrings that exceed the 100-char line budget; both are
+# load-bearing for the test scaffold and intentional.
+"tests/scenarios/test_real_codex_*.py" = [
+    "S603",     # subprocess with controlled argv (git on tmp_path fixture repo)
+    "S607",     # `git` resolved via PATH is intentional
+    "E501",     # multi-line invariant docstrings copy ADR-0002 J/K/L wording verbatim
+    "D301",     # docstring backslash escapes for regex literals (raw strings would hurt readability)
+    "D416",     # "Note" section name shape preferred over Google "Note:"
+    "D412",     # blank line after "Note" header is intentional readability
+    "ARG001",   # fixture args triggered by name; the bodies skip pending live-codex impl
+    "PT022",    # generator fixtures even when teardown is implicit; matches surrounding style
+    "RUF002",   # CJK fullwidth punctuation in docstrings is verbatim from ADR scenario
+]
+# Vendored from Hermes (MIT) per ADR-0002 § Reference sources.
+# Upstream-sync only — do not lint-fix in place.
+"jarvis/execution/codex_client.py" = ["ALL"]
+# Vendored from jarvis-legacy per ADR-0002 § Reference sources.
+# Upstream-sync only — do not lint-fix in place.
+"jarvis/shared/pricing.py" = ["ALL"]
+# Vendored from jarvis-legacy per ADR-0002 § Reference sources.
+# Upstream-sync only — do not lint-fix in place.
+"scripts/refresh_pricing.py" = ["ALL"]
+# Vendored from jarvis-legacy per ADR-0002 § Reference sources.
+# Upstream-sync only — do not lint-fix in place.
+"jarvis/execution/_helpers.py" = ["ALL"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+disallow_untyped_defs = true
+disallow_any_explicit = false  # too noisy with TypedDict + sqlite Row
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+# Voice-hardware wheels: sounddevice / onnxruntime / sherpa-onnx /
+# openwakeword / mlx-whisper / whisper are intentionally excluded from
+# ``[project].dependencies`` (ADR-0005 §12 — daemon downgrades to
+# text-only when missing). When a developer installs them locally
+# (``uv pip install sounddevice onnxruntime sherpa-onnx openwakeword``)
+# mypy promotes the error code from ``import-not-found`` to
+# ``import-untyped`` because the wheels carry no ``py.typed`` marker.
+# Listing them here as ``ignore_missing_imports`` collapses both states
+# so the per-call-site ``# type: ignore[import-not-found]`` works the
+# same in CI (wheels absent) and in dev (wheels present), without
+# flipping ``warn_unused_ignores`` for the rest of the codebase.
+#
+# soxr is a hard runtime dependency (see ``[project].dependencies``)
+# and is kept in the override below ONLY because its wheel ships no
+# ``py.typed`` marker — same mypy concern, different install posture.
+[[tool.mypy.overrides]]
+module = [
+    "sounddevice",
+    "onnxruntime",
+    "sherpa_onnx",
+    "openwakeword",
+    "openwakeword.*",
+    "soxr",
+    "mlx_whisper",
+    "whisper",
+]
+ignore_missing_imports = true

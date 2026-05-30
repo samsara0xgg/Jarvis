@@ -5,14 +5,26 @@ root_package = jarvis
 # The four middle layers are independent siblings (cannot import each other).
 # constitution and shared are independent siblings at the bottom (import nothing).
 # runtime is the only place allowed to wire across the middle four.
+#
+# ADR-0002 § Reference sources notes:
+# - jarvis.execution.codex_client is a vendored Hermes module (MIT). It is
+#   intentionally stdlib-only (json/os/queue/subprocess/threading/time) so it
+#   never names a jarvis.* module and therefore never crosses a layer edge —
+#   no explicit ignore_imports is needed today. If a future upstream sync
+#   introduces an intra-package import, add an `ignore_imports` line here
+#   targeting the concrete edge rather than relaxing the layer contract.
+# - jarvis.shared.pricing is the canonical home for cross-layer static
+#   reference data per ADR-0002 § Reference sources; jarvis.shared sits at the
+#   bottom of the DAG and may be imported by any layer above (L3 decide() +
+#   L4 cost recording both consume it).
 [importlinter:contract:layers]
 name = 6-layer architecture
 type = layers
 layers =
-    jarvis.cli
-    jarvis.runtime
-    jarvis.decision | jarvis.execution | jarvis.surface | jarvis.deployment
-    jarvis.state
-    jarvis.constitution | jarvis.shared
+    cli
+    runtime
+    decision | execution | surface | deployment
+    state
+    constitution | shared
 containers =
     jarvis
