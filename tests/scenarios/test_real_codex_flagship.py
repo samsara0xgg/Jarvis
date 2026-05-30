@@ -55,6 +55,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from jarvis.decision.pre_emit_phrases import COMPLETION_REGEXES, LIMITATION_REGEXES
 from jarvis.runtime import bootstrap_runtime_app, run_turn
 from jarvis.state.event_log import emit_event
 
@@ -246,6 +247,110 @@ def _payloads(capture: dict[str, Any], event_type: str) -> list[dict[str, Any]]:
     return [event["payload"] for event in capture["trace"] if event["type"] == event_type]
 
 
+# --- J9 timeout capture (separate short-budget live burn) -----------------
+
+# Wall-clock budget (seconds) forced onto the Codex turn for J9 so the
+# real driver deadline trips in ~seconds instead of the 600s default.
+# Large enough to clear the initialize/thread-start/turn-start handshake
+# (so the deadline trips INSIDE the poll loop → action.timeout_assumed,
+# not a handshake-phase action.failed) yet far below any realistic turn
+# completion time for the goal below.
+_TIMEOUT_BUDGET_S: str = "15"
+
+# Deliberately open-ended goal Codex cannot finish inside the budget, so
+# the deadline — not a fast turn/completed — is what ends the turn.
+_TIMEOUT_GOAL: str = (
+    "Perform a thorough, repository-wide quality pass: add exhaustive "
+    "Google-style docstrings to every function, write a comprehensive "
+    "pytest suite covering every edge case for each module, add complete "
+    "type annotations throughout, and author a detailed ARCHITECTURE.md. "
+    "Be exhaustive; do not stop early."
+)
+
+
+@pytest.fixture(scope="module")
+def live_real_codex_timeout(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[dict[str, Any]]:
+    """Run the real-Codex turn ONCE under a short budget; freeze the trace.
+
+    Sibling negative-path burn to :func:`live_real_codex_happy`: seeds the
+    same canonical D-1 ``task.created`` but forces a short per-turn budget
+    via ``JARVIS_CODEX_TURN_TIMEOUT_S`` so the real ``run_codex_action``
+    deadline trips, issues ``turn/interrupt`` + ``close(timeout=3.0)``, and
+    ``spawn_worker_handler`` maps the interrupted turn to
+    ``action.timeout_assumed`` (no ``worker.reported``). The env override
+    is popped immediately after ``run_turn`` so it cannot leak into the
+    module's other (happy-path) live fixture regardless of fixture order.
+    """
+    pytest.importorskip("openai")
+
+    repo = tmp_path_factory.mktemp("real_codex_timeout_repo")
+    _git(repo, "init", "-q")
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname = 'demo'\nversion = '0.0.1'\nrequires-python = '>=3.12'\n",
+        encoding="utf-8",
+    )
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_demo.py").write_text(
+        "def test_truthy() -> None:\n    assert True\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    root = tmp_path_factory.mktemp("real_codex_timeout_root")
+    os.environ["JARVIS_RUNTIME_ROOT"] = str(root)
+    runtime = bootstrap_runtime_app(runtime_root=root)
+
+    yesterday_ms = int(time.time() * 1000) - 26 * 3600 * 1000
+    emit_event(
+        runtime.conn,
+        type="task.created",
+        payload={
+            "task_id": "task_X",
+            "goal": _TIMEOUT_GOAL,
+            "source": "manual",
+            "repo_path": str(repo),
+            "verify_command": f"{sys.executable} -m pytest -x -q",
+        },
+        ts_epoch_ms=yesterday_ms,
+    )
+
+    os.environ["JARVIS_CODEX_TURN_TIMEOUT_S"] = _TIMEOUT_BUDGET_S
+    try:
+        result = run_turn(runtime, utterance=_UTTERANCE)
+    finally:
+        # Scope the override tightly to this run_turn so the module's
+        # happy-path fixture still gets the 600s default.
+        os.environ.pop("JARVIS_CODEX_TURN_TIMEOUT_S", None)
+    time.sleep(0.3)  # let any straggling emit finalize before the snapshot
+
+    db_path = runtime.runtime_paths.event_log
+    trace = _load_trace(db_path)
+
+    artifact_dir = Path(__file__).resolve().parent.parent / "_artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    dump_path = artifact_dir / "real_codex_timeout_trace.json"
+    dump_path.write_text(
+        json.dumps(trace, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, Any] = {
+        "runtime": runtime,
+        "result": result,
+        "db_path": db_path,
+        "repo": repo,
+        "trace": trace,
+        "dump_path": dump_path,
+    }
+    try:
+        yield captured
+    finally:
+        runtime.conn.close()
+
+
 # --- J — Real Codex round-trip --------------------------------------------
 
 
@@ -339,14 +444,86 @@ def test_j8_codex_crash_emits_action_failed(real_python_repo: Path) -> None:
     pytest.skip(_SKELETON_SKIP)
 
 
-def test_j9_codex_timeout_emits_timeout_assumed(real_python_repo: Path) -> None:
-    """J9: Codex deadline exceeded → ``action.timeout_assumed``; subprocess killed via ``close(timeout=3.0)``.
+def test_j9_codex_timeout_emits_timeout_assumed(
+    live_real_codex_timeout: dict[str, Any],
+) -> None:
+    """J9: Codex deadline exceeded → ``action.timeout_assumed``; surface limitation.
 
     Negative-path appendix: identical to crash except
-    ``action.timeout_assumed`` replaces ``action.failed``; surface
-    utterance contains "Codex 超时，未完成".
+    ``action.timeout_assumed`` replaces ``action.failed``. A short
+    ``JARVIS_CODEX_TURN_TIMEOUT_S`` budget forces the real
+    ``run_codex_action`` deadline to trip, which issues ``turn/interrupt``
+    + ``close(timeout=3.0)`` (the subprocess-kill is unconditional in the
+    driver's ``_result`` close; not Event-Log-observable, so asserted
+    structurally by ``tests/unit/test_codex_action.py`` rather than here).
+
+    Event-log-observable invariants asserted on the captured trace:
+
+    - exactly one ``action.timeout_assumed``; the run reached
+      ``run.started`` but produced NO ``worker.reported`` (the turn never
+      completed) and NO ``worker.artifact_observed`` (diff never captured);
+    - ``task.executor_reported`` carries ``status="timeout"``;
+    - a ``Limitation`` ``claim.created`` backed by an
+      ``evidence.attached(relation=limits, level=reported)`` row;
+    - NO ``task.verified`` and NO ``task.no_op``;
+    - exactly one ``surface.response_emitted`` whose text carries timeout
+      limitation phrasing (matches ``LIMITATION_REGEXES``, not
+      ``COMPLETION_REGEXES``, and names the timeout — ``超时``).
     """
-    pytest.skip(_SKELETON_SKIP)
+    cap = live_real_codex_timeout
+    types = [event["type"] for event in cap["trace"]]
+
+    # (a) Timeout lifecycle: the run started, the turn was cut off.
+    assert "run.started" in types, "spawn_worker never reached run.started"
+    assert types.count("action.timeout_assumed") == 1, (
+        f"expected exactly one action.timeout_assumed; types={types}"
+    )
+    assert "worker.reported" not in types, (
+        "timeout path must skip worker.reported (the turn never completed)"
+    )
+    assert "worker.artifact_observed" not in types, (
+        "timeout path must skip diff capture (no worker.artifact_observed)"
+    )
+
+    # (b) Task Ledger terminal row marks the run as a timeout.
+    executor_reported = _payloads(cap, "task.executor_reported")
+    assert executor_reported, "no task.executor_reported on the timeout run"
+    assert any(p.get("status") == "timeout" for p in executor_reported), (
+        f"expected a task.executor_reported(status=timeout); got {executor_reported!r}"
+    )
+
+    # (c) Limitation claim backed by reported-level limits evidence.
+    claims = _payloads(cap, "claim.created")
+    limitation_ids = {c["claim_id"] for c in claims if c.get("type") == "Limitation"}
+    assert limitation_ids, "no Limitation claim created on timeout"
+    evidence = _payloads(cap, "evidence.attached")
+    reported_limits = [
+        e
+        for e in evidence
+        if e.get("claim_id") in limitation_ids
+        and e.get("relation") == "limits"
+        and e.get("level") == "reported"
+    ]
+    assert reported_limits, (
+        "no evidence.attached(relation=limits, level=reported) on the "
+        f"Limitation claim; evidence={evidence!r}"
+    )
+
+    # (d) No completion of either kind.
+    assert not _payloads(cap, "task.verified"), "task.verified must not fire on timeout"
+    assert not _payloads(cap, "task.no_op"), "task.no_op must not fire on timeout"
+
+    # (e) Surface carries timeout-limitation framing, no completion language.
+    emitted = _payloads(cap, "surface.response_emitted")
+    assert len(emitted) == 1, f"expected exactly one surface.response_emitted; got {emitted!r}"
+    text = emitted[0]["text"]
+    assert any(rx.search(text) for rx in LIMITATION_REGEXES), (
+        f"timeout surface must use limitation phrasing; got: {text!r}"
+    )
+    assert not any(rx.search(text) for rx in COMPLETION_REGEXES), (
+        f"timeout surface must not claim completion; got: {text!r}"
+    )
+    assert "超时" in text, f"timeout surface must name the timeout; got: {text!r}"
 
 
 def test_j10_all_four_sandbox_c_flags_present_in_popen_args(real_python_repo: Path) -> None:
