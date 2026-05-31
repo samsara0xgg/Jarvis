@@ -49,6 +49,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -351,6 +352,147 @@ def live_real_codex_timeout(
         runtime.conn.close()
 
 
+# --- J8 crash capture (real Codex killed mid-turn) ------------------------
+
+# action.failed error tags that a SIGKILLed Codex subprocess can produce.
+# The targeted one is ``codex_subprocess_crashed`` (poll-loop is_alive
+# detection — the kill lands mid-turn after the handshake). The handshake
+# variants are accepted as a fallback so the live test never flakes on
+# kill timing; the exact ``codex_subprocess_crashed`` mapping is proven
+# deterministically by
+# ``tests/unit/test_codex_action.py::test_run_codex_action_dead_subprocess_maps_to_crash_not_timeout``.
+_CRASH_ERROR_FAMILY: frozenset[str] = frozenset(
+    {
+        "codex_subprocess_crashed",
+        "codex_initialize_failed",
+        "codex_thread_start_failed",
+        "codex_turn_start_failed",
+        "codex_spawn_failed",
+    }
+)
+
+# Safety net: bound a watchdog miss to this turn budget instead of the
+# 600s default, so a kill that never lands fails the burn in ~minutes,
+# not ten. The watchdog kills well before this elapses on the happy path.
+_CRASH_SAFETY_BUDGET_S: str = "120"
+
+
+def _kill_codex_child_after_grace(
+    ppid: int, *, grace_s: float = 12.0, window_s: float = 90.0
+) -> None:
+    """Wait for the Codex subprocess to spawn, let the turn get underway, then SIGKILL it.
+
+    ``run_turn`` blocks the main thread inside the synchronous Codex poll
+    loop, so the kill is issued from this watchdog thread. It polls for
+    the ``codex`` child of the pytest process (``pgrep -P`` scoped to our
+    own children, ``-f`` to match the codex argv), waits ``grace_s`` to
+    clear the initialize/thread-start/turn-start handshake so the kill
+    lands INSIDE the poll loop (→ ``codex_subprocess_crashed``), then
+    ``pkill -9``. No-match exit codes are ignored.
+    """
+    deadline = time.monotonic() + window_s
+    while time.monotonic() < deadline:
+        found = subprocess.run(
+            ["pgrep", "-P", str(ppid), "-f", "codex"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if found.stdout.strip():
+            time.sleep(grace_s)
+            subprocess.run(
+                ["pkill", "-9", "-P", str(ppid), "-f", "codex"],
+                check=False,
+            )
+            return
+        time.sleep(0.5)
+
+
+@pytest.fixture(scope="module")
+def live_real_codex_crash(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[dict[str, Any]]:
+    """Run a real Codex turn ONCE and SIGKILL the worker mid-turn; freeze the trace.
+
+    Sibling negative-path burn to :func:`live_real_codex_happy`: a
+    watchdog thread kills the real ``codex`` subprocess while the turn is
+    in flight, so the poll loop observes ``is_alive() is False`` before
+    ``turn/completed`` and ``spawn_worker_handler`` maps the dead worker
+    to ``action.failed`` (no ``worker.reported``). A short safety budget
+    bounds a watchdog miss; it is popped immediately after ``run_turn`` so
+    it cannot leak into the module's other live fixtures.
+    """
+    pytest.importorskip("openai")
+
+    repo = tmp_path_factory.mktemp("real_codex_crash_repo")
+    _git(repo, "init", "-q")
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname = 'demo'\nversion = '0.0.1'\nrequires-python = '>=3.12'\n",
+        encoding="utf-8",
+    )
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_demo.py").write_text(
+        "def test_truthy() -> None:\n    assert True\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    root = tmp_path_factory.mktemp("real_codex_crash_root")
+    os.environ["JARVIS_RUNTIME_ROOT"] = str(root)
+    runtime = bootstrap_runtime_app(runtime_root=root)
+
+    yesterday_ms = int(time.time() * 1000) - 26 * 3600 * 1000
+    emit_event(
+        runtime.conn,
+        type="task.created",
+        payload={
+            "task_id": "task_X",
+            "goal": _HAPPY_GOAL,
+            "source": "manual",
+            "repo_path": str(repo),
+            "verify_command": f"{sys.executable} -m pytest -x -q",
+        },
+        ts_epoch_ms=yesterday_ms,
+    )
+
+    killer = threading.Thread(
+        target=_kill_codex_child_after_grace, args=(os.getpid(),), daemon=True
+    )
+    killer.start()
+    os.environ["JARVIS_CODEX_TURN_TIMEOUT_S"] = _CRASH_SAFETY_BUDGET_S
+    try:
+        result = run_turn(runtime, utterance=_UTTERANCE)
+    finally:
+        os.environ.pop("JARVIS_CODEX_TURN_TIMEOUT_S", None)
+    killer.join(timeout=2.0)
+    time.sleep(0.3)  # let any straggling emit finalize before the snapshot
+
+    db_path = runtime.runtime_paths.event_log
+    trace = _load_trace(db_path)
+
+    artifact_dir = Path(__file__).resolve().parent.parent / "_artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    dump_path = artifact_dir / "real_codex_crash_trace.json"
+    dump_path.write_text(
+        json.dumps(trace, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, Any] = {
+        "runtime": runtime,
+        "result": result,
+        "db_path": db_path,
+        "repo": repo,
+        "trace": trace,
+        "dump_path": dump_path,
+    }
+    try:
+        yield captured
+    finally:
+        runtime.conn.close()
+
+
 # --- J — Real Codex round-trip --------------------------------------------
 
 
@@ -434,14 +576,91 @@ def test_j7_cost_recorded_kind_codex(live_real_codex_happy: dict[str, Any]) -> N
     assert any(c.get("run_id") for c in codex_costs), "codex cost not correlated to a run_id"
 
 
-def test_j8_codex_crash_emits_action_failed(real_python_repo: Path) -> None:
-    """J8: Codex subprocess crash → ``action.failed`` with ``error="codex_subprocess_crashed"``; no ``task.verified``.
+def test_j8_codex_crash_emits_action_failed(
+    live_real_codex_crash: dict[str, Any],
+) -> None:
+    """J8: real Codex SIGKILLed mid-turn → ``action.failed``; surface limitation.
 
-    Negative-path appendix: events 1-26 identical to happy path; at
-    evt 27, ``action.failed`` replaces the normal ``worker.reported``
-    path. Surface utterance contains "Codex 跑挂了，没新 diff".
+    Negative-path appendix: the run is identical to the happy path until
+    the worker is killed; instead of ``worker.reported``, ``action.failed``
+    is emitted and the surface utterance contains "Codex 跑挂了，没新 diff".
+
+    Event-log-observable invariants asserted on the captured trace:
+
+    - the run reached ``run.started`` then produced exactly one
+      ``action.failed`` whose ``error`` is in the crash family (targeted:
+      ``codex_subprocess_crashed`` from the poll-loop ``is_alive`` probe);
+      NO ``action.timeout_assumed`` (a killed worker is a crash, not a
+      timeout), NO ``worker.reported``, NO ``worker.artifact_observed``;
+    - ``task.executor_reported`` carries ``status="failed"``;
+    - a ``Limitation`` ``claim.created`` backed by an
+      ``evidence.attached(relation=limits, level=reported)`` row;
+    - NO ``task.verified`` and NO ``task.no_op``;
+    - exactly one ``surface.response_emitted`` whose text carries crash
+      limitation phrasing (matches ``LIMITATION_REGEXES``, not
+      ``COMPLETION_REGEXES``, and names the crash — ``跑挂``).
     """
-    pytest.skip(_SKELETON_SKIP)
+    cap = live_real_codex_crash
+    types = [event["type"] for event in cap["trace"]]
+
+    # (a) Crash lifecycle: the run started, the worker died → action.failed.
+    assert "run.started" in types, "spawn_worker never reached run.started"
+    failed = _payloads(cap, "action.failed")
+    assert len(failed) == 1, f"expected exactly one action.failed; types={types}"
+    assert "action.timeout_assumed" not in types, (
+        "a SIGKILLed worker must map to action.failed (crash), not "
+        "action.timeout_assumed — watchdog likely missed the kill window"
+    )
+    err = failed[0].get("error")
+    assert err in _CRASH_ERROR_FAMILY, (
+        f"action.failed error {err!r} not in the crash family {sorted(_CRASH_ERROR_FAMILY)}"
+    )
+    assert "worker.reported" not in types, (
+        "crash path must skip worker.reported (the turn never completed)"
+    )
+    assert "worker.artifact_observed" not in types, (
+        "crash path must skip diff capture (no worker.artifact_observed)"
+    )
+
+    # (b) Task Ledger terminal row marks the run as failed.
+    executor_reported = _payloads(cap, "task.executor_reported")
+    assert executor_reported, "no task.executor_reported on the crash run"
+    assert any(p.get("status") == "failed" for p in executor_reported), (
+        f"expected a task.executor_reported(status=failed); got {executor_reported!r}"
+    )
+
+    # (c) Limitation claim backed by reported-level limits evidence.
+    claims = _payloads(cap, "claim.created")
+    limitation_ids = {c["claim_id"] for c in claims if c.get("type") == "Limitation"}
+    assert limitation_ids, "no Limitation claim created on crash"
+    evidence = _payloads(cap, "evidence.attached")
+    reported_limits = [
+        e
+        for e in evidence
+        if e.get("claim_id") in limitation_ids
+        and e.get("relation") == "limits"
+        and e.get("level") == "reported"
+    ]
+    assert reported_limits, (
+        "no evidence.attached(relation=limits, level=reported) on the "
+        f"Limitation claim; evidence={evidence!r}"
+    )
+
+    # (d) No completion of either kind.
+    assert not _payloads(cap, "task.verified"), "task.verified must not fire on crash"
+    assert not _payloads(cap, "task.no_op"), "task.no_op must not fire on crash"
+
+    # (e) Surface carries crash-limitation framing, no completion language.
+    emitted = _payloads(cap, "surface.response_emitted")
+    assert len(emitted) == 1, f"expected exactly one surface.response_emitted; got {emitted!r}"
+    text = emitted[0]["text"]
+    assert any(rx.search(text) for rx in LIMITATION_REGEXES), (
+        f"crash surface must use limitation phrasing; got: {text!r}"
+    )
+    assert not any(rx.search(text) for rx in COMPLETION_REGEXES), (
+        f"crash surface must not claim completion; got: {text!r}"
+    )
+    assert "跑挂" in text, f"crash surface must name the crash; got: {text!r}"
 
 
 def test_j9_codex_timeout_emits_timeout_assumed(
