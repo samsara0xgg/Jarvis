@@ -715,6 +715,18 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
 
         notif = client.take_notification(timeout=_POLL_INTERVAL_S)
         if notif is None:
+            # The notification queue is drained this tick. If the
+            # subprocess has exited before emitting turn/completed, that
+            # is a crash, not a slow turn — surface the canonical
+            # codex_subprocess_crashed tag immediately (J8 / ADR-0002
+            # Negative-path appendix) instead of spinning out the full
+            # deadline and mislabelling it codex_turn_timeout. Checked
+            # AFTER take_notification so any buffered turn/completed is
+            # processed first (a clean turn whose proc then exits is not
+            # treated as a crash).
+            if not client.is_alive():
+                error = "codex_subprocess_crashed"
+                break
             # No notification this tick — check heartbeat cadence.
             if on_heartbeat is not None and (now - last_heartbeat_at) >= _HEARTBEAT_INTERVAL_S:
                 on_heartbeat(

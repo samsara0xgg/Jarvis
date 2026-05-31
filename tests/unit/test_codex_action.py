@@ -80,6 +80,7 @@ class FakeClient:
     interrupt_raises: Exception | None = None
     thread_id: str = "tid-1"
     closed: bool = False
+    alive: bool = True
 
     def initialize(self, timeout: float = 10.0) -> dict[str, Any]:
         """Return a fake initialize response, or raise the seeded exception."""
@@ -145,6 +146,10 @@ class FakeClient:
         del timeout
         self.closed = True
 
+    def is_alive(self) -> bool:
+        """Stand-in for the subprocess liveness probe (``_proc.poll() is None``)."""
+        return self.alive
+
 
 # ---------------------------------------------------------------------------
 # Factories — builders for FakeClient instances + monkeypatch helpers.
@@ -175,6 +180,7 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, client_holder: list[FakeClien
             client.initialize_raises = template.initialize_raises
             client.thread_start_raises = template.thread_start_raises
             client.turn_start_raises = template.turn_start_raises
+            client.alive = template.alive
         client_holder.clear()
         client_holder.append(client)
         return client
@@ -462,6 +468,31 @@ def test_run_codex_action_no_submit_report_call_leaves_none(
     assert result.error is None
     assert result.submit_report is None
     assert result.submit_report_calls == ()
+
+
+def test_run_codex_action_dead_subprocess_maps_to_crash_not_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A subprocess that dies before ``turn/completed`` → ``codex_subprocess_crashed``.
+
+    Without crash detection the poll loop would spin until the deadline
+    and mislabel a dead Codex subprocess as ``codex_turn_timeout`` (and
+    burn the full budget first). The loop must instead notice
+    ``is_alive() is False`` once the notification queue is drained and
+    bail with ``error="codex_subprocess_crashed"`` (J8 / ADR-0002
+    Negative-path appendix). ``timeout_s`` is tiny so a regression fails
+    fast instead of hanging.
+    """
+    # No turn/completed notification + the subprocess reports dead.
+    template = FakeClient(notifications=[], alive=False)
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=1.0)
+
+    assert result.error == "codex_subprocess_crashed"
+    assert result.interrupted is False
 
 
 # ---------------------------------------------------------------------------
