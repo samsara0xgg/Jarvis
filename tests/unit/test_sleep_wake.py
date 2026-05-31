@@ -114,6 +114,46 @@ def _seed_action_running(
     )
 
 
+def _seed_real_dispatcher_run(
+    conn: sqlite3.Connection,
+    *,
+    action_id: str,
+    run_id: str,
+    task_id: str = "task_X",
+    turn_id: str = "T_demo",
+) -> None:
+    """Seed the REAL L4-dispatcher event shape for an in-flight worker run.
+
+    Unlike :func:`_seed_action_running`, this mirrors production exactly.
+    The generic dispatcher emits ``action.running`` with correlation
+    ``{action_id, turn_id}`` and NO ``run_id`` (``_action_correlation`` in
+    :mod:`jarvis.execution.tools` only adds a run_id when the request
+    already carries one, which spawn_worker never does — the run_id is
+    minted several steps later inside the codex handler). The codex
+    handler then emits ``run.started`` carrying ``run_id`` in both payload
+    and correlation. The sleep/wake fold must therefore derive the run_id
+    from ``run.started``; ``action.running`` alone never has it for a real
+    worker run.
+    """
+    emit_event(
+        conn,
+        type="action.running",
+        payload={"action_id": action_id},
+        correlation={"action_id": action_id, "turn_id": turn_id},
+    )
+    emit_event(
+        conn,
+        type="run.started",
+        payload={"run_id": run_id, "task_id": task_id, "runner": "codex"},
+        correlation={
+            "action_id": action_id,
+            "run_id": run_id,
+            "task_id": task_id,
+            "turn_id": turn_id,
+        },
+    )
+
+
 def _event_types(conn: sqlite3.Connection) -> list[str]:
     return [evt.type for evt in iter_events(conn)]
 
@@ -217,6 +257,30 @@ def test_simulated_sleep_payload_carries_in_progress_action_ids(
     assert set(mac_sleeping.payload["in_progress_action_ids"]) == {"A1", "A2"}
 
 
+def test_simulated_sleep_suspends_real_dispatcher_run_keyed_on_run_started(
+    tmp_path: Path,
+) -> None:
+    """Real-shaped run (action.running w/o run_id + run.started) is suspended.
+
+    Regression for the K7/K8 live-burn failure: the generic L4 dispatcher
+    emits ``action.running`` WITHOUT a run_id (the run_id is minted later
+    inside the codex handler and first appears on ``run.started``). A fold
+    that reads run_id only from ``action.running`` silently skips every
+    real worker. The fold must pick the run_id up from ``run.started``.
+    """
+    conn = _make_event_log(tmp_path)
+    _seed_real_dispatcher_run(conn, action_id="A_real", run_id="R_real")
+    stub = StubPowerObserver()
+    install_power_observer(conn, observer_factory=lambda: stub)
+    stub.simulate_sleep()
+    suspended = [
+        evt for evt in iter_events(conn) if evt.type == "worker.suspended_by_sleep"
+    ]
+    assert len(suspended) == 1
+    assert suspended[0].payload["action_id"] == "A_real"
+    assert suspended[0].payload["run_id"] == "R_real"
+
+
 # --- simulate_wake + reconcile_after_wake ---------------------------------
 
 
@@ -269,6 +333,26 @@ def test_reconcile_after_wake_rejects_none_event_log() -> None:
     """reconcile_after_wake fails fast on None event_log."""
     with pytest.raises(ValueError, match="non-None event_log"):
         reconcile_after_wake(None)
+
+
+def test_reconcile_closes_real_dispatcher_run_keyed_on_run_started(
+    tmp_path: Path,
+) -> None:
+    """reconcile_after_wake closes a real-shaped orphan run via run.started run_id.
+
+    The fail-closed wake path must terminate a worker run whose
+    ``action.running`` carries no run_id (the real dispatcher shape),
+    deriving the run_id from the ``run.started`` event instead.
+    """
+    conn = _make_event_log(tmp_path)
+    _seed_real_dispatcher_run(conn, action_id="A_real", run_id="R_real")
+    closed = reconcile_after_wake(conn)
+    assert closed == 1
+    terminated = [
+        evt for evt in iter_events(conn) if evt.type == "worker.terminated_by_sleep"
+    ]
+    assert len(terminated) == 1
+    assert terminated[0].payload["run_id"] == "R_real"
 
 
 # --- K7 full cycle --------------------------------------------------------

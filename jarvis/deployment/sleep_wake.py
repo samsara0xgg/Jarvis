@@ -47,9 +47,10 @@ if TYPE_CHECKING:
 
 
 # Terminal event types that close an action's lifecycle. An ``action_id``
-# present in ``action.running`` but absent from every type in this set is
-# considered "in-flight" by ``_in_progress_actions`` and a candidate for
-# fail-closed reconciliation on wake.
+# that reached ``run.started`` (so a worker run is registered) but carries
+# no event of a type in this set is considered "in-flight" by
+# ``_in_progress_actions`` and a candidate for fail-closed reconciliation
+# on wake.
 _TERMINAL_ACTION_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {
         "action.result_observed",
@@ -313,12 +314,16 @@ def reconcile_after_wake(event_log: sqlite3.Connection | None) -> int:
 class _InProgressAction:
     """Snapshot of one in-flight action used by the sleep/wake fold.
 
-    Day-1 in-flight actions always carry a non-None ``run_id`` (the L4
-    dispatcher emits ``action.running`` with ``correlation={run_id,
-    action_id, ...}`` per :mod:`jarvis.execution.tools`). The fold
-    silently skips action.running rows that lack a run_id so the
-    fail-closed reconciliation path only emits worker.* events for
-    actions a worker actually owns.
+    A worker run's ``run_id`` is first written to the log by the codex
+    handler's ``run.started`` event, NOT by ``action.running``. The
+    generic L4 dispatcher emits ``action.running`` with
+    ``correlation={action_id, turn_id}`` and no ``run_id`` (it is minted
+    inside the handler, several steps after dispatch — see
+    :mod:`jarvis.execution.tools`). The fold therefore associates each
+    action's ``run_id`` from its ``run.started`` event and silently skips
+    actions that never reached ``run.started`` (e.g. a failed
+    ``codex --version`` preflight), so the fail-closed reconciliation
+    path only emits worker.* events for actions a worker actually owns.
     """
 
     action_id: str
@@ -334,41 +339,78 @@ def _correlation_run_id(evt: Event) -> str | None:
     return None if raw_run_id is None else str(raw_run_id)
 
 
-def _in_progress_actions(event_log: sqlite3.Connection) -> list[_InProgressAction]:
-    """Return one record per action that has ``action.running`` but no terminal.
+def _correlation_action_id(evt: Event) -> str | None:
+    """Pull ``action_id`` out of an event's correlation map; None if absent."""
+    if evt.correlation is None:
+        return None
+    raw_action_id = evt.correlation.get("action_id")
+    return None if raw_action_id is None else str(raw_action_id)
 
-    Walks the event log once. For each ``action.running`` event, record
-    its ``action_id`` and the ``run_id`` from the correlation field. Any
-    later event of a terminal type for that ``action_id`` removes the
-    entry. The returned list preserves first-seen order.
+
+def _note_run_id(
+    pending: dict[str, dict[str, str | None]],
+    action_id: str,
+    run_id: str | None,
+) -> None:
+    """Register ``action_id`` if unseen; fill its ``run_id`` once known.
+
+    ``action.running`` from the generic dispatcher registers the action
+    with a ``None`` run_id; the later ``run.started`` (or a unit-test seed
+    that bakes the run_id straight onto ``action.running``) fills it in.
+    The first non-None run_id wins; a terminal event evicts the action
+    before any re-run, so per-action run_id never needs overwriting.
+    """
+    record = pending.get(action_id)
+    if record is None:
+        pending[action_id] = {"run_id": run_id, "last_heartbeat_ts": None}
+    elif run_id is not None and record["run_id"] is None:
+        record["run_id"] = run_id
+
+
+def _apply_lifecycle_event(
+    pending: dict[str, dict[str, str | None]],
+    evt: Event,
+) -> None:
+    """Refresh a heartbeat timestamp or evict on a terminal event."""
+    raw_action_id = evt.payload.get("action_id")
+    if raw_action_id is None:
+        return
+    action_id = str(raw_action_id)
+    if evt.type == "worker.heartbeat":
+        record = pending.get(action_id)
+        if record is not None:
+            record["last_heartbeat_ts"] = str(evt.ts_epoch_ms)
+    elif evt.type in _TERMINAL_ACTION_EVENT_TYPES:
+        pending.pop(action_id, None)
+
+
+def _in_progress_actions(event_log: sqlite3.Connection) -> list[_InProgressAction]:
+    """Return one record per action that has a started run but no terminal.
+
+    Walks the event log once. ``action.running`` registers an action;
+    ``run.started`` supplies its ``run_id`` (the first event that carries
+    one for a real worker run — ``action.running`` from the generic
+    dispatcher has only ``{action_id, turn_id}``). A later terminal event
+    for that ``action_id`` evicts the entry. Actions that never reached
+    ``run.started`` carry a ``None`` run_id and are skipped (no worker was
+    ever registered). The returned list preserves first-seen order.
     """
     pending: dict[str, dict[str, str | None]] = {}
     for evt in iter_events(event_log):
         if evt.type == "action.running":
-            action_id = str(evt.payload["action_id"])
-            if action_id not in pending:
-                pending[action_id] = {
-                    "run_id": _correlation_run_id(evt),
-                    "last_heartbeat_ts": None,
-                }
-            continue
-        # Heartbeats refresh last_heartbeat_ts; terminal events evict.
-        raw_action_id = evt.payload.get("action_id")
-        if raw_action_id is None:
-            continue
-        action_id = str(raw_action_id)
-        if evt.type == "worker.heartbeat":
-            record = pending.get(action_id)
-            if record is not None:
-                record["last_heartbeat_ts"] = str(evt.ts_epoch_ms)
-        elif evt.type in _TERMINAL_ACTION_EVENT_TYPES:
-            pending.pop(action_id, None)
+            _note_run_id(pending, str(evt.payload["action_id"]), _correlation_run_id(evt))
+        elif evt.type == "run.started":
+            started_action_id = _correlation_action_id(evt)
+            if started_action_id is not None:
+                _note_run_id(pending, started_action_id, _correlation_run_id(evt))
+        else:
+            _apply_lifecycle_event(pending, evt)
     out: list[_InProgressAction] = []
     for action_id, record in pending.items():
         run_id = record["run_id"]
         if run_id is None:
-            # No worker correlation — skip; this action is not a
-            # spawn_worker run and reconciliation has no run_id to emit.
+            # No run.started — the worker never registered (e.g. a failed
+            # codex --version preflight); nothing to fail-closed.
             continue
         out.append(
             _InProgressAction(
