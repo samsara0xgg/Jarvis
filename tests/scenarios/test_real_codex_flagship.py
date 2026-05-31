@@ -708,9 +708,64 @@ def test_j5_turn_completed_nonempty_diff_marks_reported_ok(
     assert artifacts[0]["content_hash"], "diff content_hash empty (expected non-empty diff)"
 
 
-def test_j6_codex_client_dead_at_verify_diff_observation(real_python_repo: Path) -> None:
-    """J6: ``CodexAppServerClient.is_alive()`` is False when ``action.result_observed`` for verify_diff emits."""
-    pytest.skip(_SKELETON_SKIP)
+def test_j6_codex_client_dead_at_verify_diff_observation(
+    live_real_codex_happy: dict[str, Any],
+) -> None:
+    """J6: verify_diff observes its result only after the Codex worker is closed.
+
+    The literal invariant — ``CodexAppServerClient.is_alive()`` is False at
+    the moment verify_diff's ``action.result_observed`` emits — is not
+    Event-Log-observable: ``run_codex_action`` closes the client before it
+    returns, so the object no longer exists when the downstream verify_diff
+    step runs. That mechanism is pinned by ``tests/unit/test_codex_client.py
+    ::test_close_makes_is_alive_false``.
+
+    Here we assert the observable shadow on the happy trace: every
+    ``action.result_observed`` for the verify_diff action (the one whose
+    action_id is NOT the spawn_worker's) is emitted strictly after
+    ``worker.reported`` — the spawn_worker terminal signal, after which
+    ``run_codex_action`` has returned and ``close(timeout=3.0)`` has killed
+    the subprocess. The verify_diff slots carry the §3.5.7 dual-slot
+    semantics (observation [+ verification]), confirming the right action
+    was matched.
+    """
+    cap = live_real_codex_happy
+    trace = cap["trace"]
+
+    reported_idxs = [i for i, e in enumerate(trace) if e["type"] == "worker.reported"]
+    assert len(reported_idxs) == 1, (
+        f"expected exactly one worker.reported; got {len(reported_idxs)}"
+    )
+    reported_idx = reported_idxs[0]
+    spawn_action_id = trace[reported_idx]["payload"]["action_id"]
+
+    verify_observed = [
+        (i, event)
+        for i, event in enumerate(trace)
+        if event["type"] == "action.result_observed"
+        and event["payload"].get("action_id") != spawn_action_id
+    ]
+    assert verify_observed, (
+        "no verify_diff action.result_observed (action_id distinct from the "
+        f"spawn_worker action {spawn_action_id!r})"
+    )
+
+    # J6 core: verification observes its result only after the worker closed.
+    assert all(i > reported_idx for i, _ in verify_observed), (
+        "a verify_diff action.result_observed preceded worker.reported; "
+        f"reported_idx={reported_idx}, "
+        f"verify idxs={[i for i, _ in verify_observed]}"
+    )
+
+    # Confirm the matched rows are the verify_diff §3.5.7 dual-slot
+    # observations, not some unrelated action.result_observed.
+    semantics = {event["payload"].get("semantics") for _, event in verify_observed}
+    assert semantics <= {"observation", "verification", "error"}, (
+        f"unexpected verify_diff result semantics: {semantics}"
+    )
+    assert "observation" in semantics, (
+        f"verify_diff slot-1 observation missing; semantics={semantics}"
+    )
 
 
 def test_j7_cost_recorded_kind_codex(live_real_codex_happy: dict[str, Any]) -> None:
