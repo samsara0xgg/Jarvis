@@ -13,7 +13,10 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.decision.result_interpreter import result_interpreter
+from jarvis.decision.result_interpreter import (
+    emit_stash_conflict_surfacing,
+    result_interpreter,
+)
 from jarvis.shared import ActionRequest, CallerPrincipal, Event, ResultSemantics
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
 
@@ -177,3 +180,58 @@ def test_result_interpreter_subject_ref_override(tmp_path: Path) -> None:
         )
 
         assert claim_event.payload["subject_ref"] == "task_override"
+
+
+# --- J13: stash-pop conflict surfacing -------------------------------------
+
+
+def test_emit_stash_conflict_surfacing_emits_artifact_and_limitation(
+    tmp_path: Path,
+) -> None:
+    """J13: a stash-pop conflict surfaces worker.artifact_observed + a Limitation pair.
+
+    The runtime hands this L3 helper the conflict patch path + reason
+    (primitives, not the L4 ``StashConflictArtifact``); it must emit one
+    ``worker.artifact_observed(kind=stash_conflict)`` correlated to the
+    spawn_worker action plus a ``Limitation`` ``claim.created`` +
+    ``evidence.attached(relation=limits, level=reported)`` pair.
+    """
+    patch_path = tmp_path / "run_R1" / "conflict.patch"
+    patch_path.parent.mkdir(parents=True)
+    patch_path.write_text(
+        "diff --git a/a.txt b/a.txt\n@@ -1 +1 @@\n-base\n+allen edit\n",
+        encoding="utf-8",
+    )
+    with closing(open_event_log(tmp_path / "events.db")) as conn:
+        source = _seed_source_event(conn)
+        artifact_event, claim_event, evidence_event = emit_stash_conflict_surfacing(
+            conn,
+            patch_path=patch_path,
+            reason="stash_pop_conflict",
+            run_id="R1",
+            action_id="A1",
+            task_id="task_X",
+            source_event_id=source.event_uid,
+            correlation={"run_id": "R1", "task_id": "task_X", "turn_id": "T1"},
+        )
+
+        assert artifact_event.type == "worker.artifact_observed"
+        assert artifact_event.payload["kind"] == "stash_conflict"
+        assert artifact_event.payload["artifact_path"] == str(patch_path)
+        assert artifact_event.payload["action_id"] == "A1"
+        assert artifact_event.payload["run_id"] == "R1"
+        assert artifact_event.payload["content_hash"], "content_hash must be non-empty"
+
+        assert claim_event.type == "claim.created"
+        assert claim_event.payload["type"] == "Limitation"
+        assert claim_event.payload["subject_ref"] == "task_X"
+
+        assert evidence_event.type == "evidence.attached"
+        assert evidence_event.payload["relation"] == "limits"
+        assert evidence_event.payload["level"] == "reported"
+        assert evidence_event.payload["claim_id"] == claim_event.payload["claim_id"]
+        assert evidence_event.payload["artifact_path"] == str(patch_path)
+
+        # All three rows persisted, in emission order, chained off the source.
+        tail = [e.type for e in iter_events(conn)][-3:]
+        assert tail == ["worker.artifact_observed", "claim.created", "evidence.attached"]

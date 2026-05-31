@@ -45,6 +45,7 @@ stays import-light and pure (no LLM in the unit-test reach).
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -54,6 +55,7 @@ from jarvis.state.event_log import emit_event
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Mapping
+    from pathlib import Path
 
     from jarvis.shared import (
         ActionRequest,
@@ -271,6 +273,73 @@ def _emit_claim_and_evidence(  # noqa: PLR0913 — every argument is load-bearin
     )
 
     return claim_event, evidence_event
+
+
+def emit_stash_conflict_surfacing(  # noqa: PLR0913 — every id is a load-bearing correlation handle for the (artifact, claim, evidence) triple.
+    conn: sqlite3.Connection,
+    *,
+    patch_path: Path,
+    reason: str,
+    run_id: str,
+    action_id: str,
+    task_id: str,
+    source_event_id: str,
+    correlation: Mapping[str, str],
+) -> tuple[Event, Event, Event]:
+    """Surface a pre-task stash-pop conflict as Event-Log rows (ADR-0002 J13).
+
+    The dirty-tree restore (``restore_pretask_changes``) preserves the
+    un-poppable stash as ``conflict.patch`` and resets the tree to Codex's
+    edits; on its own that file write is invisible to the Event Log. The
+    runtime composition (the sole caller, ``_pop_pending_stashes``) routes
+    the conflict here so it becomes:
+
+    1. a ``worker.artifact_observed`` row (``kind="stash_conflict"``)
+       pointing at the patch, correlated to the spawn_worker ``action_id``
+       that created the stash; and
+    2. a ``Limitation`` ``claim.created`` + ``evidence.attached(relation=
+       limits, level=reported)`` pair, so the surface layer can tell Allen
+       his pre-task work was preserved, not silently overwritten (ADR-0002
+       § Dirty-tree policy: "never silently overwrite Allen's work").
+
+    Args are primitives (``patch_path`` / ``reason``), NOT the L4
+    ``StashConflictArtifact``, so this L3 function never imports
+    ``jarvis.execution`` — the runtime unpacks the artifact across the
+    layer boundary.
+
+    Returns the ``(artifact_event, claim_event, evidence_event)`` triple.
+    """
+    content_hash = hashlib.sha256(patch_path.read_bytes()).hexdigest()
+    artifact_event = emit_event(
+        conn,
+        type="worker.artifact_observed",
+        payload={
+            "run_id": run_id,
+            "action_id": action_id,
+            "artifact_path": str(patch_path),
+            "content_hash": content_hash,
+            "kind": "stash_conflict",
+        },
+        source_event_id=source_event_id,
+        correlation=correlation,
+    )
+    claim_event, evidence_event = _emit_claim_and_evidence(
+        conn=conn,
+        source_event_id=artifact_event.event_uid,
+        correlation=correlation,
+        claim_type="Limitation",
+        statement=(
+            f"pre-task stash could not be restored cleanly ({reason}); "
+            f"preserved at {patch_path} for manual reconciliation"
+        ),
+        subject_ref=task_id,
+        relation="limits",
+        level="reported",
+        source_type="tool",
+        source_id="git_stash_pop",
+        evidence_payload_extras={"artifact_path": str(patch_path), "reason": reason},
+    )
+    return artifact_event, claim_event, evidence_event
 
 
 def _build_correlation(action_request: ActionRequest) -> Mapping[str, str]:
@@ -730,6 +799,7 @@ class ReviewerVerdictLike(Protocol):
 __all__ = [
     "ReviewerVerdictLike",
     "VerifyVerdict",
+    "emit_stash_conflict_surfacing",
     "interpret_verify_diff_bundle",
     "result_interpreter",
 ]

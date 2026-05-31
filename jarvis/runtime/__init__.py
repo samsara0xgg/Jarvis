@@ -45,6 +45,7 @@ import yaml
 
 from jarvis.decision import DecideContext, LifecycleLike, ToolRegistryLike, decide
 from jarvis.decision.llm import LLMClient, load_llm_config
+from jarvis.decision.result_interpreter import emit_stash_conflict_surfacing
 from jarvis.deployment import RuntimePaths, bootstrap_runtime
 from jarvis.execution.diff_capture import StashError, restore_pretask_changes
 from jarvis.execution.tools import ActionLifecycle, ToolRegistry, build_default_registry
@@ -699,7 +700,7 @@ def _task_repo_path(conn: sqlite3.Connection, task_id: str) -> Path | None:
     return Path(latest_repo) if latest_repo is not None else None
 
 
-def _pop_pending_stashes(
+def _pop_pending_stashes(  # noqa: C901 — composition walker folds the clean / conflict / git-error stash-pop outcomes per worker.reported row; splitting the guard ladder hurts readability.
     conn: sqlite3.Connection,
     *,
     artifacts_root: Path,
@@ -730,11 +731,13 @@ def _pop_pending_stashes(
             ``worker.reported`` events tagged with this turn are popped.
 
     Returns:
-        None. Conflict artifacts are surfaced inside
-        :func:`restore_pretask_changes` (it writes them to the artifact
-        dir); this helper logs any non-conflict :class:`StashError` and
-        continues so a single stuck stash doesn't mask the user-facing
-        response.
+        None. A clean pop adds no events. A stash-pop CONFLICT is routed
+        through :func:`jarvis.decision.result_interpreter.emit_stash_conflict_surfacing`
+        so it becomes observable — ``worker.artifact_observed(kind=stash_conflict)``
+        plus a ``Limitation`` Claim — rather than a silent ``conflict.patch``
+        write nothing references (ADR-0002 J13). Non-conflict
+        :class:`StashError` is logged and skipped so a single stuck stash
+        doesn't mask the user-facing response.
     """
     seen_run_ids: set[str] = set()
     for evt in iter_events(conn):
@@ -759,23 +762,47 @@ def _pop_pending_stashes(
         if repo_path is None:
             continue
         try:
-            restore_pretask_changes(
+            conflict = restore_pretask_changes(
                 repo_path,
                 stash_ref,
                 artifact_dir=artifacts_root,
                 run_id=run_id_raw,
             )
         except StashError:
-            # Don't propagate — the conflict path inside
-            # restore_pretask_changes already preserved a patch
-            # artifact. A non-conflict error here means git itself
-            # failed (e.g. stash ref vanished); log and continue so
-            # the user-facing response is not held hostage.
+            # Don't propagate — a non-conflict error here means git
+            # itself failed (e.g. stash ref vanished); log and continue
+            # so the user-facing response is not held hostage.
             LOGGER.exception(
                 "runtime: failed to pop stash %s for run %s",
                 stash_ref,
                 run_id_raw,
             )
+            continue
+        if conflict is None:
+            continue
+        # Stash-pop CONFLICT: restore_pretask_changes preserved the patch
+        # and reset the tree to Codex's edits. Route it through L3 so the
+        # conflict surfaces as worker.artifact_observed + a Limitation Claim
+        # rather than a silent file write — ADR-0002 J13 / dirty-tree policy
+        # ("never silently overwrite Allen's work"). The worker.reported row
+        # carries the spawn_worker action that created the stash.
+        action_id_raw = evt.payload.get("action_id")
+        if not isinstance(action_id_raw, str):
+            continue
+        emit_stash_conflict_surfacing(
+            conn,
+            patch_path=conflict.patch_path,
+            reason=conflict.reason,
+            run_id=run_id_raw,
+            action_id=action_id_raw,
+            task_id=task_id_raw,
+            source_event_id=evt.event_uid,
+            correlation={
+                "run_id": run_id_raw,
+                "task_id": task_id_raw,
+                "turn_id": turn_id,
+            },
+        )
 
 
 __all__ = [

@@ -18,6 +18,7 @@ No LLM is invoked. ``bootstrap_runtime_app`` instantiates an
 from __future__ import annotations
 
 import sqlite3
+import subprocess
 import threading
 from contextlib import closing
 from pathlib import Path
@@ -25,15 +26,17 @@ from pathlib import Path
 import pytest
 
 from jarvis.deployment import RuntimePaths
+from jarvis.execution.diff_capture import isolate_pretask_changes
 from jarvis.execution.tools import ActionLifecycle, ToolRegistry
 from jarvis.runtime import (
     JarvisRuntime,
     RuntimeBootstrapError,
     TriggerWaitTimeout,
+    _pop_pending_stashes,
     _wait_for_next_trigger,
     bootstrap_runtime_app,
 )
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.event_log import emit_event, iter_events, open_event_log
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_PATH = _REPO_ROOT / "config" / "jarvis.yaml"
@@ -185,3 +188,96 @@ def test_wait_for_next_trigger_times_out_when_nothing_arrives(tmp_path: Path) ->
                 timeout=0.05,
                 poll_interval_s=0.01,
             )
+
+
+# --- _pop_pending_stashes (J13 dirty-tree conflict surfacing) ---------------
+
+
+def _git_q(repo: Path, *args: str) -> None:
+    """Run a quiet git subcommand in ``repo`` (test fixture helper)."""
+    subprocess.run(  # noqa: S603 — fixed git argv, no shell, test fixture.
+        ["git", "-C", str(repo), *args],  # noqa: S607 — `git` resolved via PATH is intentional.
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_pop_pending_stashes_surfaces_conflict(tmp_path: Path) -> None:
+    """J13: a stash-pop conflict during the post-verify pop is surfaced, not silent.
+
+    Reproduces the deterministic conflict from
+    ``test_diff_capture.py::test_dirty_tree_conflict_pop_writes_artifact``
+    (Allen's stashed edit collides with Codex's committed edit), then drives
+    the runtime's sole pop site. The conflict must become an observable
+    ``worker.artifact_observed(kind=stash_conflict)`` + ``Limitation`` claim,
+    not merely a ``conflict.patch`` file nothing references.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_q(repo, "init", "-q")
+    (repo / "a.txt").write_text("base\n", encoding="utf-8")
+    _git_q(repo, "add", "a.txt")
+    _git_q(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base")
+
+    # Allen's pre-task edit → stashed by isolate_pretask_changes.
+    (repo / "a.txt").write_text("allen edit\n", encoding="utf-8")
+    stash_ref = isolate_pretask_changes(repo, run_id="R1")
+    assert stash_ref is not None
+
+    # Codex's conflicting edit, committed (deterministic stash-apply conflict).
+    (repo / "a.txt").write_text("codex edit\n", encoding="utf-8")
+    _git_q(repo, "add", "a.txt")
+    _git_q(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "codex")
+
+    artifacts_root = tmp_path / "artifacts"
+    artifacts_root.mkdir()
+    with closing(open_event_log(tmp_path / "events.db")) as conn:
+        task_event = emit_event(
+            conn,
+            type="task.created",
+            payload={
+                "task_id": "task_X",
+                "goal": "edit a.txt",
+                "source": "manual",
+                "repo_path": str(repo),
+            },
+        )
+        emit_event(
+            conn,
+            type="worker.reported",
+            payload={
+                "run_id": "R1",
+                "action_id": "A1",
+                "status": "reported_complete",
+                "summary": "ok",
+                "stash_ref": stash_ref,
+            },
+            source_event_id=task_event.event_uid,
+            correlation={
+                "action_id": "A1",
+                "run_id": "R1",
+                "task_id": "task_X",
+                "turn_id": "T1",
+            },
+        )
+
+        _pop_pending_stashes(conn, artifacts_root=artifacts_root, turn_id="T1")
+
+        rows = list(iter_events(conn))
+        conflict_artifacts = [
+            e
+            for e in rows
+            if e.type == "worker.artifact_observed"
+            and e.payload.get("kind") == "stash_conflict"
+        ]
+        assert conflict_artifacts, "stash conflict produced no worker.artifact_observed"
+        assert conflict_artifacts[0].payload["action_id"] == "A1"
+
+        limitations = [
+            e
+            for e in rows
+            if e.type == "claim.created" and e.payload.get("type") == "Limitation"
+        ]
+        assert limitations, "stash conflict produced no Limitation claim"
+
+        assert (artifacts_root / "run_R1" / "conflict.patch").is_file()
