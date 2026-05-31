@@ -352,6 +352,102 @@ def live_real_codex_timeout(
         runtime.conn.close()
 
 
+# --- J4 heartbeat capture (lowered-cadence live burn) ---------------------
+
+# Heartbeat cadence (seconds) forced onto the Codex turn for J4 so a
+# ``worker.heartbeat`` lands within the first idle ticks instead of needing
+# a 30s real turn. A generous turn budget bounds a Codex hang to ~2 min (not
+# the 600s default) while still letting the ~15s happy turn complete
+# normally; heartbeats chain to action.running regardless of whether the
+# turn completes or trips the budget.
+_HEARTBEAT_INTERVAL_BUDGET_S: str = "3"
+_HEARTBEAT_HANG_GUARD_S: str = "120"
+
+
+@pytest.fixture(scope="module")
+def live_real_codex_heartbeat(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[dict[str, Any]]:
+    """Run a real-Codex turn ONCE under a lowered heartbeat cadence; freeze the trace.
+
+    Sibling to :func:`live_real_codex_happy`: seeds the same canonical D-1
+    ``task.created`` but forces a 3s heartbeat interval via
+    ``JARVIS_CODEX_HEARTBEAT_INTERVAL_S`` so the real ``run_codex_action``
+    poll loop emits ``worker.heartbeat`` within the first idle ticks rather
+    than needing a 30s turn. A generous ``JARVIS_CODEX_TURN_TIMEOUT_S`` hang
+    guard bounds a Codex hang; both overrides are popped immediately after
+    ``run_turn`` so they cannot leak into the module's other live fixtures.
+    """
+    pytest.importorskip("openai")
+
+    repo = tmp_path_factory.mktemp("real_codex_heartbeat_repo")
+    _git(repo, "init", "-q")
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname = 'demo'\nversion = '0.0.1'\nrequires-python = '>=3.12'\n",
+        encoding="utf-8",
+    )
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_demo.py").write_text(
+        "def test_truthy() -> None:\n    assert True\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    root = tmp_path_factory.mktemp("real_codex_heartbeat_root")
+    os.environ["JARVIS_RUNTIME_ROOT"] = str(root)
+    runtime = bootstrap_runtime_app(runtime_root=root)
+
+    yesterday_ms = int(time.time() * 1000) - 26 * 3600 * 1000
+    emit_event(
+        runtime.conn,
+        type="task.created",
+        payload={
+            "task_id": "task_X",
+            "goal": _HAPPY_GOAL,
+            "source": "manual",
+            "repo_path": str(repo),
+            "verify_command": f"{sys.executable} -m pytest -x -q",
+        },
+        ts_epoch_ms=yesterday_ms,
+    )
+
+    os.environ["JARVIS_CODEX_HEARTBEAT_INTERVAL_S"] = _HEARTBEAT_INTERVAL_BUDGET_S
+    os.environ["JARVIS_CODEX_TURN_TIMEOUT_S"] = _HEARTBEAT_HANG_GUARD_S
+    try:
+        result = run_turn(runtime, utterance=_UTTERANCE)
+    finally:
+        # Scope both overrides tightly to this run_turn so the module's
+        # happy-path fixture still gets the 30s / 600s defaults.
+        os.environ.pop("JARVIS_CODEX_HEARTBEAT_INTERVAL_S", None)
+        os.environ.pop("JARVIS_CODEX_TURN_TIMEOUT_S", None)
+    time.sleep(0.3)  # let any straggling emit finalize before the snapshot
+
+    db_path = runtime.runtime_paths.event_log
+    trace = _load_trace(db_path)
+
+    artifact_dir = Path(__file__).resolve().parent.parent / "_artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    dump_path = artifact_dir / "real_codex_heartbeat_trace.json"
+    dump_path.write_text(
+        json.dumps(trace, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, Any] = {
+        "runtime": runtime,
+        "result": result,
+        "db_path": db_path,
+        "repo": repo,
+        "trace": trace,
+        "dump_path": dump_path,
+    }
+    try:
+        yield captured
+    finally:
+        runtime.conn.close()
+
+
 # --- J8 crash capture (real Codex killed mid-turn) ------------------------
 
 # action.failed error tags that a SIGKILLed Codex subprocess can produce.
@@ -544,9 +640,59 @@ def test_j3_thread_start_cwd_matches_repo_path() -> None:
     )
 
 
-def test_j4_heartbeat_emitted_for_long_turns(real_python_repo: Path) -> None:
-    """J4: turns >= 30s emit at least one ``worker.heartbeat`` chained to ``action.running``."""
-    pytest.skip(_SKELETON_SKIP)
+def test_j4_heartbeat_emitted_for_long_turns(
+    live_real_codex_heartbeat: dict[str, Any],
+) -> None:
+    """J4: a turn idling past the heartbeat interval emits >=1 ``worker.heartbeat`` chained to ``action.running``.
+
+    The live cadence is lowered to 3s (``JARVIS_CODEX_HEARTBEAT_INTERVAL_S``)
+    so a real turn crosses the interval in seconds rather than the 30s
+    production default; the chaining invariant (ADR-0002 J4) is identical at
+    any interval — every ``worker.heartbeat`` carries a ``source_event_id``
+    equal to the spawn_worker ``action.running`` event's ``event_uid``. The
+    30s production threshold itself is proven separately by the A3 live run
+    (docs/live-run-bugs.md P-0008: 19 heartbeats 30s apart) and by the
+    deterministic unit test ``tests/unit/test_codex_action.py::
+    test_run_codex_action_respects_heartbeat_interval_param``.
+
+    Event-log-observable invariants asserted on the captured trace:
+
+    - the run reached ``run.started`` and emitted at least one
+      ``worker.heartbeat``;
+    - at least one heartbeat's ``source_event_id`` equals an
+      ``action.running`` event's ``event_uid`` (the J4 cause-chain);
+    - every chained heartbeat payload carries the spawn_worker correlation
+      (``action_id``, ``run_id``) and an ``elapsed_ms`` reading.
+    """
+    cap = live_real_codex_heartbeat
+    trace = cap["trace"]
+    types = [event["type"] for event in trace]
+
+    assert "run.started" in types, "spawn_worker never reached run.started"
+
+    heartbeats = [event for event in trace if event["type"] == "worker.heartbeat"]
+    assert heartbeats, (
+        "no worker.heartbeat emitted; the Codex poll loop never crossed the "
+        f"3s idle cadence. types={types}"
+    )
+
+    running_uids = {
+        event["event_uid"] for event in trace if event["type"] == "action.running"
+    }
+    assert running_uids, "no action.running event for heartbeats to chain to"
+
+    chained = [hb for hb in heartbeats if hb.get("source_event_id") in running_uids]
+    assert chained, (
+        "no worker.heartbeat chains back to action.running (J4); heartbeat "
+        f"source_event_ids={[hb.get('source_event_id') for hb in heartbeats]}, "
+        f"action.running uids={running_uids}"
+    )
+
+    for hb in chained:
+        payload = hb["payload"]
+        assert payload.get("action_id"), "heartbeat payload missing action_id"
+        assert payload.get("run_id"), "heartbeat payload missing run_id"
+        assert "elapsed_ms" in payload, "heartbeat payload missing elapsed_ms"
 
 
 def test_j5_turn_completed_nonempty_diff_marks_reported_ok(
