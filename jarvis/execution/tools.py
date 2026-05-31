@@ -164,6 +164,39 @@ def _resolve_codex_turn_timeout_s() -> float:
         return _CODEX_TURN_TIMEOUT_DEFAULT_S
 
 
+# Per-turn Codex heartbeat cadence (spec §3.5.8 ladder — the idle-poll
+# interval at which `run_codex_action` fires `on_heartbeat`, which this
+# module turns into `worker.heartbeat` events). Defaults to 30s (the
+# canonical "worker still alive" signal); `JARVIS_CODEX_HEARTBEAT_INTERVAL_S`
+# lowers it so the J4 heartbeat lifecycle is exercisable live in seconds
+# instead of needing a 30s real-Codex turn. Read at dispatch time, not
+# import, so a per-run override takes effect without re-importing the module.
+_CODEX_HEARTBEAT_INTERVAL_ENV: Final[str] = "JARVIS_CODEX_HEARTBEAT_INTERVAL_S"
+_CODEX_HEARTBEAT_INTERVAL_DEFAULT_S: Final[float] = 30.0
+
+
+def _resolve_codex_heartbeat_interval_s() -> float:
+    """Return the heartbeat cadence from the env override or the default.
+
+    A malformed ``JARVIS_CODEX_HEARTBEAT_INTERVAL_S`` falls back to the 30s
+    default rather than crashing the worker spawn — a bad ops knob must not
+    turn every task into an ``action.failed``.
+    """
+    raw = os.environ.get(_CODEX_HEARTBEAT_INTERVAL_ENV)
+    if raw is None:
+        return _CODEX_HEARTBEAT_INTERVAL_DEFAULT_S
+    try:
+        return float(raw)
+    except ValueError:
+        LOGGER.warning(
+            "%s=%r is not a number; using %.0fs default heartbeat cadence",
+            _CODEX_HEARTBEAT_INTERVAL_ENV,
+            raw,
+            _CODEX_HEARTBEAT_INTERVAL_DEFAULT_S,
+        )
+        return _CODEX_HEARTBEAT_INTERVAL_DEFAULT_S
+
+
 # --- Public type aliases -----------------------------------------------------
 
 # `RawResult` and `ResultSemantics` live in `jarvis.shared` since Step 0b of
@@ -781,6 +814,7 @@ def spawn_worker_handler(
             cwd=repo_path,
             timeout_s=_resolve_codex_turn_timeout_s(),
             on_heartbeat=on_heartbeat,
+            heartbeat_interval_s=_resolve_codex_heartbeat_interval_s(),
         )
     except Exception as exc:  # noqa: BLE001 — any Codex spawn failure folds into one action.failed.
         return _spawn_worker_emit_terminal_failure(

@@ -69,7 +69,7 @@ class FakeClient:
     codex_bin: str | None = None
     extra_args: list[str] = field(default_factory=list)
     env: dict[str, str] | None = None
-    notifications: list[dict[str, Any]] = field(default_factory=list)
+    notifications: list[dict[str, Any] | None] = field(default_factory=list)
     server_requests: list[dict[str, Any]] = field(default_factory=list)
     request_log: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     respond_log: list[tuple[object, dict[str, Any]]] = field(default_factory=list)
@@ -881,6 +881,51 @@ def test_run_codex_action_heartbeat_fires(
         assert "summary" in hb
         assert "elapsed_ms" in hb
         assert "last_item_summary" in hb
+
+
+def test_run_codex_action_respects_heartbeat_interval_param(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A custom ``heartbeat_interval_s`` drives the cadence, not the 30 s constant.
+
+    The J4 live seam lowers the interval so a real turn emits a
+    ``worker.heartbeat`` in seconds. This proves the poll loop honours the
+    *parameter*, not the ``_HEARTBEAT_INTERVAL_S`` module constant: with a
+    2 s interval and a clock that only advances ~5 s per idle tick (never
+    reaching 30 s), at least one heartbeat must still fire.
+    """
+    template = FakeClient(
+        notifications=[
+            None,  # idle tick 1 — now ~5 s; fires at interval=2, not at 30
+            None,  # idle tick 2 — now ~10 s
+            {"method": "turn/completed", "params": {}},
+        ],
+    )
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    # Small steps so the 30 s default would NEVER fire: 0 (start),
+    # 5 (iter1 now), 5 (hb branch), 10 (iter2 now), 10 (hb branch), 15...
+    _stub_clock(
+        monkeypatch,
+        ticks=[0.0, 0.0, 5.0, 5.0, 10.0, 10.0, 15.0, 15.0, 15.0],
+    )
+
+    heartbeats: list[dict[str, Any]] = []
+    result = ca.run_codex_action(
+        task_goal="t",
+        cwd=tmp_path,
+        timeout_s=600.0,
+        on_heartbeat=heartbeats.append,
+        heartbeat_interval_s=2.0,
+    )
+
+    assert result.error is None
+    assert len(heartbeats) >= 1, (
+        "heartbeat_interval_s=2.0 must fire within a 5 s idle tick; "
+        "the loop is using the 30 s constant instead of the parameter"
+    )
 
 
 # ---------------------------------------------------------------------------

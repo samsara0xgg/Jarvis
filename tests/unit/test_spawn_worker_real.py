@@ -449,6 +449,104 @@ def test_spawn_worker_malformed_turn_timeout_env_falls_back_to_600(
     assert mock_codex.call_args.kwargs["timeout_s"] == 600.0
 
 
+# --- Heartbeat-cadence seam (J4 live-controllability) ----------------------
+
+
+def test_spawn_worker_threads_env_heartbeat_interval_into_run_codex_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``JARVIS_CODEX_HEARTBEAT_INTERVAL_S`` overrides the run_codex_action cadence.
+
+    The 30s default heartbeat interval cannot be exercised live without a
+    30-second turn, so the J4 heartbeat scenario needs a controllable
+    seam. The handler reads ``JARVIS_CODEX_HEARTBEAT_INTERVAL_S`` and
+    threads it into ``run_codex_action(heartbeat_interval_s=...)``; this
+    asserts the wiring without a live Codex spawn.
+    """
+    monkeypatch.setenv("JARVIS_CODEX_HEARTBEAT_INTERVAL_S", "2")
+    paths, conn = _open_runtime(tmp_path)
+    try:
+        _seed_task(conn, task_id="task_X", repo_path=str(tmp_path))
+        with (
+            patch("jarvis.execution.tools.ensure_codex_version_supported"),
+            patch(
+                "jarvis.execution.tools.run_codex_action",
+                return_value=_stub_result(submit_report={"status": "ok", "summary": "ok"}),
+            ) as mock_codex,
+            patch(
+                "jarvis.execution.tools.isolate_pretask_changes",
+                return_value=None,
+            ),
+        ):
+            _dispatch(paths, conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert mock_codex.call_args is not None
+    assert mock_codex.call_args.kwargs["heartbeat_interval_s"] == 2.0
+
+
+def test_spawn_worker_heartbeat_interval_defaults_to_30_when_env_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Absent ``JARVIS_CODEX_HEARTBEAT_INTERVAL_S`` keeps the 30s default cadence."""
+    monkeypatch.delenv("JARVIS_CODEX_HEARTBEAT_INTERVAL_S", raising=False)
+    paths, conn = _open_runtime(tmp_path)
+    try:
+        _seed_task(conn, task_id="task_X", repo_path=str(tmp_path))
+        with (
+            patch("jarvis.execution.tools.ensure_codex_version_supported"),
+            patch(
+                "jarvis.execution.tools.run_codex_action",
+                return_value=_stub_result(submit_report={"status": "ok", "summary": "ok"}),
+            ) as mock_codex,
+            patch(
+                "jarvis.execution.tools.isolate_pretask_changes",
+                return_value=None,
+            ),
+        ):
+            _dispatch(paths, conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert mock_codex.call_args is not None
+    assert mock_codex.call_args.kwargs["heartbeat_interval_s"] == 30.0
+
+
+def test_spawn_worker_malformed_heartbeat_interval_env_falls_back_to_30(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-numeric ``JARVIS_CODEX_HEARTBEAT_INTERVAL_S`` must not crash the spawn.
+
+    A bad operator cadence knob falls back to the 30s default rather than
+    turning every task into an ``action.failed``.
+    """
+    monkeypatch.setenv("JARVIS_CODEX_HEARTBEAT_INTERVAL_S", "not-a-number")
+    paths, conn = _open_runtime(tmp_path)
+    try:
+        _seed_task(conn, task_id="task_X", repo_path=str(tmp_path))
+        with (
+            patch("jarvis.execution.tools.ensure_codex_version_supported"),
+            patch(
+                "jarvis.execution.tools.run_codex_action",
+                return_value=_stub_result(submit_report={"status": "ok", "summary": "ok"}),
+            ) as mock_codex,
+            patch(
+                "jarvis.execution.tools.isolate_pretask_changes",
+                return_value=None,
+            ),
+        ):
+            _dispatch(paths, conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert mock_codex.call_args is not None
+    assert mock_codex.call_args.kwargs["heartbeat_interval_s"] == 30.0
+
+
 # --- Codex spawn-time raise (FT-A) -----------------------------------------
 
 

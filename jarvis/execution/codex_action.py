@@ -482,12 +482,13 @@ def ensure_codex_version_supported(codex_bin: str = "codex") -> None:
         raise CodexVersionTooLowError(msg)
 
 
-def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver is naturally branchy and parameter-heavy; spec calls for 8 kwargs; splitting hurts readability
+def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver is naturally branchy and parameter-heavy; spec calls for 9 kwargs; splitting hurts readability
     *,
     task_goal: str,
     cwd: Path,
     timeout_s: float = 600.0,
     on_heartbeat: Callable[[dict[str, Any]], None] | None = None,
+    heartbeat_interval_s: float = _HEARTBEAT_INTERVAL_S,
     codex_bin: str = "codex",
     model: str = "gpt-5.5",
     reasoning_effort: str = "xhigh",
@@ -503,8 +504,9 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
     4. ``turn/start`` with the task goal as a text input.
     5. Poll ``take_notification(0.25)`` until ``turn/completed`` or deadline.
        On every ``item/tool_call`` with ``tool_name == "submit_report"``,
-       capture the structured arguments. On 30 s wall-clock idle, fire
-       ``on_heartbeat``. On deadline, send ``turn/interrupt`` and bail.
+       capture the structured arguments. On ``heartbeat_interval_s``
+       (default 30 s) wall-clock idle, fire ``on_heartbeat``. On deadline,
+       send ``turn/interrupt`` and bail.
     6. Capture ``git diff`` text (no artifact write — Step 8's concern).
     7. ``close(timeout=3)``.
 
@@ -514,10 +516,14 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
             writable_root and the ``thread/start`` ``cwd`` parameter).
         timeout_s: Wall-clock budget for the turn; on overrun the driver
             interrupts and returns with ``error="codex_turn_timeout"``.
-        on_heartbeat: Optional callable invoked every 30 s of idle time
-            with a summary dict (``summary``, ``elapsed_ms``,
+        on_heartbeat: Optional callable invoked every ``heartbeat_interval_s``
+            of idle time with a summary dict (``summary``, ``elapsed_ms``,
             ``last_item_summary``). Step 10's ``spawn_worker_handler``
             uses this to emit ``worker.heartbeat`` events.
+        heartbeat_interval_s: Wall-clock idle cadence between ``on_heartbeat``
+            firings; defaults to 30 s. ``spawn_worker_handler`` lowers it via
+            ``JARVIS_CODEX_HEARTBEAT_INTERVAL_S`` so the J4 heartbeat
+            lifecycle is exercisable live in seconds.
         codex_bin: Path or PATH-name of the ``codex`` CLI binary.
         model: ``-c model=<name>`` flag value.
         reasoning_effort: ``-c model_reasoning_effort=<level>`` flag value.
@@ -728,7 +734,7 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
                 error = "codex_subprocess_crashed"
                 break
             # No notification this tick — check heartbeat cadence.
-            if on_heartbeat is not None and (now - last_heartbeat_at) >= _HEARTBEAT_INTERVAL_S:
+            if on_heartbeat is not None and (now - last_heartbeat_at) >= heartbeat_interval_s:
                 on_heartbeat(
                     {
                         "summary": "codex turn in progress",
