@@ -781,8 +781,10 @@ def _pop_pending_stashes(  # noqa: C901 — composition walker folds the clean /
         if conflict is None:
             continue
         # Stash-pop CONFLICT: restore_pretask_changes preserved the patch
-        # and reset the tree to Codex's edits. Route it through L3 so the
-        # conflict surfaces as worker.artifact_observed + a Limitation Claim
+        # and left the tree holding Codex's edits (a merge conflict is
+        # reset to Codex's HEAD; an uncommitted-overwrite abort is left
+        # as-is). Route it through L3 so the conflict surfaces as
+        # worker.artifact_observed + a Limitation Claim
         # rather than a silent file write — ADR-0002 J13 / dirty-tree policy
         # ("never silently overwrite Allen's work"). The worker.reported row
         # carries the spawn_worker action that created the stash.

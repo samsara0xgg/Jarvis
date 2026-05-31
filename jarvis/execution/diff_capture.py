@@ -292,23 +292,33 @@ def restore_pretask_changes(
        Allen manually ``git stash drop``-ed it), log a WARNING and
        return ``None`` — the stash is gone, restore is a no-op.
     3. ``git -C cwd stash apply <resolved>``.
-    4. If apply returned non-zero AND the output indicates a conflict
-       (``"CONFLICT"`` or ``"merge conflict"`` substring,
-       case-insensitive):
+    4. If apply returned non-zero AND the output indicates a conflict,
+       preserve the stash as an artifact. Two shapes qualify:
+
+       - **Merge conflict** (``"conflict"`` substring): Codex committed
+         its edit, so apply wrote conflict markers into the tree.
+       - **Overwrite abort** (``"would be overwritten"`` substring):
+         Codex left an *uncommitted* edit, so apply aborted pre-merge
+         and the tree is untouched.
+
+       Either way:
 
        a. Read the stash patch via
-          ``git -C cwd stash show -p <resolved>``.
+          ``git -C cwd stash show -p <resolved>`` (works even though
+          apply failed).
        b. Write to ``<artifact_dir>/run_<run_id>/conflict.patch``.
        c. Best-effort ``git -C cwd stash drop <resolved>`` so the
           orphan stash doesn't linger in ``git stash list``.
-       d. ``git -C cwd reset --hard HEAD`` — Codex's changes are
-          authoritative; Allen reconciles the stash manually from
-          the artifact. Per ADR-0002 lines 696-705, **never silently
-          overwrite Allen's work** — the stash patch is the
+       d. For the **merge-conflict** shape only, ``git -C cwd reset
+          --hard HEAD`` drops the markers — Codex's committed changes
+          are authoritative. The **overwrite-abort** shape is NOT
+          reset: the tree already holds Codex's uncommitted edits and a
+          reset would destroy them. Per ADR-0002 lines 696-705, **never
+          silently overwrite Allen's work** — the stash patch is the
           recoverable handle.
        e. Return :class:`StashConflictArtifact`.
 
-    5. If apply returned non-zero for a non-conflict reason, raise
+    5. If apply returned non-zero for any other reason, raise
        :class:`StashError` with stderr attached.
     6. If apply succeeded cleanly, ``git stash drop <resolved>`` —
        apply leaves the entry in place, so we must drop it
@@ -358,15 +368,24 @@ def restore_pretask_changes(
         return None
 
     combined = f"{apply.stdout}\n{apply.stderr}".lower()
-    if "conflict" not in combined:
+    # Two distinct conflict shapes reach this point:
+    #  - merge conflict: Codex committed its edit, so apply attempted a
+    #    3-way merge and wrote CONFLICT markers into the tree.
+    #  - overwrite abort: Codex left an *uncommitted* edit, so apply
+    #    aborted pre-merge ("would be overwritten by merge") and the
+    #    tree is untouched — it still holds Codex's edits.
+    is_merge_conflict = "conflict" in combined
+    is_overwrite_abort = "would be overwritten" in combined
+    if not (is_merge_conflict or is_overwrite_abort):
         msg = (
             f"git stash apply failed non-conflict (rc={apply.returncode}): "
             f"{apply.stderr.strip()}"
         )
         raise StashError(msg)
 
-    # Conflict path: preserve the stash as an artifact, then reset the
-    # tree to the post-Codex state.
+    # Conflict path: preserve the stash as a patch artifact. show -p
+    # reads the stash diff even though apply failed, so the user's work
+    # is recoverable in either shape.
     show = _git("stash", "show", "-p", resolved, cwd=cwd)
     if show.returncode != 0:
         msg = (
@@ -385,14 +404,19 @@ def restore_pretask_changes(
     # conflict signal Allen needs to see.
     _git("stash", "drop", resolved, cwd=cwd)
 
-    # Reset the conflicted working tree to the post-Codex HEAD.
-    reset = _git("reset", "--hard", "HEAD", cwd=cwd)
-    if reset.returncode != 0:
-        msg = (
-            f"git reset --hard HEAD failed after stash conflict "
-            f"(rc={reset.returncode}): {reset.stderr.strip()}"
-        )
-        raise StashError(msg)
+    # Restore the tree to the post-Codex state. Only the merge-conflict
+    # shape wrote markers into the tree, so only it needs a reset. The
+    # overwrite-abort tree already holds Codex's uncommitted edits — a
+    # reset --hard there would destroy Codex's work, which the
+    # Codex-authoritative policy must never do.
+    if is_merge_conflict and not is_overwrite_abort:
+        reset = _git("reset", "--hard", "HEAD", cwd=cwd)
+        if reset.returncode != 0:
+            msg = (
+                f"git reset --hard HEAD failed after stash conflict "
+                f"(rc={reset.returncode}): {reset.stderr.strip()}"
+            )
+            raise StashError(msg)
 
     return StashConflictArtifact(
         patch_path=patch_path,

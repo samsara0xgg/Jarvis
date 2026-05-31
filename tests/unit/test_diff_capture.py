@@ -181,6 +181,57 @@ def test_dirty_tree_conflict_pop_writes_artifact(tmp_path: Path) -> None:
     assert listing.stdout.strip() == ""
 
 
+def test_dirty_tree_uncommitted_codex_edit_writes_artifact(tmp_path: Path) -> None:
+    """Uncommitted Codex edit → 'would be overwritten' abort → artifact, edit kept.
+
+    The realistic Codex lifecycle edits the working tree but does NOT
+    commit before restore. ``git stash apply`` then aborts pre-merge
+    with "would be overwritten by merge" (rc=1, no CONFLICT marker).
+    This must surface a :class:`StashConflictArtifact` — same as the
+    committed-conflict case — but must NOT ``reset --hard``, which would
+    destroy Codex's uncommitted work.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.txt").write_text("base\n")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-q", "-m", "b1")
+
+    # Allen's pre-task edit.
+    (repo / "a.txt").write_text("allen edit\n")
+
+    ref = isolate_pretask_changes(repo, run_id="R7")
+    assert ref is not None
+    assert _SHA_RE.match(ref), f"expected 40-char hex SHA, got {ref!r}"
+
+    # Codex edits the same file but does NOT commit — the realistic case.
+    (repo / "a.txt").write_text("codex edit\n")
+
+    art = restore_pretask_changes(
+        repo,
+        ref,
+        artifact_dir=tmp_path / "art",
+        run_id="R7",
+    )
+
+    assert isinstance(art, StashConflictArtifact)
+    assert art.reason == "stash_pop_conflict"
+    assert art.patch_path.is_file()
+    assert art.patch_path.parent.name == "run_R7"
+    # The preserved patch carries Allen's edit so he can re-apply.
+    assert "allen edit" in art.patch_path.read_text()
+    # Codex's uncommitted edit MUST survive — no reset --hard wiped it.
+    assert (repo / "a.txt").read_text() == "codex edit\n"
+    # And the orphan stash was dropped.
+    listing = subprocess.run(  # noqa: S603 — fixed git argv, no shell, test fixture.
+        ["git", "-C", str(repo), "stash", "list"],  # noqa: S607 — git on PATH by design.
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert listing.stdout.strip() == ""
+
+
 # ---- capture_diff -----------------------------------------------------------
 
 
