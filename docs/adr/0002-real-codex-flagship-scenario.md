@@ -521,8 +521,9 @@ shape via `-c` flags so nothing on disk is mutated.
 > concurrently-refreshed newer canonical is never clobbered; failures
 > degrade to a stderr warning, never an exception). Single-worker
 > serial execution makes last-writer-wins sufficient today; concurrent
-> spawns would need an flock around the compare-and-replace. Approved
-> by Allen 2026-06-10.
+> spawns would need an flock around the compare-and-replace. This
+> deviation was approved by Allen 2026-06-10 (session directive); the
+> ADR's overall Status is unchanged by this amendment.
 
 `_toml_list_quote(cwd)` produces a TOML-safe list literal — paths with
 spaces, quotes, or non-ASCII characters must be properly escaped before
