@@ -39,6 +39,7 @@ driver with no L2 access.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import shutil
@@ -48,6 +49,7 @@ import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -116,6 +118,91 @@ _JARVIS_AGENTS_MD: str = (
     "After completing the task (or determining you cannot complete it), "
     "call submit_report with the appropriate status."
 )
+
+
+def _canonical_auth_path() -> Path:
+    """Return the canonical ``~/.codex/auth.json`` path (single source of truth).
+
+    Used both for B-0004 seed-in (copy into the isolated ``CODEX_HOME``)
+    and for the rotated-token writeback in :func:`_sync_rotated_auth`.
+    """
+    return Path("~/.codex/auth.json").expanduser()
+
+
+def _parse_last_refresh(value: object) -> datetime | None:
+    """Parse an auth.json ``last_refresh`` ISO-8601 timestamp, or ``None``."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _sync_rotated_auth(isolated_home: Path, canonical_auth: Path) -> None:
+    """Write a rotated ``auth.json`` back from the isolated ``CODEX_HOME``.
+
+    OpenAI refresh tokens are single-use rotating. B-0004 copy-seeds the
+    canonical ``~/.codex/auth.json`` into the per-spawn throwaway home;
+    when Codex refreshes the token *inside* that home, the new token
+    lands in the throwaway copy and the canonical file keeps the
+    now-consumed predecessor. Without this writeback, the first run
+    after access-token expiry kills the canonical auth ("refresh token
+    was already used") and every later turn dies as a silent empty turn
+    (live-traced 2026-06-10; recovery needed interactive ``codex login``).
+
+    Rules (ADR-0002 § Codex auth amendment):
+
+    * Write back only when the isolated copy parses as JSON, still has a
+      non-empty ``tokens`` object, AND its ``last_refresh`` is strictly
+      newer than the canonical one (or canonical is missing/unreadable).
+      ``last_refresh`` is compared as JSON content — mtime is useless
+      because the B-0004 seed uses ``copy2`` which preserves it.
+    * A canonical file that is newer (concurrent external refresh) is
+      never clobbered.
+    * Atomic replace via ``tempfile.mkstemp`` (0600 by design) +
+      ``os.replace`` in the canonical's directory.
+    * Never raises — a writeback failure must not mask the turn result;
+      it degrades to a stderr warning.
+    """
+    try:
+        isolated_auth = isolated_home / "auth.json"
+        try:
+            raw_text = isolated_auth.read_text()
+            data = json.loads(raw_text)
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, Mapping):
+            return
+        tokens = data.get("tokens")
+        if not isinstance(tokens, Mapping) or not tokens:
+            # Logged-out / token-less shape — never clobber canonical with it.
+            return
+        isolated_refresh = _parse_last_refresh(data.get("last_refresh"))
+        if isolated_refresh is None:
+            return
+        canonical_refresh: datetime | None = None
+        try:
+            canonical_data = json.loads(canonical_auth.read_text())
+            if isinstance(canonical_data, Mapping):
+                canonical_refresh = _parse_last_refresh(canonical_data.get("last_refresh"))
+        except (OSError, ValueError):
+            canonical_refresh = None
+        if canonical_refresh is not None and isolated_refresh <= canonical_refresh:
+            return
+        # mkstemp creates the file 0600; os.replace preserves that mode,
+        # matching codex's own permission on auth.json.
+        fd, tmp_name = tempfile.mkstemp(dir=str(canonical_auth.parent), prefix=".jarvis-auth-")
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write(raw_text)
+            Path(tmp_name).replace(canonical_auth)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_name).unlink()
+            raise
+    except Exception as exc:  # noqa: BLE001 - writeback must never mask the turn result
+        sys.stderr.write(f"[jarvis] rotated auth.json writeback failed: {exc}\n")
 
 
 class CodexVersionTooLowError(RuntimeError):
@@ -614,7 +701,7 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
             # $CODEX_HOME/auth.json, not OPENAI_API_KEY (B-0004 live-verified:
             # empty home -> 401 on every request). Seed the isolated dir so
             # the worker can reach api.openai.com.
-            source_auth = Path("~/.codex/auth.json").expanduser()
+            source_auth = _canonical_auth_path()
             if source_auth.is_file():
                 shutil.copy2(source_auth, Path(codex_home_dir) / "auth.json")
             # Inject the jarvis-controlled AGENTS.md (ADR-0002 §644
@@ -677,6 +764,11 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
         # post-mortem inspection (rollout JSONL, ``AGENTS.md``,
         # ``instructionSources`` in ``logs.sqlite``) -- debug only.
         if codex_home_dir is not None:
+            # B-0004 follow-up: if Codex rotated the OpenAI refresh token
+            # inside the throwaway home, write it back BEFORE the dir is
+            # removed — otherwise the canonical ~/.codex/auth.json keeps
+            # the consumed token and dies on the next refresh cycle.
+            _sync_rotated_auth(Path(codex_home_dir), _canonical_auth_path())
             if os.environ.get("JARVIS_PRESERVE_CODEX_HOME"):
                 sys.stderr.write(f"[jarvis] preserved CODEX_HOME={codex_home_dir}\n")
             else:

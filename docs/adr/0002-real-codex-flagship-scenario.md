@@ -505,6 +505,25 @@ the canonical TOML shape is `mcp_servers.<server-name>.{command, args,
 env, startup_timeout_sec, tool_timeout_sec}`; jarvis uses the same
 shape via `-c` flags so nothing on disk is mutated.
 
+> **Amendment (2026-06-10) — rotated `auth.json` writeback.** The
+> "nothing on disk is mutated" guarantee above is narrowed to *config*:
+> `~/.codex/config.toml` and `~/.codex/AGENTS.md` remain Allen-managed
+> and jarvis-read-only. `~/.codex/auth.json` is the one exception.
+> OpenAI refresh tokens are single-use rotating, and the B-0004
+> copy-seed into the throwaway per-spawn `CODEX_HOME` means a token
+> refreshed inside a worker run is destroyed on cleanup — the canonical
+> file keeps the already-consumed predecessor, the next refresh cycle
+> fails permanently ("refresh token was already used", live-traced
+> 2026-06-10), and every turn degrades to a silent empty turn until an
+> interactive `codex login`. After each run `codex_action.py` therefore
+> writes the isolated `auth.json` back over the canonical one iff its
+> `last_refresh` is strictly newer (atomic replace, mode 0600; a
+> concurrently-refreshed newer canonical is never clobbered; failures
+> degrade to a stderr warning, never an exception). Single-worker
+> serial execution makes last-writer-wins sufficient today; concurrent
+> spawns would need an flock around the compare-and-replace. Approved
+> by Allen 2026-06-10.
+
 `_toml_list_quote(cwd)` produces a TOML-safe list literal — paths with
 spaces, quotes, or non-ASCII characters must be properly escaped before
 being injected into the `-c` argument. A naive f-string with raw

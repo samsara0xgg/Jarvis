@@ -1647,3 +1647,169 @@ def test_extract_turn_id_handles_nested_and_flat(
 ) -> None:
     """``_extract_turn_id`` prefers the 0.130 nested ``turn.id``, falls back flat."""
     assert ca._extract_turn_id(params) == expected  # noqa: SLF001 - test of private helper
+
+
+# ---------------------------------------------------------------------------
+# Rotated auth.json writeback (B-0004 follow-up, 2026-06-10).
+#
+# OpenAI refresh tokens are single-use rotating. B-0004 copy-seeds
+# ~/.codex/auth.json into the throwaway isolated CODEX_HOME; when Codex
+# refreshes inside it, the new token is written into the throwaway copy
+# and destroyed on rmtree — canonical keeps the consumed predecessor and
+# every later run dies with "refresh token was already used". The driver
+# must write a rotated auth.json back before cleanup (ADR-0002 § Codex
+# auth amendment).
+# ---------------------------------------------------------------------------
+
+
+def _write_auth_file(path: Path, *, last_refresh: str, marker: str) -> None:
+    """Write a structurally-faithful fake codex auth.json."""
+    import json  # noqa: PLC0415 - test-local helper import
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "OPENAI_API_KEY": None,
+                "tokens": {
+                    "id_token": "id",
+                    "access_token": "at",
+                    "refresh_token": marker,
+                    "account_id": "acc",
+                },
+                "last_refresh": last_refresh,
+            }
+        )
+    )
+
+
+def test_sync_rotated_auth_writes_back_newer_token(tmp_path: Path) -> None:
+    """Isolated auth.json with newer ``last_refresh`` replaces canonical, mode 0600."""
+    home = tmp_path / "isolated-home"
+    canonical = tmp_path / "dot-codex" / "auth.json"
+    _write_auth_file(canonical, last_refresh="2026-06-10T10:00:00.000000Z", marker="OLD")
+    _write_auth_file(
+        home / "auth.json", last_refresh="2026-06-10T12:00:00.000000Z", marker="ROTATED"
+    )
+
+    ca._sync_rotated_auth(home, canonical)  # noqa: SLF001 - test of private helper
+
+    assert "ROTATED" in canonical.read_text()
+    assert (canonical.stat().st_mode & 0o777) == 0o600
+
+
+def test_sync_rotated_auth_skips_when_last_refresh_unchanged(tmp_path: Path) -> None:
+    """No refresh inside the isolated home → canonical untouched."""
+    home = tmp_path / "isolated-home"
+    canonical = tmp_path / "dot-codex" / "auth.json"
+    same = "2026-06-10T10:00:00.000000Z"
+    _write_auth_file(canonical, last_refresh=same, marker="CANONICAL")
+    _write_auth_file(home / "auth.json", last_refresh=same, marker="ISOLATED-COPY")
+
+    ca._sync_rotated_auth(home, canonical)  # noqa: SLF001
+
+    assert "CANONICAL" in canonical.read_text()
+
+
+def test_sync_rotated_auth_skips_when_canonical_newer(tmp_path: Path) -> None:
+    """A concurrent external refresh (canonical newer) must never be clobbered."""
+    home = tmp_path / "isolated-home"
+    canonical = tmp_path / "dot-codex" / "auth.json"
+    _write_auth_file(canonical, last_refresh="2026-06-10T12:00:00.000000Z", marker="NEWER")
+    _write_auth_file(home / "auth.json", last_refresh="2026-06-10T10:00:00.000000Z", marker="STALE")
+
+    ca._sync_rotated_auth(home, canonical)  # noqa: SLF001
+
+    assert "NEWER" in canonical.read_text()
+
+
+def test_sync_rotated_auth_restores_missing_canonical(tmp_path: Path) -> None:
+    """Canonical absent (e.g. logged out mid-run) → isolated copy restores it."""
+    home = tmp_path / "isolated-home"
+    canonical = tmp_path / "dot-codex" / "auth.json"
+    canonical.parent.mkdir(parents=True)
+    _write_auth_file(home / "auth.json", last_refresh="2026-06-10T12:00:00.000000Z", marker="ONLY")
+
+    ca._sync_rotated_auth(home, canonical)  # noqa: SLF001
+
+    assert canonical.is_file()
+    assert "ONLY" in canonical.read_text()
+
+
+def test_sync_rotated_auth_tolerates_malformed_isolated(tmp_path: Path) -> None:
+    """Garbage isolated auth.json → no raise, canonical untouched."""
+    home = tmp_path / "isolated-home"
+    home.mkdir()
+    (home / "auth.json").write_text("{not json")
+    canonical = tmp_path / "dot-codex" / "auth.json"
+    _write_auth_file(canonical, last_refresh="2026-06-10T10:00:00.000000Z", marker="KEEP")
+
+    ca._sync_rotated_auth(home, canonical)  # noqa: SLF001
+
+    assert "KEEP" in canonical.read_text()
+
+
+def test_sync_rotated_auth_tolerates_missing_isolated(tmp_path: Path) -> None:
+    """No auth.json in the isolated home (seed skipped) → silent no-op."""
+    home = tmp_path / "isolated-home"
+    home.mkdir()
+    canonical = tmp_path / "dot-codex" / "auth.json"
+    _write_auth_file(canonical, last_refresh="2026-06-10T10:00:00.000000Z", marker="KEEP")
+
+    ca._sync_rotated_auth(home, canonical)  # noqa: SLF001
+
+    assert "KEEP" in canonical.read_text()
+
+
+def test_sync_rotated_auth_skips_tokenless_isolated(tmp_path: Path) -> None:
+    """A logged-out (token-less) isolated auth.json must not clobber canonical."""
+    import json  # noqa: PLC0415 - test-local helper import
+
+    home = tmp_path / "isolated-home"
+    home.mkdir()
+    (home / "auth.json").write_text(
+        json.dumps({"tokens": None, "last_refresh": "2026-06-10T12:00:00.000000Z"})
+    )
+    canonical = tmp_path / "dot-codex" / "auth.json"
+    _write_auth_file(canonical, last_refresh="2026-06-10T10:00:00.000000Z", marker="KEEP")
+
+    ca._sync_rotated_auth(home, canonical)  # noqa: SLF001
+
+    assert "KEEP" in canonical.read_text()
+
+
+def test_run_codex_action_syncs_auth_before_home_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The driver invokes the writeback with the isolated home BEFORE rmtree."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    calls: list[tuple[Path, Path, bool]] = []
+
+    def _recording_sync(isolated_home: Path, canonical_auth: Path) -> None:
+        calls.append((isolated_home, canonical_auth, isolated_home.is_dir()))
+
+    monkeypatch.setattr(ca, "_sync_rotated_auth", _recording_sync)
+
+    template = FakeClient(
+        notifications=[
+            {"method": "item/text", "params": {"text": "working"}},
+            {"method": "turn/completed", "params": {}},
+        ],
+    )
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error is None
+    assert len(calls) == 1
+    isolated_home, canonical_auth, existed_at_call_time = calls[0]
+    assert ca._CODEX_HOME_PREFIX in str(isolated_home)  # noqa: SLF001
+    assert canonical_auth == fake_home / ".codex" / "auth.json"
+    # The dir must still exist when the sync runs — i.e. sync precedes rmtree.
+    assert existed_at_call_time is True
