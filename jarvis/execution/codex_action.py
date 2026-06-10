@@ -139,7 +139,9 @@ class CodexActionResult:
         turn_id: ``turnId`` from the ``turn/completed`` payload, if present.
         error: One of ``codex_initialize_failed: ...``, ``codex_turn_timeout``,
             ``codex_thread_start_failed: ...``, ``codex_turn_start_failed: ...``,
-            or ``None`` on success.
+            ``codex_empty_turn`` (turn completed without streaming a single
+            ``item/*`` notification — the dead-auth signature, live-traced
+            2026-06-10), or ``None`` on success.
         interrupted: ``True`` iff the driver issued ``turn/interrupt`` (timeout).
         tokens_in / tokens_out: From ``turn/completed.usage`` (defensive ``.get``).
         elapsed_ms: Wall-clock from spawn to ``turn/completed`` (or timeout).
@@ -610,6 +612,7 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
 
     final_text_parts: list[str] = []
     submit_report_calls: list[Mapping[str, Any]] = []
+    saw_any_item = False
     last_item_summary: str = ""
     turn_id_out: str | None = None
     tokens_in = 0
@@ -749,6 +752,14 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
         raw_params = notif.get("params") or {}
         params: Mapping[str, Any] = raw_params if isinstance(raw_params, Mapping) else {}
 
+        if method.startswith("item/"):
+            # Any streamed item (started/completed/delta/tool_call) proves
+            # the model actually ran. A turn that completes with zero items
+            # is the dead-auth signature (Codex 0.130 folds an unrefreshable
+            # token into a ~2s task_complete with last_agent_message=null)
+            # and is classified ``codex_empty_turn`` below.
+            saw_any_item = True
+
         if method == "item/tool_call":
             # Legacy Codex 0.125-0.129 schema; kept as a back-compat fallback.
             tool_name = _extract_tool_name(params)
@@ -778,6 +789,12 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
         elif method == "turn/completed":
             tokens_in, tokens_out = _extract_usage(params)
             turn_id_out = _extract_turn_id(params)
+            if not saw_any_item:
+                # Zero-item turn — tool-level success is not goal evidence
+                # (C5); surface a structured error so spawn_worker_handler
+                # 7b folds it into action.failed + Limitation Claim instead
+                # of the silent task.no_op + report_missing shape.
+                error = "codex_empty_turn"
             break
 
         # Unknown notification methods are ignored on purpose; the

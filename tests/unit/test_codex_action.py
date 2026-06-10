@@ -515,7 +515,12 @@ def test_run_codex_action_injects_isolated_codex_home(
     real Codex.
     """
     template = FakeClient(
-        notifications=[{"method": "turn/completed", "params": {}}],
+        notifications=[
+            # Zero-item streams are now classified codex_empty_turn
+            # (dead-auth shape), so seed one item before turn/completed.
+            {"method": "item/text", "params": {"text": "working"}},
+            {"method": "turn/completed", "params": {}},
+        ],
     )
     holder: list[FakeClient] = [template]
     _patch_client(monkeypatch, holder)
@@ -547,7 +552,12 @@ def test_run_codex_action_respects_caller_provided_codex_home(
     on every spawn.
     """
     template = FakeClient(
-        notifications=[{"method": "turn/completed", "params": {}}],
+        notifications=[
+            # See note in the test above — zero-item streams are now
+            # classified codex_empty_turn, so seed one item.
+            {"method": "item/text", "params": {"text": "working"}},
+            {"method": "turn/completed", "params": {}},
+        ],
     )
     holder: list[FakeClient] = [template]
     _patch_client(monkeypatch, holder)
@@ -588,7 +598,12 @@ def test_run_codex_action_ignores_ambient_codex_home_when_env_none(
     monkeypatch.setenv("CODEX_HOME", str(poison_home))
 
     template = FakeClient(
-        notifications=[{"method": "turn/completed", "params": {}}],
+        notifications=[
+            # Zero-item streams are now classified codex_empty_turn
+            # (dead-auth shape), so seed one item before turn/completed.
+            {"method": "item/text", "params": {"text": "working"}},
+            {"method": "turn/completed", "params": {}},
+        ],
     )
     holder: list[FakeClient] = [template]
     _patch_client(monkeypatch, holder)
@@ -632,7 +647,12 @@ def test_run_codex_action_seeds_auth_json_into_isolated_codex_home(
     monkeypatch.setattr("jarvis.execution.codex_action.shutil.copy2", recording_copy)
 
     template = FakeClient(
-        notifications=[{"method": "turn/completed", "params": {}}],
+        notifications=[
+            # Zero-item streams are now classified codex_empty_turn
+            # (dead-auth shape), so seed one item before turn/completed.
+            {"method": "item/text", "params": {"text": "working"}},
+            {"method": "turn/completed", "params": {}},
+        ],
     )
     _patch_client(monkeypatch, [template])
     _patch_diff_capture(monkeypatch)
@@ -668,7 +688,12 @@ def test_run_codex_action_skips_auth_json_seed_when_source_absent(
     monkeypatch.setattr("jarvis.execution.codex_action.shutil.copy2", recording_copy)
 
     template = FakeClient(
-        notifications=[{"method": "turn/completed", "params": {}}],
+        notifications=[
+            # Zero-item streams are now classified codex_empty_turn
+            # (dead-auth shape), so seed one item before turn/completed.
+            {"method": "item/text", "params": {"text": "working"}},
+            {"method": "turn/completed", "params": {}},
+        ],
     )
     _patch_client(monkeypatch, [template])
     _patch_diff_capture(monkeypatch)
@@ -701,7 +726,12 @@ def test_run_codex_action_skips_auth_seed_when_caller_provides_codex_home(
     monkeypatch.setattr("jarvis.execution.codex_action.shutil.copy2", recording_copy)
 
     template = FakeClient(
-        notifications=[{"method": "turn/completed", "params": {}}],
+        notifications=[
+            # Zero-item streams are now classified codex_empty_turn
+            # (dead-auth shape), so seed one item before turn/completed.
+            {"method": "item/text", "params": {"text": "working"}},
+            {"method": "turn/completed", "params": {}},
+        ],
     )
     _patch_client(monkeypatch, [template])
     _patch_diff_capture(monkeypatch)
@@ -851,6 +881,7 @@ def test_run_codex_action_heartbeat_fires(
         notifications=[
             None,  # ticks 1 — heartbeat 1 at ~30s
             None,  # ticks 2 — heartbeat 2 at ~60s
+            {"method": "item/text", "params": {"text": "working"}},
             {"method": "turn/completed", "params": {}},
         ],
     )
@@ -899,6 +930,7 @@ def test_run_codex_action_respects_heartbeat_interval_param(
         notifications=[
             None,  # idle tick 1 — now ~5 s; fires at interval=2, not at 30
             None,  # idle tick 2 — now ~10 s
+            {"method": "item/text", "params": {"text": "working"}},
             {"method": "turn/completed", "params": {}},
         ],
     )
@@ -1020,6 +1052,7 @@ def test_run_codex_action_ignores_item_completed_for_other_mcp_tools(
                     }
                 },
             },
+            {"method": "item/text", "params": {"text": "working"}},
             {"method": "turn/completed", "params": {}},
         ],
     )
@@ -1044,6 +1077,7 @@ def test_run_codex_action_item_completed_non_mcp_falls_back_to_text(
                 "method": "item/completed",
                 "params": {"text": "hello from completed item"},
             },
+            {"method": "item/text", "params": {"text": "working"}},
             {"method": "turn/completed", "params": {}},
         ],
     )
@@ -1132,7 +1166,12 @@ def test_run_codex_action_auto_approves_approval_server_request(
                 "params": {"patch": "diff..."},
             },
         ],
-        notifications=[{"method": "turn/completed", "params": {}}],
+        notifications=[
+            # Zero-item streams are now classified codex_empty_turn
+            # (dead-auth shape), so seed one item before turn/completed.
+            {"method": "item/text", "params": {"text": "working"}},
+            {"method": "turn/completed", "params": {}},
+        ],
     )
     holder: list[FakeClient] = [template]
     _patch_client(monkeypatch, holder)
@@ -1160,7 +1199,12 @@ def test_run_codex_action_replies_method_not_found_for_unknown_server_request(
         server_requests=[
             {"id": 99, "method": "totally/unknown", "params": {}},
         ],
-        notifications=[{"method": "turn/completed", "params": {}}],
+        notifications=[
+            # Zero-item streams are now classified codex_empty_turn
+            # (dead-auth shape), so seed one item before turn/completed.
+            {"method": "item/text", "params": {"text": "working"}},
+            {"method": "turn/completed", "params": {}},
+        ],
     )
     holder: list[FakeClient] = [template]
     _patch_client(monkeypatch, holder)
@@ -1420,3 +1464,68 @@ def test_codex_action_cleans_tempdir_on_client_init_failure(
     after = _snapshot_codex_home_tempdirs()
 
     assert after - before == set()
+
+
+# ---------------------------------------------------------------------------
+# Empty-turn classification (dead-auth silent no-op, live-traced 2026-06-10).
+# ---------------------------------------------------------------------------
+
+
+def test_run_codex_action_zero_item_turn_classified_empty_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``turn/completed`` with zero streamed items → ``error="codex_empty_turn"``.
+
+    Codex 0.130 with dead auth (rotated refresh token already consumed)
+    completes the turn in ~2s with NO ``item/*`` notifications, zero
+    tokens, and ``error=None`` — indistinguishable from a worker that ran
+    and chose to do nothing. That silent shape folds into
+    ``task.no_op + report_missing`` and Allen never hears about it,
+    violating C5 (tool success alone is not goal evidence) and §3.4.11
+    (error semantics must surface a Limitation). The driver must classify
+    a zero-item turn as a failure so ``spawn_worker_handler`` 7b folds it
+    into ``action.failed`` + Limitation Claim.
+    """
+    template = FakeClient(
+        notifications=[
+            {"method": "turn/completed", "params": {}},
+        ],
+    )
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error == "codex_empty_turn"
+    assert result.interrupted is False
+
+
+def test_run_codex_action_turn_with_items_not_classified_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any streamed ``item/*`` notification keeps the turn out of empty-turn.
+
+    A live-but-lazy worker that never calls ``submit_report`` still emits
+    at least item/started + an agent message; that stays on the
+    ``report_missing`` ladder (J12 by-design) and must NOT be reclassified
+    as ``codex_empty_turn``.
+    """
+    template = FakeClient(
+        notifications=[
+            {"method": "item/started", "params": {}},
+            {
+                "method": "item/completed",
+                "params": {"item": {"type": "agentMessage", "text": "hi"}},
+            },
+            {"method": "turn/completed", "params": {}},
+        ],
+    )
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error is None
+    assert result.submit_report is None
