@@ -775,6 +775,13 @@ def test_j7_cost_recorded_kind_codex(live_real_codex_happy: dict[str, Any]) -> N
     kinds = [c.get("kind") for c in costs]
     assert codex_costs, f"no cost.recorded with kind=codex; kinds={kinds}"
     assert any(c.get("run_id") for c in codex_costs), "codex cost not correlated to a run_id"
+    # A real turn always burns tokens. Codex 0.130 dropped the usage field
+    # from turn/completed (cumulative usage streams on
+    # thread/tokenUsage/updated); before 2026-06-10 every healthy turn
+    # was ledgered as 0/0 and this test could not see it. Pin it.
+    assert any(int(c.get("tokens_in") or 0) > 0 for c in codex_costs), (
+        f"codex cost rows carry zero tokens_in — usage extraction is blind; rows={codex_costs}"
+    )
 
 
 def test_j8_codex_crash_emits_action_failed(
