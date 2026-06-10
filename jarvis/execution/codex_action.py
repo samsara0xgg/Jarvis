@@ -263,7 +263,14 @@ def _extract_text_item(params: Mapping[str, Any]) -> str | None:
 
 
 def _extract_usage(params: Mapping[str, Any]) -> tuple[int, int]:
-    """Return ``(tokens_in, tokens_out)`` from a ``turn/completed`` params dict."""
+    """Return ``(tokens_in, tokens_out)`` from a ``turn/completed`` params dict.
+
+    Legacy shape only — Codex 0.130 (live-traced 2026-06-10) no longer
+    carries a ``usage`` field on ``turn/completed``; cumulative usage
+    arrives on ``thread/tokenUsage/updated`` instead (see
+    :func:`_extract_token_usage_update`). Kept for back-compat with the
+    0.125-0.129 flat shape.
+    """
     usage = params.get("usage")
     if not isinstance(usage, Mapping):
         return (0, 0)
@@ -272,8 +279,42 @@ def _extract_usage(params: Mapping[str, Any]) -> tuple[int, int]:
     return (int(tokens_in), int(tokens_out))
 
 
+def _extract_token_usage_update(params: Mapping[str, Any]) -> tuple[int, int] | None:
+    """Return cumulative ``(tokens_in, tokens_out)`` from ``thread/tokenUsage/updated``.
+
+    Codex 0.130 shape (live-traced 2026-06-10)::
+
+        params.tokenUsage.total = {
+            "totalTokens": ..., "inputTokens": ..., "cachedInputTokens": ...,
+            "outputTokens": ..., "reasoningOutputTokens": ...,
+        }
+
+    ``total`` is cumulative across the turn, so the last update before
+    ``turn/completed`` is the turn's final count. Returns ``None`` when
+    the payload does not carry the expected shape.
+    """
+    usage = params.get("tokenUsage")
+    if not isinstance(usage, Mapping):
+        return None
+    total = usage.get("total")
+    if not isinstance(total, Mapping):
+        return None
+    tokens_in = total.get("inputTokens") or 0
+    tokens_out = total.get("outputTokens") or 0
+    return (int(tokens_in), int(tokens_out))
+
+
 def _extract_turn_id(params: Mapping[str, Any]) -> str | None:
-    """Return ``turnId`` from a ``turn/completed`` params dict."""
+    """Return the turn id from a ``turn/completed`` params dict.
+
+    Codex 0.130 nests it at ``params.turn.id`` (live-traced 2026-06-10);
+    the flat ``turnId`` / ``turn_id`` keys are kept as legacy fallbacks.
+    """
+    turn = params.get("turn")
+    if isinstance(turn, Mapping):
+        nested = turn.get("id")
+        if isinstance(nested, str):
+            return nested
     tid = params.get("turnId")
     if isinstance(tid, str):
         return tid
@@ -786,8 +827,22 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
                 final_text_parts.append(text)
             last_item_summary = method
 
+        elif method == "thread/tokenUsage/updated":
+            # Codex 0.130 streams cumulative usage here; turn/completed no
+            # longer carries a usage field. Each update overwrites the
+            # previous one (totals are cumulative), so the last update
+            # before turn/completed is the turn's final count.
+            usage_update = _extract_token_usage_update(params)
+            if usage_update is not None:
+                tokens_in, tokens_out = usage_update
+
         elif method == "turn/completed":
-            tokens_in, tokens_out = _extract_usage(params)
+            # Legacy (0.125-0.129) flat usage on turn/completed is
+            # authoritative when present; never clobber streamed
+            # tokenUsage totals with the 0.130 shape's missing field.
+            legacy_in, legacy_out = _extract_usage(params)
+            if legacy_in or legacy_out:
+                tokens_in, tokens_out = legacy_in, legacy_out
             turn_id_out = _extract_turn_id(params)
             if not saw_any_item:
                 # Zero-item turn — tool-level success is not goal evidence

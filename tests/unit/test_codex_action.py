@@ -1529,3 +1529,121 @@ def test_run_codex_action_turn_with_items_not_classified_empty(
 
     assert result.error is None
     assert result.submit_report is None
+
+
+# ---------------------------------------------------------------------------
+# Codex 0.130 token usage + nested turn id (cost 0/0 drift, live-traced
+# 2026-06-10: turn/completed carries no usage field; cumulative usage
+# arrives on thread/tokenUsage/updated; the turn id nests at turn.id).
+# ---------------------------------------------------------------------------
+
+
+def test_run_codex_action_reads_tokens_from_token_usage_updates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``thread/tokenUsage/updated`` totals flow into the result; last wins.
+
+    Without this branch every healthy Codex 0.130 turn lands in the
+    ``cost.recorded(kind=codex)`` ledger as 0/0 tokens and the turn id is
+    ``None`` — the cost account is blind to Codex spend.
+    """
+    usage_first = {
+        "threadId": "th-1",
+        "turnId": "t-1",
+        "tokenUsage": {
+            "total": {
+                "totalTokens": 13733,
+                "inputTokens": 13149,
+                "cachedInputTokens": 11136,
+                "outputTokens": 584,
+                "reasoningOutputTokens": 516,
+            },
+            "last": {"inputTokens": 13149, "outputTokens": 584},
+            "modelContextWindow": 258400,
+        },
+    }
+    usage_second = {
+        "threadId": "th-1",
+        "turnId": "t-1",
+        "tokenUsage": {"total": {"inputTokens": 20011, "outputTokens": 902}},
+    }
+    completed = {
+        "threadId": "th-1",
+        "turn": {
+            "id": "t-1",
+            "items": [],
+            "itemsView": "notLoaded",
+            "status": "completed",
+            "error": None,
+        },
+    }
+    template = FakeClient(
+        notifications=[
+            {"method": "item/text", "params": {"text": "working"}},
+            {"method": "thread/tokenUsage/updated", "params": usage_first},
+            {"method": "thread/tokenUsage/updated", "params": usage_second},
+            {"method": "turn/completed", "params": completed},
+        ],
+    )
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error is None
+    # Cumulative totals — the last update wins.
+    assert result.tokens_in == 20011
+    assert result.tokens_out == 902
+    # Codex 0.130 nests the id at params.turn.id on turn/completed.
+    assert result.turn_id == "t-1"
+
+
+def test_run_codex_action_legacy_flat_usage_takes_precedence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy ``turn/completed.usage`` payload still wins over streamed totals."""
+    template = FakeClient(
+        notifications=[
+            {"method": "item/text", "params": {"text": "working"}},
+            {
+                "method": "thread/tokenUsage/updated",
+                "params": {"tokenUsage": {"total": {"inputTokens": 1, "outputTokens": 1}}},
+            },
+            {
+                "method": "turn/completed",
+                "params": {
+                    "turnId": "legacy-1",
+                    "usage": {"input_tokens": 100, "output_tokens": 50},
+                },
+            },
+        ],
+    )
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.tokens_in == 100
+    assert result.tokens_out == 50
+    assert result.turn_id == "legacy-1"
+
+
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        ({"turn": {"id": "nested-1"}}, "nested-1"),
+        ({"turnId": "flat-1"}, "flat-1"),
+        ({"turn_id": "snake-1"}, "snake-1"),
+        ({"turn": {"id": "nested-2"}, "turnId": "flat-2"}, "nested-2"),
+        ({}, None),
+        ({"turn": "not-a-mapping"}, None),
+    ],
+)
+def test_extract_turn_id_handles_nested_and_flat(
+    params: dict[str, Any],
+    expected: str | None,
+) -> None:
+    """``_extract_turn_id`` prefers the 0.130 nested ``turn.id``, falls back flat."""
+    assert ca._extract_turn_id(params) == expected  # noqa: SLF001 - test of private helper
