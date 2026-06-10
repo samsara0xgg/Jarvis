@@ -49,7 +49,7 @@ import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -130,13 +130,23 @@ def _canonical_auth_path() -> Path:
 
 
 def _parse_last_refresh(value: object) -> datetime | None:
-    """Parse an auth.json ``last_refresh`` ISO-8601 timestamp, or ``None``."""
+    """Parse an auth.json ``last_refresh`` ISO-8601 timestamp, or ``None``.
+
+    Codex writes Z-suffixed UTC timestamps, which ``fromisoformat``
+    parses tz-aware. A naive timestamp (hand-edited / older-codex /
+    hand-restored canonical) is normalized to UTC — comparing naive
+    against aware raises TypeError, which would silently skip the
+    writeback and re-lose the rotated single-use token.
+    """
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def _sync_rotated_auth(isolated_home: Path, canonical_auth: Path) -> None:

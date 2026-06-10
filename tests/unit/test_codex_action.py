@@ -1834,3 +1834,68 @@ def test_extract_token_usage_update_ignores_non_numeric(total: dict[str, Any]) -
     params = {"tokenUsage": {"total": total}}
     result = ca._extract_token_usage_update(params)  # noqa: SLF001 - test of private helper
     assert result is None or isinstance(result[0], int)
+
+
+def test_sync_rotated_auth_writes_back_over_naive_canonical_timestamp(tmp_path: Path) -> None:
+    """A naive (no-tz) canonical ``last_refresh`` must not block the writeback.
+
+    ``datetime.fromisoformat`` parses codex's Z-suffixed timestamps as
+    tz-aware but a hand-edited / older-codex canonical may be naive;
+    comparing the two raises TypeError, which the outer guard swallows —
+    silently skipping the writeback and re-losing the rotated single-use
+    token (the exact dead-auth failure this fix targets). Naive
+    timestamps are normalized to UTC so the comparison always works.
+    """
+    home = tmp_path / "isolated-home"
+    canonical = tmp_path / "dot-codex" / "auth.json"
+    _write_auth_file(canonical, last_refresh="2026-06-10T10:00:00.000000", marker="OLD")
+    _write_auth_file(
+        home / "auth.json", last_refresh="2026-06-10T12:00:00.000000Z", marker="ROTATED"
+    )
+
+    ca._sync_rotated_auth(home, canonical)  # noqa: SLF001
+
+    assert "ROTATED" in canonical.read_text()
+
+
+def test_sync_rotated_auth_naive_isolated_never_clobbers_newer_canonical(
+    tmp_path: Path,
+) -> None:
+    """Mixed awareness in the other direction keeps the newer canonical intact."""
+    home = tmp_path / "isolated-home"
+    canonical = tmp_path / "dot-codex" / "auth.json"
+    _write_auth_file(canonical, last_refresh="2026-06-10T12:00:00.000000Z", marker="NEWER")
+    _write_auth_file(home / "auth.json", last_refresh="2026-06-10T10:00:00.000000", marker="STALE")
+
+    ca._sync_rotated_auth(home, canonical)  # noqa: SLF001
+
+    assert "NEWER" in canonical.read_text()
+
+
+def test_run_codex_action_token_usage_alone_still_classified_empty_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``thread/tokenUsage/updated`` is accounting metadata, not an item.
+
+    A turn that streams usage updates but zero ``item/*`` notifications
+    must still classify as ``codex_empty_turn`` — and the streamed
+    tokens must still reach the result so the failure is costed.
+    """
+    template = FakeClient(
+        notifications=[
+            {
+                "method": "thread/tokenUsage/updated",
+                "params": {"tokenUsage": {"total": {"inputTokens": 7, "outputTokens": 3}}},
+            },
+            {"method": "turn/completed", "params": {"turn": {"id": "t-empty"}}},
+        ],
+    )
+    _patch_client(monkeypatch, [template])
+    _patch_diff_capture(monkeypatch)
+
+    result = ca.run_codex_action(task_goal="t", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.error == "codex_empty_turn"
+    assert result.tokens_in == 7
+    assert result.tokens_out == 3
