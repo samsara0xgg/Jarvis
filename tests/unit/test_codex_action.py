@@ -1813,3 +1813,24 @@ def test_run_codex_action_syncs_auth_before_home_cleanup(
     assert canonical_auth == fake_home / ".codex" / "auth.json"
     # The dir must still exist when the sync runs — i.e. sync precedes rmtree.
     assert existed_at_call_time is True
+
+
+@pytest.mark.parametrize(
+    "total",
+    [
+        {"inputTokens": "abc", "outputTokens": 5},
+        {"inputTokens": [1], "outputTokens": 5},
+        {"inputTokens": 5, "outputTokens": None, "extra": 1},
+    ],
+)
+def test_extract_token_usage_update_ignores_non_numeric(total: dict[str, Any]) -> None:
+    """Malformed token counts must not raise out of the poll loop.
+
+    An exception escaping ``run_codex_action``'s poll loop skips the
+    ``_result`` finalizer entirely — the subprocess is never closed, the
+    isolated CODEX_HOME leaks, and the rotated-auth sync never runs. A
+    payload with non-numeric counts is dropped (``None``) instead.
+    """
+    params = {"tokenUsage": {"total": total}}
+    result = ca._extract_token_usage_update(params)  # noqa: SLF001 - test of private helper
+    assert result is None or isinstance(result[0], int)

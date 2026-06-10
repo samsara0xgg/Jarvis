@@ -388,6 +388,11 @@ def _extract_token_usage_update(params: Mapping[str, Any]) -> tuple[int, int] | 
         return None
     tokens_in = total.get("inputTokens") or 0
     tokens_out = total.get("outputTokens") or 0
+    # Non-numeric counts must not raise: an exception escaping the poll
+    # loop skips the _result finalizer (subprocess never closed, isolated
+    # CODEX_HOME leaked, rotated-auth sync never run). Drop the update.
+    if not isinstance(tokens_in, (int, float)) or not isinstance(tokens_out, (int, float)):
+        return None
     return (int(tokens_in), int(tokens_out))
 
 
