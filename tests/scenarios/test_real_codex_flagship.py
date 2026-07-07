@@ -71,18 +71,6 @@ if TYPE_CHECKING:
 pytestmark = [pytest.mark.live_codex, pytest.mark.live_llm]
 
 
-# Skeleton-policy skip reason shared by every test in this file (and
-# its J/K/L siblings). When the test inventory is fleshed out against
-# a real Mac with Codex installed, individual test bodies will replace
-# this skip with concrete assertions. The skip fires ONLY when both
-# --live-codex and --live-llm are passed (otherwise the conftest
-# collection-modify skip wins first).
-_SKELETON_SKIP = (
-    "Live-codex test scaffold; full assertions land when run against a real "
-    "Codex CLI on Allen's Mac (ADR-0002 Step 20 deferred to first live run)."
-)
-
-
 # --- Fixtures --------------------------------------------------------------
 
 
@@ -1007,8 +995,23 @@ def test_j12_no_submit_report_emits_report_missing(real_python_repo: Path) -> No
 
 
 def test_j13_dirty_tree_stash_pop_conflict_emits_conflict_patch(real_python_repo: Path) -> None:
-    """J13: dirty-tree case — ``git stash push -u`` → codex → ``git stash pop`` conflict → ``conflict.patch`` artifact."""
-    pytest.skip(_SKELETON_SKIP)
+    """J13: dirty-tree case — ``git stash push -u`` → codex → ``git stash pop`` conflict → ``conflict.patch`` artifact.
+
+    Both live-reachable shapes are burned in dedicated files: the
+    overwrite-abort shape in ``test_real_codex_dirty_tree_overwrite.py``
+    and the commit-demand variant in
+    ``test_real_codex_dirty_tree_conflict.py`` (which pins that the
+    shipped sandbox denies ``.git`` writes, making the true
+    merge-conflict shape live-unreachable; that branch is unit-proven by
+    ``tests/unit/test_diff_capture.py``).
+    """
+    pytest.skip(
+        "J13 lives in tests/scenarios/test_real_codex_dirty_tree_overwrite.py + "
+        "test_real_codex_dirty_tree_conflict.py (sandbox denies .git writes → "
+        "merge-conflict shape live-unreachable; unit-proven in "
+        "tests/unit/test_diff_capture.py). This stub keeps J13 in the Tier-2 "
+        "enumeration."
+    )
 
 
 # --- K — Real notification side-effects -----------------------------------
@@ -1049,14 +1052,25 @@ def test_k2_osascript_notification_truncated_at_240(real_python_repo: Path) -> N
 
 def test_k3_cli_parent_exits_within_100ms_no_sqlite_write(real_python_repo: Path) -> None:
     """K3: CLI parent exits within 100ms of the long-run classifier match; parent's PID never opens ``~/.jarvis/mac_events.db``."""
-    pytest.skip(_SKELETON_SKIP)
+    pytest.skip(
+        "K3 lives in tests/scenarios/test_real_codex_detached_cli.py (ack + "
+        "fast parent exit + zero Event Log rows across the parent's lifetime; "
+        "the PID half is structurally enforced by "
+        "test_canary_daemon_ack_before_fork + test_classifier_no_sqlite_open). "
+        "This stub keeps K3 in the Tier-2 enumeration."
+    )
 
 
 def test_k4_detached_child_writes_worker_reported_after_parent_exits(
     real_python_repo: Path,
 ) -> None:
     """K4: detached child writes ``worker.reported``; a fresh ``open_event_log()`` in a separate process observes the row."""
-    pytest.skip(_SKELETON_SKIP)
+    pytest.skip(
+        "K4 lives in tests/scenarios/test_real_codex_detached_cli.py (fresh "
+        "open_event_log() polling from the test process observes the detached "
+        "child's worker.reported strictly after the parent exited, through to "
+        "surface.response_emitted). This stub keeps K4 in the Tier-2 enumeration."
+    )
 
 
 def test_k5_reviewer_fail_path_uses_limitation_phrasing(real_python_repo: Path) -> None:
