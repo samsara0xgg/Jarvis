@@ -21,7 +21,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
-from jarvis.decision.llm import ChatResult
+from jarvis.decision.llm import ChatResult, LLMClient
 from jarvis.decision.reviewer import ReviewerVerdict, review_diff
 
 if TYPE_CHECKING:
@@ -49,8 +49,13 @@ def _chat_result(
     )
 
 
-class FakeLLMClient:
-    """Stand-in for :class:`LLMClient` — records calls, returns a canned text."""
+class FakeLLMClient(LLMClient):
+    """Stand-in for :class:`LLMClient` — records calls, returns a canned text.
+
+    Subclasses the real client only for nominal typing (``review_diff``
+    annotates ``llm_client: LLMClient``); ``super().__init__`` is never
+    called, so no provider config or SDK handle is touched.
+    """
 
     def __init__(
         self,
@@ -61,10 +66,12 @@ class FakeLLMClient:
         model: str = "gpt-5.5",
     ) -> None:
         """Configure the fake response + token counts for the next chat call."""
+        # ``model_used`` (not ``model``): the base class exposes ``model``
+        # as a read-only property, which a plain attribute cannot shadow.
         self.response_text = response_text
         self.tokens_in = tokens_in
         self.tokens_out = tokens_out
-        self.model = model
+        self.model_used = model
         self.fresh_context_calls = 0
         self.chat_calls: list[dict[str, Any]] = []
 
@@ -95,7 +102,7 @@ class FakeLLMClient:
             self.response_text,
             tokens_in=self.tokens_in,
             tokens_out=self.tokens_out,
-            model=self.model,
+            model=self.model_used,
         )
 
 
@@ -219,8 +226,12 @@ def test_review_fresh_context_wraps_chat() -> None:
     """The chat call executes INSIDE the fresh_context with-block, not outside."""
     seen: list[tuple[str, bool]] = []
 
-    class TracingClient:
-        """Records whether each chat call happened inside fresh_context."""
+    class TracingClient(LLMClient):
+        """Records whether each chat call happened inside fresh_context.
+
+        Subclasses :class:`LLMClient` only for nominal typing;
+        ``super().__init__`` is never called (same as FakeLLMClient).
+        """
 
         def __init__(self) -> None:
             """Start outside the contextmanager."""

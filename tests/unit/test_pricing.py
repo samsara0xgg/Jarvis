@@ -24,7 +24,7 @@ _PRICING_JSON = Path(__file__).resolve().parents[2] / "data" / "pricing.json"
 
 
 @pytest.fixture(scope="module")
-def pricing_table() -> dict:
+def pricing_table() -> dict[str, dict[str, float]]:
     """Flattened pricing table from the live ``data/pricing.json``."""
     return load_pricing_table(_PRICING_JSON)
 
@@ -62,7 +62,9 @@ def test_compute_cost_usd_empty_table_returns_none() -> None:
 # ---- compute_cost_usd: arithmetic on the real table ----------------------
 
 
-def test_compute_cost_usd_pure_input_output_no_cache(pricing_table: dict) -> None:
+def test_compute_cost_usd_pure_input_output_no_cache(
+    pricing_table: dict[str, dict[str, float]],
+) -> None:
     """No cache hits → cost = tokens_in * input_rate / 1M + tokens_out * output_rate / 1M."""
     if "gpt-5.5" not in pricing_table:
         pytest.skip("gpt-5.5 not in pricing.json — table may have been refreshed")
@@ -78,7 +80,9 @@ def test_compute_cost_usd_pure_input_output_no_cache(pricing_table: dict) -> Non
     assert actual == expected
 
 
-def test_compute_cost_usd_cache_read_bills_at_cache_rate(pricing_table: dict) -> None:
+def test_compute_cost_usd_cache_read_bills_at_cache_rate(
+    pricing_table: dict[str, dict[str, float]],
+) -> None:
     """Cached input tokens are billed at ``cache_read`` rate, not ``input``."""
     # claude-opus-4-7 ships cache_read_per_1m in the pricing.json fixture.
     if "claude-opus-4-7" not in pricing_table:
@@ -120,7 +124,7 @@ def test_compute_cost_usd_cache_write_falls_back_to_input_times_1_25() -> None:
 
 
 def test_compute_cost_usd_cache_write_uses_explicit_rate_when_present(
-    pricing_table: dict,
+    pricing_table: dict[str, dict[str, float]],
 ) -> None:
     """When the entry has ``cache_write``, use it (not the fallback)."""
     if "claude-opus-4-7" not in pricing_table:
@@ -144,7 +148,9 @@ def test_compute_cost_usd_cache_write_uses_explicit_rate_when_present(
     assert actual == expected
 
 
-def test_compute_cost_usd_zero_tokens_returns_zero(pricing_table: dict) -> None:
+def test_compute_cost_usd_zero_tokens_returns_zero(
+    pricing_table: dict[str, dict[str, float]],
+) -> None:
     """All-zero token counts → cost == 0.0 (degenerate but well-defined)."""
     if "gpt-5.5" not in pricing_table:
         pytest.skip("gpt-5.5 not in pricing.json")

@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from typing import Any, cast
 
 import pytest
 
@@ -88,7 +89,10 @@ def test_classifier_no_sqlite_open(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def tracking_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
         sqlite_opens.append((args, kwargs))
-        return real_connect(*args, **kwargs)  # type: ignore[arg-type]
+        return cast(
+            "sqlite3.Connection",
+            real_connect(*cast("tuple[Any, ...]", args), **cast("dict[str, Any]", kwargs)),
+        )
 
     monkeypatch.setattr("sqlite3.connect", tracking_connect)
     for utterance in ("跑 Codex now", "帮我做 X", "hello world", "spawn run"):

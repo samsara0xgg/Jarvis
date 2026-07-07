@@ -42,7 +42,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -54,7 +54,6 @@ from jarvis.runtime import (
     drive_turn,
 )
 from jarvis.state.event_log import iter_events, open_event_log
-from jarvis.surface import notify as nf
 from jarvis.surface.cli import SurfaceState, emit_surface_user_intent
 from jarvis.surface.cli_render import render_response
 
@@ -79,14 +78,23 @@ _STUB_RESPONSE_TEXT: str = (
 
 @dataclass(frozen=True)
 class _PlanStub:
-    """Minimal duck-typed stand-in for :class:`jarvis.decision.ResponsePlan`."""
+    """Minimal duck-typed stand-in for :class:`jarvis.decision.ResponsePlan`.
+
+    Carries the three fields the ``ResponsePlanLike`` Protocol consumes
+    (``text`` + ``response_hash`` + ``required_gate_mode``).
+    """
 
     text: str
     response_hash: str
+    required_gate_mode: str
 
 
 def _make_plan(text: str) -> _PlanStub:
-    return _PlanStub(text=text, response_hash=hashlib.sha256(text.encode()).hexdigest())
+    return _PlanStub(
+        text=text,
+        response_hash=hashlib.sha256(text.encode()).hexdigest(),
+        required_gate_mode="sentence",
+    )
 
 
 @pytest.fixture
@@ -98,7 +106,7 @@ def event_log_conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 
 
 @pytest.fixture
-def mocked_notify() -> Iterator[tuple[object, object]]:
+def mocked_notify() -> Iterator[tuple[MagicMock, MagicMock]]:
     """Patch both subprocess primitives the notify helpers spawn.
 
     Yields ``(popen_mock, run_mock)`` so per-surface assertions can
@@ -106,8 +114,8 @@ def mocked_notify() -> Iterator[tuple[object, object]]:
     ``tests/unit/test_surface_render.py``.
     """
     with (
-        patch.object(nf.subprocess, "Popen") as popen_mock,
-        patch.object(nf.subprocess, "run") as run_mock,
+        patch("jarvis.surface.notify.subprocess.Popen") as popen_mock,
+        patch("jarvis.surface.notify.subprocess.run") as run_mock,
     ):
         yield popen_mock, run_mock
 
@@ -117,7 +125,7 @@ def mocked_notify() -> Iterator[tuple[object, object]]:
 
 def test_default_available_surfaces_fires_all_three_physical_surfaces(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],
+    mocked_notify: tuple[MagicMock, MagicMock],
 ) -> None:
     """Omitting ``available_surfaces`` MUST preserve Day-1 multi-surface dispatch.
 
@@ -150,7 +158,7 @@ def test_default_available_surfaces_fires_all_three_physical_surfaces(
 
 def test_empty_frozenset_skips_all_physical_surfaces_but_emits_audit_event(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],
+    mocked_notify: tuple[MagicMock, MagicMock],
 ) -> None:
     """``frozenset()`` MUST suppress every physical surface.
 
@@ -197,7 +205,7 @@ def test_empty_frozenset_skips_all_physical_surfaces_but_emits_audit_event(
 
 def test_partial_set_with_only_cli_stdout_fires_only_stdout(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],
+    mocked_notify: tuple[MagicMock, MagicMock],
 ) -> None:
     """``frozenset({"cli_stdout"})`` on ``voice_notify`` MUST fire only stdout."""
     popen_mock, run_mock = mocked_notify
@@ -223,7 +231,7 @@ def test_partial_set_with_only_cli_stdout_fires_only_stdout(
 
 def test_partial_set_with_only_say_fires_only_voice(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],
+    mocked_notify: tuple[MagicMock, MagicMock],
 ) -> None:
     """``frozenset({"say"})`` on ``voice_notify`` MUST fire only voice."""
     popen_mock, run_mock = mocked_notify
@@ -252,7 +260,7 @@ def test_partial_set_with_only_say_fires_only_voice(
 
 def test_unknown_channel_with_empty_frozenset_emits_audit_with_anomaly_label(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],
+    mocked_notify: tuple[MagicMock, MagicMock],
 ) -> None:
     """Unknown ``attention_channel`` + ``frozenset()`` is safe and audited.
 
@@ -289,7 +297,7 @@ def test_unknown_channel_with_empty_frozenset_emits_audit_with_anomaly_label(
 
 def test_filter_is_per_surface_not_per_channel_on_interrupt_now(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],
+    mocked_notify: tuple[MagicMock, MagicMock],
 ) -> None:
     """``interrupt_now`` maps to (say_bell, osascript_banner).
 
@@ -369,7 +377,7 @@ def stub_decide(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_drive_turn_forwards_available_surfaces_frozenset_to_render(
     runtime: JarvisRuntime,
     stub_decide: None,  # noqa: ARG001 — fixture installs the monkeypatch
-    mocked_notify: tuple[object, object],
+    mocked_notify: tuple[MagicMock, MagicMock],
 ) -> None:
     """``drive_turn(..., available_surfaces=frozenset())`` MUST gate every physical surface.
 

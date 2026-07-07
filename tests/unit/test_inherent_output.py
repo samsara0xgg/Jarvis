@@ -16,13 +16,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.shared import Event
 from jarvis.surface.inherent_output import InherentBroadcaster
 
 if TYPE_CHECKING:
     import pytest
+    from starlette.websockets import WebSocket
 
 # ---------------------------------------------------------------------------
 # Test doubles
@@ -55,6 +56,16 @@ class _FakeWebSocket:
 
     def __eq__(self, other: object) -> bool:
         return self is other
+
+
+def _as_ws(fake: _FakeWebSocket) -> WebSocket:
+    """Present the duck-typed fake as a starlette ``WebSocket`` for mypy.
+
+    ``WebSocket`` is a concrete class (not a Protocol), so the fake
+    cannot satisfy it structurally; the cast is confined to this one
+    seam so the ``register`` / ``unregister`` call sites type-check.
+    """
+    return cast("WebSocket", fake)
 
 
 def _make_open_event(*, query: str = "hello", turn_id: str = "T-open-001") -> Event:
@@ -118,7 +129,7 @@ def test_register_adds_client() -> None:
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
 
-    asyncio.run(bc.register(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
     asyncio.run(bc.broadcast_done(_make_done_event()))
 
     assert len(ws.sent_messages) == 1
@@ -130,8 +141,8 @@ def test_register_is_idempotent() -> None:
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
 
-    asyncio.run(bc.register(ws))
-    asyncio.run(bc.register(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
+    asyncio.run(bc.register(_as_ws(ws)))
     asyncio.run(bc.broadcast_done(_make_done_event()))
 
     # One message total — NOT two. Duplicate registration collapsed
@@ -144,8 +155,8 @@ def test_unregister_removes_client() -> None:
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
 
-    asyncio.run(bc.register(ws))
-    asyncio.run(bc.unregister(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
+    asyncio.run(bc.unregister(_as_ws(ws)))
     asyncio.run(bc.broadcast_done(_make_done_event()))
 
     assert ws.sent_messages == []
@@ -157,7 +168,7 @@ def test_unregister_unknown_client_is_idempotent() -> None:
     ws = _FakeWebSocket(name="never-registered")
 
     # Must not raise; discard() is idempotent by design.
-    asyncio.run(bc.unregister(ws))
+    asyncio.run(bc.unregister(_as_ws(ws)))
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +185,7 @@ def test_broadcast_open_pushes_legacy_envelope() -> None:
     """
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
-    asyncio.run(bc.register(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
 
     asyncio.run(bc.broadcast_open(_make_open_event(query="what time is it")))
 
@@ -200,7 +211,7 @@ def test_broadcast_open_with_empty_query_sets_q_to_empty_string() -> None:
     """
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
-    asyncio.run(bc.register(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
 
     asyncio.run(bc.broadcast_open(_make_open_event(query="")))
 
@@ -212,7 +223,7 @@ def test_broadcast_open_with_missing_query_key_sets_q_to_empty_string() -> None:
     """Payload lacking a ``query`` key -> ``q=""`` (same as empty)."""
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
-    asyncio.run(bc.register(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
 
     event = Event(
         event_uid="evt-open-no-q",
@@ -267,7 +278,7 @@ def test_broadcast_chunk_pushes_legacy_envelope() -> None:
     """
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
-    asyncio.run(bc.register(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
 
     asyncio.run(bc.broadcast_chunk(_make_chunk_event(text="hello ")))
 
@@ -286,7 +297,7 @@ def test_broadcast_chunk_with_empty_text_returns_silently(
     """
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
-    asyncio.run(bc.register(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
 
     with caplog.at_level(logging.WARNING, logger="jarvis.surface.inherent_output"):
         asyncio.run(bc.broadcast_chunk(_make_chunk_event(text="")))
@@ -300,7 +311,7 @@ def test_broadcast_chunk_with_missing_text_key_returns_silently() -> None:
     """Payload without a ``text`` key behaves the same as empty text."""
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
-    asyncio.run(bc.register(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
 
     event = Event(
         event_uid="evt-no-text",
@@ -347,7 +358,7 @@ def test_broadcast_done_pushes_legacy_envelope() -> None:
     """
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
-    asyncio.run(bc.register(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
 
     asyncio.run(bc.broadcast_done(_make_done_event()))
 
@@ -360,7 +371,7 @@ def test_broadcast_done_always_sends_no_payload_guard() -> None:
     """``done`` ignores the event payload — empty payload still fires the envelope."""
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
-    asyncio.run(bc.register(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
 
     event = Event(
         event_uid="evt-done-empty",
@@ -402,7 +413,7 @@ def test_broadcast_open_pushes_to_multiple_clients() -> None:
     bc = InherentBroadcaster()
     clients = [_FakeWebSocket(name=f"ws{i}") for i in range(3)]
     for ws in clients:
-        asyncio.run(bc.register(ws))
+        asyncio.run(bc.register(_as_ws(ws)))
 
     asyncio.run(bc.broadcast_open(_make_open_event(query="multi")))
 
@@ -425,7 +436,7 @@ def test_full_open_chunk_done_sequence_to_single_client() -> None:
     """Three sequential broadcasts produce the legacy open/append/done sequence."""
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
-    asyncio.run(bc.register(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
 
     asyncio.run(bc.broadcast_open(_make_open_event(query="hi", turn_id="T-seq")))
     asyncio.run(bc.broadcast_chunk(_make_chunk_event(text="hello ", turn_id="T-seq")))
@@ -469,9 +480,9 @@ def test_broadcast_open_dead_client_removed_others_succeed(
     )
     ws_b = _FakeWebSocket(name="ws_b")
 
-    asyncio.run(bc.register(ws_a))
-    asyncio.run(bc.register(ws_dead))
-    asyncio.run(bc.register(ws_b))
+    asyncio.run(bc.register(_as_ws(ws_a)))
+    asyncio.run(bc.register(_as_ws(ws_dead)))
+    asyncio.run(bc.register(_as_ws(ws_b)))
 
     with caplog.at_level(logging.WARNING, logger="jarvis.surface.inherent_output"):
         asyncio.run(bc.broadcast_open(_make_open_event(query="first")))
@@ -521,8 +532,8 @@ def test_broadcast_chunk_dead_client_removed_others_succeed() -> None:
     )
     ws_healthy = _FakeWebSocket(name="ws_healthy")
 
-    asyncio.run(bc.register(ws_dead))
-    asyncio.run(bc.register(ws_healthy))
+    asyncio.run(bc.register(_as_ws(ws_dead)))
+    asyncio.run(bc.register(_as_ws(ws_healthy)))
 
     asyncio.run(bc.broadcast_chunk(_make_chunk_event(text="tok")))
 
@@ -547,8 +558,8 @@ def test_broadcast_done_dead_client_removed_others_succeed() -> None:
     ws_dead = _FakeWebSocket(name="ws_dead", raise_on_send=RuntimeError("boom"))
     ws_healthy = _FakeWebSocket(name="ws_healthy")
 
-    asyncio.run(bc.register(ws_dead))
-    asyncio.run(bc.register(ws_healthy))
+    asyncio.run(bc.register(_as_ws(ws_dead)))
+    asyncio.run(bc.register(_as_ws(ws_healthy)))
 
     asyncio.run(bc.broadcast_done(_make_done_event()))
 

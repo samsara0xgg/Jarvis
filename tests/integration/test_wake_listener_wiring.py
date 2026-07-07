@@ -100,8 +100,12 @@ def test_wake_listener_uses_ducker_around_capture() -> None:
     """
     ducker_calls: list[str] = []
 
+    def _record_duck() -> bool:
+        ducker_calls.append("duck")
+        return True
+
     fake_ducker = MagicMock(spec=voice_ducking.SystemAudioDucker)
-    fake_ducker.duck.side_effect = lambda: ducker_calls.append("duck") or True
+    fake_ducker.duck.side_effect = _record_duck
     fake_ducker.restore.side_effect = lambda: ducker_calls.append("restore")
 
     fake_engine = MagicMock()

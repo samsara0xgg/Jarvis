@@ -41,7 +41,6 @@ from jarvis.runtime import (
 )
 from jarvis.shared import Event
 from jarvis.state.event_log import iter_events
-from jarvis.surface import notify as nf
 from jarvis.surface.cli import emit_surface_user_intent
 
 if TYPE_CHECKING:
@@ -76,8 +75,8 @@ def runtime(tmp_path: Path) -> Iterator[JarvisRuntime]:
 def mocked_notify() -> Iterator[tuple[object, object]]:
     """Patch subprocess primitives so no macOS surface fires for real."""
     with (
-        patch.object(nf.subprocess, "Popen") as popen_mock,
-        patch.object(nf.subprocess, "run") as run_mock,
+        patch("jarvis.surface.notify.subprocess.Popen") as popen_mock,
+        patch("jarvis.surface.notify.subprocess.run") as run_mock,
     ):
         yield popen_mock, run_mock
 

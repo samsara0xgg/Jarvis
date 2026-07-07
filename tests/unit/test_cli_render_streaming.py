@@ -41,12 +41,11 @@ import io
 from contextlib import closing
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from jarvis.state.event_log import iter_events, open_event_log
-from jarvis.surface import notify as nf
 from jarvis.surface.cli import PreEmitTokenError, SurfaceState
 from jarvis.surface.cli_render import render_response
 
@@ -94,11 +93,11 @@ def event_log_conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 
 
 @pytest.fixture
-def mocked_notify() -> Iterator[tuple[object, object]]:
+def mocked_notify() -> Iterator[tuple[MagicMock, MagicMock]]:
     """Patch subprocess primitives so no macOS surface fires for real."""
     with (
-        patch.object(nf.subprocess, "Popen") as popen_mock,
-        patch.object(nf.subprocess, "run") as run_mock,
+        patch("jarvis.surface.notify.subprocess.Popen") as popen_mock,
+        patch("jarvis.surface.notify.subprocess.run") as run_mock,
     ):
         yield popen_mock, run_mock
 
@@ -109,7 +108,7 @@ def mocked_notify() -> Iterator[tuple[object, object]]:
 @pytest.mark.parametrize("gate_mode", ["sentence", "full_text"])
 def test_streaming_disabled_emits_only_response_emitted(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],  # noqa: ARG001 — fixture installs the patches
+    mocked_notify: tuple[MagicMock, MagicMock],  # noqa: ARG001 — fixture installs the patches
     gate_mode: str,
 ) -> None:
     """Default ``streaming_enabled=False`` MUST preserve Step-1 single-emit semantics.
@@ -142,7 +141,7 @@ def test_streaming_disabled_emits_only_response_emitted(
 
 def test_streaming_sentence_mode_emits_open_two_chunks_then_emitted(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],  # noqa: ARG001 — fixture installs the patches
+    mocked_notify: tuple[MagicMock, MagicMock],  # noqa: ARG001 — fixture installs the patches
 ) -> None:
     """``streaming_enabled=True`` + sentence mode MUST split into N chunks.
 
@@ -200,7 +199,7 @@ def test_streaming_sentence_mode_emits_open_two_chunks_then_emitted(
 
 def test_streaming_full_text_mode_emits_open_single_chunk_then_emitted(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],  # noqa: ARG001 — fixture installs the patches
+    mocked_notify: tuple[MagicMock, MagicMock],  # noqa: ARG001 — fixture installs the patches
 ) -> None:
     """``full_text`` mode MUST emit one chunk carrying the FULL text (no split)."""
     plan = _make_plan("完整文本，未分句。", required_gate_mode="full_text")
@@ -232,7 +231,7 @@ def test_streaming_full_text_mode_emits_open_single_chunk_then_emitted(
 
 def test_streaming_structured_mode_emits_open_single_chunk_then_emitted(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],  # noqa: ARG001 — fixture installs the patches
+    mocked_notify: tuple[MagicMock, MagicMock],  # noqa: ARG001 — fixture installs the patches
 ) -> None:
     """``structured`` mode MUST behave like ``full_text`` — a single chunk."""
     plan = _make_plan("结构化输出。一二三。", required_gate_mode="structured")
@@ -265,7 +264,7 @@ def test_streaming_structured_mode_emits_open_single_chunk_then_emitted(
 
 def test_streaming_sentence_mode_no_punctuation_emits_single_chunk(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],  # noqa: ARG001 — fixture installs the patches
+    mocked_notify: tuple[MagicMock, MagicMock],  # noqa: ARG001 — fixture installs the patches
 ) -> None:
     """No-boundary text under sentence mode MUST yield one chunk (splitter fallback).
 
@@ -302,7 +301,7 @@ def test_streaming_sentence_mode_no_punctuation_emits_single_chunk(
 
 def test_streaming_with_empty_query_still_emits_open(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],  # noqa: ARG001 — fixture installs the patches
+    mocked_notify: tuple[MagicMock, MagicMock],  # noqa: ARG001 — fixture installs the patches
 ) -> None:
     """``query=""`` MUST still produce an open event with empty-string query.
 
@@ -341,7 +340,7 @@ def test_streaming_with_empty_query_still_emits_open(
 
 def test_pre_emit_token_mismatch_raises_before_any_event_emit(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],  # noqa: ARG001 — fixture installs the patches
+    mocked_notify: tuple[MagicMock, MagicMock],  # noqa: ARG001 — fixture installs the patches
 ) -> None:
     """Token check MUST fire BEFORE any open/chunk/emitted row is appended.
 

@@ -26,11 +26,13 @@ def test_canary_voice_layer_imports() -> None:
     for path in surface_dir.glob("voice_*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            mods: list[str] = []
+            mods: list[str]
             if isinstance(node, ast.Import):
                 mods = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom) and node.module:
                 mods = [node.module]
+            else:
+                continue
             violations.extend(
                 f"{path}:{node.lineno} imports {mod}"
                 for mod in mods

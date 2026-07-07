@@ -19,6 +19,7 @@ because the canary guards production emit sites, not test fixtures.
 from __future__ import annotations
 
 import ast
+from typing import TypeGuard
 
 from tests.canary._helpers import iter_jarvis_py_files, parse, relative_to_repo
 
@@ -29,7 +30,7 @@ _VOICE_EMIT_ALLOWLIST: frozenset[str] = frozenset(
 )
 
 
-def _is_emit_event_call(node: ast.AST) -> bool:
+def _is_emit_event_call(node: ast.AST) -> TypeGuard[ast.Call]:
     """Return True iff ``node`` is a call to a function named ``emit_event``.
 
     Accepts both bare ``emit_event(...)`` and attribute-style

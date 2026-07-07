@@ -52,6 +52,8 @@ from jarvis.state.event_log import emit_event
 from jarvis.surface.cli import emit_surface_user_intent
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from jarvis.shared import Event
 
 
@@ -71,7 +73,7 @@ _STUB_RESPONSE_TEXT: str = "drive_turn unit-test response — status pending."
 
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> JarvisRuntime:
+def runtime(tmp_path: Path) -> Iterator[JarvisRuntime]:
     """Bootstrap a real :class:`JarvisRuntime` against ``tmp_path``.
 
     No LLM is invoked during bootstrap — the :class:`LLMClient` SDK is

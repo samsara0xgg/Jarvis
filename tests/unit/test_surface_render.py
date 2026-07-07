@@ -17,12 +17,11 @@ import io
 from contextlib import closing
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from jarvis.state.event_log import iter_events, open_event_log
-from jarvis.surface import notify as nf
 from jarvis.surface.cli import PreEmitTokenError, SurfaceState
 from jarvis.surface.cli_render import render_response
 
@@ -41,6 +40,9 @@ class _PlanStub:
 
     text: str
     response_hash: str
+    # Streaming is off in every test here, so the mode is never read;
+    # the field exists to satisfy the ResponsePlanLike Protocol.
+    required_gate_mode: str = "full_text"
 
 
 def _make_plan(text: str) -> _PlanStub:
@@ -56,15 +58,15 @@ def event_log_conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 
 
 @pytest.fixture
-def mocked_notify() -> Iterator[tuple[object, object]]:
+def mocked_notify() -> Iterator[tuple[MagicMock, MagicMock]]:
     """Patch both subprocess primitives the notify helpers spawn.
 
     Yields ``(popen_mock, run_mock)`` so per-channel assertions can
     inspect call counts + argv.
     """
     with (
-        patch.object(nf.subprocess, "Popen") as popen_mock,
-        patch.object(nf.subprocess, "run") as run_mock,
+        patch("jarvis.surface.notify.subprocess.Popen", new_callable=MagicMock) as popen_mock,
+        patch("jarvis.surface.notify.subprocess.run", new_callable=MagicMock) as run_mock,
     ):
         yield popen_mock, run_mock
 
@@ -149,7 +151,7 @@ def test_render_per_channel_delivered_via_matches_table(
 
 def test_render_voice_notify_fires_say_and_banner_and_writes_stdout(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],
+    mocked_notify: tuple[MagicMock, MagicMock],
 ) -> None:
     """Flagship channel: say + osascript banner + stdout write all happen."""
     popen_mock, run_mock = mocked_notify
@@ -184,7 +186,7 @@ def test_render_voice_notify_fires_say_and_banner_and_writes_stdout(
 
 def test_render_interrupt_now_prepends_bell_to_voice_text(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],
+    mocked_notify: tuple[MagicMock, MagicMock],
 ) -> None:
     """``interrupt_now`` uses the same TTS voice but prepends a BEL marker."""
     popen_mock, _ = mocked_notify
@@ -207,7 +209,7 @@ def test_render_interrupt_now_prepends_bell_to_voice_text(
 
 def test_render_badge_card_uses_title_only_variant(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],
+    mocked_notify: tuple[MagicMock, MagicMock],
 ) -> None:
     """``badge_card`` calls ``deliver_banner`` with document_text as the title and empty body."""
     _, run_mock = mocked_notify
@@ -375,7 +377,7 @@ def test_render_clears_token_on_returned_state(
 
 def test_render_unknown_channel_falls_back_to_silent_log(
     event_log_conn: sqlite3.Connection,
-    mocked_notify: tuple[object, object],
+    mocked_notify: tuple[MagicMock, MagicMock],
 ) -> None:
     """An unknown channel name yields no surface calls and ``delivered_via=[]``.
 

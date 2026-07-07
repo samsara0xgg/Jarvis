@@ -31,12 +31,13 @@ import asyncio
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.surface.inherent_output import InherentBroadcaster
 
 if TYPE_CHECKING:
     import pytest
+    from starlette.websockets import WebSocket
 
 # ---------------------------------------------------------------------------
 # Test doubles — mirror test_inherent_output.py
@@ -61,6 +62,16 @@ class _FakeWebSocket:
         return self is other
 
 
+def _as_ws(fake: _FakeWebSocket) -> WebSocket:
+    """Present the duck-typed fake as a starlette ``WebSocket`` for mypy.
+
+    ``WebSocket`` is a concrete class (not a Protocol), so the fake
+    cannot satisfy it structurally; the cast is confined to this one
+    seam so the ``register`` call sites type-check.
+    """
+    return cast("WebSocket", fake)
+
+
 # ---------------------------------------------------------------------------
 # broadcast_voice — async envelope
 # ---------------------------------------------------------------------------
@@ -74,7 +85,7 @@ def test_broadcast_voice_sends_envelope_to_clients() -> None:
     """
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
-    asyncio.run(bc.register(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
 
     asyncio.run(bc.broadcast_voice("listening", turn_id="T1"))
 
@@ -89,7 +100,7 @@ def test_broadcast_voice_passes_optional_fields() -> None:
     """Optional kwargs (transcript, emotion, ...) flow into payload verbatim."""
     bc = InherentBroadcaster()
     ws = _FakeWebSocket(name="ws1")
-    asyncio.run(bc.register(ws))
+    asyncio.run(bc.register(_as_ws(ws)))
 
     asyncio.run(
         bc.broadcast_voice("accepted", turn_id="T2", transcript="你好", emotion="HAPPY"),
@@ -162,7 +173,7 @@ def test_broadcast_voice_sync_schedules_onto_attached_loop() -> None:
         # Register on the attached loop (the WS endpoint path normally
         # calls ``await broadcaster.register(ws)`` from a loop-resident
         # coroutine; we simulate that via ``run_coroutine_threadsafe``).
-        asyncio.run_coroutine_threadsafe(bc.register(ws), loop).result(timeout=1.0)
+        asyncio.run_coroutine_threadsafe(bc.register(_as_ws(ws)), loop).result(timeout=1.0)
 
         # Main thread has no running loop here; this is the worker-bridge path.
         bc.broadcast_voice_sync("listening", turn_id="T3")

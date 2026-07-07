@@ -20,7 +20,7 @@ owner_layer enforcement); this canary is the L4 negative guard.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeGuard
 
 from tests.canary._helpers import parse, relative_to_repo, repo_root
 
@@ -34,7 +34,7 @@ def _iter_execution_py_files() -> list[Path]:
     return sorted(execution_dir.rglob("*.py"))
 
 
-def _is_emit_event_call(node: ast.AST) -> bool:
+def _is_emit_event_call(node: ast.AST) -> TypeGuard[ast.Call]:
     """True iff ``node`` is a call to a function named ``emit_event``.
 
     Accepts bare ``emit_event(...)`` and attribute-style ``mod.emit_event(...)``.

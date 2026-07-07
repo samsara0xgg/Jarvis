@@ -701,13 +701,13 @@ def test_spawn_wake_listener_starts_engine(tmp_path: Path) -> None:
     monkeypatch_ctx = pytest.MonkeyPatch()
     try:
         monkeypatch_ctx.setattr(
-            inherent_loop.voice_wake, "WakeEngine", _fake_wake_engine,
+            "jarvis.runtime.inherent_loop.voice_wake.WakeEngine", _fake_wake_engine,
         )
         monkeypatch_ctx.setattr(
-            inherent_loop.voice_wake, "WakeListener", _fake_wake_listener,
+            "jarvis.runtime.inherent_loop.voice_wake.WakeListener", _fake_wake_listener,
         )
         monkeypatch_ctx.setattr(
-            inherent_loop.voice_audio, "SileroVad", lambda **_kw: MagicMock(),
+            "jarvis.runtime.inherent_loop.voice_audio.SileroVad", lambda **_kw: MagicMock(),
         )
         monkeypatch_ctx.setattr(
             inherent_loop, "_open_wake_input_stream", lambda: mock_stream,

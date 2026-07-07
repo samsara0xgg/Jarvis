@@ -42,6 +42,7 @@ class _PlanStub:
 
     text: str
     response_hash: str
+    required_gate_mode: str = "full_text"
 
 
 # --- parse_response_channels -------------------------------------------------

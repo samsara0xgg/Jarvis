@@ -51,7 +51,7 @@ def _find_module_level_assignment(
     return None
 
 
-def _extract_call(value: ast.expr) -> ast.Call | None:
+def _extract_call(value: ast.expr | None) -> ast.Call | None:
     """Return ``value`` if it is a Call; else None."""
     return value if isinstance(value, ast.Call) else None
 

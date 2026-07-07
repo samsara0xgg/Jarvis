@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -17,22 +17,24 @@ from jarvis.decision.result_interpreter import (
     emit_stash_conflict_surfacing,
     result_interpreter,
 )
-from jarvis.shared import ActionRequest, CallerPrincipal, Event, ResultSemantics
+from jarvis.shared import (
+    ActionRequest,
+    CallerPrincipal,
+    Event,
+    RawResult,
+    ResultSemantics,
+)
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Mapping
     from pathlib import Path
 
 
 @dataclass(frozen=True)
-class _FakeRawResult:
-    """RawResultLike-compatible record for unit tests."""
+class _FakeRawResult(RawResult):
+    """RawResult for unit tests — defaults ``tool_output`` / ``error`` to None."""
 
-    action_id: str
-    semantics: ResultSemantics
-    payload: Mapping[str, Any]
     tool_output: str | None = None
     error: str | None = None
 

@@ -210,7 +210,7 @@ def _stub_clock(monkeypatch: pytest.MonkeyPatch, ticks: list[float]) -> None:
             last[0] = next(iterator)
         return last[0]
 
-    monkeypatch.setattr(ca.time, "monotonic", _now)
+    monkeypatch.setattr("jarvis.execution.codex_action.time.monotonic", _now)
 
 
 # ---------------------------------------------------------------------------
@@ -1237,9 +1237,8 @@ def _make_completed_proc(stdout: str = "", stderr: str = "") -> MagicMock:
 
 def test_ensure_codex_version_supported_accepts_min_version() -> None:
     """Exactly ``0.125.0`` is accepted (the floor)."""
-    with patch.object(
-        ca.subprocess,
-        "run",
+    with patch(
+        "jarvis.execution.codex_action.subprocess.run",
         return_value=_make_completed_proc(stdout="codex-cli 0.125.0\n"),
     ):
         ca.ensure_codex_version_supported()  # no raise
@@ -1247,9 +1246,8 @@ def test_ensure_codex_version_supported_accepts_min_version() -> None:
 
 def test_ensure_codex_version_supported_accepts_higher_version() -> None:
     """Any version above the floor is accepted."""
-    with patch.object(
-        ca.subprocess,
-        "run",
+    with patch(
+        "jarvis.execution.codex_action.subprocess.run",
         return_value=_make_completed_proc(stdout="codex-cli 0.130.5\n"),
     ):
         ca.ensure_codex_version_supported()  # no raise
@@ -1257,9 +1255,8 @@ def test_ensure_codex_version_supported_accepts_higher_version() -> None:
 
 def test_ensure_codex_version_supported_rejects_too_low() -> None:
     """``0.124.99`` is rejected."""
-    with patch.object(
-        ca.subprocess,
-        "run",
+    with patch(
+        "jarvis.execution.codex_action.subprocess.run",
         return_value=_make_completed_proc(stdout="codex-cli 0.124.99\n"),
     ), pytest.raises(ca.CodexVersionTooLow):
         ca.ensure_codex_version_supported()
@@ -1267,9 +1264,8 @@ def test_ensure_codex_version_supported_rejects_too_low() -> None:
 
 def test_ensure_codex_version_supported_rejects_unparseable() -> None:
     """Output that doesn't contain a version triplet raises."""
-    with patch.object(
-        ca.subprocess,
-        "run",
+    with patch(
+        "jarvis.execution.codex_action.subprocess.run",
         return_value=_make_completed_proc(stdout="codex-cli unknown\n"),
     ), pytest.raises(ca.CodexVersionTooLow):
         ca.ensure_codex_version_supported()
@@ -1277,9 +1273,8 @@ def test_ensure_codex_version_supported_rejects_unparseable() -> None:
 
 def test_ensure_codex_version_supported_rejects_missing_binary() -> None:
     """``FileNotFoundError`` from subprocess.run surfaces as ``CodexVersionTooLow``."""
-    with patch.object(
-        ca.subprocess,
-        "run",
+    with patch(
+        "jarvis.execution.codex_action.subprocess.run",
         side_effect=FileNotFoundError("no such file"),
     ), pytest.raises(ca.CodexVersionTooLow):
         ca.ensure_codex_version_supported(codex_bin="/nope/codex")
@@ -1287,9 +1282,8 @@ def test_ensure_codex_version_supported_rejects_missing_binary() -> None:
 
 def test_ensure_codex_version_supported_uses_stderr_too() -> None:
     """Some codex builds print the version on stderr; we accept either."""
-    with patch.object(
-        ca.subprocess,
-        "run",
+    with patch(
+        "jarvis.execution.codex_action.subprocess.run",
         return_value=_make_completed_proc(stdout="", stderr="codex-cli 0.125.0\n"),
     ):
         ca.ensure_codex_version_supported()  # no raise
@@ -1307,7 +1301,7 @@ def test_capture_diff_returns_empty_on_git_error(monkeypatch: pytest.MonkeyPatch
         msg = "no git"
         raise FileNotFoundError(msg)
 
-    monkeypatch.setattr(ca.subprocess, "run", _raise)
+    monkeypatch.setattr("jarvis.execution.codex_action.subprocess.run", _raise)
     assert ca._capture_diff(Path("/tmp")) == ""  # noqa: SLF001
 
 

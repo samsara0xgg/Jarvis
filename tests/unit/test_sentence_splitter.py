@@ -116,7 +116,7 @@ def test_decimal_guard_then_terminator():
         ("vs.", "Cats vs. dogs win."),
     ],
 )
-def test_single_dot_abbreviation_guard(abbr: str, text: str):
+def test_single_dot_abbreviation_guard(abbr: str, text: str) -> None:
     """Internal ``.`` in a known single-dot abbreviation does not split."""
     # The whole input should remain one sentence (only the trailing dot terminates).
     result = split_into_sentences(text)
@@ -130,7 +130,7 @@ def test_single_dot_abbreviation_guard(abbr: str, text: str):
         ("i.e.", "Namely i.e. this one."),
     ],
 )
-def test_multi_dot_abbreviation_guard(abbr: str, text: str):
+def test_multi_dot_abbreviation_guard(abbr: str, text: str) -> None:
     """Every internal dot of multi-dot abbreviations (``e.g.``, ``i.e.``) is protected."""
     result = split_into_sentences(text)
     assert result == [text], f"Multi-dot abbreviation {abbr!r} was not protected in {text!r}"
