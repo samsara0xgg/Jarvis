@@ -295,7 +295,12 @@ def test_k4_detached_child_writes_worker_reported_after_parent_exit(
     cap = live_detached_cli
 
     reported = _payloads(cap, "worker.reported")
-    assert reported, "no worker.reported — the detached child never finished a Codex turn"
+    assert reported, (
+        "no worker.reported — the detached child never finished a Codex turn; "
+        "if the trace holds action.timeout_assumed the live Codex backend "
+        "exceeded the turn budget (transient — re-burn); events seen: "
+        f"{[event['type'] for event in cap['trace']]}"
+    )
     assert reported[0]["status"] == "ok", (
         f"worker.reported.status={reported[0]['status']!r}; expected 'ok'"
     )
