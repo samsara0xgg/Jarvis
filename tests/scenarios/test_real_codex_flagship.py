@@ -999,7 +999,11 @@ def test_j12_no_submit_report_emits_report_missing(real_python_repo: Path) -> No
     Tier-2 J inventory so a `--collect-only` run shows the complete
     J1-J13 enumeration.
     """
-    pytest.skip(_SKELETON_SKIP)
+    pytest.skip(
+        "J12 lives in tests/scenarios/test_real_codex_no_submit_report.py; its "
+        "live burn is deferred by design (P-0010 X-decision + spec §3.5.8) and "
+        "the post-turn guard is unit-proven by tests/unit/test_spawn_worker_real.py."
+    )
 
 
 def test_j13_dirty_tree_stash_pop_conflict_emits_conflict_patch(real_python_repo: Path) -> None:
@@ -1056,8 +1060,20 @@ def test_k4_detached_child_writes_worker_reported_after_parent_exits(
 
 
 def test_k5_reviewer_fail_path_uses_limitation_phrasing(real_python_repo: Path) -> None:
-    """K5: reviewer-verdict-fail path delivers limitation utterance through ``say``, not a completion claim."""
-    pytest.skip(_SKELETON_SKIP)
+    """K5: reviewer-verdict-fail path delivers limitation utterance through ``say``, not a completion claim.
+
+    Blocked on the B-0005/B-0006 Attention-channel design gap: Limitation-class
+    responses currently deliver via ``stdout`` only, so the ADR K5 row (voice
+    delivery of the limitation utterance) cannot pass against shipped behavior.
+    The limitation *text* contract is live-proven by L3
+    (``test_real_codex_verify_fail.py``) and the reviewer-fail evidence contract
+    by L5 (``test_real_codex_reviewer_fail_no_verify.py``).
+    """
+    pytest.skip(
+        "K5 blocked on B-0005/B-0006 (docs/live-run-bugs.md): Limitation-class "
+        "responses deliver via stdout only until the Attention-channel routing "
+        "is pinned by an ADR-0002 amendment. Burn live once that decision lands."
+    )
 
 
 def test_k6_surface_response_emitted_carries_delivered_via_and_attention_channel(
@@ -1081,7 +1097,11 @@ def test_l1_no_verify_command_emits_observation_only_slot_with_limitation(
     real_python_repo: Path,
 ) -> None:
     """L1: ``task.created`` without ``verify_command`` → one ``action.result_observed(observation)``; Artifact Claim at observed + Limitation Claim per §8.5 rule 6; no ``task.verified``."""
-    pytest.skip(_SKELETON_SKIP)
+    pytest.skip(
+        "L1 lives in tests/scenarios/test_real_codex_empty_diff.py (route B "
+        "no-verify_command + route A true-empty-diff, both live-green); this "
+        "stub keeps L1 in the Tier-2 enumeration."
+    )
 
 
 def test_l2_verify_pytest_pass_plus_reviewer_ok_emits_task_verified(
