@@ -1,15 +1,25 @@
 """Unit tests for ``jarvis.decision.gates.attention_policy`` (ADR § Stub strategy).
 
-Day-1 attention rules:
+Day-1 attention rules (incl. the B-0005/B-0006 Limitation routing pinned
+by the ADR-0002 amendment, 2026-08-10):
 
 - Verified Postcondition just emitted for the current subject →
   ``"voice_notify"``.
+- ``worker.reported`` trigger + a Limitation Claim emitted this turn →
+  ``"voice_notify"`` (K5 row: verify-fail / reviewer-fail must speak).
 - ``worker.reported`` trigger without verified evidence → ``"silent_log"``.
+- ``action.timeout_assumed`` / ``action.failed`` + Limitation →
+  ``"queue_review"`` (pinned: Allen is typically away after a long wait;
+  badge escalation deferred until the Inherent cockpit exists).
 - Default → ``"queue_review"``.
 """
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
+import jarvis.decision as decision_pkg
 from jarvis.decision.gates import attention_policy
 from jarvis.decision.packet import SituationPacket
 from jarvis.shared import Event
@@ -143,3 +153,95 @@ def test_attention_default_is_queue_review():
     packet = _build_packet(_utterance_event(), task)
 
     assert attention_policy(packet, projection) == "queue_review"
+
+
+def _timeout_event(*, action_id: str = "A1", run_id: str = "R1") -> Event:
+    """Build an action.timeout_assumed trigger with the conventional correlation."""
+    return Event(
+        event_uid="timeout-uid-1",
+        type="action.timeout_assumed",
+        schema_version=1,
+        ts_epoch_ms=1_000_004,
+        payload={"action_id": action_id, "reason": "result_expected_by exceeded"},
+        source_event_id=None,
+        correlation={"run_id": run_id, "action_id": action_id, "task_id": "task_X"},
+    )
+
+
+def test_attention_voice_notify_on_worker_reported_limitation():
+    """B-0006: worker.reported + Limitation emitted this turn → voice_notify.
+
+    The K5 ADR row mandates the reviewer/verify-fail limitation utterance
+    delivers through ``say``; before the 2026-08-10 amendment this path
+    fell into the ``silent_log`` rule and ``delivered_via=[]``.
+    """
+    task = _task_event("task_X")
+    claim = _claim_event("C1", "task_X", claim_type="Limitation")
+    evidence = _evidence_event("E1", "C1", "executed")
+    projection = ClaimEvidenceProjection.from_events([claim, evidence])
+    packet = _build_packet(_worker_reported_event(), task, claim, evidence)
+
+    assert (
+        attention_policy(packet, projection, limitation_emitted=True) == "voice_notify"
+    )
+
+
+def test_attention_queue_review_on_timeout_limitation():
+    """B-0005 pinned: timeout/failed trigger + Limitation → queue_review.
+
+    Quiet-first: after a worker timeout Allen has typically walked away;
+    the limitation is queued for review rather than spoken. Escalation to
+    a badge surface is deferred until the Inherent cockpit exists.
+    """
+    task = _task_event("task_X")
+    claim = _claim_event("C1", "task_X", claim_type="Limitation")
+    evidence = _evidence_event("E1", "C1", "reported")
+    projection = ClaimEvidenceProjection.from_events([claim, evidence])
+    packet = _build_packet(_timeout_event(), task, claim, evidence)
+
+    assert (
+        attention_policy(packet, projection, limitation_emitted=True) == "queue_review"
+    )
+
+
+def test_finalize_response_passes_limitation_emitted() -> None:
+    """Wiring: ``_finalize_response`` computes ``limitation_emitted`` from scratch.
+
+    AST walk (same pattern as ``test_finalize_response_promotes_silent_log_on
+    _hard_refusal``): the finalizer must scan ``scratch.events`` for a
+    ``claim.created`` event with ``type == "Limitation"`` and pass the flag
+    into ``attention_policy``. Without this, the gates-level rule above can
+    never fire and the K5 burn regresses to ``delivered_via=[]``.
+    """
+    source_path = Path(decision_pkg.__file__)
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+    finalize_fn: ast.FunctionDef | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_finalize_response":
+            finalize_fn = node
+            break
+    assert finalize_fn is not None, "_finalize_response not found in module AST"
+
+    string_constants: set[str] = set()
+    names: set[str] = set()
+    for sub in ast.walk(finalize_fn):
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+            string_constants.add(sub.value)
+        elif isinstance(sub, ast.Name):
+            names.add(sub.id)
+        elif isinstance(sub, ast.keyword) and sub.arg is not None:
+            names.add(sub.arg)
+
+    assert "limitation_emitted" in names, (
+        "B-0005/B-0006 regression: _finalize_response no longer computes or "
+        "passes limitation_emitted — Limitation routing can never fire."
+    )
+    assert "Limitation" in string_constants, (
+        "B-0005/B-0006 regression: _finalize_response no longer matches "
+        "claim.created type 'Limitation' when computing limitation_emitted."
+    )
+    assert "claim.created" in string_constants, (
+        "B-0005/B-0006 regression: _finalize_response no longer scans "
+        "scratch.events for 'claim.created' rows."
+    )

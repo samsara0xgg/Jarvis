@@ -1967,7 +1967,18 @@ def _finalize_response(
         )
         scratch.events.append(ended_event)
 
-    attention = attention_policy(packet, projections.claim_evidence)
+    # B-0005/B-0006: a Limitation Claim emitted THIS turn must reach the
+    # operator (ADR K5 row) — scan the turn's own events, not the folded
+    # projection, so historical Limitations never re-trigger voice.
+    limitation_emitted = any(
+        ev.type == "claim.created" and ev.payload.get("type") == "Limitation"
+        for ev in scratch.events
+    )
+    attention = attention_policy(
+        packet,
+        projections.claim_evidence,
+        limitation_emitted=limitation_emitted,
+    )
     # The attention_policy verdict reflects evidence state at the trigger
     # event (worker.reported + no verified Postcondition → silent_log per
     # ``test_attention_silent_log_on_worker_reported_without_verified``).

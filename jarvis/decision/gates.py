@@ -479,23 +479,40 @@ AttentionChannel = Literal["voice_notify", "silent_log", "queue_review"]
 def attention_policy(  # noqa: C901 — small branch tree but ruff counts each ``if`` separately.
     packet: SituationPacket,
     claim_evidence: ClaimEvidenceProjection,
+    *,
+    limitation_emitted: bool = False,
 ) -> AttentionChannel:
     """Decide where this L3 invocation should surface output.
 
-    Day-1 rules per ADR § Stub strategy L3 Attention row:
+    Day-1 rules per ADR § Stub strategy L3 Attention row + the
+    B-0005/B-0006 Limitation-routing amendment (2026-08-10):
 
     - If a verified Postcondition Claim was just emitted for the
       current subject -> ``"voice_notify"``.
+    - If trigger is ``worker.reported`` and this turn emitted a
+      Limitation Claim -> ``"voice_notify"`` (ADR K5 row: the
+      verify-fail / reviewer-fail limitation utterance must reach
+      ``say``, not die in ``silent_log``).
     - If trigger is ``worker.reported`` and no verified evidence
       yet -> ``"silent_log"`` (Allen said "审核了再告诉我";
       reporting an unverified status would violate the spirit).
-    - Default -> ``"queue_review"``.
+    - Default -> ``"queue_review"``. This deliberately covers the
+      ``action.timeout_assumed`` / ``action.failed`` Limitation
+      paths (B-0005 pinned): after a worker timeout Allen has
+      typically walked away, so the limitation queues for review;
+      badge escalation is deferred until the Inherent cockpit
+      exists.
 
     Args:
         packet: Current SituationPacket (trigger + open tasks +
             correlations).
         claim_evidence: Folded projection used to detect verified
             Postcondition evidence.
+        limitation_emitted: ``True`` when the CURRENT turn emitted a
+            ``claim.created(type=Limitation)`` (computed by
+            ``_finalize_response`` from ``scratch.events``, NOT from
+            the projection — historical Limitations of the same
+            subject must not re-trigger voice on later turns).
 
     Returns:
         One of ``"voice_notify"`` / ``"silent_log"`` /
@@ -527,6 +544,8 @@ def attention_policy(  # noqa: C901 — small branch tree but ruff counts each `
                 break
 
     if has_verified_postcondition:
+        return "voice_notify"
+    if limitation_emitted and trigger_type == "worker.reported":
         return "voice_notify"
     if trigger_type == "worker.reported":
         return "silent_log"
