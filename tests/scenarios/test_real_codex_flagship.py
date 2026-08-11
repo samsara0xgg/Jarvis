@@ -1074,19 +1074,14 @@ def test_k4_detached_child_writes_worker_reported_after_parent_exits(
 
 
 def test_k5_reviewer_fail_path_uses_limitation_phrasing(real_python_repo: Path) -> None:
-    """K5: reviewer-verdict-fail path delivers limitation utterance through ``say``, not a completion claim.
-
-    Blocked on the B-0005/B-0006 Attention-channel design gap: Limitation-class
-    responses currently deliver via ``stdout`` only, so the ADR K5 row (voice
-    delivery of the limitation utterance) cannot pass against shipped behavior.
-    The limitation *text* contract is live-proven by L3
-    (``test_real_codex_verify_fail.py``) and the reviewer-fail evidence contract
-    by L5 (``test_real_codex_reviewer_fail_no_verify.py``).
-    """
+    """K5: reviewer-verdict-fail path delivers limitation utterance through ``say``, not a completion claim."""
     pytest.skip(
-        "K5 blocked on B-0005/B-0006 (docs/live-run-bugs.md): Limitation-class "
-        "responses deliver via stdout only until the Attention-channel routing "
-        "is pinned by an ADR-0002 amendment. Burn live once that decision lands."
+        "K5 lives in tests/scenarios/test_real_codex_verify_fail.py::"
+        "test_k5_limitation_routes_voice_notify_and_reaches_say (B-0005/B-0006 "
+        "resolved by the ADR-0002 Limitation-routing amendment, 2026-08-10: "
+        "worker.reported + Limitation → voice_notify; the burn asserts "
+        "attention_channel, 'voice' in delivered_via, and limitation phrasing "
+        "in voice_text). This stub keeps K5 in the Tier-2 enumeration."
     )
 
 

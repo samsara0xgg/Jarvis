@@ -322,3 +322,36 @@ def test_l3_pre_emit_gate_verdict_force_limitation_language(
     assert any(rx.search(text) for rx in LIMITATION_REGEXES), (
         f"verify-fail surface must use limitation phrasing; got: {text!r}"
     )
+
+
+def test_k5_limitation_routes_voice_notify_and_reaches_say(
+    live_real_codex_verify_fail: dict[str, Any],
+) -> None:
+    """K5: verify-fail limitation utterance routes ``voice_notify`` and reaches ``say``.
+
+    Per ADR K5 row + the B-0005/B-0006 amendment (2026-08-10): a
+    ``worker.reported`` turn that emits a Limitation Claim must route
+    ``voice_notify`` — the limitation utterance is *spoken*, not a
+    completion claim and not ``silent_log``-swallowed. ``delivered_via``
+    must record the ``voice`` physical surface (``say`` fired; stdout is
+    absent because pytest's captured stdout is not a TTY), and the
+    voice-channel text carries the canonical limitation phrasing.
+    """
+    cap = live_real_codex_verify_fail
+
+    emitted = _payloads(cap, "surface.response_emitted")
+    assert len(emitted) == 1
+    payload = emitted[0]
+
+    assert payload["attention_channel"] == "voice_notify", (
+        f"B-0006 regression: verify-fail limitation routed "
+        f"{payload['attention_channel']!r}, not voice_notify"
+    )
+    delivered = payload["delivered_via"]
+    assert "voice" in delivered, (
+        f"K5 regression: say did not fire — delivered_via={delivered!r}"
+    )
+    voice_text = payload["voice_text"]
+    assert any(rx.search(voice_text) for rx in LIMITATION_REGEXES), (
+        f"K5: spoken text must use limitation phrasing; got: {voice_text!r}"
+    )
