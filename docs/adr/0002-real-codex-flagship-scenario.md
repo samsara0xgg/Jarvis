@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed — 2026-05-18. Builds on ADR 0001 (Day-1 MVP, approved 2026-05-17).
+Approved — 2026-08-10 (Allen, session directive; v3.1 with the
+Limitation-routing amendment). Originally Proposed 2026-05-18. Builds on
+ADR 0001 (Day-1 MVP, approved 2026-05-17).
 
 ## Context
 
@@ -1072,6 +1074,39 @@ e.g. `["banner"]` when CLI parent has detached). The `delivered_via`
 list records **physical surfaces actually written to**, not Attention
 channels — Attention channel goes in `attention_channel` field of the
 same event payload.
+
+> **Amendment (2026-08-10) — Limitation-claim routing (B-0005 /
+> B-0006).** The table above maps channel → physical surfaces but left
+> "which channel does a `Limitation` claim route to?" unpinned; the
+> live 2026-05-18 A3 traces showed the timeout path landing in
+> `queue_review` (stdout only) and the verify-fail path in
+> `silent_log` (`delivered_via=[]`, total surface silence) — both
+> technically per-table, both wrong against the K5 row. Pinned
+> routing:
+>
+> - A `worker.reported` turn that emits
+>   `claim.created(type=Limitation)` (verify-fail / reviewer-fail)
+>   routes **`voice_notify`**. This aligns the Attention Policy with
+>   the K5 acceptance row, which already mandated the limitation
+>   utterance deliver through `say`.
+> - `action.timeout_assumed` / `action.failed` turns (which always
+>   emit a Limitation) stay **`queue_review`**: after a worker
+>   timeout Allen has typically walked away, and quiet-first (spec
+>   §1.5 principle 4) queues the limitation for review instead of
+>   speaking to an empty room. Escalation to a badge/banner surface
+>   is deferred until an Inherent cockpit panel exists to host it.
+> - The routing keys on the **current turn's emitted events**
+>   (`scratch.events`), not the folded ClaimEvidence projection —
+>   historical Limitations on the same subject must not re-trigger
+>   voice on later turns.
+>
+> Implementation: `attention_policy(..., limitation_emitted=)` in
+> `jarvis/decision/gates.py` + the `_finalize_response` scan in
+> `jarvis/decision/__init__.py`. Acceptance: the K5 burn
+> (`test_real_codex_verify_fail.py::test_k5_limitation_routes_voice_notify_and_reaches_say`).
+> Resolves B-0006 (behavior change: `silent_log` → `voice_notify`)
+> and closes B-0005 as pinned-as-decided. Approved by Allen
+> 2026-08-10 (session directive).
 
 ### Daemon / CLI contract (L6)
 

@@ -18,16 +18,17 @@ Merge-gate status of every tracked code bug. No code bug remains open.
 | B-0002 | FIXED | commit (nested `thread.id` parse) |
 | B-0003 a/b/c | **FIXED** | `_RUNTIME_TRIGGER_TYPES` includes `action.timeout_assumed`+`action.failed` (runtime/__init__.py:90-95); `decision/__init__.py:652` timeout/failed branch; surface emits per B-0005 trace |
 | B-0004 | FIXED, live-verified | commit `e006ed6` (seed `auth.json`) |
-| B-0005 / B-0006 | spec/ADR gap, **not a bug** | Limitation→channel routing unpinned by ADR; needs ADR-0002 amendment, deferred |
+| B-0005 / B-0006 | **RESOLVED** (2026-08-10) | ADR-0002 Limitation-routing amendment: `worker.reported`+Limitation → `voice_notify` (B-0006 fix, K5 burn); timeout/failed → `queue_review` pinned as-decided (B-0005) |
 | B-0007 | FIXED | commit `b62fd13` (`inputSchema` + protocolVersion) |
 | B-0008 | FIXED | commit `373c0fb` (`approval_policy=never`) |
 | B-0013 | **FIXED, live-confirmed** | commit `dc0abb4` (elicitation-drain); 4 Increment burns all `worker.report_missing=0` / `worker.reported.status=ok` → submit_report dispatched |
 | B-0014 | FIXED, live-covered | commit `e599b8e`; Increment-2 burns exercise both untracked-capture (NOTES.md) and empty-diff (route A) paths |
 | C23 / stash_ref gap | CLOSED | `stash_ref` forwarded on `worker.reported` payload (tools.py:897) |
 
-Remaining non-bug work: B-0005/B-0006 Attention-channel routing (design
-decision, needs ADR/spec edit); Tier-2 skeleton skips (capture-seam +
-explicit-defer scenarios, see `docs/progress.md`).
+Remaining non-bug work: Tier-2 skeleton skips (capture-seam +
+explicit-defer scenarios, see `docs/progress.md`). B-0005/B-0006 were
+resolved 2026-08-10 by the ADR-0002 Limitation-routing amendment (see
+their entries below).
 
 ---
 
@@ -451,6 +452,16 @@ path. Both `queue_review` and `silent_log` channels themselves are
 behaving per ADR-0002 spec; the open question is which channel
 Limitation should target.
 
+**Resolution (2026-08-10):** pinned **as-decided** by the ADR-0002
+Limitation-routing amendment: `action.timeout_assumed` /
+`action.failed` Limitation turns stay `queue_review` — after a
+worker timeout Allen has typically walked away, and quiet-first
+(spec §1.5 principle 4) queues the limitation for review instead of
+speaking to an empty room. Escalation to a badge/banner surface is
+deferred until an Inherent cockpit panel exists. No code change on
+this path; the decision is enforced normatively by
+`test_attention_queue_review_on_timeout_limitation` (Tier-1).
+
 **Suspect surface:** L3 Attention Policy table — the mapping from
 `claim_type=Limitation × source=spawn_worker` to attention channel
 is not pinned by ADR.
@@ -618,6 +629,19 @@ Attention Policy picks different channels. The underlying spec gap
 **Disposition (under Allen X decision):** **spec/ADR gap, not a
 bug.** Same resolution path as B-0005: would require an ADR-0002
 amendment or spec.html edit. Out of scope for this session.
+
+**Resolution (2026-08-10):** **fixed** by the ADR-0002
+Limitation-routing amendment: a `worker.reported` turn that emits
+`claim.created(type=Limitation)` (verify-fail / reviewer-fail) now
+routes `voice_notify` — the limitation utterance reaches `say` +
+banner per the K5 acceptance row. Implementation:
+`attention_policy(..., limitation_emitted=)` in
+`jarvis/decision/gates.py` + the `_finalize_response` scan in
+`jarvis/decision/__init__.py` (current-turn events only, so
+historical Limitations never re-trigger voice). Acceptance:
+`test_real_codex_verify_fail.py::test_k5_limitation_routes_voice_notify_and_reaches_say`
+live burn + three Tier-1 unit tests in
+`tests/unit/test_attention_policy.py`.
 
 ---
 
