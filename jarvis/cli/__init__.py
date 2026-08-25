@@ -40,11 +40,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import json
 import logging
 import os
 import re
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 from jarvis.deployment import DEFAULT_RUNTIME_ROOT_LITERAL, launchd, process_lock
 from jarvis.deployment.process_lock import ProcessLockHeld
@@ -86,6 +95,28 @@ _LONG_RUN_RE: re.Pattern[str] = re.compile(
 # is deliberate Chinese punctuation here.
 _QUICK_ACK_PHRASE: str = "好的，跑起来了。"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
 
+# --- ADR-0009 D2: forward mode -------------------------------------------
+#
+# The daemon binds one address; the CLI is a thin client over the same
+# wire the inherent-swift app speaks.
+_DAEMON_HOST = "127.0.0.1"
+_DAEMON_PORT = 8006
+
+# Contract table (D2). Connection-refused means "lock acquired, uvicorn
+# not yet bound" — `acquire_exclusive` runs before bind with the voice
+# preflight in between, and a launchd respawn re-opens that window every
+# ThrottleInterval (~10s). Three tries a second apart covers it without
+# hanging a shell.
+_FORWARD_ATTEMPTS = 3
+_FORWARD_RETRY_SLEEP_S = 1.0
+_FORWARD_DEFAULT_TIMEOUT_S = 120.0
+_WS_OPEN_TIMEOUT_S = 5.0
+_POST_TIMEOUT_S = 10.0
+
+_EXIT_REFUSED = 2
+_EXIT_DAEMON_UNREACHABLE = 3
+_EXIT_RESPONSE_TIMEOUT = 4
+
 
 def _utterance_implies_long_run(utterance: str) -> bool:
     """Day-2 classifier: regex keyword match only. NO SQLite open.
@@ -106,6 +137,208 @@ def _quick_ack_phrase(utterance: str) -> str:
     # transcripts without parsing variants.
     del utterance
     return _QUICK_ACK_PHRASE
+
+
+class _DaemonUnreachableError(RuntimeError):
+    """The daemon holds the lock (or the agent is installed) but nothing is bound."""
+
+
+class _SubmitRejectedError(RuntimeError):
+    """The daemon answered the POST with an error status — not a retry case."""
+
+
+class _ResponseTimeoutError(RuntimeError):
+    """No terminal response envelope arrived before the deadline.
+
+    Carries the ``turn_id`` so the operator can find the turn later: the
+    daemon keeps running it, so this is a client-side give-up, not a
+    cancellation.
+    """
+
+    def __init__(self, turn_id: str) -> None:
+        """Store the ``turn_id`` the operator needs to find the turn later."""
+        super().__init__(f"no response envelope for turn {turn_id or '<unknown>'}")
+        self.turn_id = turn_id
+
+
+def _post_submit(url: str, utterance: str) -> str:
+    """POST the utterance to ``/inherent/submit``; return the minted ``turn_id``.
+
+    stdlib ``urllib`` on purpose — ADR-0009 adds zero runtime
+    dependencies, and the CLI must stay importable on a machine where
+    the daemon's optional extras are missing.
+
+    Raises:
+        _DaemonUnreachableError: Nothing is listening yet (the lock is
+            taken before uvicorn binds).
+    """
+    payload = json.dumps({"text": utterance}).encode("utf-8")
+    request = urllib.request.Request(  # noqa: S310 — fixed http://127.0.0.1 URL built above.
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(  # noqa: S310 — same fixed loopback URL.
+            request, timeout=_POST_TIMEOUT_S
+        ) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except ConnectionRefusedError as exc:
+        raise _DaemonUnreachableError(str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        # The daemon answered but rejected the submit (400 empty text, 500
+        # inside submit_callable). Not a retry case — surface it verbatim.
+        msg = f"daemon rejected the submit: HTTP {exc.code} {exc.reason}"
+        raise _SubmitRejectedError(msg) from None
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, ConnectionRefusedError):
+            raise _DaemonUnreachableError(str(exc.reason)) from None
+        msg = f"cannot reach the daemon: {exc.reason}"
+        raise _SubmitRejectedError(msg) from None
+    if not isinstance(body, dict):
+        return ""
+    return str(body.get("turn_id", "") or "")
+
+
+def _envelope_opens_our_turn(
+    payload: Mapping[str, object],
+    *,
+    utterance: str,
+    turn_id: str,
+) -> bool:
+    """Decide whether an ``open`` envelope belongs to the turn we submitted.
+
+    Two keys, in order of trust:
+
+    1. ``payload["turn_id"]`` when both sides have one — exact
+       correlation, the D2 contract.
+    2. ``payload["q"]`` (the response header's query text, which is the
+       submitted transcript) otherwise. Needed because the Step-2 wire
+       envelope carries no ``turn_id`` today; see the module note.
+    """
+    envelope_turn = str(payload.get("turn_id", "") or "")
+    if turn_id and envelope_turn:
+        return envelope_turn == turn_id
+    return str(payload.get("q", "") or "") == utterance
+
+
+async def _collect_response(
+    queue: asyncio.Queue[dict[str, object]],
+    *,
+    utterance: str,
+    turn_id: str,
+    timeout_s: float,
+) -> str:
+    """Filter the buffered + live envelope stream down to our turn's text.
+
+    Consumes ``open`` → ``append``* → ``done``. Envelopes that arrived
+    before the POST returned are already in ``queue`` (the reader task
+    starts before the POST — that ordering is the whole point of D2),
+    so a turn fast enough to open before the HTTP response is read is
+    still matched.
+
+    Raises:
+        _ResponseTimeoutError: Deadline hit before ``done``.
+    """
+    deadline = time.monotonic() + timeout_s
+    matched = False
+    parts: list[str] = []
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _ResponseTimeoutError(turn_id)
+        try:
+            envelope = await asyncio.wait_for(queue.get(), timeout=remaining)
+        except TimeoutError:
+            raise _ResponseTimeoutError(turn_id) from None
+        op = envelope.get("op")
+        raw_payload = envelope.get("payload")
+        payload: Mapping[str, object] = raw_payload if isinstance(raw_payload, dict) else {}
+        if not matched:
+            if op == "open":
+                matched = _envelope_opens_our_turn(
+                    payload, utterance=utterance, turn_id=turn_id
+                )
+            continue
+        if op == "append":
+            parts.append(str(payload.get("token", "") or ""))
+        elif op == "done":
+            return "".join(parts)
+
+
+async def _drain_ws(ws: object, queue: asyncio.Queue[dict[str, object]]) -> None:
+    """Push every decodable WS envelope into ``queue``.
+
+    Started BEFORE the POST so nothing that lands between the submit and
+    the first read is lost — the daemon has no late-subscriber replay
+    (ADR-0003 deferred the replay queue deliberately).
+    """
+    async for raw in ws:  # type: ignore[attr-defined]
+        with contextlib.suppress(json.JSONDecodeError, TypeError, ValueError):
+            decoded = json.loads(raw)
+            if isinstance(decoded, dict):
+                queue.put_nowait(decoded)
+
+
+async def _forward_attempt(utterance: str, *, timeout_s: float) -> str:
+    """One WS-connect → POST → collect cycle. Returns the response text."""
+    from websockets.asyncio.client import connect  # noqa: PLC0415 — keeps CLI import cheap.
+
+    ws_url = f"ws://{_DAEMON_HOST}:{_DAEMON_PORT}/inherent/ws"
+    post_url = f"http://{_DAEMON_HOST}:{_DAEMON_PORT}/inherent/submit"
+
+    # WS FIRST. Reversing these two lines loses the response on any turn
+    # that finishes before the POST's HTTP response is read.
+    async with connect(ws_url, open_timeout=_WS_OPEN_TIMEOUT_S) as ws:
+        queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+        reader = asyncio.create_task(_drain_ws(ws, queue))
+        try:
+            turn_id = await asyncio.to_thread(_post_submit, post_url, utterance)
+            return await _collect_response(
+                queue, utterance=utterance, turn_id=turn_id, timeout_s=timeout_s
+            )
+        finally:
+            reader.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reader
+
+
+async def _forward(utterance: str, *, timeout_s: float) -> int:
+    """D2 forward mode with the pinned retry / exit-code contract."""
+    last_error = ""
+    for attempt in range(1, _FORWARD_ATTEMPTS + 1):
+        try:
+            text = await _forward_attempt(utterance, timeout_s=timeout_s)
+        except (ConnectionRefusedError, _DaemonUnreachableError) as exc:
+            last_error = str(exc)
+            if attempt < _FORWARD_ATTEMPTS:
+                await asyncio.sleep(_FORWARD_RETRY_SLEEP_S)
+            continue
+        except _ResponseTimeoutError as exc:
+            sys.stderr.write(
+                f"jarvis: no response within {timeout_s:.0f}s. The turn is still "
+                f"running in the daemon; turn_id={exc.turn_id or '<unknown>'}. "
+                "Raise --timeout or inspect the event log.\n"
+            )
+            return _EXIT_RESPONSE_TIMEOUT
+        except _SubmitRejectedError as exc:
+            sys.stderr.write(f"jarvis: {exc}\n")
+            return 1
+        else:
+            print(text)  # noqa: T201 — the daemon's response IS this command's output.
+            return 0
+
+    sys.stderr.write(
+        f"jarvis: daemon starting or hung ({last_error}); tried "
+        f"{_FORWARD_ATTEMPTS}x. Try again, or run `jarvis daemon status`.\n"
+    )
+    return _EXIT_DAEMON_UNREACHABLE
+
+
+def _forward_to_daemon(utterance: str, *, timeout_s: float) -> int:
+    """Sync wrapper — the one-shot CLI has no running event loop."""
+    return asyncio.run(_forward(utterance, timeout_s=timeout_s))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -145,6 +378,26 @@ def _build_parser() -> argparse.ArgumentParser:
             "Used by smoke tests; production callers omit this flag."
         ),
     )
+    parser.add_argument(
+        "--no-forward",
+        action="store_true",
+        default=False,
+        help=(
+            "Do not forward to a running daemon (ADR-0009 D2). Restores "
+            "the pre-0009 exit-2 refusal when the daemon holds the lock; "
+            "scripts that depend on that refusal pass this flag."
+        ),
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=_FORWARD_DEFAULT_TIMEOUT_S,
+        help=(
+            "Seconds to wait for the forwarded turn's response before "
+            f"giving up with exit 4 (default: {_FORWARD_DEFAULT_TIMEOUT_S:.0f}). "
+            "The turn keeps running inside the daemon either way."
+        ),
+    )
     return parser
 
 
@@ -168,8 +421,17 @@ def main_with_detach(
        (the ONLY sqlite-open site in this CLI), install the macOS
        power observer (spec §3.7.8), run the turn, return 0.
 
-    Synchronous path (classifier did not match, or ``no_detach``):
-    Day-1 behavior preserved — bootstrap, run_turn, return 0.
+    Synchronous path (classifier did not match, ``no_detach``, or the
+    LaunchAgent is installed): Day-1 behavior preserved — bootstrap,
+    run_turn, return 0.
+
+    ADR-0009 D2 adds the third condition. With the agent installed, a
+    detached child would race the launchd-respawned daemon: the child's
+    actions live in ITS process's live-action set, so the daemon's
+    ``_system_trigger_watcher`` sees the child's terminal rows as
+    orphans and drives a second turn for them. No fork means no foreign
+    live turn, which is why the guard is in the branch condition rather
+    than in the caller alone.
 
     Args:
         utterance: User text.
@@ -186,7 +448,11 @@ def main_with_detach(
     # ``test_canary_daemon_ack_before_fork`` enforces that no
     # ``bootstrap_runtime_app`` call appears in the parent before
     # ``fork_detach``.
-    if _utterance_implies_long_run(utterance) and not no_detach:
+    if (
+        _utterance_implies_long_run(utterance)
+        and not no_detach
+        and not launchd.is_agent_installed()
+    ):
         # Print ack BEFORE fork (canary `test_canary_daemon_ack_before_fork`
         # / ADR-0002 lines 1632-1635). `print` is the operator's visible
         # acknowledgement on stdout — using sys.stderr or logging would
@@ -551,25 +817,29 @@ def _main_oneshot(argv: list[str]) -> int:
     run drive separate event logs and the operator only sees one of
     them. The check uses the same :func:`process_lock.is_held` machinery
     as the D4 probe but targets the default-root lock specifically.
+
+    ADR-0009 D2 turns the D4 refusal into a forward: when the lock is
+    held OR the LaunchAgent is installed, this process becomes a thin
+    client of the daemon. Order matters — **B-NEW-5 is evaluated before
+    the forward decision** so a cross-root invocation still refuses
+    instead of being answered out of the wrong event log. The requested
+    root's own lock is still probed first so the probe order the D4
+    tests assert on is unchanged.
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    # ADR-0003 D4 / F2 — CLI refuses to run when the daemon owns the
-    # lock to avoid double-driving on the same SQLite event log.
+    # ADR-0003 D4 / F2 — probe the requested root's lock first (kept
+    # first so the ordering the D4 tests observe does not change).
     requested_root = _resolve_runtime_root(args.runtime_root)
     lock_path = requested_root / "daemon.lock"
-    if process_lock.is_held(lock_path):
-        pid = process_lock.holder_pid(lock_path)
-        sys.stderr.write(
-            f"jarvis: daemon running at pid {pid}; "
-            f"stop it or POST to http://127.0.0.1:8006/inherent/submit\n"
-        )
-        return 2
+    lock_held = process_lock.is_held(lock_path)
 
     # B-NEW-5 — when the user explicitly overrides the runtime root but
     # a daemon already owns the DEFAULT (home) runtime root, refuse with
     # a clear error rather than silently forking into a parallel state.
+    # Forwarding would be worse than forking here: the answer would come
+    # out of the daemon's event log, not the one the operator asked for.
     home_root = Path(DEFAULT_RUNTIME_ROOT_LITERAL).expanduser().resolve()
     if requested_root != home_root:
         home_lock = home_root / "daemon.lock"
@@ -581,7 +851,22 @@ def _main_oneshot(argv: list[str]) -> int:
                 f"create a conflicting parallel state. Stop the daemon or "
                 f"omit --runtime-root.\n"
             )
-            return 2
+            return _EXIT_REFUSED
+
+    if args.no_forward:
+        # Pre-0009 behavior, verbatim — scripts match on this string.
+        if lock_held:
+            pid = process_lock.holder_pid(lock_path)
+            sys.stderr.write(
+                f"jarvis: daemon running at pid {pid}; "
+                f"stop it or POST to http://127.0.0.1:8006/inherent/submit\n"
+            )
+            return _EXIT_REFUSED
+    elif lock_held or launchd.is_agent_installed():
+        # D2 — thin client. The agent-installed half also covers the
+        # ThrottleInterval respawn window, where the lock is momentarily
+        # free but a daemon is about to own it again.
+        return _forward_to_daemon(args.utterance, timeout_s=args.timeout)
 
     return main_with_detach(
         args.utterance,

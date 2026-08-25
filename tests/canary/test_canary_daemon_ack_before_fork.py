@@ -30,6 +30,18 @@ ADR-0002 lines 1064-1087). The body MUST contain an
 fork_detach call MUST be lexically preceded (smaller line number) by a
 ``print(...)`` call AND a ``sys.stdout.flush()`` call, and MUST NOT be
 preceded by any ``bootstrap_runtime_app(...)`` call.
+
+ADR-0009 D2 amendment (§9 "Canary impact" — this canary is the one
+listed as *affected*). The branch's precondition used to be "the
+classifier matched"; the fork path is now additionally gated on the
+LaunchAgent NOT being installed. With the agent installed, a detached
+child races the launchd-respawned daemon: the child's action ids live
+in its own process's live-action set, so the daemon's
+``_system_trigger_watcher`` reads the child's terminal rows as orphans
+and drives a second turn for the same action. The ordering assertions
+above are unchanged; :func:`test_canary_fork_gated_on_agent_not_installed`
+adds the new half of the precondition so the guard cannot be dropped
+without the canary noticing.
 """
 
 from __future__ import annotations
@@ -44,6 +56,8 @@ _FORK_CALL_NAME: str = "fork_detach"
 _BOOTSTRAP_CALL_NAME: str = "bootstrap_runtime_app"
 _FLUSH_TARGET_ATTR: str = "flush"
 _FLUSH_TARGET_STREAM: str = "stdout"
+# ADR-0009 D2: the agent-installed probe that must gate the fork.
+_AGENT_INSTALLED_CALL_NAME: str = "is_agent_installed"
 
 
 def _find_function_def(module: ast.Module, *, name: str) -> ast.FunctionDef | None:
@@ -163,6 +177,43 @@ def test_canary_long_run_branch_prints_and_flushes_before_fork() -> None:
         f"BEFORE the {_FORK_CALL_NAME}() call at line {first_fork_lineno}. "
         "Without flush the ack would stay buffered until the parent exited "
         "and could be lost on the fork."
+    )
+
+
+def test_canary_fork_gated_on_agent_not_installed() -> None:
+    """The long-run branch MUST also require the LaunchAgent to be absent.
+
+    ADR-0009 D2. The guard has to sit in the branch TEST (not merely in
+    ``_main_oneshot``'s dispatch) because ``main_with_detach`` is a
+    public entry point: anything calling it directly must not be able to
+    fork a child alongside a resident daemon.
+    """
+    module = parse(repo_root() / _CLI_MODULE_RELPATH)
+    entry = _find_function_def(module, name=_ENTRY_FUNCTION_NAME)
+    assert entry is not None
+
+    long_run_branch = _find_long_run_branch(entry)
+    guard_calls = _iter_calls_with_name(
+        long_run_branch.test, name=_AGENT_INSTALLED_CALL_NAME,
+    )
+    assert guard_calls, (
+        f"{_ENTRY_FUNCTION_NAME}: the long-run branch test must call "
+        f"{_AGENT_INSTALLED_CALL_NAME}(...) so fork-detach is disabled while "
+        "the LaunchAgent is installed (ADR-0009 D2). Without it a detached "
+        "child races the respawned daemon and its terminal events look like "
+        "orphans to _system_trigger_watcher, which drives a duplicate turn."
+    )
+
+    negated = any(
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.Not)
+        and _iter_calls_with_name(node.operand, name=_AGENT_INSTALLED_CALL_NAME)
+        for node in ast.walk(long_run_branch.test)
+    )
+    assert negated, (
+        f"{_ENTRY_FUNCTION_NAME}: {_AGENT_INSTALLED_CALL_NAME}(...) must appear "
+        "NEGATED in the branch test (`not launchd.is_agent_installed()`); the "
+        "fork path is the daemon-NOT-installed path."
     )
 
 

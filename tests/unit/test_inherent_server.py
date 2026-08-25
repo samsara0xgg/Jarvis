@@ -104,13 +104,17 @@ def test_submit_with_text_returns_accepted(
     client: TestClient,
     spy_and_broadcaster: tuple[_SubmitSpy, InherentBroadcaster],
 ) -> None:
-    """POST {'text': 'hi'} -> 200 + {'status': 'accepted'}; spy sees ['hi']."""
+    """POST {'text': 'hi'} -> 200 + {'status': 'accepted'}; spy sees ['hi'].
+
+    ADR-0009 D2 added ``turn_id`` to the response; the spy callable
+    returns None, so it echoes as an empty string.
+    """
     spy, _ = spy_and_broadcaster
 
     resp = client.post("/inherent/submit", json={"text": "hi"})
 
     assert resp.status_code == 200
-    assert resp.json() == {"status": "accepted"}
+    assert resp.json() == {"status": "accepted", "turn_id": ""}
     assert spy.received == ["hi"]
 
 
@@ -124,7 +128,7 @@ def test_submit_strips_whitespace(
     resp = client.post("/inherent/submit", json={"text": "  hi  "})
 
     assert resp.status_code == 200
-    assert resp.json() == {"status": "accepted"}
+    assert resp.json() == {"status": "accepted", "turn_id": ""}
     assert spy.received == ["hi"]
 
 

@@ -34,7 +34,10 @@ runtime is the only place wiring across layers.
 Wire contract (preserved from legacy ``ui/web/server.py`` so the
 inherent-swift client's ``BridgeBackend`` keeps working unchanged):
 
-- ``POST /inherent/submit``      — body ``{"text": str}`` → ``{"status": "accepted"}``
+- ``POST /inherent/submit``      — body ``{"text": str}`` →
+  ``{"status": "accepted", "turn_id": str}`` (ADR-0009 D2 added
+  ``turn_id``; additive, so the inherent-swift client that reads only
+  ``status`` is unaffected)
 - ``WS  /inherent/ws``           — outbound-only; client receives ``{"op", "payload"}`` envelopes
 - ``GET /api/health``            — liveness; ``{"status": "ok"}``
 - ``POST /inherent/image-submit`` — Step 2 / ADR-0004 stub (501)
@@ -150,6 +153,14 @@ class InherentDeps:
             because the underlying SQLite write is sync; the handler
             offloads the call via ``asyncio.to_thread`` so the event
             loop stays unblocked.
+
+            ADR-0009 D2: the return value is the ``turn_id`` the
+            callable minted, echoed back on the wire so a forwarding
+            client can correlate the response stream (and print the id
+            when it gives up waiting). ``None`` is accepted for
+            bindings that do not mint one — the response then carries
+            an empty ``turn_id`` and the client falls back to matching
+            the response header's query text.
         broadcaster: Shared :class:`InherentBroadcaster` instance.
             The runtime's ``_response_watcher`` task pushes envelopes
             into it from the background (one cursor over the three
@@ -166,7 +177,7 @@ class InherentDeps:
             attempting ASR.
     """
 
-    submit_callable: Callable[[str], None]
+    submit_callable: Callable[[str], str | None]
     broadcaster: InherentBroadcaster
     voice_pipeline_callable: Callable[[bytes, str, str, str], Event] | None = None
 
@@ -284,12 +295,17 @@ def create_app(deps: InherentDeps) -> FastAPI:
         case explicitly rather than silently no-op-ing. The
         ``submit_callable`` is sync (SQLite write) — offloaded via
         ``asyncio.to_thread`` so the event loop stays free.
+
+        ADR-0009 D2 wire change: the response echoes the minted
+        ``turn_id`` so the one-shot CLI can correlate the WS stream it
+        subscribed to BEFORE this POST. Additive — existing clients
+        that read only ``status`` keep working.
         """
         text = req.text.strip()
         if not text:
             raise HTTPException(status_code=400, detail="text required")
-        await asyncio.to_thread(deps.submit_callable, text)
-        return {"status": "accepted"}
+        turn_id = await asyncio.to_thread(deps.submit_callable, text)
+        return {"status": "accepted", "turn_id": turn_id or ""}
 
     @app.websocket("/inherent/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
