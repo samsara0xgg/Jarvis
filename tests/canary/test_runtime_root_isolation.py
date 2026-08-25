@@ -62,7 +62,9 @@ def _event_count(db_path: Path) -> int:
         conn.close()
 
 
-def test_runtime_root_isolates_event_log_writes(tmp_path: Path) -> None:
+def test_runtime_root_isolates_event_log_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``--runtime-root <tmp>`` writes only under ``<tmp>``, not under home.
 
     B-NEW-5 positive-path regression guard. Verifies the existing
@@ -75,6 +77,15 @@ def test_runtime_root_isolates_event_log_writes(tmp_path: Path) -> None:
             "B-NEW-5 canary requires OPENROUTER_PROXY_KEY for the "
             "synchronous one-shot turn (LLM call). Set it locally to run.",
         )
+
+    # HOME redirect (hermetic against machine state): with a real daemon
+    # holding ~/.jarvis/daemon.lock the CLI's B-NEW-5 guard would refuse
+    # with exit 2 before bootstrap. The isolation invariant is unchanged —
+    # "default root's DB untouched" is asserted against the redirected
+    # home, where absence-before/absence-after satisfies it identically.
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
 
     user_root = (tmp_path / "iso-root").resolve()
     home_db = Path(DEFAULT_RUNTIME_ROOT_LITERAL).expanduser().resolve() / "mac_events.db"
