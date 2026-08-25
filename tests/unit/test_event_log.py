@@ -375,8 +375,9 @@ def test_registry_surface_response_open_registered() -> None:
     assert schema.required_payload == ("turn_id", "query", "kind")
     # ADR-0005 §7: ``required_gate_mode`` lifted onto the open header so
     # L5 TTS consumers can route between sentence-streaming and full-text
-    # playback per spec §3.6.6.
-    assert schema.optional_payload == ("required_gate_mode",)
+    # playback per spec §3.6.6. ADR-0009 D4 adds ``attention_channel`` so
+    # `_tts_watcher` / the WS broadcaster can skip queue_review turns.
+    assert schema.optional_payload == ("required_gate_mode", "attention_channel")
     assert schema.schema_version == 1
 
 
@@ -501,6 +502,200 @@ def test_emit_surface_response_chunk_rejects_missing_text(tmp_path: Path) -> Non
                 ts_epoch_ms=0,
             )
         assert list(iter_events(conn)) == []
+
+
+# --- ADR-0009 Step 2 residency / perception registry extensions ------------
+
+
+def test_registry_repo_state_observed_registered() -> None:
+    """ADR-0009 §4 / D5: `repo.state_observed` is the repo-observer snapshot.
+
+    Owner L5 (the observer is an L5 input adapter per spec §2.1) with
+    `actor` as a required payload field — the L2 schema has no actor
+    column, so the §5.1 principal enumeration rides in the payload (V6).
+    """
+    schema = EventTypeRegistry.get("repo.state_observed")
+    assert schema is not None, "repo.state_observed must be in EventTypeRegistry per ADR-0009 §4"
+    assert schema.event_type == "repo.state_observed"
+    assert schema.owner_layer == "L5"
+    assert schema.required_payload == (
+        "repo_path",
+        "branch",
+        "head_sha",
+        "dirty_file_count",
+        "last_commit_subject",
+        "observed_at_ms",
+        "actor",
+    )
+    assert schema.optional_payload == ()
+    assert schema.schema_version == 1
+
+
+def test_registry_project_commit_seen_registered() -> None:
+    """ADR-0009 §4 / D5: `project.commit_seen` is the spec-canonical name.
+
+    Spec §6 names it as a Drift Watch fold source; §5.4 requires it be
+    registered before any emit. `truncated` / `skipped_count` carry the
+    burst-cap signal on the final event of a capped poll.
+    """
+    schema = EventTypeRegistry.get("project.commit_seen")
+    assert schema is not None, "project.commit_seen must be in EventTypeRegistry per ADR-0009 §4"
+    assert schema.event_type == "project.commit_seen"
+    assert schema.owner_layer == "L5"
+    assert schema.required_payload == (
+        "repo_path",
+        "commit_sha",
+        "subject",
+        "committed_at_ms",
+        "actor",
+    )
+    assert schema.optional_payload == ("truncated", "skipped_count")
+    assert schema.schema_version == 1
+
+
+def test_emit_repo_state_observed_happy_path(tmp_path: Path) -> None:
+    """emit_event with every required field (incl. `actor`) round-trips."""
+    payload = {
+        "repo_path": "/Users/allen/Projects/jarvis",
+        "branch": "main",
+        "head_sha": "a793784",
+        "dirty_file_count": 3,
+        "last_commit_subject": "docs(adr): ADR-0009 residency and perception",
+        "observed_at_ms": 1_700_000_000_000,
+        "actor": "observer",
+    }
+    with closing(_open(tmp_path)) as conn:
+        evt = emit_event(conn, type="repo.state_observed", payload=payload, ts_epoch_ms=0)
+        fetched = list(iter_events(conn))
+    assert evt.type == "repo.state_observed"
+    assert evt.schema_version == 1
+    assert evt.payload == payload
+    assert fetched == [evt]
+
+
+def test_emit_repo_state_observed_rejects_missing_actor(tmp_path: Path) -> None:
+    """Missing `actor` raises MissingPayloadFieldError; nothing written (V6)."""
+    with closing(_open(tmp_path)) as conn:
+        with pytest.raises(MissingPayloadFieldError):
+            emit_event(
+                conn,
+                type="repo.state_observed",
+                payload={
+                    "repo_path": "/Users/allen/Projects/jarvis",
+                    "branch": "main",
+                    "head_sha": "a793784",
+                    "dirty_file_count": 0,
+                    "last_commit_subject": "chore: noop",
+                    "observed_at_ms": 1_700_000_000_000,
+                },
+                ts_epoch_ms=0,
+            )
+        assert list(iter_events(conn)) == []
+
+
+def test_emit_project_commit_seen_happy_path(tmp_path: Path) -> None:
+    """emit_event with every required field (incl. `actor`) round-trips."""
+    payload = {
+        "repo_path": "/Users/allen/Projects/jarvis",
+        "commit_sha": "a793784",
+        "subject": "feat(state): register ADR-0009 observation types",
+        "committed_at_ms": 1_700_000_000_000,
+        "actor": "observer",
+    }
+    with closing(_open(tmp_path)) as conn:
+        evt = emit_event(conn, type="project.commit_seen", payload=payload, ts_epoch_ms=0)
+        fetched = list(iter_events(conn))
+    assert evt.type == "project.commit_seen"
+    assert evt.schema_version == 1
+    assert evt.payload == payload
+    assert fetched == [evt]
+
+
+def test_emit_project_commit_seen_accepts_burst_cap_optionals(tmp_path: Path) -> None:
+    """`truncated` + `skipped_count` are optional; supplying them round-trips."""
+    with closing(_open(tmp_path)) as conn:
+        evt = emit_event(
+            conn,
+            type="project.commit_seen",
+            payload={
+                "repo_path": "/Users/allen/Projects/jarvis",
+                "commit_sha": "a793784",
+                "subject": "feat(state): register ADR-0009 observation types",
+                "committed_at_ms": 1_700_000_000_000,
+                "actor": "observer",
+                "truncated": True,
+                "skipped_count": 7,
+            },
+            ts_epoch_ms=0,
+        )
+    assert evt.payload["truncated"] is True
+    assert evt.payload["skipped_count"] == 7
+
+
+def test_emit_project_commit_seen_rejects_missing_actor(tmp_path: Path) -> None:
+    """Missing `actor` raises MissingPayloadFieldError; nothing written (V6)."""
+    with closing(_open(tmp_path)) as conn:
+        with pytest.raises(MissingPayloadFieldError):
+            emit_event(
+                conn,
+                type="project.commit_seen",
+                payload={
+                    "repo_path": "/Users/allen/Projects/jarvis",
+                    "commit_sha": "a793784",
+                    "subject": "feat(state): register ADR-0009 observation types",
+                    "committed_at_ms": 1_700_000_000_000,
+                },
+                ts_epoch_ms=0,
+            )
+        assert list(iter_events(conn)) == []
+
+
+def test_registry_action_dispatched_optional_has_result_expected_by_ms() -> None:
+    """ADR-0009 D4: `action.dispatched` gains optional `result_expected_by_ms`.
+
+    Additive optional field, schema_version stays 1; the supervisor sweep
+    reads it as the per-action deadline (spec §3.4.8).
+    """
+    schema = EventTypeRegistry.get("action.dispatched")
+    assert schema is not None
+    assert schema.required_payload == ("action_id",)
+    assert schema.optional_payload == ("result_expected_by_ms",)
+    assert schema.schema_version == 1
+
+
+def test_emit_action_dispatched_accepts_optional_result_expected_by_ms(
+    tmp_path: Path,
+) -> None:
+    """The dispatcher-stamped deadline round-trips through the payload."""
+    with closing(_open(tmp_path)) as conn:
+        evt = emit_event(
+            conn,
+            type="action.dispatched",
+            payload={"action_id": "A1", "result_expected_by_ms": 1_700_000_600_000},
+            ts_epoch_ms=0,
+        )
+    assert evt.payload["result_expected_by_ms"] == 1_700_000_600_000
+    assert evt.schema_version == 1
+
+
+def test_emit_surface_response_open_accepts_optional_attention_channel(
+    tmp_path: Path,
+) -> None:
+    """ADR-0009 D4: `attention_channel` rides the open header for TTS filtering."""
+    with closing(_open(tmp_path)) as conn:
+        evt = emit_event(
+            conn,
+            type="surface.response_open",
+            payload={
+                "turn_id": "T1",
+                "query": "supervisor sweep",
+                "kind": "text",
+                "attention_channel": "queue_review",
+            },
+            ts_epoch_ms=0,
+        )
+    assert evt.payload["attention_channel"] == "queue_review"
+    assert evt.schema_version == 1
 
 
 # --- emit_event happy path --------------------------------------------------

@@ -237,7 +237,12 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         event_type="action.dispatched",
         owner_layer="L4",
         required_payload=("action_id",),
-        optional_payload=(),
+        # ADR-0009 D4: `result_expected_by_ms` is the dispatcher-stamped
+        # deadline (per-tool budget + grace) the supervisor sweep reads to
+        # decide whether an open action is overdue (spec §3.4.8). Optional
+        # so pre-ADR-0009 rows stay valid; the sweep falls back to the
+        # dispatched ts + `supervisor.default_budget_s` for those.
+        optional_payload=("result_expected_by_ms",),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -453,7 +458,10 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # open header to route between sentence-streaming and full-text TTS
         # playback per spec §3.6.6. Optional so legacy emitters (and the
         # event-log unit tests that emit directly via emit_event) keep working.
-        optional_payload=("required_gate_mode",),
+        # ADR-0009 D4: ``attention_channel`` rides the same header so
+        # `_tts_watcher` / the WS broadcaster can drop `queue_review` /
+        # `silent_log` turns before they speak (spec §3.2.5 安静优先).
+        optional_payload=("required_gate_mode", "attention_channel"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -508,6 +516,56 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L5",
         required_payload=("turn_id", "exception_repr"),
         optional_payload=("trigger_event_id",),
+        schema_version=1,
+    ),
+    # --- ADR-0009 residency & perception extensions (§4 registry table) ---
+    #
+    # Both are `evidence_semantics=observation` per spec §5.4 — the
+    # registry dataclass does not yet carry that field (Day-1 kept only
+    # what emit_event consumes), so the semantics live here as the
+    # declaration of record until a consumer exists.
+    # owner_layer is L5: the repo observer is a Mac input adapter on the
+    # INPUTS/Surface row of spec §2.1.
+    # Provenance (ADR-0009 V6): the L2 schema has no actor column, so
+    # `actor` is a REQUIRED payload field on both types — the §5.1
+    # principal enumeration realized as a payload convention, exactly as
+    # `payload.by` already is for `task.verified`.
+    # Neither type joins any trigger tuple: observations fold silently
+    # (spec §3.4.1 / §3.2.5 安静优先).
+    EventTypeSchema(
+        event_type="repo.state_observed",
+        owner_layer="L5",
+        # Emitted only when a field changes (§3.6.1 emit-on-change ladder).
+        # `last_commit_subject` is capped at 200 chars by the producer per
+        # spec §3.3.9 bounded payloads; `branch` is the literal "HEAD" on a
+        # detached checkout so the contract stays total.
+        required_payload=(
+            "repo_path",
+            "branch",
+            "head_sha",
+            "dirty_file_count",
+            "last_commit_subject",
+            "observed_at_ms",
+            "actor",
+        ),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        # The spec-canonical name (§6 Drift Watch fold sources). One event
+        # per newly-seen first-parent commit; `truncated` + `skipped_count`
+        # ride the final event of a burst-capped poll so ADR-0010 can tell
+        # a gapped window from a contiguous one.
+        event_type="project.commit_seen",
+        owner_layer="L5",
+        required_payload=(
+            "repo_path",
+            "commit_sha",
+            "subject",
+            "committed_at_ms",
+            "actor",
+        ),
+        optional_payload=("truncated", "skipped_count"),
         schema_version=1,
     ),
 )
