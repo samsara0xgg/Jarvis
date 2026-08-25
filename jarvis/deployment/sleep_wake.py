@@ -153,6 +153,7 @@ _ACK_MESSAGES: Final[frozenset[int]] = frozenset(
 
 # The runloop thread publishes its CFRunLoop ref before parking; the
 # join bound keeps ``shutdown()`` from blocking the serve teardown.
+# MUST stay > _MARSHAL_ACK_BOUND_S — see the note on that constant.
 _RUNLOOP_READY_TIMEOUT_S: Final = 5.0
 _RUNLOOP_JOIN_TIMEOUT_S: Final = 5.0
 
@@ -443,6 +444,12 @@ def _real_observer_factory() -> PowerObserver:
 # regardless. The OS gives a bounded ack window and Jarvis never vetoes a
 # sleep; a missed bound degrades to the F3 wake-side reconciliation, which
 # is the mandatory half of spec §3.7.8 ("Sleep hook 不可靠").
+#
+# MUST stay < _RUNLOOP_JOIN_TIMEOUT_S. If a notification is in flight when
+# ``shutdown()`` runs, the CFRunLoop thread is blocked in ``finished.wait``
+# while the loop thread is blocked in ``thread.join`` — deadlocked on each
+# other until one bound expires. The shorter bound here is what breaks the
+# tie; inverting the two makes every such teardown pay the full join.
 _MARSHAL_ACK_BOUND_S: Final = 3.0
 
 

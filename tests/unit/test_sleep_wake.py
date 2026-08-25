@@ -552,6 +552,20 @@ def test_marshal_ack_bound_is_three_seconds() -> None:
     assert sleep_wake._MARSHAL_ACK_BOUND_S == 3.0  # noqa: SLF001 — the constant IS the contract.
 
 
+def test_marshal_ack_bound_is_shorter_than_the_runloop_join() -> None:
+    """The ack bound must expire BEFORE ``shutdown()``'s thread join.
+
+    A notification in flight when ``shutdown()`` runs deadlocks the two
+    threads against each other — the CFRunLoop thread waits on the
+    marshaled emit, the loop thread waits on ``thread.join``. The shorter
+    bound is what breaks the tie, so inverting these two would make every
+    such teardown pay the full join instead.
+    """
+    assert (
+        sleep_wake._MARSHAL_ACK_BOUND_S < sleep_wake._RUNLOOP_JOIN_TIMEOUT_S  # noqa: SLF001 — the ordering IS the contract.
+    )
+
+
 def test_marshaled_callback_returns_within_bound_when_loop_never_runs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
