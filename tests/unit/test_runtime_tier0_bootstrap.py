@@ -30,18 +30,25 @@ lazily and never calls ``chat``.
 
 from __future__ import annotations
 
+import dataclasses
 import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from jarvis.decision.pre_emit_phrases import COMPLETION_REGEXES
 from jarvis.decision.tier0 import match_tier0
-from jarvis.runtime import RuntimeBootstrapError, bootstrap_runtime_app
+from jarvis.runtime import RuntimeBootstrapError, bootstrap_runtime_app, drive_turn
+from jarvis.surface.cli import emit_surface_user_intent
+
+if TYPE_CHECKING:
+    from jarvis.decision.llm import LLMClient
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_PATH = _REPO_ROOT / "config" / "jarvis.yaml"
 _PROMPT_PATH = _REPO_ROOT / "prompts" / "jarvis_v1.md"
+_TIER0_PATH = _REPO_ROOT / "config" / "tier0_patterns.yaml"
 
 # Two structurally valid entries naming a tool ``regex_router`` really
 # may call. The regexes are deliberately ASCII toys — the shipped
@@ -83,6 +90,53 @@ def _make_config_dir(tmp_path: Path, *, tier0_yaml: str | None) -> Path:
     if tier0_yaml is not None:
         (config_dir / "tier0_patterns.yaml").write_text(tier0_yaml, encoding="utf-8")
     return config_dir
+
+
+class _ExplodingLLMClient:
+    """Stand-in LLM client; any ``chat`` call fails the Tier 0 pin below."""
+
+    def chat(self, **kwargs: object) -> object:  # noqa: ARG002 — stub ignores args.
+        """Raise — a Tier 0 hit driven through ``drive_turn`` must not reach here."""
+        msg = "drive_turn Tier 0 hit must not call the LLM"
+        raise AssertionError(msg)
+
+
+def test_drive_turn_routes_a_tier0_hit_without_the_llm(tmp_path: Path) -> None:
+    """``drive_turn`` MUST hand ``runtime.tier0_table`` to the DecideContext.
+
+    ``DecideContext.tier0_table`` defaults to ``None``, so dropping the
+    ``tier0_table=runtime.tier0_table`` line in ``drive_turn`` disables
+    Tier 0 in production while every other test stays green: the
+    decide()-level tests build their own DecideContext and the bootstrap
+    tests stop at ``JarvisRuntime.tier0_table``. Nothing else drives the
+    full bootstrap -> drive_turn -> decide chain.
+
+    Removing that line makes this test fail twice over — the exploding
+    client is called (Tier 2 fallback) and the response is not the
+    ``date_today`` template. The shipped whitelist is used verbatim, so
+    this also pins the template/payload contract: ``{spoken_date}`` must
+    be a key ``get_current_time`` actually returns, or
+    ``render_tier0_response`` falls back to its variables-missing line.
+    """
+    cfg = _make_config_dir(tmp_path, tier0_yaml=_TIER0_PATH.read_text(encoding="utf-8"))
+    rt = bootstrap_runtime_app(config_path=cfg / "jarvis.yaml", runtime_root=tmp_path / "rt")
+    rt = dataclasses.replace(rt, llm_client=cast("LLMClient", _ExplodingLLMClient()))
+    try:
+        intent = emit_surface_user_intent(rt.conn, transcript="今天几号", turn_id="T_tier0_wire")
+        result = drive_turn(rt, user_intent_event=intent)
+
+        prefix = "今天是"
+        assert result.response_text.startswith(prefix)
+        # Past the prefix there must be a real rendered date, not "".
+        assert result.response_text[len(prefix):].strip("。 \n")
+
+        proposed = [e for e in result.events_emitted if e.type == "action.proposed"]
+        assert len(proposed) == 1
+        assert proposed[0].payload["routed_by"] == "tier_0"
+        assert proposed[0].payload["pattern_id"] == "date_today"
+        assert proposed[0].payload["caller_principal"] == "regex_router"
+    finally:
+        rt.conn.close()
 
 
 def test_bootstrap_loads_tier0_table(tmp_path: Path) -> None:
