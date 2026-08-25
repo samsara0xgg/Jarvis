@@ -70,7 +70,11 @@ from jarvis.decision.intent import (
     tier_0_match,
     tool_definitions_for_llm,
 )
-from jarvis.decision.packet import SituationPacket, assemble_packet
+from jarvis.decision.packet import (
+    SituationPacket,
+    assemble_packet,
+    format_status_board_note,
+)
 from jarvis.decision.policy import EffectivePolicy, effective_policy
 from jarvis.decision.pre_emit_phrases import COMPLETION_REGEXES
 from jarvis.decision.resolver import (
@@ -789,6 +793,15 @@ def _run_tool_use_loop(
     open_tasks_note = _format_open_tasks_note(packet)
     if open_tasks_note is not None:
         messages.insert(0, {"role": "user", "content": open_tasks_note})
+    # ADR-0009 D6 (render half of Step 11): surface the folded Status
+    # Board the same way, so "repo X 现在什么状态" is answered from
+    # observer-folded state — with its §3.6.9 freshness wording — instead
+    # of the LLM reaching for git inside the turn (M6). Inserted ahead of
+    # the open-tasks note: ambient repo state is background, the Task
+    # Ledger snapshot keeps its position adjacent to the user turn.
+    status_board_note = format_status_board_note(packet)
+    if status_board_note is not None:
+        messages.insert(0, {"role": "user", "content": status_board_note})
     tools = tool_definitions_for_llm(
         [_tool_to_dict(t) for t in ctx.tool_registry.for_caller(CallerPrincipal.JARVIS_LLM)],
     )
