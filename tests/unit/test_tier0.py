@@ -51,6 +51,20 @@ def test_load_valid_file_two_patterns(tmp_path: Path) -> None:
     assert table[1].arg_template == {"goal": "$1"}
 
 
+def test_load_rejects_malformed_yaml_naming_the_file(tmp_path: Path) -> None:
+    """A YAML *syntax* error surfaces as Tier0ConfigError naming the file.
+
+    The header comment in ``config/tier0_patterns.yaml`` invites hand
+    edits, so an unbalanced quote is the likeliest operator mistake.
+    PyYAML's own mark says ``<unicode string>`` because the loader reads
+    the text before parsing, so the path has to come from us or the
+    operator is told nothing about *which* file to fix.
+    """
+    bad = '- id: x\n  pattern: "^x$\n  tool: get_current_time\n  template: "t"\n'
+    with pytest.raises(Tier0ConfigError, match=r"tier0_patterns\.yaml"):
+        load_tier0_table(_write(tmp_path, bad))
+
+
 def test_load_rejects_unanchored_pattern(tmp_path: Path) -> None:
     """A pattern without ``^...$`` fails fast naming the entry (spec §17)."""
     bad = '- id: x\n  pattern: "现在几点"\n  tool: get_current_time\n  template: "t"\n'

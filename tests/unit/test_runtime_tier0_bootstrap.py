@@ -113,6 +113,20 @@ def test_bootstrap_rejects_invalid_tier0_tool(tmp_path: Path) -> None:
         bootstrap_runtime_app(config_path=cfg / "jarvis.yaml", runtime_root=tmp_path / "rt")
 
 
+def test_bootstrap_rejects_malformed_tier0_yaml(tmp_path: Path) -> None:
+    """A YAML syntax error fails the boot as RuntimeBootstrapError, not a raw traceback.
+
+    Every CLI entry point catches :class:`RuntimeBootstrapError` and
+    prints a one-line diagnosis; a ``yaml.YAMLError`` escaping the load
+    would sail past all of them as an unhandled traceback naming no
+    file.
+    """
+    bad = '- id: x\n  pattern: "^x$\n  tool: get_current_time\n  template: "t"\n'
+    cfg = _make_config_dir(tmp_path, tier0_yaml=bad)
+    with pytest.raises(RuntimeBootstrapError, match=r"tier0_patterns\.yaml"):
+        bootstrap_runtime_app(config_path=cfg / "jarvis.yaml", runtime_root=tmp_path / "rt")
+
+
 def test_shipped_tier0_patterns_match_and_avoid_completion_language(tmp_path: Path) -> None:
     """The shipped whitelist boots, matches its target utterances, and stays scrub-safe.
 

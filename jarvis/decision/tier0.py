@@ -72,14 +72,24 @@ def load_tier0_table(path: Path) -> Tier0Table:  # noqa: C901, PLR0912 — one l
     """Parse + structurally validate the YAML whitelist at ``path``.
 
     Missing file → empty table (Tier 0 disabled, spec §17 Day-1 state).
-    Any malformed entry → :class:`Tier0ConfigError` naming the entry —
+    A YAML *syntax* error → :class:`Tier0ConfigError` naming the file
+    (PyYAML's own error names no path). Any malformed *entry* →
+    :class:`Tier0ConfigError` naming the entry —
     never a silent skip. That includes an ``args`` ``$N`` reference
     outside ``$1..$<group count>``, which would otherwise raise only
     once a live utterance hit the pattern.
     """
     if not path.is_file():
         return ()
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        # PyYAML's own marks read ``<unicode string>`` because we hand it
+        # text, not a stream — so the path has to come from us or the
+        # operator is told the line/column of an unnamed file. The file
+        # invites hand edits, making this the likeliest config error.
+        msg = f"tier0 patterns: {path} is not valid YAML: {exc}"
+        raise Tier0ConfigError(msg) from exc
     if raw is None:
         return ()
     if not isinstance(raw, list):
