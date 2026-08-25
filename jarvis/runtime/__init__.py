@@ -54,6 +54,7 @@ from jarvis.execution.tools import (
     ToolRegistry,
     build_default_registry,
     release_turn_actions,
+    turn_action_ids,
 )
 from jarvis.shared import CallerPrincipal, Event
 from jarvis.state.event_log import iter_events, open_event_log
@@ -359,11 +360,16 @@ def _latest_row_id(conn: sqlite3.Connection) -> int:
     return int(row[0])
 
 
+# Candidate rows for the in-turn waiter. NOT ``LIMIT 1``: since
+# ADR-0009 D4 the waiter also filters by action_id (see
+# :func:`_wait_for_next_trigger`), so a foreign orphan's terminal row
+# sitting at the head of the cursor must be skipped over rather than
+# blocking every later row this turn actually owns.
 _SELECT_NEXT_TRIGGER_SQL = (  # noqa: S608 — placeholders interpolation is over a hard-coded type tuple, not user input.
     "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
     "payload_json, source_event_id, correlation_json "
     "FROM events WHERE id > ? AND type IN ({placeholders}) "
-    "ORDER BY id ASC LIMIT 1"
+    "ORDER BY id ASC"
 ).format(placeholders=",".join("?" for _ in _RUNTIME_TRIGGER_TYPES))
 
 
@@ -399,10 +405,35 @@ def _hydrate_event_row(row: tuple[Any, ...]) -> Event:
     )
 
 
+def _event_action_id(event: Event) -> str | None:
+    """Return the action_id this event belongs to, or ``None``.
+
+    Correlation first (the canonical slot every L4 emitter fills via
+    ``_action_correlation``), payload second (all four trigger types
+    mirror the id there, and the supervisor sweep's
+    ``action.timeout_assumed`` fills both).
+
+    ADR-0009 D4 partitions terminal events between two consumers — the
+    in-turn waiter (``action_id`` IS one of the turn's own) and
+    ``_system_trigger_watcher`` (``action_id`` is in NO live turn's set).
+    Both predicates read the key through THIS function, so the two
+    filters are complements of one another by construction and no event
+    can be claimed twice or dropped by both.
+    """
+    for source in (event.correlation, event.payload):
+        if source is None:
+            continue
+        value = source.get("action_id")
+        if isinstance(value, str):
+            return value
+    return None
+
+
 def _wait_for_next_trigger(
     conn: sqlite3.Connection,
     *,
     after_id: int,
+    action_ids: frozenset[str],
     timeout: float,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
 ) -> tuple[Event, int]:
@@ -417,6 +448,18 @@ def _wait_for_next_trigger(
     emitted by the L4 handler when the Codex turn times out or the
     subprocess crashes; the runtime waiter must wake decide() so L3
     can fold a Limitation Claim).
+
+    Scoping (ADR-0009 D4 / F9). Type + ``after_id`` alone is NOT a
+    correlation: a supervisor sweep or wake reconciliation closing some
+    *foreign* orphan writes an ``action.timeout_assumed`` into the same
+    log, and the pre-D4 waiter would hand it to whichever turn happened
+    to be in flight — which then adopts the orphan's correlation and
+    ends the wrong turn with the wrong limitation. Every candidate row
+    is therefore matched against ``action_ids``, the set of actions THIS
+    turn dispatched; foreign rows are skipped over (the local cursor
+    still advances past them, so they are examined once, not once per
+    poll). This is a filter, not a new trigger type — the
+    ``_RUNTIME_TRIGGER_TYPES`` tuple is untouched.
 
     The runtime composition root explicitly polls across thread
     boundaries; ``time.sleep`` is the cleanest primitive here. The
@@ -433,6 +476,11 @@ def _wait_for_next_trigger(
         after_id: The most recent SQLite row id the caller has
             already consumed. Returned events all have ``id >
             after_id``.
+        action_ids: The action_ids this turn owns — read fresh per call
+            from :func:`jarvis.execution.tools.turn_action_ids` so an
+            action dispatched during the previous decide() iteration is
+            already in scope. A row whose ``action_id`` is outside this
+            set belongs to somebody else and is never returned.
         timeout: Hard wall-clock cap in seconds; raise
             :class:`TriggerWaitTimeout` if exceeded.
         poll_interval_s: Sleep between polls (default 10 ms).
@@ -447,19 +495,22 @@ def _wait_for_next_trigger(
             ``timeout`` seconds.
     """
     deadline = time.monotonic() + timeout
+    cursor_id = after_id
     while True:
-        cursor = conn.execute(
+        rows = conn.execute(
             _SELECT_NEXT_TRIGGER_SQL,
-            (after_id, *_RUNTIME_TRIGGER_TYPES),
-        )
-        row = cursor.fetchone()
-        if row is not None:
-            row_id = int(row[0])
-            return _hydrate_event_row(row), row_id
+            (cursor_id, *_RUNTIME_TRIGGER_TYPES),
+        ).fetchall()
+        for row in rows:
+            cursor_id = int(row[0])
+            event = _hydrate_event_row(row)
+            if _event_action_id(event) in action_ids:
+                return event, cursor_id
         if time.monotonic() >= deadline:
             msg = (
                 f"runtime: no trigger event of types {_RUNTIME_TRIGGER_TYPES!r} "
-                f"arrived within {timeout!r}s (after_id={after_id})."
+                f"for action_ids={sorted(action_ids)!r} arrived within "
+                f"{timeout!r}s (after_id={after_id})."
             )
             raise TriggerWaitTimeout(msg)
         time.sleep(poll_interval_s)
@@ -645,9 +696,13 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
 
             # No final plan -> decide() paused on an async tool. Wait for the
             # next L4-side trigger event.
+            # ADR-0009 D4 / F9 — the waiter is scoped to the actions THIS
+            # turn dispatched. Read fresh each iteration: the action
+            # that paused decide() was registered inside the call above.
             next_event, last_seen_id = _wait_for_next_trigger(
                 runtime.conn,
                 after_id=last_seen_id,
+                action_ids=turn_action_ids(effective_turn_id),
                 timeout=trigger_timeout_s,
             )
             trigger_event = next_event

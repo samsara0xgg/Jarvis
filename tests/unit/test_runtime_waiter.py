@@ -75,6 +75,7 @@ def test_wait_for_next_trigger_returns_on_action_timeout_assumed(tmp_path: Path)
         event, new_id = _wait_for_next_trigger(
             conn,
             after_id=after_id,
+            action_ids=frozenset({"A_to"}),
             timeout=1.0,
             poll_interval_s=0.01,
         )
@@ -115,6 +116,7 @@ def test_wait_for_next_trigger_returns_on_action_failed(tmp_path: Path) -> None:
         event, new_id = _wait_for_next_trigger(
             conn,
             after_id=after_id,
+            action_ids=frozenset({"A_fail"}),
             timeout=1.0,
             poll_interval_s=0.01,
         )

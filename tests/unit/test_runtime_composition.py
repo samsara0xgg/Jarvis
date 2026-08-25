@@ -172,6 +172,7 @@ def test_wait_for_next_trigger_returns_worker_reported(tmp_path: Path) -> None:
         event, new_id = _wait_for_next_trigger(
             conn,
             after_id=last_id,
+            action_ids=frozenset({"A_test"}),
             timeout=2.0,
             poll_interval_s=0.01,
         )
@@ -192,6 +193,7 @@ def test_wait_for_next_trigger_times_out_when_nothing_arrives(tmp_path: Path) ->
             _wait_for_next_trigger(
                 conn,
                 after_id=last_id,
+                action_ids=frozenset({"A_absent"}),
                 timeout=0.05,
                 poll_interval_s=0.01,
             )

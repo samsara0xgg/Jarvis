@@ -2100,6 +2100,20 @@ def live_action_ids() -> frozenset[str]:
         )
 
 
+def turn_action_ids(turn_id: str) -> frozenset[str]:
+    """Snapshot the action_ids ``turn_id`` alone owns (empty when unknown).
+
+    The per-turn narrowing of :func:`live_action_ids`, read by the
+    composition root's in-turn trigger waiter (ADR-0009 D4 / F9). The
+    waiter must accept ONLY its own actions' terminal events: the global
+    live set would still let one in-flight turn adopt a *concurrent*
+    turn's timeout — the daemon drives turns on worker threads, so two
+    can be live at once.
+    """
+    with _LIVE_ACTIONS_LOCK:
+        return frozenset(_LIVE_ACTIONS_BY_TURN.get(turn_id, ()))
+
+
 def _action_correlation(action_request: ActionRequest) -> dict[str, str]:
     """Build the canonical `{action_id, run_id?, turn_id?}` correlation mapping."""
     out: dict[str, str] = {"action_id": action_request.action_id}
@@ -2305,5 +2319,6 @@ __all__ = [
     "spawn_worker_handler",
     "tool_error",
     "tool_result",
+    "turn_action_ids",
     "verify_diff_handler",
 ]
