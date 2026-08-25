@@ -23,7 +23,11 @@ import jarvis.decision as decision_pkg
 from jarvis.decision.gates import attention_policy
 from jarvis.decision.packet import SituationPacket
 from jarvis.shared import Event
-from jarvis.state.projections import ClaimEvidenceProjection, TaskLedger
+from jarvis.state.projections import (
+    ClaimEvidenceProjection,
+    StatusBoard,
+    TaskLedger,
+)
 
 
 def _utterance_event(*, turn_id: str = "T1") -> Event:
@@ -121,6 +125,7 @@ def _build_packet(trigger: Event, *seed_events: Event) -> SituationPacket:
         open_tasks=snapshot.open_tasks(),
         current_turn_id="T1",
         current_run_id=None,
+        status_board=StatusBoard(),
     )
 
 

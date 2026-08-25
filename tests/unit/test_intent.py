@@ -16,7 +16,7 @@ from jarvis.decision.intent import (
 )
 from jarvis.decision.packet import SituationPacket
 from jarvis.shared import Event
-from jarvis.state.projections import TaskLedger
+from jarvis.state.projections import StatusBoard, TaskLedger
 
 
 def _packet_for(trigger: Event) -> SituationPacket:
@@ -29,6 +29,7 @@ def _packet_for(trigger: Event) -> SituationPacket:
         open_tasks=(),
         current_turn_id=None,
         current_run_id=None,
+        status_board=StatusBoard(),
     )
 
 

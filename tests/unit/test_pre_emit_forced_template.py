@@ -37,7 +37,12 @@ from jarvis.decision.gates import _COMPLETION_KEYWORDS
 from jarvis.decision.packet import SituationPacket
 from jarvis.decision.pre_emit_phrases import COMPLETION_REGEXES
 from jarvis.shared import Event
-from jarvis.state.projections import ClaimEvidenceProjection, TaskLedgerRecord, TaskLedgerSnapshot
+from jarvis.state.projections import (
+    ClaimEvidenceProjection,
+    StatusBoard,
+    TaskLedgerRecord,
+    TaskLedgerSnapshot,
+)
 
 if TYPE_CHECKING:
     from jarvis.shared import EvidenceLevel
@@ -198,6 +203,7 @@ def _packet_with_transcript(transcript: str) -> SituationPacket:
         open_tasks=(),
         current_turn_id=None,
         current_run_id=None,
+        status_board=StatusBoard(),
     )
 
 
@@ -264,6 +270,7 @@ def test_no_task_to_refer_to_false_when_open_tasks_exist() -> None:
         open_tasks=(record,),
         current_turn_id=None,
         current_run_id=None,
+        status_board=StatusBoard(),
     )
     assert _no_task_to_refer_to(packet) is False
 

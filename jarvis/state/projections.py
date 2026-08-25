@@ -10,7 +10,7 @@ Per spec.html §3.3.2 + §6 + §7 + §8 and ADR 0001 § Stub strategy (L2 row),
 § Acceptance criterion D + E + F (status derivation + integrity), and
 § Resolver contract (mentions `TaskLedgerSnapshot.open_tasks()`).
 
-Three projections are produced:
+Four projections are produced:
 
 1. **Task Ledger** — one record per `task_id` mentioned anywhere on the
    trace. Status is **DERIVED** (computed at read time), never stored.
@@ -24,6 +24,11 @@ Three projections are produced:
 3. **Claim / Evidence projection** — records every `claim.created` /
    `evidence.attached` event, indexed by `claim_id` and `subject_ref`,
    used by Pre-emit Gate via `strongest_level_for(subject_ref)`.
+
+4. **Status Board** — ADR-0009 D6: latest observed state per watched
+   repo (`repo.state_observed` + `project.commit_seen`), the last Mac
+   power transition (`mac.sleeping` / `mac.awake`), and every action
+   the log shows dispatched with no terminal event yet.
 
 `rebuild_projections(conn)` is the single L3-facing entry point — it reads
 all events from the connection and returns a frozen `ProjectionSet`.
@@ -645,12 +650,261 @@ def _fold_claim_evidence(events: Iterable[Event]) -> ClaimEvidenceProjection:
     )
 
 
+# --- StatusBoard --------------------------------------------------------------
+
+
+PowerState = Literal["awake", "sleeping"]
+"""Last observed Mac power state (spec §3.7.8 `mac.sleeping` / `mac.awake`)."""
+
+
+# Terminal action-lifecycle types that close an open action. Same set as the
+# supervisor sweep's `_TERMINAL_ACTION_EVENT_TYPES` in
+# `jarvis/deployment/sleep_wake.py` — `action.cancelled` is terminal in both
+# the L4 lifecycle FSM and the sleep/wake fold, so leaving it out here would
+# strand cancelled actions on the board as phantom open work forever
+# (ADR-0009 D6 calls this out by name).
+_STATUS_BOARD_TERMINAL_ACTION_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "action.result_observed",
+        "action.failed",
+        "action.timeout_assumed",
+        "action.cancelled",
+    },
+)
+
+
+@dataclass(frozen=True)
+class RepoObservation:
+    """Latest `repo.state_observed` for one watched repo (ADR-0009 D5 payload).
+
+    Attributes:
+        repo_path: Absolute path of the watched repo (the fold key).
+        branch: Current branch, or the literal `"HEAD"` on a detached
+            checkout — the producer keeps the contract total.
+        head_sha: Full HEAD sha as observed.
+        dirty_file_count: `git status --porcelain` line count.
+        last_commit_subject: Subject of HEAD's commit (producer-capped at
+            200 chars per spec §3.3.9 bounded payloads).
+        observed_at_ms: Producer-stamped observation time. This — not the
+            event's `ts_epoch_ms` — is what freshness wording is computed
+            against, because it is when the world was actually looked at.
+    """
+
+    repo_path: str
+    branch: str
+    head_sha: str
+    dirty_file_count: int
+    last_commit_subject: str
+    observed_at_ms: int
+
+
+@dataclass(frozen=True)
+class CommitObservation:
+    """Latest `project.commit_seen` for one watched repo.
+
+    Attributes:
+        repo_path: Absolute path of the watched repo (the fold key).
+        commit_sha: Commit sha of the newest commit seen for this repo.
+        subject: Commit subject (producer-capped at 200 chars).
+        committed_at_ms: Commit timestamp, epoch ms.
+        truncated: True when the producer burst-capped the poll that
+            emitted this event — the commit window is gapped, not
+            contiguous (ADR-0010 reads this).
+        skipped_count: How many commits the burst cap dropped, when the
+            producer reported it.
+    """
+
+    repo_path: str
+    commit_sha: str
+    subject: str
+    committed_at_ms: int
+    truncated: bool
+    skipped_count: int | None
+
+
+@dataclass(frozen=True)
+class PowerTransition:
+    """The last `mac.sleeping` / `mac.awake` transition on the log.
+
+    Attributes:
+        state: `"sleeping"` or `"awake"`.
+        ts_epoch_ms: Transition time as stamped in the payload (kernel
+            time for the real power-notification path).
+        slept_for_ms: Sleep duration carried by `mac.awake`; None for a
+            `mac.sleeping` transition.
+    """
+
+    state: PowerState
+    ts_epoch_ms: int
+    slept_for_ms: int | None
+
+
+@dataclass(frozen=True)
+class OpenAction:
+    """One action the log shows dispatched with no terminal event yet.
+
+    Attributes:
+        action_id: Canonical action identifier.
+        dispatched_ts_ms: `ts_epoch_ms` of its `action.dispatched` row.
+    """
+
+    action_id: str
+    dispatched_ts_ms: int
+
+
+@dataclass(frozen=True)
+class StatusBoard:
+    """Folded Status Board projection (spec §6, ADR-0009 D6).
+
+    "What is true about the machine right now" as distinct from "what is
+    true about the tasks" (Task Ledger). Full-refold like every other
+    projection here; Stage-2 incrementality stays deferred.
+
+    Fold sources are exactly the §6 canonical ones minus the two
+    domain-availability types that Mac-only scope does not yet register
+    (`domain_availability.changed` / `domain_projection.stale` — recorded
+    as ADR-0009 deviation V2, deliberately absent rather than forgotten).
+
+    Attributes:
+        repos: `repo_path → RepoObservation`, latest per repo.
+        latest_commits: `repo_path → CommitObservation`, latest per repo.
+        last_power_transition: Last `mac.*` transition, or None when the
+            log carries none.
+        open_actions: Actions dispatched with no terminal event, in
+            first-dispatched order.
+    """
+
+    repos: dict[str, RepoObservation] = field(default_factory=dict)
+    latest_commits: dict[str, CommitObservation] = field(default_factory=dict)
+    last_power_transition: PowerTransition | None = None
+    open_actions: tuple[OpenAction, ...] = ()
+
+    @classmethod
+    def from_events(cls, events: Iterable[Event]) -> StatusBoard:
+        """Fold `events` into a Status Board."""
+        return _fold_status_board(events)
+
+    def repos_by_recency(self) -> tuple[RepoObservation, ...]:
+        """Return observations newest-observed first; ties broken by path."""
+        return tuple(
+            sorted(
+                self.repos.values(),
+                key=lambda observation: (-observation.observed_at_ms, observation.repo_path),
+            ),
+        )
+
+    def last_wake_ts_ms(self) -> int | None:
+        """Epoch-ms of the most recent wake, or None if the last transition was a sleep.
+
+        Consumers use this to tell "observed before the machine woke" from
+        "merely old": an observation older than the wake cannot have seen
+        anything that happened during the sleep window.
+        """
+        transition = self.last_power_transition
+        if transition is None or transition.state != "awake":
+            return None
+        return transition.ts_epoch_ms
+
+
+def _payload_int(evt: Event, key: str) -> int | None:
+    """Return `evt.payload[key]` as an int, or None when absent / not an int.
+
+    Payloads round-trip through JSON, so the registry's "required field"
+    guarantee covers presence but not type. `bool` is rejected explicitly
+    (it is an `int` subclass and would silently fold to 0/1).
+    """
+    value = evt.payload.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _fold_repo_observation(repos: dict[str, RepoObservation], evt: Event) -> None:
+    """Fold one `repo.state_observed` row; last row in log order wins."""
+    repo_path = str(evt.payload["repo_path"])
+    observed_at_ms = _payload_int(evt, "observed_at_ms")
+    dirty_file_count = _payload_int(evt, "dirty_file_count")
+    repos[repo_path] = RepoObservation(
+        repo_path=repo_path,
+        branch=str(evt.payload["branch"]),
+        head_sha=str(evt.payload["head_sha"]),
+        dirty_file_count=0 if dirty_file_count is None else dirty_file_count,
+        last_commit_subject=str(evt.payload["last_commit_subject"]),
+        observed_at_ms=evt.ts_epoch_ms if observed_at_ms is None else observed_at_ms,
+    )
+
+
+def _fold_commit_observation(commits: dict[str, CommitObservation], evt: Event) -> None:
+    """Fold one `project.commit_seen` row; last row in log order wins."""
+    repo_path = str(evt.payload["repo_path"])
+    committed_at_ms = _payload_int(evt, "committed_at_ms")
+    commits[repo_path] = CommitObservation(
+        repo_path=repo_path,
+        commit_sha=str(evt.payload["commit_sha"]),
+        subject=str(evt.payload["subject"]),
+        committed_at_ms=evt.ts_epoch_ms if committed_at_ms is None else committed_at_ms,
+        truncated=bool(evt.payload.get("truncated", False)),
+        skipped_count=_payload_int(evt, "skipped_count"),
+    )
+
+
+def _fold_power_transition(evt: Event) -> PowerTransition:
+    """Build the transition record for one `mac.sleeping` / `mac.awake` row."""
+    state: PowerState = "sleeping" if evt.type == "mac.sleeping" else "awake"
+    ts_epoch_ms = _payload_int(evt, "ts_epoch_ms")
+    return PowerTransition(
+        state=state,
+        ts_epoch_ms=evt.ts_epoch_ms if ts_epoch_ms is None else ts_epoch_ms,
+        slept_for_ms=_payload_int(evt, "slept_for_ms"),
+    )
+
+
+def _fold_status_board(events: Iterable[Event]) -> StatusBoard:
+    """Single-pass fold producing the Status Board projection.
+
+    Open-action rule: `action.dispatched` opens an action, and any of the
+    four terminal types closes it. `action.cancelled` is one of the four —
+    an action closed by cancellation leaves the board, exactly as it
+    leaves the supervisor sweep's pending map.
+    """
+    repos: dict[str, RepoObservation] = {}
+    latest_commits: dict[str, CommitObservation] = {}
+    power_transition: PowerTransition | None = None
+    dispatched_ts_by_action: dict[str, int] = {}
+
+    for evt in events:
+        if evt.type == "repo.state_observed":
+            _fold_repo_observation(repos, evt)
+        elif evt.type == "project.commit_seen":
+            _fold_commit_observation(latest_commits, evt)
+        elif evt.type in ("mac.sleeping", "mac.awake"):
+            power_transition = _fold_power_transition(evt)
+        elif evt.type == "action.dispatched":
+            dispatched_ts_by_action.setdefault(
+                str(evt.payload["action_id"]), evt.ts_epoch_ms,
+            )
+        elif evt.type in _STATUS_BOARD_TERMINAL_ACTION_TYPES:
+            dispatched_ts_by_action.pop(str(evt.payload["action_id"]), None)
+
+    return StatusBoard(
+        repos=repos,
+        latest_commits=latest_commits,
+        last_power_transition=power_transition,
+        open_actions=tuple(
+            OpenAction(action_id=action_id, dispatched_ts_ms=dispatched_ts)
+            for action_id, dispatched_ts in dispatched_ts_by_action.items()
+        ),
+    )
+
+
 # --- ProjectionSet -----------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class ProjectionSet:
-    """Bundle of the three Day-1 projections produced by `rebuild_projections`.
+    """Bundle of the projections produced by `rebuild_projections`.
 
     Frozen so that comparison / equality semantics work for the
     rebuild-idempotency test (acceptance D5 / E4).
@@ -659,11 +913,13 @@ class ProjectionSet:
         task_ledger: Folded Task Ledger.
         recent_trace: Folded Recent Trace ring buffer.
         claim_evidence: Folded Claim/Evidence projection.
+        status_board: Folded Status Board (ADR-0009 D6).
     """
 
     task_ledger: TaskLedger
     recent_trace: RecentTrace
     claim_evidence: ClaimEvidenceProjection
+    status_board: StatusBoard
 
 
 def rebuild_projections(
@@ -671,7 +927,7 @@ def rebuild_projections(
     *,
     recent_trace_size: int = _RECENT_TRACE_DEFAULT_SIZE,
 ) -> ProjectionSet:
-    """Read all events from `conn` and fold all three projections.
+    """Read all events from `conn` and fold all four projections.
 
     Single SELECT-driven pass over the live Event Log via
     `iter_events(conn)` — no SQL writes, no projection tables touched.
@@ -686,7 +942,7 @@ def rebuild_projections(
 
     Returns:
         `ProjectionSet` carrying frozen `task_ledger`, `recent_trace`,
-        and `claim_evidence` projections.
+        `claim_evidence`, and `status_board` projections.
     """
     materialized = list(iter_events(conn))
     claim_evidence = _fold_claim_evidence(materialized)
@@ -699,6 +955,7 @@ def rebuild_projections(
         task_ledger=task_ledger,
         recent_trace=recent_trace,
         claim_evidence=claim_evidence,
+        status_board=_fold_status_board(materialized),
     )
 
 
@@ -714,8 +971,14 @@ def make_snapshot(conn: sqlite3.Connection) -> ProjectionSet:
 
 __all__ = [
     "ClaimEvidenceProjection",
+    "CommitObservation",
+    "OpenAction",
+    "PowerState",
+    "PowerTransition",
     "ProjectionSet",
     "RecentTrace",
+    "RepoObservation",
+    "StatusBoard",
     "TaskId",
     "TaskLedger",
     "TaskLedgerRecord",
