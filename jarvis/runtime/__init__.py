@@ -46,10 +46,11 @@ import yaml
 from jarvis.decision import DecideContext, LifecycleLike, ToolRegistryLike, decide
 from jarvis.decision.llm import LLMClient, load_llm_config
 from jarvis.decision.result_interpreter import emit_stash_conflict_surfacing
+from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime
 from jarvis.execution.diff_capture import StashError, restore_pretask_changes
 from jarvis.execution.tools import ActionLifecycle, ToolRegistry, build_default_registry
-from jarvis.shared import Event
+from jarvis.shared import CallerPrincipal, Event
 from jarvis.state.event_log import iter_events, open_event_log
 from jarvis.surface.cli import (
     PreEmitTokenError,
@@ -64,6 +65,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from jarvis.decision import ResponsePlan
+    from jarvis.decision.tier0 import Tier0Table
 
 
 LOGGER = logging.getLogger("jarvis.runtime")
@@ -151,6 +153,9 @@ class JarvisRuntime:
         llm_client: L3 multi-provider LLM client.
         system_prompt: Rendered system prompt string (verbatim
             content of ``prompts/jarvis_v1.md``).
+        tier0_table: Spec §17 Tier 0 whitelist loaded from
+            ``config/tier0_patterns.yaml``; empty tuple = Tier 0
+            disabled.
     """
 
     config: Mapping[str, Any]
@@ -160,6 +165,7 @@ class JarvisRuntime:
     lifecycle: ActionLifecycle
     llm_client: LLMClient
     system_prompt: str
+    tier0_table: Tier0Table = ()
 
 
 @dataclass(frozen=True)
@@ -236,6 +242,8 @@ def bootstrap_runtime_app(
     3. L4 registry + lifecycle — :func:`jarvis.execution.tools.build_default_registry`
        registers ``spawn_worker`` + ``verify_diff``; the
        :class:`ActionLifecycle` is per-process FSM.
+    3b. L3 Tier 0 whitelist — ``config/tier0_patterns.yaml`` parsed and
+       cross-checked against the registry's ``regex_router`` surface.
     4. L3 LLM client — :class:`jarvis.decision.llm.LLMClient` reads the
        ``llm:`` block from the YAML config. Lazy SDK construction —
        no network call until ``run_turn`` actually invokes ``chat``.
@@ -288,6 +296,22 @@ def bootstrap_runtime_app(
     registry = build_default_registry()
     lifecycle = ActionLifecycle()
 
+    # 3b. Spec §17 Tier 0 whitelist — sits next to jarvis.yaml so Allen
+    #     edits one config directory. Invalid content fails the boot
+    #     loudly (no silent pattern drops); missing file = Tier 0 off.
+    tier0_path = config_path.parent / "tier0_patterns.yaml"
+    try:
+        tier0_table = load_tier0_table(tier0_path)
+        regex_router_tools = registry.for_caller(CallerPrincipal.REGEX_ROUTER)
+        validate_tier0_table(
+            tier0_table,
+            allowed_tool_names=frozenset(t.name for t in regex_router_tools),
+            async_tool_names=frozenset(t.name for t in regex_router_tools if t.is_async),
+        )
+    except Tier0ConfigError as exc:
+        msg = f"runtime: {tier0_path} invalid: {exc}"
+        raise RuntimeBootstrapError(msg) from exc
+
     # 4. L3 LLM client.
     full_config = _load_full_config(config_path)
     llm_config = load_llm_config(config_path)
@@ -304,6 +328,7 @@ def bootstrap_runtime_app(
         lifecycle=lifecycle,
         llm_client=llm_client,
         system_prompt=system_prompt,
+        tier0_table=tier0_table,
     )
 
 
@@ -573,6 +598,7 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
         lifecycle=cast("LifecycleLike", runtime.lifecycle),
         llm_client=runtime.llm_client,
         system_prompt=runtime.system_prompt,
+        tier0_table=runtime.tier0_table,
     )
 
     # SQLite row id of the surface.user_intent event — used as the

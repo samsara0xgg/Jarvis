@@ -1,0 +1,19 @@
+# Tier 0 closed regex whitelist (spec §17). Loaded at daemon/CLI boot;
+# restart `python -m jarvis serve` after editing.
+#
+# Entry schema:
+#   id:       unique slug (shows up in action.proposed.pattern_id)
+#   pattern:  full-sentence anchored regex — MUST start with ^ and end with $
+#   tool:     a tool the regex_router principal may call (validated at boot)
+#   args:     optional str->str map; "$N" pulls regex capture group N
+#   template: response text; {name} fills from tool payload keys + args.
+#             NEVER use completion-class words (完成/已完成/done/verified) —
+#             the Pre-emit Gate downgrades them.
+- id: time_now
+  pattern: "^现在几点了?[?？。.!！]?$"
+  tool: get_current_time
+  template: "现在是{spoken_time}。"
+- id: date_today
+  pattern: "^今天(?:几号|星期几|周几)[?？。.!！]?$"
+  tool: get_current_time
+  template: "今天是{spoken_date}。"
