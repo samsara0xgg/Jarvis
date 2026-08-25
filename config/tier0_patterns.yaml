@@ -17,3 +17,22 @@
   pattern: "^今天(?:几号|星期几|周几)[?？。.!！]?$"
   tool: get_current_time
   template: "今天是{spoken_date}。"
+- id: open_in_vscode
+  pattern: "^(?:帮我)?用\\s*(?:[Vv][Ss]\\s?[Cc]ode|[Cc]ode)\\s*打开(.+?)[?？。.!！]?$"
+  tool: open_path
+  args:
+    query: "$1"
+    app: "vscode"
+  template: "正在用 VS Code 打开{opened_name}。"
+- id: open_target_suffixed
+  pattern: "^(?:帮我)?打开(.+?)(?:的)?(?:文件夹|文件|目录)[?？。.!！]?$"
+  tool: open_path
+  args:
+    query: "$1"
+  template: "正在打开{opened_name}。"
+- id: open_target_ascii
+  pattern: "^(?:帮我)?打开((?=[^?？。.!！]*[A-Za-z0-9]).+?)[?？。.!！]?$"
+  tool: open_path
+  args:
+    query: "$1"
+  template: "正在打开{opened_name}。"

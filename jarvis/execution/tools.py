@@ -102,6 +102,8 @@ from jarvis.execution.diff_capture import (
     isolate_pretask_changes,
     write_diff_artifact,
 )
+from jarvis.execution.path_resolver import TargetKind, load_file_targets_config
+from jarvis.execution.path_resolver import resolve as resolve_path_target
 from jarvis.execution.verify_command_detect import detect_verify_command
 from jarvis.shared import (
     ActionRequest,
@@ -1777,6 +1779,245 @@ def get_current_time_handler(
     )
 
 
+# --- open_path handler --------------------------------------------------------
+
+_OPEN_PATH_DEFAULT_TARGET_KIND: Final[str] = "any"
+_OPEN_PATH_DEFAULT_APP: Final[str] = "default"
+_OPEN_PATH_SUBPROCESS_TIMEOUT_S: Final[float] = 10.0
+
+
+@dataclass(frozen=True)
+class _OpenPathArgs:
+    """Parsed + validated arguments for `open_path_handler`."""
+
+    query: str
+    target_kind: TargetKind
+    app: Literal["default", "vscode"]
+
+
+def _parse_open_path_args(arguments: Mapping[str, Any]) -> _OpenPathArgs:
+    """Validate `open_path` arguments and return a typed bundle.
+
+    Raises (`KeyError` for the missing required `query`, `TypeError` for a
+    wrong type, an empty/whitespace-only query, or an out-of-enum value)
+    rather than returning a sentinel — the caller, `open_path_handler`,
+    catches both and turns them into a `tool_error(code="invalid_argument")`
+    RawResult (see `list_tasks_handler`'s `invalid_argument` shape for the
+    convention this mirrors). The schema's `enum`/`required` should catch
+    most of this first for `jarvis_llm` callers, but Tier 0's literal-string
+    `args` (spec §17) — and a Tier 0 capture group that strips to an empty
+    string, e.g. "帮我打开 。" — bypass schema validation entirely, so the
+    handler must defend here rather than let an unhandled exception strand
+    the lifecycle at `running`.
+    """
+    query = arguments["query"]
+    if not isinstance(query, str) or not query.strip():
+        msg = f"open_path: query must be a non-empty string (got {query!r})"
+        raise TypeError(msg)
+
+    target_kind = arguments.get("target_kind", _OPEN_PATH_DEFAULT_TARGET_KIND)
+    if target_kind not in ("file", "folder", "any"):
+        msg = f"open_path: target_kind must be one of file/folder/any (got {target_kind!r})"
+        raise TypeError(msg)
+
+    app = arguments.get("app", _OPEN_PATH_DEFAULT_APP)
+    if app not in ("default", "vscode"):
+        msg = f"open_path: app must be one of default/vscode (got {app!r})"
+        raise TypeError(msg)
+
+    return _OpenPathArgs(query=query, target_kind=target_kind, app=app)
+
+
+def _build_open_argv(path: Path, app: Literal["default", "vscode"]) -> tuple[list[str], str]:
+    """Build the `open`/`open -a` argv per the app + extension rules.
+
+    - `app == "vscode"` (file or folder) -> `open -a <editor_app> <path>`,
+      unconditionally — an explicit "用 VS Code 打开" request always wins.
+    - `app == "default"` and `path` is a file whose extension is in
+      `editor_extensions` -> also `open -a <editor_app> <path>`.
+    - Everything else (folders, non-editor files) -> the macOS default
+      handler, `open <path>`.
+
+    Returns `(argv, app_used)` where `app_used` is `editor_app` or the
+    literal string `"default"` — the latter feeds the success payload's
+    `app_used` field verbatim.
+    """
+    config = load_file_targets_config()
+    if app == "vscode":
+        return ["open", "-a", config.editor_app, str(path)], config.editor_app
+    if path.is_file() and path.suffix.lstrip(".").lower() in config.editor_extensions:
+        return ["open", "-a", config.editor_app, str(path)], config.editor_app
+    return ["open", str(path)], "default"
+
+
+def _open_path_error(  # noqa: PLR0913 — all kwargs are the shared sync-handler failure shape (conn/lifecycle/action_id/running_event_uid/code/message); splitting them into a bundle defeats the point of a shared helper.
+    *,
+    conn: sqlite3.Connection,
+    lifecycle: ActionLifecycle,
+    action_id: str,
+    running_event_uid: str,
+    code: str,
+    message: str,
+) -> RawResult:
+    """Shared `open_path` failure path: `action.result_observed(error)` + terminal-transition.
+
+    Mirrors `list_tasks_handler`'s `invalid_argument` failure shape — every
+    exit from a sync L4 handler, success or failure, emits exactly one
+    `action.result_observed` and transitions the lifecycle terminal before
+    returning (the invariant `_get_running_event_uid` documents at its call
+    sites).
+    """
+    tool_output_str = tool_error(message, code=code)
+    emit_event(
+        conn,
+        type="action.result_observed",
+        payload={
+            "action_id": action_id,
+            "semantics": "error",
+            "tool_output": tool_output_str,
+            "error": code,
+        },
+        source_event_id=running_event_uid,
+        correlation={"action_id": action_id},
+    )
+    lifecycle.transition(action_id, "result_observed")
+    return RawResult(
+        action_id=action_id,
+        semantics="error",
+        payload={"error": code},
+        tool_output=tool_output_str,
+        error=code,
+    )
+
+
+def open_path_handler(
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
+    lifecycle: ActionLifecycle,
+) -> RawResult:
+    """Open a file or folder on Allen's Mac by spoken name (spec §17 companion tool).
+
+    "打开 X" / "用 VS Code 打开 X" — Allen names a file or folder loosely
+    (an alias, a partial filename, a description); the handler resolves it
+    via :func:`jarvis.execution.path_resolver.resolve` (pure logic, no
+    event emission — see that module's docstring for the bookmark /
+    Spotlight / one-level-scan strategy and the ranking rule) and, on a
+    match, shells out to macOS `open`.
+
+    This handler owns exactly what `resolve()` deliberately does not:
+
+    - argv construction (`_build_open_argv`),
+    - the `open` subprocess call,
+    - the L4 event-emission + lifecycle-transition contract every sync
+      handler in this module follows — one `action.result_observed` +
+      one terminal `lifecycle.transition`, on EVERY exit path, success or
+      failure (see `create_task_handler` for the canonical success shape,
+      `list_tasks_handler` for the canonical failure shape this mirrors).
+
+    Arguments (`arguments` on `action_request`):
+        query: Required. Spoken name/description of the target.
+        target_kind: Optional `"file" | "folder" | "any"`, default `"any"`.
+        app: Optional `"default" | "vscode"`, default `"default"`.
+
+    Returns:
+        Success: `RawResult(semantics="observation", payload={"opened_name",
+        "opened_path", "app_used", "target_kind"})`.
+        Failure: `RawResult(semantics="error")` with `error` one of
+        `"invalid_argument"` (missing/empty `query` or an out-of-enum
+        `target_kind`/`app` — caught from `_parse_open_path_args`),
+        `"target_not_found"` (no candidate matched), or `"open_failed"`
+        (the `open` subprocess errored or exited non-zero). Every path,
+        success or failure, emits exactly one `action.result_observed`
+        and terminal-transitions the lifecycle before returning — no
+        exit leaves the lifecycle stranded at `running`.
+    """
+    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+
+    try:
+        args = _parse_open_path_args(action_request.arguments)
+    except (KeyError, TypeError) as exc:
+        return _open_path_error(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_request.action_id,
+            running_event_uid=running_event_uid,
+            code="invalid_argument",
+            message=f"open_path: {exc}",
+        )
+
+    target = resolve_path_target(args.query, args.target_kind, conn)
+    if target is None:
+        return _open_path_error(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_request.action_id,
+            running_event_uid=running_event_uid,
+            code="target_not_found",
+            message=f"open_path: no file/folder matched {args.query!r}",
+        )
+
+    argv, app_used = _build_open_argv(target.path, args.app)
+
+    try:
+        proc = subprocess.run(  # noqa: S603 — argv list, no shell; path comes only from resolve()'s home-scoped candidates.
+            argv,
+            timeout=_OPEN_PATH_SUBPROCESS_TIMEOUT_S,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _open_path_error(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_request.action_id,
+            running_event_uid=running_event_uid,
+            code="open_failed",
+            message=f"open_path: subprocess failed to start: {exc}",
+        )
+
+    if proc.returncode != 0:
+        stderr_tail = (proc.stderr or "").strip()[-_OUTPUT_TAIL_BYTES:]
+        return _open_path_error(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_request.action_id,
+            running_event_uid=running_event_uid,
+            code="open_failed",
+            message=f"open_path: `open` exited {proc.returncode}: {stderr_tail}",
+        )
+
+    payload: dict[str, Any] = {
+        "opened_name": target.display_name,
+        "opened_path": str(target.path),
+        "app_used": app_used,
+        "target_kind": args.target_kind,
+    }
+    tool_output_str = tool_result(payload)
+
+    emit_event(
+        conn,
+        type="action.result_observed",
+        payload={
+            "action_id": action_request.action_id,
+            "semantics": "observation",
+            "tool_output": tool_output_str,
+        },
+        source_event_id=running_event_uid,
+        correlation={"action_id": action_request.action_id},
+    )
+    lifecycle.transition(action_request.action_id, "result_observed")
+
+    return RawResult(
+        action_id=action_request.action_id,
+        semantics="observation",
+        payload=payload,
+        tool_output=tool_output_str,
+        error=None,
+    )
+
+
 # --- ToolRegistry ------------------------------------------------------------
 
 
@@ -2100,6 +2341,36 @@ _CREATE_TASK_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
     "required": ["goal"],
 }
 
+# open_path is L1 — a subprocess side effect (`open <path>`), so it sits
+# one rung above the L0 read-only observation tools even though it emits
+# no claim. `app` stays a plain default/vscode enum rather than an
+# arbitrary bundle-id string — the only Day-1 override is "force VS Code",
+# matching the two Tier 0 patterns in config/tier0_patterns.yaml.
+_OPEN_PATH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Spoken name or description of the file or folder to open.",
+        },
+        "target_kind": {
+            "type": "string",
+            "enum": ["file", "folder", "any"],
+            "description": "Restrict the match to a file, a folder, or either. Default 'any'.",
+        },
+        "app": {
+            "type": "string",
+            "enum": ["default", "vscode"],
+            "description": (
+                "'default' uses the macOS default handler (or the configured "
+                "editor for editor_extensions files); 'vscode' forces Visual "
+                "Studio Code regardless of extension. Default 'default'."
+            ),
+        },
+    },
+    "required": ["query"],
+}
+
 
 def build_default_registry() -> ToolRegistry:
     """Assemble the Day-1 ToolRegistry (`spawn_worker` + `verify_diff` + `create_task`).
@@ -2170,6 +2441,24 @@ def build_default_registry() -> ToolRegistry:
             handler=get_current_time_handler,
         )
     )
+    registry.register(
+        ToolDefinition(
+            name="open_path",
+            description=(
+                "Open a file or folder on Allen's Mac by spoken name (bookmark "
+                "alias, partial filename, or description). Use for '打开 X' / "
+                "'用 VS Code 打开 X' requests."
+            ),
+            allowed_callers=frozenset(
+                {CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM},
+            ),
+            risk_level="L1",
+            result_semantics="observation",
+            is_async=False,
+            input_schema=_OPEN_PATH_INPUT_SCHEMA,
+            handler=open_path_handler,
+        )
+    )
     return registry
 
 
@@ -2193,6 +2482,7 @@ __all__ = [
     "create_task_handler",
     "get_current_time_handler",
     "list_tasks_handler",
+    "open_path_handler",
     "spawn_worker_handler",
     "tool_error",
     "tool_result",
