@@ -22,10 +22,18 @@ Hard rules (canary ``test_canary_daemon_ack_before_fork``):
   :func:`jarvis.deployment.sleep_wake.install_power_observer` before
   running the turn (spec §3.7.8 — child owns the power observer).
 
+ADR-0009 D1 adds ``jarvis daemon install|uninstall|status``. Those verbs
+are deliberately THIN: every path, plist key, and ``launchctl``
+argument lives in :mod:`jarvis.deployment.launchd`, which is what keeps
+canary H8 (the runtime-root literal stays inside ``jarvis/deployment/``)
+green. This module only maps results to stdout and exit codes.
+
 Layer rules: ``jarvis.cli`` imports ``jarvis.runtime`` (and via that,
 the whole stack). It MUST NOT import the middle-layer siblings
 directly — ``.importlinter`` keeps cli above runtime, runtime above
-the four siblings.
+the four siblings. ``jarvis.deployment.launchd`` / ``process_lock`` are
+the documented exception: cli sits above deployment too, and the lock
+probe + daemon verbs are cli-owned operator surface.
 """
 
 from __future__ import annotations
@@ -38,7 +46,7 @@ import re
 import sys
 from pathlib import Path
 
-from jarvis.deployment import DEFAULT_RUNTIME_ROOT_LITERAL, process_lock
+from jarvis.deployment import DEFAULT_RUNTIME_ROOT_LITERAL, launchd, process_lock
 from jarvis.deployment.process_lock import ProcessLockHeld
 from jarvis.runtime import (
     PreEmitTokenError,
@@ -389,7 +397,28 @@ def _main_serve(argv: list[str]) -> int:
         default=None,
         help="Path to system prompt markdown.",
     )
+    parser.add_argument(
+        "--force-manual",
+        action="store_true",
+        default=False,
+        help=(
+            "Serve manually even though the LaunchAgent is installed. "
+            "Without this the command refuses (ADR-0009 D1) because a "
+            "manual daemon fights the launchd respawn for the same lock."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    # ADR-0009 D1 — a manual serve while the agent is installed loses the
+    # lock race against launchd's KeepAlive respawn (and vice versa). The
+    # plist's presence is the signal; refuse unless explicitly forced.
+    if launchd.is_agent_installed() and not args.force_manual:
+        sys.stderr.write(
+            f"jarvis serve: LaunchAgent {launchd.AGENT_LABEL} installed "
+            f"({launchd.plist_path()}); manual serve will fight respawn — "
+            "run `jarvis daemon uninstall` first, or pass --force-manual.\n"
+        )
+        return 2
 
     try:
         runtime = bootstrap_runtime_app(
@@ -429,6 +458,81 @@ def _main_serve(argv: list[str]) -> int:
         except OSError:
             LOGGER.exception("failed to close Event Log connection on serve exit")
 
+    return 0
+
+
+def _render_launchctl_step(step: launchd.LaunchctlResult) -> str:
+    """One ``launchctl`` line for the install / uninstall report."""
+    return f"  launchctl   : {' '.join(step.argv)} -> exit {step.returncode}"
+
+
+def _daemon_install() -> str:
+    """Run :func:`launchd.install` and render its result for the operator."""
+    result = launchd.install()
+    written = "written" if result.plist_changed else "unchanged (idempotent re-install)"
+    lines = [
+        f"jarvis daemon install: {launchd.service_target()} bootstrapped",
+        f"  plist       : {result.plist_path} ({written})",
+        f"  interpreter : {result.interpreter}",
+        f"  logs        : {result.logs_dir}",
+    ]
+    lines.extend(_render_launchctl_step(step) for step in result.steps)
+    return "\n".join(lines)
+
+
+def _daemon_uninstall(*, keep_plist: bool) -> str:
+    """Run :func:`launchd.uninstall` and render its result for the operator."""
+    result = launchd.uninstall(remove_plist=not keep_plist)
+    fate = "removed" if result.plist_removed else "left in place"
+    lines = [
+        f"jarvis daemon uninstall: {launchd.service_target()} booted out",
+        f"  plist       : {result.plist_path} ({fate})",
+    ]
+    lines.extend(_render_launchctl_step(step) for step in result.steps)
+    return "\n".join(lines)
+
+
+def _main_daemon(argv: list[str]) -> int:
+    """``jarvis daemon install|uninstall|status`` — ADR-0009 D1 verbs.
+
+    Thin by construction: :mod:`jarvis.deployment.launchd` owns every
+    path, plist key, and ``launchctl`` argument; this function only
+    parses argv, prints, and maps failures to exit codes.
+
+    Returns:
+        0 on success, 1 on any :class:`launchd.LaunchdError` (bad
+        interpreter, no GUI session, failed ``launchctl`` step).
+    """
+    parser = argparse.ArgumentParser(
+        prog=f"{_PROG} daemon",
+        description=(
+            "Manage the com.allen.jarvis LaunchAgent (ADR-0009 D1). "
+            "install is idempotent; uninstall stops the job regardless of "
+            "KeepAlive; status combines launchctl, the daemon lock, the "
+            "interpreter check, and log sizes."
+        ),
+    )
+    parser.add_argument("verb", choices=("install", "uninstall", "status"))
+    parser.add_argument(
+        "--keep-plist",
+        action="store_true",
+        default=False,
+        help="uninstall only: stop the job but leave the plist on disk.",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        if args.verb == "install":
+            report = _daemon_install()
+        elif args.verb == "uninstall":
+            report = _daemon_uninstall(keep_plist=args.keep_plist)
+        else:
+            report = launchd.format_status(launchd.status())
+    except launchd.LaunchdError as exc:
+        sys.stderr.write(f"jarvis daemon {args.verb}: {exc}\n")
+        return 1
+
+    print(report)  # noqa: T201 — operator-facing report is this verb's whole output.
     return 0
 
 
@@ -492,9 +596,10 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry. Routes ``serve`` to the daemon; otherwise to one-shot.
 
     Dispatch is purely positional: ``serve`` as the first argv element
-    routes to :func:`_main_serve`; everything else goes through
-    :func:`_main_oneshot` (which preserves the Day-1 argparse contract
-    so existing tests in ``tests/unit/test_cli_main.py`` keep passing).
+    routes to :func:`_main_serve`, ``daemon`` to :func:`_main_daemon`
+    (ADR-0009 D1); everything else goes through :func:`_main_oneshot`
+    (which preserves the Day-1 argparse contract so existing tests in
+    ``tests/unit/test_cli_main.py`` keep passing).
 
     Args:
         argv: argv-style list (without the program name). Default:
@@ -509,6 +614,8 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
     if argv and argv[0] == "serve":
         return _main_serve(argv[1:])
+    if argv and argv[0] == "daemon":
+        return _main_daemon(argv[1:])
     return _main_oneshot(argv)
 
 
