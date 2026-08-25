@@ -143,16 +143,26 @@ def _emit_response_open(
     turn_id: str,
     query: str,
     response_plan: ResponsePlanLike,
+    attention_channel: str,
 ) -> None:
     """Emit the ADR-0003 Step 2 ``surface.response_open`` event.
 
     Single emission per turn. Payload carries ``turn_id``, ``query``
     (the user transcript that triggered the turn — empty string allowed),
-    ``kind`` (always ``"text"`` for A1), and ``required_gate_mode``
+    ``kind`` (always ``"text"`` for A1), ``required_gate_mode``
     (ADR-0005 §7: L5 TTS consumers read this off the open header to
     route between sentence-streaming and full-text TTS playback per
     spec §3.6.6 — the same plan field already drives chunk-splitting
-    in :func:`_emit_response_chunks`).
+    in :func:`_emit_response_chunks`), and ``attention_channel``.
+
+    ``attention_channel`` (ADR-0009 §4 registry amendment, D4) is the
+    L3 verdict this render is executing. It already rides the terminal
+    ``surface.response_emitted`` audit event, but the streaming
+    consumers (``_tts_watcher`` / the WS broadcaster) key off the OPEN
+    header — they must know the channel BEFORE the first chunk arrives
+    to drop a turn that must not speak. The label is written verbatim,
+    including an unknown value: the audit trail records the L3 anomaly
+    rather than the ``silent_log`` surface fallback applied downstream.
     """
     emit_event(
         conn,
@@ -162,6 +172,7 @@ def _emit_response_open(
             "query": query,
             "kind": "text",
             "required_gate_mode": response_plan.required_gate_mode,
+            "attention_channel": attention_channel,
         },
         correlation={"turn_id": turn_id},
     )
@@ -234,7 +245,10 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
        still emits with the remaining (possibly empty) ``delivered_via``.
     5. When ``streaming_enabled=True`` (ADR-0003 Step 2, A1 daemon path),
        emits the 3-event Inherent taxonomy before the audit event:
-       one ``surface.response_open`` (carrying ``query`` + ``kind="text"``),
+       one ``surface.response_open`` (carrying ``query`` + ``kind="text"``
+       + ``attention_channel`` — ADR-0009 D4: the streaming consumers
+       read the channel off the open header so a non-speaking turn is
+       dropped before its first chunk),
        then one-or-more ``surface.response_chunk`` events gated by
        ``response_plan.required_gate_mode`` (``"sentence"`` -> one chunk
        per :func:`split_into_sentences` output; ``"full_text"`` /
@@ -385,6 +399,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
             turn_id=turn_id,
             query=query,
             response_plan=response_plan,
+            attention_channel=attention_channel,
         )
         _emit_response_chunks(conn, turn_id=turn_id, response_plan=response_plan)
 

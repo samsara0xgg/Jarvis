@@ -117,6 +117,43 @@ _DEFAULT_POLL_INTERVAL_S: float = 0.01
 # inherent-swift dev server (8001).
 _DEFAULT_PORT: int = 8006
 
+# --- ADR-0009 D4 "System turns are silent, enforced" ------------------------
+#
+# The daemon streams EVERY turn (``streaming_enabled=True``), so both
+# response consumers below see every turn's open/chunk/emitted triple
+# regardless of where L3 routed it. Step 8 gives them the L3 verdict:
+# ``attention_channel`` now rides the ``surface.response_open`` header
+# (ADR-0009 §4 registry amendment), which is the one event that arrives
+# BEFORE any chunk — the only place a turn can be dropped before it is
+# spoken.
+#
+# TTS suppression set. A supervisor-sweep orphan closure at 3am drives a
+# system turn whose Limitation routes to ``queue_review`` (the ADR-0002
+# Limitation-routing amendment); ``silent_log`` is the other non-speaking
+# verdict ``attention_policy`` can return. Neither channel lists a voice
+# surface in ``ATTENTION_CHANNEL_TO_SURFACES``, so feeding their chunks
+# to TTS contradicts the routing table and spec §3.2.5 安静优先.
+_TTS_SILENT_CHANNELS: frozenset[str] = frozenset({"queue_review", "silent_log"})
+
+# WS-broadcaster suppression set — deliberately NARROWER than the TTS
+# set, and this asymmetry is load-bearing:
+#
+# - ``silent_log`` maps to ``()`` in ``ATTENTION_CHANNEL_TO_SURFACES``:
+#   no physical surface at all. Dropping its envelopes is exactly what
+#   aligns the wire with the routing table.
+# - ``queue_review`` maps to ``("cli_stdout",)`` — it is a TEXT channel,
+#   and it is ``attention_policy``'s DEFAULT verdict for an ordinary
+#   user utterance (jarvis/decision/gates.py: the final ``return``).
+#   The daemon passes ``available_surfaces=frozenset()``, so this WS is
+#   the substitute for that ``cli_stdout``. Suppressing it would blank
+#   the Inherent text surface for nearly every turn and hang ADR-0009
+#   D2's forwarding CLI until its 120s timeout (exit 4).
+#
+# "Silent" in D4 means no audio, not no text: the queue_review turn
+# still lands on the card so Allen can read it when he comes back —
+# which is what "queue for review" means.
+_BROADCAST_SILENT_CHANNELS: frozenset[str] = frozenset({"silent_log"})
+
 # Watcher cursor SELECT — placeholders only, no user-controlled
 # interpolation. Mirrors the column order of
 # ``jarvis.state.event_log._SELECT_ALL_ORDERED_SQL``. The type filter
@@ -291,6 +328,51 @@ def _fetch_response_events_after(
     """
     cursor = conn.execute(_SELECT_RESPONSE_EVENTS_AFTER_ID_SQL, (after_id,))
     return [_row_to_id_event(row) for row in cursor]
+
+
+def _drop_for_silent_channel(
+    event: Event,
+    *,
+    turn_id: str,
+    silent_turns: set[str],
+    silent_channels: frozenset[str],
+    consumer: str,
+) -> bool:
+    """True when ``event`` belongs to a turn ``consumer`` must not deliver.
+
+    ADR-0009 D4. Shared by :func:`_response_watcher` and
+    :func:`_tts_watcher`, which differ only in their ``silent_channels``
+    set (see the two constants' comments for why the sets differ).
+
+    The L3 ``attention_channel`` verdict rides the ``surface.response_open``
+    header only (ADR-0009 §4), so a suppressed turn id is remembered
+    across its chunks and forgotten when its ``surface.response_emitted``
+    row arrives — the whole open/chunk*/emitted triple is dropped or
+    none of it is.
+
+    A missing (or non-string) ``attention_channel`` is deliberately NOT
+    silent: the pre-Step-8 behaviour — deliver and speak — stays the
+    default, so an emitter that predates the field (legacy rows, direct
+    ``emit_event`` callers) never loses its output. Suppression is
+    opt-in by an explicit channel label.
+    """
+    if event.type == "surface.response_open":
+        channel = event.payload.get("attention_channel")
+        if not (isinstance(channel, str) and channel in silent_channels):
+            return False
+        silent_turns.add(turn_id)
+        LOGGER.info(
+            "%s: turn_id=%s routed to %r — suppressed for this consumer (ADR-0009 D4).",
+            consumer,
+            turn_id,
+            channel,
+        )
+        return True
+    if turn_id not in silent_turns:
+        return False
+    if event.type == "surface.response_emitted":
+        silent_turns.discard(turn_id)
+    return True
 
 
 def _emit_turn_failed(
@@ -473,8 +555,17 @@ async def _response_watcher(
 
     Cursor anchoring mirrors :func:`_user_intent_watcher` — events
     that landed BEFORE this watcher started are not replayed.
+
+    Channel filter (ADR-0009 D4): a turn whose ``surface.response_open``
+    header declares a channel in :data:`_BROADCAST_SILENT_CHANNELS` is
+    dropped whole — open, chunks and done — so the wire never carries a
+    turn the L3 routing table gives no surface to. The turn id is
+    remembered from the open until its ``emitted`` closes it, because
+    only the open header carries the channel. See the constant's
+    comment for why this set is narrower than the TTS one.
     """
     after_id = _latest_id(runtime.conn)
+    silent_turns: set[str] = set()
     LOGGER.info("response_watcher started (after_id=%d)", after_id)
     try:
         while True:
@@ -484,6 +575,15 @@ async def _response_watcher(
             )
             for row_id, ev in new_events:
                 after_id = max(after_id, row_id)
+                turn_id = str(ev.payload.get("turn_id", ""))
+                if _drop_for_silent_channel(
+                    ev,
+                    turn_id=turn_id,
+                    silent_turns=silent_turns,
+                    silent_channels=_BROADCAST_SILENT_CHANNELS,
+                    consumer="response_watcher",
+                ):
+                    continue
                 if ev.type == "surface.response_open":
                     await broadcaster.broadcast_open(ev)
                 elif ev.type == "surface.response_chunk":
@@ -532,10 +632,20 @@ async def _tts_watcher(
     warning and continue; the surface broadcaster keeps running on the
     parallel cursor, so the UI is unaffected.
 
+    Channel filter (ADR-0009 D4 — "System turns are silent, enforced"):
+    a turn whose ``surface.response_open`` header declares a channel in
+    :data:`_TTS_SILENT_CHANNELS` never reaches the pipeline at all —
+    ``begin_turn`` is not called, its chunks are dropped, and its
+    ``emitted`` only clears the bookkeeping. The channel is known ONLY
+    from the open header, so the suppressed turn ids are remembered
+    until their ``emitted`` row closes them. This is a filter, not a
+    switch: a ``voice_notify`` turn streams exactly as before.
+
     Cancellation: re-raises :class:`asyncio.CancelledError` so the daemon
     shutdown path (Task 19) can await the watcher cleanly.
     """
     after_id = _latest_id(conn)
+    silent_turns: set[str] = set()
     LOGGER.info("tts_watcher started (after_id=%d)", after_id)
     try:
         while True:
@@ -552,6 +662,14 @@ async def _tts_watcher(
                 after_id = max(after_id, row_id)
                 try:
                     turn_id = str(ev.payload.get("turn_id", ""))
+                    if _drop_for_silent_channel(
+                        ev,
+                        turn_id=turn_id,
+                        silent_turns=silent_turns,
+                        silent_channels=_TTS_SILENT_CHANNELS,
+                        consumer="tts_watcher",
+                    ):
+                        continue
                     if ev.type == "surface.response_open":
                         gate_mode = ev.payload.get("required_gate_mode", "sentence")
                         await asyncio.to_thread(

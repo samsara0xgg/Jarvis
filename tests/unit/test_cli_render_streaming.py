@@ -181,6 +181,7 @@ def test_streaming_sentence_mode_emits_open_two_chunks_then_emitted(
         "query": "hi",
         "kind": "text",
         "required_gate_mode": "sentence",
+        "attention_channel": "voice_notify",
     }
     assert open_row.correlation == {"turn_id": "T_stream_sent"}
 
@@ -332,6 +333,7 @@ def test_streaming_with_empty_query_still_emits_open(
         "query": "",
         "kind": "text",
         "required_gate_mode": "sentence",
+        "attention_channel": "voice_notify",
     }
 
 

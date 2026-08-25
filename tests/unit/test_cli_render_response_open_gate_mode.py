@@ -45,7 +45,13 @@ def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 def test_response_open_payload_carries_gate_mode(conn: sqlite3.Connection) -> None:
     """``full_text`` plans land their gate mode on the open payload verbatim."""
     plan = _PlanStub(required_gate_mode="full_text")
-    _emit_response_open(conn, turn_id="T1", query="hi", response_plan=plan)
+    _emit_response_open(
+        conn,
+        turn_id="T1",
+        query="hi",
+        response_plan=plan,
+        attention_channel="voice_notify",
+    )
     row = conn.execute(
         "SELECT payload_json FROM events WHERE type='surface.response_open' "
         "ORDER BY id DESC LIMIT 1"
@@ -59,7 +65,13 @@ def test_response_open_payload_defaults_when_plan_is_sentence(
 ) -> None:
     """``sentence`` plans land ``"sentence"`` on the open payload (no rewrite)."""
     plan = _PlanStub(required_gate_mode="sentence")
-    _emit_response_open(conn, turn_id="T2", query="", response_plan=plan)
+    _emit_response_open(
+        conn,
+        turn_id="T2",
+        query="",
+        response_plan=plan,
+        attention_channel="voice_notify",
+    )
     row = conn.execute(
         "SELECT payload_json FROM events WHERE type='surface.response_open' "
         "ORDER BY id DESC LIMIT 1"

@@ -212,6 +212,7 @@ def test_drive_turn_streaming_enabled_true_emits_three_event_taxonomy(
         "query": "你好世界",
         "kind": "text",
         "required_gate_mode": "sentence",
+        "attention_channel": "voice_notify",
     }, f"surface.response_open payload mismatch: {open_payload!r}"
 
 
@@ -253,6 +254,7 @@ def test_drive_turn_streaming_with_missing_transcript_defaults_query_to_empty(
         "query": "",
         "kind": "text",
         "required_gate_mode": "sentence",
+        "attention_channel": "voice_notify",
     }, f"surface.response_open payload mismatch: {open_payload!r}"
 
 
