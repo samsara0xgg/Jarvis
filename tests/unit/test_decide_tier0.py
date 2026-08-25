@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.decision import (
+    _TIER0_TOOL_ERROR_TEXT,
     DecideContext,
     LifecycleLike,
     RuntimePathsLike,
@@ -21,6 +22,7 @@ from jarvis.decision import (
     decide,
 )
 from jarvis.decision.llm import ChatResult, LLMClient
+from jarvis.decision.pre_emit_phrases import COMPLETION_REGEXES
 from jarvis.decision.tier0 import load_tier0_table, validate_tier0_table
 from jarvis.execution.tools import (
     ActionLifecycle,
@@ -29,7 +31,7 @@ from jarvis.execution.tools import (
     build_default_registry,
     get_current_time_handler,
 )
-from jarvis.shared import CallerPrincipal
+from jarvis.shared import CallerPrincipal, RawResult
 from jarvis.state.event_log import emit_event, open_event_log
 
 if TYPE_CHECKING:
@@ -38,7 +40,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.decision.tier0 import Tier0Table
-    from jarvis.shared import Event
+    from jarvis.shared import ActionRequest, Event
 
 
 @dataclass(frozen=True)
@@ -196,6 +198,56 @@ def _registry_with_regex_only_tool() -> ToolRegistry:
     return registry
 
 
+_ERROR_SLOT_TOOL = "error_slot_probe"
+
+_ERROR_SLOT_YAML = (
+    "- id: error_probe\n"
+    '  pattern: "^现在几点$"\n'
+    f"  tool: {_ERROR_SLOT_TOOL}\n"
+    '  template: "探针 {spoken_time}"\n'
+)
+
+# A handler error tag that is itself completion-class (``\bdone\b``).
+# Handler error tags are developer strings, not curated user copy, so
+# nothing stops one from reading like a completion claim.
+_COMPLETION_FLAVORED_ERROR = "task done but verification failed"
+
+
+def _error_slot_handler(
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,  # noqa: ARG001 — signature uniformity; no events needed.
+    runtime_paths: object,  # noqa: ARG001 — signature uniformity.
+    lifecycle: ActionLifecycle,
+) -> RawResult:
+    """Fail the action and return an error slot carrying a completion keyword."""
+    lifecycle.transition(action_request.action_id, "failed")
+    return RawResult(
+        action_id=action_request.action_id,
+        semantics="error",
+        payload={},
+        tool_output=None,
+        error=_COMPLETION_FLAVORED_ERROR,
+    )
+
+
+def _registry_with_error_slot_tool() -> ToolRegistry:
+    """Default registry plus a regex_router tool that always errors."""
+    registry = build_default_registry()
+    registry.register(
+        ToolDefinition(
+            name=_ERROR_SLOT_TOOL,
+            description="probe that always returns an error slot",
+            allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER}),
+            risk_level="L0",
+            result_semantics="error",
+            is_async=False,
+            input_schema={"type": "object", "properties": {}},
+            handler=_error_slot_handler,
+        ),
+    )
+    return registry
+
+
 def _emit_intent(conn: sqlite3.Connection, transcript: str) -> Event:
     """Emit the ``surface.user_intent`` trigger that drives ``decide()``."""
     return emit_event(
@@ -289,6 +341,57 @@ def test_tier0_resolves_regex_router_only_tool(tmp_path: Path) -> None:
             "SELECT COUNT(*) FROM events WHERE type='action.result_observed'",
         ).fetchone()
         assert int(row[0]) == 1
+    finally:
+        conn.close()
+
+
+def test_tier0_tool_error_never_reaches_the_llm_or_the_surface(tmp_path: Path) -> None:
+    """An erroring Tier 0 tool must answer with fixed text, not the handler's tag.
+
+    Interpolating ``primary_slot.error`` into the draft made the Tier 0
+    reply a function of developer error strings. With an open task in
+    scope (so ``_finalize_response`` picks a real active subject with no
+    verified Postcondition), an error tag containing a completion
+    keyword drove the Pre-emit Gate to ``downgrade_required`` — and the
+    downgrade path re-prompts ``ctx.llm_client.chat``. That breaks the
+    one invariant Tier 0 exists for: no LLM on this path. The exploding
+    stub below is the proof; the seeded open task is what makes the
+    subject non-None.
+    """
+    p = tmp_path / "error_probe.yaml"
+    p.write_text(_ERROR_SLOT_YAML, encoding="utf-8")
+    registry = _registry_with_error_slot_tool()
+    ctx, conn = _build_ctx(
+        tmp_path,
+        llm=_ExplodingLLMClient(),
+        tier0_table=load_tier0_table(p),
+        registry=registry,
+    )
+    try:
+        emit_event(
+            conn,
+            type="task.created",
+            payload={"task_id": "task_open", "goal": "unverified work", "source": "manual"},
+        )
+        result = decide(_emit_intent(conn, "现在几点"), ctx)
+
+        assert result.response_plan is not None
+        assert result.response_plan.text == _TIER0_TOOL_ERROR_TEXT
+        assert _COMPLETION_FLAVORED_ERROR not in result.response_plan.text
+        for regex in COMPLETION_REGEXES:
+            assert regex.search(result.response_plan.text) is None
+
+        # Exactly one Pre-emit verdict (attempt 0) — attempts 1/2 exist
+        # only on the downgrade path, which is where the LLM re-prompt
+        # lives.
+        pre_emit_rows = [
+            e for e in result.events_emitted
+            if e.type == "gate.evaluated" and e.payload.get("gate") == "pre_emit"
+        ]
+        assert [e.payload["attempt"] for e in pre_emit_rows] == [0]
+        # An open task WAS in scope — otherwise the gate short-circuits
+        # and this test would pass for the wrong reason.
+        assert pre_emit_rows[0].payload["outcome"] == "force_limitation_language"
     finally:
         conn.close()
 

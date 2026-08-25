@@ -861,6 +861,14 @@ def _run_tool_use_loop(
 
 _TIER0_GATE_REFUSED_TEXT: Final[str] = "这条指令被 Pre-action Gate 拦下，未执行。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
 
+# Fixed, scrub-safe text for an erroring Tier 0 tool. MUST stay free of
+# completion-class keywords (完成 / 已完成 / done / verified): a Tier 0
+# draft that trips the Pre-emit Gate's downgrade path would re-prompt
+# the LLM, which is exactly what this path exists to avoid. The
+# handler's own error tag is a developer string and goes to the log,
+# never to the voice surface.
+_TIER0_TOOL_ERROR_TEXT: Final[str] = "这条指令执行出错，未产生结果。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
+
 
 def _run_tier0_path(
     hit: Tier0Hit,
@@ -972,7 +980,17 @@ def _run_tier0_path(
 
     primary_slot = bundle.slots[0]
     if primary_slot.error is not None:
-        draft = f"这条指令执行出错（{primary_slot.error}），未产生结果。"  # noqa: RUF001 — fullwidth parens/comma/period are intentional Chinese punctuation.
+        # The error tag is a developer string: it can carry anything,
+        # including completion-class wording that would push
+        # _finalize_response onto the LLM-retry path. Keep it in the log
+        # and answer with fixed, scrub-safe text.
+        LOGGER.warning(
+            "tier0: pattern %r tool %r returned error slot %r — answering with fixed text",
+            hit.pattern_id,
+            hit.tool_name,
+            primary_slot.error,
+        )
+        draft = _TIER0_TOOL_ERROR_TEXT
     else:
         draft = render_tier0_response(hit, primary_slot.payload)
     return _finalize_response(draft, packet, ctx, scratch)
