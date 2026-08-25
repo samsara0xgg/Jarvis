@@ -2129,3 +2129,42 @@ guesses against the real emitted schema (semantics, evidence vs claim fields,
 pre_emit `outcome`, reviewer evidence is a row not a Limitation claim). The
 live J12 broken-precondition seam remains a documented TODO (the
 true-empty-diff route A is now covered — Variant 5 above).
+
+---
+
+# ADR-0009 Build Progress
+
+ADR: `docs/adr/0009-residency-and-perception.md` (Approved 2026-08-25).
+Branch `worktree-adr0009-residency`. Steps follow ADR §7 build order.
+
+## Step 0 — Spike: power-notification proof (ctypes-IOKit) — GREEN
+
+- Files: `scripts/spike_power_observer.py` (standalone proof script;
+  ruff + mypy-strict clean; not imported by `jarvis/`).
+- **Verdict: ctypes-IOKit is the D3 mechanism. No ADR amendment needed;
+  the NSWorkspace fallback stays unexercised and PyObjC stays out of
+  `pyproject.toml`.**
+- Proof run (2026-08-25, real `pmset sleepnow`, machine slept ~30s,
+  manual key-press wake; log timestamps UTC):
+  - `19:05:29 registered root_port=3843` + `runloop_entering` — plain
+    background process (no NSApplication), CFRunLoop on a dedicated
+    non-main thread, exactly the Step-3 target architecture.
+  - `19:05:37 will_sleep arg=1035796631` →
+    `allow_power_change rc=0` — before-sleep callback fired on the
+    runloop thread; `IOAllowPowerChange` acked with KERN_SUCCESS.
+  - `19:06:07 will_power_on` → `has_powered_on` — both wake-side
+    callbacks fired immediately on wake.
+  - `kIOMessageCanSystemSleep` did NOT fire — `pmset sleepnow` is a
+    forced sleep and skips the can-sleep poll; the Step-3 observer must
+    not depend on it (D3 already allows it immediately when it does).
+  - Dry run (no sleep) also proved the D3 teardown order:
+    `IODeregisterForSystemPower` → `CFRunLoopStop` → `join` →
+    `IONotificationPortDestroy` exits the runloop thread cleanly
+    (`runloop_exited`, `thread_alive=False`).
+- Observation for F8: `time.monotonic()` advanced ~30s across the ~30s
+  sleep window on this Apple-Silicon machine — do NOT rely on monotonic
+  pausing during sleep; `slept_for_ms` must come from
+  `kern.sleeptime`/`kern.waketime` sysctls (already pinned in D3).
+- Tier 1: docs-only + standalone script — package gates unaffected
+  (ruff/mypy strict pass on the script itself).
+- Next: Step 1 (env-file loader).
