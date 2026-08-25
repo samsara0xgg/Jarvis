@@ -85,6 +85,7 @@ from jarvis.decision.result_interpreter import (
     result_interpreter,
 )
 from jarvis.decision.reviewer import ReviewerVerdict, review_diff
+from jarvis.decision.tier0 import render_tier0_response
 from jarvis.shared import (
     ActionRequest,
     CallerPrincipal,
@@ -100,6 +101,7 @@ if TYPE_CHECKING:
     import sqlite3
 
     from jarvis.decision.llm import ChatResult, LLMClient
+    from jarvis.decision.tier0 import Tier0Hit, Tier0Table
     from jarvis.shared import EvidenceLevel, RiskLevel
 
 LOGGER = logging.getLogger(__name__)
@@ -467,6 +469,15 @@ class ToolRegistryLike(Protocol):
     the real registry; tests build minimal duck-typed substitutes.
     """
 
+    def get_definitions(self) -> tuple[ToolDefinitionLike, ...]:
+        """Return every registered tool, unfiltered by caller.
+
+        Used for caller-blind NAME resolution (Tier 0), where deciding
+        whether the principal may actually call the tool is the
+        Pre-action Gate's job, not the lookup's.
+        """
+        ...
+
     def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolDefinitionLike, ...]:
         """Return tools this caller may dispatch."""
         ...
@@ -531,6 +542,10 @@ class DecideContext:
         system_prompt: Rendered system prompt string (loaded from
             ``prompts/jarvis_v1.md`` by the caller).
         max_tool_iterations: Safety bound on the tool-use loop.
+        tier0_table: Compiled Tier 0 regex whitelist (spec §17) the
+            composition root loaded from ``config/tier0_patterns.yaml``.
+            ``None`` (or an empty table) disables Tier 0 — every turn
+            falls through to the Tier 2 LLM loop.
     """
 
     conn: sqlite3.Connection
@@ -540,6 +555,7 @@ class DecideContext:
     llm_client: LLMClient
     system_prompt: str
     max_tool_iterations: int = _DEFAULT_MAX_TOOL_ITERATIONS
+    tier0_table: Tier0Table | None = None
 
 
 @dataclass(frozen=True)
@@ -686,8 +702,12 @@ def _handle_utterance(
     )
     scratch.events.append(started_event)
 
-    # Tier 0 deterministic shortcut. Day-1 always None.
-    tier_0_match(packet)
+    # Tier 0 deterministic shortcut (spec §17): hit → dispatch through
+    # the full gate/audit chain with caller_principal=regex_router,
+    # LLM never invoked. Miss / no table → Tier 2 loop.
+    hit = tier_0_match(packet, ctx.tier0_table)
+    if hit is not None:
+        return _run_tier0_path(hit, packet, policy, ctx, scratch)
 
     # Tier 2 tool-use loop. Each iteration calls the LLM, dispatches any
     # tool_calls (with full Resolver + Pre-action Gate + Result
@@ -837,6 +857,125 @@ def _run_tool_use_loop(
     LOGGER.warning("decide(): tool-use loop hit max_iterations=%d", ctx.max_tool_iterations)
     fallback = "tool-use loop exhausted; turn incomplete."
     return _finalize_response(fallback, packet, ctx, scratch)
+
+
+_TIER0_GATE_REFUSED_TEXT: Final[str] = "这条指令被 Pre-action Gate 拦下，未执行。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
+
+
+def _run_tier0_path(
+    hit: Tier0Hit,
+    packet: SituationPacket,
+    policy: EffectivePolicy,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> DecideResult:
+    """Dispatch one Tier 0 whitelist hit (spec §17) without the LLM.
+
+    Mirrors :func:`_dispatch_one_tool_call` steps 2-7b for a sync,
+    entity-free tool with ``caller_principal=REGEX_ROUTER``: proposed →
+    Pre-action Gate → authorized → L4 dispatch → Result Interpreter →
+    deterministic template text → :func:`_finalize_response` (Pre-emit
+    Gate + attention). Spec §3.5.2: "低延迟路径，但仍要过 entity /
+    policy / risk gate".
+
+    An entry naming an unknown or async tool is a table
+    misconfiguration that ``validate_tier0_table`` normally rejects at
+    bootstrap; reaching it here degrades to the Tier 2 loop rather than
+    failing the turn.
+    """  # noqa: RUF002 — fullwidth punctuation is verbatim spec §3.5.2 Chinese quotation.
+    tool_def = _find_registered_tool_def(ctx.tool_registry, hit.tool_name)
+    if tool_def is None or tool_def.is_async:
+        LOGGER.warning(
+            "tier0: pattern %r targets unusable tool %r — falling back to LLM",
+            hit.pattern_id,
+            hit.tool_name,
+        )
+        return _run_tool_use_loop(packet, policy, ctx, scratch)
+
+    action_id = _new_action_id()
+    action_request = ActionRequest(
+        action_id=action_id,
+        tool_name=hit.tool_name,
+        target_entity_ref=None,
+        caller_principal=CallerPrincipal.REGEX_ROUTER,
+        risk_level=tool_def.risk_level,
+        arguments=dict(hit.tool_args),
+        authorization_lease=None,
+        run_id=None,
+        turn_id=scratch.turn_id,
+    )
+    proposed_event = emit_event(
+        ctx.conn,
+        type="action.proposed",
+        payload={
+            "action_id": action_id,
+            "tool_name": hit.tool_name,
+            "caller_principal": CallerPrincipal.REGEX_ROUTER.value,
+            "risk_level": tool_def.risk_level,
+            "target_entity_ref": None,
+            "turn_id": scratch.turn_id,
+            "arguments": dict(hit.tool_args),
+            "routed_by": "tier_0",
+            "pattern_id": hit.pattern_id,
+        },
+        correlation=_action_correlation(action_request),
+    )
+    scratch.events.append(proposed_event)
+
+    gate = pre_action_gate(action_request, policy, packet.task_ledger_snapshot)
+    gate_event = emit_event(
+        ctx.conn,
+        type="gate.evaluated",
+        payload={
+            "gate": "pre_action",
+            "outcome": gate.outcome,
+            "reasons": list(gate.reasons),
+            "check_results": dict(gate.check_results),
+            "action_id": action_id,
+        },
+        source_event_id=proposed_event.event_uid,
+        correlation=_action_correlation(action_request),
+    )
+    scratch.events.append(gate_event)
+    if gate.outcome != "pass":
+        # No LLM to adapt on this path (that is the point of Tier 0), so
+        # the refusal itself is the user-facing text.
+        return _finalize_response(_TIER0_GATE_REFUSED_TEXT, packet, ctx, scratch)
+
+    authorized_event = emit_event(
+        ctx.conn,
+        type="action.authorized",
+        payload={"action_id": action_id},
+        source_event_id=gate_event.event_uid,
+        correlation=_action_correlation(action_request),
+    )
+    scratch.events.append(authorized_event)
+    ctx.lifecycle.register(action_id)
+    ctx.lifecycle.transition(action_id, "authorized")
+
+    bundle = ctx.tool_registry.dispatch(
+        action_request, ctx.conn, ctx.runtime_paths, ctx.lifecycle,
+    )
+    result_observed_uid = _latest_event_uid_of_type(
+        ctx.conn, event_type="action.result_observed",
+    )
+    source_event_for_interpreter = result_observed_uid or proposed_event.event_uid
+    for slot in bundle.slots:
+        interpreted_events = result_interpreter(
+            slot,
+            source_event_id=source_event_for_interpreter,
+            action_request=action_request,
+            conn=ctx.conn,
+            subject_ref_override=None,
+        )
+        scratch.events.extend(interpreted_events)
+
+    primary_slot = bundle.slots[0]
+    if primary_slot.error is not None:
+        draft = f"这条指令执行出错（{primary_slot.error}），未产生结果。"  # noqa: RUF001 — fullwidth parens/comma/period are intentional Chinese punctuation.
+    else:
+        draft = render_tier0_response(hit, primary_slot.payload)
+    return _finalize_response(draft, packet, ctx, scratch)
 
 
 def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single-pass orchestration of resolver (Day-1 + Day-2 time-window) + gate + dispatch + interpreter; splitting muddles the audit trace.
@@ -2129,6 +2268,30 @@ def _find_tool_def(
 ) -> ToolDefinitionLike | None:
     """Locate a tool definition by name (JARVIS_LLM-scoped surface)."""
     for tool_def in registry.for_caller(CallerPrincipal.JARVIS_LLM):
+        if tool_def.name == name:
+            return tool_def
+    return None
+
+
+def _find_registered_tool_def(
+    registry: ToolRegistryLike,
+    name: str,
+) -> ToolDefinitionLike | None:
+    """Locate a tool definition by name across EVERY registered tool.
+
+    Tier 0's lookup must cover at least what ``validate_tier0_table``
+    certifies at bootstrap — the ``regex_router`` surface — which
+    :func:`_find_tool_def`'s ``JARVIS_LLM``-scoped scan does not: a
+    whitelist entry naming a regex-router-only tool would pass bootstrap
+    validation and then vanish at dispatch time, silently degrading to
+    the LLM.
+
+    Resolution here is deliberately caller-blind. Whether the principal
+    may actually call the tool is the Pre-action Gate's decision, so a
+    registered-but-disallowed tool yields an auditable ``refuse`` on
+    ``gate.evaluated`` instead of a fall-through with no gate row.
+    """
+    for tool_def in registry.get_definitions():
         if tool_def.name == name:
             return tool_def
     return None

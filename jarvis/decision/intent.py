@@ -1,13 +1,12 @@
-"""L3 Intent Router — Tier 0 scaffold + Tier 2 LLM bridge.
+"""L3 Intent Router — Tier 0 regex whitelist + Tier 2 LLM bridge.
 
 Per ADR 0001 § Stub strategy L3 Intent Router rows.
 
-Day-1:
-
-- **Tier 0** is an empty scaffold: :func:`tier_0_match` always returns
-  ``None``. No deterministic regex shortcuts ship Day-1 per Allen's
-  directive. The function exists so Stage 2's first deterministic
-  pattern has a place to slot in without restructuring.
+- **Tier 0** is table-driven (spec §17): :func:`tier_0_match` runs the
+  closed regex whitelist loaded from ``config/tier0_patterns.yaml``
+  (see :mod:`jarvis.decision.tier0`) against the user's transcript. No
+  table (the Day-1 state) means no shortcuts — every turn falls
+  through to Tier 2.
 - **Tier 2** is a real LLM call. :func:`build_llm_messages` turns the
   current packet into an OpenAI/Anthropic-compatible message list; the
   composition root constructs the system prompt + tool list and feeds
@@ -27,30 +26,37 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from jarvis.decision.tier0 import match_tier0
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from jarvis.decision.packet import SituationPacket
+    from jarvis.decision.tier0 import Tier0Hit, Tier0Table
 
 
-# --- Tier 0 (empty scaffold) ------------------------------------------------
+# --- Tier 0 (regex whitelist, spec §17) -------------------------------------
 
 
-def tier_0_match(packet: SituationPacket) -> None:
-    """Return ``None`` always — Day-1 has no deterministic shortcuts.
+def tier_0_match(
+    packet: SituationPacket,
+    table: Tier0Table | None = None,
+) -> Tier0Hit | None:
+    """Spec §17 Tier 0: deterministic whitelist match on the transcript.
 
-    The signature is shaped like the eventual Stage 2 surface
-    (``packet -> ToolCall | None``) but Day-1 deliberately ships
-    nothing. Allen confirmed: no regex patterns Day-1.
-
-    Args:
-        packet: SituationPacket. Unused Day-1 but documented so the
-            Stage 2 first-pattern PR has a place to read.
-
-    Returns:
-        Always ``None``.
+    Returns None when no table is loaded (Day-1 scaffold behavior),
+    when the trigger is not a user utterance, or on a whitelist miss —
+    the caller falls through to the Tier 2 LLM loop.
     """
-    del packet  # Stage 2 wiring placeholder — preserved as the matched arg name.
+    if not table:
+        return None
+    trigger = packet.trigger_event
+    if trigger.type not in ("surface.user_intent", "utterance.received"):
+        return None
+    transcript = trigger.payload.get("transcript", "")
+    if not isinstance(transcript, str):
+        return None
+    return match_tier0(transcript, table)
 
 
 # --- Tier 2 LLM message bridge ---------------------------------------------
