@@ -2168,3 +2168,69 @@ Branch `worktree-adr0009-residency`. Steps follow ADR §7 build order.
 - Tier 1: docs-only + standalone script — package gates unaffected
   (ruff/mypy strict pass on the script itself).
 - Next: Step 1 (env-file loader).
+
+## Groundwork — hermetic tests vs the always-resident daemon
+
+Two test-only commits (`6a72d02`, `af6651b`), not ADR steps: 3 CLI
+tests + 1 canary failed whenever a real daemon held
+`~/.jarvis/daemon.lock` (D4 probe / B-NEW-5 guard fire by design).
+Fixed by HOME-redirect inside the tests (monkeypatch / subprocess env)
+— the pattern to reuse for any new test that spawns `python -m jarvis`:
+the default-root probe must resolve under a tmp HOME. Allen's live
+daemon (pid 80376) + InherentCard frontend were left untouched.
+
+## Step 1 — env-file loader (`a2740eb`) — GREEN
+
+- Files: `jarvis/deployment/__init__.py` (`load_env_file`, fill-only),
+  `jarvis/runtime/__init__.py` (bootstrap step 1b), 5 unit tests.
+- Contract: `${runtime_root}/env`, KEY=VALUE, first-`=` split, existing
+  env always wins, missing file no-op, temp-root isolated.
+
+## Step 2 — registry extensions (`8debd30`) — GREEN
+
+- Files: `jarvis/state/event_log.py` + `tests/unit/test_event_log.py`
+  (9 new tests, TDD red 9 → green).
+- `repo.state_observed` + `project.commit_seen` registered (L5, actor
+  required per V6; `evidence_semantics=observation` recorded as a
+  comment — the Day-1 `EventTypeSchema` dataclass has no such field,
+  deliberately not invented here). `action.dispatched` +
+  `result_expected_by_ms`; `surface.response_open` +
+  `attention_channel`. schema_version 1 everywhere.
+
+## Session handoff (2026-08-25, context cutover before Step 3)
+
+Fresh-session bootstrap, in order:
+
+1. `EnterWorktree` path
+   `.claude/worktrees/adr0009-residency` (branch
+   `worktree-adr0009-residency`). The worktree has its OWN venv
+   (`uv sync --extra dev` already run): use `.venv/bin/...` binaries.
+2. Read `docs/adr/0009-residency-and-perception.md` §3 + §7 (build
+   order) — Steps 3–14 remain. THIS file is the running log.
+3. Working mode (Allen-pinned): one **Opus** subagent per step, strict
+   TDD, agent runs all four gates and reports numbers; orchestrator
+   reviews the diff and makes the commit itself (per
+   `CLAUDE.md`/`docs/git-guide.md` body template — English, no
+   Co-Authored-By, one step per commit, never push). Sonnet only for
+   mechanical exploration; Fable is not fanned out.
+4. Gates (from worktree root): `.venv/bin/lint-imports` ·
+   `.venv/bin/ruff check .` · `.venv/bin/mypy --strict .` ·
+   `.venv/bin/python -m pytest -q tests/unit tests/scenarios` (< 30s)
+   — plus `tests/canary/` at Steps 4/7/12 per house rule.
+5. Facts a fresh session must not re-derive:
+   - Step 0 verdict above — **ctypes-IOKit confirmed, D3 stands**; no
+     PyObjC; `scripts/spike_power_observer.py` is the working reference
+     for the Step-3 implementation (argtypes, ack, teardown order).
+   - Allen's real daemon may be running — tests must stay hermetic via
+     the HOME-redirect pattern (Groundwork section above).
+   - M1/M2/M3 are Allen-supervised manual smokes (exact commands in
+     ADR §8 DoD 6); do NOT run `jarvis daemon install` or sleep the
+     machine again without Allen. Implementation done ≠ installed —
+     install is Allen's call, after the separate DB-backfill chore
+     (deliberately out of this ADR's scope).
+   - `pmset sleepnow` proof already burned once (Step 0); M3 stays
+     manual per V5.
+6. Next: Step 3 — real power observer in `sleep_wake.py` (D3;
+   observer_factory seam byte-preserved, K7/K8 must stay green,
+   callback-lifetime ref pinned by unit test, post-shutdown fire = no
+   emit, `test_canary_power_observer_seam`).
