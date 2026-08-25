@@ -42,11 +42,30 @@ Reconciliation is the spec's mandated fail-closed behavior: emit
 later Limitation Claim will reference); never silently mark the action
 complete.
 
+Supervisor sweep (ADR-0009 D4, spec §3.4.8)
+===========================================
+
+:func:`sweep_overdue_actions` lives here rather than in a module of its
+own because H13 scopes the ``deployment -> jarvis.state.event_log``
+exception to this one file, and because it shares the open-action fold
+with the wake path. There is exactly ONE fold
+(:func:`_open_actions`); the two consumers differ only in what they
+project out of it — the wake path keeps actions that reached
+``run.started`` (it names a run in ``worker.terminated_by_sleep``), the
+sweep keeps all of them and reads deadlines. Copying the fold instead of
+parameterizing it is how the two paths would drift apart.
+
+The sweep is an emitter, not a second brain: one
+``action.timeout_assumed`` per overdue action, and the existing Result
+Interpreter ladder turns that into the Limitation claim.
+
 Layer boundary (``.importlinter``): jarvis.deployment may import
 jarvis.state (state sits below deployment in the layer DAG). The
 framework handles are dlopened lazily by :func:`_load_power_binding`,
 so importing this module binds nothing — unit tests and non-Mac hosts
-never touch IOKit.
+never touch IOKit. The live action-id set the sweep excludes is owned by
+the composition root and arrives as a plain ``frozenset[str]`` argument;
+``deployment`` must never import ``execution`` to learn it (D4).
 
 References:
 - ADR-0002 § Sleep/wake protocol (lines 1100-1156)
@@ -59,21 +78,20 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import json
 import logging
 import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from jarvis.state.event_log import emit_event, iter_events
 
 if TYPE_CHECKING:
     import asyncio
     import sqlite3
-    from collections.abc import Callable
-
-    from jarvis.shared import Event
+    from collections.abc import Callable, Iterator
 
 LOGGER = logging.getLogger("jarvis.deployment.sleep_wake")
 
@@ -91,6 +109,50 @@ _TERMINAL_ACTION_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         "action.cancelled",
     },
 )
+
+# Sorted so the SQL placeholder tuples below bind deterministically.
+_TERMINAL_ACTION_EVENT_TYPES_ORDERED: Final[tuple[str, ...]] = tuple(
+    sorted(_TERMINAL_ACTION_EVENT_TYPES),
+)
+
+# The complete set of event types the shared open-action fold reads.
+# ADR-0009 D4 pins the fold to a typed SELECT over exactly these rather
+# than ``iter_events`` over the whole log: the supervisor sweep runs this
+# every ``supervisor.sweep_interval_s`` forever, on a log this same ADR
+# makes grow per minute (repo observer). Same IN-list shape as the
+# runtime's ``_SELECT_NEXT_TRIGGER_SQL`` watcher query.
+_OPEN_ACTION_EVENT_TYPES: Final[tuple[str, ...]] = (
+    "action.dispatched",
+    "action.running",
+    "run.started",
+    "worker.heartbeat",
+    *_TERMINAL_ACTION_EVENT_TYPES_ORDERED,
+)
+
+_SELECT_OPEN_ACTION_ROWS_SQL: Final[str] = (  # noqa: S608 — placeholder interpolation is over a hard-coded type tuple, not user input.
+    "SELECT type, ts_epoch_ms, payload_json, correlation_json FROM events "
+    "WHERE type IN ({placeholders}) ORDER BY id ASC"
+).format(placeholders=",".join("?" for _ in _OPEN_ACTION_EVENT_TYPES))
+
+_SELECT_TERMINAL_FOR_ACTION_SQL: Final[str] = (  # noqa: S608 — placeholder interpolation is over a hard-coded type tuple, not user input.
+    "SELECT 1 FROM events WHERE type IN ({placeholders}) "
+    "AND json_extract(payload_json, '$.action_id') = ? LIMIT 1"
+).format(
+    placeholders=",".join("?" for _ in _TERMINAL_ACTION_EVENT_TYPES_ORDERED),
+)
+
+# ADR-0009 D4 fallback budget for actions whose ``action.dispatched`` row
+# predates the Step-5 ``result_expected_by_ms`` stamp. Matches
+# ``supervisor.default_budget_s`` in ``config/jarvis.yaml``, which is what
+# the Step-7 periodic task passes in; the constant is the standalone
+# default so the sweep is callable (and testable) without config.
+_DEFAULT_SUPERVISOR_BUDGET_S: Final[float] = 700.0
+
+# ``action.timeout_assumed.reason`` written by the sweep. Distinct from
+# the wake path's ``lost_to_sleep`` so the Result Interpreter's Limitation
+# claim — and any human reading the trace — can tell "the machine slept"
+# from "nobody ever reported back".
+_SWEEP_TIMEOUT_REASON: Final[str] = "supervisor_sweep"
 
 
 class PowerObserver(Protocol):
@@ -684,6 +746,95 @@ def reconcile_after_wake(event_log: sqlite3.Connection | None) -> int:
     return closed
 
 
+# --- sweep_overdue_actions -------------------------------------------------
+
+
+def sweep_overdue_actions(
+    event_log: sqlite3.Connection | None,
+    *,
+    active_action_ids: frozenset[str] = frozenset(),
+    default_budget_s: float = _DEFAULT_SUPERVISOR_BUDGET_S,
+) -> int:
+    """Close every open action past its deadline. Returns the count closed.
+
+    The spec §3.4.8 mandate ("Scheduler / supervisor 必须扫 open actions,
+    超过 result_expected_by 且无 terminal event 时 emit timeout/limitation")
+    realized as ADR-0009 D4. Runs both as a one-shot bootstrap sweep at
+    serve start and as the periodic task (Step 7 wires both).
+
+    Emits exactly ONE ``action.timeout_assumed`` per closure —
+    ``reason="supervisor_sweep"``, ``run_id`` on the correlation when the
+    action reached ``run.started``. Deliberately no ``worker.*`` event,
+    for run-less and run-ful orphans alike: ``run_id`` is born at
+    ``run.started``, so a run-less orphan has no run to declare
+    terminated, and ADR-0009 §4 registers no supervisor-side worker type
+    that would be true of the others (reusing
+    ``worker.terminated_by_sleep`` would put a false cause on the trace).
+
+    The sweep is an emitter, not a second brain: the Result Interpreter
+    and ``_handle_action_terminal_failure`` already turn a timeout into
+    the Limitation claim, and the ADR-0002 amendment routes it to
+    ``queue_review``.
+
+    Double-emission is excluded twice over (F7 — "at most one
+    ``action.timeout_assumed`` per action_id under every interleaving"):
+    ``active_action_ids`` skips actions a live turn is still driving, and
+    :func:`_has_terminal_event` re-checks the log immediately before each
+    emit, so a detached child or the in-turn driver closing an action
+    mid-sweep cancels the pending emit.
+
+    Args:
+        event_log: Open Event Log connection.
+        active_action_ids: Snapshot of the action_ids live turns are
+            currently driving. A value, not a callable: the sweep is then
+            a pure function of (log, active set, budget), and the guard
+            that actually has to be race-tight is the pre-emit terminal
+            re-check, which reads the log rather than this set. The
+            composition root owns the set and passes the snapshot down,
+            so ``deployment`` never imports ``execution``.
+        default_budget_s: Fallback budget, in seconds, for rows lacking
+            the dispatcher-stamped ``result_expected_by_ms`` (see
+            :func:`_deadline_ms`). Defaults to
+            ``supervisor.default_budget_s``.
+
+    Returns:
+        Number of actions closed by this call (0 on a quiet sweep).
+
+    Raises:
+        ValueError: If ``event_log`` is None.
+    """
+    if event_log is None:
+        msg = "sweep_overdue_actions requires a non-None event_log connection"
+        raise ValueError(msg)
+    conn: sqlite3.Connection = event_log
+
+    now_ms = int(time.time() * 1000)
+    budget_ms = int(default_budget_s * 1000)
+    closed = 0
+    for action in _open_actions(conn):
+        if action.action_id in active_action_ids:
+            continue
+        deadline_ms = _deadline_ms(action, budget_ms=budget_ms)
+        if deadline_ms is None or now_ms < deadline_ms:
+            continue
+        if _has_terminal_event(conn, action.action_id):
+            continue
+        correlation = {"action_id": action.action_id}
+        if action.run_id is not None:
+            correlation["run_id"] = action.run_id
+        emit_event(
+            conn,
+            type="action.timeout_assumed",
+            payload={
+                "action_id": action.action_id,
+                "reason": _SWEEP_TIMEOUT_REASON,
+            },
+            correlation=correlation,
+        )
+        closed += 1
+    return closed
+
+
 # --- Internal helpers ------------------------------------------------------
 
 
@@ -707,28 +858,74 @@ class _InProgressAction:
     run_id: str
     last_heartbeat_ts: str | None
 
+@dataclass(frozen=True)
+class _OpenAction:
+    """One action the log shows as open — the shared fold's output row.
 
-def _correlation_run_id(evt: Event) -> str | None:
-    """Pull ``run_id`` out of an event's correlation map; None if absent."""
-    if evt.correlation is None:
-        return None
-    raw_run_id = evt.correlation.get("run_id")
-    return None if raw_run_id is None else str(raw_run_id)
+    Superset of :class:`_InProgressAction`: ``run_id`` may be ``None``
+    (the action never reached ``run.started``) and the deadline anchors
+    are carried for the supervisor sweep. The wake path narrows this
+    back down in :func:`_in_progress_actions`.
+    """
+
+    action_id: str
+    run_id: str | None
+    last_heartbeat_ts: str | None
+    dispatched_ts_ms: int | None
+    running_ts_ms: int | None
+    result_expected_by_ms: int | None
 
 
-def _correlation_action_id(evt: Event) -> str | None:
-    """Pull ``action_id`` out of an event's correlation map; None if absent."""
-    if evt.correlation is None:
-        return None
-    raw_action_id = evt.correlation.get("action_id")
-    return None if raw_action_id is None else str(raw_action_id)
+@dataclass
+class _PendingAction:
+    """Mutable accumulator for one action_id while the fold runs."""
+
+    run_id: str | None = None
+    last_heartbeat_ts: str | None = None
+    dispatched_ts_ms: int | None = None
+    running_ts_ms: int | None = None
+    result_expected_by_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class _LifecycleRow:
+    """One row of the typed open-action SELECT, JSON already parsed."""
+
+    type: str
+    ts_epoch_ms: int
+    payload: dict[str, Any]
+    correlation: dict[str, Any]
+
+
+def _iter_lifecycle_rows(event_log: sqlite3.Connection) -> Iterator[_LifecycleRow]:
+    """Yield the action/run lifecycle rows in log order, and nothing else.
+
+    ADR-0009 D4: type-scoped, not ``iter_events`` — see
+    :data:`_OPEN_ACTION_EVENT_TYPES`. Only the four columns the fold
+    reads are selected, so no full :class:`jarvis.shared.Event`
+    hydration happens on the sweep's every-30s path.
+    """
+    cursor = event_log.execute(_SELECT_OPEN_ACTION_ROWS_SQL, _OPEN_ACTION_EVENT_TYPES)
+    for type_, ts_epoch_ms, payload_json, correlation_json in cursor:
+        yield _LifecycleRow(
+            type=str(type_),
+            ts_epoch_ms=int(ts_epoch_ms),
+            payload=json.loads(payload_json),
+            correlation={} if correlation_json is None else json.loads(correlation_json),
+        )
+
+
+def _correlation_str(row: _LifecycleRow, key: str) -> str | None:
+    """Pull ``key`` out of a row's correlation map; None if absent."""
+    raw = row.correlation.get(key)
+    return None if raw is None else str(raw)
 
 
 def _note_run_id(
-    pending: dict[str, dict[str, str | None]],
+    pending: dict[str, _PendingAction],
     action_id: str,
     run_id: str | None,
-) -> None:
+) -> _PendingAction:
     """Register ``action_id`` if unseen; fill its ``run_id`` once known.
 
     ``action.running`` from the generic dispatcher registers the action
@@ -739,64 +936,156 @@ def _note_run_id(
     """
     record = pending.get(action_id)
     if record is None:
-        pending[action_id] = {"run_id": run_id, "last_heartbeat_ts": None}
-    elif run_id is not None and record["run_id"] is None:
-        record["run_id"] = run_id
+        record = _PendingAction(run_id=run_id)
+        pending[action_id] = record
+    elif run_id is not None and record.run_id is None:
+        record.run_id = run_id
+    return record
 
 
-def _apply_lifecycle_event(
-    pending: dict[str, dict[str, str | None]],
-    evt: Event,
+def _note_dispatched(record: _PendingAction, row: _LifecycleRow) -> None:
+    """Record the dispatch anchor and the Step-5 stamp; first row wins.
+
+    Both are deadline inputs for :func:`_deadline_ms`. "First wins"
+    because the lifecycle FSM rejects re-dispatch of an ``action_id``, so
+    a second ``action.dispatched`` row for one action would be a bug —
+    and the earlier, stricter deadline is the safe one to keep either way.
+    """
+    if record.dispatched_ts_ms is None:
+        record.dispatched_ts_ms = row.ts_epoch_ms
+    raw_deadline = row.payload.get("result_expected_by_ms")
+    if isinstance(raw_deadline, int) and record.result_expected_by_ms is None:
+        record.result_expected_by_ms = raw_deadline
+
+
+def _apply_lifecycle_row(
+    pending: dict[str, _PendingAction],
+    row: _LifecycleRow,
 ) -> None:
-    """Refresh a heartbeat timestamp or evict on a terminal event."""
-    raw_action_id = evt.payload.get("action_id")
-    if raw_action_id is None:
+    """Fold one lifecycle row into the pending map.
+
+    ``action.dispatched`` / ``action.running`` register the action and
+    record their timestamps (the sweep's fallback deadline anchors);
+    ``run.started`` supplies the ``run_id``; ``worker.heartbeat``
+    refreshes liveness; a terminal row evicts the action outright.
+    """
+    raw_action_id = row.payload.get("action_id")
+    action_id = None if raw_action_id is None else str(raw_action_id)
+    if row.type == "run.started":
+        started_action_id = _correlation_str(row, "action_id")
+        if started_action_id is not None:
+            _note_run_id(pending, started_action_id, _correlation_str(row, "run_id"))
         return
-    action_id = str(raw_action_id)
-    if evt.type == "worker.heartbeat":
-        record = pending.get(action_id)
-        if record is not None:
-            record["last_heartbeat_ts"] = str(evt.ts_epoch_ms)
-    elif evt.type in _TERMINAL_ACTION_EVENT_TYPES:
+    if action_id is None:
+        return
+    if row.type == "action.dispatched":
+        _note_dispatched(
+            _note_run_id(pending, action_id, _correlation_str(row, "run_id")),
+            row,
+        )
+    elif row.type == "action.running":
+        record = _note_run_id(pending, action_id, _correlation_str(row, "run_id"))
+        if record.running_ts_ms is None:
+            record.running_ts_ms = row.ts_epoch_ms
+    elif row.type == "worker.heartbeat":
+        heartbeat_record = pending.get(action_id)
+        if heartbeat_record is not None:
+            heartbeat_record.last_heartbeat_ts = str(row.ts_epoch_ms)
+    elif row.type in _TERMINAL_ACTION_EVENT_TYPES:
         pending.pop(action_id, None)
+
+
+def _open_actions(event_log: sqlite3.Connection) -> list[_OpenAction]:
+    """Shared low-level fold: every action the log shows as open.
+
+    ADR-0009 D4 pins ONE fold for both consumers, parameterized by what
+    each projects out of it rather than duplicated:
+
+    - :func:`reconcile_after_wake` (via :func:`_in_progress_actions`)
+      keeps only actions that reached ``run.started``, because it emits
+      ``worker.terminated_by_sleep`` and there must be a run to name.
+    - :func:`sweep_overdue_actions` keeps all of them — including the
+      daemon-died-during-preflight window — and reads the deadline
+      anchors, because an action nobody ever started is exactly the
+      ghost the sweep exists to close.
+
+    The returned list preserves first-seen order.
+    """
+    pending: dict[str, _PendingAction] = {}
+    for row in _iter_lifecycle_rows(event_log):
+        _apply_lifecycle_row(pending, row)
+    return [
+        _OpenAction(
+            action_id=action_id,
+            run_id=record.run_id,
+            last_heartbeat_ts=record.last_heartbeat_ts,
+            dispatched_ts_ms=record.dispatched_ts_ms,
+            running_ts_ms=record.running_ts_ms,
+            result_expected_by_ms=record.result_expected_by_ms,
+        )
+        for action_id, record in pending.items()
+    ]
 
 
 def _in_progress_actions(event_log: sqlite3.Connection) -> list[_InProgressAction]:
     """Return one record per action that has a started run but no terminal.
 
-    Walks the event log once. ``action.running`` registers an action;
-    ``run.started`` supplies its ``run_id`` (the first event that carries
-    one for a real worker run — ``action.running`` from the generic
-    dispatcher has only ``{action_id, turn_id}``). A later terminal event
-    for that ``action_id`` evicts the entry. Actions that never reached
-    ``run.started`` carry a ``None`` run_id and are skipped (no worker was
-    ever registered). The returned list preserves first-seen order.
+    The wake path's projection of :func:`_open_actions`. ``action.running``
+    registers an action; ``run.started`` supplies its ``run_id`` (the
+    first event that carries one for a real worker run — ``action.running``
+    from the generic dispatcher has only ``{action_id, turn_id}``). A
+    later terminal event for that ``action_id`` evicts the entry. Actions
+    that never reached ``run.started`` carry a ``None`` run_id and are
+    skipped (no worker was ever registered) — the deliberate blind spot
+    the supervisor sweep, and only the supervisor sweep, covers. The
+    returned list preserves first-seen order.
     """
-    pending: dict[str, dict[str, str | None]] = {}
-    for evt in iter_events(event_log):
-        if evt.type == "action.running":
-            _note_run_id(pending, str(evt.payload["action_id"]), _correlation_run_id(evt))
-        elif evt.type == "run.started":
-            started_action_id = _correlation_action_id(evt)
-            if started_action_id is not None:
-                _note_run_id(pending, started_action_id, _correlation_run_id(evt))
-        else:
-            _apply_lifecycle_event(pending, evt)
-    out: list[_InProgressAction] = []
-    for action_id, record in pending.items():
-        run_id = record["run_id"]
-        if run_id is None:
-            # No run.started — the worker never registered (e.g. a failed
-            # codex --version preflight); nothing to fail-closed.
-            continue
-        out.append(
-            _InProgressAction(
-                action_id=action_id,
-                run_id=run_id,
-                last_heartbeat_ts=record["last_heartbeat_ts"],
-            ),
+    return [
+        _InProgressAction(
+            action_id=action.action_id,
+            run_id=action.run_id,
+            last_heartbeat_ts=action.last_heartbeat_ts,
         )
-    return out
+        for action in _open_actions(event_log)
+        if action.run_id is not None
+    ]
+
+
+def _has_terminal_event(event_log: sqlite3.Connection, action_id: str) -> bool:
+    """Return True if any terminal event already names ``action_id``.
+
+    The sweep's pre-emit re-check (ADR-0009 F7). Deliberately a fresh
+    query rather than a lookup into the fold's own result: between the
+    fold and this action's emit, a detached child from the pre-install
+    era or the in-turn driver may have closed it.
+    """
+    cursor = event_log.execute(
+        _SELECT_TERMINAL_FOR_ACTION_SQL,
+        (*_TERMINAL_ACTION_EVENT_TYPES_ORDERED, action_id),
+    )
+    return cursor.fetchone() is not None
+
+
+def _deadline_ms(action: _OpenAction, *, budget_ms: int) -> int | None:
+    """Resolve ``action``'s deadline via the ADR-0009 D4 ladder.
+
+    1. The dispatcher-stamped ``result_expected_by_ms``.
+    2. Legacy rows lacking it: that action's ``action.dispatched`` ts
+       plus the default budget.
+    3. Pre-dispatch-era rows: first-seen ``action.running`` ts plus the
+       same budget.
+
+    ``None`` when no anchor exists at all (an action known only from a
+    ``run.started`` row) — the sweep then leaves it alone rather than
+    inventing an age for it.
+    """
+    if action.result_expected_by_ms is not None:
+        return action.result_expected_by_ms
+    if action.dispatched_ts_ms is not None:
+        return action.dispatched_ts_ms + budget_ms
+    if action.running_ts_ms is not None:
+        return action.running_ts_ms + budget_ms
+    return None
 
 
 def _slept_for_ms(event_log: sqlite3.Connection) -> int:
@@ -820,4 +1109,5 @@ __all__ = [
     "PowerObserver",
     "install_power_observer",
     "reconcile_after_wake",
+    "sweep_overdue_actions",
 ]

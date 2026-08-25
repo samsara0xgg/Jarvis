@@ -23,3 +23,13 @@ llm:
     faster_first_response: true
     # 保护英文缩写不在 Dr./e.g./vs. 等处误切
     abbreviation_protect: true
+
+# Supervisor sweep（ADR-0009 D4 / spec §3.4.8）：扫 open actions，超过
+# deadline 且无 terminal event 的 emit action.timeout_assumed。
+supervisor:
+  # 没有 dispatcher 打的 result_expected_by_ms 时用的兜底预算（秒）。
+  # 700 = Codex 600s 预算 + 100s grace，与 dispatcher 打的时间戳一致，
+  # 所以旧 row 和新 row 同龄时判定超时的时刻完全相同。
+  default_budget_s: 700
+  # 周期扫描间隔（秒）。Step 7 才把它接到 serve_inherent 的 watcher 列表。
+  sweep_interval_s: 30
