@@ -212,10 +212,13 @@ def _envelope_opens_our_turn(
     Two keys, in order of trust:
 
     1. ``payload["turn_id"]`` when both sides have one — exact
-       correlation, the D2 contract.
+       correlation, the D2 contract, and since the wire completion the
+       normal path: ``POST /inherent/submit`` returns the minted id and
+       every ``open`` / ``append`` / ``done`` envelope carries it.
     2. ``payload["q"]`` (the response header's query text, which is the
-       submitted transcript) otherwise. Needed because the Step-2 wire
-       envelope carries no ``turn_id`` today; see the module note.
+       submitted transcript) otherwise. Retained for a daemon on the
+       pre-completion wire, and inherently ambiguous when two turns
+       carry byte-identical text — which is exactly why (1) exists.
     """
     envelope_turn = str(payload.get("turn_id", "") or "")
     if turn_id and envelope_turn:
