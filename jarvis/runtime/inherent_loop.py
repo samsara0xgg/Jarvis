@@ -89,7 +89,15 @@ if TYPE_CHECKING:
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
 from jarvis.execution.tools import live_action_ids
-from jarvis.runtime import JarvisRuntime, _event_action_id, _new_turn_id, drive_turn
+from jarvis.runtime import (
+    JarvisRuntime,
+    _event_action_id,
+    _new_turn_id,
+    _observer_poll_interval_s,
+    _observer_repo_paths,
+    _positive_float,
+    drive_turn,
+)
 from jarvis.shared import Event
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.surface import (
@@ -103,6 +111,7 @@ from jarvis.surface import (
 from jarvis.surface.cli import emit_surface_user_intent
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.repo_observer import RepoObserver
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
 
@@ -948,17 +957,6 @@ _FALLBACK_SWEEP_INTERVAL_S: float = 30.0
 _FALLBACK_SUPERVISOR_BUDGET_S: float = 700.0
 
 
-def _positive_float(value: object, fallback: float) -> float:
-    """Coerce a YAML scalar to a positive float; ``fallback`` on anything else.
-
-    ``bool`` is excluded explicitly because it is an ``int`` subclass —
-    ``sweep_interval_s: true`` would otherwise become a 1-second sweep.
-    """
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return fallback
-    return float(value) if value > 0 else fallback
-
-
 def _supervisor_settings(config: Mapping[str, Any]) -> tuple[float, float]:
     """Return ``(sweep_interval_s, default_budget_s)`` from the ``supervisor:`` block."""
     block = config.get("supervisor")
@@ -1169,6 +1167,108 @@ async def _start_sweep_control_plane(
     return [watcher, sweep]
 
 
+# --- ADR-0009 D5 repo observer -----------------------------------------------
+
+
+async def _poll_one_repo(observer: RepoObserver, repo_path: str) -> None:
+    """Poll ONE repo: collect off the loop thread, emit on it.
+
+    The thread split is the pin, and it is the only reason this is a
+    function rather than two lines inline. ``collect`` runs three ``git``
+    subprocesses and touches no database, so it goes through
+    :func:`asyncio.to_thread`; ``emit`` writes to ``runtime.conn``, which
+    :func:`jarvis.state.event_log.open_event_log` opened with
+    ``check_same_thread=True``, so it MUST stay on the loop thread. Move
+    the ``emit`` inside the ``to_thread`` call and SQLite raises
+    ``ProgrammingError`` on the first observed change — the failure would
+    surface as "the observer sees nothing", one poll interval later.
+
+    F5/F6 are already total inside ``collect`` (a hung, failing, or
+    missing repo returns ``None``, never raises), so ``None`` here just
+    means "skip this repo this cycle". The two ``except`` arms cover what
+    ``collect`` does not own: an ``emit`` that fails on the log, and any
+    unforeseen raise from the thread hop. Either way this repo is skipped
+    and the next one in the cycle still runs.
+    """
+    try:
+        poll = await asyncio.to_thread(observer.collect, repo_path)
+    except Exception:  # one bad repo must not kill the observer task.
+        LOGGER.exception("repo_observer: collect failed for %s; skipping cycle.", repo_path)
+        return
+    if poll is None:
+        return
+    try:
+        observer.emit(poll)
+    except Exception:  # an emit failure is logged, never fatal to the daemon.
+        LOGGER.exception("repo_observer: emit failed for %s; baseline unchanged.", repo_path)
+
+
+async def _repo_observer_task(observer: RepoObserver, *, interval_s: float) -> None:
+    """Background task: poll every watched repo every ``interval_s`` seconds.
+
+    Polls FIRST, then sleeps — the mirror image of
+    :func:`_supervisor_sweep_task`, and for the mirror-image reason. No
+    bootstrap pass covers t=0 here, and the headline case of ADR-0009 D5
+    is exactly the delta that accumulated while the daemon was down; a
+    sleep-first loop would sit on the overnight commits for a full
+    interval after every restart.
+
+    Cancellation: re-raises :class:`asyncio.CancelledError` so
+    :func:`serve_inherent`'s ``finally`` can await it cleanly.
+    """
+    LOGGER.info(
+        "repo_observer started (%d repo(s), interval=%.0fs)",
+        len(observer.repo_paths),
+        interval_s,
+    )
+    try:
+        while True:
+            for repo_path in observer.repo_paths:
+                await _poll_one_repo(observer, repo_path)
+            await asyncio.sleep(interval_s)
+    except asyncio.CancelledError:
+        LOGGER.info("repo_observer cancelled")
+        raise
+
+
+def _start_repo_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
+    """Wire the ADR-0009 D5 repo observer. Returns its task, or none at all.
+
+    Two ordered statements, and the order is the pin: baselines are
+    recovered from the event log BEFORE the task can run its first poll.
+    Skip the recovery and every repo looks like a first-ever observation
+    on restart — one spurious ``repo.state_observed`` per repo, and the
+    ``project.commit_seen`` history for the down window is lost for good
+    (a first-ever observation deliberately walks no commits).
+
+    Runs on the loop thread, synchronously, so the ``recover_baselines``
+    read of ``runtime.conn`` is on the connection's owning thread.
+
+    An empty ``observer.repos`` starts no task: the observer is opt-in
+    perception, and a zero-repo poll loop would be pure wakeups.
+    """
+    repo_paths = _observer_repo_paths(runtime.config)
+    if not repo_paths:
+        LOGGER.info("repo_observer: observer.repos is empty; observer not started.")
+        return []
+    observer = RepoObserver(runtime.conn, repo_paths)
+    baselines = observer.recover_baselines()
+    LOGGER.info(
+        "repo_observer: %d baseline(s) recovered from the event log for %d watched repo(s)",
+        len(baselines),
+        len(repo_paths),
+    )
+    return [
+        asyncio.create_task(
+            _repo_observer_task(
+                observer,
+                interval_s=_observer_poll_interval_s(runtime.config),
+            ),
+            name="repo_observer",
+        ),
+    ]
+
+
 def _install_power_observer_or_degrade(
     conn: sqlite3.Connection,
     loop: asyncio.AbstractEventLoop,
@@ -1310,6 +1410,13 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
        wait for it to signal anchored, run the one-shot bootstrap sweep,
        then start the periodic :func:`_supervisor_sweep_task`. Both tasks
        join ``watchers`` so the same ``finally`` tears them down.
+    6c. ADR-0009 D5 — :func:`_start_repo_observer`: recover the
+       emit-on-change baselines from the log, then start one more
+       watchers-list task polling ``observer.repos`` every
+       ``observer.poll_interval_s``. Each poll collects via
+       :func:`asyncio.to_thread` (``git`` subprocesses) and emits on the
+       loop thread (``runtime.conn`` is ``check_same_thread``). Empty
+       ``observer.repos`` starts nothing.
     7. ADR-0009 D3 — :func:`install_power_observer` on ``runtime.conn``
        with ``loop=`` the running loop, so the observer's CFRunLoop-thread
        notifications marshal their ``mac.sleeping`` / ``mac.awake`` emits
@@ -1468,6 +1575,13 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
         watchers.extend(
             await _start_sweep_control_plane(runtime, poll_interval_s=poll_interval_s),
         )
+
+        # ADR-0009 D5 — repo observer: baselines recovered from the log
+        # first, then one more watchers-list task polling `observer.repos`
+        # every `observer.poll_interval_s`. Nothing it emits is a trigger,
+        # so it is wired after the sweep control plane without disturbing
+        # that anchor-then-bootstrap ordering.
+        watchers.extend(_start_repo_observer(runtime))
 
         # ADR-0009 D3 — power observer, installed after the lock (which
         # stays the outermost scope) and immediately before the try/finally

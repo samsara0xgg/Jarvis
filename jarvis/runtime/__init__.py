@@ -37,6 +37,7 @@ import logging
 import sys
 import time
 import uuid
+from collections.abc import Mapping  # runtime use: isinstance in the config readers.
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -68,7 +69,6 @@ from jarvis.surface.cli_render import render_response
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Mapping
 
     from jarvis.decision import ResponsePlan
     from jarvis.decision.tier0 import Tier0Table
@@ -116,6 +116,12 @@ _DEFAULT_MAX_ITERATIONS: int = 50
 # Default per-trigger wait. The spawn_worker Timer fires at ~10 ms in
 # Day-1; ``verify_diff`` re-entry happens inline. 5 s is generous.
 _DEFAULT_TRIGGER_TIMEOUT_S: float = 5.0
+
+# Fallback for a runtime whose config carries no ``observer:`` block
+# (hand-assembled test runtimes). ``config/jarvis.yaml`` is the real
+# source; mirroring the shipped default here means a missing block reads
+# the same cadence the daemon would actually poll at.
+_FALLBACK_OBSERVER_POLL_INTERVAL_S: float = 60.0
 
 
 # --- Exceptions -------------------------------------------------------------
@@ -227,6 +233,57 @@ def _load_full_config(path: Path) -> Mapping[str, Any]:
         msg = f"config at {path} is not a YAML mapping"
         raise RuntimeBootstrapError(msg)
     return raw
+
+
+def _positive_float(value: object, fallback: float) -> float:
+    """Coerce a YAML scalar to a positive float; ``fallback`` on anything else.
+
+    ``bool`` is excluded explicitly because it is an ``int`` subclass —
+    ``poll_interval_s: true`` would otherwise become a 1-second poll.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return fallback
+    return float(value) if value > 0 else fallback
+
+
+def _observer_poll_interval_s(config: Mapping[str, Any]) -> float:
+    """Return ``observer.poll_interval_s`` in seconds (ADR-0009 D5).
+
+    Read by TWO consumers, which is the whole reason it lives here in the
+    composition root rather than inside the daemon module: the observer
+    task polls at this cadence, and :func:`drive_turn` hands the same
+    number to L3 so the Status Board note's stale threshold (3x the poll
+    interval, ADR-0009 D6 v0) is derived from the cadence the daemon
+    actually runs at. Configure the interval away from 60 and the note's
+    judgement moves with it instead of silently diverging.
+    """
+    block = config.get("observer")
+    if not isinstance(block, Mapping):
+        return _FALLBACK_OBSERVER_POLL_INTERVAL_S
+    return _positive_float(
+        block.get("poll_interval_s"), _FALLBACK_OBSERVER_POLL_INTERVAL_S,
+    )
+
+
+def _observer_repo_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return the watched repos from ``observer.repos``; empty = observer off.
+
+    ``~`` is expanded here so a config line like ``~/Projects/jarvis``
+    does not degrade into a silent per-cycle F6 skip. Non-string and
+    blank entries are dropped rather than raising: a typo in one row of
+    an Allen-managed list must not refuse to boot the daemon.
+    """
+    block = config.get("observer")
+    if not isinstance(block, Mapping):
+        return ()
+    raw = block.get("repos")
+    if not isinstance(raw, list):
+        return ()
+    return tuple(
+        str(Path(item).expanduser())
+        for item in raw
+        if isinstance(item, str) and item.strip()
+    )
 
 
 def bootstrap_runtime_app(
@@ -667,6 +724,11 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
             llm_client=runtime.llm_client,
             system_prompt=runtime.system_prompt,
             tier0_table=runtime.tier0_table,
+            # ADR-0009 D5/D6 — the Status Board note calls an observation
+            # "stale" at 3x the observer's poll interval. Read from the
+            # same config key the observer task polls on, so the two can
+            # never disagree about what "stale" means.
+            observer_poll_interval_s=int(_observer_poll_interval_s(runtime.config)),
         )
 
         # SQLite row id of the surface.user_intent event — used as the

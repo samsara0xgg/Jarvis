@@ -33,3 +33,14 @@ supervisor:
   default_budget_s: 700
   # 周期扫描间隔（秒）。Step 7 才把它接到 serve_inherent 的 watcher 列表。
   sweep_interval_s: 30
+
+# Repo observer v0（ADR-0009 D5 / spec §3.6.1）：只读本地 git 轮询，
+# 只在快照字段变化时 emit，不触发任何 decide() turn。
+observer:
+  # 轮询间隔（秒）。同一个数字还决定 Status Board note 的 stale 判定
+  # （stale = 3 × poll_interval_s，ADR-0009 D6 v0 / 偏差 V4），所以改这里
+  # 就够了——note 的判词跟着一起走，不会和真实轮询节奏脱节。
+  poll_interval_s: 60
+  # 被观察的 repo（绝对路径，`~` 会展开）。空列表 = 不启动观察器任务。
+  # Allen 自己维护这份清单：观察器只读，不 fetch，不写外部世界。
+  repos: []

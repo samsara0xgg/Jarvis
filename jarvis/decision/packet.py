@@ -130,9 +130,12 @@ def assemble_packet(trigger: Event, conn: sqlite3.Connection) -> SituationPacket
 
 
 # Repo-observer poll cadence (ADR-0009 D5 default ``observer.poll_interval_s``).
-# Passed in by callers that hold the config; this constant is the fallback,
-# because L3 may not import the config loader.
-_DEFAULT_POLL_INTERVAL_S: Final[int] = 60
+# Public because it is also :class:`jarvis.decision.DecideContext`'s default —
+# one constant for the whole layer, so a composition root that does not pass
+# the configured value still lands on the shipped cadence rather than on a
+# second, independently-drifting literal. L3 may not import the config loader;
+# the runtime reads ``observer.poll_interval_s`` and hands it down.
+DEFAULT_OBSERVER_POLL_INTERVAL_S: Final[int] = 60
 
 # Stale rule v0 (ADR-0009 D6, deviation V4): an observation older than three
 # poll intervals is prefixed "stale". The per-domain TTL ladder of spec
@@ -220,7 +223,7 @@ def format_status_board_note(
     packet: SituationPacket,
     *,
     now_ms: int | None = None,
-    poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S,
+    poll_interval_s: int = DEFAULT_OBSERVER_POLL_INTERVAL_S,
     max_repos: int = _NOTE_MAX_REPOS,
 ) -> str | None:
     """Render the Status Board as an LLM system note, or None when empty.
@@ -285,6 +288,7 @@ def format_status_board_note(
 
 
 __all__ = [
+    "DEFAULT_OBSERVER_POLL_INTERVAL_S",
     "SituationPacket",
     "assemble_packet",
     "format_status_board_note",

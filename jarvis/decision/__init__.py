@@ -71,6 +71,7 @@ from jarvis.decision.intent import (
     tool_definitions_for_llm,
 )
 from jarvis.decision.packet import (
+    DEFAULT_OBSERVER_POLL_INTERVAL_S,
     SituationPacket,
     assemble_packet,
     format_status_board_note,
@@ -550,6 +551,13 @@ class DecideContext:
             composition root loaded from ``config/tier0_patterns.yaml``.
             ``None`` (or an empty table) disables Tier 0 — every turn
             falls through to the Tier 2 LLM loop.
+        observer_poll_interval_s: The repo observer's configured poll
+            cadence (``observer.poll_interval_s``), in seconds, supplied
+            by the composition root the same way ``tier0_table`` is.
+            Only the Status Board note reads it, to derive its stale
+            threshold (3x the interval, ADR-0009 D6 v0). The default is
+            the shipped cadence, so a hand-assembled context still calls
+            staleness the way the daemon does.
     """
 
     conn: sqlite3.Connection
@@ -560,6 +568,7 @@ class DecideContext:
     system_prompt: str
     max_tool_iterations: int = _DEFAULT_MAX_TOOL_ITERATIONS
     tier0_table: Tier0Table | None = None
+    observer_poll_interval_s: int = DEFAULT_OBSERVER_POLL_INTERVAL_S
 
 
 @dataclass(frozen=True)
@@ -799,7 +808,9 @@ def _run_tool_use_loop(
     # of the LLM reaching for git inside the turn (M6). Inserted ahead of
     # the open-tasks note: ambient repo state is background, the Task
     # Ledger snapshot keeps its position adjacent to the user turn.
-    status_board_note = format_status_board_note(packet)
+    status_board_note = format_status_board_note(
+        packet, poll_interval_s=ctx.observer_poll_interval_s,
+    )
     if status_board_note is not None:
         messages.insert(0, {"role": "user", "content": status_board_note})
     tools = tool_definitions_for_llm(
