@@ -24,6 +24,13 @@ This module covers the LLM-free invariants of the extract:
   right order: ``surface.user_intent`` precedes
   ``surface.response_emitted`` in the log.
 
+ADR-0009 Step 5 adds the live-action-set lifecycle:
+
+- ``drive_turn`` releases every action its dispatches registered, on the
+  success path and on the crash path alike. D4: "a crashed turn must not
+  pin its actions 'active' forever" — a pinned action_id is one the
+  supervisor sweep will refuse to close for the life of the process.
+
 All tests are Tier 1 (LLM-free): the L3 ``decide`` call is replaced via
 ``monkeypatch`` with a deterministic stub that returns a final
 :class:`ResponsePlan` on the first invocation, so ``drive_turn``
@@ -41,6 +48,11 @@ import pytest
 
 from jarvis.decision import DecideResult
 from jarvis.decision.gates import ResponsePlan
+from jarvis.execution.tools import (
+    live_action_ids,
+    register_live_action,
+    release_turn_actions,
+)
 from jarvis.runtime import (
     JarvisRuntime,
     RunTurnResult,
@@ -308,3 +320,84 @@ def test_drive_turn_does_not_emit_extra_user_intent_when_log_preseeded(
     )
     drive_turn(runtime, user_intent_event=user_intent_event)
     assert _count_event_rows(runtime, "surface.user_intent") == 1
+
+
+# --- ADR-0009 Step 5: live action-id set lifecycle -------------------------
+
+
+def test_drive_turn_releases_live_actions_on_the_success_path(
+    runtime: JarvisRuntime,
+    stub_decide: None,  # noqa: ARG001
+) -> None:
+    """Actions registered during a turn MUST NOT outlive it."""
+    user_intent_event = emit_surface_user_intent(
+        runtime.conn,
+        transcript="hello",
+        turn_id="T_live_ok",
+    )
+    register_live_action(turn_id="T_live_ok", action_id="A_live_ok")
+    assert "A_live_ok" in live_action_ids()
+
+    drive_turn(runtime, user_intent_event=user_intent_event)
+
+    assert "A_live_ok" not in live_action_ids(), (
+        "ADR-0009 D4: drive_turn owns the release side of the live action set."
+    )
+
+
+def test_drive_turn_releases_live_actions_when_the_turn_crashes(
+    runtime: JarvisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raising ``decide`` MUST still release the turn's actions.
+
+    D4 pins this explicitly: "a crashed turn must not pin its actions
+    'active' forever". A leaked action_id makes the supervisor sweep
+    skip that action for the life of the daemon, so the very orphan the
+    crash created can never be closed.
+    """
+
+    class _TurnExplodedError(RuntimeError):
+        """Raised by the stub decide to simulate a mid-turn crash."""
+
+    def _exploding_decide(trigger: Event, _ctx: object) -> DecideResult:
+        turn_id = trigger.payload["turn_id"]
+        register_live_action(turn_id=str(turn_id), action_id="A_live_crash")
+        raise _TurnExplodedError
+
+    monkeypatch.setattr("jarvis.runtime.decide", _exploding_decide)
+
+    user_intent_event = emit_surface_user_intent(
+        runtime.conn,
+        transcript="hello",
+        turn_id="T_live_crash",
+    )
+    with pytest.raises(_TurnExplodedError):
+        drive_turn(runtime, user_intent_event=user_intent_event)
+
+    assert "A_live_crash" not in live_action_ids(), (
+        "drive_turn must release its live action_ids from a finally that runs "
+        "on the exception path too."
+    )
+
+
+def test_drive_turn_releases_only_its_own_turns_actions(
+    runtime: JarvisRuntime,
+    stub_decide: None,  # noqa: ARG001
+) -> None:
+    """A concurrent turn's actions MUST survive this turn's release.
+
+    The daemon drives turns on worker threads; a release that dropped
+    the whole set would unprotect every other in-flight turn.
+    """
+    register_live_action(turn_id="T_other", action_id="A_other")
+    user_intent_event = emit_surface_user_intent(
+        runtime.conn,
+        transcript="hello",
+        turn_id="T_live_scope",
+    )
+    try:
+        drive_turn(runtime, user_intent_event=user_intent_event)
+        assert "A_other" in live_action_ids()
+    finally:
+        release_turn_actions("T_other")

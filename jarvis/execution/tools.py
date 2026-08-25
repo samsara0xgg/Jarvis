@@ -142,6 +142,18 @@ _CODEX_DEFAULT_MODEL: Final[str] = "gpt-5.5"
 _CODEX_TURN_TIMEOUT_ENV: Final[str] = "JARVIS_CODEX_TURN_TIMEOUT_S"
 _CODEX_TURN_TIMEOUT_DEFAULT_S: Final[float] = 600.0
 
+# ADR-0009 D4 — grace added to a tool's own budget when the dispatcher
+# stamps `action.dispatched.result_expected_by_ms`. 100s is not a taste
+# call: 600s (Codex) + 100s = 700s = `supervisor.default_budget_s`, the
+# anchor the sweep falls back to for rows that predate the stamp. Keeping
+# them equal means a stamped row and a legacy row of the same age are
+# judged overdue at the same instant, so the fallback ladder is a true
+# reconstruction of the stamp rather than a second, disagreeing policy.
+# It also leaves the in-process driver deadline (600s) a clear 100s head
+# start to emit its own terminal event before the supervisor assumes the
+# worker is gone — the sweep is the backstop, not the primary closer.
+_DISPATCH_DEADLINE_GRACE_S: Final[float] = 100.0
+
 
 def _resolve_codex_turn_timeout_s() -> float:
     """Return the per-turn Codex budget from the env override or the default.
@@ -457,6 +469,15 @@ class ToolDefinition:
             Day-2 ``verify_diff`` declares one so the handler can chain
             an inline ``verify_command`` subprocess into the second
             ``RawResultBundle`` slot.
+        result_budget_s: Optional per-tool wall-clock budget, in seconds,
+            for the tool to produce a terminal event (ADR-0009 D4). A
+            zero-argument callable rather than a float because the Codex
+            budget is env-overridable per run
+            (``JARVIS_CODEX_TURN_TIMEOUT_S``) and must be read at
+            dispatch time, not at registry-build time. ``None`` (the
+            default, and every sync tool) means "no declared budget":
+            the dispatcher stamps no deadline and the supervisor sweep
+            falls back to ``dispatched ts + supervisor.default_budget_s``.
     """
 
     name: str
@@ -468,6 +489,7 @@ class ToolDefinition:
     input_schema: Mapping[str, Any]
     handler: ToolHandler
     post_action_check: PostActionCheck | None = None
+    result_budget_s: Callable[[], float] | None = None
 
 
 # --- JSON serializers (adapted from legacy tools_v2/helpers.py) -------------
@@ -1869,10 +1891,16 @@ class ToolRegistry:
               to `register` the action and transition `proposed →
               authorized` before this call).
 
-        On precondition pass, emits:
+        On precondition pass, registers the action_id in the live set
+        (ADR-0009 D4 — the supervisor sweep skips live action_ids;
+        `jarvis.runtime.drive_turn` releases the turn's entries in a
+        `finally`), then emits:
             1. `action.dispatched(action_id)` → lifecycle authorized →
                dispatched. The event_uid is the `source_event_id` of
-               the next event.
+               the next event. Carries `result_expected_by_ms` when
+               `tool_def.result_budget_s` is declared — the persisted
+               deadline the supervisor sweep reads (ADR-0009 D4,
+               spec §3.4.8).
             2. `action.running(action_id)` → lifecycle dispatched →
                running. The event_uid is stashed on `conn` under
                `_jarvis_running_event_uid` so the handler can use it as
@@ -1908,10 +1936,23 @@ class ToolRegistry:
             )
             raise IllegalLifecycleTransition(msg)
 
+        # ADR-0009 D4 — publish the action as live BEFORE the first event
+        # lands, so a sweep tick that runs between the two never sees an
+        # unprotected open action. `drive_turn` owns the release.
+        if action_request.turn_id is not None:
+            register_live_action(
+                turn_id=action_request.turn_id,
+                action_id=action_request.action_id,
+            )
+
+        dispatched_payload: dict[str, Any] = {"action_id": action_request.action_id}
+        result_expected_by_ms = _result_expected_by_ms(tool_def)
+        if result_expected_by_ms is not None:
+            dispatched_payload["result_expected_by_ms"] = result_expected_by_ms
         dispatched_event = emit_event(
             conn,
             type="action.dispatched",
-            payload={"action_id": action_request.action_id},
+            payload=dispatched_payload,
             correlation=_action_correlation(action_request),
         )
         lifecycle.transition(action_request.action_id, "dispatched")
@@ -1998,6 +2039,65 @@ def _clear_running_event_uid(
     """Drop the stash entry once the handler returns."""
     with _RUNNING_UID_LOCK:
         _RUNNING_UID_TABLE.pop(action_id, None)
+
+
+def _result_expected_by_ms(tool_def: ToolDefinition) -> int | None:
+    """Return the epoch-ms deadline to stamp on `action.dispatched`, or None.
+
+    ADR-0009 D4. `None` for every tool that declares no
+    `result_budget_s`; the supervisor sweep then falls back to
+    `dispatched ts + supervisor.default_budget_s` for that action.
+    """
+    budget = tool_def.result_budget_s
+    if budget is None:
+        return None
+    return int(time.time() * 1000) + int((budget() + _DISPATCH_DEADLINE_GRACE_S) * 1000)
+
+
+# --- Live action-id set (ADR-0009 D4 active-turn exclusion) ------------------
+#
+# The supervisor sweep (`jarvis.deployment.sleep_wake`) closes open
+# actions whose deadline has passed. It must never close an action a turn
+# is still driving, and it cannot ask the `ActionLifecycle` FSM: that is a
+# per-process dict, empty in the sweep's own view after any restart.
+#
+# So the dispatch path publishes each action_id here, and the composition
+# root (`jarvis.runtime.drive_turn`) drops the turn's whole entry in a
+# `finally` — including when the turn raises, because an entry nobody
+# removes pins its action_id "active" for the life of the process and the
+# sweep could never close the very orphan that crash created.
+#
+# Keyed by turn_id (not a flat set) so one turn's release cannot unprotect
+# a concurrent turn's actions — the daemon drives turns on worker threads.
+# Storage sits in L4 because L4 is where dispatch happens and L4 may not
+# import runtime; L6 reads it only through a value the composition root
+# passes down, so `deployment -> execution` never appears in the graph.
+# Same module-level + Lock shape as `_RUNNING_UID_TABLE` below.
+
+_LIVE_ACTIONS_LOCK: Final[threading.Lock] = threading.Lock()
+_LIVE_ACTIONS_BY_TURN: Final[dict[str, set[str]]] = {}
+
+
+def register_live_action(*, turn_id: str, action_id: str) -> None:
+    """Publish ``action_id`` as driven by ``turn_id`` (idempotent)."""
+    with _LIVE_ACTIONS_LOCK:
+        _LIVE_ACTIONS_BY_TURN.setdefault(turn_id, set()).add(action_id)
+
+
+def release_turn_actions(turn_id: str) -> None:
+    """Drop every action_id ``turn_id`` registered. No-op if unknown."""
+    with _LIVE_ACTIONS_LOCK:
+        _LIVE_ACTIONS_BY_TURN.pop(turn_id, None)
+
+
+def live_action_ids() -> frozenset[str]:
+    """Snapshot every action_id currently driven by some live turn."""
+    with _LIVE_ACTIONS_LOCK:
+        return frozenset(
+            action_id
+            for action_ids in _LIVE_ACTIONS_BY_TURN.values()
+            for action_id in action_ids
+        )
 
 
 def _action_correlation(action_request: ActionRequest) -> dict[str, str]:
@@ -2121,6 +2221,12 @@ def build_default_registry() -> ToolRegistry:
             is_async=True,
             input_schema=_SPAWN_WORKER_INPUT_SCHEMA,
             handler=spawn_worker_handler,
+            # ADR-0009 D4: the only Day-2 tool that can outlive its
+            # dispatch call, hence the only one carrying a supervisor
+            # deadline. Passed as the resolver itself so a per-run
+            # `JARVIS_CODEX_TURN_TIMEOUT_S` moves the persisted deadline
+            # in step with the in-process driver deadline.
+            result_budget_s=_resolve_codex_turn_timeout_s,
         )
     )
     registry.register(VERIFY_DIFF_TOOL_DEF)
@@ -2193,6 +2299,9 @@ __all__ = [
     "create_task_handler",
     "get_current_time_handler",
     "list_tasks_handler",
+    "live_action_ids",
+    "register_live_action",
+    "release_turn_actions",
     "spawn_worker_handler",
     "tool_error",
     "tool_result",

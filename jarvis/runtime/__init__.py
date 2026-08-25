@@ -49,7 +49,12 @@ from jarvis.decision.result_interpreter import emit_stash_conflict_surfacing
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.execution.diff_capture import StashError, restore_pretask_changes
-from jarvis.execution.tools import ActionLifecycle, ToolRegistry, build_default_registry
+from jarvis.execution.tools import (
+    ActionLifecycle,
+    ToolRegistry,
+    build_default_registry,
+    release_turn_actions,
+)
 from jarvis.shared import CallerPrincipal, Event
 from jarvis.state.event_log import iter_events, open_event_log
 from jarvis.surface.cli import (
@@ -567,7 +572,9 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
 
     The Pre-emit token check protects against a runtime that
     accidentally re-uses an old plan or fails to refresh the token —
-    :class:`PreEmitTokenError` propagates out.
+    :class:`PreEmitTokenError` propagates out. It — and every other
+    exception — still passes through the ``finally`` that releases this
+    turn's live action_ids (ADR-0009 D4).
 
     Args:
         runtime: Assembled :class:`JarvisRuntime`.
@@ -590,121 +597,128 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
         the events emitted.
     """
     effective_turn_id = str(user_intent_event.payload["turn_id"])
+    # ADR-0009 D4 — every action this turn dispatches registers itself
+    # in the L4 live set (`ToolRegistry.dispatch`). The release MUST run
+    # even when the turn raises: a leaked action_id is one the supervisor
+    # sweep will refuse to close for the life of the process, so a crashed
+    # turn would permanently protect the very orphan it created.
+    try:
+        decide_ctx = DecideContext(
+            conn=runtime.conn,
+            runtime_paths=runtime.runtime_paths,
+            # ``ToolRegistry`` / ``ActionLifecycle`` satisfy the L3
+            # Protocols structurally; the casts pin the boundary because
+            # mypy's invariant generic stance over Protocol attribute
+            # types treats the more-specific RawResult / LifecycleState
+            # return types as a conflict.
+            tool_registry=cast("ToolRegistryLike", runtime.tool_registry),
+            lifecycle=cast("LifecycleLike", runtime.lifecycle),
+            llm_client=runtime.llm_client,
+            system_prompt=runtime.system_prompt,
+            tier0_table=runtime.tier0_table,
+        )
 
-    decide_ctx = DecideContext(
-        conn=runtime.conn,
-        runtime_paths=runtime.runtime_paths,
-        # ``ToolRegistry`` / ``ActionLifecycle`` satisfy the L3
-        # Protocols structurally; the casts pin the boundary because
-        # mypy's invariant generic stance over Protocol attribute
-        # types treats the more-specific RawResult / LifecycleState
-        # return types as a conflict.
-        tool_registry=cast("ToolRegistryLike", runtime.tool_registry),
-        lifecycle=cast("LifecycleLike", runtime.lifecycle),
-        llm_client=runtime.llm_client,
-        system_prompt=runtime.system_prompt,
-        tier0_table=runtime.tier0_table,
-    )
+        # SQLite row id of the surface.user_intent event — used as the
+        # "after_id" anchor for the trigger poll loop.
+        last_seen_id = _latest_row_id(runtime.conn)
 
-    # SQLite row id of the surface.user_intent event — used as the
-    # "after_id" anchor for the trigger poll loop.
-    last_seen_id = _latest_row_id(runtime.conn)
+        collected_events: list[Event] = []
+        trigger_event: Event = user_intent_event
+        response_plan: ResponsePlan | None = None
+        # Track the attention_channel from the final decide() iteration so
+        # we can route the response to the right surfaces in Step 18.
+        # Default ``"voice_notify"`` covers the flagship ADR-0002 scenario
+        # when an L3 branch returns a plan without explicitly setting the
+        # field; the L3 Attention Policy emits one of the 9 channels for
+        # canonical branches today.
+        final_attention_channel: str = "voice_notify"
+        iterations = 0
 
-    collected_events: list[Event] = []
-    trigger_event: Event = user_intent_event
-    response_plan: ResponsePlan | None = None
-    # Track the attention_channel from the final decide() iteration so
-    # we can route the response to the right surfaces in Step 18.
-    # Default ``"voice_notify"`` covers the flagship ADR-0002 scenario
-    # when an L3 branch returns a plan without explicitly setting the
-    # field; the L3 Attention Policy emits one of the 9 channels for
-    # canonical branches today.
-    final_attention_channel: str = "voice_notify"
-    iterations = 0
+        while response_plan is None and iterations < max_iterations:
+            iterations += 1
+            result = decide(trigger_event, decide_ctx)
+            collected_events.extend(result.events_emitted)
+            response_plan = result.response_plan
+            if response_plan is not None:
+                final_attention_channel = result.attention_channel
+                break
 
-    while response_plan is None and iterations < max_iterations:
-        iterations += 1
-        result = decide(trigger_event, decide_ctx)
-        collected_events.extend(result.events_emitted)
-        response_plan = result.response_plan
-        if response_plan is not None:
-            final_attention_channel = result.attention_channel
-            break
+            # No final plan -> decide() paused on an async tool. Wait for the
+            # next L4-side trigger event.
+            next_event, last_seen_id = _wait_for_next_trigger(
+                runtime.conn,
+                after_id=last_seen_id,
+                timeout=trigger_timeout_s,
+            )
+            trigger_event = next_event
 
-        # No final plan -> decide() paused on an async tool. Wait for the
-        # next L4-side trigger event.
-        next_event, last_seen_id = _wait_for_next_trigger(
+        if response_plan is None:
+            msg = (
+                f"drive_turn: exhausted max_iterations={max_iterations} without a final "
+                f"ResponsePlan (turn_id={effective_turn_id!r})."
+            )
+            raise RuntimeBootstrapError(msg)
+
+        # --- Stash-pop finalizer (ADR-0002 § Dirty-tree policy lines 663-713).
+        # The decide() loop above has already dispatched verify_diff_handler
+        # for every action in the turn (L4 sync semantics); pop the
+        # pre-task stash here, STRICTLY AFTER verify_diff exits, so the
+        # verify_command saw exactly Codex's tree. This call MUST live in
+        # the composition root and MUST come after the dispatch site —
+        # canary ``test_canary_stash_pop_after_verify`` enforces both.
+        _pop_pending_stashes(
             runtime.conn,
-            after_id=last_seen_id,
-            timeout=trigger_timeout_s,
+            artifacts_root=runtime.runtime_paths.artifacts_root,
+            turn_id=effective_turn_id,
         )
-        trigger_event = next_event
 
-    if response_plan is None:
-        msg = (
-            f"drive_turn: exhausted max_iterations={max_iterations} without a final "
-            f"ResponsePlan (turn_id={effective_turn_id!r})."
+        # L5 emission (Step 18 — channel-split + multi-surface dispatch).
+        # The Pre-emit token guard inside render_response() preserves the
+        # canary H3 runtime check — calling record_pre_emit_token() then
+        # render_response() in this order is the only legal path.
+        # SurfaceState is allocated fresh per turn (spec §3.6.7 — local
+        # surface state owns no truth and doesn't survive across turns)
+        # and discarded once render_response returns the cleared state.
+        surface_state = SurfaceState(last_gate_response_hash=None)
+        primed_state = record_pre_emit_token(surface_state, response_plan.response_hash)
+
+        # The in-memory capture stream serves two ends at once. First the
+        # operator console: render_response() writes the cli_stdout slice
+        # into it so the runtime can re-emit the same bytes to the real
+        # sys.stdout. Second the test / programmatic caller: the returned
+        # RunTurnResult.response_text is the captured string. Beyond
+        # stdout, render_response also routes voice text to say and
+        # document text to the notify banner per the channel mapping, and
+        # emits the audit surface.response_emitted event itself.
+        capture: io.StringIO = io.StringIO()
+        transcript_raw = user_intent_event.payload.get("transcript", "")
+        query = transcript_raw if isinstance(transcript_raw, str) else ""
+        _, render_event = render_response(
+            primed_state,
+            response_plan,
+            conn=runtime.conn,
+            turn_id=effective_turn_id,
+            attention_channel=final_attention_channel,
+            stream=capture,
+            available_surfaces=available_surfaces,
+            streaming_enabled=streaming_enabled,
+            query=query,
         )
-        raise RuntimeBootstrapError(msg)
+        rendered = capture.getvalue()
+        sys.stdout.write(rendered)
+        sys.stdout.flush()
+        collected_events.append(render_event)
 
-    # --- Stash-pop finalizer (ADR-0002 § Dirty-tree policy lines 663-713).
-    # The decide() loop above has already dispatched verify_diff_handler
-    # for every action in the turn (L4 sync semantics); pop the
-    # pre-task stash here, STRICTLY AFTER verify_diff exits, so the
-    # verify_command saw exactly Codex's tree. This call MUST live in
-    # the composition root and MUST come after the dispatch site —
-    # canary ``test_canary_stash_pop_after_verify`` enforces both.
-    _pop_pending_stashes(
-        runtime.conn,
-        artifacts_root=runtime.runtime_paths.artifacts_root,
-        turn_id=effective_turn_id,
-    )
-
-    # L5 emission (Step 18 — channel-split + multi-surface dispatch).
-    # The Pre-emit token guard inside render_response() preserves the
-    # canary H3 runtime check — calling record_pre_emit_token() then
-    # render_response() in this order is the only legal path.
-    # SurfaceState is allocated fresh per turn (spec §3.6.7 — local
-    # surface state owns no truth and doesn't survive across turns)
-    # and discarded once render_response returns the cleared state.
-    surface_state = SurfaceState(last_gate_response_hash=None)
-    primed_state = record_pre_emit_token(surface_state, response_plan.response_hash)
-
-    # The in-memory capture stream serves two ends at once. First the
-    # operator console: render_response() writes the cli_stdout slice
-    # into it so the runtime can re-emit the same bytes to the real
-    # sys.stdout. Second the test / programmatic caller: the returned
-    # RunTurnResult.response_text is the captured string. Beyond
-    # stdout, render_response also routes voice text to say and
-    # document text to the notify banner per the channel mapping, and
-    # emits the audit surface.response_emitted event itself.
-    capture: io.StringIO = io.StringIO()
-    transcript_raw = user_intent_event.payload.get("transcript", "")
-    query = transcript_raw if isinstance(transcript_raw, str) else ""
-    _, render_event = render_response(
-        primed_state,
-        response_plan,
-        conn=runtime.conn,
-        turn_id=effective_turn_id,
-        attention_channel=final_attention_channel,
-        stream=capture,
-        available_surfaces=available_surfaces,
-        streaming_enabled=streaming_enabled,
-        query=query,
-    )
-    rendered = capture.getvalue()
-    sys.stdout.write(rendered)
-    sys.stdout.flush()
-    collected_events.append(render_event)
-
-    return RunTurnResult(
-        response_text=rendered,
-        response_plan=response_plan,
-        turn_id=effective_turn_id,
-        iterations=iterations,
-        events_emitted=tuple(collected_events),
-        attention_channel=final_attention_channel,
-    )
+        return RunTurnResult(
+            response_text=rendered,
+            response_plan=response_plan,
+            turn_id=effective_turn_id,
+            iterations=iterations,
+            events_emitted=tuple(collected_events),
+            attention_channel=final_attention_channel,
+        )
+    finally:
+        release_turn_actions(effective_turn_id)
 
 
 # --- Stash-pop finalizer (ADR-0002 § Dirty-tree policy) --------------------
