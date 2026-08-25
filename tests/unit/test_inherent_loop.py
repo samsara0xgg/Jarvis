@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -726,3 +727,229 @@ def test_spawn_wake_listener_starts_engine(tmp_path: Path) -> None:
     # The engine the listener was wired with must have been started.
     assert captured["listener_engine"] is mock_engine_instance
     mock_engine_instance.start.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# serve_inherent — ADR-0009 Step 4 power-observer install / teardown
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _FakePowerObserver:
+    """Records ``shutdown()`` into a shared ordering log.
+
+    Satisfies the teardown half of the
+    :class:`jarvis.deployment.sleep_wake.PowerObserver` protocol;
+    ``register`` is never reached because the tests patch
+    ``install_power_observer`` wholesale.
+    """
+
+    order: list[str] = field(default_factory=list)
+    shutdown_calls: int = 0
+    shutdown_raises: bool = False
+
+    def shutdown(self) -> None:
+        """Record the teardown; optionally fail like a wedged CFRunLoop."""
+        self.shutdown_calls += 1
+        self.order.append("power_observer")
+        if self.shutdown_raises:
+            msg = "CFRunLoopStop wedged"
+            raise RuntimeError(msg)
+
+
+async def _noop_serve_ok(_self: uvicorn.Server) -> None:
+    """Stand-in for ``uvicorn.Server.serve`` that returns immediately."""
+
+
+def test_serve_inherent_installs_power_observer_after_lock(
+    runtime: JarvisRuntime,
+    tmp_path: Path,
+) -> None:
+    """The observer is installed after lock acquisition, on the runtime conn.
+
+    ADR-0009 D3: the install passes ``runtime.conn`` (the loop-thread-only
+    Event Log handle) plus ``loop=`` the running loop, so the CFRunLoop
+    thread's emit is marshaled instead of crashing ``check_same_thread``.
+    """
+    lock_path = tmp_path / "test-jarvis.lock"
+    captured: list[dict[str, Any]] = []
+    observer = _FakePowerObserver()
+
+    async def _body() -> None:
+        running_loop = asyncio.get_running_loop()
+
+        def _fake_install(
+            event_log: sqlite3.Connection,
+            **kwargs: object,
+        ) -> _FakePowerObserver:
+            captured.append(
+                {
+                    "event_log": event_log,
+                    "loop": kwargs.get("loop"),
+                    "lock_held": lock_path.exists(),
+                },
+            )
+            return observer
+
+        with (
+            patch("uvicorn.Server.serve", _noop_serve_ok),
+            patch.object(inherent_loop, "install_power_observer", _fake_install),
+        ):
+            await inherent_loop.serve_inherent(
+                runtime,
+                host="127.0.0.1",
+                port=0,
+                lock_path=lock_path,
+                poll_interval_s=0.001,
+            )
+
+        assert len(captured) == 1, f"expected exactly one install, got {captured}"
+        assert captured[0]["event_log"] is runtime.conn
+        assert captured[0]["loop"] is running_loop
+        assert captured[0]["lock_held"] is True
+
+    asyncio.run(_body())
+
+
+def test_serve_inherent_tears_power_observer_down_first_in_finally(
+    runtime: JarvisRuntime,
+    tmp_path: Path,
+) -> None:
+    """``shutdown()`` runs in the finally, ahead of the wake/tts/ducker steps.
+
+    ADR-0009 D3 pins the closed-flag ahead of everything else in the
+    teardown: a notification arriving mid-shutdown must find the flag,
+    not a loop already winding down toward ``runtime.conn.close``.
+    """
+    lock_path = tmp_path / "test-jarvis.lock"
+    order: list[str] = []
+    observer = _FakePowerObserver(order=order)
+
+    def _recording_shutdown_wake(_listener: object, _stream: object) -> None:
+        order.append("wake")
+
+    async def _body() -> None:
+        with (
+            patch("uvicorn.Server.serve", _noop_serve_ok),
+            patch.object(
+                inherent_loop, "install_power_observer", lambda *_a, **_k: observer,
+            ),
+            patch.object(inherent_loop, "_shutdown_wake", _recording_shutdown_wake),
+        ):
+            await inherent_loop.serve_inherent(
+                runtime,
+                host="127.0.0.1",
+                port=0,
+                lock_path=lock_path,
+                poll_interval_s=0.001,
+            )
+
+        assert observer.shutdown_calls == 1
+        assert order == ["power_observer", "wake"], (
+            f"power observer must be torn down first in the finally; got {order}"
+        )
+
+    asyncio.run(_body())
+
+
+def test_serve_inherent_tears_power_observer_down_when_serve_raises(
+    runtime: JarvisRuntime,
+    tmp_path: Path,
+) -> None:
+    """A crashing ``server.serve()`` still unwinds the power observer."""
+    lock_path = tmp_path / "test-jarvis.lock"
+    observer = _FakePowerObserver()
+
+    async def _boom_serve(_self: uvicorn.Server) -> None:
+        msg = "uvicorn exploded"
+        raise RuntimeError(msg)
+
+    async def _body() -> None:
+        with (
+            patch("uvicorn.Server.serve", _boom_serve),
+            patch.object(
+                inherent_loop, "install_power_observer", lambda *_a, **_k: observer,
+            ),
+            pytest.raises(RuntimeError, match="uvicorn exploded"),
+        ):
+            await inherent_loop.serve_inherent(
+                runtime,
+                host="127.0.0.1",
+                port=0,
+                lock_path=lock_path,
+                poll_interval_s=0.001,
+            )
+
+        assert observer.shutdown_calls == 1
+
+    asyncio.run(_body())
+
+
+def test_serve_inherent_survives_power_observer_install_failure(
+    runtime: JarvisRuntime,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ADR-0009 F4: a dead IOKit path degrades the daemon, never kills it.
+
+    The daemon must still bind its watchers and reach ``server.serve()``,
+    log one line, and unwind without tripping over the ``None`` observer
+    in the teardown.
+    """
+    lock_path = tmp_path / "test-jarvis.lock"
+    served: list[str] = []
+
+    def _exploding_install(*_args: object, **_kwargs: object) -> NoReturn:
+        msg = "IOKit unavailable"
+        raise RuntimeError(msg)
+
+    async def _serve_marker(_self: uvicorn.Server) -> None:
+        served.append("served")
+
+    async def _body() -> None:
+        with (
+            caplog.at_level(logging.ERROR, logger="jarvis.runtime.inherent_loop"),
+            patch("uvicorn.Server.serve", _serve_marker),
+            patch.object(inherent_loop, "install_power_observer", _exploding_install),
+        ):
+            await inherent_loop.serve_inherent(
+                runtime,
+                host="127.0.0.1",
+                port=0,
+                lock_path=lock_path,
+                poll_interval_s=0.001,
+            )
+
+        assert served == ["served"], "daemon must keep serving without a power observer"
+        assert any("power observer" in rec.message for rec in caplog.records), (
+            f"expected one power-observer degradation log; got {caplog.records}"
+        )
+
+    asyncio.run(_body())
+
+
+def test_serve_inherent_power_observer_shutdown_failure_does_not_mask_return(
+    runtime: JarvisRuntime,
+    tmp_path: Path,
+) -> None:
+    """A wedged ``shutdown()`` must not replace uvicorn's clean return."""
+    lock_path = tmp_path / "test-jarvis.lock"
+    observer = _FakePowerObserver(shutdown_raises=True)
+
+    async def _body() -> None:
+        with (
+            patch("uvicorn.Server.serve", _noop_serve_ok),
+            patch.object(
+                inherent_loop, "install_power_observer", lambda *_a, **_k: observer,
+            ),
+        ):
+            await inherent_loop.serve_inherent(
+                runtime,
+                host="127.0.0.1",
+                port=0,
+                lock_path=lock_path,
+                poll_interval_s=0.001,
+            )
+        assert observer.shutdown_calls == 1
+
+    asyncio.run(_body())

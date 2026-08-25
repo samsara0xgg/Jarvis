@@ -24,13 +24,16 @@ invariants reuse the same injection point against live Codex.
 **Callbacks run on the CFRunLoop thread, never on the asyncio loop.**
 The Event Log connection is opened ``check_same_thread=True``, so an
 emit wired straight into ``before_sleep`` / ``on_wake`` raises here.
-That is deliberate and survivable: both callbacks are invoked guarded
-(the exception is logged and swallowed) and ``IOAllowPowerChange`` is
-then called unconditionally, so a failed emit never vetoes or delays a
-sleep. Marshaling the emit onto the loop with ``call_soon_threadsafe``
-belongs to the ``serve_inherent`` wiring (ADR-0009 Step 4); the
-fail-closed wake-side reconciliation is the safety net either way
-(spec §3.7.8 — "sleep hook 不可靠").
+:func:`install_power_observer` therefore takes the loop that owns the
+connection (``loop=``) and marshals both callbacks onto it with
+``call_soon_threadsafe`` + a bounded wait (ADR-0009 Step 4 — see
+:func:`_marshal_onto_loop`). Without ``loop=`` the callbacks stay inline
+on the firing thread, which is what the one-shot CLI and the stub-driven
+K7/K8 tests want. Either way the emit is survivable: both callbacks are
+invoked guarded (the exception is logged and swallowed) and
+``IOAllowPowerChange`` is then called unconditionally, so a failed or
+timed-out emit never vetoes or delays a sleep — the fail-closed wake-side
+reconciliation is the safety net (spec §3.7.8 — "sleep hook 不可靠").
 
 The Codex subprocess almost always dies through a sleep — macOS power
 management does not preserve subprocess sockets/pipes across deep sleep.
@@ -54,6 +57,7 @@ References:
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import logging
 import sys
@@ -65,6 +69,7 @@ from typing import TYPE_CHECKING, Final, Protocol
 from jarvis.state.event_log import emit_event, iter_events
 
 if TYPE_CHECKING:
+    import asyncio
     import sqlite3
     from collections.abc import Callable
 
@@ -255,8 +260,9 @@ class _IOKitPowerObserver:
     Both callbacks are therefore invoked guarded (exception logged,
     swallowed) and ``IOAllowPowerChange`` is called unconditionally
     afterwards — a broken callback can never veto or stall a sleep.
-    Marshaling the emit onto the loop is the ``serve_inherent`` wiring's
-    job (ADR-0009 Step 4).
+    Marshaling the emit onto the loop is
+    :func:`install_power_observer`'s job, via its ``loop=`` argument
+    (ADR-0009 Step 4); ``serve_inherent`` is what supplies the loop.
 
     Lifetime hazard: ctypes does not own the trampoline it builds for a
     Python callback. :attr:`_callback_ref` keeps it alive for the whole
@@ -293,11 +299,14 @@ class _IOKitPowerObserver:
 
         Raises:
             RuntimeError: If ``IORegisterForSystemPower`` fails (root
-                port 0) or the runloop thread never comes up. The caller
-                degrades to running without a power observer (ADR-0009
-                F4) — the bootstrap sweep still closes orphans — but
-                should still call :meth:`shutdown` so a registration
-                that succeeded before the thread stalled is unwound.
+                port 0) or the runloop thread never comes up. Either
+                path can leave a *partial* registration behind, so
+                :func:`install_power_observer` unwinds it with
+                :meth:`shutdown` before re-raising — the caller of
+                ``install_power_observer`` never receives the observer
+                and structurally cannot do it itself. Callers degrade
+                to running without a power observer (ADR-0009 F4); the
+                bootstrap sweep still closes orphans.
         """
         self._before_sleep = before_sleep
         self._on_wake = on_wake
@@ -429,10 +438,73 @@ def _real_observer_factory() -> PowerObserver:
 # --- install_power_observer ------------------------------------------------
 
 
+# ADR-0009 D3: the before-sleep emit is scheduled onto the asyncio loop and
+# waited on for at most this long, then ``IOAllowPowerChange`` fires
+# regardless. The OS gives a bounded ack window and Jarvis never vetoes a
+# sleep; a missed bound degrades to the F3 wake-side reconciliation, which
+# is the mandatory half of spec §3.7.8 ("Sleep hook 不可靠").
+_MARSHAL_ACK_BOUND_S: Final = 3.0
+
+
+def _marshal_onto_loop(
+    callback: Callable[[], None],
+    *,
+    loop: asyncio.AbstractEventLoop,
+    label: str,
+) -> Callable[[], None]:
+    """Wrap ``callback`` so it runs on ``loop``'s thread, bounded-wait.
+
+    The IOKit observer fires its callbacks on the CFRunLoop thread while
+    the Event Log connection is ``check_same_thread=True`` on the loop
+    thread, so the emit must hop. ``call_soon_threadsafe`` does the hop;
+    a :class:`threading.Event` gives the CFRunLoop thread a bounded wait
+    so the emit is (usually) durable before the kernel is acked.
+
+    The returned wrapper NEVER raises and never blocks past
+    :data:`_MARSHAL_ACK_BOUND_S` — both would stall or veto a system
+    sleep. It must only be fired from a thread that is not the loop's
+    own (as the CFRunLoop thread always is); calling it from the loop
+    thread would wait out the full bound and accomplish nothing.
+    """
+
+    def _marshaled() -> None:
+        finished = threading.Event()
+
+        def _run_on_loop() -> None:
+            try:
+                callback()
+            except Exception:
+                # Mirrors the observer's own guard: a raising emit must
+                # not escape onto the loop's exception handler either.
+                LOGGER.exception("power observer %s callback raised", label)
+            finally:
+                finished.set()
+
+        try:
+            loop.call_soon_threadsafe(_run_on_loop)
+        except RuntimeError:
+            # Loop already closed (teardown race). Nothing to emit onto.
+            LOGGER.warning(
+                "power observer %s: event loop is closed; emit skipped", label,
+            )
+            return
+        if not finished.wait(timeout=_MARSHAL_ACK_BOUND_S):
+            LOGGER.warning(
+                "power observer %s: loop did not run the emit within %.1fs; "
+                "acking the power change anyway (wake-side reconciliation "
+                "covers it)",
+                label,
+                _MARSHAL_ACK_BOUND_S,
+            )
+
+    return _marshaled
+
+
 def install_power_observer(
     event_log: sqlite3.Connection | None,
     *,
     observer_factory: Callable[[], PowerObserver] | None = None,
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> PowerObserver:
     """Register the macOS power observer; wire sleep/wake callbacks.
 
@@ -454,6 +526,15 @@ def install_power_observer(
             handle.
         observer_factory: Callable returning a :class:`PowerObserver`.
             Defaults to the real macOS observer. Tests inject a stub.
+        loop: Asyncio loop that owns ``event_log``. When given (the
+            ``serve_inherent`` daemon wiring, ADR-0009 D3), BOTH
+            callbacks are marshaled onto it via
+            :func:`_marshal_onto_loop` — mandatory for the real
+            observer, whose callbacks arrive on the CFRunLoop thread
+            while ``event_log`` is loop-thread-only. Left ``None``
+            (default) the callbacks run inline on whatever thread fires
+            them, which is the one-shot CLI's shape and the byte-for-byte
+            K7/K8 stub contract.
 
     Returns:
         The registered observer. The caller may later call
@@ -461,6 +542,9 @@ def install_power_observer(
 
     Raises:
         ValueError: If ``event_log`` is None.
+        Exception: Whatever ``observer.register`` raises — re-raised
+            after the half-registered observer has been shut down here,
+            because the caller never receives a reference to unwind.
     """
     if event_log is None:
         msg = "install_power_observer requires a non-None event_log connection"
@@ -512,7 +596,23 @@ def install_power_observer(
         )
         reconcile_after_wake(conn)
 
-    observer.register(before_sleep=_before_sleep, on_wake=_on_wake)
+    before_sleep_cb: Callable[[], None] = _before_sleep
+    on_wake_cb: Callable[[], None] = _on_wake
+    if loop is not None:
+        before_sleep_cb = _marshal_onto_loop(
+            _before_sleep, loop=loop, label="before_sleep",
+        )
+        on_wake_cb = _marshal_onto_loop(_on_wake, loop=loop, label="on_wake")
+
+    try:
+        observer.register(before_sleep=before_sleep_cb, on_wake=on_wake_cb)
+    except BaseException:
+        # register() can fail AFTER IORegisterForSystemPower handed back a
+        # live root port (runloop thread never came up). We are the only
+        # holder of the reference at this point, so the unwind is ours.
+        with contextlib.suppress(Exception):
+            observer.shutdown()
+        raise
     return observer
 
 

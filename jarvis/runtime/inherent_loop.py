@@ -83,7 +83,10 @@ import uvicorn
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from jarvis.deployment.sleep_wake import PowerObserver
+
 from jarvis.deployment.process_lock import acquire_exclusive
+from jarvis.deployment.sleep_wake import install_power_observer
 from jarvis.runtime import JarvisRuntime, _new_turn_id, drive_turn
 from jarvis.shared import Event
 from jarvis.state.event_log import emit_event, open_event_log
@@ -799,6 +802,48 @@ def _spawn_wake_listener(
     return listener, stream
 
 
+def _install_power_observer_or_degrade(
+    conn: sqlite3.Connection,
+    loop: asyncio.AbstractEventLoop,
+) -> PowerObserver | None:
+    """Install the ADR-0009 D3 power observer; ``None`` if it cannot register.
+
+    ``loop`` is mandatory here (unlike the one-shot CLI's install): the
+    observer fires its callbacks on the CFRunLoop thread while ``conn``
+    is loop-thread-only, so ``install_power_observer`` marshals the
+    ``mac.sleeping`` / ``mac.awake`` emits back onto the loop.
+
+    F4 — fail-open residency. A dead IOKit path costs live sleep/wake
+    events, never the daemon; the bootstrap sweep closes actions
+    orphaned by an unobserved sleep on the next restart instead.
+    """
+    try:
+        return install_power_observer(conn, loop=loop)
+    except Exception:
+        LOGGER.exception(
+            "power observer install failed; serving without sleep/wake "
+            "notifications (ADR-0009 F4).",
+        )
+        return None
+
+
+def _shutdown_power_observer(power_observer: PowerObserver | None) -> None:
+    """De-register the power observer. Idempotent, never raises.
+
+    ADR-0009 D3 pins this FIRST in the serve teardown: ``shutdown()``
+    sets the closed flag that a racing kernel notification consults, so
+    a sleep landing mid-teardown returns instead of marshaling an emit
+    onto a loop that is about to stop — and onto ``runtime.conn``, which
+    the caller closes as soon as ``serve_inherent`` returns.
+    """
+    if power_observer is None:
+        return
+    try:
+        power_observer.shutdown()
+    except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
+        LOGGER.debug("power observer shutdown failed", exc_info=True)
+
+
 def _shutdown_tts(tts_pipe: voice_tts.TTSPipeline | None) -> None:
     """Stop the TTS pipeline's audio player and release the PortAudio device.
 
@@ -893,12 +938,18 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
        dispatches to the per-type broadcaster methods (D16); the
        ``_tts_watcher`` (parallel cursor) dispatches the same three
        types into the TTS state machine (ADR-0005 §5.3).
-    7. ``await server.serve()`` — blocks until uvicorn returns (signal
+    7. ADR-0009 D3 — :func:`install_power_observer` on ``runtime.conn``
+       with ``loop=`` the running loop, so the observer's CFRunLoop-thread
+       notifications marshal their ``mac.sleeping`` / ``mac.awake`` emits
+       onto this loop. Any failure is logged and swallowed (F4: the
+       daemon serves text + voice without sleep/wake rather than dying).
+    8. ``await server.serve()`` — blocks until uvicorn returns (signal
        received).
-    8. ``finally``: request the wake listener stop (if running), cancel
-       every watcher task, and ``await`` them with
-       ``return_exceptions=True`` so a watcher that crashed during
-       runtime does not mask the shutdown path. Then the
+    9. ``finally``: tear the power observer down FIRST (its closed flag
+       must be set before the loop starts winding down), then request the
+       wake listener stop (if running), cancel every watcher task, and
+       ``await`` them with ``return_exceptions=True`` so a watcher that
+       crashed during runtime does not mask the shutdown path. Then the
        ``acquire_exclusive`` context manager unwinds and releases the
        lock file.
 
@@ -912,7 +963,7 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
         host: Bind interface for the FastAPI app.
         port: TCP port for the FastAPI app.
         lock_path: Per-runtime-root daemon lock file. Resolved by
-            ``cli/__main__.py`` (Step 9) to ``${runtime_root}/jarvis.lock``.
+            ``jarvis.cli._main_serve`` to ``${runtime_root}/daemon.lock``.
         poll_interval_s: Watcher poll cadence (default 10 ms).
         sensevoice_dir: SenseVoice INT8 model directory (pre-flight).
         silero_path: Silero VAD ONNX path (pre-flight).
@@ -1039,10 +1090,25 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
                 ),
             )
 
+        # ADR-0009 D3 — power observer, installed after the lock (which
+        # stays the outermost scope) and immediately before the try/finally
+        # that owns the serve lifetime, so its registered CFRunLoop thread
+        # is bracketed by the same `finally` that tears the watchers down;
+        # no path between install and try can leak a live registration.
+        power_observer = _install_power_observer_or_degrade(
+            runtime.conn, asyncio.get_running_loop(),
+        )
+
         try:
             await server.serve()
         finally:
             LOGGER.info("serve_inherent: shutting down watchers")
+            # Power observer FIRST: its closed flag must be set before the
+            # loop starts winding down, so a notification racing this
+            # teardown finds the flag instead of a dead loop. Everything
+            # below (wake / TTS / ducker / watcher cancel) is loop-thread
+            # work that would otherwise be racing that notification.
+            _shutdown_power_observer(power_observer)
             # Shutdown order is load-bearing: wake first (releases the mic so
             # any ducker bracket the listener held is unwound), TTS second
             # (releases the speaker / PortAudio output stream), ducker last

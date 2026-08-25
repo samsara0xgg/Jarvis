@@ -22,14 +22,31 @@ spec §3.7.8:
 - Fail-closed sees a None ``run_id`` in correlation as a string-None;
   the action is still closed
 - Actions that already have a terminal event are NOT reconciled
+
+ADR-0009 Step 4 additions (the ``loop=`` marshaling seam):
+
+- ``loop=None`` (the default) keeps the callbacks inline on the firing
+  thread — the byte-for-byte K7/K8 contract
+- ``loop=<running loop>`` marshals the emit onto the loop thread, so a
+  CFRunLoop-thread notification can write a ``check_same_thread=True``
+  connection
+- the marshaled wrapper returns within a 3s hard bound even when the
+  loop never runs the callback (it must never delay ``IOAllowPowerChange``)
+- a ``register()`` that raises after a partial registration is unwound
+  by ``install_power_observer`` itself (the caller never gets a handle)
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import threading
+import time
 from typing import TYPE_CHECKING
 
 import pytest
 
+from jarvis.deployment import sleep_wake
 from jarvis.deployment.sleep_wake import (
     PowerObserver,
     install_power_observer,
@@ -372,3 +389,234 @@ def test_sleep_wake_full_cycle_k7(tmp_path: Path) -> None:
     assert types.count("mac.awake") == 1
     assert types.count("worker.terminated_by_sleep") == 1
     assert types.count("action.timeout_assumed") == 1
+
+
+# --- ADR-0009 Step 4: the loop= marshaling seam ----------------------------
+
+
+class _RaisingRegisterObserver(StubPowerObserver):
+    """Stub whose ``register`` fails the way a partial IOKit setup does.
+
+    ``_IOKitPowerObserver.register`` can raise *after*
+    ``IORegisterForSystemPower`` already handed back a live root port
+    (root port 0 check, or the runloop thread never coming up). The
+    caller never receives the observer on that path, so
+    :func:`install_power_observer` itself must unwind it.
+    """
+
+    def __init__(self, *, shutdown_raises: bool = False) -> None:
+        """Record whether the unwinding ``shutdown()`` should also fail."""
+        super().__init__()
+        self._shutdown_raises = shutdown_raises
+
+    def register(
+        self,
+        *,
+        before_sleep: Callable[[], None],
+        on_wake: Callable[[], None],
+    ) -> None:
+        """Fail exactly as a half-registered IOKit observer does."""
+        super().register(before_sleep=before_sleep, on_wake=on_wake)
+        msg = "IORegisterForSystemPower failed (root port 0)"
+        raise RuntimeError(msg)
+
+    def shutdown(self) -> None:
+        """Mark the unwind; optionally fail so suppression is exercised."""
+        super().shutdown()
+        if self._shutdown_raises:
+            msg = "IODeregisterForSystemPower blew up during unwind"
+            raise RuntimeError(msg)
+
+
+def _capturing(fire: Callable[[], None], raised: list[BaseException]) -> Callable[[], None]:
+    """Wrap ``fire`` so whatever it raises lands in ``raised`` instead."""
+
+    def _target() -> None:
+        try:
+            fire()
+        except BaseException as exc:  # noqa: BLE001 — the test asserts on it
+            raised.append(exc)
+
+    return _target
+
+
+def _fire_from_worker_thread(fire: Callable[[], None]) -> list[BaseException]:
+    """Run ``fire`` on a bare thread (no loop running); return what it raised.
+
+    Stands in for the CFRunLoop thread: the real observer invokes the
+    installed callbacks there, never on the asyncio loop thread.
+    """
+    raised: list[BaseException] = []
+    thread = threading.Thread(target=_capturing(fire, raised), name="fake-cfrunloop")
+    thread.start()
+    thread.join(timeout=10.0)
+    assert not thread.is_alive(), "callback never returned — the ack bound leaked"
+    return raised
+
+
+async def _fire_off_loop(fire: Callable[[], None]) -> list[BaseException]:
+    """Run ``fire`` on a worker thread while the loop stays free to turn.
+
+    ``asyncio.to_thread`` is what makes this a real marshaling test: the
+    callback runs off-loop (as the CFRunLoop thread does) and the awaiting
+    loop is simultaneously free to run the ``call_soon_threadsafe`` emit
+    the callback is blocking on.
+    """
+    raised: list[BaseException] = []
+    await asyncio.to_thread(_capturing(fire, raised))
+    return raised
+
+
+def test_marshaled_before_sleep_emits_on_the_loop_thread(tmp_path: Path) -> None:
+    """A CFRunLoop-thread before-sleep lands its emit on the loop thread.
+
+    The Event Log connection is opened with ``check_same_thread=True`` on
+    the loop thread, so an un-marshaled emit from another thread raises
+    ``sqlite3.ProgrammingError``. The row existing — with the callback
+    having been fired from a different thread — is the proof that
+    ``loop=`` moved the write onto the loop.
+    """
+
+    async def _body() -> None:
+        conn = _make_event_log(tmp_path)
+        try:
+            stub = StubPowerObserver()
+            install_power_observer(
+                conn,
+                observer_factory=lambda: stub,
+                loop=asyncio.get_running_loop(),
+            )
+            raised = await _fire_off_loop(stub.simulate_sleep)
+
+            assert raised == []
+            assert "mac.sleeping" in _event_types(conn)
+        finally:
+            conn.close()
+
+    asyncio.run(_body())
+
+
+def test_marshaled_on_wake_emits_on_the_loop_thread(tmp_path: Path) -> None:
+    """The on-wake callback is marshaled the same way (ADR-0009 D3)."""
+
+    async def _body() -> None:
+        conn = _make_event_log(tmp_path)
+        try:
+            _seed_action_running(conn, action_id="A_marshal", run_id="R_marshal")
+            stub = StubPowerObserver()
+            install_power_observer(
+                conn,
+                observer_factory=lambda: stub,
+                loop=asyncio.get_running_loop(),
+            )
+            raised = await _fire_off_loop(stub.simulate_wake)
+
+            assert raised == []
+            types = _event_types(conn)
+            # mac.awake AND the reconciliation it drives both ran on the loop.
+            assert "mac.awake" in types
+            assert "worker.terminated_by_sleep" in types
+        finally:
+            conn.close()
+
+    asyncio.run(_body())
+
+
+def test_install_without_loop_emits_inline_on_the_firing_thread(
+    tmp_path: Path,
+) -> None:
+    """``loop=None`` keeps the Day-1 inline behavior — the K7/K8 pin.
+
+    No hop, no wait: the ``mac.sleeping`` row is visible the instant
+    ``simulate_sleep()`` returns, without the loop ever being given a
+    chance to run a scheduled callback. (A marshaled callback fired from
+    the loop thread would instead block until the ack bound and emit
+    nothing.)
+    """
+
+    async def _body() -> None:
+        conn = _make_event_log(tmp_path)
+        try:
+            stub = StubPowerObserver()
+            install_power_observer(conn, observer_factory=lambda: stub)
+            stub.simulate_sleep()
+            assert "mac.sleeping" in _event_types(conn)
+        finally:
+            conn.close()
+
+    asyncio.run(_body())
+
+
+def test_marshal_ack_bound_is_three_seconds() -> None:
+    """ADR-0009 D3 pins the before-sleep ack wait at a 3s hard bound."""
+    assert sleep_wake._MARSHAL_ACK_BOUND_S == 3.0  # noqa: SLF001 — the constant IS the contract.
+
+
+def test_marshaled_callback_returns_within_bound_when_loop_never_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A busy/stopped loop must not stall the kernel's ack window.
+
+    The wrapper waits at most ``_MARSHAL_ACK_BOUND_S``, logs one
+    warning, and returns normally — never raises. Correctness then falls
+    to the wake-side reconciliation (ADR-0009 F3).
+    """
+    monkeypatch.setattr(sleep_wake, "_MARSHAL_ACK_BOUND_S", 0.05)
+    conn = _make_event_log(tmp_path)
+    idle_loop = asyncio.new_event_loop()
+    try:
+        stub = StubPowerObserver()
+        install_power_observer(
+            conn,
+            observer_factory=lambda: stub,
+            loop=idle_loop,
+        )
+        with caplog.at_level(logging.WARNING, logger="jarvis.deployment.sleep_wake"):
+            started = time.monotonic()
+            raised = _fire_from_worker_thread(stub.simulate_sleep)
+            elapsed = time.monotonic() - started
+
+        assert raised == []
+        assert elapsed < 1.0, f"ack wait overran the bound: {elapsed:.3f}s"
+        warnings = [rec.getMessage() for rec in caplog.records]
+        assert any("before_sleep" in msg for msg in warnings), (
+            f"expected one before_sleep timeout warning, got {warnings}"
+        )
+        # The loop never ran, so nothing was written.
+        assert _event_types(conn) == []
+    finally:
+        idle_loop.close()
+        conn.close()
+
+
+def test_install_unwinds_the_observer_when_register_raises(tmp_path: Path) -> None:
+    """A half-registered observer is shut down by install, then re-raised.
+
+    ``install_power_observer`` is the only holder of the reference at
+    that point — the caller structurally cannot unwind what it never
+    received.
+    """
+    conn = _make_event_log(tmp_path)
+    stub = _RaisingRegisterObserver()
+    try:
+        with pytest.raises(RuntimeError, match="root port 0"):
+            install_power_observer(conn, observer_factory=lambda: stub)
+        assert stub.shutdown_called is True
+    finally:
+        conn.close()
+
+
+def test_install_reraises_register_error_even_if_unwind_fails(
+    tmp_path: Path,
+) -> None:
+    """A failing unwind is suppressed; the ORIGINAL register error wins."""
+    conn = _make_event_log(tmp_path)
+    stub = _RaisingRegisterObserver(shutdown_raises=True)
+    try:
+        with pytest.raises(RuntimeError, match="root port 0"):
+            install_power_observer(conn, observer_factory=lambda: stub)
+        assert stub.shutdown_called is True
+    finally:
+        conn.close()
