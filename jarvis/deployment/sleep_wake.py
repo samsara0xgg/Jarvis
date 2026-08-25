@@ -1,17 +1,36 @@
-"""macOS IOPM sleep/wake observer + reconciliation for in-flight workers.
+"""macOS IOKit sleep/wake observer + reconciliation for in-flight workers.
 
-Per ADR-0002 § Sleep/wake protocol (lines 1100-1156) + spec §3.7.8.
+Per ADR-0002 § Sleep/wake protocol (lines 1100-1156), ADR-0009 D3, and
+spec §3.7.8.
 
-A 3-minute Codex turn easily spans a Mac sleep. The detached child must
-observe sleep/wake and reconcile in-flight state. Day-2 implements the
-Mac-only minimum (cross-domain publication deferred per deviation V4):
-IOPM observer + ``reconcile_after_wake`` handle the case fail-closed.
+A 3-minute Codex turn easily spans a Mac sleep. The daemon must observe
+sleep/wake and reconcile in-flight state. Mac-only minimum
+(cross-domain publication deferred per ADR-0002 deviation V4): power
+observer + ``reconcile_after_wake`` handle the case fail-closed.
 
-The macOS IOPM bindings (via PyObjC ``Foundation.NSWorkspace``) are
-stubbed behind a :class:`PowerObserver` protocol so unit tests inject a
+The real observer is :class:`_IOKitPowerObserver` —
+``IORegisterForSystemPower`` driven over **ctypes** against IOKit +
+CoreFoundation (ADR-0009 D3: PyObjC does not wrap IOKit at all, so
+ctypes is the mechanism and costs no dependency). The exact signatures,
+message codes, ack calls and teardown order come from the Step-0 spike
+``scripts/spike_power_observer.py``, which proved them against a real
+``pmset sleepnow``.
+
+It sits behind a :class:`PowerObserver` protocol so unit tests inject a
 fake observer that fires ``simulate_sleep`` / ``simulate_wake``
 deterministically without touching system power events. K7 / K8 Tier-2
 invariants reuse the same injection point against live Codex.
+
+**Callbacks run on the CFRunLoop thread, never on the asyncio loop.**
+The Event Log connection is opened ``check_same_thread=True``, so an
+emit wired straight into ``before_sleep`` / ``on_wake`` raises here.
+That is deliberate and survivable: both callbacks are invoked guarded
+(the exception is logged and swallowed) and ``IOAllowPowerChange`` is
+then called unconditionally, so a failed emit never vetoes or delays a
+sleep. Marshaling the emit onto the loop with ``call_soon_threadsafe``
+belongs to the ``serve_inherent`` wiring (ADR-0009 Step 4); the
+fail-closed wake-side reconciliation is the safety net either way
+(spec §3.7.8 — "sleep hook 不可靠").
 
 The Codex subprocess almost always dies through a sleep — macOS power
 management does not preserve subprocess sockets/pipes across deep sleep.
@@ -21,18 +40,24 @@ later Limitation Claim will reference); never silently mark the action
 complete.
 
 Layer boundary (``.importlinter``): jarvis.deployment may import
-jarvis.state (state sits below deployment in the layer DAG). Lazy
-PyObjC import keeps non-Mac CI / unit tests free of the binding.
+jarvis.state (state sits below deployment in the layer DAG). The
+framework handles are dlopened lazily by :func:`_load_power_binding`,
+so importing this module binds nothing — unit tests and non-Mac hosts
+never touch IOKit.
 
 References:
 - ADR-0002 § Sleep/wake protocol (lines 1100-1156)
+- ADR-0009 D3 (ctypes-IOKit observer, ack protocol, pinned teardown)
 - spec.html §3.7.8 (sleep/wake protocol)
 - ADR-0002 deviation V4 (Mac-only minimum; cross-domain publication deferred)
 """
 
 from __future__ import annotations
 
+import ctypes
+import logging
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Protocol
@@ -44,6 +69,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jarvis.shared import Event
+
+LOGGER = logging.getLogger("jarvis.deployment.sleep_wake")
 
 
 # Terminal event types that close an action's lifecycle. An ``action_id``
@@ -64,9 +91,10 @@ _TERMINAL_ACTION_EVENT_TYPES: Final[frozenset[str]] = frozenset(
 class PowerObserver(Protocol):
     """Power observer contract used by :func:`install_power_observer`.
 
-    The real macOS observer subscribes to ``NSWorkspaceWillSleepNotification``
-    / ``NSWorkspaceDidWakeNotification`` (PyObjC). Unit tests inject a stub
-    that fires ``simulate_sleep`` / ``simulate_wake`` manually.
+    The real macOS observer (:class:`_IOKitPowerObserver`) registers for
+    IOKit system-power notifications on a dedicated CFRunLoop thread.
+    Unit tests inject a stub that fires ``simulate_sleep`` /
+    ``simulate_wake`` manually.
     """
 
     def register(
@@ -88,24 +116,172 @@ class PowerObserver(Protocol):
         ...
 
 
-# --- Real observer (Mac-only, lazy PyObjC import) ---------------------------
+# --- Real observer: ctypes-IOKit on a dedicated CFRunLoop thread -----------
+
+_IOKIT_FRAMEWORK: Final = "/System/Library/Frameworks/IOKit.framework/IOKit"
+_COREFOUNDATION_FRAMEWORK: Final = (
+    "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+)
+
+# void (*IOServiceInterestCallback)(void *refcon, io_service_t service,
+#                                   natural_t messageType, void *messageArgument)
+_CALLBACK_TYPE = ctypes.CFUNCTYPE(
+    None,
+    ctypes.c_void_p,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.c_void_p,
+)
+
+# IOMessage.h power codes (iokit_common_msg base 0xE0000000).
+_MSG_CAN_SYSTEM_SLEEP: Final = 0xE0000270
+_MSG_WILL_SLEEP: Final = 0xE0000280
+_MSG_HAS_POWERED_ON: Final = 0xE0000300
+
+# The two messages the kernel waits on. Both are acknowledged with
+# ``IOAllowPowerChange`` — Jarvis never vetoes a sleep (spec §3.7.8).
+# Note ``kIOMessageCanSystemSleep`` is skipped entirely for forced
+# sleeps (spike-proven), so nothing may depend on seeing it.
+_ACK_MESSAGES: Final[frozenset[int]] = frozenset(
+    {_MSG_CAN_SYSTEM_SLEEP, _MSG_WILL_SLEEP},
+)
+
+# The runloop thread publishes its CFRunLoop ref before parking; the
+# join bound keeps ``shutdown()`` from blocking the serve teardown.
+_RUNLOOP_READY_TIMEOUT_S: Final = 5.0
+_RUNLOOP_JOIN_TIMEOUT_S: Final = 5.0
 
 
-class _NSWorkspacePowerObserver:
-    """NSWorkspace-backed observer (real Mac code path).
+@dataclass(frozen=True)
+class _PowerBinding:
+    """The IOKit / CoreFoundation entry points the observer calls.
 
-    Day-2 minimum: holds the callbacks and records that registration
-    happened. The full Cocoa wiring (NSNotificationCenter
-    ``addObserver`` plumbing through an NSObject delegate) is deferred —
-    Step 17 will exercise this against the live system; reliability of
-    the sleep notification itself is best-effort by spec §3.7.8, with
-    :func:`reconcile_after_wake` providing the fail-closed safety net.
+    Bundled into one frozen struct so unit tests can inject a fake and
+    drive the observer's whole control flow — ack protocol, closed flag,
+    teardown order — without registering with the kernel. Resolved by
+    :func:`_load_power_binding`, which is the only place a framework is
+    dlopened.
     """
 
-    def __init__(self) -> None:
+    register_for_system_power: Callable[..., int]
+    notification_port_get_runloop_source: Callable[..., int | None]
+    allow_power_change: Callable[..., int]
+    deregister_for_system_power: Callable[..., int]
+    service_close: Callable[..., int]
+    notification_port_destroy: Callable[..., None]
+    runloop_get_current: Callable[..., int | None]
+    runloop_add_source: Callable[..., None]
+    runloop_run: Callable[..., None]
+    runloop_stop: Callable[..., None]
+    runloop_default_mode: object
+
+
+def _load_power_binding() -> _PowerBinding:
+    """Load IOKit + CoreFoundation and pin every argtype / restype.
+
+    Signatures are copied verbatim from ``scripts/spike_power_observer.py``
+    (ADR-0009 Step 0), which proved them end-to-end against a real
+    ``pmset sleepnow`` plus a scheduled wake. Called only from
+    :func:`_real_observer_factory`, so importing this module never binds
+    a framework.
+    """
+    iokit = ctypes.CDLL(_IOKIT_FRAMEWORK)
+    corefoundation = ctypes.CDLL(_COREFOUNDATION_FRAMEWORK)
+
+    # io_connect_t IORegisterForSystemPower(void *refcon,
+    #     IONotificationPortRef *thePortRef,
+    #     IOServiceInterestCallback callback, io_object_t *notifier)
+    iokit.IORegisterForSystemPower.restype = ctypes.c_uint32
+    iokit.IORegisterForSystemPower.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        _CALLBACK_TYPE,
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    iokit.IONotificationPortGetRunLoopSource.restype = ctypes.c_void_p
+    iokit.IONotificationPortGetRunLoopSource.argtypes = [ctypes.c_void_p]
+    iokit.IOAllowPowerChange.restype = ctypes.c_int
+    iokit.IOAllowPowerChange.argtypes = [ctypes.c_uint32, ctypes.c_ssize_t]
+    iokit.IODeregisterForSystemPower.restype = ctypes.c_int
+    iokit.IODeregisterForSystemPower.argtypes = [ctypes.POINTER(ctypes.c_uint32)]
+    iokit.IOServiceClose.restype = ctypes.c_int
+    iokit.IOServiceClose.argtypes = [ctypes.c_uint32]
+    iokit.IONotificationPortDestroy.restype = None
+    iokit.IONotificationPortDestroy.argtypes = [ctypes.c_void_p]
+
+    corefoundation.CFRunLoopGetCurrent.restype = ctypes.c_void_p
+    corefoundation.CFRunLoopGetCurrent.argtypes = []
+    corefoundation.CFRunLoopAddSource.restype = None
+    corefoundation.CFRunLoopAddSource.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    corefoundation.CFRunLoopRun.restype = None
+    corefoundation.CFRunLoopRun.argtypes = []
+    corefoundation.CFRunLoopStop.restype = None
+    corefoundation.CFRunLoopStop.argtypes = [ctypes.c_void_p]
+
+    return _PowerBinding(
+        register_for_system_power=iokit.IORegisterForSystemPower,
+        notification_port_get_runloop_source=(
+            iokit.IONotificationPortGetRunLoopSource
+        ),
+        allow_power_change=iokit.IOAllowPowerChange,
+        deregister_for_system_power=iokit.IODeregisterForSystemPower,
+        service_close=iokit.IOServiceClose,
+        notification_port_destroy=iokit.IONotificationPortDestroy,
+        runloop_get_current=corefoundation.CFRunLoopGetCurrent,
+        runloop_add_source=corefoundation.CFRunLoopAddSource,
+        runloop_run=corefoundation.CFRunLoopRun,
+        runloop_stop=corefoundation.CFRunLoopStop,
+        runloop_default_mode=ctypes.c_void_p.in_dll(
+            corefoundation, "kCFRunLoopDefaultMode",
+        ),
+    )
+
+
+class _IOKitPowerObserver:
+    """IOKit system-power observer on a dedicated CFRunLoop thread.
+
+    ``IORegisterForSystemPower`` delivers notifications through a
+    CFRunLoop source. The daemon has no CFRunLoop of its own (its main
+    thread runs asyncio), so the observer owns one on a daemon thread —
+    the architecture the Step-0 spike proved.
+
+    Threading contract: ``before_sleep`` / ``on_wake`` are invoked **on
+    that thread**, not on the asyncio loop, so the Event Log's
+    ``check_same_thread=True`` connection rejects a directly-wired emit.
+    Both callbacks are therefore invoked guarded (exception logged,
+    swallowed) and ``IOAllowPowerChange`` is called unconditionally
+    afterwards — a broken callback can never veto or stall a sleep.
+    Marshaling the emit onto the loop is the ``serve_inherent`` wiring's
+    job (ADR-0009 Step 4).
+
+    Lifetime hazard: ctypes does not own the trampoline it builds for a
+    Python callback. :attr:`_callback_ref` keeps it alive for the whole
+    object lifetime — dropping it while IOKit still holds the pointer
+    crashes the runloop thread on the next notification.
+    """
+
+    def __init__(self, *, binding: _PowerBinding) -> None:
+        """Build an unregistered observer over ``binding``.
+
+        Constructing spins no thread and touches no kernel state;
+        :meth:`register` does both.
+        """
+        self._binding = binding
         self._before_sleep: Callable[[], None] | None = None
         self._on_wake: Callable[[], None] | None = None
-        self._registered: bool = False
+        self._root_port = ctypes.c_uint32(0)
+        self._notify_port = ctypes.c_void_p(None)
+        self._notifier = ctypes.c_uint32(0)
+        self._runloop_ref = ctypes.c_void_p(None)
+        self._runloop_ready = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._closed = False
+        # Held for the observer's lifetime — see the class docstring.
+        self._callback_ref = _CALLBACK_TYPE(self._on_power_message)
 
     def register(
         self,
@@ -113,35 +289,129 @@ class _NSWorkspacePowerObserver:
         before_sleep: Callable[[], None],
         on_wake: Callable[[], None],
     ) -> None:
-        """Subscribe to NSWorkspaceWillSleep / NSWorkspaceDidWake."""
+        """Subscribe to IOKit power notifications; start the CFRunLoop thread.
+
+        Raises:
+            RuntimeError: If ``IORegisterForSystemPower`` fails (root
+                port 0) or the runloop thread never comes up. The caller
+                degrades to running without a power observer (ADR-0009
+                F4) — the bootstrap sweep still closes orphans — but
+                should still call :meth:`shutdown` so a registration
+                that succeeded before the thread stalled is unwound.
+        """
         self._before_sleep = before_sleep
         self._on_wake = on_wake
-        # Lazy import: PyObjC is a Mac-only optional dep; non-Mac CI
-        # never reaches this branch (factory raises on non-darwin), and
-        # mypy on non-Mac runners cannot find the stub at all. F401 +
-        # PLC0415 are silenced for the placeholder until Step 17 wires
-        # NSNotificationCenter; type-ignore covers the missing stub.
-        try:
-            from Foundation import NSWorkspace  # type:ignore[import-not-found] # noqa:F401,PLC0415
-        except ImportError as exc:
+        self._root_port = ctypes.c_uint32(
+            self._binding.register_for_system_power(
+                None,
+                ctypes.byref(self._notify_port),
+                self._callback_ref,
+                ctypes.byref(self._notifier),
+            ),
+        )
+        if self._root_port.value == 0:
+            msg = "IORegisterForSystemPower failed (root port 0)"
+            raise RuntimeError(msg)
+        thread = threading.Thread(
+            target=self._runloop_thread,
+            name="jarvis-power-observer",
+            daemon=True,
+        )
+        self._thread = thread
+        thread.start()
+        if not self._runloop_ready.wait(timeout=_RUNLOOP_READY_TIMEOUT_S):
             msg = (
-                "PyObjC required for real IOPM observer. "
-                "Install with: pip install pyobjc-framework-Cocoa"
+                "power observer runloop thread did not come up within "
+                f"{_RUNLOOP_READY_TIMEOUT_S}s"
             )
-            raise RuntimeError(msg) from exc
-        # Day-2 minimum records that registration happened. The actual
-        # NSNotificationCenter subscription (with an NSObject delegate)
-        # is wired in Step 17 against live Codex; reliability of the
-        # notification is best-effort by spec §3.7.8.
-        self._registered = True
+            raise RuntimeError(msg)
 
     def shutdown(self) -> None:
-        """Mark the observer de-registered (best-effort)."""
-        self._registered = False
+        """Tear the registration down in the ADR-0009 D3 pinned order.
+
+        Closed flag first (a notification racing this teardown must find
+        it and return), then ``IODeregisterForSystemPower`` +
+        ``IOServiceClose``, then ``CFRunLoopStop`` and the thread join,
+        and only then ``IONotificationPortDestroy`` — destroying the
+        port while the runloop thread still owns its source is what
+        turns a clean exit into a crash. Idempotent.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        if self._root_port.value == 0:
+            # register() never succeeded — nothing to unwind.
+            return
+        binding = self._binding
+        binding.deregister_for_system_power(ctypes.byref(self._notifier))
+        binding.service_close(self._root_port.value)
+        if self._runloop_ref.value is not None:
+            binding.runloop_stop(self._runloop_ref)
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=_RUNLOOP_JOIN_TIMEOUT_S)
+            self._thread = None
+        binding.notification_port_destroy(self._notify_port)
+
+    # -- CFRunLoop thread -------------------------------------------------
+
+    def _runloop_thread(self) -> None:
+        """Own a CFRunLoop, attach the notification source, and park in it."""
+        binding = self._binding
+        self._runloop_ref = ctypes.c_void_p(binding.runloop_get_current())
+        source = binding.notification_port_get_runloop_source(self._notify_port)
+        binding.runloop_add_source(
+            self._runloop_ref, source, binding.runloop_default_mode,
+        )
+        self._runloop_ready.set()
+        binding.runloop_run()
+
+    def _on_power_message(
+        self,
+        _refcon: int | None,
+        _service: int,
+        message_type: int,
+        message_argument: int | None,
+    ) -> None:
+        """IOKit callback. Runs on the CFRunLoop thread — never on the loop."""
+        if self._closed:
+            # Late notification after shutdown(): the root port is
+            # already closed and the asyncio loop may be gone, so both
+            # the callback and the ack would be use-after-close.
+            return
+        if message_type == _MSG_WILL_SLEEP:
+            self._invoke_guarded(self._before_sleep, "before_sleep")
+        elif message_type == _MSG_HAS_POWERED_ON:
+            self._invoke_guarded(self._on_wake, "on_wake")
+        if message_type in _ACK_MESSAGES:
+            self._allow_power_change(message_argument)
+
+    def _invoke_guarded(
+        self,
+        callback: Callable[[], None] | None,
+        label: str,
+    ) -> None:
+        """Run ``callback``, swallowing any exception so the ack still happens."""
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            # A raising callback must never veto or stall a sleep: log it
+            # and fall through to the unconditional ack.
+            LOGGER.exception("power observer %s callback raised", label)
+
+    def _allow_power_change(self, message_argument: int | None) -> None:
+        """Acknowledge the pending power change. Never veto (spec §3.7.8)."""
+        rc = self._binding.allow_power_change(
+            self._root_port.value, message_argument or 0,
+        )
+        if rc != 0:
+            LOGGER.warning("IOAllowPowerChange returned %d", rc)
 
 
 def _real_observer_factory() -> PowerObserver:
-    """Construct the real macOS IOPM-backed observer.
+    """Construct the real macOS IOKit-backed observer.
 
     Raises ``RuntimeError`` on non-macOS platforms — unit tests must
     inject ``observer_factory=<stub-factory>`` rather than relying on
@@ -149,11 +419,11 @@ def _real_observer_factory() -> PowerObserver:
     """
     if sys.platform != "darwin":
         msg = (
-            "Real IOPM observer requires macOS; "
+            "Real IOKit power observer requires macOS; "
             "pass observer_factory=<stub> in tests."
         )
         raise RuntimeError(msg)
-    return _NSWorkspacePowerObserver()
+    return _IOKitPowerObserver(binding=_load_power_binding())
 
 
 # --- install_power_observer ------------------------------------------------
