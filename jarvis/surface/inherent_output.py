@@ -11,15 +11,24 @@ Inherent client. Single instance per daemon process:
   ``surface.response_{open,chunk,emitted}`` row observed in the L2
   Event Log, translating each into the legacy Inherent wire envelope.
 
-Step 2 wire schema (three envelopes per turn, mirrored verbatim from
-``jarvis-legacy/ui/web/server.py:357-414``):
+Step 2 wire schema (three envelopes per turn, mirrored from
+``jarvis-legacy/ui/web/server.py:357-414``), each payload carrying the
+``turn_id`` added by ADR-0009 D2:
 
 1. ``{"op": "open",   "payload": {"content": "", "streaming": True,
-   "kind": "text", "q": <query>}}``     ← from ``surface.response_open``
-2. ``{"op": "append", "payload": {"token": <text>}}`` (x N)
+   "kind": "text", "q": <query>, "turn_id": <id>}}``
+                                        ← from ``surface.response_open``
+2. ``{"op": "append", "payload": {"token": <text>, "turn_id": <id>}}`` (x N)
                                         ← from ``surface.response_chunk``
-3. ``{"op": "done",   "payload": {"fadeMs": 5000}}``
+3. ``{"op": "done",   "payload": {"fadeMs": 5000, "turn_id": <id>}}``
                                         ← from ``surface.response_emitted``
+
+``turn_id`` is additive (the legacy swift card ignores unknown payload
+keys) and it is what makes the ADR-0009 D2 CLI client correct rather
+than merely usually-right: without it a client can only match the
+``open`` envelope's ``q`` against the text it submitted, so two
+concurrent turns carrying byte-identical utterances are
+indistinguishable and the wrong answer gets printed.
 
 The single-watcher caller (``_response_watcher``) dispatches by
 ``event.type`` from one cursor ordered by SQLite row id, so within-broadcast
@@ -124,6 +133,7 @@ class InherentBroadcaster:
                 read; other keys are ignored.
         """
         query = event.payload.get("query", "") or ""
+        turn_id = str(event.payload.get("turn_id", "<unknown>"))
         msg: dict[str, object] = {
             "op": "open",
             "payload": {
@@ -131,9 +141,10 @@ class InherentBroadcaster:
                 "streaming": True,
                 "kind": "text",
                 "q": query,
+                "turn_id": turn_id,
             },
         }
-        await self._send_all(msg, turn_id=str(event.payload.get("turn_id", "<unknown>")))
+        await self._send_all(msg, turn_id=turn_id)
 
     async def broadcast_chunk(self, event: Event) -> None:
         """Translate ``surface.response_chunk`` into the ``append`` wire envelope.
@@ -151,11 +162,12 @@ class InherentBroadcaster:
         text = event.payload.get("text", "") or ""
         if not text:
             return
+        turn_id = str(event.payload.get("turn_id", "<unknown>"))
         msg: dict[str, object] = {
             "op": "append",
-            "payload": {"token": text},
+            "payload": {"token": text, "turn_id": turn_id},
         }
-        await self._send_all(msg, turn_id=str(event.payload.get("turn_id", "<unknown>")))
+        await self._send_all(msg, turn_id=turn_id)
 
     async def broadcast_done(self, event: Event) -> None:
         """Translate ``surface.response_emitted`` into the ``done`` wire envelope.
@@ -167,15 +179,17 @@ class InherentBroadcaster:
         guard: the ``done`` envelope always sends.
 
         Args:
-            event: The ``surface.response_emitted`` event. No payload
-                fields are read (only ``turn_id`` is used for the F5
-                log via :meth:`_send_all`).
+            event: The ``surface.response_emitted`` event. Only
+                ``payload["turn_id"]`` is read — for the envelope's
+                correlation field and the F5 log via
+                :meth:`_send_all`.
         """
+        turn_id = str(event.payload.get("turn_id", "<unknown>"))
         msg: dict[str, object] = {
             "op": "done",
-            "payload": {"fadeMs": 5000},
+            "payload": {"fadeMs": 5000, "turn_id": turn_id},
         }
-        await self._send_all(msg, turn_id=str(event.payload.get("turn_id", "<unknown>")))
+        await self._send_all(msg, turn_id=turn_id)
 
     async def broadcast_voice(
         self,

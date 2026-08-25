@@ -1455,7 +1455,7 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
         broadcaster = InherentBroadcaster()
         broadcaster.attach_loop(asyncio.get_running_loop())
 
-        def submit_callable(text: str) -> None:
+        def submit_callable(text: str) -> str:
             """Bound at daemon-start time. Mints a fresh ``turn_id`` per call.
 
             Runs on whatever thread :func:`asyncio.to_thread` dispatches
@@ -1463,17 +1463,26 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
             handler thread is NOT the event-loop thread, so to honor
             ``check_same_thread`` we open a fresh ``sqlite3.Connection``
             to the same DB file for the SQLite write.
+
+            **Returns the minted id** (ADR-0009 D2): it is what
+            ``POST /inherent/submit`` hands back, and what the one-shot
+            CLI filters the WS stream on. Discarding it here — the Step-12
+            state — left the response's ``turn_id`` an empty string in
+            production, with the client falling back to matching the
+            ``open`` envelope's ``q`` against its own utterance.
             """
+            turn_id = _new_turn_id()
             inner_conn = open_event_log(runtime.runtime_paths.event_log)
             try:
                 emit_surface_user_intent(
                     inner_conn,
                     transcript=text,
-                    turn_id=_new_turn_id(),
+                    turn_id=turn_id,
                 )
             finally:
                 with contextlib.suppress(sqlite3.Error):
                     inner_conn.close()
+            return turn_id
 
         # ADR-0005 §12 pre-flight + voice subsystem wiring. Any failure
         # downgrades the daemon to text-only — text path must stay

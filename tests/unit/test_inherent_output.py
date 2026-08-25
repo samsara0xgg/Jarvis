@@ -197,6 +197,7 @@ def test_broadcast_open_pushes_legacy_envelope() -> None:
                 "streaming": True,
                 "kind": "text",
                 "q": "what time is it",
+                "turn_id": "T-open-001",
             },
         },
     ]
@@ -244,6 +245,7 @@ def test_broadcast_open_with_missing_query_key_sets_q_to_empty_string() -> None:
                 "streaming": True,
                 "kind": "text",
                 "q": "",
+                "turn_id": "T-no-q",
             },
         },
     ]
@@ -283,7 +285,7 @@ def test_broadcast_chunk_pushes_legacy_envelope() -> None:
     asyncio.run(bc.broadcast_chunk(_make_chunk_event(text="hello ")))
 
     assert ws.sent_messages == [
-        {"op": "append", "payload": {"token": "hello "}},
+        {"op": "append", "payload": {"token": "hello ", "turn_id": "T-chunk-001"}},
     ]
 
 
@@ -363,7 +365,7 @@ def test_broadcast_done_pushes_legacy_envelope() -> None:
     asyncio.run(bc.broadcast_done(_make_done_event()))
 
     assert ws.sent_messages == [
-        {"op": "done", "payload": {"fadeMs": 5000}},
+        {"op": "done", "payload": {"fadeMs": 5000, "turn_id": "T-done-001"}},
     ]
 
 
@@ -385,7 +387,7 @@ def test_broadcast_done_always_sends_no_payload_guard() -> None:
     asyncio.run(bc.broadcast_done(event))
 
     assert ws.sent_messages == [
-        {"op": "done", "payload": {"fadeMs": 5000}},
+        {"op": "done", "payload": {"fadeMs": 5000, "turn_id": "T-done-empty"}},
     ]
 
 
@@ -425,6 +427,7 @@ def test_broadcast_open_pushes_to_multiple_clients() -> None:
                 "streaming": True,
                 "kind": "text",
                 "q": "multi",
+                "turn_id": "T-open-001",
             },
         },
     ]
@@ -451,11 +454,12 @@ def test_full_open_chunk_done_sequence_to_single_client() -> None:
                 "streaming": True,
                 "kind": "text",
                 "q": "hi",
+                "turn_id": "T-seq",
             },
         },
-        {"op": "append", "payload": {"token": "hello "}},
-        {"op": "append", "payload": {"token": "world"}},
-        {"op": "done", "payload": {"fadeMs": 5000}},
+        {"op": "append", "payload": {"token": "hello ", "turn_id": "T-seq"}},
+        {"op": "append", "payload": {"token": "world", "turn_id": "T-seq"}},
+        {"op": "done", "payload": {"fadeMs": 5000, "turn_id": "T-seq"}},
     ]
 
 
@@ -496,6 +500,7 @@ def test_broadcast_open_dead_client_removed_others_succeed(
                 "streaming": True,
                 "kind": "text",
                 "q": "first",
+                "turn_id": "T-open-001",
             },
         },
     ]
@@ -515,7 +520,7 @@ def test_broadcast_open_dead_client_removed_others_succeed(
     ws_dead.raise_on_send = None
     asyncio.run(bc.broadcast_done(_make_done_event(turn_id="T-second")))
 
-    expected_done = [{"op": "done", "payload": {"fadeMs": 5000}}]
+    expected_done = [{"op": "done", "payload": {"fadeMs": 5000, "turn_id": "T-second"}}]
     assert ws_a.sent_messages == expected_first + expected_done
     assert ws_b.sent_messages == expected_first + expected_done
     assert ws_dead.sent_messages == [], (
@@ -538,7 +543,7 @@ def test_broadcast_chunk_dead_client_removed_others_succeed() -> None:
     asyncio.run(bc.broadcast_chunk(_make_chunk_event(text="tok")))
 
     assert ws_healthy.sent_messages == [
-        {"op": "append", "payload": {"token": "tok"}},
+        {"op": "append", "payload": {"token": "tok", "turn_id": "T-chunk-001"}},
     ]
 
     # Confirm the dead client was dropped: a second broadcast lands only
@@ -547,8 +552,8 @@ def test_broadcast_chunk_dead_client_removed_others_succeed() -> None:
     asyncio.run(bc.broadcast_chunk(_make_chunk_event(text="tok2")))
     assert ws_dead.sent_messages == []
     assert ws_healthy.sent_messages == [
-        {"op": "append", "payload": {"token": "tok"}},
-        {"op": "append", "payload": {"token": "tok2"}},
+        {"op": "append", "payload": {"token": "tok", "turn_id": "T-chunk-001"}},
+        {"op": "append", "payload": {"token": "tok2", "turn_id": "T-chunk-001"}},
     ]
 
 
@@ -564,7 +569,7 @@ def test_broadcast_done_dead_client_removed_others_succeed() -> None:
     asyncio.run(bc.broadcast_done(_make_done_event()))
 
     assert ws_healthy.sent_messages == [
-        {"op": "done", "payload": {"fadeMs": 5000}},
+        {"op": "done", "payload": {"fadeMs": 5000, "turn_id": "T-done-001"}},
     ]
 
     ws_dead.raise_on_send = None

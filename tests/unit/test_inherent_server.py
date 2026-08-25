@@ -284,7 +284,7 @@ def test_ws_endpoint_broadcast_round_trip(
 
         done_msg = ws.receive_json()
 
-    assert done_msg == {"op": "done", "payload": {"fadeMs": 5000}}
+    assert done_msg == {"op": "done", "payload": {"fadeMs": 5000, "turn_id": "T-test-001"}}
 
 
 def test_ws_endpoint_multiple_clients_each_receive_envelopes(
@@ -303,7 +303,10 @@ def test_ws_endpoint_multiple_clients_each_receive_envelopes(
         a_done = ws_a.receive_json()
         b_done = ws_b.receive_json()
 
-    expected_done: dict[str, object] = {"op": "done", "payload": {"fadeMs": 5000}}
+    expected_done: dict[str, object] = {
+        "op": "done",
+        "payload": {"fadeMs": 5000, "turn_id": "T-test-001"},
+    }
     assert a_done == expected_done
     assert b_done == expected_done
 
