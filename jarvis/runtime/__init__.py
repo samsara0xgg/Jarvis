@@ -47,7 +47,7 @@ from jarvis.decision import DecideContext, LifecycleLike, ToolRegistryLike, deci
 from jarvis.decision.llm import LLMClient, load_llm_config
 from jarvis.decision.result_interpreter import emit_stash_conflict_surfacing
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
-from jarvis.deployment import RuntimePaths, bootstrap_runtime
+from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.execution.diff_capture import StashError, restore_pretask_changes
 from jarvis.execution.tools import ActionLifecycle, ToolRegistry, build_default_registry
 from jarvis.shared import CallerPrincipal, Event
@@ -288,6 +288,11 @@ def bootstrap_runtime_app(
 
     # 1. L6 paths.
     paths = bootstrap_runtime(runtime_root)
+
+    # 1b. ADR-0009 D1 — fill-only ``${runtime_root}/env`` loader, BEFORE
+    #     any surface preflight reads the environment (launchd strips the
+    #     shell env; secrets must not live in the 0644 plist).
+    load_env_file(paths.root)
 
     # 2. L2 event log.
     conn = open_event_log(paths.event_log)

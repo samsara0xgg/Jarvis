@@ -94,6 +94,50 @@ def _resolve_root(root: Path | None) -> Path:
     return Path(DEFAULT_RUNTIME_ROOT_LITERAL).expanduser().resolve()
 
 
+def load_env_file(runtime_root: Path) -> dict[str, str]:
+    """Fill-only loader for ``${runtime_root}/env`` (ADR-0009 D1).
+
+    launchd strips Allen's shell environment, so the plist-spawned
+    daemon loses ``MINIMAX_API_KEY`` etc.; secrets must not live in the
+    world-readable plist. Bootstrap calls this before any surface
+    preflight reads the environment.
+
+    Contract:
+        - ``KEY=VALUE`` lines, split on the FIRST ``=``; key and value
+          are whitespace-stripped, quotes are NOT interpreted.
+        - Blank lines and ``#`` comments are skipped; lines without
+          ``=`` or with an empty key are skipped.
+        - Fill-only: a key already present in ``os.environ`` is never
+          overridden (the operator's shell always wins).
+        - Missing file → no-op (voice preflight keeps its existing
+          text-only degradation).
+        - Keyed by ``runtime_root`` — never a hardcoded home path — so
+          temp-root test daemons stay isolated from Allen's real keys.
+
+    Args:
+        runtime_root: Resolved runtime root whose ``env`` file to load.
+
+    Returns:
+        The keys actually applied to ``os.environ`` (fill-only wins
+        excluded), for logging / tests.
+    """
+    env_path = runtime_root / "env"
+    if not env_path.is_file():
+        return {}
+    applied: dict[str, str] = {}
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = value.strip()
+        applied[key] = value.strip()
+    return applied
+
+
 def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
     """Resolve runtime root, create base directories, and return paths.
 
