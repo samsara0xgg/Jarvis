@@ -34,8 +34,14 @@ def test_main_help_returns_zero(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_main_missing_config_returns_nonzero(
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A missing --config path must yield a nonzero exit code + stderr message."""
+    # HOME redirect: the D4 lock probe resolves ~/.jarvis under a clean
+    # root, so the test reaches the bootstrap path even while a real
+    # daemon runs on this machine (always-resident per ADR-0009).
+    monkeypatch.setenv("HOME", str(tmp_path))
     bogus = "/tmp/nonexistent-jarvis-config-xyz.yaml"
     code = main(["--config", bogus, "hello"])
     assert code != 0

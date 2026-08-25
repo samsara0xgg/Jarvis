@@ -18,7 +18,10 @@ import sqlite3
 import subprocess
 import sys
 import time
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 
@@ -166,7 +169,7 @@ def test_subprocess_parent_exits_for_short_utterance() -> None:
 
 
 @skip_windows
-def test_subprocess_parent_exits_quickly_for_long_run_utterance() -> None:
+def test_subprocess_parent_exits_quickly_for_long_run_utterance(tmp_path: Path) -> None:
     """Long-run utterance: parent prints ack + exits cleanly + child detaches.
 
     The Day-2 contract: parent prints ``_QUICK_ACK_PHRASE``, flushes
@@ -187,7 +190,15 @@ def test_subprocess_parent_exits_quickly_for_long_run_utterance() -> None:
         timeout=15,
         capture_output=True,
         text=True,
-        env={**os.environ, "JARVIS_RUNTIME_ROOT": "/tmp/jarvis-test-root"},
+        # HOME is redirected so the B-NEW-5 default-root probe sees a
+        # clean ~/.jarvis even while a real daemon runs on this machine
+        # (ADR-0009 makes the daemon always-resident; the suite must not
+        # depend on machine state).
+        env={
+            **os.environ,
+            "JARVIS_RUNTIME_ROOT": str(tmp_path / "jarvis-test-root"),
+            "HOME": str(tmp_path),
+        },
     )
     elapsed_s = time.monotonic() - start
     assert result.returncode == 0, (
@@ -205,7 +216,7 @@ def test_subprocess_parent_exits_quickly_for_long_run_utterance() -> None:
 
 
 @skip_windows
-def test_subprocess_no_detach_flag_takes_synchronous_path() -> None:
+def test_subprocess_no_detach_flag_takes_synchronous_path(tmp_path: Path) -> None:
     """``--no-detach`` forces sync path even on classifier match (smoke escape)."""
     # Use a long-run utterance with --no-detach; the CLI should still
     # take the synchronous path (no fork). The bootstrap will fail or
@@ -226,6 +237,10 @@ def test_subprocess_no_detach_flag_takes_synchronous_path() -> None:
         timeout=10,
         capture_output=True,
         text=True,
+        # HOME redirect: the D4 lock probe resolves ~/.jarvis under a
+        # clean root, so the test reaches the bootstrap path even while
+        # a real daemon runs on this machine.
+        env={**os.environ, "HOME": str(tmp_path)},
     )
     # Bootstrap fails on missing config -> nonzero exit code.
     assert result.returncode != 0
