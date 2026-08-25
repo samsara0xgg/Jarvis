@@ -65,9 +65,16 @@ def test_bootstrap_runtime_app_returns_populated_runtime(tmp_path: Path) -> None
         assert runtime.system_prompt  # non-empty prompt text loaded
         assert "llm" in runtime.config
         # Default registry has the Day-1 pair, Day-2 Step 4's create_task,
-        # plus F6's list_tasks read-only observation tool.
+        # F6's list_tasks read-only observation tool, plus the Tier-0
+        # get_current_time clock read.
         tool_names = {t.name for t in runtime.tool_registry.get_definitions()}
-        assert tool_names == {"spawn_worker", "verify_diff", "create_task", "list_tasks"}
+        assert tool_names == {
+            "spawn_worker",
+            "verify_diff",
+            "create_task",
+            "list_tasks",
+            "get_current_time",
+        }
     finally:
         runtime.conn.close()
 

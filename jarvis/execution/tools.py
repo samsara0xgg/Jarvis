@@ -88,6 +88,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
@@ -1668,6 +1669,114 @@ def list_tasks_handler(
     )
 
 
+# --- get_current_time (F-Tier0) ---------------------------------------------
+
+
+_WEEKDAYS_ZH: Final[tuple[str, ...]] = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+"""`datetime.weekday()` (Mon=0) indexed into the zh-CN weekday names."""
+
+_DAY_PERIODS: Final[tuple[tuple[int, str], ...]] = (
+    (6, "凌晨"),
+    (9, "早上"),
+    (12, "上午"),
+    (13, "中午"),
+    (18, "下午"),
+    (24, "晚上"),
+)
+"""`(exclusive upper-bound hour, zh-CN day-period label)`, ascending."""
+
+_SPOKEN_MINUTE_FILLER_BELOW: Final[int] = 10
+"""Minutes below this take the spoken `零` filler (`10点零2分`)."""
+
+
+def _spoken_day_period(hour: int) -> str:
+    """Map a 24h hour to the zh-CN day-period prefix used by TTS."""
+    for upper_bound, label in _DAY_PERIODS:
+        if hour < upper_bound:
+            return label
+    return "晚上"
+
+
+def _spoken_clock(hour: int, minute: int) -> str:
+    """Render a 24h `(hour, minute)` as one idiomatic zh-CN spoken clock string.
+
+    This field exists only to be spoken by TTS, so it follows speech
+    convention rather than digit-for-digit transcription:
+
+    - minute 0 says ``整`` (``上午10点整``), never ``10点0分``;
+    - minutes 1-9 take the ``零`` filler (``10点零2分``) — dropping it
+      makes the utterance wrong, not merely terse;
+    - hour 0 is ``零点`` (``凌晨零点30分``); the naive 12h wrap would say
+      ``凌晨12点``, which contradicts itself since ``12点`` reads as noon.
+
+    Args:
+        hour: Hour in 24h form, 0-23.
+        minute: Minute, 0-59.
+
+    Returns:
+        The day-period prefix followed by the spoken clock reading.
+    """
+    period = _spoken_day_period(hour)
+    hour_label = "零" if hour == 0 else str(hour % 12 or 12)
+    if minute == 0:
+        return f"{period}{hour_label}点整"
+    if minute < _SPOKEN_MINUTE_FILLER_BELOW:
+        return f"{period}{hour_label}点零{minute}分"
+    return f"{period}{hour_label}点{minute}分"
+
+
+def get_current_time_handler(
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
+    lifecycle: ActionLifecycle,
+) -> RawResult:
+    """Read the system clock; observation semantics only (spec §3.5.4).
+
+    Zero arguments, zero side effects, risk L0. The Tier 0 regex path
+    (spec §17) is the primary caller; jarvis_llm may also call it.
+
+    Returns:
+        ``RawResult(semantics="observation")`` whose payload carries the
+        machine keys ``iso`` / ``date`` / ``time`` / ``weekday`` plus the
+        TTS-ready ``spoken_time`` / ``spoken_date`` the L5 templates read.
+    """
+    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+
+    now = datetime.now().astimezone()
+    weekday = _WEEKDAYS_ZH[now.weekday()]
+    payload: dict[str, Any] = {
+        "iso": now.isoformat(timespec="seconds"),
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M"),
+        "weekday": weekday,
+        "spoken_time": _spoken_clock(now.hour, now.minute),
+        "spoken_date": f"{now.month}月{now.day}日{weekday}",
+    }
+    tool_output_str = tool_result(payload)
+
+    emit_event(
+        conn,
+        type="action.result_observed",
+        payload={
+            "action_id": action_request.action_id,
+            "semantics": "observation",
+            "tool_output": tool_output_str,
+        },
+        source_event_id=running_event_uid,
+        correlation={"action_id": action_request.action_id},
+    )
+    lifecycle.transition(action_request.action_id, "result_observed")
+
+    return RawResult(
+        action_id=action_request.action_id,
+        semantics="observation",
+        payload=payload,
+        tool_output=tool_output_str,
+        error=None,
+    )
+
+
 # --- ToolRegistry ------------------------------------------------------------
 
 
@@ -2047,6 +2156,20 @@ def build_default_registry() -> ToolRegistry:
             handler=list_tasks_handler,
         )
     )
+    registry.register(
+        ToolDefinition(
+            name="get_current_time",
+            description="Read the current local date and time (observation only).",
+            allowed_callers=frozenset(
+                {CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM},
+            ),
+            risk_level="L0",
+            result_semantics="observation",
+            is_async=False,
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=get_current_time_handler,
+        )
+    )
     return registry
 
 
@@ -2068,6 +2191,7 @@ __all__ = [
     "UnknownToolError",
     "build_default_registry",
     "create_task_handler",
+    "get_current_time_handler",
     "list_tasks_handler",
     "spawn_worker_handler",
     "tool_error",

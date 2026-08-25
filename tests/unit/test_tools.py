@@ -119,11 +119,17 @@ def _stub_codex_result(  # noqa: PLR0913 — six kwargs map 1-to-1 to CodexActio
 
 
 def test_default_registry_registers_day1_and_day2_step4_tools() -> None:
-    """`build_default_registry()` registers the Day-1 pair + Day-2 Step-4 + F6 list_tasks."""
+    """Registers the Day-1 pair + Day-2 Step-4 + F6 list_tasks + Tier-0 get_current_time."""
     registry = build_default_registry()
     defs = registry.get_definitions()
     names = sorted(d.name for d in defs)
-    assert names == ["create_task", "list_tasks", "spawn_worker", "verify_diff"]
+    assert names == [
+        "create_task",
+        "get_current_time",
+        "list_tasks",
+        "spawn_worker",
+        "verify_diff",
+    ]
 
 
 def test_default_registry_spawn_worker_shape() -> None:
@@ -165,12 +171,18 @@ def test_default_registry_verify_diff_shape() -> None:
 
 
 def test_for_caller_filters_by_principal() -> None:
-    """OBSERVER only sees verify_diff; JARVIS_LLM sees all four (incl. F6 list_tasks)."""
+    """OBSERVER only sees verify_diff; JARVIS_LLM sees all five (incl. get_current_time)."""
     registry = build_default_registry()
     llm_tools = {d.name for d in registry.for_caller(CallerPrincipal.JARVIS_LLM)}
     observer_tools = {d.name for d in registry.for_caller(CallerPrincipal.OBSERVER)}
     worker_tools = {d.name for d in registry.for_caller(CallerPrincipal.WORKER_AGENT)}
-    assert llm_tools == {"spawn_worker", "verify_diff", "create_task", "list_tasks"}
+    assert llm_tools == {
+        "spawn_worker",
+        "verify_diff",
+        "create_task",
+        "list_tasks",
+        "get_current_time",
+    }
     assert observer_tools == {"verify_diff"}
     assert worker_tools == set()
 
