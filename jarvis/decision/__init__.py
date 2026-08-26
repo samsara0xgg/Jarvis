@@ -78,7 +78,7 @@ from jarvis.decision.packet import (
     format_evidence_context_note,
     format_status_board_note,
 )
-from jarvis.decision.policy import EffectivePolicy, effective_policy
+from jarvis.decision.policy import EffectivePolicy, effective_policy, surface_for
 from jarvis.decision.pre_emit_phrases import COMPLETION_REGEXES
 from jarvis.decision.resolver import (
     ResolverConfidence,
@@ -875,9 +875,8 @@ def _run_tool_use_loop(
 
     messages = build_llm_messages(packet)
     _insert_system_notes(messages, packet, scratch, ctx)
-    tools = tool_definitions_for_llm(
-        [_tool_to_dict(t) for t in ctx.tool_registry.for_caller(CallerPrincipal.JARVIS_LLM)],
-    )
+    llm_surface = surface_for(policy, ctx.tool_registry, CallerPrincipal.JARVIS_LLM)
+    tools = tool_definitions_for_llm([_tool_to_dict(t) for t in llm_surface])
 
     iteration = 0
     while iteration < ctx.max_tool_iterations:

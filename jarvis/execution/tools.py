@@ -466,6 +466,23 @@ class ToolDefinition:
         input_schema: JSON schema describing the tool's arguments
             (Anthropic-style `{type, properties, required}` shape).
         handler: The callable that actually executes the tool.
+        domain: One of the spec §14.1 domains (e.g. ``"git"``,
+            ``"task_ledger"``, ``"agent_control"``, ``"state_read"``,
+            ``"mac_gui"``). Feeds audit payloads and future surface
+            filtering (ADR-0011 D2).
+        read_only: True if the tool performs no durable-state mutation.
+            Feeds ``surface_for`` grouping and the Pre-emit scrub
+            context (ADR-0011 D2).
+        requires_entity: True if the Pre-action Gate must see a
+            resolved ``target_entity_ref`` on the ActionRequest before
+            letting this tool through. Feeds the gate's entity arm
+            landing in Step 3 (ADR-0011 D3).
+        requires_confirmation: True if dispatch needs a valid
+            ``authorization_lease`` (feeds ADR-0012's confirmation
+            template line). Must equal ``risk_rank(risk_level) >=
+            risk_rank(confirmation_threshold)``; boot validation
+            (``jarvis.decision.policy.validate_requires_confirmation``)
+            enforces this so the two fields cannot drift.
         post_action_check: Optional inline post-action chained check
             (spec §3.5.7). ``None`` for Day-1 / single-slot tools;
             Day-2 ``verify_diff`` declares one so the handler can chain
@@ -490,6 +507,10 @@ class ToolDefinition:
     is_async: bool
     input_schema: Mapping[str, Any]
     handler: ToolHandler
+    domain: str
+    read_only: bool
+    requires_entity: bool
+    requires_confirmation: bool
     post_action_check: PostActionCheck | None = None
     result_budget_s: Callable[[], float] | None = None
 
@@ -2457,6 +2478,10 @@ VERIFY_DIFF_TOOL_DEF: Final[ToolDefinition] = ToolDefinition(
     is_async=False,
     input_schema=_VERIFY_DIFF_INPUT_SCHEMA,
     handler=verify_diff_handler,
+    domain="git",
+    read_only=True,
+    requires_entity=False,
+    requires_confirmation=False,
     post_action_check=PostActionCheck(
         mode="inline",
         check_tool="verify_command",
@@ -2548,6 +2573,10 @@ def build_default_registry() -> ToolRegistry:
             is_async=True,
             input_schema=_SPAWN_WORKER_INPUT_SCHEMA,
             handler=spawn_worker_handler,
+            domain="agent_control",
+            read_only=False,
+            requires_entity=False,
+            requires_confirmation=False,
             # ADR-0009 D4: the only Day-2 tool that can outlive its
             # dispatch call, hence the only one carrying a supervisor
             # deadline. Passed as the resolver itself so a per-run
@@ -2570,6 +2599,10 @@ def build_default_registry() -> ToolRegistry:
             is_async=False,
             input_schema=_CREATE_TASK_INPUT_SCHEMA,
             handler=create_task_handler,
+            domain="task_ledger",
+            read_only=False,
+            requires_entity=False,
+            requires_confirmation=False,
         )
     )
     registry.register(
@@ -2587,6 +2620,10 @@ def build_default_registry() -> ToolRegistry:
             is_async=False,
             input_schema=_LIST_TASKS_INPUT_SCHEMA,
             handler=list_tasks_handler,
+            domain="task_ledger",
+            read_only=True,
+            requires_entity=False,
+            requires_confirmation=False,
         )
     )
     registry.register(
@@ -2601,6 +2638,10 @@ def build_default_registry() -> ToolRegistry:
             is_async=False,
             input_schema={"type": "object", "properties": {}, "required": []},
             handler=get_current_time_handler,
+            domain="state_read",
+            read_only=True,
+            requires_entity=False,
+            requires_confirmation=False,
         )
     )
     registry.register(
@@ -2619,6 +2660,15 @@ def build_default_registry() -> ToolRegistry:
             is_async=False,
             input_schema=_OPEN_PATH_INPUT_SCHEMA,
             handler=open_path_handler,
+            domain="mac_gui",
+            read_only=False,
+            # requires_entity stays False deliberately (ADR-0011 D2
+            # footnote): open_path keeps its own resolve-then-act
+            # contract internally — it *is* a resolver caller — and
+            # participates in the EntityRegistry as an emitter, not a
+            # gate consumer. Do not "fix" this to True.
+            requires_entity=False,
+            requires_confirmation=False,
         )
     )
     return registry

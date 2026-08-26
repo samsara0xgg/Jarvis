@@ -20,12 +20,12 @@ Layer rules: stdlib + ``jarvis.shared``. No imports of sibling layers.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 from jarvis.shared import CallerPrincipal
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
     from jarvis.shared import RiskLevel
 
@@ -224,11 +224,139 @@ def effective_policy(
     )
 
 
+# --- surface_for() -----------------------------------------------------------
+#
+# `policy.py` (L3) must not import `jarvis.execution` (sibling layer) and
+# cannot import from `jarvis.decision.__init__` (import cycle:
+# decision/__init__ -> gates -> policy). The structural Protocols below
+# are the layer seam: the real L4 `ToolDefinition` / `ToolRegistry`
+# satisfy them structurally, and a frozen dataclass attribute satisfies a
+# read-only `@property` in a Protocol. Kept to exactly what `surface_for`
+# and `validate_requires_confirmation` below read — not a mirror of
+# `jarvis.decision.ToolDefinitionLike`.
+#
+# `_RegistryLike` is generic in the tool type so `surface_for` returns
+# whatever concrete/structural tool type the caller's registry already
+# promises (e.g. `jarvis.decision.ToolDefinitionLike`, which carries
+# `description` / `input_schema` that `_ToolLike` deliberately omits)
+# instead of narrowing every caller down to the two fields filtering
+# needs.
+
+class _ToolLike(Protocol):
+    """Structural view of a registered tool — name + risk_level only."""
+
+    @property
+    def name(self) -> str:
+        """Tool name (matches an entry in ``allowed_tool_surface``)."""
+        ...
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        """Risk level compared against ``autonomy_ceiling``."""
+        ...
+
+
+class _ConfirmationToolLike(_ToolLike, Protocol):
+    """``_ToolLike`` plus ``requires_confirmation``, for the boot validator."""
+
+    @property
+    def requires_confirmation(self) -> bool:
+        """Whether dispatch needs a valid ``authorization_lease``."""
+        ...
+
+
+class _RegistryLike[ToolT: _ToolLike](Protocol):
+    """Structural view of L4 ``ToolRegistry`` — only what filtering needs."""
+
+    def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolT, ...]:
+        """Return the tools ``caller_principal`` is intrinsically allowed to call."""
+        ...
+
+
+def surface_for[ToolT: _ToolLike](
+    policy: EffectivePolicy,
+    registry: _RegistryLike[ToolT],
+    caller: CallerPrincipal,
+) -> tuple[ToolT, ...]:
+    """Return the least-capability tool menu for ``caller`` (ADR 0011 D2).
+
+    Wraps ``registry.for_caller(caller)`` (intrinsic caller scoping,
+    unchanged) and keeps only tools that are BOTH:
+
+    1. named in ``policy.allowed_tool_surface.get(caller, frozenset())``, and
+    2. within the autonomy ceiling: ``risk_rank(tool.risk_level) <=
+       risk_rank(policy.autonomy_ceiling)``.
+
+    Tools above the ceiling simply do not appear in the returned tuple —
+    spec §14: least-capability surface; §14.8: the registry must really
+    filter, not the prompt. This is the call site
+    ``jarvis/decision/__init__.py``'s Tier 2 loop uses to build the
+    JARVIS_LLM menu; other ``for_caller`` call sites (Tier 0 boot
+    validation, Tier 0 name resolution) are untouched by this function.
+    """
+    allowed_names = policy.allowed_tool_surface.get(caller, frozenset())
+    ceiling_rank = risk_rank(policy.autonomy_ceiling)
+    return tuple(
+        tool
+        for tool in registry.for_caller(caller)
+        if tool.name in allowed_names and risk_rank(tool.risk_level) <= ceiling_rank
+    )
+
+
+# --- Boot validation: requires_confirmation consistency ----------------------
+
+
+class PolicyConsistencyError(ValueError):
+    """Raised when a tool's ``requires_confirmation`` drifts from risk vs threshold.
+
+    The composition root (``jarvis.runtime``) converts this into
+    ``RuntimeBootstrapError`` so a misdeclared tool fails the daemon
+    start loudly instead of silently under- or over-gating dispatch.
+    """
+
+
+def validate_requires_confirmation(
+    tool_defs: Iterable[_ConfirmationToolLike],
+    confirmation_threshold: RiskLevel,
+) -> None:
+    """Assert every tool's ``requires_confirmation`` matches its risk rank.
+
+    Per ADR 0011 D2 (and V6): ``requires_confirmation`` is stored
+    explicitly on ``ToolDefinition`` rather than always recomputed, so
+    ADR-0012 can render its confirmation template line without
+    recomputing policy — but that redundancy only stays safe if it can
+    never drift from ``risk_rank(risk_level) >=
+    risk_rank(confirmation_threshold)``. This pure function is the boot-time
+    check; it takes ``confirmation_threshold`` as an explicit
+    :class:`RiskLevel` rather than a whole policy object to stay a
+    narrow, single-purpose check.
+
+    Raises:
+        PolicyConsistencyError: naming the offending tool and both the
+            actual and expected ``requires_confirmation`` values.
+    """
+    threshold_rank = risk_rank(confirmation_threshold)
+    for tool in tool_defs:
+        expected = risk_rank(tool.risk_level) >= threshold_rank
+        if tool.requires_confirmation != expected:
+            msg = (
+                f"tool {tool.name!r}: requires_confirmation="
+                f"{tool.requires_confirmation!r} but risk_level="
+                f"{tool.risk_level!r} vs confirmation_threshold="
+                f"{confirmation_threshold!r} implies requires_confirmation="
+                f"{expected!r}"
+            )
+            raise PolicyConsistencyError(msg)
+
+
 __all__ = [
     "COLLABORATE_MODE_STATE",
     "EffectivePolicy",
     "ModeRuntimeState",
+    "PolicyConsistencyError",
     "PolicyMode",
     "effective_policy",
     "risk_rank",
+    "surface_for",
+    "validate_requires_confirmation",
 ]

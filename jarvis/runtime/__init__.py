@@ -46,6 +46,11 @@ import yaml
 
 from jarvis.decision import DecideContext, LifecycleLike, ToolRegistryLike, decide
 from jarvis.decision.llm import LLMClient, load_llm_config
+from jarvis.decision.policy import (
+    PolicyConsistencyError,
+    effective_policy,
+    validate_requires_confirmation,
+)
 from jarvis.decision.result_interpreter import emit_stash_conflict_surfacing
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
@@ -379,6 +384,20 @@ def bootstrap_runtime_app(
         )
     except Tier0ConfigError as exc:
         msg = f"runtime: {tier0_path} invalid: {exc}"
+        raise RuntimeBootstrapError(msg) from exc
+
+    # 3c. ADR-0011 D2 — boot invariant: every registered tool's
+    #     `requires_confirmation` must equal `risk_rank(risk_level) >=
+    #     risk_rank(confirmation_threshold)`, so the two fields can never
+    #     drift (spec §14.2 / ADR-0011 V6). Loud failure, same shape as
+    #     the Tier 0 block above.
+    try:
+        validate_requires_confirmation(
+            registry.get_definitions(),
+            effective_policy().confirmation_threshold,
+        )
+    except PolicyConsistencyError as exc:
+        msg = f"runtime: tool registry requires_confirmation invariant violated: {exc}"
         raise RuntimeBootstrapError(msg) from exc
 
     # 4. L3 LLM client.
