@@ -27,13 +27,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from jarvis.decision.policy import risk_rank
+from jarvis.shared import CallerPrincipal
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from jarvis.decision.packet import SituationPacket
     from jarvis.decision.policy import EffectivePolicy
-    from jarvis.shared import ActionRequest, EvidenceLevel
+    from jarvis.shared import ActionRequest, AuthorizationLease, EvidenceLevel
     from jarvis.state.projections import (
         ClaimEvidenceProjection,
         EntityRegistry,
@@ -277,20 +278,43 @@ def pre_action_gate(
        comment below for the exact line ranges).
     3. **risk_within_ceiling**: ``risk_level <= autonomy_ceiling``
        per the L0..L4 ladder.
-    4. **lease_validated**: when
-       ``risk_level >= confirmation_threshold``,
-       ``authorization_lease`` must be non-None and unexpired with a
-       scope that permits the tool + target. Day-1 scenario never
-       triggers this branch; the check is preserved for Stage 2.
+    4. **lease_validated** (ADR-0012 D2 — lease validation v2): when
+       ``risk_level >= confirmation_threshold``, three sub-checks run
+       in order — shape, expiry, scope. A **malformed** lease (missing
+       key or wrong-typed value) never raises; it fails shape and is
+       reported via reason ``"lease_malformed"`` (fixes the bare
+       ``lease["expires_at_ms"]`` / ``lease["scope"]`` subscript hole
+       that used to let a malformed lease raise ``KeyError`` out of
+       the gate). Otherwise the lease must be unexpired
+       (``expires_at_ms > now``) and in scope: tool_name in
+       ``allowed_tools``, and the target side must agree in shape (a
+       target-bearing request needs its target listed in
+       ``allowed_targets``; a target-less request needs
+       ``allowed_targets`` empty — a lease scoped to specific targets
+       must not vacuously cover a target-less action of the same
+       tool). **Single-use** (D2.4) is deferred: it needs the
+       PendingConfirmations projection (Step 3) and the
+       ``gate.evaluated`` ``lease_id`` fold (Step 6), neither of which
+       exists yet — see the inline comment at the single-use seam
+       below.
 
-    Outcome ladder:
+    Outcome ladder — ``lease_hard_invalid`` (see that local variable's
+    definition below) distinguishes "the lease is corrupt or spent"
+    from "the lease is merely unsatisfied but a fresh grant could fix
+    it":
 
     - All passed -> ``"pass"``.
-    - Risk above ceiling AND lease invalid (or missing when
-      required) -> ``"refuse"``.
-    - Risk above ceiling AND a lease MIGHT cover it if Allen grants
-      one -> ``"confirm_required"``. Day-1 scenario does not hit
-      this branch, but the symmetric path is kept for canary H12.
+    - The lease is **hard-invalid** (malformed today; Step 6 adds
+      already-consumed replay, ADR-0012 §7 acceptance row C5) ->
+      ``"refuse"`` outright — re-asking Allen would be wrong for
+      corruption or replay, so this skips the softer
+      confirm-required path entirely.
+    - Risk above ceiling AND lease invalid for any other reason
+      (missing / expired / wrong-tool / wrong-target) but otherwise
+      legal -> a lease MIGHT cover it if Allen grants/re-grants one ->
+      ``"confirm_required"``. Day-1 scenario does not hit this
+      branch, but the symmetric path is kept for canary H12 and is
+      now ADR-0012's live entry point.
     - Any other failure -> ``"refuse"``.
 
     Args:
@@ -354,26 +378,52 @@ def pre_action_gate(
         f"{'<=' if risk_within_ceiling else '>'} autonomy_ceiling={policy.autonomy_ceiling}"
     )
 
-    # 4. lease_validated
+    # 4. lease_validated (ADR-0012 D2 — lease validation v2)
     needs_lease = risk_rank(action_request.risk_level) >= risk_rank(
         policy.confirmation_threshold,
     )
     lease_validated = True
+    # `lease_hard_invalid` means "not merely unsatisfied-but-re-grantable;
+    # corrupt or spent" — Allen re-granting cannot fix it, so it must
+    # skip confirm_required and refuse outright. Today only the shape
+    # (malformed) sub-check sets it; Step 6's single-use fold (D2.4,
+    # ADR-0012 §7 acceptance row C5 — replaying a consumed lease must
+    # refuse, and a consumed lease is otherwise shape/expiry/scope
+    # valid) will set it too, on the same branch this comment marks
+    # below, without needing to touch the outcome ladder again.
+    lease_hard_invalid = False
     if needs_lease:
         lease = action_request.authorization_lease
         if lease is None:
             lease_validated = False
             reasons.append("lease_validated: required at this risk but no lease present")
         else:
-            now_ms = _now_epoch_ms()
-            expires_at_ms = int(lease["expires_at_ms"])
-            scope = lease["scope"]
-            unexpired = expires_at_ms > now_ms
-            scope_ok = _lease_scope_permits(scope, action_request)
-            lease_validated = unexpired and scope_ok
-            reasons.append(
-                f"lease_validated: unexpired={unexpired}, scope_ok={scope_ok}"
-            )
+            shape_ok, shape_detail = _lease_shape_ok(lease)
+            if not shape_ok:
+                lease_validated = False
+                lease_hard_invalid = True
+                reasons.append(f"lease_validated: lease_malformed: {shape_detail}")
+            else:
+                now_ms = _now_epoch_ms()
+                unexpired = lease["expires_at_ms"] > now_ms
+                scope_ok = _lease_scope_permits(lease, action_request)
+                # Single-use (ADR-0012 D2.4) is deferred to Step 3/6:
+                # it needs the PendingConfirmations projection (Step 3,
+                # does not exist yet) to confirm
+                # `source_confirmation_event_id` names a confirmation
+                # that is accepted-and-not-yet-consumed, with
+                # consumption folded from `gate.evaluated`'s
+                # `lease_id` payload key (Step 6). Until that seam is
+                # wired, a shape-valid + unexpired + in-scope lease
+                # passes here regardless of prior use. Step 6: an
+                # already-consumed lease found here must set BOTH
+                # `lease_validated = False` and `lease_hard_invalid = True`
+                # (not just fail validation) so the outcome ladder
+                # below refuses per C5 instead of asking Allen again.
+                lease_validated = unexpired and scope_ok
+                reasons.append(
+                    f"lease_validated: unexpired={unexpired}, scope_ok={scope_ok}"
+                )
     else:
         reasons.append(
             "lease_validated: risk below confirmation threshold; no lease required"
@@ -384,6 +434,12 @@ def pre_action_gate(
     all_pass = all(checks.values())
     if all_pass:
         outcome: GateOutcome = "pass"
+    elif lease_hard_invalid:
+        # Corrupt (malformed) or, from Step 6, spent (already-consumed)
+        # — not "no lease yet". Hard refuse, no confirm_required
+        # invitation to re-ask Allen (ADR-0012 §4 failure-mode table;
+        # §7 acceptance row C5 for the Step 6 replay case).
+        outcome = "refuse"
     elif (
         needs_lease
         and not lease_validated
@@ -391,8 +447,9 @@ def pre_action_gate(
         and entity_trusted
         and risk_within_ceiling
     ):
-        # The action is otherwise legal but lacks an authorization
-        # lease; Allen could grant one. Surface as confirm_required.
+        # The action is otherwise legal but lacks a valid authorization
+        # lease; Allen could grant (or re-grant) one. Surface as
+        # confirm_required.
         outcome = "confirm_required"
     else:
         outcome = "refuse"
@@ -400,33 +457,93 @@ def pre_action_gate(
     return GateResult(outcome=outcome, reasons=tuple(reasons), check_results=checks)
 
 
+_LEASE_REQUIRED_KEYS: tuple[str, ...] = (
+    "lease_id",
+    "granted_by",
+    "granted_to",
+    "allowed_tools",
+    "allowed_targets",
+    "expires_at_ms",
+    "max_uses",
+    "reason",
+    "source_confirmation_event_id",
+)
+"""The nine §3.5.2 fields, per ``AuthorizationLease`` (``jarvis/shared``)."""
+
+
+def _lease_shape_ok(lease: Mapping[str, object]) -> tuple[bool, str]:
+    """Validate lease shape without ever raising (ADR-0012 D2.1).
+
+    A ``TypedDict`` is a plain ``dict`` at runtime — mypy's static
+    ``AuthorizationLease`` typing does not stop a malformed mapping
+    (missing key, wrong-typed value) from reaching the gate. This is
+    check 4's shape sub-check: it must catch that case and report it
+    via a ``(False, detail)`` pair instead of letting a bare subscript
+    raise ``KeyError`` out of the gate (the hole this closes).
+
+    Returns:
+        ``(True, "ok")`` when every field is present with the
+        expected type; otherwise ``(False, <detail>)`` naming the
+        first problem found.
+    """
+    missing = [key for key in _LEASE_REQUIRED_KEYS if key not in lease]
+    if missing:
+        return False, f"missing keys {missing!r}"
+
+    if not isinstance(lease["granted_to"], CallerPrincipal):
+        return False, "granted_to is not a CallerPrincipal"
+    for key in ("allowed_tools", "allowed_targets"):
+        if not isinstance(lease[key], (frozenset, set, list, tuple)):
+            return False, f"{key} is not a collection"
+    for key in ("expires_at_ms", "max_uses"):
+        if not isinstance(lease[key], int) or isinstance(lease[key], bool):
+            return False, f"{key} is not an int"
+    for key in ("lease_id", "granted_by", "reason", "source_confirmation_event_id"):
+        if not isinstance(lease[key], str):
+            return False, f"{key} is not a str"
+    return True, "ok"
+
+
 def _lease_scope_permits(
-    scope: Mapping[str, object],
+    lease: AuthorizationLease,
     action_request: ActionRequest,
 ) -> bool:
-    """Return True iff the lease scope covers this tool + target.
+    """Return True iff the lease's tool/target scope covers this request.
 
-    Day-1 minimum scope shape (matches ADR § AuthorizationLease):
+    ADR-0012 D2.3 (check 4.3) — byte-equal match, fail-closed in BOTH
+    directions on target: the request's ``tool_name`` must be in
+    ``allowed_tools``; and (``ActionRequest`` has no separate
+    canonical-target field, so ``target_entity_ref`` is "the request's
+    canonical target" for this check) the target side must agree in
+    shape, not just in membership:
 
-    - ``allowed_tools``: iterable of tool name strings.
-    - ``allowed_targets``: iterable of entity-ref strings (optional).
+    | request target        | lease ``allowed_targets`` | result  |
+    |------------------------|---------------------------|---------|
+    | non-None, member       | non-empty                 | permit  |
+    | non-None, non-member   | non-empty                 | refuse  |
+    | non-None                | empty                     | refuse  |
+    | None                    | non-empty                 | refuse  |
+    | None                    | empty                     | permit  |
+
+    The first two rows are D2.3's explicit "request has a target"
+    case. The last three are the symmetric case the ADR states in
+    words but the original draft of this function only half-applied:
+    a lease scoped to specific targets must not vacuously authorize a
+    target-less action of the same tool — spec §1 "the lease ...
+    binds the approval to the exact frozen action", not the tool name
+    alone.
+
+    Callers must run :func:`_lease_shape_ok` first — this function
+    trusts ``lease``'s keys/types and will raise if they're wrong.
     """
-    allowed_tools = scope.get("allowed_tools") or ()
-    if isinstance(allowed_tools, (list, tuple, frozenset, set)):
-        if action_request.tool_name not in allowed_tools:
-            return False
-    else:
+    if action_request.tool_name not in lease["allowed_tools"]:
         return False
-
-    if action_request.target_entity_ref is not None:
-        allowed_targets = scope.get("allowed_targets")
-        if (
-            allowed_targets is not None
-            and isinstance(allowed_targets, (list, tuple, frozenset, set))
-            and action_request.target_entity_ref not in allowed_targets
-        ):
-            return False
-    return True
+    if not lease["allowed_targets"]:
+        return action_request.target_entity_ref is None
+    return (
+        action_request.target_entity_ref is not None
+        and action_request.target_entity_ref in lease["allowed_targets"]
+    )
 
 
 # --- Pre-emit Gate ----------------------------------------------------------

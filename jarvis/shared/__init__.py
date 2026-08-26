@@ -185,25 +185,48 @@ class Evidence:
 
 
 class AuthorizationLease(TypedDict):
-    """Temporary capability grant from Allen (spec §3.5.2).
+    """Temporary capability grant from Allen (spec §3.5.2, nine fields).
 
-    Day-1 scenario does not exercise leases (`spawn_worker` is L2, `verify_diff`
-    is L0) — `ActionRequest.authorization_lease` is always None on Day-1. The
-    type exists so Stage 2 high-risk scenarios can populate it.
+    Minted by the ADR-0012 accept handler (D6, Step 6) when Allen answers
+    "是" to a `confirmation.requested` ask; attached to exactly one
+    re-proposed ActionRequest and then dropped — leases are never
+    pooled or stored (ADR-0012 D2), so there is nothing to leak or
+    replay from. `pre_action_gate` check 4 (`jarvis/decision/gates.py`)
+    validates shape / expiry / scope; single-use enforcement (D2.4) is
+    deferred to Step 3/6, which folds consumption from
+    `gate.evaluated`'s `lease_id` payload key against the
+    PendingConfirmations projection.
 
     Fields:
-        lease_id: Unique ID for audit chain.
-        granted_at_ms: Wall-clock ms at grant time.
-        expires_at_ms: Wall-clock ms expiry. Pre-action Gate refuses if past.
-        scope: Free-form mapping covering allowed_tools / allowed_targets /
-            risk ceiling. Day-1 keeps it as `Mapping[str, Any]`; Stage 2
-            tightens to a TypedDict once consumers exist.
-    """
+        lease_id: Unique id for the audit chain.
+        granted_by: Always `"allen"` in v1 — the human who approved.
+        granted_to: The caller principal the lease empowers. The real
+            caller stays `jarvis_llm`; the lease is a temporary
+            capability layered on top (spec §3.5.2: "human_approved
+            不是 caller principal；它是 AuthorizationLease").
+        allowed_tools: Tool names the lease authorizes.
+        allowed_targets: Canonical target refs the lease authorizes
+            (byte-equal match against
+            `ActionRequest.target_entity_ref`).
+        expires_at_ms: Wall-clock ms expiry. Pre-action Gate refuses if
+            past.
+        max_uses: Always 1 in v1 (ADR-0012 D2); consumption is Step 6's
+            single-use fold (D2.4), not enforced by this type.
+        reason: Human-readable audit line — the rendered confirmation
+            `template_line`.
+        source_confirmation_event_id: The `confirmation.accepted`
+            event id this lease was minted from.
+    """  # noqa: RUF002 — fullwidth punctuation is verbatim spec §3.5.2 Chinese quotation.
 
     lease_id: str
-    granted_at_ms: int
+    granted_by: str
+    granted_to: CallerPrincipal
+    allowed_tools: frozenset[str]
+    allowed_targets: frozenset[str]
     expires_at_ms: int
-    scope: Mapping[str, Any]
+    max_uses: int
+    reason: str
+    source_confirmation_event_id: str
 
 
 # --- ActionRequest (spec §3.4.8 — Day-1 fields only) ------------------------
