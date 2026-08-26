@@ -6,8 +6,20 @@ holds the lock, exit 2 with stderr that mentions the holder pid AND a
 pointer to the HTTP submit endpoint so the operator knows their two
 remediation options (kill the daemon, or POST through it).
 
+ADR-0009 D2 moved that refusal behind ``--no-forward``: a held lock now
+makes the bare command a thin client of the daemon instead. The flag is
+the documented way for scripts that depend on the exit-2 refusal to keep
+it, so this test asserts it through the flag.
+
 This test pre-acquires the lock from THIS test process, then spawns the
 CLI as a subprocess and asserts the refusal path.
+
+``HOME`` is redirected at the tmp dir because the B-NEW-5 cross-root
+guard runs BEFORE the refusal and probes the *default* runtime root's
+lock (``~/.jarvis/daemon.lock``, resolved through ``expanduser``). Left
+pointing at the real home, this test would refuse for B-NEW-5's reason —
+with a different message and Allen's daemon pid — whenever a daemon
+happens to be running on the machine.
 """
 
 from __future__ import annotations
@@ -37,6 +49,7 @@ def test_cli_refuses_to_run_when_lock_held(tmp_path: Path) -> None:
                 "-m",
                 "jarvis",
                 "test text",
+                "--no-forward",
                 "--runtime-root",
                 str(tmp_path),
             ],
@@ -44,6 +57,7 @@ def test_cli_refuses_to_run_when_lock_held(tmp_path: Path) -> None:
             text=True,
             timeout=15,
             check=False,
+            env={**os.environ, "HOME": str(tmp_path)},
         )
 
     assert result.returncode == 2, (
