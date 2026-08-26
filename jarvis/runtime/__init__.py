@@ -63,6 +63,7 @@ from jarvis.surface.cli import (
     PreEmitTokenError,
     SurfaceState,
     emit_surface_user_intent,
+    parse_response_channels,
     record_pre_emit_token,
 )
 from jarvis.surface.cli_render import render_response
@@ -977,5 +978,9 @@ __all__ = [
     "TriggerWaitTimeout",
     "bootstrap_runtime_app",
     "drive_turn",
+    # Re-exported for jarvis.cli: H13 forbids a single file importing two
+    # middle-layer siblings, and the CLI already imports jarvis.deployment.
+    # Same route PreEmitTokenError above already takes.
+    "parse_response_channels",
     "run_turn",
 ]

@@ -62,6 +62,7 @@ from jarvis.runtime import (
     RuntimeBootstrapError,
     TriggerWaitTimeout,
     bootstrap_runtime_app,
+    parse_response_channels,
     run_turn,
 )
 from jarvis.runtime.inherent_loop import serve_inherent
@@ -307,6 +308,30 @@ async def _forward_attempt(utterance: str, *, timeout_s: float) -> str:
                 await reader
 
 
+def _stdout_text(text: str) -> str:
+    """Project the daemon's response onto the document channel.
+
+    ``cli_stdout`` is a document-channel surface: the pre-0009 direct
+    path reached it through
+    :func:`jarvis.surface.cli_render.render_response`, which writes
+    ``document_text``. Forward mode reassembles the raw chunk stream
+    instead, and that stream still carries the
+    ``<voice>``/``<document>`` markup the render layer would have
+    split — printing it verbatim shows an operator both halves plus
+    the tags, with the document half's line breaks flattened.
+
+    Parsing happens here, after ``_collect_response`` has joined every
+    ``append`` token, because a tag may straddle any chunk boundary.
+
+    A response with no tags at all comes back whole (the parser
+    returns it as both channels). A voice-only response falls back to
+    the voice half rather than printing an empty line — an exit-0
+    one-shot that emits nothing reads as a lost answer.
+    """
+    channels = parse_response_channels(text)
+    return channels.document or channels.voice
+
+
 async def _forward(utterance: str, *, timeout_s: float) -> int:
     """D2 forward mode with the pinned retry / exit-code contract."""
     last_error = ""
@@ -329,7 +354,7 @@ async def _forward(utterance: str, *, timeout_s: float) -> int:
             sys.stderr.write(f"jarvis: {exc}\n")
             return 1
         else:
-            print(text)  # noqa: T201 — the daemon's response IS this command's output.
+            print(_stdout_text(text))  # noqa: T201 — the daemon's response IS this command's output.
             return 0
 
     sys.stderr.write(
