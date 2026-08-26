@@ -83,6 +83,30 @@ class RuntimePaths:
         run_dir.mkdir(parents=True, exist_ok=True)
         return run_dir
 
+    def pending_write_path(self, confirmation_id: str) -> Path:
+        """Return the staging path for a pending write's content (ADR-0012 §3 D3).
+
+        Shape: `${artifacts_root}/pending_writes/<confirmation_id>`.
+        Sibling of `artifact_dir_for_run`'s `run_<run_id>/` convention.
+        The `pending_writes/` directory is created lazily on first call
+        (`exist_ok=True`); the content FILE itself is written by the
+        caller (`decision/__init__.py`'s `confirm_required` handling),
+        not here — this method only guarantees the parent directory
+        exists and returns the deterministic path so the same
+        `confirmation_id` always resolves to the same artifact.
+
+        Args:
+            confirmation_id: The `confirmation_id` minted for one
+                `confirmation.requested` ask.
+
+        Returns:
+            The path the write's `content` argument should be staged
+            at. The parent directory exists after this call.
+        """
+        pending_dir = self.artifacts_root / "pending_writes"
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        return pending_dir / confirmation_id
+
 
 def _resolve_root(root: Path | None) -> Path:
     """Pick the runtime root (explicit arg > env var > built-in default)."""

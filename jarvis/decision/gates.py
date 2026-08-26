@@ -712,8 +712,15 @@ def _derive_output_risk(
 
 # --- Attention Policy (Day-1 minimal) ---------------------------------------
 
-AttentionChannel = Literal["voice_notify", "silent_log", "queue_review"]
-"""Day-1 attention-policy decisions. Other 7 channels map to silent_log."""
+AttentionChannel = Literal["voice_notify", "silent_log", "queue_review", "ask_confirm"]
+"""Day-1 attention-policy decisions, plus ``ask_confirm`` (ADR-0012 D5).
+
+``ask_confirm`` is never returned by :func:`attention_policy` itself —
+it is set by ``_finalize_response``'s post-hoc scan for a
+``confirmation.requested`` event emitted THIS turn, the same
+finalize-scan-override pattern as the existing ``hard_refusal_used``
+check (`jarvis.decision.__init__`). Other 5 channels map to
+silent_log."""
 
 
 def attention_policy(  # noqa: C901 — small branch tree but ruff counts each ``if`` separately.

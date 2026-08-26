@@ -150,6 +150,13 @@ _DEFAULT_TRIGGER_TIMEOUT_S: float = 5.0
 # the same cadence the daemon would actually poll at.
 _FALLBACK_OBSERVER_POLL_INTERVAL_S: float = 60.0
 
+# Fallback for a runtime whose config carries no ``confirmation:`` block.
+# Mirrors ``jarvis.decision._DEFAULT_CONFIRMATION_TTL_MS`` (private in
+# that module — not imported here, same as
+# ``_FALLBACK_OBSERVER_POLL_INTERVAL_S`` above keeps its own mirror
+# rather than importing ``packet.DEFAULT_OBSERVER_POLL_INTERVAL_S``).
+_FALLBACK_CONFIRMATION_TTL_MS: int = 600_000
+
 # Default `tools.screen.vision_preset` (ADR-0011 D7) — the `llm.presets.*`
 # key `screen_look` reads for its one vision call when the config's
 # `tools.screen` block doesn't override it.
@@ -406,6 +413,25 @@ def _observer_poll_interval_s(config: Mapping[str, Any]) -> float:
     return _positive_float(
         block.get("poll_interval_s"), _FALLBACK_OBSERVER_POLL_INTERVAL_S,
     )
+
+
+def _confirmation_ttl_ms(config: Mapping[str, Any]) -> int:
+    """Return ``confirmation.ttl_ms`` (ADR-0012 §3 D4/V2 — default 10 min).
+
+    Config-overridable so the live burn (ADR-0012 §7 acceptance row
+    C3, TTL expiry) can use a short value without touching code. Same
+    fill-only-with-fallback shape as :func:`_observer_poll_interval_s`
+    above; ``bool`` is excluded explicitly for the same reason
+    :func:`_positive_float` excludes it (``bool`` is an ``int``
+    subclass).
+    """
+    block = config.get("confirmation")
+    if not isinstance(block, Mapping):
+        return _FALLBACK_CONFIRMATION_TTL_MS
+    value = block.get("ttl_ms")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return _FALLBACK_CONFIRMATION_TTL_MS
+    return value if value > 0 else _FALLBACK_CONFIRMATION_TTL_MS
 
 
 def _observer_repo_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
@@ -783,6 +809,12 @@ def bootstrap_runtime_app(
             async_tool_names=frozenset(t.name for t in regex_router_tools if t.is_async),
             entity_required_tool_names=frozenset(
                 t.name for t in regex_router_tools if t.requires_entity
+            ),
+            # ADR-0012 §3 D5 — a Tier 0 row must never target a
+            # `requires_confirmation` tool (Tier 0 has no LLM to
+            # receive Allen's confirmation answer).
+            requires_confirmation_tool_names=frozenset(
+                t.name for t in regex_router_tools if t.requires_confirmation
             ),
         )
     except Tier0ConfigError as exc:
@@ -1180,6 +1212,9 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
             # ADR-0012 D1 — write-target resolve-on-propose. Same
             # per-turn-closure rationale as `entity_resolver` above.
             write_entity_resolver=_make_write_entity_resolver(runtime.conn),
+            # ADR-0012 §3 D4/V2 — confirmation TTL, config-overridable
+            # via `confirmation.ttl_ms` so the live burn can shorten it.
+            confirmation_ttl_ms=_confirmation_ttl_ms(runtime.config),
         )
 
         # SQLite row id of the surface.user_intent event — used as the

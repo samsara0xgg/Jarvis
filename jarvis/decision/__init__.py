@@ -49,11 +49,12 @@ import json
 import logging
 import math
 import re
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 from jarvis.decision.gates import (
     AttentionChannel,
@@ -119,6 +120,20 @@ LOGGER = logging.getLogger(__name__)
 # Hard ceiling on the tool-use loop in `decide()`. Defends against an LLM
 # that keeps proposing tool calls without converging.
 _DEFAULT_MAX_TOOL_ITERATIONS = 5
+
+# ADR-0012 §3 D4/V2 — confirmation TTL default (10 minutes). Config-
+# overridable via `config/jarvis.yaml`'s `confirmation.ttl_ms`
+# (composition root: `jarvis.runtime._confirmation_ttl_ms`) so the
+# live burn can use a short value without touching code.
+_DEFAULT_CONFIRMATION_TTL_MS: Final[int] = 600_000
+
+# `_dispatch_one_tool_call`'s three-way signal to `_run_tool_use_loop`
+# (ADR-0012 D5 widens the prior bool: True=continue / False=pause):
+# "continue" — sync tool dispatched, loop to the next iteration;
+# "async_pause" — spawn_worker paused, `worker.reported` re-enters
+# later; "confirm_required" — the FIRST confirm_required this turn was
+# frozen into an ask, the tool loop ends here (no more LLM calls).
+_DispatchOutcome = Literal["continue", "async_pause", "confirm_required"]
 
 # Limitation-language template used when Pre-emit Gate forces a downgrade
 # after the LLM's second attempt still claims completion. Day-1 keeps it
@@ -436,6 +451,16 @@ class RuntimePathsLike(Protocol):
         """Return (and create) the per-run artifact directory."""
         ...
 
+    def pending_write_path(self, confirmation_id: str) -> Path:
+        """Return the staging path for a pending write's content.
+
+        ADR-0012 §3 D3/D5: on ``confirm_required``, ``write_file``'s
+        ``content`` argument is staged here — never on the event
+        payload (§3.3.9 bounded payloads) — before
+        ``confirmation.requested`` is emitted.
+        """
+        ...
+
 
 class ToolDefinitionLike(Protocol):
     """Structural view of L4 ``ToolDefinition`` records.
@@ -643,6 +668,13 @@ class DecideContext:
             ``write_file`` resolution inert the same way ``None`` on
             ``entity_resolver`` does for ``read_file`` — fail-closed,
             not a bug.
+        confirmation_ttl_ms: How long a ``confirmation.requested`` ask
+            stays live before the PendingConfirmations projection
+            judges it expired (ADR-0012 §3 D4/V2), in milliseconds.
+            Default 10 minutes; the composition root reads
+            ``confirmation.ttl_ms`` from ``config/jarvis.yaml``
+            (`jarvis.runtime._confirmation_ttl_ms`) so the live burn
+            can use a short value without touching code.
     """
 
     conn: sqlite3.Connection
@@ -657,6 +689,7 @@ class DecideContext:
     entity_bookmarks: Sequence[tuple[str, str]] = ()
     entity_resolver: EntityResolverLike | None = None
     write_entity_resolver: EntityResolverLike | None = None
+    confirmation_ttl_ms: int = _DEFAULT_CONFIRMATION_TTL_MS
 
 
 @dataclass(frozen=True)
@@ -711,6 +744,13 @@ class _Scratch:
     in_flight_action_id: str | None = None
     in_flight_target_ref: str | None = None
     in_flight_turn_id: str | None = None
+    # ADR-0012 D5: the exact rendered template_line for the FIRST
+    # `confirm_required` this turn froze — stamped by
+    # `_stage_and_request_confirmation` via `_dispatch_one_tool_call`,
+    # read back by `_run_tool_use_loop` to build the final draft. Lives
+    # on scratch (not a local in either function) because the value is
+    # produced deep in the tool-dispatch loop and consumed one frame up.
+    pending_confirmation_template_line: str | None = None
 
 
 def _active_subject_or_default(
@@ -1001,20 +1041,46 @@ def _run_tool_use_loop(
             # iteration sees the LLM's tool requests in history.
             messages.append(_assistant_message_for(chat_result))
 
-            async_pause = False
+            dispatch_outcome: _DispatchOutcome = "continue"
             for tool_call in chat_result.tool_calls:
-                if not _dispatch_one_tool_call(
+                dispatch_outcome = _dispatch_one_tool_call(
                     tool_call=tool_call,
                     packet=packet,
                     policy=policy,
                     ctx=ctx,
                     scratch=scratch,
                     messages=messages,
-                ):
-                    async_pause = True
+                )
+                # ADR-0012 D4: a "confirm_required" outcome does NOT
+                # break this inner loop — a batch of several tool_calls
+                # in the SAME LLM response must still see every later
+                # one (the first froze the ask; each later one falls
+                # through to the generic gate-refuse handling inside
+                # `_dispatch_one_tool_call` once
+                # `_confirmation_already_requested_this_turn` is True,
+                # per D4 "further L3 proposals in the same turn get the
+                # synthetic refuse result"). Only "async_pause" breaks
+                # immediately — spawn_worker pausing mid-batch has
+                # always short-circuited the remaining tool_calls.
+                if dispatch_outcome == "async_pause":
                     break
 
-            if async_pause:
+            if _confirmation_already_requested_this_turn(scratch):
+                # ADR-0012 D5: the ask ends the tool loop here — no more
+                # LLM calls this turn, regardless of which tool_call in
+                # the batch (or which loop iteration) triggered it. The
+                # draft is THIS response's own LLM text (optional 铺垫,
+                # if any — goes through the normal Pre-emit Gate scrub
+                # below like any other draft) plus the runtime-rendered
+                # template line frozen at staging time
+                # (`_stage_and_request_confirmation`), never composed by
+                # the LLM.
+                llm_preamble = (chat_result.text or "").strip()
+                template_line = scratch.pending_confirmation_template_line or ""
+                draft = f"{llm_preamble}\n\n{template_line}" if llm_preamble else template_line
+                return _finalize_response(draft, packet, ctx, scratch)
+
+            if dispatch_outcome == "async_pause":
                 # spawn_worker is async; lifecycle stays at running and
                 # the Timer will re-enter via worker.reported. Return
                 # a "partial" DecideResult — no final response yet.
@@ -1061,6 +1127,30 @@ _TIER0_GATE_REFUSED_TEXT: Final[str] = "这条指令被 Pre-action Gate 拦下�
 # handler's own error tag is a developer string and goes to the log,
 # never to the voice surface.
 _TIER0_TOOL_ERROR_TEXT: Final[str] = "这条指令执行出错，未产生结果。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
+
+# ADR-0012 §3 D5 — synthetic tool result injected on the FIRST
+# `confirm_required` this turn (the ask). Never sent to the LLM within
+# THIS `decide()` call (the tool loop ends right after), but kept
+# JSON-shaped for consistency with every other synthetic tool result
+# in this module.
+_CONFIRM_REQUIRED_TOOL_RESULT_TEXT: Final[str] = "等待 Allen 确认，本回合不可执行"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+
+# ADR-0012 §3 D5 — the exact rendered action line, appended by the
+# RUNTIME to the draft, never composed by the LLM (§13.4; consent
+# binds machine truth). Rendered ONLY from the frozen action_snapshot
+# (`_stage_and_request_confirmation`) — `canonical_target` is the
+# resolved absolute path, the one thing standing between Allen and a
+# fuzzy-resolved write landing somewhere unintended. Fixed vocabulary,
+# scrub-safe (no 完成/已完成/done/verified), same discipline as the
+# Tier 0 texts above. `{tool_name}`/`{risk_level}` are interpolated
+# rather than hardcoded to "write_file"/"L3" even though that is the
+# only L3 tool today (D1) — byte-identical output for the one case
+# that exists, forward-compatible if a second L3 tool ever lands.
+_CONFIRMATION_TEMPLATE_LINE: Final[str] = (
+    "待确认：{tool_name} → `{canonical_target}`"  # noqa: RUF001 — fullwidth colon is intentional Chinese punctuation.
+    "（{mode}，{content_bytes} 字节，风险 {risk_level}）。"  # noqa: RUF001 — fullwidth parens/comma/period are intentional Chinese punctuation.
+    "回复「可以」执行，「不要」取消。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
+)
 
 _TIER0_SPOKEN_PREVIEW_MAX_BYTES: Final[int] = 200
 """MUST-FIX 2b (ADR-0011 §12): a Tier 0 template's tool-payload values
@@ -1178,7 +1268,16 @@ def _run_tier0_path(
     scratch.events.append(gate_event)
     if gate.outcome != "pass":
         # No LLM to adapt on this path (that is the point of Tier 0), so
-        # the refusal itself is the user-facing text.
+        # the refusal itself is the user-facing text. This also covers
+        # `confirm_required`: boot validation (`validate_tier0_table`'s
+        # `requires_confirmation_tool_names` arm, ADR-0012 §3 D5)
+        # forbids any Tier 0 row from targeting a `requires_confirmation`
+        # tool, so a real `confirm_required` should never reach here.
+        # This branch is the RUNTIME enforcement of that boot rule
+        # (defense in depth) — declared, not dead code: Tier 0 has no
+        # LLM to ask/answer a confirmation, so if a misconfiguration
+        # ever slipped past the boot check, refusing here (rather than
+        # e.g. crashing) is still the correct, safe behavior.
         return _finalize_response(_TIER0_GATE_REFUSED_TEXT, packet, ctx, scratch)
 
     authorized_event = emit_event(
@@ -1247,13 +1346,20 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     ctx: DecideContext,
     scratch: _Scratch,
     messages: list[dict[str, Any]],
-) -> bool:
+) -> _DispatchOutcome:
     """Resolve, gate, and dispatch one LLM-proposed tool call.
 
     Returns:
-        ``True`` if the tool was sync (the loop should continue with
-        the next iteration). ``False`` if the tool was async (the
-        caller should pause and return a partial DecideResult).
+        ``"continue"`` if the tool was sync (the loop should continue
+        with the next iteration). ``"async_pause"`` if the tool was
+        async (the caller should pause and return a partial
+        DecideResult). ``"confirm_required"`` if this call's Pre-action
+        Gate outcome was ``confirm_required`` AND it is the first such
+        outcome this turn (ADR-0012 D5) — the caller must end the tool
+        loop and finalize with the frozen ask's template line. A
+        second-or-later ``confirm_required`` in the same turn (D4)
+        instead falls through to the generic ``gate_outcome != "pass"``
+        refuse handling below and returns ``"continue"``.
     """
     name = getattr(tool_call, "name", "")
     call_id = getattr(tool_call, "call_id", "")
@@ -1280,7 +1386,7 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
                 content=json.dumps({"error": f"unknown tool: {name}"}),
             )
         )
-        return True
+        return "continue"
 
     # 2. Task-ref resolver. Tools that accept a ``task_id`` go through
     #    the resolver; LLM-supplied ``task_id`` is treated as a natural
@@ -1374,6 +1480,17 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
         ctx.write_entity_resolver if name == "write_file" else ctx.entity_resolver
     )
     gate_entity_registry = packet.entity_registry
+    # ADR-0012 §3 D3: the confirmation snapshot's human-readable
+    # `canonical_target` is the resolver's `.canonical` (bare absolute
+    # path), captured here at the source of truth rather than
+    # re-derived later by stripping `target_entity_ref`'s `"file:"`
+    # prefix — that prefix convention belongs to `execution/tools.py`
+    # (L4), which L3 must not import. Stays `None` for any tool other
+    # than `write_file` (or a miss); `confirm_required` is only
+    # reachable once `target_entity_ref` is set, which for `write_file`
+    # only ever happens via this block, so the two are always set
+    # together on the path that reaches confirm_required.
+    write_target_canonical: str | None = None
     if (
         tool_def.requires_entity
         and target_entity_ref is None
@@ -1392,6 +1509,7 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
         scratch.events.append(entity_event)
         if resolved is not None:
             target_entity_ref = resolved.entity_id
+            write_target_canonical = resolved.canonical
             gate_entity_registry = gate_entity_registry.with_resolved_event(entity_event)
 
     # When the tool accepts run_id (verify_diff), prefer the most recent
@@ -1518,6 +1636,42 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     )
     scratch.events.append(gate_event)
 
+    # ADR-0012 D5/D4: the FIRST `confirm_required` this turn freezes an
+    # ask and ends the tool loop. Checked before the generic
+    # `!= "pass"` handling below, which a second-or-later
+    # `confirm_required` in the same turn falls through to (D4: "只有
+    # 第一个 confirm_required 变成 ask, 之后的 L3 proposal 得到 synthetic
+    # refuse result") — that generic refuse is exactly what already
+    # happens for `gate_outcome == "confirm_required"` there, so no
+    # separate refuse text is needed for the second+ case.
+    if gate_outcome == "confirm_required" and not _confirmation_already_requested_this_turn(
+        scratch,
+    ):
+        confirmation_event = _stage_and_request_confirmation(
+            ctx,
+            action_request=action_request,
+            arguments=arguments,
+            canonical_target=write_target_canonical or "",
+            tool_def=tool_def,
+            source_event_id=gate_event.event_uid,
+        )
+        scratch.events.append(confirmation_event)
+        scratch.pending_confirmation_template_line = str(
+            confirmation_event.payload["template_line"],
+        )
+        messages.append(
+            _tool_result_message(
+                call_id=call_id,
+                content=json.dumps(
+                    {
+                        "status": "confirmation_requested",
+                        "message": _CONFIRM_REQUIRED_TOOL_RESULT_TEXT,
+                    }
+                ),
+            )
+        )
+        return "confirm_required"
+
     if gate_outcome != "pass":
         # Refuse / confirm — inject a tool result explaining the refusal
         # and let the LLM adapt. Day-1 scenario should not hit this.
@@ -1533,7 +1687,7 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
                 ),
             )
         )
-        return True
+        return "continue"
 
     # 5. action.authorized + lifecycle register/transition
     authorized_event = emit_event(
@@ -1583,7 +1737,7 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
         run_id_from_raw = primary_slot.payload.get("run_id")
         if isinstance(run_id_from_raw, str):
             scratch.last_run_id = run_id_from_raw
-        return False
+        return "async_pause"
 
     # 7b. Sync tools (verify_diff Day-2 dual-slot, create_task single
     #     slot): the handler emitted ``action.result_observed`` itself.
@@ -1681,7 +1835,7 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
             content=_render_bundle_for_llm(bundle),
         )
     )
-    return True
+    return "continue"
 
 
 def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are all load-bearing per ADR-0002 § Verify_command plumbing.
@@ -2501,6 +2655,40 @@ def _finalize_response(
             else:
                 plan = forced_plan
 
+    # ADR-0012 D5 MUST-FIX (post-review): the template line must
+    # survive the retry chain above UNCONDITIONALLY. The retry chain
+    # re-prompts the LLM with only `draft_text`/`retry_text` in
+    # history — the LLM never sees `scratch.pending_confirmation_
+    # template_line` as something to preserve, so a downgrade_required
+    # verdict on attempt 0 can silently drop the line from `plan.text`
+    # (attempt 1's retry_plan, or attempt 2's forced/hard-refusal
+    # plan, all overwrite `plan` with fresh text that was never built
+    # from the frozen snapshot). That line is Allen's only chance to
+    # catch a fuzzy-resolved write target before bytes are written
+    # (Step 4 erratum) — losing it would let a "是" bind to a
+    # confirmation whose rendered question Allen never actually saw.
+    # Idempotent post-condition, not a rewrite of the function above:
+    # if this turn froze a template_line and the text about to ship
+    # doesn't already end with it, append it and re-hash — same
+    # re-hash discipline as the `gate_text` override earlier in this
+    # function, so `turn.ended` below and the returned plan agree.
+    # Unreachable-in-practice on the acceptance scenario (write_file
+    # proposals carry no active_subject_ref, so pre_emit_gate never
+    # even reaches the retry chain) but not a structural guarantee —
+    # this guard is what makes it one.
+    pending_template_line = scratch.pending_confirmation_template_line
+    if pending_template_line and not plan.text.endswith(pending_template_line):
+        guarded_text = (
+            f"{plan.text}\n\n{pending_template_line}"
+            if plan.text.strip()
+            else pending_template_line
+        )
+        plan = replace(
+            plan,
+            text=guarded_text,
+            response_hash=hashlib.sha256(guarded_text.encode("utf-8")).hexdigest(),
+        )
+
     # turn.ended. ``source_event_id`` references the last gate verdict
     # on the chain (attempt 0 / 1 / 2 depending on how far retry went).
     if scratch.turn_id is not None:
@@ -2543,6 +2731,17 @@ def _finalize_response(
     # limitation language so the "审核了再告诉我" spirit holds.
     if hard_refusal_used and attention == "silent_log":
         attention = "queue_review"
+
+    # ADR-0012 D5: a `confirmation.requested` emitted THIS turn always
+    # routes to `ask_confirm` — the same finalize-scan-override pattern
+    # as `limitation_emitted` above (a scan of `scratch.events`, not a
+    # new `attention_policy()` branch). Placed last so it wins over
+    # every other override: the turn's entire content IS the ask, and
+    # `ask_confirm` deliberately sits outside the ADR-0009 D4 TTS
+    # suppression set (`jarvis.runtime.inherent_loop._TTS_SILENT_CHANNELS`)
+    # — the question must be spoken, not swallowed.
+    if _confirmation_already_requested_this_turn(scratch):
+        attention = "ask_confirm"
 
     return DecideResult(
         response_plan=plan,
@@ -2619,6 +2818,21 @@ def _new_turn_id() -> str:
 def _new_action_id() -> str:
     """Fresh action_id (A + 8-hex)."""
     return "A" + uuid.uuid4().hex[:8]
+
+
+def _new_confirmation_id() -> str:
+    """Fresh confirmation_id (C + 8-hex) — mirrors T/A above (ADR-0012 D5)."""
+    return "C" + uuid.uuid4().hex[:8]
+
+
+def _now_epoch_ms() -> int:
+    """Current epoch time in milliseconds (ADR-0012 D5 ``expires_at_ms``).
+
+    Private copy of the same one-liner in ``jarvis.decision.gates``
+    (not exported there either) — trivial enough that importing across
+    for it would cost more than it saves.
+    """
+    return int(time.time() * 1000)
 
 
 def _action_correlation(action_request: ActionRequest) -> Mapping[str, str]:
@@ -2707,6 +2921,122 @@ def _emit_file_entity_resolved(
         payload=payload,
         source_event_id=source_event_id,
         correlation={"turn_id": turn_id} if turn_id else None,
+    )
+
+
+def _confirmation_already_requested_this_turn(scratch: _Scratch) -> bool:
+    """True iff a ``confirmation.requested`` already rides ``scratch.events``.
+
+    ADR-0012 D4: only the FIRST ``confirm_required`` this turn becomes
+    an ask; every later one falls through to the generic gate-refuse
+    handling instead. Mirrors ``_finalize_response``'s
+    ``limitation_emitted`` scan — a turn-scoped event-log scan, not a
+    persisted flag, so it is naturally correct across the tool-use
+    loop's iterations without any extra bookkeeping.
+    """
+    return any(ev.type == "confirmation.requested" for ev in scratch.events)
+
+
+def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 snapshot input; each is load-bearing (ADR-0012 §3 D3), splitting would only relocate the arg list.
+    ctx: DecideContext,
+    *,
+    action_request: ActionRequest,
+    arguments: Mapping[str, Any],
+    canonical_target: str,
+    tool_def: ToolDefinitionLike,
+    source_event_id: str,
+) -> Event:
+    """Freeze the action snapshot, stage its content, emit the ask.
+
+    ADR-0012 §3 D3/D5. Three things happen, in order:
+
+    1. ``content`` (never any other argument) is staged to
+       ``ctx.runtime_paths.pending_write_path(confirmation_id)`` and
+       hashed — the content itself never rides the event payload
+       (§3.3.9 bounded payloads); only ``content_sha256`` /
+       ``content_bytes`` / ``content_artifact`` do, folded into
+       ``args_meta`` alongside the tool's other (non-content)
+       arguments.
+    2. The six-key ``action_snapshot`` is assembled: ``tool_name``,
+       ``caller``, ``canonical_target`` (bare path, for the template
+       line), ``target_entity_ref`` (the ``file:<abs-path>`` form —
+       the exact field Step 6 will copy into a minted lease's
+       ``allowed_targets``; see ADR-0012's Step 1 erratum),
+       ``risk_level``, ``args_meta``.
+    3. ``confirmation.requested`` is emitted, carrying the snapshot
+       plus ``template_line`` (rendered from the snapshot, never from
+       LLM text) and ``expires_at_ms`` (``ctx.confirmation_ttl_ms``
+       from now).
+
+    Args:
+        ctx: The current DecideContext (supplies ``runtime_paths`` for
+            staging and ``confirmation_ttl_ms`` for the TTL).
+        action_request: The proposed, not-yet-authorized ActionRequest
+            (already carries ``target_entity_ref`` and ``tool_name``).
+        arguments: The tool call's raw arguments (parsed LLM JSON) —
+            NOT ``action_request.arguments`` specifically so the
+            caller can pass the exact dict it already resolved/parsed.
+        canonical_target: The resolved bare absolute path (empty
+            string if resolution somehow left it unset — defensive
+            only; unreachable in practice, see the call site comment).
+        tool_def: The tool's definition (for ``risk_level`` — Day-1
+            always ``"L3"``, but read off the def rather than
+            hardcoded).
+        source_event_id: The ``gate.evaluated`` event that produced
+            ``confirm_required`` — mirrors every other downstream event
+            in this function chaining off the gate verdict that caused
+            it (e.g. ``action.authorized``).
+
+    Returns:
+        The emitted ``confirmation.requested`` :class:`Event`.
+    """
+    confirmation_id = _new_confirmation_id()
+
+    content_raw = arguments.get("content")
+    content_str = content_raw if isinstance(content_raw, str) else ""
+    content_bytes_data = content_str.encode("utf-8")
+    content_sha256 = hashlib.sha256(content_bytes_data).hexdigest()
+    content_byte_count = len(content_bytes_data)
+    artifact_path = ctx.runtime_paths.pending_write_path(confirmation_id)
+    artifact_path.write_text(content_str, encoding="utf-8")
+
+    mode_raw = arguments.get("mode")
+    mode_str = mode_raw if isinstance(mode_raw, str) else str(mode_raw)
+
+    args_meta: dict[str, Any] = {k: v for k, v in arguments.items() if k != "content"}
+    args_meta["content_sha256"] = content_sha256
+    args_meta["content_bytes"] = content_byte_count
+    args_meta["content_artifact"] = str(artifact_path)
+
+    action_snapshot: dict[str, Any] = {
+        "tool_name": action_request.tool_name,
+        "caller": action_request.caller_principal.value,
+        "canonical_target": canonical_target,
+        "target_entity_ref": action_request.target_entity_ref,
+        "risk_level": tool_def.risk_level,
+        "args_meta": args_meta,
+    }
+
+    template_line = _CONFIRMATION_TEMPLATE_LINE.format(
+        tool_name=action_request.tool_name,
+        canonical_target=canonical_target,
+        mode=mode_str,
+        content_bytes=content_byte_count,
+        risk_level=tool_def.risk_level,
+    )
+    expires_at_ms = _now_epoch_ms() + ctx.confirmation_ttl_ms
+
+    return emit_event(
+        ctx.conn,
+        type="confirmation.requested",
+        payload={
+            "confirmation_id": confirmation_id,
+            "action_snapshot": action_snapshot,
+            "template_line": template_line,
+            "expires_at_ms": expires_at_ms,
+        },
+        source_event_id=source_event_id,
+        correlation=_action_correlation(action_request),
     )
 
 

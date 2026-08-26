@@ -76,3 +76,9 @@ tools:
     vision_preset: vision
     # 截图喂给 vision 模型前用 sips 缩到这个宽度以内（像素）。
     max_width_px: 1568
+
+# ADR-0012 §3 D4/V2 — confirm_required 询问（confirmation.requested）
+# 的存活时长。默认 10 分钟；live burn 验证 C3（TTL 过期）时把这里改短，
+# 不用碰代码。
+confirmation:
+  ttl_ms: 600000

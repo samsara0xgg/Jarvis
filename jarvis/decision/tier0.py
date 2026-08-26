@@ -160,6 +160,7 @@ def validate_tier0_table(
     allowed_tool_names: frozenset[str],
     async_tool_names: frozenset[str],
     entity_required_tool_names: frozenset[str] = frozenset(),
+    requires_confirmation_tool_names: frozenset[str] = frozenset(),
 ) -> None:
     """Cross-check the table against the registry's regex_router surface.
 
@@ -178,6 +179,20 @@ def validate_tier0_table(
     EVERY dispatch. Defaulted to an empty frozenset so pre-existing
     callers (and hand-built test fixtures) keep compiling; an empty
     set simply means no row can ever trip this check.
+
+    ``requires_confirmation_tool_names`` (ADR-0012 §3 D5) is the
+    subset of ``allowed_tool_names`` whose ``requires_confirmation`` is
+    True. Tier 0 has no LLM on this path — nobody to receive Allen's
+    「可以」/「不要」 answer — so a row naming such a tool would boot
+    clean and then hit ``confirm_required`` at dispatch with no way to
+    ever resolve it. This check makes that unreachable at boot time,
+    same defense-layer-0 posture as the two checks above; the Tier 0
+    dispatch path's own ``gate.outcome != "pass"`` refusal (
+    `jarvis.decision.__init__._run_tier0_path`) stays as
+    defense-in-depth for a row that somehow slips past this check —
+    that branch is the RUNTIME enforcement of this boot rule, not dead
+    code. Defaulted to an empty frozenset for the same backward-compat
+    reason as ``entity_required_tool_names``.
     """
     for pattern in table:
         if pattern.tool_name not in allowed_tool_names:
@@ -199,6 +214,15 @@ def validate_tier0_table(
                 f"{pattern.tool_name!r}, which declares requires_entity=True; "
                 "Tier 0 always dispatches with target_entity_ref=None and "
                 "would be refused by the Pre-action Gate at every call"
+            )
+            raise Tier0ConfigError(msg)
+        if pattern.tool_name in requires_confirmation_tool_names:
+            msg = (
+                f"tier0 patterns: {pattern.pattern_id!r} targets tool "
+                f"{pattern.tool_name!r}, which declares "
+                "requires_confirmation=True; Tier 0 has no LLM to receive "
+                "Allen's confirmation answer (ADR-0012 §3 D5) — "
+                "confirm_required must never be reachable on this path"
             )
             raise Tier0ConfigError(msg)
 

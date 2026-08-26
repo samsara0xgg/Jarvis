@@ -25,7 +25,15 @@ ATTENTION_CHANNEL_TO_SURFACES: Final[dict[str, tuple[str, ...]]] = {
     "soft_suggest":   ("cli_stdout",),
     "voice_notify":   ("say", "osascript_banner", "cli_stdout"),
     "interrupt_now":  ("say_bell", "osascript_banner"),  # bell tone variant
-    "ask_confirm":    ("osascript_banner", "cli_stdout"),
+    # ADR-0012 D5: the confirmation question is meant to be SPOKEN — an
+    # L3 write waits on Allen's answer, and a silent banner he may not be
+    # looking at is not an ask. `say` was absent while the channel was
+    # unreachable; Step 5 makes it reachable, so the routing table has to
+    # say what actually happens. The daemon path is unaffected (it passes
+    # `available_surfaces=frozenset()`, so voice there comes solely from
+    # `_tts_watcher` via `_TTS_SILENT_CHANNELS`, which `ask_confirm` is
+    # deliberately NOT in); this entry is what makes the CLI path speak.
+    "ask_confirm":    ("say", "osascript_banner", "cli_stdout"),
     "delegate_agent": (),  # internal action only
     "suppress":       (),
 }
