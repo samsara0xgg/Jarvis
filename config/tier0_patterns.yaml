@@ -17,3 +17,28 @@
   pattern: "^今天(?:几号|星期几|周几)[?？。.!！]?$"
   tool: get_current_time
   template: "今天是{spoken_date}。"
+# Exact-sentence whitelist for open_path: each entry matches ONE literal
+# spoken sentence (tolerating only whitespace, ASCII case, claude/cloud ASR
+# spelling, and trailing punctuation). Anything else falls through to the
+# LLM, which knows the open_path tool. Generalization is deliberately NOT
+# encoded here — it belongs to the LLM now and to the Tier 1 surrogate
+# model later (spec §3.4.15), trained on real usage from the event log.
+- id: open_jarvis_claude_md
+  pattern: "^帮我打开\\s*(?i:jarvis)\\s*的\\s*(?i:claude|cloud)\\s*[.。]?\\s*(?i:md)\\s*文件[。.!！]?$"
+  tool: open_path
+  args:
+    query: "jarvis claude md"
+  template: "正在打开{opened_name}。"
+- id: open_root_claude_md
+  pattern: "^帮我打开\\s*根目录的\\s*(?i:claude|cloud)\\s*[.。]?\\s*(?i:md)\\s*文件[。.!！]?$"
+  tool: open_path
+  args:
+    query: "root claude md"
+  template: "正在打开{opened_name}。"
+- id: open_jarvis_vscode
+  pattern: "^帮我用\\s*(?i:vs\\s?code)\\s*打开\\s*(?i:jarvis)[。.!！]?$"
+  tool: open_path
+  args:
+    query: "jarvis"
+    app: "vscode"
+  template: "正在用 VS Code 打开{opened_name}。"

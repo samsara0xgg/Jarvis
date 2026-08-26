@@ -1,0 +1,54 @@
+# File/folder target config for the L4 `open_path` tool ("打开 X" — spec
+# §17 Tier 0 companion data, not part of the regex whitelist itself).
+# Loaded lazily by `jarvis.execution.path_resolver` on first `resolve()`
+# call: the loader walks up from that module's own file looking for
+# `config/jarvis.yaml` (same strategy `jarvis.runtime._locate_repo_root`
+# uses for `tier0_patterns.yaml`), then reads this file from that same
+# `config/` directory. Missing file -> empty config (no bookmarks, no
+# search roots, no editor override) rather than a boot failure; `open_path`
+# just returns no match for every query.
+#
+# Entry schema:
+#   search_roots:       list of directories `open_path` may search under.
+#                        Each root is Spotlight-queried (`mdfind -onlyin
+#                        <root> -name <token>`) for the longest ASCII
+#                        search token, and also one-level scanned (catches
+#                        unindexed / dot-adjacent files quickly). `~` is
+#                        expanded at load time.
+#   bookmarks:           alias (str) -> path (str) map. A query that names
+#                        an alias resolves straight to that path; a query
+#                        that names an alias PLUS more (e.g. "jarvis 项目的
+#                        claude md 文件") uses the alias's path as a
+#                        priority search root instead. `~` is expanded at
+#                        load time.
+#   editor_extensions:   file extensions (no leading dot, case-insensitive)
+#                        that open in `editor_app` instead of the macOS
+#                        default handler (`open <path>`).
+#   editor_app:          `open -a <editor_app>` target — used for
+#                        editor_extensions hits and whenever `open_path`'s
+#                        `app` argument is `"vscode"`.
+search_roots:
+  - ~/Projects
+  - ~/Documents
+  - ~/Desktop
+  - ~/Downloads
+
+bookmarks:
+  # Pinned targets for the exact-sentence Tier 0 whitelist.
+  "jarvis claude md": "~/Projects/jarvis/CLAUDE.md"
+  "root claude md": "~/.claude/CLAUDE.md"
+  jarvis: ~/Projects/jarvis
+  下载: ~/Downloads
+  桌面: ~/Desktop
+  文档: ~/Documents
+  projects: ~/Projects
+
+editor_extensions:
+  - md
+  - py
+  - txt
+  - json
+  - yaml
+  - toml
+
+editor_app: "Visual Studio Code"
