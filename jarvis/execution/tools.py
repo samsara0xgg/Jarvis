@@ -2042,6 +2042,29 @@ def open_path_handler(
             message=f"open_path: no file/folder matched {args.query!r}",
         )
 
+    # ADR-0011 D4: `open_path` is an `entity.resolved` EMITTER (it keeps
+    # its own resolve-then-act contract per D2's footnote rather than
+    # going through resolve-on-propose) — a successful resolution here
+    # feeds the EntityRegistry projection's `file:` route the same way a
+    # `read_file`-style pre-gate resolution would. `path_resolver` itself
+    # stays pure; this emission lives in the handler, same as the
+    # `action.result_observed` emission below.
+    emit_event(
+        conn,
+        type="entity.resolved",
+        payload={
+            "entity_type": "file",
+            "natural_ref": args.query,
+            "resolved_to": f"file:{target.path}",
+            "confidence": "bookmark" if target.source == "bookmark" else "fuzzy",
+            "candidates": [],
+            "match_basis": target.source,
+            "outcome": "resolved",
+        },
+        source_event_id=running_event_uid,
+        correlation={"action_id": action_request.action_id},
+    )
+
     argv, app_used = _build_open_argv(target.path, args.app)
 
     try:

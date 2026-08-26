@@ -44,7 +44,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 import yaml
 
-from jarvis.decision import DecideContext, LifecycleLike, ToolRegistryLike, decide
+from jarvis.decision import (
+    DecideContext,
+    EntityResolverLike,
+    LifecycleLike,
+    ResolvedEntityLike,
+    ToolRegistryLike,
+    decide,
+)
 from jarvis.decision.llm import LLMClient, load_llm_config
 from jarvis.decision.policy import (
     PolicyConsistencyError,
@@ -55,6 +62,11 @@ from jarvis.decision.result_interpreter import emit_stash_conflict_surfacing
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.execution.diff_capture import StashError, restore_pretask_changes
+from jarvis.execution.path_resolver import (
+    FileTargetsConfigError,
+    load_file_targets_config,
+)
+from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.tools import (
     ActionLifecycle,
     ToolRegistry,
@@ -141,6 +153,66 @@ class TriggerWaitTimeout(RuntimeError):  # noqa: N818 — Day-1 vocabulary keeps
     """Raised by :func:`_wait_for_next_trigger` when no trigger arrives in time."""
 
 
+# --- ADR-0011 D4 — resolve-on-propose wiring --------------------------------
+
+
+@dataclass(frozen=True)
+class _ResolvedFileEntity:
+    """Adapts `path_resolver.ResolvedTarget` to L3's `ResolvedEntityLike`.
+
+    `jarvis.runtime` is the only module allowed to know both the L3
+    Protocol shape and the L4 `ResolvedTarget` dataclass it adapts —
+    that is the whole point of the resolve-on-propose seam (ADR-0011
+    D4): L3 never imports `jarvis.execution.path_resolver` directly.
+    """
+
+    entity_id: str
+    canonical: str
+    confidence: str
+    match_basis: str
+
+
+def _make_entity_resolver(conn: sqlite3.Connection) -> EntityResolverLike:
+    """Build the resolve-on-propose callable (ADR-0011 D4), closing over `conn`.
+
+    Wired into `DecideContext.entity_resolver`; `_dispatch_one_tool_call`
+    calls it for a `requires_entity=True` tool whose `target_entity_ref`
+    is still unset. `path_resolver.resolve` never raises for a bad or
+    unresolvable query (its own docstring's contract) — a miss is the
+    normal `None` return, not an exception, so this wrapper adds no
+    try/except of its own; a real bug inside `resolve` should surface,
+    not be swallowed here.
+    """
+
+    def _resolve(query: str) -> ResolvedEntityLike | None:
+        target = resolve_file_entity(query, "file", conn)
+        if target is None:
+            return None
+        return _ResolvedFileEntity(
+            entity_id=f"file:{target.path}",
+            canonical=str(target.path),
+            confidence="bookmark" if target.source == "bookmark" else "fuzzy",
+            match_basis=target.source,
+        )
+
+    return _resolve
+
+
+def _entity_bookmarks() -> tuple[tuple[str, str], ...]:
+    """Load `config/file_targets.yaml` bookmarks as `(alias, abs-path)` pairs.
+
+    Seeds the EntityRegistry projection's config route (ADR-0011 D4).
+    `jarvis.state` may not import `jarvis.execution.path_resolver`, so
+    the composition root loads the config here and threads the pairs
+    down as plain data — the same reason `tier0_table` is loaded here
+    and threaded rather than re-parsed inside `jarvis.decision`.
+    """
+    return tuple(
+        (alias, str(path))
+        for alias, path in load_file_targets_config().bookmarks.items()
+    )
+
+
 # --- Public dataclasses -----------------------------------------------------
 
 
@@ -174,6 +246,10 @@ class JarvisRuntime:
         tier0_table: Spec §17 Tier 0 whitelist loaded from
             ``config/tier0_patterns.yaml``; empty tuple = Tier 0
             disabled.
+        entity_bookmarks: ``(alias, absolute-path)`` pairs loaded from
+            ``config/file_targets.yaml`` (ADR-0011 D4) — seeds the
+            EntityRegistry projection's config route. Empty tuple =
+            no bookmarks configured.
     """
 
     config: Mapping[str, Any]
@@ -184,6 +260,7 @@ class JarvisRuntime:
     llm_client: LLMClient
     system_prompt: str
     tier0_table: Tier0Table = ()
+    entity_bookmarks: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -400,6 +477,21 @@ def bootstrap_runtime_app(
         msg = f"runtime: tool registry requires_confirmation invariant violated: {exc}"
         raise RuntimeBootstrapError(msg) from exc
 
+    # 3d. ADR-0011 D4 — EntityRegistry config seed. A missing/empty
+    #     `file_targets.yaml` still degrades to no bookmarks (same
+    #     posture as `open_path`'s own use of this config) — genuinely
+    #     best-effort. A MALFORMED file is different: it would silently
+    #     remove a trust source the Pre-action Gate consults (ADR-0011
+    #     §12.2), so `load_file_targets_config` raising
+    #     `FileTargetsConfigError` fails the boot loudly instead of
+    #     degrading, matching steps 3b/3c above — a silent trust
+    #     reduction is worse than a loud boot failure.
+    try:
+        entity_bookmarks = _entity_bookmarks()
+    except FileTargetsConfigError as exc:
+        msg = f"runtime: config/file_targets.yaml invalid: {exc}"
+        raise RuntimeBootstrapError(msg) from exc
+
     # 4. L3 LLM client.
     full_config = _load_full_config(config_path)
     llm_config = load_llm_config(config_path)
@@ -417,6 +509,7 @@ def bootstrap_runtime_app(
         llm_client=llm_client,
         system_prompt=system_prompt,
         tier0_table=tier0_table,
+        entity_bookmarks=entity_bookmarks,
     )
 
 
@@ -751,6 +844,14 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
             # same config key the observer task polls on, so the two can
             # never disagree about what "stale" means.
             observer_poll_interval_s=int(_observer_poll_interval_s(runtime.config)),
+            # ADR-0011 D4 — EntityRegistry config seed, threaded the same
+            # way tier0_table is threaded.
+            entity_bookmarks=runtime.entity_bookmarks,
+            # ADR-0011 D4 — resolve-on-propose. Built fresh per turn (a
+            # trivial closure) rather than stored on JarvisRuntime: it
+            # closes over `runtime.conn`, which the JarvisRuntime fields
+            # above already carry, so there is nothing to cache.
+            entity_resolver=_make_entity_resolver(runtime.conn),
         )
 
         # SQLite row id of the surface.user_intent event — used as the

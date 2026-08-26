@@ -26,10 +26,12 @@ from jarvis.state.projections import make_snapshot
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Sequence
 
     from jarvis.shared import Event
     from jarvis.state.projections import (
         CommitObservation,
+        EntityRegistry,
         RepoObservation,
         StatusBoard,
         TaskLedgerRecord,
@@ -67,6 +69,10 @@ class SituationPacket:
             state, last Mac power transition, open actions. Carried on
             the packet so L3 can answer "repo X 现在什么状态" from the
             log instead of shelling out to git mid-turn.
+        entity_registry: Folded EntityRegistry (ADR-0011 D4) — `file:` /
+            `repo:` / `task:` entries the trusted resolver (or config
+            bookmarks) has produced. Consulted by the Pre-action Gate's
+            widened entity-trust arm (ADR-0011 §12.2 Reconciliation J).
     """
 
     trigger_event: Event
@@ -76,6 +82,7 @@ class SituationPacket:
     current_turn_id: str | None
     current_run_id: str | None
     status_board: StatusBoard
+    entity_registry: EntityRegistry
 
 
 # --- assemble_packet --------------------------------------------------------
@@ -93,13 +100,19 @@ def _extract_correlation(trigger: Event, key: str) -> str | None:
     return None
 
 
-def assemble_packet(trigger: Event, conn: sqlite3.Connection) -> SituationPacket:
+def assemble_packet(
+    trigger: Event,
+    conn: sqlite3.Connection,
+    *,
+    entity_bookmarks: Sequence[tuple[str, str]] = (),
+) -> SituationPacket:
     """Build a :class:`SituationPacket` from the live event log.
 
     Reads the event log via ``jarvis.state.projections.make_snapshot``
-    (which folds Task Ledger + Recent Trace + Claim/Evidence + Status
-    Board in one pass), then bundles the trigger + correlations into a
-    frozen packet.
+    (which reads the event log once and folds Task Ledger, Recent
+    Trace, Claim/Evidence, Status Board, and EntityRegistry via five
+    separate in-memory passes over that one materialized read), then
+    bundles the trigger + correlations into a frozen packet.
 
     Args:
         trigger: The event that re-entered L3 (already appended to
@@ -107,12 +120,17 @@ def assemble_packet(trigger: Event, conn: sqlite3.Connection) -> SituationPacket
             packet so downstream callers can inspect its payload
             without re-querying.
         conn: Open Event Log connection.
+        entity_bookmarks: `(alias, absolute-path)` seed pairs forwarded
+            to the EntityRegistry's config route (ADR-0011 D4). L3 may
+            not import `jarvis.execution.path_resolver`; the runtime
+            composition root loads `config/file_targets.yaml` and
+            threads the pairs down as plain data. Default `()`.
 
     Returns:
         Frozen :class:`SituationPacket` ready for the Intent Router,
         Resolver, Effective Policy resolver, and Gates.
     """
-    projections = make_snapshot(conn)
+    projections = make_snapshot(conn, entity_bookmarks=entity_bookmarks)
     snapshot = projections.task_ledger.snapshot()
 
     return SituationPacket(
@@ -123,6 +141,7 @@ def assemble_packet(trigger: Event, conn: sqlite3.Connection) -> SituationPacket
         current_turn_id=_extract_correlation(trigger, "turn_id"),
         current_run_id=_extract_correlation(trigger, "run_id"),
         status_board=projections.status_board,
+        entity_registry=projections.entity_registry,
     )
 
 

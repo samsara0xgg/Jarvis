@@ -34,7 +34,11 @@ if TYPE_CHECKING:
     from jarvis.decision.packet import SituationPacket
     from jarvis.decision.policy import EffectivePolicy
     from jarvis.shared import ActionRequest, EvidenceLevel
-    from jarvis.state.projections import ClaimEvidenceProjection, TaskLedgerSnapshot
+    from jarvis.state.projections import (
+        ClaimEvidenceProjection,
+        EntityRegistry,
+        TaskLedgerSnapshot,
+    )
 
 
 # --- Public types -----------------------------------------------------------
@@ -165,12 +169,81 @@ class _EntityGateToolLike(Protocol):
         ...
 
 
+def _check_entity_trusted(
+    action_request: ActionRequest,
+    tool_def: _EntityGateToolLike | None,
+    ledger_snapshot: TaskLedgerSnapshot,
+    entity_registry: EntityRegistry | None,
+) -> tuple[bool, str]:
+    """Evaluate check 2 (entity_trusted) for :func:`pre_action_gate`.
+
+    Split out purely to keep ``pre_action_gate`` under ruff's
+    PLR0912/PLR0915 branch/statement thresholds — the logic itself is
+    unchanged from the inline version.
+
+    None arm (ADR-0011 D3, untouched by §12.2): if
+    ``target_entity_ref`` is None and ``tool_def.requires_entity`` is
+    True, the tool declares it cannot act without a resolved entity —
+    refuse with reason ``"entity_required: <tool_name> demands a
+    resolved target"``. ``tool_def is None`` (unknown tool) does NOT
+    take this branch, but NOT because check 1 (``caller_allowed``)
+    would refuse it — ``allowed_tool_surface`` is a bare name
+    allowlist, structurally independent of the registry, so a name
+    could be caller-allowed with no registry definition behind it. The
+    real reason ``tool_def is None`` never reaches this gate in
+    production: both call sites early-return before constructing the
+    ``ActionRequest`` when their own lookup returns None —
+    ``jarvis/decision/__init__.py`` ~994-1000 (Tier 0 path falls back
+    to the LLM loop) and ~1174-1183 (LLM path injects an "unknown
+    tool" result and returns). This is defense-in-depth for a case
+    that cannot currently occur.
+
+    Non-None arm (ADR-0011 §12.2 Reconciliation J): trusted when
+    ``target_entity_ref`` is EITHER a known Task Ledger task id
+    (checked FIRST, byte-for-byte the pre-ADR-0011 rule — open OR
+    reported_complete OR verified_complete all count, since rejecting
+    reported_complete would break the verify_diff leg of the Day-1
+    happy path) OR a known ``entity_id`` in ``entity_registry`` (the
+    D4 fold of resolver-produced ``file:``/``repo:`` ids — without
+    this second universe, a resolve-on-propose ``file:`` id could
+    never pass, since it is by construction never a Task Ledger task
+    id). ``entity_registry is None`` (a caller that hasn't wired one)
+    simply means this arm never matches — it does not widen trust, it
+    only adds a second place trust CAN come from.
+    """
+    if action_request.target_entity_ref is None:
+        if tool_def is not None and tool_def.requires_entity:
+            return False, (
+                "entity_trusted: entity_required: "
+                f"{action_request.tool_name} demands a resolved target"
+            )
+        return True, "entity_trusted: no target_entity_ref to check"
+
+    known_task_ids = set(ledger_snapshot.records_by_task_id.keys())
+    in_ledger = action_request.target_entity_ref in known_task_ids
+    in_registry = (
+        entity_registry is not None and action_request.target_entity_ref in entity_registry
+    )
+    if in_ledger:
+        matched_where = "is in Task Ledger"
+    elif in_registry:
+        matched_where = "is in EntityRegistry"
+    else:
+        matched_where = "is NOT in Task Ledger or EntityRegistry"
+    return (
+        in_ledger or in_registry,
+        f"entity_trusted: target_entity_ref={action_request.target_entity_ref!r} "
+        f"{matched_where}",
+    )
+
+
 def pre_action_gate(
     action_request: ActionRequest,
     policy: EffectivePolicy,
     ledger_snapshot: TaskLedgerSnapshot,
     *,
     tool_def: _EntityGateToolLike | None,
+    entity_registry: EntityRegistry | None = None,
 ) -> GateResult:
     """Evaluate the four MUST-checks per ADR § Gate contracts.
 
@@ -181,10 +254,16 @@ def pre_action_gate(
     1. **caller_allowed**: ``action_request.caller_principal`` is in
        ``policy.allowed_tool_surface`` for ``tool_name``.
     2. **entity_trusted**: if ``target_entity_ref`` is non-None, it
-       must be the ``task_id`` of an open task in
-       ``ledger_snapshot``. Day-1 only task entities; Stage 2 widens
-       to an Entity Registry. If ``target_entity_ref`` is None AND
-       ``tool_def.requires_entity`` is True, the check now FAILS
+       must be EITHER the ``task_id`` of a task known to
+       ``ledger_snapshot`` (checked first, byte-for-byte the Day-1
+       rule — this is what keeps the shipped ``verify_diff`` /
+       ``spawn_worker`` path, which passes bare task ids, untouched)
+       OR a known ``entity_id`` in ``entity_registry`` (ADR-0011
+       §12.2 Reconciliation J — the widening that makes D4's
+       ``file:``/``repo:`` ids trustworthy; ``entity_registry=None``
+       degrades to "no registry universe", i.e. only the ledger arm
+       can pass). If ``target_entity_ref`` is None AND
+       ``tool_def.requires_entity`` is True, the check FAILS
        (ADR-0011 D3) with reason ``"entity_required: <tool_name>
        demands a resolved target"`` — this is the arm that makes the
        entity check non-vacuous for tools like ADR-0012's
@@ -231,6 +310,13 @@ def pre_action_gate(
             resolved definition removes that divergence. Keyword-only
             and required — there are only two call sites and both
             already hold the value.
+        entity_registry: The folded EntityRegistry projection
+            (``packet.entity_registry``), or ``None``. ADR-0011 §12.2:
+            the second universe check 2's non-None arm may match
+            against, alongside (never instead of) the Task Ledger.
+            Keyword-only with a ``None`` default so pre-Step-4 callers
+            (and hand-built test fixtures) keep compiling; ``None``
+            simply means the registry arm never matches.
 
     Returns:
         Frozen :class:`GateResult` with per-check bool + reason.
@@ -248,47 +334,15 @@ def pre_action_gate(
         f"{action_request.tool_name!r} under mode={policy.mode}"
     )
 
-    # 2. entity_trusted
-    if action_request.target_entity_ref is None:
-        if tool_def is not None and tool_def.requires_entity:
-            # ADR-0011 D3: this tool declares it cannot act without a
-            # resolved entity — a None ref is no longer vacuously
-            # trusted. `tool_def is None` (unknown tool) does NOT take
-            # this branch, but NOT because check 1 (caller_allowed)
-            # would refuse it — `allowed_tool_surface` is a bare name
-            # allowlist, structurally independent of the registry, so
-            # a name could be caller-allowed with no registry
-            # definition behind it. The real reason `tool_def is None`
-            # never reaches this gate in production: both call sites
-            # early-return before constructing the ActionRequest when
-            # their own lookup returns None —
-            # `jarvis/decision/__init__.py` ~994-1000 (Tier 0 path
-            # falls back to the LLM loop) and ~1174-1183 (LLM path
-            # injects an "unknown tool" result and returns). The
-            # `None` handling below is defense-in-depth for a case
-            # that cannot currently occur.
-            entity_trusted = False
-            reasons.append(
-                "entity_trusted: entity_required: "
-                f"{action_request.tool_name} demands a resolved target"
-            )
-        else:
-            entity_trusted = True
-            reasons.append("entity_trusted: no target_entity_ref to check")
-    else:
-        # A task is "trusted" when it appears in the Task Ledger at
-        # all — open OR reported_complete (mid-turn verify must still
-        # pass) OR verified_complete (re-verify after the fact). The
-        # ledger is the gate's universe of known entities; rejecting
-        # reported_complete tasks would break the verify_diff leg of
-        # the Day-1 happy path. (Step 12 follow-up.)
-        known_task_ids = set(ledger_snapshot.records_by_task_id.keys())
-        entity_trusted = action_request.target_entity_ref in known_task_ids
-        reasons.append(
-            f"entity_trusted: target_entity_ref={action_request.target_entity_ref!r} "
-            f"{'is' if entity_trusted else 'is NOT'} in Task Ledger"
-        )
+    # 2. entity_trusted — split into a helper purely to keep this
+    #    function's branch/statement count under ruff's PLR0912/PLR0915
+    #    thresholds; see `_check_entity_trusted`'s docstring for the
+    #    full contract (unchanged from the inline version).
+    entity_trusted, entity_reason = _check_entity_trusted(
+        action_request, tool_def, ledger_snapshot, entity_registry,
+    )
     checks["entity_trusted"] = entity_trusted
+    reasons.append(entity_reason)
 
     # 3. risk_within_ceiling
     risk_within_ceiling = (

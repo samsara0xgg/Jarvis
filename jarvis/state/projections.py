@@ -50,7 +50,7 @@ from jarvis.state.event_log import iter_events
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterable, Iterator
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
 
     from jarvis.shared import Event
 
@@ -1002,6 +1002,243 @@ def _fold_status_board(events: Iterable[Event]) -> StatusBoard:
     )
 
 
+# --- EntityRegistry -----------------------------------------------------------
+
+# Alias cap per ADR-0011 D4 entry shape: "last 8, dedup". Bounds the
+# payload the packet carries per entity — a file opened/resolved dozens
+# of times under different phrasings must not grow the projection
+# unboundedly.
+_ALIAS_CAP: Final[int] = 8
+
+
+@dataclass(frozen=True)
+class EntityRegistryEntry:
+    """One folded EntityRegistry row (ADR-0011 §3 D4).
+
+    Attributes:
+        entity_id: Deterministic natural key — ``"file:<abs-path>"`` |
+            ``"repo:<abs-path>"`` | ``"task:<task-id>"``.
+        entity_type: ``"file"`` | ``"repo"`` | ``"task"`` (open enum;
+            ``"device"`` joins with the smart_home ADR).
+        canonical: The resolved absolute path / task id.
+        aliases: Raw refs that resolved to this entity, in first-seen
+            order, deduped, bounded to the last `_ALIAS_CAP` (8).
+        confidence: ``"exact"`` | ``"fuzzy"`` | ``"bookmark"`` |
+            ``"config"``.
+        source_event_id: `event_uid` of the event that (re)registered
+            this entry, or `None` for a config-seeded row that no event
+            has yet confirmed.
+        last_seen_ms: `ts_epoch_ms` of the row that produced this entry
+            (`0` for a config seed that has never been confirmed by an
+            event).
+    """
+
+    entity_id: str
+    entity_type: str
+    canonical: str
+    aliases: tuple[str, ...]
+    confidence: str
+    source_event_id: str | None
+    last_seen_ms: int
+
+
+def _add_alias(aliases: tuple[str, ...], new_ref: str) -> tuple[str, ...]:
+    """Append `new_ref` to `aliases`, deduped, capped at the last 8.
+
+    A ref already present is not re-appended — its original position is
+    kept (order-stable). Once more than `_ALIAS_CAP` distinct refs have
+    accumulated, the oldest is dropped so the tuple never exceeds the
+    cap. An empty `new_ref` (no natural-language ref on the resolving
+    event) is a no-op.
+    """
+    if not new_ref or new_ref in aliases:
+        return aliases
+    updated = (*aliases, new_ref)
+    if len(updated) > _ALIAS_CAP:
+        updated = updated[-_ALIAS_CAP:]
+    return updated
+
+
+@dataclass(frozen=True)
+class EntityRegistry:
+    """Folded EntityRegistry projection (ADR-0011 §3 D4).
+
+    The Pre-action Gate's entity arm (ADR-0011 §12.2 Reconciliation J)
+    consults this alongside the Task Ledger: a `target_entity_ref` that
+    is not a known task id may still be trusted if it is a known
+    `entity_id` here — the registry is precisely the projection of ids
+    the trusted resolver produced (spec §3.3.7's ID-source allowlist).
+
+    Attributes:
+        entries_by_id: Frozen mapping of `entity_id -> EntityRegistryEntry`.
+    """
+
+    entries_by_id: Mapping[str, EntityRegistryEntry] = field(default_factory=dict)
+
+    def __contains__(self, entity_id: object) -> bool:
+        """Return True iff `entity_id` is a known entry key."""
+        return entity_id in self.entries_by_id
+
+    def get(self, entity_id: str) -> EntityRegistryEntry | None:
+        """Return the entry for `entity_id`, or None if absent."""
+        return self.entries_by_id.get(entity_id)
+
+    def with_resolved_event(self, event: Event) -> EntityRegistry:
+        """Return a new registry with one `entity.resolved` event folded in.
+
+        ADR-0011 §12.2 MUST-FIX 1: `_dispatch_one_tool_call` emits the
+        `entity.resolved` event into the log and then must gate on a
+        registry that already reflects it — the packet snapshot it holds
+        was assembled BEFORE that event existed, so a first-time file
+        resolution would otherwise be refused by the gate even though it
+        just succeeded. This overlays exactly that one event via
+        `_entity_registry_entry_for_resolved_event` — the SAME helper
+        `_fold_entity_registry`'s route 3 uses — so the result is
+        byte-identical to what the next full `rebuild_projections` would
+        produce. The event is already durable in the log; this only
+        catches the projection up to it. It is not a widening of trust.
+
+        A non-file / non-resolved / malformed event is a no-op: returns
+        an equivalent (here, the same) registry.
+        """
+        update = _entity_registry_entry_for_resolved_event(self.entries_by_id, event)
+        if update is None:
+            return self
+        entity_id, entry = update
+        return EntityRegistry(entries_by_id={**self.entries_by_id, entity_id: entry})
+
+
+def _entity_registry_entry_for_resolved_event(
+    entries_by_id: Mapping[str, EntityRegistryEntry],
+    evt: Event,
+) -> tuple[str, EntityRegistryEntry] | None:
+    """Compute the `(entity_id, entry)` update one `entity.resolved` event produces.
+
+    Single source of truth for "how an `entity.resolved` event becomes an
+    EntityRegistry entry" — shared by :func:`_fold_entity_registry`'s
+    route 3 and :meth:`EntityRegistry.with_resolved_event`'s single-event
+    overlay, so the two paths can never disagree.
+
+    Returns `None` for a non-`entity.resolved` / non-`file` /
+    non-`resolved` / malformed event — the caller then leaves its
+    registry untouched.
+
+    NIT-FIX 4(b): a config-seeded entry (`confidence="config"`) keeps
+    that confidence when a later event re-registers the same
+    `entity_id` — config is the most trusted provenance, and losing it
+    on the first real resolution would make "was this a trusted config
+    entry" unrecoverable from the projection. Everything else about the
+    override (alias merge, `last_seen_ms`, `source_event_id`) proceeds
+    normally.
+    """
+    if (
+        evt.type != "entity.resolved"
+        or evt.payload.get("entity_type") != "file"
+        or evt.payload.get("outcome") != "resolved"
+    ):
+        return None
+    resolved_to = evt.payload.get("resolved_to")
+    if not isinstance(resolved_to, str):
+        return None
+    canonical = resolved_to.removeprefix("file:")
+    natural_ref_raw = evt.payload.get("natural_ref", "")
+    natural_ref = natural_ref_raw if isinstance(natural_ref_raw, str) else ""
+    confidence_raw = evt.payload.get("confidence", "exact")
+    confidence = confidence_raw if isinstance(confidence_raw, str) else "exact"
+    existing = entries_by_id.get(resolved_to)
+    if existing is not None and existing.confidence == "config":
+        confidence = "config"
+    aliases = _add_alias(existing.aliases if existing is not None else (), natural_ref)
+    entry = EntityRegistryEntry(
+        entity_id=resolved_to,
+        entity_type="file",
+        canonical=canonical,
+        aliases=aliases,
+        confidence=confidence,
+        source_event_id=evt.event_uid,
+        last_seen_ms=evt.ts_epoch_ms,
+    )
+    return resolved_to, entry
+
+
+def _fold_entity_registry(
+    events: Iterable[Event],
+    task_records: Mapping[str, TaskLedgerRecord],
+    entity_bookmarks: Sequence[tuple[str, str]],
+) -> dict[str, EntityRegistryEntry]:
+    """Single-pass fold producing the EntityRegistry (ADR-0011 D4).
+
+    Three routes plus one seed, folded in this order so a real
+    resolution always supersedes a mere config declaration:
+
+    1. **Seed** — `entity_bookmarks` (alias, absolute-path) pairs from
+       `config/file_targets.yaml`, folded FIRST at `confidence="config"`.
+       The seed arrives as plain data because `jarvis.state` may not
+       import `jarvis.execution.path_resolver` (layer boundary); the
+       runtime composition root loads the config and passes the pairs.
+    2. **Task Ledger** — `task_records` (already folded by the caller,
+       so this route costs no extra event walk) → `task:` entries,
+       `confidence="exact"`.
+    3. **`repo.state_observed`** events → `repo:` entries; last row in
+       log order wins (mirrors `_fold_repo_observation`).
+    4. **`entity.resolved`** events with `entity_type="file"` and
+       `outcome="resolved"` → `file:` entries, via
+       `_entity_registry_entry_for_resolved_event` (the same helper
+       `EntityRegistry.with_resolved_event` uses to overlay a single
+       just-emitted event onto a stale registry — ADR-0011 §12.2
+       MUST-FIX 1). `aliases` accumulates `natural_ref` via
+       `_add_alias`; `source_event_id` is the resolving event's uid,
+       superseding any earlier seed/event row for the same `entity_id`
+       (except a `confidence="config"` row, which the helper keeps).
+    """
+    entries: dict[str, EntityRegistryEntry] = {}
+
+    for alias, abs_path in entity_bookmarks:
+        entity_id = f"file:{abs_path}"
+        entries[entity_id] = EntityRegistryEntry(
+            entity_id=entity_id,
+            entity_type="file",
+            canonical=abs_path,
+            aliases=(alias,),
+            confidence="config",
+            source_event_id=None,
+            last_seen_ms=0,
+        )
+
+    for task_id, record in task_records.items():
+        entity_id = f"task:{task_id}"
+        entries[entity_id] = EntityRegistryEntry(
+            entity_id=entity_id,
+            entity_type="task",
+            canonical=task_id,
+            aliases=(),
+            confidence="exact",
+            source_event_id=record.created_event_uid,
+            last_seen_ms=record.created_ts_epoch_ms,
+        )
+
+    for evt in events:
+        if evt.type == "repo.state_observed":
+            repo_path = str(evt.payload["repo_path"])
+            entity_id = f"repo:{repo_path}"
+            entries[entity_id] = EntityRegistryEntry(
+                entity_id=entity_id,
+                entity_type="repo",
+                canonical=repo_path,
+                aliases=(),
+                confidence="exact",
+                source_event_id=evt.event_uid,
+                last_seen_ms=evt.ts_epoch_ms,
+            )
+        elif evt.type == "entity.resolved":
+            update = _entity_registry_entry_for_resolved_event(entries, evt)
+            if update is not None:
+                entity_id, entry = update
+                entries[entity_id] = entry
+
+    return entries
+
+
 # --- ProjectionSet -----------------------------------------------------------
 
 
@@ -1017,35 +1254,50 @@ class ProjectionSet:
         recent_trace: Folded Recent Trace ring buffer.
         claim_evidence: Folded Claim/Evidence projection.
         status_board: Folded Status Board (ADR-0009 D6).
+        entity_registry: Folded EntityRegistry (ADR-0011 D4).
     """
 
     task_ledger: TaskLedger
     recent_trace: RecentTrace
     claim_evidence: ClaimEvidenceProjection
     status_board: StatusBoard
+    entity_registry: EntityRegistry
 
 
 def rebuild_projections(
     conn: sqlite3.Connection,
     *,
     recent_trace_size: int = _RECENT_TRACE_DEFAULT_SIZE,
+    entity_bookmarks: Sequence[tuple[str, str]] = (),
 ) -> ProjectionSet:
-    """Read all events from `conn` and fold all four projections.
+    """Read all events from `conn` and fold all five projections.
 
-    Single SELECT-driven pass over the live Event Log via
-    `iter_events(conn)` — no SQL writes, no projection tables touched.
-    Idempotent: calling twice on the same connection (with no
-    intervening `emit_event`) returns deep-equal `ProjectionSet`s.
+    One SELECT-driven read of the live Event Log via `iter_events(conn)`
+    — materialized once, then walked by five separate in-memory fold
+    passes (Claim/Evidence, Task Ledger, Recent Trace, EntityRegistry,
+    Status Board; the Task Ledger route inside EntityRegistry's fold
+    reuses the already-folded records rather than re-walking, but the
+    other four each make their own pass). No SQL writes, no projection
+    tables touched. Idempotent: calling twice on the same connection
+    (with no intervening `emit_event`) returns deep-equal
+    `ProjectionSet`s.
 
     Args:
         conn: Open Event Log connection from
             `jarvis.state.event_log.open_event_log`.
         recent_trace_size: Ring-buffer capacity for the Recent Trace
             projection. Default = 200 (Day-1 per ADR § Module map).
+        entity_bookmarks: `(alias, absolute-path)` seed pairs for the
+            EntityRegistry's config route (ADR-0011 D4). `jarvis.state`
+            may not import `jarvis.execution.path_resolver`, so the
+            runtime composition root loads `config/file_targets.yaml`
+            and passes the pairs down as plain data. Default `()` —
+            no seed, matching every pre-ADR-0011 caller.
 
     Returns:
         `ProjectionSet` carrying frozen `task_ledger`, `recent_trace`,
-        `claim_evidence`, and `status_board` projections.
+        `claim_evidence`, `status_board`, and `entity_registry`
+        projections.
     """
     materialized = list(iter_events(conn))
     claim_evidence = _fold_claim_evidence(materialized)
@@ -1054,27 +1306,39 @@ def rebuild_projections(
         claim_evidence=claim_evidence,
     )
     recent_trace = RecentTrace.from_events(materialized, max_size=recent_trace_size)
+    entity_registry = EntityRegistry(
+        entries_by_id=_fold_entity_registry(
+            materialized, task_ledger.records_by_task_id, entity_bookmarks,
+        ),
+    )
     return ProjectionSet(
         task_ledger=task_ledger,
         recent_trace=recent_trace,
         claim_evidence=claim_evidence,
         status_board=_fold_status_board(materialized),
+        entity_registry=entity_registry,
     )
 
 
-def make_snapshot(conn: sqlite3.Connection) -> ProjectionSet:
+def make_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    entity_bookmarks: Sequence[tuple[str, str]] = (),
+) -> ProjectionSet:
     """L3-facing alias for `rebuild_projections` (Day-1 identical).
 
     Stage 2 may introduce snapshot-vs-rebuild differentiation (e.g.,
     high-water-mark caching per spec §3.3.6); Day-1 keeps the contract
     surface simple by aliasing to a fresh fold every call.
     """
-    return rebuild_projections(conn)
+    return rebuild_projections(conn, entity_bookmarks=entity_bookmarks)
 
 
 __all__ = [
     "ClaimEvidenceProjection",
     "CommitObservation",
+    "EntityRegistry",
+    "EntityRegistryEntry",
     "OpenAction",
     "PowerState",
     "PowerTransition",

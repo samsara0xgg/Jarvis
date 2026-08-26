@@ -50,7 +50,7 @@ import logging
 import math
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol
@@ -479,6 +479,49 @@ class ToolDefinitionLike(Protocol):
         ...
 
 
+class ResolvedEntityLike(Protocol):
+    """One resolved non-task entity handed back by the injected resolver.
+
+    ADR-0011 D4 resolve-on-propose: L3 cannot import
+    ``jarvis.execution.path_resolver`` (layer boundary), so the runtime
+    composition root injects a small callable (``EntityResolverLike``)
+    that returns an object satisfying this Protocol on a hit.
+    """
+
+    @property
+    def entity_id(self) -> str:
+        """Deterministic natural key, e.g. ``"file:<abs-path>"``."""
+        ...
+
+    @property
+    def canonical(self) -> str:
+        """The resolved absolute path (or other canonical form)."""
+        ...
+
+    @property
+    def confidence(self) -> str:
+        """``"exact"`` | ``"fuzzy"`` | ``"bookmark"`` | ``"config"``."""
+        ...
+
+    @property
+    def match_basis(self) -> str:
+        """Where the match came from, e.g. ``"bookmark"`` / ``"search"``."""
+        ...
+
+
+class EntityResolverLike(Protocol):
+    """Injected resolve-on-propose callable (ADR-0011 D4).
+
+    Never raises — a resolution miss is a normal ``None`` return, not
+    an exception; the caller (``_dispatch_one_tool_call``) treats
+    ``None`` as ``outcome="not_found"``.
+    """
+
+    def __call__(self, query: str, /) -> ResolvedEntityLike | None:
+        """Resolve ``query`` (a raw ``target`` argument) or return None."""
+        ...
+
+
 class ToolRegistryLike(Protocol):
     """Structural view of L4 ``ToolRegistry``.
 
@@ -571,6 +614,21 @@ class DecideContext:
             threshold (3x the interval, ADR-0009 D6 v0). The default is
             the shipped cadence, so a hand-assembled context still calls
             staleness the way the daemon does.
+        entity_bookmarks: ``(alias, absolute-path)`` seed pairs for the
+            EntityRegistry projection's config route (ADR-0011 D4),
+            threaded down to every ``assemble_packet`` call the same
+            way ``tier0_table`` is threaded. The runtime composition
+            root loads ``config/file_targets.yaml``; L3 cannot import
+            the loader itself. Default ``()`` — no seed.
+        entity_resolver: Injected resolve-on-propose callable (ADR-0011
+            D4), or ``None``. ``_dispatch_one_tool_call`` calls it for
+            a ``requires_entity=True`` tool whose ``target_entity_ref``
+            is still unset after the task-ref resolver runs. ``None``
+            (the default) makes the feature inert: every
+            ``requires_entity=True`` tool then refuses via Step 3's
+            gate arm — correct fail-closed behavior, not a bug, for
+            any context that hasn't wired a resolver (e.g. a context
+            with no file-entity tools registered).
     """
 
     conn: sqlite3.Connection
@@ -582,6 +640,8 @@ class DecideContext:
     max_tool_iterations: int = _DEFAULT_MAX_TOOL_ITERATIONS
     tier0_table: Tier0Table | None = None
     observer_poll_interval_s: int = DEFAULT_OBSERVER_POLL_INTERVAL_S
+    entity_bookmarks: Sequence[tuple[str, str]] = ()
+    entity_resolver: EntityResolverLike | None = None
 
 
 @dataclass(frozen=True)
@@ -755,7 +815,7 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
         Frozen :class:`DecideResult`.
     """
     scratch = _Scratch()
-    packet = assemble_packet(trigger, ctx.conn)
+    packet = assemble_packet(trigger, ctx.conn, entity_bookmarks=ctx.entity_bookmarks)
     policy = effective_policy(_allowed_tool_surface(ctx.tool_registry))
 
     # ``utterance.received`` is the voice-surface twin of
@@ -939,7 +999,9 @@ def _run_tool_use_loop(
             # and re-render the evidence note against it — sync tools
             # (verify_diff) mint claims mid-loop, which is exactly when
             # the note must not be stale.
-            packet = assemble_packet(packet.trigger_event, ctx.conn)
+            packet = assemble_packet(
+                packet.trigger_event, ctx.conn, entity_bookmarks=ctx.entity_bookmarks,
+            )
             _refresh_evidence_note(messages, packet, scratch)
             continue
 
@@ -1030,7 +1092,11 @@ def _run_tier0_path(
     scratch.events.append(proposed_event)
 
     gate = pre_action_gate(
-        action_request, policy, packet.task_ledger_snapshot, tool_def=tool_def,
+        action_request,
+        policy,
+        packet.task_ledger_snapshot,
+        tool_def=tool_def,
+        entity_registry=packet.entity_registry,
     )
     gate_event = emit_event(
         ctx.conn,
@@ -1121,55 +1187,13 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     except (TypeError, ValueError):
         arguments = {}
 
-    # 1. Resolver. Tools that accept a ``task_id`` go through the
-    #    resolver; LLM-supplied ``task_id`` is treated as a natural ref
-    #    (per spec §3.3.7: LLM must not invent entity IDs). When the LLM
-    #    additionally emits a structured ``{since_ts, until_ts}`` pair
-    #    on the action arguments (ADR-0002 Step 5: L3 LLM translates
-    #    natural-language time windows like "昨天" into epoch-ms bounds),
-    #    we route through ``resolve_task_ref_by_window`` so the resolver
-    #    queries the projection via :meth:`TaskLedgerSnapshot.tasks_in_window`
-    #    — no direct SQL from L3 per spec §3.4.3.
-    target_entity_ref: str | None = None
-    natural_ref_raw = arguments.get("task_id") or arguments.get("natural_ref") or ""
-    natural_ref = natural_ref_raw if isinstance(natural_ref_raw, str) else ""
-    since_ts = _coerce_epoch_ms(arguments.get("since_ts"))
-    until_ts = _coerce_epoch_ms(arguments.get("until_ts"))
-    resolver_result: ResolverResult | None = None
-    if since_ts is not None and until_ts is not None:
-        resolver_result = resolve_task_ref_by_window(
-            natural_ref,
-            packet.task_ledger_snapshot,
-            since_ts=since_ts,
-            until_ts=until_ts,
-        )
-        # Window-resolution args are consumed here; do not leak into the
-        # L4 tool call (L4 tools don't understand them).
-        arguments.pop("since_ts", None)
-        arguments.pop("until_ts", None)
-    elif natural_ref:
-        resolver_result = resolve_task_ref(natural_ref, packet.task_ledger_snapshot)
-    if resolver_result is not None:
-        scratch.events.append(
-            _emit_entity_resolved(
-                ctx,
-                natural_ref=natural_ref,
-                result=resolver_result,
-                turn_id=scratch.turn_id,
-                source_event_id=packet.trigger_event.event_uid,
-            )
-        )
-        if resolver_result.resolved_to is not None:
-            target_entity_ref = resolver_result.resolved_to
-            scratch.active_subject_ref = resolver_result.resolved_to
-            # Rewrite arguments.task_id to the canonical id so L4 sees
-            # the real id, not the natural ref. ``run_id`` arguments
-            # are left untouched.
-            if "task_id" in arguments:
-                arguments["task_id"] = resolver_result.resolved_to
-
-    # 2. Build the ActionRequest. Risk + caller default to
-    #    JARVIS_LLM/L2 — the Pre-action Gate verifies via policy.
+    # 1. Tool definition lookup (ADR-0011 §12.2 MUST-FIX 2). Moved ahead
+    #    of the task-ref resolver below: an unknown tool must not run
+    #    the resolver at all (it would emit a task-flavored
+    #    ``entity.resolved`` for a name that doesn't even exist — a
+    #    deliberate, minor behavior change from the previous ordering),
+    #    and a ``requires_entity=True`` tool must never run it either —
+    #    see the guard on that block.
     tool_def = _find_tool_def(ctx.tool_registry, name)
     if tool_def is None:
         # Unknown tool from LLM. Inject a tool-result message saying so
@@ -1181,6 +1205,108 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
             )
         )
         return True
+
+    # 2. Task-ref resolver. Tools that accept a ``task_id`` go through
+    #    the resolver; LLM-supplied ``task_id`` is treated as a natural
+    #    ref (per spec §3.3.7: LLM must not invent entity IDs). When the
+    #    LLM additionally emits a structured ``{since_ts, until_ts}``
+    #    pair on the action arguments (ADR-0002 Step 5: L3 LLM
+    #    translates natural-language time windows like "昨天" into
+    #    epoch-ms bounds), we route through ``resolve_task_ref_by_window``
+    #    so the resolver queries the projection via
+    #    :meth:`TaskLedgerSnapshot.tasks_in_window` — no direct SQL from
+    #    L3 per spec §3.4.3.
+    #
+    #    ADR-0011 §12.2 MUST-FIX 2: gated on ``not tool_def.requires_entity``
+    #    — a ``requires_entity=True`` tool (e.g. ``read_file``) must not
+    #    have ``target_entity_ref`` filled from a ``task_id`` /
+    #    ``natural_ref`` argument that raw, unvalidated LLM JSON happens
+    #    to carry alongside an unrelated ``target``. Without this guard
+    #    that fill runs BEFORE the resolve-on-propose block below ever
+    #    sees ``target_entity_ref`` (its precondition is
+    #    ``target_entity_ref is None``), so the file target is neither
+    #    resolved nor refused — it is silently skipped.
+    target_entity_ref: str | None = None
+    if not tool_def.requires_entity:
+        natural_ref_raw = arguments.get("task_id") or arguments.get("natural_ref") or ""
+        natural_ref = natural_ref_raw if isinstance(natural_ref_raw, str) else ""
+        since_ts = _coerce_epoch_ms(arguments.get("since_ts"))
+        until_ts = _coerce_epoch_ms(arguments.get("until_ts"))
+        resolver_result: ResolverResult | None = None
+        if since_ts is not None and until_ts is not None:
+            resolver_result = resolve_task_ref_by_window(
+                natural_ref,
+                packet.task_ledger_snapshot,
+                since_ts=since_ts,
+                until_ts=until_ts,
+            )
+            # Window-resolution args are consumed here; do not leak into the
+            # L4 tool call (L4 tools don't understand them).
+            arguments.pop("since_ts", None)
+            arguments.pop("until_ts", None)
+        elif natural_ref:
+            resolver_result = resolve_task_ref(natural_ref, packet.task_ledger_snapshot)
+        if resolver_result is not None:
+            scratch.events.append(
+                _emit_entity_resolved(
+                    ctx,
+                    natural_ref=natural_ref,
+                    result=resolver_result,
+                    turn_id=scratch.turn_id,
+                    source_event_id=packet.trigger_event.event_uid,
+                )
+            )
+            if resolver_result.resolved_to is not None:
+                target_entity_ref = resolver_result.resolved_to
+                scratch.active_subject_ref = resolver_result.resolved_to
+                # Rewrite arguments.task_id to the canonical id so L4 sees
+                # the real id, not the natural ref. ``run_id`` arguments
+                # are left untouched.
+                if "task_id" in arguments:
+                    arguments["task_id"] = resolver_result.resolved_to
+
+    # ADR-0011 D4 (resolve-on-propose): a tool that declares
+    # `requires_entity=True` (e.g. `read_file`) but has no
+    # `target_entity_ref` yet gets one shot at the injected entity
+    # resolver here. Nothing upstream can have filled the ref first: the
+    # task-ref resolver block above is skipped entirely for a
+    # `requires_entity=True` tool (its `not tool_def.requires_entity`
+    # guard, §12.2 MUST-FIX 2 above), and the active-subject inheritance
+    # below carries its own `not tool_def.requires_entity` guard — so
+    # this is the only block that can set `target_entity_ref` for such a
+    # tool. `ctx.entity_resolver` is `None` in any context that hasn't
+    # wired one; the feature is then inert and Step 3's `requires_entity`
+    # gate arm refuses, which is correct fail-closed behavior, not a
+    # bug. `entity.resolved` is emitted on BOTH outcomes (ADR §4) — the
+    # `not_found` emission is what E2 depends on.
+    #
+    # ADR-0011 §12.2 MUST-FIX 1: `gate_entity_registry` starts as the
+    # packet's registry (assembled before this call, so it can be one
+    # `entity.resolved` event stale) and is overlaid with the
+    # just-emitted event on a hit, via the exact same fold logic route 3
+    # of `_fold_entity_registry` uses (`EntityRegistry.with_resolved_event`).
+    # The event is already durable in the log; this only catches the
+    # gate's view up to it — it is not a widening of trust.
+    gate_entity_registry = packet.entity_registry
+    if (
+        tool_def.requires_entity
+        and target_entity_ref is None
+        and ctx.entity_resolver is not None
+    ):
+        raw_target = arguments.get("target")
+        raw_query = raw_target if isinstance(raw_target, str) else ""
+        resolved = ctx.entity_resolver(raw_query)
+        entity_event = _emit_file_entity_resolved(
+            ctx,
+            natural_ref=raw_query,
+            resolved=resolved,
+            turn_id=scratch.turn_id,
+            source_event_id=packet.trigger_event.event_uid,
+        )
+        scratch.events.append(entity_event)
+        if resolved is not None:
+            target_entity_ref = resolved.entity_id
+            gate_entity_registry = gate_entity_registry.with_resolved_event(entity_event)
 
     # When the tool accepts run_id (verify_diff), prefer the most recent
     # run we spawned this turn. The action.proposed correlation carries
@@ -1194,7 +1320,19 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     # task_id rather than the synthetic action_id. Without this, the
     # Pre-emit Gate cannot find the verified evidence for the active
     # subject and task.verified is never emitted. (Step 12 follow-up.)
-    if target_entity_ref is None and scratch.active_subject_ref is not None:
+    #
+    # ADR-0011 D3/D4 guard: a `requires_entity=True` tool must NEVER
+    # inherit the active *task* subject as its `target_entity_ref` —
+    # doing so would hand the gate a task id for a tool whose contract
+    # is a non-task entity (e.g. a file), and the ledger arm would pass
+    # it, silently defeating both D3 (an entity-required tool needs a
+    # REAL resolved target) and D4/E2 (an unresolved target must
+    # refuse, not fall back to whatever task happens to be active).
+    if (
+        target_entity_ref is None
+        and scratch.active_subject_ref is not None
+        and not tool_def.requires_entity
+    ):
         target_entity_ref = scratch.active_subject_ref
 
     # ADR-0002 Step 12 § Verify_command plumbing (lines 875-913):
@@ -1259,9 +1397,17 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     )
     scratch.events.append(proposed_event)
 
-    # 4. Pre-action Gate
+    # 4. Pre-action Gate. Uses `gate_entity_registry`, not
+    #    `packet.entity_registry` — see the MUST-FIX 1 comment above the
+    #    resolve-on-propose block: the two are identical except when
+    #    this call just resolved a file target, in which case the
+    #    former also carries that event.
     gate = pre_action_gate(
-        action_request, policy, packet.task_ledger_snapshot, tool_def=tool_def,
+        action_request,
+        policy,
+        packet.task_ledger_snapshot,
+        tool_def=tool_def,
+        entity_registry=gate_entity_registry,
     )
     gate_outcome = gate.outcome
     gate_reasons = list(gate.reasons)
@@ -1822,7 +1968,7 @@ def _handle_worker_reported(
 
     # 4 + 5. Re-call the LLM to plan verification + continue loop.
     return _run_tool_use_loop(
-        assemble_packet(trigger, ctx.conn),
+        assemble_packet(trigger, ctx.conn, entity_bookmarks=ctx.entity_bookmarks),
         policy,
         ctx,
         scratch,
@@ -1920,7 +2066,7 @@ def _handle_result_observed(
     # Ask the LLM to compose a final response now that fresh evidence
     # is on the trace.
     return _run_tool_use_loop(
-        assemble_packet(trigger, ctx.conn),
+        assemble_packet(trigger, ctx.conn, entity_bookmarks=ctx.entity_bookmarks),
         policy,
         ctx,
         scratch,
@@ -2394,6 +2540,55 @@ def _emit_entity_resolved(
     )
 
 
+def _emit_file_entity_resolved(
+    ctx: DecideContext,
+    *,
+    natural_ref: str,
+    resolved: ResolvedEntityLike | None,
+    turn_id: str | None,
+    source_event_id: str,
+) -> Event:
+    """Emit the file-flavored ``entity.resolved`` event (ADR-0011 D4).
+
+    A separate function rather than a branch inside
+    :func:`_emit_entity_resolved`: that function's shape is load-bearing
+    for the flagship canary's task-resolution path, and a resolver
+    outcome ladder do not apply the same way here — the injected
+    resolver either fully resolves or misses outright (no ambiguous
+    multi-candidate case), so this emitter always writes
+    ``candidates=[]`` and one of exactly two outcomes. Emitted on BOTH
+    outcomes per ADR §4 — the ``not_found`` emission is what E2
+    (garbage target -> gate refuse) depends on for its audit trail.
+    """
+    if resolved is not None:
+        payload: dict[str, Any] = {
+            "entity_type": "file",
+            "natural_ref": natural_ref,
+            "resolved_to": resolved.entity_id,
+            "confidence": resolved.confidence,
+            "candidates": [],
+            "match_basis": resolved.match_basis,
+            "outcome": "resolved",
+        }
+    else:
+        payload = {
+            "entity_type": "file",
+            "natural_ref": natural_ref,
+            "resolved_to": None,
+            "confidence": "none",
+            "candidates": [],
+            "match_basis": "none",
+            "outcome": "not_found",
+        }
+    return emit_event(
+        ctx.conn,
+        type="entity.resolved",
+        payload=payload,
+        source_event_id=source_event_id,
+        correlation={"turn_id": turn_id} if turn_id else None,
+    )
+
+
 def _resolver_outcome(result: ResolverResult) -> str:
     """Map ResolverResult.confidence -> entity.resolved.outcome.
 
@@ -2564,10 +2759,12 @@ __all__ = [
     "DecideContext",
     "DecideResult",
     "EffectivePolicy",
+    "EntityResolverLike",
     "GateOutcome",
     "GateResult",
     "LifecycleLike",
     "PreEmitPermission",
+    "ResolvedEntityLike",
     "ResolverConfidence",
     "ResolverResult",
     "ResponsePlan",
