@@ -63,6 +63,15 @@ EvidenceLevel = Literal["reported", "observed", "executed", "verified", "accepte
 Day-1 Result Interpreter maps ToolDefinition.result_semantics to one of these.
 """
 
+ClaimStatus = Literal["open", "supported", "refuted", "limited", "superseded"]
+"""Claim lifecycle status (spec §8.7 enum, exactly).
+
+`accepted` is deliberately NOT a status — spec §8.7 has no such state.
+`claim.accepted` (Allen's manual acceptance) folds as accepted-LEVEL
+evidence (§8.4 ladder top) plus status `supported`; see
+`jarvis.state.projections._fold_claim_evidence`.
+"""
+
 ClaimType = Literal[
     "Report",
     "Postcondition",
@@ -133,9 +142,16 @@ class Event:
 class Claim:
     """A claim Jarvis is willing to record / act on (spec §8.1, §8.7).
 
-    Day-1 carries only the fields needed by Result Interpreter and Pre-emit
-    Gate. Status / required_for_completion / supersede chain (full §8.7
-    record) come in later steps when the projection actually exposes them.
+    `status` is the §8.7 lifecycle state, derived by the projection fold
+    from the correction events (`claim.refuted` / `claim.limited` /
+    `claim.superseded` / `claim.accepted`) — never stored outside the
+    fold, mirroring the H11 rule for task status. Consumers must treat
+    `refuted` / `superseded` claims as inactive (they no longer support
+    completion); `limited` claims stay active — a limitation qualifies,
+    it does not veto (ADR-0002 reviewer-advisory precedent).
+
+    `required_for_completion` (§8.8) remains deferred until the
+    completion-rule consumer lands.
     """
 
     claim_id: str
@@ -144,6 +160,7 @@ class Claim:
     subject_ref: str
     produced_by_event_id: str
     ts_epoch_ms: int
+    status: ClaimStatus = "open"
 
 
 @dataclass(frozen=True)
@@ -344,6 +361,7 @@ __all__ = [
     "AuthorizationLease",
     "CallerPrincipal",
     "Claim",
+    "ClaimStatus",
     "ClaimType",
     "Event",
     "Evidence",

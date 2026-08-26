@@ -381,7 +381,11 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "subject_ref",
             "produced_by_event_id",
         ),
-        optional_payload=("supersedes",),
+        # `supersedes` (forward-pointing field) removed 2026-08-25: no
+        # emitter ever wrote it and no fold read it. Supersession is the
+        # backward-pointing `claim.superseded` EVENT per spec §3.3.3 —
+        # one model, not two.
+        optional_payload=(),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -408,6 +412,61 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "artifact_ref",
             "limitations",
         ),
+        schema_version=1,
+    ),
+    # --- Claim correction events (spec §3.3.3 / §3.8 invariant 2) --------
+    # The append-only correction mechanism: a claim is never edited, its
+    # status is changed by one of these events and re-derived by the fold.
+    # Spec §6's projection table lists only refuted/accepted as fold
+    # sources — treated as a typo (§3.3.3 and §5.2 both list all four);
+    # the fold consumes all four.
+    EventTypeSchema(
+        # Emitted by the Result Interpreter when a deterministic outcome
+        # contradicts an existing claim (e.g. verify_command exit != 0
+        # refutes the worker's Report claim).
+        event_type="claim.refuted",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("claim_id", "reason"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        # Emitted when advisory signal qualifies (not vetoes) a claim —
+        # e.g. the reviewer disagrees with a verify_command pass. A
+        # `limited` claim stays active for completion (ADR-0002
+        # reviewer-advisory: no veto over task.verified).
+        event_type="claim.limited",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("claim_id", "reason"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        # Emitted when a newer claim of the same (type, subject_ref)
+        # replaces an older one — re-runs of the same task. Backward
+        # pointer lives HERE (the event), not on claim.created.
+        event_type="claim.superseded",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("claim_id", "superseded_by_claim_id"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        # Allen's manual acceptance — the §8.4 ladder top realized as an
+        # event. Registered + folded (accepted-level evidence, status →
+        # supported); NO emitter exists yet: it needs a human-input
+        # surface (e.g. `jarvis accept`) plus an amendment to ADR-0002's
+        # "verify_command-less tasks never reach verified" pin. Deferred
+        # as its own follow-up; registering now occupies the schema so
+        # the fold and readers are correction-complete.
+        event_type="claim.accepted",
+        owner_layer="L3",
+        actor="user",
+        required_payload=("claim_id",),
+        optional_payload=("note",),
         schema_version=1,
     ),
     EventTypeSchema(

@@ -197,6 +197,21 @@ def result_interpreter(  # noqa: PLR0913 — Result Interpreter signature is a p
 
     correlation = _build_correlation(action_request)
 
+    if claim_type in ("Report", "Postcondition"):
+        # Conclusion-class: a re-run's new conclusion supersedes the old
+        # one (may append a third `claim.superseded` event).
+        return _emit_conclusion_claim(
+            conn=conn,
+            source_event_id=source_event_id,
+            correlation=correlation,
+            claim_type=claim_type,
+            statement=statement,
+            subject_ref=subject_ref,
+            relation=relation,
+            level=evidence_level,
+            evidence_payload_extras=_evidence_payload_extras(raw),
+        )
+
     claim_event, evidence_event = _emit_claim_and_evidence(
         conn=conn,
         source_event_id=source_event_id,
@@ -273,6 +288,118 @@ def _emit_claim_and_evidence(  # noqa: PLR0913 — every argument is load-bearin
     )
 
     return claim_event, evidence_event
+
+
+def _latest_claim_id_for(
+    conn: sqlite3.Connection,
+    *,
+    claim_type: str,
+    subject_ref: str,
+) -> str | None:
+    """Newest ``claim.created`` claim_id of ``(claim_type, subject_ref)``.
+
+    Read-only SQL scan over the log (H1 guards writes, not reads) — the
+    interpreter holds no projection, and one indexed point-lookup per
+    conclusion-class claim is cheaper than a full fold.
+    """
+    row = conn.execute(
+        "SELECT json_extract(payload_json, '$.claim_id') FROM events "
+        "WHERE type = 'claim.created' "
+        "AND json_extract(payload_json, '$.type') = ? "
+        "AND json_extract(payload_json, '$.subject_ref') = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (claim_type, subject_ref),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return str(row[0])
+
+
+def _emit_claim_correction(  # noqa: PLR0913 — one keyword per correction-event payload field.
+    conn: sqlite3.Connection,
+    *,
+    event_type: Literal["claim.refuted", "claim.limited", "claim.superseded"],
+    claim_id: str,
+    source_event_id: str,
+    correlation: Mapping[str, str],
+    reason: str | None = None,
+    superseded_by_claim_id: str | None = None,
+) -> Event:
+    """Emit one claim-correction event (spec §3.8 invariant 2).
+
+    ``claim.accepted`` is deliberately absent from the Literal — its
+    emitter is a human-input surface that does not exist yet (see the
+    registry entry's comment).
+    """
+    payload: dict[str, Any] = {"claim_id": claim_id}
+    if reason is not None:
+        payload["reason"] = reason[:200]
+    if superseded_by_claim_id is not None:
+        payload["superseded_by_claim_id"] = superseded_by_claim_id
+    return emit_event(
+        conn,
+        type=event_type,
+        payload=payload,
+        source_event_id=source_event_id,
+        correlation=correlation,
+    )
+
+
+def _emit_conclusion_claim(  # noqa: PLR0913 — same load-bearing surface as _emit_claim_and_evidence.
+    *,
+    conn: sqlite3.Connection,
+    source_event_id: str,
+    correlation: Mapping[str, str],
+    claim_type: ClaimType,
+    statement: str,
+    subject_ref: str,
+    relation: Literal["supports", "refutes", "limits"],
+    level: EvidenceLevel,
+    evidence_payload_extras: Mapping[str, Any] | None = None,
+    source_type: str | None = None,
+    source_id: str | None = None,
+) -> tuple[Event, ...]:
+    """`_emit_claim_and_evidence` + auto-supersede for conclusion claims.
+
+    Report / Postcondition claims are conclusion-class: a re-run of the
+    same subject produces a NEW conclusion that replaces the old one, so
+    the prior claim of the same ``(type, subject_ref)`` gets a
+    ``claim.superseded`` event pointing at its replacement (spec §3.3.3
+    backward-pointing supersession). Limitation / Execution / Artifact
+    rows legitimately coexist and never auto-supersede.
+
+    Returns ``(claim_event, evidence_event)`` or
+    ``(claim_event, evidence_event, superseded_event)``.
+    """
+    prior_claim_id = _latest_claim_id_for(
+        conn,
+        claim_type=claim_type,
+        subject_ref=subject_ref,
+    )
+    claim_event, evidence_event = _emit_claim_and_evidence(
+        conn=conn,
+        source_event_id=source_event_id,
+        correlation=correlation,
+        claim_type=claim_type,
+        statement=statement,
+        subject_ref=subject_ref,
+        relation=relation,
+        level=level,
+        evidence_payload_extras=evidence_payload_extras,
+        source_type=source_type,
+        source_id=source_id,
+    )
+    if prior_claim_id is None:
+        return (claim_event, evidence_event)
+    superseded_event = _emit_claim_correction(
+        conn,
+        event_type="claim.superseded",
+        claim_id=prior_claim_id,
+        source_event_id=claim_event.event_uid,
+        correlation=correlation,
+        superseded_by_claim_id=str(claim_event.payload["claim_id"]),
+    )
+    return (claim_event, evidence_event, superseded_event)
 
 
 def emit_stash_conflict_surfacing(  # noqa: PLR0913 — every id is a load-bearing correlation handle for the (artifact, claim, evidence) triple.
@@ -600,7 +727,7 @@ def _emit_verification_rows(  # noqa: PLR0913 - verification ladder needs ctx, o
         if not diff_nonempty:
             return observation_active_claim_id, "supports", "no_op"
 
-        postcondition_claim, postcondition_evidence = _emit_claim_and_evidence(
+        postcondition_events = _emit_conclusion_claim(
             conn=ctx.conn,
             source_event_id=ctx.source_event_id("verification"),
             correlation=ctx.correlation,
@@ -618,7 +745,8 @@ def _emit_verification_rows(  # noqa: PLR0913 - verification ladder needs ctx, o
                 observation_slot=observation_slot,
             ),
         )
-        emitted.extend((postcondition_claim, postcondition_evidence))
+        emitted.extend(postcondition_events)
+        postcondition_claim = postcondition_events[0]
         return str(postcondition_claim.payload["claim_id"]), "supports", "verified"
 
     # exit_code != 0 or timeout — semantics="error". Limitation Claim at
@@ -646,6 +774,27 @@ def _emit_verification_rows(  # noqa: PLR0913 - verification ladder needs ctx, o
         ),
     )
     emitted.extend((limitation_claim, limitation_evidence))
+
+    # Spec §3.8 invariant 2: the deterministic verify outcome contradicts
+    # the worker's self-report — mark that Report claim refuted so the
+    # Pre-emit Gate / attention / status folds stop counting it. The
+    # Limitation mint above stays (it carries the ADR-0002 voice route).
+    report_claim_id = _latest_claim_id_for(
+        ctx.conn,
+        claim_type="Report",
+        subject_ref=ctx.subject_ref,
+    )
+    if report_claim_id is not None:
+        emitted.append(
+            _emit_claim_correction(
+                ctx.conn,
+                event_type="claim.refuted",
+                claim_id=report_claim_id,
+                source_event_id=str(limitation_claim.event_uid),
+                correlation=ctx.correlation,
+                reason="verify_command exit_code != 0 contradicts the worker report",
+            ),
+        )
     return str(limitation_claim.payload["claim_id"]), "limits", "neither"
 
 
@@ -720,6 +869,23 @@ def _emit_reviewer_rows(  # noqa: PLR0913 - reviewer row needs (ctx + verdict + 
             source_id="reviewer",
         )
         emitted.extend((contrast_claim, contrast_evidence))
+
+        # Spec §3.8 invariant 2: qualify (never veto) the Postcondition
+        # claim this bundle just minted — `limited` status keeps it
+        # active for completion per ADR-0002 reviewer-advisory.
+        emitted.append(
+            _emit_claim_correction(
+                ctx.conn,
+                event_type="claim.limited",
+                claim_id=active_claim_id,
+                source_event_id=str(contrast_claim.event_uid),
+                correlation=ctx.correlation,
+                reason=(
+                    "reviewer disagrees with verify_command pass: "
+                    + ",".join(reviewer_verdict.reasons[:2])
+                ),
+            ),
+        )
 
 
 def _diff_evidence_extras(observation_slot: RawResult) -> dict[str, Any]:

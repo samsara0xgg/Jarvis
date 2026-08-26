@@ -395,10 +395,13 @@ def pre_emit_gate(
             required_gate_mode="sentence",
         )
 
+    # `strongest_level_for` and `active_claims_for` are correction-aware
+    # (2026-08-25): refuted/superseded claims and non-supporting evidence
+    # no longer grant completion language.
     strongest = claim_evidence.strongest_level_for(active_subject_ref)
     has_postcondition_for_subject = any(
         claim.type == "Postcondition"
-        for claim in claim_evidence.claims_for(active_subject_ref)
+        for claim in claim_evidence.active_claims_for(active_subject_ref)
     )
 
     # Collect ALL evidence levels for the subject (not just the
@@ -531,13 +534,18 @@ def attention_policy(  # noqa: C901 — small branch tree but ruff counts each `
     if active_subject is None and packet.open_tasks:
         active_subject = packet.open_tasks[0].task_id
 
+    # Correction-aware walk (2026-08-25): skip refuted/superseded claims
+    # and require SUPPORTING evidence — a verified-level refuting row must
+    # not trigger the completion voice path.
     has_verified_postcondition = False
     if active_subject is not None:
-        for claim in claim_evidence.claims_for(active_subject):
+        for claim in claim_evidence.active_claims_for(active_subject):
             if claim.type != "Postcondition":
                 continue
             for ev in claim_evidence.evidence_for(claim.claim_id):
-                if ev.level in ("verified", "accepted"):
+                if ev.level in ("verified", "accepted") and (
+                    ev.payload.get("relation", "supports") == "supports"
+                ):
                     has_verified_postcondition = True
                     break
             if has_verified_postcondition:

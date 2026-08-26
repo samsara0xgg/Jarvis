@@ -42,8 +42,8 @@ Layer boundary (`.importlinter` + canary H13 Step 11): stdlib only plus
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Final, Literal, cast
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from jarvis.shared import Claim, ClaimType, Evidence, EvidenceLevel
 from jarvis.state.event_log import iter_events
@@ -183,21 +183,42 @@ class ClaimEvidenceProjection:
         """Return all evidence for `claim_id` in event order."""
         return self.evidence_by_claim_id.get(claim_id, ())
 
-    def strongest_level_for(self, subject_ref: str) -> EvidenceLevel | None:
-        """Strongest evidence level across all claims for `subject_ref`.
+    def active_claims_for(self, subject_ref: str) -> tuple[Claim, ...]:
+        """Claims for `subject_ref` excluding `refuted` / `superseded`.
 
-        Walks every claim whose `subject_ref` equals the argument, gathers
-        every `Evidence.level` attached to those claims, and returns the
-        maximum per the ladder `accepted > verified > executed > observed >
-        reported`. Returns None when no evidence exists.
+        The correction-aware view every completion-adjacent reader must
+        use (spec §3.8 invariant 2): a refuted or superseded claim is
+        history, not support. `limited` claims remain active — a
+        limitation qualifies, it does not veto (ADR-0002).
+        """
+        return tuple(
+            claim
+            for claim in self.claims_for(subject_ref)
+            if claim.status not in ("refuted", "superseded")
+        )
+
+    def strongest_level_for(self, subject_ref: str) -> EvidenceLevel | None:
+        """Strongest SUPPORTING evidence level for `subject_ref`.
+
+        Walks every ACTIVE claim (not refuted/superseded) for the
+        subject, gathers every supporting `Evidence.level` (payload
+        `relation` == "supports"; absent relation counts as supporting
+        for pre-relation rows), and returns the maximum per the ladder
+        `accepted > verified > executed > observed > reported`. Returns
+        None when no supporting evidence exists.
+
+        Relation-awareness fix (2026-08-25): refuting / limiting
+        evidence previously counted toward the strongest level, so a
+        verified-level REFUTING row would strengthen a claim.
 
         Used by the Pre-emit Gate (Step 9) to decide whether the draft
         response may carry completion-class language.
         """
         levels: list[EvidenceLevel] = [
             ev.level
-            for claim_id in self.claim_ids_by_subject_ref.get(subject_ref, ())
-            for ev in self.evidence_by_claim_id.get(claim_id, ())
+            for claim in self.active_claims_for(subject_ref)
+            for ev in self.evidence_by_claim_id.get(claim.claim_id, ())
+            if ev.payload.get("relation", "supports") == "supports"
         ]
         if not levels:
             return None
@@ -318,13 +339,28 @@ def _derive_status(
     # task_id AND (b) at least one Postcondition Claim with level in
     # {verified, accepted} for subject_ref == task_id. Either alone is
     # insufficient per ADR § Acceptance D1 + D3.
+    # Correction-aware (spec §3.8 invariant 2 + §8.8, 2026-08-25):
+    # refuted/superseded Postcondition claims no longer count; evidence
+    # must SUPPORT (a verified-level refuting row is a block, not a
+    # proof); and any verified/accepted-level refuting row on the claim
+    # blocks it (§8.8 "no blocking refute evidence", minimal reading).
     if record.task_verified_event_uids:
-        for claim in claim_evidence.claims_for(task_id):
+        for claim in claim_evidence.active_claims_for(task_id):
             if claim.type != "Postcondition":
                 continue
-            for ev in claim_evidence.evidence_for(claim.claim_id):
-                if ev.level in ("verified", "accepted"):
-                    return "verified_complete"
+            rows = claim_evidence.evidence_for(claim.claim_id)
+            supported = any(
+                ev.level in ("verified", "accepted")
+                and ev.payload.get("relation", "supports") == "supports"
+                for ev in rows
+            )
+            blocked = any(
+                ev.level in ("verified", "accepted")
+                and ev.payload.get("relation") == "refutes"
+                for ev in rows
+            )
+            if supported and not blocked:
+                return "verified_complete"
 
     # reported_complete — any worker.reported for an action under this task.
     if record.worker_reported_statuses:
@@ -591,14 +627,74 @@ class RecentTrace:
 # --- ClaimEvidenceProjection.from_events -------------------------------------
 
 
-def _fold_claim_evidence(events: Iterable[Event]) -> ClaimEvidenceProjection:
-    """Single-pass fold producing the Claim/Evidence projection."""
+def _fold_claim_evidence(  # noqa: C901 — one branch per §3.3.3 event family; splitting hides the fold table.
+    events: Iterable[Event],
+) -> ClaimEvidenceProjection:
+    """Single-pass fold producing the Claim/Evidence projection.
+
+    Correction mechanism (spec §3.3.3 / §3.8 invariant 2, landed
+    2026-08-25): a claim's `status` is derived here from the four
+    correction events — the claim record itself is never edited.
+    Transition rules, applied in event order:
+
+    - ``claim.created`` → ``open``.
+    - ``evidence.attached`` with ``relation="supports"`` → ``supported``
+      (only from ``open`` — corrections are not undone by later
+      supporting evidence).
+    - ``claim.refuted`` → ``refuted``.
+    - ``claim.limited`` → ``limited`` (only from ``open``/``supported``;
+      a limitation qualifies a live claim, it does not resurrect a
+      refuted or superseded one).
+    - ``claim.superseded`` → ``superseded``.
+    - ``claim.accepted`` → ``supported`` unconditionally (Allen's
+      override outranks prior corrections) AND synthesizes one
+      accepted-level supporting Evidence row (spec §8.4 ladder top —
+      "accepted" is an evidence level, not a §8.7 status).
+
+    A correction referencing an unknown ``claim_id`` is skipped — a
+    partial replay must not crash the rebuild.
+
+    Note: spec §6's projection table lists only refuted/accepted as fold
+    sources; §3.3.3 and §5.2 list all four correction events. Treated as
+    a §6 typo — all four fold here.
+    """
     claims_by_id: dict[str, Claim] = {}
     evidence_by_claim_id: dict[str, list[Evidence]] = {}
     claim_ids_by_subject_ref: dict[str, list[str]] = {}
 
+    def _transition(evt: Event) -> None:
+        claim_id = str(evt.payload["claim_id"])
+        claim = claims_by_id.get(claim_id)
+        if claim is None:
+            return
+        if evt.type == "claim.refuted":
+            claims_by_id[claim_id] = replace(claim, status="refuted")
+        elif evt.type == "claim.limited":
+            if claim.status in ("open", "supported"):
+                claims_by_id[claim_id] = replace(claim, status="limited")
+        elif evt.type == "claim.superseded":
+            claims_by_id[claim_id] = replace(claim, status="superseded")
+        elif evt.type == "claim.accepted":
+            claims_by_id[claim_id] = replace(claim, status="supported")
+            note = evt.payload.get("note")
+            payload: dict[str, Any] = {"relation": "supports", "source_type": "user"}
+            if isinstance(note, str):
+                payload["note"] = note
+            evidence_by_claim_id.setdefault(claim_id, []).append(
+                Evidence(
+                    evidence_id="E" + evt.event_uid[:8],
+                    claim_id=claim_id,
+                    level="accepted",
+                    source_event_id=evt.event_uid,
+                    payload=payload,
+                    ts_epoch_ms=evt.ts_epoch_ms,
+                ),
+            )
+
     for evt in events:
-        if evt.type == "claim.created":
+        if evt.type in ("claim.refuted", "claim.limited", "claim.superseded", "claim.accepted"):
+            _transition(evt)
+        elif evt.type == "claim.created":
             claim_id = str(evt.payload["claim_id"])
             # `type` / `level` arrive as JSON strings from the event log;
             # validation that they are members of the `ClaimType` /
@@ -640,6 +736,13 @@ def _fold_claim_evidence(events: Iterable[Event]) -> ClaimEvidenceProjection:
                     ts_epoch_ms=evt.ts_epoch_ms,
                 ),
             )
+            claim = claims_by_id.get(claim_id)
+            if (
+                claim is not None
+                and claim.status == "open"
+                and extras.get("relation", "supports") == "supports"
+            ):
+                claims_by_id[claim_id] = replace(claim, status="supported")
 
     return ClaimEvidenceProjection(
         claims_by_id=claims_by_id,
