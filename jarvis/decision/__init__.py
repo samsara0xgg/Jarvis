@@ -1520,7 +1520,12 @@ def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are 
 
     observation_slot = bundle.slots[0]
     diff_nonempty = bool(observation_slot.payload.get("diff_nonempty", False))
-    diff_text = observation_slot.payload.get("diff_text_preview")
+    # ADR-0002 § Reviewer contract: the reviewer sees the FULL diff.
+    # ``diff_text_preview`` stays as the fallback for slots minted
+    # before the full-text field existed.
+    diff_text = observation_slot.payload.get("diff_text")
+    if not isinstance(diff_text, str) or not diff_text:
+        diff_text = observation_slot.payload.get("diff_text_preview")
     task_goal = _task_goal_for_subject(ctx, target_entity_ref)
 
     reviewer_verdict: ReviewerVerdict | None = None

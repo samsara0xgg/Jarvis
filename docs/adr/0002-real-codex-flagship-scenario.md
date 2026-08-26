@@ -813,6 +813,28 @@ source per spec §8.5 rule 1; lifting its verdict to `level=verified`
 would violate both invariants. See § Evidence ladder for the full
 per-source mapping.
 
+> **Amendment (2026-08-25) — reviewer receives the full diff.** The
+> `diff_text` argument above was specified as the captured unified
+> diff, but the implementation drifted: L4's observation slot carried
+> only `diff_text_preview` (first 500 bytes) and L3 handed that to
+> `review_diff`, so every verdict was formed on the diff's head. The
+> slot now carries the full `diff_text` alongside the preview, and L3
+> reads `diff_text` first with `diff_text_preview` as the fallback for
+> slots minted before the field existed. The full text is in-memory
+> only — it never enters an event payload; `action.result_observed`
+> keeps carrying `tool_output` (path + content hash + `diff_nonempty`)
+> and the Evidence extras allowlist still admits `artifact_path` /
+> `content_hash` only. `reviewer.py`'s `_DIFF_TEXT_CHAR_CAP = 50_000`
+> now bites: a longer diff is truncated at the cap and the verdict
+> carries `diff_truncated=True`, which the Result Interpreter surfaces
+> on the reviewer's evidence row via the same `limitations` field that
+> already carries `malformed_reviewer_json`. Consequences: reviewer
+> `tokens_in` rises roughly 25x (intended — a verdict on 500 bytes was
+> not a review), and more `voice_notify` routes fire because a
+> better-informed reviewer disagrees with a passing `verify_command`
+> more often, minting the paradox Limitation Claim from § Evidence
+> ladder row 285.
+
 ### Verify_diff contract (L4 observation + post_action_check chain, per spec §3.4.11 + §3.5.7)
 
 `verify_diff`'s ToolDefinition carries a **primary** `result_semantics=

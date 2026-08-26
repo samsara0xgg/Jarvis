@@ -65,6 +65,11 @@ class ReviewerVerdict:
             uses this to attach a Limitation Claim alongside the verdict
             (the verdict itself is still emitted — we don't drop the
             signal, we just flag its reliability).
+        diff_truncated: ``True`` when the diff exceeded
+            ``_DIFF_TEXT_CHAR_CAP`` and only its head reached the
+            prompt. Surfaced by the Result Interpreter as a Limitation
+            flag on the reviewer's evidence row — the verdict was
+            formed on partial input.
     """
 
     verdict: Literal["ok", "fail"]
@@ -73,6 +78,7 @@ class ReviewerVerdict:
     tokens_out: int
     model: str
     malformed: bool = False
+    diff_truncated: bool = False
 
 
 # --- reviewer system prompt -------------------------------------------------
@@ -152,7 +158,9 @@ def review_diff(
             that produced the task).
         diff_text: Unified git diff captured after the worker ran
             (Step 8 ``diff_capture``). Truncated to
-            ``_DIFF_TEXT_CHAR_CAP`` chars before prompt assembly.
+            ``_DIFF_TEXT_CHAR_CAP`` chars before prompt assembly;
+            truncation sets ``diff_truncated`` on the verdict so the
+            Result Interpreter can attach a Limitation flag.
         llm_client: L3-owned :class:`LLMClient`. The caller (Step-12
             Result Interpreter) hands in the same client used for
             ``decide()``; the contextmanager is what isolates the call.
@@ -163,11 +171,13 @@ def review_diff(
 
     Returns:
         A :class:`ReviewerVerdict` with ``verdict``, ``reasons``,
-        ``tokens_in``, ``tokens_out``, ``model``, ``malformed``.
+        ``tokens_in``, ``tokens_out``, ``model``, ``malformed``,
+        ``diff_truncated``.
     """
     # Build a single user message — the reviewer is one-shot, no
     # streaming, no multi-turn. The fence is purely visual separation
     # inside the prompt; the LLM treats it as text.
+    diff_truncated = len(diff_text) > _DIFF_TEXT_CHAR_CAP
     diff_for_prompt = diff_text[:_DIFF_TEXT_CHAR_CAP]
     user_text = (
         "---\n"
@@ -211,6 +221,7 @@ def review_diff(
         tokens_out=chat_result.tokens_out,
         model=chat_result.model_used or model,
         malformed=malformed,
+        diff_truncated=diff_truncated,
     )
 
 

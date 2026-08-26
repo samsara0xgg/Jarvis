@@ -913,7 +913,9 @@ def _emit_reviewer_rows(  # noqa: PLR0913 - reviewer row needs (ctx + verdict + 
     relation derived from verdict (supports/refutes) when attached to a
     supporting claim; locks to ``limits`` when attached to a Limitation
     Claim. Reviewer-fail-while-verify_command-passes (F2 ladder row 285)
-    emits an extra contrast Limitation Claim.
+    emits an extra contrast Limitation Claim. Reliability caveats
+    (malformed JSON, diff truncated at the reviewer's char cap) ride on
+    the row's ``limitations`` field.
     """
     reviewer_relation: Literal["supports", "refutes", "limits"]
     if active_relation == "limits":
@@ -933,8 +935,16 @@ def _emit_reviewer_rows(  # noqa: PLR0913 - reviewer row needs (ctx + verdict + 
         "source_id": "reviewer",
         "summary": ",".join(reviewer_verdict.reasons[:3])[:200],
     }
-    if reviewer_verdict.malformed:
-        reviewer_payload["limitations"] = "malformed_reviewer_json"
+    limitation_flags = [
+        flag
+        for flag, active in (
+            ("malformed_reviewer_json", reviewer_verdict.malformed),
+            ("diff_truncated", reviewer_verdict.diff_truncated),
+        )
+        if active
+    ]
+    if limitation_flags:
+        reviewer_payload["limitations"] = ",".join(limitation_flags)
     reviewer_evidence_event = emit_event(
         ctx.conn,
         type="evidence.attached",
@@ -1043,7 +1053,8 @@ class ReviewerVerdictLike(Protocol):
     (whose import surface pulls in ``jarvis.decision.llm`` and bloats
     the interpreter's import graph). Callers pass the real
     :class:`ReviewerVerdict` dataclass — duck-typing via
-    ``verdict`` / ``reasons`` / ``malformed`` attributes.
+    ``verdict`` / ``reasons`` / ``malformed`` / ``diff_truncated``
+    attributes.
     """
 
     @property
@@ -1059,6 +1070,11 @@ class ReviewerVerdictLike(Protocol):
     @property
     def malformed(self) -> bool:
         """True iff the LLM's response was not valid JSON."""
+        ...
+
+    @property
+    def diff_truncated(self) -> bool:
+        """True iff the diff was cut at the reviewer's char cap."""
         ...
 
 

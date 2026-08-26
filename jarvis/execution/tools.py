@@ -1083,7 +1083,8 @@ def verify_diff_handler(
         plumbs this from the worker's run); fall back to
         ``runtime_paths.artifact_dir_for_run(run_id) / "diff.txt"``
         when only ``run_id`` is supplied. The slot's payload carries
-        a bounded ``diff_text_preview`` plus a ``diff_nonempty`` flag
+        the full ``diff_text`` (in-memory only, for the L3 reviewer)
+        plus a bounded ``diff_text_preview``, a ``diff_nonempty`` flag
         and the absolute ``artifact_ref``. NO ``git apply --check``:
         Codex already applied the patch in place upstream
         (``spawn_worker``).
@@ -1232,11 +1233,21 @@ def _build_observation_slot(*, action_id: str, diff_path: Path) -> RawResult:
     edit), not an artifact-missing error. The C5 cross-task isolation
     check from Day-1 is intentionally dropped (Day-2 L3 owns the
     artifact-binding from spawn_worker's run_id correlation).
+
+    The payload carries BOTH the full ``diff_text`` (in-memory only —
+    the L3 reviewer reads it per ADR-0002 § Reviewer contract) and the
+    bounded ``diff_text_preview`` retained as fallback.
     """
     diff_text = diff_path.read_text(encoding="utf-8") if diff_path.exists() else ""
     diff_nonempty = bool(diff_text.strip())
     content_hash = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
     payload: dict[str, Any] = {
+        # In-memory only: the L3 reviewer reads the full text off this
+        # slot. NEVER emitted into an event payload — the emitted
+        # ``action.result_observed`` carries ``tool_output`` (path +
+        # hash + flag), and the Evidence extras allowlist admits
+        # ``artifact_path`` / ``content_hash`` only.
+        "diff_text": diff_text,
         "diff_text_preview": diff_text[:_DIFF_PREVIEW_BYTES],
         "diff_nonempty": diff_nonempty,
         "artifact_path": str(diff_path),

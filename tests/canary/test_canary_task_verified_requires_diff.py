@@ -63,6 +63,7 @@ class _FakeVerdict:
     verdict: Literal["ok", "fail"]
     reasons: tuple[str, ...] = ("canary",)
     malformed: bool = False
+    diff_truncated: bool = False
 
 
 def _action_request() -> ActionRequest:
@@ -85,6 +86,7 @@ def _observation_slot(*, diff_nonempty: bool) -> RawResult:
         action_id="A1",
         semantics="observation",
         payload={
+            "diff_text": "" if not diff_nonempty else "diff --git a/x b/x\n",
             "diff_text_preview": "" if not diff_nonempty else "diff --git a/x b/x\n",
             "diff_nonempty": diff_nonempty,
         },
