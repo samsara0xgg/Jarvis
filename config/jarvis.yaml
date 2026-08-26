@@ -44,3 +44,11 @@ observer:
   # 被观察的 repo（绝对路径，`~` 会展开）。空列表 = 不启动观察器任务。
   # Allen 自己维护这份清单：观察器只读，不 fetch，不写外部世界。
   repos: []
+
+# ADR-0011 D7 — L4 只读工具配置（tools.py 不自己读 YAML，composition
+# root 在 build_default_registry() 时把值传进去）。
+tools:
+  obsidian:
+    # search_notes 的搜索根目录，`~` 会展开。Allen 可能改名/迁移 vault，
+    # 找不到时 search_notes 返回空结果 + 提示，不是 boot 失败。
+    vault_root: "~/Documents/Obsidian Vault"

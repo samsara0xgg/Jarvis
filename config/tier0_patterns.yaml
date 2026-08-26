@@ -17,6 +17,14 @@
   pattern: "^今天(?:几号|星期几|周几)[?？。.!！]?$"
   tool: get_current_time
   template: "今天是{spoken_date}。"
+# ADR-0011 D6: fixed-argument tool (no input) — read_clipboard takes no
+# parameters, so an exact-sentence Tier 0 row is possible (unlike
+# search_notes/read_file, which need a query/target no fixed sentence
+# can carry). One row, two phrasings via alternation.
+- id: read_clipboard
+  pattern: "^(?:剪贴板里有什么|读一下剪贴板)[?？。.!！]?$"
+  tool: read_clipboard
+  template: "剪贴板里是：{content}。"
 # Exact-sentence whitelist for open_path: each entry matches ONE literal
 # spoken sentence (tolerating only whitespace, ASCII case, claude/cloud ASR
 # spelling, and trailing punctuation). Anything else falls through to the

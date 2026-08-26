@@ -68,6 +68,7 @@ from jarvis.execution.path_resolver import (
 )
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.tools import (
+    DEFAULT_OBSIDIAN_VAULT_ROOT,
     ActionLifecycle,
     ToolRegistry,
     build_default_registry,
@@ -140,6 +141,15 @@ _DEFAULT_TRIGGER_TIMEOUT_S: float = 5.0
 # source; mirroring the shipped default here means a missing block reads
 # the same cadence the daemon would actually poll at.
 _FALLBACK_OBSERVER_POLL_INTERVAL_S: float = 60.0
+
+# Fallback ``tools.obsidian.vault_root`` (ADR-0011 D7) for a runtime
+# whose config carries no ``tools:`` block. NIT-FIX 8 (ADR-0011 §12):
+# unlike ``_FALLBACK_OBSERVER_POLL_INTERVAL_S`` above, this one does
+# NOT hold its own copy of the literal — two copies of the same vault
+# path in two layers can silently drift. `jarvis.execution.tools`
+# (L4, the layer this fallback exists for) owns
+# ``DEFAULT_OBSIDIAN_VAULT_ROOT``; `jarvis.runtime` just imports it —
+# a higher-layer-imports-lower-layer edge `.importlinter` allows.
 
 
 # --- Exceptions -------------------------------------------------------------
@@ -369,6 +379,28 @@ def _observer_repo_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
     )
 
 
+def _obsidian_vault_root(config: Mapping[str, Any]) -> Path:
+    """Return `tools.obsidian.vault_root`, `~`-expanded (ADR-0011 D7).
+
+    Threaded into `build_default_registry`'s `search_notes` closure at
+    registry-build time — L4 handlers do not load YAML themselves
+    (same reason `tier0_table` / `observer_poll_interval_s` are read
+    here and threaded down rather than re-parsed inside `jarvis.decision`
+    or `jarvis.execution`). A missing/malformed `tools:` or `obsidian:`
+    block degrades to the shipped default rather than failing boot —
+    `search_notes` on a misconfigured key still resolves quietly to
+    "vault not found" (same posture as `_observer_poll_interval_s`).
+    """
+    block = config.get("tools")
+    if isinstance(block, Mapping):
+        obsidian_block = block.get("obsidian")
+        if isinstance(obsidian_block, Mapping):
+            raw = obsidian_block.get("vault_root")
+            if isinstance(raw, str) and raw.strip():
+                return Path(raw).expanduser()
+    return DEFAULT_OBSIDIAN_VAULT_ROOT
+
+
 def bootstrap_runtime_app(
     *,
     config_path: Path | None = None,
@@ -443,8 +475,12 @@ def bootstrap_runtime_app(
     # 2. L2 event log.
     conn = open_event_log(paths.event_log)
 
-    # 3. L4 registry + lifecycle.
-    registry = build_default_registry()
+    # 3. L4 registry + lifecycle. Config is loaded here (ahead of step 4's
+    #    LLM-config read) because `search_notes` needs
+    #    `tools.obsidian.vault_root` threaded into the registry at build
+    #    time (ADR-0011 D7) — L4 handlers do not load YAML themselves.
+    full_config = _load_full_config(config_path)
+    registry = build_default_registry(obsidian_vault_root=_obsidian_vault_root(full_config))
     lifecycle = ActionLifecycle()
 
     # 3b. Spec §17 Tier 0 whitelist — sits next to jarvis.yaml so Allen
@@ -458,6 +494,9 @@ def bootstrap_runtime_app(
             tier0_table,
             allowed_tool_names=frozenset(t.name for t in regex_router_tools),
             async_tool_names=frozenset(t.name for t in regex_router_tools if t.is_async),
+            entity_required_tool_names=frozenset(
+                t.name for t in regex_router_tools if t.requires_entity
+            ),
         )
     except Tier0ConfigError as exc:
         msg = f"runtime: {tier0_path} invalid: {exc}"
@@ -492,8 +531,7 @@ def bootstrap_runtime_app(
         msg = f"runtime: config/file_targets.yaml invalid: {exc}"
         raise RuntimeBootstrapError(msg) from exc
 
-    # 4. L3 LLM client.
-    full_config = _load_full_config(config_path)
+    # 4. L3 LLM client. `full_config` was already loaded at step 3 above.
     llm_config = load_llm_config(config_path)
     llm_client = LLMClient(llm_config)
 

@@ -51,7 +51,7 @@ import math
 import re
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
@@ -102,6 +102,7 @@ from jarvis.shared import (
     RawResultBundle,
 )
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
+from jarvis.shared.text import truncate_utf8
 from jarvis.state.event_log import emit_event
 from jarvis.state.projections import make_snapshot
 
@@ -1030,6 +1031,38 @@ _TIER0_GATE_REFUSED_TEXT: Final[str] = "这条指令被 Pre-action Gate 拦下�
 # never to the voice surface.
 _TIER0_TOOL_ERROR_TEXT: Final[str] = "这条指令执行出错，未产生结果。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
 
+_TIER0_SPOKEN_PREVIEW_MAX_BYTES: Final[int] = 200
+"""MUST-FIX 2b (ADR-0011 §12): a Tier 0 template's tool-payload values
+go straight to TTS unbounded otherwise — `read_file`/`read_clipboard`'s
+own 8 KiB cap is a text-safety limit, not a speech-safety one (2761
+measured chars for a truncated CJK clipboard). Every string value
+interpolated into a Tier 0 template is capped to this short spoken
+preview before rendering; the FULL value already reached
+``action.result_observed`` via the L4 handler's own emission before
+:func:`_run_tier0_path` ever calls :func:`render_tier0_response`, so
+ADR §8 row T6 ("pbpaste content in observation") stays satisfied
+regardless of what gets spoken."""
+
+
+def _spoken_preview_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Cap every string value in ``payload`` to a short spoken preview.
+
+    Non-string values (e.g. ``truncated: bool``, ``total_bytes: int``)
+    pass through unchanged — :func:`render_tier0_response` only ever
+    interpolates them via ``str()`` and they're already short scalars.
+    """
+    preview: dict[str, Any] = {}
+    for key, value in payload.items():
+        if not isinstance(value, str):
+            preview[key] = value
+            continue
+        value_bytes = value.encode("utf-8")
+        text, undelivered, _lossy = truncate_utf8(
+            value_bytes[:_TIER0_SPOKEN_PREVIEW_MAX_BYTES], len(value_bytes),
+        )
+        preview[key] = f"{text}…[truncated {undelivered} bytes]" if undelivered > 0 else text
+    return preview
+
 
 def _run_tier0_path(
     hit: Tier0Hit,
@@ -1158,9 +1191,21 @@ def _run_tier0_path(
             primary_slot.error,
         )
         draft = _TIER0_TOOL_ERROR_TEXT
-    else:
-        draft = render_tier0_response(hit, primary_slot.payload)
-    return _finalize_response(draft, packet, ctx, scratch)
+        return _finalize_response(draft, packet, ctx, scratch)
+
+    # MUST-FIX 2 (ADR-0011 §12): `primary_slot.payload` may carry
+    # user-controlled tool output (e.g. clipboard content) — cap it to
+    # a short spoken preview before it goes to TTS (2b), and gate on
+    # `hit.response_template` (the closed, unformatted template
+    # literal) rather than on the rendered `draft` below (2a) — see
+    # `_finalize_response`'s `gate_text` parameter for the full
+    # rationale. The FULL, uncapped payload already reached
+    # `action.result_observed` via the L4 handler above; only what
+    # gets SPOKEN and what gets GATED change here.
+    draft = render_tier0_response(hit, _spoken_preview_payload(primary_slot.payload))
+    return _finalize_response(
+        draft, packet, ctx, scratch, gate_text=hit.response_template,
+    )
 
 
 def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single-pass orchestration of resolver (Day-1 + Day-2 time-window) + gate + dispatch + interpreter; splitting muddles the audit trace.
@@ -2263,6 +2308,8 @@ def _finalize_response(
     packet: SituationPacket,
     ctx: DecideContext,
     scratch: _Scratch,
+    *,
+    gate_text: str | None = None,
 ) -> DecideResult:
     """Apply the Pre-emit Gate to a draft, emit gate + turn.ended, return.
 
@@ -2281,6 +2328,24 @@ def _finalize_response(
       fall back to a fixed :func:`_hard_refusal_plan` that is
       scrub-safe by construction (no extra gate event — it is a
       deterministic bailout, not a gate verdict).
+
+    ``gate_text`` (ADR-0011 §12, MUST-FIX 2a): the Tier 0 path
+    (`_run_tier0_path`) renders `draft_text` by interpolating TOOL
+    OUTPUT — possibly user-controlled, e.g. clipboard content — into
+    an Allen-authored template. That interpolated text is quoted data
+    Jarvis is reading back on Allen's behalf, not a claim Jarvis is
+    making, so a clipboard that happens to contain "已完成" must not
+    read as Jarvis inflating completion. When the caller supplies
+    ``gate_text`` (the closed, unformatted template literal —
+    `Tier0Hit.response_template`), attempt 0 gates THAT instead of
+    `draft_text`; `draft_text` — the fully rendered response, content
+    and all — still ships to the user unchanged below. The LLM path
+    never sets `gate_text`: there the whole draft IS Jarvis's own
+    words, so it keeps gating itself exactly as before. Retry attempts
+    1/2 (unreachable today — no shipped Tier 0 template contains
+    completion language) still gate `draft_text` if a future
+    misconfigured template ever gets this far; that is the intended
+    defense-in-depth, not an oversight.
 
     ``turn.ended.source_event_id`` references the LAST gate event in
     the chain regardless of which branch was taken.
@@ -2305,8 +2370,23 @@ def _finalize_response(
     # claim/evidence rows.
     projections = make_snapshot(ctx.conn)
 
-    # Attempt 0 — initial verdict on the raw LLM draft.
-    plan = pre_emit_gate(draft_text, projections.claim_evidence, active_subject)
+    # Attempt 0 — initial verdict on the raw LLM draft (or, on the
+    # Tier 0 path, on the closed template literal — see `gate_text` in
+    # the docstring above).
+    text_to_gate = draft_text if gate_text is None else gate_text
+    plan = pre_emit_gate(text_to_gate, projections.claim_evidence, active_subject)
+    if gate_text is not None:
+        # `pre_emit_gate` echoes back whatever text it gated. Ship the
+        # fully rendered `draft_text` instead of the template literal,
+        # and re-hash so `response_hash` matches what the surface
+        # actually renders — the gate reasoned about `gate_text`, but
+        # `draft_text` is what's on record from here on (including on
+        # the `gate.evaluated` event emitted just below).
+        plan = replace(
+            plan,
+            text=draft_text,
+            response_hash=hashlib.sha256(draft_text.encode("utf-8")).hexdigest(),
+        )
     last_gate_event = _emit_pre_emit_gate_event(ctx, scratch, plan=plan, attempt=0)
 
     # The ``active_subject is not None`` clause is redundant at runtime —

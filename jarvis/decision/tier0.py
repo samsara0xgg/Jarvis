@@ -159,6 +159,7 @@ def validate_tier0_table(
     *,
     allowed_tool_names: frozenset[str],
     async_tool_names: frozenset[str],
+    entity_required_tool_names: frozenset[str] = frozenset(),
 ) -> None:
     """Cross-check the table against the registry's regex_router surface.
 
@@ -167,6 +168,16 @@ def validate_tier0_table(
     composition root; a pattern naming any other tool fails fast here
     (defense layer 0 — the Pre-action Gate would refuse it per-call
     anyway).
+
+    ``entity_required_tool_names`` (ADR-0011 §12.1 item M) is the
+    subset of ``allowed_tool_names`` whose ``requires_entity`` is
+    True. The Tier 0 dispatch path hardcodes
+    ``target_entity_ref=None`` (`jarvis.decision.__init__` — Tier 0
+    never runs resolve-on-propose), so a row naming such a tool would
+    boot clean and then be refused by the Pre-action Gate's D3 arm at
+    EVERY dispatch. Defaulted to an empty frozenset so pre-existing
+    callers (and hand-built test fixtures) keep compiling; an empty
+    set simply means no row can ever trip this check.
     """
     for pattern in table:
         if pattern.tool_name not in allowed_tool_names:
@@ -180,6 +191,14 @@ def validate_tier0_table(
             msg = (
                 f"tier0 patterns: {pattern.pattern_id!r} targets async tool "
                 f"{pattern.tool_name!r}; Tier 0 dispatches sync tools only"
+            )
+            raise Tier0ConfigError(msg)
+        if pattern.tool_name in entity_required_tool_names:
+            msg = (
+                f"tier0 patterns: {pattern.pattern_id!r} targets tool "
+                f"{pattern.tool_name!r}, which declares requires_entity=True; "
+                "Tier 0 always dispatches with target_entity_ref=None and "
+                "would be refused by the Pre-action Gate at every call"
             )
             raise Tier0ConfigError(msg)
 

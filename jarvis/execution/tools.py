@@ -113,6 +113,7 @@ from jarvis.shared import (
     ResultSemantics,
     RiskLevel,
 )
+from jarvis.shared.text import truncate_utf8
 from jarvis.state.event_log import emit_event, iter_events
 from jarvis.state.projections import make_snapshot
 
@@ -1935,46 +1936,6 @@ def _build_open_argv(path: Path, app: Literal["default", "vscode"]) -> tuple[lis
     return ["open", str(path)], "default"
 
 
-def _open_path_error(  # noqa: PLR0913 — all kwargs are the shared sync-handler failure shape (conn/lifecycle/action_id/running_event_uid/code/message); splitting them into a bundle defeats the point of a shared helper.
-    *,
-    conn: sqlite3.Connection,
-    lifecycle: ActionLifecycle,
-    action_id: str,
-    running_event_uid: str,
-    code: str,
-    message: str,
-) -> RawResult:
-    """Shared `open_path` failure path: `action.result_observed(error)` + terminal-transition.
-
-    Mirrors `list_tasks_handler`'s `invalid_argument` failure shape — every
-    exit from a sync L4 handler, success or failure, emits exactly one
-    `action.result_observed` and transitions the lifecycle terminal before
-    returning (the invariant `_get_running_event_uid` documents at its call
-    sites).
-    """
-    tool_output_str = tool_error(message, code=code)
-    emit_event(
-        conn,
-        type="action.result_observed",
-        payload={
-            "action_id": action_id,
-            "semantics": "error",
-            "tool_output": tool_output_str,
-            "error": code,
-        },
-        source_event_id=running_event_uid,
-        correlation={"action_id": action_id},
-    )
-    lifecycle.transition(action_id, "result_observed")
-    return RawResult(
-        action_id=action_id,
-        semantics="error",
-        payload={"error": code},
-        tool_output=tool_output_str,
-        error=code,
-    )
-
-
 def open_path_handler(
     action_request: ActionRequest,
     conn: sqlite3.Connection,
@@ -2022,7 +1983,7 @@ def open_path_handler(
     try:
         args = _parse_open_path_args(action_request.arguments)
     except (KeyError, TypeError) as exc:
-        return _open_path_error(
+        return _emit_tool_error(
             conn=conn,
             lifecycle=lifecycle,
             action_id=action_request.action_id,
@@ -2033,7 +1994,7 @@ def open_path_handler(
 
     target = resolve_path_target(args.query, args.target_kind, conn)
     if target is None:
-        return _open_path_error(
+        return _emit_tool_error(
             conn=conn,
             lifecycle=lifecycle,
             action_id=action_request.action_id,
@@ -2076,7 +2037,7 @@ def open_path_handler(
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return _open_path_error(
+        return _emit_tool_error(
             conn=conn,
             lifecycle=lifecycle,
             action_id=action_request.action_id,
@@ -2087,7 +2048,7 @@ def open_path_handler(
 
     if proc.returncode != 0:
         stderr_tail = (proc.stderr or "").strip()[-_OUTPUT_TAIL_BYTES:]
-        return _open_path_error(
+        return _emit_tool_error(
             conn=conn,
             lifecycle=lifecycle,
             action_id=action_request.action_id,
@@ -2123,6 +2084,488 @@ def open_path_handler(
         payload=payload,
         tool_output=tool_output_str,
         error=None,
+    )
+
+
+# --- ADR-0011 D5 read-only tools (search_notes / read_file / read_clipboard) -
+#
+# All three are L0, sync, `result_semantics="observation"`. Two shared
+# helpers below cover the "emit exactly one action.result_observed +
+# terminal-transition lifecycle" contract every sync handler in this
+# module follows (see `list_tasks_handler` for the observation shape).
+# `_emit_tool_error` also backs `open_path_handler`'s failure exits —
+# its body used to be duplicated there verbatim as `_open_path_error`;
+# that duplicate is gone, `open_path_handler` calls this one directly.
+
+
+def _emit_tool_observation(
+    *,
+    conn: sqlite3.Connection,
+    lifecycle: ActionLifecycle,
+    action_id: str,
+    running_event_uid: str,
+    payload: Mapping[str, Any],
+) -> RawResult:
+    """Shared success exit for the three ADR-0011 D5 tools."""
+    tool_output_str = tool_result(payload)
+    emit_event(
+        conn,
+        type="action.result_observed",
+        payload={
+            "action_id": action_id,
+            "semantics": "observation",
+            "tool_output": tool_output_str,
+        },
+        source_event_id=running_event_uid,
+        correlation={"action_id": action_id},
+    )
+    lifecycle.transition(action_id, "result_observed")
+    return RawResult(
+        action_id=action_id,
+        semantics="observation",
+        payload=payload,
+        tool_output=tool_output_str,
+        error=None,
+    )
+
+
+def _emit_tool_error(  # noqa: PLR0913 — all kwargs are the shared sync-handler failure shape (conn/lifecycle/action_id/running_event_uid/code/message); splitting them into a bundle defeats the point of a shared helper.
+    *,
+    conn: sqlite3.Connection,
+    lifecycle: ActionLifecycle,
+    action_id: str,
+    running_event_uid: str,
+    code: str,
+    message: str,
+) -> RawResult:
+    """Shared error exit: `action.result_observed(error)` + terminal-transition.
+
+    Used by the three ADR-0011 D5 tools AND `open_path_handler` — same
+    "emit exactly one action.result_observed, transition the lifecycle
+    terminal, on every exit path" contract every sync L4 handler in
+    this module follows (the invariant `_get_running_event_uid`
+    documents at its call sites).
+    """
+    tool_output_str = tool_error(message, code=code)
+    emit_event(
+        conn,
+        type="action.result_observed",
+        payload={
+            "action_id": action_id,
+            "semantics": "error",
+            "tool_output": tool_output_str,
+            "error": code,
+        },
+        source_event_id=running_event_uid,
+        correlation={"action_id": action_id},
+    )
+    lifecycle.transition(action_id, "result_observed")
+    return RawResult(
+        action_id=action_id,
+        semantics="error",
+        payload={"error": code},
+        tool_output=tool_output_str,
+        error=code,
+    )
+
+
+# --- search_notes ------------------------------------------------------------
+
+_SEARCH_NOTES_DEFAULT_MAX_RESULTS: Final[int] = 5
+_SEARCH_NOTES_MAX_RESULTS_CAP: Final[int] = 10
+
+_SEARCH_NOTES_LINE_MAX_BYTES: Final[int] = 512
+"""Per-matched-line cap (MUST-FIX 1, ADR-0011 §12). A vault note can
+contain one pathological line (e.g. a pasted JSON blob, measured at
+2,000,000+ chars in the wild) many times larger than any sane search
+snippet; without this cap that ONE line would consume the entire
+``_SEARCH_NOTES_TOTAL_MAX_BYTES`` budget below and crowd out every
+other match. Codepoint-safe cut via `jarvis.shared.text.truncate_utf8`."""
+
+_SEARCH_NOTES_TOTAL_MAX_BYTES: Final[int] = 8192
+"""Aggregate cap across all returned rows — same 8 KiB order as the
+`read_file`/`read_clipboard` sibling caps. The per-line cap above
+already bounds the worst case to roughly
+``_SEARCH_NOTES_MAX_RESULTS_CAP * _SEARCH_NOTES_LINE_MAX_BYTES`` (10 *
+512 = 5120 today), but this is the hard ceiling that still holds if
+either of those two numbers changes independently later."""
+
+DEFAULT_OBSIDIAN_VAULT_ROOT: Final[Path] = Path("~/Documents/Obsidian Vault").expanduser()
+"""Fallback vault root when the composition root passes none in (e.g. the
+two existing integration tests that call ``build_default_registry()``
+with no arguments). Production always overrides this with
+``tools.obsidian.vault_root`` (ADR-0011 D7, `jarvis.runtime`).
+
+NIT-FIX 8, ADR-0011 §12: single source of truth — `jarvis.runtime`
+imports this constant (an L4 -> higher-layer import direction
+`.importlinter` allows) rather than holding its own copy of the
+literal, so the two layers can't drift apart."""
+
+_SEARCH_NOTES_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": (
+                "Case-insensitive search text. Whitespace-separated tokens "
+                "must ALL appear in a line for it to match."
+            ),
+        },
+        "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of matching lines to return. Default 5, capped at 10.",
+        },
+    },
+    "required": ["query"],
+}
+
+
+def _resolved_within(path: Path, root: Path) -> bool:
+    """Containment check: is ``path`` (resolved) under ``root`` (already resolved)?
+
+    Mirrors `jarvis.execution.path_resolver._under_home` — resolve
+    first (following symlinks), then test — so a symlinked ``*.md``
+    that points outside ``root`` is caught even though 3.12's
+    ``rglob`` already refuses to descend into a symlinked *directory*
+    on its own (SHOULD-FIX 6, ADR-0011 §12).
+    """
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return resolved == root or root in resolved.parents
+
+
+def _cap_search_notes_total_bytes(rows: list[str], max_bytes: int) -> list[str]:
+    """Enforce the aggregate output cap across matched rows (MUST-FIX 1).
+
+    The per-line cap already bounds any single row; this guards the
+    SUM. Walks ``rows`` in order, keeping whole rows until the next
+    one would exceed ``max_bytes``, then truncates that ONE row
+    (codepoint-safe, same marker convention as the per-line cap) and
+    drops everything after it.
+    """
+    capped: list[str] = []
+    used = 0
+    for row in rows:
+        row_bytes = row.encode("utf-8")
+        if used + len(row_bytes) <= max_bytes:
+            capped.append(row)
+            used += len(row_bytes)
+            continue
+        remaining = max_bytes - used
+        if remaining > 0:
+            text, undelivered, _lossy = truncate_utf8(row_bytes[:remaining], len(row_bytes))
+            capped.append(f"{text}…[truncated {undelivered} bytes]")
+        break
+    return capped
+
+
+def _make_search_notes_handler(vault_root: Path) -> ToolHandler:  # noqa: C901 — one linear validate/search/rank pass; splitting scatters the fail-fast checks from the loop they guard.
+    """Bind ``vault_root`` into a ``search_notes`` handler closure (ADR-0011 D7).
+
+    ``search_notes`` is the only ADR-0011 D5 tool that needs a config
+    value the ``ActionRequest`` / ``RuntimePathsLike`` surface doesn't
+    already carry. Per the ADR-0011 build brief, L4 handlers do not
+    load YAML themselves — the composition root
+    (``jarvis.runtime.bootstrap_runtime_app``) reads
+    ``tools.obsidian.vault_root`` once at registry-build time and
+    closes over it here, the same seam a test uses to point the tool
+    at a ``tmp_path`` fixture instead of Allen's real vault.
+
+    No index (spec: vault is small) — every call walks the tree fresh.
+    A missing vault root is an empty result with a note, not an error
+    (Allen may rename the vault). A matched ``*.md`` that resolves
+    outside ``vault_root`` (a symlink escape) is silently skipped
+    (SHOULD-FIX 6). A note whose bytes are not valid UTF-8 is skipped
+    from line-matching and its path collected under
+    ``payload["non_utf8_files"]`` instead of narrating mojibake
+    (SHOULD-FIX 7).
+    """
+
+    def _handler(  # noqa: C901, PLR0912 — one linear validate/search/rank pass (containment + encoding + per-line + total-cap guards all live in the loop they protect); splitting them out scatters the fail-fast checks from the data they guard, same rationale as the outer function's own noqa.
+        action_request: ActionRequest,
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
+        lifecycle: ActionLifecycle,
+    ) -> RawResult:
+        running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+        action_id = action_request.action_id
+
+        query = action_request.arguments.get("query")
+        if not isinstance(query, str) or not query.strip():
+            return _emit_tool_error(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_id,
+                running_event_uid=running_event_uid,
+                code="invalid_argument",
+                message=f"search_notes: query must be a non-empty string (got {query!r})",
+            )
+
+        max_results = _SEARCH_NOTES_DEFAULT_MAX_RESULTS
+        max_results_arg = action_request.arguments.get("max_results")
+        if isinstance(max_results_arg, (int, float)) and not isinstance(max_results_arg, bool):
+            max_results = int(max_results_arg)
+        max_results = max(1, min(max_results, _SEARCH_NOTES_MAX_RESULTS_CAP))
+
+        if not vault_root.is_dir():
+            payload: dict[str, Any] = {
+                "results": [],
+                "note": f"vault root not found: {vault_root} (Allen may have renamed it)",
+            }
+            return _emit_tool_observation(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_id,
+                running_event_uid=running_event_uid,
+                payload=payload,
+            )
+
+        tokens = [tok.lower() for tok in query.split() if tok]
+        results: list[str] = []
+        non_utf8_files: list[str] = []
+        vault_root_resolved = vault_root.resolve()
+        for md_path in sorted(vault_root.rglob("*.md")):
+            if len(results) >= max_results:
+                break
+            if not _resolved_within(md_path, vault_root_resolved):
+                continue  # SHOULD-FIX 6: symlinked *.md escaping the vault.
+            try:
+                raw = md_path.read_bytes()
+            except OSError:
+                continue
+            text, _undelivered, lossy = truncate_utf8(raw, len(raw))
+            if lossy:
+                # SHOULD-FIX 7: don't narrate mojibake as real content —
+                # flag the file instead of returning garbled lines.
+                non_utf8_files.append(str(md_path))
+                continue
+            for line in text.splitlines():
+                if len(results) >= max_results:
+                    break
+                if not all(tok in line.lower() for tok in tokens):
+                    continue
+                line_bytes = line.strip().encode("utf-8")
+                line_text, line_undelivered, _lossy = truncate_utf8(
+                    line_bytes[:_SEARCH_NOTES_LINE_MAX_BYTES], len(line_bytes),
+                )
+                if line_undelivered > 0:
+                    line_text += f"…[truncated {line_undelivered} bytes]"
+                results.append(f"{md_path} — {line_text}")
+
+        results = _cap_search_notes_total_bytes(results, _SEARCH_NOTES_TOTAL_MAX_BYTES)
+        payload = {"results": results}
+        if non_utf8_files:
+            payload["non_utf8_files"] = non_utf8_files
+        return _emit_tool_observation(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_id,
+            running_event_uid=running_event_uid,
+            payload=payload,
+        )
+
+    return _handler
+
+
+# --- read_file -----------------------------------------------------------------
+
+_READ_FILE_MAX_BYTES: Final[int] = 8192
+"""Output cap (8 KiB), ADR-0011 D5. A per-tool module constant, not a
+schema field (§11 defer table: ``max_output_bytes`` deferred)."""
+
+_READ_FILE_ENTITY_PREFIX: Final[str] = "file:"
+
+_READ_FILE_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "target": {
+            "type": "string",
+            "description": (
+                "Spoken name or description of the file to read. Resolved to a "
+                "canonical path before reading (never used as a raw path)."
+            ),
+        },
+    },
+    "required": ["target"],
+}
+
+
+def read_file_handler(
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
+    lifecycle: ActionLifecycle,
+) -> RawResult:
+    """L0 `read_file` — the first `requires_entity=True` tool (ADR-0011 D5).
+
+    Reads the RESOLVED canonical path off
+    `action_request.target_entity_ref` — NEVER `arguments["target"]`,
+    the raw free text the LLM supplied. That is the entire point of
+    D4's resolve-on-propose contract and invariant I2 (no fabricated
+    entity IDs): by the time this handler runs, the Pre-action Gate has
+    already required a trusted ``"file:<abs-path>"`` ref, so the raw
+    argument is never even read here.
+
+    `target_entity_ref is None` cannot pass the gate for a
+    `requires_entity=True` tool (ADR-0011 D3), but this handler checks
+    it anyway — a handler must be safe standing alone, not merely
+    behind a gate that happens to always run first in production.
+
+    Text files only: a NUL byte anywhere in the `_READ_FILE_MAX_BYTES`
+    prefix marks the file binary (same heuristic `git` uses) and the
+    handler refuses rather than returning decoded garbage. Output is
+    capped at 8 KiB, cut at the last valid UTF-8 codepoint boundary
+    (never mid-character), with an explicit ``…[truncated N bytes]``
+    marker appended when the file is larger. A file whose bytes are
+    not valid UTF-8 at all (e.g. GBK) still returns an observation —
+    best-effort lossy-decoded — but with `payload["encoding"] ==
+    "lossy"` so the caller knows not to trust it as real text
+    (SHOULD-FIX 7, ADR-0011 §12).
+    """
+    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+    action_id = action_request.action_id
+
+    ref = action_request.target_entity_ref
+    if ref is None or not ref.startswith(_READ_FILE_ENTITY_PREFIX):
+        return _emit_tool_error(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_id,
+            running_event_uid=running_event_uid,
+            code="no_resolved_target",
+            message="read_file: no resolved target_entity_ref (the gate should have refused this)",
+        )
+
+    path = Path(ref[len(_READ_FILE_ENTITY_PREFIX) :])
+    if not path.is_file():
+        return _emit_tool_error(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_id,
+            running_event_uid=running_event_uid,
+            code="file_not_found",
+            message=f"read_file: {path} does not exist or is not a regular file",
+        )
+
+    try:
+        total_bytes = path.stat().st_size
+        with path.open("rb") as fh:
+            prefix = fh.read(_READ_FILE_MAX_BYTES)
+    except OSError as exc:
+        return _emit_tool_error(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_id,
+            running_event_uid=running_event_uid,
+            code="read_failed",
+            message=f"read_file: {exc}",
+        )
+
+    if b"\x00" in prefix:
+        return _emit_tool_error(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_id,
+            running_event_uid=running_event_uid,
+            code="binary_file",
+            message=f"read_file: {path} looks binary, refusing to read it as text",
+        )
+
+    text, undelivered_bytes, lossy = truncate_utf8(prefix, total_bytes)
+    if undelivered_bytes > 0:
+        text += f"…[truncated {undelivered_bytes} bytes]"
+
+    payload: dict[str, Any] = {
+        "path": str(path),
+        "content": text,
+        "truncated": undelivered_bytes > 0,
+        "total_bytes": total_bytes,
+    }
+    if lossy:
+        # SHOULD-FIX 7: `path` is not valid UTF-8 (e.g. GBK) — tell the
+        # caller explicitly rather than shipping a clean-looking
+        # observation full of mojibake the LLM would narrate as real
+        # content.
+        payload["encoding"] = "lossy"
+    return _emit_tool_observation(
+        conn=conn,
+        lifecycle=lifecycle,
+        action_id=action_id,
+        running_event_uid=running_event_uid,
+        payload=payload,
+    )
+
+
+# --- read_clipboard --------------------------------------------------------------
+
+_CLIPBOARD_MAX_BYTES: Final[int] = 8192
+_CLIPBOARD_TIMEOUT_S: Final[float] = 5.0
+
+
+def read_clipboard_handler(
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
+    lifecycle: ActionLifecycle,
+) -> RawResult:
+    """L0 `read_clipboard` — `pbpaste`, capped at 8 KiB (ADR-0011 D5).
+
+    Zero arguments. An empty clipboard is a VALID empty observation,
+    not an error — Allen's clipboard being empty is itself an answer,
+    not a tool failure.
+    """
+    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+    action_id = action_request.action_id
+
+    try:
+        proc = subprocess.run(
+            ["pbpaste"],  # noqa: S607 — `pbpaste` resolved via PATH, matches mdfind/open precedent.
+            timeout=_CLIPBOARD_TIMEOUT_S,
+            capture_output=True,
+            text=False,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _emit_tool_error(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_id,
+            running_event_uid=running_event_uid,
+            code="clipboard_read_failed",
+            message=f"read_clipboard: pbpaste failed to run: {exc}",
+        )
+
+    if proc.returncode != 0:
+        stderr_tail = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+        return _emit_tool_error(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_id,
+            running_event_uid=running_event_uid,
+            code="clipboard_read_failed",
+            message=f"read_clipboard: pbpaste exited {proc.returncode}: {stderr_tail}",
+        )
+
+    raw = proc.stdout or b""
+    total_bytes = len(raw)
+    text, undelivered_bytes, _lossy = truncate_utf8(raw[:_CLIPBOARD_MAX_BYTES], total_bytes)
+    if undelivered_bytes > 0:
+        text += f"…[truncated {undelivered_bytes} bytes]"
+
+    payload: dict[str, Any] = {
+        "content": text,
+        "truncated": undelivered_bytes > 0,
+        "total_bytes": total_bytes,
+    }
+    return _emit_tool_observation(
+        conn=conn,
+        lifecycle=lifecycle,
+        action_id=action_id,
+        running_event_uid=running_event_uid,
+        payload=payload,
     )
 
 
@@ -2576,12 +3019,24 @@ _OPEN_PATH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
 }
 
 
-def build_default_registry() -> ToolRegistry:
-    """Assemble the Day-1 ToolRegistry (`spawn_worker` + `verify_diff` + `create_task`).
+def build_default_registry(*, obsidian_vault_root: Path | None = None) -> ToolRegistry:
+    """Assemble the default ToolRegistry (Day-1 six tools + ADR-0011 D5 three).
 
     The composition root (`jarvis.runtime`, Step 10) calls this once at
     startup and passes the registry to L3 + L4.
+
+    Args:
+        obsidian_vault_root: Vault root for `search_notes` (ADR-0011
+            D7, `tools.obsidian.vault_root`). `None` (the default, and
+            what the two existing integration tests pass implicitly)
+            falls back to :data:`DEFAULT_OBSIDIAN_VAULT_ROOT` — the
+            composition root always supplies the real configured
+            value; a hand-built test registry can point this at a
+            `tmp_path` fixture instead.
     """
+    vault_root = (
+        obsidian_vault_root if obsidian_vault_root is not None else DEFAULT_OBSIDIAN_VAULT_ROOT
+    )
     registry = ToolRegistry()
     registry.register(
         ToolDefinition(
@@ -2694,10 +3149,70 @@ def build_default_registry() -> ToolRegistry:
             requires_confirmation=False,
         )
     )
+    registry.register(
+        ToolDefinition(
+            name="search_notes",
+            description=(
+                "Case-insensitive full-text search over Allen's Obsidian vault "
+                "(*.md files only). Returns matching lines with their source "
+                "file. No index — brute-force scan, fine for a small vault."
+            ),
+            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            risk_level="L0",
+            result_semantics="observation",
+            is_async=False,
+            input_schema=_SEARCH_NOTES_INPUT_SCHEMA,
+            handler=_make_search_notes_handler(vault_root),
+            domain="obsidian",
+            read_only=True,
+            requires_entity=False,
+            requires_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="read_file",
+            description=(
+                "Read a text file's contents by spoken name or description. "
+                "The target is resolved to a canonical path before reading — "
+                "never pass a raw filesystem path. Binary files are rejected; "
+                "output is capped at 8 KiB."
+            ),
+            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            risk_level="L0",
+            result_semantics="observation",
+            is_async=False,
+            input_schema=_READ_FILE_INPUT_SCHEMA,
+            handler=read_file_handler,
+            domain="file_read",
+            read_only=True,
+            requires_entity=True,
+            requires_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="read_clipboard",
+            description="Read the current macOS clipboard's text contents. No arguments.",
+            allowed_callers=frozenset(
+                {CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM},
+            ),
+            risk_level="L0",
+            result_semantics="observation",
+            is_async=False,
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=read_clipboard_handler,
+            domain="clipboard",
+            read_only=True,
+            requires_entity=False,
+            requires_confirmation=False,
+        )
+    )
     return registry
 
 
 __all__ = [
+    "DEFAULT_OBSIDIAN_VAULT_ROOT",
     "VERIFY_DIFF_TOOL_DEF",
     "ActionLifecycle",
     "CallerNotAllowedError",
@@ -2719,6 +3234,8 @@ __all__ = [
     "list_tasks_handler",
     "live_action_ids",
     "open_path_handler",
+    "read_clipboard_handler",
+    "read_file_handler",
     "register_live_action",
     "release_turn_actions",
     "spawn_worker_handler",
