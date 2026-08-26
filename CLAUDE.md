@@ -7,6 +7,23 @@
 - **No Co-Authored-By** in commit messages.
 - Don't violate layer boundaries — `lint-imports` enforces them.
 
+## Testing
+
+- No new unit tests; verify each task with its acceptance command.
+  Branchy logic gets data-driven checks (input → expected tables).
+  Canaries and regression pins stay.
+- New capability → live test before calling it done (real LLM, real run,
+  result matches expectation). Small fixes / refactors skip this —
+  judge by risk.
+
+## Models
+
+- Default: `opus` — orchestrates, writes task cards, reviews.
+- `fable` — design, ADRs, major changes.
+- `sonnet` — turning settled designs / ADRs into code.
+- `haiku` — lookups, mechanical sweeps.
+- Unlisted cases: pick by judgment; escalate when stuck.
+
 ## Git
 
 - Conventional Commits: `type(scope): English description`. Types: `feat fix refactor test docs chore perf data`.
