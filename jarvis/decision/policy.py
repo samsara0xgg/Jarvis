@@ -203,7 +203,17 @@ def effective_policy(
     """
     if allowed_tool_surface is None:
         allowed_tool_surface = {
-            CallerPrincipal.JARVIS_LLM: frozenset({"spawn_worker", "verify_diff"}),
+            # NOTE (ADR-0012 D1): "write_file" is added here so a caller
+            # that takes the static fallback still reaches
+            # `confirm_required` instead of dying at check 1
+            # (`caller_allowed`). The seven ADR-0011 tools
+            # (search_notes / read_file / read_clipboard / web_search /
+            # web_fetch / open_url / screen_look) are ALSO absent from
+            # this literal and were already stale before this change —
+            # out of scope here; production never hits this branch (see
+            # docstring: `decide()` always passes an explicit,
+            # registry-derived surface via `_allowed_tool_surface`).
+            CallerPrincipal.JARVIS_LLM: frozenset({"spawn_worker", "verify_diff", "write_file"}),
             CallerPrincipal.OBSERVER: frozenset({"verify_diff"}),
             CallerPrincipal.REGEX_ROUTER: frozenset(),
             CallerPrincipal.WORKER_AGENT: frozenset(),

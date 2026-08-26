@@ -614,6 +614,98 @@ def resolve(
     return ResolvedTarget(path=best, display_name=best.name, source="search")
 
 
+# --- write-target resolution (ADR-0012 D1) -----------------------------------
+
+
+def _bookmark_relative_target(query: str, config: FileTargetsConfig) -> Path | None:
+    """Resolve `"<bookmark alias>/<relative path>"` to an absolute `Path`.
+
+    Exact-alias-match shorthand for a WRITE target, e.g.
+    `"jarvis/scratch/shopping.txt"` with a `jarvis` bookmark. Both
+    sides are normalized the same way `_match_bookmark` normalizes
+    them, but this checks for equality only — no substring / fuzzy
+    matching, unlike `resolve()`'s existing-file search. Returns
+    `None` when `query` has no `/`, the head does not exactly match
+    any bookmark, or the tail is empty.
+    """
+    head, sep, rest = query.partition("/")
+    if not sep or not rest:
+        return None
+    normalized_head = _normalize_query(head)
+    if not normalized_head:
+        return None
+    for alias, path in config.bookmarks.items():
+        if _normalize_query(alias) == normalized_head:
+            return path / rest
+    return None
+
+
+def _parent_in_scope(parent: Path, config: FileTargetsConfig) -> bool:
+    """True iff `parent` equals, or is nested under, a configured scope dir.
+
+    "Configured scope" is `search_roots` plus every bookmark target
+    directory (ADR-0012 D1: "a non-existent target resolves iff its
+    parent directory resolves within `search_roots`/bookmarks scope").
+    """
+    try:
+        resolved_parent = parent.resolve()
+    except OSError:
+        return False
+    for root in (*config.search_roots, *config.bookmarks.values()):
+        try:
+            resolved_root = root.expanduser().resolve()
+        except OSError:
+            continue
+        if resolved_parent == resolved_root or resolved_root in resolved_parent.parents:
+            return True
+    return False
+
+
+def resolve_write_target(query: str, conn: sqlite3.Connection) -> ResolvedTarget | None:
+    """Resolve a `write_file` target (ADR-0012 D1 — resolve-on-propose extended for write targets).
+
+    An EXISTING file resolves exactly as :func:`resolve` already does
+    (bookmark/search matching over real candidates on disk) — called
+    first, unchanged. A NON-existent target resolves only when a
+    prospective absolute path can be derived from `query` AND that
+    path's parent directory is itself in scope (see
+    :func:`_parent_in_scope`); the prospective path then becomes the
+    canonical target (this function never creates it — the handler
+    does the actual write). Two shapes produce a prospective path:
+
+    1. `"<bookmark alias>/<relative path>"` — exact alias match
+       (:func:`_bookmark_relative_target`).
+    2. An absolute (or `~`-relative) path.
+
+    A bare natural-language phrase matching neither shape (e.g.
+    "scratch 的 shopping 文件" with no bookmark literally named
+    "scratch") cannot be turned into a prospective path and returns
+    `None` — D1 does not specify a fuzzy new-filename inference
+    algorithm, and guessing one risks writing to the wrong place,
+    which is worse than refusing (ADR-0011 D3's fail-closed posture:
+    an unresolved ref simply refuses at the gate). Never raises.
+    """
+    existing = resolve(query, "file", conn)
+    if existing is not None:
+        return existing
+
+    config = load_file_targets_config()
+    prospective = _bookmark_relative_target(query, config)
+    source: TargetSource = "bookmark"
+    if prospective is None:
+        candidate = Path(query).expanduser()
+        if candidate.is_absolute() and candidate.name:
+            prospective = candidate
+            source = "search"
+    if prospective is None:
+        return None
+    if not _under_home(prospective):
+        return None
+    if not _parent_in_scope(prospective.parent, config):
+        return None
+    return ResolvedTarget(path=prospective, display_name=prospective.name, source=source)
+
+
 __all__ = [
     "FileTargetsConfig",
     "FileTargetsConfigError",
@@ -622,4 +714,5 @@ __all__ = [
     "TargetSource",
     "load_file_targets_config",
     "resolve",
+    "resolve_write_target",
 ]

@@ -631,6 +631,18 @@ class DecideContext:
             gate arm — correct fail-closed behavior, not a bug, for
             any context that hasn't wired a resolver (e.g. a context
             with no file-entity tools registered).
+        write_entity_resolver: Injected resolve-on-propose callable for
+            ``write_file`` (ADR-0012 D1 — extends ADR-0011 D4).
+            ``_dispatch_one_tool_call`` uses THIS resolver instead of
+            ``entity_resolver`` when the tool being resolved is
+            ``write_file``, because a write target's resolution rule
+            differs from a read target's: a non-existent path resolves
+            iff its parent directory is in scope, which
+            ``entity_resolver`` (backed by ``path_resolver.resolve``,
+            existing-file-only) cannot do. ``None`` (the default) makes
+            ``write_file`` resolution inert the same way ``None`` on
+            ``entity_resolver`` does for ``read_file`` — fail-closed,
+            not a bug.
     """
 
     conn: sqlite3.Connection
@@ -644,6 +656,7 @@ class DecideContext:
     observer_poll_interval_s: int = DEFAULT_OBSERVER_POLL_INTERVAL_S
     entity_bookmarks: Sequence[tuple[str, str]] = ()
     entity_resolver: EntityResolverLike | None = None
+    write_entity_resolver: EntityResolverLike | None = None
 
 
 @dataclass(frozen=True)
@@ -1337,11 +1350,12 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     # guard, §12.2 MUST-FIX 2 above), and the active-subject inheritance
     # below carries its own `not tool_def.requires_entity` guard — so
     # this is the only block that can set `target_entity_ref` for such a
-    # tool. `ctx.entity_resolver` is `None` in any context that hasn't
-    # wired one; the feature is then inert and Step 3's `requires_entity`
-    # gate arm refuses, which is correct fail-closed behavior, not a
-    # bug. `entity.resolved` is emitted on BOTH outcomes (ADR §4) — the
-    # `not_found` emission is what E2 depends on.
+    # tool. `ctx.entity_resolver` / `ctx.write_entity_resolver` (ADR-0012
+    # D1, see the tool-name branch below) are `None` in any context that
+    # hasn't wired them; the feature is then inert and Step 3's
+    # `requires_entity` gate arm refuses, which is correct fail-closed
+    # behavior, not a bug. `entity.resolved` is emitted on BOTH outcomes
+    # (ADR §4) — the `not_found` emission is what E2 depends on.
     #
     # ADR-0011 §12.2 MUST-FIX 1: `gate_entity_registry` starts as the
     # packet's registry (assembled before this call, so it can be one
@@ -1350,15 +1364,24 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     # of `_fold_entity_registry` uses (`EntityRegistry.with_resolved_event`).
     # The event is already durable in the log; this only catches the
     # gate's view up to it — it is not a widening of trust.
+    # ADR-0012 D1: `write_file`'s write-target resolution differs from
+    # every other `requires_entity=True` tool's (a non-existent target
+    # can still resolve, iff its parent directory is in scope), so it
+    # gets its own injected resolver rather than sharing
+    # `ctx.entity_resolver`. Selecting by bare tool name mirrors the
+    # existing `name == "verify_diff"` precedent just above this block.
+    file_entity_resolver = (
+        ctx.write_entity_resolver if name == "write_file" else ctx.entity_resolver
+    )
     gate_entity_registry = packet.entity_registry
     if (
         tool_def.requires_entity
         and target_entity_ref is None
-        and ctx.entity_resolver is not None
+        and file_entity_resolver is not None
     ):
         raw_target = arguments.get("target")
         raw_query = raw_target if isinstance(raw_target, str) else ""
-        resolved = ctx.entity_resolver(raw_query)
+        resolved = file_entity_resolver(raw_query)
         entity_event = _emit_file_entity_resolved(
             ctx,
             natural_ref=raw_query,

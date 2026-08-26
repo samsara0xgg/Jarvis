@@ -67,6 +67,7 @@ from jarvis.execution.diff_capture import StashError, restore_pretask_changes
 from jarvis.execution.path_resolver import (
     FileTargetsConfigError,
     load_file_targets_config,
+    resolve_write_target,
 )
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.tools import (
@@ -219,6 +220,32 @@ def _make_entity_resolver(conn: sqlite3.Connection) -> EntityResolverLike:
 
     def _resolve(query: str) -> ResolvedEntityLike | None:
         target = resolve_file_entity(query, "file", conn)
+        if target is None:
+            return None
+        return _ResolvedFileEntity(
+            entity_id=f"file:{target.path}",
+            canonical=str(target.path),
+            confidence="bookmark" if target.source == "bookmark" else "fuzzy",
+            match_basis=target.source,
+        )
+
+    return _resolve
+
+
+def _make_write_entity_resolver(conn: sqlite3.Connection) -> EntityResolverLike:
+    """Build the `write_file` resolve-on-propose callable (ADR-0012 D1).
+
+    Mirrors :func:`_make_entity_resolver` but calls
+    `path_resolver.resolve_write_target` instead of `path_resolver.resolve`,
+    so a non-existent target whose parent directory is in scope also
+    resolves (D1's extension of ADR-0011 D4 for write targets). Wired
+    into `DecideContext.write_entity_resolver`;
+    `_dispatch_one_tool_call` picks this resolver instead of
+    `entity_resolver` when the tool being resolved is `write_file`.
+    """
+
+    def _resolve(query: str) -> ResolvedEntityLike | None:
+        target = resolve_write_target(query, conn)
         if target is None:
             return None
         return _ResolvedFileEntity(
@@ -1150,6 +1177,9 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
             # closes over `runtime.conn`, which the JarvisRuntime fields
             # above already carry, so there is nothing to cache.
             entity_resolver=_make_entity_resolver(runtime.conn),
+            # ADR-0012 D1 — write-target resolve-on-propose. Same
+            # per-turn-closure rationale as `entity_resolver` above.
+            write_entity_resolver=_make_write_entity_resolver(runtime.conn),
         )
 
         # SQLite row id of the surface.user_intent event — used as the
