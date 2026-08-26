@@ -1,0 +1,79 @@
+# Confirmation-answer grammar (ADR-0012 §3 D6). Loaded at daemon/CLI
+# boot next to tier0_patterns.yaml; restart `python -m jarvis serve`
+# after editing.
+#
+# Active ONLY while the PendingConfirmations projection holds a live
+# (unexpired, still-"pending") confirmation slot — see the grammar hook
+# in `jarvis/decision/__init__.py::_handle_utterance`, which runs
+# BEFORE `tier_0_match`. Exact-sentence match, same normalization
+# tolerance as `tier0_patterns.yaml`: leading/trailing whitespace
+# (stripped before matching), ASCII case-insensitivity for the English
+# tokens, and one optional trailing punctuation mark. Zero
+# generalization by design — every entry below is ONE literal token
+# from the ADR's frozen yes-set / no-set v1. A paraphrase such as
+# "行吧那就写进去吧" must NOT match: it isn't one of these literals, so
+# no pattern here can ever fire for it, full stop — that sentence falls
+# through to ordinary Tier 0 / LLM handling exactly like any other
+# turn.
+#
+# Entry schema:
+#   id:        unique slug (rides `confirmation.accepted/rejected.grammar_rule_id`)
+#   pattern:   full-sentence anchored regex — MUST start with ^ and end with $
+#   decision:  "yes" | "no"
+- id: yes_keyi
+  pattern: "^可以[?？。.!！]?$"
+  decision: "yes"
+- id: yes_hao
+  pattern: "^好[?？。.!！]?$"
+  decision: "yes"
+- id: yes_haode
+  pattern: "^好的[?？。.!！]?$"
+  decision: "yes"
+- id: yes_shi
+  pattern: "^是[?？。.!！]?$"
+  decision: "yes"
+- id: yes_queren
+  pattern: "^确认[?？。.!！]?$"
+  decision: "yes"
+- id: yes_zhixingba
+  pattern: "^执行吧[?？。.!！]?$"
+  decision: "yes"
+- id: yes_zuoba
+  pattern: "^做吧[?？。.!！]?$"
+  decision: "yes"
+- id: yes_yes
+  pattern: "^(?i:yes)[?？。.!！]?$"
+  decision: "yes"
+- id: yes_ok
+  pattern: "^(?i:ok)[?？。.!！]?$"
+  decision: "yes"
+- id: yes_go_ahead
+  pattern: "^(?i:go)\\s+(?i:ahead)[?？。.!！]?$"
+  decision: "yes"
+- id: no_bu
+  pattern: "^不[?？。.!！]?$"
+  decision: "no"
+- id: no_buyao
+  pattern: "^不要[?？。.!！]?$"
+  decision: "no"
+- id: no_buyong
+  pattern: "^不用[?？。.!！]?$"
+  decision: "no"
+- id: no_fou
+  pattern: "^否[?？。.!！]?$"
+  decision: "no"
+- id: no_quxiao
+  pattern: "^取消[?？。.!！]?$"
+  decision: "no"
+- id: no_suanle
+  pattern: "^算了[?？。.!！]?$"
+  decision: "no"
+- id: no_bie
+  pattern: "^别[?？。.!！]?$"
+  decision: "no"
+- id: no_no
+  pattern: "^(?i:no)[?？。.!！]?$"
+  decision: "no"
+- id: no_cancel
+  pattern: "^(?i:cancel)[?？。.!！]?$"
+  decision: "no"

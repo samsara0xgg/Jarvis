@@ -56,6 +56,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
+from jarvis.decision.confirm_grammar import match_confirm_grammar
 from jarvis.decision.gates import (
     AttentionChannel,
     GateOutcome,
@@ -111,9 +112,11 @@ from jarvis.state.projections import make_snapshot
 if TYPE_CHECKING:
     import sqlite3
 
+    from jarvis.decision.confirm_grammar import ConfirmGrammarHit, ConfirmGrammarTable
     from jarvis.decision.llm import ChatResult, LLMClient
     from jarvis.decision.tier0 import Tier0Hit, Tier0Table
-    from jarvis.shared import EvidenceLevel, RiskLevel
+    from jarvis.shared import AuthorizationLease, EvidenceLevel, RiskLevel
+    from jarvis.state.projections import PendingConfirmationSlot
 
 LOGGER = logging.getLogger(__name__)
 
@@ -675,6 +678,13 @@ class DecideContext:
             ``confirmation.ttl_ms`` from ``config/jarvis.yaml``
             (`jarvis.runtime._confirmation_ttl_ms`) so the live burn
             can use a short value without touching code.
+        confirm_grammar_table: Compiled exact-sentence yes/no grammar
+            (ADR-0012 §3 D6) the composition root loaded from
+            ``config/confirm_grammar.yaml``. ``()`` (the default)
+            disables the answer-path grammar hook entirely — every
+            utterance falls through to Tier 0 / Tier 2 exactly as if
+            no confirmation flow existed, same "off means inert" shape
+            as ``tier0_table=None``.
     """
 
     conn: sqlite3.Connection
@@ -690,6 +700,7 @@ class DecideContext:
     entity_resolver: EntityResolverLike | None = None
     write_entity_resolver: EntityResolverLike | None = None
     confirmation_ttl_ms: int = _DEFAULT_CONFIRMATION_TTL_MS
+    confirm_grammar_table: ConfirmGrammarTable = ()
 
 
 @dataclass(frozen=True)
@@ -751,6 +762,15 @@ class _Scratch:
     # on scratch (not a local in either function) because the value is
     # produced deep in the tool-dispatch loop and consumed one frame up.
     pending_confirmation_template_line: str | None = None
+    # ADR-0012 D6: True once `_handle_confirmation_accepted` /
+    # `_handle_confirmation_rejected` has run this turn (any outcome —
+    # success, hash-mismatch abort, gate-refuse abort, dispatch error,
+    # or a plain rejection). `_finalize_response` reads this to force
+    # `voice_notify`: every one of those branches is a direct,
+    # synchronous reply to a question Allen just asked, never a
+    # silent_log/queue_review candidate. Same flag-to-finalize idiom as
+    # `pending_confirmation_template_line` above.
+    confirmation_answered_this_turn: bool = False
 
 
 def _active_subject_or_default(
@@ -938,6 +958,48 @@ def _handle_utterance(
         correlation={"turn_id": turn_id},
     )
     scratch.events.append(started_event)
+
+    # ADR-0012 §3 D6 — the answer-path grammar hook, BEFORE
+    # `tier_0_match`. THE LOAD-BEARING INVARIANT this ADR builds
+    # toward: no LLM output, under any phrasing, can cause an L3
+    # dispatch — only a hit against `ctx.confirm_grammar_table` can,
+    # and only by reaching `_handle_confirmation_accepted`, the ONE
+    # function in this module that mints an AuthorizationLease, and
+    # even then only through the FULL `pre_action_gate`. This is
+    # structural, not a policy the LLM is asked to respect:
+    #   - The check below runs and returns BEFORE `tier_0_match` and
+    #     (further down) before `_run_tool_use_loop` ever calls the
+    #     LLM this turn. On a grammar hit, the LLM is never invoked at
+    #     all for this trigger.
+    #   - The grammar is active ONLY while the PendingConfirmations
+    #     projection holds a live (`state == "pending"`, unexpired)
+    #     slot (`PendingConfirmationSlot.is_live`) — an expired or
+    #     already-answered slot makes this whole block inert and the
+    #     turn falls through to ordinary Tier 0 / Tier 2 handling
+    #     exactly as if no confirmation existed (D6 "expired pending ->
+    #     ordinary turn"; C3).
+    #   - The LLM's only touchpoint with a pending ask is
+    #     `format_pending_confirmation_note` — an id-free system note
+    #     it can talk ABOUT (C4/C6) but that carries no
+    #     `confirmation_id`, no tool, and no argument it could use to
+    #     act on the ask. Its worst case (a paraphrase like "行吧那就写
+    #     进去吧", ADR's own C6 example) is proposing the action again
+    #     via the ordinary tool-call path, which produces a FRESH
+    #     `confirm_required` -> a fresh `confirmation.requested` that
+    #     supersedes this slot and re-asks — never a dispatch.
+    pending_slot = packet.pending_confirmation.slot
+    if pending_slot is not None and pending_slot.is_live(_now_epoch_ms()):
+        transcript_raw = trigger.payload.get("transcript", "")
+        transcript = transcript_raw if isinstance(transcript_raw, str) else ""
+        grammar_hit = match_confirm_grammar(transcript, ctx.confirm_grammar_table)
+        if grammar_hit is not None:
+            if grammar_hit.decision == "yes":
+                return _handle_confirmation_accepted(
+                    pending_slot, grammar_hit, transcript, packet, policy, ctx, scratch,
+                )
+            return _handle_confirmation_rejected(
+                pending_slot, grammar_hit, transcript, packet, ctx, scratch,
+            )
 
     # Tier 0 deterministic shortcut (spec §17): hit → dispatch through
     # the full gate/audit chain with caller_principal=regex_router,
@@ -2740,8 +2802,7 @@ def _finalize_response(
     # `ask_confirm` deliberately sits outside the ADR-0009 D4 TTS
     # suppression set (`jarvis.runtime.inherent_loop._TTS_SILENT_CHANNELS`)
     # — the question must be spoken, not swallowed.
-    if _confirmation_already_requested_this_turn(scratch):
-        attention = "ask_confirm"
+    attention = _confirmation_attention_override(scratch, attention)
 
     return DecideResult(
         response_plan=plan,
@@ -2749,6 +2810,37 @@ def _finalize_response(
         turn_id=scratch.turn_id,
         attention_channel=attention,
     )
+
+
+def _confirmation_attention_override(
+    scratch: _Scratch,
+    attention: AttentionChannel,
+) -> AttentionChannel:
+    """Apply the two ADR-0012 finalize-scan attention overrides, in order.
+
+    Split out of :func:`_finalize_response` purely to keep that
+    function's branch count under ruff's C901 threshold — the logic
+    itself is unchanged from the inline version.
+
+    1. ``ask_confirm`` — this turn emitted a ``confirmation.requested``
+       (D5): the turn's entire content IS the ask, and ``ask_confirm``
+       deliberately sits outside the ADR-0009 D4 TTS suppression set —
+       the question must be spoken, not swallowed.
+    2. ``voice_notify`` — this turn ran
+       ``_handle_confirmation_accepted`` / ``_handle_confirmation_rejected``
+       (D6): a direct, synchronous reply to a question Allen just
+       asked, on every outcome (success, aborted accept, or plain
+       rejection) — never silent_log/queue_review.
+
+    Mutually exclusive in practice — one ``decide()`` call either
+    STAGES an ask or ANSWERS one, never both — so the order between
+    the two checks does not matter.
+    """
+    if _confirmation_already_requested_this_turn(scratch):
+        attention = "ask_confirm"
+    if scratch.confirmation_answered_this_turn:
+        attention = "voice_notify"
+    return attention
 
 
 def _pre_emit_reasons(plan: ResponsePlan) -> tuple[str, ...]:
@@ -3038,6 +3130,337 @@ def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 sna
         source_event_id=source_event_id,
         correlation=_action_correlation(action_request),
     )
+
+
+# --- ADR-0012 D6 — the answer path ------------------------------------------
+#
+# `_handle_confirmation_accepted` is the ONLY function in this module (and,
+# by the module-boundary rules at the top of this file, in all of L3) that
+# constructs an `AuthorizationLease`. It is reachable from exactly one call
+# site: the grammar hook in `_handle_utterance`, itself gated on a live
+# PendingConfirmations slot and an exact-sentence grammar hit. No LLM code
+# path touches either precondition. That is the load-bearing invariant
+# (ADR §3 D6) made structural rather than merely documented.
+
+_LEASE_TTL_MS: Final[int] = 60_000
+"""ADR-0012 D2/D6: the lease need only outlive gate + dispatch (seconds, not
+the confirmation ask's own minutes-scale TTL)."""
+
+_CONFIRMATION_REJECTED_TEMPLATE: Final[str] = "好，已取消：{template_line}"  # noqa: RUF001 — fullwidth comma/colon are intentional Chinese punctuation.
+
+# ADR-0012 §4 failure-mode table: "content artifact missing/hash mismatch at
+# accept -> abort re-proposal, fixed error line". Scrub-safe (no
+# 完成/已完成/done/verified) by construction, same discipline as every other
+# fixed line in this module.
+_CONFIRMATION_CONTENT_MISMATCH_TEXT: Final[str] = "暂存内容校验失败，写入未执行。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
+
+# Defensive-only: the tool named in a frozen snapshot is no longer
+# registered (e.g. the daemon restarted with the tool removed between ask
+# and answer). Unreachable in the Day-1 scenario (write_file is the only L3
+# tool and registries don't shrink mid-process), kept for the same reason
+# `_check_entity_trusted`'s `tool_def is None` arm is kept — a handler must
+# be safe standing alone, not merely behind preconditions that happen to
+# always hold in production.
+_CONFIRMATION_TOOL_GONE_TEXT: Final[str] = "无法执行：工具已不可用，写入未执行。"  # noqa: RUF001 — fullwidth colon/comma/period are intentional Chinese punctuation.
+
+# ADR-0012 §4: "gate refuses the re-proposal (policy/entity drift since ask)
+# -> fixed line reporting the refusal reason". Interpolates only the
+# GateOutcome literal ("refuse" / "confirm_required") — never raw
+# `gate.reasons` strings, which are developer-facing audit text not vetted
+# against the Pre-emit Gate's completion-keyword scrub.
+_CONFIRMATION_REPROPOSAL_REFUSED_TEMPLATE: Final[str] = (
+    "已取消：重新检查未通过（{outcome}），写入未执行。"  # noqa: RUF001 — fullwidth parens/comma/period are intentional Chinese punctuation.
+)
+
+# ADR-0012 §4: "write_file handler I/O error -> error observation ->
+# Limitation routing (existing machinery)" — `result_interpreter` below
+# already emits the Limitation Claim; this is only the direct-reply text
+# for the turn that was Allen's own "可以".
+_CONFIRMATION_DISPATCH_ERROR_TEMPLATE: Final[str] = "写入执行出错，未写入：{error}"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+
+# ADR-0012 §3 D6 exact wording — "backed by ack semantics; the wording
+# deliberately stops at 已执行 and must not be strengthened" (no 完成/
+# 已完成/verified/done — see `_COMPLETION_KEYWORDS` in `jarvis.decision.gates`;
+# "执行"/"已执行" do not match any of those patterns).
+_CONFIRMED_WRITE_SUCCESS_TEMPLATE: Final[str] = (
+    "write_file 已执行：`{path}`（{bytes_written} 字节）"  # noqa: RUF001 — fullwidth colon/parens/comma are intentional Chinese punctuation.
+)
+
+
+def _new_lease_id() -> str:
+    """Fresh lease_id (L + 8-hex) — mirrors T/A/C above (ADR-0012 D6)."""
+    return "L" + uuid.uuid4().hex[:8]
+
+
+def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answer-path input; each is load-bearing, splitting would only relocate the arg list.
+    slot: PendingConfirmationSlot,
+    grammar_hit: ConfirmGrammarHit,
+    transcript: str,
+    packet: SituationPacket,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> DecideResult:
+    """ADR-0012 D6 no-branch: emit ``confirmation.rejected``, fixed cancel line.
+
+    No lease, no re-proposal, no gate, no dispatch — the entire branch
+    is two events (``confirmation.rejected`` here, ``turn.ended`` via
+    :func:`_finalize_response`) and a fixed line. The
+    PendingConfirmations fold moves the slot to ``state="rejected"``
+    on this event (matched by ``confirmation_id``), which is terminal
+    — :meth:`PendingConfirmationSlot.is_live` is false for any
+    non-``"pending"`` state, so this exact slot can never be answered
+    again (a later 「可以」 either hits a NEWER slot or, with none
+    pending, is an ordinary utterance).
+    """
+    requested_event_uid = _latest_event_uid_of_type(
+        ctx.conn, event_type="confirmation.requested",
+    )
+    rejected_event = emit_event(
+        ctx.conn,
+        type="confirmation.rejected",
+        payload={
+            "confirmation_id": slot.confirmation_id,
+            "utterance_raw": transcript,
+            "grammar_rule_id": grammar_hit.rule_id,
+        },
+        source_event_id=requested_event_uid,
+        correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
+    )
+    scratch.events.append(rejected_event)
+    scratch.confirmation_answered_this_turn = True
+
+    draft = _CONFIRMATION_REJECTED_TEMPLATE.format(template_line=slot.template_line)
+    return _finalize_response(draft, packet, ctx, scratch)
+
+
+def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per D6 answer-path input (each load-bearing); single-pass mint+re-propose+gate+dispatch+interpret mirrors `_dispatch_one_tool_call`'s own noqa'd shape — splitting would only scatter the audit trace.
+    slot: PendingConfirmationSlot,
+    grammar_hit: ConfirmGrammarHit,
+    transcript: str,
+    packet: SituationPacket,
+    policy: EffectivePolicy,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> DecideResult:
+    """ADR-0012 D6 yes-branch: accept -> mint lease -> re-propose -> gate -> dispatch.
+
+    This is the ONE function in L3 that constructs an
+    ``AuthorizationLease`` (see the section banner above this
+    function). Steps, each mirroring the equivalent stage of the
+    ordinary LLM-driven dispatch in ``_dispatch_one_tool_call`` (steps
+    3-7b) so the audit chain reads the same way regardless of which
+    path produced it:
+
+    1. Emit ``confirmation.accepted`` (durable proof of Allen's exact
+       words + which grammar rule matched).
+    2. Re-read the staged content artifact and verify it against the
+       frozen ``content_sha256`` — a mismatch aborts here, before any
+       lease is minted or any gate runs (§4 failure mode).
+    3. Mint the lease per D2's nine fields, scoped to exactly this
+       tool + this ``target_entity_ref`` (the entity-REF form — cross-
+       step contract #1: ``allowed_targets`` must NOT hold the bare
+       ``canonical_target`` path, or every re-proposal would refuse as
+       wrong-target).
+    4. Rebuild the ActionRequest from the FROZEN snapshot with a NEW
+       ``action_id`` and the lease attached, emit ``action.proposed``.
+    5. Run the FULL ``pre_action_gate`` — no shortcuts. The
+       ``gate.evaluated`` payload always carries ``lease_id`` when a
+       lease is attached (cross-step contract #3), regardless of
+       outcome, so the audit trail shows what was attempted even on a
+       refusal.
+    6. On ``pass``: ``action.authorized`` + lifecycle transition,
+       dispatch via the L4 registry, Result Interpreter on the
+       returned slot, fixed broadcast.
+    """
+    requested_event_uid = _latest_event_uid_of_type(
+        ctx.conn, event_type="confirmation.requested",
+    )
+    accepted_event = emit_event(
+        ctx.conn,
+        type="confirmation.accepted",
+        payload={
+            "confirmation_id": slot.confirmation_id,
+            "utterance_raw": transcript,
+            "grammar_rule_id": grammar_hit.rule_id,
+        },
+        source_event_id=requested_event_uid,
+        correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
+    )
+    scratch.events.append(accepted_event)
+    scratch.confirmation_answered_this_turn = True
+
+    # --- 2. Re-read + verify the staged content artifact -------------------
+    snapshot = slot.snapshot
+    args_meta_raw = snapshot.get("args_meta")
+    args_meta: Mapping[str, Any] = args_meta_raw if isinstance(args_meta_raw, Mapping) else {}
+    content_artifact_raw = args_meta.get("content_artifact")
+    expected_sha256_raw = args_meta.get("content_sha256")
+
+    content_text: str | None = None
+    if isinstance(content_artifact_raw, str) and isinstance(expected_sha256_raw, str):
+        artifact_path = Path(content_artifact_raw)
+        if artifact_path.is_file():
+            content_bytes_data = artifact_path.read_bytes()
+            if hashlib.sha256(content_bytes_data).hexdigest() == expected_sha256_raw:
+                content_text = content_bytes_data.decode("utf-8")
+
+    if content_text is None:
+        return _finalize_response(_CONFIRMATION_CONTENT_MISMATCH_TEXT, packet, ctx, scratch)
+
+    tool_name_raw = snapshot.get("tool_name")
+    tool_name = tool_name_raw if isinstance(tool_name_raw, str) else ""
+    tool_def = _find_tool_def(ctx.tool_registry, tool_name)
+    if tool_def is None:
+        return _finalize_response(_CONFIRMATION_TOOL_GONE_TEXT, packet, ctx, scratch)
+
+    target_entity_ref_raw = snapshot.get("target_entity_ref")
+    target_entity_ref = (
+        target_entity_ref_raw if isinstance(target_entity_ref_raw, str) else None
+    )
+
+    # --- 3. Mint the lease (D2 nine fields) ---------------------------------
+    # Cross-step contract #1 (Step 1 erratum): `allowed_targets` holds the
+    # entity-ref form (`target_entity_ref`, e.g. "file:/abs/path") — the
+    # exact field `_lease_scope_permits` matches byte-equal against
+    # `ActionRequest.target_entity_ref`. NOT `canonical_target` (the bare
+    # path) — that field exists only for the human-readable template line.
+    reproposal_arguments: dict[str, Any] = {
+        k: v
+        for k, v in args_meta.items()
+        if k not in ("content_sha256", "content_bytes", "content_artifact")
+    }
+    reproposal_arguments["content"] = content_text
+
+    lease: AuthorizationLease = {
+        "lease_id": _new_lease_id(),
+        "granted_by": "allen",
+        "granted_to": CallerPrincipal.JARVIS_LLM,
+        "allowed_tools": frozenset({tool_name}),
+        "allowed_targets": (
+            frozenset({target_entity_ref}) if target_entity_ref is not None else frozenset()
+        ),
+        "expires_at_ms": _now_epoch_ms() + _LEASE_TTL_MS,
+        "max_uses": 1,
+        "reason": slot.template_line,
+        "source_confirmation_event_id": accepted_event.event_uid,
+    }
+
+    # --- 4. Deterministic re-proposal ---------------------------------------
+    action_id = _new_action_id()
+    action_request = ActionRequest(
+        action_id=action_id,
+        tool_name=tool_name,
+        target_entity_ref=target_entity_ref,
+        caller_principal=CallerPrincipal.JARVIS_LLM,
+        risk_level=tool_def.risk_level,
+        arguments=reproposal_arguments,
+        authorization_lease=lease,
+        run_id=None,
+        turn_id=scratch.turn_id,
+    )
+    proposed_event = emit_event(
+        ctx.conn,
+        type="action.proposed",
+        payload={
+            "action_id": action_id,
+            "tool_name": tool_name,
+            "caller_principal": CallerPrincipal.JARVIS_LLM.value,
+            "risk_level": tool_def.risk_level,
+            "target_entity_ref": target_entity_ref,
+            "turn_id": scratch.turn_id,
+            "arguments": dict(reproposal_arguments),
+        },
+        source_event_id=accepted_event.event_uid,
+        correlation=_action_correlation(action_request),
+    )
+    scratch.events.append(proposed_event)
+
+    # --- 5. FULL Pre-action Gate — no shortcuts -----------------------------
+    # `packet.pending_confirmation` is STALE here: it was folded at the top
+    # of `_handle_utterance`, BEFORE `confirmation.accepted` (step 1 above)
+    # was durably appended — its slot's `accepted_event_uid` is still None.
+    # D2.4's single-use check joins on exactly that field (cross-step
+    # contract #2), so the gate needs a projection that has already seen
+    # THIS turn's acceptance. Re-fold fresh off the log, mirroring how
+    # `_dispatch_one_tool_call` overlays a just-emitted `entity.resolved`
+    # onto `gate_entity_registry` rather than trusting the packet's copy
+    # (ADR-0011 §12.2 MUST-FIX 1) — same "the event is already durable;
+    # only the caller's cached VIEW of it needs a refresh" shape.
+    pending_confirmations = make_snapshot(ctx.conn).pending_confirmations
+    gate = pre_action_gate(
+        action_request,
+        policy,
+        packet.task_ledger_snapshot,
+        tool_def=tool_def,
+        entity_registry=packet.entity_registry,
+        pending_confirmations=pending_confirmations,
+    )
+    gate_payload: dict[str, Any] = {
+        "gate": "pre_action",
+        "outcome": gate.outcome,
+        "reasons": list(gate.reasons),
+        "check_results": dict(gate.check_results),
+        "action_id": action_id,
+        # Cross-step contract #3: MUST be present whenever a lease is
+        # attached, on every outcome — the D2.4 consumption fold
+        # (`jarvis.state.projections._fold_pending_confirmations`) only
+        # ever closes on a `pass` carrying this key, and C5's replay
+        # scenario needs it on a `refuse` too for the audit trail.
+        "lease_id": lease["lease_id"],
+    }
+    gate_event = emit_event(
+        ctx.conn,
+        type="gate.evaluated",
+        payload=gate_payload,
+        source_event_id=proposed_event.event_uid,
+        correlation=_action_correlation(action_request),
+    )
+    scratch.events.append(gate_event)
+
+    if gate.outcome != "pass":
+        draft = _CONFIRMATION_REPROPOSAL_REFUSED_TEMPLATE.format(outcome=gate.outcome)
+        return _finalize_response(draft, packet, ctx, scratch)
+
+    # --- 6. action.authorized + lifecycle, dispatch, interpret -------------
+    authorized_event = emit_event(
+        ctx.conn,
+        type="action.authorized",
+        payload={"action_id": action_id},
+        source_event_id=gate_event.event_uid,
+        correlation=_action_correlation(action_request),
+    )
+    scratch.events.append(authorized_event)
+    ctx.lifecycle.register(action_id)
+    ctx.lifecycle.transition(action_id, "authorized")
+
+    bundle = ctx.tool_registry.dispatch(
+        action_request, ctx.conn, ctx.runtime_paths, ctx.lifecycle,
+    )
+    primary_result_slot = bundle.slots[0]
+
+    result_observed_uid = _latest_event_uid_of_type(
+        ctx.conn, event_type="action.result_observed",
+    )
+    source_event_for_interpreter = result_observed_uid or proposed_event.event_uid
+    interpreted_events = result_interpreter(
+        primary_result_slot,
+        source_event_id=source_event_for_interpreter,
+        action_request=action_request,
+        conn=ctx.conn,
+        subject_ref_override=target_entity_ref,
+    )
+    scratch.events.extend(interpreted_events)
+
+    if primary_result_slot.error is not None:
+        draft = _CONFIRMATION_DISPATCH_ERROR_TEMPLATE.format(error=primary_result_slot.error)
+        return _finalize_response(draft, packet, ctx, scratch)
+
+    path_written = primary_result_slot.payload.get("path", "?")
+    bytes_written = primary_result_slot.payload.get("bytes_written", "?")
+    draft = _CONFIRMED_WRITE_SUCCESS_TEMPLATE.format(
+        path=path_written, bytes_written=bytes_written,
+    )
+    return _finalize_response(draft, packet, ctx, scratch)
 
 
 def _resolver_outcome(result: ResolverResult) -> str:

@@ -54,6 +54,7 @@ from jarvis.decision import (
     ToolRegistryLike,
     decide,
 )
+from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_confirm_grammar
 from jarvis.decision.llm import LLMClient, load_llm_config
 from jarvis.decision.policy import (
     PolicyConsistencyError,
@@ -98,6 +99,7 @@ if TYPE_CHECKING:
     import sqlite3
 
     from jarvis.decision import ResponsePlan
+    from jarvis.decision.confirm_grammar import ConfirmGrammarTable
     from jarvis.decision.tier0 import Tier0Table
 
 
@@ -317,6 +319,10 @@ class JarvisRuntime:
             ``config/file_targets.yaml`` (ADR-0011 D4) — seeds the
             EntityRegistry projection's config route. Empty tuple =
             no bookmarks configured.
+        confirm_grammar_table: ADR-0012 §3 D6 exact-sentence yes/no
+            grammar loaded from ``config/confirm_grammar.yaml``; empty
+            tuple = the answer-path grammar hook disabled (same "off
+            means inert" posture as an empty ``tier0_table``).
     """
 
     config: Mapping[str, Any]
@@ -328,6 +334,7 @@ class JarvisRuntime:
     system_prompt: str
     tier0_table: Tier0Table = ()
     entity_bookmarks: tuple[tuple[str, str], ...] = ()
+    confirm_grammar_table: ConfirmGrammarTable = ()
 
 
 @dataclass(frozen=True)
@@ -850,6 +857,17 @@ def bootstrap_runtime_app(
         msg = f"runtime: config/file_targets.yaml invalid: {exc}"
         raise RuntimeBootstrapError(msg) from exc
 
+    # 3e. ADR-0012 §3 D6 — answer-path grammar table. Same posture as
+    #     3b above: sits next to jarvis.yaml, missing file = the
+    #     grammar hook disabled (inert, not broken), malformed content
+    #     fails the boot loudly.
+    confirm_grammar_path = config_path.parent / "confirm_grammar.yaml"
+    try:
+        confirm_grammar_table = load_confirm_grammar(confirm_grammar_path)
+    except ConfirmGrammarConfigError as exc:
+        msg = f"runtime: {confirm_grammar_path} invalid: {exc}"
+        raise RuntimeBootstrapError(msg) from exc
+
     # 4. L3 LLM client. `full_config` was already loaded at step 3 above.
     llm_config = load_llm_config(config_path)
     llm_client = LLMClient(llm_config)
@@ -867,6 +885,7 @@ def bootstrap_runtime_app(
         system_prompt=system_prompt,
         tier0_table=tier0_table,
         entity_bookmarks=entity_bookmarks,
+        confirm_grammar_table=confirm_grammar_table,
     )
 
 
@@ -1215,6 +1234,9 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
             # ADR-0012 §3 D4/V2 — confirmation TTL, config-overridable
             # via `confirmation.ttl_ms` so the live burn can shorten it.
             confirmation_ttl_ms=_confirmation_ttl_ms(runtime.config),
+            # ADR-0012 §3 D6 — answer-path grammar, threaded the same
+            # way tier0_table is threaded.
+            confirm_grammar_table=runtime.confirm_grammar_table,
         )
 
         # SQLite row id of the surface.user_intent event — used as the

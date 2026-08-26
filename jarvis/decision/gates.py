@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from jarvis.state.projections import (
         ClaimEvidenceProjection,
         EntityRegistry,
+        PendingConfirmations,
         TaskLedgerSnapshot,
     )
 
@@ -238,13 +239,14 @@ def _check_entity_trusted(
     )
 
 
-def pre_action_gate(
+def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-0012 D2.4 adds the fourth gate input alongside `entity_registry`, same load-bearing shape.
     action_request: ActionRequest,
     policy: EffectivePolicy,
     ledger_snapshot: TaskLedgerSnapshot,
     *,
     tool_def: _EntityGateToolLike | None,
     entity_registry: EntityRegistry | None = None,
+    pending_confirmations: PendingConfirmations | None = None,
 ) -> GateResult:
     """Evaluate the four MUST-checks per ADR § Gate contracts.
 
@@ -292,11 +294,14 @@ def pre_action_gate(
        ``allowed_targets``; a target-less request needs
        ``allowed_targets`` empty — a lease scoped to specific targets
        must not vacuously cover a target-less action of the same
-       tool). **Single-use** (D2.4) is deferred: it needs the
-       PendingConfirmations projection (Step 3) and the
-       ``gate.evaluated`` ``lease_id`` fold (Step 6), neither of which
-       exists yet — see the inline comment at the single-use seam
-       below.
+       tool). **Single-use** (D2.4, Step 6): the lease's
+       ``source_confirmation_event_id`` must equal the
+       PendingConfirmations projection's current slot's
+       ``accepted_event_uid`` (the D6 join key), and
+       ``lease["lease_id"]`` must not already be in
+       ``pending_confirmations.consumed_lease_ids`` (folded from a
+       prior passing ``gate.evaluated`` that carried this same
+       ``lease_id`` — see :func:`_lease_single_use_ok`).
 
     Outcome ladder — ``lease_hard_invalid`` (see that local variable's
     definition below) distinguishes "the lease is corrupt or spent"
@@ -304,11 +309,16 @@ def pre_action_gate(
     it":
 
     - All passed -> ``"pass"``.
-    - The lease is **hard-invalid** (malformed today; Step 6 adds
-      already-consumed replay, ADR-0012 §7 acceptance row C5) ->
+    - The lease is **hard-invalid** (malformed, OR already-consumed
+      replay per D2.4/Step 6, ADR-0012 §7 acceptance row C5) ->
       ``"refuse"`` outright — re-asking Allen would be wrong for
       corruption or replay, so this skips the softer
-      confirm-required path entirely.
+      confirm-required path entirely. A lease whose
+      ``source_confirmation_event_id`` simply does not match the
+      projection's current accepted slot (e.g. the ask it named was
+      superseded) is NOT hard-invalid — that is merely unsatisfied,
+      same as an expired or wrong-scope lease: a fresh grant could
+      still fix it.
     - Risk above ceiling AND lease invalid for any other reason
       (missing / expired / wrong-tool / wrong-target) but otherwise
       legal -> a lease MIGHT cover it if Allen grants/re-grants one ->
@@ -341,6 +351,24 @@ def pre_action_gate(
             Keyword-only with a ``None`` default so pre-Step-4 callers
             (and hand-built test fixtures) keep compiling; ``None``
             simply means the registry arm never matches.
+        pending_confirmations: The folded PendingConfirmations
+            projection (``packet.pending_confirmation``), or ``None``.
+            ADR-0012 D2.4 (Step 6): check 4's single-use sub-check
+            reads this to confirm a lease's
+            ``source_confirmation_event_id`` names a confirmation the
+            projection shows as accepted, and that
+            ``lease["lease_id"]`` is not already in
+            ``consumed_lease_ids``. Keyword-only with a ``None``
+            default so callers that never attach a lease (the five
+            pre-existing ADR-0012 D7 sites) keep compiling without
+            passing it. UNLIKE ``entity_registry``, ``None`` here does
+            NOT degrade to a no-op pass: this is the one check
+            standing between a replayed lease and an L3 dispatch, so a
+            lease-bearing request with no projection supplied fails
+            single-use SOFT (``confirm_required``, not ``refuse`` —
+            see :func:`_lease_single_use_ok`'s docstring for the
+            fail-closed rationale and why it differs from
+            ``entity_registry=None``'s posture).
 
     Returns:
         Frozen :class:`GateResult` with per-check bool + reason.
@@ -407,22 +435,22 @@ def pre_action_gate(
                 now_ms = _now_epoch_ms()
                 unexpired = lease["expires_at_ms"] > now_ms
                 scope_ok = _lease_scope_permits(lease, action_request)
-                # Single-use (ADR-0012 D2.4) is deferred to Step 3/6:
-                # it needs the PendingConfirmations projection (Step 3,
-                # does not exist yet) to confirm
-                # `source_confirmation_event_id` names a confirmation
-                # that is accepted-and-not-yet-consumed, with
-                # consumption folded from `gate.evaluated`'s
-                # `lease_id` payload key (Step 6). Until that seam is
-                # wired, a shape-valid + unexpired + in-scope lease
-                # passes here regardless of prior use. Step 6: an
-                # already-consumed lease found here must set BOTH
-                # `lease_validated = False` and `lease_hard_invalid = True`
-                # (not just fail validation) so the outcome ladder
-                # below refuses per C5 instead of asking Allen again.
-                lease_validated = unexpired and scope_ok
+                # Single-use (ADR-0012 D2.4, Step 6): see
+                # `_lease_single_use_ok`'s docstring for the full
+                # contract. An already-consumed lease sets BOTH
+                # `lease_validated = False` (via `single_use_ok=False`
+                # below) AND `lease_hard_invalid = True` — not just a
+                # failed validation — so the outcome ladder refuses per
+                # C5 instead of asking Allen again.
+                single_use_ok, single_use_hard_invalid, single_use_detail = (
+                    _lease_single_use_ok(lease, pending_confirmations)
+                )
+                if single_use_hard_invalid:
+                    lease_hard_invalid = True
+                lease_validated = unexpired and scope_ok and single_use_ok
                 reasons.append(
-                    f"lease_validated: unexpired={unexpired}, scope_ok={scope_ok}"
+                    f"lease_validated: unexpired={unexpired}, scope_ok={scope_ok}, "
+                    f"single_use_ok={single_use_ok} ({single_use_detail})"
                 )
     else:
         reasons.append(
@@ -544,6 +572,92 @@ def _lease_scope_permits(
         action_request.target_entity_ref is not None
         and action_request.target_entity_ref in lease["allowed_targets"]
     )
+
+
+def _lease_single_use_ok(
+    lease: AuthorizationLease,
+    pending_confirmations: PendingConfirmations | None,
+) -> tuple[bool, bool, str]:
+    """Evaluate D2.4 single-use for an already shape/expiry/scope-valid lease.
+
+    Two independent facts, both read off the PendingConfirmations
+    projection (never a lease store — D2: leases are never pooled):
+
+    1. **References a real acceptance.** The lease's
+       ``source_confirmation_event_id`` must equal the projection's
+       CURRENT slot's ``accepted_event_uid`` — the D6 join key Step 3
+       added ``PendingConfirmationSlot.accepted_event_uid`` for
+       exactly this purpose (the slot is keyed on ``confirmation_id``;
+       the lease carries the accepted EVENT's uid, a different
+       string). A mismatch here is NOT hard-invalid: the referenced
+       ask may simply have been superseded by a newer one (D4
+       single-slot), and Allen granting a fresh lease would fix it —
+       same posture as an expired or wrong-scope lease.
+    2. **Not already spent.** ``lease["lease_id"] in
+       pending_confirmations.consumed_lease_ids`` — folded from every
+       prior ``gate.evaluated(outcome="pass")`` that carried this
+       exact ``lease_id`` (cross-step contract #3: the gate event this
+       function's caller emits MUST carry ``lease_id`` for that fold
+       to ever fire). A lease found here IS hard-invalid — replaying a
+       spent lease must refuse outright (ADR-0012 §7 acceptance row
+       C5), never soften to ``confirm_required``.
+
+    Args:
+        lease: The already shape/expiry/scope-valid lease under
+            evaluation.
+        pending_confirmations: The folded projection, or ``None``.
+            ``None`` fails CLOSED, not open: this is the one check
+            standing between a replayed lease and an L3 dispatch, so a
+            missing projection must not be read as "unspent" — it must
+            be read as "unverifiable". Unlike ``entity_registry=None``
+            (which NARROWS check 2 by removing a universe a ref could
+            match in, making that check strictly stricter),
+            ``pending_confirmations=None`` here would SKIP this check
+            entirely if allowed to pass — a different failure shape,
+            not the same one. The missing-projection case is soft
+            (``hard_invalid=False``, i.e. ``confirm_required``), not
+            hard: the lease itself is not proven corrupt or spent, the
+            verifier simply lacked its input, and re-asking Allen is
+            the safe resolution — same posture ``_lease_shape_ok``'s
+            key-presence check and ``_lease_scope_permits``'s missing-
+            ``allowed_tools`` case both take (§1: "fail-closed on a
+            missing key"). In production the sole lease-minting call
+            site (the D6 accept handler) always passes the just-
+            refolded projection, so this branch is exercised only by
+            callers that never attach a lease in the first place (the
+            five untouched ADR-0012 D7 sites) — but that is call-site
+            discipline, not a structural guarantee, hence fail-closed
+            here regardless.
+
+    Returns:
+        ``(single_use_ok, hard_invalid, detail)`` — ``detail`` always
+        names the projection's current ``confirmation_id`` when a slot
+        exists, satisfying C5's "the reason names the consumed
+        confirmation".
+    """
+    if pending_confirmations is None:
+        return (
+            False,
+            False,
+            "single_use could not be verified: no PendingConfirmations projection wired",
+        )
+
+    slot = pending_confirmations.slot
+    confirmation_id = slot.confirmation_id if slot is not None else None
+    accepted_match = (
+        slot is not None and slot.accepted_event_uid == lease["source_confirmation_event_id"]
+    )
+    already_consumed = lease["lease_id"] in pending_confirmations.consumed_lease_ids
+
+    if already_consumed:
+        return False, True, f"lease already consumed by confirmation_id={confirmation_id!r}"
+    if not accepted_match:
+        return (
+            False,
+            False,
+            "source_confirmation_event_id does not match any accepted confirmation",
+        )
+    return True, False, f"confirmation_id={confirmation_id!r}"
 
 
 # --- Pre-emit Gate ----------------------------------------------------------
