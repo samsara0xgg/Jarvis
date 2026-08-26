@@ -40,6 +40,12 @@ import pytest
 
 from jarvis.deployment import DEFAULT_RUNTIME_ROOT_LITERAL
 
+# The one-shot "hello" turn below hits the REAL cloud LLM whenever
+# OPENROUTER_PROXY_KEY is set — mark it live_llm so the hermetic Tier-1
+# gate (`pytest tests -m "not live_llm and not live_codex"`) deselects it
+# instead of silently spending a real network call on every commit.
+pytestmark = pytest.mark.live_llm
+
 # Generous wall-clock bound. The synchronous "hello" turn hits the LLM,
 # which can take several seconds; we want a bound that lets the test
 # complete on a slow runner but bails out before the suite times out.

@@ -20,6 +20,12 @@ var/
 # Per-run Tier 2 artifacts (token-use JSON, scenario LLM logs).
 tests/_artifacts/
 
+# Voice model assets — per-machine symlinks into external checkouts /
+# downloads, never committed (distribution contract: models are located
+# via explicit external paths, not repo data). Keeps `git status` clean.
+/data/sensevoice-small-int8
+/data/silero_vad.onnx
+
 # Secrets
 .env
 .env.*

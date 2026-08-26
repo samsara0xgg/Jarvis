@@ -40,7 +40,7 @@ For any commit landing implementation, the body has five parts:
 - <path> — <what this file contributes>
 - <path> — <...>
 
-Tier 1: lint-imports KEPT (1/1) · ruff clean (N files) · mypy strict clean (N files) · M/M canary+integration tests pass · wall <t>s (< 30s budget).
+Tier 1: lint-imports KEPT (1/1) · ruff clean (N files) · mypy strict clean (N files) · M/M hermetic tests pass · wall <t>s (< 30s budget).
 
 Legacy-bypass: <legacy/path> — <reason it was not reused>.
 Legacy consulted: <legacy/path> (<what slice was borrowed>).

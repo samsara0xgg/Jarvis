@@ -17,6 +17,15 @@ dependencies = [
     "numpy",              # ADR-0005 — L5 voice surface (PCM math, RMS, recognizer audio)
     "python-multipart",   # ADR-0005 §5.2 — /inherent/asr-submit multipart WAV upload
     "soxr",               # ADR-0005 §5.3 — MiniMax 32 kHz → OutputStream 48 kHz resample
+    # ADR-0005 voice stack — lazy-imported inside jarvis.surface.voice_* so
+    # non-voice contexts run without PortAudio, but genuinely required at
+    # runtime (wake word, audio I/O, SenseVoice ONNX inference) and by the
+    # wake-listener integration tests. Previously installed by hand and
+    # undeclared — a fresh venv failed 3 integration tests (hermetic-gate
+    # fix, 2026-08-25). mlx-whisper stays undeclared: optional ASR backend.
+    "openwakeword>=0.6.0",  # ADR-0005 §3 — wake word detection; 0.4.x lacks utils.download_models
+    "sounddevice",        # ADR-0005 — PortAudio input/output streams
+    "onnxruntime",        # ADR-0005 §5 — SenseVoice + Silero VAD inference
 ]
 
 [project.optional-dependencies]
@@ -30,6 +39,14 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["jarvis"]
+
+[tool.uv]
+# Mac-only scope (docs/architecture-mac-only.md; RPi deferred): resolve the
+# lockfile for macOS only. openwakeword 0.6.0's linux-marker dependency
+# (tflite-runtime) ships no cp312 wheels, which breaks uv's universal
+# resolution; the linux branch becomes relevant only when the RPi domain
+# lands, and gets revisited then.
+environments = ["sys_platform == 'darwin'"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -109,6 +126,11 @@ convention = "google"
 [tool.mypy]
 python_version = "3.12"
 strict = true
+# data/ holds untracked model symlinks (sensevoice-small-int8 points into an
+# upstream checkout whose export-onnx.py is not ours to type-check); without
+# this, a habitual `mypy --strict .` follows the symlink and reports foreign
+# errors. The documented gate scopes explicitly (`jarvis tests scripts tools`).
+exclude = ["^data/"]
 disallow_untyped_defs = true
 disallow_any_explicit = false  # too noisy with TypedDict + sqlite Row
 warn_unused_ignores = true

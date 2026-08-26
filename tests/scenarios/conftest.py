@@ -4,17 +4,12 @@ Per ADR 0001 § Tier 2 invocation command + ADR 0002 Step 20 brief.
 
 Responsibilities:
 
-- ``pytest_addoption`` — register the ``--live-llm`` and
-  ``--live-codex`` CLI flags. ``--live-llm`` gates real cloud LLM
-  calls (OpenRouter, $ per run); ``--live-codex`` additionally gates
-  tests that spawn a real ``codex app-server`` subprocess on Allen's
-  Mac ($$ per run, slow).
-- ``pytest_configure`` — register both markers in the ini-section to
-  silence pytest warnings about unknown markers.
-- ``pytest_collection_modifyitems`` — skip every ``live_llm``-marked
-  item unless ``--live-llm`` is on, and every ``live_codex``-marked
-  item unless ``--live-codex`` is on. Running ``pytest tests/``
-  therefore never reaches the cloud LLM and never spawns Codex.
+- (moved) ``pytest_addoption`` + ``pytest_collection_modifyitems`` now
+  live in ``tests/conftest.py`` — the flags and the live-skip guarantee
+  must hold for EVERY invocation scope under ``tests/``, and pytest only
+  registers ``pytest_addoption`` from initial conftests (the ancestor
+  path of the command-line args). Markers themselves are registered in
+  ``pyproject.toml`` ``[tool.pytest.ini_options]``.
 
 Tier-2 invocation
 -----------------
@@ -47,9 +42,8 @@ spend. The default CI path (no flags) costs $0.
   writes ``tests/_artifacts/llm_use_<ts>.json`` with the per-run token
   usage / finish_reason summary (acceptance G5).
 
-This file is the SINGLE place Tier 2 conftest logic lives — Tier 1
-tests under ``tests/unit/`` and ``tests/canary/`` are unaffected (their
-``tests/conftest.py`` remains empty).
+Tier-2-only fixtures stay here; the option/skip hooks shared with the
+rest of the suite live in ``tests/conftest.py`` (see above).
 """
 
 from __future__ import annotations
@@ -84,51 +78,6 @@ _MIN_API_KEY_LEN: int = 20
 # Substrings whose presence in an opened path indicates recorded-LLM
 # playback (Acceptance G4 / H7 Part B).
 _FORBIDDEN_PATH_SUBSTRINGS: tuple[str, ...] = ("cassette", "recording")
-
-
-# --- CLI option + collection skip -----------------------------------------
-
-
-def pytest_addoption(parser: pytest.Parser) -> None:
-    """Register the ``--live-llm`` and ``--live-codex`` flags (default: off)."""
-    parser.addoption(
-        "--live-llm",
-        action="store_true",
-        default=False,
-        help="Run scenarios that call the real cloud LLM (real network).",
-    )
-    parser.addoption(
-        "--live-codex",
-        action="store_true",
-        default=False,
-        help="Run Tier-2 tests that spawn real Codex app-server subprocesses ($$$).",
-    )
-
-
-def pytest_collection_modifyitems(
-    config: pytest.Config,
-    items: list[pytest.Item],
-) -> None:
-    """Skip ``live_llm`` / ``live_codex`` items unless the matching flag is on.
-
-    Both markers are independent: a test marked ``live_codex`` but not
-    ``live_llm`` will run under ``--live-codex`` alone, and vice versa.
-    A test marked with BOTH (the common Tier-2 J/K/L case) needs both
-    flags to run; either flag missing → the item is skipped.
-    """
-    skip_llm = pytest.mark.skip(
-        reason="live_llm scenario; pass --live-llm to enable real cloud LLM calls.",
-    )
-    skip_codex = pytest.mark.skip(
-        reason="live_codex scenario; pass --live-codex to spawn real Codex subprocess.",
-    )
-    want_llm = config.getoption("--live-llm")
-    want_codex = config.getoption("--live-codex")
-    for item in items:
-        if "live_llm" in item.keywords and not want_llm:
-            item.add_marker(skip_llm)
-        if "live_codex" in item.keywords and not want_codex:
-            item.add_marker(skip_codex)
 
 
 # --- API key precondition -------------------------------------------------

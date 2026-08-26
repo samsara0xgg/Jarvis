@@ -8,9 +8,22 @@ details and examples live here.
 1. Edit code → run all Tier 1 gates → commit only after every gate is
    green:
    - `lint-imports`
-   - `ruff check . --select ALL`
-   - `mypy --strict .`
-   - `pytest tests/canary/ tests/integration/ -x`
+   - `ruff check .`
+   - `mypy --strict jarvis tests scripts tools`
+   - `pytest tests -m "not live_llm and not live_codex" -x`
+
+   Why these exact forms (hermetic-gate contract, 2026-08-25):
+   - ruff: NO `--select ALL` — the CLI flag discards the
+     `[tool.ruff.lint] ignore` list in `pyproject.toml` (COM812/D104
+     fire spuriously). `select = ["ALL"]` is already set in config.
+   - mypy: explicit scopes (or `--exclude '^data/'`) — a bare `.`
+     follows the untracked SenseVoice symlink under `data/` into an
+     upstream checkout and reports foreign errors.
+   - pytest: marker deselection is the LLM-free guarantee. Directory
+     scoping (`tests/canary/ tests/integration/`) silently disabled
+     the live-skip hook and let `live_llm` items call the real LLM.
+     `-m` deselects at marker level, works at any scope, and covers
+     future test dirs automatically.
 2. `git status` + `git diff --stat` to glance at the change set.
 3. One thing per commit (no mixing `fix` with `feat`, no new
    functionality inside a `refactor`).
@@ -111,10 +124,15 @@ single line summarizing the gate results. Format (mid-dot `·`
 separators):
 
 ```
-Tier 1: lint-imports KEPT (1/1) · ruff clean (39 files) · mypy
-strict clean (39 files) · 94/94 canary+integration tests pass · wall
-0.37s (< 30s budget).
+Tier 1: lint-imports KEPT (1/1) · ruff clean (132 files) · mypy
+strict clean (131 files) · 109/109 hermetic tests pass · wall
+7.8s (< 30s budget).
 ```
+
+("hermetic tests" = `pytest tests -m "not live_llm and not
+live_codex"` — every collected non-live test; live-marked items are
+deselected, not skipped-in-place, so the count moves when tests are
+added.)
 
 Always include each of the four gates and a wall-clock number. If a
 gate is intentionally skipped (e.g. pure docs change), say so:

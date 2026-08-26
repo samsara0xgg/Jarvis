@@ -67,6 +67,61 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
 
+# --- CLI option + collection skip -----------------------------------------
+#
+# These two hooks live HERE (tests/ root) and not in
+# ``tests/scenarios/conftest.py`` on purpose: pytest only registers
+# ``pytest_addoption`` from *initial* conftests — the conftest.py files on
+# the ancestor path of the command-line arguments. When the hooks lived in
+# the scenarios conftest, ``pytest tests/canary tests/integration`` (the
+# old Tier-1 gate scope) rejected ``--live-llm`` outright AND silently
+# dropped the skip hook, so ``live_llm``-marked items in that scope ran
+# for real. At the tests/ root the flags and the skip guarantee hold for
+# every invocation scope under ``tests/``.
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register the ``--live-llm`` and ``--live-codex`` flags (default: off)."""
+    parser.addoption(
+        "--live-llm",
+        action="store_true",
+        default=False,
+        help="Run scenarios that call the real cloud LLM (real network).",
+    )
+    parser.addoption(
+        "--live-codex",
+        action="store_true",
+        default=False,
+        help="Run Tier-2 tests that spawn real Codex app-server subprocesses ($$$).",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config,
+    items: list[pytest.Item],
+) -> None:
+    """Skip ``live_llm`` / ``live_codex`` items unless the matching flag is on.
+
+    Both markers are independent: a test marked ``live_codex`` but not
+    ``live_llm`` will run under ``--live-codex`` alone, and vice versa.
+    A test marked with BOTH (the common Tier-2 J/K/L case) needs both
+    flags to run; either flag missing → the item is skipped.
+    """
+    skip_llm = pytest.mark.skip(
+        reason="live_llm scenario; pass --live-llm to enable real cloud LLM calls.",
+    )
+    skip_codex = pytest.mark.skip(
+        reason="live_codex scenario; pass --live-codex to spawn real Codex subprocess.",
+    )
+    want_llm = config.getoption("--live-llm")
+    want_codex = config.getoption("--live-codex")
+    for item in items:
+        if "live_llm" in item.keywords and not want_llm:
+            item.add_marker(skip_llm)
+        if "live_codex" in item.keywords and not want_codex:
+            item.add_marker(skip_codex)
+
+
 class _InertPowerObserver:
     """Satisfies :class:`jarvis.deployment.sleep_wake.PowerObserver`, does nothing.
 
