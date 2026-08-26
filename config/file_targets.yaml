@@ -34,6 +34,9 @@ search_roots:
   - ~/Downloads
 
 bookmarks:
+  # Pinned targets for the exact-sentence Tier 0 whitelist.
+  "jarvis claude md": "~/Projects/jarvis/CLAUDE.md"
+  "root claude md": "~/.claude/CLAUDE.md"
   jarvis: ~/Projects/jarvis
   下载: ~/Downloads
   桌面: ~/Desktop
