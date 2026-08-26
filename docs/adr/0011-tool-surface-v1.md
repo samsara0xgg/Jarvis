@@ -1,0 +1,302 @@
+# ADR 0011 — Tool Surface v1 (7 read/observe tools · EffectivePolicy ×9 · ToolDefinition +4 · EntityRegistry v0)
+
+**Status:** Approved (2026-08-25, Allen)
+**Date:** 2026-08-25
+**Depends on:** ADR-0001/0002 (decide() loop, gates, Tier 0, Task Ledger), ADR-0003 (inherent daemon), ADR-0009 (Status Board projection idiom, registration idiom, `actor` provenance; schema-v1 migration landed via phase0-debts merge 2ccb5c2)
+**Prepares:** ADR-0012 (Confirmation Flow + AuthorizationLease + `write_file`) — this ADR lands every contract 0012 consumes (`confirmation_threshold`, `requires_confirmation`, `requires_entity`, EntityRegistry, `surface_for`), so 0012 adds only the confirmation state machine and one L3 tool.
+**Defers to future ADRs:** scheduler domain — `create_reminder`/`list_reminders` tools, `scheduler.scheduled/cancelled/fired/expired` events, DeferredExecution schema (spec §3.7.9), the wall-clock fire watcher (cut by Allen 2026-08-25 to shrink this batch); smart_home domain — Hue + `device` entities (RPi/home-node phase per spec §3.7.2, see §11); `idle_proactivity` policy dimension (spec §11.1); mode/lens/override events + real policy engine (Phase 4); RPi/home domain; image-submit endpoint (stays 501).
+**Number note:** 0004/0006/0007/0008 pre-reserved by ADR-0003/0005 defer tables; 0010 reserved for Drift Watch by ADR-0009. 0011 is next free; 0012 is reserved by this pair for the confirmation flow.
+
+---
+
+## 1. Context
+
+### What exists today
+
+- **6 tools, all plumbing-proven**: `spawn_worker` (L2, async), `verify_diff` (L0), `create_task` (L1), `list_tasks` (L0), `get_current_time` (L0), `open_path` (L1) — registered in one place, `build_default_registry` (`jarvis/execution/tools.py:2489-2582`). The LLM menu is `ctx.tool_registry.for_caller(CallerPrincipal.JARVIS_LLM)` (`jarvis/decision/__init__.py:816-818`) — intrinsic caller filtering only, no policy filtering.
+- **`ToolDefinition` has 10 fields** (`tools.py:446-494`): name, description, allowed_callers, risk_level, result_semantics, is_async, input_schema, handler, post_action_check, result_budget_s. None of the spec §14.2 surface/gating fields (`domain`, `read_only`, `requires_entity`, `requires_confirmation`) exist.
+- **`EffectivePolicy` has 4 fields** (`jarvis/decision/policy.py:33-60`): mode, autonomy_ceiling, confirmation_required_at_or_above, allowed_tools_per_caller. `effective_policy()` (`policy.py:82-117`) hardcodes the single Collaborate preset: ceiling **L2**, confirmation at **L3** — which means the gate's confirm branch is unreachable: nothing ≥L3 can ever be proposed under an L2 ceiling.
+- **The gate's entity check is a hole**: `pre_action_gate` sets `entity_trusted = True` unconditionally when `target_entity_ref is None` (`jarvis/decision/gates.py:209-211`). Every construction site passes None, so the check has never rejected anything.
+- **`path_resolver` is pure and silent**: `jarvis/execution/path_resolver.py` resolves free text → path with zero event emission (module docstring, lines 1-17); `open_path_handler` (`tools.py:1915-2040`) emits `action.result_observed` + `lifecycle.transition` but nothing feeds an entity projection. There is no EntityRegistry projection at all — spec §3.3.7 names it as the L2 authority for canonical IDs.
+- **Tier 0 discipline is settled**: `config/tier0_patterns.yaml` (5 entries, exact-sentence whitelist per its head comment — tolerates whitespace/case/ASR-spelling only; generalization belongs to the LLM), boot-validated by `validate_tier0_table` (`jarvis/decision/tier0.py:157-184`, rejects async targets, called from `runtime/__init__.py:371-382`).
+- **Infra this ADR reuses**: OpenRouter-proxy LLM presets with `api_key_env` indirection (`config/jarvis.yaml` `llm.presets.*` → `https://openrouter.icu/v1`, key `OPENROUTER_PROXY_KEY`); `runtime.runtime_paths.artifacts_root` with the `voice_artifacts/` subdirectory precedent (`runtime/inherent_loop.py:735`); the projection FOLD→PACKET→RENDER→INJECT idiom (StatusBoard: `state/projections.py:756-806` fold, `decision/packet.py:222-287` render, `decision/__init__.py:811-815` inject); the ADR-0009 event-registration idiom with the 6-field schema (`actor` required since the phase0 schema-v1 migration).
+
+### Why this ADR
+
+Jarvis can orchestrate a Codex worker but cannot look anything up: no web, no vault search, no file reading, no screen. Spec §14's first principle — "Tool Surface 不是所有可用工具列表，而是 effective_policy 为当前主体生成的最小能力面" — has no mechanism: the menu is caller-filtered only, policy owns no tool dimension, and entity trust is vacuously true. This ADR lands the seven read/observe tools Allen scoped (2026-08-25), and the three contracts they force into existence: a policy object with the spec's nine dimensions, tool metadata the gate can act on, and an entity registry so `target_entity_ref` stops being decorative. ADR-0012's confirmation flow then plugs into these contracts instead of inventing its own.
+
+### Spec touchpoints
+
+- §14 (line 2588): tool surface = least-capability filter `filter(registry, by=(effective_policy, caller_principal, authorization_lease, mode, surface, active_task))`; "LLM 看到的不是 registry 本身，是过滤后的子集". §14.8: enforcement must be runtime-real, "registry 必须真的过滤".
+- §3.4.5: `effective_policy` output is nine fields — autonomy_ceiling, confirmation_threshold, allowed_tool_surface, output_form, verification_level, interrupt_policy, memory_write_policy, task_policy, attention_defaults. "Mode 可以改变 defaults，但不能突破 invariant。"
+- §11 (line 2313): "Policy Resolver 是纯函数：(mode_runtime_state, mode_presets, lenses, overrides, invariants) → effective_policy. 它只解释 state 和 config，不创造 state."
+- §3.3.6: Mode Runtime State is an event-sourced State Object projection (from `mode.transitioned`/`lens.enabled`/`override.applied`); Mode Preset Table is static config; Effective Policy is computed per-decision, never stored.
+- §14.2 (lines 2600-2617): the 15-field per-tool metadata block — source of the four field names adopted here.
+- §14.4: risk taxonomy is **L0–L4** (five levels; L4 = system/admin: config·secrets·permissions·daemon control). §14.5: jarvis_llm default L0-L1 + partial L2; L3+ only under AuthorizationLease(human_approved).
+- §3.3.7: "LLM 不能 invent entity IDs" — real IDs must come from Event Log, Entity Registry, trusted resolver, tool observation, trusted config, or imported cross-domain event. Entity Registry / Alias Projection holds "canonical entity IDs、aliases、resolver confidence". §3.3.8: `resolve_entity(ref, context)` is a State Object API. Invariant I2 (No Fabricated Entity IDs) is anchored here.
+- §3.5.11 / §3.3.9: bounded payloads — tool output capped (`max_output_bytes` in §14.2), artifacts referenced by path, never inlined.
+- §3.5.1: "No direct LLM-to-tool execution" — unchanged; all seven tools ride the existing propose → gate → dispatch path.
+
+### Spec contradictions this ADR must pick through (and how)
+
+1. **Two "9-field" EffectivePolicy lists.** §3.4.5 includes `attention_defaults`; §11.1 instead has `idle_proactivity`, and names two fields differently (`tool_surface`, `memory_policy`). Per the project's source-of-truth rule (§3 wins), this ADR adopts **§3.4.5's list and names** verbatim. `idle_proactivity` is deferred (header) and will join the struct when the §11.1 reconciliation lands in a future spec pass.
+2. **Two 15-field ToolDefinition lists.** §3.5.3 (name/input_schema/action_type/timeout_default/required_entity_types/artifact_policy/…) and §14.2 (tool_id/domain/requires_confirmation/requires_task_binding/allowed_modes/…) overlap but disagree. The four fields added here use **§14.2's names** (they are the tool-surface/gating fields; §14.2 is the Tool Surface chapter). The defer table (§11 below) enumerates the remainder of *both* lists so neither silently disappears.
+3. **§14.4 lists "search" under L0**, but that reads as local/state search. `web_search`/`web_fetch`/`screen_look` are classed **L1** here because their read crosses the network boundary (query text, URLs, screen pixels leave the machine) — more exposure than a local read, no local mutation, hence between L0 and L2. Declared as a deviation (§6, V3).
+
+### Non-spec context
+
+- `.importlinter` layer contract: tools live in `jarvis/execution/`, policy/gate/packet in `jarvis/decision/`, projections in `jarvis/state/`, config loading via existing seams; `runtime/` remains the only cross-layer wiring point.
+- Allen's 2026-08-25 scope cut: `create_reminder` + `list_reminders` removed from this batch (they drag in a wall-clock scheduler subsystem — watcher, projection, four events); the remaining seven tools are all L0/L1 with zero new subsystems.
+- Privacy fact, accepted by Allen: `screen_look` sends a screenshot to a cloud multimodal model via the existing OpenRouter proxy. The decision brain stays text-only; vision is encapsulated inside the tool.
+- No unit tests (dev-mode rules): acceptance is per-step commands + one live burn matrix; branchy logic (resolver outcomes, SSRF guard, truncation) gets data-driven tables.
+
+---
+
+## 2. Scope
+
+**In scope:** P1 EffectivePolicy ×9 + Mode Runtime State v0 (constant) · P2 ToolDefinition +4 fields, migration of the 6 existing tools, `surface_for` policy filtering, gate `requires_entity` rule · P3 EntityRegistry v0 projection + `entity.resolved` event + resolve-on-propose · P4 the seven tools (`search_notes`, `read_file`, `read_clipboard`, `web_search`, `web_fetch`, `open_url`, `screen_look`) + Tier 0 rows + config.
+
+**Out of scope:** confirmation flow, AuthorizationLease expansion, `write_file` (all ADR-0012); scheduler/reminders (deferred, header); any L2+ tool; packet entity *menu* (resolve-on-propose makes it unnecessary for v1); Obsidian write access; browser automation beyond GET.
+
+---
+
+## 3. Decision
+
+### D1. EffectivePolicy grows to the nine §3.4.5 fields; ceiling L2→L3; placeholders are declared decisions
+
+`EffectivePolicy` (`policy.py`) becomes a frozen dataclass with exactly the §3.4.5 output fields:
+
+| field | v1 value | consumer today |
+|---|---|---|
+| `autonomy_ceiling` | `"L3"` | gate check 3 (risk within ceiling) |
+| `confirmation_threshold` | `"L3"` | gate check 4 (`needs_lease`), `surface_for` annotation |
+| `allowed_tool_surface` | per-caller name map (today's `allowed_tools_per_caller`, renamed) | gate check 1, `surface_for` |
+| `output_form` | `"conversational"` | **placeholder** |
+| `verification_level` | `"standard"` | **placeholder** |
+| `interrupt_policy` | `"collaborate_default"` | **placeholder** |
+| `memory_write_policy` | `"propose_only"` | **placeholder** |
+| `task_policy` | `"explicit_only"` | **placeholder** |
+| `attention_defaults` | `{}` (empty map) | **placeholder** — `attention_policy()` remains a separate function until Phase 4 folds it in |
+
+- **Renames**: `confirmation_required_at_or_above` → `confirmation_threshold` (spec name; single gate reference updates, `gates.py:238-240`); `allowed_tools_per_caller` → `allowed_tool_surface`. Mechanical, same semantics.
+- **Ceiling L3**: with ceiling L2 nothing ≥L3 can be proposed and the gate's `confirm_required` outcome is dead code forever. L3 ceiling + L3 threshold = the spec's intended shape: L3 proposals are *possible*, and every one of them needs a lease (0012). Guard-rail sentence, binding on all future ADRs: per invariant **I7**, confirmation for L3/L4 is an invariant *floor* — `confirmation_threshold` is a dial that can move only below L3; no mode or policy engine may ever set L3+ to no-confirm.
+- **Mode Runtime State v0**: a frozen `ModeRuntimeState` (mode=`"collaborate"`, lenses=(), overrides=()) returned by a constant provider on the State Object side. `effective_policy(mode_state: ModeRuntimeState = COLLABORATE_CONSTANT) -> EffectivePolicy` stays a pure function (§11: "只解释 state 和 config，不创造 state"). No `mode.transitioned`/`lens.enabled`/`override.applied` registration in this ADR — the projection becomes event-sourced when the policy engine ADR lands (deferred). The placeholders are *declared decisions*, not dead code: each is listed here with its Phase-4 consumer so a reviewer can tell intent from leftovers.
+- `risk_rank` learns **L4** (§14.4 is five levels). No L4 tool exists; the rank function must still order it (fail-closed above ceiling).
+
+### D2. ToolDefinition gains the four §14.2 fields with consumers; the 6 existing tools are migrated
+
+Add to `ToolDefinition` (`tools.py`): `domain: str` (one of the §14.1 seventeen), `read_only: bool`, `requires_entity: bool`, `requires_confirmation: bool`. Every field has a consumer in this ADR or 0012: `domain` feeds audit payloads + future surface filtering; `read_only` feeds `surface_for` grouping and the Pre-emit scrub context; `requires_entity` feeds the new gate rule (D3); `requires_confirmation` feeds 0012's template line (and is derivable-but-explicit: for v1 it must equal `risk_rank(risk_level) >= risk_rank(confirmation_threshold)` — boot validation asserts consistency so the two can't drift).
+
+Migration of the existing six:
+
+| tool | domain | read_only | requires_entity | requires_confirmation |
+|---|---|---|---|---|
+| spawn_worker | agent_control | false | false | false |
+| verify_diff | git | true | false | false |
+| create_task | task_ledger | false | false | false |
+| list_tasks | task_ledger | true | false | false |
+| get_current_time | state_read | true | false | false |
+| open_path | mac_gui | false | false* | false |
+
+\* `open_path` keeps its internal resolve-then-act contract (it *is* a resolver caller); flipping it to pre-resolve would change a shipped tool for zero benefit. It participates in EntityRegistry as an **emitter** (D4), not a gate consumer.
+
+**`surface_for(policy, registry, caller)`** (new, `jarvis/decision/policy.py`): wraps `registry.for_caller(caller)` and filters by `policy.allowed_tool_surface[caller]` and `risk_rank(tool.risk_level) <= risk_rank(policy.autonomy_ceiling)`. The LLM menu call site (`decision/__init__.py:816-818`) switches to it; tools above the ceiling simply do not exist in the menu (§14: least-capability surface; §14.8: the registry really filters, not the prompt). Tier 0's boot validation composes with it unchanged (regex_router's surface is already tiny).
+
+### D3. Gate rule: `requires_entity` ∧ `target_entity_ref is None` → refuse
+
+`pre_action_gate` check 2 gains one arm: if the tool's definition has `requires_entity=True` and the ActionRequest carries no `target_entity_ref`, then `entity_trusted=False` with reason `"entity_required: <tool> demands a resolved target"`. The existing None-passes arm (`gates.py:209-211`) remains for tools with `requires_entity=False` — closing it wholesale would break the six migrated tools; the hole is now *scoped* instead of universal, and 0012's `write_file` inherits the strict arm on day one. The gate signature gains the tool definition lookup it already implicitly depends on (registry passed alongside policy — pure function, no I/O).
+
+### D4. EntityRegistry v0: projection + `entity.resolved` + resolve-on-propose
+
+**Entry shape** (plan-original — spec gives no field-level schema for this projection, only "canonical entity IDs、aliases、resolver confidence"):
+
+```python
+@dataclass(frozen=True)
+class EntityRegistryEntry:
+    entity_id: str        # deterministic natural key: "file:<abs-path>" | "repo:<abs-path>" | "task:<task-id>"
+    entity_type: str      # open enum, v1 folds: "file" | "repo" | "task" ("device" joins with the smart_home ADR — no reshaping needed)
+    canonical: str        # the resolved absolute path / task id
+    aliases: tuple[str, ...]   # raw refs that resolved here (bounded: last 8, dedup)
+    confidence: str       # "exact" | "fuzzy" | "bookmark" | "config"
+    source_event_id: str | None   # event that registered it (None for config-seeded rows)
+    last_seen_ms: int
+```
+
+**Fold, three routes + one seed** (FOLD→PACKET→RENDER→INJECT per the StatusBoard idiom, but *no packet note in v1* — see resolve-on-propose below for why the LLM doesn't need a menu):
+1. Task Ledger task ids → `task:` entries (fold `task.created` etc. the ledger already consumes; piggybacks the existing fold pass).
+2. `repo.state_observed` → `repo:` entries (ADR-0009's observer already emits these).
+3. `entity.resolved` events (new, §4) → `file:` entries.
+4. Seed: `config/file_targets.yaml` bookmarks ingested as `confidence="config"` entries at fold init (trusted config is a legitimate ID source per §3.3.7).
+
+**Resolve-on-propose** (the LLM-facing contract, locked with Allen 2026-08-25): the LLM never sees or invents entity ids. For a tool with `requires_entity=True`, the LLM passes a free-text `target` argument; at ActionRequest construction time (pre-gate, in `_dispatch_one_tool_call`), the runtime runs the trusted resolver (path_resolver + registry lookup), fills `target_entity_ref` with the resulting `entity_id`, and emits `entity.resolved`. Resolution failure leaves the ref `None` → D3's gate arm refuses with the resolver's reason (including candidate list on ambiguity) → the LLM sees a structured tool-result error and may retry with a better ref. Every resolution attempt is auditable (`entity.resolved` with `outcome`), every failure is a gate event, and I2 (no fabricated IDs) holds by construction.
+
+**Emitters**: `open_path_handler` on successful resolution (outcome=`resolved`; path_resolver itself stays pure — emission lives in the handler, same as its existing `action.result_observed`), and the new pre-gate resolve step. Registered `owner_layer=L2` (the Entity Registry is a State Object concern, §3.3.7), `actor="jarvis_runtime"`.
+
+### D5. The seven tools
+
+All sync, all registered in `build_default_registry`, all riding propose → gate → dispatch → `action.result_observed` → Result Interpreter (`result_semantics` mapping unchanged from the handler protocol). Output caps are per-tool `max_output_bytes`-style constants (bounded payloads, §3.5.11); truncation appends an explicit `…[truncated N bytes]` marker so the LLM knows it saw a prefix.
+
+| tool | domain | risk | read_only | requires_entity | result_semantics |
+|---|---|---|---|---|---|
+| search_notes | obsidian | L0 | true | false | observation |
+| read_file | file_read | L0 | true | **true** | observation |
+| read_clipboard | clipboard | L0 | true | false | observation |
+| web_search | browser | L1 | true | false | observation |
+| web_fetch | browser | L1 | true | false | observation |
+| open_url | mac_gui | L1 | false | false | ack |
+| screen_look | screen | L1 | true | false | observation |
+
+- **search_notes** — input `{query: str, max_results?: int ≤10 (default 5)}`. Case-insensitive token match over `*.md` under `obsidian.vault_root` (new config key, default `~/Documents/Obsidian Vault`); returns `path — matched line` rows. No index in v1 (vault is small); missing vault → empty result with a note, not an error.
+- **read_file** — input `{target: str}` free text. Resolve-on-propose (D4) fills `target_entity_ref`; the handler reads the *resolved canonical path* (never the raw string), text files only (binary sniff → error observation), output cap 8 KiB.
+- **read_clipboard** — no input. `pbpaste`, cap 8 KiB. Empty clipboard is a valid empty observation.
+- **web_search** — input `{query: str, max_results?: int ≤8 (default 5)}`. Backend: the `ddgs` package (DuckDuckGo, no API key, no new account — chosen over Brave/Exa APIs purely to avoid provisioning a new secret; the backend sits behind one function so a keyed API is a config-sized swap later). Returns numbered `title — url — snippet` rows. Timeout 15 s; backend breakage (anti-bot) degrades to an error observation, never a crash.
+- **web_fetch** — input `{url: str}`. `httpx` GET (promoted from transitive to declared dependency), timeout 20 s, ≤3 redirects, streamed with an 8 KiB text cap. HTML → title + tag-stripped readable text; no JS rendering (declared limitation — SPA pages return their shell). **Egress guard in-handler** (L4 sandbox duty, §3.5.3 note): scheme ∈ {http, https} and the resolved address must not be loopback/link-local/RFC1918 — the daemon holds local sockets (uvicorn :8006) that a fetched URL must not be able to probe.
+- **open_url** — input `{url: str}`. Same scheme allowlist, then `open <url>` (default browser). This *acts* on the GUI (read_only=false) but touches no durable state; result is an ack (Execution Claim `executed` — the browser opening is not verified).
+- **screen_look** — input `{question?: str}`. `screencapture -x` → `artifacts_root/screen_artifacts/<ts>.png` (voice_artifacts precedent) → downscale to ≤1568 px wide (`sips`) → one vision call through a new `llm.presets.vision` preset (same OpenRouter proxy + `OPENROUTER_PROXY_KEY`, multimodal model; the decision brain never sees pixels, only the returned text observation). Payload carries the artifact *path*, never image bytes (§3.3.9). First run in the daemon context triggers the macOS Screen Recording TCC prompt for the Python binary — the DoD includes granting it once; denial degrades to an instructive error observation.
+
+### D6. Tier 0 rows — only where an exact sentence fully determines the arguments
+
+The whitelist discipline (exact sentences, zero generalization) is incompatible with parameterized tools: no exact sentence can carry an arbitrary query/URL/path. So Tier 0 rows ship only for the fixed-argument tools:
+
+- `read_clipboard`: 「剪贴板里有什么」「读一下剪贴板」
+- `screen_look`: 「看一下我的屏幕」「看一眼屏幕」(question=None)
+
+This **refines the handoff line "每个只读工具配 Tier 0 精确句式"** — declared in §6 (V4) rather than silently narrowed. Parameterized invocations of every other tool route through the LLM (Tier 1/2), exactly where the head comment of `tier0_patterns.yaml` says generalization belongs. Both rows are sync tools → `validate_tier0_table` passes unchanged.
+
+### D7. Config additions (`config/jarvis.yaml`)
+
+```yaml
+llm:
+  presets:
+    vision:                      # screen_look only — multimodal, same proxy, same key
+      model: gpt-5.5
+      base_url: "https://openrouter.icu/v1"
+      api_key_env: OPENROUTER_PROXY_KEY
+      max_tokens: 1024
+tools:
+  obsidian:
+    vault_root: "~/Documents/Obsidian Vault"
+  web:
+    search_max_results: 5
+    fetch_max_bytes: 8192
+    timeout_s: 20
+  screen:
+    vision_preset: vision
+    max_width_px: 1568
+```
+
+New dependencies: `ddgs`, `httpx` (explicit). No new secrets, no new accounts.
+
+---
+
+## 4. Event Type Registry Changes
+
+One new type (ADR-0009 idiom, 6-field schema):
+
+- **`entity.resolved`** — owner_layer `L2`, actor `jarvis_runtime`, schema_version 1.
+  required: `ref_raw: str`, `outcome: "resolved" | "ambiguous" | "not_found"`.
+  optional: `entity_id`, `entity_type`, `canonical`, `confidence`, `candidates` (≤5, ambiguity case), `resolver` (`"path_resolver" | "bookmark"`), `tool_name`.
+  Emitted by `open_path_handler` (success only, outcome=resolved) and the pre-gate resolve step (all outcomes). Registry count 41 → 42.
+
+No other registrations. (`scheduler.*` left the batch with the reminder tools; `confirmation.*`/`surface.*` belong to ADR-0012.)
+
+---
+
+## 5. Failure Modes
+
+| failure | behavior |
+|---|---|
+| ddgs backend breaks (anti-bot churn) | error observation with backend name; LLM narrates the limitation; no retry loop in-handler |
+| web_fetch hits SSRF guard | in-handler refuse → error observation naming the guard (not a gate refuse — the URL is an argument, not an entity) |
+| web_fetch oversized / non-text body | streamed cap + truncation marker / content-type note |
+| screen_look TCC denied | error observation: "Screen Recording permission missing for <python path> — System Settings → Privacy" |
+| vision preset misconfigured / proxy down | error observation; screenshot artifact still saved (evidence survives the model failure) |
+| resolver ambiguity on read_file | ref stays None → gate refuse, reason carries ≤5 candidates → LLM retries with a specific one |
+| vault_root missing | empty search result + note (not an error — Allen may rename the vault) |
+| clipboard empty / non-text | valid empty/typed observation |
+
+Un-guarded pre-existing hole explicitly **not** touched here: malformed-lease KeyError (`gates.py:249-250`) — 0012 owns lease construction and hardens that seam with it.
+
+---
+
+## 6. Spec Deviations Declared
+
+- **V1**: §3.4.5's nine-field list adopted over §11.1's (which swaps `attention_defaults` for `idle_proactivity` and drifts two names). §3-wins rule; `idle_proactivity` deferred, not dropped.
+- **V2**: the four new ToolDefinition fields use §14.2 names; the remaining fields of *both* §14.2 and §3.5.3 are deferred (see §11), not merged into a hybrid neither section specifies.
+- **V3**: `web_search`/`web_fetch`/`screen_look` are L1 although §14.4 lists "search"/"screen observe" under L0 — network egress of query/screen content is more exposure than a local read. Conservative direction (up-classification), so I7/threshold semantics are unaffected.
+- **V4**: Tier 0 rows only for fixed-argument tools (D6), refining the handoff's "每个只读工具" line — exact-sentence discipline cannot carry parameters, and diluting it to templates would reopen the generalization door Tier 0 exists to close.
+- **V5**: EntityRegistryEntry shape and the resolve-on-propose contract are plan-original designs filling declared spec silences (§3.3.7 names the projection but gives no schema; no spec text describes how the LLM supplies entity refs). Both satisfy the §3.3.7 ID-source allowlist and I2 by construction.
+- **V6**: `requires_confirmation` stored explicitly though derivable from risk vs threshold — redundancy is boot-validated (D2) so it cannot drift; explicit storage is what lets 0012 render the template line without recomputing policy.
+
+---
+
+## 7. Build Order
+
+Each step = one commit, Tier-1 green, its acceptance command in the body (CLAUDE.md five-part template).
+
+1. **Policy ×9** — EffectivePolicy nine fields + renames + `ModeRuntimeState` constant + ceiling L3 + `risk_rank` L4. Acceptance: data-driven table over `effective_policy()` output; gate canaries still green (confirm branch now *reachable* but nothing triggers it — no L3 tool exists yet).
+2. **ToolDefinition +4 + surface_for** — field additions, six-tool migration table, `surface_for` at the menu call site, boot validation (`requires_confirmation` consistency). Acceptance: menu snapshot for JARVIS_LLM == 6 tools pre-P4; validate_tier0_table green.
+3. **Gate entity arm** — D3 rule + registry lookup pass-in. Acceptance: data-driven gate table (requires_entity × ref-present × outcome).
+4. **EntityRegistry v0** — projection + `entity.resolved` registration + bookmark seed + open_path emission + resolve-on-propose helper. Acceptance: E1/E2 (below) in a scripted run.
+5. **Local tools** — search_notes, read_file, read_clipboard + Tier 0 rows. Acceptance: T3/T4/T6 live.
+6. **Web tools** — web_search, web_fetch (+ deps, egress guard), open_url. Acceptance: T1/T2/T7 live; SSRF data-driven table.
+7. **screen_look** — artifact dir, sips downscale, vision preset, TCC note. Acceptance: T5 live.
+
+Steps 5-7 are independent of each other (any order); 1→4 are strictly ordered.
+
+## 8. Acceptance
+
+### Tier 1 (every commit)
+lint-imports KEPT · ruff clean · mypy strict clean · hermetic tests pass · wall <30 s.
+
+### Tier 2 — live burn (single session, real daemon, real LLM)
+
+| row | utterance (via decide(), full chain) | pass condition |
+|---|---|---|
+| T1 | 「搜一下 SQLite WAL 模式的优缺点」 | web_search dispatched; ≥1 result row in observation; LLM answer cites a result |
+| T2 | 「把 https://example.com 的内容抓下来看看」 | web_fetch observation contains page text; cap respected |
+| T3 | 「我 vault 里关于 ADR 的笔记有哪些」 | search_notes returns ≥1 path from the real vault |
+| T4 | 「读一下 jarvis 的 CLAUDE.md」 | resolve-on-propose fills `target_entity_ref`; `entity.resolved(outcome=resolved)` on the log; content observation |
+| T5 | 「看一下我的屏幕」(Tier 0 hit) + 「屏幕上现在开着什么」(LLM path) | screenshot artifact exists; text observation names something actually on screen |
+| T6 | 「剪贴板里有什么」(Tier 0 hit) | pbpaste content in observation |
+| T7 | 「用浏览器打开 anthropic.com」 | browser opens; ack claim `executed`, no completion inflation |
+| E1 | T4's side effect | EntityRegistry projection contains the `file:` entry; bookmark seeds present at boot |
+| E2 | 「读一下 xzqk9 文件」(garbage target) | gate refuse via D3 arm; `entity.resolved(outcome=not_found)`; LLM relays the limitation, no hallucinated content |
+
+### Definition of Done
+All 9 rows green in one burn log (`docs/`, ADR-0009 precedent) · TCC granted once for screen · registry count 42 · menu snapshot documented.
+
+## 9. Consequences
+
+- 0012 starts with every contract in place: it adds `write_file` (one registry entry with `requires_entity=True, requires_confirmation=True`), the confirmation state machine, and lease minting — no policy/metadata surgery.
+- The gate is stricter only for new tools (D3's arm); zero behavior change for the shipped six — regression surface is the menu call site swap (step 2's snapshot pins it).
+- Two new dependencies (`ddgs`, `httpx`); one new LLM preset; no new secrets.
+- Tier-1 wall-clock: the seven handlers are sync and hermetic-testable via injected fakes (subprocess/network seams follow the existing handler-injection pattern); budget stays <30 s.
+- Known debt carried, not created: malformed-lease KeyError (0012), `event_log.py:697` stale "no actor column" comment (any next commit touching that file), packet-side entity menu (only if resolve-on-propose proves too blind in practice).
+
+## 10. Module Map
+
+| piece | location |
+|---|---|
+| EffectivePolicy ×9, ModeRuntimeState, surface_for | `jarvis/decision/policy.py` |
+| gate entity arm | `jarvis/decision/gates.py` |
+| resolve-on-propose helper | `jarvis/decision/__init__.py` (`_dispatch_one_tool_call` seam) |
+| EntityRegistry projection | `jarvis/state/projections.py` |
+| `entity.resolved` registration | `jarvis/state/event_log.py` (registry block) |
+| seven handlers + registrations | `jarvis/execution/tools.py` (or `tools_surface.py` if tools.py's size demands a sibling — importlinter-neutral either way) |
+| Tier 0 rows | `config/tier0_patterns.yaml` |
+| config | `config/jarvis.yaml` |
+
+## 11. Defer Table
+
+| item | where it went |
+|---|---|
+| `create_reminder`, `list_reminders`, scheduler watcher, `scheduler.*` events, DeferredExecution | future scheduler ADR (Allen cut, 2026-08-25) |
+| smart_home domain — Hue control, `device` entities + discovery | RPi/home-node phase. Spec §3.7.2 assigns Hue **authority** to the RPi domain (invariant 7: "Mac 不直接拥有 Hue truth"); the canonical Mac path is `cross_domain.request.dispatched(action_type=hue_control)` over MQTT (§3.7.3, §16). Mac-direct bridge control would violate both and is **not** taken as an interim step. |
+| `idle_proactivity` (§11.1) | policy engine ADR (Phase 4) |
+| §14.2 remainder: `caller_principal` list-form, `side_effect`, `requires_task_binding`, `requires_evidence`, `max_output_bytes` (per-tool constants for now, not schema field), `allowed_modes`, `allowed_surfaces` | when a consumer exists |
+| §3.5.3 remainder: `action_type`, `timeout_default`, `required_entity_types`, `side_effect_domain`, `artifact_policy` | when a consumer exists / spec reconciliation |
+| mode/lens/override events; event-sourced Mode Runtime State | policy engine ADR |
+| packet entity menu | only if resolve-on-propose proves insufficient |
+| Obsidian index for search_notes | if vault scale demands it |
+| image-submit endpoint (501) | untouched (handoff decision 9) |
