@@ -62,9 +62,6 @@ ignore = [
 # of its boundary detection contract: RUF001/RUF002/RUF003 ambiguous-char
 # warnings are the whole point of the module and must be silenced.
 "jarvis/surface/sentence_splitter.py" = ["RUF001", "RUF002", "RUF003"]
-# Sentence splitter tests assert on those same CJK literals end-to-end;
-# same RUF001/RUF002/RUF003 justification applies.
-"tests/unit/test_sentence_splitter.py" = ["RUF001", "RUF002", "RUF003"]
 # voice_asr carries (a) the SenseVoice misplaced-period regex `[。，]` and
 # (b) the unified empty-filter CJK punctuation set; both target real CJK
 # characters that ASR output contains, so the ambiguous-char lints are

@@ -10,7 +10,7 @@ details and examples live here.
    - `lint-imports`
    - `ruff check . --select ALL`
    - `mypy --strict .`
-   - `pytest tests/unit/ tests/canary/ -x`
+   - `pytest tests/canary/ tests/integration/ -x`
 2. `git status` + `git diff --stat` to glance at the change set.
 3. One thing per commit (no mixing `fix` with `feat`, no new
    functionality inside a `refactor`).
@@ -112,8 +112,8 @@ separators):
 
 ```
 Tier 1: lint-imports KEPT (1/1) · ruff clean (39 files) · mypy
-strict clean (39 files) · 218/218 unit tests pass · wall 0.37s
-(< 30s budget).
+strict clean (39 files) · 94/94 canary+integration tests pass · wall
+0.37s (< 30s budget).
 ```
 
 Always include each of the four gates and a wall-clock number. If a
