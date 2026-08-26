@@ -201,3 +201,162 @@ All 6 rows green in one burn log · grammar and gate tables committed · registr
 | `write_file` handler + registration | `jarvis/execution/tools.py` |
 | grammar table | `config/confirm_grammar.yaml` |
 | content staging | `artifacts_root/pending_writes/` |
+
+---
+
+## 10. Implementation errata and reconciliations
+
+Recorded during the build on `worktree-phase2-impl` (Steps 1-7, `ce2ec34`..`1e2f75c`).
+Each entry names the step that surfaced it. §10.6 is **open** and needs Allen's decision;
+everything above it is shipped.
+
+### 10.1 Count correction
+
+**A (Step 2).** §6 build-order step 2 reads "registry 42→47". The live registry measured
+**41** entries at `9bdc73a`. §3 D3 ("41 … → 46") and §7 Definition of Done ("registry 46")
+are both correct; §6's number is the typo. Shipped 41 → 46, verified at runtime.
+
+### 10.2 Cross-step contracts the ADR left implicit
+
+**B (Step 1) — `allowed_targets` holds the entity-ref form, not the bare path.** D2.3 says
+"byte-equal **path** match" against "the request's canonical target", but `ActionRequest`
+has no canonical-target field — only `target_entity_ref: str | None` (e.g. `file:/abs/path`).
+`_lease_scope_permits` therefore matches against `target_entity_ref`, and Step 6 mints
+`allowed_targets` from the snapshot's `target_entity_ref`. D3's `canonical_target` (bare path)
+exists only for the human-readable template line. Had Step 6 minted from `canonical_target`,
+every re-proposal would refuse as wrong-target and C1 would fail by construction.
+
+**C (Step 3) — the slot needs `accepted_event_uid` as D2.4's join key.** D2.4's first half
+requires finding, from a lease, the confirmation the projection "shows as accepted". D6 defines
+the lease's `source_confirmation_event_id` as the `confirmation.accepted` **event's uid**, not
+the `confirmation_id` payload key the slot is keyed on. `PendingConfirmationSlot.accepted_event_uid`
+is that join key, stamped during the fold, `None` in every other state. `confirmation.rejected`
+needs no equivalent — a rejected confirmation mints no lease.
+
+**D (Step 3) — consumption folds through a `lease_id` set.** D2.4 says consumption folds from
+the `gate.evaluated` pass event, but that event carries only `lease_id`, and leases are never
+stored (D2), so no `lease_id → confirmation` mapping exists. `PendingConfirmations` exposes
+`consumed_lease_ids: frozenset[str]`, folded from every `gate.evaluated` with `outcome == "pass"`
+and a `lease_id`. Row C5's replay check tests membership directly, which stays correct if
+multi-slot pending ever lands. **The closing condition:** the re-proposal's own `gate.evaluated`
+must carry `lease_id`, or nothing is ever marked consumed and C5 silently never fires. Step 6
+emits it on every outcome — the fold consumes only on `pass`, and having it on a refusal makes
+a drift-refusal auditable.
+
+### 10.3 Gate semantics reconciliations
+
+**E (Step 1) — the outcome ladder needed a new branch.** §4 says a malformed lease produces
+`refuse`, and C5 requires a replayed lease to produce `refuse`. The pre-existing ladder routed
+*any* present-but-invalid lease to `confirm_required` when the other three checks passed, so
+both would have landed on "ask Allen again". Shipped: a `lease_hard_invalid` flag forcing
+`refuse` ahead of the `confirm_required` arm. The distinction it encodes:
+
+- missing / expired / wrong-tool / wrong-target → `confirm_required` (Allen could re-grant)
+- malformed / already-consumed / unverifiable → `refuse` or `confirm_required` per below
+
+Step 6's single-use check sets both `lease_validated = False` and `lease_hard_invalid = True`
+on a replay, so C5 refuses without the ladder being touched again.
+
+**F (Step 1) — D2.3's fail-closed is bidirectional.** D2.3 states one direction ("the request
+has a target and the lease lists none"). The symmetric hole is equally real: a lease scoped to
+specific targets must not vacuously authorize a **target-less** action of the same tool (§1: the
+lease "binds the approval to the exact frozen action"). Shipped `_lease_scope_permits` implements
+the full five-row truth table; the ADR's prose covers two rows.
+
+**G (Step 6) — an unverifiable lease fails closed.** When a lease is present but no
+`PendingConfirmations` projection was supplied, the single-use check **fails** (soft —
+`confirm_required`), rather than passing. It is not analogous to `entity_registry=None`, which
+*narrows* a check that still runs; a missing projection would skip the check entirely. Unreachable
+today (the five D7 sites attach no lease; the sole minting site always supplies the projection),
+but that is call-site discipline, not structure.
+
+**H (Steps 3, 6) — §4's "gate refuses the re-proposal → slot → consumed".** The shipped fold
+marks `consumed` only on a `pass` carrying `lease_id`; a refused re-proposal (gate drift, hash
+mismatch) leaves the slot at `accepted_unconsumed`. Functionally equivalent — `is_live` gates the
+grammar on `state == "pending"`, so a stranded slot can never be answered again. Read §4's
+"slot → consumed" as "the slot is finished", which it is.
+
+**I (Step 3) — `superseded` is unobservable under the single-slot fold.** D4 says a new
+`confirmation.requested` "marks the old `superseded`", but with one slot the new ask replaces the
+old outright. Supersession stays visible in the event log (two `requested` events) and is enforced
+behaviourally: a stale `accepted` naming the discarded `confirmation_id` does not match and is
+ignored. The Literal member stays for D4 fidelity and the deferred multi-slot case; the Day-1 fold
+never returns it.
+
+### 10.4 Surface routing
+
+**J (Step 5) — `ask_confirm` needed `say` in the routing table.** §1 notes the channel was
+"already mapped" to `(osascript_banner, cli_stdout)`, and D5 says it is deliberately NOT in the
+ADR-0009 TTS suppression set because "the question speaks". Making the channel reachable exposed
+the contradiction: `tests/canary/test_canary_system_turns_never_tts.py` derives "channels that must
+be suppressed" from that table and demanded the opposite.
+
+The table was wrong, not the canary. `ask_confirm` is now `("say", "osascript_banner", "cli_stdout")`.
+`_TTS_SILENT_CHANNELS` is untouched (D5 honoured) and the canary is untouched. No double-speak: the
+daemon passes `available_surfaces=frozenset()`, so daemon voice still comes solely from
+`_tts_watcher`; this entry is what makes the **CLI** path speak. `_TTS_SILENT_CHANNELS`'s own comment
+states the principle — feeding TTS a channel with no voice surface "contradicts the routing table",
+so a channel that speaks must declare it there.
+
+### 10.5 Safety strengthenings beyond the ADR text
+
+**K (Step 4) — a write target resolves through the existing fuzzy search.** D1 says "an existing
+file resolves normally", and normal resolution is the same mdfind/token search `open_path` uses. A
+fuzzy mis-hit costs nothing on a read and clobbers the wrong file on a write. The containment is the
+confirmation itself: the canonical path reaches Allen in the template line before any byte is written.
+Non-existent targets never touch the fuzzy path — only `<bookmark alias>/<relative path>` or an
+absolute/`~` path, both deterministic.
+
+**L (Step 5) — the template line must survive a Pre-emit Gate retry.** D5 puts the line in the draft,
+which then goes through the normal gate. If the retry chain regenerates the draft, the LLM — which
+never saw the line — produces text without it, and Allen gets a confirmation question with no path,
+no mode and no byte count while his 「可以」 still authorizes the write. Unreachable today only because
+`write_file` proposals carry no `active_subject_ref`. Given K, this line is the wrong place to rely on
+a coincidence. Shipped: an idempotent post-condition at the end of the finalize path, byte-identical
+output on the normal path, with the response hash recomputed so `turn.ended` and the returned plan
+agree.
+
+### 10.6 Live-burn findings — OPEN, Allen's decision
+
+Both surfaced in the §7 burn (`docs/live-burn-2026-08-26-adr0012.md`). Neither is a confirmation-flow
+defect; both keep C1 red, and neither was patched.
+
+**M — `write_file`'s mode contract demands a distinction the tool surface withholds.** D1: `create`
+refuses an existing file, `overwrite`/`append` require one. To pick correctly the LLM must know whether
+the target exists; its `read_file` probe on a missing file is refused with `entity_required: read_file
+demands a resolved target` — a **resolution** message, not an **existence** one. The LLM chose
+`append` on a non-existent file **8 times out of 8** and never once `create`.
+
+The minimal candidate fix is to let `append` create a missing file (ordinary POSIX append semantics),
+keeping `create` and `overwrite` strict. That deviates from D1's stated contract, so it is not taken
+unilaterally.
+
+**N — the prompt's prose ask preempts the machine ask.** Of 20 ask utterances, 10 produced a
+`confirmation.requested` and 10 produced prose ("待确认操作：…") with `tools=[]` and no proposal, no
+slot, no armed grammar — a following 「可以」 would have been inert. The cause is
+`prompts/jarvis_v1.md`'s `<intent_and_routing>` and `<action_safety>` instructions to confirm before
+persistent actions.
+
+§1 called those instructions decorative; the burn shows they **compete with** the machine ask and win
+about half the time. D7's "they become true by machinery, not by editing" holds only on turns where the
+LLM proposes the tool. §7's defer clause — "prompt-side interface notes (only if live burn shows need —
+never as behavior patch)" — now has its evidence. Note that the indicated direction is *removing* a
+now-redundant instruction (the machine asks, so the LLM need not), not accreting a new one.
+
+### 10.7 Carried debts
+
+- **Orphaned staged artifacts (Step 5).** Content is staged before `confirmation.requested` is emitted —
+  correct ordering, since the reverse would leave an event pointing at a missing artifact and break
+  accept-time hash verification. A crash in the window leaves an inert unreferenced file under
+  `pending_writes/`. Nothing prunes it, matching the codebase's existing absence of artifact retention.
+- **C1's `scratch` target does not resolve (Step 4).** `config/file_targets.yaml` has no `scratch`
+  bookmark, and a bare natural-language target deliberately resolves to `None`. The burn used
+  `桌面/jarvis-burn-shopping.md`. Either add the bookmark or keep the substituted target.
+- **`effective_policy()`'s static tool surface was already stale (Step 4).** The `None` fallback listed
+  only `{spawn_worker, verify_diff}` — all seven ADR-0011 tools were already missing. Step 4 added
+  `write_file` (needed so a caller on that branch reaches `confirm_required`) and left the rest. Production
+  never takes this branch. Worth a separate cleanup commit.
+- **The two `surface.*` placeholders are declared thin (Step 2).** `required_payload=("turn_id",)` does not
+  point back at the surface being dismissed, which a real emitter will likely need. Acceptable because
+  `emit_event` accepts undeclared extra keys Day-1 (§5.4 strict-mode deferred), so the emitter can carry a
+  target ref without a registry change.
