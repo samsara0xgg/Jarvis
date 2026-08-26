@@ -61,7 +61,7 @@ pytestmark = [pytest.mark.live_codex, pytest.mark.live_llm]
 _J12_DEFERRED_SKIP = (
     "J12 live burn deferred by design (P-0010 X-decision + spec §3.5.8): the "
     "load-bearing post-turn guard is deterministically covered by "
-    "tests/unit/test_spawn_worker_real.py::"
+    "~/Projects/jarvis-deprecated-tests/unit/test_spawn_worker_real.py::"
     "test_spawn_worker_submit_report_missing_emits_report_missing. A real, "
     "fully-wired Codex 0.130 cannot be made to organically skip submit_report "
     "without gaming the prompt. See module docstring for the optional "

@@ -190,6 +190,22 @@ def live_detached_cli(
 
     rows_before_spawn = _count_events_fresh(db_path)
 
+    # Hermetic HOME. ``JARVIS_RUNTIME_ROOT`` only moves the Event Log —
+    # two CLI probes stay home-relative and would couple this burn to
+    # Allen's real machine state: the B-NEW-5 guard resolves
+    # ``~/.jarvis/daemon.lock`` (a live daemon → exit 2 refusal before
+    # the fork) and the ADR-0009 D2 forward resolves
+    # ``~/Library/LaunchAgents`` (an installed plist → HTTP forward
+    # instead of ack-then-fork). Both read $HOME via ``expanduser``.
+    fake_home = tmp_path_factory.mktemp("detached_home")
+    # ...with one carve-out: Codex auth. ``codex_action`` copy-seeds
+    # ``~/.codex/auth.json`` into the per-spawn CODEX_HOME and writes the
+    # rotated (single-use) refresh token back to that same canonical
+    # path. Symlink rather than copy, so the child reads AND refreshes
+    # the real credential — a copy would strand the rotated token in tmp
+    # and kill the next turn's auth (B-0004 follow-up).
+    (fake_home / ".codex").symlink_to(Path("~/.codex").expanduser())
+
     spawn_started = time.monotonic()
     proc = subprocess.run(
         [sys.executable, "-m", "jarvis", _UTTERANCE],
@@ -197,7 +213,7 @@ def live_detached_cli(
         timeout=60,
         capture_output=True,
         text=True,
-        env={**environ, "JARVIS_RUNTIME_ROOT": str(root)},
+        env={**environ, "JARVIS_RUNTIME_ROOT": str(root), "HOME": str(fake_home)},
     )
     parent_wall_s = time.monotonic() - spawn_started
     parent_exit_epoch_ms = int(time.time() * 1000)

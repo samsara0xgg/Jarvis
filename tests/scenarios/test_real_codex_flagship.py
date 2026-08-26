@@ -623,7 +623,7 @@ def test_j3_thread_start_cwd_matches_repo_path() -> None:
     """
     pytest.skip(
         "J3 thread/start cwd is not Event-Log-observable; proven by "
-        "tests/unit/test_codex_action.py::"
+        "~/Projects/jarvis-deprecated-tests/unit/test_codex_action.py::"
         "test_run_codex_action_thread_start_cwd_matches_repo_path.",
     )
 
@@ -953,7 +953,7 @@ def test_j10_all_four_sandbox_c_flags_present_in_popen_args(real_python_repo: Pa
     """
     pytest.skip(
         "J10 -c flags are not Event-Log-observable; proven by "
-        "tests/unit/test_codex_action.py::test_build_extra_args_carries_all_required_keys "
+        "~/Projects/jarvis-deprecated-tests/unit/test_codex_action.py::test_build_extra_args_carries_all_required_keys "
         "(+ ::test_build_extra_args_has_eleven_c_flags).",
     )
 
@@ -990,7 +990,7 @@ def test_j12_no_submit_report_emits_report_missing(real_python_repo: Path) -> No
     pytest.skip(
         "J12 lives in tests/scenarios/test_real_codex_no_submit_report.py; its "
         "live burn is deferred by design (P-0010 X-decision + spec §3.5.8) and "
-        "the post-turn guard is unit-proven by tests/unit/test_spawn_worker_real.py."
+        "the post-turn guard is unit-proven by ~/Projects/jarvis-deprecated-tests/unit/test_spawn_worker_real.py."
     )
 
 
@@ -1009,7 +1009,7 @@ def test_j13_dirty_tree_stash_pop_conflict_emits_conflict_patch(real_python_repo
         "J13 lives in tests/scenarios/test_real_codex_dirty_tree_overwrite.py + "
         "test_real_codex_dirty_tree_conflict.py (sandbox denies .git writes → "
         "merge-conflict shape live-unreachable; unit-proven in "
-        "tests/unit/test_diff_capture.py). This stub keeps J13 in the Tier-2 "
+        "~/Projects/jarvis-deprecated-tests/unit/test_diff_capture.py). This stub keeps J13 in the Tier-2 "
         "enumeration."
     )
 
@@ -1028,7 +1028,7 @@ def test_k1_say_subprocess_invoked_with_voice_flag(real_python_repo: Path) -> No
     """
     pytest.skip(
         "K1 say argv is not Event-Log-observable; proven by "
-        "tests/unit/test_notify.py::test_deliver_voice_spawns_say_with_tingting.",
+        "~/Projects/jarvis-deprecated-tests/unit/test_notify.py::test_deliver_voice_spawns_say_with_tingting.",
     )
 
 
@@ -1045,7 +1045,7 @@ def test_k2_osascript_notification_truncated_at_240(real_python_repo: Path) -> N
     """
     pytest.skip(
         "K2 osascript argv/truncation is not Event-Log-observable; proven by "
-        "tests/unit/test_notify.py::test_deliver_banner_short_body "
+        "~/Projects/jarvis-deprecated-tests/unit/test_notify.py::test_deliver_banner_short_body "
         "(+ ::test_deliver_banner_truncates_at_240).",
     )
 

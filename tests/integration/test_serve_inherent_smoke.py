@@ -95,19 +95,20 @@ def test_daemon_submit_to_ws_round_trip(tmp_path: Path) -> None:
             with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310 — localhost loopback URL controlled by the test.
                 assert resp.status == 200
                 body = json.loads(resp.read().decode())
-                assert body == {"status": "accepted"}
+                # Subset assert: ADR-0009 D2 made the response additive
+                # (``turn_id`` rides alongside). Pin the Day-1 field
+                # exactly; tolerate additive keys.
+                assert body["status"] == "accepted", body
 
             # 3. Receive open + N appends + done. Daemon must complete a
             #    full turn (real LLM call) before the first envelope
             #    arrives; subsequent envelopes are emitted back-to-back.
             open_msg = json.loads(ws.recv(timeout=120))
             assert open_msg["op"] == "open", open_msg
-            assert open_msg["payload"] == {
-                "content": "",
-                "streaming": True,
-                "kind": "text",
-                "q": "hi",
-            }
+            # Subset assert (see /submit above): the open payload also
+            # carries the additive ``turn_id``.
+            expected_open = {"content": "", "streaming": True, "kind": "text", "q": "hi"}
+            assert open_msg["payload"].items() >= expected_open.items(), open_msg
 
             appends: list[str] = []
             done_msg: dict[str, object] | None = None
@@ -130,7 +131,12 @@ def test_daemon_submit_to_ws_round_trip(tmp_path: Path) -> None:
                 pytest.fail(f"daemon emitted >64 envelopes without done; got appends={appends!r}")
 
         assert done_msg is not None
-        assert done_msg == {"op": "done", "payload": {"fadeMs": 5000}}
+        assert done_msg["op"] == "done", done_msg
+        # Subset assert (see /submit above): the done payload also
+        # carries the additive ``turn_id``.
+        done_payload = done_msg["payload"]
+        assert isinstance(done_payload, dict), done_msg
+        assert done_payload["fadeMs"] == 5000, done_msg
         assert appends, "daemon emitted no append envelopes"
         assert "".join(appends), "daemon emitted empty appends"
 
