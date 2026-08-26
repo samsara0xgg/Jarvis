@@ -88,6 +88,7 @@ import math
 import os
 import socket
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -2147,6 +2148,16 @@ def _emit_tool_observation(  # noqa: PLR0913 — all kwargs are the shared sync-
     )
 
 
+_TOOL_ERROR_MESSAGE_MAX_BYTES: Final[int] = 8192
+"""Same 8 KiB order as every other D5 tool's output cap (MUST-FIX 1b,
+ADR-0011 §12). `_emit_tool_error` is the single choke point every sync
+handler's failure exit goes through — capping HERE, once, means no
+handler can write an unbounded `tool_output` / `action.result_observed`
+row by interpolating a raw exception's `str()` verbatim (the uncapped
+`f"...: {exc}"` idiom appears at half a dozen call sites; this bounds
+all of them without touching any of them individually)."""
+
+
 def _emit_tool_error(  # noqa: PLR0913 — all kwargs are the shared sync-handler failure shape (conn/lifecycle/action_id/running_event_uid/code/message); splitting them into a bundle defeats the point of a shared helper.
     *,
     conn: sqlite3.Connection,
@@ -2163,7 +2174,19 @@ def _emit_tool_error(  # noqa: PLR0913 — all kwargs are the shared sync-handle
     terminal, on every exit path" contract every sync L4 handler in
     this module follows (the invariant `_get_running_event_uid`
     documents at its call sites).
+
+    `message` is capped at `_TOOL_ERROR_MESSAGE_MAX_BYTES` (MUST-FIX 1b,
+    ADR-0011 §12 / spec §3.5.11's bounded-payload rule) — a handler
+    that interpolates a raw exception's `str()` can otherwise write an
+    unbounded row into durable state (an upstream that echoes its
+    request body, or simply a pathological error message).
     """
+    message_bytes = message.encode("utf-8")
+    if len(message_bytes) > _TOOL_ERROR_MESSAGE_MAX_BYTES:
+        capped_text, undelivered_bytes, _lossy = truncate_utf8(
+            message_bytes[:_TOOL_ERROR_MESSAGE_MAX_BYTES], len(message_bytes),
+        )
+        message = f"{capped_text}…[truncated {undelivered_bytes} bytes]"
     tool_output_str = tool_error(message, code=code)
     emit_event(
         conn,
@@ -3712,6 +3735,334 @@ def open_url_handler(  # noqa: PLR0911 — one linear validate/canonicalize/subp
         )
 
 
+# --- screen_look ---------------------------------------------------------------
+
+
+class VisionClient(Protocol):
+    """Injected one-shot vision seam for `screen_look` (ADR-0011 D5/D7).
+
+    L4 cannot import `jarvis.decision.llm.LLMClient` — sibling layers
+    under `.importlinter`. `jarvis.runtime` (the composition root)
+    builds the real implementation around the `llm.presets.vision`
+    preset and binds it into `build_default_registry` at
+    registry-build time — the same seam Step 5/6 used for
+    `vault_root` / `tools.web.*`.
+
+    One call: an image path (+ optional question) in, text out. The
+    handler hands this a `Path`, never bytes — reading the file and
+    base64-encoding it for the actual vision request happens entirely
+    inside the injected implementation, so no image data ever passes
+    through, or is held by, this L4 module (spec §3.3.9 / ADR-0011 §3
+    D5: the payload carries the artifact path, never image bytes).
+    Any failure must be raised, not swallowed — the handler's own
+    boundary catch turns it into an error observation; the screenshot
+    artifact already on disk is unaffected by a vision failure
+    (ADR-0011 §5).
+    """
+
+    def describe_image(self, image_path: Path, *, question: str | None) -> str:
+        """Return a text description of the image at `image_path`."""
+        ...
+
+
+DEFAULT_SCREEN_MAX_WIDTH_PX: Final[int] = 1568
+"""Default `tools.screen.max_width_px` (ADR-0011 D7) — the vision
+model's own recommended upper bound on input image width."""
+
+_SCREEN_ARTIFACTS_DIRNAME: Final[str] = "screen_artifacts"
+"""Subdirectory of `runtime_paths.artifacts_root`, mirroring the
+`voice_artifacts/` precedent (`jarvis/runtime/inherent_loop.py:735`).
+Nothing prunes it — same as `voice_artifacts/`, which has no pruner
+either (`jarvis/surface/voice_artifact_store.py`); screenshots
+accumulate on disk indefinitely."""
+
+_SCREEN_CAPTURE_TIMEOUT_S: Final[float] = 10.0
+_SIPS_TIMEOUT_S: Final[float] = 10.0
+
+_SCREEN_LOOK_TEXT_MAX_BYTES: Final[int] = 8192
+"""Same 8 KiB order as every other D5 tool's output cap."""
+
+_PNG_MAGIC: Final[bytes] = b"\x89PNG\r\n\x1a\n"
+
+
+def _looks_like_png(path: Path) -> bool:
+    """Check the real 8-byte PNG magic (NIT-FIX 6, ADR-0011 §12).
+
+    A bare `st_size == 0` check lets a truncated write through — e.g.
+    a 3-byte fragment from an interrupted `screencapture` is non-empty
+    and would otherwise reach the vision model (and get billed for
+    garbage input) instead of being rejected here. Stdlib only, no new
+    imaging dependency.
+    """
+    try:
+        with path.open("rb") as fh:
+            return fh.read(len(_PNG_MAGIC)) == _PNG_MAGIC
+    except OSError:
+        return False
+
+
+_SCREEN_LOOK_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "question": {
+            "type": "string",
+            "description": (
+                "Optional: focus the screen description on this question "
+                "instead of a generic summary."
+            ),
+        },
+    },
+    "required": [],
+}
+
+
+def _run_screencapture(
+    output_path: Path, *, timeout_s: float,
+) -> subprocess.CompletedProcess[bytes]:
+    """Real `screencapture -x -m` invocation (ADR-0011 D5).
+
+    Named seam, not inlined, so the acceptance script can substitute a
+    fake without ever invoking the real macOS screenshot utility — the
+    first real invocation triggers the Screen Recording TCC prompt,
+    which needs Allen physically present to approve.
+
+    `-m` restricts the capture to the main display (NIT-FIX 6, ADR-0011
+    §12): without it, a multi-display Mac gets one file per display,
+    and every file but the one at `output_path` is an orphan — no
+    payload field ever references it and nothing prunes it. Declared
+    limitation: on a multi-display Mac this tool only ever sees the
+    main display.
+    """
+    return subprocess.run(  # noqa: S603
+        ["screencapture", "-x", "-m", str(output_path)],  # noqa: S607 — resolved via PATH, matches pbpaste/open precedent.
+        timeout=timeout_s,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+
+
+def _run_sips_downscale(
+    image_path: Path, max_width_px: int, *, timeout_s: float,
+) -> subprocess.CompletedProcess[bytes]:
+    """Real in-place `sips -Z <max_width_px>` downscale (ADR-0011 D5).
+
+    `-Z` / `--resampleHeightWidthMax` bounds the LARGER of the two
+    dimensions to at most `max_width_px` (preserving aspect ratio, and
+    not upscaling an already-smaller image) — not width specifically.
+    For an ordinary landscape screenshot the two readings coincide, so
+    behavior matches intent; a rotated display would make height the
+    binding dimension, and `-Z` still produces the correct bound in
+    that case too (NIT-FIX 6, ADR-0011 §12 — `max_width_px` is simply a
+    narrower name than what this actually controls). Named seam, same
+    rationale as `_run_screencapture`.
+    """
+    return subprocess.run(  # noqa: S603
+        ["sips", "-Z", str(max_width_px), str(image_path)],  # noqa: S607 — resolved via PATH.
+        timeout=timeout_s,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+
+
+def _screen_recording_permission_message() -> str:
+    """ADR-0011 §5's TCC-denial sentence, with the real interpreter path."""
+    return f"Screen Recording permission missing for {sys.executable} — System Settings → Privacy"
+
+
+def _make_screen_look_handler(  # noqa: C901 — one linear capture/downscale/vision/cap pass; each return is a distinct named terminal outcome, same rationale as the other D5 closure factories.
+    *,
+    vision_client: VisionClient | None,
+    max_width_px: int,
+) -> ToolHandler:
+    """Bind the injected vision client + `tools.screen.max_width_px` (ADR-0011 D7).
+
+    Same shape as `_make_web_search_handler` — config/deps read once at
+    registry-build time, closed over here. `vision_client=None` means
+    `jarvis.runtime` found no usable `llm.presets.vision` block: the
+    tool still registers (the menu stays complete) but every call
+    degrades to a `vision_unconfigured` error observation — AFTER the
+    screenshot is captured and saved, so evidence survives a config
+    gap the same way it survives a live proxy outage (ADR-0011 §5).
+    """
+
+    def _handler(  # noqa: PLR0911 — one linear capture/downscale/vision/cap pass; each return is a distinct named terminal outcome via `_emit_tool_error`/`_emit_tool_observation`, same rationale as the other D5 handlers.
+        action_request: ActionRequest,
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,
+        lifecycle: ActionLifecycle,
+    ) -> RawResult:
+        running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+        action_id = action_request.action_id
+
+        try:
+            question_raw = action_request.arguments.get("question")
+            question = (
+                question_raw.strip()
+                if isinstance(question_raw, str) and question_raw.strip()
+                else None
+            )
+
+            artifacts_dir = runtime_paths.artifacts_root / _SCREEN_ARTIFACTS_DIRNAME
+            artifacts_dir.mkdir(parents=True, exist_ok=True)
+            # `action_id` makes this collision-free (SHOULD-FIX 4, ADR-0011
+            # §12): the millisecond timestamp alone repeats across
+            # back-to-back dispatches, silently repointing an OLDER
+            # `action.result_observed` row's `artifact_path` at a
+            # DIFFERENT screenshot's bytes — undetectable after the fact,
+            # since the path IS the evidence (§3.3.9's whole design).
+            # The timestamp prefix is kept only for chronological `ls`.
+            image_path = artifacts_dir / f"{int(time.time() * 1000)}_{action_id}.png"
+
+            try:
+                capture_proc = _run_screencapture(image_path, timeout_s=_SCREEN_CAPTURE_TIMEOUT_S)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return _emit_tool_error(
+                    conn=conn,
+                    lifecycle=lifecycle,
+                    action_id=action_id,
+                    running_event_uid=running_event_uid,
+                    code="screen_capture_start_failed",
+                    message=f"screen_look: screencapture failed to run: {exc}",
+                )
+
+            if capture_proc.returncode != 0:
+                # SHOULD-FIX 5, ADR-0011 §12: a non-zero exit's cause is
+                # NOT determinable from here — it could be a TCC denial,
+                # a bad path, a full disk, or anything else `screencapture`
+                # exits non-zero for. Unlike the "wrote nothing" branch
+                # below (a shape that genuinely IS specific to TCC denial
+                # on some macOS versions), asserting a permission cause
+                # here would send Allen to System Settings for e.g. a
+                # filesystem problem. Report what actually happened, and
+                # name Screen Recording only as the likely cause on a
+                # first run — actionable without claiming certainty.
+                stderr_tail = (capture_proc.stderr or b"").decode("utf-8", errors="replace").strip()
+                return _emit_tool_error(
+                    conn=conn,
+                    lifecycle=lifecycle,
+                    action_id=action_id,
+                    running_event_uid=running_event_uid,
+                    code="screen_capture_failed",
+                    message=(
+                        f"screen_look: screencapture exited {capture_proc.returncode}"
+                        f"{f': {stderr_tail}' if stderr_tail else ''}. If this is the "
+                        f"first screen_look call, the likely cause is missing Screen "
+                        f"Recording permission for {sys.executable} — System Settings → "
+                        "Privacy; otherwise this is a genuine screencapture failure."
+                    ),
+                )
+
+            if not image_path.is_file() or not _looks_like_png(image_path):
+                # ADR-0011 §5: on some macOS versions a TCC-denied
+                # screencapture exits 0 but writes nothing (or an empty
+                # /truncated file) instead of failing loudly. This
+                # branch — unlike the non-zero-exit one above — genuinely
+                # IS specific enough to name Screen Recording as the
+                # cause: a successful (exit-0) capture that produced no
+                # valid PNG is the documented TCC-denial shape on those
+                # macOS versions, not a generic failure. Checking the
+                # PNG magic (not just `st_size`) also catches a
+                # truncated/partial write (NIT-FIX 6) before it reaches
+                # the vision model. Detecting a FOURTH shape — an
+                # all-black image written by some macOS versions on
+                # TCC denial — would require decoding pixel data (a
+                # new imaging dependency); deliberately not attempted.
+                return _emit_tool_error(
+                    conn=conn,
+                    lifecycle=lifecycle,
+                    action_id=action_id,
+                    running_event_uid=running_event_uid,
+                    code="screen_recording_permission_denied",
+                    message=(
+                        f"screen_look: {_screen_recording_permission_message()} "
+                        "(screencapture produced no image data)"
+                    ),
+                )
+
+            try:
+                sips_proc = _run_sips_downscale(image_path, max_width_px, timeout_s=_SIPS_TIMEOUT_S)
+                if sips_proc.returncode != 0:
+                    LOGGER.warning(
+                        "screen_look: sips downscale failed (exit %s) for %s; "
+                        "continuing with the full-resolution screenshot",
+                        sips_proc.returncode,
+                        image_path,
+                    )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                # Downscaling is a cost/latency optimization for the
+                # vision call, not a correctness requirement — the
+                # call still works against the full-resolution PNG,
+                # and the artifact on disk is untouched either way.
+                LOGGER.warning(
+                    "screen_look: sips failed to run (%s) for %s; "
+                    "continuing with the full-resolution screenshot",
+                    exc,
+                    image_path,
+                )
+
+            if vision_client is None:
+                return _emit_tool_error(
+                    conn=conn,
+                    lifecycle=lifecycle,
+                    action_id=action_id,
+                    running_event_uid=running_event_uid,
+                    code="vision_unconfigured",
+                    message=(
+                        "screen_look: no vision client configured "
+                        f"(llm.presets.vision missing or invalid); screenshot saved at {image_path}"
+                    ),
+                )
+
+            try:
+                description_raw = vision_client.describe_image(image_path, question=question)
+            except Exception as exc:  # noqa: BLE001 — vision preset / proxy failures degrade to an error observation (ADR-0011 §5); the screenshot artifact above already exists on disk regardless.
+                return _emit_tool_error(
+                    conn=conn,
+                    lifecycle=lifecycle,
+                    action_id=action_id,
+                    running_event_uid=running_event_uid,
+                    code="vision_call_failed",
+                    message=(
+                        f"screen_look: vision call failed: {type(exc).__name__}: {exc}; "
+                        f"screenshot saved at {image_path}"
+                    ),
+                )
+
+            description_bytes = description_raw.encode("utf-8")
+            text, undelivered_bytes, _lossy = truncate_utf8(
+                description_bytes[:_SCREEN_LOOK_TEXT_MAX_BYTES], len(description_bytes),
+            )
+            if undelivered_bytes > 0:
+                text += f"…[truncated {undelivered_bytes} bytes]"
+
+            payload: dict[str, Any] = {
+                "artifact_path": str(image_path),
+                "description": text,
+                "truncated": undelivered_bytes > 0,
+                "total_bytes": len(description_bytes),
+            }
+            return _emit_tool_observation(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_id,
+                running_event_uid=running_event_uid,
+                payload=payload,
+            )
+        except Exception as exc:  # noqa: BLE001 — handler-boundary catch-all (ADR-0011 §12 MUST-FIX 2 precedent): never strand the lifecycle at `running`, name the real exception type.
+            return _emit_tool_error(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_id,
+                running_event_uid=running_event_uid,
+                code="screen_look_unexpected_error",
+                message=f"screen_look: unexpected {type(exc).__name__}: {exc}",
+            )
+
+    return _handler
+
+
 # --- ToolRegistry ------------------------------------------------------------
 
 
@@ -4162,14 +4513,16 @@ _OPEN_PATH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
 }
 
 
-def build_default_registry(
+def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
     *,
     obsidian_vault_root: Path | None = None,
     web_search_max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS,
     web_fetch_max_bytes: int = DEFAULT_WEB_FETCH_MAX_BYTES,
     web_timeout_s: float = DEFAULT_WEB_TIMEOUT_S,
+    vision_client: VisionClient | None = None,
+    screen_max_width_px: int = DEFAULT_SCREEN_MAX_WIDTH_PX,
 ) -> ToolRegistry:
-    """Assemble the default ToolRegistry (Day-1 six + ADR-0011 D5 six).
+    """Assemble the default ToolRegistry (Day-1 six + ADR-0011 D5 seven).
 
     The composition root (`jarvis.runtime`, Step 10) calls this once at
     startup and passes the registry to L3 + L4.
@@ -4189,6 +4542,15 @@ def build_default_registry(
         web_timeout_s: `tools.web.timeout_s` (ADR-0011 D7) — shared by
             `web_search` and `web_fetch` (see :data:`DEFAULT_WEB_TIMEOUT_S`
             for why D5's per-tool 15s/20s split collapses to one knob).
+        vision_client: Injected `screen_look` vision seam (ADR-0011
+            D5/D7). `None` (the default, and what the two existing
+            integration tests pass implicitly) means no usable
+            `llm.presets.vision` block was found; `screen_look` still
+            registers but every call degrades to an error observation
+            AFTER saving the screenshot. `jarvis.runtime` always
+            supplies a real client when `llm.presets.vision` parses.
+        screen_max_width_px: `tools.screen.max_width_px` (ADR-0011 D7)
+            — the `sips` downscale ceiling before the vision call.
     """
     vault_root = (
         obsidian_vault_root if obsidian_vault_root is not None else DEFAULT_OBSIDIAN_VAULT_ROOT
@@ -4426,11 +4788,39 @@ def build_default_registry(
             requires_confirmation=False,
         )
     )
+    registry.register(
+        ToolDefinition(
+            name="screen_look",
+            description=(
+                "Take a screenshot of Allen's screen and describe what's on "
+                "it via a vision model; an optional `question` focuses the "
+                "description on something specific. The decision LLM never "
+                "sees the screenshot pixels — only this tool's returned "
+                "text description."
+            ),
+            allowed_callers=frozenset(
+                {CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM},
+            ),
+            risk_level="L1",
+            result_semantics="observation",
+            is_async=False,
+            input_schema=_SCREEN_LOOK_INPUT_SCHEMA,
+            handler=_make_screen_look_handler(
+                vision_client=vision_client,
+                max_width_px=screen_max_width_px,
+            ),
+            domain="screen",
+            read_only=True,
+            requires_entity=False,
+            requires_confirmation=False,
+        )
+    )
     return registry
 
 
 __all__ = [
     "DEFAULT_OBSIDIAN_VAULT_ROOT",
+    "DEFAULT_SCREEN_MAX_WIDTH_PX",
     "DEFAULT_WEB_FETCH_MAX_BYTES",
     "DEFAULT_WEB_SEARCH_MAX_RESULTS",
     "DEFAULT_WEB_TIMEOUT_S",
@@ -4449,6 +4839,7 @@ __all__ = [
     "ToolRegistry",
     "ToolRegistryError",
     "UnknownToolError",
+    "VisionClient",
     "build_default_registry",
     "create_task_handler",
     "get_current_time_handler",

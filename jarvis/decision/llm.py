@@ -220,6 +220,25 @@ class LLMClient:
         self._max_tokens: int = int(cfg.get("max_tokens", 0) or 0)
         self._api_key: str | None = None
 
+        # Transport-level knobs (MUST-FIX 2, ADR-0011 §12): opt-in, flat
+        # top-level config only — no preset ever overrides these, so a
+        # caller that wants a bounded client (e.g. `screen_look`'s vision
+        # preset, via `jarvis.runtime._build_vision_client`) passes them
+        # in its config dict, and every other `LLMClient` (the decision
+        # loop's own) keeps the SDK's own default (unset -> not passed).
+        raw_timeout = cfg.get("timeout_s")
+        self._timeout_s: float | None = (
+            float(raw_timeout)
+            if isinstance(raw_timeout, (int, float)) and not isinstance(raw_timeout, bool)
+            else None
+        )
+        raw_max_retries = cfg.get("max_retries")
+        self._max_retries: int | None = (
+            int(raw_max_retries)
+            if isinstance(raw_max_retries, int) and not isinstance(raw_max_retries, bool)
+            else None
+        )
+
         # Last-call metadata. Reset on every chat() entry.
         self._last_metadata: dict[str, Any] = _empty_metadata()
         self._last_finish_reason: str | None = None
@@ -466,10 +485,19 @@ class LLMClient:
             msg = "OpenAI API key is unset; check api_key_env in the active preset"
             raise MissingAPIKeyError(msg)
         # base_url=None is the SDK's "use the default OpenAI host" sentinel.
-        self._openai_client = OpenAI(
-            api_key=self._api_key,
-            base_url=self._base_url or None,
-        )
+        # `timeout`/`max_retries` are omitted entirely (SDK defaults apply)
+        # unless the config set `timeout_s`/`max_retries` explicitly
+        # (MUST-FIX 2, ADR-0011 §12) — today only the vision preset's
+        # dedicated client does.
+        client_kwargs: dict[str, Any] = {
+            "api_key": self._api_key,
+            "base_url": self._base_url or None,
+        }
+        if self._timeout_s is not None:
+            client_kwargs["timeout"] = self._timeout_s
+        if self._max_retries is not None:
+            client_kwargs["max_retries"] = self._max_retries
+        self._openai_client = OpenAI(**client_kwargs)
         return self._openai_client
 
     def _chat_openai(

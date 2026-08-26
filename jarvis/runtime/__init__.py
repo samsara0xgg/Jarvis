@@ -31,16 +31,18 @@ imported by ``jarvis.cli`` only.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import logging
+import re
 import sys
 import time
 import uuid
 from collections.abc import Mapping  # runtime use: isinstance in the config readers.
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import yaml
 
@@ -69,11 +71,13 @@ from jarvis.execution.path_resolver import (
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.tools import (
     DEFAULT_OBSIDIAN_VAULT_ROOT,
+    DEFAULT_SCREEN_MAX_WIDTH_PX,
     DEFAULT_WEB_FETCH_MAX_BYTES,
     DEFAULT_WEB_SEARCH_MAX_RESULTS,
     DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
     ToolRegistry,
+    VisionClient,
     build_default_registry,
     release_turn_actions,
     turn_action_ids,
@@ -144,6 +148,22 @@ _DEFAULT_TRIGGER_TIMEOUT_S: float = 5.0
 # source; mirroring the shipped default here means a missing block reads
 # the same cadence the daemon would actually poll at.
 _FALLBACK_OBSERVER_POLL_INTERVAL_S: float = 60.0
+
+# Default `tools.screen.vision_preset` (ADR-0011 D7) — the `llm.presets.*`
+# key `screen_look` reads for its one vision call when the config's
+# `tools.screen` block doesn't override it.
+_DEFAULT_VISION_PRESET_NAME: str = "vision"
+
+# System prompt for the injected vision client (`_LLMVisionClient` below).
+# Directed at the vision model, not Allen, so it stays English; asking for
+# a Chinese answer means `screen_look`'s text observation slots straight
+# into the rest of Jarvis's Chinese-speaking pipeline without a translation
+# hop.
+_VISION_SYSTEM_PROMPT: str = (
+    "You are a screen-reading assistant. Describe what is currently "
+    "visible in the screenshot factually and concisely. Respond in "
+    "Chinese (中文)."
+)
 
 # Fallback ``tools.obsidian.vault_root`` (ADR-0011 D7) for a runtime
 # whose config carries no ``tools:`` block. NIT-FIX 8 (ADR-0011 §12):
@@ -446,6 +466,191 @@ def _web_tools_config(config: Mapping[str, Any]) -> tuple[int, int, float]:
     return search_max_results, fetch_max_bytes, timeout_s
 
 
+def _screen_tools_config(config: Mapping[str, Any]) -> tuple[str, int]:
+    """Return `(vision_preset_name, max_width_px)` from `tools.screen.*` (ADR-0011 D7).
+
+    Same best-effort posture as `_web_tools_config` — a missing/malformed
+    `tools.screen` block degrades to the shipped defaults rather than
+    failing boot; these are UX/cost knobs, not trust sources.
+    """
+    preset_name = _DEFAULT_VISION_PRESET_NAME
+    max_width_px = DEFAULT_SCREEN_MAX_WIDTH_PX
+    block = config.get("tools")
+    if isinstance(block, Mapping):
+        screen_block = block.get("screen")
+        if isinstance(screen_block, Mapping):
+            raw_preset = screen_block.get("vision_preset")
+            if isinstance(raw_preset, str) and raw_preset.strip():
+                preset_name = raw_preset
+            raw_width = screen_block.get("max_width_px")
+            if isinstance(raw_width, int) and not isinstance(raw_width, bool) and raw_width > 0:
+                max_width_px = raw_width
+    return preset_name, max_width_px
+
+
+_VISION_CALL_TIMEOUT_S: Final[float] = 20.0
+"""Bound on the vision preset's OpenAI SDK call (MUST-FIX 2, ADR-0011
+§12). Same 20 s order as `DEFAULT_WEB_TIMEOUT_S` (Step 6's web tools) —
+every other seam in `screen_look` is bounded (`_SCREEN_CAPTURE_TIMEOUT_S`
+/ `_SIPS_TIMEOUT_S` = 10 s each), yet without this the one network call
+had NO timeout: the SDK's own default is `Timeout(connect=5, read=600,
+write=600, pool=600)` with `max_retries=2`, i.e. up to ~1800 s blocking
+the synchronous `decide()` loop on a hung proxy. Deliberately scoped to
+ONLY the vision client — the decision loop's own `LLMClient` (built
+separately, below) shares the same unbounded-timeout omission, but a
+`deep` preset with a large `max_tokens` can legitimately run long;
+bounding it is a separate decision, out of this ADR's scope."""
+
+_VISION_CALL_MAX_RETRIES: Final[int] = 1
+"""Paired with `_VISION_CALL_TIMEOUT_S` so the worst case is a small
+multiple of the timeout (~40 s: one attempt + one retry) rather than
+half an hour."""
+
+_VISION_ERROR_EXCERPT_MAX_CHARS: Final[int] = 300
+"""Bound on the redacted excerpt `VisionCallError` carries (MUST-FIX 1a,
+ADR-0011 §12) — independent of, and a first line of defense ahead of,
+`_emit_tool_error`'s own byte cap in `jarvis.execution.tools`."""
+
+_BASE64_DATA_URL_RE: Final[re.Pattern[str]] = re.compile(
+    r"data:[\w./+-]*;base64,[A-Za-z0-9+/=]+",
+)
+_LONG_BASE64_RUN_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9+/]{64,}={0,2}")
+
+
+class VisionCallError(RuntimeError):
+    """Raised by `_LLMVisionClient.describe_image` in place of the raw SDK error.
+
+    MUST-FIX 1a, ADR-0011 §12: this is the ONE call site that holds the
+    screenshot's base64 data URL, so an upstream (proxy or provider)
+    that echoes the request body it failed on — a common thin-proxy
+    error shape — would otherwise ship image bytes into `str(exc)`,
+    which `screen_look`'s handler interpolates verbatim into
+    `action.result_observed` (durable SQLite, spec §3.3.9 forbids this)
+    and into the tool-result message the decision LLM sees. Redaction
+    is by PATTERN (a `data:...;base64,` URL, or any standalone long
+    base64-alphabet run), not by trusting the upstream's error shape —
+    the whole point is that an arbitrary upstream can echo the request
+    in a format this code has never seen.
+    """
+
+
+def _redact_vision_error(exc: Exception) -> str:
+    """Scrub base64 image payloads out of a vision-call exception's message.
+
+    Returns `"{type name}: {bounded, redacted excerpt}"` — diagnosable
+    (the real exception type survives) without risking a fresh
+    un-redacted echo downstream. `raise ... from None` at the call site
+    severs the exception chain so nothing that later prints a full
+    traceback (e.g. `__cause__`/`__context__`) can resurrect the
+    original, un-redacted message either.
+    """
+    text = str(exc)
+    text = _BASE64_DATA_URL_RE.sub("data:[redacted-base64]", text)
+    text = _LONG_BASE64_RUN_RE.sub("[redacted-base64]", text)
+    if len(text) > _VISION_ERROR_EXCERPT_MAX_CHARS:
+        text = text[:_VISION_ERROR_EXCERPT_MAX_CHARS] + "…[truncated]"
+    return f"{type(exc).__name__}: {text}"
+
+
+class _LLMVisionClient:
+    """Adapts `LLMClient` (L3) to `jarvis.execution.tools.VisionClient` (ADR-0011 D5/D7).
+
+    L4 cannot import L3 (`.importlinter` sibling isolation), so
+    `screen_look`'s one vision call is injected through this
+    composition-root-only adapter. Reads the image bytes and
+    base64-encodes them HERE, at call time, inside the vision request
+    only — never in the event-log payload (spec §3.3.9 / ADR-0011 §3
+    D5): the L4 handler only ever hands this a `Path` and gets a `str`
+    back.
+    """
+
+    def __init__(self, llm_client: LLMClient) -> None:
+        """Wrap a vision-preset-bound `LLMClient` (see `_build_vision_client`)."""
+        self._llm_client = llm_client
+
+    def describe_image(self, image_path: Path, *, question: str | None) -> str:
+        """Send one image + optional question to the vision preset; return text.
+
+        Raises `VisionCallError` — never the raw SDK/HTTP exception —
+        on any failure (MUST-FIX 1a, ADR-0011 §12): see that class's
+        docstring for why.
+        """
+        data_url = "data:image/png;base64," + base64.b64encode(
+            image_path.read_bytes(),
+        ).decode("ascii")
+        prompt_text = question or "Describe what is currently on this screen."
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            },
+        ]
+        try:
+            result = self._llm_client.chat(messages=messages, system=_VISION_SYSTEM_PROMPT)
+        except Exception as exc:  # noqa: BLE001 — deliberately re-raised, scrubbed, as VisionCallError; see MUST-FIX 1a.
+            raise VisionCallError(_redact_vision_error(exc)) from None
+        return result.text or ""
+
+
+def _build_vision_client(config: Mapping[str, Any], preset_name: str) -> VisionClient | None:
+    """Build the `screen_look` vision seam from `llm.presets.<preset_name>` (ADR-0011 D7).
+
+    Returns `None` when the preset is absent/malformed — either
+    STRUCTURALLY (missing `llm`/`presets` block, preset not a mapping)
+    or by CONTENT (an unsupported `provider` string, a non-numeric
+    `max_tokens` — SHOULD-FIX 3, ADR-0011 §12): `screen_look` still
+    registers (the menu stays complete) but every call degrades to a
+    `vision_unconfigured` error observation (ADR-0011 §5). A malformed
+    preset is one optional tool misconfigured, not a trust source going
+    missing (contrast `_load_file_targets_config`'s deliberate
+    fail-boot posture, which protects a trust source the gate
+    consults) — so it must not take the whole daemon down at boot.
+
+    A DEDICATED `LLMClient` is built here rather than reusing the
+    decision loop's own client (constructed at step 4, below):
+    `LLMClient.switch_model`/`_apply_preset` mutates the client's
+    active provider/model/base_url/key in place, so sharing one
+    instance between the decision loop's `chat()` calls and
+    `screen_look`'s vision calls would risk leaving the WRONG model
+    active for the next turn. This reuses the SAME loader
+    (`LLMClient.__init__` / `_apply_preset` reading a `presets` dict) —
+    not a parallel YAML parser — just a second instance scoped to one
+    preset, with an explicit bounded `timeout_s`/`max_retries`
+    (MUST-FIX 2) the decision client does not get.
+    """
+    llm_block = config.get("llm")
+    if not isinstance(llm_block, Mapping):
+        return None
+    presets = llm_block.get("presets")
+    if not isinstance(presets, Mapping):
+        return None
+    preset = presets.get(preset_name)
+    if not isinstance(preset, Mapping):
+        return None
+    vision_llm_config: dict[str, Any] = {
+        "provider": "openai",
+        "presets": {preset_name: dict(preset)},
+        "default_preset": preset_name,
+        "timeout_s": _VISION_CALL_TIMEOUT_S,
+        "max_retries": _VISION_CALL_MAX_RETRIES,
+    }
+    try:
+        llm_client = LLMClient(vision_llm_config)
+    except (ValueError, TypeError) as exc:
+        LOGGER.warning(
+            "screen_look: llm.presets.%s is malformed (%s: %s); screen_look will "
+            "report vision_unconfigured at use time instead of the daemon failing to boot",
+            preset_name,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    return _LLMVisionClient(llm_client)
+
+
 def bootstrap_runtime_app(
     *,
     config_path: Path | None = None,
@@ -527,11 +732,14 @@ def bootstrap_runtime_app(
     #    load YAML themselves.
     full_config = _load_full_config(config_path)
     web_search_max_results, web_fetch_max_bytes, web_timeout_s = _web_tools_config(full_config)
+    vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
     registry = build_default_registry(
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
         web_fetch_max_bytes=web_fetch_max_bytes,
         web_timeout_s=web_timeout_s,
+        vision_client=_build_vision_client(full_config, vision_preset_name),
+        screen_max_width_px=screen_max_width_px,
     )
     lifecycle = ActionLifecycle()
 

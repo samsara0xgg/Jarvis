@@ -25,6 +25,12 @@
   pattern: "^(?:剪贴板里有什么|读一下剪贴板)[?？。.!！]?$"
   tool: read_clipboard
   template: "剪贴板里是：{content}。"
+# ADR-0011 D6: fixed-argument tool (question is optional and omitted
+# here, so it resolves to None) — same shape as read_clipboard above.
+- id: screen_look
+  pattern: "^(?:看一下我的屏幕|看一眼屏幕)[?？。.!！]?$"
+  tool: screen_look
+  template: "屏幕上：{description}。"
 # Exact-sentence whitelist for open_path: each entry matches ONE literal
 # spoken sentence (tolerating only whitespace, ASCII case, claude/cloud ASR
 # spelling, and trailing punctuation). Anything else falls through to the

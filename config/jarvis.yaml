@@ -16,6 +16,14 @@ llm:
       base_url: "https://openrouter.icu/v1"
       api_key_env: OPENROUTER_PROXY_KEY
       max_tokens: 32768
+    # screen_look 专用（ADR-0011 D7）：多模态模型，同一个代理、同一把
+    # key。决策 LLM（deep/fast 两档）从不切到这个预设——vision 只在
+    # jarvis.runtime 注入的独立 LLMClient 实例上用一次。
+    vision:
+      model: gpt-5.5
+      base_url: "https://openrouter.icu/v1"
+      api_key_env: OPENROUTER_PROXY_KEY
+      max_tokens: 1024
 
   # 流式回复的句子切分调优
   sentence_divider:
@@ -63,3 +71,8 @@ tools:
     # 两个工具分别写了 15s/20s，但这里只有一个键——D7 定的 schema 就是
     # 一个共享超时，所以两个工具都读这一个值（§12 勘误候选项）。
     timeout_s: 20
+  screen:
+    # screen_look 用哪个 llm.presets.* 做 vision 调用。
+    vision_preset: vision
+    # 截图喂给 vision 模型前用 sips 缩到这个宽度以内（像素）。
+    max_width_px: 1568
