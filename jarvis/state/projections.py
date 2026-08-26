@@ -1239,6 +1239,191 @@ def _fold_entity_registry(
     return entries
 
 
+# --- PendingConfirmations ------------------------------------------------------
+
+PendingConfirmationState = Literal[
+    "pending",
+    "accepted_unconsumed",
+    "consumed",
+    "rejected",
+    "superseded",
+]
+"""Single-slot lifecycle state (ADR-0012 §3 D4).
+
+Day-1's single-slot fold (:func:`_fold_pending_confirmations`) never
+returns a slot whose CURRENT state is `"superseded"` — a new
+`confirmation.requested` discards the old slot outright rather than
+retaining it in a superseded state, since only one slot is ever held
+(supersession is observable indirectly: a later accepted/rejected event
+naming the discarded slot's `confirmation_id` no longer matches the
+current slot and is ignored). `"superseded"` stays in the Literal for
+D4 spec fidelity and so a future multi-slot fold (ADR-0012's defer
+list) can produce it without widening this module's public surface —
+mirrors `TaskStatus` carrying literal members the Day-1 fold does not
+yet produce.
+"""
+
+
+@dataclass(frozen=True)
+class PendingConfirmationSlot:
+    """The one live-or-recent confirmation ask (ADR-0012 §3 D4).
+
+    Attributes:
+        confirmation_id: `confirmation_id` from the originating
+            `confirmation.requested` event. The answer-path grammar
+            hook (Step 6) binds "是"/"不要" to this id; an
+            accepted/rejected event naming a different id does not
+            move this slot (see :func:`_fold_pending_confirmations`).
+        snapshot: The `action_snapshot` payload dict, stored verbatim —
+            no transformation. It already excludes the write content
+            (staged to an artifact per §3 D3; `args_meta` carries
+            `content_artifact`, the staged path), so there is nothing
+            left to strip.
+        template_line: The exact rendered action line from
+            `confirmation.requested.payload["template_line"]` — durable
+            so consent binds to recorded machine truth (§3 D3).
+        expires_at_ms: TTL deadline stamped by the ask path (Step 5;
+            this projection never computes or defaults it). Compared
+            against a caller-supplied `now_ms` at read time via
+            :meth:`is_live` — never against a hidden clock read.
+        state: Current lifecycle state. See `PendingConfirmationState`.
+        accepted_event_uid: `event_uid` of the `confirmation.accepted`
+            event that moved this slot to `accepted_unconsumed`, or
+            `None` if it never has been. This is the join key D2.4's
+            first half needs: a minted `AuthorizationLease`'s
+            `source_confirmation_event_id` is set (D6) to exactly this
+            uid, and Step 6's gate check matches the lease against this
+            field to confirm "references a confirmation this
+            projection shows as accepted" — a distinct check from
+            `consumed_lease_ids`, which only prevents replaying an
+            already-spent `lease_id` and has no way to validate that a
+            lease's `source_confirmation_event_id` was ever a real
+            acceptance in the first place.
+    """
+
+    confirmation_id: str
+    snapshot: Mapping[str, Any]
+    template_line: str
+    expires_at_ms: int
+    state: PendingConfirmationState
+    accepted_event_uid: str | None = None
+
+    def is_live(self, now_ms: int) -> bool:
+        """True iff this slot is a still-pending, unexpired ask at `now_ms`.
+
+        §3 D4's state enum has no `expired` member — expiry is judged
+        here, at read time, against the caller-supplied `now_ms`, never
+        stored and never read from a hidden clock (a caller-supplied
+        `now_ms` keeps the fold pure and this check testable). Any
+        state other than `"pending"` returns False regardless of
+        `expires_at_ms` — an accepted, rejected, consumed, or
+        superseded slot is not awaiting an answer, live or not.
+        """
+        return self.state == "pending" and now_ms < self.expires_at_ms
+
+
+@dataclass(frozen=True)
+class PendingConfirmations:
+    """Folded PendingConfirmations projection (ADR-0012 §3 D4).
+
+    Single-slot: the answer-path grammar hook (Step 6) always binds the
+    newest ask. Folded from `confirmation.requested` /
+    `confirmation.accepted` / `confirmation.rejected` plus
+    `gate.evaluated` (lease consumption).
+
+    Attributes:
+        slot: The current slot, or None when no `confirmation.requested`
+            has ever fired.
+        consumed_lease_ids: Every `lease_id` a `gate.evaluated(outcome=
+            "pass")` event has carried. D2.4's single-use check
+            (Step 6, `gates.py`) tests `lease["lease_id"] in
+            consumed_lease_ids` directly — a set, not slot-matching,
+            because `gate.evaluated` carries `lease_id` but never
+            `confirmation_id`, and leases are never stored (D2), so
+            there is no persistent `lease_id -> confirmation_id`
+            mapping to fold through. Stays correct if multi-slot
+            pending ever lands.
+    """
+
+    slot: PendingConfirmationSlot | None = None
+    consumed_lease_ids: frozenset[str] = frozenset()
+
+    @classmethod
+    def from_events(cls, events: Iterable[Event]) -> PendingConfirmations:
+        """Fold `events` into a PendingConfirmations projection."""
+        return _fold_pending_confirmations(events)
+
+
+def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations:
+    """Single-pass fold producing the PendingConfirmations projection.
+
+    Fold rules (ADR-0012 §3 D4, decisions pinned 2026-08-26):
+
+    - `confirmation.requested` unconditionally replaces the slot with a
+      fresh `state="pending"` row — the old slot (in whatever state) is
+      discarded, not retained (single-slot; see `PendingConfirmationState`
+      for why `"superseded"` is never the CURRENT slot's state under
+      this rule).
+    - `confirmation.accepted` / `confirmation.rejected` move the slot to
+      `accepted_unconsumed` / `rejected` ONLY when the event's
+      `confirmation_id` matches the current slot's — a stale answer
+      naming a superseded ask's id does not match the (already
+      replaced) current slot and is ignored, so it cannot resurrect it.
+      The accepted branch also stamps `accepted_event_uid` with the
+      accepted event's own `event_uid` — the D2.4 join key a minted
+      lease's `source_confirmation_event_id` is matched against (Step
+      6). `confirmation.rejected` gets no analogous field: D6 never
+      mints a lease on rejection, so no lease could ever carry a uid
+      pointing at a `confirmation.rejected` event — there is no
+      consumer for that join key.
+    - `gate.evaluated` with `outcome == "pass"` and a string `lease_id`
+      payload key adds that id to `consumed_lease_ids` unconditionally
+      (every passing leased gate evaluation is a real consumption, not
+      just ones tied to the current slot), AND, only when the current
+      slot is `accepted_unconsumed`, moves it to `consumed`
+      (`accepted_event_uid` is left untouched by this transition — it
+      still and forever names the event that authorized the now-spent
+      slot).
+    A non-`"pass"` outcome never consumes, even carrying a `lease_id` —
+    a refused gate did not spend the lease.
+    """
+    slot: PendingConfirmationSlot | None = None
+    consumed_lease_ids: set[str] = set()
+
+    for evt in events:
+        if evt.type == "confirmation.requested":
+            slot = PendingConfirmationSlot(
+                confirmation_id=str(evt.payload["confirmation_id"]),
+                snapshot=evt.payload["action_snapshot"],
+                template_line=str(evt.payload["template_line"]),
+                expires_at_ms=int(evt.payload["expires_at_ms"]),
+                state="pending",
+                accepted_event_uid=None,
+            )
+        elif evt.type == "confirmation.accepted":
+            if (
+                slot is not None
+                and str(evt.payload["confirmation_id"]) == slot.confirmation_id
+            ):
+                slot = replace(
+                    slot, state="accepted_unconsumed", accepted_event_uid=evt.event_uid,
+                )
+        elif evt.type == "confirmation.rejected":
+            if (
+                slot is not None
+                and str(evt.payload["confirmation_id"]) == slot.confirmation_id
+            ):
+                slot = replace(slot, state="rejected")
+        elif evt.type == "gate.evaluated" and evt.payload.get("outcome") == "pass":
+            lease_id = evt.payload.get("lease_id")
+            if isinstance(lease_id, str) and lease_id:
+                consumed_lease_ids.add(lease_id)
+                if slot is not None and slot.state == "accepted_unconsumed":
+                    slot = replace(slot, state="consumed")
+
+    return PendingConfirmations(slot=slot, consumed_lease_ids=frozenset(consumed_lease_ids))
+
+
 # --- ProjectionSet -----------------------------------------------------------
 
 
@@ -1255,6 +1440,7 @@ class ProjectionSet:
         claim_evidence: Folded Claim/Evidence projection.
         status_board: Folded Status Board (ADR-0009 D6).
         entity_registry: Folded EntityRegistry (ADR-0011 D4).
+        pending_confirmations: Folded PendingConfirmations (ADR-0012 D4).
     """
 
     task_ledger: TaskLedger
@@ -1262,6 +1448,7 @@ class ProjectionSet:
     claim_evidence: ClaimEvidenceProjection
     status_board: StatusBoard
     entity_registry: EntityRegistry
+    pending_confirmations: PendingConfirmations
 
 
 def rebuild_projections(
@@ -1270,17 +1457,17 @@ def rebuild_projections(
     recent_trace_size: int = _RECENT_TRACE_DEFAULT_SIZE,
     entity_bookmarks: Sequence[tuple[str, str]] = (),
 ) -> ProjectionSet:
-    """Read all events from `conn` and fold all five projections.
+    """Read all events from `conn` and fold all six projections.
 
     One SELECT-driven read of the live Event Log via `iter_events(conn)`
-    — materialized once, then walked by five separate in-memory fold
+    — materialized once, then walked by six separate in-memory fold
     passes (Claim/Evidence, Task Ledger, Recent Trace, EntityRegistry,
-    Status Board; the Task Ledger route inside EntityRegistry's fold
-    reuses the already-folded records rather than re-walking, but the
-    other four each make their own pass). No SQL writes, no projection
-    tables touched. Idempotent: calling twice on the same connection
-    (with no intervening `emit_event`) returns deep-equal
-    `ProjectionSet`s.
+    Status Board, PendingConfirmations; the Task Ledger route inside
+    EntityRegistry's fold reuses the already-folded records rather than
+    re-walking, but the other five each make their own pass). No SQL
+    writes, no projection tables touched. Idempotent: calling twice on
+    the same connection (with no intervening `emit_event`) returns
+    deep-equal `ProjectionSet`s.
 
     Args:
         conn: Open Event Log connection from
@@ -1296,8 +1483,8 @@ def rebuild_projections(
 
     Returns:
         `ProjectionSet` carrying frozen `task_ledger`, `recent_trace`,
-        `claim_evidence`, `status_board`, and `entity_registry`
-        projections.
+        `claim_evidence`, `status_board`, `entity_registry`, and
+        `pending_confirmations` projections.
     """
     materialized = list(iter_events(conn))
     claim_evidence = _fold_claim_evidence(materialized)
@@ -1317,6 +1504,7 @@ def rebuild_projections(
         claim_evidence=claim_evidence,
         status_board=_fold_status_board(materialized),
         entity_registry=entity_registry,
+        pending_confirmations=_fold_pending_confirmations(materialized),
     )
 
 
@@ -1340,6 +1528,9 @@ __all__ = [
     "EntityRegistry",
     "EntityRegistryEntry",
     "OpenAction",
+    "PendingConfirmationSlot",
+    "PendingConfirmationState",
+    "PendingConfirmations",
     "PowerState",
     "PowerTransition",
     "ProjectionSet",

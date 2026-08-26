@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from jarvis.state.projections import (
         CommitObservation,
         EntityRegistry,
+        PendingConfirmations,
         RepoObservation,
         StatusBoard,
         TaskLedgerRecord,
@@ -73,6 +74,12 @@ class SituationPacket:
             `repo:` / `task:` entries the trusted resolver (or config
             bookmarks) has produced. Consulted by the Pre-action Gate's
             widened entity-trust arm (ADR-0011 §12.2 Reconciliation J).
+        pending_confirmation: Folded PendingConfirmations (ADR-0012 §3
+            D4, packet block 8) — the single live-or-recent
+            confirmation ask, plus every `lease_id` a passing gate
+            evaluation has consumed. The answer-path grammar hook
+            (Step 6) and `format_pending_confirmation_note` both read
+            this field.
     """
 
     trigger_event: Event
@@ -83,6 +90,7 @@ class SituationPacket:
     current_run_id: str | None
     status_board: StatusBoard
     entity_registry: EntityRegistry
+    pending_confirmation: PendingConfirmations
 
 
 # --- assemble_packet --------------------------------------------------------
@@ -142,6 +150,7 @@ def assemble_packet(
         current_run_id=_extract_correlation(trigger, "run_id"),
         status_board=projections.status_board,
         entity_registry=projections.entity_registry,
+        pending_confirmation=projections.pending_confirmations,
     )
 
 
@@ -400,11 +409,63 @@ _EVIDENCE_NOTE_RANK: Final[dict[str, int]] = {
 }
 
 
+# --- Pending confirmation note (ADR-0012 §3 D4, packet block 8) -------------
+
+
+def format_pending_confirmation_note(
+    packet: SituationPacket,
+    *,
+    now_ms: int | None = None,
+) -> str | None:
+    """Render the live pending confirmation ask as an LLM system note.
+
+    Id-free by design (ADR-0012 §3 D4): `confirmation_id` never appears
+    in the rendered text, so an LLM reading this note — on an unrelated
+    turn (C4), or one that only paraphrases consent (C6) — has no
+    handle it could try to use to act on the pending ask itself. Only
+    the answer-path grammar hook (Step 6, exact-sentence match against
+    `confirm_grammar.yaml`) can move the slot; this note exists so the
+    LLM can *talk about* the ask without being structurally able to
+    authorize it.
+
+    Returns None when there is no live slot: no `confirmation.requested`
+    has fired, the slot has moved past `pending` (accepted / rejected /
+    consumed / superseded), or the recorded `expires_at_ms` has lapsed
+    at `now_ms` — a merely-expired ask renders no note, matching D6's
+    "expired pending -> ordinary turn, packet note shows no pending"
+    rule (:meth:`PendingConfirmationSlot.is_live`).
+
+    Args:
+        packet: The packet whose ``pending_confirmation`` is rendered.
+        now_ms: Reference "now" in epoch milliseconds. Defaults to the
+            wall clock; injected by callers that need a fixed reference
+            (mirrors ``format_status_board_note``).
+    """
+    slot = packet.pending_confirmation.slot
+    resolved_now_ms = int(time.time() * _MS_PER_SECOND) if now_ms is None else now_ms
+    if slot is None or not slot.is_live(resolved_now_ms):
+        return None
+
+    tool_name = slot.snapshot.get("tool_name", "?")
+    target = slot.snapshot.get("canonical_target", "?")
+    remaining_s = max(0, (slot.expires_at_ms - resolved_now_ms) // _MS_PER_SECOND)
+    return (
+        "[system context] A confirmation is pending Allen's answer — "
+        f"tool={tool_name!r}, target={target!r}, expires in {remaining_s}s. "
+        "You cannot execute or authorize this yourself; only Allen's exact "
+        "yes/no answer to the runtime's own question can move it. If Allen "
+        "asks about it, describe the pending action; do not claim you can "
+        "act on it, and do not re-propose the same action unless Allen "
+        "asks you to."
+    )
+
+
 __all__ = [
     "DEFAULT_OBSERVER_POLL_INTERVAL_S",
     "EVIDENCE_NOTE_PREFIX",
     "SituationPacket",
     "assemble_packet",
     "format_evidence_context_note",
+    "format_pending_confirmation_note",
     "format_status_board_note",
 ]

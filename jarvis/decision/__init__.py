@@ -76,6 +76,7 @@ from jarvis.decision.packet import (
     SituationPacket,
     assemble_packet,
     format_evidence_context_note,
+    format_pending_confirmation_note,
     format_status_board_note,
 )
 from jarvis.decision.policy import EffectivePolicy, effective_policy, surface_for
@@ -723,18 +724,35 @@ def _insert_system_notes(
     scratch: _Scratch,
     ctx: DecideContext,
 ) -> None:
-    """Insert the three prompt-head system notes into ``messages``.
+    """Insert the four prompt-head system notes into ``messages``.
 
-    Stacking order after the three ``insert(0)`` calls (top → bottom):
-    Status Board (ambient background), open tasks (Task Ledger snapshot
-    for reference resolution), evidence context (nearest the
-    conversation — the Pre-emit Gate judges completion language on
-    exactly that projection, and a blind draft costs one refused
-    round-trip per unverified completion; spec §3.4.4, Phase 0 batch 4).
+    Each note is added via ``messages.insert(0, ...)``, and each such
+    call pushes every note already inserted further from index 0 — so
+    the call order below is bottom-to-top: the FIRST call ends up
+    nearest the live conversation (later inserts push it toward the
+    tail, where the user message sits), the LAST call ends up at index
+    0, farthest from it. Final stacking order (top → bottom):
+    Status Board (ambient background, called last), open tasks (Task
+    Ledger snapshot for reference resolution), evidence context, pending
+    confirmation (nearest the conversation, called first — the most
+    immediately turn-critical: it governs what THIS draft may claim
+    about THIS turn's outstanding ask; spec §3.4.4, Phase 0 batch 4;
+    ADR-0012 §3 D4).
 
-    All three share the §10.5 deviation: dynamic context sits at the
+    All four share the §10.5 deviation: dynamic context sits at the
     head of the prompt, not the tail — flagged, not fixed, here.
     """
+    # ADR-0012 §3 D4: id-free note naming an outstanding confirmation
+    # ask, if one is live. Lets an unrelated turn's LLM know an ask is
+    # outstanding (C4) and a paraphrased-consent turn's LLM talk about
+    # it (C6) without being able to act on it — the note carries no
+    # confirmation_id. Called FIRST so it ends up nearest the
+    # conversation: it is the most immediately turn-critical of the
+    # four (governs what THIS draft may claim about THIS turn's
+    # outstanding ask).
+    pending_confirmation_note = format_pending_confirmation_note(packet)
+    if pending_confirmation_note is not None:
+        messages.insert(0, {"role": "user", "content": pending_confirmation_note})
     evidence_note = format_evidence_context_note(
         packet, subject_ref=_active_subject_or_default(scratch, packet),
     )
