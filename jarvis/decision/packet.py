@@ -287,9 +287,105 @@ def format_status_board_note(
     )
 
 
+# --- Evidence context note (spec §3.4.4 evidence_summary, minimal) ----------
+
+# Claims rendered per note before the remainder is summarized as a count.
+_NOTE_MAX_CLAIMS: Final[int] = 6
+
+# Statement text cap per line (claim statements are producer-capped at
+# 200 chars; this is the tighter render budget).
+_NOTE_STATEMENT_CHARS: Final[int] = 90
+
+# Stable header prefix — `jarvis.decision` uses it to find and REPLACE
+# the note when the packet is re-assembled mid-turn (sync tool results
+# change evidence exactly when it matters).
+EVIDENCE_NOTE_PREFIX: Final[str] = "[system context] Evidence state for"
+
+
+def format_evidence_context_note(
+    packet: SituationPacket,
+    *,
+    subject_ref: str | None,
+    max_claims: int = _NOTE_MAX_CLAIMS,
+) -> str | None:
+    """Render the subject's Claim/Evidence state as an LLM system note.
+
+    The projection has ridden the packet since Day-1
+    (``task_ledger_snapshot.claim_evidence``) but nothing rendered it,
+    so the LLM drafted completion answers blind, got refused by the
+    Pre-emit Gate, and burned a retry round-trip. This note hands it
+    the per-turn facts the gate will judge it on, in the same evidence
+    vocabulary the system prompt already teaches.
+
+    Correction-aware (spec §3.8 invariant 2): refuted / superseded
+    claims are excluded from the bullets and summarized as a count.
+    ``stale_warnings`` / ``missing`` from the full §3.4.4 shape stay
+    deferred with their contract fields (typed freshness,
+    ``required_for_completion``).
+
+    Returns None when there is no subject or the subject has no claims —
+    no signal is worth no context spend.
+    """
+    if subject_ref is None:
+        return None
+    claim_evidence = packet.task_ledger_snapshot.claim_evidence
+    all_claims = claim_evidence.claims_for(subject_ref)
+    if not all_claims:
+        return None
+    active = claim_evidence.active_claims_for(subject_ref)
+    inactive_count = len(all_claims) - len(active)
+
+    shown = active[-max_claims:]
+    lines = []
+    for claim in shown:
+        rows = claim_evidence.evidence_for(claim.claim_id)
+        supporting = [
+            ev.level for ev in rows if ev.payload.get("relation", "supports") == "supports"
+        ]
+        strongest = (
+            max(supporting, key=lambda lv: _EVIDENCE_NOTE_RANK[lv]) if supporting else "none"
+        )
+        refuting = sum(1 for ev in rows if ev.payload.get("relation") == "refutes")
+        statement = claim.statement[:_NOTE_STATEMENT_CHARS]
+        lines.append(
+            f"- [{claim.type}] {statement} — status={claim.status}, "
+            f"strongest_support={strongest}, refuting_evidence={refuting}",
+        )
+    hidden = len(active) - len(shown)
+    if hidden > 0:
+        lines.append(f"- (+{hidden} older active claim(s) not shown)")
+    if inactive_count > 0:
+        lines.append(
+            f"- ({inactive_count} claim(s) refuted or superseded — corrections "
+            f"applied, no longer count as support)",
+        )
+
+    bullets = "\n".join(lines)
+    return (
+        f"{EVIDENCE_NOTE_PREFIX} {subject_ref!r} (Claim/Evidence projection — "
+        "the Pre-emit Gate judges completion language against exactly this):\n"
+        f"{bullets}\n"
+        "`reported` is the worker's own words, not proof. Only an active "
+        "Postcondition claim with `verified`/`accepted` SUPPORTING evidence "
+        "justifies completion language; anything less, use limitation "
+        "language and say what is unverified."
+    )
+
+
+_EVIDENCE_NOTE_RANK: Final[dict[str, int]] = {
+    "reported": 0,
+    "observed": 1,
+    "executed": 2,
+    "verified": 3,
+    "accepted": 4,
+}
+
+
 __all__ = [
     "DEFAULT_OBSERVER_POLL_INTERVAL_S",
+    "EVIDENCE_NOTE_PREFIX",
     "SituationPacket",
     "assemble_packet",
+    "format_evidence_context_note",
     "format_status_board_note",
 ]

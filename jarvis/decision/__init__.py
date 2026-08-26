@@ -72,8 +72,10 @@ from jarvis.decision.intent import (
 )
 from jarvis.decision.packet import (
     DEFAULT_OBSERVER_POLL_INTERVAL_S,
+    EVIDENCE_NOTE_PREFIX,
     SituationPacket,
     assemble_packet,
+    format_evidence_context_note,
     format_status_board_note,
 )
 from jarvis.decision.policy import EffectivePolicy, effective_policy
@@ -625,6 +627,85 @@ class _Scratch:
     in_flight_turn_id: str | None = None
 
 
+def _active_subject_or_default(
+    scratch: _Scratch,
+    packet: SituationPacket,
+) -> str | None:
+    """Resolved subject, else the first open task, else None.
+
+    The single home of a fallback previously duplicated across
+    `_finalize_response` and the prompt-note builders — the note and
+    the gate must brief/judge the SAME subject, or the LLM gets briefed
+    on task A and gated on task B.
+    """
+    if scratch.active_subject_ref is not None:
+        return scratch.active_subject_ref
+    if packet.open_tasks:
+        return packet.open_tasks[0].task_id
+    return None
+
+
+def _insert_system_notes(
+    messages: list[dict[str, Any]],
+    packet: SituationPacket,
+    scratch: _Scratch,
+    ctx: DecideContext,
+) -> None:
+    """Insert the three prompt-head system notes into ``messages``.
+
+    Stacking order after the three ``insert(0)`` calls (top → bottom):
+    Status Board (ambient background), open tasks (Task Ledger snapshot
+    for reference resolution), evidence context (nearest the
+    conversation — the Pre-emit Gate judges completion language on
+    exactly that projection, and a blind draft costs one refused
+    round-trip per unverified completion; spec §3.4.4, Phase 0 batch 4).
+
+    All three share the §10.5 deviation: dynamic context sits at the
+    head of the prompt, not the tail — flagged, not fixed, here.
+    """
+    evidence_note = format_evidence_context_note(
+        packet, subject_ref=_active_subject_or_default(scratch, packet),
+    )
+    if evidence_note is not None:
+        messages.insert(0, {"role": "user", "content": evidence_note})
+    # Task Ledger snapshot so the LLM can resolve natural references
+    # like "昨天那个 task" to the canonical task_id (Step 12 follow-up).
+    open_tasks_note = _format_open_tasks_note(packet)
+    if open_tasks_note is not None:
+        messages.insert(0, {"role": "user", "content": open_tasks_note})
+    # ADR-0009 D6 (render half of Step 11): folded Status Board with its
+    # §3.6.9 freshness wording, so "repo X 现在什么状态" is answered from
+    # observer-folded state instead of the LLM reaching for git (M6).
+    status_board_note = format_status_board_note(
+        packet, poll_interval_s=ctx.observer_poll_interval_s,
+    )
+    if status_board_note is not None:
+        messages.insert(0, {"role": "user", "content": status_board_note})
+
+
+def _refresh_evidence_note(
+    messages: list[dict[str, Any]],
+    packet: SituationPacket,
+    scratch: _Scratch,
+) -> None:
+    """Replace (or insert) the evidence-context note after a packet refresh.
+
+    The resolver may have set the subject since the first render, and
+    sync tool dispatches change the claim/evidence state mid-loop.
+    """
+    refreshed_note = format_evidence_context_note(
+        packet, subject_ref=_active_subject_or_default(scratch, packet),
+    )
+    if refreshed_note is None:
+        return
+    for note_index, message in enumerate(messages):
+        content = message.get("content")
+        if isinstance(content, str) and content.startswith(EVIDENCE_NOTE_PREFIX):
+            messages[note_index] = {"role": "user", "content": refreshed_note}
+            return
+    messages.insert(0, {"role": "user", "content": refreshed_note})
+
+
 # --- decide() entry point ---------------------------------------------------
 
 
@@ -792,27 +873,7 @@ def _run_tool_use_loop(
         )
 
     messages = build_llm_messages(packet)
-    # Surface the Task Ledger snapshot as an explicit system note so
-    # the LLM can resolve natural references like "昨天那个 task" to
-    # the canonical task_id. Without this hint the LLM has no
-    # visibility into open tasks and may stall asking Allen for an ID
-    # the runtime already owns. Day-1 ADR § Situation Packet expects
-    # L3 to render this context for the LLM; this is the minimum
-    # surgical surface that delivers it. (Step 12 follow-up.)
-    open_tasks_note = _format_open_tasks_note(packet)
-    if open_tasks_note is not None:
-        messages.insert(0, {"role": "user", "content": open_tasks_note})
-    # ADR-0009 D6 (render half of Step 11): surface the folded Status
-    # Board the same way, so "repo X 现在什么状态" is answered from
-    # observer-folded state — with its §3.6.9 freshness wording — instead
-    # of the LLM reaching for git inside the turn (M6). Inserted ahead of
-    # the open-tasks note: ambient repo state is background, the Task
-    # Ledger snapshot keeps its position adjacent to the user turn.
-    status_board_note = format_status_board_note(
-        packet, poll_interval_s=ctx.observer_poll_interval_s,
-    )
-    if status_board_note is not None:
-        messages.insert(0, {"role": "user", "content": status_board_note})
+    _insert_system_notes(messages, packet, scratch, ctx)
     tools = tool_definitions_for_llm(
         [_tool_to_dict(t) for t in ctx.tool_registry.for_caller(CallerPrincipal.JARVIS_LLM)],
     )
@@ -864,8 +925,12 @@ def _run_tool_use_loop(
                 )
 
             # Otherwise (only sync tool results) refresh the packet so
-            # the next LLM call sees freshly-emitted claims/evidence.
+            # the next LLM call sees freshly-emitted claims/evidence,
+            # and re-render the evidence note against it — sync tools
+            # (verify_diff) mint claims mid-loop, which is exactly when
+            # the note must not be stale.
             packet = assemble_packet(packet.trigger_event, ctx.conn)
+            _refresh_evidence_note(messages, packet, scratch)
             continue
 
         # LLM returned text -> finalize via Pre-emit Gate.
@@ -2040,9 +2105,7 @@ def _finalize_response(
     the chain regardless of which branch was taken.
     """
     hard_refusal_used = False
-    active_subject: str | None = scratch.active_subject_ref
-    if active_subject is None and packet.open_tasks:
-        active_subject = packet.open_tasks[0].task_id
+    active_subject = _active_subject_or_default(scratch, packet)
     if active_subject is None:
         # Spec §3.4.12 v0 + §3.4.4 LLMSituationPacket: no subject in
         # scope is a first-class case, not a failure mode. Pass None to
