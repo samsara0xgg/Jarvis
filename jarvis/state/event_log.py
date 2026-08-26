@@ -335,7 +335,9 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="jarvis_runtime",
         required_payload=("action_id",),
-        optional_payload=("error", "reason"),
+        # `stash_ref` — the runtime stash-pop finalizer needs it to
+        # restore the pre-task stash on failure paths.
+        optional_payload=("error", "reason", "stash_ref"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -343,7 +345,9 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="jarvis_runtime",
         required_payload=("action_id",),
-        optional_payload=("error", "reason"),
+        # `stash_ref` — the runtime stash-pop finalizer needs it to
+        # restore the pre-task stash on failure paths.
+        optional_payload=("error", "reason", "stash_ref"),
         schema_version=1,
     ),
     EventTypeSchema(

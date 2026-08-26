@@ -744,6 +744,27 @@ permitted call site, and it must call `verify_diff_handler(...)`
 strictly before `restore_pretask_changes(...)` in the linearized
 source of `jarvis/runtime/__init__.py`).
 
+> **Amendment (2026-08-25) — restore on failure paths.** The ordering
+> clause above ("restore only after `verify_diff_handler` exits") is
+> vacuous on paths where verify_diff never runs: spawn_worker timeout,
+> Codex crash, or an exception between decide() and the finalizer. On
+> those paths the stash was orphaned — Allen's work sat hidden in the
+> stash stack, the next run stashed on top, and nothing surfaced it.
+> Three changes close the leak: the terminal failure events
+> (`action.failed` / `action.timeout_assumed`) now carry `stash_ref`
+> in their payload; the runtime finalizer `_pop_pending_stashes` scans
+> `worker.reported` + `action.failed` + `action.timeout_assumed`
+> (dedup by run_id, so a run appearing under two types pops once); and
+> the pop call moved into `drive_turn`'s `finally`, so a mid-turn
+> exception no longer skips it. Restoring onto Codex's partial edits
+> usually conflicts by design — the conflict branch (no `reset --hard`;
+> `conflict.patch` artifact + Limitation claim) is the intended
+> surfacing per this section's "never silently overwrite Allen's
+> work". Known consequence: on a timeout turn the finalizer may emit
+> `worker.artifact_observed(kind=stash_conflict)` plus a second
+> Limitation claim after the turn's response — an audit row only; it
+> cannot change the already-finalized ResponsePlan.
+
 ### Reviewer contract (L3 helper)
 
 ```python

@@ -661,11 +661,13 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
        ``worker.reported`` / ``action.result_observed`` /
        ``action.timeout_assumed`` / ``action.failed`` row, re-enter
        decide() with that trigger, repeat.
-    3. Run the stash-pop finalizer (ADR-0002 § Dirty-tree policy) — by
-       construction this lives strictly after the last ``decide(...)``
-       call so the ``verify_command`` subprocess saw exactly Codex's
-       tree. Canary ``test_canary_stash_pop_after_verify`` enforces
-       this ordering inside :func:`drive_turn`.
+    3. Run the stash-pop finalizer (ADR-0002 § Dirty-tree policy,
+       amended 2026-08-25) from the ``finally`` — lexically after the
+       last ``decide(...)`` call so the ``verify_command`` subprocess
+       saw exactly Codex's tree, and unconditionally so an exception
+       between decide() and finalization cannot orphan the pre-task
+       stash. Canary ``test_canary_stash_pop_after_verify`` enforces
+       the ordering inside :func:`drive_turn`.
     4. Record the Pre-emit token on a fresh :class:`SurfaceState`, then
        call :func:`jarvis.surface.cli_render.render_response` which
        routes the channel-split text across the L3 attention channel's
@@ -777,19 +779,6 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
             )
             raise RuntimeBootstrapError(msg)
 
-        # --- Stash-pop finalizer (ADR-0002 § Dirty-tree policy lines 663-713).
-        # The decide() loop above has already dispatched verify_diff_handler
-        # for every action in the turn (L4 sync semantics); pop the
-        # pre-task stash here, STRICTLY AFTER verify_diff exits, so the
-        # verify_command saw exactly Codex's tree. This call MUST live in
-        # the composition root and MUST come after the dispatch site —
-        # canary ``test_canary_stash_pop_after_verify`` enforces both.
-        _pop_pending_stashes(
-            runtime.conn,
-            artifacts_root=runtime.runtime_paths.artifacts_root,
-            turn_id=effective_turn_id,
-        )
-
         # L5 emission (Step 18 — channel-split + multi-surface dispatch).
         # The Pre-emit token guard inside render_response() preserves the
         # canary H3 runtime check — calling record_pre_emit_token() then
@@ -836,6 +825,24 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
             attention_channel=final_attention_channel,
         )
     finally:
+        # --- Stash-pop finalizer (ADR-0002 § Dirty-tree policy, amended
+        # 2026-08-25). Lives in the finally: lexically after the last
+        # decide() call — canary ``test_canary_stash_pop_after_verify``
+        # enforces the ordering, so verify_diff read exactly Codex's
+        # tree — and unconditionally, so an exception between decide()
+        # and finalization cannot orphan Allen's pre-task stash. The
+        # guard keeps the finally from masking the original exception.
+        try:
+            _pop_pending_stashes(
+                runtime.conn,
+                artifacts_root=runtime.runtime_paths.artifacts_root,
+                turn_id=effective_turn_id,
+            )
+        except Exception:
+            LOGGER.exception(
+                "drive_turn: stash-pop finalizer failed (turn_id=%r)",
+                effective_turn_id,
+            )
         release_turn_actions(effective_turn_id)
 
 
@@ -869,16 +876,22 @@ def _pop_pending_stashes(  # noqa: C901 — composition walker folds the clean /
     artifacts_root: Path,
     turn_id: str,
 ) -> None:
-    """Pop every pre-task stash recorded by ``worker.reported`` in this turn.
+    """Restore every pre-task stash recorded by this turn's terminal events.
 
-    Walks the event log for ``worker.reported`` events whose
-    ``correlation.turn_id`` matches ``turn_id``; each row carries the
-    ``run_id`` plus a ``stash_ref`` (forwarded by
-    :func:`jarvis.execution.tools.spawn_worker_handler` on
-    ``RawResult.metadata["stash_ref"]`` and then placed into the
-    payload by L3's Result Interpreter). For each match we call
-    :func:`jarvis.execution.diff_capture.restore_pretask_changes` with
-    the repo cwd resolved from ``task.created.repo_path``.
+    Walks the event log for terminal worker / action events —
+    ``worker.reported``, ``action.failed``, ``action.timeout_assumed`` —
+    whose ``correlation.turn_id`` matches ``turn_id``. L4's
+    ``spawn_worker_handler`` stamps the ``stash_ref`` onto each of
+    those payloads at emit time (success via the ``worker.reported``
+    literal, failure paths via ``_spawn_worker_emit_terminal_failure``);
+    the ``run_id`` rides on the payload (``worker.reported``) or on the
+    correlation (failure events). For each stash_ref-carrying row we
+    call :func:`jarvis.execution.diff_capture.restore_pretask_changes`
+    with the repo cwd resolved from ``task.created.repo_path``. The
+    runtime invokes this finalizer from ``drive_turn``'s ``finally`` —
+    strictly after the last ``decide()`` call, so verify_diff always
+    read exactly Codex's tree, and unconditionally, so an exception
+    mid-turn cannot orphan the stash.
 
     This call is the SOLE legitimate site for
     ``restore_pretask_changes``; canary
@@ -891,7 +904,7 @@ def _pop_pending_stashes(  # noqa: C901 — composition walker folds the clean /
         artifacts_root: ``RuntimePaths.artifacts_root`` — conflict
             patches land at ``<artifacts_root>/run_<run_id>/conflict.patch``.
         turn_id: The composition root's turn correlation id. Only
-            ``worker.reported`` events tagged with this turn are popped.
+            terminal events tagged with this turn are popped.
 
     Returns:
         None. A clean pop adds no events. A stash-pop CONFLICT is routed
@@ -902,13 +915,21 @@ def _pop_pending_stashes(  # noqa: C901 — composition walker folds the clean /
         :class:`StashError` is logged and skipped so a single stuck stash
         doesn't mask the user-facing response.
     """
+    # Terminal event types that may carry a pre-task stash_ref. A run that
+    # appears under two types (e.g. worker.reported + action.timeout_assumed)
+    # is popped once via the shared seen_run_ids dedup below.
+    terminal_types = {"worker.reported", "action.failed", "action.timeout_assumed"}
     seen_run_ids: set[str] = set()
     for evt in iter_events(conn):
-        if evt.type != "worker.reported":
+        if evt.type not in terminal_types:
             continue
         if evt.correlation is None or evt.correlation.get("turn_id") != turn_id:
             continue
+        # worker.reported carries run_id in the payload; the failure
+        # events carry it on the correlation only.
         run_id_raw = evt.payload.get("run_id")
+        if not isinstance(run_id_raw, str):
+            run_id_raw = evt.correlation.get("run_id")
         stash_ref_raw = evt.payload.get("stash_ref")
         task_id_raw = evt.correlation.get("task_id") if evt.correlation is not None else None
         if not isinstance(run_id_raw, str) or run_id_raw in seen_run_ids:

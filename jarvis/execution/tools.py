@@ -629,14 +629,20 @@ def _spawn_worker_emit_terminal_failure(  # noqa: PLR0913 — Day-2 failure path
     if turn_id is not None:
         correlation["turn_id"] = turn_id
 
+    failure_payload: dict[str, Any] = {
+        "action_id": action_id,
+        "error": error_code,
+        "reason": error_message,
+    }
+    if stash_ref is not None:
+        # Phase 0 batch 6: the runtime stash-pop finalizer scans terminal
+        # failure events too — carry the ref so timeout / crash paths
+        # restore Allen's pre-task stash instead of orphaning it.
+        failure_payload["stash_ref"] = stash_ref
     emit_event(
         conn,
         type=event_type,
-        payload={
-            "action_id": action_id,
-            "error": error_code,
-            "reason": error_message,
-        },
+        payload=failure_payload,
         source_event_id=source_event_id,
         correlation=correlation,
     )
