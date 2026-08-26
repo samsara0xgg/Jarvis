@@ -1,7 +1,7 @@
 # ADR 0011 — Tool Surface v1 (7 read/observe tools · EffectivePolicy ×9 · ToolDefinition +4 · EntityRegistry v0)
 
 **Status:** Approved (2026-08-25, Allen)
-**Amended:** 2026-08-26 — §12 records implementation errata (§12.1) and one forced design reconciliation (§12.2, item J) that changes gate behavior and **awaits Allen's confirmation**. §1-§11 are unedited.
+**Amended:** 2026-08-26 — §12 records implementation errata (§12.1 for Steps 1-3, §12.4 for Steps 4-7) and **two** forced design reconciliations that change behavior and **await Allen's confirmation**: §12.2 (item J, the entity gate) and §12.5 (item AK, Tier 0 templates and the Pre-emit Gate). §12.6 lists three accepted risks. §1-§11 are unedited.
 **Date:** 2026-08-25
 **Depends on:** ADR-0001/0002 (decide() loop, gates, Tier 0, Task Ledger), ADR-0003 (inherent daemon), ADR-0009 (Status Board projection idiom, registration idiom, `actor` provenance; schema-v1 migration landed via phase0-debts merge 2ccb5c2)
 **Prepares:** ADR-0012 (Confirmation Flow + AuthorizationLease + `write_file`) — this ADR lands every contract 0012 consumes (`confirmation_threshold`, `requires_confirmation`, `requires_entity`, EntityRegistry, `surface_for`), so 0012 adds only the confirmation state machine and one L3 tool.
@@ -304,7 +304,7 @@ All 9 rows green in one burn log (`docs/`, ADR-0009 precedent) · TCC granted on
 
 ## 12. Amendments (implementation pass, 2026-08-26)
 
-Written after §7 Steps 1-3 shipped. **§1-§11 above are unedited** — an amendment records the correction, it does not rewrite the approved text. Two kinds of entry: **errata** (§12.1), where the ADR's prose was wrong or under-specified and the code is right; and **one reconciliation** (§12.2), a real design change taken because two of §8's own acceptance rows are otherwise unsatisfiable. No decision Allen made is re-opened; no scope is added.
+Started after §7 Steps 1-3 shipped and extended as Steps 4-7 landed. **§1-§11 above are unedited** — an amendment records the correction, it does not rewrite the approved text. Three kinds of entry: **errata** (§12.1, §12.4), where the ADR's prose was wrong or under-specified and the code is right; **reconciliations** (§12.2, §12.5), real design changes taken because §8's own acceptance rows or the shipped system are otherwise broken; and **accepted risks** (§12.6), properties that are deliberate and should be re-read as decisions. No decision Allen made is re-opened; no scope is added.
 
 ### 12.1 Errata — prose corrections, no design change
 
@@ -379,7 +379,244 @@ Keeping (1) untouched is what preserves the shipped `verify_diff` / `spawn_worke
 | 1 | Policy ×9 + `ModeRuntimeState` + ceiling L3 | `a96ee88` |
 | 2 | ToolDefinition +4 + `surface_for` + boot validation | `7e221bf` |
 | 3 | Gate entity arm (D3) | `6ff67fc` |
-| 4 | EntityRegistry v0 (+ reconciliation J) | pending |
-| 5 | Local tools + Tier 0 rows | pending |
-| 6 | Web tools | pending |
-| 7 | `screen_look` | pending |
+| 4 | EntityRegistry v0 (+ reconciliation J) | `758af59` |
+| 5 | Local tools + Tier 0 rows (+ reconciliation AK) | `3fb37d2` |
+| 6 | Web tools | `b68f0e3` |
+| 7 | `screen_look` | `dbda5d7` |
+
+All seven build steps are committed on `worktree-phase2-impl`. §8's Tier-2 live
+burn is a separate step; row **T5 cannot be completed by any commit** (see item
+AH). Every step ran the four Tier-1 gates green, and every step's implementation
+was reviewed adversarially before commit — §12.4 records what those reviews
+found.
+
+### 12.4 Errata from Steps 4-7 (implementation pass, 2026-08-26)
+
+Same rule as §12.1: the code is authoritative, the ADR prose was written
+ahead of the implementation. §1-§11 stay unedited.
+
+**N — §4 is obsolete in whole; this ADR registers ZERO new event types, and §8's
+"registry count 42" can never be met.** §4 specifies a *new* `entity.resolved`
+registration with required `ref_raw` + `outcome`, optional `entity_id` /
+`entity_type` / `canonical` / `confidence` / `candidates` / `resolver` /
+`tool_name`, `owner_layer=L2`, and "Registry count 41 → 42". Every part of that
+is wrong. `entity.resolved` has existed since Day-1
+(`jarvis/state/event_log.py:250-265`) with a different, load-bearing schema —
+required `entity_type`, `natural_ref`, `resolved_to`, `confidence`,
+`candidates`, `match_basis`, `outcome`; optional `resolver_warning`;
+`owner_layer=L3` — already emitted by the task resolver
+(`jarvis/decision/__init__.py`, `_emit_entity_resolved`) and pinned by
+`tests/scenarios/test_flagship.py:350`. Both new emitters (the pre-gate resolve
+step and `open_path_handler`) write that schema with `entity_type="file"`. The
+registry stays at **41**, so §8's Definition-of-Done line "registry count 42" is
+unsatisfiable as written and should read "registry count unchanged at 41".
+
+Two sub-points that follow from it, both recorded rather than fixed:
+
+- §3 D4 asks for `owner_layer=L2` ("the Entity Registry is a State Object
+  concern"). Shipped is L3, inherited from the Day-1 registration.
+- `open_path_handler` is L4 and now emits this L3-declared type. `emit_event`
+  does not enforce `owner_layer`, and no canary covers `entity.resolved` the way
+  `tests/canary/test_canary_cost_recorded_l3_only.py` covers `cost.recorded`, so
+  the inconsistency passes silently. Reconciling it — either re-declaring the
+  owner layer or adding an enforcement canary — is deferred, but it is now on
+  the record rather than inherited by accident.
+
+**O — §12.2's plumbing paragraph is necessary but not sufficient; the packet's
+registry snapshot predates the event the same dispatch emits.** §12.2 says the
+EntityRegistry snapshot "reaches the gate the same way the Task Ledger snapshot
+already does — folded into the SituationPacket". Implemented literally, that
+still fails T4 and E1: `_dispatch_one_tool_call` emits `entity.resolved` and
+*then* gates, but `packet.entity_registry` was folded before that event existed,
+so a **first-time** file resolution is refused with `is NOT in Task Ledger or
+EntityRegistry` — precisely the outcome §12.2 exists to remove. Probed directly
+at Step-4 HEAD. Shipped fix: `EntityRegistry.with_resolved_event()` overlays the
+just-emitted event through the same private entry builder fold route 3 uses, so
+the overlay is byte-identical to the next full refold. The event is already
+durable in the log; only the snapshot lags. This is a completion of §12.2, not a
+further widening of trust.
+
+**P — §3 D4 gives no alias tie-break rule.** "bounded: last 8, dedup" does not
+say what happens to a ref that resolves again. Plan-original fill: a duplicate
+keeps its existing position (no reordering), a new ref appends, and the oldest
+drops once the count exceeds 8.
+
+**Q — the `confidence` value for a failed resolve is unspecified.** D4's enum
+`"exact" | "fuzzy" | "bookmark" | "config"` describes registry *entries*, not
+the payload of a `not_found` event. Shipped `"none"` for that case. Separately,
+a bookmark hit produces `confidence="bookmark"` and the task-ledger fold route
+produces `"exact"`, so all four documented values are now reachable.
+
+**R — D3 and D4 together left the entity gate bypassable, and neither section
+anticipated it.** The task-ref resolver runs *before* the `tool_def` lookup and
+assigns `target_entity_ref` from raw, unvalidated LLM JSON. A `requires_entity`
+tool called with a stray `task_id` or `natural_ref` argument alongside its
+`target` therefore received a **task id**, skipped resolve-on-propose entirely,
+emitted no file `entity.resolved`, and passed check 2's ledger arm — §8 row E2's
+own scenario returning `pass` and dispatching with an unresolved target. Probed
+and reproduced. Shipped fix: the `tool_def` lookup is hoisted above the task-ref
+resolver and the whole resolver block is skipped for `requires_entity` tools.
+Consequence worth noting: an unknown tool name now returns before the task
+resolver runs, so it no longer emits a task-flavored `entity.resolved` for a
+tool that does not exist.
+
+**S — §3 D5 mandates an output cap for every tool; `search_notes` shipped
+without one and needed two.** D5 line 138 requires per-tool
+`max_output_bytes`-style caps with an explicit truncation marker. A single
+matched line is unbounded, so one pathological note (minified JSON, base64, a
+long CSV row) produced a 2,000,096-character payload bound for both the event
+log and the cloud model. Shipped: a per-line cap **and** an aggregate cap, so
+one pathological line cannot consume the whole budget.
+
+**T — see §12.5 (reconciliation AK).** D6's Tier 0 row for `read_clipboard` interacts with the
+Pre-emit Gate in a way no section anticipated. Recorded as a reconciliation
+because it changes behavior.
+
+**U — neither §3 D5 nor §5 acknowledges what `read_file` can actually reach.**
+D5 line 151 constrains it to "text files only, output cap 8 KiB" and §5's
+failure-mode table has no row for a resolver hit on a credential file. In
+practice `read_file` inherits `open_path`'s containment — anything text-shaped
+under `~/Projects`, `~/Documents`, `~/Desktop`, `~/Downloads` and the configured
+bookmark directories, via a one-level scan plus recursive Spotlight — and ships
+those bytes to a cloud model. That includes any repository's `.env`, `.pem`, or
+`secrets.yaml`. Verified *not* reachable: `~/.ssh/*`, `~/.aws/credentials`,
+`~/.zsh_history`, browser cookie databases, `$CODEX_HOME/auth.json`,
+`/etc/passwd`; symlink escape and `..` traversal are both blocked by the
+resolver's resolve-then-contain check. No denylist was added because none was
+scoped — but `open_path` shows a file on Allen's own screen while `read_file`
+transmits it to a third party, and that difference should be a written decision
+rather than an inherited side effect.
+
+**V — §3 D7 does not say how a per-tool config value reaches a handler.** The
+existing precedents (`observer.poll_interval_s`, `tier0_table`) are consumed
+inside `decide()` via `DecideContext`. `tools.obsidian.vault_root` and
+`tools.web.*` instead have to reach a *handler bound at registry-build time*.
+Shipped pattern: a closure factory (`_make_<tool>_handler(config) -> ToolHandler`)
+with `full_config` loaded before `build_default_registry` runs. New pattern
+class; a future ADR should name it if more config-needing tools land.
+
+**W — D5 does not define `read_file`'s behavior on a non-`file:` entity ref.**
+D4 fixes the id shape as `"file:<abs-path>"` but says nothing about a non-None
+ref that lacks the prefix — reachable in principle now that §12.2 gives check 2
+two universes. Shipped: an explicit prefix check folding into the same
+`no_resolved_target` error path as the `None` case.
+
+**X — §12.1 item M's validator is narrower than item M's own text.** M says
+"reject a whitelist entry whose tool has `requires_entity=True`". The shipped
+validator's input set is derived from the `REGEX_ROUTER` surface, so a row
+naming an entity-required tool *outside* that surface is caught by the
+pre-existing `allowed_tool_names` arm with a generic message instead. Today the
+new arm has no reachable input, since `read_file` is not in the regex-router
+surface. Correct but weaker than advertised.
+
+**Y — §3 D5 and §3 D7 disagree on web timeouts.** D5 line 153 gives `web_search`
+a 15 s timeout and line 154 gives `web_fetch` 20 s; D7 ships a single
+`tools.web.timeout_s: 20`. Shipped: the one configured value applies to both.
+The schema's own naming supports this — `search_max_results` and
+`fetch_max_bytes` are tool-prefixed and `timeout_s` deliberately is not.
+
+**Z — "at most 3 redirects" does not say how many requests that is.** Shipped:
+up to 3 redirects *followed*, i.e. at most 4 requests; a 4th redirect response
+is refused with `too_many_redirects`.
+
+**AA — §3 D5's egress guard specification is an incomplete denylist.** D5 line
+154 requires "scheme ∈ {http, https} and the resolved address must not be
+loopback/link-local/RFC1918". Implemented literally that misses, and adversarial
+probing confirmed it allowed: CGNAT `100.64.0.0/10` — **the Tailscale range**,
+live and reachable on this machine, which CPython's `is_private` deliberately
+excludes — IPv4 and IPv6 multicast (including SSDP `239.255.255.250`), IPv6
+site-local `fec0::/10`, and NAT64 `64:ff9b::/96` with an embedded private
+address. Shipped: the predicate is inverted from a denylist enumeration to an
+allowlist of globally-routable addresses, with explicit refusals for the four
+classes above; NAT64 unwraps the embedded IPv4 and re-checks it.
+
+**AB — the guard specification does not address validated-string ≠ used-string.**
+D5 describes what to validate but not what to *use*. Validating with `urlsplit`
+and then handing the original string to macOS LaunchServices or to httpx means
+three parsers with three interpretations, and that gap was exploitable: a 4-part
+leading-zero host (`http://0177.0.0.1/`) is decimal to `getaddrinfo`
+(`177.0.0.1`, public, allowed) and octal to every browser (`127.0.0.1`), which
+was confirmed end-to-end with `open` reaching a throwaway loopback server.
+Shipped: the guard returns a canonical re-serialized URL and both call sites use
+only that, plus strict `ipaddress` parsing for IP-literal-shaped hosts so
+legacy literal forms never reach `getaddrinfo`.
+
+**AC — §3 D7's "no new secrets, no new accounts" is a credential claim, not a
+supply-chain one.** `ddgs` was chosen over Brave/Exa purely to avoid
+provisioning a key (D5 line 153 says so). It pulls in nine transitive packages,
+including `lxml`, `fake-useragent`, and `primp`, a Rust HTTP client whose stated
+purpose is impersonating browser TLS fingerprints. The backend sits behind one
+function, so a keyed search API remains a config-sized swap.
+
+**AD — an exact truncation byte count is not obtainable for a chunked response
+without draining it.** D5 requires the `…[truncated N bytes]` marker. For a
+response with no `Content-Length`, computing an exact `N` means reading the
+whole body — which, with a per-operation rather than wall-clock timeout, let a
+1-byte-per-second server hold the synchronous decide() loop for 30 s against a
+5 s configured timeout. Shipped: `Content-Length` is trusted when present;
+otherwise reading stops at the cap and the marker says "at least N bytes"
+rather than claiming a count that was never measured. A wall-clock deadline
+now covers the whole fetch including every redirect hop.
+
+**AE — `tools.screen.max_width_px` names a width bound; the shipped primitive bounds both dimensions.** §3 D5 line 156 and §3 D7 line 186 both say "downscale to ≤1568 px wide". The correct `sips` primitive for "shrink to fit within N, never upscale, preserve aspect ratio" is `-Z` / `--resampleHeightWidthMax`, which bounds the **larger** of the two dimensions. For a landscape screenshot the two readings coincide, so behavior matches intent for every real input; the config key name is simply narrower than what it controls.
+
+**AF — §5 collapses the TCC failure shapes, and one of them is undetectable.** The table has a single "screen_look TCC denied" row. In practice `screencapture` fails in at least four distinguishable ways: non-zero exit, exit-0 with no output file, exit-0 with an empty output file, and exit-0 with a **silently all-black image**. The first three are detected and all render the same actionable message, because a non-zero exit is not attributable to permission denial specifically (disk-full looks the same). The fourth cannot be detected without decoding pixel data, which would mean a new imaging dependency; it is a **declared non-goal**, not an oversight, and is noted in the handler.
+
+**AG — §3 D6's "(question=None)" shorthand is a trap if read literally.** Tier 0's `args:` schema is `str -> str` only, so there is no way to encode a `None`. Writing `args: {question: "None"}` would pass the four-character *string* `"None"` to the handler. The correct — and only — encoding is to omit the `args:` block entirely, so the tool receives `{}` and the handler's own default applies.
+
+**AH — §8's Definition of Done contains a step no commit can perform.** "TCC granted once for screen" is a human-in-the-loop action: the first real `screencapture` in the daemon's process raises the macOS Screen Recording prompt, which needs Allen physically present to approve. Row **T5 therefore stays open** in the burn log rather than being recorded green, and the DoD is not fully met until Allen grants it and re-runs that one row.
+
+**AI — putting `vision` under the shared `llm.presets.*` block makes it visible to the decision client.** A direct consequence of D7's chosen config shape, not an implementation slip: the decision loop's own `LLMClient` parses the same block, so `get_presets()` now lists `"vision"` and `switch_model("vision")` would strand the decision loop on a multimodal model. Nothing calls it, and the vision request always goes through a separate injected client, but the preset is reachable where it has no business being.
+
+**AJ — nothing prunes any `artifacts_root` subdirectory.** `screen_artifacts/` follows the `voice_artifacts/` precedent the ADR cites, and that precedent has no retention or cleanup logic anywhere in the tree. Screenshots of Allen's screen therefore accumulate on disk indefinitely. No pruner was built, to avoid inventing a retention policy the ADR does not specify — but the growth is now on the record, and it is worth noting the accumulating files are full-screen captures, i.e. the most sensitive artifact class this system writes.
+
+### 12.5 Reconciliation AK — Tier 0 templates gate the claim, not the quotation
+
+**This is the second item in §12 that changes behavior rather than correcting
+prose. Allen: please confirm.**
+
+**The gap.** §3 D6 ships a Tier 0 row for `read_clipboard` whose response
+template interpolates the clipboard's contents. It is the first Tier 0 template
+to splice **user-controlled** text into a draft; `{spoken_time}`,
+`{spoken_date}` and `{opened_name}` are all tool-produced scalars. The rendered
+draft then goes to the Pre-emit Gate, whose completion scan does not distinguish
+Jarvis's own words from quoted third-party text.
+
+**Evidence.** Probe against the real `pre_emit_gate` with one open task in the
+ledger: a clipboard containing `任务已完成，请查收` and one containing
+`verified locally` both produce `downgrade_required=True`; ordinary text does
+not. `已完成` and `verified` are canonical `COMPLETION_REGEXES` entries.
+
+**Consequence.** On `downgrade_required=True`, `_finalize_response` attempt 1
+re-prompts the LLM — on the path whose entire purpose is to never call an LLM —
+and Allen, having asked what is on his clipboard, receives limitation framing
+about an unrelated task. 完成 is among the most common words in written Chinese,
+Allen copies text constantly, and having open tasks is the normal state of this
+system, so this would fire routinely. The head comment's rule
+(`config/tier0_patterns.yaml`, "template: NEVER use completion-class words") is
+satisfied by the literal and silently violated by the substitution.
+
+**Resolution.** On the Tier 0 path the gate evaluates the **template literal** —
+the closed, Allen-authored whitelist text that constitutes Jarvis's actual
+claim. Interpolated tool output is quoted data, not a claim. The user still
+receives the fully rendered response, contents included. The LLM path is
+untouched: there the whole draft is Jarvis's own words and stays fully gated.
+Separately, every value interpolated into a Tier 0 template is now capped to a
+short spoken preview, since 8 KiB of clipboard spliced verbatim into a *spoken*
+response is unbounded TTS.
+
+**Proven both directions.** A Tier 0 clipboard containing `已完成` no longer
+downgrades, while an LLM-path draft of `任务已完成。` with no verified evidence
+still does. A fix that merely disabled the gate would fail the second half.
+
+**What does not change.** `COMPLETION_REGEXES`, the gate itself, the LLM path,
+the Tier 0 whitelist discipline, §8 row T6's pass condition ("pbpaste content in
+observation" — the full content still lands in `action.result_observed`).
+
+### 12.6 Accepted risks, recorded rather than mitigated
+
+Three properties of this batch are deliberate and should be re-read as decisions, not as gaps someone forgot to close:
+
+1. **`read_file` reach** (item U) — any text file under the resolver's search roots, including credential files, transmitted to a cloud model.
+2. **`screen_look` privacy** — §1 already records that a screenshot goes to a cloud multimodal model via the OpenRouter proxy, and Allen accepted it. Worth restating alongside AJ: those same screenshots also persist on disk forever.
+3. **DNS-rebinding TOCTOU on `web_fetch` / `open_url`** — the egress guard resolves once to validate and httpx (or the browser) resolves again to connect, so an attacker controlling a low-TTL record could rebind in between. Pinning the connection to the validated address would break SNI and virtual-host handling for too little gain at this threat level. Literal-IP URLs have no such gap, as a side effect of item AB's strict-parsing fix.
