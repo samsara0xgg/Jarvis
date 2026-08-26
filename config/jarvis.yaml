@@ -52,3 +52,14 @@ tools:
     # search_notes 的搜索根目录，`~` 会展开。Allen 可能改名/迁移 vault，
     # 找不到时 search_notes 返回空结果 + 提示，不是 boot 失败。
     vault_root: "~/Documents/Obsidian Vault"
+  web:
+    # web_search 在请求未指定 max_results 时的默认值；硬上限 8 写死在
+    # tools.py，这里改不了那个上限。
+    search_max_results: 5
+    # web_fetch 输出的文本字节上限（cap 到这个大小，超出部分变成
+    # "…[truncated N bytes]"）。
+    fetch_max_bytes: 8192
+    # web_search 和 web_fetch 共用同一个超时（秒）。ADR-0011 D5 原文给
+    # 两个工具分别写了 15s/20s，但这里只有一个键——D7 定的 schema 就是
+    # 一个共享超时，所以两个工具都读这一个值（§12 勘误候选项）。
+    timeout_s: 20

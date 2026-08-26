@@ -69,6 +69,9 @@ from jarvis.execution.path_resolver import (
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.tools import (
     DEFAULT_OBSIDIAN_VAULT_ROOT,
+    DEFAULT_WEB_FETCH_MAX_BYTES,
+    DEFAULT_WEB_SEARCH_MAX_RESULTS,
+    DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
     ToolRegistry,
     build_default_registry,
@@ -401,6 +404,48 @@ def _obsidian_vault_root(config: Mapping[str, Any]) -> Path:
     return DEFAULT_OBSIDIAN_VAULT_ROOT
 
 
+def _web_tools_config(config: Mapping[str, Any]) -> tuple[int, int, float]:
+    """Return `(search_max_results, fetch_max_bytes, timeout_s)` from `tools.web.*`.
+
+    ADR-0011 D7. Same best-effort posture as `_obsidian_vault_root` — a
+    missing/malformed `tools.web` block degrades to the shipped
+    defaults rather than failing boot; these are UX knobs, not trust
+    sources.
+
+    D7's schema ships ONE `timeout_s` shared by `web_search` and
+    `web_fetch`, though D5's prose separately gives the two tools
+    different timeouts (15s / 20s) — see `jarvis.execution.tools`'s
+    `DEFAULT_WEB_TIMEOUT_S` docstring for the full reconciliation
+    (ADR-0011 §12 errata candidate). The single configured value is
+    applied to both tools here.
+    """
+    search_max_results = DEFAULT_WEB_SEARCH_MAX_RESULTS
+    fetch_max_bytes = DEFAULT_WEB_FETCH_MAX_BYTES
+    timeout_s = DEFAULT_WEB_TIMEOUT_S
+    block = config.get("tools")
+    if isinstance(block, Mapping):
+        web_block = block.get("web")
+        if isinstance(web_block, Mapping):
+            raw_results = web_block.get("search_max_results")
+            if (
+                isinstance(raw_results, int)
+                and not isinstance(raw_results, bool)
+                and raw_results > 0
+            ):
+                search_max_results = raw_results
+            raw_bytes = web_block.get("fetch_max_bytes")
+            if isinstance(raw_bytes, int) and not isinstance(raw_bytes, bool) and raw_bytes > 0:
+                fetch_max_bytes = raw_bytes
+            raw_timeout = web_block.get("timeout_s")
+            if (
+                isinstance(raw_timeout, (int, float))
+                and not isinstance(raw_timeout, bool)
+                and raw_timeout > 0
+            ):
+                timeout_s = float(raw_timeout)
+    return search_max_results, fetch_max_bytes, timeout_s
+
+
 def bootstrap_runtime_app(
     *,
     config_path: Path | None = None,
@@ -476,11 +521,18 @@ def bootstrap_runtime_app(
     conn = open_event_log(paths.event_log)
 
     # 3. L4 registry + lifecycle. Config is loaded here (ahead of step 4's
-    #    LLM-config read) because `search_notes` needs
-    #    `tools.obsidian.vault_root` threaded into the registry at build
-    #    time (ADR-0011 D7) — L4 handlers do not load YAML themselves.
+    #    LLM-config read) because `search_notes`/`web_search`/`web_fetch`
+    #    need `tools.obsidian.vault_root` / `tools.web.*` threaded into
+    #    the registry at build time (ADR-0011 D7) — L4 handlers do not
+    #    load YAML themselves.
     full_config = _load_full_config(config_path)
-    registry = build_default_registry(obsidian_vault_root=_obsidian_vault_root(full_config))
+    web_search_max_results, web_fetch_max_bytes, web_timeout_s = _web_tools_config(full_config)
+    registry = build_default_registry(
+        obsidian_vault_root=_obsidian_vault_root(full_config),
+        web_search_max_results=web_search_max_results,
+        web_fetch_max_bytes=web_fetch_max_bytes,
+        web_timeout_s=web_timeout_s,
+    )
     lifecycle = ActionLifecycle()
 
     # 3b. Spec §17 Tier 0 whitelist — sits next to jarvis.yaml so Allen

@@ -26,6 +26,8 @@ dependencies = [
     "openwakeword>=0.6.0",  # ADR-0005 §3 — wake word detection; 0.4.x lacks utils.download_models
     "sounddevice",        # ADR-0005 — PortAudio input/output streams
     "onnxruntime",        # ADR-0005 §5 — SenseVoice + Silero VAD inference
+    "httpx",              # ADR-0011 D5/D7 — web_fetch GET; promoted from transitive (openai/anthropic)
+    "ddgs",               # ADR-0011 D5/D7 — web_search backend (DuckDuckGo, no API key)
 ]
 
 [project.optional-dependencies]

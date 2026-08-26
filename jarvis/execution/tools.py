@@ -79,18 +79,26 @@ the no-call invariant.
 
 from __future__ import annotations
 
+import codecs
 import hashlib
+import ipaddress
 import json
 import logging
+import math
 import os
+import socket
 import subprocess
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
+from urllib.parse import urljoin, urlsplit, urlunsplit
+
+import httpx
 
 from jarvis.execution.codex_action import (
     CodexActionResult,
@@ -119,7 +127,7 @@ from jarvis.state.projections import make_snapshot
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
 
 
 LOGGER = logging.getLogger(__name__)
@@ -2098,22 +2106,32 @@ def open_path_handler(
 # that duplicate is gone, `open_path_handler` calls this one directly.
 
 
-def _emit_tool_observation(
+def _emit_tool_observation(  # noqa: PLR0913 — all kwargs are the shared sync-handler success shape (conn/lifecycle/action_id/running_event_uid/payload/semantics); splitting them into a bundle defeats the point of a shared helper, same rationale as `_emit_tool_error`.
     *,
     conn: sqlite3.Connection,
     lifecycle: ActionLifecycle,
     action_id: str,
     running_event_uid: str,
     payload: Mapping[str, Any],
+    semantics: ResultSemantics = "observation",
 ) -> RawResult:
-    """Shared success exit for the three ADR-0011 D5 tools."""
+    """Shared success exit for the ADR-0011 D5 tools — observations AND acks alike.
+
+    NIT-FIX 8, ADR-0011 §12: despite the name, this is not
+    observation-only. ``semantics`` defaults to ``"observation"`` (every D5 tool but
+    ``open_url``, ADR-0011 §3 D5's result_semantics column). ``open_url``
+    passes ``semantics="ack"`` — it is the one D5 tool whose result is an
+    Execution Claim ``executed`` rather than an observation (the browser
+    opening is not verified) — so it shares this same emit+transition
+    shape instead of duplicating it.
+    """
     tool_output_str = tool_result(payload)
     emit_event(
         conn,
         type="action.result_observed",
         payload={
             "action_id": action_id,
-            "semantics": "observation",
+            "semantics": semantics,
             "tool_output": tool_output_str,
         },
         source_event_id=running_event_uid,
@@ -2122,7 +2140,7 @@ def _emit_tool_observation(
     lifecycle.transition(action_id, "result_observed")
     return RawResult(
         action_id=action_id,
-        semantics="observation",
+        semantics=semantics,
         payload=payload,
         tool_output=tool_output_str,
         error=None,
@@ -2306,7 +2324,16 @@ def _make_search_notes_handler(vault_root: Path) -> ToolHandler:  # noqa: C901 �
 
         max_results = _SEARCH_NOTES_DEFAULT_MAX_RESULTS
         max_results_arg = action_request.arguments.get("max_results")
-        if isinstance(max_results_arg, (int, float)) and not isinstance(max_results_arg, bool):
+        if (
+            isinstance(max_results_arg, (int, float))
+            and not isinstance(max_results_arg, bool)
+            and math.isfinite(max_results_arg)
+        ):
+            # SHOULD-FIX 6, ADR-0011 §12: `json.loads` accepts `Infinity`/
+            # `NaN` in the LLM tool-arg path, and `int(inf)` raises
+            # OverflowError — the `isfinite` guard folds that shape into
+            # "ignore, use the default", same as any other malformed
+            # `max_results_arg` this branch already ignores silently.
             max_results = int(max_results_arg)
         max_results = max(1, min(max_results, _SEARCH_NOTES_MAX_RESULTS_CAP))
 
@@ -2567,6 +2594,1122 @@ def read_clipboard_handler(
         running_event_uid=running_event_uid,
         payload=payload,
     )
+
+
+# --- SSRF egress guard (ADR-0011 D5) -----------------------------------------
+#
+# Shared by `web_fetch` and `open_url` — both hand a URL Allen (or the LLM)
+# did not type into a terminal to something that reaches the network / the
+# GUI. Refusing here is an in-handler guard refuse (ADR-0011 §5: "not a gate
+# refuse — the URL is an argument, not an entity"), never a gate-level
+# `requires_entity` concern and never an uncaught exception.
+
+_ALLOWED_URL_SCHEMES: Final[frozenset[str]] = frozenset({"http", "https"})
+
+_IPV4_LITERAL_CHARS: Final[frozenset[str]] = frozenset("0123456789.")
+"""Character set of an IPv4-dotted-literal-*shaped* host (MUST-FIX 1,
+ADR-0011 §12) — deliberately includes bare-digit strings (`"0"`,
+`"2130706433"`) and short forms (`"127.1"`), not just 4-part dotted
+quads. Every one of those shapes is exactly what a browser's WHATWG URL
+parser recognizes as "ends in a number" and converts to an IPv4 address
+(decimal, or octal per-part on a leading zero) — never as a DNS
+hostname. Treating them the same way here (strict-parse-or-refuse,
+never fall through to `getaddrinfo`) is what closes the bypass."""
+
+
+def _strict_ip_literal(
+    host: str,
+) -> tuple[bool, ipaddress.IPv4Address | ipaddress.IPv6Address | None]:
+    """Return `(is_literal_shaped, addr)`.
+
+    `is_literal_shaped=True, addr=None` means `host` LOOKS like an IP
+    literal — digits-and-dots only, or contains a `:` (bracketed IPv6)
+    — but failed a STRICT `ipaddress` parse. `0177.0.0.1` is exactly
+    this: `socket.getaddrinfo` reads the leading zero as decimal
+    (`177.0.0.1`, public) while every WHATWG URL parser (every browser,
+    and `open_url`'s downstream `open`) reads it as octal (`127.0.0.1`,
+    loopback) — CPython's `ipaddress.IPv4Address` has rejected leading
+    zeros since 3.9.5, which is exactly the WHATWG-compatible reading.
+    A literal-shaped host must never reach `getaddrinfo`, which would
+    silently paper over the ambiguity in the resolver's favour.
+
+    `is_literal_shaped=False` means `host` is an ordinary DNS hostname
+    — untouched, resolved via `getaddrinfo` as before.
+
+    IPv6 zone suffixes (`fe80::1%en0`) are stripped at the first literal
+    `%` before parsing — `ipaddress.IPv6Address` rejects them outright,
+    and the zone plays no part in which address a scoped literal names.
+    """
+    if host and set(host) <= _IPV4_LITERAL_CHARS:
+        try:
+            return True, ipaddress.IPv4Address(host)
+        except ValueError:
+            return True, None
+    if ":" in host:
+        try:
+            return True, ipaddress.IPv6Address(host.split("%", 1)[0])
+        except ValueError:
+            return True, None
+    return False, None
+
+
+def _resolve_hostname_ips(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Resolve `host` to its address(es), literal IPs parsed directly.
+
+    Everything else goes via `socket.getaddrinfo` (real DNS). This is
+    the default `resolver` `validate_egress_url` closes over; the
+    ADR-0011 §7 SSRF acceptance table substitutes a canned mapping here
+    instead (a hostname with both a public and a private A record cannot
+    be reproduced against real DNS in a hermetic test).
+
+    An IP-literal-shaped host (`_strict_ip_literal`) is parsed strictly
+    and NEVER handed to `getaddrinfo` (MUST-FIX 1, ADR-0011 §12) — a
+    literal that fails strict parsing returns an empty list (refused)
+    rather than falling through to the resolver's own, looser
+    normalization of legacy forms (decimal `2130706433`, hex
+    `0x7f000001`, mixed `0x7f.0.0.1` are NOT digits-and-dots-only shaped
+    and are unaffected — `getaddrinfo` already normalizes those to
+    their dotted form identically to a browser, so no bypass exists
+    there). A host that fails to resolve at all returns an empty list
+    (the guard then refuses — an unresolvable host cannot be proven
+    safe).
+    """
+    is_literal_shaped, literal_addr = _strict_ip_literal(host)
+    if is_literal_shaped:
+        return [] if literal_addr is None else [literal_addr]
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (OSError, UnicodeError):
+        return []
+    addrs: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    seen: set[str] = set()
+    for info in infos:
+        raw_ip = str(info[4][0])
+        if raw_ip in seen:
+            continue
+        seen.add(raw_ip)
+        try:
+            addrs.append(ipaddress.ip_address(raw_ip.split("%", 1)[0]))
+        except ValueError:
+            continue
+    return addrs
+
+
+_NAT64_WELL_KNOWN_PREFIX: Final[ipaddress.IPv6Network] = ipaddress.IPv6Network("64:ff9b::/96")
+"""RFC 6052 NAT64 well-known prefix. An address in this block is a
+translated IPv4 address embedded in the low 32 bits — judging the /96
+prefix itself (`is_global` says True; it is not IANA special-purpose
+"reserved" in any way `ipaddress` models cheaply) tells you nothing;
+judging the EMBEDDED address is the only thing that means anything
+(MUST-FIX 4, ADR-0011 §12)."""
+
+
+def _is_globally_routable(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Allowlist predicate — permit only a globally routable address.
+
+    MUST-FIX 4, ADR-0011 §12. Inverted from the original denylist enumeration
+    (loopback/link-local/private/unspecified), which left
+    `100.64.0.0/10` — CGNAT, and the exact range Allen's Tailscale
+    tailnet (including the RPi that runs Jarvis) lives on — reachable
+    purely by omission: `ipaddress` classifies it as neither
+    `is_loopback`, `is_link_local`, `is_private`, nor `is_unspecified`.
+
+    `is_global` alone is not sufficient either — empirically (not just per
+    the stdlib docs) it says `True` for: IPv4/IPv6 multicast
+    (`224.0.0.1`, `ff02::1`), the deprecated IPv6 site-local block
+    (`fec0::1`, `fec0::/10`), and any address in the NAT64 well-known
+    prefix REGARDLESS of what it embeds (`64:ff9b::7f00:1` embeds
+    `127.0.0.1`). Each gets an explicit refusal below; the NAT64 case
+    recurses on the embedded IPv4 address instead of trusting the /96
+    prefix, so a real NAT64-translated public address is not refused
+    just for sharing the prefix.
+
+    An IPv4-mapped IPv6 address (`::ffff:127.0.0.1`) is unwrapped to its
+    IPv4 form first so it is judged by the exact same rule as the
+    literal it represents — empirically `is_global` already agrees with
+    the unwrapped form for every address family tried here, but the
+    unwrap is kept as the documented, not-accidental, invariant.
+    """
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    if isinstance(addr, ipaddress.IPv6Address) and addr in _NAT64_WELL_KNOWN_PREFIX:
+        embedded = ipaddress.IPv4Address(addr.packed[-4:])
+        return _is_globally_routable(embedded)
+    if addr.is_multicast:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.is_site_local:
+        return False
+    return addr.is_global
+
+
+def _is_blocked_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True for anything NOT globally routable.
+
+    See `_is_globally_routable` (MUST-FIX 4, ADR-0011 §12) for the
+    allowlist this inverts.
+    """
+    return not _is_globally_routable(addr)
+
+
+@dataclass(frozen=True)
+class _EgressUrlParts:
+    """Scheme/host/port plus the canonical re-serialized URL string."""
+
+    scheme: str
+    host: str
+    port: int | None
+    canonical: str
+
+
+def _parse_egress_url(url: str) -> tuple[_EgressUrlParts | None, str]:
+    r"""Parse `url` into `(parts, reason)` — `parts is None` iff refused.
+
+    `reason` names why, used verbatim by `validate_egress_url`.
+
+    This is the ROOT-CAUSE fix (ADR-0011 §12 MUST-FIX 1/2): the bug
+    class underlying both fixes is "the validated string is not the
+    used string" — `validate_egress_url` parses with `urlsplit`, then
+    the ORIGINAL string gets handed to a second parser (macOS
+    LaunchServices/the browser for `open_url`, `httpx` for `web_fetch`)
+    that can read it differently (backslash-as-slash in a WHATWG
+    "special scheme" authority is the concrete case: `urlsplit` puts
+    everything before the last `\@` into userinfo and the rest into
+    host; the browser reinterprets the backslash as a path separator
+    and lands on a completely different host).
+
+    `parts.canonical` is rebuilt from ONLY the parsed scheme/host/port/
+    path/query — userinfo and fragment are dropped unconditionally,
+    never forwarded to `open` or `httpx`. `validate_egress_url` and
+    `_normalize_egress_url` both call this SAME function, so the string
+    a caller ends up acting on is always byte-identical to the one the
+    guard's scheme/address checks ran against.
+
+    A URL that does not survive a re-parse of its own canonical form
+    with IDENTICAL scheme/host/port is refused outright (`parts is
+    None`) rather than trusted — this is the literal "anything that
+    does not survive parse → re-serialize → reparse identically is
+    refused" rule; in practice this never fires for a legitimate URL
+    (host/port can't contain any of the delimiters being reassembled
+    around them) and exists as a named invariant, not a vector this
+    project has observed.
+    """
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None, f"malformed URL {url!r}"
+
+    host = parsed.hostname
+    if not host:
+        return None, "URL has no hostname"
+
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        return None, f"invalid port in URL: {exc}"
+
+    scheme = parsed.scheme.lower()
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    canonical = urlunsplit((scheme, netloc, parsed.path or "/", parsed.query, ""))
+
+    reparsed = urlsplit(canonical)
+    try:
+        reparsed_port = reparsed.port
+    except ValueError:
+        return None, "URL does not survive canonical re-serialization (port)"
+    if reparsed.scheme != scheme or reparsed.hostname != host or reparsed_port != port:
+        return None, "URL does not survive canonical re-serialization (host/scheme mismatch)"
+
+    return _EgressUrlParts(scheme=scheme, host=host, port=port, canonical=canonical), ""
+
+
+def _normalize_egress_url(url: str) -> str | None:
+    """Canonical re-serialized form of an already-guard-allowed `url`.
+
+    The ONLY string a call site may act on (ADR-0011 §12 MUST-FIX 1/2
+    root cause; see `_parse_egress_url`). `None` means `url` cannot be
+    canonicalized — should not happen for a URL `validate_egress_url`
+    just allowed (both call the identical parser), but callers check
+    for it and refuse rather than ever fall back to the raw string.
+    """
+    parts, _reason = _parse_egress_url(url)
+    return parts.canonical if parts is not None else None
+
+
+def validate_egress_url(
+    url: str,
+    *,
+    resolver: Callable[
+        [str], Sequence[ipaddress.IPv4Address | ipaddress.IPv6Address]
+    ] = _resolve_hostname_ips,
+) -> tuple[bool, str]:
+    """SSRF egress guard shared by `web_fetch` and `open_url` (ADR-0011 D5).
+
+    Pure aside from the injected `resolver` (real DNS by default; the
+    acceptance script substitutes a canned lookup). Returns
+    `(allowed, reason)` — `reason` is `""` when `allowed` and otherwise
+    names exactly what tripped, for the caller's error observation.
+
+    Checks, in order (each is a real bypass if skipped, per ADR-0011 D5):
+
+    1. The URL must parse into a canonical form that survives its own
+       re-parse (`_parse_egress_url`) — a malformed URL, one with no
+       hostname, or an unparseable port is refused before anything
+       else is inspected.
+    2. Scheme must be `http`/`https`. `file:`/`ftp:`/`data:`/
+       `javascript:`/anything else is refused — this matters most for
+       `open_url`, where macOS `open` will happily launch a non-http
+       scheme.
+    3. EVERY address `resolver` returns is checked, not just the first —
+       a host with both a public and a private A record is refused.
+
+    Callers that walk redirects (`web_fetch`) MUST call this again on
+    every hop's `Location` — this function only ever sees one URL. A
+    caller that gets `allowed=True` back MUST fetch/open
+    `_normalize_egress_url(url)`, never `url` itself (see
+    `_parse_egress_url`'s docstring for why).
+    """
+    parts, reason = _parse_egress_url(url)
+    if parts is None:
+        return False, reason
+
+    if parts.scheme not in _ALLOWED_URL_SCHEMES:
+        return False, f"scheme {parts.scheme!r} is not in the http/https allowlist"
+
+    addrs = resolver(parts.host)
+    if not addrs:
+        return False, f"host {parts.host!r} did not resolve to any address"
+
+    for addr in addrs:
+        if _is_blocked_address(addr):
+            return False, f"host {parts.host!r} resolves to blocked address {addr}"
+
+    return True, ""
+
+
+# --- web_search ----------------------------------------------------------------
+
+DEFAULT_WEB_SEARCH_MAX_RESULTS: Final[int] = 5
+"""Default `max_results` absent both a request argument and a
+`tools.web.search_max_results` config override (ADR-0011 D7). Public so
+`jarvis.runtime` can fall back to it — same single-source-of-truth
+reasoning as `DEFAULT_OBSIDIAN_VAULT_ROOT` (NIT-FIX 8, ADR-0011 §12)."""
+
+_WEB_SEARCH_MAX_RESULTS_CAP: Final[int] = 8
+"""Hard ceiling (ADR-0011 D5) — NOT configurable, unlike the default
+above. Applies regardless of what the request argument or config asks
+for."""
+
+DEFAULT_WEB_TIMEOUT_S: Final[float] = 20.0
+"""Shared `web_search`/`web_fetch` timeout absent a `tools.web.timeout_s`
+config override. ADR-0011 D5's prose gives the two tools DIFFERENT
+timeouts (15s / 20s) but D7's shipped config schema has only ONE
+`timeout_s` key under `tools.web` — deliberately unprefixed, unlike its
+`search_max_results`/`fetch_max_bytes` siblings, which reads as intent
+to share one knob. Step 6 resolves the conflict by applying the single
+configured value to both tools (ADR-0011 §12 errata candidate)."""
+
+_WEB_SEARCH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Search query text.",
+        },
+        "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of results to return. Default 5, capped at 8.",
+        },
+    },
+    "required": ["query"],
+}
+
+
+def _ddgs_search_backend(
+    query: str,
+    max_results: int,
+    *,
+    timeout_s: float,
+) -> list[tuple[str, str, str]]:
+    """Real DuckDuckGo backend via the `ddgs` package (ADR-0011 D5).
+
+    One function, as D5 explicitly asks for, so a keyed API is a
+    config-sized swap later — nothing above this function knows or
+    cares that DuckDuckGo is behind it. Returns `(title, url, snippet)`
+    tuples. The acceptance script monkeypatches this name directly
+    rather than mocking `ddgs` internals, so it never makes a real
+    network call.
+    """
+    # Imported here, not at module top, so a `ddgs` import error surfaces as
+    # this tool's own error observation rather than failing
+    # `import jarvis.execution.tools` for every caller.
+    from ddgs import DDGS  # noqa: PLC0415
+
+    # NIT-FIX 8, ADR-0011 §12: `int(timeout_s)` floors any sub-1s config
+    # value to 0 — `max(1, ...)` keeps a deliberately-short timeout at a
+    # sane floor instead of silently becoming "no timeout" / "instant
+    # timeout" depending on how `ddgs` treats `0`.
+    with DDGS(timeout=max(1, int(timeout_s))) as client:
+        rows = client.text(query, max_results=max_results)
+    return [
+        (str(row.get("title", "")), str(row.get("href", "")), str(row.get("body", "")))
+        for row in rows
+    ]
+
+
+def _make_web_search_handler(*, default_max_results: int, timeout_s: float) -> ToolHandler:
+    """Bind `tools.web.{search_max_results,timeout_s}` into a closure (ADR-0011 D7).
+
+    Same shape as `_make_search_notes_handler` — config read once at
+    registry-build time, closed over here.
+    """
+
+    def _handler(
+        action_request: ActionRequest,
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
+        lifecycle: ActionLifecycle,
+    ) -> RawResult:
+        running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+        action_id = action_request.action_id
+
+        try:
+            query = action_request.arguments.get("query")
+            if not isinstance(query, str) or not query.strip():
+                return _emit_tool_error(
+                    conn=conn,
+                    lifecycle=lifecycle,
+                    action_id=action_id,
+                    running_event_uid=running_event_uid,
+                    code="invalid_argument",
+                    message=f"web_search: query must be a non-empty string (got {query!r})",
+                )
+
+            max_results = default_max_results
+            max_results_arg = action_request.arguments.get("max_results")
+            if (
+                isinstance(max_results_arg, (int, float))
+                and not isinstance(max_results_arg, bool)
+                and math.isfinite(max_results_arg)
+            ):
+                # SHOULD-FIX 6, ADR-0011 §12: `json.loads` accepts
+                # `Infinity`/`NaN` in the LLM tool-arg path, and
+                # `int(inf)` raises OverflowError — fold that shape
+                # into "ignore, use the default", same as any other
+                # malformed `max_results_arg` this branch already
+                # ignores silently.
+                max_results = int(max_results_arg)
+            max_results = max(1, min(max_results, _WEB_SEARCH_MAX_RESULTS_CAP))
+
+            try:
+                rows = _ddgs_search_backend(query, max_results, timeout_s=timeout_s)
+            except Exception as exc:  # noqa: BLE001 — ddgs backend breakage (anti-bot churn is expected and normal, ADR-0011 §5) degrades to an error observation naming the backend, never a crash; no retry loop in-handler.
+                return _emit_tool_error(
+                    conn=conn,
+                    lifecycle=lifecycle,
+                    action_id=action_id,
+                    running_event_uid=running_event_uid,
+                    code="web_search_backend_error",
+                    message=f"web_search: ddgs backend error: {exc}",
+                )
+
+            results = [
+                f"{i}. {title} — {url} — {snippet}"
+                for i, (title, url, snippet) in enumerate(rows, start=1)
+            ]
+            payload: dict[str, Any] = {"results": results}
+            return _emit_tool_observation(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_id,
+                running_event_uid=running_event_uid,
+                payload=payload,
+            )
+        except Exception as exc:  # noqa: BLE001 — handler-boundary catch-all (MUST-FIX 2, ADR-0011 §12): §5's contract is "never a crash"; anything not already folded into a named error observation above (e.g. a future argument-shape bug) still terminal-transitions the lifecycle instead of stranding it at `running`, naming the real exception type so a genuine bug stays diagnosable.
+            return _emit_tool_error(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_id,
+                running_event_uid=running_event_uid,
+                code="web_search_unexpected_error",
+                message=f"web_search: unexpected {type(exc).__name__}: {exc}",
+            )
+
+    return _handler
+
+
+# --- web_fetch -----------------------------------------------------------------
+
+DEFAULT_WEB_FETCH_MAX_BYTES: Final[int] = 8192
+"""Default `tools.web.fetch_max_bytes` (ADR-0011 D7) — same 8 KiB order
+as every other D5 tool's output cap."""
+
+_WEB_FETCH_MAX_REDIRECTS: Final[int] = 3
+"""Hard ceiling on redirects FOLLOWED (ADR-0011 D5: "at most 3
+redirects") — not configurable. A 4th redirect response is refused
+rather than followed; up to `_WEB_FETCH_MAX_REDIRECTS` + 1 HTTP
+requests are made in total (the initial request plus each followed
+redirect)."""
+
+_WEB_FETCH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "url": {
+            "type": "string",
+            "description": "The http(s) URL to fetch.",
+        },
+    },
+    "required": ["url"],
+}
+
+_REDIRECT_STATUS_CODES: Final[frozenset[int]] = frozenset({301, 302, 303, 307, 308})
+
+
+def _parse_content_length(raw: str | None) -> int | None:
+    """Parse a `Content-Length` header value, or `None` if absent/junk."""
+    if raw is None:
+        return None
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+@dataclass(frozen=True)
+class _HopResponse:
+    """One non-redirect-following HTTP response (ADR-0011 D5 `web_fetch`)."""
+
+    status_code: int
+    location: str | None
+    content_type: str | None
+    body: bytes
+    total_bytes: int
+    total_bytes_exact: bool = True
+    """False iff `total_bytes` is a lower bound, not a measured total —
+    the drain stopped at `max_bytes` (or the fetch deadline) on a
+    response with no usable `Content-Length` (MUST-FIX 3, ADR-0011
+    §12). `body` itself is always the true prefix actually read,
+    capped at `max_bytes` regardless of this flag."""
+
+
+class _FetchDeadlineExceededError(Exception):
+    """Raised when the overall wall-clock fetch budget elapses mid-drain.
+
+    MUST-FIX 3, ADR-0011 §12. Raised by `_http_get_one_hop`, caught by
+    `_fetch_url_backend` — never escapes this module.
+    """
+
+
+def _http_get_one_hop(
+    url: str, *, timeout_s: float, max_bytes: int, deadline: float,
+) -> _HopResponse:
+    """Issue ONE GET with redirects disabled, streamed, body capped at `max_bytes`.
+
+    The caller (`_fetch_url_backend`) owns redirect-following — this
+    function never does, so every hop's `Location` can be re-validated
+    by the SSRF guard before it is followed (ADR-0011 D5 point 5).
+
+    The drain STOPS as soon as `max_bytes` is collected (MUST-FIX 3,
+    ADR-0011 §12) — `httpx`'s `timeout` is a per-read timeout, not a
+    wall-clock budget, so draining the FULL body (as this used to do,
+    to report an exact `total_bytes`) let a slow/adversarial server
+    hold the connection open indefinitely while trickling data, and let
+    a huge body cost full transfer time to deliver a capped prefix.
+    `deadline` (an absolute `time.monotonic()` value, shared across
+    every hop by `_fetch_url_backend`) is also checked every chunk, so
+    a slow-loris server that never triggers `httpx`'s own read timeout
+    still gets cut off.
+
+    `total_bytes`/`total_bytes_exact`: when the server sends a
+    `Content-Length`, that is trusted as the exact total (matches what
+    every HTTP client does). Otherwise, if the drain reached the cap or
+    deadline before the stream ended, `total_bytes` is only the number
+    of bytes actually read off the wire — a true LOWER BOUND, reported
+    as such via `total_bytes_exact=False` — never a claimed exact count
+    for data that was never measured.
+
+    This is the one seam the acceptance script monkeypatches
+    (`tools._http_get_one_hop`) to exercise `_fetch_url_backend`'s
+    redirect-walking + guard-revalidation + truncation logic without a
+    real socket — same "substitute a seam" shape Step 5 used for
+    `vault_root`.
+    """
+    with (
+        httpx.Client(timeout=timeout_s, follow_redirects=False, trust_env=False) as client,
+        client.stream("GET", url) as response,
+    ):
+        content_type = response.headers.get("content-type")
+        location = response.headers.get("location")
+        declared_length = _parse_content_length(response.headers.get("content-length"))
+        chunks: list[bytes] = []
+        collected = 0
+        stopped_early = False
+        for chunk in response.iter_bytes():
+            if collected < max_bytes:
+                chunks.append(chunk[: max_bytes - collected])
+            collected += len(chunk)
+            if collected >= max_bytes:
+                stopped_early = True
+                break
+            if time.monotonic() >= deadline:
+                # Distinct from the `max_bytes` cap above: reaching the
+                # cap is a normal, expected truncation of a large body;
+                # running out of wall-clock time mid-drain means the
+                # server is too slow (slow-loris) — surfaced as an
+                # error by `_fetch_url_backend`, not a truncated
+                # success.
+                msg = f"exceeded the fetch deadline after {collected} bytes"
+                raise _FetchDeadlineExceededError(msg)
+        body = b"".join(chunks)
+        if declared_length is not None:
+            total_bytes, total_bytes_exact = declared_length, True
+        elif stopped_early:
+            total_bytes, total_bytes_exact = collected, False
+        else:
+            total_bytes, total_bytes_exact = collected, True
+        return _HopResponse(
+            status_code=response.status_code,
+            location=location,
+            content_type=content_type,
+            body=body,
+            total_bytes=total_bytes,
+            total_bytes_exact=total_bytes_exact,
+        )
+
+
+@dataclass(frozen=True)
+class _FetchOutcome:
+    """Result of `_fetch_url_backend` — success fields XOR error fields."""
+
+    ok: bool
+    status_code: int = 0
+    content_type: str | None = None
+    body: bytes = b""
+    total_bytes: int = 0
+    total_bytes_exact: bool = True
+    final_url: str = ""
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+def _fetch_url_backend(  # noqa: PLR0911 — one linear guard/canonicalize/fetch/redirect loop; each return is a distinct named terminal outcome (`_FetchOutcome.error_code`), same rationale as the other D5 handlers' `_emit_tool_error` call sites — splitting them apart would scatter the outcomes from the loop that produces them.
+    url: str,
+    *,
+    timeout_s: float,
+    max_bytes: int,
+    max_redirects: int = _WEB_FETCH_MAX_REDIRECTS,
+    resolver: Callable[
+        [str], Sequence[ipaddress.IPv4Address | ipaddress.IPv6Address]
+    ]
+    | None = None,
+) -> _FetchOutcome:
+    """Guarded GET with manual redirect walking (ADR-0011 D5).
+
+    Validates EVERY hop — the initial `url` and each `Location` header —
+    through `validate_egress_url` before issuing that hop's request,
+    and always fetches `_normalize_egress_url`'s canonical form of that
+    hop, never the raw `Location`/input string (ADR-0011 §12 MUST-FIX
+    1/2 root cause — the validated string must be the used string).
+    This is what stops the classic bypass: a public URL that 302s to
+    `http://127.0.0.1:8006/`. A guard refusal at any hop, and exceeding
+    `max_redirects`, both return `ok=False` with a named `error_code`;
+    neither ever raises past this function.
+
+    A single wall-clock `deadline` (MUST-FIX 3, ADR-0011 §12) is set
+    ONCE from `timeout_s` and shared across every hop, including the
+    guard/canonicalization work between hops — no redirect chain can
+    make one `web_fetch` call run longer than `timeout_s` total,
+    contrary to the previous per-hop-only `httpx` timeout.
+
+    `resolver` defaults to `None`, resolved to the module-level
+    `_resolve_hostname_ips` INSIDE the function body rather than as a
+    literal default value — a default value is bound once at `def`
+    time, so monkeypatching `tools._resolve_hostname_ips` afterward
+    (the acceptance script's hermetic seam for every caller that does
+    not pass `resolver` explicitly, e.g. `web_fetch`'s registered
+    handler) would silently have no effect against a frozen default.
+    """
+    resolve = resolver if resolver is not None else _resolve_hostname_ips
+    deadline = time.monotonic() + timeout_s
+    current = url
+    hops_followed = 0
+    while True:
+        allowed, reason = validate_egress_url(current, resolver=resolve)
+        if not allowed:
+            return _FetchOutcome(
+                ok=False,
+                error_code="ssrf_guard_refused",
+                error_message=f"web_fetch egress guard refused {current!r}: {reason}",
+            )
+
+        normalized = _normalize_egress_url(current)
+        if normalized is None:
+            # Should be unreachable — `validate_egress_url` just
+            # allowed `current` via the identical parser — but refuse
+            # rather than ever fall back to the raw string.
+            return _FetchOutcome(
+                ok=False,
+                error_code="ssrf_guard_refused",
+                error_message=f"web_fetch: {current!r} passed the guard but would not canonicalize",
+            )
+
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0:
+            return _FetchOutcome(
+                ok=False,
+                error_code="deadline_exceeded",
+                error_message=(
+                    f"web_fetch: exceeded the {timeout_s:g}s wall-clock budget "
+                    f"before hop {hops_followed + 1}"
+                ),
+            )
+
+        try:
+            hop = _http_get_one_hop(
+                normalized, timeout_s=remaining_s, max_bytes=max_bytes, deadline=deadline,
+            )
+        except _FetchDeadlineExceededError:
+            return _FetchOutcome(
+                ok=False,
+                error_code="deadline_exceeded",
+                error_message=f"web_fetch: exceeded the {timeout_s:g}s wall-clock budget",
+            )
+        except httpx.HTTPError as exc:
+            return _FetchOutcome(
+                ok=False,
+                error_code="network_error",
+                error_message=f"web_fetch: {exc}",
+            )
+
+        if hop.status_code in _REDIRECT_STATUS_CODES:
+            if hop.location is None:
+                return _FetchOutcome(
+                    ok=False,
+                    error_code="network_error",
+                    error_message=f"web_fetch: {normalized!r} redirected with no Location header",
+                )
+            if hops_followed >= max_redirects:
+                return _FetchOutcome(
+                    ok=False,
+                    error_code="too_many_redirects",
+                    error_message=(
+                        f"web_fetch: exceeded {max_redirects} redirects starting from {url!r}"
+                    ),
+                )
+            hops_followed += 1
+            current = urljoin(normalized, hop.location)
+            continue
+
+        return _FetchOutcome(
+            ok=True,
+            status_code=hop.status_code,
+            content_type=hop.content_type,
+            body=hop.body,
+            total_bytes=hop.total_bytes,
+            total_bytes_exact=hop.total_bytes_exact,
+            final_url=normalized,
+        )
+
+
+class _ReadableHTMLParser(HTMLParser):
+    """Strip an HTML document to its page title + tag-stripped visible text.
+
+    stdlib-only (ADR-0011 D5: no bs4/lxml — `html.parser` is fine).
+    `<script>`/`<style>` contents are dropped entirely; every other
+    tag's text is kept, collapsed to single-space-joined chunks. Feeding
+    a byte-capped, possibly mid-tag-truncated document is safe —
+    `HTMLParser` is deliberately lenient about malformed/incomplete
+    markup, and an unclosed tag at EOF simply stops emitting text there.
+    """
+
+    def __init__(self) -> None:
+        """Start with empty title/text buffers and zero script/style depth."""
+        super().__init__(convert_charrefs=True)
+        self._title_parts: list[str] = []
+        self._text_parts: list[str] = []
+        self._in_title = False
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:  # noqa: ARG002 — HTMLParser calls this positionally; attrs is unused but must stay in the override's signature.
+        """Track entry into `<title>` and `<script>`/`<style>` regions."""
+        if tag in ("script", "style"):
+            self._skip_depth += 1
+        elif tag == "title":
+            self._in_title = True
+
+    def handle_endtag(self, tag: str) -> None:
+        """Track exit from `<title>` and `<script>`/`<style>` regions."""
+        if tag in ("script", "style"):
+            self._skip_depth = max(0, self._skip_depth - 1)
+        elif tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data: str) -> None:
+        """Collect text data outside of skipped regions."""
+        if self._skip_depth:
+            return
+        if self._in_title:
+            self._title_parts.append(data)
+            return
+        stripped = data.strip()
+        if stripped:
+            self._text_parts.append(stripped)
+
+    @property
+    def title(self) -> str:
+        """Return the concatenated `<title>` text, stripped."""
+        return "".join(self._title_parts).strip()
+
+    @property
+    def text(self) -> str:
+        """Return the space-joined visible text chunks."""
+        return " ".join(self._text_parts)
+
+
+def _extract_readable_html(html_text: str) -> tuple[str, str]:
+    """Return `(title, stripped_text)` from an HTML document (stdlib-only)."""
+    parser = _ReadableHTMLParser()
+    parser.feed(html_text)
+    return parser.title, parser.text
+
+
+def _parse_content_type_charset(content_type: str | None) -> str | None:
+    """Extract a `charset=` parameter from a `Content-Type` header value."""
+    if not content_type:
+        return None
+    for part in content_type.split(";")[1:]:
+        key, _, value = part.strip().partition("=")
+        if key.strip().lower() == "charset":
+            return value.strip().strip('"').strip("'") or None
+    return None
+
+
+def _decode_hop_body(
+    body: bytes, total_bytes: int, content_type: str | None,
+) -> tuple[str, int, bool]:
+    """`(text, undelivered_bytes, lossy)` honoring a declared `charset=`.
+
+    SHOULD-FIX 7, ADR-0011 §12 — a `charset=gb2312` page used to decode
+    to 100% U+FFFD because everything went through the UTF-8-only
+    `truncate_utf8` path regardless of what `Content-Type` declared.
+
+    UTF-8 (declared, or no usable charset named) still goes through
+    `truncate_utf8` UNCHANGED — its codepoint-safe boundary handling is
+    never duplicated here; this only adds ONE more decode attempt in
+    front of it for a charset Python actually knows (stdlib `codecs`,
+    no new dependency). A body cut mid-character by the caller's own
+    `max_bytes` cap decodes with `errors="replace"` and is reported
+    `lossy=True`, same signal `truncate_utf8` gives its own lossy case.
+    """
+    charset = _parse_content_type_charset(content_type)
+    if charset is None or charset.lower().replace("_", "-") in ("utf-8", "utf8"):
+        return truncate_utf8(body, total_bytes)
+    try:
+        codec_name = codecs.lookup(charset).name
+    except LookupError:
+        return truncate_utf8(body, total_bytes)
+    undelivered = max(0, total_bytes - len(body))
+    try:
+        return body.decode(codec_name), undelivered, False
+    except UnicodeDecodeError:
+        return body.decode(codec_name, errors="replace"), undelivered, True
+    except LookupError:
+        # A declared charset can name a REGISTERED but non-text codec
+        # (e.g. `charset=base64`) — `codecs.lookup` accepts it but
+        # `bytes.decode` refuses it with `LookupError`, not
+        # `UnicodeDecodeError`. Caught here (not left to MUST-FIX 2's
+        # handler-boundary catch-all) so an unusual header degrades to
+        # the same lossy-UTF-8 fallback as an unknown charset, rather
+        # than a generic "unexpected error" observation.
+        return truncate_utf8(body, total_bytes)
+
+
+def _looks_like_html(body: bytes) -> bool:
+    """Sniff a leading `<`/`<!doctype` to detect an HTML document.
+
+    SHOULD-FIX 7, ADR-0011 §12 — used only when `Content-Type` is
+    absent, so a header-less HTML response still gets routed through
+    the tag-stripping path instead of being dumped as raw markup under
+    the "plain text" branch.
+    """
+    stripped = body.lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    return stripped.startswith(b"<")
+
+
+def _make_web_fetch_handler(*, max_bytes: int, timeout_s: float) -> ToolHandler:  # noqa: C901 — thin closure factory; the complexity ruff counts lives entirely in the nested `_handler` (see its own noqa), not in this function's own body.
+    """Bind `tools.web.{fetch_max_bytes,timeout_s}` into a closure (ADR-0011 D7)."""
+
+    def _handler(  # noqa: C901, PLR0912 — one linear guard/content-type/decode/shape pass (MUST-FIX 2's handler-boundary try/except wraps all of it, ADR-0011 §12) — splitting the content-type sniff, charset decode, and HTML-placeholder branches into helpers would scatter the fail-fast checks from the payload fields they gate, same rationale as `_make_search_notes_handler`'s own noqa.
+        action_request: ActionRequest,
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
+        lifecycle: ActionLifecycle,
+    ) -> RawResult:
+        running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+        action_id = action_request.action_id
+
+        try:
+            url = action_request.arguments.get("url")
+            if not isinstance(url, str) or not url.strip():
+                return _emit_tool_error(
+                    conn=conn,
+                    lifecycle=lifecycle,
+                    action_id=action_id,
+                    running_event_uid=running_event_uid,
+                    code="invalid_argument",
+                    message=f"web_fetch: url must be a non-empty string (got {url!r})",
+                )
+
+            outcome = _fetch_url_backend(url, timeout_s=timeout_s, max_bytes=max_bytes)
+            if not outcome.ok:
+                return _emit_tool_error(
+                    conn=conn,
+                    lifecycle=lifecycle,
+                    action_id=action_id,
+                    running_event_uid=running_event_uid,
+                    code=outcome.error_code or "web_fetch_failed",
+                    message=outcome.error_message or "web_fetch: unknown failure",
+                )
+
+            mime = (outcome.content_type or "").split(";", 1)[0].strip().lower()
+            if not mime and _looks_like_html(outcome.body):
+                # SHOULD-FIX 7, ADR-0011 §12: a response with NO
+                # Content-Type used to skip both the non-text branch
+                # below and the HTML branch further down, dumping raw
+                # markup as if it were the tool's plain-text case.
+                mime = "text/html"
+            if mime and not mime.startswith("text/"):
+                payload: dict[str, Any] = {
+                    "url": outcome.final_url,
+                    "status_code": outcome.status_code,
+                    "content_type": outcome.content_type,
+                    "note": (
+                        f"non-text content-type {outcome.content_type!r}; "
+                        "body not decoded as text"
+                    ),
+                }
+                return _emit_tool_observation(
+                    conn=conn,
+                    lifecycle=lifecycle,
+                    action_id=action_id,
+                    running_event_uid=running_event_uid,
+                    payload=payload,
+                )
+
+            text, undelivered_bytes, lossy = _decode_hop_body(
+                outcome.body, outcome.total_bytes, outcome.content_type,
+            )
+            truncated = undelivered_bytes > 0
+
+            title: str | None = None
+            placeholder = False
+            if mime == "text/html":
+                title, html_text = _extract_readable_html(text)
+                if html_text.strip():
+                    content = html_text
+                elif truncated:
+                    # SHOULD-FIX 7, ADR-0011 §12: the cap cut the
+                    # document before any body text was parsed — unlike
+                    # the genuinely-empty-parse case below, the page may
+                    # well have content past the cut. Don't blame JS
+                    # for a truncation artifact, and don't glue the
+                    # byte-count marker onto this sentence either — it
+                    # already names the cut inline (`placeholder=True`
+                    # skips the generic marker append below).
+                    placeholder = True
+                    content = (
+                        "(the page was cut off by the output cap before any "
+                        "body text was parsed — cannot tell whether it has "
+                        "visible content past the cut)"
+                    )
+                else:
+                    # ADR-0011 D5: no JS rendering — an SPA that hydrates via
+                    # script returns only its shell here. Declared limitation,
+                    # not an empty-page bug; say so instead of narrating
+                    # nothing as "the page has no content".
+                    placeholder = True
+                    content = (
+                        "(no visible text in the initial HTML — this may be a "
+                        "JavaScript-rendered page; this tool does not execute JS)"
+                    )
+            else:
+                content = text
+
+            if truncated and not placeholder:
+                if outcome.total_bytes_exact:
+                    content += f"…[truncated {undelivered_bytes} bytes]"
+                else:
+                    # MUST-FIX 3, ADR-0011 §12: the drain stopped at the
+                    # cap or the fetch deadline before the server
+                    # declared a Content-Length — `undelivered_bytes`
+                    # is a true LOWER bound (bytes actually seen past
+                    # the cap), never a claimed exact count.
+                    content += f"…[truncated, at least {undelivered_bytes} bytes remaining]"
+
+            payload = {
+                "url": outcome.final_url,
+                "status_code": outcome.status_code,
+                "content_type": outcome.content_type,
+                "content": content,
+                "truncated": truncated,
+                "total_bytes": outcome.total_bytes,
+            }
+            if not outcome.total_bytes_exact:
+                payload["total_bytes_exact"] = False
+            if title is not None:
+                payload["title"] = title
+            if lossy:
+                payload["encoding"] = "lossy"
+            return _emit_tool_observation(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_id,
+                running_event_uid=running_event_uid,
+                payload=payload,
+            )
+        except Exception as exc:  # noqa: BLE001 — handler-boundary catch-all (MUST-FIX 2, ADR-0011 §12): closes the class where a URL passes the SSRF guard but breaks a DIFFERENT parser downstream (`httpx.InvalidURL`/`CookieConflict`/`StreamError` are NOT `httpx.HTTPError` subclasses and would otherwise escape `_fetch_url_backend`'s own except clause, then `ToolRegistry.dispatch`'s bare `finally`, all the way past `decide()`, which has no `except Exception`). §5's contract is "never a crash": name the real exception type and terminal-transition the lifecycle exactly like every other error path here.
+            return _emit_tool_error(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_id,
+                running_event_uid=running_event_uid,
+                code="web_fetch_unexpected_error",
+                message=f"web_fetch: unexpected {type(exc).__name__}: {exc}",
+            )
+
+    return _handler
+
+
+# --- open_url --------------------------------------------------------------
+
+_OPEN_URL_SUBPROCESS_TIMEOUT_S: Final[float] = 10.0
+
+_OPEN_URL_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "url": {
+            "type": "string",
+            "description": "The http(s) URL to open in the default browser.",
+        },
+    },
+    "required": ["url"],
+}
+
+
+def open_url_handler(  # noqa: PLR0911 — one linear validate/canonicalize/subprocess/ack pass; each return is a distinct named terminal outcome via `_emit_tool_error`/`_emit_tool_observation`, same rationale as the D5 handlers this mirrors.
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
+    lifecycle: ActionLifecycle,
+) -> RawResult:
+    """Open a URL in the default browser (ADR-0011 D5).
+
+    Same scheme + address checks as `web_fetch` via `validate_egress_url`
+    — `open http://127.0.0.1:8006/shutdown` would otherwise open Allen's
+    browser against his own daemon. `open` is handed
+    `_normalize_egress_url`'s canonical re-serialization of `url`, never
+    `url` itself (ADR-0011 §12 MUST-FIX 1/2 root cause) — the browser's
+    WHATWG URL parser reads some strings (a backslash before the last
+    `@` in the authority, in particular) differently from the
+    `urlsplit`-based guard that just validated them; canonicalizing
+    strips exactly the userinfo/fragment components that trick relies
+    on. Result is an ACK (`result_semantics="ack"`, Execution Claim
+    `executed`) — the browser actually opening is not verified, same
+    posture `open_path_handler` documents for its own `open` call.
+    """
+    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+    action_id = action_request.action_id
+
+    try:
+        url = action_request.arguments.get("url")
+        if not isinstance(url, str) or not url.strip():
+            return _emit_tool_error(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_id,
+                running_event_uid=running_event_uid,
+                code="invalid_argument",
+                message=f"open_url: url must be a non-empty string (got {url!r})",
+            )
+
+        allowed, reason = validate_egress_url(url)
+        if not allowed:
+            return _emit_tool_error(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_id,
+                running_event_uid=running_event_uid,
+                code="ssrf_guard_refused",
+                message=f"open_url egress guard refused {url!r}: {reason}",
+            )
+
+        normalized = _normalize_egress_url(url)
+        if normalized is None:
+            # Should be unreachable — the guard just allowed `url` via
+            # the identical parser — but refuse rather than ever fall
+            # back to the raw string.
+            return _emit_tool_error(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_id,
+                running_event_uid=running_event_uid,
+                code="ssrf_guard_refused",
+                message=f"open_url: {url!r} passed the guard but would not canonicalize",
+            )
+
+        try:
+            # argv list, no shell; `normalized` already passed the
+            # scheme+address allowlist above; `open` resolved via PATH
+            # matches the `pbpaste`/`open_path` precedent.
+            proc = subprocess.run(  # noqa: S603
+                ["open", normalized],  # noqa: S607
+                timeout=_OPEN_URL_SUBPROCESS_TIMEOUT_S,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return _emit_tool_error(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_id,
+                running_event_uid=running_event_uid,
+                code="open_failed",
+                message=f"open_url: subprocess failed to start: {exc}",
+            )
+
+        if proc.returncode != 0:
+            stderr_tail = (proc.stderr or "").strip()[-_OUTPUT_TAIL_BYTES:]
+            return _emit_tool_error(
+                conn=conn,
+                lifecycle=lifecycle,
+                action_id=action_id,
+                running_event_uid=running_event_uid,
+                code="open_failed",
+                message=f"open_url: `open` exited {proc.returncode}: {stderr_tail}",
+            )
+
+        payload: dict[str, Any] = {"url": normalized}
+        return _emit_tool_observation(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_id,
+            running_event_uid=running_event_uid,
+            payload=payload,
+            semantics="ack",
+        )
+    except Exception as exc:  # noqa: BLE001 — handler-boundary catch-all (MUST-FIX 2, ADR-0011 §12), same rationale as `web_fetch`'s: §5's contract is "never a crash", so any unexpected failure still terminal-transitions the lifecycle, naming the real exception type, instead of stranding it at `running`.
+        return _emit_tool_error(
+            conn=conn,
+            lifecycle=lifecycle,
+            action_id=action_id,
+            running_event_uid=running_event_uid,
+            code="open_url_unexpected_error",
+            message=f"open_url: unexpected {type(exc).__name__}: {exc}",
+        )
 
 
 # --- ToolRegistry ------------------------------------------------------------
@@ -3019,8 +4162,14 @@ _OPEN_PATH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
 }
 
 
-def build_default_registry(*, obsidian_vault_root: Path | None = None) -> ToolRegistry:
-    """Assemble the default ToolRegistry (Day-1 six tools + ADR-0011 D5 three).
+def build_default_registry(
+    *,
+    obsidian_vault_root: Path | None = None,
+    web_search_max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS,
+    web_fetch_max_bytes: int = DEFAULT_WEB_FETCH_MAX_BYTES,
+    web_timeout_s: float = DEFAULT_WEB_TIMEOUT_S,
+) -> ToolRegistry:
+    """Assemble the default ToolRegistry (Day-1 six + ADR-0011 D5 six).
 
     The composition root (`jarvis.runtime`, Step 10) calls this once at
     startup and passes the registry to L3 + L4.
@@ -3033,6 +4182,13 @@ def build_default_registry(*, obsidian_vault_root: Path | None = None) -> ToolRe
             composition root always supplies the real configured
             value; a hand-built test registry can point this at a
             `tmp_path` fixture instead.
+        web_search_max_results: `tools.web.search_max_results` (ADR-0011
+            D7) — the `web_search` default absent a request argument.
+        web_fetch_max_bytes: `tools.web.fetch_max_bytes` (ADR-0011 D7) —
+            `web_fetch`'s output cap.
+        web_timeout_s: `tools.web.timeout_s` (ADR-0011 D7) — shared by
+            `web_search` and `web_fetch` (see :data:`DEFAULT_WEB_TIMEOUT_S`
+            for why D5's per-tool 15s/20s split collapses to one knob).
     """
     vault_root = (
         obsidian_vault_root if obsidian_vault_root is not None else DEFAULT_OBSIDIAN_VAULT_ROOT
@@ -3208,11 +4364,76 @@ def build_default_registry(*, obsidian_vault_root: Path | None = None) -> ToolRe
             requires_confirmation=False,
         )
     )
+    registry.register(
+        ToolDefinition(
+            name="web_search",
+            description=(
+                "Search the web (DuckDuckGo) and return numbered "
+                "title — url — snippet rows. Use for questions about "
+                "current events or anything not already known."
+            ),
+            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            risk_level="L1",
+            result_semantics="observation",
+            is_async=False,
+            input_schema=_WEB_SEARCH_INPUT_SCHEMA,
+            handler=_make_web_search_handler(
+                default_max_results=web_search_max_results,
+                timeout_s=web_timeout_s,
+            ),
+            domain="browser",
+            read_only=True,
+            requires_entity=False,
+            requires_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="web_fetch",
+            description=(
+                "Fetch a URL's content: page title + tag-stripped readable "
+                "text for HTML, raw text otherwise. Does not execute "
+                "JavaScript, so a JS-rendered page may return only its shell."
+            ),
+            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            risk_level="L1",
+            result_semantics="observation",
+            is_async=False,
+            input_schema=_WEB_FETCH_INPUT_SCHEMA,
+            handler=_make_web_fetch_handler(
+                max_bytes=web_fetch_max_bytes,
+                timeout_s=web_timeout_s,
+            ),
+            domain="browser",
+            read_only=True,
+            requires_entity=False,
+            requires_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="open_url",
+            description="Open a URL in the default browser. Use for '用浏览器打开 X' requests.",
+            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            risk_level="L1",
+            result_semantics="ack",
+            is_async=False,
+            input_schema=_OPEN_URL_INPUT_SCHEMA,
+            handler=open_url_handler,
+            domain="mac_gui",
+            read_only=False,
+            requires_entity=False,
+            requires_confirmation=False,
+        )
+    )
     return registry
 
 
 __all__ = [
     "DEFAULT_OBSIDIAN_VAULT_ROOT",
+    "DEFAULT_WEB_FETCH_MAX_BYTES",
+    "DEFAULT_WEB_SEARCH_MAX_RESULTS",
+    "DEFAULT_WEB_TIMEOUT_S",
     "VERIFY_DIFF_TOOL_DEF",
     "ActionLifecycle",
     "CallerNotAllowedError",
@@ -3234,6 +4455,7 @@ __all__ = [
     "list_tasks_handler",
     "live_action_ids",
     "open_path_handler",
+    "open_url_handler",
     "read_clipboard_handler",
     "read_file_handler",
     "register_live_action",
@@ -3242,5 +4464,6 @@ __all__ = [
     "tool_error",
     "tool_result",
     "turn_action_ids",
+    "validate_egress_url",
     "verify_diff_handler",
 ]
