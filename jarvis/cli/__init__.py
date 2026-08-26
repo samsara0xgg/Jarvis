@@ -706,7 +706,12 @@ def _main_serve(argv: list[str]) -> int:
     # ADR-0009 D1 — a manual serve while the agent is installed loses the
     # lock race against launchd's KeepAlive respawn (and vice versa). The
     # plist's presence is the signal; refuse unless explicitly forced.
-    if launchd.is_agent_installed() and not args.force_manual:
+    #
+    # ...unless WE are the agent. launchd execs this exact argv, so the
+    # plist-presence signal is true for its own child too; without the
+    # marker check the daemon refuses itself and KeepAlive retries the
+    # refusal every ThrottleInterval, forever.
+    if launchd.is_agent_installed() and not args.force_manual and not launchd.spawned_by_agent():
         sys.stderr.write(
             f"jarvis serve: LaunchAgent {launchd.AGENT_LABEL} installed "
             f"({launchd.plist_path()}); manual serve will fight respawn — "

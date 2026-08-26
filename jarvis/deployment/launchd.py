@@ -53,6 +53,16 @@ from jarvis.deployment import DEFAULT_RUNTIME_ROOT_LITERAL, process_lock
 # component of the service target ``gui/<uid>/<label>``.
 AGENT_LABEL = "com.allen.jarvis"
 
+# Stamped into the plist's ``EnvironmentVariables`` and read back by
+# :func:`spawned_by_agent`. The D1 manual-serve guard keys on the plist
+# EXISTING, but launchd's own child runs the very same
+# ``python -m jarvis serve`` argv — without this marker that child
+# refuses itself and KeepAlive turns the refusal into a respawn loop.
+# An env var (not argv) so the guard stays off for launchd only: a human
+# who copies ProgramArguments out of the plist still gets the warning.
+# Not a secret — it is the public label, so the 0644 plist rule holds.
+AGENT_ENV_MARKER = "JARVIS_LAUNCHD_AGENT"
+
 # Per-user LaunchAgents directory. The second (and last) home-relative
 # literal this codebase owns; H8 only guards ``~/.jarvis`` but the same
 # "paths live in deployment/" rule applies by convention.
@@ -213,6 +223,17 @@ def is_agent_installed(agents_dir: Path | None = None) -> bool:
     return plist_path(agents_dir).is_file()
 
 
+def spawned_by_agent() -> bool:
+    """True iff this process was exec'd by the LaunchAgent itself.
+
+    :func:`is_agent_installed` cannot tell launchd's child apart from a
+    human's ``jarvis serve`` — both see the same plist on disk. The
+    marker :data:`AGENT_ENV_MARKER` is only in the environment launchd
+    builds from the plist, so it answers "am I the agent" exactly.
+    """
+    return os.environ.get(AGENT_ENV_MARKER) == AGENT_LABEL
+
+
 def gui_domain() -> str:
     """The launchd user domain for the current uid (``gui/501``)."""
     return f"gui/{os.getuid()}"
@@ -251,6 +272,9 @@ def render_plist(
         "Label": AGENT_LABEL,
         "ProgramArguments": [str(interp), "-m", "jarvis", "serve"],
         "WorkingDirectory": str(workdir),
+        # The one key that tells the spawned daemon it IS the agent.
+        # See :data:`AGENT_ENV_MARKER`.
+        "EnvironmentVariables": {AGENT_ENV_MARKER: AGENT_LABEL},
         "RunAtLoad": True,
         # Plain ``true`` — see the module docstring. Do NOT "improve"
         # this into {"SuccessfulExit": False}.
@@ -607,6 +631,7 @@ def format_status(report: DaemonStatus) -> str:
 
 
 __all__ = [
+    "AGENT_ENV_MARKER",
     "AGENT_LABEL",
     "DaemonStatus",
     "GuiSessionUnavailableError",
@@ -626,6 +651,7 @@ __all__ = [
     "plist_path",
     "render_plist",
     "service_target",
+    "spawned_by_agent",
     "status",
     "uninstall",
     "validate_interpreter",
