@@ -280,12 +280,18 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # 1=LLM retry, 2=forced template) so the audit trail captures
         # every verdict on the way to the final ResponsePlan, not just
         # the last one. Pre-action gate events omit it.
+        # `lease_id` (ADR-0012 D2.4): stamped when a lease-bearing
+        # ActionRequest passes the Pre-action Gate. Step 6's single-use
+        # fold reads lease consumption from this key, so it must be
+        # declared here rather than smuggled through as an unregistered
+        # extra payload field.
         optional_payload=(
             "action_id",
             "response_hash",
             "claim_levels",
             "check_results",
             "attempt",
+            "lease_id",
         ),
         schema_version=1,
     ),
@@ -736,6 +742,95 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "actor",
         ),
         optional_payload=("truncated", "skipped_count"),
+        schema_version=1,
+    ),
+    # --- ADR-0012 Confirmation Flow extensions (§3 D3) ---
+    #
+    # owner_layer=L3 for the two confirmation.* below per D5/D6: both
+    # the ask path (`confirm_required` handling) and the answer path
+    # (`_handle_utterance`'s pre-tier_0 grammar hook) live in
+    # `jarvis/decision/__init__.py`.
+    EventTypeSchema(
+        # `action_snapshot` is a frozen dict; the registry only
+        # validates top-level payload keys, so its inner shape is
+        # documented here for Step 5 (the ask path, which freezes it)
+        # and Step 6 (the answer path, which re-reads it to rebuild the
+        # ActionRequest). Per ADR-0012 §3 D3 the snapshot carries six
+        # keys: tool_name (the proposed tool's name); caller (the
+        # caller_principal value); canonical_target (the resolved
+        # path/target); target_entity_ref (the resolved entity ref, or
+        # null); risk_level (one of L0 through L4); and args_meta,
+        # itself a dict of the tool's non-content arguments plus three
+        # always-present keys — content_sha256, content_bytes, and
+        # content_artifact (the staged content's path).
+        # The `content` argument itself never rides the event payload
+        # (§3.3.9 bounded payloads) — it is staged to
+        # `artifacts_root/pending_writes/<confirmation_id>` at request
+        # time; args_meta's content_artifact is that path.
+        event_type="confirmation.requested",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=(
+            "confirmation_id",
+            "action_snapshot",
+            "template_line",
+            "expires_at_ms",
+        ),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        # `source_event_id` (an `emit_event` column, not a payload key)
+        # points at the `confirmation.requested` event this answers —
+        # D2.4's single-use fold and the audit chain both read it from
+        # `events.source_event_id`, not from `payload`.
+        event_type="confirmation.accepted",
+        owner_layer="L3",
+        actor="user",
+        required_payload=("confirmation_id", "utterance_raw", "grammar_rule_id"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        # Same shape as `confirmation.accepted`; `source_event_id`
+        # again points at the `confirmation.requested` event (a column,
+        # not a payload key — see that entry's comment above).
+        event_type="confirmation.rejected",
+        owner_layer="L3",
+        actor="user",
+        required_payload=("confirmation_id", "utterance_raw", "grammar_rule_id"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    # `surface.dismissed` / `surface.clarified` — spec §3.6.3-named
+    # UserResponse durable forms; ADR-0012 §3 D3 registers them as
+    # placeholders with NO emitter yet, same idiom as `claim.accepted`
+    # above (occupy the schema now; the emitter lands as its own
+    # change). owner_layer/actor deliberately align with the existing
+    # `surface.*` family rather than inventing new values: L5
+    # (unanimous across every surface.* entry above) and `user`
+    # (matching `surface.user_intent` specifically — a dismiss or
+    # clarify is a human action crossing the surface, not
+    # runtime-authored output like `surface.response_*`).
+    # `required_payload=("turn_id",)` is the smallest defensible
+    # shape: every per-turn surface.* entry above keys on `turn_id`,
+    # and inventing a content shape ahead of a real emitter would
+    # fight whatever consumes it later — same minimalism as
+    # `claim.accepted`'s single identifying field.
+    EventTypeSchema(
+        event_type="surface.dismissed",
+        owner_layer="L5",
+        actor="user",
+        required_payload=("turn_id",),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="surface.clarified",
+        owner_layer="L5",
+        actor="user",
+        required_payload=("turn_id",),
+        optional_payload=(),
         schema_version=1,
     ),
 )
