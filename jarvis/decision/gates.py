@@ -160,7 +160,7 @@ def pre_action_gate(
     hide bug clusters from the autonomous loop):
 
     1. **caller_allowed**: ``action_request.caller_principal`` is in
-       ``policy.allowed_tools_per_caller`` for ``tool_name``.
+       ``policy.allowed_tool_surface`` for ``tool_name``.
     2. **entity_trusted**: if ``target_entity_ref`` is non-None, it
        must be the ``task_id`` of an open task in
        ``ledger_snapshot``. Day-1 only task entities; Stage 2 widens
@@ -168,7 +168,7 @@ def pre_action_gate(
     3. **risk_within_ceiling**: ``risk_level <= autonomy_ceiling``
        per the L0..L4 ladder.
     4. **lease_validated**: when
-       ``risk_level >= confirmation_required_at_or_above``,
+       ``risk_level >= confirmation_threshold``,
        ``authorization_lease`` must be non-None and unexpired with a
        scope that permits the tool + target. Day-1 scenario never
        triggers this branch; the check is preserved for Stage 2.
@@ -196,7 +196,7 @@ def pre_action_gate(
     checks: dict[str, bool] = {}
 
     # 1. caller_allowed
-    allowed = policy.allowed_tools_per_caller.get(action_request.caller_principal, frozenset())
+    allowed = policy.allowed_tool_surface.get(action_request.caller_principal, frozenset())
     caller_allowed = action_request.tool_name in allowed
     checks["caller_allowed"] = caller_allowed
     reasons.append(
@@ -236,7 +236,7 @@ def pre_action_gate(
 
     # 4. lease_validated
     needs_lease = risk_rank(action_request.risk_level) >= risk_rank(
-        policy.confirmation_required_at_or_above,
+        policy.confirmation_threshold,
     )
     lease_validated = True
     if needs_lease:

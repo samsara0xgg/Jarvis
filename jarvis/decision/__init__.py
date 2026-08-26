@@ -746,7 +746,7 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
     """
     scratch = _Scratch()
     packet = assemble_packet(trigger, ctx.conn)
-    policy = effective_policy(_allowed_tools_per_caller(ctx.tool_registry))
+    policy = effective_policy(_allowed_tool_surface(ctx.tool_registry))
 
     # ``utterance.received`` is the voice-surface twin of
     # ``surface.user_intent``: ADR-0005 §5.1 — the ASR pipeline owns the
@@ -2432,7 +2432,7 @@ def _find_registered_tool_def(
     return None
 
 
-def _allowed_tools_per_caller(
+def _allowed_tool_surface(
     registry: ToolRegistryLike,
 ) -> Mapping[CallerPrincipal, frozenset[str]]:
     """Derive the policy's tool-surface from the registry, per caller."""
