@@ -468,6 +468,16 @@ class ToolDefinitionLike(Protocol):
         """JSON-schema for the tool's arguments."""
         ...
 
+    @property
+    def requires_entity(self) -> bool:
+        """Whether the Pre-action Gate must see a resolved target_entity_ref.
+
+        ADR-0011 D3: consumed by ``pre_action_gate``'s entity arm. Both
+        call sites pass the ``tool_def`` this Protocol types straight
+        through to the gate.
+        """
+        ...
+
 
 class ToolRegistryLike(Protocol):
     """Structural view of L4 ``ToolRegistry``.
@@ -1019,7 +1029,9 @@ def _run_tier0_path(
     )
     scratch.events.append(proposed_event)
 
-    gate = pre_action_gate(action_request, policy, packet.task_ledger_snapshot)
+    gate = pre_action_gate(
+        action_request, policy, packet.task_ledger_snapshot, tool_def=tool_def,
+    )
     gate_event = emit_event(
         ctx.conn,
         type="gate.evaluated",
@@ -1248,7 +1260,9 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     scratch.events.append(proposed_event)
 
     # 4. Pre-action Gate
-    gate = pre_action_gate(action_request, policy, packet.task_ledger_snapshot)
+    gate = pre_action_gate(
+        action_request, policy, packet.task_ledger_snapshot, tool_def=tool_def,
+    )
     gate_outcome = gate.outcome
     gate_reasons = list(gate.reasons)
     if redundant_verify_diff and gate_outcome == "pass":

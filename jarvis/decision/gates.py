@@ -24,7 +24,7 @@ import hashlib
 import re
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from jarvis.decision.policy import risk_rank
 
@@ -148,10 +148,29 @@ def _now_epoch_ms() -> int:
     return int(time.time() * 1000)
 
 
+class _EntityGateToolLike(Protocol):
+    """Minimal structural shape ``pre_action_gate``'s D3 entity arm needs.
+
+    ADR-0011 D3: the gate takes the caller's already-resolved tool
+    definition (not a registry lookup) so a third, gate-internal
+    lookup can never disagree with the definition the caller actually
+    resolved. The gate reads only ``requires_entity`` off this object
+    — not ``name`` or ``risk_level`` — so this Protocol declares
+    nothing else.
+    """
+
+    @property
+    def requires_entity(self) -> bool:
+        """Whether the gate must see a resolved ``target_entity_ref``."""
+        ...
+
+
 def pre_action_gate(
     action_request: ActionRequest,
     policy: EffectivePolicy,
     ledger_snapshot: TaskLedgerSnapshot,
+    *,
+    tool_def: _EntityGateToolLike | None,
 ) -> GateResult:
     """Evaluate the four MUST-checks per ADR § Gate contracts.
 
@@ -164,7 +183,19 @@ def pre_action_gate(
     2. **entity_trusted**: if ``target_entity_ref`` is non-None, it
        must be the ``task_id`` of an open task in
        ``ledger_snapshot``. Day-1 only task entities; Stage 2 widens
-       to an Entity Registry.
+       to an Entity Registry. If ``target_entity_ref`` is None AND
+       ``tool_def.requires_entity`` is True, the check now FAILS
+       (ADR-0011 D3) with reason ``"entity_required: <tool_name>
+       demands a resolved target"`` — this is the arm that makes the
+       entity check non-vacuous for tools like ADR-0012's
+       ``write_file``. Tools with ``requires_entity=False`` (the six
+       Day-1 tools) keep passing on a None ref, and an unknown tool
+       (``tool_def is None``) does not trigger this arm either — not
+       because check 1 would catch it (``allowed_tool_surface`` is a
+       name allowlist independent of the registry), but because both
+       call sites early-return on an unresolved ``tool_def`` before
+       ever constructing the ``ActionRequest`` (see the inline
+       comment below for the exact line ranges).
     3. **risk_within_ceiling**: ``risk_level <= autonomy_ceiling``
        per the L0..L4 ladder.
     4. **lease_validated**: when
@@ -188,6 +219,18 @@ def pre_action_gate(
         policy: EffectivePolicy from
             :func:`jarvis.decision.policy.effective_policy`.
         ledger_snapshot: TaskLedgerSnapshot for entity-trust check.
+        tool_def: The tool definition the caller already resolved for
+            this ``action_request.tool_name`` (or ``None`` for an
+            unknown tool). ADR-0011 D3: the gate takes this from the
+            caller rather than doing its own registry lookup. The two
+            call sites resolve ``tool_def`` through two different
+            lookups (``_find_registered_tool_def`` is caller-blind;
+            ``_find_tool_def`` is JARVIS_LLM-scoped), so a third,
+            gate-internal lookup could disagree with the definition
+            the caller actually resolved; taking the caller's
+            resolved definition removes that divergence. Keyword-only
+            and required — there are only two call sites and both
+            already hold the value.
 
     Returns:
         Frozen :class:`GateResult` with per-check bool + reason.
@@ -207,8 +250,31 @@ def pre_action_gate(
 
     # 2. entity_trusted
     if action_request.target_entity_ref is None:
-        entity_trusted = True
-        reasons.append("entity_trusted: no target_entity_ref to check")
+        if tool_def is not None and tool_def.requires_entity:
+            # ADR-0011 D3: this tool declares it cannot act without a
+            # resolved entity — a None ref is no longer vacuously
+            # trusted. `tool_def is None` (unknown tool) does NOT take
+            # this branch, but NOT because check 1 (caller_allowed)
+            # would refuse it — `allowed_tool_surface` is a bare name
+            # allowlist, structurally independent of the registry, so
+            # a name could be caller-allowed with no registry
+            # definition behind it. The real reason `tool_def is None`
+            # never reaches this gate in production: both call sites
+            # early-return before constructing the ActionRequest when
+            # their own lookup returns None —
+            # `jarvis/decision/__init__.py` ~994-1000 (Tier 0 path
+            # falls back to the LLM loop) and ~1174-1183 (LLM path
+            # injects an "unknown tool" result and returns). The
+            # `None` handling below is defense-in-depth for a case
+            # that cannot currently occur.
+            entity_trusted = False
+            reasons.append(
+                "entity_trusted: entity_required: "
+                f"{action_request.tool_name} demands a resolved target"
+            )
+        else:
+            entity_trusted = True
+            reasons.append("entity_trusted: no target_entity_ref to check")
     else:
         # A task is "trusted" when it appears in the Task Ledger at
         # all — open OR reported_complete (mid-turn verify must still
