@@ -118,6 +118,16 @@ Rejected alternatives — **query ActionLifecycle FSM**: per-process memory, emp
 - Pure snapshot function per repo (config `observer.repos`): local-only `git` reads — current branch (`rev-parse --abbrev-ref HEAD`; detached HEAD yields the literal `"HEAD"`, payload contract is total), HEAD sha, dirty file count (`status --porcelain` line count), last commit subject + sha. **Every invocation runs with `GIT_OPTIONAL_LOCKS=0`** — plain `git status` opportunistically writes `.git/index.lock` (the classic watcher-vs-user bug: Allen's own `git commit` dies with "Unable to create index.lock" when the poll fires), and the spec row this section cites ("read-only observation；不写外部世界") forbids exactly that. Never `fetch`/network, never write; 5s subprocess timeout, failure → log + skip cycle (F5; deleted/moved repo path → F6, same skip).
 - §3.6.1 ladder compliance: poll every `observer.poll_interval_s` (default 60s); **emit only on change**. The change-baseline is **recovered from the event log at startup** (fold the latest `repo.state_observed` per repo) — the in-memory buffer is a cache, not the source of truth. First poll after a restart therefore emits exactly the delta accumulated while the daemon was down (commit walk `old_head..HEAD`, burst-capped) — no spurious restart emissions, and no permanent holes in `project.commit_seen` history across the overnight window that is this ADR's headline use case.
 - Two new registered event types (both `evidence_semantics=observation`, owner_layer=L5, bounded payloads — subject fields capped at 200 chars, no artifacts in v0). Provenance: the L2 schema has **no actor column** — `actor: "observer"` is a required **payload** field of both types (the §5.1 actor enumeration realized as a payload convention, as `payload.by` already is for `task.verified`):
+
+  > **Amendment (2026-08-25) — the L2 schema now HAS an actor column.**
+  > The §5.1 schema backfill (L2 schema v1) added `actor` as a real
+  > column, stamped by `emit_event` from the registry's per-type actor
+  > value; the migration backfilled historical rows from this payload
+  > convention first, then from the registry. The column is authoritative
+  > from v1 on. The payload `actor` field on `repo.state_observed` /
+  > `project.commit_seen` REMAINS required — existing consumers and this
+  > ADR's contract stay valid — but new event types should rely on the
+  > column and not replicate the payload convention.
   - `repo.state_observed` — required `repo_path, branch, head_sha, dirty_file_count, last_commit_subject, observed_at_ms, actor`. Emitted when any field changes. Net-new family (V1).
   - `project.commit_seen` — required `repo_path, commit_sha, subject, committed_at_ms, actor`; optional `truncated, skipped_count`. The spec-canonical name (§6 Drift Watch sources — its only occurrence; registered here per §5.4's own rule). One event per newly-seen first-parent commit since the last baseline, burst-capped at 20 per poll with `truncated: true` + `skipped_count` on the final event (rebase/history-walk safety). ADR-0010 note: a truncated window means gapped, not contiguous, history.
 - **No decision triggers.** Neither type joins any trigger tuple; observations fold silently (§3.4.1; §3.2.5 安静优先). Existing watcher cursors filter by type-IN lists, so the new rows are ignored for free.

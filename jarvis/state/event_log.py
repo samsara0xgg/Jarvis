@@ -52,7 +52,35 @@ if TYPE_CHECKING:
 # Single table — projections (Step 5) live in their own module, no caches here.
 _TABLE_NAME: Final[str] = "events"
 
-_CREATE_TABLE_SQL: Final[str] = """
+# Schema v1 (spec §5.1 backfill, 2026-08-25). Deviations from the spec's
+# literal DDL, each deliberate and documented:
+#
+# - `ts` (ISO 8601) and `correlation_id` are VIRTUAL generated columns
+#   derived from `ts_epoch_ms` / `correlation_json` — always in sync by
+#   construction, no writer can skew them, and rows inserted by an
+#   old-code daemon during a rolling upgrade get correct values for
+#   free. Cost: they cannot carry NOT NULL (spec-shaped in value, not
+#   in constraint).
+# - `correlation_id` is the scalar `turn_id` promoted out of the
+#   `correlation_json` map (the map is the documented superset; spec
+#   §5.1 wants one indexable scalar and turn is the runtime's primary
+#   correlation axis).
+# - `source_event_id` stays TEXT → `events.event_uid` (spec says
+#   INTEGER → id; rationale near `_validate_source_event_id`).
+# - `event_uid` stays uuid4 hex, NOT UUIDv7 — declared deviation: the
+#   §3.7.10 sortable-ID clause exists for cross-domain ordering, which
+#   is inactive under the Mac-only scope (single domain; ordering
+#   authority is `id` / `ts_epoch_ms`). Old rows could never be
+#   re-minted anyway (`source_event_id` references them). Revisit at
+#   federation.
+_SCHEMA_USER_VERSION: Final[int] = 1
+
+_TS_GENERATED_EXPR: Final[str] = (
+    "strftime('%Y-%m-%dT%H:%M:%fZ', ts_epoch_ms / 1000.0, 'unixepoch')"
+)
+_CORRELATION_ID_GENERATED_EXPR: Final[str] = "json_extract(correlation_json, '$.turn_id')"
+
+_CREATE_TABLE_SQL: Final[str] = f"""
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_uid TEXT NOT NULL UNIQUE,
@@ -61,16 +89,28 @@ CREATE TABLE IF NOT EXISTS events (
     ts_epoch_ms INTEGER NOT NULL,
     payload_json TEXT NOT NULL,
     source_event_id TEXT,
-    correlation_json TEXT
+    correlation_json TEXT,
+    actor TEXT NOT NULL DEFAULT 'unknown',
+    ingestion_node TEXT NOT NULL DEFAULT 'mac',
+    ts TEXT GENERATED ALWAYS AS ({_TS_GENERATED_EXPR}) VIRTUAL,
+    correlation_id TEXT GENERATED ALWAYS AS ({_CORRELATION_ID_GENERATED_EXPR}) VIRTUAL
 )
 """
 
 # Indexes: (type) for projection scans, (source_event_id) for cause-chain
 # walks (acceptance A4), (ts_epoch_ms) for time-range / monotonic checks (A5).
+# Schema v1 adds the three spec §5.1 indexes: (type, ts_epoch_ms) and
+# (actor, ts_epoch_ms) composites plus (correlation_id). `idx_events_ts`
+# is an extra beyond spec §5.1's four — kept, it predates v1 and costs
+# little. Current hot reads filter by `id` cursors, so the v1 indexes are
+# spec-fidelity for the growing observer log, not a measured perf fix.
 _CREATE_INDEXES_SQL: Final[tuple[str, ...]] = (
     "CREATE INDEX IF NOT EXISTS idx_events_type ON events(type)",
     "CREATE INDEX IF NOT EXISTS idx_events_source ON events(source_event_id)",
     "CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts_epoch_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts_epoch_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_events_actor_ts ON events(actor, ts_epoch_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_events_correlation ON events(correlation_id)",
 )
 
 # Append-only enforcement (acceptance A6). RAISE(ABORT, ...) raises
@@ -124,14 +164,30 @@ class EventTypeSchema:
     """One entry in the EventTypeRegistry (spec §5.4.1, Day-1 minimum).
 
     Day-1 keeps only the fields `emit_event` actually consumes
-    (`required_payload`, `optional_payload`, `schema_version`) plus the
-    `owner_layer` label used by canary H13. Producer / projection consumers
-    / cross-domain policy / evidence semantics / artifact policy fields
-    from the full spec §5.4.1 shape are deferred until a consumer exists.
+    (`required_payload`, `optional_payload`, `schema_version`, `actor`)
+    plus the `owner_layer` label used by canary H13. Producer / projection
+    consumers / cross-domain policy / evidence semantics / artifact policy
+    fields from the full spec §5.4.1 shape are deferred until a consumer
+    exists.
+
+    `actor` is the spec §5.1 provenance column value stamped by
+    `emit_event` (schema-v1 migration, 2026-08-25) — who *caused* the
+    event, distinct from L4's caller_principal. The §5.1 enumeration is
+    open ("user" | "jarvis_llm" | "observer" | device ids | ...); this
+    registry uses five values:
+
+    - ``user`` — a human input crossing the surface.
+    - ``jarvis_llm`` — the event records an LLM decision output.
+    - ``jarvis_runtime`` — deterministic runtime machinery (gates,
+      dispatch, interpreters, surface delivery bookkeeping).
+    - ``codex_worker`` — a worker's self-report about itself.
+    - ``observer`` — environment observation (repo watcher, power
+      notifications).
     """
 
     event_type: str
     owner_layer: str
+    actor: str
     required_payload: tuple[str, ...]
     optional_payload: tuple[str, ...]
     schema_version: int
@@ -151,6 +207,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # which point this declaration first becomes load-bearing.
         event_type="task.created",
         owner_layer="L4",
+        actor="jarvis_llm",
         required_payload=("task_id", "goal"),
         # `repo_path` + `verify_command` are populated by the Day-2
         # `create_task` L4 tool (ADR-0002 Step 4) from the JARVIS_LLM
@@ -162,6 +219,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="turn.started",
         owner_layer="L3",
+        actor="jarvis_runtime",
         required_payload=("turn_id",),
         optional_payload=("trigger",),
         schema_version=1,
@@ -169,6 +227,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="turn.ended",
         owner_layer="L3",
+        actor="jarvis_runtime",
         required_payload=("turn_id",),
         optional_payload=("final_response_hash",),
         schema_version=1,
@@ -176,6 +235,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="utterance.received",
         owner_layer="L5",
+        actor="user",
         required_payload=("transcript", "turn_id"),
         optional_payload=(
             "channel",
@@ -190,6 +250,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="entity.resolved",
         owner_layer="L3",
+        actor="jarvis_runtime",
         required_payload=(
             "entity_type",
             "natural_ref",
@@ -205,6 +266,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="action.proposed",
         owner_layer="L3",
+        actor="jarvis_llm",
         required_payload=("action_id", "tool_name", "caller_principal", "risk_level"),
         optional_payload=("target_entity_ref", "run_id", "turn_id", "arguments"),
         schema_version=1,
@@ -212,6 +274,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="gate.evaluated",
         owner_layer="L3",
+        actor="jarvis_runtime",
         required_payload=("gate", "outcome", "reasons"),
         # `attempt` carries the Pre-emit Gate retry index (0=initial,
         # 1=LLM retry, 2=forced template) so the audit trail captures
@@ -229,6 +292,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="action.authorized",
         owner_layer="L3",
+        actor="jarvis_runtime",
         required_payload=("action_id",),
         optional_payload=(),
         schema_version=1,
@@ -236,6 +300,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="action.dispatched",
         owner_layer="L4",
+        actor="jarvis_runtime",
         required_payload=("action_id",),
         # ADR-0009 D4: `result_expected_by_ms` is the dispatcher-stamped
         # deadline (per-tool budget + grace) the supervisor sweep reads to
@@ -248,6 +313,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="action.running",
         owner_layer="L4",
+        actor="jarvis_runtime",
         required_payload=("action_id",),
         optional_payload=(),
         schema_version=1,
@@ -255,6 +321,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="action.result_observed",
         owner_layer="L4",
+        actor="jarvis_runtime",
         required_payload=("action_id", "semantics"),
         # `error_payload` carries the L4 error-context dict for the
         # task-isolation error codes (`cross_task_artifact`,
@@ -266,6 +333,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="action.failed",
         owner_layer="L4",
+        actor="jarvis_runtime",
         required_payload=("action_id",),
         optional_payload=("error", "reason"),
         schema_version=1,
@@ -273,6 +341,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="action.timeout_assumed",
         owner_layer="L4",
+        actor="jarvis_runtime",
         required_payload=("action_id",),
         optional_payload=("error", "reason"),
         schema_version=1,
@@ -280,6 +349,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="action.cancelled",
         owner_layer="L4",
+        actor="jarvis_runtime",
         required_payload=("action_id",),
         optional_payload=("error", "reason"),
         schema_version=1,
@@ -287,6 +357,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="run.started",
         owner_layer="L4",
+        actor="jarvis_runtime",
         required_payload=("run_id", "task_id"),
         optional_payload=("runner",),
         schema_version=1,
@@ -294,6 +365,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="worker.reported",
         owner_layer="L4",
+        actor="codex_worker",
         required_payload=("run_id", "action_id", "status"),
         optional_payload=("summary", "artifact_path", "stash_ref"),
         schema_version=1,
@@ -301,6 +373,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="claim.created",
         owner_layer="L3",
+        actor="jarvis_runtime",
         required_payload=(
             "claim_id",
             "type",
@@ -314,6 +387,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="evidence.attached",
         owner_layer="L3",
+        actor="jarvis_runtime",
         # ADR-0002 F8 / Step 12: `relation` added to required_payload so
         # every Evidence Record carries the (relation, level) pair from
         # spec §8.6. Deferred from Step 1 because the Day-1 emit-sites in
@@ -339,6 +413,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="task.verified",
         owner_layer="L2",
+        actor="jarvis_runtime",
         required_payload=("task_id", "by"),
         optional_payload=(),
         schema_version=1,
@@ -353,6 +428,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="task.no_op",
         owner_layer="L3",
+        actor="jarvis_runtime",
         required_payload=("task_id",),
         optional_payload=("reason", "verify_command"),
         schema_version=1,
@@ -367,6 +443,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="worker.heartbeat",
         owner_layer="L4",
+        actor="codex_worker",
         required_payload=("run_id", "action_id"),
         optional_payload=("elapsed_ms", "last_log_line", "summary"),
         schema_version=1,
@@ -374,6 +451,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="worker.artifact_observed",
         owner_layer="L4",
+        actor="jarvis_runtime",
         required_payload=("run_id", "action_id", "artifact_path"),
         optional_payload=("content_hash", "kind"),
         schema_version=1,
@@ -381,6 +459,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="worker.report_missing",
         owner_layer="L4",
+        actor="jarvis_runtime",
         required_payload=("run_id", "action_id"),
         optional_payload=("reason",),
         schema_version=1,
@@ -388,6 +467,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="task.executor_assigned",
         owner_layer="L3",
+        actor="jarvis_runtime",
         required_payload=("task_id", "executor", "action_id"),
         optional_payload=("model",),
         schema_version=1,
@@ -395,6 +475,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="task.executor_reported",
         owner_layer="L4",
+        actor="codex_worker",
         required_payload=("task_id", "run_id", "status"),
         optional_payload=("summary", "diff_path"),
         schema_version=1,
@@ -409,6 +490,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # action.result_observed.
         event_type="cost.recorded",
         owner_layer="L3",
+        actor="jarvis_runtime",
         required_payload=("kind", "model"),
         optional_payload=(
             "tokens_in",
@@ -425,6 +507,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="surface.user_intent",
         owner_layer="L5",
+        actor="user",
         required_payload=("transcript", "turn_id"),
         optional_payload=("channel", "language"),
         schema_version=1,
@@ -435,6 +518,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="surface.response_emitted",
         owner_layer="L5",
+        actor="jarvis_runtime",
         required_payload=("turn_id", "text"),
         optional_payload=(
             "delivered_via",
@@ -453,6 +537,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="surface.response_open",
         owner_layer="L5",
+        actor="jarvis_runtime",
         required_payload=("turn_id", "query", "kind"),
         # ADR-0005 §7: L5 TTS consumers read ``required_gate_mode`` from the
         # open header to route between sentence-streaming and full-text TTS
@@ -467,6 +552,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="surface.response_chunk",
         owner_layer="L5",
+        actor="jarvis_runtime",
         required_payload=("turn_id", "text"),
         optional_payload=(),
         schema_version=1,
@@ -475,6 +561,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="mac.sleeping",
         owner_layer="L6",
+        actor="observer",
         required_payload=("ts_epoch_ms",),
         optional_payload=("reason", "in_progress_action_ids"),
         schema_version=1,
@@ -482,6 +569,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="mac.awake",
         owner_layer="L6",
+        actor="observer",
         required_payload=("ts_epoch_ms", "slept_for_ms"),
         optional_payload=("reconciliation_summary",),
         schema_version=1,
@@ -489,6 +577,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="worker.suspended_by_sleep",
         owner_layer="L6",
+        actor="jarvis_runtime",
         required_payload=("run_id", "action_id"),
         optional_payload=("last_heartbeat_ts",),
         schema_version=1,
@@ -496,6 +585,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="worker.terminated_by_sleep",
         owner_layer="L6",
+        actor="jarvis_runtime",
         required_payload=("run_id", "action_id"),
         optional_payload=("reason",),
         schema_version=1,
@@ -514,6 +604,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # numbered spec layer.
         event_type="turn.failed",
         owner_layer="L5",
+        actor="jarvis_runtime",
         required_payload=("turn_id", "exception_repr"),
         optional_payload=("trigger_event_id",),
         schema_version=1,
@@ -535,6 +626,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         event_type="repo.state_observed",
         owner_layer="L5",
+        actor="observer",
         # Emitted only when a field changes (§3.6.1 emit-on-change ladder).
         # `last_commit_subject` is capped at 200 chars by the producer per
         # spec §3.3.9 bounded payloads; `branch` is the literal "HEAD" on a
@@ -558,6 +650,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # a gapped window from a contiguous one.
         event_type="project.commit_seen",
         owner_layer="L5",
+        actor="observer",
         required_payload=(
             "repo_path",
             "commit_sha",
@@ -607,6 +700,78 @@ class EventTypeRegistry:
 
 
 # --- Connection lifecycle ----------------------------------------------------
+
+
+def _migrate_schema_v0_to_v1(conn: sqlite3.Connection) -> None:
+    """In-place migrate a pre-2026-08-25 `events` table to schema v1.
+
+    v0 shape: eight columns, no `actor` / `ingestion_node` / generated
+    `ts` / `correlation_id`. Detection is by column presence, not
+    `PRAGMA user_version` — v0 predates any version stamp.
+
+    The whole migration runs inside ONE EXCLUSIVE transaction:
+
+    - `DROP TRIGGER events_no_update` opens the only window in the log's
+      life where an UPDATE could slip past append-only enforcement; the
+      exclusive lock guarantees no concurrent writer exists inside it
+      (old-code daemons block on their 5 s busy_timeout and then fail
+      their single emit — they retry-safe on the next event).
+    - `ALTER TABLE ADD COLUMN` with a non-NULL DEFAULT gives every
+      existing row the default without a rewrite (`ingestion_node` needs
+      no backfill at all — every pre-v1 event was ingested on the Mac).
+    - The `actor` backfill honors the ADR-0009 payload convention first
+      (`payload.actor`, set by the repo observer), then stamps the
+      registry's per-type actor; rows of types absent from the registry
+      keep 'unknown'.
+    - The generated columns need no backfill by construction.
+
+    Crash-safety: any failure rolls the transaction back — the table is
+    either fully v0 (with its trigger intact) or fully v1; `PRAGMA
+    user_version` is stamped by `open_event_log` only after this returns.
+    """
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'events'",
+    ).fetchone()
+    if row is None:
+        return  # Fresh database — CREATE TABLE installs v1 directly.
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
+    if "ingestion_node" in columns:
+        return  # Already v1.
+
+    conn.execute("BEGIN EXCLUSIVE")
+    try:
+        conn.execute("DROP TRIGGER IF EXISTS events_no_update")
+        conn.execute("ALTER TABLE events ADD COLUMN actor TEXT NOT NULL DEFAULT 'unknown'")
+        conn.execute(
+            "ALTER TABLE events ADD COLUMN ingestion_node TEXT NOT NULL DEFAULT 'mac'",
+        )
+        conn.execute(
+            f"ALTER TABLE events ADD COLUMN ts TEXT "
+            f"GENERATED ALWAYS AS ({_TS_GENERATED_EXPR}) VIRTUAL",
+        )
+        conn.execute(
+            f"ALTER TABLE events ADD COLUMN correlation_id TEXT "
+            f"GENERATED ALWAYS AS ({_CORRELATION_ID_GENERATED_EXPR}) VIRTUAL",
+        )
+        # H1-canary note: these are the ONLY UPDATE statements allowed to
+        # exist in `jarvis/` — one-shot schema-migration backfill inside
+        # the exclusive transaction, tagged for the canary's allowlist.
+        conn.execute(
+            "/* L2 schema migration v1 */ UPDATE events SET "
+            "actor = json_extract(payload_json, '$.actor') "
+            "WHERE json_extract(payload_json, '$.actor') IS NOT NULL",
+        )
+        for schema in _REGISTRY_ENTRIES:
+            conn.execute(
+                "/* L2 schema migration v1 */ UPDATE events SET actor = ? "
+                "WHERE type = ? AND actor = 'unknown'",
+                (schema.actor, schema.event_type),
+            )
+        conn.execute(_CREATE_TRIGGER_NO_UPDATE_SQL)
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def open_event_log(path: Path) -> sqlite3.Connection:
@@ -659,11 +824,14 @@ def open_event_log(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL").fetchall()
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA synchronous = NORMAL")
+    _migrate_schema_v0_to_v1(conn)
     conn.execute(_CREATE_TABLE_SQL)
     for index_sql in _CREATE_INDEXES_SQL:
         conn.execute(index_sql)
     conn.execute(_CREATE_TRIGGER_NO_UPDATE_SQL)
     conn.execute(_CREATE_TRIGGER_NO_DELETE_SQL)
+    # Stamped after table + indexes + triggers exist; idempotent.
+    conn.execute(f"PRAGMA user_version = {_SCHEMA_USER_VERSION}")
     conn.commit()
     return conn
 
@@ -697,6 +865,8 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
     ts_epoch_ms: int | None = None,
     schema_version: int | None = None,
     event_uid: str | None = None,
+    actor: str | None = None,
+    ingestion_node: str = "mac",
 ) -> Event:
     """Validate, INSERT, and return one Event (single L3/L4/L5 append API).
 
@@ -713,10 +883,19 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
            `events.event_uid` → `DanglingSourceEventError`.
 
     On success:
-        - Generates `event_uid` (default `uuid.uuid4().hex` — spec §5.1
-          calls for UUIDv7-ish; Python 3.12 stdlib has no UUIDv7, so
-          Day-1 uses uuid4 hex; the `jarvis.shared.Event` docstring
-          already documents this as "UUIDv7-ish hex string").
+        - Generates `event_uid` (default `uuid.uuid4().hex`). Declared
+          deviation from spec §3.7.10 (UUIDv7/ULID): the sortable-ID
+          clause targets cross-domain ordering, inactive under the
+          Mac-only scope — single domain, ordering authority is
+          `id` / `ts_epoch_ms`. Python 3.12 stdlib has no `uuid7`, old
+          rows can never be re-minted (`source_event_id` references
+          them), so `ORDER BY event_uid` would stay unsafe regardless.
+          Revisit at federation.
+        - Stamps `actor` from the registry entry (schema v1); an explicit
+          `actor=` argument overrides — for a future caller relaying a
+          foreign-provenance event, not for routine emits.
+        - Stamps `ingestion_node` (default `"mac"` — the only node in
+          the Mac-only scope).
         - Uses registry `schema_version` if caller did not supply one.
         - Uses `_now_epoch_ms()` if caller did not supply `ts_epoch_ms`.
         - Serializes `payload` and `correlation` to JSON via stdlib
@@ -744,6 +923,10 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
             is raised. Default = registry value.
         event_uid: Optional caller-supplied uid (used by tests to assert
             round-trip); default = `uuid.uuid4().hex`.
+        actor: Optional spec §5.1 provenance override; default = the
+            registry entry's `actor`. Routine emits never pass this.
+        ingestion_node: Node this event entered the log on; default
+            `"mac"` (the only node in the Mac-only scope).
 
     Returns:
         The persisted Event as a frozen dataclass.
@@ -771,6 +954,7 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
 
     effective_event_uid = uuid.uuid4().hex if event_uid is None else event_uid
     effective_ts_epoch_ms = _now_epoch_ms() if ts_epoch_ms is None else ts_epoch_ms
+    effective_actor = schema.actor if actor is None else actor
 
     # Normalize payload / correlation to plain dict before JSON encoding —
     # MappingProxyType / TypedDict-as-dict / custom Mapping subclasses all
@@ -790,8 +974,9 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
         """
         INSERT INTO events (
             event_uid, type, schema_version, ts_epoch_ms,
-            payload_json, source_event_id, correlation_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            payload_json, source_event_id, correlation_json,
+            actor, ingestion_node
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             effective_event_uid,
@@ -801,6 +986,8 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
             payload_json,
             source_event_id,
             correlation_json,
+            effective_actor,
+            ingestion_node,
         ),
     )
     conn.commit()

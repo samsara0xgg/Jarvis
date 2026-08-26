@@ -49,6 +49,24 @@ def _allowed_insert(rel_path: str, table: str) -> bool:
     return rel_path == "jarvis/state/event_log.py" and table.lower() == "events"
 
 
+# One-shot schema-migration backfills are the single sanctioned UPDATE:
+# they run inside `_migrate_schema_v0_to_v1`'s EXCLUSIVE transaction with
+# the `events_no_update` trigger dropped, and every such literal must be
+# tagged with this marker AND live in event_log.py. Anything else that
+# says UPDATE — including an untagged migration in any other file — still
+# trips H1.
+_MIGRATION_MARKER = "/* L2 schema migration"
+
+
+def _allowed_migration_update(rel_path: str, source: str, table: str) -> bool:
+    """Whitelist: tagged migration backfill UPDATEs inside ``event_log.py``."""
+    return (
+        rel_path == "jarvis/state/event_log.py"
+        and table.lower() == "events"
+        and source.lstrip().startswith(_MIGRATION_MARKER)
+    )
+
+
 def _is_trigger_ddl(source: str) -> bool:
     """True iff this string literal looks like SQLite trigger DDL.
 
@@ -110,6 +128,8 @@ def test_no_projection_writes() -> None:
                     continue
                 kind, table = classified
                 if kind == "INSERT" and _allowed_insert(rel, table):
+                    continue
+                if kind == "UPDATE" and _allowed_migration_update(rel, value, table):
                     continue
                 violations.append(
                     _format_violation(rel, getattr(node, "lineno", 0), kind, table)
