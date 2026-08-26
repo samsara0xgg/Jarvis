@@ -469,6 +469,106 @@ def emit_stash_conflict_surfacing(  # noqa: PLR0913 — every id is a load-beari
     return artifact_event, claim_event, evidence_event
 
 
+# ``submit_report`` status enum (``jarvis/execution/codex_mcp_tools.py``
+# SUBMIT_REPORT_TOOL): ["ok", "partial", "failed", "blocked"]. "ok" is
+# the sole success value; everything else — including the degraded
+# "report_missing" L4 substitutes when the tool was never called — is
+# non-success for the remaining_risks Limitation gate below.
+_WORKER_REPORT_SUCCESS_STATUSES = frozenset({"ok"})
+
+
+def emit_worker_report_extras(
+    conn: sqlite3.Connection,
+    *,
+    report_payload: Mapping[str, Any],
+    subject_ref: str,
+    source_event_id: str,
+    correlation: Mapping[str, str],
+) -> tuple[Event, ...]:
+    """Fold optional WorkerReport fields into claims (Phase 0 batch 5).
+
+    Two folds over the ``worker.reported`` payload:
+
+    1. ``remaining_risks`` (non-empty str) on a NON-SUCCESS status ->
+       one Limitation Claim (relation=limits, level=reported). The
+       success-status gate is deliberate (Allen's decision, option a):
+       a Limitation Claim emitted on a ``worker.reported`` turn forces
+       ``voice_notify`` (``jarvis/decision/gates.py`` K5 branch), and
+       routine successes must stay silent — so a successful run's
+       ``remaining_risks`` must NOT mint a Limitation. "Success" means
+       status ``"ok"`` per the ``submit_report`` schema enum; every
+       other value (``partial`` / ``failed`` / ``blocked``, plus the
+       degraded ``report_missing``) is non-success.
+
+    2. ``tests_run`` / ``commands_run`` (non-empty list) -> ONE
+       Execution Claim (relation=supports, level=reported). NEVER
+       ``executed``: these are the worker's ASSERTIONS about what it
+       ran, not Jarvis's observation — emitting above ``reported``
+       would violate the interpreter's evidence-ceiling rule (module
+       header, spec §15.6, ``jarvis/constitution/__init__.py:164``).
+
+    Returns the emitted events as a flat tuple (possibly empty).
+    """
+    events: list[Event] = []
+    status = str(report_payload.get("status", ""))
+
+    remaining_risks = report_payload.get("remaining_risks")
+    if (
+        isinstance(remaining_risks, str)
+        and remaining_risks
+        and status not in _WORKER_REPORT_SUCCESS_STATUSES
+    ):
+        events.extend(
+            _emit_claim_and_evidence(
+                conn=conn,
+                source_event_id=source_event_id,
+                correlation=correlation,
+                claim_type="Limitation",
+                statement=(
+                    f"worker reports remaining risks for {subject_ref}: "
+                    f"{remaining_risks[:160]}"
+                ),
+                subject_ref=subject_ref,
+                relation="limits",
+                level="reported",
+                source_type="llm",
+                source_id="worker_report",
+                evidence_payload_extras={"limitations": remaining_risks[:200]},
+            )
+        )
+
+    commands_value = report_payload.get("commands_run")
+    tests_value = report_payload.get("tests_run")
+    commands = [str(item) for item in commands_value] if isinstance(commands_value, list) else []
+    tests = [str(item) for item in tests_value] if isinstance(tests_value, list) else []
+    if commands or tests:
+        summary_parts: list[str] = []
+        if commands:
+            summary_parts.append("commands: " + ", ".join(commands)[:200])
+        if tests:
+            summary_parts.append("tests: " + ", ".join(tests)[:200])
+        events.extend(
+            _emit_claim_and_evidence(
+                conn=conn,
+                source_event_id=source_event_id,
+                correlation=correlation,
+                claim_type="Execution",
+                statement=(
+                    f"worker reports {len(commands)} command(s), "
+                    f"{len(tests)} test(s) run for {subject_ref}"
+                ),
+                subject_ref=subject_ref,
+                relation="supports",
+                level="reported",
+                source_type="llm",
+                source_id="worker_report",
+                evidence_payload_extras={"summary": " | ".join(summary_parts)},
+            )
+        )
+
+    return tuple(events)
+
+
 def _build_correlation(action_request: ActionRequest) -> Mapping[str, str]:
     """Build the standard ``{action_id, run_id?, turn_id?}`` correlation."""
     out: dict[str, str] = {"action_id": action_request.action_id}
@@ -966,6 +1066,7 @@ __all__ = [
     "ReviewerVerdictLike",
     "VerifyVerdict",
     "emit_stash_conflict_surfacing",
+    "emit_worker_report_extras",
     "interpret_verify_diff_bundle",
     "result_interpreter",
 ]

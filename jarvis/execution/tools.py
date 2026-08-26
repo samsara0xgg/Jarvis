@@ -684,6 +684,30 @@ def _spawn_worker_emit_terminal_failure(  # noqa: PLR0913 — Day-2 failure path
     )
 
 
+def _worker_report_extras(submit_report: Mapping[str, Any]) -> dict[str, Any]:
+    """Optional WorkerReport fields for the ``worker.reported`` payload.
+
+    Phase 0 batch 5: reclaim the ``submit_report`` fields the payload
+    literal previously dropped (spec §5.4.2 registry entry). Strict
+    type guards — only well-typed values reach the log, lists are
+    shallow-copied with ``str()``-coerced elements capped at 20 items,
+    and the report_missing path (``submit_report == {}``) adds nothing.
+    """
+    extras: dict[str, Any] = {}
+    for list_key in ("changed_files", "commands_run", "tests_run"):
+        list_value = submit_report.get(list_key)
+        if isinstance(list_value, list):
+            extras[list_key] = [str(item) for item in list_value[:20]]
+    for str_key in ("remaining_risks", "next_recommended_action"):
+        str_value = submit_report.get(str_key)
+        if isinstance(str_value, str):
+            extras[str_key] = str_value
+    review_flag = submit_report.get("needs_human_review")
+    if isinstance(review_flag, bool):
+        extras["needs_human_review"] = review_flag
+    return extras
+
+
 def spawn_worker_handler(
     action_request: ActionRequest,
     conn: sqlite3.Connection,
@@ -962,6 +986,7 @@ def spawn_worker_handler(
             "summary": report_summary,
             "artifact_path": str(diff_artifact_path),
             "stash_ref": stash_ref,
+            **_worker_report_extras(submit_report),
         },
         source_event_id=running_event_uid,
         correlation=correlation,

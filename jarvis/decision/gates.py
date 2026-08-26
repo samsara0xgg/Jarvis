@@ -484,6 +484,7 @@ def attention_policy(  # noqa: C901 — small branch tree but ruff counts each `
     claim_evidence: ClaimEvidenceProjection,
     *,
     limitation_emitted: bool = False,
+    needs_human_review: bool = False,
 ) -> AttentionChannel:
     """Decide where this L3 invocation should surface output.
 
@@ -496,6 +497,10 @@ def attention_policy(  # noqa: C901 — small branch tree but ruff counts each `
       Limitation Claim -> ``"voice_notify"`` (ADR K5 row: the
       verify-fail / reviewer-fail limitation utterance must reach
       ``say``, not die in ``silent_log``).
+    - If trigger is ``worker.reported`` and the worker set
+      ``needs_human_review`` -> ``"queue_review"`` (Phase 0 batch 5:
+      a promotion from ``silent_log`` ONLY — the branch sits below
+      both voice checks, so it can never demote a ``voice_notify``).
     - If trigger is ``worker.reported`` and no verified evidence
       yet -> ``"silent_log"`` (Allen said "审核了再告诉我";
       reporting an unverified status would violate the spirit).
@@ -516,6 +521,11 @@ def attention_policy(  # noqa: C901 — small branch tree but ruff counts each `
             ``_finalize_response`` from ``scratch.events``, NOT from
             the projection — historical Limitations of the same
             subject must not re-trigger voice on later turns).
+        needs_human_review: ``True`` when a ``worker.reported``
+            trigger's payload carried ``needs_human_review=True`` —
+            the worker explicitly asked for a human look. Promotes
+            the worker.reported ``silent_log`` fallthrough to
+            ``queue_review``; never demotes a voice verdict.
 
     Returns:
         One of ``"voice_notify"`` / ``"silent_log"`` /
@@ -556,7 +566,11 @@ def attention_policy(  # noqa: C901 — small branch tree but ruff counts each `
     if limitation_emitted and trigger_type == "worker.reported":
         return "voice_notify"
     if trigger_type == "worker.reported":
-        return "silent_log"
+        # Phase 0 batch 5: the worker's explicit needs_human_review
+        # flag promotes the silent_log fallthrough to queue_review.
+        # Placement below both voice branches makes this a promotion
+        # only — never a voice demotion.
+        return "queue_review" if needs_human_review else "silent_log"
     return "queue_review"
 
 

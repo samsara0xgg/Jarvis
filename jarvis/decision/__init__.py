@@ -88,6 +88,7 @@ from jarvis.decision.resolver import (
 )
 from jarvis.decision.result_interpreter import (
     VerifyVerdict,
+    emit_worker_report_extras,
     interpret_verify_diff_bundle,
     result_interpreter,
 )
@@ -1785,6 +1786,22 @@ def _handle_worker_reported(
     )
     scratch.events.extend(interpreted)
 
+    # 3b. Phase 0 batch 5: fold the optional WorkerReport fields
+    # (remaining_risks / tests_run / commands_run) into claims.
+    if scratch.active_subject_ref is not None:
+        report_extra_events = emit_worker_report_extras(
+            ctx.conn,
+            report_payload=trigger.payload,
+            subject_ref=scratch.active_subject_ref,
+            source_event_id=trigger.event_uid,
+            correlation={
+                "action_id": action_id,
+                **({"run_id": run_id} if isinstance(run_id, str) else {}),
+                **({"turn_id": scratch.turn_id} if scratch.turn_id else {}),
+            },
+        )
+        scratch.events.extend(report_extra_events)
+
     # 4 + 5. Re-call the LLM to plan verification + continue loop.
     return _run_tool_use_loop(
         assemble_packet(trigger, ctx.conn),
@@ -2218,10 +2235,18 @@ def _finalize_response(
         ev.type == "claim.created" and ev.payload.get("type") == "Limitation"
         for ev in scratch.events
     )
+    # Phase 0 batch 5: the worker's explicit review request promotes the
+    # worker.reported silent_log fallthrough to queue_review (never a
+    # voice demotion — see attention_policy's branch placement).
+    needs_human_review = (
+        packet.trigger_event.type == "worker.reported"
+        and packet.trigger_event.payload.get("needs_human_review") is True
+    )
     attention = attention_policy(
         packet,
         projections.claim_evidence,
         limitation_emitted=limitation_emitted,
+        needs_human_review=needs_human_review,
     )
     # The attention_policy verdict reflects evidence state at the trigger
     # event (worker.reported + no verified Postcondition → silent_log per

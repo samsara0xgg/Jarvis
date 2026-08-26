@@ -367,7 +367,21 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="codex_worker",
         required_payload=("run_id", "action_id", "status"),
-        optional_payload=("summary", "artifact_path", "stash_ref"),
+        # Optional keys aligned with the spec §5.4.2 WorkerReport
+        # registry entry — Phase 0 batch 5 reclaims the submit_report
+        # fields L4 previously dropped.
+        optional_payload=(
+            "summary",
+            "artifact_path",
+            "stash_ref",
+            "changed_files",
+            "commands_run",
+            "tests_run",
+            "evidence_submitted",
+            "remaining_risks",
+            "needs_human_review",
+            "next_recommended_action",
+        ),
         schema_version=1,
     ),
     EventTypeSchema(
