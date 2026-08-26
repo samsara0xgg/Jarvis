@@ -1,6 +1,7 @@
 # ADR 0011 — Tool Surface v1 (7 read/observe tools · EffectivePolicy ×9 · ToolDefinition +4 · EntityRegistry v0)
 
 **Status:** Approved (2026-08-25, Allen)
+**Amended:** 2026-08-26 — §12 records implementation errata (§12.1) and one forced design reconciliation (§12.2, item J) that changes gate behavior and **awaits Allen's confirmation**. §1-§11 are unedited.
 **Date:** 2026-08-25
 **Depends on:** ADR-0001/0002 (decide() loop, gates, Tier 0, Task Ledger), ADR-0003 (inherent daemon), ADR-0009 (Status Board projection idiom, registration idiom, `actor` provenance; schema-v1 migration landed via phase0-debts merge 2ccb5c2)
 **Prepares:** ADR-0012 (Confirmation Flow + AuthorizationLease + `write_file`) — this ADR lands every contract 0012 consumes (`confirmation_threshold`, `requires_confirmation`, `requires_entity`, EntityRegistry, `surface_for`), so 0012 adds only the confirmation state machine and one L3 tool.
@@ -300,3 +301,85 @@ All 9 rows green in one burn log (`docs/`, ADR-0009 precedent) · TCC granted on
 | packet entity menu | only if resolve-on-propose proves insufficient |
 | Obsidian index for search_notes | if vault scale demands it |
 | image-submit endpoint (501) | untouched (handoff decision 9) |
+
+## 12. Amendments (implementation pass, 2026-08-26)
+
+Written after §7 Steps 1-3 shipped. **§1-§11 above are unedited** — an amendment records the correction, it does not rewrite the approved text. Two kinds of entry: **errata** (§12.1), where the ADR's prose was wrong or under-specified and the code is right; and **one reconciliation** (§12.2), a real design change taken because two of §8's own acceptance rows are otherwise unsatisfiable. No decision Allen made is re-opened; no scope is added.
+
+### 12.1 Errata — prose corrections, no design change
+
+**Naming and value drift.** The code is authoritative; the ADR text was written against mis-remembered symbols.
+
+| § / line | ADR text | shipped | note |
+|---|---|---|---|
+| §3 D1, line 84 | mode `"collaborate"` | `"Collaborate"` (`jarvis/decision/policy.py:35`, `:158`) | `PolicyMode = Literal["Collaborate"]` predates this ADR (`git show 058b8c8:jarvis/decision/policy.py:29`); the lowercase form does not type-check. |
+| §3 D1, line 84 | `COLLABORATE_CONSTANT` | `COLLABORATE_MODE_STATE` (`policy.py:163`) | Divergence documented in the constant's own docstring (`policy.py:166-167`). |
+| §3 D1, line 85 | "`risk_rank` learns **L4**" | already present | `_RISK_LADDER = ("L0", "L1", "L2", "L3", "L4")` at `git show 058b8c8:jarvis/decision/policy.py:65`. No work was required; Step 1 changed nothing here. |
+
+**B — §3 D1 vs §10 on where `ModeRuntimeState` lives. Code follows §10; the reason is *not* a layer violation.** §3 D1 (line 84) puts the constant provider "on the State Object side" (L2); §10's Module Map (line 282) puts `ModeRuntimeState` in `jarvis/decision/policy.py` (L3). `.importlinter` orders `decision | execution | surface | deployment` **above** `state`, and higher layers may import lower ones — so `decision → state` is permitted, and five `jarvis/decision/*` modules already do it (`decision/__init__.py:105-106`, `packet.py:25`, `gates.py:37`, `resolver.py:44`, `result_interpreter.py:53`). **There is no layer violation on either placement.** §10 was followed because: (i) the L2 rule this project actually holds is "when *mutable* mode state exists, it belongs in L2 rather than L3" (`policy.py:8-13`), and v0 is a frozen zero-input constant, not state, so the rule is not triggered; (ii) an L2 module that folds no events and reads no rows would be a placeholder, not a projection; (iii) `policy.py` deliberately restricts its own imports to stdlib + `jarvis.shared` (`policy.py:17`), which an L2 constant would break for no benefit. When the policy-engine ADR makes Mode Runtime State event-sourced, it moves to L2 and D1's wording becomes correct.
+
+**D — `effective_policy()` signature.** §3 D1 (line 84) gives `effective_policy(mode_state: ModeRuntimeState = COLLABORATE_CONSTANT)`, omitting `allowed_tool_surface` entirely. Implemented literally it breaks the sole production call site, `effective_policy(_allowed_tool_surface(ctx.tool_registry))` (`jarvis/decision/__init__.py:759`), which passes the surface **positionally**. Shipped signature keeps `allowed_tool_surface` first and positional and makes `mode_state` keyword-only (`policy.py:174-178`). Purity is unaffected — the resolver still only interprets its arguments (§11).
+
+**F — `surface_for` name filtering is fail-closed.** §3 D2 (line 104) specifies filtering "by `policy.allowed_tool_surface[caller]`". Literal subscripting raises `KeyError` for any caller absent from the map. Shipped code uses `.get(caller, frozenset())` (`policy.py:297`) — an unmapped caller gets an empty surface, not a crash. Same shape as gate check 1 (`gates.py:242`).
+
+**G — `domain` is typed `str`; nothing enforces the §14.1 enum.** §3 D2 (line 89) requires `domain` to be "one of the §14.1 seventeen" but ships it as `domain: str` (`jarvis/execution/tools.py:510`), so a typo registers cleanly. The seventeen, verbatim from spec §14.1 (`docs/spec.html:2598`):
+
+`state_read` · `file_read` · `file_write` · `terminal` · `git` · `browser` · `screen` · `clipboard` · `mac_gui` · `smart_home` · `task_ledger` · `agent_control` · `memory` · `obsidian` · `notification` · `scheduler` · `hardware`
+
+All five values the Step-2 migration ships are in that list: `agent_control` (`tools.py:2576`), `git` (`:2481`), `task_ledger` (`:2602`, `:2623`), `state_read` (`:2641`), `mac_gui` (`:2663`). **Declared debt:** the membership check belongs beside the `requires_confirmation` invariant in the boot-validation block Step 2 added, `jarvis/runtime/__init__.py:389-401` (bootstrap step 3c) — one more pure validator raising `PolicyConsistencyError`, same failure shape.
+
+**H — `surface_for` cannot currently subtract anything.** Neither §3 D2 nor §9 says so, and it belongs on the record before §14.8's "registry 必须真的过滤" is read as an accomplished property.
+
+- *Name arm is a structural identity.* The policy's `allowed_tool_surface` is derived from the same registry the filter walks: `_allowed_tool_surface` builds `frozenset(t.name for t in registry.for_caller(principal))` for every principal (`jarvis/decision/__init__.py:2448-2455`), and `surface_for` then keeps tools from `registry.for_caller(caller)` whose name is in that set (`policy.py:297-303`). At the sole production call site (`decision/__init__.py:759` feeding `:888`) the two sets are equal by construction, for *any* registry. Nothing is ever removed.
+- *Ceiling arm is inert.* All six registered tools are ≤L2 — `spawn_worker` L2, `create_task`/`open_path` L1, the rest L0 (`tools.py:2476`, `:2571`, `:2597`, `:2618`, `:2636`, `:2658`) — under an L3 ceiling. Even ADR-0012's planned L3 `write_file` passes (`risk_rank("L3") <= risk_rank("L3")`). The arm first bites at L4, and no L4 tool exists.
+
+The mechanism is wired and correct; it is **dormant, not proven**. The first real subtraction arrives when a mode preset narrows `allowed_tool_surface` below the registry, or when the ceiling drops below L3 — both in the policy-engine ADR.
+
+**I — §10's Module Map omits the Step-2 boot validator.** It landed as `validate_requires_confirmation` + `PolicyConsistencyError` in `jarvis/decision/policy.py:309-349` (pure; takes an iterable of tool defs and a threshold), called from `jarvis/runtime/__init__.py:394-401` as bootstrap step 3c, converted to `RuntimeBootstrapError` (`runtime/__init__.py:136`). Missing Module Map row: `requires_confirmation` boot invariant → `jarvis/decision/policy.py` (check) + `jarvis/runtime/__init__.py` (call site).
+
+**K — the gate takes a resolved `ToolDefinition`, not a registry.** §3 D3 (line 108) says the gate gains "the tool definition lookup … (registry passed alongside policy)". The shipped signature instead takes the caller's **already-resolved** definition as a required keyword-only parameter: `pre_action_gate(action_request, policy, ledger_snapshot, *, tool_def: _EntityGateToolLike | None)` (`jarvis/decision/gates.py:168-174`), where `_EntityGateToolLike` is a one-property Protocol reading only `requires_entity` (`gates.py:151-165`). Reason: the two call sites resolve `tool_def` through two *different* lookups — `_find_registered_tool_def` is caller-blind over `registry.get_definitions()` (`decision/__init__.py:2424-2445`, Tier 0 path), `_find_tool_def` is `JARVIS_LLM`-scoped (`:2413-2421`, LLM path) — so a third, gate-internal lookup could act on a different definition than the caller resolved. Taking the caller's value removes that divergence. Still a pure function, no I/O, and strictly less coupling than passing the registry.
+
+**L — §1's "the check has never rejected anything" is half wrong.** §1 (line 20) frames the whole entity check as a hole. Only the `None` arm was vacuous. The **non-None arm has always been real validation**: it tests `target_entity_ref` for membership in the Task Ledger projection and refuses on miss (`gates.py:278-290`; identical at the pre-ADR baseline, `git show 2ccb5c2:jarvis/decision/gates.py`). §1's companion claim that "every construction site passes None" is also wrong — only the Tier 0 path hardcodes `None` (`decision/__init__.py:1006`); the LLM path fills the ref from the resolver (`:1163`) or from `scratch.active_subject_ref` (`:1197-1198`) and passes it through (`:1235`). Corrected framing: **D3 closes the `None` arm; the non-None arm was never open.** §12.2 turns on this.
+
+**M — `requires_entity` has no boot-validation counterpart.** Unlike `requires_confirmation` (item I), nothing checks `requires_entity` against the Tier 0 table. A future Tier 0 row naming a `requires_entity=True` tool would boot clean and then refuse at every dispatch, because the Tier 0 path hardcodes `target_entity_ref=None` (`decision/__init__.py:1006`) and D3's new arm refuses exactly that. D6's two planned rows are safe — `read_clipboard` and `screen_look` are both `requires_entity=false` (§3 D5 table) — so nothing breaks today. **Cheap follow-up, land with Step 5:** extend `validate_tier0_table` (`jarvis/decision/tier0.py:157`) to reject a whitelist entry whose tool has `requires_entity=True`, alongside its existing async-target rejection. Same block, same failure shape.
+
+### 12.2 Reconciliation J — the entity gate refuses `read_file` on both branches
+
+**This is the one item in §12 that changes behavior rather than correcting prose. Allen: please confirm.**
+
+**The gap.** §3 D3 (line 108) explicitly *preserves* check 2's existing non-None arm, which tests `target_entity_ref` for membership in the Task Ledger's task ids. §3 D4 (line 117) specifies that resolve-on-propose fills `target_entity_ref` with an entity_id shaped `"file:<abs-path>"`. A `file:` id can never be a Task Ledger task id. So after Step 4, `read_file` (`requires_entity=true`, §3 D5) is refused on **both** branches:
+
+| `target_entity_ref` | arm taken | result |
+|---|---|---|
+| `None` (resolver failed) | D3's new arm | refuse — `entity_required: read_file demands a resolved target` (intended, E2) |
+| `"file:/…/CLAUDE.md"` (resolver succeeded) | pre-existing ledger arm | refuse — `is NOT in Task Ledger` (**not** intended) |
+| `"task-abc"` (a real task id) | pre-existing ledger arm | pass |
+
+**Evidence.** Direct probe against the real `pre_action_gate` at Step-3 HEAD — `tool_def.requires_entity=True`, ledger holding one task `task-abc`, policy allowing `read_file`, risk L0 — reproduces all three rows exactly as tabulated, the middle one with `outcome=refuse`.
+
+**Consequence for §8.** Two of this ADR's own Tier-2 acceptance rows are **unsatisfiable as written**: **T4** ("resolve-on-propose fills `target_entity_ref`; `entity.resolved(outcome=resolved)` on the log; content observation") and **E1** ("EntityRegistry projection contains the `file:` entry"). T4 never reaches a content observation and E1's side effect never happens, because the gate refuses first. This is not an implementation defect — it follows directly from D3 and D4 as approved.
+
+**Resolution (decided by the implementation session, 2026-08-26).** Check 2's non-None arm widens to accept a ref that is **either**:
+
+1. a known Task Ledger task id — existing behavior, byte-for-byte unchanged, **or**
+2. a known `entity_id` in the EntityRegistry projection.
+
+Keeping (1) untouched is what preserves the shipped `verify_diff` / `spawn_worker` path, which passes bare task ids (`decision/__init__.py:1163`, `:1197-1198`, `:1235`) and is pinned by the existing gate canaries. (2) is what makes D4's `file:` ids trustworthy — and it is the only widening that satisfies I2 (no fabricated entity IDs), since the EntityRegistry is precisely the projection of ids the trusted resolver produced (§3.3.7's ID-source allowlist).
+
+**Plumbing.** The EntityRegistry snapshot reaches the gate the same way the Task Ledger snapshot already does — folded into the SituationPacket (`decision/packet.py:121`) and passed as a parameter (`decision/__init__.py:1032-1033`, `:1263-1264` pass `packet.task_ledger_snapshot`). `pre_action_gate` stays a pure function with no I/O.
+
+**Cost, stated plainly.** This lands in **Step 4**, which therefore makes a **second** signature change to `pre_action_gate` one step after Step 3's. Accepted deliberately: folding it into Step 3 would require Step 4's projection to exist first, and swapping the two steps would leave D3's arm untestable.
+
+**What does not change.** D3's `None` arm and its refuse reason; D4's entry shape, `file:` id format, and resolve-on-propose contract; §8's T4/E1 row text (they become satisfiable, not rewritten); the six migrated tools' behavior; every other approved decision in §1-§11.
+
+### 12.3 Build-order status (§7)
+
+| step | scope | commit |
+|---|---|---|
+| 1 | Policy ×9 + `ModeRuntimeState` + ceiling L3 | `a96ee88` |
+| 2 | ToolDefinition +4 + `surface_for` + boot validation | `7e221bf` |
+| 3 | Gate entity arm (D3) | `6ff67fc` |
+| 4 | EntityRegistry v0 (+ reconciliation J) | pending |
+| 5 | Local tools + Tier 0 rows | pending |
+| 6 | Web tools | pending |
+| 7 | `screen_look` | pending |
