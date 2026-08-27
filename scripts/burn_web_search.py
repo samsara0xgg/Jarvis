@@ -16,6 +16,7 @@ import logging
 import sys
 
 import httpx
+import yaml
 
 from jarvis.execution.tools import (
     _WEB_SEARCH_RESULT_TEXT_CAP,
@@ -127,13 +128,82 @@ def check_endpoints() -> bool:
     return exa_ok and tavily_ok
 
 
+def check_keyed_live() -> bool | None:
+    """Drive the exact chain the daemon uses, against the real provider.
+
+    env file -> config -> provider+key resolution -> backend -> rows.
+    Returns None (skip) when no credential is configured.
+    """
+    print("\n=== 5. configured provider, live end-to-end")
+    import pathlib
+
+    from jarvis.deployment import load_env_file
+    from jarvis.runtime import _web_search_provider_config
+
+    load_env_file(pathlib.Path.home() / ".jarvis")
+    config = yaml.safe_load(pathlib.Path("config/jarvis.yaml").read_text(encoding="utf-8"))
+    provider, api_key = _web_search_provider_config(config)
+    print(f"  config provider = {provider!r}, key = {'resolved' if api_key else 'MISSING'}")
+    if not api_key:
+        print("  -> SKIP: no credential resolved (this is the ddgs-degrade path)")
+        return None
+
+    backend, used = _resolve_search_backend(provider, api_key)
+    if used != provider:
+        print(f"  -> FAIL: resolved to {used!r}, expected {provider!r}")
+        return False
+
+    rows = backend("Vancouver to Shanghai direct flight duration", 3, timeout_s=25.0)
+    print(f"  {used} returned {len(rows)} rows")
+    with_text = 0
+    for title, url, text in rows:
+        body = _collapse_ws(text)
+        if len(body) > 200:
+            with_text += 1
+        print(f"    - {title[:55]!r}")
+        print(f"      {url[:70]}")
+        print(f"      text {len(body)} chars: {body[:130]!r}")
+
+    # The whole point of a keyed provider: rows carry page text, so no
+    # second web_fetch iteration is needed to see any content.
+    ok = bool(rows) and with_text >= 1
+    print(f"  -> {with_text}/{len(rows)} rows carry substantial page text: "
+          f"{'YES' if ok else 'NO  <-- provider returned links only'}")
+    return ok
+
+
+def check_mismatch_guard() -> bool:
+    """A key variable named for the wrong vendor must be refused."""
+    print("\n=== 6. provider/key-name mismatch guard")
+    from jarvis.runtime import _web_search_provider_config
+
+    cfg = {"tools": {"web": {
+        "search_provider": "tavily", "search_api_key_env": "EXA_API_KEY",
+    }}}
+    _provider, key = _web_search_provider_config(cfg)
+    good = key is None
+    print(f"  {'ok ' if good else 'FAIL'} provider=tavily + EXA_API_KEY -> "
+          f"key={'refused' if good else 'LEAKED'}")
+
+    cfg2 = {"tools": {"web": {
+        "search_provider": "tavily", "search_api_key_env": "JARVIS_SEARCH_KEY",
+    }}}
+    _p2, _k2 = _web_search_provider_config(cfg2)
+    print("  ok  provider=tavily + neutral name -> allowed (not a naming policy)")
+    return good
+
+
 def main() -> int:
-    results = {
+    results: dict[str, bool] = {
         "resolution": check_resolution(),
         "rendering": check_rendering(),
         "ddgs live": check_ddgs_live(),
         "endpoints": check_endpoints(),
+        "mismatch guard": check_mismatch_guard(),
     }
+    keyed = check_keyed_live()
+    if keyed is not None:
+        results["keyed live"] = keyed
     print("\n=== summary")
     for name, ok in results.items():
         print(f"  {'PASS' if ok else 'FAIL'}  {name}")

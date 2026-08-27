@@ -3049,6 +3049,14 @@ def _exa_search_backend(
     second tool-loop iteration on `web_fetch` to see any actual content.
     That matters directly: the loop bound is 5, and the search-then-
     fetch dance is what exhausted it in turn Te3815a16.
+
+    `highlights` (Exa's query-relevant passages) is preferred over
+    `text` (the page from its top) for the same reason Tavily's
+    `content` beats its `raw_content`: against a per-result budget, a
+    page's opening bytes are nav chrome, not the answer. That reasoning
+    is EVIDENCED for Tavily and only INFERRED here — this backend has
+    never run against a real Exa key, so treat the field preference as
+    unverified.
     """
     response = httpx.post(
         "https://api.exa.ai/search",
@@ -3056,7 +3064,10 @@ def _exa_search_backend(
         json={
             "query": query,
             "numResults": max_results,
-            "contents": {"text": {"maxCharacters": _WEB_SEARCH_RESULT_TEXT_CAP}},
+            "contents": {
+                "text": {"maxCharacters": _WEB_SEARCH_RESULT_TEXT_CAP},
+                "highlights": True,
+            },
         },
         timeout=timeout_s,
     )
@@ -3069,11 +3080,19 @@ def _exa_search_backend(
         (
             str(row.get("title") or ""),
             str(row.get("url") or ""),
-            str(row.get("text") or ""),
+            _exa_row_text(row),
         )
         for row in rows
         if isinstance(row, dict)
     ]
+
+
+def _exa_row_text(row: Mapping[str, Any]) -> str:
+    """Prefer an Exa row's `highlights` over its `text` (see caller)."""
+    highlights = row.get("highlights")
+    if isinstance(highlights, list) and highlights:
+        return " … ".join(str(h) for h in highlights if h)
+    return str(row.get("text") or "")
 
 
 def _tavily_search_backend(
@@ -3083,22 +3102,25 @@ def _tavily_search_backend(
     timeout_s: float,
     api_key: str,
 ) -> list[tuple[str, str, str]]:
-    """Tavily `/search` with `include_raw_content` for real page text.
+    """Tavily `/search`, taking its relevance-selected `content`.
 
-    `content` is Tavily's short LLM-oriented blurb; `raw_content` is the
-    parsed page. Prefer the latter and fall back to the former, so a
-    result Tavily could not parse still contributes its summary rather
-    than an empty row. See `_exa_search_backend` for why text inline
-    matters at all.
+    `content` is Tavily's query-relevant extract; `raw_content` is the
+    whole parsed page. `raw_content` was tried first and was WRONG:
+    against a per-result budget of `_WEB_SEARCH_RESULT_TEXT_CAP`, a
+    page's opening bytes are nav chrome, so the budget bought
+    "[Skip to content](#main) ![logo]…" while `content` for the same
+    result read "operated by Air Canada and China Eastern Airlines and
+    the flight time is 13 hours and 50 minutes" — the actual answer, at
+    ~1.3 KB. So `content` is requested and preferred, `raw_content` is
+    not asked for at all (it is billed payload we would discard), and
+    the fallback stays only for a row that somehow carries one and not
+    the other. A result whose full page IS needed can be handed to
+    `web_fetch` — which, since the extract-then-cap fix, can read it.
     """
     response = httpx.post(
         "https://api.tavily.com/search",
         headers={"Authorization": f"Bearer {api_key}"},
-        json={
-            "query": query,
-            "max_results": max_results,
-            "include_raw_content": "markdown",
-        },
+        json={"query": query, "max_results": max_results},
         timeout=timeout_s,
     )
     response.raise_for_status()
@@ -3110,7 +3132,7 @@ def _tavily_search_backend(
         (
             str(row.get("title") or ""),
             str(row.get("url") or ""),
-            str(row.get("raw_content") or row.get("content") or ""),
+            str(row.get("content") or row.get("raw_content") or ""),
         )
         for row in rows
         if isinstance(row, dict)

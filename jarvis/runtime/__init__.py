@@ -496,12 +496,20 @@ def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str, str | N
     `config/jarvis.yaml`. L4 receives the resolved value; it does not
     read YAML or the environment itself.
 
+    `search_api_key_env` is OPTIONAL: left blank it derives from the
+    provider (`exa` -> `EXA_API_KEY`). An explicit name that belongs to
+    a DIFFERENT provider is refused rather than honoured — pointing
+    `search_provider: tavily` at `EXA_API_KEY` would post one vendor's
+    credential to the other vendor's server, which is a leak, not a
+    misconfiguration to paper over. Refusing yields no key, so
+    `_resolve_search_backend` degrades to `ddgs` with its own warning.
+
     Best-effort like its `tools.web` siblings: a missing block, an
     unknown provider name, or an unset variable all degrade inside
     `_resolve_search_backend` rather than failing boot.
     """
     provider = DEFAULT_WEB_SEARCH_PROVIDER
-    key_env: str | None = None
+    raw_key_env: object = None
     block = config.get("tools")
     if isinstance(block, Mapping):
         web_block = block.get("web")
@@ -510,10 +518,39 @@ def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str, str | N
             if isinstance(raw_provider, str) and raw_provider.strip():
                 provider = raw_provider.strip()
             raw_key_env = web_block.get("search_api_key_env")
-            if isinstance(raw_key_env, str) and raw_key_env.strip():
-                key_env = raw_key_env.strip()
-    api_key = os.environ.get(key_env) if key_env else None
+
+    key_env = f"{provider.strip().upper()}_API_KEY"
+    if isinstance(raw_key_env, str) and raw_key_env.strip():
+        key_env = raw_key_env.strip()
+        if not _key_env_matches_provider(key_env, provider):
+            LOGGER.error(
+                "tools.web.search_api_key_env=%r does not belong to "
+                "search_provider=%r — refusing to send that credential to the "
+                "wrong vendor; leave the key blank to derive it automatically",
+                key_env, provider,
+            )
+            return provider, None
+
+    api_key = os.environ.get(key_env)
     return provider, (api_key.strip() if api_key else None)
+
+
+def _key_env_matches_provider(key_env: str, provider: str) -> bool:
+    """Is `key_env` plausibly the credential for `provider`?
+
+    Only guards the case that actually leaks: a variable named for one
+    KNOWN provider while a different KNOWN provider is selected. A name
+    mentioning neither (an operator's own convention, e.g.
+    `JARVIS_SEARCH_KEY`) is left alone — this is a footgun guard, not a
+    naming policy.
+    """
+    known = ("exa", "tavily")
+    selected = provider.strip().lower()
+    if selected not in known:
+        return True
+    upper = key_env.upper()
+    mentioned = [name for name in known if name.upper() in upper]
+    return not mentioned or selected in mentioned
 
 
 def _web_tools_config(config: Mapping[str, Any]) -> tuple[int, int, int, float]:

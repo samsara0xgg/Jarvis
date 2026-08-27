@@ -8,8 +8,9 @@ PYTHONPATH=. python scripts/burn_web_fetch.py     # exit 0 = all pages yielded t
 PYTHONPATH=. python scripts/burn_web_search.py    # exit 0 = no blocking failure
 ```
 
-Both hit the real network. `burn_web_search.py` needs no credential —
-the keyed providers are probed with a dummy key on purpose.
+Both hit the real network. `burn_web_search.py` needs no credential to
+run — the keyed providers are probed with a dummy key on purpose — and
+adds a live end-to-end section when one IS configured.
 
 ## What prompted this
 
@@ -76,12 +77,56 @@ loop. `tools.web.search_provider` now selects `exa` / `tavily` /
   would have said otherwise).
 - `ddgs` live: still answers (3 rows), so the default path is intact.
 
+### Tavily, live with a real key · GREEN
+
+Configured as `search_provider: tavily`, key in `~/.jarvis/env` (0600).
+Burn drives the daemon's own chain — `load_env_file` → config →
+`_web_search_provider_config` → `_resolve_search_backend` → backend:
+
+```
+config provider = 'tavily', key = resolved
+tavily returned 3 rows
+  -> 3/3 rows carry substantial page text
+```
+
+### R4 — wrong Tavily field preferred · GREEN
+
+Found by the burn above. The first cut preferred `raw_content` (whole
+parsed page) over `content` (Tavily's query-relevant extract). Against
+the 1,500-char per-result budget that is backwards — the opening bytes
+of a page are nav chrome:
+
+| field | first bytes of the same result |
+|-------|-------------------------------|
+| `raw_content` | `[](https://www.flightsfrom.com/) Which airport are you flying from? … ### Menu * [Home]…` |
+| `content` | `…operated by Air Canada and China Eastern Airlines and the flight time is 13 hours and 50 minutes. The distance is 5634 miles.` |
+
+`content` is now preferred and `raw_content` is no longer requested at
+all (billed payload we would discard). After the fix, rows open with
+real schedule data (`HX238 Hong Kong Airlines 15:30 HKG 2.5h Nonstop…`).
+A result whose full page really is needed goes to `web_fetch`, which
+can read it now.
+
+The same reasoning was applied to Exa (`highlights` preferred over
+`text`) but is **inferred there, not measured** — see below.
+
+### R5 — provider/key-name mismatch is refused · GREEN
+
+`search_api_key_env` now derives from the provider when left blank.
+An explicit name belonging to a *different* known provider is refused
+outright: `search_provider: tavily` + `search_api_key_env: EXA_API_KEY`
+would have posted the Exa credential to Tavily's server. That is a
+credential leak, not a typo to tolerate. A neutral name
+(`JARVIS_SEARCH_KEY`) is still allowed — this is a footgun guard, not a
+naming policy. Burn asserts both branches.
+
 ### Not verified
 
-**The Exa and Tavily paths have never run against a real key.** Request
-and response shapes were written from the vendors' current API docs and
-are unexercised past the 401. Setting `EXA_API_KEY` and flipping
-`search_provider: exa` is a live-burn item, not a settled one.
+**The Exa path has still never run against a real key.** Its request and
+response shapes come from Exa's docs and are unexercised past the 401,
+and its `highlights`-over-`text` preference is reasoning carried over
+from Tavily rather than anything measured. Setting `EXA_API_KEY` and
+flipping `search_provider: exa` remains a live-burn item.
 
 ## R3 — aggregate output cap overshot · GREEN (pre-existing)
 

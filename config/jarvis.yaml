@@ -73,12 +73,18 @@ tools:
     #
     # 换成 exa 或 tavily（并设好下面的 search_api_key_env），搜索直接带
     # 回页面正文：既有据可依，也省下一整轮工具循环预算。
-    search_provider: ddgs
+    search_provider: tavily
     # 上面那个 provider 的 API key 从哪个环境变量读。和 llm.presets.*
-    # 的 api_key_env 是同一套间接引用——key 永远不写进这个文件。
+    # 的 api_key_env 是同一套间接引用——key 永远不写进这个文件；实际的
+    # key 放在 ~/.jarvis/env（0600），因为 launchd 会剥掉 shell 环境。
+    #
+    # 留空即可：不填就按 provider 自动推导成 EXA_API_KEY / TAVILY_API_KEY。
+    # 只有在你想用非常规变量名时才需要显式写，而且写了也必须和 provider
+    # 对得上——否则启动时拒用并退回 ddgs，不会把 A 家的 key 发给 B 家。
+    #
     # 指定了 exa/tavily 但变量没设：告警 + 退回 ddgs，不会 boot 失败，
     # 且实际用了哪个后端会写进 web_search 结果的 provider 字段。
-    search_api_key_env: EXA_API_KEY
+    search_api_key_env:
     # web_fetch 从 socket 上最多读多少字节响应体。这是内存/DoS 护栏，
     # 不是输出上限——输出上限是下面的 fetch_max_text_bytes。
     #
