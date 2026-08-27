@@ -64,6 +64,21 @@ tools:
     # web_search 在请求未指定 max_results 时的默认值；硬上限 8 写死在
     # tools.py，这里改不了那个上限。
     search_max_results: 5
+    # 哪个后端来答 web_search：exa | tavily | ddgs。
+    #
+    # ddgs（非官方 DuckDuckGo 抓取）是默认值，只因为它不需要凭证——不是
+    # 推荐值。它只回链接+摘要，想看正文得再花一轮 web_fetch；而且经常被
+    # 反爬挡掉（Te3815a16 那轮 5 次工具调用里有 3 次花在它身上，最后一次
+    # 直接 No results found）。
+    #
+    # 换成 exa 或 tavily（并设好下面的 search_api_key_env），搜索直接带
+    # 回页面正文：既有据可依，也省下一整轮工具循环预算。
+    search_provider: ddgs
+    # 上面那个 provider 的 API key 从哪个环境变量读。和 llm.presets.*
+    # 的 api_key_env 是同一套间接引用——key 永远不写进这个文件。
+    # 指定了 exa/tavily 但变量没设：告警 + 退回 ddgs，不会 boot 失败，
+    # 且实际用了哪个后端会写进 web_search 结果的 provider 字段。
+    search_api_key_env: EXA_API_KEY
     # web_fetch 从 socket 上最多读多少字节响应体。这是内存/DoS 护栏，
     # 不是输出上限——输出上限是下面的 fetch_max_text_bytes。
     #

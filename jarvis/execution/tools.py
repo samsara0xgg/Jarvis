@@ -2278,14 +2278,17 @@ def _resolved_within(path: Path, root: Path) -> bool:
     return resolved == root or root in resolved.parents
 
 
-def _cap_search_notes_total_bytes(rows: list[str], max_bytes: int) -> list[str]:
-    """Enforce the aggregate output cap across matched rows (MUST-FIX 1).
+def _cap_rows_total_bytes(rows: list[str], max_bytes: int) -> list[str]:
+    """Enforce an aggregate output cap across rendered rows (MUST-FIX 1).
 
-    The per-line cap already bounds any single row; this guards the
-    SUM. Walks ``rows`` in order, keeping whole rows until the next
+    The caller's per-row cap already bounds any single row; this guards
+    the SUM. Walks ``rows`` in order, keeping whole rows until the next
     one would exceed ``max_bytes``, then truncates that ONE row
-    (codepoint-safe, same marker convention as the per-line cap) and
+    (codepoint-safe, same marker convention as the per-row cap) and
     drops everything after it.
+
+    Shared by ``search_notes`` and ``web_search`` — both render a list
+    of rows whose count is bounded but whose total size is not.
     """
     capped: list[str] = []
     used = 0
@@ -2295,9 +2298,17 @@ def _cap_search_notes_total_bytes(rows: list[str], max_bytes: int) -> list[str]:
             capped.append(row)
             used += len(row_bytes)
             continue
+        # The marker is part of the output, so it has to come OUT of the
+        # remaining budget rather than be appended past it — otherwise
+        # the sum overshoots `max_bytes` by the marker's own length
+        # every time the cap fires. Size the reservation with
+        # `len(row_bytes)`: the real `undelivered` is always <= that, so
+        # it never renders more digits than budgeted for.
         remaining = max_bytes - used
-        if remaining > 0:
-            text, undelivered, _lossy = truncate_utf8(row_bytes[:remaining], len(row_bytes))
+        marker_budget = len(f"…[truncated {len(row_bytes)} bytes]".encode())
+        keep = remaining - marker_budget
+        if keep > 0:
+            text, undelivered, _lossy = truncate_utf8(row_bytes[:keep], len(row_bytes))
             capped.append(f"{text}…[truncated {undelivered} bytes]")
         break
     return capped
@@ -2405,7 +2416,7 @@ def _make_search_notes_handler(vault_root: Path) -> ToolHandler:  # noqa: C901 �
                     line_text += f"…[truncated {line_undelivered} bytes]"
                 results.append(f"{md_path} — {line_text}")
 
-        results = _cap_search_notes_total_bytes(results, _SEARCH_NOTES_TOTAL_MAX_BYTES)
+        results = _cap_rows_total_bytes(results, _SEARCH_NOTES_TOTAL_MAX_BYTES)
         payload = {"results": results}
         if non_utf8_files:
             payload["non_utf8_files"] = non_utf8_files
@@ -2924,6 +2935,28 @@ _WEB_SEARCH_MAX_RESULTS_CAP: Final[int] = 8
 above. Applies regardless of what the request argument or config asks
 for."""
 
+DEFAULT_WEB_SEARCH_PROVIDER: Final[str] = "ddgs"
+"""Default `tools.web.search_provider`.
+
+`ddgs` (unofficial DuckDuckGo scraping) stays the DEFAULT only because
+it needs no credential — it is not the recommended choice. It returns
+link-plus-blurb, so any actual content costs a second `web_fetch`
+iteration, and it is routinely rate-limited or blocked outright: turn
+Te3815a16 burned three of its five tool-loop iterations on it and got
+`No results found` from the last one. Point this at `exa` or `tavily`
+(with `search_api_key_env` set) and search returns page text directly,
+which is both better grounded and cheaper in loop iterations."""
+
+_WEB_SEARCH_RESULT_TEXT_CAP: Final[int] = 1500
+"""Per-result text budget, in characters, requested from a text-bearing
+provider and enforced locally regardless of what it returns. Bounds any
+ONE result; `_WEB_SEARCH_TOTAL_MAX_BYTES` bounds the sum."""
+
+_WEB_SEARCH_TOTAL_MAX_BYTES: Final[int] = 8192
+"""Aggregate cap across all rendered rows — same 8 KiB order as every
+other tool's output cap. Without it, 8 results x full page text would
+dwarf the rest of the decision packet."""
+
 DEFAULT_WEB_TIMEOUT_S: Final[float] = 20.0
 """Shared `web_search`/`web_fetch` timeout absent a `tools.web.timeout_s`
 config override. ADR-0011 D5's prose gives the two tools DIFFERENT
@@ -2982,12 +3015,187 @@ def _ddgs_search_backend(
     ]
 
 
-def _make_web_search_handler(*, default_max_results: int, timeout_s: float) -> ToolHandler:
-    """Bind `tools.web.{search_max_results,timeout_s}` into a closure (ADR-0011 D7).
+def _collapse_ws(text: str) -> str:
+    """Squeeze runs of whitespace to single spaces.
 
-    Same shape as `_make_search_notes_handler` — config read once at
-    registry-build time, closed over here.
+    Extracted page text arrives with the source document's newlines and
+    indentation intact. Those bytes count against
+    `_WEB_SEARCH_RESULT_TEXT_CAP` while carrying no meaning, and one
+    result rendered across many lines would also break the one-row-per-
+    result shape the results list promises.
     """
+    return " ".join(text.split())
+
+
+class _KeyedSearchBackend(Protocol):
+    """A `web_search` backend that needs a credential (Exa, Tavily)."""
+
+    def __call__(
+        self, query: str, max_results: int, *, timeout_s: float, api_key: str,
+    ) -> list[tuple[str, str, str]]: ...
+
+
+def _exa_search_backend(
+    query: str,
+    max_results: int,
+    *,
+    timeout_s: float,
+    api_key: str,
+) -> list[tuple[str, str, str]]:
+    """Exa `/search` with page text inlined (`contents.text`).
+
+    The point of a text-bearing provider is that ONE tool call answers
+    "what does the web say about X" — the LLM does not have to spend a
+    second tool-loop iteration on `web_fetch` to see any actual content.
+    That matters directly: the loop bound is 5, and the search-then-
+    fetch dance is what exhausted it in turn Te3815a16.
+    """
+    response = httpx.post(
+        "https://api.exa.ai/search",
+        headers={"x-api-key": api_key},
+        json={
+            "query": query,
+            "numResults": max_results,
+            "contents": {"text": {"maxCharacters": _WEB_SEARCH_RESULT_TEXT_CAP}},
+        },
+        timeout=timeout_s,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [
+        (
+            str(row.get("title") or ""),
+            str(row.get("url") or ""),
+            str(row.get("text") or ""),
+        )
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
+def _tavily_search_backend(
+    query: str,
+    max_results: int,
+    *,
+    timeout_s: float,
+    api_key: str,
+) -> list[tuple[str, str, str]]:
+    """Tavily `/search` with `include_raw_content` for real page text.
+
+    `content` is Tavily's short LLM-oriented blurb; `raw_content` is the
+    parsed page. Prefer the latter and fall back to the former, so a
+    result Tavily could not parse still contributes its summary rather
+    than an empty row. See `_exa_search_backend` for why text inline
+    matters at all.
+    """
+    response = httpx.post(
+        "https://api.tavily.com/search",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={
+            "query": query,
+            "max_results": max_results,
+            "include_raw_content": "markdown",
+        },
+        timeout=timeout_s,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [
+        (
+            str(row.get("title") or ""),
+            str(row.get("url") or ""),
+            str(row.get("raw_content") or row.get("content") or ""),
+        )
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
+class _SearchBackend(Protocol):
+    """Uniform call shape every `web_search` backend is adapted to."""
+
+    def __call__(
+        self, query: str, max_results: int, *, timeout_s: float,
+    ) -> list[tuple[str, str, str]]: ...
+
+
+def _resolve_search_backend(
+    provider: str, api_key: str | None,
+) -> tuple[_SearchBackend, str]:
+    """Pick the `web_search` backend, returning `(backend, name_actually_used)`.
+
+    A keyed provider named without its key does NOT fail boot — it warns
+    and degrades to `ddgs`, because losing web search entirely is worse
+    than losing result quality. The degrade is never silent: it is
+    logged here AND the provider actually used is reported in every
+    `web_search` result payload, so the event log shows which backend
+    answered rather than leaving it to be inferred.
+    """
+    normalized = provider.strip().lower()
+    keyed: Mapping[str, _KeyedSearchBackend] = {
+        "exa": _exa_search_backend,
+        "tavily": _tavily_search_backend,
+    }
+    if normalized in keyed:
+        if not api_key:
+            LOGGER.warning(
+                "tools.web.search_provider=%r but its search_api_key_env names an "
+                "unset/empty variable — degrading to the ddgs backend",
+                normalized,
+            )
+            return _call_ddgs, "ddgs"
+        return _with_api_key(keyed[normalized], api_key), normalized
+    if normalized != "ddgs":
+        LOGGER.warning(
+            "unknown tools.web.search_provider=%r — using the ddgs backend",
+            provider,
+        )
+    return _call_ddgs, "ddgs"
+
+
+def _call_ddgs(
+    query: str, max_results: int, *, timeout_s: float,
+) -> list[tuple[str, str, str]]:
+    """Adapt `_ddgs_search_backend` to `_SearchBackend`.
+
+    Deliberately a late-bound module-global lookup rather than a
+    captured function object: `_ddgs_search_backend`'s own docstring
+    promises the acceptance script can monkeypatch that NAME, and
+    capturing it at registry-build time would quietly break that seam.
+    """
+    return _ddgs_search_backend(query, max_results, timeout_s=timeout_s)
+
+
+def _with_api_key(backend: _KeyedSearchBackend, api_key: str) -> _SearchBackend:
+    """Close a keyed backend over its credential, yielding a `_SearchBackend`."""
+
+    def _call(
+        query: str, max_results: int, *, timeout_s: float,
+    ) -> list[tuple[str, str, str]]:
+        return backend(query, max_results, timeout_s=timeout_s, api_key=api_key)
+
+    return _call
+
+
+def _make_web_search_handler(
+    *,
+    default_max_results: int,
+    timeout_s: float,
+    provider: str = DEFAULT_WEB_SEARCH_PROVIDER,
+    api_key: str | None = None,
+) -> ToolHandler:
+    """Bind `tools.web.{search_max_results,timeout_s,search_provider}` into a closure.
+
+    ADR-0011 D7. Same shape as `_make_search_notes_handler` — config
+    read once at registry-build time, closed over here.
+    """
+    backend, provider_used = _resolve_search_backend(provider, api_key)
 
     def _handler(
         action_request: ActionRequest,
@@ -3027,22 +3235,27 @@ def _make_web_search_handler(*, default_max_results: int, timeout_s: float) -> T
             max_results = max(1, min(max_results, _WEB_SEARCH_MAX_RESULTS_CAP))
 
             try:
-                rows = _ddgs_search_backend(query, max_results, timeout_s=timeout_s)
-            except Exception as exc:  # noqa: BLE001 — ddgs backend breakage (anti-bot churn is expected and normal, ADR-0011 §5) degrades to an error observation naming the backend, never a crash; no retry loop in-handler.
+                rows = backend(query, max_results, timeout_s=timeout_s)
+            except Exception as exc:  # noqa: BLE001 — backend breakage (ddgs anti-bot churn is expected and normal, ADR-0011 §5; a keyed provider can 401/429 just as routinely) degrades to an error observation naming the backend, never a crash; no retry loop in-handler.
                 return _emit_tool_error(
                     conn=conn,
                     lifecycle=lifecycle,
                     action_id=action_id,
                     running_event_uid=running_event_uid,
                     code="web_search_backend_error",
-                    message=f"web_search: ddgs backend error: {exc}",
+                    message=f"web_search: {provider_used} backend error: {exc}",
                 )
 
-            results = [
-                f"{i}. {title} — {url} — {snippet}"
-                for i, (title, url, snippet) in enumerate(rows, start=1)
-            ]
-            payload: dict[str, Any] = {"results": results}
+            results = _cap_rows_total_bytes(
+                [
+                    f"{i}. {title} — {url} — {_collapse_ws(text)[:_WEB_SEARCH_RESULT_TEXT_CAP]}"
+                    for i, (title, url, text) in enumerate(rows, start=1)
+                ],
+                _WEB_SEARCH_TOTAL_MAX_BYTES,
+            )
+            # Naming the backend keeps the `_resolve_search_backend`
+            # degrade visible in the event log instead of inferable.
+            payload: dict[str, Any] = {"results": results, "provider": provider_used}
             return _emit_tool_observation(
                 conn=conn,
                 lifecycle=lifecycle,
@@ -4797,6 +5010,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     *,
     obsidian_vault_root: Path | None = None,
     web_search_max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS,
+    web_search_provider: str = DEFAULT_WEB_SEARCH_PROVIDER,
+    web_search_api_key: str | None = None,
     web_fetch_max_bytes: int = DEFAULT_WEB_FETCH_MAX_BYTES,
     web_fetch_max_text_bytes: int = DEFAULT_WEB_FETCH_MAX_TEXT_BYTES,
     web_timeout_s: float = DEFAULT_WEB_TIMEOUT_S,
@@ -4818,6 +5033,15 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             `tmp_path` fixture instead.
         web_search_max_results: `tools.web.search_max_results` (ADR-0011
             D7) — the `web_search` default absent a request argument.
+        web_search_provider: `tools.web.search_provider` — which backend
+            answers `web_search`. See
+            :data:`DEFAULT_WEB_SEARCH_PROVIDER` for why the keyless
+            default is not the recommended one.
+        web_search_api_key: The credential named by
+            `tools.web.search_api_key_env`, already resolved from the
+            environment by the composition root. `None` with a keyed
+            provider degrades to `ddgs` with a warning rather than
+            failing boot.
         web_fetch_max_bytes: `tools.web.fetch_max_bytes` (ADR-0011 D7) —
             how much of the response body `web_fetch` drains off the
             socket. A memory bound, NOT the output cap.
@@ -5027,6 +5251,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             handler=_make_web_search_handler(
                 default_max_results=web_search_max_results,
                 timeout_s=web_timeout_s,
+                provider=web_search_provider,
+                api_key=web_search_api_key,
             ),
             domain="browser",
             read_only=True,
@@ -5133,6 +5359,7 @@ __all__ = [
     "DEFAULT_WEB_FETCH_MAX_BYTES",
     "DEFAULT_WEB_FETCH_MAX_TEXT_BYTES",
     "DEFAULT_WEB_SEARCH_MAX_RESULTS",
+    "DEFAULT_WEB_SEARCH_PROVIDER",
     "DEFAULT_WEB_TIMEOUT_S",
     "VERIFY_DIFF_TOOL_DEF",
     "ActionLifecycle",

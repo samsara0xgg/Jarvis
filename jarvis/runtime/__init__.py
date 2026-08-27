@@ -35,6 +35,7 @@ import base64
 import io
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -77,6 +78,7 @@ from jarvis.execution.tools import (
     DEFAULT_WEB_FETCH_MAX_BYTES,
     DEFAULT_WEB_FETCH_MAX_TEXT_BYTES,
     DEFAULT_WEB_SEARCH_MAX_RESULTS,
+    DEFAULT_WEB_SEARCH_PROVIDER,
     DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
     ToolRegistry,
@@ -485,6 +487,35 @@ def _obsidian_vault_root(config: Mapping[str, Any]) -> Path:
     return DEFAULT_OBSIDIAN_VAULT_ROOT
 
 
+def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str, str | None]:
+    """Return `(search_provider, api_key)` from `tools.web.*`.
+
+    The key is resolved HERE, from the env var named by
+    `tools.web.search_api_key_env` — same indirection the LLM presets
+    use (`api_key_env`), so no credential is ever written into
+    `config/jarvis.yaml`. L4 receives the resolved value; it does not
+    read YAML or the environment itself.
+
+    Best-effort like its `tools.web` siblings: a missing block, an
+    unknown provider name, or an unset variable all degrade inside
+    `_resolve_search_backend` rather than failing boot.
+    """
+    provider = DEFAULT_WEB_SEARCH_PROVIDER
+    key_env: str | None = None
+    block = config.get("tools")
+    if isinstance(block, Mapping):
+        web_block = block.get("web")
+        if isinstance(web_block, Mapping):
+            raw_provider = web_block.get("search_provider")
+            if isinstance(raw_provider, str) and raw_provider.strip():
+                provider = raw_provider.strip()
+            raw_key_env = web_block.get("search_api_key_env")
+            if isinstance(raw_key_env, str) and raw_key_env.strip():
+                key_env = raw_key_env.strip()
+    api_key = os.environ.get(key_env) if key_env else None
+    return provider, (api_key.strip() if api_key else None)
+
+
 def _web_tools_config(config: Mapping[str, Any]) -> tuple[int, int, int, float]:
     """Return `(search_max_results, fetch_max_bytes, fetch_max_text_bytes, timeout_s)`.
 
@@ -808,10 +839,13 @@ def bootstrap_runtime_app(
         web_fetch_max_text_bytes,
         web_timeout_s,
     ) = _web_tools_config(full_config)
+    web_search_provider, web_search_api_key = _web_search_provider_config(full_config)
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
     registry = build_default_registry(
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
+        web_search_provider=web_search_provider,
+        web_search_api_key=web_search_api_key,
         web_fetch_max_bytes=web_fetch_max_bytes,
         web_fetch_max_text_bytes=web_fetch_max_text_bytes,
         web_timeout_s=web_timeout_s,
