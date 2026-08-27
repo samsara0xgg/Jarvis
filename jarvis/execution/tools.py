@@ -3065,9 +3065,50 @@ def _make_web_search_handler(*, default_max_results: int, timeout_s: float) -> T
 
 # --- web_fetch -----------------------------------------------------------------
 
-DEFAULT_WEB_FETCH_MAX_BYTES: Final[int] = 8192
-"""Default `tools.web.fetch_max_bytes` (ADR-0011 D7) — same 8 KiB order
-as every other D5 tool's output cap."""
+DEFAULT_WEB_FETCH_MAX_BYTES: Final[int] = 2 * 1024 * 1024
+"""Default `tools.web.fetch_max_bytes` (ADR-0011 D7) — how many bytes of
+the RESPONSE BODY are drained off the socket.
+
+This is a memory/DoS bound, NOT the output cap — that is
+:data:`DEFAULT_WEB_FETCH_MAX_TEXT_BYTES`, applied to the extracted text
+further downstream.
+
+It was 8 KiB ("same order as every other D5 tool's output cap"), which
+conflated the two: the drain stops at this many bytes of *raw markup*,
+and a real page spends far more than 8 KiB on `<head>` (inline CSS,
+JSON-LD, script tags) before the first byte of visible text. A 150 KB
+page therefore reached the parser as pure `<head>` and extracted to
+nothing at all — the tool reported "cut off before any body text was
+parsed" on ordinary sites, i.e. it could not read the web. 2 MiB clears
+the head of essentially any real document while still refusing an
+unbounded stream."""
+
+DEFAULT_WEB_FETCH_MAX_TEXT_BYTES: Final[int] = 8192
+"""Default `tools.web.fetch_max_text_bytes` — the cap on the text this
+tool actually returns, applied AFTER HTML extraction.
+
+This is the 8 KiB context bound the old `fetch_max_bytes` was really
+reaching for. Capping extracted text (rather than raw bytes) is what
+makes the number mean what it says: 8 KiB of readable prose, not 8 KiB
+of markup that may contain none."""
+
+_WEB_FETCH_HEADERS: Final[Mapping[str, str]] = {
+    # httpx's default UA (`python-httpx/x.y.z`) is refused outright by a
+    # meaningful slice of the web. Wikipedia answers it with a bare 403
+    # whose body reads "Please set a user-agent and respect our robot
+    # policy" — which reached the LLM as an unexplained failure on an
+    # ordinary encyclopedia lookup.
+    #
+    # Self-identifying (a real name plus a contact URL) is what the
+    # sites asking for a UA actually want, and it keeps this honest:
+    # `web_fetch` does not pretend to be a browser, and pairing a
+    # browser UA with a client that runs no JS earns bot-detection
+    # blocks rather than avoiding them.
+    "User-Agent": "Jarvis/1.0 (+https://github.com/alllllenshi/jarvis)",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
+"""Request headers for every `web_fetch` hop (see the UA note above)."""
 
 _WEB_FETCH_MAX_REDIRECTS: Final[int] = 3
 """Hard ceiling on redirects FOLLOWED (ADR-0011 D5: "at most 3
@@ -3162,7 +3203,7 @@ def _http_get_one_hop(
     """
     with (
         httpx.Client(timeout=timeout_s, follow_redirects=False, trust_env=False) as client,
-        client.stream("GET", url) as response,
+        client.stream("GET", url, headers=_WEB_FETCH_HEADERS) as response,
     ):
         content_type = response.headers.get("content-type")
         location = response.headers.get("location")
@@ -3450,6 +3491,52 @@ def _decode_hop_body(
         return truncate_utf8(body, total_bytes)
 
 
+def _cap_extracted_text(text: str, max_bytes: int) -> tuple[str, int]:
+    """Cap ALREADY-EXTRACTED text to `max_bytes`, codepoint-safe.
+
+    Returns `(capped, undelivered_bytes)`; `undelivered_bytes == 0`
+    means nothing was cut. The `lossy` leg of `truncate_utf8` cannot
+    fire here — `text` is a valid `str`, so re-encoding it always
+    produces well-formed UTF-8 and the only possible cut is a clean
+    codepoint boundary.
+
+    This is the counterpart to the drain-side `max_bytes` cap in
+    `_fetch_hop`: that one bounds bytes off the socket, this one bounds
+    what the LLM is asked to read. Keeping them separate is the whole
+    point — see :data:`DEFAULT_WEB_FETCH_MAX_BYTES`.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text, 0
+    capped, undelivered, _lossy = truncate_utf8(encoded[:max_bytes], len(encoded))
+    return capped, undelivered
+
+
+def _truncation_marker(
+    *, text_undelivered: int, body_undelivered: int, body_total_exact: bool,
+) -> str:
+    """Render the inline `…[…]` marker naming which cut(s) fired.
+
+    Both can fire on one response — a page past the drain cap whose
+    extracted text ALSO overruns the text cap — and they mean different
+    things to a reader deciding whether to fetch more, so name both
+    rather than picking one. Returns `""` when nothing was cut.
+    """
+    markers: list[str] = []
+    if text_undelivered > 0:
+        markers.append(f"truncated {text_undelivered} bytes of extracted text")
+    if body_undelivered > 0:
+        # MUST-FIX 3, ADR-0011 §12: when the drain stopped at the cap or
+        # the fetch deadline before the server declared a
+        # Content-Length, the shortfall is a true LOWER bound (bytes
+        # actually seen past the cap), never a claimed exact count.
+        qualifier = "" if body_total_exact else "at least "
+        markers.append(f"download stopped {qualifier}{body_undelivered} bytes short")
+    if not markers:
+        return ""
+    return "…[" + "; ".join(markers) + "]"
+
+
 def _looks_like_html(body: bytes) -> bool:
     """Sniff a leading `<`/`<!doctype` to detect an HTML document.
 
@@ -3462,8 +3549,16 @@ def _looks_like_html(body: bytes) -> bool:
     return stripped.startswith(b"<")
 
 
-def _make_web_fetch_handler(*, max_bytes: int, timeout_s: float) -> ToolHandler:  # noqa: C901 — thin closure factory; the complexity ruff counts lives entirely in the nested `_handler` (see its own noqa), not in this function's own body.
-    """Bind `tools.web.{fetch_max_bytes,timeout_s}` into a closure (ADR-0011 D7)."""
+def _make_web_fetch_handler(  # noqa: C901 — thin closure factory; the complexity ruff counts lives entirely in the nested `_handler` (see its own noqa), not in this function's own body.
+    *, max_bytes: int, max_text_bytes: int, timeout_s: float,
+) -> ToolHandler:
+    """Bind the `tools.web.*` fetch knobs into a closure (ADR-0011 D7).
+
+    `fetch_max_bytes`, `fetch_max_text_bytes` and `timeout_s`.
+    `max_bytes` bounds the socket drain; `max_text_bytes` bounds the
+    extracted text handed back. See :data:`DEFAULT_WEB_FETCH_MAX_BYTES`
+    for why collapsing the two made the tool unable to read real pages.
+    """
 
     def _handler(  # noqa: C901, PLR0912 — one linear guard/content-type/decode/shape pass (MUST-FIX 2's handler-boundary try/except wraps all of it, ADR-0011 §12) — splitting the content-type sniff, charset decode, and HTML-placeholder branches into helpers would scatter the fail-fast checks from the payload fields they gate, same rationale as `_make_search_notes_handler`'s own noqa.
         action_request: ActionRequest,
@@ -3525,7 +3620,7 @@ def _make_web_fetch_handler(*, max_bytes: int, timeout_s: float) -> ToolHandler:
             text, undelivered_bytes, lossy = _decode_hop_body(
                 outcome.body, outcome.total_bytes, outcome.content_type,
             )
-            truncated = undelivered_bytes > 0
+            body_truncated = undelivered_bytes > 0
 
             title: str | None = None
             placeholder = False
@@ -3533,7 +3628,7 @@ def _make_web_fetch_handler(*, max_bytes: int, timeout_s: float) -> ToolHandler:
                 title, html_text = _extract_readable_html(text)
                 if html_text.strip():
                     content = html_text
-                elif truncated:
+                elif body_truncated:
                     # SHOULD-FIX 7, ADR-0011 §12: the cap cut the
                     # document before any body text was parsed — unlike
                     # the genuinely-empty-parse case below, the page may
@@ -3542,9 +3637,14 @@ def _make_web_fetch_handler(*, max_bytes: int, timeout_s: float) -> ToolHandler:
                     # byte-count marker onto this sentence either — it
                     # already names the cut inline (`placeholder=True`
                     # skips the generic marker append below).
+                    #
+                    # Now reachable only past a 2 MiB `<head>`, not the
+                    # old 8 KiB one: this used to be the ROUTINE outcome
+                    # for any real page, which is what made the tool
+                    # useless.
                     placeholder = True
                     content = (
-                        "(the page was cut off by the output cap before any "
+                        "(the page was cut off by the download cap before any "
                         "body text was parsed — cannot tell whether it has "
                         "visible content past the cut)"
                     )
@@ -3561,23 +3661,28 @@ def _make_web_fetch_handler(*, max_bytes: int, timeout_s: float) -> ToolHandler:
             else:
                 content = text
 
-            if truncated and not placeholder:
-                if outcome.total_bytes_exact:
-                    content += f"…[truncated {undelivered_bytes} bytes]"
-                else:
-                    # MUST-FIX 3, ADR-0011 §12: the drain stopped at the
-                    # cap or the fetch deadline before the server
-                    # declared a Content-Length — `undelivered_bytes`
-                    # is a true LOWER bound (bytes actually seen past
-                    # the cap), never a claimed exact count.
-                    content += f"…[truncated, at least {undelivered_bytes} bytes remaining]"
+            # The output cap lands HERE — on extracted text, not on the
+            # raw bytes upstream. A placeholder is a fixed sentence the
+            # tool wrote itself; capping it would only mangle it.
+            text_undelivered = 0
+            if not placeholder:
+                content, text_undelivered = _cap_extracted_text(content, max_text_bytes)
+
+            if not placeholder:
+                content += _truncation_marker(
+                    text_undelivered=text_undelivered,
+                    body_undelivered=undelivered_bytes if body_truncated else 0,
+                    body_total_exact=outcome.total_bytes_exact,
+                )
 
             payload = {
                 "url": outcome.final_url,
                 "status_code": outcome.status_code,
                 "content_type": outcome.content_type,
                 "content": content,
-                "truncated": truncated,
+                # Unchanged contract: "you did not get the whole thing",
+                # now true for either cut.
+                "truncated": bool(text_undelivered > 0 or body_truncated),
                 "total_bytes": outcome.total_bytes,
             }
             if not outcome.total_bytes_exact:
@@ -4693,6 +4798,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     obsidian_vault_root: Path | None = None,
     web_search_max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS,
     web_fetch_max_bytes: int = DEFAULT_WEB_FETCH_MAX_BYTES,
+    web_fetch_max_text_bytes: int = DEFAULT_WEB_FETCH_MAX_TEXT_BYTES,
     web_timeout_s: float = DEFAULT_WEB_TIMEOUT_S,
     vision_client: VisionClient | None = None,
     screen_max_width_px: int = DEFAULT_SCREEN_MAX_WIDTH_PX,
@@ -4713,7 +4819,11 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         web_search_max_results: `tools.web.search_max_results` (ADR-0011
             D7) — the `web_search` default absent a request argument.
         web_fetch_max_bytes: `tools.web.fetch_max_bytes` (ADR-0011 D7) —
-            `web_fetch`'s output cap.
+            how much of the response body `web_fetch` drains off the
+            socket. A memory bound, NOT the output cap.
+        web_fetch_max_text_bytes: `tools.web.fetch_max_text_bytes` —
+            `web_fetch`'s real output cap, applied to the text left
+            after HTML extraction.
         web_timeout_s: `tools.web.timeout_s` (ADR-0011 D7) — shared by
             `web_search` and `web_fetch` (see :data:`DEFAULT_WEB_TIMEOUT_S`
             for why D5's per-tool 15s/20s split collapses to one knob).
@@ -4939,6 +5049,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             input_schema=_WEB_FETCH_INPUT_SCHEMA,
             handler=_make_web_fetch_handler(
                 max_bytes=web_fetch_max_bytes,
+                max_text_bytes=web_fetch_max_text_bytes,
                 timeout_s=web_timeout_s,
             ),
             domain="browser",
@@ -5020,6 +5131,7 @@ __all__ = [
     "DEFAULT_OBSIDIAN_VAULT_ROOT",
     "DEFAULT_SCREEN_MAX_WIDTH_PX",
     "DEFAULT_WEB_FETCH_MAX_BYTES",
+    "DEFAULT_WEB_FETCH_MAX_TEXT_BYTES",
     "DEFAULT_WEB_SEARCH_MAX_RESULTS",
     "DEFAULT_WEB_TIMEOUT_S",
     "VERIFY_DIFF_TOOL_DEF",

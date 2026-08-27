@@ -75,6 +75,7 @@ from jarvis.execution.tools import (
     DEFAULT_OBSIDIAN_VAULT_ROOT,
     DEFAULT_SCREEN_MAX_WIDTH_PX,
     DEFAULT_WEB_FETCH_MAX_BYTES,
+    DEFAULT_WEB_FETCH_MAX_TEXT_BYTES,
     DEFAULT_WEB_SEARCH_MAX_RESULTS,
     DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
@@ -484,8 +485,10 @@ def _obsidian_vault_root(config: Mapping[str, Any]) -> Path:
     return DEFAULT_OBSIDIAN_VAULT_ROOT
 
 
-def _web_tools_config(config: Mapping[str, Any]) -> tuple[int, int, float]:
-    """Return `(search_max_results, fetch_max_bytes, timeout_s)` from `tools.web.*`.
+def _web_tools_config(config: Mapping[str, Any]) -> tuple[int, int, int, float]:
+    """Return `(search_max_results, fetch_max_bytes, fetch_max_text_bytes, timeout_s)`.
+
+    Read from `tools.web.*`.
 
     ADR-0011 D7. Same best-effort posture as `_obsidian_vault_root` — a
     missing/malformed `tools.web` block degrades to the shipped
@@ -501,6 +504,7 @@ def _web_tools_config(config: Mapping[str, Any]) -> tuple[int, int, float]:
     """
     search_max_results = DEFAULT_WEB_SEARCH_MAX_RESULTS
     fetch_max_bytes = DEFAULT_WEB_FETCH_MAX_BYTES
+    fetch_max_text_bytes = DEFAULT_WEB_FETCH_MAX_TEXT_BYTES
     timeout_s = DEFAULT_WEB_TIMEOUT_S
     block = config.get("tools")
     if isinstance(block, Mapping):
@@ -516,6 +520,13 @@ def _web_tools_config(config: Mapping[str, Any]) -> tuple[int, int, float]:
             raw_bytes = web_block.get("fetch_max_bytes")
             if isinstance(raw_bytes, int) and not isinstance(raw_bytes, bool) and raw_bytes > 0:
                 fetch_max_bytes = raw_bytes
+            raw_text_bytes = web_block.get("fetch_max_text_bytes")
+            if (
+                isinstance(raw_text_bytes, int)
+                and not isinstance(raw_text_bytes, bool)
+                and raw_text_bytes > 0
+            ):
+                fetch_max_text_bytes = raw_text_bytes
             raw_timeout = web_block.get("timeout_s")
             if (
                 isinstance(raw_timeout, (int, float))
@@ -523,7 +534,7 @@ def _web_tools_config(config: Mapping[str, Any]) -> tuple[int, int, float]:
                 and raw_timeout > 0
             ):
                 timeout_s = float(raw_timeout)
-    return search_max_results, fetch_max_bytes, timeout_s
+    return search_max_results, fetch_max_bytes, fetch_max_text_bytes, timeout_s
 
 
 def _screen_tools_config(config: Mapping[str, Any]) -> tuple[str, int]:
@@ -791,12 +802,18 @@ def bootstrap_runtime_app(
     #    the registry at build time (ADR-0011 D7) — L4 handlers do not
     #    load YAML themselves.
     full_config = _load_full_config(config_path)
-    web_search_max_results, web_fetch_max_bytes, web_timeout_s = _web_tools_config(full_config)
+    (
+        web_search_max_results,
+        web_fetch_max_bytes,
+        web_fetch_max_text_bytes,
+        web_timeout_s,
+    ) = _web_tools_config(full_config)
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
     registry = build_default_registry(
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
         web_fetch_max_bytes=web_fetch_max_bytes,
+        web_fetch_max_text_bytes=web_fetch_max_text_bytes,
         web_timeout_s=web_timeout_s,
         vision_client=_build_vision_client(full_config, vision_preset_name),
         screen_max_width_px=screen_max_width_px,

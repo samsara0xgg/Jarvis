@@ -64,9 +64,19 @@ tools:
     # web_search 在请求未指定 max_results 时的默认值；硬上限 8 写死在
     # tools.py，这里改不了那个上限。
     search_max_results: 5
-    # web_fetch 输出的文本字节上限（cap 到这个大小，超出部分变成
-    # "…[truncated N bytes]"）。
-    fetch_max_bytes: 8192
+    # web_fetch 从 socket 上最多读多少字节响应体。这是内存/DoS 护栏，
+    # 不是输出上限——输出上限是下面的 fetch_max_text_bytes。
+    #
+    # 这两个曾经是同一个键（8192），后果是：真实网页光 <head> 里的内联
+    # CSS/JSON-LD/script 就远超 8KB，抓取在碰到正文之前就断了，解析器
+    # 拿到的是纯 <head>，抽出来一个字都没有。150KB 的页面只读到 5.4%。
+    # 2MiB 足够越过任何正常文档的 head，同时仍然拒绝无限流。
+    fetch_max_bytes: 2097152
+    # web_fetch 真正的输出上限：HTML 抽完正文之后，最多把多少字节的
+    # 文本交给 LLM（超出部分变成 "…[truncated N bytes of extracted text]"）。
+    # 卡在抽取后的文本上，这个数字才名副其实——8KB 可读正文，而不是
+    # 8KB 可能一个字正文都不含的标记。
+    fetch_max_text_bytes: 8192
     # web_search 和 web_fetch 共用同一个超时（秒）。ADR-0011 D5 原文给
     # 两个工具分别写了 15s/20s，但这里只有一个键——D7 定的 schema 就是
     # 一个共享超时，所以两个工具都读这一个值（§12 勘误候选项）。
