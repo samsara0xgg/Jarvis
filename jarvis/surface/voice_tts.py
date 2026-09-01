@@ -19,11 +19,13 @@ import asyncio
 import contextlib
 import json
 import logging
+import queue
 import re
 import subprocess
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import numpy as np
 
@@ -662,6 +664,8 @@ class MiniMaxWSClient:
     _TASK_START_TIMEOUT = 3.0
     _FIRST_CHUNK_TIMEOUT = 8.0
     _BETWEEN_CHUNK_TIMEOUT = 5.0
+    _TOTAL_TIMEOUT = 30.0
+    _SESSION_CLOSE_TIMEOUT = 1.0
 
     def __init__(  # noqa: PLR0913 — keyword-only audio + endpoint config
         self,
@@ -675,6 +679,7 @@ class MiniMaxWSClient:
         sample_rate_in: int = 32000,
         sample_rate_out: int = 32000,
         connect_timeout_s: float = 3.0,
+        total_timeout_s: float = _TOTAL_TIMEOUT,
     ) -> None:
         """Configure endpoints, voice and audio shape; does not connect yet."""
         self._api_key = api_key
@@ -686,6 +691,12 @@ class MiniMaxWSClient:
         self._sr_in = int(sample_rate_in)
         self._sr_out = int(sample_rate_out)
         self._connect_timeout = float(connect_timeout_s)
+        self._total_timeout = float(total_timeout_s)
+        self._closed = threading.Event()
+        self._sessions_lock = threading.Lock()
+        self._active_sessions: set[
+            tuple[asyncio.AbstractEventLoop, asyncio.Task[Any]]
+        ] = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -710,7 +721,46 @@ class MiniMaxWSClient:
         return b"".join(chunks)
 
     async def synthesize_stream(self, text: str) -> AsyncIterator[bytes]:
-        """Yield float32 PCM chunks as bytes as they arrive from MiniMax."""
+        """Yield PCM under one total deadline and one cancellable session."""
+        if self._closed.is_set():
+            msg = "MiniMax client is closed"
+            raise MiniMaxUnavailableError(msg)
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        if task is None:
+            msg = "MiniMax synthesize_stream requires an asyncio task"
+            raise RuntimeError(msg)
+        session = (loop, task)
+        with self._sessions_lock:
+            if self._closed.is_set():
+                msg = "MiniMax client is closed"
+                raise MiniMaxUnavailableError(msg)
+            self._active_sessions.add(session)
+        try:
+            async with asyncio.timeout(self._total_timeout):
+                async for chunk in self._synthesize_stream_with_fallback(text):
+                    yield chunk
+        except TimeoutError as exc:
+            msg = f"MiniMax synthesis exceeded {self._total_timeout:.1f}s total deadline"
+            raise MiniMaxUnavailableError(msg) from exc
+        finally:
+            with self._sessions_lock:
+                self._active_sessions.discard(session)
+
+    def request_close(self) -> None:
+        """Reject new sessions and thread-safely cancel every active session."""
+        self._closed.set()
+        with self._sessions_lock:
+            sessions = tuple(self._active_sessions)
+        for loop, task in sessions:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(task.cancel)
+
+    async def _synthesize_stream_with_fallback(
+        self,
+        text: str,
+    ) -> AsyncIterator[bytes]:
+        """Try both endpoints inside the caller's total-deadline scope."""
         last_exc: BaseException | None = None
         for endpoint in (self._primary_endpoint, self._fallback_endpoint):
             try:
@@ -764,7 +814,10 @@ class MiniMaxWSClient:
                 await conn.send(json.dumps({"event": "task_finish"}))
         finally:
             with contextlib.suppress(Exception):
-                await conn.close()
+                await asyncio.wait_for(
+                    conn.close(),
+                    timeout=self._SESSION_CLOSE_TIMEOUT,
+                )
 
     async def _handshake(self, conn: Any, text: str) -> None:  # noqa: ANN401
         """Drive ``connected_success → task_start → task_started → task_continue``."""
@@ -887,6 +940,114 @@ def _decode_audio_hex(audio_hex: str, carry: bytes) -> tuple[np.ndarray, bytes]:
 GateMode = Literal["sentence", "full_text", "structured"]
 
 
+class FallbackOwner(Protocol):
+    """Side-effect owner created without starting the fallback process."""
+
+    def run(self) -> bool:
+        """Start the fallback unless cancelled; return whether it started."""
+
+    def cancel(self, *, wait_timeout_s: float) -> bool:
+        """Prevent start or terminate an already-started fallback within a bound."""
+
+
+class MacOSSayProcessOwner:
+    """Cancellable owner for one macOS ``say`` process.
+
+    ``run`` and ``cancel`` share ``_lock`` as their process-start
+    linearization point. Cancellation before ``Popen`` prevents the spawn;
+    cancellation after it terminates, then kills, the exact captured process.
+    """
+
+    _RUN_TIMEOUT_S = 30.0
+
+    def __init__(self, text: str, *, voice: str = "Tingting") -> None:
+        """Capture arguments without spawning the process."""
+        self._text = text
+        self._voice = voice
+        self._lock = threading.Lock()
+        self._cancel_requested = False
+        self._process: subprocess.Popen[bytes] | None = None
+        self._finished = threading.Event()
+
+    def run(self) -> bool:
+        """Spawn and wait for ``say`` unless close cancelled this owner first."""
+        with self._lock:
+            if self._cancel_requested:
+                self._finished.set()
+                return False
+            try:
+                process = subprocess.Popen(  # noqa: S603 — macOS API contract.
+                    ["say", "-v", self._voice, self._text],  # noqa: S607
+                )
+            except OSError as exc:
+                self._finished.set()
+                LOGGER.warning(
+                    "macos_say_fallback failed to start: %r — response remains silent",
+                    exc,
+                )
+                return False
+            self._process = process
+
+        try:
+            process.wait(timeout=self._RUN_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            LOGGER.warning("macos_say_fallback exceeded %.1fs; terminating", self._RUN_TIMEOUT_S)
+            self.cancel(wait_timeout_s=1.0)
+        except (subprocess.SubprocessError, OSError) as exc:
+            LOGGER.warning(
+                "macos_say_fallback failed: %r — response remains silent",
+                exc,
+            )
+        finally:
+            with self._lock:
+                if self._process is process:
+                    self._process = None
+                self._finished.set()
+        return True
+
+    def cancel(self, *, wait_timeout_s: float) -> bool:
+        """Prevent spawn or terminate/kill the owned process within ``wait_timeout_s``."""
+        with self._lock:
+            self._cancel_requested = True
+            process = self._process
+            if process is None:
+                self._finished.set()
+                return True
+            try:
+                process_finished = process.poll() is not None
+            except OSError:
+                process_finished = False
+            if process_finished:
+                self._finished.set()
+                return True
+            with contextlib.suppress(OSError):
+                process.terminate()
+
+        terminate_wait = max(0.0, wait_timeout_s / 2.0)
+        try:
+            process.wait(timeout=terminate_wait)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(OSError):
+                process.kill()
+            try:
+                process.wait(timeout=max(0.0, wait_timeout_s - terminate_wait))
+            except (subprocess.SubprocessError, OSError):
+                return False
+        except (subprocess.SubprocessError, OSError):
+            return False
+        finally:
+            self._finished.set()
+        return process.poll() is not None
+
+
+@dataclass(frozen=True)
+class _TTSWorkItem:
+    kind: Literal["speak", "broadcast_spoken"]
+    generation: int
+    turn_id: str | None
+    text: str = ""
+
+
 class TTSPipeline:
     """Event-driven TTS playback per ADR-0005 §5.3.
 
@@ -913,13 +1074,15 @@ class TTSPipeline:
     """
 
     _CLOSE_WAIT_S = 2.5
+    _OWNER_CANCEL_WAIT_S = 0.5
+    _PROVIDER_TOTAL_TIMEOUT_S = 35.0
 
     def __init__(
         self,
         *,
         provider: MiniMaxWSClient,
         player: AudioStreamPlayer,
-        fallback: Callable[[str], None],
+        fallback: Callable[[str], FallbackOwner] | None,
         broadcaster: object | None = None,
         ducker: voice_ducking.SystemAudioDucker | None = None,
     ) -> None:
@@ -928,8 +1091,10 @@ class TTSPipeline:
         Args:
             provider: WebSocket-backed TTS source (MiniMax).
             player: PCM sink with a queue (drives ``is_speaking`` + ducking).
-            fallback: Called with cleaned text when the provider is down;
-                use :func:`macos_say_fallback` in production.
+            fallback: Side-effect-free owner factory called when the provider
+                is down; use :func:`macos_say_fallback` in production. The
+                returned owner's ``run`` starts the external effect only after
+                pipeline registration, while ``cancel`` owns shutdown.
             broadcaster: Optional object exposing
                 ``broadcast_voice_sync(phase, *, turn_id)`` — the pipeline
                 emits ``"spoken"`` at end-of-turn for UI feedback.
@@ -954,6 +1119,17 @@ class TTSPipeline:
         self._generation = 0
         self._active_workers = 0
         self._output_active_leases = 0
+        self._fallback_owner: FallbackOwner | None = None
+        self._provider_loop: asyncio.AbstractEventLoop | None = None
+        self._provider_task: asyncio.Task[bytes] | None = None
+        self._work_queue: queue.Queue[_TTSWorkItem | None] = queue.Queue()
+        self._worker_stop_sent = False
+        self._worker_thread = threading.Thread(
+            target=self._worker_main,
+            name="jarvis-tts-worker",
+            daemon=True,
+        )
+        self._worker_thread.start()
 
     def begin_turn(self, turn_id: str, *, gate_mode: GateMode | None) -> None:
         """Called on ``surface.response_open``. Resets buffer + routing mode."""
@@ -964,17 +1140,6 @@ class TTSPipeline:
             self._turn_id = turn_id
             self._gate_mode = gate_mode or "sentence"
             self._buffer.clear()
-        prior_pcm_pending = self._player.bytes_pending() > 0
-        if prior_pcm_pending:
-            record_realtime_trace(
-                "audio_trace_correlation_unavailable",
-                turn_id=turn_id,
-                reason="prior_turn_pcm_still_in_software_ring",
-            )
-        self._player.begin_trace_turn(
-            {"turn_id": turn_id},
-            enabled=not prior_pcm_pending,
-        )
 
     def handle_chunk(self, turn_id: str, text: str) -> None:
         """Called on ``surface.response_chunk``.
@@ -1009,65 +1174,121 @@ class TTSPipeline:
         self.end_turn(turn_id)
 
     def end_turn(self, turn_id: str) -> None:
-        """Flush any remaining buffer, broadcast ``spoken``, clear state.
+        """Queue remaining speech then queue ``spoken`` behind its completion.
 
         Defensive flush covers truncated streams (``</voice>`` never
         arrived) and the tests that drive the pipeline directly without
-        a full ``handle_emitted`` event.
+        a full ``handle_emitted`` event. Both operations share the single
+        TTS worker, so the UI phase cannot overtake queued synthesis.
         """
         self._flush_buffer()
         with self._state:
             if self._closed or turn_id != self._turn_id:
                 return
-        broadcast = getattr(self._broadcaster, "broadcast_voice_sync", None)
-        if callable(broadcast):
-            try:
-                broadcast("spoken", turn_id=turn_id)
-            except Exception as exc:  # noqa: BLE001 — broadcast must not crash TTS
-                LOGGER.warning("broadcast_voice_sync(spoken) failed: %r", exc)
-        with self._state:
-            if not self._closed and turn_id == self._turn_id:
-                self._turn_id = None
-                self._buffer.clear()
+            self._enqueue_work_locked(
+                _TTSWorkItem(
+                    kind="broadcast_spoken",
+                    generation=self._generation,
+                    turn_id=turn_id,
+                ),
+            )
+            self._turn_id = None
+            self._buffer.clear()
 
     def _flush_buffer(self) -> None:
-        """Synth whatever is in the buffer (if any), then clear it."""
+        """Move buffered text to the owned daemon worker without blocking."""
         with self._state:
             if self._closed or not self._buffer:
                 return
             joined = "".join(self._buffer)
             self._buffer.clear()
-        if joined:
-            self._speak(joined)
-
-    def request_close(self) -> None:
-        """Atomically reject future/late output, then flush queued PCM."""
-        self._close_requested.set()
-        with self._state:
-            if not self._closed:
-                self._closed = True
-                self._generation += 1
-                self._turn_id = None
-                self._buffer.clear()
-                self._state.notify_all()
-                record_realtime_trace(
-                    "tts_pipeline_close_requested",
-                    generation=self._generation,
+            if joined:
+                self._enqueue_work_locked(
+                    _TTSWorkItem(
+                        kind="speak",
+                        generation=self._generation,
+                        turn_id=self._turn_id,
+                        text=joined,
+                    ),
                 )
+
+    def request_close(
+        self,
+        *,
+        owner_cancel_timeout_s: float = _OWNER_CANCEL_WAIT_S,
+    ) -> None:
+        """Install the close gate and cancel captured side-effect owners.
+
+        ``_commit_lock`` is the linearization point shared with provider PCM
+        commits and fallback registration. Once this method returns, no new
+        fallback can register or start. A registered ``say`` owner has either
+        been prevented from spawning or terminate/kill has been attempted
+        within ``owner_cancel_timeout_s``.
+        """
+        fallback_owner: FallbackOwner | None
+        provider_loop: asyncio.AbstractEventLoop | None
+        provider_task: asyncio.Task[bytes] | None
+        with self._commit_lock:
+            self._close_requested.set()
+            with self._state:
+                if not self._closed:
+                    self._closed = True
+                    self._generation += 1
+                    self._turn_id = None
+                    self._buffer.clear()
+                    if not self._worker_stop_sent:
+                        self._worker_stop_sent = True
+                        self._work_queue.put(None)
+                    self._state.notify_all()
+                    record_realtime_trace(
+                        "tts_pipeline_close_requested",
+                        generation=self._generation,
+                    )
+            fallback_owner = self._fallback_owner
+            provider_loop = self._provider_loop
+            provider_task = self._provider_task
+
+        provider_close = getattr(self._provider, "request_close", None)
+        if callable(provider_close):
+            with contextlib.suppress(Exception):
+                provider_close()
+        if provider_loop is not None and provider_task is not None:
+            with contextlib.suppress(RuntimeError):
+                provider_loop.call_soon_threadsafe(provider_task.cancel)
+        if fallback_owner is not None:
+            try:
+                cancelled = fallback_owner.cancel(
+                    wait_timeout_s=max(0.0, owner_cancel_timeout_s),
+                )
+            except Exception:
+                cancelled = False
+                LOGGER.exception("TTS fallback owner cancellation failed")
+            record_realtime_trace(
+                "tts_fallback_cancelled_on_close",
+                success=cancelled,
+            )
+
         # A write already in progress observes _close_requested; flush also
         # wakes drain/write loops. A late provider return fails the generation
-        # CAS before player.write or fallback is invoked.
+        # CAS before player.write or fallback registration.
         self._player.flush()
 
     def close(self, *, wait_timeout_s: float = _CLOSE_WAIT_S) -> bool:
         """Close the gate, bound worker drain, then stop PortAudio.
 
-        Returns ``True`` when every synth/ring-output owner released before
-        the bound. A provider thread that outlives the bound remains harmless:
-        its generation is stale and it cannot write PCM or start fallback.
+        Returns ``True`` when the cancellable provider/fallback owner, queued
+        work, output leases, and daemon worker all stop before the bound. A
+        pathological provider that ignores task cancellation can outlive the
+        bound only on the daemon worker; its stale generation cannot write PCM
+        or register fallback and cannot delay asyncio default-executor exit.
         """
-        self.request_close()
         deadline = time.monotonic() + max(0.0, wait_timeout_s)
+        self.request_close(
+            owner_cancel_timeout_s=min(
+                self._OWNER_CANCEL_WAIT_S,
+                max(0.0, deadline - time.monotonic()),
+            ),
+        )
         with self._state:
             while self._active_workers > 0 or self._output_active_leases > 0:
                 remaining = deadline - time.monotonic()
@@ -1077,12 +1298,16 @@ class TTSPipeline:
             idle = self._active_workers == 0 and self._output_active_leases == 0
             active_workers = self._active_workers
             active_leases = self._output_active_leases
+        self._worker_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        worker_stopped = not self._worker_thread.is_alive()
+        idle = idle and worker_stopped
         if not idle:
             record_realtime_trace(
                 "tts_pipeline_close_bounded",
                 success=False,
                 active_workers=active_workers,
                 active_output_leases=active_leases,
+                worker_stopped=worker_stopped,
                 wait_timeout_s=wait_timeout_s,
             )
             LOGGER.warning(
@@ -1097,13 +1322,25 @@ class TTSPipeline:
             success=idle,
             active_workers=active_workers,
             active_output_leases=active_leases,
+            worker_stopped=worker_stopped,
         )
         return idle
+
+    def wait_until_idle(self, *, timeout_s: float) -> bool:
+        """Wait for queued/running work and output leases without closing."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        with self._state:
+            while self._active_workers > 0 or self._output_active_leases > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._state.wait(timeout=remaining)
+            return True
 
     def is_output_active(self) -> bool:
         """Return whether synthesis, fallback, or queued playback owns output."""
         with self._state:
-            if self._output_active_leases > 0:
+            if self._active_workers > 0 or self._output_active_leases > 0:
                 return True
         return self._player.bytes_pending() > 0
 
@@ -1115,12 +1352,38 @@ class TTSPipeline:
         with self._state:
             return not self._closed and self._generation == generation
 
-    def _begin_worker(self) -> tuple[int, str | None] | None:
-        with self._state:
-            if self._closed or self._close_requested.is_set():
-                return None
-            self._active_workers += 1
-            return self._generation, self._turn_id
+    def _enqueue_work_locked(self, item: _TTSWorkItem) -> None:
+        """Queue one item while the caller holds ``_state``."""
+        self._active_workers += 1
+        self._work_queue.put(item)
+
+    def _worker_main(self) -> None:
+        """Own all provider/fallback work outside asyncio's default executor."""
+        while True:
+            item = self._work_queue.get()
+            try:
+                if item is None:
+                    return
+                if item.kind == "speak":
+                    self._speak(item)
+                else:
+                    self._broadcast_spoken(item)
+            except BaseException:
+                LOGGER.exception("TTS worker item failed")
+            finally:
+                if item is not None:
+                    self._finish_worker()
+                self._work_queue.task_done()
+
+    def _broadcast_spoken(self, item: _TTSWorkItem) -> None:
+        if not self._generation_is_current(item.generation):
+            return
+        broadcast = getattr(self._broadcaster, "broadcast_voice_sync", None)
+        if callable(broadcast):
+            try:
+                broadcast("spoken", turn_id=item.turn_id)
+            except Exception as exc:  # noqa: BLE001 — broadcast must not crash TTS
+                LOGGER.warning("broadcast_voice_sync(spoken) failed: %r", exc)
 
     def _finish_worker(self) -> None:
         with self._state:
@@ -1184,22 +1447,145 @@ class TTSPipeline:
         generation: int,
         turn_id: str | None,
     ) -> None:
-        """CAS fallback authorization against close/generation ownership."""
+        """Register an owner, then start it outside the commit lock."""
+        if self._fallback is None:
+            record_realtime_trace(
+                "tts_fallback_suppressed",
+                turn_id=turn_id,
+                reason="fallback_not_configured",
+            )
+            return
+        try:
+            owner = self._fallback(cleaned)
+        except Exception:
+            LOGGER.exception("TTS fallback owner construction failed")
+            return
+
         with self._commit_lock:
-            if self._close_requested.is_set() or not self._generation_is_current(
-                generation,
-            ):
+            suppressed = self._close_requested.is_set() or not (
+                self._generation_is_current(generation)
+            )
+            if suppressed:
                 record_realtime_trace(
                     "tts_fallback_suppressed",
                     turn_id=turn_id,
                     reason="pipeline_closed_or_stale_generation",
                 )
-                return
-            record_realtime_trace("tts_fallback_started", turn_id=turn_id)
-            self._fallback(cleaned)
-            record_realtime_trace("tts_fallback_completed", turn_id=turn_id)
+            elif self._fallback_owner is not None:
+                msg = "TTS fallback owner overlap on single worker"
+                raise RuntimeError(msg)
+            else:
+                self._fallback_owner = owner
 
-    def _speak(self, text: str) -> None:
+        if suppressed:
+            owner.cancel(wait_timeout_s=0.0)
+            return
+
+        try:
+            record_realtime_trace("tts_fallback_owner_run_requested", turn_id=turn_id)
+            started = owner.run()
+            if started:
+                record_realtime_trace(
+                    "tts_fallback_owner_finished",
+                    turn_id=turn_id,
+                    measurement_semantics=(
+                        "owned_fallback_run_returned_not_natural_audio_completion"
+                    ),
+                )
+            else:
+                record_realtime_trace(
+                    "tts_fallback_suppressed",
+                    turn_id=turn_id,
+                    reason="owner_cancelled_before_process_start",
+                )
+        finally:
+            with self._commit_lock:
+                if self._fallback_owner is owner:
+                    self._fallback_owner = None
+
+    def _run_provider(self, cleaned: str, *, generation: int) -> bytes:
+        """Run one bounded provider task on the owned daemon worker loop."""
+        loop = asyncio.new_event_loop()
+
+        async def _bounded_synthesize() -> bytes:
+            try:
+                return await asyncio.wait_for(
+                    self._provider.synthesize(cleaned),
+                    timeout=self._PROVIDER_TOTAL_TIMEOUT_S,
+                )
+            except TimeoutError as exc:
+                msg = (
+                    "TTS provider exceeded "
+                    f"{self._PROVIDER_TOTAL_TIMEOUT_S:.1f}s pipeline deadline"
+                )
+                raise MiniMaxUnavailableError(msg) from exc
+
+        task = loop.create_task(_bounded_synthesize())
+        with self._commit_lock:
+            if self._close_requested.is_set() or not self._generation_is_current(
+                generation,
+            ):
+                task.cancel()
+            self._provider_loop = loop
+            self._provider_task = task
+        try:
+            return loop.run_until_complete(task)
+        finally:
+            with self._commit_lock:
+                if self._provider_task is task:
+                    self._provider_task = None
+                    self._provider_loop = None
+            loop.close()
+
+    def _commit_pcm(
+        self,
+        pcm: bytes,
+        *,
+        generation: int,
+        turn_id: str | None,
+    ) -> bool:
+        """Commit current PCM and transfer its lease to a ring-drain owner."""
+        with self._commit_lock:
+            pcm_current = not self._close_requested.is_set() and (
+                self._generation_is_current(generation)
+            )
+        if not pcm_current:
+            record_realtime_trace(
+                "tts_late_pcm_discarded",
+                turn_id=turn_id,
+                pcm_bytes=len(pcm),
+            )
+            return False
+        self._player.write(pcm, cancel_event=self._close_requested)
+        if self._close_requested.is_set() or self._player.bytes_pending() <= 0:
+            return False
+        release_thread = threading.Thread(
+            target=self._release_output_after_ring_empty,
+            kwargs={"turn_id": turn_id},
+            name="jarvis-tts-output-lease",
+            daemon=True,
+        )
+        release_thread.start()
+        return True
+
+    def _begin_player_trace(self, *, turn_id: str | None) -> None:
+        """Install correlation when this queued item actually reaches output."""
+        prior_pcm_pending = self._player.bytes_pending() > 0
+        if prior_pcm_pending:
+            record_realtime_trace(
+                "audio_trace_correlation_unavailable",
+                turn_id=turn_id,
+                reason="prior_turn_pcm_still_in_software_ring",
+            )
+        attributes: dict[str, TraceValue] = {}
+        if turn_id is not None:
+            attributes["turn_id"] = turn_id
+        self._player.begin_trace_turn(
+            attributes,
+            enabled=not prior_pcm_pending,
+        )
+
+    def _speak(self, item: _TTSWorkItem) -> None:
         """Synthesize ``text`` and push the PCM bytes to the player.
 
         The output lease begins before provider I/O and remains held until the
@@ -1218,14 +1604,15 @@ class TTSPipeline:
         # any <document>...</document> region is silently dropped from
         # synthesis. See ``_extract_voice_content`` for fallback rules
         # when the text has no tags (legacy plain-text path).
-        voice_only = _extract_voice_content(text)
+        voice_only = _extract_voice_content(item.text)
         cleaned = _preprocess_for_speech(voice_only)
         if not cleaned:
             return
-        worker = self._begin_worker()
-        if worker is None:
+        generation = item.generation
+        turn_id = item.turn_id
+        if not self._generation_is_current(generation):
             return
-        generation, turn_id = worker
+        self._begin_player_trace(turn_id=turn_id)
         # NOTE: do NOT wrap synth+write in SystemAudioDucker. That ducker
         # zeroes the macOS master output volume — which silences the TTS
         # output stream itself for the duration of write() (write blocks
@@ -1247,7 +1634,7 @@ class TTSPipeline:
             )
             try:
                 with realtime_trace_context(turn_id=turn_id, provider_mode="batch"):
-                    pcm = asyncio.run(self._provider.synthesize(cleaned))
+                    pcm = self._run_provider(cleaned, generation=generation)
                 if pcm:
                     record_realtime_trace(
                         "tts_batch_synthesis_completed",
@@ -1256,26 +1643,16 @@ class TTSPipeline:
                         measurement_semantics="all_provider_pcm_aggregated_not_first_pcm",
                         pcm_bytes=len(pcm),
                     )
-                with self._commit_lock:
-                    if self._close_requested.is_set() or not self._generation_is_current(
-                        generation,
-                    ):
-                        record_realtime_trace(
-                            "tts_late_pcm_discarded",
-                            turn_id=turn_id,
-                            pcm_bytes=len(pcm),
-                        )
-                        return
-                    self._player.write(pcm, cancel_event=self._close_requested)
-                if not self._close_requested.is_set() and self._player.bytes_pending() > 0:
-                    release_thread = threading.Thread(
-                        target=self._release_output_after_ring_empty,
-                        kwargs={"turn_id": turn_id},
-                        name="jarvis-tts-output-lease",
-                        daemon=True,
-                    )
-                    release_thread.start()
-                    release_after_ring_empty = True
+                release_after_ring_empty = self._commit_pcm(
+                    pcm,
+                    generation=generation,
+                    turn_id=turn_id,
+                )
+            except asyncio.CancelledError:
+                record_realtime_trace(
+                    "tts_provider_cancelled_on_close",
+                    turn_id=turn_id,
+                )
             except MiniMaxUnavailableError:
                 LOGGER.warning(
                     "MiniMax unavailable; falling back to macos_say for: %r",
@@ -1297,34 +1674,29 @@ class TTSPipeline:
                     turn_id=turn_id,
                 )
         finally:
-            try:
-                if lease_acquired and not release_after_ring_empty:
-                    self._leave_output_active()
-            finally:
-                self._finish_worker()
+            if lease_acquired and not release_after_ring_empty:
+                self._leave_output_active()
 
 
-def macos_say_fallback(text: str, *, voice: str = "Tingting") -> None:
-    """ADR-0005 §10 F7 fallback: macOS ``say`` subprocess.
+def macos_say_fallback(
+    text: str,
+    *,
+    voice: str = "Tingting",
+) -> MacOSSayProcessOwner:
+    """Create the ADR-0005 §10 F7 macOS ``say`` process owner.
 
-    Log-only on failure; the assistant response is silent but the daemon
-    stays up. ADR-0007 will eventually replace this leaf with a
-    ``surface.failed`` event.
+    Construction has no external side effect. :class:`TTSPipeline` registers
+    the owner before calling :meth:`MacOSSayProcessOwner.run`, giving close a
+    linearizable cancellation point. ADR-0007 will eventually replace this
+    leaf with a ``surface.failed`` event.
     """
-    try:
-        subprocess.run(  # noqa: S603 — `say` is the macOS API contract.
-            ["say", "-v", voice, text],  # noqa: S607 — PATH lookup is the contract.
-            check=False,
-            timeout=30,
-        )
-    except (subprocess.SubprocessError, OSError) as exc:
-        LOGGER.warning(
-            "macos_say_fallback failed: %r — response remains silent", exc,
-        )
+    return MacOSSayProcessOwner(text, voice=voice)
 
 
 __all__ = [
     "AudioStreamPlayer",
+    "FallbackOwner",
+    "MacOSSayProcessOwner",
     "MiniMaxUnavailableError",
     "MiniMaxWSClient",
     "TTSPipeline",

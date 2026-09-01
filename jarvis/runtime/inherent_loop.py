@@ -624,7 +624,9 @@ async def _tts_watcher(
     The ``pipeline`` parameter is typed as :class:`object` (rather than
     ``voice_tts.TTSPipeline``) so this composition-root module stays free
     of an L5 import cycle; the three method calls below pin the structural
-    contract the watcher actually depends on.
+    contract the watcher actually depends on. Production TTSPipeline methods
+    only mutate state/enqueue owned work, so dispatch stays on the event-loop
+    thread without blocking and never creates a default-executor TTS worker.
 
     Dispatch by ``event.type``:
 
@@ -681,21 +683,18 @@ async def _tts_watcher(
                         continue
                     if ev.type == "surface.response_open":
                         gate_mode = ev.payload.get("required_gate_mode", "sentence")
-                        await asyncio.to_thread(
-                            pipeline.begin_turn,  # type: ignore[attr-defined]
+                        pipeline.begin_turn(  # type: ignore[attr-defined]
                             turn_id,
                             gate_mode=gate_mode,
                         )
                     elif ev.type == "surface.response_chunk":
                         text = str(ev.payload.get("text", ""))
-                        await asyncio.to_thread(
-                            pipeline.handle_chunk,  # type: ignore[attr-defined]
+                        pipeline.handle_chunk(  # type: ignore[attr-defined]
                             turn_id,
                             text,
                         )
                     elif ev.type == "surface.response_emitted":
-                        await asyncio.to_thread(
-                            pipeline.handle_emitted,  # type: ignore[attr-defined]
+                        pipeline.handle_emitted(  # type: ignore[attr-defined]
                             turn_id,
                         )
                 except Exception as exc:  # noqa: BLE001 — log + continue; TTS must not crash watcher.
@@ -1329,9 +1328,9 @@ def _shutdown_tts(tts_pipe: voice_tts.TTSPipeline | None) -> None:
     """Bound TTS owners, then stop the player and release PortAudio.
 
     The caller has already installed the pipeline's close gate and cancelled
-    the watcher.  ``asyncio.to_thread`` cancellation cannot kill a provider
-    thread, so :meth:`TTSPipeline.close` also waits for generation owners up to
-    a bound; any later provider return is discarded by the closed generation.
+    the watcher. TTS provider/fallback work belongs to the pipeline's daemon
+    worker rather than asyncio's default executor; :meth:`TTSPipeline.close`
+    cancels its owned task/process and joins that worker up to a hard bound.
     """
     if tts_pipe is None:
         return
@@ -1634,9 +1633,10 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
             # below (wake / TTS / ducker / watcher cancel) is loop-thread
             # work that would otherwise be racing that notification.
             _shutdown_power_observer(power_observer)
-            # Install the TTS generation gate BEFORE cancelling the watcher:
-            # cancelling an asyncio.to_thread await does not terminate its
-            # provider thread. Late PCM/fallback is rejected from this point.
+            # Install the TTS generation gate BEFORE cancelling the watcher.
+            # The watcher only enqueues into TTSPipeline's owned daemon worker;
+            # no TTS provider/fallback work belongs to asyncio's default
+            # executor. Late PCM/fallback is rejected from this point.
             _request_tts_close(tts_pipe)
             # Wake then releases the mic and unwinds any capture duck.
             _shutdown_wake(wake_listener, wake_stream)

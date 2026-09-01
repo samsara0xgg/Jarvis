@@ -171,12 +171,13 @@ def test_tts_pipeline_does_not_duck_around_speak() -> None:
     pipeline = voice_tts.TTSPipeline(
         provider=provider,
         player=player,
-        fallback=lambda _text: None,
+        fallback=None,
         ducker=fake_ducker,
     )
     pipeline.begin_turn("T1", gate_mode="sentence")
     pipeline.handle_chunk("T1", "<voice>你好</voice>")
     pipeline.end_turn("T1")
+    assert pipeline.wait_until_idle(timeout_s=1.0)
 
     # Synth must have happened (the smoke fix only dropped the ducker, not the synth).
     provider.synthesize.assert_awaited_once()
@@ -184,6 +185,7 @@ def test_tts_pipeline_does_not_duck_around_speak() -> None:
     # And the ducker MUST be untouched.
     fake_ducker.duck.assert_not_called()
     fake_ducker.restore.assert_not_called()
+    assert pipeline.close(wait_timeout_s=1.0)
 
 
 def test_wake_does_not_duck_while_tts_waits_for_first_pcm() -> None:
@@ -204,7 +206,7 @@ def test_wake_does_not_duck_while_tts_waits_for_first_pcm() -> None:
     pipeline = voice_tts.TTSPipeline(
         provider=provider,
         player=player,
-        fallback=lambda _text: None,
+        fallback=None,
         ducker=voice_ducking.SystemAudioDucker(enabled=False),
     )
     pipeline.begin_turn("T-race", gate_mode="sentence")
@@ -243,9 +245,11 @@ def test_wake_does_not_duck_while_tts_waits_for_first_pcm() -> None:
     finally:
         release_synthesis.set()
         synthesis_thread.join(timeout=2.0)
+        assert pipeline.wait_until_idle(timeout_s=2.0)
 
     assert not synthesis_thread.is_alive()
     player.write.assert_called_once()
+    assert pipeline.close(wait_timeout_s=1.0)
 
 
 def test_shared_ducker_closes_check_then_duck_race() -> None:
@@ -267,7 +271,7 @@ def test_shared_ducker_closes_check_then_duck_race() -> None:
     tts_pipeline = voice_tts.TTSPipeline(
         provider=provider,
         player=player,
-        fallback=lambda _text: None,
+        fallback=None,
         ducker=shared_ducker,
     )
     tts_pipeline.begin_turn("T-race-arbiter", gate_mode="sentence")
@@ -308,9 +312,11 @@ def test_shared_ducker_closes_check_then_duck_race() -> None:
         release_synthesis.set()
         if synthesis_thread is not None:
             synthesis_thread.join(timeout=2.0)
+        assert tts_pipeline.wait_until_idle(timeout_s=2.0)
 
     assert synthesis_thread is not None
     assert not synthesis_thread.is_alive()
+    assert tts_pipeline.close(wait_timeout_s=1.0)
 
 
 def test_serve_inherent_shutdown_joins_wake_thread_before_stream_close(
@@ -387,7 +393,7 @@ def test_shutdown_tts_closes_player() -> None:
     tts_pipe = voice_tts.TTSPipeline(
         provider=MagicMock(spec=voice_tts.MiniMaxWSClient),
         player=player,
-        fallback=lambda _text: None,
+        fallback=None,
     )
     inherent_loop._shutdown_tts(tts_pipe)
     player.stop.assert_called_once()

@@ -40,11 +40,12 @@ def test_tts_trace_points_share_one_monotonic_clock() -> None:
     pipeline = voice_tts.TTSPipeline(
         provider=provider,
         player=player,
-        fallback=lambda _text: None,
+        fallback=None,
     )
 
     pipeline.begin_turn("T-trace", gate_mode="sentence")
     pipeline.handle_chunk("T-trace", "<voice>你好</voice>")
+    assert pipeline.wait_until_idle(timeout_s=1.0)
 
     points = [
         point for point in realtime_trace_snapshot()
@@ -59,6 +60,7 @@ def test_tts_trace_points_share_one_monotonic_clock() -> None:
     )
     assert all(point.monotonic_ns >= before_ns for point in points)
     assert all(point.telemetry_only for point in points)
+    assert pipeline.close(wait_timeout_s=1.0)
 
 
 def test_jsonl_export_is_correlated_diagnostic_only_and_reportable(
