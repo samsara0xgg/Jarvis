@@ -42,6 +42,7 @@ LOGGER = logging.getLogger(__name__)
 SILERO_CHUNK_SAMPLES = 512  # silero fixed-size per inference (32 ms @ 16 kHz)
 _LSTM_SHAPE = (2, 1, 64)
 _SAMPLE_RATE = 16000
+_PREWARM_FRAMES = 5
 
 
 class VadEvent(enum.Enum):
@@ -109,8 +110,9 @@ class SileroVad:
     single-frame jitter.
 
     :meth:`feed` returns the per-frame classification (instantaneous),
-    while :meth:`empty` flips to ``True`` once post-speech silence has
-    been observed — the recorder uses that as the stop signal.
+    while :meth:`empty` flips to ``True`` once the configured number of
+    consecutive post-speech silence frames has been observed — the recorder
+    uses that as the stop signal.
     """
 
     def __init__(
@@ -171,6 +173,19 @@ class SileroVad:
         self._post_speech_silence_seen = False
         self._last_start_perf = None
 
+    def prepare_utterance(self) -> None:
+        """Reset utterance-local state and converge the LSTM on silence.
+
+        The five prewarm inferences update only the provider's recurrent
+        state; smoothing and endpoint counters stay empty until real capture
+        frames arrive. Calling this before the input stream opens also keeps
+        model/session cold-start work from consuming the start of speech.
+        """
+        self.reset()
+        silence = np.zeros(SILERO_CHUNK_SAMPLES, dtype=np.float32)
+        for _ in range(_PREWARM_FRAMES):
+            self._infer_chunk(silence)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -203,11 +218,10 @@ class SileroVad:
         return VadEvent.SPEECH_ACTIVE if is_speech else VadEvent.SILENCE
 
     def empty(self) -> bool:
-        """``True`` once post-speech silence has been observed.
+        """``True`` once consecutive post-speech silence reaches its threshold.
 
-        Flips to ``True`` the first time the state machine, having entered
-        ACTIVE, sees a non-speech frame. The recorder polls this after
-        each frame and stops capture when it flips.
+        The recorder polls this after each frame and stops capture when it
+        flips. Any intervening speech resets the consecutive-miss counter.
         """
         return self._post_speech_silence_seen
 
@@ -266,15 +280,11 @@ class SileroVad:
             else:
                 self._hits = 0
         elif not is_speech:
-            # ACTIVE branch: first non-speech frame flips the
-            # "post-speech silence seen" flag — that's the recorder's
-            # stop signal (looser than the full required_misses
-            # transition back to IDLE).
-            self._post_speech_silence_seen = True
             self._misses += 1
             if self._misses >= self._t.required_misses:
                 self._state = "IDLE"
                 self._hits = 0
+                self._post_speech_silence_seen = True
         else:
             # ACTIVE + still speech.
             self._misses = 0
@@ -343,6 +353,7 @@ def capture_utterance(
     audio_bytes = bytearray()
     voiced_frames = 0
 
+    vad.prepare_utterance()
     with _open_input_stream(sample_rate_hz=sample_rate_hz, blocksize=blocksize) as stream:
         for _frame_idx in range(max_frames):
             frame, _overflowed = stream.read(blocksize)

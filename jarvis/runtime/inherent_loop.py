@@ -911,6 +911,18 @@ def _spawn_wake_listener(
             LOGGER.debug("wake: stream close after engine start failure failed", exc_info=True)
         return None
     silero_vad = voice_audio.SileroVad(mode="record", model_path=silero_path)
+    try:
+        silero_vad.prepare_utterance()
+    except Exception:
+        LOGGER.exception(
+            "wake: Silero VAD prewarm failed; skipping wake listener.",
+        )
+        engine.close()
+        try:
+            stream.close()
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            LOGGER.debug("wake: stream close after VAD prewarm failure failed", exc_info=True)
+        return None
     capture_callable = functools.partial(
         voice_audio.capture_utterance,
         vad=silero_vad,
