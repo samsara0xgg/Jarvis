@@ -1,28 +1,16 @@
-"""cost.recorded-per-LLM-call canary: every L3 ``chat()`` site is followed by an emit.
+"""Every L3 ``chat``/``chat_stream`` site has an accounting disposition guard.
 
-Per ADR-0002 § Tier 1 canaries and spec §5.4.1 (``cost.recorded.owner_layer
-== L3``): every ``ctx.llm_client.chat(...)`` site in :mod:`jarvis.decision`
-must be followed by an ``emit_event(..., type="cost.recorded", ...)`` call
-in the same function body. Forgetting the emit on any site silently drops
-spend attribution for that turn — a regression the canary catches statically.
+Per ADR-0002 § Tier 1 canaries, ADR-0008 §4.1, and spec §5.4.1
+(``cost.recorded.owner_layer == L3``): every full or streamed provider call
+under :mod:`jarvis.decision` must share a function body with either the legacy
+cost emitter or the Wave 1 exactly-once ``CostRecorder`` guard. Forgetting the
+guard silently drops spend attribution or an explicit unavailable disposition.
 
-This canary AST-scans :mod:`jarvis.decision.__init__` and walks every
-function body. Inside each function it pairs every ``chat`` call site
-with the function's ``cost.recorded`` emit sites; if the function
-performs a chat call but has zero ``emit_event(..., type="cost.recorded", ...)``
-calls, the function is flagged.
-
-:mod:`jarvis.decision.reviewer` is **exempt** by design: per ADR-0002
-§ Reviewer contract + Step 12, the reviewer module returns the chat's
-token counts on :class:`ReviewerVerdict` and the L3 Result Interpreter
-(``jarvis/decision/__init__.py``) emits ``cost.recorded(kind="reviewer",
-tokens_in=verdict.tokens_in, tokens_out=verdict.tokens_out, ...)``
-itself, in the same function that consumes the verdict. The cost-recorded
-emit therefore lives one frame up from the ``review_diff(...)`` chat —
-still in L3, still per-call — but not inside ``reviewer.py``. This split
-keeps the reviewer module a pure helper and lets it be reused later by
-non-Result-Interpreter call sites (the cost emit chases the caller, not
-the helper).
+The scan covers the decision orchestrator, reviewer, and cost guard. It
+recognizes ``chat`` and ``chat_stream`` calls plus the bounded helper calls
+that commit or replay one request disposition. The reviewer retains its
+legacy caller-owned emit when the Wave 1 flag is off and uses ``CostRecorder``
+in its own function when the flag is on.
 
 The "same function body" pairing is conservative: the canary does not
 require strict adjacency, only co-presence within the same function (or
@@ -48,12 +36,13 @@ from tests.canary._helpers import parse, relative_to_repo, repo_root
 if TYPE_CHECKING:
     from pathlib import Path
 
-# Modules in scope: every Python file under ``jarvis/decision/`` that is
-# part of the L3 LLM caller surface. ``jarvis/decision/reviewer.py`` is
-# intentionally excluded — see module docstring for the contract that
-# Step 12 emits the reviewer's ``cost.recorded`` from the Result
-# Interpreter using :class:`ReviewerVerdict` token counts.
-_DECISION_LLM_CALLER_MODULES = ("jarvis/decision/__init__.py",)
+# Modules in scope: every production file that calls the L3 provider adapter
+# or owns its exactly-once accounting commit.
+_DECISION_LLM_CALLER_MODULES = (
+    "jarvis/decision/__init__.py",
+    "jarvis/decision/reviewer.py",
+    "jarvis/decision/cost_guard.py",
+)
 
 
 def _modules_in_scope() -> list[Path]:
@@ -63,7 +52,7 @@ def _modules_in_scope() -> list[Path]:
 
 
 def _is_chat_call(node: ast.AST) -> bool:
-    """Return True iff ``node`` is a call whose method name is ``chat``.
+    """Return True for full or streamed LLM adapter calls.
 
     Matches ``ctx.llm_client.chat(...)``, ``self._llm.chat(...)``,
     ``client.chat(...)``. Does NOT match bare ``chat(...)`` (would
@@ -73,7 +62,7 @@ def _is_chat_call(node: ast.AST) -> bool:
     if not isinstance(node, ast.Call):
         return False
     func = node.func
-    return isinstance(func, ast.Attribute) and func.attr == "chat"
+    return isinstance(func, ast.Attribute) and func.attr in ("chat", "chat_stream")
 
 
 def _is_cost_recorded_emit(node: ast.AST) -> bool:
@@ -87,22 +76,27 @@ def _is_cost_recorded_emit(node: ast.AST) -> bool:
     if not isinstance(node, ast.Call):
         return False
     func = node.func
-    name = None
-    if isinstance(func, ast.Name):
-        name = func.id
-    elif isinstance(func, ast.Attribute):
-        name = func.attr
-    if name in ("_emit_cost_recorded", "_emit_cost_recorded_from_metadata"):
+    name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+    guarded_names = {
+        "_commit",
+        "_emit_cost_recorded",
+        "_emit_cost_recorded_from_metadata",
+        "record_cost_disposition_once",
+    }
+    if name in guarded_names:
         return True
-    if name != "emit_event":
-        return False
-    for kw in node.keywords:
-        if kw.arg != "type":
-            continue
-        value = kw.value
-        if isinstance(value, ast.Constant) and value.value == "cost.recorded":
+    if name == "chat" and isinstance(func, ast.Attribute):
+        owner = func.value
+        if isinstance(owner, ast.Name) and owner.id in ("cost_recorder", "reviewer_cost_recorder"):
             return True
-    return False
+        if isinstance(owner, ast.Call) and isinstance(owner.func, ast.Name):
+            return owner.func.id == "CostRecorder"
+    return name == "emit_event" and any(
+        kw.arg == "type"
+        and isinstance(kw.value, ast.Constant)
+        and kw.value.value == "cost.recorded"
+        for kw in node.keywords
+    )
 
 
 def _function_walks(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -149,13 +143,13 @@ def test_canary_cost_recorded_emitted_per_llm_call() -> None:
             if _has_cost_emit(func):
                 continue
             violations.append(
-                f"{rel}:{func.lineno}: function {func.name!r} calls .chat(...) but "
+                f"{rel}:{func.lineno}: function {func.name!r} calls chat/stream but "
                 "does not emit cost.recorded in the same body — L3 is the sole "
                 "emit-site per spec §5.4.1; every LLM turn must be billed"
             )
 
     assert not violations, (
-        "cost-recorded-per-llm-call canary — every L3 chat() site must be "
+        "cost-recorded-per-llm-call canary — every L3 chat/stream site must be "
         "followed by a cost.recorded emit in the same function:\n  "
         + "\n  ".join(violations)
     )

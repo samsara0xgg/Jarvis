@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 from jarvis.decision.confirm_grammar import match_confirm_grammar
+from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.gates import (
     AttentionChannel,
     GateOutcome,
@@ -105,6 +106,7 @@ from jarvis.shared import (
     RawResultBundle,
 )
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
+from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
 from jarvis.shared.text import truncate_utf8
 from jarvis.state.event_log import emit_event
@@ -339,6 +341,19 @@ def _emit_cost_recorded(
             worker run; ``cost.recorded`` carries it as an optional
             correlation field so per-run cost rollups are possible).
     """
+    if ctx.wave1_features.exactly_once_cost_accounting:
+        outcome = CostRecorder(
+            ctx.conn,
+            pricing_table=_pricing_table(),
+        ).record_chat_result(
+            chat_result,
+            client=ctx.llm_client,
+            kind=kind,
+            turn_id=turn_id,
+            run_id=run_id,
+        )
+        return outcome.event
+
     cost_usd = compute_cost_usd(
         chat_result.model_used or None,
         chat_result.tokens_in,
@@ -368,6 +383,35 @@ def _emit_cost_recorded(
         type="cost.recorded",
         payload=payload,
         correlation=correlation or None,
+    )
+
+
+def _run_llm_chat_with_cost_guard(  # noqa: PLR0913 - mirrors the provider call plus audit keys
+    ctx: DecideContext,
+    *,
+    messages: list[dict[str, Any]],
+    system: str,
+    tools: list[dict[str, Any]] | None,
+    kind: str,
+    turn_id: str | None,
+    tool_choice: str | None = "auto",
+) -> ChatResult:
+    """Use the exactly-once guard only when its Wave 1 flag is enabled."""
+    if not ctx.wave1_features.exactly_once_cost_accounting:
+        return ctx.llm_client.chat(
+            messages=messages,
+            system=system,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+    return CostRecorder(ctx.conn, pricing_table=_pricing_table()).chat(
+        ctx.llm_client,
+        messages=messages,
+        system=system,
+        tools=tools,
+        tool_choice=tool_choice,
+        kind=kind,
+        turn_id=turn_id,
     )
 
 
@@ -702,6 +746,7 @@ class DecideContext:
     write_entity_resolver: EntityResolverLike | None = None
     confirmation_ttl_ms: int = _DEFAULT_CONFIRMATION_TTL_MS
     confirm_grammar_table: ConfirmGrammarTable = ()
+    wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
 
 
 @dataclass(frozen=True)
@@ -1098,8 +1143,13 @@ def _run_tool_use_loop(
             request_kind="decision",
             iteration=iteration,
         ):
-            chat_result = ctx.llm_client.chat(
-                messages=messages, system=ctx.system_prompt, tools=tools,
+            chat_result = _run_llm_chat_with_cost_guard(
+                ctx,
+                messages=messages,
+                system=ctx.system_prompt,
+                tools=tools,
+                kind="decision",
+                turn_id=scratch.turn_id,
             )
         record_realtime_trace(
             "llm_batch_response_completed",
@@ -2057,10 +2107,17 @@ def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are 
         # ``review_diff`` itself wraps the ``.chat()`` call inside the
         # context manager (canary
         # ``test_canary_reviewer_fresh_context`` enforces).
+        reviewer_cost_recorder = (
+            CostRecorder(ctx.conn, pricing_table=_pricing_table())
+            if ctx.wave1_features.exactly_once_cost_accounting
+            else None
+        )
         reviewer_verdict = review_diff(
             task_goal=task_goal,
             diff_text=diff_text,
             llm_client=ctx.llm_client,
+            cost_recorder=reviewer_cost_recorder,
+            turn_id=scratch.turn_id,
         )
         # ADR-0002 § Reviewer contract line 743: the reviewer module
         # returns token counts on :class:`ReviewerVerdict`; this
@@ -2068,14 +2125,21 @@ def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are 
         # ``cost.recorded(kind="reviewer", ...)`` so the
         # per-LLM-call canary is satisfied without putting the emit
         # inside ``reviewer.py``.
-        scratch.events.append(
-            _emit_cost_recorded_from_verdict(
-                ctx,
-                verdict=reviewer_verdict,
-                turn_id=scratch.turn_id,
-                action_id=action_request.action_id,
-            ),
-        )
+        if reviewer_cost_recorder is not None:
+            accounting_outcome = reviewer_cost_recorder.last_outcome
+            if accounting_outcome is None:  # pragma: no cover - guarded chat always records
+                msg = "reviewer cost guard returned without a disposition"
+                raise RuntimeError(msg)
+            scratch.events.append(accounting_outcome.event)
+        else:
+            scratch.events.append(
+                _emit_cost_recorded_from_verdict(
+                    ctx,
+                    verdict=reviewer_verdict,
+                    turn_id=scratch.turn_id,
+                    action_id=action_request.action_id,
+                ),
+            )
 
     emitted, verdict = interpret_verify_diff_bundle(
         bundle,
@@ -2759,10 +2823,13 @@ def _finalize_response(
             request_kind="pre_emit_retry",
             iteration=1,
         ):
-            retry_result = ctx.llm_client.chat(
+            retry_result = _run_llm_chat_with_cost_guard(
+                ctx,
                 messages=retry_messages,
                 system=ctx.system_prompt,
                 tools=None,
+                kind="decision",
+                turn_id=scratch.turn_id,
             )
         record_realtime_trace(
             "llm_batch_response_completed",

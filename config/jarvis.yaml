@@ -113,3 +113,14 @@ tools:
 # 不用碰代码。
 confirmation:
   ttl_ms: 600000
+
+# ADR-0006/0008 Wave 1 safety primitives.  All adoption switches remain
+# disabled: this wave proves transaction/CAS/accounting behavior without
+# enabling concurrent turns, model streaming, or streaming TTS/player work.
+realtime:
+  enabled: false
+  concurrency_safety:
+    transactional_event_append: false
+    lifecycle_terminal_cas: false
+    confirmation_dispatch_outbox: false
+    exactly_once_cost_accounting: false

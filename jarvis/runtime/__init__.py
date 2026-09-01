@@ -41,7 +41,7 @@ import sys
 import time
 import uuid
 from collections.abc import Mapping  # runtime use: isinstance in the config readers.
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -88,6 +88,7 @@ from jarvis.execution.tools import (
     turn_action_ids,
 )
 from jarvis.shared import CallerPrincipal, Event
+from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.shared.realtime_trace import (
     configure_realtime_trace_jsonl,
     record_realtime_trace,
@@ -342,6 +343,7 @@ class JarvisRuntime:
     tier0_table: Tier0Table = ()
     entity_bookmarks: tuple[tuple[str, str], ...] = ()
     confirm_grammar_table: ConfirmGrammarTable = ()
+    wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
 
 
 @dataclass(frozen=True)
@@ -446,6 +448,15 @@ def _confirmation_ttl_ms(config: Mapping[str, Any]) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         return _FALLBACK_CONFIRMATION_TTL_MS
     return value if value > 0 else _FALLBACK_CONFIRMATION_TTL_MS
+
+
+def _wave1_feature_flags(config: Mapping[str, Any]) -> Wave1FeatureFlags:
+    """Parse opt-in Wave 1 adoption flags; missing/malformed means all off."""
+    realtime = config.get("realtime")
+    if not isinstance(realtime, Mapping) or realtime.get("enabled") is not True:
+        return Wave1FeatureFlags()
+    safety = realtime.get("concurrency_safety")
+    return Wave1FeatureFlags.from_mapping(safety if isinstance(safety, Mapping) else None)
 
 
 def _observer_repo_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
@@ -1006,6 +1017,7 @@ def bootstrap_runtime_app(
         tier0_table=tier0_table,
         entity_bookmarks=entity_bookmarks,
         confirm_grammar_table=confirm_grammar_table,
+        wave1_features=_wave1_feature_flags(full_config),
     )
 
 
@@ -1367,6 +1379,7 @@ def drive_turn(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; argum
             # ADR-0012 §3 D6 — answer-path grammar, threaded the same
             # way tier0_table is threaded.
             confirm_grammar_table=runtime.confirm_grammar_table,
+            wave1_features=runtime.wave1_features,
         )
 
         # SQLite row id of the surface.user_intent event — used as the

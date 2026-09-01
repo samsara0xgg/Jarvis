@@ -1,10 +1,11 @@
-"""H1 — no direct INSERT/UPDATE/DELETE on projection tables.
+"""H1 — no direct INSERT/UPDATE/DELETE outside L2-owned tables.
 
 Per ADR 0001 § Acceptance criterion H1:
 
 > AST scan of ``jarvis/`` for direct INSERT/UPDATE/DELETE on projection
-> tables. Only ``jarvis/state/event_log.py`` may execute INSERT (and
-> only into ``events``). Projection module may only SELECT and rebuild.
+> tables. Canonical events may only be inserted by
+> ``jarvis/state/event_log.py``. Bounded operational idempotency/outbox
+> tables may only be inserted by their explicit L2 owner modules.
 
 Implementation: walk every ``.py`` under ``jarvis/`` with ``ast.parse``;
 for each :class:`ast.Constant` (string) in the module, regex-scan for
@@ -44,9 +45,20 @@ _SQL_WRITE_RE = re.compile(
 )
 
 
+_L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
+    "jarvis/state/authorized_dispatch_outbox.py": frozenset(
+        {"confirmation_consumption_claims", "authorized_dispatch_outbox"},
+    ),
+    "jarvis/state/cost_accounting.py": frozenset({"cost_accounting_dispositions"}),
+}
+
+
 def _allowed_insert(rel_path: str, table: str) -> bool:
-    """Whitelist: only ``event_log.py`` may INSERT, and only into ``events``."""
-    return rel_path == "jarvis/state/event_log.py" and table.lower() == "events"
+    """Allow canonical events plus explicitly-owned L2 idempotency debt."""
+    normalized = table.lower()
+    if rel_path == "jarvis/state/event_log.py" and normalized == "events":
+        return True
+    return normalized in _L2_OPERATIONAL_INSERTS.get(rel_path, frozenset())
 
 
 # One-shot schema-migration backfills are the single sanctioned UPDATE:
