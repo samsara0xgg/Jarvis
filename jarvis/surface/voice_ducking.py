@@ -3,13 +3,15 @@
 While the microphone is open for wake-detection or PTT capture, the system
 output must be silenced to prevent the assistant's own TTS playback from being
 heard back as user speech. ``SystemAudioDucker`` wraps the legacy
-``core/media_ducking.py`` behavior with two adjustments:
+``core/media_ducking.py`` behavior with three adjustments:
 
 1. ``_run_osascript`` is exposed as a module-level callable so test code can
    ``patch.object`` it without instantiating an alternate runner.
 2. ``duck()`` is refcounted: nested ``duck()``/``restore()`` pairs make only
    one real osascript restore on the outermost release. Inner ``restore()``
    decrements the depth without touching the OS.
+3. TTS can hold an output lease across provider I/O and queued playback;
+   ``duck()`` refuses to mute while such a lease exists.
 
 Layer placement: L5 surface. Only stdlib imports.
 """
@@ -123,13 +125,15 @@ def _build_restore_script(snapshot: VolumeSnapshot) -> str:
 
 
 class SystemAudioDucker:
-    """Temporarily silence macOS system output and restore it exactly once."""
+    """Arbitrate assistant output against temporary macOS output muting."""
 
     def __init__(self, *, enabled: bool = True) -> None:
         """Initialize with the given enable flag; lock + depth + snapshot reset."""
         self.enabled = enabled
         self._lock = threading.Lock()
+        self._output_idle = threading.Condition(self._lock)
         self._depth = 0
+        self._output_depth = 0
         self._snapshot: VolumeSnapshot | None = None
 
     @property
@@ -144,6 +148,11 @@ class SystemAudioDucker:
             return False
 
         with self._lock:
+            # TTS registers its provider-I/O + playback lifetime here before
+            # producing PCM. Refuse to mute under the same lock so a wake
+            # capture cannot silence an answer that is about to play.
+            if self._output_depth > 0:
+                return False
             if self._depth > 0:
                 # Nested duck: re-assert mute (one osascript call) but keep the
                 # original snapshot so restore_all returns to pre-duck state.
@@ -165,6 +174,23 @@ class SystemAudioDucker:
             self._depth = 1
             return True
 
+    def enter_output(self) -> None:
+        """Acquire an output lease, waiting for an existing capture duck to end."""
+        with self._output_idle:
+            while self._depth > 0:
+                self._output_idle.wait()
+            self._output_depth += 1
+
+    def leave_output(self) -> None:
+        """Release one output lease acquired by :meth:`enter_output`."""
+        with self._output_idle:
+            if self._output_depth <= 0:
+                msg = "leave_output called without an active output lease"
+                raise RuntimeError(msg)
+            self._output_depth -= 1
+            if self._output_depth == 0:
+                self._output_idle.notify_all()
+
     def restore(self) -> None:
         """Decrement refcount; on outermost release, restore pre-duck volume/muted."""
         with self._lock:
@@ -175,6 +201,7 @@ class SystemAudioDucker:
                 return
             snapshot = self._snapshot
             self._snapshot = None
+            self._output_idle.notify_all()
 
         if snapshot is None:
             return
@@ -189,6 +216,7 @@ class SystemAudioDucker:
             snapshot = self._snapshot
             self._depth = 0
             self._snapshot = None
+            self._output_idle.notify_all()
 
         if snapshot is None:
             return

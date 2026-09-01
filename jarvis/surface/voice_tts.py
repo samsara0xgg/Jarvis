@@ -874,12 +874,10 @@ class TTSPipeline:
                 ``broadcast_voice_sync(phase, *, turn_id)`` — the pipeline
                 emits ``"spoken"`` at end-of-turn for UI feedback.
             ducker: Optional :class:`voice_ducking.SystemAudioDucker`.
-                When wired, system output is muted (refcounted) around
-                each synth+play call so the assistant's OWN playback is
-                not picked up by an open mic — ADR §5.3. Sharing one
-                ducker instance between the wake listener and the TTS
-                pipeline ensures the refcount nests correctly when both
-                paths want output muted simultaneously.
+                Sharing one instance with the wake listener makes output
+                leases and capture ducking mutually exclusive. TTS never
+                mutes itself; its lease prevents wake capture from muting
+                provider I/O or queued playback.
         """
         self._provider = provider
         self._player = player
@@ -976,13 +974,27 @@ class TTSPipeline:
 
     def _enter_output_active(self) -> None:
         """Acquire one synth-before-first-PCM output lease."""
+        if self._ducker is not None:
+            self._ducker.enter_output()
         with self._output_active_lock:
             self._output_active_leases += 1
 
     def _leave_output_active(self) -> None:
         """Release one output lease without disturbing concurrent synthesis."""
         with self._output_active_lock:
+            if self._output_active_leases <= 0:
+                msg = "output-active lease released without a matching acquire"
+                raise RuntimeError(msg)
             self._output_active_leases -= 1
+        if self._ducker is not None:
+            self._ducker.leave_output()
+
+    def _release_output_after_playback(self) -> None:
+        """Hold the synth lease until queued PCM has left the player ring."""
+        try:
+            self._player.drain()
+        finally:
+            self._leave_output_active()
 
     def _speak(self, text: str) -> None:
         """Synthesize ``text`` and push the PCM bytes to the player.
@@ -1015,10 +1027,19 @@ class TTSPipeline:
         # OS-level master-volume duck only belongs on the wake-capture
         # path (mute speakers while the mic is open).
         self._enter_output_active()
+        release_after_playback = False
         try:
             try:
                 pcm = asyncio.run(self._provider.synthesize(cleaned))
                 self._player.write(pcm)
+                if self._player.bytes_pending() > 0:
+                    release_thread = threading.Thread(
+                        target=self._release_output_after_playback,
+                        name="jarvis-tts-output-lease",
+                        daemon=True,
+                    )
+                    release_thread.start()
+                    release_after_playback = True
             except MiniMaxUnavailableError:
                 LOGGER.warning(
                     "MiniMax unavailable; falling back to macos_say for: %r",
@@ -1032,7 +1053,8 @@ class TTSPipeline:
                 )
                 self._fallback(cleaned)
         finally:
-            self._leave_output_active()
+            if not release_after_playback:
+                self._leave_output_active()
 
 
 def macos_say_fallback(text: str, *, voice: str = "Tingting") -> None:

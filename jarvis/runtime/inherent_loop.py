@@ -757,9 +757,8 @@ def _build_tts_pipeline(
     own would lie about what the daemon can actually do.
 
     The optional ``ducker`` is the same :class:`SystemAudioDucker`
-    instance shared with the WakeListener — refcounted nesting means
-    wake-capture + TTS-playback can both demand mute simultaneously
-    without stomping each other's restore.
+    instance shared with the WakeListener. TTS registers an output lease;
+    wake capture refuses to mute while provider I/O or playback owns it.
     """
     api_key = os.environ.get("MINIMAX_API_KEY")
     if not api_key:
@@ -917,7 +916,10 @@ def _spawn_wake_listener(
         LOGGER.exception(
             "wake: Silero VAD prewarm failed; skipping wake listener.",
         )
-        engine.close()
+        try:
+            engine.close()
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            LOGGER.debug("wake: engine close after VAD prewarm failure failed", exc_info=True)
         try:
             stream.close()
         except Exception:  # noqa: BLE001 — best-effort cleanup
@@ -1504,8 +1506,8 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
         wake_listener: voice_wake.WakeListener | None = None
         wake_stream: Any | None = None
         voice_pipeline_callable: Any | None = None
-        # ADR-0005 §5.1 / §5.3: ONE shared SystemAudioDucker between
-        # wake-capture and TTS-playback so the refcount nests correctly.
+        # ADR-0005 §5.1 / §5.3: ONE shared SystemAudioDucker arbitrates
+        # wake-capture muting against TTS provider/playback output leases.
         shared_ducker: voice_ducking.SystemAudioDucker = (
             voice_ducking.SystemAudioDucker()
         )
