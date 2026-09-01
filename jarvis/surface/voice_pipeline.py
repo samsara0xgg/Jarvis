@@ -17,6 +17,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Protocol
 
+from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import emit_event
 from jarvis.surface import voice_artifact_store, voice_asr
 
@@ -127,7 +128,19 @@ class VoicePipeline:
                 raise VoiceInputBusyError(msg)
         try:
             # 1. Recognize (sync ASR call).
+            record_realtime_trace(
+                "utterance_committed",
+                turn_id=turn_id,
+                channel=channel,
+                audio_bytes=len(audio_bytes),
+            )
             tr = self._recognizer.recognize(audio_bytes)
+            record_realtime_trace(
+                "asr_final",
+                turn_id=turn_id,
+                channel=channel,
+                transcript_characters=len(tr.text),
+            )
 
             # 2. Empty / too-short filter — ADR §8 fix #3 (unified).
             if voice_asr.is_empty_or_too_short(tr.text, audio_pcm=audio_bytes):
@@ -171,7 +184,6 @@ class VoicePipeline:
                     payload=payload,
                     correlation={"turn_id": turn_id},
                 )
-
             # 6. Wake-path UI notify (PTT path passes broadcast=False so
             # Swift drives the card from the HTTP response, not WS).
             # Wire field is "text" to match the PTT HTTP contract

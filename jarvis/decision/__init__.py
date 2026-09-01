@@ -105,6 +105,7 @@ from jarvis.shared import (
     RawResultBundle,
 )
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
+from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.shared.text import truncate_utf8
 from jarvis.state.event_log import emit_event
 from jarvis.state.projections import make_snapshot
@@ -1085,8 +1086,22 @@ def _run_tool_use_loop(
     iteration = 0
     while iteration < ctx.max_tool_iterations:
         iteration += 1
+        record_realtime_trace(
+            "llm_request_sent",
+            turn_id=scratch.turn_id,
+            request_kind="decision",
+            iteration=iteration,
+        )
         chat_result = ctx.llm_client.chat(
             messages=messages, system=ctx.system_prompt, tools=tools,
+        )
+        record_realtime_trace(
+            "llm_response_completed",
+            turn_id=scratch.turn_id,
+            request_kind="decision",
+            iteration=iteration,
+            candidate_kind="tool" if chat_result.tool_calls else "text",
+            text_characters=len(chat_result.text or ""),
         )
         # ADR-0002 Step 3: emit cost.recorded for the L3 decision turn.
         # L3 is the sole emit-site per spec §5.4.1; this is one of two
@@ -2668,10 +2683,24 @@ def _finalize_response(
                 ),
             },
         ]
+        record_realtime_trace(
+            "llm_request_sent",
+            turn_id=scratch.turn_id,
+            request_kind="pre_emit_retry",
+            iteration=1,
+        )
         retry_result = ctx.llm_client.chat(
             messages=retry_messages,
             system=ctx.system_prompt,
             tools=None,
+        )
+        record_realtime_trace(
+            "llm_response_completed",
+            turn_id=scratch.turn_id,
+            request_kind="pre_emit_retry",
+            iteration=1,
+            candidate_kind="text",
+            text_characters=len(retry_result.text or ""),
         )
         # ADR-0002 Step 3: emit cost.recorded for the Pre-emit retry
         # LLM turn (the second of two L3 chat() sites in this module).

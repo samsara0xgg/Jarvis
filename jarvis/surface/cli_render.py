@@ -68,6 +68,7 @@ import logging
 import sys
 from typing import IO, TYPE_CHECKING
 
+from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import emit_event
 from jarvis.surface.cli import (
     PreEmitTokenError,
@@ -198,12 +199,19 @@ def _emit_response_chunks(
     else:
         chunks = [response_plan.text]
 
-    for chunk_text in chunks:
+    for sequence, chunk_text in enumerate(chunks):
         emit_event(
             conn,
             type="surface.response_chunk",
             payload={"turn_id": turn_id, "text": chunk_text},
             correlation={"turn_id": turn_id},
+        )
+        record_realtime_trace(
+            "surface_segment_committed",
+            turn_id=turn_id,
+            segment_sequence=sequence,
+            gate_mode=response_plan.required_gate_mode,
+            text_characters=len(chunk_text),
         )
 
 

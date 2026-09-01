@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 
     from jarvis.surface import voice_ducking
 
+from jarvis.shared.realtime_trace import record_realtime_trace
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -1027,10 +1029,22 @@ class TTSPipeline:
         # OS-level master-volume duck only belongs on the wake-capture
         # path (mute speakers while the mic is open).
         self._enter_output_active()
+        record_realtime_trace(
+            "tts_text_pushed",
+            turn_id=self._turn_id,
+            provider_mode="batch",
+        )
         release_after_playback = False
         try:
             try:
                 pcm = asyncio.run(self._provider.synthesize(cleaned))
+                if pcm:
+                    record_realtime_trace(
+                        "tts_first_pcm",
+                        turn_id=self._turn_id,
+                        provider_mode="batch_upper_bound",
+                        pcm_bytes=len(pcm),
+                    )
                 self._player.write(pcm)
                 if self._player.bytes_pending() > 0:
                     release_thread = threading.Thread(

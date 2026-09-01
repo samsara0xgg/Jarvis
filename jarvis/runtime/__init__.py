@@ -88,6 +88,7 @@ from jarvis.execution.tools import (
     turn_action_ids,
 )
 from jarvis.shared import CallerPrincipal, Event
+from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import iter_events, open_event_log
 from jarvis.surface.cli import (
     PreEmitTokenError,
@@ -1284,6 +1285,16 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
         the events emitted.
     """
     effective_turn_id = str(user_intent_event.payload["turn_id"])
+    record_realtime_trace(
+        "intent_queue_accepted",
+        turn_id=effective_turn_id,
+        source="runtime_drive_turn",
+    )
+    record_realtime_trace(
+        "response_started",
+        turn_id=effective_turn_id,
+        trigger_type=user_intent_event.type,
+    )
     # ADR-0009 D4 — every action this turn dispatches registers itself
     # in the L4 live set (`ToolRegistry.dispatch`). The release MUST run
     # even when the turn raises: a leaked action_id is one the supervisor
@@ -1408,6 +1419,12 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
         sys.stdout.write(rendered)
         sys.stdout.flush()
         collected_events.append(render_event)
+        record_realtime_trace(
+            "response_completed",
+            turn_id=effective_turn_id,
+            iterations=iterations,
+            gate_mode=response_plan.required_gate_mode,
+        )
 
         return RunTurnResult(
             response_text=rendered,

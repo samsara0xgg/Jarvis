@@ -34,6 +34,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from jarvis.shared.realtime_trace import record_realtime_trace
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -277,6 +279,11 @@ class SileroVad:
                     self._state = "ACTIVE"
                     self._misses = 0
                     self._last_start_perf = time.perf_counter()
+                    record_realtime_trace(
+                        "vad_speech_started",
+                        vad_mode=self._mode,
+                        required_hits=self._t.required_hits,
+                    )
             else:
                 self._hits = 0
         elif not is_speech:
@@ -285,6 +292,11 @@ class SileroVad:
                 self._state = "IDLE"
                 self._hits = 0
                 self._post_speech_silence_seen = True
+                record_realtime_trace(
+                    "endpoint_candidate",
+                    vad_mode=self._mode,
+                    consecutive_silence_frames=self._misses,
+                )
         else:
             # ACTIVE + still speech.
             self._misses = 0
