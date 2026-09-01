@@ -61,7 +61,13 @@ import pytest
 
 from jarvis.deployment import sleep_wake
 from jarvis.runtime import inherent_loop
-from jarvis.surface import notify, voice_audio, voice_ducking, voice_tts
+from jarvis.surface import (
+    notify,
+    voice_audio,
+    voice_backend,
+    voice_ducking,
+    voice_tts,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -207,6 +213,7 @@ def _block_real_audio_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     # player wrap their own ``patch.object`` for these; the session-wide
     # block here only fires when a test path forgot to mock.
     monkeypatch.setattr(voice_audio, "_open_input_stream", _block_audio_seam)
+    monkeypatch.setattr(voice_backend, "_open_sounddevice_input_stream", _block_audio_seam)
     monkeypatch.setattr(voice_tts, "_open_output_stream", _block_audio_seam)
     monkeypatch.setattr(inherent_loop, "_open_wake_input_stream", _block_audio_seam)
     # Ducker's AppleScript seam — replace with a safe stub returning a

@@ -36,6 +36,8 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from jarvis.shared.realtime_trace import record_realtime_trace
+
 LOGGER = logging.getLogger(__name__)
 
 _SAMPLE_RATE = 16000
@@ -427,6 +429,22 @@ class SenseVoiceRecognizer:
             confidence=confidence,
             language_detected=language or None,
             emotion=emotion,
+        )
+
+    def prewarm(self) -> None:
+        """Load SenseVoice and run one silent stream before capture is armed."""
+        recognizer = self._load()
+        stream = recognizer.create_stream()
+        stream.accept_waveform(
+            _SAMPLE_RATE,
+            np.zeros(_SAMPLE_RATE // 10, dtype=np.float32),
+        )
+        recognizer.decode_stream(stream)
+        record_realtime_trace(
+            "asr_prewarm_completed",
+            provider="sensevoice",
+            silence_samples=_SAMPLE_RATE // 10,
+            measurement_boundary="software_model_and_stream_ready",
         )
 
     def _load(self) -> Any:  # noqa: ANN401 — sherpa_onnx typing is dynamic

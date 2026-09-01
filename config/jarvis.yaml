@@ -145,3 +145,36 @@ realtime:
     checkpoint_retry_attempts: 3
     durability_retry_s: 0.02
     enable_macos_say_fallback: true
+  # ADR-0006 Step 5. Disabled by default. When enabled it additionally
+  # requires the Wave-1 transactional/terminal switches above and a live
+  # Wave-2 StreamingTTSPipeline; failed validation happens before device open
+  # and uses legacy wake. A failed/uncertain device open keeps only text and
+  # whole-WAV PTT upload for that boot so no second input owner can appear.
+  single_audio_ingress:
+    enabled: false
+    backend: sounddevice
+    canonical_sample_rate_hz: 16000
+    canonical_frame_samples: 512
+    native_ring_capacity: 128
+    default_subscriber_capacity: 64
+    max_subscribers: 8
+    wake_subscriber_capacity: 64
+    capture_subscriber_capacity: 128
+    diagnostic_subscriber_capacity: 16
+    detection_queue_capacity: 2
+    commit_queue_capacity: 2
+    wake_failure_threshold: 3
+    pre_roll_ms: 500
+    min_voiced_s: 1.0
+    max_utterance_s: 30.0
+    worker_poll_s: 0.002
+    session_worker_poll_s: 0.005
+    fault_poll_s: 0.02
+    route_poll_s: 1.0
+    reopen_attempts: 3
+    reopen_initial_backoff_s: 0.05
+    reopen_max_backoff_s: 0.5
+    backend_open_timeout_s: 2.0
+    backend_close_timeout_s: 2.0
+    shutdown_timeout_s: 2.0
+    session_shutdown_timeout_s: 3.0

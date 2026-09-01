@@ -25,8 +25,17 @@ if TYPE_CHECKING:
 type Scenario = Literal["routine", "deep_tool", "live_voice"]
 
 _DURATIONS: tuple[tuple[str, str, str], ...] = (
-    ("endpoint_to_commit_ms", "endpoint_candidate", "utterance_committed"),
-    ("commit_to_asr_final_ms", "utterance_committed", "asr_final"),
+    (
+        "endpoint_candidate_to_gap_free_audio_ms",
+        "endpoint_candidate",
+        "audio_input_endpoint_committed",
+    ),
+    (
+        "gap_free_audio_to_asr_final_ms",
+        "audio_input_endpoint_committed",
+        "asr_final",
+    ),
+    ("asr_final_to_durable_utterance_ms", "asr_final", "utterance_committed"),
     (
         "llm_sdk_call_start_to_batch_complete_ms",
         "llm_sdk_request_call_started_upper_bound",

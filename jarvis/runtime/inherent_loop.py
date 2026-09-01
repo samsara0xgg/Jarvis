@@ -99,13 +99,16 @@ from jarvis.runtime import (
     drive_turn,
 )
 from jarvis.shared import Event
+from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.surface import (
     voice_asr,
     voice_audio,
+    voice_backend,
     voice_ducking,
     voice_media,
     voice_pipeline,
+    voice_session,
     voice_tts,
     voice_wake,
 )
@@ -754,6 +757,7 @@ def _build_voice_pipeline(
     aliases / corrections land in a follow-up.
     """
     recognizer = voice_asr.SenseVoiceRecognizer(model_dir=sensevoice_dir)
+    recognizer.prewarm()
     normalizer = voice_asr.AsrNormalizer(
         corrections=[],
         aliases={},
@@ -1044,6 +1048,212 @@ def _spawn_wake_listener(
     )
     listener.start()
     return listener, stream
+
+
+@dataclasses.dataclass(frozen=True)
+class _SingleIngressActivation:
+    """Validated Wave-3 activation decision before any input device open."""
+
+    requested: bool
+    capable: bool
+    reason: str
+    ingress_config: voice_audio.AudioIngressConfig | None = None
+    session_config: voice_session.RealtimeInputSessionConfig | None = None
+
+
+def _single_ingress_activation(  # noqa: PLR0911 - each fail-closed prerequisite has a named result
+    runtime: JarvisRuntime,
+    *,
+    tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+) -> _SingleIngressActivation:
+    """Validate feature flags, Wave-1/2 dependencies, and strict input bounds."""
+    realtime_raw = runtime.config.get("realtime")
+    realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
+    ingress_raw = realtime.get("single_audio_ingress")
+    ingress_values = ingress_raw if isinstance(ingress_raw, Mapping) else {}
+    requested = ingress_values.get("enabled") is True
+    if not requested:
+        return _SingleIngressActivation(
+            requested=False,
+            capable=False,
+            reason="feature_disabled",
+        )
+    if realtime.get("enabled") is not True:
+        return _SingleIngressActivation(
+            requested=True,
+            capable=False,
+            reason="realtime_parent_disabled",
+        )
+    if ingress_values.get("backend", "sounddevice") != "sounddevice":
+        return _SingleIngressActivation(
+            requested=True,
+            capable=False,
+            reason="unsupported_input_backend",
+        )
+    try:
+        ingress_config = voice_audio.audio_ingress_config_from_mapping(ingress_values)
+        session_config = voice_session.realtime_input_session_config_from_mapping(
+            ingress_values,
+        )
+    except ValueError as exc:
+        return _SingleIngressActivation(
+            requested=True,
+            capable=False,
+            reason=f"invalid_input_config:{exc}",
+        )
+    if not (
+        runtime.wave1_features.transactional_event_append
+        and runtime.wave1_features.lifecycle_terminal_cas
+    ):
+        return _SingleIngressActivation(
+            requested=True,
+            capable=False,
+            reason="wave1_capability_missing",
+        )
+    streaming_raw = realtime.get("streaming_output")
+    streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
+    if streaming.get("enabled") is not True or not isinstance(
+        tts,
+        voice_media.StreamingTTSPipeline,
+    ):
+        return _SingleIngressActivation(
+            requested=True,
+            capable=False,
+            reason="wave2_streaming_output_missing",
+        )
+    return _SingleIngressActivation(
+        requested=True,
+        capable=True,
+        reason="validated",
+        ingress_config=ingress_config,
+        session_config=session_config,
+    )
+
+
+def _spawn_single_ingress_session(  # noqa: PLR0911 - each pre/post-device downgrade has distinct ownership semantics
+    *,
+    runtime: JarvisRuntime,
+    pipeline: voice_pipeline.VoicePipeline,
+    broadcaster: InherentBroadcaster,
+    silero_path: Path,
+    tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+) -> tuple[voice_session.DuplexVoiceSession | None, bool]:
+    """Start Wave 3 or return whether a device-open attempt was made.
+
+    ``attempted=True`` forbids legacy wake fallback for this boot even when
+    startup failed: a timed-out foreign PortAudio open may still own the
+    default microphone.  ``attempted=False`` means no input owner was touched,
+    so a failed prerequisite/config validation may explicitly use legacy wake.
+    """
+    activation = _single_ingress_activation(runtime, tts=tts)
+    if not activation.requested:
+        return None, False
+    if not activation.capable:
+        LOGGER.warning(
+            "realtime.single_audio_ingress validation failed (%s); "
+            "downgraded to legacy wake before opening an input owner.",
+            activation.reason,
+        )
+        record_realtime_trace(
+            "audio_input_activation_downgraded",
+            reason=activation.reason,
+            fallback="legacy_wake",
+            input_owner_attempted=False,
+        )
+        return None, False
+    ingress_config = activation.ingress_config
+    session_config = activation.session_config
+    if ingress_config is None or session_config is None:
+        msg = "validated single ingress activation lacks parsed config"
+        raise RuntimeError(msg)
+    engine = voice_wake.WakeEngine(model_name="hey_jarvis_v0.1")
+    try:
+        # Model construction/download happens before PortAudio owns the mic.
+        engine.start()
+    except Exception:
+        LOGGER.exception(
+            "realtime.single_audio_ingress wake model failed before device open; "
+            "downgraded to legacy wake.",
+        )
+        with contextlib.suppress(Exception):
+            engine.close()
+        return None, False
+
+    def _capability_changed(snapshot: voice_audio.InputCapabilitySnapshot) -> None:
+        log = LOGGER.info if snapshot.local_capture_available else LOGGER.warning
+        log(
+            "audio input capability state=%s epoch=%s reason=%s "
+            "wake=%s local_capture=%s ptt_upload=%s text=%s",
+            snapshot.state.value,
+            snapshot.stream_epoch,
+            snapshot.reason,
+            snapshot.wake_available,
+            snapshot.local_capture_available,
+            snapshot.ptt_upload_available,
+            snapshot.text_available,
+        )
+
+    try:
+        backend = voice_backend.SoundDeviceDuplexBackend(
+            input_format=voice_backend.AudioInputFormat(
+                sample_rate_hz=ingress_config.canonical_sample_rate_hz,
+                channels=1,
+                callback_frame_samples=ingress_config.canonical_frame_samples,
+            ),
+            open_timeout_s=ingress_config.backend_open_timeout_s,
+            close_timeout_s=ingress_config.backend_close_timeout_s,
+        )
+        ingress = voice_audio.AudioIngress(
+            backend=backend,
+            config=ingress_config,
+            capability_sink=_capability_changed,
+        )
+        vad = voice_audio.SileroVad(mode="record", model_path=silero_path)
+        session = voice_session.DuplexVoiceSession(
+            ingress=ingress,
+            wake_engine=engine,
+            vad=vad,
+            pipeline=pipeline,
+            broadcaster=broadcaster,
+            output_active=(tts.is_output_active if tts is not None else None),
+            wake_threshold=_DEFAULT_WAKE_THRESHOLD,
+            config=session_config,
+        )
+    except Exception:
+        LOGGER.exception(
+            "realtime.single_audio_ingress construction failed before device open; "
+            "downgraded to legacy wake.",
+        )
+        with contextlib.suppress(Exception):
+            engine.close()
+        return None, False
+    try:
+        start_result = session.start()
+    except Exception:
+        LOGGER.exception(
+            "realtime.single_audio_ingress construction failed; preserving "
+            "text/PTT-upload only and refusing a second input owner.",
+        )
+        with contextlib.suppress(Exception):
+            session.close()
+        return None, True
+    if not start_result.started:
+        LOGGER.warning(
+            "realtime.single_audio_ingress start failed state=%s reason=%s; "
+            "preserving text/PTT-upload only and refusing legacy mic fallback.",
+            start_result.ingress.capability.state.value,
+            start_result.ingress.capability.reason,
+        )
+        close_result = session.close()
+        record_realtime_trace(
+            "audio_input_activation_downgraded",
+            reason=start_result.ingress.capability.reason,
+            fallback="text_ptt_upload",
+            input_owner_attempted=True,
+            definitively_closed=close_result.definitively_closed,
+        )
+        return None, True
+    return session, True
 
 
 # --- ADR-0009 D4: supervisor sweep control plane ---------------------------
@@ -1387,6 +1597,9 @@ def _start_repo_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
 def _install_power_observer_or_degrade(
     conn: sqlite3.Connection,
     loop: asyncio.AbstractEventLoop,
+    *,
+    before_sleep_hook: Callable[[], object] | None = None,
+    on_wake_hook: Callable[[], object] | None = None,
 ) -> PowerObserver | None:
     """Install the ADR-0009 D3 power observer; ``None`` if it cannot register.
 
@@ -1400,7 +1613,12 @@ def _install_power_observer_or_degrade(
     orphaned by an unobserved sleep on the next restart instead.
     """
     try:
-        return install_power_observer(conn, loop=loop)
+        return install_power_observer(
+            conn,
+            loop=loop,
+            before_sleep_hook=before_sleep_hook,
+            on_wake_hook=on_wake_hook,
+        )
     except Exception:
         LOGGER.exception(
             "power observer install failed; serving without sleep/wake "
@@ -1486,7 +1704,30 @@ def _shutdown_wake(
             LOGGER.debug("wake_stream close failed", exc_info=True)
 
 
-async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring branch necessarily inflates body length + branch count.
+def _shutdown_duplex_voice_session(
+    session: voice_session.DuplexVoiceSession | None,
+) -> voice_session.VoiceSessionCloseResult | None:
+    """Close Wave-3 input ownership and retain a typed shutdown trace."""
+    if session is None:
+        return None
+    try:
+        result = session.close()
+    except Exception:
+        LOGGER.exception("duplex voice session close raised")
+        return None
+    if not result.definitively_closed:
+        LOGGER.error(
+            "duplex voice session close incomplete: backend=%s workers=%s "
+            "pending_detections=%d pending_commits=%d",
+            result.ingress.backend_result,
+            result.alive_threads,
+            result.pending_detections,
+            result.pending_commits,
+        )
+    return result
+
+
+async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring branch necessarily inflates body length + branch count.
     runtime: JarvisRuntime,
     *,
     host: str = "127.0.0.1",
@@ -1619,6 +1860,7 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
         tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None = None
         wake_listener: voice_wake.WakeListener | None = None
         wake_stream: Any | None = None
+        duplex_voice_session: voice_session.DuplexVoiceSession | None = None
         voice_pipeline_callable: Any | None = None
         # ADR-0005 §5.1 / §5.3: ONE shared SystemAudioDucker arbitrates
         # wake-capture muting against TTS provider/playback output leases.
@@ -1653,15 +1895,23 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
                         "JARVIS_VOICE_DISABLE_WAKE=1; skipping WakeListener spawn.",
                     )
                 else:
-                    spawn_result = _spawn_wake_listener(
+                    duplex_voice_session, single_ingress_attempted = _spawn_single_ingress_session(
+                        runtime=runtime,
                         pipeline=voice_pipe,
                         broadcaster=broadcaster,
                         silero_path=silero_path,
                         tts=tts_pipe,
-                        ducker=shared_ducker,
                     )
-                    if spawn_result is not None:
-                        wake_listener, wake_stream = spawn_result
+                    if duplex_voice_session is None and not single_ingress_attempted:
+                        spawn_result = _spawn_wake_listener(
+                            pipeline=voice_pipe,
+                            broadcaster=broadcaster,
+                            silero_path=silero_path,
+                            tts=tts_pipe,
+                            ducker=shared_ducker,
+                        )
+                        if spawn_result is not None:
+                            wake_listener, wake_stream = spawn_result
             except Exception:
                 LOGGER.exception(
                     "voice subsystem construction failed; running text-only.",
@@ -1671,6 +1921,7 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
                 tts_pipe = None
                 wake_listener = None
                 wake_stream = None
+                duplex_voice_session = None
 
         deps = InherentDeps(
             submit_callable=submit_callable,
@@ -1729,8 +1980,21 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
         # that owns the serve lifetime, so its registered CFRunLoop thread
         # is bracketed by the same `finally` that tears the watchers down;
         # no path between install and try can leak a live registration.
+        before_sleep_hook = (
+            duplex_voice_session.ingress.stop_for_sleep
+            if duplex_voice_session is not None
+            else None
+        )
+        on_wake_hook = (
+            duplex_voice_session.ingress.resume_after_wake
+            if duplex_voice_session is not None
+            else None
+        )
         power_observer = _install_power_observer_or_degrade(
-            runtime.conn, asyncio.get_running_loop(),
+            runtime.conn,
+            asyncio.get_running_loop(),
+            before_sleep_hook=before_sleep_hook,
+            on_wake_hook=on_wake_hook,
         )
 
         try:
@@ -1743,13 +2007,17 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
             # below (wake / TTS / ducker / watcher cancel) is loop-thread
             # work that would otherwise be racing that notification.
             _shutdown_power_observer(power_observer)
-            # Install the TTS generation gate BEFORE cancelling the watcher.
-            # The watcher only enqueues into TTSPipeline's owned daemon worker;
-            # no TTS provider/fallback work belongs to asyncio's default
-            # executor. Late PCM/fallback is rejected from this point.
-            _request_tts_close(tts_pipe)
-            # Wake then releases the mic and unwinds any capture duck.
-            _shutdown_wake(wake_listener, wake_stream)
+            if duplex_voice_session is not None:
+                # ADR-0006 F14: revoke the input epoch first. Wave 3 never
+                # turns captured speech into playback hard-cancel; TTS close
+                # remains an independent output-owner transition below.
+                _shutdown_duplex_voice_session(duplex_voice_session)
+                _request_tts_close(tts_pipe)
+            else:
+                # Feature-off legacy order is intentionally unchanged: gate
+                # TTS first so legacy capture ducking cannot mute new output.
+                _request_tts_close(tts_pipe)
+                _shutdown_wake(wake_listener, wake_stream)
             # Cancel/await watcher ownership before PortAudio teardown. A
             # provider thread may still exist, but the closed generation owns
             # no right to write or invoke fallback.

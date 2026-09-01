@@ -574,6 +574,8 @@ def install_power_observer(
     *,
     observer_factory: Callable[[], PowerObserver] | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
+    before_sleep_hook: Callable[[], object] | None = None,
+    on_wake_hook: Callable[[], object] | None = None,
 ) -> PowerObserver:
     """Register the macOS power observer; wire sleep/wake callbacks.
 
@@ -604,6 +606,10 @@ def install_power_observer(
             (default) the callbacks run inline on whatever thread fires
             them, which is the one-shot CLI's shape and the byte-for-byte
             K7/K8 stub contract.
+        before_sleep_hook: Optional runtime-owned bounded media shutdown
+            called before the durable sleep events are emitted.
+        on_wake_hook: Optional runtime-owned bounded media reopen called after
+            durable wake reconciliation.
 
     Returns:
         The registered observer. The caller may later call
@@ -625,6 +631,8 @@ def install_power_observer(
 
     def _before_sleep() -> None:
         """Emit mac.sleeping + per-action worker.suspended_by_sleep."""
+        if before_sleep_hook is not None:
+            before_sleep_hook()
         in_progress = _in_progress_actions(conn)
         emit_event(
             conn,
@@ -664,6 +672,8 @@ def install_power_observer(
             },
         )
         reconcile_after_wake(conn)
+        if on_wake_hook is not None:
+            on_wake_hook()
 
     before_sleep_cb: Callable[[], None] = _before_sleep
     on_wake_cb: Callable[[], None] = _on_wake
