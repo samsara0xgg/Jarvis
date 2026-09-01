@@ -42,6 +42,7 @@ class RealtimeInputSessionConfig:
 
     pre_roll_ms: int = 500
     max_utterance_s: float = 30.0
+    armed_no_speech_timeout_s: float = 3.0
     min_voiced_s: float = 1.0
     wake_subscriber_capacity: int = 64
     capture_subscriber_capacity: int = 128
@@ -90,6 +91,18 @@ class UtteranceCaptureFailure:
 
 
 @dataclass(frozen=True)
+class WakeArmExpired:
+    """False wake expired before speech; future speech requires a fresh wake."""
+
+    session_id: str
+    utterance_id: str
+    turn_id: str
+    stream_epoch: int
+    input_sample_cursor: int
+    reason: str = "armed_no_speech_timeout"
+
+
+@dataclass(frozen=True)
 class VoiceSessionStartResult:
     """Typed session startup result."""
 
@@ -126,6 +139,7 @@ class VoiceSessionMetrics:
     diagnostic_frames: int
     diagnostic_last_cursor: int | None
     wake_prediction_failures: int
+    armed_no_speech_timeouts: int
 
 
 class _WakeEnginePort(Protocol):
@@ -271,12 +285,18 @@ class UtteranceAssembler:
             1,
             int(config.min_voiced_s * sample_rate_hz / frame_samples),
         )
+        self._armed_timeout_samples = max(
+            frame_samples,
+            int(config.armed_no_speech_timeout_s * sample_rate_hz),
+        )
         self._state = _AssemblerState.IDLE
         self._stream_epoch: int | None = None
         self._expected_cursor: int | None = None
         self._utterance_id = ""
         self._turn_id = ""
         self._wake_cursor = 0
+        self._armed_deadline_cursor = 0
+        self._armed_deadline_monotonic_ns = 0
         self._audio_frames: list[bytes] = []
         self._start_cursor = 0
         self._voiced_frames = 0
@@ -310,7 +330,7 @@ class UtteranceAssembler:
     def arm(
         self,
         detection: WakeDetection,
-    ) -> tuple[CapturedUtterance | UtteranceCaptureFailure, ...]:
+    ) -> tuple[CapturedUtterance | UtteranceCaptureFailure | WakeArmExpired, ...]:
         """Arm from the exact wake cursor and replay only already-consumed suffix."""
         self._state = _AssemblerState.ARMED
         self._stream_epoch = detection.stream_epoch
@@ -318,6 +338,12 @@ class UtteranceAssembler:
         self._utterance_id = "U" + secrets.token_hex(8)
         self._turn_id = "T" + secrets.token_hex(4)
         self._wake_cursor = detection.input_sample_cursor
+        self._armed_deadline_cursor = (
+            detection.input_sample_cursor + self._armed_timeout_samples
+        )
+        self._armed_deadline_monotonic_ns = detection.observed_monotonic_ns + int(
+            self._config.armed_no_speech_timeout_s * 1_000_000_000,
+        )
         self._audio_frames.clear()
         self._speech_pre_roll.clear()
         self._voiced_frames = 0
@@ -330,17 +356,19 @@ class UtteranceAssembler:
         self._idle_history.clear()
         if replay:
             self._expected_cursor = replay[0].sample_cursor
-        outcomes: list[CapturedUtterance | UtteranceCaptureFailure] = []
+        outcomes: list[
+            CapturedUtterance | UtteranceCaptureFailure | WakeArmExpired
+        ] = []
         for frame in replay:
             outcome = self.feed(frame)
             if outcome is not None:
                 outcomes.append(outcome)
         return tuple(outcomes)
 
-    def feed(
+    def feed(  # noqa: C901 - linear ARMED/ACTIVE endpoint state machine
         self,
         frame: voice_audio.CanonicalAudioFrame,
-    ) -> CapturedUtterance | UtteranceCaptureFailure | None:
+    ) -> CapturedUtterance | UtteranceCaptureFailure | WakeArmExpired | None:
         """Consume one canonical frame and return only terminal assembly outcomes."""
         if self._state is _AssemblerState.IDLE:
             self.observe_idle(frame)
@@ -369,6 +397,25 @@ class UtteranceAssembler:
             self._vad.prepare_utterance()
             self._stream_epoch = frame.stream_epoch
         self._expected_cursor = frame.sample_cursor + frame.frame_count
+        if self._state is _AssemblerState.ARMED and (
+            self._expected_cursor >= self._armed_deadline_cursor
+            or (
+                self._armed_deadline_monotonic_ns > 0
+                and frame.captured_monotonic_ns >= self._armed_deadline_monotonic_ns
+            )
+        ):
+            expired = WakeArmExpired(
+                session_id=self._session_id,
+                utterance_id=self._utterance_id,
+                turn_id=self._turn_id,
+                stream_epoch=frame.stream_epoch,
+                input_sample_cursor=frame.sample_cursor + frame.frame_count,
+            )
+            self.reset_to_idle()
+            self._idle_history.clear()
+            self._vad.prepare_utterance()
+            self.observe_idle(frame)
+            return expired
         event = self._vad.feed(frame.pcm16_mono)
         if self._state is _AssemblerState.ARMED:
             self._speech_pre_roll.append(frame)
@@ -389,6 +436,16 @@ class UtteranceAssembler:
             endpoint_reason = "max_duration"
         if endpoint_reason is None:
             return None
+        record_realtime_trace(
+            "endpoint_candidate",
+            session_id=self._session_id,
+            utterance_id=self._utterance_id,
+            turn_id=self._turn_id,
+            stream_epoch=frame.stream_epoch,
+            input_sample_cursor=frame.sample_cursor + frame.frame_count,
+            endpoint_reason=endpoint_reason,
+            measurement_boundary="software_correlated_vad_assembler",
+        )
         audio_bytes = b"".join(self._audio_frames)
         utterance = CapturedUtterance(
             session_id=self._session_id,
@@ -411,6 +468,8 @@ class UtteranceAssembler:
         self._utterance_id = ""
         self._turn_id = ""
         self._wake_cursor = 0
+        self._armed_deadline_cursor = 0
+        self._armed_deadline_monotonic_ns = 0
         self._audio_frames.clear()
         self._speech_pre_roll.clear()
         self._voiced_frames = 0
@@ -471,6 +530,7 @@ class DuplexVoiceSession:
         self._stop = threading.Event()
         self._threads: tuple[threading.Thread, ...] = ()
         self._started = False
+        self._started_threads: list[threading.Thread] = []
         self._wake_windows = 0
         self._wake_detections = 0
         self._wake_suppressed_during_output = 0
@@ -481,6 +541,7 @@ class DuplexVoiceSession:
         self._diagnostic_frames = 0
         self._diagnostic_last_cursor: int | None = None
         self._wake_prediction_failures = 0
+        self._armed_no_speech_timeouts = 0
 
     def start(self) -> VoiceSessionStartResult:
         """Prewarm models, start ingress, then start bounded software owners."""
@@ -493,6 +554,10 @@ class DuplexVoiceSession:
             self._wake_subscription.close()
             self._capture_subscription.close()
             self._diagnostic_subscription.close()
+            try:
+                self._wake_engine.close()
+            except Exception:  # noqa: BLE001 - failed ingress must still return typed
+                LOGGER.debug("wake engine close failed after ingress start failure", exc_info=True)
             return VoiceSessionStartResult(started=False, ingress=ingress_result)
         self._stop.clear()
         self._threads = (
@@ -513,8 +578,22 @@ class DuplexVoiceSession:
                 daemon=False,
             ),
         )
-        for thread in self._threads:
-            thread.start()
+        self._started_threads.clear()
+        try:
+            for thread in self._threads:
+                thread.start()
+                self._started_threads.append(thread)
+        except BaseException:
+            self._stop.set()
+            self._ingress.close()
+            deadline = time.monotonic() + self._config.shutdown_timeout_s
+            for started_thread in self._started_threads:
+                started_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            try:
+                self._wake_engine.close()
+            except Exception:  # noqa: BLE001 - preserve original start failure
+                LOGGER.debug("wake engine close failed after partial start", exc_info=True)
+            raise
         self._started = True
         record_realtime_trace(
             "duplex_voice_session_started",
@@ -653,9 +732,22 @@ class DuplexVoiceSession:
 
     def _handle_capture_outcome(
         self,
-        outcome: CapturedUtterance | UtteranceCaptureFailure,
+        outcome: CapturedUtterance | UtteranceCaptureFailure | WakeArmExpired,
     ) -> None:
         self._capture_subscription.set_active_utterance(active=False)
+        if isinstance(outcome, WakeArmExpired):
+            self._armed_no_speech_timeouts += 1
+            record_realtime_trace(
+                "audio_input_wake_arm_expired",
+                session_id=outcome.session_id,
+                utterance_id=outcome.utterance_id,
+                turn_id=outcome.turn_id,
+                stream_epoch=outcome.stream_epoch,
+                input_sample_cursor=outcome.input_sample_cursor,
+                reason=outcome.reason,
+                measurement_boundary="software_armed_timeout",
+            )
+            return
         if isinstance(outcome, UtteranceCaptureFailure):
             self._capture_discontinuities += 1
             record_realtime_trace(
@@ -774,6 +866,7 @@ class DuplexVoiceSession:
             diagnostic_frames=self._diagnostic_frames,
             diagnostic_last_cursor=self._diagnostic_last_cursor,
             wake_prediction_failures=self._wake_prediction_failures,
+            armed_no_speech_timeouts=self._armed_no_speech_timeouts,
         )
 
     @property
@@ -786,13 +879,13 @@ class DuplexVoiceSession:
         ingress_result = self._ingress.close()
         self._stop.set()
         deadline = time.monotonic() + self._config.shutdown_timeout_s
-        for thread in self._threads:
+        for thread in self._started_threads:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
         try:
             self._wake_engine.close()
         except Exception:  # noqa: BLE001 - report thread/backend ownership separately
             LOGGER.debug("wake engine close failed", exc_info=True)
-        alive = tuple(thread.name for thread in self._threads if thread.is_alive())
+        alive = tuple(thread.name for thread in self._started_threads if thread.is_alive())
         result = VoiceSessionCloseResult(
             ingress=ingress_result,
             alive_threads=alive,
@@ -841,6 +934,10 @@ def realtime_input_session_config_from_mapping(
             "max_utterance_s",
             defaults.max_utterance_s,
         ),
+        armed_no_speech_timeout_s=_positive_float(
+            "armed_no_speech_timeout_s",
+            defaults.armed_no_speech_timeout_s,
+        ),
         min_voiced_s=_positive_float("min_voiced_s", defaults.min_voiced_s),
         wake_subscriber_capacity=_positive_int(
             "wake_subscriber_capacity",
@@ -883,6 +980,7 @@ __all__ = [
     "VoiceSessionCloseResult",
     "VoiceSessionMetrics",
     "VoiceSessionStartResult",
+    "WakeArmExpired",
     "WakeDetection",
     "WakeWindowFramer",
     "realtime_input_session_config_from_mapping",

@@ -43,6 +43,16 @@ class BackendStopStatus(enum.Enum):
     CLOSE_UNCERTAIN = "close_uncertain"
 
 
+class BackendLifecycleState(enum.Enum):
+    """Single physical-owner FSM state published by the backend ledger."""
+
+    CLOSED = "closed"
+    OPENING = "opening"
+    OPEN = "open"
+    CLOSING = "closing"
+    UNCERTAIN = "uncertain"
+
+
 @dataclass(frozen=True)
 class AudioInputFormat:
     """Native PCM layout delivered by a backend callback."""
@@ -101,6 +111,7 @@ class BackendStartResult:
     stream_epoch: int
     profile: InputDeviceProfile | None
     reason: str | None = None
+    attempt_id: str | None = None
 
     @property
     def started(self) -> bool:
@@ -116,6 +127,7 @@ class BackendStopResult:
     stream_epoch: int
     reason: str | None = None
     helper_thread_alive: bool = False
+    attempt_id: str | None = None
 
     @property
     def definitively_closed(self) -> bool:
@@ -134,6 +146,20 @@ class BackendFault:
     code: str
     detail: str
     recoverable: bool
+    attempt_id: str | None = None
+
+
+@dataclass(frozen=True)
+class BackendOwnershipSnapshot:
+    """Monotonic physical ownership truth, including unresolved helper debt."""
+
+    state: BackendLifecycleState
+    stream_epoch: int | None
+    attempt_id: str | None
+    version: int
+    physical_owner_possible: bool
+    helper_thread_alive: bool
+    reason: str | None = None
 
 
 class RenderSource(Protocol):
@@ -151,6 +177,7 @@ class InputFrameSink(Protocol):
         self,
         *,
         stream_epoch: int,
+        attempt_id: str,
         callback_buffer: Any,  # noqa: ANN401
         frame_count: int,
         adc_time_s: float | None,
@@ -168,13 +195,19 @@ class AudioDuplexBackend(Protocol):
         self,
         *,
         stream_epoch: int,
+        attempt_id: str,
         frame_sink: InputFrameSink,
         render_source: RenderSource | None = None,
     ) -> BackendStartResult:
         """Open one epoch and start callbacks."""
         ...
 
-    def stop(self, *, stream_epoch: int) -> BackendStopResult:
+    def stop(
+        self,
+        *,
+        stream_epoch: int,
+        attempt_id: str,
+    ) -> BackendStopResult:
         """Stop exactly the requested epoch with a hard implementation bound."""
         ...
 
@@ -198,6 +231,10 @@ class AudioDuplexBackend(Protocol):
         """Return implementation capabilities, independent of route policy."""
         ...
 
+    def ownership_snapshot(self) -> BackendOwnershipSnapshot:
+        """Return the backend's non-lossy physical ownership ledger."""
+        ...
+
 
 class _DefaultInputOwnerRegistry:
     """Process-wide assertion that the default microphone has one owner."""
@@ -208,7 +245,10 @@ class _DefaultInputOwnerRegistry:
     @classmethod
     def claim(cls, token: object) -> bool:
         with cls._lock:
-            if cls._owner_token is not None and cls._owner_token is not token:
+            # Claims are deliberately non-reentrant, including for the same
+            # token. Backend FSM state must prove CLOSED before any new open;
+            # a lingering registry claim is ownership debt, never permission.
+            if cls._owner_token is not None:
                 return False
             cls._owner_token = token
             return True
@@ -286,33 +326,45 @@ def _open_sounddevice_input_stream(
 class _StartAttempt:
     """Cross-thread result box for one bounded PortAudio open."""
 
+    stream_epoch: int
+    attempt_id: str
     done: threading.Event
-    cancelled: threading.Event
-    handoff_lock: threading.Lock
+    helper: threading.Thread | None = None
+    cancel_requested: bool = False
     stream: Any | None = None
     profile: InputDeviceProfile | None = None
     error: BaseException | None = None
-    state_uncertain: bool = False
+    cleanup_error: BaseException | None = None
 
 
 @dataclass
 class _StopAttempt:
     """Cross-thread result box for one bounded PortAudio close."""
 
+    stream_epoch: int
+    attempt_id: str
+    close_attempt_id: int
     done: threading.Event
+    helper: threading.Thread | None = None
     error: BaseException | None = None
 
 
-class SoundDeviceDuplexBackend:
-    """One callback-driven PortAudio input owner with typed bounded lifecycle.
+@dataclass
+class _RouteQueryAttempt:
+    """Single bounded default-route query; late completion is reusable."""
 
-    PortAudio open/close are foreign calls and cannot be force-cancelled safely
-    from Python.  They run in named daemon helpers solely to impose caller
-    bounds. A timed-out operation is reported as ``*_UNCERTAIN`` and retains
-    the process-wide owner claim until a late helper proves the stream closed,
-    so the daemon cannot open a second input and pretend the first one closed.
-    A late successful open observes its cancel flag and immediately closes the
-    stream instead of publishing callbacks.
+    done: threading.Event
+    helper: threading.Thread | None = None
+    device_uid: str | None = None
+
+
+class SoundDeviceDuplexBackend:
+    """One callback-driven PortAudio input owner with a non-lossy attempt FSM.
+
+    Foreign open/close calls cannot be cancelled safely. Each physical claim
+    therefore remains in one stable ownership attempt until an exact helper
+    proves it closed. Timeouts retain that debt as ``UNCERTAIN``; helper thread
+    exit alone is never treated as proof that the device closed.
     """
 
     def __init__(
@@ -331,15 +383,79 @@ class SoundDeviceDuplexBackend:
         self._close_timeout_s = close_timeout_s
         self._owner_token = object()
         self._lock = threading.Lock()
+        self._state = BackendLifecycleState.CLOSED
+        self._state_reason: str | None = None
+        self._version = 0
         self._stream: Any | None = None
         self._profile: InputDeviceProfile | None = None
-        self._active_epoch: int | None = None
-        self._state_uncertain = False
-        self._callback_fault_epoch: int | None = None
-        self._callback_fault_code: str | None = None
-        self._finished_epoch: int | None = None
+        self._stream_epoch: int | None = None
+        self._attempt_id: str | None = None
+        self._open_attempt: _StartAttempt | None = None
+        self._close_attempt: _StopAttempt | None = None
+        self._close_attempt_sequence = 0
+        self._last_closed_epoch: int | None = None
+        self._last_closed_attempt_id: str | None = None
+        self._callback_fault: tuple[int, str, str] | None = None
+        self._finished_attempt: tuple[int, str] | None = None
+        self._route_query_attempt: _RouteQueryAttempt | None = None
         self._callback_count = 0
         self._callback_deadline_misses = 0
+
+    def _transition_locked(
+        self,
+        state: BackendLifecycleState,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        self._state = state
+        self._state_reason = reason
+        self._version += 1
+
+    def _publish_closed_locked(self, *, attempt_id: str, stream_epoch: int) -> bool:
+        """CAS one exact ownership attempt to CLOSED and release its claim."""
+        if self._attempt_id != attempt_id or self._stream_epoch != stream_epoch:
+            return False
+        self._last_closed_epoch = stream_epoch
+        self._last_closed_attempt_id = attempt_id
+        self._stream = None
+        self._profile = None
+        self._stream_epoch = None
+        self._attempt_id = None
+        self._open_attempt = None
+        self._close_attempt = None
+        self._callback_fault = None
+        self._finished_attempt = None
+        self._transition_locked(BackendLifecycleState.CLOSED)
+        _DefaultInputOwnerRegistry.release(self._owner_token)
+        return True
+
+    def ownership_snapshot(self) -> BackendOwnershipSnapshot:
+        """Return current physical ownership truth without consuming it."""
+        with self._lock:
+            helper = (
+                self._close_attempt.helper
+                if self._close_attempt is not None
+                else self._open_attempt.helper
+                if self._open_attempt is not None
+                else None
+            )
+            return BackendOwnershipSnapshot(
+                state=self._state,
+                stream_epoch=self._stream_epoch,
+                attempt_id=self._attempt_id,
+                version=self._version,
+                physical_owner_possible=self._state is not BackendLifecycleState.CLOSED,
+                helper_thread_alive=bool(helper is not None and helper.is_alive()),
+                reason=self._state_reason,
+            )
+
+    def _open_commit_allowed_locked(self, attempt: _StartAttempt) -> bool:
+        """Hide cross-thread state narrowing behind one exact CAS predicate."""
+        return (
+            self._open_attempt is attempt
+            and self._state is BackendLifecycleState.OPENING
+            and not attempt.cancel_requested
+        )
 
     def input_format(self) -> AudioInputFormat:
         """Return the fixed native callback format."""
@@ -363,6 +479,7 @@ class SoundDeviceDuplexBackend:
         self,
         *,
         stream_epoch: int,
+        attempt_id: str,
         frame_sink: InputFrameSink,
         render_source: RenderSource | None = None,
     ) -> BackendStartResult:
@@ -373,35 +490,52 @@ class SoundDeviceDuplexBackend:
                 stream_epoch=stream_epoch,
                 profile=None,
                 reason="sounddevice_wave3_render_source_not_owned",
+                attempt_id=attempt_id,
             )
         with self._lock:
-            if self._state_uncertain:
+            if self._state is BackendLifecycleState.UNCERTAIN:
                 return BackendStartResult(
                     status=BackendStartStatus.OPEN_UNCERTAIN,
                     stream_epoch=stream_epoch,
                     profile=None,
-                    reason="prior_device_state_uncertain",
+                    reason=self._state_reason or "prior_device_state_uncertain",
+                    attempt_id=self._attempt_id,
                 )
-            if self._stream is not None or not _DefaultInputOwnerRegistry.claim(
-                self._owner_token,
-            ):
+            if self._state is not BackendLifecycleState.CLOSED:
+                return BackendStartResult(
+                    status=BackendStartStatus.OWNER_BUSY,
+                    stream_epoch=stream_epoch,
+                    profile=None,
+                    reason=f"backend_{self._state.value}",
+                    attempt_id=self._attempt_id,
+                )
+            if not _DefaultInputOwnerRegistry.claim(self._owner_token):
                 return BackendStartResult(
                     status=BackendStartStatus.OWNER_BUSY,
                     stream_epoch=stream_epoch,
                     profile=None,
                     reason="default_input_already_owned",
+                    attempt_id=attempt_id,
                 )
+            attempt = _StartAttempt(
+                stream_epoch=stream_epoch,
+                attempt_id=attempt_id,
+                done=threading.Event(),
+            )
+            self._stream_epoch = stream_epoch
+            self._attempt_id = attempt_id
+            self._open_attempt = attempt
+            self._close_attempt = None
+            self._stream = None
+            self._profile = None
+            self._transition_locked(BackendLifecycleState.OPENING)
 
         record_realtime_trace(
             "audio_input_stream_open_started",
             stream_epoch=stream_epoch,
+            attempt_id=attempt_id,
             backend="sounddevice",
             measurement_boundary="software_owner_control",
-        )
-        attempt = _StartAttempt(
-            done=threading.Event(),
-            cancelled=threading.Event(),
-            handoff_lock=threading.Lock(),
         )
         expected_callback_ns = int(
             self._input_format.callback_frame_samples
@@ -415,8 +549,9 @@ class SoundDeviceDuplexBackend:
             time_info: Any,  # noqa: ANN401
             status: Any,  # noqa: ANN401
         ) -> None:
-            # ADC realtime boundary: scalar bookkeeping + one private copy
-            # sink only.  No logger/trace/database/event/await/user callback.
+            # ADC realtime boundary: bounded scalar bookkeeping and one
+            # private copy sink. It performs small Python allocations; it
+            # never waits, logs, performs I/O, awaits, or calls user code.
             callback_started_ns = time.monotonic_ns()
             self._callback_count += 1
             try:
@@ -425,6 +560,7 @@ class SoundDeviceDuplexBackend:
                 discontinuity = bool(status and getattr(status, "input_overflow", False))
                 frame_sink(
                     stream_epoch=stream_epoch,
+                    attempt_id=attempt_id,
                     callback_buffer=callback_buffer,
                     frame_count=frame_count,
                     adc_time_s=adc_time_s,
@@ -432,18 +568,20 @@ class SoundDeviceDuplexBackend:
                     discontinuity_before=discontinuity,
                 )
             except Exception:  # noqa: BLE001 - callback must fail closed without logging
-                self._callback_fault_epoch = stream_epoch
-                self._callback_fault_code = "callback_sink_error"
+                self._callback_fault = (
+                    stream_epoch,
+                    attempt_id,
+                    "callback_sink_error",
+                )
             if time.monotonic_ns() - callback_started_ns > expected_callback_ns:
                 self._callback_deadline_misses += 1
 
         def _finished_callback() -> None:
             # PortAudio thread: publish a scalar for poll_fault(); no logging.
-            self._finished_epoch = stream_epoch
+            self._finished_attempt = (stream_epoch, attempt_id)
 
-        def _open() -> None:
+        def _open() -> None:  # noqa: C901 - exact foreign-open cleanup FSM
             stream: Any | None = None
-            result_published = False
             try:
                 profile = _default_input_device_profile(self._input_format)
                 stream = _open_sounddevice_input_stream(
@@ -458,61 +596,96 @@ class SoundDeviceDuplexBackend:
                 current_profile = _default_input_device_profile(self._input_format)
                 _assert_default_profile_unchanged(profile, current_profile)
                 stream.start()
-                with attempt.handoff_lock:
-                    cancelled = attempt.cancelled.is_set()
-                    if not cancelled:
+                with self._lock:
+                    exact = (
+                        self._attempt_id == attempt_id
+                        and self._stream_epoch == stream_epoch
+                        and self._open_attempt is attempt
+                    )
+                    if exact:
                         attempt.stream = stream
                         attempt.profile = profile
-                        # Result publication and completion share the handoff
-                        # lock with the timeout path. A boundary-time success
-                        # therefore cannot strand an open stream in the box.
-                        attempt.done.set()
-                        result_published = True
+                        self._stream = stream
+                        self._profile = profile
+                    cancelled = not exact or attempt.cancel_requested
                 if cancelled:
                     try:
                         stream.abort()
-                    finally:
                         stream.close()
-                    _DefaultInputOwnerRegistry.release(self._owner_token)
+                    except Exception as close_exc:  # noqa: BLE001
+                        attempt.cleanup_error = close_exc
+                        with self._lock:
+                            if exact:
+                                self._transition_locked(
+                                    BackendLifecycleState.UNCERTAIN,
+                                    reason=_foreign_error_reason(close_exc),
+                                )
+                    else:
+                        with self._lock:
+                            self._publish_closed_locked(
+                                attempt_id=attempt_id,
+                                stream_epoch=stream_epoch,
+                            )
             except Exception as exc:  # noqa: BLE001 - foreign open surfaced as typed failure
                 attempt.error = exc
-                if stream is None:
-                    _DefaultInputOwnerRegistry.release(self._owner_token)
-                else:
+                if stream is not None:
                     try:
                         stream.abort()
                         stream.close()
                     except Exception as close_exc:  # noqa: BLE001 - cleanup ownership boundary
-                        attempt.error = close_exc
-                        attempt.state_uncertain = True
-                    else:
-                        _DefaultInputOwnerRegistry.release(self._owner_token)
+                        attempt.cleanup_error = close_exc
+                with self._lock:
+                    exact = (
+                        self._attempt_id == attempt_id
+                        and self._stream_epoch == stream_epoch
+                        and self._open_attempt is attempt
+                    )
+                    if exact and attempt.cleanup_error is not None:
+                        if stream is not None:
+                            self._stream = stream
+                        self._transition_locked(
+                            BackendLifecycleState.UNCERTAIN,
+                            reason=_foreign_error_reason(attempt.cleanup_error),
+                        )
+                    elif exact:
+                        self._publish_closed_locked(
+                            attempt_id=attempt_id,
+                            stream_epoch=stream_epoch,
+                        )
             finally:
-                if not result_published:
-                    with attempt.handoff_lock:
-                        attempt.done.set()
+                attempt.done.set()
 
         helper = threading.Thread(
             target=_open,
             name=f"jarvis-audio-input-open-e{stream_epoch}",
             daemon=True,
         )
-        helper.start()
+        attempt.helper = helper
+        try:
+            helper.start()
+        except RuntimeError as exc:
+            attempt.error = exc
+            with self._lock:
+                self._publish_closed_locked(
+                    attempt_id=attempt_id,
+                    stream_epoch=stream_epoch,
+                )
+            attempt.done.set()
         timed_out = not attempt.done.wait(timeout=self._open_timeout_s)
         if timed_out:
-            with attempt.handoff_lock:
-                # The helper may have completed on the timeout boundary before
-                # this lock was acquired. In that case consume its definitive
-                # result instead of falsely returning OPEN_UNCERTAIN.
-                timed_out = not attempt.done.is_set()
-                if timed_out:
-                    attempt.cancelled.set()
-        if timed_out:
             with self._lock:
-                self._state_uncertain = True
+                timed_out = not attempt.done.is_set()
+                if timed_out and self._open_attempt is attempt:
+                    attempt.cancel_requested = True
+                    self._transition_locked(
+                        BackendLifecycleState.UNCERTAIN,
+                        reason="open_timeout",
+                    )
+        if timed_out:
             record_realtime_trace(
                 "audio_input_stream_open_failed",
                 stream_epoch=stream_epoch,
+                attempt_id=attempt_id,
                 backend="sounddevice",
                 outcome="bounded_timeout_state_uncertain",
                 helper_thread_alive=helper.is_alive(),
@@ -522,18 +695,18 @@ class SoundDeviceDuplexBackend:
                 stream_epoch=stream_epoch,
                 profile=None,
                 reason="open_timeout",
+                attempt_id=attempt_id,
             )
-        if attempt.state_uncertain:
-            with self._lock:
-                self._state_uncertain = True
+        if attempt.cleanup_error is not None:
             reason = (
-                _foreign_error_reason(attempt.error)
-                if attempt.error is not None
+                _foreign_error_reason(attempt.cleanup_error)
+                if attempt.cleanup_error is not None
                 else "open_cleanup_state_uncertain"
             )
             record_realtime_trace(
                 "audio_input_stream_open_failed",
                 stream_epoch=stream_epoch,
+                attempt_id=attempt_id,
                 backend="sounddevice",
                 outcome="cleanup_state_uncertain",
                 reason=reason,
@@ -543,6 +716,7 @@ class SoundDeviceDuplexBackend:
                 stream_epoch=stream_epoch,
                 profile=None,
                 reason=reason,
+                attempt_id=attempt_id,
             )
         if attempt.error is not None or attempt.stream is None or attempt.profile is None:
             reason = (
@@ -553,6 +727,7 @@ class SoundDeviceDuplexBackend:
             record_realtime_trace(
                 "audio_input_stream_open_failed",
                 stream_epoch=stream_epoch,
+                attempt_id=attempt_id,
                 backend="sounddevice",
                 outcome="failed_closed",
                 reason=reason,
@@ -562,17 +737,24 @@ class SoundDeviceDuplexBackend:
                 stream_epoch=stream_epoch,
                 profile=None,
                 reason=reason,
+                attempt_id=attempt_id,
             )
         with self._lock:
-            self._stream = attempt.stream
-            self._profile = attempt.profile
-            self._active_epoch = stream_epoch
-            self._finished_epoch = None
-            self._callback_fault_epoch = None
-            self._callback_fault_code = None
+            if not self._open_commit_allowed_locked(attempt):
+                return BackendStartResult(
+                    status=BackendStartStatus.OPEN_UNCERTAIN,
+                    stream_epoch=stream_epoch,
+                    profile=None,
+                    reason=self._state_reason or "open_commit_revoked",
+                    attempt_id=attempt_id,
+                )
+            self._finished_attempt = None
+            self._callback_fault = None
+            self._transition_locked(BackendLifecycleState.OPEN)
         record_realtime_trace(
             "audio_input_stream_opened",
             stream_epoch=stream_epoch,
+            attempt_id=attempt_id,
             backend="sounddevice",
             device_uid=attempt.profile.device_uid,
             sample_rate_hz=self._input_format.sample_rate_hz,
@@ -584,76 +766,181 @@ class SoundDeviceDuplexBackend:
             status=BackendStartStatus.STARTED,
             stream_epoch=stream_epoch,
             profile=attempt.profile,
+            attempt_id=attempt_id,
         )
 
-    def stop(self, *, stream_epoch: int) -> BackendStopResult:
-        """Abort and close one epoch without ever claiming an uncertain close."""
+    def _close_result_from_snapshot(
+        self,
+        *,
+        stream_epoch: int,
+        attempt_id: str,
+        reason: str | None = None,
+    ) -> BackendStopResult:
         with self._lock:
-            stream = self._stream
-            active_epoch = self._active_epoch
-            if stream is None and self._state_uncertain:
+            helper = (
+                self._close_attempt.helper
+                if self._close_attempt is not None
+                else self._open_attempt.helper
+                if self._open_attempt is not None
+                else None
+            )
+            if self._state is BackendLifecycleState.CLOSED:
                 return BackendStopResult(
-                    status=BackendStopStatus.CLOSE_UNCERTAIN,
+                    status=BackendStopStatus.CLOSED,
                     stream_epoch=stream_epoch,
-                    reason="prior_foreign_call_state_uncertain",
-                    helper_thread_alive=True,
+                    reason=reason,
+                    attempt_id=attempt_id,
                 )
-            if stream is None or active_epoch != stream_epoch:
+            return BackendStopResult(
+                status=BackendStopStatus.CLOSE_UNCERTAIN,
+                stream_epoch=self._stream_epoch or stream_epoch,
+                reason=reason or self._state_reason or f"backend_{self._state.value}",
+                helper_thread_alive=bool(helper is not None and helper.is_alive()),
+                attempt_id=self._attempt_id or attempt_id,
+            )
+
+    def stop(  # noqa: C901, PLR0912, PLR0915 - exact bounded close/join FSM
+        self,
+        *,
+        stream_epoch: int,
+        attempt_id: str,
+    ) -> BackendStopResult:
+        """Close or join the exact physical debt; never infer from worker exit."""
+        wait_event: threading.Event
+        launch_close = False
+        with self._lock:
+            if self._state is BackendLifecycleState.CLOSED:
                 return BackendStopResult(
                     status=BackendStopStatus.ALREADY_CLOSED,
                     stream_epoch=stream_epoch,
-                    reason="epoch_not_active",
+                    reason="backend_closed",
+                    attempt_id=attempt_id,
                 )
-            # Reject a second stop while the foreign close is in flight.
-            self._stream = None
-            self._active_epoch = None
-        attempt = _StopAttempt(done=threading.Event())
+            actual_epoch = self._stream_epoch
+            actual_attempt_id = self._attempt_id
+            if actual_epoch is None or actual_attempt_id is None:
+                return BackendStopResult(
+                    status=BackendStopStatus.CLOSE_UNCERTAIN,
+                    stream_epoch=stream_epoch,
+                    reason="ownership_ledger_incomplete",
+                    attempt_id=attempt_id,
+                )
+            if self._state is BackendLifecycleState.OPENING or (
+                self._state is BackendLifecycleState.UNCERTAIN
+                and self._open_attempt is not None
+                and not self._open_attempt.done.is_set()
+            ):
+                open_attempt = self._open_attempt
+                if open_attempt is None:
+                    return BackendStopResult(
+                        status=BackendStopStatus.CLOSE_UNCERTAIN,
+                        stream_epoch=actual_epoch,
+                        reason="opening_attempt_ledger_missing",
+                        attempt_id=actual_attempt_id,
+                    )
+                open_attempt.cancel_requested = True
+                if self._state is BackendLifecycleState.OPENING:
+                    self._transition_locked(
+                        BackendLifecycleState.UNCERTAIN,
+                        reason="close_requested_during_open",
+                    )
+                wait_event = open_attempt.done
+                close_attempt = None
+            elif (
+                self._state is BackendLifecycleState.CLOSING
+                and self._close_attempt is not None
+            ):
+                wait_event = self._close_attempt.done
+                close_attempt = self._close_attempt
+            else:
+                stream = self._stream
+                if stream is None:
+                    return BackendStopResult(
+                        status=BackendStopStatus.CLOSE_UNCERTAIN,
+                        stream_epoch=actual_epoch,
+                        reason=self._state_reason or "owned_stream_handle_missing",
+                        attempt_id=actual_attempt_id,
+                    )
+                owned_stream = stream
+                self._close_attempt_sequence += 1
+                close_attempt = _StopAttempt(
+                    stream_epoch=actual_epoch,
+                    attempt_id=actual_attempt_id,
+                    close_attempt_id=self._close_attempt_sequence,
+                    done=threading.Event(),
+                )
+                self._close_attempt = close_attempt
+                self._transition_locked(BackendLifecycleState.CLOSING)
+                wait_event = close_attempt.done
+                launch_close = True
 
-        def _close() -> None:
-            try:
-                stream.abort()
-                stream.close()
-                # Release only after the foreign close actually returns. This
-                # also prevents a timeout-boundary success from permanently
-                # poisoning the process-wide owner registry.
-                _DefaultInputOwnerRegistry.release(self._owner_token)
-            except Exception as exc:  # noqa: BLE001 - foreign close surfaced as typed result
-                attempt.error = exc
-            finally:
-                attempt.done.set()
+        if close_attempt is not None and launch_close:
+            def _close() -> None:
+                try:
+                    owned_stream.abort()
+                    owned_stream.close()
+                except Exception as exc:  # noqa: BLE001
+                    close_attempt.error = exc
+                    with self._lock:
+                        if self._close_attempt is close_attempt:
+                            self._transition_locked(
+                                BackendLifecycleState.UNCERTAIN,
+                                reason=_foreign_error_reason(exc),
+                            )
+                else:
+                    with self._lock:
+                        self._publish_closed_locked(
+                            attempt_id=close_attempt.attempt_id,
+                            stream_epoch=close_attempt.stream_epoch,
+                        )
+                finally:
+                    close_attempt.done.set()
 
-        helper = threading.Thread(
-            target=_close,
-            name=f"jarvis-audio-input-close-e{stream_epoch}",
-            daemon=True,
-        )
-        helper.start()
-        if not attempt.done.wait(timeout=self._close_timeout_s):
-            with self._lock:
-                self._state_uncertain = True
-            result = BackendStopResult(
-                status=BackendStopStatus.CLOSE_UNCERTAIN,
-                stream_epoch=stream_epoch,
-                reason="close_timeout",
-                helper_thread_alive=helper.is_alive(),
+            helper = threading.Thread(
+                target=_close,
+                name=(
+                    f"jarvis-audio-input-close-e{close_attempt.stream_epoch}"
+                    f"-a{close_attempt.close_attempt_id}"
+                ),
+                daemon=True,
             )
-        elif attempt.error is not None:
+            close_attempt.helper = helper
+            try:
+                helper.start()
+            except RuntimeError as exc:
+                close_attempt.error = exc
+                with self._lock:
+                    if self._close_attempt is close_attempt:
+                        self._transition_locked(
+                            BackendLifecycleState.UNCERTAIN,
+                            reason=_foreign_error_reason(exc),
+                        )
+                close_attempt.done.set()
+
+        if not wait_event.wait(timeout=self._close_timeout_s):
             with self._lock:
-                self._state_uncertain = True
-            result = BackendStopResult(
-                status=BackendStopStatus.CLOSE_UNCERTAIN,
-                stream_epoch=stream_epoch,
-                reason=_foreign_error_reason(attempt.error),
-                helper_thread_alive=helper.is_alive(),
+                if self._state in {
+                    BackendLifecycleState.OPENING,
+                    BackendLifecycleState.CLOSING,
+                }:
+                    self._transition_locked(
+                        BackendLifecycleState.UNCERTAIN,
+                        reason="close_timeout",
+                    )
+            result = self._close_result_from_snapshot(
+                stream_epoch=actual_epoch,
+                attempt_id=actual_attempt_id,
+                reason="close_timeout",
             )
         else:
-            result = BackendStopResult(
-                status=BackendStopStatus.CLOSED,
-                stream_epoch=stream_epoch,
+            result = self._close_result_from_snapshot(
+                stream_epoch=actual_epoch,
+                attempt_id=actual_attempt_id,
             )
         record_realtime_trace(
             "audio_input_stream_closed",
-            stream_epoch=stream_epoch,
+            stream_epoch=result.stream_epoch,
+            attempt_id=result.attempt_id,
             backend="sounddevice",
             outcome=result.status.value,
             reason=result.reason,
@@ -664,26 +951,35 @@ class SoundDeviceDuplexBackend:
     def poll_fault(self, *, stream_epoch: int) -> BackendFault | None:
         """Surface callback, finished-stream, and inactive-stream faults."""
         with self._lock:
-            if self._callback_fault_epoch == stream_epoch:
-                code = self._callback_fault_code or "callback_error"
-                self._callback_fault_epoch = None
-                self._callback_fault_code = None
+            attempt_id = self._attempt_id
+            if (
+                self._callback_fault is not None
+                and self._callback_fault[:2] == (stream_epoch, attempt_id)
+            ):
+                code = self._callback_fault[2]
+                self._callback_fault = None
                 return BackendFault(
                     stream_epoch=stream_epoch,
                     code=code,
                     detail=code,
                     recoverable=True,
+                    attempt_id=attempt_id,
                 )
-            if self._finished_epoch == stream_epoch:
-                self._finished_epoch = None
+            if self._finished_attempt == (stream_epoch, attempt_id):
+                self._finished_attempt = None
                 return BackendFault(
                     stream_epoch=stream_epoch,
                     code="stream_finished",
                     detail="PortAudio finished callback fired",
                     recoverable=True,
+                    attempt_id=attempt_id,
                 )
             stream = self._stream
-            if self._active_epoch != stream_epoch or stream is None:
+            if (
+                self._state is not BackendLifecycleState.OPEN
+                or self._stream_epoch != stream_epoch
+                or stream is None
+            ):
                 return None
             try:
                 active = bool(stream.active)
@@ -693,6 +989,7 @@ class SoundDeviceDuplexBackend:
                     code="stream_state_error",
                     detail=_foreign_error_reason(exc),
                     recoverable=True,
+                    attempt_id=attempt_id,
                 )
             if not active:
                 return BackendFault(
@@ -700,15 +997,48 @@ class SoundDeviceDuplexBackend:
                     code="stream_inactive",
                     detail="PortAudio stream reports inactive",
                     recoverable=True,
+                    attempt_id=attempt_id,
                 )
         return None
 
     def current_device_uid(self) -> str | None:
-        """Resolve the current default input for route-change detection."""
-        try:
-            return _default_input_device_profile(self._input_format).device_uid
-        except Exception:  # noqa: BLE001 - default-device provider boundary
+        """Resolve default input through one bounded, non-accumulating helper."""
+        with self._lock:
+            attempt = self._route_query_attempt
+            if attempt is not None and attempt.done.is_set():
+                self._route_query_attempt = None
+                return attempt.device_uid
+            if attempt is None:
+                attempt = _RouteQueryAttempt(done=threading.Event())
+                self._route_query_attempt = attempt
+
+                def _query() -> None:
+                    try:
+                        attempt.device_uid = _default_input_device_profile(
+                            self._input_format,
+                        ).device_uid
+                    except Exception:  # noqa: BLE001 - provider boundary
+                        attempt.device_uid = None
+                    finally:
+                        attempt.done.set()
+
+                helper = threading.Thread(
+                    target=_query,
+                    name="jarvis-audio-input-route-query",
+                    daemon=True,
+                )
+                attempt.helper = helper
+                try:
+                    helper.start()
+                except RuntimeError:
+                    self._route_query_attempt = None
+                    return None
+        if not attempt.done.wait(timeout=min(0.05, self._open_timeout_s)):
             return None
+        with self._lock:
+            if self._route_query_attempt is attempt:
+                self._route_query_attempt = None
+            return attempt.device_uid
 
     @property
     def callback_count(self) -> int:
@@ -726,6 +1056,8 @@ __all__ = [
     "AudioInputFormat",
     "BackendCapabilities",
     "BackendFault",
+    "BackendLifecycleState",
+    "BackendOwnershipSnapshot",
     "BackendStartResult",
     "BackendStartStatus",
     "BackendStopResult",

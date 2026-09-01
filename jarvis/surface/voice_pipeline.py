@@ -79,6 +79,14 @@ class VoicePipeline:
         self._artifacts_dir = artifacts_dir
         self._sample_rate_hz = sample_rate_hz
 
+    def prewarm_input_model(self) -> None:
+        """Prewarm the concrete local ASR provider for single-ingress activation."""
+        prewarm = getattr(self._recognizer, "prewarm", None)
+        if not callable(prewarm):
+            msg = "configured ASR recognizer does not expose prewarm()"
+            raise TypeError(msg)
+        prewarm()
+
     def run_turn(  # noqa: C901, PLR0912, PLR0913 — wake/PTT toggles widen the signature; splitting would shred the single locked critical section.
         self,
         *,

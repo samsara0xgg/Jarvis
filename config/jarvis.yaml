@@ -167,6 +167,7 @@ realtime:
     pre_roll_ms: 500
     min_voiced_s: 1.0
     max_utterance_s: 30.0
+    armed_no_speech_timeout_s: 3.0
     worker_poll_s: 0.002
     session_worker_poll_s: 0.005
     fault_poll_s: 0.02

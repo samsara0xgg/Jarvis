@@ -101,7 +101,9 @@ def test_reused_vad_resets_prewarms_and_waits_for_consecutive_silence(
         "each utterance must run five silent prewarm inferences before real frames"
     )
     endpoint_points = [
-        point for point in realtime_trace_snapshot() if point.name == "endpoint_candidate"
+        point
+        for point in realtime_trace_snapshot()
+        if point.name == "vad_endpoint_candidate"
     ]
     assert [point.attributes["consecutive_silence_frames"] for point in endpoint_points] == [
         required_misses,

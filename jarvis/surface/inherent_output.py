@@ -96,6 +96,7 @@ class InherentBroadcaster:
         # unit tests of ``voice_pipeline`` that pass a bare broadcaster
         # stay loop-free.
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._latest_voice_capability: dict[str, object] | None = None
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Store the daemon's event loop for the worker-thread → broadcaster bridge.
@@ -112,6 +113,17 @@ class InherentBroadcaster:
         """Add a connected WS client to the registry. Idempotent."""
         async with self._lock:
             self._clients.add(ws)
+            capability = (
+                dict(self._latest_voice_capability)
+                if self._latest_voice_capability is not None
+                else None
+            )
+        if capability is not None:
+            try:
+                await ws.send_json({"op": "voice_capability", "payload": capability})
+            except Exception:  # noqa: BLE001 - reconnect snapshot uses F4 removal
+                async with self._lock:
+                    self._clients.discard(ws)
 
     async def unregister(self, ws: WebSocket) -> None:
         """Remove a disconnected WS client from the registry. Idempotent."""
@@ -267,6 +279,75 @@ class InherentBroadcaster:
             return
         asyncio.run_coroutine_threadsafe(
             self.broadcast_voice(phase, turn_id=turn_id, **payload),
+            loop,
+        )
+
+    async def broadcast_voice_capability(  # noqa: PLR0913 - explicit wire schema
+        self,
+        *,
+        version: int,
+        state: str,
+        stream_epoch: int | None,
+        reason: str,
+        wake_available: bool,
+        local_capture_available: bool,
+        ptt_upload_available: bool,
+        text_available: bool,
+    ) -> None:
+        """Publish and retain one versioned ephemeral input-capability snapshot."""
+        payload: dict[str, object] = {
+            "version": version,
+            "state": state,
+            "stream_epoch": stream_epoch,
+            "reason": reason,
+            "wake_available": wake_available,
+            "local_capture_available": local_capture_available,
+            "ptt_upload_available": ptt_upload_available,
+            "text_available": text_available,
+        }
+        async with self._lock:
+            prior = self._latest_voice_capability
+            if prior is not None:
+                prior_version = prior.get("version")
+                if isinstance(prior_version, int) and prior_version >= version:
+                    return
+            self._latest_voice_capability = payload
+        await self._send_all(
+            {"op": "voice_capability", "payload": payload},
+            turn_id=f"input-capability-v{version}",
+        )
+
+    def broadcast_voice_capability_sync(  # noqa: PLR0913 - explicit wire schema
+        self,
+        *,
+        version: int,
+        state: str,
+        stream_epoch: int | None,
+        reason: str,
+        wake_available: bool,
+        local_capture_available: bool,
+        ptt_upload_available: bool,
+        text_available: bool,
+    ) -> None:
+        """Schedule a capability snapshot from the ingress worker thread."""
+        loop = self._loop
+        if loop is None:
+            LOGGER.warning(
+                "voice capability v%s dropped before broadcaster loop attach",
+                version,
+            )
+            return
+        asyncio.run_coroutine_threadsafe(
+            self.broadcast_voice_capability(
+                version=version,
+                state=state,
+                stream_epoch=stream_epoch,
+                reason=reason,
+                wake_available=wake_available,
+                local_capture_available=local_capture_available,
+                ptt_upload_available=ptt_upload_available,
+                text_available=text_available,
+            ),
             loop,
         )
 

@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Literal, Self, cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -241,6 +241,34 @@ def _player(*, ring_seconds: float = 0.25) -> voice_tts.AudioStreamPlayer:
         generation_safe=True,
         estimated_output_latency_s=0.0,
     )
+
+
+def test_media_power_transition_stops_then_reopens_fresh_player_stream(
+    tmp_path: Path,
+) -> None:
+    """System sleep/wake uses typed bounded output lifecycle, not speech cancel."""
+    db_path = tmp_path / "power-media.db"
+    conn = open_event_log(db_path)
+    conn.close()
+    player = MagicMock(spec=voice_tts.AudioStreamPlayer)
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=_FakeProvider(),
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), shutdown_timeout_s=1.0),
+        start_player=True,
+    )
+    suspended = pipeline.suspend_for_sleep(timeout_s=1.0)
+    assert suspended.status == "suspended"
+    assert suspended.succeeded
+    assert player.stop.call_count == 1
+    resumed = pipeline.resume_after_wake(timeout_s=1.0)
+    assert resumed.status == "resumed"
+    assert resumed.succeeded
+    assert resumed.attempt_id > suspended.attempt_id
+    assert player.start.call_count == 2
+    assert pipeline.close(wait_timeout_s=1.0)
 
 
 def _config() -> voice_media.StreamingMediaConfig:

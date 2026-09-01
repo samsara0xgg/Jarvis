@@ -3,24 +3,32 @@
 # ruff: noqa: SLF001 - private owner/ring seams are the race surface under test.
 from __future__ import annotations
 
+import asyncio
+import json
 import threading
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
 
 from jarvis.runtime import inherent_loop
 from jarvis.shared.realtime import Wave1FeatureFlags
+from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.surface import (
     voice_asr,
     voice_audio,
     voice_backend,
     voice_media,
+    voice_pipeline,
     voice_session,
+    voice_wake,
 )
+from jarvis.surface.inherent_output import InherentBroadcaster
+from scripts import bench_voice_audio_ingress as voice_input_bench
+from tools.realtime_trace_report import TraceRow, summarize_trace
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -50,18 +58,22 @@ class _FakeBackend:
         self.format = voice_backend.AudioInputFormat(16_000, 1, 512)
         self.stop_status = stop_status
         self.sinks: dict[int, voice_backend.InputFrameSink] = {}
+        self.attempts: dict[int, str] = {}
         self.active_epoch: int | None = None
+        self.active_attempt_id: str | None = None
         self.device_uid = "fake-input-A"
         self.pending_fault: voice_backend.BackendFault | None = None
         self.start_count = 0
         self.stop_count = 0
         self.active_owner_count = 0
         self.max_active_owner_count = 0
+        self.ownership_version = 0
 
     def start(
         self,
         *,
         stream_epoch: int,
+        attempt_id: str,
         frame_sink: voice_backend.InputFrameSink,
         render_source: voice_backend.RenderSource | None = None,
     ) -> voice_backend.BackendStartResult:
@@ -69,12 +81,15 @@ class _FakeBackend:
         assert self.active_epoch is None, "a second physical owner was opened"
         self.start_count += 1
         self.active_epoch = stream_epoch
+        self.active_attempt_id = attempt_id
+        self.ownership_version += 1
         self.active_owner_count += 1
         self.max_active_owner_count = max(
             self.max_active_owner_count,
             self.active_owner_count,
         )
         self.sinks[stream_epoch] = frame_sink
+        self.attempts[stream_epoch] = attempt_id
         profile = voice_backend.InputDeviceProfile(
             device_uid=self.device_uid,
             device_name=self.device_uid,
@@ -85,14 +100,25 @@ class _FakeBackend:
             status=voice_backend.BackendStartStatus.STARTED,
             stream_epoch=stream_epoch,
             profile=profile,
+            attempt_id=attempt_id,
         )
 
-    def stop(self, *, stream_epoch: int) -> voice_backend.BackendStopResult:
+    def stop(
+        self,
+        *,
+        stream_epoch: int,
+        attempt_id: str,
+    ) -> voice_backend.BackendStopResult:
         self.stop_count += 1
-        if self.active_epoch == stream_epoch:
+        if (
+            self.active_epoch == stream_epoch
+            and self.active_attempt_id == attempt_id
+            and self.stop_status is voice_backend.BackendStopStatus.CLOSED
+        ):
             self.active_epoch = None
-            if self.stop_status is voice_backend.BackendStopStatus.CLOSED:
-                self.active_owner_count -= 1
+            self.active_attempt_id = None
+            self.active_owner_count -= 1
+            self.ownership_version += 1
         return voice_backend.BackendStopResult(
             status=self.stop_status,
             stream_epoch=stream_epoch,
@@ -101,6 +127,7 @@ class _FakeBackend:
                 if self.stop_status is voice_backend.BackendStopStatus.CLOSE_UNCERTAIN
                 else None
             ),
+            attempt_id=attempt_id,
         )
 
     def emit(
@@ -113,6 +140,7 @@ class _FakeBackend:
         callback_owned = bytearray(_pcm(value))
         self.sinks[epoch](
             stream_epoch=epoch,
+            attempt_id=self.attempts[epoch],
             callback_buffer=callback_owned,
             frame_count=512,
             adc_time_s=time.monotonic(),
@@ -149,20 +177,47 @@ class _FakeBackend:
             reliable_dac_time=False,
         )
 
+    def ownership_snapshot(self) -> voice_backend.BackendOwnershipSnapshot:
+        state = (
+            voice_backend.BackendLifecycleState.CLOSED
+            if self.active_epoch is None
+            else voice_backend.BackendLifecycleState.OPEN
+            if self.stop_status is voice_backend.BackendStopStatus.CLOSED
+            else voice_backend.BackendLifecycleState.UNCERTAIN
+        )
+        return voice_backend.BackendOwnershipSnapshot(
+            state=state,
+            stream_epoch=self.active_epoch,
+            attempt_id=self.active_attempt_id,
+            version=self.ownership_version,
+            physical_owner_possible=self.active_epoch is not None,
+            helper_thread_alive=False,
+            reason=(
+                "injected_stuck_backend"
+                if self.active_epoch is not None
+                and state is voice_backend.BackendLifecycleState.UNCERTAIN
+                else None
+            ),
+        )
+
 
 class _EnergySession:
     """ONNX-shaped Silero fixture whose probability follows sample energy."""
+
+    def __init__(self) -> None:
+        self.input_h_values: list[float] = []
 
     def run(
         self,
         _output_names: object,
         inputs: dict[str, np.ndarray],
     ) -> list[np.ndarray]:
+        self.input_h_values.append(float(inputs["h"].flat[0]))
         probability = 0.9 if np.any(inputs["x"]) else 0.0
         return [
             np.asarray([[probability]], dtype=np.float32),
-            inputs["h"].copy(),
-            inputs["c"].copy(),
+            inputs["h"].copy() + 1.0,
+            inputs["c"].copy() + 1.0,
         ]
 
 
@@ -292,6 +347,7 @@ def test_sounddevice_backend_asserts_one_default_input_owner_and_uses_callback()
     def _sink(  # noqa: PLR0913 - mirrors the fixed backend sink contract
         *,
         stream_epoch: int,
+        attempt_id: str,
         callback_buffer: Any,  # noqa: ANN401 - mirrors untyped sounddevice buffer
         frame_count: int,
         adc_time_s: float | None,
@@ -300,6 +356,7 @@ def test_sounddevice_backend_asserts_one_default_input_owner_and_uses_callback()
     ) -> None:
         del (
             stream_epoch,
+            attempt_id,
             frame_count,
             adc_time_s,
             captured_monotonic_ns,
@@ -311,8 +368,8 @@ def test_sounddevice_backend_asserts_one_default_input_owner_and_uses_callback()
         patch.object(voice_backend, "_open_sounddevice_input_stream", side_effect=_open),
         patch.object(voice_backend, "_default_input_device_profile", return_value=profile),
     ):
-        assert first.start(stream_epoch=1, frame_sink=_sink).started
-        busy = second.start(stream_epoch=1, frame_sink=_sink)
+        assert first.start(stream_epoch=1, attempt_id="first-1", frame_sink=_sink).started
+        busy = second.start(stream_epoch=1, attempt_id="second-1", frame_sink=_sink)
         assert busy.status is voice_backend.BackendStartStatus.OWNER_BUSY
         streams[0].callback(
             bytearray(_pcm(123)),
@@ -321,9 +378,9 @@ def test_sounddevice_backend_asserts_one_default_input_owner_and_uses_callback()
             MagicMock(input_overflow=False, __bool__=lambda _self: False),
         )
         assert copied == [_pcm(123)]
-        assert first.stop(stream_epoch=1).definitively_closed
-        assert second.start(stream_epoch=2, frame_sink=_sink).started
-        assert second.stop(stream_epoch=2).definitively_closed
+        assert first.stop(stream_epoch=1, attempt_id="first-1").definitively_closed
+        assert second.start(stream_epoch=2, attempt_id="second-2", frame_sink=_sink).started
+        assert second.stop(stream_epoch=2, attempt_id="second-2").definitively_closed
     assert len(streams) == 2
     assert all(stream.closed for stream in streams)
 
@@ -382,11 +439,11 @@ def test_sounddevice_route_change_during_open_closes_stream_before_owner_release
             side_effect=[first_profile, second_profile, second_profile, second_profile],
         ),
     ):
-        failed = backend.start(stream_epoch=1, frame_sink=MagicMock())
+        failed = backend.start(stream_epoch=1, attempt_id="route-1", frame_sink=MagicMock())
         assert failed.status is voice_backend.BackendStartStatus.FAILED_CLOSED
         assert streams[0].closed
-        assert successor.start(stream_epoch=2, frame_sink=MagicMock()).started
-        assert successor.stop(stream_epoch=2).definitively_closed
+        assert successor.start(stream_epoch=2, attempt_id="route-2", frame_sink=MagicMock()).started
+        assert successor.stop(stream_epoch=2, attempt_id="route-2").definitively_closed
 
 
 def test_sounddevice_open_timeout_late_success_closes_before_owner_release() -> None:
@@ -439,17 +496,32 @@ def test_sounddevice_open_timeout_late_success_closes_before_owner_release() -> 
         patch.object(voice_backend, "_open_sounddevice_input_stream", side_effect=_open),
         patch.object(voice_backend, "_default_input_device_profile", return_value=profile),
     ):
-        timed_out = timed_out_backend.start(stream_epoch=1, frame_sink=MagicMock())
+        timed_out = timed_out_backend.start(
+            stream_epoch=1,
+            attempt_id="timeout-1",
+            frame_sink=MagicMock(),
+        )
         assert first_open_entered.is_set()
         assert timed_out.status is voice_backend.BackendStartStatus.OPEN_UNCERTAIN
         assert (
-            successor.start(stream_epoch=2, frame_sink=MagicMock()).status
+            successor.start(
+                stream_epoch=2,
+                attempt_id="timeout-2",
+                frame_sink=MagicMock(),
+            ).status
             is voice_backend.BackendStartStatus.OWNER_BUSY
         )
         release_first_open.set()
         _wait_until(lambda: bool(streams) and streams[0].closed)
-        assert successor.start(stream_epoch=3, frame_sink=MagicMock()).started
-        assert successor.stop(stream_epoch=3).definitively_closed
+        assert successor.start(
+            stream_epoch=3,
+            attempt_id="timeout-3",
+            frame_sink=MagicMock(),
+        ).started
+        assert successor.stop(
+            stream_epoch=3,
+            attempt_id="timeout-3",
+        ).definitively_closed
     assert len(streams) == 2
     assert all(stream.closed for stream in streams)
 
@@ -505,18 +577,29 @@ def test_sounddevice_close_timeout_releases_owner_only_after_late_close() -> Non
         patch.object(voice_backend, "_open_sounddevice_input_stream", side_effect=_open),
         patch.object(voice_backend, "_default_input_device_profile", return_value=profile),
     ):
-        assert first.start(stream_epoch=1, frame_sink=MagicMock()).started
-        close = first.stop(stream_epoch=1)
+        assert first.start(stream_epoch=1, attempt_id="close-1", frame_sink=MagicMock()).started
+        close = first.stop(stream_epoch=1, attempt_id="close-1")
         assert close_entered.is_set()
         assert close.status is voice_backend.BackendStopStatus.CLOSE_UNCERTAIN
         assert (
-            successor.start(stream_epoch=2, frame_sink=MagicMock()).status
+            successor.start(
+                stream_epoch=2,
+                attempt_id="close-2",
+                frame_sink=MagicMock(),
+            ).status
             is voice_backend.BackendStartStatus.OWNER_BUSY
         )
         release_close.set()
         _wait_until(lambda: streams[0].closed)
-        assert successor.start(stream_epoch=3, frame_sink=MagicMock()).started
-        assert successor.stop(stream_epoch=3).definitively_closed
+        assert successor.start(
+            stream_epoch=3,
+            attempt_id="close-3",
+            frame_sink=MagicMock(),
+        ).started
+        assert successor.stop(
+            stream_epoch=3,
+            attempt_id="close-3",
+        ).definitively_closed
     assert len(streams) == 2
     assert all(stream.closed for stream in streams)
 
@@ -792,10 +875,15 @@ def test_device_fault_close_race_revokes_reopen_before_shutdown() -> None:
             self.stop_entered = threading.Event()
             self.release_stop = threading.Event()
 
-        def stop(self, *, stream_epoch: int) -> voice_backend.BackendStopResult:
+        def stop(
+            self,
+            *,
+            stream_epoch: int,
+            attempt_id: str,
+        ) -> voice_backend.BackendStopResult:
             self.stop_entered.set()
             assert self.release_stop.wait(timeout=0.5)
-            return super().stop(stream_epoch=stream_epoch)
+            return super().stop(stream_epoch=stream_epoch, attempt_id=attempt_id)
 
     backend = _CoordinatedBackend()
     ingress = _ingress(backend)
@@ -836,7 +924,8 @@ def test_duplex_session_runs_two_silero_utterances_without_second_round_truncati
     ingress = _ingress(backend)
     wake_engine = _FakeWakeEngine(detections={0, 4})
     pipeline = _RecordingPipeline()
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    silero_session = _EnergySession()
+    with patch.object(voice_audio, "_load_silero_session", return_value=silero_session):
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
             wake_engine=wake_engine,
@@ -881,6 +970,18 @@ def test_duplex_session_runs_two_silero_utterances_without_second_round_truncati
     assert close.definitively_closed
     assert wake_engine.closed
     assert not close.alive_threads
+    reset_indices = [
+        index for index, value in enumerate(silero_session.input_h_values) if value == 0.0
+    ]
+    assert len(reset_indices) >= 3
+    for reset_index in reset_indices[:3]:
+        assert silero_session.input_h_values[reset_index : reset_index + 5] == [
+            0.0,
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+        ]
 
 
 def test_output_active_keeps_sampling_but_cannot_cancel_or_commit_echo() -> None:
@@ -1070,8 +1171,10 @@ def test_feature_off_on_and_dependency_downgrade_are_explicit() -> None:
     assert invalid.reason.startswith("invalid_input_config:")
 
 
-def test_runtime_prewarms_sensevoice_before_any_input_owner_starts(tmp_path: Path) -> None:
-    """Model/session cold start belongs to daemon construction, not first speech."""
+def test_voice_pipeline_build_is_feature_off_cold_and_explicit_prewarm_is_available(
+    tmp_path: Path,
+) -> None:
+    """Legacy feature-off construction keeps its prior lazy-ASR semantics."""
     runtime = MagicMock()
     runtime.runtime_paths.event_log = tmp_path / "events.db"
     runtime.runtime_paths.artifacts_root = tmp_path / "artifacts"
@@ -1082,8 +1185,10 @@ def test_runtime_prewarms_sensevoice_before_any_input_owner_starts(tmp_path: Pat
             broadcaster=MagicMock(),
             sensevoice_dir=tmp_path / "sensevoice",
         )
-    recognizer.prewarm.assert_called_once_with()
+    recognizer.prewarm.assert_not_called()
     assert pipeline._recognizer is recognizer
+    pipeline.prewarm_input_model()
+    recognizer.prewarm.assert_called_once_with()
 
 
 def test_real_concurrent_churn_1000_epoch_subscribe_fanout_close_cycles() -> None:
@@ -1092,6 +1197,18 @@ def test_real_concurrent_churn_1000_epoch_subscribe_fanout_close_cycles() -> Non
     ingress = _ingress(backend, native_capacity=8, subscriber_capacity=2)
     assert ingress.start().started
     retained: list[bytes] = []
+    barrier: tuple[threading.Event, threading.Event] | None = None
+    original_write = ingress._native_ring.write
+
+    def _barrier_write(**kwargs: object) -> bool:
+        active_barrier = barrier
+        if active_barrier is not None:
+            entered, release = active_barrier
+            entered.set()
+            assert release.wait(timeout=1.0)
+        return original_write(**kwargs)  # type: ignore[arg-type]
+
+    ingress._native_ring.write = _barrier_write  # type: ignore[method-assign]
     for cycle in range(1_000):
         subscription = ingress.subscribe(
             name=f"churn-{cycle}",
@@ -1107,14 +1224,28 @@ def test_real_concurrent_churn_1000_epoch_subscribe_fanout_close_cycles() -> Non
         if cycle < 8:
             retained.append(frame.pcm16_mono)
         subscription.close()
+        entered = threading.Event()
+        release = threading.Event()
+        barrier = (entered, release)
+        stale_callback = threading.Thread(
+            target=lambda old_epoch=epoch: backend.emit(
+                epoch=old_epoch,
+                value=31_000,
+            ),
+            name="wave3-stale-callback-barrier",
+        )
+        stale_callback.start()
+        assert entered.wait(timeout=1.0)
         stopped = ingress.stop_for_sleep()
         assert stopped is not None
         assert stopped.definitively_closed
         reopened = ingress.resume_after_wake()
         assert reopened is not None
         assert reopened.started
-        # The old callback closure remains callable but must never publish.
-        backend.emit(epoch=epoch, value=31_000)
+        release.set()
+        stale_callback.join(timeout=1.0)
+        assert not stale_callback.is_alive()
+        barrier = None
     close = ingress.close()
     assert close.definitively_closed
     assert not close.worker_alive
@@ -1128,3 +1259,649 @@ def test_real_concurrent_churn_1000_epoch_subscribe_fanout_close_cycles() -> Non
         thread.name.startswith("jarvis-audio-ingress") and thread.is_alive()
         for thread in threading.enumerate()
     )
+
+
+def test_false_wake_armed_timeout_requires_a_fresh_wake_for_later_speech() -> None:
+    """Silence expires ARMED identity; unrelated future speech cannot commit."""
+    thresholds = voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2)
+    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+        vad = voice_audio.SileroVad(mode="record")
+        vad._t = thresholds
+        assembler = voice_session.UtteranceAssembler(
+            vad=vad,
+            config=replace(
+                voice_session.RealtimeInputSessionConfig(),
+                armed_no_speech_timeout_s=0.064,
+                pre_roll_ms=32,
+                min_voiced_s=0.032,
+            ),
+            sample_rate_hz=16_000,
+            frame_samples=512,
+            session_id="S-armed-timeout",
+        )
+        assembler.prepare()
+        assembler.arm(voice_session.WakeDetection(1, 0, 0, 0.9))
+
+        def _frame(index: int, value: int) -> voice_audio.CanonicalAudioFrame:
+            return voice_audio.CanonicalAudioFrame(
+                stream_epoch=1,
+                sequence=index,
+                sample_cursor=index * 512,
+                sample_rate_hz=16_000,
+                frame_count=512,
+                adc_time_s=None,
+                captured_monotonic_ns=index,
+                discontinuity_before=False,
+                pcm16_mono=_pcm(value),
+            )
+
+        assert assembler.feed(_frame(0, 0)) is None
+        expired = assembler.feed(_frame(1, 0))
+        assert isinstance(expired, voice_session.WakeArmExpired)
+        assert not assembler.armed
+        assert assembler.feed(_frame(2, 20_000)) is None
+        assert not assembler.armed
+
+        assembler.arm(voice_session.WakeDetection(1, 1536, 3, 0.9))
+        committed = None
+        for index, value in enumerate([20_000, 21_000, 0, 0], start=3):
+            outcome = assembler.feed(_frame(index, value))
+            if isinstance(outcome, voice_session.CapturedUtterance):
+                committed = outcome
+        assert committed is not None
+        assert committed.start_sample_cursor >= 1536
+
+
+def test_old_callback_paused_before_ring_commit_cannot_contaminate_new_epoch() -> None:
+    """The ring's exact publication token is revalidated after slot copy."""
+    backend = _FakeBackend()
+    ingress = _ingress(backend)
+    capture = ingress.subscribe(
+        name="publication-race",
+        purpose=voice_audio.SubscriberPurpose.CAPTURE,
+    )
+    assert ingress.start().started
+    first_epoch = ingress.stream_epoch
+    assert first_epoch == 1
+    entered = threading.Event()
+    release = threading.Event()
+    original_write = ingress._native_ring.write
+    blocked_once = False
+
+    def _barrier_write(**kwargs: object) -> bool:
+        nonlocal blocked_once
+        if not blocked_once:
+            blocked_once = True
+            entered.set()
+            assert release.wait(timeout=1.0)
+        return original_write(**kwargs)  # type: ignore[arg-type]
+
+    ingress._native_ring.write = _barrier_write  # type: ignore[method-assign]
+    old_callback = threading.Thread(
+        target=lambda: backend.emit(epoch=first_epoch, value=111),
+        name="paused-old-epoch-callback",
+    )
+    old_callback.start()
+    assert entered.wait(timeout=1.0)
+    assert ingress.stop_for_sleep() is not None
+    reopened = ingress.resume_after_wake()
+    assert reopened is not None
+    assert reopened.started
+    assert ingress.stream_epoch == 2
+    release.set()
+    old_callback.join(timeout=1.0)
+    assert not old_callback.is_alive()
+    ingress._native_ring.write = original_write  # type: ignore[method-assign]
+    backend.emit(epoch=2, value=222)
+    frame = _read_frames(capture, 1)[0]
+    assert frame.stream_epoch == 2
+    assert frame.sample_cursor == 0
+    assert not frame.discontinuity_before
+    assert int(np.frombuffer(frame.pcm16_mono, dtype="<i2")[0]) == 222
+    assert ingress.metrics().late_epoch_callbacks_rejected == 1
+    assert ingress.close().definitively_closed
+
+
+def test_ring_overflow_vs_consumer_commit_1000_cycles_marks_first_post_gap() -> None:
+    """Producer watermark wins every final-cursor race without writing read_index."""
+    ring = voice_audio._PreallocatedPcmRing(capacity=1, max_frame_bytes=1024)
+
+    def _write(sequence: int, value: int) -> bool:
+        return ring.write(
+            pcm=_pcm(value),
+            byte_count=1024,
+            stream_epoch=1,
+            sequence=sequence,
+            sample_cursor=sequence * 512,
+            sample_rate_hz=16_000,
+            channels=1,
+            frame_count=512,
+            adc_time_s=None,
+            captured_monotonic_ns=sequence,
+            discontinuity_before=False,
+            purpose=voice_audio.SubscriberPurpose.WAKE,
+            active=False,
+        )
+
+    for cycle in range(1_000):
+        sequence = cycle * 2
+        assert _write(sequence, cycle)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _pause(
+            _expected_index: int,
+            entered_event: threading.Event = entered,
+            release_event: threading.Event = release,
+        ) -> None:
+            entered_event.set()
+            assert release_event.wait(timeout=1.0)
+
+        ring._consumer_before_commit_hook = _pause
+        raced: list[voice_audio._OwnedPcmFrame | None] = []
+        def _consume(
+            target: list[voice_audio._OwnedPcmFrame | None] = raced,
+        ) -> None:
+            target.append(ring.read())
+
+        consumer = threading.Thread(target=_consume)
+        consumer.start()
+        assert entered.wait(timeout=1.0)
+        read_before_overflow = ring._read_index
+        assert _write(sequence + 1, cycle + 1)
+        assert ring._read_index == read_before_overflow
+        ring._consumer_before_commit_hook = None
+        release.set()
+        consumer.join(timeout=1.0)
+        assert not consumer.is_alive()
+        assert raced == [None]
+        post_gap = ring.read()
+        assert post_gap is not None
+        assert post_gap.sequence == sequence + 1
+        assert post_gap.discontinuity_before
+    assert ring.overflow_count == 1_000
+
+
+def test_backend_same_instance_open_close_attempts_are_serial_and_monotonic() -> None:
+    """Concurrent same-backend start/close joins one exact physical attempt."""
+
+    class _BlockingStream:
+        active = False
+
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def start(self) -> None:
+            self.active = True
+
+        def abort(self) -> None:
+            self.active = False
+
+        def close(self) -> None:
+            self.close_calls += 1
+            close_entered.set()
+            assert close_release.wait(timeout=1.0)
+
+    open_entered = threading.Event()
+    open_release = threading.Event()
+    close_entered = threading.Event()
+    close_release = threading.Event()
+    streams: list[_BlockingStream] = []
+
+    def _open(**_kwargs: object) -> _BlockingStream:
+        open_entered.set()
+        assert open_release.wait(timeout=1.0)
+        stream = _BlockingStream()
+        streams.append(stream)
+        return stream
+
+    input_format = voice_backend.AudioInputFormat(16_000, 1, 512)
+    profile = voice_backend.InputDeviceProfile(
+        "serial-device",
+        "serial-device",
+        "sounddevice",
+        input_format,
+    )
+    backend = voice_backend.SoundDeviceDuplexBackend(
+        input_format=input_format,
+        open_timeout_s=0.5,
+        close_timeout_s=0.01,
+    )
+    starts: list[voice_backend.BackendStartResult] = []
+    with (
+        patch.object(voice_backend, "_open_sounddevice_input_stream", side_effect=_open),
+        patch.object(voice_backend, "_default_input_device_profile", return_value=profile),
+    ):
+        opener = threading.Thread(
+            target=lambda: starts.append(
+                backend.start(stream_epoch=1, attempt_id="A", frame_sink=MagicMock()),
+            ),
+        )
+        opener.start()
+        assert open_entered.wait(timeout=1.0)
+        concurrent = backend.start(
+            stream_epoch=2,
+            attempt_id="B",
+            frame_sink=MagicMock(),
+        )
+        assert concurrent.status is voice_backend.BackendStartStatus.OWNER_BUSY
+        open_release.set()
+        opener.join(timeout=1.0)
+        assert starts
+        assert starts[0].started
+
+        closes: list[voice_backend.BackendStopResult] = []
+        first_closer = threading.Thread(
+            target=lambda: closes.append(backend.stop(stream_epoch=1, attempt_id="A")),
+        )
+        second_closer = threading.Thread(
+            target=lambda: closes.append(backend.stop(stream_epoch=1, attempt_id="A")),
+        )
+        first_closer.start()
+        assert close_entered.wait(timeout=1.0)
+        second_closer.start()
+        busy = backend.start(stream_epoch=3, attempt_id="C", frame_sink=MagicMock())
+        assert busy.status is voice_backend.BackendStartStatus.OWNER_BUSY
+        first_closer.join(timeout=1.0)
+        second_closer.join(timeout=1.0)
+        assert len(closes) == 2
+        assert all(
+            result.status is voice_backend.BackendStopStatus.CLOSE_UNCERTAIN
+            for result in closes
+        )
+        assert all(not result.definitively_closed for result in closes)
+        assert streams[0].close_calls == 1
+        close_release.set()
+        _wait_until(
+            lambda: backend.ownership_snapshot().state
+            is voice_backend.BackendLifecycleState.CLOSED,
+        )
+        replay = backend.stop(stream_epoch=1, attempt_id="A")
+        assert replay.definitively_closed
+    assert len(streams) == 1
+
+
+@pytest.mark.parametrize("reopen_source", ["fault", "wake"])
+def test_open_timeout_recovery_debt_survives_ingress_close(
+    reopen_source: str,
+) -> None:
+    """Fault/wake open timeout remains close debt until its exact helper settles."""
+    owner_counts = [0, 0]  # active, lifetime maximum
+
+    class _CountingStream:
+        active = False
+        closed = False
+
+        def start(self) -> None:
+            self.active = True
+            owner_counts[0] += 1
+            owner_counts[1] = max(owner_counts[1], owner_counts[0])
+
+        def abort(self) -> None:
+            self.active = False
+
+        def close(self) -> None:
+            if not self.closed:
+                self.closed = True
+                owner_counts[0] -= 1
+
+    second_open_entered = threading.Event()
+    release_second_open = threading.Event()
+    streams: list[_CountingStream] = []
+
+    def _open(**_kwargs: object) -> _CountingStream:
+        if streams:
+            second_open_entered.set()
+            assert release_second_open.wait(timeout=1.0)
+        stream = _CountingStream()
+        streams.append(stream)
+        return stream
+
+    input_format = voice_backend.AudioInputFormat(16_000, 1, 512)
+    profile = voice_backend.InputDeviceProfile(
+        "timeout-recovery-device",
+        "timeout-recovery-device",
+        "sounddevice",
+        input_format,
+    )
+    backend = voice_backend.SoundDeviceDuplexBackend(
+        input_format=input_format,
+        open_timeout_s=0.01,
+        close_timeout_s=0.01,
+    )
+    ingress = voice_audio.AudioIngress(
+        backend=backend,
+        config=replace(
+            voice_audio.AudioIngressConfig(),
+            reopen_initial_backoff_s=0.001,
+            reopen_max_backoff_s=0.001,
+            shutdown_timeout_s=0.02,
+            route_poll_s=60.0,
+        ),
+    )
+    with (
+        patch.object(voice_backend, "_open_sounddevice_input_stream", side_effect=_open),
+        patch.object(voice_backend, "_default_input_device_profile", return_value=profile),
+    ):
+        assert ingress.start().started
+        if reopen_source == "fault":
+            ingress.notify_route_change(reason="injected_fault_reopen")
+        else:
+            stopped = ingress.stop_for_sleep()
+            assert stopped is not None
+            assert stopped.definitively_closed
+            wake = ingress.resume_after_wake()
+            assert wake is not None
+            assert wake.status is voice_backend.BackendStartStatus.OPEN_UNCERTAIN
+        assert second_open_entered.is_set()
+        debt = backend.ownership_snapshot()
+        assert debt.state is voice_backend.BackendLifecycleState.UNCERTAIN
+        first_close = ingress.close()
+        second_close = ingress.close()
+        assert not first_close.definitively_closed
+        assert not second_close.definitively_closed
+        assert first_close.backend_result is not None
+        assert second_close.backend_result is not None
+        release_second_open.set()
+        _wait_until(
+            lambda: backend.ownership_snapshot().state
+            is voice_backend.BackendLifecycleState.CLOSED,
+        )
+        assert ingress.close().definitively_closed
+    assert len(streams) == 2
+    assert owner_counts == [0, 1]
+
+
+def test_sleep_lock_timeout_wake_and_close_never_overwrite_physical_debt() -> None:
+    """Ingress lock timeout still closes backend debt and forbids a second open."""
+    backend = _FakeBackend()
+    ingress = voice_audio.AudioIngress(
+        backend=backend,
+        config=replace(
+            voice_audio.AudioIngressConfig(),
+            shutdown_timeout_s=0.01,
+            route_poll_s=60.0,
+        ),
+    )
+    assert ingress.start().started
+    ingress._lifecycle_lock.acquire()
+    try:
+        slept = ingress.stop_for_sleep()
+        assert slept is not None
+        assert slept.definitively_closed
+        wake = ingress.resume_after_wake()
+        assert wake is not None
+        assert wake.status is voice_backend.BackendStartStatus.OPEN_UNCERTAIN
+        closed = ingress.close()
+    finally:
+        ingress._lifecycle_lock.release()
+    assert closed.definitively_closed
+    assert backend.start_count == 1
+    assert backend.max_active_owner_count == 1
+
+
+def test_duplex_partial_thread_start_failure_closes_started_owners() -> None:
+    """A later Thread.start failure joins only threads that actually started."""
+    backend = _FakeBackend()
+    ingress = _ingress(backend)
+    wake_engine = _FakeWakeEngine(set())
+    session = voice_session.DuplexVoiceSession(
+        ingress=ingress,
+        wake_engine=wake_engine,
+        vad=MagicMock(spec=voice_audio.SileroVad),
+        pipeline=_RecordingPipeline(),
+        broadcaster=None,
+        output_active=None,
+        wake_threshold=0.5,
+        config=replace(
+            voice_session.RealtimeInputSessionConfig(),
+            shutdown_timeout_s=0.5,
+        ),
+    )
+    session._assembler.prepare = MagicMock()  # type: ignore[method-assign]
+    original_start = threading.Thread.start
+
+    def _start(thread: threading.Thread) -> None:
+        if thread.name == "jarvis-utterance-ingress":
+            message = "injected partial start"
+            raise RuntimeError(message)
+        original_start(thread)
+
+    with (
+        patch.object(threading.Thread, "start", _start),
+        pytest.raises(RuntimeError, match="injected partial start"),
+    ):
+        session.start()
+    assert wake_engine.closed
+    assert not any(thread.is_alive() for thread in session._started_threads)
+    assert backend.active_owner_count == 0
+
+
+def test_correlated_endpoint_candidate_is_reportable_by_turn() -> None:
+    """Assembler endpoint and gap-free commit share turn/session identity."""
+    reset_realtime_trace()
+    thresholds = voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2)
+    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+        vad = voice_audio.SileroVad(mode="record")
+        vad._t = thresholds
+        assembler = voice_session.UtteranceAssembler(
+            vad=vad,
+            config=replace(
+                voice_session.RealtimeInputSessionConfig(),
+                min_voiced_s=0.032,
+            ),
+            sample_rate_hz=16_000,
+            frame_samples=512,
+            session_id="S-report",
+        )
+        assembler.prepare()
+        assembler.arm(voice_session.WakeDetection(1, 0, 0, 0.9))
+        outcome = None
+        for index, value in enumerate([20_000, 20_000, 0, 0]):
+            outcome = assembler.feed(
+                voice_audio.CanonicalAudioFrame(
+                    stream_epoch=1,
+                    sequence=index,
+                    sample_cursor=index * 512,
+                    sample_rate_hz=16_000,
+                    frame_count=512,
+                    adc_time_s=None,
+                    captured_monotonic_ns=index,
+                    discontinuity_before=False,
+                    pcm16_mono=_pcm(value),
+                ),
+            )
+        assert isinstance(outcome, voice_session.CapturedUtterance)
+        backend = _FakeBackend()
+        session = voice_session.DuplexVoiceSession(
+            ingress=_ingress(backend),
+            wake_engine=_FakeWakeEngine(set()),
+            vad=MagicMock(spec=voice_audio.SileroVad),
+            pipeline=_RecordingPipeline(),
+            broadcaster=None,
+            output_active=None,
+            wake_threshold=0.5,
+            config=voice_session.RealtimeInputSessionConfig(),
+        )
+        session._assembler.prepare = MagicMock()  # type: ignore[method-assign]
+        session._handle_capture_outcome(outcome)
+        points = realtime_trace_snapshot()
+        endpoint = next(point for point in points if point.name == "endpoint_candidate")
+        assert endpoint.attributes["turn_id"] == outcome.turn_id
+        rows = tuple(
+            TraceRow(point.name, point.monotonic_ns, dict(point.attributes))
+            for point in points
+        )
+        report = summarize_trace(rows, scenario="live_voice", turn_id=outcome.turn_id)
+        assert "endpoint_candidate_to_gap_free_audio_ms" in report["durations_ms"]
+        assert session.close().definitively_closed
+
+
+@pytest.mark.parametrize(
+    ("git_state", "expected_revision", "expected_reason"),
+    [
+        ({"head": "actual", "dirty": False}, "expected", "revision_mismatch"),
+        ({"head": None, "dirty": False}, "expected", "git_head_unknown"),
+        ({"head": "actual", "dirty": True}, "actual", "worktree_dirty_or_unknown"),
+    ],
+)
+def test_input_bench_ineligible_provenance_fails_before_device_work(
+    tmp_path: Path,
+    git_state: dict[str, object],
+    expected_revision: str,
+    expected_reason: str,
+) -> None:
+    """Bench rejects mismatch, unknown, or dirty state before sounddevice import."""
+    output = tmp_path / "ineligible.json"
+    with (
+        patch.object(
+            voice_input_bench,
+            "_git_provenance",
+            return_value=git_state,
+        ),
+        patch.object(
+            voice_input_bench,
+            "_base_report",
+            side_effect=AssertionError("device/provider work must not begin"),
+        ),
+    ):
+        code = voice_input_bench.main(
+            [
+                "--synthetic-churn-cycles",
+                "1",
+                "--expected-revision",
+                expected_revision,
+                "--output",
+                str(output),
+            ],
+        )
+    report = json.loads(output.read_text())
+    assert code == 2
+    assert report["status"] == "INELIGIBLE"
+    assert report["eligibility"]["reasons"] == [expected_reason]
+
+
+def test_input_bench_synthetic_status_requires_every_exact_churn_gate() -> None:
+    """The synthetic report cannot say observed with a missed stale callback."""
+    report = voice_input_bench.run_synthetic_churn(cycles=25)
+    assert report["status"] == "observed"
+    assert report["cycles_completed"] == 25
+    assert report["late_epoch_callbacks_rejected"] == 25
+    strict_checks = report["strict_checks"]
+    assert isinstance(strict_checks, dict)
+    assert all(strict_checks.values())
+
+
+def test_power_coordinator_orders_input_then_output_and_fresh_output_before_input() -> None:
+    """Composition root owns the ADR sleep/wake ordering across both devices."""
+    actions: list[str] = []
+    session = MagicMock(spec=voice_session.DuplexVoiceSession)
+    session.ingress.stop_for_sleep.side_effect = lambda: actions.append("input_stop")
+    session.ingress.resume_after_wake.side_effect = lambda: actions.append("input_start")
+    media = MagicMock(spec=voice_media.StreamingTTSPipeline)
+    media.suspend_for_sleep.side_effect = lambda: actions.append("output_stop")
+    media.resume_after_wake.side_effect = lambda: actions.append("output_start")
+    coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+    coordinator.before_sleep()
+    coordinator.on_wake()
+    assert actions == ["input_stop", "output_stop", "output_start", "input_start"]
+
+
+def test_wave3_prewarm_is_flag_gated_and_failure_preserves_legacy_before_device() -> None:
+    """SenseVoice prewarm never changes feature-off or claims a mic on failure."""
+    runtime = MagicMock()
+    runtime.wave1_features = Wave1FeatureFlags(
+        transactional_event_append=True,
+        lifecycle_terminal_cas=True,
+    )
+    runtime.config = {"realtime": {"enabled": True}}
+    pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
+    broadcaster = MagicMock()
+    wave2 = object.__new__(voice_media.StreamingTTSPipeline)
+    disabled = inherent_loop._spawn_single_ingress_session(
+        runtime=runtime,
+        pipeline=pipeline,
+        broadcaster=broadcaster,
+        silero_path=MagicMock(),
+        tts=wave2,
+    )
+    assert disabled == (None, False)
+    pipeline.prewarm_input_model.assert_not_called()
+
+    runtime.config = {
+        "realtime": {
+            "enabled": True,
+            "single_audio_ingress": {"enabled": True},
+            "streaming_output": {"enabled": True},
+        },
+    }
+    pipeline.prewarm_input_model.side_effect = RuntimeError("injected prewarm")
+    engine = MagicMock()
+    with (
+        patch.object(voice_wake, "WakeEngine", return_value=engine),
+        patch.object(
+            voice_backend,
+            "SoundDeviceDuplexBackend",
+            side_effect=AssertionError("device must not be constructed"),
+        ),
+    ):
+        failed = inherent_loop._spawn_single_ingress_session(
+            runtime=runtime,
+            pipeline=pipeline,
+            broadcaster=broadcaster,
+            silero_path=MagicMock(),
+            tts=wave2,
+        )
+    assert failed == (None, False)
+    pipeline.prewarm_input_model.assert_called_once_with()
+    engine.start.assert_called_once_with()
+    engine.close.assert_called_once_with()
+
+
+def test_input_capability_snapshot_is_versioned_ephemeral_and_reconnectable() -> None:
+    """Reconnect gets latest L5 capability without writing an Event Log tick."""
+
+    async def _scenario() -> None:
+        broadcaster = InherentBroadcaster()
+        await broadcaster.broadcast_voice_capability(
+            version=2,
+            state="available",
+            stream_epoch=7,
+            reason="input_stream_started",
+            wake_available=True,
+            local_capture_available=True,
+            ptt_upload_available=True,
+            text_available=True,
+        )
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        await broadcaster.register(ws)
+        ws.send_json.assert_awaited_once()
+        payload = ws.send_json.await_args.args[0]
+        assert payload["op"] == "voice_capability"
+        assert payload["payload"]["version"] == 2
+        ws.send_json.reset_mock()
+        await broadcaster.broadcast_voice_capability(
+            version=1,
+            state="stopped",
+            stream_epoch=None,
+            reason="stale",
+            wake_available=False,
+            local_capture_available=False,
+            ptt_upload_available=True,
+            text_available=True,
+        )
+        ws.send_json.assert_not_awaited()
+        await broadcaster.broadcast_voice_capability(
+            version=3,
+            state="close_uncertain",
+            stream_epoch=7,
+            reason="device_close_timeout",
+            wake_available=False,
+            local_capture_available=False,
+            ptt_upload_available=True,
+            text_available=True,
+        )
+        ws.send_json.assert_awaited_once()
+
+    asyncio.run(_scenario())

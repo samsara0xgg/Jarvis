@@ -23,9 +23,11 @@ from pathlib import Path
 
 import numpy as np
 
+import jarvis
 from jarvis.surface import voice_audio, voice_backend
 
 _RETAINED_HASH_COUNT = 8
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _json_default(value: object) -> object:
@@ -37,15 +39,15 @@ def _json_default(value: object) -> object:
 
 
 def _git_provenance() -> dict[str, object]:
-    """Read HEAD/dirty without mutating the checkout."""
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],  # noqa: S607 - project git from PATH
+    """Read exact repository identity without trusting the caller's cwd."""
+    head = subprocess.run(  # noqa: S603 - fixed git argv, no shell
+        ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],  # noqa: S607
         check=False,
         capture_output=True,
         text=True,
     )
-    status = subprocess.run(
-        ["git", "status", "--porcelain"],  # noqa: S607 - project git from PATH
+    status = subprocess.run(  # noqa: S603 - fixed git argv, no shell
+        ["git", "-C", str(_REPO_ROOT), "status", "--porcelain"],  # noqa: S607
         check=False,
         capture_output=True,
         text=True,
@@ -56,18 +58,68 @@ def _git_provenance() -> dict[str, object]:
     }
 
 
-def _base_report() -> dict[str, object]:
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _eligibility(*, expected_revision: str) -> tuple[bool, dict[str, object]]:
+    """Fail closed on revision, dirty tree, or cross-checkout imports."""
+    git = _git_provenance()
+    jarvis_path = Path(jarvis.__file__).resolve()
+    voice_audio_path = Path(voice_audio.__file__).resolve()
+    voice_backend_path = Path(voice_backend.__file__).resolve()
+    identities = {
+        "repo_root": str(_REPO_ROOT),
+        "script_realpath": str(Path(__file__).resolve()),
+        "script_sha256": _sha256_file(Path(__file__).resolve()),
+        "jarvis_module_realpath": str(jarvis_path),
+        "voice_audio_module_realpath": str(voice_audio_path),
+        "voice_audio_module_sha256": _sha256_file(voice_audio_path),
+        "voice_backend_module_realpath": str(voice_backend_path),
+        "voice_backend_module_sha256": _sha256_file(voice_backend_path),
+    }
+    reasons: list[str] = []
+    head = git.get("head")
+    dirty = git.get("dirty")
+    if not isinstance(head, str) or not head:
+        reasons.append("git_head_unknown")
+    elif head != expected_revision:
+        reasons.append("revision_mismatch")
+    if dirty is not False:
+        reasons.append("worktree_dirty_or_unknown")
+    for name, path in (
+        ("jarvis", jarvis_path),
+        ("voice_audio", voice_audio_path),
+        ("voice_backend", voice_backend_path),
+    ):
+        if not path.is_relative_to(_REPO_ROOT):
+            reasons.append(f"{name}_module_outside_repo_root")
+    return not reasons, {
+        "status": "ELIGIBLE" if not reasons else "INELIGIBLE",
+        "expected_revision": expected_revision,
+        "reasons": reasons,
+        "git": git,
+        "identity": identities,
+    }
+
+
+def _config_record(config: voice_audio.AudioIngressConfig) -> dict[str, object]:
+    values = dataclasses.asdict(config)
+    canonical = json.dumps(values, sort_keys=True, separators=(",", ":"))
+    return {"effective": values, "sha256": hashlib.sha256(canonical.encode()).hexdigest()}
+
+
+def _base_report(*, eligibility: dict[str, object]) -> dict[str, object]:
     """Return reproducibility metadata shared by live and synthetic runs."""
     import sounddevice  # noqa: PLC0415
 
     return {
         "record_kind": "wave3_audio_ingress_bench",
         "production_fact": False,
-        "module": str(Path(__file__).resolve()),
+        "eligibility": eligibility,
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "sounddevice_version": getattr(sounddevice, "__version__", None),
-        "git": _git_provenance(),
         "measurement_limits": [
             "PortAudio callback arrival is not physical acoustic truth",
             "subscriber cursor is a software canonical timeline",
@@ -107,7 +159,7 @@ def run_live_input_smoke(*, duration_s: float) -> dict[str, object]:
         return {
             "status": "input_unavailable",
             "duration_target_s": duration_s,
-            "config": dataclasses.asdict(ingress_config),
+            "config": _config_record(ingress_config),
             "backend_start": dataclasses.asdict(start.backend_result),
             "capability": dataclasses.asdict(start.capability),
             "close": dataclasses.asdict(close),
@@ -148,7 +200,7 @@ def run_live_input_smoke(*, duration_s: float) -> dict[str, object]:
         "status": status,
         "duration_target_s": duration_s,
         "duration_observed_s": observed_samples / ingress_config.canonical_sample_rate_hz,
-        "config": dataclasses.asdict(ingress_config),
+        "config": _config_record(ingress_config),
         "device": dataclasses.asdict(profile) if profile is not None else None,
         "stream_epoch": metrics_before_close.stream_epoch,
         "callback_calls": metrics_before_close.callback_calls,
@@ -183,7 +235,10 @@ class _SyntheticCallbackBackend:
     def __init__(self) -> None:
         self.format = voice_backend.AudioInputFormat(16_000, 1, 512)
         self.sinks: dict[int, voice_backend.InputFrameSink] = {}
+        self.attempts: dict[int, str] = {}
         self.active_epoch: int | None = None
+        self.active_attempt_id: str | None = None
+        self.ownership_version = 0
         self.start_count = 0
         self.stop_count = 0
         self.active_owners = 0
@@ -193,6 +248,7 @@ class _SyntheticCallbackBackend:
         self,
         *,
         stream_epoch: int,
+        attempt_id: str,
         frame_sink: voice_backend.InputFrameSink,
         render_source: voice_backend.RenderSource | None = None,
     ) -> voice_backend.BackendStartResult:
@@ -204,7 +260,10 @@ class _SyntheticCallbackBackend:
                 reason="synthetic_owner_busy",
             )
         self.active_epoch = stream_epoch
+        self.active_attempt_id = attempt_id
+        self.ownership_version += 1
         self.sinks[stream_epoch] = frame_sink
+        self.attempts[stream_epoch] = attempt_id
         self.start_count += 1
         self.active_owners += 1
         self.max_active_owners = max(self.max_active_owners, self.active_owners)
@@ -218,22 +277,32 @@ class _SyntheticCallbackBackend:
             status=voice_backend.BackendStartStatus.STARTED,
             stream_epoch=stream_epoch,
             profile=profile,
+            attempt_id=attempt_id,
         )
 
-    def stop(self, *, stream_epoch: int) -> voice_backend.BackendStopResult:
+    def stop(
+        self,
+        *,
+        stream_epoch: int,
+        attempt_id: str,
+    ) -> voice_backend.BackendStopResult:
         self.stop_count += 1
-        if self.active_epoch == stream_epoch:
+        if self.active_epoch == stream_epoch and self.active_attempt_id == attempt_id:
             self.active_epoch = None
+            self.active_attempt_id = None
             self.active_owners -= 1
+            self.ownership_version += 1
         return voice_backend.BackendStopResult(
             status=voice_backend.BackendStopStatus.CLOSED,
             stream_epoch=stream_epoch,
+            attempt_id=attempt_id,
         )
 
     def emit(self, *, stream_epoch: int, value: int) -> None:
         callback_owned = bytearray(np.full(512, value, dtype="<i2").tobytes())
         self.sinks[stream_epoch](
             stream_epoch=stream_epoch,
+            attempt_id=self.attempts[stream_epoch],
             callback_buffer=callback_owned,
             frame_count=512,
             adc_time_s=None,
@@ -263,6 +332,20 @@ class _SyntheticCallbackBackend:
             natural_barge_in=False,
             reliable_adc_time=False,
             reliable_dac_time=False,
+        )
+
+    def ownership_snapshot(self) -> voice_backend.BackendOwnershipSnapshot:
+        return voice_backend.BackendOwnershipSnapshot(
+            state=(
+                voice_backend.BackendLifecycleState.CLOSED
+                if self.active_epoch is None
+                else voice_backend.BackendLifecycleState.OPEN
+            ),
+            stream_epoch=self.active_epoch,
+            attempt_id=self.active_attempt_id,
+            version=self.ownership_version,
+            physical_owner_possible=self.active_epoch is not None,
+            helper_thread_alive=False,
         )
 
 
@@ -297,6 +380,7 @@ def run_synthetic_churn(  # noqa: C901, PLR0912, PLR0915 - one auditable bounded
     started = ingress.start()
     errors: list[str] = []
     retained_hashes: list[str] = []
+    cycles_completed = 0
     callback_requests: queue.Queue[tuple[int, int, threading.Event] | None] = queue.Queue(
         maxsize=1,
     )
@@ -366,6 +450,7 @@ def run_synthetic_churn(  # noqa: C901, PLR0912, PLR0915 - one auditable bounded
             if not _emit_on_callback_thread(stream_epoch=epoch, value=31_000):
                 errors.append(f"cycle_{cycle}:late_callback_thread_timeout")
                 break
+            cycles_completed += 1
     metrics = ingress.metrics()
     close = ingress.close()
     try:
@@ -381,19 +466,35 @@ def run_synthetic_churn(  # noqa: C901, PLR0912, PLR0915 - one auditable bounded
     ]
     if retained_hashes != expected_hashes:
         errors.append("retained_buffer_mutation")
+    strict_checks = {
+        "cycles_completed": cycles_completed == cycles,
+        "late_epoch_callbacks_rejected": (
+            metrics.late_epoch_callbacks_rejected == cycles
+        ),
+        "start_count": backend.start_count == cycles + 1,
+        "stop_count": backend.stop_count == cycles + 1,
+        "max_active_input_owners": backend.max_active_owners == 1,
+        "native_overflows": metrics.native_overflows == 0,
+        "subscriber_overflows": metrics.subscriber_overflows == 0,
+        "callback_thread_closed": not callback_thread.is_alive(),
+        "backend_owner_closed": backend.active_owners == 0,
+        "ingress_definitively_closed": close.definitively_closed,
+        "subscribers_closed": close.open_subscribers == 0,
+    }
+    failed_checks = [name for name, passed in strict_checks.items() if not passed]
+    errors.extend(f"strict_gate:{name}" for name in failed_checks)
     return {
         "status": (
             "observed"
             if started.started
             and not errors
-            and close.definitively_closed
-            and backend.max_active_owners == 1
+            and all(strict_checks.values())
             else "bounded_failure"
         ),
         "cycles_requested": cycles,
-        "cycles_completed": max(0, backend.start_count - 1),
+        "cycles_completed": cycles_completed,
         "wall_s": round(time.monotonic() - started_at, 3),
-        "config": dataclasses.asdict(config),
+        "config": _config_record(config),
         "start_count": backend.start_count,
         "stop_count": backend.stop_count,
         "max_active_input_owners": backend.max_active_owners,
@@ -403,6 +504,7 @@ def run_synthetic_churn(  # noqa: C901, PLR0912, PLR0915 - one auditable bounded
         "subscriber_overflows": metrics.subscriber_overflows,
         "retained_buffer_hashes": retained_hashes,
         "errors": errors,
+        "strict_checks": strict_checks,
         "close": dataclasses.asdict(close),
     }
 
@@ -413,13 +515,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--live-input", action="store_true")
     parser.add_argument("--duration-s", type=float, default=1.0)
     parser.add_argument("--synthetic-churn-cycles", type=int, default=0)
+    parser.add_argument("--expected-revision", required=True)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     if not args.live_input and args.synthetic_churn_cycles <= 0:
         parser.error("select --live-input and/or --synthetic-churn-cycles")
     if args.duration_s <= 0 or args.synthetic_churn_cycles < 0:
         parser.error("duration must be positive and churn cycles non-negative")
-    report = _base_report()
+    eligible, eligibility = _eligibility(expected_revision=args.expected_revision)
+    if not eligible:
+        report = {
+            "record_kind": "wave3_audio_ingress_bench",
+            "production_fact": False,
+            "status": "INELIGIBLE",
+            "eligibility": eligibility,
+        }
+        payload = json.dumps(report, indent=2, sort_keys=True) + "\n"
+        if args.output is not None:
+            args.output.write_text(payload, encoding="utf-8")
+        sys.stdout.write(payload)
+        return 2
+    report = _base_report(eligibility=eligibility)
     if args.live_input:
         report["live_input"] = run_live_input_smoke(duration_s=args.duration_s)
     if args.synthetic_churn_cycles:

@@ -74,6 +74,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -757,7 +758,6 @@ def _build_voice_pipeline(
     aliases / corrections land in a follow-up.
     """
     recognizer = voice_asr.SenseVoiceRecognizer(model_dir=sensevoice_dir)
-    recognizer.prewarm()
     normalizer = voice_asr.AsrNormalizer(
         corrections=[],
         aliases={},
@@ -1061,6 +1061,42 @@ class _SingleIngressActivation:
     session_config: voice_session.RealtimeInputSessionConfig | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class _VoicePowerTransition:
+    """Auditable ordered input/output transition at the power boundary."""
+
+    input_result: object | None
+    output_result: voice_media.MediaPowerTransitionResult | None
+
+
+class _VoicePowerCoordinator:
+    """Serialize power lifecycle without exposing a speech-cancel seam."""
+
+    def __init__(
+        self,
+        *,
+        session: voice_session.DuplexVoiceSession,
+        media: voice_media.StreamingTTSPipeline,
+    ) -> None:
+        self._session = session
+        self._media = media
+        self._lock = threading.Lock()
+
+    def before_sleep(self) -> _VoicePowerTransition:
+        """Close input first, then terminalize and stop output."""
+        with self._lock:
+            input_result = self._session.ingress.stop_for_sleep()
+            output_result = self._media.suspend_for_sleep()
+            return _VoicePowerTransition(input_result, output_result)
+
+    def on_wake(self) -> _VoicePowerTransition:
+        """Create fresh output ownership before re-enabling input decisions."""
+        with self._lock:
+            output_result = self._media.resume_after_wake()
+            input_result = self._session.ingress.resume_after_wake()
+            return _VoicePowerTransition(input_result, output_result)
+
+
 def _single_ingress_activation(  # noqa: PLR0911 - each fail-closed prerequisite has a named result
     runtime: JarvisRuntime,
     *,
@@ -1178,6 +1214,18 @@ def _spawn_single_ingress_session(  # noqa: PLR0911 - each pre/post-device downg
         with contextlib.suppress(Exception):
             engine.close()
         return None, False
+    try:
+        # Wave 3 requires final-ASR model/stream readiness before the sole
+        # device open. Feature-off and validation downgrade never execute it.
+        pipeline.prewarm_input_model()
+    except Exception:
+        LOGGER.exception(
+            "realtime.single_audio_ingress SenseVoice prewarm failed before "
+            "device open; downgraded to legacy wake/PTT.",
+        )
+        with contextlib.suppress(Exception):
+            engine.close()
+        return None, False
 
     def _capability_changed(snapshot: voice_audio.InputCapabilitySnapshot) -> None:
         log = LOGGER.info if snapshot.local_capture_available else LOGGER.warning
@@ -1191,6 +1239,16 @@ def _spawn_single_ingress_session(  # noqa: PLR0911 - each pre/post-device downg
             snapshot.local_capture_available,
             snapshot.ptt_upload_available,
             snapshot.text_available,
+        )
+        broadcaster.broadcast_voice_capability_sync(
+            version=snapshot.version,
+            state=snapshot.state.value,
+            stream_epoch=snapshot.stream_epoch,
+            reason=snapshot.reason,
+            wake_available=snapshot.wake_available,
+            local_capture_available=snapshot.local_capture_available,
+            ptt_upload_available=snapshot.ptt_upload_available,
+            text_available=snapshot.text_available,
         )
 
     try:
@@ -1980,16 +2038,19 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
         # that owns the serve lifetime, so its registered CFRunLoop thread
         # is bracketed by the same `finally` that tears the watchers down;
         # no path between install and try can leak a live registration.
+        power_coordinator = (
+            _VoicePowerCoordinator(
+                session=duplex_voice_session,
+                media=tts_pipe,
+            )
+            if duplex_voice_session is not None
+            and isinstance(tts_pipe, voice_media.StreamingTTSPipeline)
+            else None
+        )
         before_sleep_hook = (
-            duplex_voice_session.ingress.stop_for_sleep
-            if duplex_voice_session is not None
-            else None
+            power_coordinator.before_sleep if power_coordinator is not None else None
         )
-        on_wake_hook = (
-            duplex_voice_session.ingress.resume_after_wake
-            if duplex_voice_session is not None
-            else None
-        )
+        on_wake_hook = power_coordinator.on_wake if power_coordinator is not None else None
         power_observer = _install_power_observer_or_degrade(
             runtime.conn,
             asyncio.get_running_loop(),
