@@ -2560,6 +2560,91 @@ def test_streaming_rollout_default_off_and_production_builder_gate(  # noqa: PLR
     conn.close()
 
 
+def test_production_builder_falls_back_only_after_typed_closed_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Uncertain Wave-2 output debt forbids an independent legacy owner."""
+    db_path = tmp_path / "typed-output-startup.db"
+    conn = open_event_log(db_path)
+    runtime = SimpleNamespace(
+        config={
+            "realtime": {
+                "enabled": True,
+                "streaming_output": {"enabled": True},
+            },
+        },
+        wave1_features=Wave1FeatureFlags(
+            transactional_event_append=True,
+            lifecycle_terminal_cas=True,
+        ),
+        runtime_paths=SimpleNamespace(event_log=db_path),
+        conn=conn,
+    )
+    monkeypatch.setenv("MINIMAX_API_KEY", "integration-placeholder")
+    provider = MagicMock()
+    provider.streaming_candidate_count = 1
+
+    uncertain_player = MagicMock(spec=voice_tts.AudioStreamPlayer)
+    uncertain_player.start.return_value = voice_tts.PlayerStartResult(
+        "uncertain",
+        11,
+        "injected_open_debt",
+    )
+    uncertain_player.stop.return_value = voice_tts.PlayerStopResult(
+        "uncertain",
+        11,
+        "injected_open_debt",
+    )
+    with (
+        patch.object(voice_tts, "AudioStreamPlayer", return_value=uncertain_player) as factory,
+        patch.object(voice_tts, "MiniMaxWSClient", return_value=provider),
+    ):
+        assert (
+            inherent_loop._build_tts_pipeline(  # noqa: SLF001
+                cast("Any", runtime),
+                cast("Any", SimpleNamespace()),
+            )
+            is None
+        )
+    assert factory.call_count == 1
+    assert uncertain_player.start.call_count == 1
+
+    failed_closed_player = MagicMock(spec=voice_tts.AudioStreamPlayer)
+    failed_closed_player.start.return_value = voice_tts.PlayerStartResult(
+        "failed_closed",
+        21,
+        "injected_closed_open_failure",
+    )
+    failed_closed_player.stop.return_value = voice_tts.PlayerStopResult(
+        "already_closed",
+        21,
+        "already_closed",
+    )
+    legacy_player = MagicMock(spec=voice_tts.AudioStreamPlayer)
+    legacy_player.stop.return_value = voice_tts.PlayerStopResult(
+        "closed",
+        22,
+        "closed",
+    )
+    with (
+        patch.object(
+            voice_tts,
+            "AudioStreamPlayer",
+            side_effect=[failed_closed_player, legacy_player],
+        ) as factory,
+        patch.object(voice_tts, "MiniMaxWSClient", return_value=provider),
+    ):
+        fallback = inherent_loop._build_tts_pipeline(  # noqa: SLF001
+            cast("Any", runtime),
+            cast("Any", SimpleNamespace()),
+        )
+    assert isinstance(fallback, voice_tts.TTSPipeline)
+    assert factory.call_count == 2
+    assert fallback.close()
+    conn.close()
+
+
 def test_voice_bench_provenance_fails_closed_before_provider_use(tmp_path: Path) -> None:
     """Revision/config provenance debt makes the software gate ineligible/nonzero."""
     output = tmp_path / "ineligible.json"

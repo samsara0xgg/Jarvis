@@ -110,6 +110,10 @@ class VoiceSessionStartResult:
     ingress: voice_audio.IngressStartResult
 
 
+class VoiceSessionPreDeviceError(RuntimeError):
+    """Model/session preparation failed before any input-owner attempt."""
+
+
 @dataclass(frozen=True)
 class VoiceSessionCloseResult:
     """Typed proof that every session owner stopped (or remained visible)."""
@@ -548,7 +552,11 @@ class DuplexVoiceSession:
         if self._started:
             msg = "duplex voice session already started"
             raise RuntimeError(msg)
-        self._assembler.prepare()
+        try:
+            self._assembler.prepare()
+        except Exception as exc:
+            msg = "duplex voice session prepare failed before input device open"
+            raise VoiceSessionPreDeviceError(msg) from exc
         ingress_result = self._ingress.start()
         if not ingress_result.started:
             self._wake_subscription.close()

@@ -852,15 +852,15 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
                 ducker=ducker,
             )
         except voice_media.StreamingMediaStartupError as exc:
-            if exc.device_state_uncertain:
+            if not exc.legacy_fallback_safe:
                 LOGGER.warning(
-                    "realtime.streaming_output startup timed out while opening the "
-                    "audio device; isolated owner will close any late device, and "
-                    "this boot is downgraded to text-only.",
+                    "realtime.streaming_output startup left output ownership "
+                    "uncertain in %s; this boot is downgraded to text-only.",
+                    exc.phase,
                 )
                 return None
             LOGGER.warning(
-                "realtime.streaming_output startup failed in %s (%r); "
+                "realtime.streaming_output startup failed closed in %s (%r); "
                 "downgraded using an independent legacy provider.",
                 exc.phase,
                 exc,
@@ -998,55 +998,52 @@ def _spawn_wake_listener(
         data, _overflow = stream.read(_WAKE_FRAME_SAMPLES)
         return bytes(data)
 
-    engine = voice_wake.WakeEngine(model_name="hey_jarvis_v0.1")
-    # Without start(), the underlying openwakeword Model is never loaded:
-    # predict() silently returns {} and the listener's threshold check is
-    # always 0.0 — wake never fires. ADR §F1: a failure here downgrades to
-    # text-only (no audio device / wheel missing in CI).
+    engine: voice_wake.WakeEngine | None = None
+    listener: voice_wake.WakeListener | None = None
     try:
+        engine = voice_wake.WakeEngine(model_name="hey_jarvis_v0.1")
+        # Without start(), predict() silently returns no detection.
         engine.start()
-    except Exception:
-        LOGGER.exception(
-            "wake: WakeEngine.start() failed; skipping wake listener.",
-        )
-        try:
-            stream.close()
-        except Exception:  # noqa: BLE001 — best-effort cleanup
-            LOGGER.debug("wake: stream close after engine start failure failed", exc_info=True)
-        return None
-    silero_vad = voice_audio.SileroVad(mode="record", model_path=silero_path)
-    try:
+        silero_vad = voice_audio.SileroVad(mode="record", model_path=silero_path)
         silero_vad.prepare_utterance()
+        capture_callable = functools.partial(
+            voice_audio.capture_utterance,
+            vad=silero_vad,
+            max_duration_s=_DEFAULT_CAPTURE_MAX_DURATION_S,
+            min_voiced_s=_DEFAULT_CAPTURE_MIN_VOICED_S,
+        )
+        listener = voice_wake.WakeListener(
+            engine=engine,
+            pipeline=pipeline,
+            broadcaster=broadcaster,
+            capture_callable=capture_callable,
+            threshold=_DEFAULT_WAKE_THRESHOLD,
+            is_speaking_callable=(tts.is_speaking if tts is not None else None),
+            frame_factory=_read_wake_frame,
+            ducker=ducker,
+        )
+        listener.start()
     except Exception:
         LOGGER.exception(
-            "wake: Silero VAD prewarm failed; skipping wake listener.",
+            "wake: legacy listener construction/start failed; preserving PTT.",
         )
-        try:
-            engine.close()
-        except Exception:  # noqa: BLE001 — best-effort cleanup
-            LOGGER.debug("wake: engine close after VAD prewarm failure failed", exc_info=True)
-        try:
-            stream.close()
-        except Exception:  # noqa: BLE001 — best-effort cleanup
-            LOGGER.debug("wake: stream close after VAD prewarm failure failed", exc_info=True)
+        if listener is not None:
+            _shutdown_wake(listener, stream)
+        else:
+            try:
+                stream.stop()
+            except Exception:  # noqa: BLE001 - continue exact close attempt
+                LOGGER.debug("wake: stream stop during startup cleanup failed", exc_info=True)
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001 - local startup failure stays isolated
+                LOGGER.debug("wake: stream close during startup cleanup failed", exc_info=True)
+        if engine is not None:
+            try:
+                engine.close()
+            except Exception:  # noqa: BLE001 - local startup failure stays isolated
+                LOGGER.debug("wake: engine startup cleanup failed", exc_info=True)
         return None
-    capture_callable = functools.partial(
-        voice_audio.capture_utterance,
-        vad=silero_vad,
-        max_duration_s=_DEFAULT_CAPTURE_MAX_DURATION_S,
-        min_voiced_s=_DEFAULT_CAPTURE_MIN_VOICED_S,
-    )
-    listener = voice_wake.WakeListener(
-        engine=engine,
-        pipeline=pipeline,
-        broadcaster=broadcaster,
-        capture_callable=capture_callable,
-        threshold=_DEFAULT_WAKE_THRESHOLD,
-        is_speaking_callable=(tts.is_speaking if tts is not None else None),
-        frame_factory=_read_wake_frame,
-        ducker=ducker,
-    )
-    listener.start()
     return listener, stream
 
 
@@ -1258,7 +1255,7 @@ def _single_ingress_activation(  # noqa: PLR0911 - each fail-closed prerequisite
     )
 
 
-def _spawn_single_ingress_session(  # noqa: PLR0911 - each pre/post-device downgrade has distinct ownership semantics
+def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0915 - each pre/post-device downgrade has distinct ownership semantics
     *,
     runtime: JarvisRuntime,
     pipeline: voice_pipeline.VoicePipeline,
@@ -1379,9 +1376,23 @@ def _spawn_single_ingress_session(  # noqa: PLR0911 - each pre/post-device downg
         return None, False
     try:
         start_result = session.start()
+    except voice_session.VoiceSessionPreDeviceError:
+        LOGGER.exception(
+            "realtime.single_audio_ingress Silero prepare failed before device "
+            "open; downgraded to legacy wake/PTT.",
+        )
+        with contextlib.suppress(Exception):
+            session.close()
+        record_realtime_trace(
+            "audio_input_activation_downgraded",
+            reason="session_prepare_failed_before_device",
+            fallback="legacy_wake",
+            input_owner_attempted=False,
+        )
+        return None, False
     except Exception:
         LOGGER.exception(
-            "realtime.single_audio_ingress construction failed; preserving "
+            "realtime.single_audio_ingress failed after device ownership attempt; preserving "
             "text/PTT-upload only and refusing a second input owner.",
         )
         with contextlib.suppress(Exception):
@@ -1886,8 +1897,11 @@ def _shutdown_wake(
     if wake_stream is not None:
         try:
             wake_stream.stop()
-            wake_stream.close()
         except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
+            LOGGER.debug("wake_stream stop failed", exc_info=True)
+        try:
+            wake_stream.close()
+        except Exception:  # noqa: BLE001 — close still runs after stop failure
             LOGGER.debug("wake_stream close failed", exc_info=True)
 
 

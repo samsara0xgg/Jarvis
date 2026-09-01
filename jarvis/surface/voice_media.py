@@ -186,12 +186,18 @@ class StreamingMediaStartupError(RuntimeError):
         message: str,
         *,
         phase: str,
-        device_state_uncertain: bool,
+        device_disposition: Literal["not_attempted", "failed_closed", "uncertain"],
     ) -> None:
-        """Record the phase and whether another audio backend is unsafe."""
+        """Record the phase and exact typed output-ownership disposition."""
         super().__init__(message)
         self.phase = phase
-        self.device_state_uncertain = device_state_uncertain
+        self.device_disposition = device_disposition
+        self.device_state_uncertain = device_disposition == "uncertain"
+
+    @property
+    def legacy_fallback_safe(self) -> bool:
+        """Return whether no prior physical output ownership can overlap."""
+        return self.device_disposition in {"not_attempted", "failed_closed"}
 
 
 class StreamingTTSProvider(Protocol):
@@ -588,11 +594,15 @@ class StreamingTTSPipeline:
         self._power_helper_done = threading.Event()
         self._power_helper_error: BaseException | None = None
         self._power_helper_reason = ""
+        self._power_last_timed_out_attempt_id: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue[_MediaCommand | object] | None = None
         self._conn: sqlite3.Connection | None = None
         self._startup_error: BaseException | None = None
         self._startup_error_phase: str | None = None
+        self._startup_device_disposition: Literal[
+            "not_attempted", "failed_closed", "uncertain"
+        ] = "not_attempted"
         self._shutdown_requested = threading.Event()
         self._deadline_lock = threading.Lock()
         self._shutdown_deadline = float("inf")
@@ -637,7 +647,9 @@ class StreamingTTSPipeline:
             raise StreamingMediaStartupError(
                 message,
                 phase=phase,
-                device_state_uncertain=phase == "starting_player",
+                device_disposition=(
+                    "uncertain" if phase == "starting_player" else "not_attempted"
+                ),
             )
         if not self._ready.is_set():
             self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
@@ -651,7 +663,7 @@ class StreamingTTSPipeline:
             raise StreamingMediaStartupError(
                 msg,
                 phase=self._startup_error_phase or self._get_startup_phase(),
-                device_state_uncertain=False,
+                device_disposition=self._startup_device_disposition,
             ) from error
 
     def _set_startup_phase(self, phase: str) -> None:
@@ -774,7 +786,7 @@ class StreamingTTSPipeline:
         """Compatibility alias used by the wake listener."""
         return self.is_output_active()
 
-    def suspend_for_sleep(
+    def suspend_for_sleep(  # noqa: C901, PLR0912, PLR0915 - exact late-continuation FSM
         self,
         *,
         timeout_s: float | None = None,
@@ -799,30 +811,131 @@ class StreamingTTSPipeline:
                 self._power_attempt_id,
                 "actor_closed",
             )
-        future = asyncio.run_coroutine_threadsafe(
-            self._suspend_for_sleep_owned(),
-            loop,
-        )
-        try:
-            terminalized = future.result(
-                timeout=max(0.0, transition_deadline - time.monotonic()),
-            )
-        except Exception as exc:  # noqa: BLE001 - bounded cross-loop boundary
+        with self._power_lock:
+            if self._power_state == "suspended":
+                return MediaPowerTransitionResult(
+                    "suspended",
+                    self._power_attempt_id,
+                    "already_suspended",
+                )
+            if self._power_state == "stopping":
+                attempt_id = self._power_attempt_id
+                done = self._power_helper_done
+                helper = self._power_helper
+                launch = False
+            elif self._power_state not in {"running", "open_unadmitted", "uncertain"}:
+                return MediaPowerTransitionResult(
+                    "uncertain",
+                    self._power_attempt_id,
+                    f"power_state_{self._power_state}",
+                )
+            else:
+                self._power_attempt_id += 1
+                attempt_id = self._power_attempt_id
+                done = threading.Event()
+                self._power_helper_done = done
+                self._power_helper_error = None
+                self._power_helper_reason = ""
+                self._power_state = "stopping"
+                helper = None
+                launch = True
+        if launch:
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._suspend_for_sleep_owned(),
+                    loop,
+                )
+            except BaseException as exc:  # noqa: BLE001 - exact attempt failure
+                with self._power_lock:
+                    if self._power_attempt_id == attempt_id:
+                        self._power_helper_error = exc
+                        self._power_helper_reason = (
+                            f"actor_terminalization:{type(exc).__name__}"
+                        )
+                        self._power_state = "uncertain"
+                done.set()
+            else:
+
+                def _finish_suspend() -> None:
+                    error: BaseException | None = None
+                    reason = ""
+                    try:
+                        terminalized = future.result()
+                        if not terminalized:
+                            reason = "actor_terminalization_debt"
+                            error = RuntimeError(reason)
+                        else:
+                            result = self._stop_player_with_bound(
+                                self._config.shutdown_timeout_s,
+                            )
+                            if (
+                                isinstance(result, PlayerStopResult)
+                                and not result.definitively_closed
+                            ):
+                                reason = result.reason
+                                error = RuntimeError(reason)
+                    except BaseException as exc:  # noqa: BLE001 - lifecycle debt
+                        error = exc
+                        reason = f"actor_terminalization:{type(exc).__name__}"
+                    with self._power_lock:
+                        late = self._power_last_timed_out_attempt_id == attempt_id
+                        if self._power_attempt_id == attempt_id:
+                            self._power_helper_error = error
+                            self._power_helper_reason = reason
+                            self._power_state = (
+                                "suspended" if error is None else "uncertain"
+                            )
+                    record_realtime_trace(
+                        "media_power_suspend_continuation",
+                        attempt_id=attempt_id,
+                        late_after_caller_timeout=late,
+                        definitively_suspended=error is None,
+                        reason=reason or "actor_terminalized_and_player_closed",
+                    )
+                    done.set()
+
+                helper = threading.Thread(
+                    target=_finish_suspend,
+                    name=f"jarvis-media-power-stop-a{attempt_id}",
+                    daemon=True,
+                )
+                with self._power_lock:
+                    if self._power_attempt_id == attempt_id:
+                        self._power_helper = helper
+                try:
+                    helper.start()
+                except RuntimeError as exc:
+                    with self._power_lock:
+                        if self._power_attempt_id == attempt_id:
+                            self._power_helper_error = exc
+                            self._power_helper_reason = "continuation_thread_start_failed"
+                            self._power_state = "uncertain"
+                    done.set()
+        if not done.wait(timeout=max(0.0, transition_deadline - time.monotonic())):
+            with self._power_lock:
+                self._power_last_timed_out_attempt_id = attempt_id
             return MediaPowerTransitionResult(
                 "uncertain",
-                self._power_attempt_id,
-                f"actor_terminalization:{type(exc).__name__}",
+                attempt_id,
+                "actor_terminalization_or_player_stop_timeout",
+                helper_thread_alive=bool(helper is not None and helper.is_alive()),
                 deadline_exhausted=time.monotonic() >= transition_deadline,
             )
-        if not terminalized:
+        with self._power_lock:
+            state = self._power_state
+            error = self._power_helper_error
+            reason = self._power_helper_reason
+        if state != "suspended":
             return MediaPowerTransitionResult(
                 "uncertain",
-                self._power_attempt_id,
-                "actor_terminalization_debt",
+                attempt_id,
+                reason
+                or f"power_stop:{type(error).__name__ if error is not None else state}",
             )
-        return self._transition_player_for_power(
-            action="stop",
-            deadline=transition_deadline,
+        return MediaPowerTransitionResult(
+            "suspended",
+            attempt_id,
+            "actor_terminalized_and_player_closed",
         )
 
     def resume_after_wake(
@@ -1069,8 +1182,19 @@ class StreamingTTSPipeline:
             )
             if self._start_player:
                 self._set_startup_phase("starting_player")
-                started = self._player.start()
+                try:
+                    started = self._player.start()
+                except BaseException:
+                    # An untyped exception from a device start cannot prove
+                    # whether the foreign API retained a physical stream.
+                    self._startup_device_disposition = "uncertain"
+                    raise
                 if isinstance(started, PlayerStartResult) and not started.started:
+                    self._startup_device_disposition = (
+                        "failed_closed"
+                        if started.status == "failed_closed"
+                        else "uncertain"
+                    )
                     self._raise_player_start_debt(started)
                 if self._startup_abandoned.is_set():
                     return

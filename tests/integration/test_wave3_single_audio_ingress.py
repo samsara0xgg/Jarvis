@@ -29,6 +29,7 @@ from jarvis.surface import (
     voice_wake,
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
+from jarvis.surface.inherent_server import InherentDeps
 from scripts import bench_voice_audio_ingress as voice_input_bench
 from tools.realtime_trace_report import TraceRow, summarize_trace
 
@@ -1158,6 +1159,123 @@ def test_sleep_wins_real_fault_handler_backoff_without_post_sleep_reopen() -> No
     assert ingress.close().definitively_closed
 
 
+def test_sleep_generation_revokes_fault_paused_at_physical_reopen_gate() -> None:
+    """A sleep intent that wins the final CAS prevents a post-sleep open."""
+    backend = _FakeBackend()
+    ingress = _ingress(backend)
+    assert ingress.start().started
+    epoch = ingress.stream_epoch
+    assert epoch == 1
+    before_open = threading.Event()
+    release_open = threading.Event()
+    original_open = ingress._open_new_epoch
+
+    def _paused_open(
+        *,
+        reason: str,
+        deadline: float | None = None,
+        expected_control_generation: int | None = None,
+    ) -> voice_backend.BackendStartResult:
+        before_open.set()
+        assert release_open.wait(timeout=1.0)
+        return original_open(
+            reason=reason,
+            deadline=deadline,
+            expected_control_generation=expected_control_generation,
+        )
+
+    fault = voice_backend.BackendFault(
+        stream_epoch=epoch,
+        code="sleep_before_physical_reopen",
+        detail="integration",
+        recoverable=True,
+        attempt_id=backend.active_attempt_id,
+    )
+    with patch.object(ingress, "_open_new_epoch", side_effect=_paused_open):
+        recovery = threading.Thread(target=lambda: ingress._handle_fault(fault))
+        recovery.start()
+        assert before_open.wait(timeout=1.0)
+        slept = ingress.stop_for_sleep(deadline=time.monotonic() + 0.02)
+        assert slept is not None
+        release_open.set()
+        recovery.join(timeout=1.0)
+    assert not recovery.is_alive()
+    assert backend.start_count == 1
+    assert ingress.capability.state is voice_audio.InputCapabilityState.SUSPENDED
+    assert ingress.close().definitively_closed
+
+
+def test_sleep_generation_rejects_fault_terminal_publish_after_timeout() -> None:
+    """A late fault terminal result cannot overwrite the SUSPENDED snapshot."""
+    backend = _FakeBackend()
+    capabilities: list[voice_audio.InputCapabilitySnapshot] = []
+
+    def _capture_capability(snapshot: voice_audio.InputCapabilitySnapshot) -> None:
+        capabilities.append(snapshot)
+
+    ingress = voice_audio.AudioIngress(
+        backend=backend,
+        config=replace(
+            voice_audio.AudioIngressConfig(),
+            reopen_initial_backoff_s=0.001,
+            reopen_max_backoff_s=0.001,
+            shutdown_timeout_s=0.02,
+            route_poll_s=60.0,
+        ),
+        capability_sink=_capture_capability,
+    )
+    assert ingress.start().started
+    epoch = ingress.stream_epoch
+    assert epoch == 1
+    before_publish = threading.Event()
+    release_publish = threading.Event()
+    original_publish = ingress._publish_capability_if_current
+
+    def _paused_publish(
+        generation: int,
+        state: voice_audio.InputCapabilityState,
+        *,
+        reason: str,
+    ) -> voice_audio.InputCapabilitySnapshot | None:
+        if state is voice_audio.InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE:
+            before_publish.set()
+            assert release_publish.wait(timeout=1.0)
+        return original_publish(generation, state, reason=reason)
+
+    fault = voice_backend.BackendFault(
+        stream_epoch=epoch,
+        code="terminal_publish_after_sleep",
+        detail="integration",
+        recoverable=False,
+        attempt_id=backend.active_attempt_id,
+    )
+    with patch.object(
+        ingress,
+        "_publish_capability_if_current",
+        side_effect=_paused_publish,
+    ):
+        recovery = threading.Thread(target=lambda: ingress._handle_fault(fault))
+        recovery.start()
+        assert before_publish.wait(timeout=1.0)
+        ingress.stop_for_sleep(deadline=time.monotonic() + 0.02)
+        suspended_version = ingress.capability.version
+        release_publish.set()
+        recovery.join(timeout=1.0)
+    assert not recovery.is_alive()
+    assert ingress.capability.state is voice_audio.InputCapabilityState.SUSPENDED
+    assert ingress.capability.version == suspended_version
+    suspended_index = next(
+        index
+        for index, snapshot in enumerate(capabilities)
+        if snapshot.version == suspended_version
+    )
+    assert all(
+        snapshot.state is voice_audio.InputCapabilityState.SUSPENDED
+        for snapshot in capabilities[suspended_index:]
+    )
+    assert ingress.close().definitively_closed
+
+
 def test_duplex_session_runs_two_silero_utterances_without_second_round_truncation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2145,6 +2263,42 @@ def test_input_bench_synthetic_status_requires_every_exact_churn_gate() -> None:
     assert all(strict_checks.values())
 
 
+def test_live_bench_tail_drain_waits_past_initial_empty_worker_poll() -> None:
+    """One early empty read cannot hide an accepted delayed native tail."""
+    frame = voice_audio.CanonicalAudioFrame(
+        stream_epoch=1,
+        sequence=0,
+        sample_cursor=0,
+        sample_rate_hz=16_000,
+        frame_count=512,
+        adc_time_s=None,
+        captured_monotonic_ns=1,
+        discontinuity_before=False,
+        pcm16_mono=_pcm(7),
+    )
+    subscriber = MagicMock(spec=voice_audio.AudioSubscription)
+    subscriber.read.side_effect = [None, frame, None, None]
+    delayed = MagicMock()
+    delayed.callback_calls = 1
+    delayed.canonical_frames = 0
+    converged = MagicMock()
+    converged.callback_calls = 1
+    converged.canonical_frames = 1
+    ingress = MagicMock(spec=voice_audio.AudioIngress)
+    ingress.metrics.side_effect = [delayed, converged, converged]
+    frames: list[voice_audio.CanonicalAudioFrame] = []
+    completed, stable_polls = voice_input_bench._drain_accepted_tail(
+        ingress=ingress,
+        subscriber=subscriber,
+        frames=frames,
+        deadline=time.monotonic() + 0.2,
+    )
+    assert completed
+    assert stable_polls == 2
+    assert frames == [frame]
+    assert subscriber.read.call_count == 4
+
+
 def test_power_coordinator_orders_input_then_output_and_fresh_output_before_input() -> None:
     """Composition root owns the ADR sleep/wake ordering across both devices."""
     actions: list[str] = []
@@ -2331,6 +2485,64 @@ def test_power_coordinator_real_media_success_preserves_cross_device_order(
     assert ingress.close().definitively_closed
 
 
+def test_media_sleep_timeout_late_terminalization_continues_exact_stop_and_wake(
+    tmp_path: Path,
+) -> None:
+    """Late actor success completes its exact stop before a fresh wake start."""
+    db_path = tmp_path / "late-sleep-terminalization.db"
+    open_event_log(db_path).close()
+    provider = MagicMock()
+    provider.streaming_candidate_count = 1
+    player = MagicMock(spec=voice_tts.AudioStreamPlayer)
+    player.stop.return_value = voice_tts.PlayerStopResult(
+        "closed",
+        31,
+        "close_returned",
+    )
+    player.start.return_value = voice_tts.PlayerStartResult(
+        "started",
+        32,
+        "stream_started",
+    )
+    media = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        start_player=False,
+    )
+    release_terminalization = threading.Event()
+
+    async def _late_terminalization() -> bool:
+        await asyncio.to_thread(release_terminalization.wait)
+        return True
+
+    with patch.object(
+        media,
+        "_suspend_for_sleep_owned",
+        new=_late_terminalization,
+    ):
+        timed_out = media.suspend_for_sleep(timeout_s=0.02)
+        assert timed_out.status == "uncertain"
+        assert timed_out.deadline_exhausted
+        assert timed_out.helper_thread_alive
+        attempt_id = timed_out.attempt_id
+        assert player.stop.call_count == 0
+        release_terminalization.set()
+        _wait_until(lambda: media._power_state == "suspended")
+        assert media._power_attempt_id == attempt_id
+        assert player.stop.call_count == 1
+        assert media._power_helper is not None
+        media._power_helper.join(timeout=1.0)
+        assert not media._power_helper.is_alive()
+        woke = media.resume_after_wake(timeout_s=0.5)
+        assert woke.status == "resumed"
+        assert player.start.call_count == 1
+        assert media._power_attempt_id == attempt_id + 1
+    assert media.close(wait_timeout_s=1.0)
+
+
 def test_wave3_prewarm_is_flag_gated_and_failure_preserves_legacy_before_device() -> None:
     """SenseVoice prewarm never changes feature-off or claims a mic on failure."""
     runtime = MagicMock()
@@ -2379,6 +2591,106 @@ def test_wave3_prewarm_is_flag_gated_and_failure_preserves_legacy_before_device(
     assert failed == (None, False)
     pipeline.prewarm_input_model.assert_called_once_with()
     engine.start.assert_called_once_with()
+    engine.close.assert_called_once_with()
+
+
+def test_session_silero_prepare_failure_is_pre_device_and_enables_legacy() -> None:
+    """Session preparation has a typed no-owner boundary before ingress.start."""
+    runtime = MagicMock()
+    runtime.wave1_features = Wave1FeatureFlags(
+        transactional_event_append=True,
+        lifecycle_terminal_cas=True,
+    )
+    runtime.config = {
+        "realtime": {
+            "enabled": True,
+            "single_audio_ingress": {"enabled": True},
+            "streaming_output": {"enabled": True},
+        },
+    }
+    pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
+    broadcaster = MagicMock()
+    backend = _FakeBackend()
+    engine = MagicMock()
+    vad = MagicMock(spec=voice_audio.SileroVad)
+    vad.prepare_utterance.side_effect = RuntimeError("injected Silero prepare failure")
+    legacy_listener = MagicMock()
+    legacy_stream = MagicMock()
+    wave2 = object.__new__(voice_media.StreamingTTSPipeline)
+    with (
+        patch.object(voice_wake, "WakeEngine", return_value=engine),
+        patch.object(voice_audio, "SileroVad", return_value=vad),
+        patch.object(voice_backend, "SoundDeviceDuplexBackend", return_value=backend),
+        patch.object(
+            inherent_loop,
+            "_spawn_wake_listener",
+            return_value=(legacy_listener, legacy_stream),
+        ) as legacy_spawn,
+    ):
+        owners = inherent_loop._spawn_voice_input_owners(
+            runtime=runtime,
+            pipeline=pipeline,
+            broadcaster=broadcaster,
+            silero_path=MagicMock(),
+            tts=wave2,
+            ducker=MagicMock(),
+        )
+    assert backend.start_count == 0
+    assert not owners.single_ingress_attempted
+    assert owners.duplex_session is None
+    assert owners.wake_listener is legacy_listener
+    assert owners.wake_stream is legacy_stream
+    legacy_spawn.assert_called_once()
+    engine.close.assert_called_once_with()
+
+
+def test_legacy_listener_start_failure_is_local_and_ptt_remains_wired() -> None:
+    """Legacy wake startup cleanup cannot clear an already-valid PTT pipeline."""
+    runtime = MagicMock()
+    runtime.wave1_features = Wave1FeatureFlags(
+        transactional_event_append=True,
+        lifecycle_terminal_cas=True,
+    )
+    runtime.config = {"realtime": {"enabled": True}}
+    pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
+    pipeline.run_turn.return_value = MagicMock()
+    broadcaster = MagicMock()
+    stream = MagicMock()
+    engine = MagicMock()
+    vad = MagicMock(spec=voice_audio.SileroVad)
+    listener = MagicMock(spec=voice_wake.WakeListener)
+    listener.start.side_effect = RuntimeError("injected listener thread start failure")
+    listener.is_alive.return_value = False
+    with (
+        patch.object(inherent_loop, "_open_wake_input_stream", return_value=stream),
+        patch.object(voice_wake, "WakeEngine", return_value=engine),
+        patch.object(voice_audio, "SileroVad", return_value=vad),
+        patch.object(voice_wake, "WakeListener", return_value=listener),
+    ):
+        owners = inherent_loop._spawn_voice_input_owners(
+            runtime=runtime,
+            pipeline=pipeline,
+            broadcaster=broadcaster,
+            silero_path=MagicMock(),
+            tts=None,
+            ducker=MagicMock(),
+        )
+    ptt = inherent_loop._build_voice_pipeline_callable(pipeline)
+    deps = InherentDeps(
+        submit_callable=lambda _text: "T-submit",
+        broadcaster=broadcaster,
+        voice_pipeline_callable=ptt,
+    )
+    assert deps.voice_pipeline_callable is ptt
+    ptt(b"RIFF", "T-ptt-after-wake-failure", "U-ptt", "S-ptt")
+    pipeline.run_turn.assert_called_once()
+    assert owners.wake_listener is None
+    assert owners.wake_stream is None
+    assert not owners.single_ingress_attempted
+    listener.request_stop.assert_called_once_with()
+    listener.join.assert_called_once()
+    stream.stop.assert_called_once_with()
+    stream.close.assert_called_once_with()
     engine.close.assert_called_once_with()
 
 

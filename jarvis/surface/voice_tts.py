@@ -816,19 +816,15 @@ class AudioStreamPlayer:
                     helper_thread_alive=True,
                 )
             close_attempt = self._close_attempt
-            if (
-                close_attempt is not None
-                and close_attempt.done.is_set()
-                and close_attempt.close_error is not None
-                and close_attempt.stop_helper_alive
+            # A returned close() is not enough to retire the exact attempt
+            # while its stop helper still owns a call into the same foreign
+            # stream.  Repeated/concurrent callers must join that attempt;
+            # launching another helper here would call stop()/close() twice on
+            # one OutputStream.
+            if close_attempt is None or (
+                close_attempt.done.is_set()
+                and not close_attempt.stop_helper_alive
             ):
-                return PlayerStopResult(
-                    "uncertain",
-                    close_attempt.attempt_id,
-                    "prior_stop_helper_in_flight_after_close_failure",
-                    helper_thread_alive=True,
-                )
-            if close_attempt is None or close_attempt.done.is_set():
                 stream = self._stream
                 if stream is None:
                     self._lifecycle_state = "uncertain"

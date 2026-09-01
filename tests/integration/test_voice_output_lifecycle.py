@@ -166,6 +166,11 @@ def test_output_player_attempts_close_when_stop_hangs() -> None:
         assert first.close_calls == 1
         assert not player.start().started
         assert second.start_calls == 0
+        repeated = player.stop(timeout_s=0.02)
+        assert not repeated.definitively_closed
+        assert repeated.attempt_id == result.attempt_id
+        assert first.stop_calls == 1
+        assert first.close_calls == 1
         stop_release.set()
         deadline = time.monotonic() + 1.0
         while not player.stop(timeout_s=0.02).definitively_closed:

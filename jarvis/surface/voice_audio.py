@@ -31,7 +31,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import numpy as np
 
@@ -1013,6 +1013,9 @@ class AudioIngress:
         self._subscriber_snapshot: tuple[AudioSubscription, ...] = ()
         self._subscribe_before_insert_hook: Callable[[], None] | None = None
         self._lifecycle_lock = threading.Lock()
+        self._control_lock = threading.RLock()
+        self._control_generation = 0
+        self._control_intent: Literal["running", "suspended", "closing"] = "running"
         self._worker_stop = threading.Event()
         self._worker: threading.Thread | None = None
         self._opening_timeline: _CallbackTimeline | None = None
@@ -1113,6 +1116,16 @@ class AudioIngress:
             for sub in self._subscriber_snapshot
         )
 
+    def _control_allows_running(self, expected_generation: int) -> bool:
+        """Check one exact recovery/open generation while control lock is held."""
+        return (
+            self._control_generation == expected_generation
+            and self._control_intent == "running"
+            and not self._closing
+            and not self._suspended
+            and not self._worker_stop.is_set()
+        )
+
     def start(self) -> IngressStartResult:
         """Start the canonicalizer worker and exactly one backend epoch."""
         with self._lifecycle_lock:
@@ -1120,6 +1133,11 @@ class AudioIngress:
                 msg = "audio ingress already started"
                 raise RuntimeError(msg)
             self._worker_stop.clear()
+            with self._control_lock:
+                self._control_generation += 1
+                control_generation = self._control_generation
+                self._control_intent = "running"
+                self._suspended = False
             with self._subscriber_lock:
                 self._closing = False
             self._worker = threading.Thread(
@@ -1132,12 +1150,18 @@ class AudioIngress:
             except RuntimeError:
                 self._worker = None
                 raise
-            backend_result = self._open_new_epoch(reason="startup")
+            backend_result = self._open_new_epoch(
+                reason="startup",
+                expected_control_generation=control_generation,
+            )
             if backend_result.started:
-                snapshot = self._publish_capability(
+                snapshot = self._publish_capability_if_current(
+                    control_generation,
                     InputCapabilityState.AVAILABLE,
                     reason="input_stream_started",
                 )
+                if snapshot is None:
+                    snapshot = self.capability
                 return IngressStartResult(
                     started=True,
                     capability=snapshot,
@@ -1152,22 +1176,39 @@ class AudioIngress:
             if backend_result.status is voice_backend.BackendStartStatus.OPEN_UNCERTAIN
             else InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE
         )
-        snapshot = self._publish_capability(
+        snapshot = self._publish_capability_if_current(
+            control_generation,
             state,
             reason=backend_result.reason or backend_result.status.value,
         )
+        if snapshot is None:
+            snapshot = self.capability
         return IngressStartResult(
             started=False,
             capability=snapshot,
             backend_result=backend_result,
         )
 
-    def _open_new_epoch(
+    def _open_new_epoch(  # noqa: C901, PLR0911, PLR0915 - exact generation/open/commit outcomes
         self,
         *,
         reason: str,
         deadline: float | None = None,
+        expected_control_generation: int | None = None,
     ) -> voice_backend.BackendStartResult:
+        with self._control_lock:
+            control_generation = (
+                self._control_generation
+                if expected_control_generation is None
+                else expected_control_generation
+            )
+            if not self._control_allows_running(control_generation):
+                return voice_backend.BackendStartResult(
+                    status=voice_backend.BackendStartStatus.FAILED_CLOSED,
+                    stream_epoch=self._last_epoch,
+                    profile=None,
+                    reason="control_generation_revoked_before_open",
+                )
         ownership = self._backend.ownership_snapshot()
         if ownership.state is not voice_backend.BackendLifecycleState.CLOSED:
             return voice_backend.BackendStartResult(
@@ -1209,27 +1250,39 @@ class AudioIngress:
             for subscriber in self._subscriber_snapshot:
                 subscriber._ring.discard_all(discontinuity=False)  # noqa: SLF001
         timeout_s = None if deadline is None else max(0.0, deadline - time.monotonic())
-        try:
-            result = self._backend.start(
-                stream_epoch=epoch,
-                attempt_id=attempt_id,
-                frame_sink=self._on_backend_frame,
-                render_source=None,
-                timeout_s=timeout_s,
-            )
-        except TypeError as exc:
-            if "timeout_s" not in str(exc):
-                raise
-            result = self._backend.start(
-                stream_epoch=epoch,
-                attempt_id=attempt_id,
-                frame_sink=self._on_backend_frame,
-                render_source=None,
-            )
+        with self._control_lock:
+            if not self._control_allows_running(control_generation):
+                self._opening_timeline = None
+                return voice_backend.BackendStartResult(
+                    status=voice_backend.BackendStartStatus.FAILED_CLOSED,
+                    stream_epoch=epoch,
+                    profile=None,
+                    reason="control_generation_revoked_at_physical_open",
+                    attempt_id=attempt_id,
+                )
+            try:
+                result = self._backend.start(
+                    stream_epoch=epoch,
+                    attempt_id=attempt_id,
+                    frame_sink=self._on_backend_frame,
+                    render_source=None,
+                    timeout_s=timeout_s,
+                )
+            except TypeError as exc:
+                if "timeout_s" not in str(exc):
+                    raise
+                result = self._backend.start(
+                    stream_epoch=epoch,
+                    attempt_id=attempt_id,
+                    frame_sink=self._on_backend_frame,
+                    render_source=None,
+                )
         if not result.started:
             self._opening_timeline = None
             return result
-        if self._closing or self._suspended or self._worker_stop.is_set():
+        with self._control_lock:
+            control_current = self._control_allows_running(control_generation)
+        if not control_current or self._worker_stop.is_set():
             self._opening_timeline = None
             stop_result = self._stop_backend_debt(deadline=deadline)
             if stop_result is None:
@@ -1260,15 +1313,33 @@ class AudioIngress:
                 reason="open_attempt_identity_mismatch",
                 attempt_id=attempt_id,
             )
-        self._opening_timeline = None
-        self._native_ring = native_ring
-        self._active_timeline = timeline
-        self._active_epoch = epoch
-        native_ring.set_publication_token(timeline)
-        with self._subscriber_lock:
-            for subscriber in self._subscriber_snapshot:
-                subscriber._ring.set_publication_token(timeline)  # noqa: SLF001
-        self._active_profile = result.profile
+        with self._control_lock:
+            if not self._control_allows_running(control_generation):
+                self._opening_timeline = None
+                stop_result = self._stop_backend_debt(deadline=deadline)
+                definitively_closed = (
+                    stop_result is None or stop_result.definitively_closed
+                )
+                return voice_backend.BackendStartResult(
+                    status=(
+                        voice_backend.BackendStartStatus.FAILED_CLOSED
+                        if definitively_closed
+                        else voice_backend.BackendStartStatus.OPEN_UNCERTAIN
+                    ),
+                    stream_epoch=epoch,
+                    profile=None,
+                    reason="control_generation_revoked_before_epoch_commit",
+                    attempt_id=attempt_id,
+                )
+            self._opening_timeline = None
+            self._native_ring = native_ring
+            self._active_timeline = timeline
+            self._active_epoch = epoch
+            native_ring.set_publication_token(timeline)
+            with self._subscriber_lock:
+                for subscriber in self._subscriber_snapshot:
+                    subscriber._ring.set_publication_token(timeline)  # noqa: SLF001
+            self._active_profile = result.profile
         record_realtime_trace(
             "audio_input_epoch_opened",
             stream_epoch=epoch,
@@ -1561,8 +1632,10 @@ class AudioIngress:
             self._deferred_fault = fault
             return
         try:
-            if self._closing or self._suspended or self._worker_stop.is_set():
-                return
+            with self._control_lock:
+                control_generation = self._control_generation
+                if not self._control_allows_running(control_generation):
+                    return
             timeline = self._active_timeline
             if timeline is None or timeline.stream_epoch != fault.stream_epoch:
                 return
@@ -1577,8 +1650,9 @@ class AudioIngress:
                 measurement_boundary="software_backend_health",
             )
             self._stop_backend_debt()
-            if self._closing or self._suspended or self._worker_stop.is_set():
-                return
+            with self._control_lock:
+                if not self._control_allows_running(control_generation):
+                    return
             ownership = self._backend.ownership_snapshot()
             definitively_closed = (
                 ownership.state is voice_backend.BackendLifecycleState.CLOSED
@@ -1589,14 +1663,19 @@ class AudioIngress:
                     if not definitively_closed
                     else InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE
                 )
-                self._publish_capability(state, reason=fault.code)
+                self._publish_capability_if_current(
+                    control_generation,
+                    state,
+                    reason=fault.code,
+                )
                 return
             backoff = self._config.reopen_initial_backoff_s
             for attempt_number in range(1, self._config.reopen_attempts + 1):
                 if self._worker_stop.wait(timeout=backoff):
                     return
-                if self._closing or self._suspended or self._worker_stop.is_set():
-                    return
+                with self._control_lock:
+                    if not self._control_allows_running(control_generation):
+                        return
                 self._reopen_attempts += 1
                 record_realtime_trace(
                     "audio_input_reopen_started",
@@ -1604,16 +1683,20 @@ class AudioIngress:
                     attempt=attempt_number,
                     reason=fault.code,
                 )
-                if self._closing or self._suspended or self._worker_stop.is_set():
-                    return
-                result = self._open_new_epoch(reason=f"recovery:{fault.code}")
-                if self._closing or self._suspended or self._worker_stop.is_set():
+                result = self._open_new_epoch(
+                    reason=f"recovery:{fault.code}",
+                    expected_control_generation=control_generation,
+                )
+                with self._control_lock:
+                    control_current = self._control_allows_running(control_generation)
+                if not control_current:
                     self._revoke_publication()
                     self._stop_backend_debt()
                     return
                 if result.started:
                     self._reopen_successes += 1
-                    self._publish_capability(
+                    self._publish_capability_if_current(
+                        control_generation,
                         InputCapabilityState.AVAILABLE,
                         reason="bounded_reopen_succeeded",
                     )
@@ -1625,15 +1708,18 @@ class AudioIngress:
                     )
                     return
                 if result.status is voice_backend.BackendStartStatus.OPEN_UNCERTAIN:
-                    self._publish_capability(
+                    self._publish_capability_if_current(
+                        control_generation,
                         InputCapabilityState.CLOSE_UNCERTAIN,
                         reason="reopen_state_uncertain",
                     )
                     return
                 backoff = min(backoff * 2.0, self._config.reopen_max_backoff_s)
-            if self._closing or self._suspended or self._worker_stop.is_set():
-                return
-            self._publish_capability(
+            with self._control_lock:
+                if not self._control_allows_running(control_generation):
+                    return
+            self._publish_capability_if_current(
+                control_generation,
                 InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE,
                 reason="reopen_budget_exhausted",
             )
@@ -1657,7 +1743,28 @@ class AudioIngress:
             if deadline is None
             else deadline
         )
+        # Publish the terminal intent before contending with recovery.  Every
+        # fault-side physical action and capability CAS rechecks this scalar
+        # under the control/capability locks, so a lifecycle-lock timeout
+        # cannot be overwritten by late recovery output.
         self._suspended = True
+        control_acquired = self._control_lock.acquire(
+            timeout=max(0.0, transition_deadline - time.monotonic()),
+        )
+        if control_acquired:
+            try:
+                self._control_generation += 1
+                self._control_intent = "suspended"
+            finally:
+                self._control_lock.release()
+        self._publish_capability(
+            InputCapabilityState.SUSPENDED,
+            reason=(
+                "system_sleep_requested"
+                if control_acquired
+                else "system_sleep_control_timeout"
+            ),
+        )
         self._revoke_publication()
         if not self._lifecycle_lock.acquire(
             timeout=max(0.0, transition_deadline - time.monotonic()),
@@ -1672,31 +1779,11 @@ class AudioIngress:
                     stream_epoch=self._last_epoch,
                     reason="sleep_lifecycle_lock_timeout_but_backend_closed",
                 )
-            self._publish_capability(
-                (
-                    InputCapabilityState.SUSPENDED
-                    if self._backend.ownership_snapshot().state
-                    is voice_backend.BackendLifecycleState.CLOSED
-                    else InputCapabilityState.CLOSE_UNCERTAIN
-                ),
-                reason="sleep_lifecycle_lock_timeout",
-            )
             return result
         try:
             result = self._stop_backend_debt(deadline=transition_deadline)
-            ownership = self._backend.ownership_snapshot()
             if result is None:
-                self._publish_capability(
-                    InputCapabilityState.SUSPENDED,
-                    reason="sleep_without_active_epoch",
-                )
                 return None
-            state = (
-                InputCapabilityState.SUSPENDED
-                if ownership.state is voice_backend.BackendLifecycleState.CLOSED
-                else InputCapabilityState.CLOSE_UNCERTAIN
-            )
-            self._publish_capability(state, reason="system_sleep")
             return result
         finally:
             self._lifecycle_lock.release()
@@ -1748,10 +1835,17 @@ class AudioIngress:
                     reason="wake_blocked_by_prior_close_debt",
                 )
                 return result
-            self._suspended = False
+            with self._control_lock:
+                if self._closing or self._control_intent == "closing":
+                    return None
+                self._control_generation += 1
+                control_generation = self._control_generation
+                self._control_intent = "running"
+                self._suspended = False
             result = self._open_new_epoch(
                 reason="system_wake",
                 deadline=transition_deadline,
+                expected_control_generation=control_generation,
             )
             if result.started:
                 state = InputCapabilityState.AVAILABLE
@@ -1763,10 +1857,13 @@ class AudioIngress:
                 state = InputCapabilityState.CLOSE_UNCERTAIN
             else:
                 state = InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE
-            self._publish_capability(
+            snapshot = self._publish_capability_if_current(
+                control_generation,
                 state,
                 reason=("wake_reopen_succeeded" if result.started else "wake_reopen_failed"),
             )
+            if snapshot is None and self._suspended:
+                return result
             return result
         finally:
             self._lifecycle_lock.release()
@@ -1827,6 +1924,19 @@ class AudioIngress:
                     LOGGER.warning("audio ingress capability sink failed", exc_info=True)
             return snapshot
 
+    def _publish_capability_if_current(
+        self,
+        expected_control_generation: int,
+        state: InputCapabilityState,
+        *,
+        reason: str,
+    ) -> InputCapabilitySnapshot | None:
+        """Publish only if the exact running generation still owns control."""
+        with self._control_lock, self._capability_lock:
+            if not self._control_allows_running(expected_control_generation):
+                return None
+            return self._publish_capability(state, reason=reason)
+
     def report_wake_unavailable(self, *, reason: str) -> InputCapabilitySnapshot:
         """Downgrade only wake decisions while the shared input remains healthy."""
         if not self._lifecycle_lock.acquire(blocking=False):
@@ -1860,7 +1970,10 @@ class AudioIngress:
 
     def report_output_unavailable(self, *, reason: str) -> InputCapabilitySnapshot:
         """Keep input suspended when fresh output ownership is not proven."""
-        self._suspended = True
+        with self._control_lock:
+            self._suspended = True
+            self._control_generation += 1
+            self._control_intent = "suspended"
         return self._publish_capability(
             InputCapabilityState.OUTPUT_UNAVAILABLE,
             reason=reason,
@@ -1919,8 +2032,11 @@ class AudioIngress:
 
     def close(self) -> IngressCloseResult:
         """Reject callbacks, close the backend, and join every owned worker."""
-        with self._subscriber_lock:
+        with self._control_lock:
             self._closing = True
+            self._control_generation += 1
+            self._control_intent = "closing"
+        with self._subscriber_lock:
             subscribers = tuple(self._subscribers.values())
             self._subscribers.clear()
             self._subscriber_snapshot = ()

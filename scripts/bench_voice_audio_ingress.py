@@ -27,6 +27,8 @@ import numpy as np
 import jarvis
 from jarvis.surface import voice_audio, voice_backend
 
+_TAIL_DRAIN_STABLE_EMPTY_POLLS = 2
+
 _RETAINED_HASH_COUNT = 8
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -130,7 +132,46 @@ def _base_report(*, eligibility: dict[str, object]) -> dict[str, object]:
     }
 
 
-def run_live_input_smoke(*, duration_s: float) -> dict[str, object]:
+def _drain_accepted_tail(
+    *,
+    ingress: voice_audio.AudioIngress,
+    subscriber: voice_audio.AudioSubscription,
+    frames: list[voice_audio.CanonicalAudioFrame],
+    deadline: float,
+) -> tuple[bool, int]:
+    """Drain accepted native work until exact counts are stably equal."""
+    stable_empty_polls = 0
+    stable_counts: tuple[int, int, int] | None = None
+    while time.monotonic() < deadline:
+        frame = subscriber.read(
+            timeout_s=min(0.01, max(0.0, deadline - time.monotonic())),
+        )
+        if frame is not None:
+            frames.append(frame)
+            stable_empty_polls = 0
+            stable_counts = None
+            continue
+        drain_metrics = ingress.metrics()
+        counts = (
+            drain_metrics.callback_calls,
+            drain_metrics.canonical_frames,
+            len(frames),
+        )
+        if counts[0] == counts[1] == counts[2]:
+            stable_empty_polls = stable_empty_polls + 1 if counts == stable_counts else 1
+            stable_counts = counts
+            if stable_empty_polls >= _TAIL_DRAIN_STABLE_EMPTY_POLLS:
+                return True, stable_empty_polls
+        else:
+            stable_empty_polls = 0
+            stable_counts = counts
+    return False, stable_empty_polls
+
+
+def run_live_input_smoke(
+    *,
+    duration_s: float,
+) -> dict[str, object]:
     """Open the default mic once and collect at least ``duration_s`` callbacks."""
     ingress_config = dataclasses.replace(
         voice_audio.AudioIngressConfig(),
@@ -178,12 +219,17 @@ def run_live_input_smoke(*, duration_s: float) -> dict[str, object]:
     metrics_while_open = ingress.metrics()
     clock_mapping = ingress.clock_mapping()
     sleep_stop = ingress.stop_for_sleep()
-    while True:
-        frame = subscriber.read(timeout_s=0.01)
-        if frame is None:
-            break
-        frames.append(frame)
-        observed_samples += frame.frame_count
+    # A single empty poll does not prove that the worker has drained the
+    # already-accepted native tail.  Stay within the original absolute bench
+    # bound and require two stable empty observations after all three counts
+    # converge exactly.
+    tail_drain_completed, stable_empty_polls = _drain_accepted_tail(
+        ingress=ingress,
+        subscriber=subscriber,
+        frames=frames,
+        deadline=deadline,
+    )
+    observed_samples = sum(frame.frame_count for frame in frames)
     metrics_before_close = ingress.metrics()
     subscriber.close()
     close = ingress.close()
@@ -223,14 +269,16 @@ def run_live_input_smoke(*, duration_s: float) -> dict[str, object]:
         "subscriber_overflows_zero": metrics_before_close.subscriber_overflows == 0,
         "callback_deadline_misses_zero": backend.callback_deadline_misses == 0,
         "callback_count_consistent": (
-            backend.callback_count >= metrics_before_close.callback_calls
+            backend.callback_count == metrics_before_close.callback_calls
             and metrics_before_close.callback_frames
             == metrics_before_close.callback_calls * input_format.callback_frame_samples
         ),
         "canonical_subscriber_count_consistent": (
-            metrics_before_close.callback_calls >= metrics_before_close.canonical_frames
-            and metrics_before_close.canonical_frames == len(frames)
+            metrics_before_close.callback_calls
+            == metrics_before_close.canonical_frames
+            == len(frames)
         ),
+        "tail_drain_completed": tail_drain_completed,
         "discontinuities_zero": discontinuities == 0,
         "sleep_stop_definitive": (
             sleep_stop is not None and sleep_stop.definitively_closed
@@ -254,6 +302,8 @@ def run_live_input_smoke(*, duration_s: float) -> dict[str, object]:
         "callback_frames": metrics_before_close.callback_frames,
         "canonical_frames": metrics_before_close.canonical_frames,
         "subscriber_frames": len(frames),
+        "tail_drain_completed": tail_drain_completed,
+        "tail_drain_stable_empty_polls": stable_empty_polls,
         "cursor_start": frames[0].sample_cursor if frames else None,
         "cursor_end": cursor_end,
         "sum_frame_count": sum_frame_count,
