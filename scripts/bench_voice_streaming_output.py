@@ -369,7 +369,7 @@ async def _first_streaming_pcm(
             await session.close()
 
 
-def _bounded_real_streaming_smoke(
+def _bounded_real_streaming_smoke(  # noqa: C901, PLR0912, PLR0915 - audited probe FSM
     *,
     api_key: str,
     text: str,
@@ -377,31 +377,41 @@ def _bounded_real_streaming_smoke(
     """Probe real MiniMax first PCM through the real PortAudio callback boundary."""
     reset_realtime_trace()
     request_ns = time.monotonic_ns()
-    provider = MiniMaxWSClient(
-        api_key=api_key,
-        sample_rate_in=32_000,
-        sample_rate_out=_SAMPLE_RATE_HZ,
-    )
-    player = AudioStreamPlayer(
-        sample_rate_hz=_SAMPLE_RATE_HZ,
-        ring_seconds=2.0,
-        lazy_open=False,
-        generation_safe=True,
-    )
-    lease = player.activate_generation(
-        session_id="BENCH-BOUNDED-SMOKE",
-        response_id="BENCH-BOUNDED-SMOKE",
-        response_group_id="BENCH-BOUNDED-SMOKE",
-        turn_id="BENCH-BOUNDED-SMOKE",
-    )
+    provider: MiniMaxWSClient | None = None
+    player: AudioStreamPlayer | None = None
+    phase = "device_open"
     result: dict[str, object] = {
         "status": "FAIL",
         "measurement_semantics": (
             "real provider first PCM and software ring accept; PortAudio callback "
             "is host submission, never physical DAC/loopback"
         ),
+        "silent_callback_baseline": None,
+        "player_state_after_device_open": _player_state(None),
+        "player_state_after_accept": _player_state(None),
+        "player_state_at_callback_deadline": _player_state(None),
     }
     try:
+        player = AudioStreamPlayer(
+            sample_rate_hz=_SAMPLE_RATE_HZ,
+            ring_seconds=2.0,
+            lazy_open=False,
+            generation_safe=True,
+        )
+        result["player_state_after_device_open"] = _player_state(player)
+        result["silent_callback_baseline"] = _silent_callback_baseline(player)
+        phase = "provider_first_pcm"
+        provider = MiniMaxWSClient(
+            api_key=api_key,
+            sample_rate_in=32_000,
+            sample_rate_out=_SAMPLE_RATE_HZ,
+        )
+        lease = player.activate_generation(
+            session_id="BENCH-BOUNDED-SMOKE",
+            response_id="BENCH-BOUNDED-SMOKE",
+            response_group_id="BENCH-BOUNDED-SMOKE",
+            turn_id="BENCH-BOUNDED-SMOKE",
+        )
         generation = getattr(lease, "playback_generation_id", None)
         if not isinstance(generation, int):
             result["failure"] = "generation_player_refused_bounded_smoke_lease"
@@ -435,6 +445,7 @@ def _bounded_real_streaming_smoke(
         )
         accepted_ns = time.monotonic_ns()
         accepted_count = getattr(accepted, "sample_count", 0)
+        result["player_state_after_accept"] = _player_state(player)
         result.update(
             {
                 "request_to_session_open_ms": (opened_ns - request_ns) / 1_000_000,
@@ -444,6 +455,10 @@ def _bounded_real_streaming_smoke(
                 "player_accepted_samples": int(accepted_count),
             },
         )
+        if not isinstance(accepted_count, int) or accepted_count <= 0:
+            result["failure"] = "player_accepted_no_samples"
+            return result
+        phase = "portaudio_callback"
         callback_deadline = time.monotonic() + 2.0
         callback_ns: int | None = None
         while time.monotonic() < callback_deadline:
@@ -456,26 +471,91 @@ def _bounded_real_streaming_smoke(
                 ),
                 None,
             )
-            if callback_point is not None:
+            if callback_point is not None and callback_ns is None:
                 callback_ns = callback_point.monotonic_ns
-                break
             time.sleep(0.005)
+        deadline_state = _player_state(player)
+        result["player_state_at_callback_deadline"] = deadline_state
         if callback_ns is None:
-            result["failure"] = "portaudio_active_but_no_nonzero_callback_within_2s"
+            baseline = result["silent_callback_baseline"]
+            baseline_delta = (
+                baseline.get("callback_calls_delta")
+                if isinstance(baseline, dict)
+                else None
+            )
+            callback_calls = deadline_state["callback_calls"]
+            if baseline_delta == 0 and callback_calls == 0:
+                result["failure"] = (
+                    "no_portaudio_callbacks_observed_in_silent_baseline_or_pcm_window"
+                )
+            else:
+                result["failure"] = (
+                    "portaudio_callbacks_observed_but_no_nonzero_pcm_callback_within_2s"
+                )
         else:
             result["status"] = "PASS"
             result["request_to_first_callback_ms"] = (
                 callback_ns - request_ns
             ) / 1_000_000
     except Exception as exc:  # noqa: BLE001 - smoke must persist its failure artifact
-        result["failure"] = f"{type(exc).__name__}:{exc}"
+        result["failure"] = f"{phase}_failed:{type(exc).__name__}:{exc}"
     finally:
+        result["player_state_before_cleanup"] = _player_state(player)
         request_close = getattr(provider, "request_close", None)
         if callable(request_close):
             with contextlib.suppress(Exception):
                 request_close()
-        player.stop()
+        if player is not None:
+            player.stop()
+        result["player_state_after_cleanup"] = _player_state(player)
     return result
+
+
+def _player_state(player: AudioStreamPlayer | None) -> dict[str, object]:
+    """Snapshot audited player counters without inferring unavailable state."""
+    if player is None:
+        return {
+            "sampled": False,
+            "is_running": None,
+            "callback_calls": None,
+            "underflow_count": None,
+            "bytes_pending": None,
+        }
+    return {
+        "sampled": True,
+        "is_running": player.is_running,
+        "callback_calls": player.callback_calls,
+        "underflow_count": player.underflow_count,
+        "bytes_pending": player.bytes_pending(),
+    }
+
+
+def _silent_callback_baseline(
+    player: AudioStreamPlayer,
+    *,
+    duration_s: float = 0.25,
+) -> dict[str, object]:
+    """Measure a bounded silent device callback baseline before provider I/O."""
+    started = time.monotonic()
+    start_state = _player_state(player)
+    deadline = started + duration_s
+    while time.monotonic() < deadline:
+        time.sleep(min(0.005, max(0.0, deadline - time.monotonic())))
+    end_state = _player_state(player)
+    start_calls = start_state["callback_calls"]
+    end_calls = end_state["callback_calls"]
+    delta = (
+        end_calls - start_calls
+        if isinstance(start_calls, int) and isinstance(end_calls, int)
+        else None
+    )
+    return {
+        "duration_ms": (time.monotonic() - started) * 1_000,
+        "silent_output_only": True,
+        "start": start_state,
+        "end": end_state,
+        "callback_calls_delta": delta,
+    }
 
 
 def _summary(
@@ -510,6 +590,16 @@ def _summary(
         summary["software_streaming_output_gate"] = "PASS" if software_gate else "FAIL"
     summary["physical_dac_loopback_gate"] = "UNMEASURED"
     summary["true_end_to_end_latency_gate"] = "UNMEASURED"
+    return summary
+
+
+def _bounded_smoke_summary(smoke: Mapping[str, object]) -> dict[str, object]:
+    """Keep the non-A/B smoke gate separate from the software latency gate."""
+    summary = _summary([], eligibility_reasons=[])
+    summary["software_streaming_output_gate"] = "NOT_RUN"
+    summary["bounded_real_streaming_smoke_gate"] = (
+        "PASS" if smoke.get("status") == "PASS" else "FAIL"
+    )
     return summary
 
 
@@ -789,7 +879,7 @@ def main() -> int:  # noqa: C901 - explicit benchmark/fail-closed modes
         smoke_payload: dict[str, object] = {
             "schema": "jarvis.wave2.voice_latency.v2",
             "raw_runs": [],
-            "summary": _summary([], eligibility_reasons=[]),
+            "summary": _bounded_smoke_summary(smoke),
             "bounded_real_streaming_smoke": smoke,
             "provenance": provenance,
             "state_isolation": "No Event Log opened; provider/device probe only",

@@ -29,6 +29,7 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
 from jarvis.surface import voice_media, voice_tts
 from jarvis.surface.voice_ledger import ForegroundBusy, StalePlaybackGeneration
+from scripts import bench_voice_streaming_output as voice_bench
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -2567,3 +2568,170 @@ def test_voice_bench_provenance_fails_closed_before_provider_use(tmp_path: Path)
     reasons = payload["provenance"]["software_gate_ineligibility_reasons"]
     assert "git_revision_mismatch" in reasons
     assert "effective_config_source_mismatch" in reasons
+
+
+@pytest.mark.parametrize(("status", "expected"), [("PASS", "PASS"), ("FAIL", "FAIL")])
+def test_bounded_smoke_uses_independent_gate_and_marks_ab_not_run(
+    status: str,
+    expected: str,
+) -> None:
+    """A bounded device smoke never masquerades as legacy-vs-streaming A/B."""
+    summary = voice_bench._bounded_smoke_summary({"status": status})  # noqa: SLF001
+    assert summary["software_streaming_output_gate"] == "NOT_RUN"
+    assert summary["bounded_real_streaming_smoke_gate"] == expected
+    assert summary["physical_dac_loopback_gate"] == "UNMEASURED"
+    assert summary["true_end_to_end_latency_gate"] == "UNMEASURED"
+
+
+def test_bounded_smoke_device_open_failure_still_writes_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Device construction errors remain structured artifacts, not tracebacks."""
+    output = tmp_path / "device-open-failure.json"
+
+    def _eligible_provenance(
+        *,
+        config_path: Path,
+        text: str,
+        expected_revision: str,
+        media_config: voice_media.StreamingMediaConfig,
+    ) -> tuple[dict[str, object], list[str]]:
+        del config_path, text, expected_revision, media_config
+        return {"software_gate_eligible": True}, []
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "integration-placeholder")
+    monkeypatch.setattr(voice_bench, "_provenance", _eligible_provenance)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench_voice_streaming_output.py",
+            "--runs",
+            "1",
+            "--bounded-smoke-only",
+            "--expected-revision",
+            "integration-revision",
+            "--output",
+            str(output),
+        ],
+    )
+    with (
+        patch.object(
+            voice_bench,
+            "AudioStreamPlayer",
+            side_effect=OSError("injected device open failure"),
+        ),
+        patch.object(voice_bench, "MiniMaxWSClient") as provider_factory,
+    ):
+        assert voice_bench.main() == 1
+    provider_factory.assert_not_called()
+    payload = json.loads(output.read_text())
+    smoke = payload["bounded_real_streaming_smoke"]
+    assert smoke["status"] == "FAIL"
+    assert smoke["failure"].startswith("device_open_failed:OSError:")
+    assert smoke["silent_callback_baseline"] is None
+    for name in (
+        "player_state_after_accept",
+        "player_state_at_callback_deadline",
+        "player_state_before_cleanup",
+        "player_state_after_cleanup",
+    ):
+        assert smoke[name] == {
+            "sampled": False,
+            "is_running": None,
+            "callback_calls": None,
+            "underflow_count": None,
+            "bytes_pending": None,
+        }
+    assert payload["summary"]["software_streaming_output_gate"] == "NOT_RUN"
+    assert payload["summary"]["bounded_real_streaming_smoke_gate"] == "FAIL"
+
+
+def test_bounded_smoke_persists_player_counters_after_accept_and_deadline() -> None:
+    """PASS and FAIL artifacts retain measured player state at both boundaries."""
+    class _BenchPlayer:
+        def __init__(self) -> None:
+            self.is_running = True
+            self.callback_calls = 11
+            self.underflow_count = 2
+            self._pending = 0
+
+        def activate_generation(self, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(playback_generation_id=7)
+
+        def begin_generation_segment(self, **_kwargs: object) -> None:
+            return
+
+        def write_generation(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+            self._pending = 512
+            return SimpleNamespace(sample_count=128)
+
+        def poll_presentation(self) -> None:
+            self.callback_calls = 12
+            self._pending = 0
+
+        def bytes_pending(self) -> int:
+            return self._pending
+
+        def stop(self) -> None:
+            self.is_running = False
+
+    async def _pcm(
+        *,
+        provider: voice_tts.MiniMaxWSClient,
+        text: str,
+        playback_generation_id: int,
+    ) -> tuple[voice_tts.TTSAudioChunk, int, int]:
+        del provider, text, playback_generation_id
+        now = time.monotonic_ns()
+        return voice_tts.TTSAudioChunk(0, np.ones(128, dtype="<i2").tobytes(), 48_000), now, now
+
+    fake_player = _BenchPlayer()
+    fake_provider = SimpleNamespace(request_close=lambda: None)
+    clock = 0.0
+
+    def _monotonic() -> float:
+        nonlocal clock
+        clock += 0.1
+        return clock
+
+    trace_point = SimpleNamespace(
+        name="audio_output_first_nonzero_callback",
+        monotonic_ns=time.monotonic_ns(),
+    )
+    with (
+        patch.object(voice_bench, "AudioStreamPlayer", return_value=fake_player),
+        patch.object(voice_bench, "MiniMaxWSClient", return_value=fake_provider),
+        patch.object(voice_bench, "_first_streaming_pcm", side_effect=_pcm),
+        patch.object(
+            voice_bench,
+            "_silent_callback_baseline",
+            return_value={"callback_calls_delta": 11},
+        ),
+        patch.object(voice_bench, "realtime_trace_snapshot", return_value=(trace_point,)),
+        patch.object(time, "monotonic", side_effect=_monotonic),
+        patch.object(time, "sleep"),
+    ):
+        smoke = voice_bench._bounded_real_streaming_smoke(  # noqa: SLF001
+            api_key="integration-placeholder",
+            text="bounded smoke",
+        )
+    assert smoke["status"] == "PASS"
+    assert smoke["player_state_after_accept"] == {
+        "sampled": True,
+        "is_running": True,
+        "callback_calls": 11,
+        "underflow_count": 2,
+        "bytes_pending": 512,
+    }
+    assert smoke["player_state_at_callback_deadline"] == {
+        "sampled": True,
+        "is_running": True,
+        "callback_calls": 12,
+        "underflow_count": 2,
+        "bytes_pending": 0,
+    }
+    after_cleanup = smoke["player_state_after_cleanup"]
+    assert isinstance(after_cleanup, dict)
+    assert after_cleanup["is_running"] is False
