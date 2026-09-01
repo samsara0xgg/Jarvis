@@ -3,6 +3,8 @@
 # ruff: noqa: SLF001 — module-private wiring is the surface under test here.
 from __future__ import annotations
 
+import asyncio
+import threading
 import time
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -182,6 +184,67 @@ def test_tts_pipeline_does_not_duck_around_speak() -> None:
     # And the ducker MUST be untouched.
     fake_ducker.duck.assert_not_called()
     fake_ducker.restore.assert_not_called()
+
+
+def test_wake_does_not_duck_while_tts_waits_for_first_pcm() -> None:
+    """Provider I/O is output-active before the player's first queued byte."""
+    synthesis_started = threading.Event()
+    release_synthesis = threading.Event()
+
+    async def _synthesize(_text: str) -> bytes:
+        synthesis_started.set()
+        assert release_synthesis.wait(timeout=2.0)
+        await asyncio.sleep(0)
+        return b"\x00" * 960
+
+    provider = MagicMock(spec=voice_tts.MiniMaxWSClient)
+    provider.synthesize = AsyncMock(side_effect=_synthesize)
+    player = MagicMock(spec=voice_tts.AudioStreamPlayer)
+    player.bytes_pending.return_value = 0
+    pipeline = voice_tts.TTSPipeline(
+        provider=provider,
+        player=player,
+        fallback=lambda _text: None,
+    )
+    pipeline.begin_turn("T-race", gate_mode="sentence")
+
+    synthesis_thread = threading.Thread(
+        target=pipeline.handle_chunk,
+        args=("T-race", "<voice>你好</voice>"),
+        daemon=True,
+    )
+    synthesis_thread.start()
+    assert synthesis_started.wait(timeout=1.0)
+
+    ducker = MagicMock(spec=voice_ducking.SystemAudioDucker)
+    capture = MagicMock(return_value=b"\x10\x00" * 16_000)
+    engine = MagicMock()
+    engine.predict.return_value = {"hey_jarvis_v0.1": 0.9}
+    listener = voice_wake.WakeListener(
+        engine=engine,
+        pipeline=MagicMock(),
+        broadcaster=MagicMock(),
+        capture_callable=capture,
+        threshold=0.5,
+        is_speaking_callable=pipeline.is_speaking,
+        ducker=ducker,
+    )
+
+    try:
+        assert pipeline.is_speaking(), (
+            "legacy is_speaking() must include synth-before-first-PCM activity"
+        )
+        assert pipeline.is_output_active()
+        listener._run_one_iter()
+        engine.predict.assert_not_called()
+        capture.assert_not_called()
+        ducker.duck.assert_not_called()
+    finally:
+        release_synthesis.set()
+        synthesis_thread.join(timeout=2.0)
+
+    assert not synthesis_thread.is_alive()
+    player.write.assert_called_once()
 
 
 def test_serve_inherent_shutdown_joins_wake_thread_before_stream_close(

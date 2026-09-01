@@ -889,6 +889,8 @@ class TTSPipeline:
         self._turn_id: str | None = None
         self._gate_mode: GateMode = "sentence"
         self._buffer: list[str] = []
+        self._output_active_lock = threading.Lock()
+        self._output_active_leases = 0
 
     def begin_turn(self, turn_id: str, *, gate_mode: GateMode | None) -> None:
         """Called on ``surface.response_open``. Resets buffer + routing mode."""
@@ -961,9 +963,26 @@ class TTSPipeline:
         """
         self._player.stop()
 
-    def is_speaking(self) -> bool:
-        """True iff the player still has queued bytes (drives wake suppression)."""
+    def is_output_active(self) -> bool:
+        """Return whether synthesis, fallback, or queued playback owns output."""
+        with self._output_active_lock:
+            if self._output_active_leases > 0:
+                return True
         return self._player.bytes_pending() > 0
+
+    def is_speaking(self) -> bool:
+        """Compatibility alias for the unified output-active lifecycle."""
+        return self.is_output_active()
+
+    def _enter_output_active(self) -> None:
+        """Acquire one synth-before-first-PCM output lease."""
+        with self._output_active_lock:
+            self._output_active_leases += 1
+
+    def _leave_output_active(self) -> None:
+        """Release one output lease without disturbing concurrent synthesis."""
+        with self._output_active_lock:
+            self._output_active_leases -= 1
 
     def _speak(self, text: str) -> None:
         """Synthesize ``text`` and push the PCM bytes to the player.
@@ -995,21 +1014,25 @@ class TTSPipeline:
         # PCM-level gain duck inside the player for barge-in; the
         # OS-level master-volume duck only belongs on the wake-capture
         # path (mute speakers while the mic is open).
+        self._enter_output_active()
         try:
-            pcm = asyncio.run(self._provider.synthesize(cleaned))
-            self._player.write(pcm)
-        except MiniMaxUnavailableError:
-            LOGGER.warning(
-                "MiniMax unavailable; falling back to macos_say for: %r",
-                cleaned,
-            )
-            self._fallback(cleaned)
-        except Exception:
-            # TTS path must never crash the daemon; F7 fallback.
-            LOGGER.exception(
-                "TTS synth failed for turn_id=%s", self._turn_id,
-            )
-            self._fallback(cleaned)
+            try:
+                pcm = asyncio.run(self._provider.synthesize(cleaned))
+                self._player.write(pcm)
+            except MiniMaxUnavailableError:
+                LOGGER.warning(
+                    "MiniMax unavailable; falling back to macos_say for: %r",
+                    cleaned,
+                )
+                self._fallback(cleaned)
+            except Exception:
+                # TTS path must never crash the daemon; F7 fallback.
+                LOGGER.exception(
+                    "TTS synth failed for turn_id=%s", self._turn_id,
+                )
+                self._fallback(cleaned)
+        finally:
+            self._leave_output_active()
 
 
 def macos_say_fallback(text: str, *, voice: str = "Tingting") -> None:
