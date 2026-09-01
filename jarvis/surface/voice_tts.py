@@ -13,6 +13,7 @@ This file lands in 4 commits per ADR-0005 §14:
   Task 15: MiniMaxWSClient + MiniMaxUnavailableError (this one)
   Task 16: TTSPipeline + macos_say_fallback
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +25,7 @@ import re
 import subprocess
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -38,6 +40,15 @@ from jarvis.shared.realtime_trace import (
     TraceValue,
     realtime_trace_context,
     record_realtime_trace,
+)
+from jarvis.surface.voice_ledger import (
+    AcceptedSamples,
+    AudibilityClass,
+    ForegroundBusy,
+    GenerationLease,
+    OutputTimelineSnapshot,
+    PlaybackLedger,
+    StalePlaybackGeneration,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -205,6 +216,199 @@ class _RingBuffer:
         self._read_idx = 0
 
 
+class _GenerationRingBuffer:
+    """Preallocated SPSC PCM ring with generation/cursor metadata.
+
+    The actor owns ``_write_idx`` and the callback owns ``_read_idx``.
+    Interrupt never rewinds either cursor.  It publishes a monotonic discard
+    boundary which the callback consumes before its next copy, avoiding the
+    reset-vs-callback race that can leak N into N+1.
+    """
+
+    def __init__(self, size_samples: int) -> None:
+        n = 1
+        while n < size_samples:
+            n <<= 1
+        self._size = n
+        self._mask = n - 1
+        self._pcm = np.zeros(n, dtype=np.float32)
+        self._generation = np.full(n, -1, dtype=np.int64)
+        self._cursor = np.zeros(n, dtype=np.int64)
+        self._write_idx = 0
+        self._read_idx = 0
+        self._discard_before_idx = 0
+
+    def available_read(self) -> int:
+        return self._write_idx - max(self._read_idx, self._discard_before_idx)
+
+    def available_write(self) -> int:
+        # Capacity uses the callback-owned read cursor, not the requested
+        # discard boundary: the writer never overwrites slots a callback may
+        # still be copying.
+        return self._size - (self._write_idx - self._read_idx)
+
+    def write(
+        self,
+        data: np.ndarray,
+        *,
+        generation: int,
+        output_start_cursor: int,
+    ) -> int:
+        """Publish as much generation-tagged PCM as currently fits."""
+        n = min(len(data), self.available_write())
+        if n <= 0:
+            return 0
+        wi = self._write_idx & self._mask
+        end = wi + n
+        cursors = np.arange(
+            output_start_cursor,
+            output_start_cursor + n,
+            dtype=np.int64,
+        )
+        if end <= self._size:
+            self._pcm[wi:end] = data[:n]
+            self._generation[wi:end] = generation
+            self._cursor[wi:end] = cursors
+        else:
+            first = self._size - wi
+            self._pcm[wi:] = data[:first]
+            self._generation[wi:] = generation
+            self._cursor[wi:] = cursors[:first]
+            self._pcm[: n - first] = data[first:n]
+            self._generation[: n - first] = generation
+            self._cursor[: n - first] = cursors[first:n]
+        self._write_idx += n
+        return n
+
+    def read_into(
+        self,
+        pcm_out: np.ndarray,
+        generation_out: np.ndarray,
+        cursor_out: np.ndarray,
+        n: int,
+    ) -> int:
+        """Copy a callback block and zero-pad without allocating."""
+        self._read_idx = max(self._read_idx, self._discard_before_idx)
+        available = self._write_idx - self._read_idx
+        actual = min(n, available)
+        if actual > 0:
+            ri = self._read_idx & self._mask
+            end = ri + actual
+            if end <= self._size:
+                pcm_out[:actual] = self._pcm[ri:end]
+                generation_out[:actual] = self._generation[ri:end]
+                cursor_out[:actual] = self._cursor[ri:end]
+            else:
+                first = self._size - ri
+                pcm_out[:first] = self._pcm[ri:]
+                generation_out[:first] = self._generation[ri:]
+                cursor_out[:first] = self._cursor[ri:]
+                pcm_out[first:actual] = self._pcm[: actual - first]
+                generation_out[first:actual] = self._generation[: actual - first]
+                cursor_out[first:actual] = self._cursor[: actual - first]
+            self._read_idx += actual
+        if actual < n:
+            pcm_out[actual:n] = 0.0
+            generation_out[actual:n] = -1
+            cursor_out[actual:n] = 0
+        return actual
+
+    def request_discard(self) -> int:
+        """Publish a kill boundary without mutating the callback cursor."""
+        self._discard_before_idx = self._write_idx
+        return self._discard_before_idx
+
+
+@dataclass(frozen=True)
+class _CallbackReport:
+    generation: int
+    output_start_cursor: int
+    output_end_cursor: int
+    audibility_class: AudibilityClass
+    callback_monotonic_ns: int
+    presentation_delay_ns: int
+    first_for_generation: bool
+
+
+_AUDIBILITY_CODE: dict[AudibilityClass, int] = {
+    "normal": 0,
+    "attenuated": 1,
+    "muted": 2,
+    "unknown": 3,
+}
+
+
+class _CallbackReportRing:
+    """Bounded callback-to-media-actor SPSC report ring."""
+
+    def __init__(self, capacity: int) -> None:
+        self._capacity = capacity
+        self._generation = np.zeros(capacity, dtype=np.int64)
+        self._start = np.zeros(capacity, dtype=np.int64)
+        self._end = np.zeros(capacity, dtype=np.int64)
+        self._audibility = np.zeros(capacity, dtype=np.int8)
+        self._callback_ns = np.zeros(capacity, dtype=np.int64)
+        self._delay_ns = np.zeros(capacity, dtype=np.int64)
+        self._first = np.zeros(capacity, dtype=np.bool_)
+        self._write_idx = 0
+        self._read_idx = 0
+        self._dropped = 0
+
+    @property
+    def dropped(self) -> int:
+        return self._dropped
+
+    def write(  # noqa: PLR0913 - fixed preallocated callback report shape
+        self,
+        *,
+        generation: int,
+        output_start_cursor: int,
+        output_end_cursor: int,
+        audibility_class: AudibilityClass,
+        callback_monotonic_ns: int,
+        presentation_delay_ns: int,
+        first_for_generation: bool,
+    ) -> None:
+        """Write from the callback, dropping rather than blocking when full."""
+        if self._write_idx - self._read_idx >= self._capacity:
+            self._dropped += 1
+            return
+        slot = self._write_idx % self._capacity
+        self._generation[slot] = generation
+        self._start[slot] = output_start_cursor
+        self._end[slot] = output_end_cursor
+        self._audibility[slot] = _AUDIBILITY_CODE[audibility_class]
+        self._callback_ns[slot] = callback_monotonic_ns
+        self._delay_ns[slot] = presentation_delay_ns
+        self._first[slot] = first_for_generation
+        self._write_idx += 1
+
+    def drain(self) -> list[_CallbackReport]:
+        """Drain on the media owner; allocation is outside the callback."""
+        reports: list[_CallbackReport] = []
+        labels: tuple[AudibilityClass, ...] = (
+            "normal",
+            "attenuated",
+            "muted",
+            "unknown",
+        )
+        while self._read_idx < self._write_idx:
+            slot = self._read_idx % self._capacity
+            reports.append(
+                _CallbackReport(
+                    generation=int(self._generation[slot]),
+                    output_start_cursor=int(self._start[slot]),
+                    output_end_cursor=int(self._end[slot]),
+                    audibility_class=labels[int(self._audibility[slot])],
+                    callback_monotonic_ns=int(self._callback_ns[slot]),
+                    presentation_delay_ns=int(self._delay_ns[slot]),
+                    first_for_generation=bool(self._first[slot]),
+                ),
+            )
+            self._read_idx += 1
+        return reports
+
+
 class _PCMCommitGate:
     """Linearize close-generation invalidation with ring-index publication.
 
@@ -257,6 +461,20 @@ class _GainRamp:
     @property
     def current(self) -> float:
         return self._current
+
+    @property
+    def is_normal(self) -> bool:
+        """Return whether the whole next block is guaranteed unity gain."""
+        return self._current == 1.0 and self._target == 1.0 and self._remaining == 0
+
+    @property
+    def audibility_class(self) -> AudibilityClass:
+        """Classify the next post-gain block without advancing the ramp."""
+        if self.is_normal:
+            return "normal"
+        if self._current == 0.0 and self._target == 0.0 and self._remaining == 0:
+            return "muted"
+        return "attenuated"
 
     def set_target(self, target: float, ramp_samples: int) -> None:
         self._target = float(target)
@@ -344,6 +562,8 @@ class AudioStreamPlayer:
     """
 
     _BYTES_PER_SAMPLE = 4  # float32 mono
+    _RECENT_TOMBSTONE_LIMIT = 4096
+    _PENDING_AUDIBLE_LIMIT = 8192
 
     def __init__(  # noqa: PLR0913 — keyword-only audio + lifecycle config
         self,
@@ -356,6 +576,9 @@ class AudioStreamPlayer:
         device: Any | None = None,  # noqa: ANN401
         on_first_chunk: Callable[[], None] | None = None,
         lazy_open: bool = True,
+        generation_safe: bool = False,
+        callback_max_frames: int = 4096,
+        estimated_output_latency_s: float = 0.12,
     ) -> None:
         """Construct an idle player; does not open the OutputStream by default."""
         if channels != 1:
@@ -363,8 +586,10 @@ class AudioStreamPlayer:
             raise NotImplementedError(msg)
         self._sample_rate_hz = int(sample_rate_hz)
         self._channels = channels
-        self._ring = _RingBuffer(int(sample_rate_hz * ring_seconds))
-        self._gain = _GainRamp(max_block_size=4096)
+        ring_samples = int(sample_rate_hz * ring_seconds)
+        self._ring = _RingBuffer(ring_samples)
+        self._generation_ring = _GenerationRingBuffer(ring_samples) if generation_safe else None
+        self._gain = _GainRamp(max_block_size=callback_max_frames)
         self._blocksize = int(blocksize)
         self._latency = latency
         self._device = device
@@ -382,6 +607,29 @@ class AudioStreamPlayer:
         self._trace_attributes: dict[str, TraceValue] = {}
         self._trace_first_ring_accept_fired = False
         self._trace_first_callback_fired = False
+        self._legacy_callback_report_pending = False
+        self._legacy_first_chunk_pending = False
+        self._generation_safe = generation_safe
+        self._callback_max_frames = callback_max_frames
+        self._callback_generations = np.full(callback_max_frames, -1, dtype=np.int64)
+        self._callback_cursors = np.zeros(callback_max_frames, dtype=np.int64)
+        self._callback_valid = np.zeros(callback_max_frames, dtype=np.bool_)
+        self._callback_reports = _CallbackReportRing(capacity=2048)
+        self._active_lease: GenerationLease | None = None
+        self._next_generation = 0
+        self._timeline_epoch = 0
+        self._ledgers: dict[int, PlaybackLedger] = {}
+        self._tombstoned_generations: set[int] = set()
+        self._tombstone_order: deque[int] = deque()
+        self._pending_audible: list[tuple[int, int, int]] = []
+        self._estimated_output_latency_ns = max(
+            0,
+            int(estimated_output_latency_s * 1_000_000_000),
+        )
+        self._callback_first_generation = -1
+        self._callback_report_drop_seen = 0
+        self._presentation_horizon_coalesced = 0
+        self._presentation_horizon_coalesced_seen = 0
 
         if not lazy_open:
             self.start()
@@ -413,15 +661,21 @@ class AudioStreamPlayer:
 
     def stop(self) -> None:
         """Stop and close the OutputStream. Safe to call repeatedly."""
-        if self._stream is None:
-            return
-        try:
-            self._stream.stop()
-            self._stream.close()
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning("stream close error (ignored): %s", exc)
-        self._stream = None
-        self._ring.reset()
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("stream close error (ignored): %s", exc)
+            self._stream = None
+        if self._generation_ring is not None:
+            if self._active_lease is not None:
+                self._remember_tombstone(self._active_lease.playback_generation_id)
+                self._active_lease = None
+            with self._write_lock:
+                self._generation_ring.request_discard()
+        else:
+            self._ring.reset()
         self._played_samples = 0
         self._drained.set()
         LOGGER.info(
@@ -480,23 +734,17 @@ class AudioStreamPlayer:
         deadline = time.monotonic() + timeout_s
         offset = 0
         while offset < len(samples):
-            if self._abort.is_set() or (
-                cancel_event is not None and cancel_event.is_set()
-            ):
+            if self._abort.is_set() or (cancel_event is not None and cancel_event.is_set()):
                 return offset
 
             def _publish(start: int = offset) -> int:
                 with self._write_lock:
-                    if self._abort.is_set() or (
-                        cancel_event is not None and cancel_event.is_set()
-                    ):
+                    if self._abort.is_set() or (cancel_event is not None and cancel_event.is_set()):
                         return 0
                     return self._ring.write(samples[start:])
 
             published = (
-                commit_gate.publish(generation, _publish)
-                if commit_gate is not None
-                else _publish()
+                commit_gate.publish(generation, _publish) if commit_gate is not None else _publish()
             )
             if published is None:
                 return offset
@@ -505,9 +753,7 @@ class AudioStreamPlayer:
                 self._trace_first_ring_accept_fired = True
                 record_realtime_trace(
                     "tts_first_pcm_accepted_to_ring",
-                    measurement_semantics=(
-                        "first_float32_samples_committed_to_software_ring"
-                    ),
+                    measurement_semantics=("first_float32_samples_committed_to_software_ring"),
                     **self._trace_attributes,
                 )
             offset += written
@@ -522,12 +768,314 @@ class AudioStreamPlayer:
             time.sleep(0.01)
         return offset
 
+    def activate_generation(
+        self,
+        *,
+        session_id: str,
+        response_id: str,
+        response_group_id: str,
+        turn_id: str,
+    ) -> GenerationLease | ForegroundBusy:
+        """Mint the next L5 playback lease when no foreground is active."""
+        if not self._generation_safe or self._generation_ring is None:
+            msg = "generation activation requires generation_safe=True"
+            raise RuntimeError(msg)
+        if self._active_lease is not None:
+            return ForegroundBusy(active_lease=self._active_lease)
+        self._next_generation += 1
+        self._timeline_epoch += 1
+        lease = GenerationLease(
+            session_id=session_id,
+            response_id=response_id,
+            response_group_id=response_group_id,
+            turn_id=turn_id,
+            playback_generation_id=self._next_generation,
+            timeline_epoch=self._timeline_epoch,
+        )
+        self._active_lease = lease
+        self._ledgers[lease.playback_generation_id] = PlaybackLedger(
+            lease,
+            sample_rate=self._sample_rate_hz,
+        )
+        self._abort.clear()
+        self._drained.clear()
+        self._callback_first_generation = -1
+        return lease
+
+    def begin_generation_segment(
+        self,
+        *,
+        expected_playback_generation_id: int,
+        sequence: int,
+        text: str,
+        segment_hash: str,
+    ) -> StalePlaybackGeneration | None:
+        """Open one speech segment under the exact active generation."""
+        lease = self._active_lease
+        if lease is None or lease.playback_generation_id != expected_playback_generation_id:
+            return self._stale(expected_playback_generation_id)
+        self._ledgers[expected_playback_generation_id].begin_segment(
+            sequence=sequence,
+            text=text,
+            segment_hash=segment_hash,
+        )
+        return None
+
+    def write_generation(
+        self,
+        pcm: bytes,
+        *,
+        expected_playback_generation_id: int,
+        segment_sequence: int,
+    ) -> AcceptedSamples | StalePlaybackGeneration | None:
+        """Publish one bounded PCM slice under generation CAS.
+
+        ``None`` means the bounded ring is currently full and the async media
+        owner must apply backpressure before retrying.  It is never a drop.
+        """
+        generation_ring = self._generation_ring
+        lease = self._active_lease
+        if (
+            generation_ring is None
+            or lease is None
+            or lease.playback_generation_id != expected_playback_generation_id
+        ):
+            return self._stale(expected_playback_generation_id)
+        samples = np.frombuffer(pcm, dtype=np.float32)
+        if samples.size == 0:
+            return None
+        ledger = self._ledgers[expected_playback_generation_id]
+        with self._write_lock:
+            # The actor is the sole producer, but the explicit second check
+            # preserves the CAS if shutdown installs a tombstone between the
+            # caller's first check and ring publication.
+            active = self._active_lease
+            if active is None or active.playback_generation_id != expected_playback_generation_id:
+                return self._stale(expected_playback_generation_id)
+            written = generation_ring.write(
+                samples,
+                generation=expected_playback_generation_id,
+                output_start_cursor=ledger.accepted_cursor,
+            )
+            if written <= 0:
+                return None
+            accepted = ledger.accept_samples(
+                sequence=segment_sequence,
+                sample_count=written,
+            )
+        if accepted.output_start_cursor == 0:
+            record_realtime_trace(
+                "tts_player_first_accept",
+                response_id=lease.response_id,
+                playback_generation_id=expected_playback_generation_id,
+                segment_sequence=segment_sequence,
+                accepted_samples=written,
+                measurement_semantics=(
+                    "first_generation_valid_float32_samples_accepted_by_software_player"
+                ),
+            )
+        return accepted
+
+    def finish_generation_segment(
+        self,
+        *,
+        expected_playback_generation_id: int,
+        sequence: int,
+    ) -> StalePlaybackGeneration | None:
+        """Finalize one independent segment resampler/timeline span."""
+        lease = self._active_lease
+        if lease is None or lease.playback_generation_id != expected_playback_generation_id:
+            return self._stale(expected_playback_generation_id)
+        self._ledgers[expected_playback_generation_id].finish_segment(sequence=sequence)
+        return None
+
+    def interrupt_generation(
+        self,
+        *,
+        expected_playback_generation_id: int,
+    ) -> OutputTimelineSnapshot | StalePlaybackGeneration:
+        """Atomically tombstone, then publish the unsubmitted discard boundary."""
+        lease = self._active_lease
+        if lease is None or lease.playback_generation_id != expected_playback_generation_id:
+            return self._stale(expected_playback_generation_id)
+        # Tombstone is the first publication.  A callback which already read
+        # the old value performs a second validation immediately before host
+        # return; anything already returned is submitted-host tail and remains
+        # accounted conservatively.
+        self._remember_tombstone(expected_playback_generation_id)
+        self._active_lease = None
+        with self._write_lock:
+            if self._generation_ring is not None:
+                self._generation_ring.request_discard()
+        ledger = self._ledgers[expected_playback_generation_id]
+        ledger.mark_software_drained()
+        self._drained.set()
+        return ledger.freeze()
+
+    def complete_generation(
+        self,
+        *,
+        expected_playback_generation_id: int,
+    ) -> OutputTimelineSnapshot | StalePlaybackGeneration:
+        """Close a naturally presented generation without resetting cursors."""
+        lease = self._active_lease
+        if lease is None or lease.playback_generation_id != expected_playback_generation_id:
+            return self._stale(expected_playback_generation_id)
+        snapshot = self.poll_generation(expected_playback_generation_id)
+        if isinstance(snapshot, StalePlaybackGeneration):
+            return snapshot
+        if not snapshot.fully_presented:
+            msg = "cannot complete playback before conservative presentation drain"
+            raise RuntimeError(msg)
+        self._active_lease = None
+        self._remember_tombstone(expected_playback_generation_id)
+        return self._ledgers[expected_playback_generation_id].freeze()
+
+    def retire_generation(self, playback_generation_id: int) -> None:
+        """Release completed ledger detail while retaining bounded stale identity."""
+        lease = self._active_lease
+        if lease is not None and lease.playback_generation_id == playback_generation_id:
+            msg = "cannot retire the active playback generation"
+            raise RuntimeError(msg)
+        self._ledgers.pop(playback_generation_id, None)
+        self._pending_audible = [
+            item for item in self._pending_audible if item[1] != playback_generation_id
+        ]
+
+    def _remember_tombstone(self, generation: int) -> None:
+        """Keep a bounded recent terminal set for typed late-operation results."""
+        if generation in self._tombstoned_generations:
+            return
+        self._tombstoned_generations.add(generation)
+        self._tombstone_order.append(generation)
+        if len(self._tombstone_order) > self._RECENT_TOMBSTONE_LIMIT:
+            oldest = self._tombstone_order.popleft()
+            self._tombstoned_generations.discard(oldest)
+
+    def poll_presentation(self) -> None:  # noqa: C901, PLR0912 - two backend ledgers
+        """Consume callback reports and advance conservative horizons."""
+        if self._generation_ring is None:
+            if self._legacy_callback_report_pending:
+                self._legacy_callback_report_pending = False
+                record_realtime_trace(
+                    "audio_output_first_nonzero_callback",
+                    measurement_semantics=("portaudio_callback_buffer_submission_not_dac_audible"),
+                    **self._trace_attributes,
+                )
+            if self._legacy_first_chunk_pending:
+                self._legacy_first_chunk_pending = False
+                if self._on_first_chunk is not None:
+                    with contextlib.suppress(Exception):
+                        self._on_first_chunk()
+            return
+        for report in self._callback_reports.drain():
+            ledger = self._ledgers.get(report.generation)
+            if ledger is None:
+                continue
+            ledger.record_submitted(
+                output_start_cursor=report.output_start_cursor,
+                output_end_cursor=report.output_end_cursor,
+                audibility_class=report.audibility_class,
+            )
+            due_ns = report.callback_monotonic_ns + report.presentation_delay_ns
+            if len(self._pending_audible) >= self._PENDING_AUDIBLE_LIMIT:
+                # A later callback horizon implies the earlier cursor has also
+                # crossed its (earlier) estimate. Retaining only the later
+                # report delays accounting and is therefore conservative.
+                self._pending_audible.pop(0)
+                self._presentation_horizon_coalesced += 1
+            self._pending_audible.append(
+                (due_ns, report.generation, report.output_end_cursor),
+            )
+            if report.first_for_generation:
+                record_realtime_trace(
+                    "audio_output_first_nonzero_callback",
+                    response_id=ledger.lease.response_id,
+                    playback_generation_id=report.generation,
+                    frames_submitted=(report.output_end_cursor - report.output_start_cursor),
+                    measurement_semantics=("portaudio_callback_buffer_submission_not_dac_audible"),
+                )
+                if self._on_first_chunk is not None:
+                    with contextlib.suppress(Exception):
+                        self._on_first_chunk()
+        now_ns = time.monotonic_ns()
+        remaining: list[tuple[int, int, int]] = []
+        for due_ns, generation, cursor in self._pending_audible:
+            ledger = self._ledgers.get(generation)
+            if ledger is None:
+                continue
+            if due_ns <= now_ns:
+                ledger.record_audible(
+                    output_cursor=cursor,
+                    cursor_quality="estimated",
+                )
+            else:
+                remaining.append((due_ns, generation, cursor))
+        self._pending_audible = remaining
+        active = self._active_lease
+        if active is not None and self.bytes_pending() == 0:
+            self._ledgers[active.playback_generation_id].mark_software_drained()
+        dropped = self._callback_reports.dropped
+        if dropped > self._callback_report_drop_seen:
+            record_realtime_trace(
+                "audio_callback_report_overflow",
+                dropped_reports=dropped - self._callback_report_drop_seen,
+                capacity=2048,
+            )
+            self._callback_report_drop_seen = dropped
+        coalesced = self._presentation_horizon_coalesced
+        if coalesced > self._presentation_horizon_coalesced_seen:
+            record_realtime_trace(
+                "audio_presentation_horizon_coalesced",
+                coalesced_reports=(coalesced - self._presentation_horizon_coalesced_seen),
+                capacity=self._PENDING_AUDIBLE_LIMIT,
+                measurement_semantics="later_estimated_horizon_retained_conservatively",
+            )
+            self._presentation_horizon_coalesced_seen = coalesced
+
+    def poll_generation(
+        self,
+        expected_playback_generation_id: int,
+    ) -> OutputTimelineSnapshot | StalePlaybackGeneration:
+        """Return the latest generation snapshot after consuming reports."""
+        self.poll_presentation()
+        ledger = self._ledgers.get(expected_playback_generation_id)
+        if ledger is None:
+            return self._stale(expected_playback_generation_id)
+        return ledger.snapshot()
+
+    @property
+    def active_lease(self) -> GenerationLease | None:
+        """Return the current L5 write lease."""
+        return self._active_lease
+
+    def _stale(self, expected: int) -> StalePlaybackGeneration:
+        active = self._active_lease
+        return StalePlaybackGeneration(
+            expected_playback_generation_id=expected,
+            active_playback_generation_id=(
+                active.playback_generation_id if active is not None else None
+            ),
+            reason=(
+                "already_terminal"
+                if expected in self._tombstoned_generations
+                else "stale_generation"
+            ),
+        )
+
     def bytes_pending(self) -> int:
         """Queued bytes not yet read by the PortAudio callback."""
-        return self._ring.available_read() * self._BYTES_PER_SAMPLE
+        ring = self._generation_ring if self._generation_ring is not None else self._ring
+        return ring.available_read() * self._BYTES_PER_SAMPLE
 
     def flush(self) -> None:
         """Drop every queued sample and signal in-flight writes to bail."""
+        if self._generation_ring is not None:
+            msg = (
+                "generation-safe playback requires interrupt_generation() "
+                "with the expected playback_generation_id"
+            )
+            raise RuntimeError(msg)
         self._abort.set()
         with self._write_lock:
             self._ring.reset()
@@ -536,7 +1084,9 @@ class AudioStreamPlayer:
     def drain(self, timeout_s: float = 30.0) -> bool:
         """Block until the ring is empty (or timeout/abort). Returns True if drained."""
         deadline = time.monotonic() + timeout_s
-        while self._ring.available_read() > 0:
+        ring = self._generation_ring if self._generation_ring is not None else self._ring
+        while ring.available_read() > 0:
+            self.poll_presentation()
             if self._abort.is_set():
                 return False
             remaining = deadline - time.monotonic()
@@ -544,6 +1094,7 @@ class AudioStreamPlayer:
                 return False
             time.sleep(min(0.01, remaining))
         self._drained.set()
+        self.poll_presentation()
         return True
 
     # ------------------------------------------------------------------
@@ -605,6 +1156,8 @@ class AudioStreamPlayer:
         self._trace_attributes = dict(attributes)
         self._trace_first_ring_accept_fired = not enabled
         self._trace_first_callback_fired = not enabled
+        self._legacy_callback_report_pending = False
+        self._legacy_first_chunk_pending = False
         if enabled:
             self.reset_first_chunk()
 
@@ -612,7 +1165,7 @@ class AudioStreamPlayer:
     # Callback — runs on PortAudio thread, keep it tight
     # ------------------------------------------------------------------
 
-    def _callback(
+    def _callback(  # noqa: C901 - realtime callback keeps all checks inline
         self,
         outdata: np.ndarray,
         frames: int,
@@ -630,27 +1183,80 @@ class AudioStreamPlayer:
             self._underflow_count += 1
 
         view = outdata[:, 0] if outdata.ndim > 1 else outdata
-        actual = self._ring.read_into(view, frames)
-        self._played_samples += actual
+        generation_ring = self._generation_ring
+        if generation_ring is None:
+            actual = self._ring.read_into(view, frames)
+            self._played_samples += actual
+            # Legacy callbacks retain their old diagnostic flags.  Trace/user
+            # delivery happens when the non-callback drain owner polls.
+            if actual > 0 and not self._trace_first_callback_fired:
+                self._trace_first_callback_fired = True
+                self._legacy_callback_report_pending = True
+            if actual > 0 and not self._first_chunk_fired:
+                self._first_chunk_fired = True
+                self._legacy_first_chunk_pending = True
+            self._gain.apply(view)
+            return
 
-        if actual > 0 and not self._trace_first_callback_fired:
-            self._trace_first_callback_fired = True
-            record_realtime_trace(
-                "audio_output_first_nonzero_callback",
-                measurement_semantics=(
-                    "portaudio_callback_buffer_submission_not_dac_audible"
-                ),
-                frames_submitted=actual,
-                **self._trace_attributes,
-            )
+        if frames > self._callback_max_frames:
+            # Fail silent on an unexpected host block rather than allocate or
+            # overrun scratch buffers on the realtime thread.
+            view[:frames] = 0.0
+            self._underflow_count += 1
+            return
 
-        if actual > 0 and not self._first_chunk_fired and self._on_first_chunk is not None:
-            # never crash the audio thread due to caller bugs
-            with contextlib.suppress(Exception):
-                self._on_first_chunk()
-            self._first_chunk_fired = True
-
+        active_before = self._active_lease
+        actual = generation_ring.read_into(
+            view,
+            self._callback_generations,
+            self._callback_cursors,
+            frames,
+        )
+        if actual <= 0:
+            return
+        active_after = self._active_lease
+        if (
+            active_before is None
+            or active_after is None
+            or active_before.playback_generation_id != active_after.playback_generation_id
+        ):
+            view[:actual] = 0.0
+            return
+        generation = active_after.playback_generation_id
+        valid = self._callback_valid[:actual]
+        np.equal(
+            self._callback_generations[:actual],
+            generation,
+            out=valid,
+        )
+        if not bool(np.all(valid)):
+            view[:actual] = 0.0
+            return
+        audibility_class = self._gain.audibility_class
         self._gain.apply(view)
+
+        # Revalidate immediately before returning the block to PortAudio.  A
+        # CAS tombstone that landed during the numpy copies kills the entire
+        # block; a block already returned before CAS is submitted-host tail.
+        active_final = self._active_lease
+        if active_final is None or active_final.playback_generation_id != generation:
+            view[:actual] = 0.0
+            return
+        start_cursor = int(self._callback_cursors[0])
+        end_cursor = int(self._callback_cursors[actual - 1]) + 1
+        first = self._callback_first_generation != generation
+        if first:
+            self._callback_first_generation = generation
+        self._played_samples += actual
+        self._callback_reports.write(
+            generation=generation,
+            output_start_cursor=start_cursor,
+            output_end_cursor=end_cursor,
+            audibility_class=audibility_class,
+            callback_monotonic_ns=time.monotonic_ns(),
+            presentation_delay_ns=self._estimated_output_latency_ns,
+            first_for_generation=first,
+        )
 
 
 # --- MiniMax T2A WebSocket client (ported from legacy core/tts_minimax_ws.py) ---
@@ -684,6 +1290,68 @@ class _MiniMaxProtocolError(RuntimeError):
     """Server returned a non-zero status_code in ``base_resp``."""
 
 
+class TTSConcurrentSendError(RuntimeError):
+    """A second segment send raced the response-scoped command writer."""
+
+
+class TTSSessionClosedError(RuntimeError):
+    """A command targeted a closed response-scoped TTS session."""
+
+
+@dataclass(frozen=True)
+class TTSResponseSegment:
+    """One semantic segment sent through a response-scoped session."""
+
+    response_id: str
+    playback_generation_id: int
+    sequence: int
+    text: str
+
+
+@dataclass(frozen=True)
+class TTSAudioChunk:
+    """Provider PCM bytes before the per-segment canonical resampler."""
+
+    sequence: int
+    pcm: bytes
+    sample_rate_hz: int
+    channels: int = 1
+    sample_format: Literal["int16_le"] = "int16_le"
+
+
+@dataclass(frozen=True)
+class TTSSegmentFinished:
+    """Provider terminal for one segment; only now may resampling finalize."""
+
+    sequence: int
+    usage: Mapping[str, object] | None = None
+
+
+TTSAudioEvent = TTSAudioChunk | TTSSegmentFinished
+
+
+class TTSSession(Protocol):
+    """Typed response-scoped single-writer/single-reader provider contract."""
+
+    async def open(self, response_id: str, playback_generation_id: int) -> None:
+        """Open one logical response session."""
+
+    async def send(self, segment: TTSResponseSegment) -> None:
+        """Serialize one segment through the command writer."""
+
+    def audio_events(self) -> AsyncIterator[TTSAudioEvent]:
+        """Return the session's sole audio-event iterator."""
+
+    async def finish(self) -> None:
+        """Finish a clean response session."""
+
+    async def abort(self, reason: str) -> None:
+        """Abort network work after playback CAS."""
+
+    async def close(self) -> None:
+        """Close every owned task and the transport."""
+
+
 async def _ws_connect(url: str, *, additional_headers: dict[str, str]) -> Any:  # noqa: ANN401
     """Open a websocket connection.
 
@@ -693,7 +1361,12 @@ async def _ws_connect(url: str, *, additional_headers: dict[str, str]) -> Any:  
     """
     import websockets  # noqa: PLC0415
 
-    return await websockets.connect(url, additional_headers=additional_headers)
+    return await websockets.connect(
+        url,
+        additional_headers=additional_headers,
+        max_size=1_048_576,
+        max_queue=16,
+    )
 
 
 def _base_to_ws_url(base_url: str) -> str:
@@ -751,13 +1424,46 @@ class MiniMaxWSClient:
         self._total_timeout = float(total_timeout_s)
         self._closed = threading.Event()
         self._sessions_lock = threading.Lock()
-        self._active_sessions: set[
-            tuple[asyncio.AbstractEventLoop, asyncio.Task[Any]]
-        ] = set()
+        self._active_sessions: set[tuple[asyncio.AbstractEventLoop, asyncio.Task[Any]]] = set()
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @property
+    def streaming_candidate_count(self) -> int:
+        """Return the ordered prefix-safe endpoint candidate count."""
+        return 2
+
+    def create_tts_session(
+        self,
+        *,
+        endpoint_index: int,
+        idle_close_s: float,
+        command_queue_capacity: int,
+        audio_queue_capacity: int,
+    ) -> TTSSession:
+        """Create one response-scoped session without opening the network."""
+        endpoints = (self._primary_endpoint, self._fallback_endpoint)
+        try:
+            endpoint = endpoints[endpoint_index]
+        except IndexError as exc:
+            msg = f"invalid MiniMax endpoint index: {endpoint_index}"
+            raise ValueError(msg) from exc
+        return MiniMaxTTSSession(
+            api_key=self._api_key,
+            endpoint=endpoint,
+            voice=self._voice,
+            model=self._model,
+            volume=self._volume,
+            sample_rate_hz=self._sr_in,
+            connect_timeout_s=self._connect_timeout,
+            first_chunk_timeout_s=self._FIRST_CHUNK_TIMEOUT,
+            between_chunk_timeout_s=self._BETWEEN_CHUNK_TIMEOUT,
+            idle_close_s=idle_close_s,
+            command_queue_capacity=command_queue_capacity,
+            audio_queue_capacity=audio_queue_capacity,
+        )
 
     async def synthesize(self, text: str) -> bytes:
         """Return float32 mono PCM bytes for ``text``.
@@ -852,7 +1558,9 @@ class MiniMaxWSClient:
     # ------------------------------------------------------------------
 
     async def _stream_one_endpoint(
-        self, endpoint: str, text: str,
+        self,
+        endpoint: str,
+        text: str,
     ) -> AsyncIterator[bytes]:
         ws_url = _base_to_ws_url(endpoint)
         headers = {"Authorization": f"Bearer {self._api_key}"}
@@ -910,7 +1618,9 @@ class MiniMaxWSClient:
         await conn.send(json.dumps({"event": "task_continue", "text": text}))
 
     async def _stream_audio(
-        self, conn: Any, resampler: Any | None,  # noqa: ANN401
+        self,
+        conn: Any,  # noqa: ANN401
+        resampler: Any | None,  # noqa: ANN401
     ) -> AsyncIterator[bytes]:
         """Loop ``conn.recv`` until ``is_final``; yield float32 PCM byte chunks."""
         carry: bytes = b""
@@ -932,7 +1642,8 @@ class MiniMaxWSClient:
             if obj.get("is_final"):
                 if resampler is not None:
                     tail = resampler.resample_chunk(
-                        np.zeros(0, dtype=np.float32), last=True,
+                        np.zeros(0, dtype=np.float32),
+                        last=True,
                     )
                     if tail.size:
                         yield tail.astype(np.float32).tobytes()
@@ -958,7 +1669,11 @@ class MiniMaxWSClient:
             )
             raise RuntimeError(msg) from exc
         return soxr.ResampleStream(
-            self._sr_in, self._sr_out, 1, dtype="float32", quality="HQ",
+            self._sr_in,
+            self._sr_out,
+            1,
+            dtype="float32",
+            quality="HQ",
         )
 
 
@@ -980,6 +1695,399 @@ def _decode_audio_hex(audio_hex: str, carry: bytes) -> tuple[np.ndarray, bytes]:
     pcm_i16 = np.frombuffer(raw, dtype=np.int16).copy()
     pcm_f32 = pcm_i16.astype(np.float32) / 32768.0
     return pcm_f32, new_carry
+
+
+@dataclass(frozen=True)
+class _SessionFailure:
+    error: BaseException
+
+
+@dataclass(frozen=True)
+class _SessionWriterCommand:
+    kind: Literal["segment", "finish"]
+    acknowledged: asyncio.Future[None]
+    segment: TTSResponseSegment | None = None
+
+
+_SESSION_EVENTS_CLOSED = object()
+
+
+class MiniMaxTTSSession:
+    """One MiniMax response session with one writer and one reader task."""
+
+    _CLOSE_TIMEOUT_S = 1.0
+
+    def __init__(  # noqa: PLR0913 - explicit provider/session budgets
+        self,
+        *,
+        api_key: str,
+        endpoint: str,
+        voice: str,
+        model: str,
+        volume: int,
+        sample_rate_hz: int,
+        connect_timeout_s: float,
+        first_chunk_timeout_s: float,
+        between_chunk_timeout_s: float,
+        idle_close_s: float,
+        command_queue_capacity: int,
+        audio_queue_capacity: int,
+    ) -> None:
+        self._api_key = api_key
+        self._endpoint = endpoint
+        self._voice = voice
+        self._model = model
+        self._volume = volume
+        self._sample_rate_hz = sample_rate_hz
+        self._connect_timeout_s = connect_timeout_s
+        self._first_chunk_timeout_s = first_chunk_timeout_s
+        self._between_chunk_timeout_s = between_chunk_timeout_s
+        self._idle_close_s = idle_close_s
+        self._commands: asyncio.Queue[_SessionWriterCommand] = asyncio.Queue(
+            maxsize=command_queue_capacity,
+        )
+        self._events: asyncio.Queue[TTSAudioEvent | _SessionFailure | object] = asyncio.Queue(
+            maxsize=audio_queue_capacity
+        )
+        self._conn: Any | None = None
+        self._writer_task: asyncio.Task[None] | None = None
+        self._reader_task: asyncio.Task[None] | None = None
+        self._watchdog_task: asyncio.Task[None] | None = None
+        self._active_sequence: int | None = None
+        self._active_ready = asyncio.Event()
+        self._send_call_active = False
+        self._reader_claimed = False
+        self._closing = False
+        self._close_complete = False
+        self._close_lock = asyncio.Lock()
+        self._opened = False
+        self._response_id: str | None = None
+        self._generation: int | None = None
+        self._last_activity = 0.0
+
+    async def open(
+        self,
+        response_id: str,
+        playback_generation_id: int,
+    ) -> None:
+        """Connect and finish the handshake before starting owned tasks."""
+        if self._opened or self._closing:
+            msg = "TTS session cannot be opened twice"
+            raise RuntimeError(msg)
+        self._response_id = response_id
+        self._generation = playback_generation_id
+        loop = asyncio.get_running_loop()
+        record_realtime_trace(
+            "tts_session_open_requested",
+            response_id=response_id,
+            playback_generation_id=playback_generation_id,
+            measurement_semantics="before_provider_transport_connect",
+        )
+        conn = await asyncio.wait_for(
+            _ws_connect(
+                _base_to_ws_url(self._endpoint),
+                additional_headers={"Authorization": f"Bearer {self._api_key}"},
+            ),
+            timeout=self._connect_timeout_s,
+        )
+        self._conn = conn
+        try:
+            hello_raw = await asyncio.wait_for(
+                conn.recv(),
+                timeout=self._connect_timeout_s,
+            )
+            self._touch_activity(loop)
+            hello = json.loads(hello_raw)
+            hello_status = hello.get("base_resp", {}).get("status_code", 0)
+            if hello_status != 0:
+                msg = f"MiniMax session hello rejected: {hello.get('base_resp')}"
+                raise _MiniMaxProtocolError(msg)  # noqa: TRY301 - handshake cleanup below
+            task_start = {
+                "event": "task_start",
+                "model": self._model,
+                "voice_setting": {
+                    "voice_id": self._voice,
+                    "speed": 1.0,
+                    "vol": self._volume,
+                    "pitch": 0,
+                },
+                "audio_setting": {
+                    "format": "pcm",
+                    "sample_rate": self._sample_rate_hz,
+                    "bitrate": 128000,
+                    "channel": 1,
+                },
+            }
+            await conn.send(json.dumps(task_start))
+            self._touch_activity(loop)
+            started_raw = await asyncio.wait_for(
+                conn.recv(),
+                timeout=self._connect_timeout_s,
+            )
+            self._touch_activity(loop)
+            started = json.loads(started_raw)
+            status = started.get("base_resp", {}).get("status_code", 0)
+            if status != 0:
+                msg = f"MiniMax task_start rejected: {started.get('base_resp')}"
+                raise _MiniMaxProtocolError(msg)  # noqa: TRY301 - handshake cleanup below
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(conn.close(), timeout=self._CLOSE_TIMEOUT_S)
+            self._conn = None
+            raise
+        self._opened = True
+        self._touch_activity(loop)
+        self._writer_task = asyncio.create_task(
+            self._writer_main(),
+            name=f"tts-command-writer-{response_id}",
+        )
+        self._reader_task = asyncio.create_task(
+            self._reader_main(),
+            name=f"tts-audio-reader-{response_id}",
+        )
+        self._watchdog_task = asyncio.create_task(
+            self._watchdog_main(),
+            name=f"tts-idle-watchdog-{response_id}",
+        )
+        record_realtime_trace(
+            "tts_session_opened",
+            response_id=response_id,
+            playback_generation_id=playback_generation_id,
+            measurement_semantics="provider_handshake_completed",
+        )
+
+    async def send(self, segment: TTSResponseSegment) -> None:
+        """Send through the sole writer, rejecting overlapping segment feeds."""
+        if not self._opened or self._closing:
+            msg = "send targeted a closed TTS session"
+            raise TTSSessionClosedError(msg)
+        if segment.response_id != self._response_id or (
+            segment.playback_generation_id != self._generation
+        ):
+            msg = "segment identity does not match its response-scoped session"
+            raise ValueError(msg)
+        if self._send_call_active or self._active_sequence is not None:
+            msg = "a segment feed is already active"
+            raise TTSConcurrentSendError(msg)
+        self._send_call_active = True
+        try:
+            acknowledged = asyncio.get_running_loop().create_future()
+            await self._commands.put(
+                _SessionWriterCommand(
+                    kind="segment",
+                    segment=segment,
+                    acknowledged=acknowledged,
+                ),
+            )
+            await acknowledged
+        finally:
+            self._send_call_active = False
+
+    async def _audio_events_iter(self) -> AsyncIterator[TTSAudioEvent]:
+        if self._reader_claimed:
+            msg = "TTSSession.audio_events() has exactly one reader"
+            raise RuntimeError(msg)
+        self._reader_claimed = True
+        while True:
+            item = await self._events.get()
+            if item is _SESSION_EVENTS_CLOSED:
+                return
+            if isinstance(item, _SessionFailure):
+                raise item.error
+            if isinstance(item, TTSAudioChunk | TTSSegmentFinished):
+                yield item
+
+    def audio_events(self) -> AsyncIterator[TTSAudioEvent]:
+        """Return the one normalized event iterator."""
+        return self._audio_events_iter()
+
+    async def finish(self) -> None:
+        """Send task_finish only after the current segment terminal."""
+        if self._closing:
+            return
+        if self._active_sequence is not None:
+            msg = "cannot finish while a segment feed is active"
+            raise TTSConcurrentSendError(msg)
+        acknowledged = asyncio.get_running_loop().create_future()
+        await self._commands.put(
+            _SessionWriterCommand(kind="finish", acknowledged=acknowledged),
+        )
+        await acknowledged
+        await self.close()
+
+    async def abort(self, reason: str) -> None:
+        """Close network work; playback CAS is owned by the caller."""
+        record_realtime_trace(
+            "tts_session_abort_requested",
+            response_id=self._response_id,
+            playback_generation_id=self._generation,
+            reason=reason,
+        )
+        await self.close()
+
+    async def close(self) -> None:
+        """Bound cancellation and close of writer/reader/watchdog/transport."""
+        async with self._close_lock:
+            if self._close_complete:
+                return
+            self._closing = True
+            current = asyncio.current_task()
+            tasks = tuple(
+                task
+                for task in (self._writer_task, self._reader_task, self._watchdog_task)
+                if task is not None and task is not current
+            )
+            for task in tasks:
+                task.cancel()
+            conn = self._conn
+            self._conn = None
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(conn.close(), timeout=self._CLOSE_TIMEOUT_S)
+            if tasks:
+                _done, pending = await asyncio.wait(
+                    tasks,
+                    timeout=self._CLOSE_TIMEOUT_S,
+                )
+                if pending:
+                    LOGGER.warning(
+                        "TTS session tasks ignored bounded cancellation: %s",
+                        ", ".join(task.get_name() for task in pending),
+                    )
+            with contextlib.suppress(asyncio.QueueFull):
+                self._events.put_nowait(_SESSION_EVENTS_CLOSED)
+            self._opened = False
+            self._close_complete = True
+
+    async def _writer_main(self) -> None:  # noqa: C901 - one writer FSM
+        """Own every post-handshake ``send`` call."""
+        try:
+            while True:
+                command = await self._commands.get()
+                conn = self._conn
+                if conn is None:
+                    msg = "writer lost its connection"
+                    raise TTSSessionClosedError(msg)  # noqa: TRY301 - writer failure lane
+                try:
+                    if command.kind == "segment":
+                        segment = command.segment
+                        if segment is None:
+                            msg = "segment writer command missing payload"
+                            raise RuntimeError(msg)  # noqa: TRY301 - writer failure lane
+                        if self._active_sequence is not None:
+                            msg = "writer observed overlapping active segments"
+                            raise TTSConcurrentSendError(msg)  # noqa: TRY301
+                        self._active_sequence = segment.sequence
+                        self._active_ready.set()
+                        await conn.send(
+                            json.dumps(
+                                {"event": "task_continue", "text": segment.text},
+                            ),
+                        )
+                        self._touch_activity(asyncio.get_running_loop())
+                    else:
+                        await conn.send(json.dumps({"event": "task_finish"}))
+                        self._touch_activity(asyncio.get_running_loop())
+                    if not command.acknowledged.done():
+                        command.acknowledged.set_result(None)
+                except BaseException as exc:
+                    if not command.acknowledged.done():
+                        command.acknowledged.set_exception(exc)
+                    raise
+                finally:
+                    self._commands.task_done()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - provider writer boundary
+            await self._publish_failure(exc)
+
+    async def _reader_main(self) -> None:  # noqa: C901 - one reader FSM
+        """Own the only post-handshake ``recv`` loop."""
+        first_for_segment = True
+        try:
+            while True:
+                await self._active_ready.wait()
+                sequence = self._active_sequence
+                conn = self._conn
+                if sequence is None or conn is None:
+                    if self._closing:
+                        return
+                    await asyncio.sleep(0)
+                    continue
+                timeout = (
+                    self._first_chunk_timeout_s
+                    if first_for_segment
+                    else self._between_chunk_timeout_s
+                )
+                raw = await asyncio.wait_for(conn.recv(), timeout=timeout)
+                self._touch_activity(asyncio.get_running_loop())
+                obj = json.loads(raw)
+                status = obj.get("base_resp", {}).get("status_code", 0)
+                if status != 0:
+                    msg = f"MiniMax audio event failed: {obj.get('base_resp')}"
+                    raise _MiniMaxProtocolError(msg)  # noqa: TRY301 - reader failure lane
+                audio_hex = obj.get("data", {}).get("audio", "") or ""
+                if audio_hex:
+                    if len(audio_hex) % 2:
+                        audio_hex = audio_hex[:-1]
+                    pcm = bytes.fromhex(audio_hex)
+                    if pcm:
+                        await self._events.put(
+                            TTSAudioChunk(
+                                sequence=sequence,
+                                pcm=pcm,
+                                sample_rate_hz=self._sample_rate_hz,
+                            ),
+                        )
+                        first_for_segment = False
+                if obj.get("is_final"):
+                    usage_raw = obj.get("extra_info")
+                    usage = usage_raw if isinstance(usage_raw, dict) else None
+                    await self._events.put(
+                        TTSSegmentFinished(sequence=sequence, usage=usage),
+                    )
+                    self._active_sequence = None
+                    self._active_ready.clear()
+                    first_for_segment = True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - provider reader boundary
+            await self._publish_failure(exc)
+
+    async def _watchdog_main(self) -> None:
+        """Close only an actually idle session; active feeds use reader deadlines."""
+        while not self._closing:
+            await asyncio.sleep(min(0.1, max(0.01, self._idle_close_s / 4)))
+            if self._active_sequence is not None or not self._commands.empty():
+                continue
+            idle_for = asyncio.get_running_loop().time() - self._last_activity
+            if idle_for <= self._idle_close_s:
+                continue
+            await self._publish_failure(
+                TTSSessionClosedError(
+                    f"TTS session idle for {idle_for:.3f}s",
+                ),
+            )
+            conn = self._conn
+            self._conn = None
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        conn.close(),
+                        timeout=self._CLOSE_TIMEOUT_S,
+                    )
+            self._closing = True
+            return
+
+    async def _publish_failure(self, error: BaseException) -> None:
+        """Backpressure failure delivery through the bounded audio queue."""
+        if self._closing:
+            return
+        await self._events.put(_SessionFailure(error=error))
+
+    def _touch_activity(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Refresh the common send/receive activity clock."""
+        self._last_activity = loop.time()
 
 
 # --- TTS Pipeline (gate-mode routing + fallback chain) -----------------------
@@ -1602,8 +2710,7 @@ class TTSPipeline:
                 )
             except TimeoutError as exc:
                 msg = (
-                    "TTS provider exceeded "
-                    f"{self._PROVIDER_TOTAL_TIMEOUT_S:.1f}s pipeline deadline"
+                    f"TTS provider exceeded {self._PROVIDER_TOTAL_TIMEOUT_S:.1f}s pipeline deadline"
                 )
                 raise MiniMaxUnavailableError(msg) from exc
 
@@ -1781,7 +2888,8 @@ class TTSPipeline:
             except Exception:
                 # TTS path must never crash the daemon; F7 fallback.
                 LOGGER.exception(
-                    "TTS synth failed for turn_id=%s", turn_id,
+                    "TTS synth failed for turn_id=%s",
+                    turn_id,
                 )
                 self._fallback_if_current(
                     cleaned,

@@ -104,6 +104,7 @@ from jarvis.surface import (
     voice_asr,
     voice_audio,
     voice_ducking,
+    voice_media,
     voice_pipeline,
     voice_tts,
     voice_wake,
@@ -655,7 +656,14 @@ async def _tts_watcher(
     Cancellation: re-raises :class:`asyncio.CancelledError` so the daemon
     shutdown path (Task 19) can await the watcher cleanly.
     """
-    after_id = _latest_id(conn)
+    streaming_pipeline = (
+        pipeline if isinstance(pipeline, voice_media.StreamingTTSPipeline) else None
+    )
+    after_id = (
+        streaming_pipeline.boot_high_water_event_log_id
+        if streaming_pipeline is not None
+        else _latest_id(conn)
+    )
     silent_turns: set[str] = set()
     LOGGER.info("tts_watcher started (after_id=%d)", after_id)
     try:
@@ -680,6 +688,13 @@ async def _tts_watcher(
                         silent_channels=_TTS_SILENT_CHANNELS,
                         consumer="tts_watcher",
                     ):
+                        continue
+                    if streaming_pipeline is not None:
+                        await streaming_pipeline.submit_event(
+                            row_id=row_id,
+                            event=ev,
+                            origin="watcher",
+                        )
                         continue
                     if ev.type == "surface.response_open":
                         gate_mode = ev.payload.get("required_gate_mode", "sentence")
@@ -742,10 +757,11 @@ def _build_voice_pipeline(
 
 
 def _build_tts_pipeline(
+    runtime: JarvisRuntime,
     broadcaster: InherentBroadcaster,
     *,
     ducker: voice_ducking.SystemAudioDucker | None = None,
-) -> voice_tts.TTSPipeline | None:
+) -> voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None:
     """Build the TTS subsystem when ``MINIMAX_API_KEY`` is present.
 
     ADR-0005 §5.3 — the env var is the sole credential source for the
@@ -776,6 +792,48 @@ def _build_tts_pipeline(
         sample_rate_in=32000,
         sample_rate_out=_DEFAULT_TTS_SAMPLE_RATE_HZ,
     )
+    realtime_raw = runtime.config.get("realtime")
+    realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
+    streaming_raw = realtime.get("streaming_output")
+    streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
+    streaming_requested = realtime.get("enabled") is True and streaming.get("enabled") is True
+    try:
+        media_config = voice_media.streaming_media_config_from_mapping(streaming)
+    except ValueError as exc:
+        media_config = None
+        if streaming_requested:
+            LOGGER.warning(
+                "realtime.streaming_output config invalid (%s); downgraded to legacy TTS.",
+                exc,
+            )
+    streaming_capable = (
+        runtime.wave1_features.transactional_event_append
+        and runtime.wave1_features.lifecycle_terminal_cas
+        and provider.streaming_candidate_count > 0
+        and media_config is not None
+        and media_config.canonical_sample_rate_hz == _DEFAULT_TTS_SAMPLE_RATE_HZ
+    )
+    if streaming_requested and streaming_capable:
+        player = voice_tts.AudioStreamPlayer(
+            sample_rate_hz=_DEFAULT_TTS_SAMPLE_RATE_HZ,
+            ring_seconds=2.0,
+            lazy_open=True,
+            generation_safe=True,
+        )
+        return voice_media.StreamingTTSPipeline(
+            provider=provider,
+            player=player,
+            conn_factory=lambda: open_event_log(runtime.runtime_paths.event_log),
+            boot_high_water_id=_latest_id(runtime.conn),
+            config=media_config,
+            broadcaster=broadcaster,
+            ducker=ducker,
+        )
+    if streaming_requested and media_config is not None:
+        LOGGER.warning(
+            "realtime.streaming_output requested without transactional_event_append "
+            "and lifecycle_terminal_cas capabilities; downgraded to legacy TTS.",
+        )
     # lazy_open=False so the PortAudio OutputStream is up before the first
     # MiniMax chunk lands; otherwise `write()` would fill the ring and
     # never drain, leaving `is_speaking()` permanently True and starving
@@ -857,7 +915,7 @@ def _spawn_wake_listener(
     pipeline: voice_pipeline.VoicePipeline,
     broadcaster: InherentBroadcaster,
     silero_path: Path,
-    tts: voice_tts.TTSPipeline | None,
+    tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
     ducker: voice_ducking.SystemAudioDucker | None = None,
 ) -> tuple[voice_wake.WakeListener, Any | None] | None:
     """Construct + start a :class:`WakeListener` daemon thread.
@@ -1324,7 +1382,9 @@ def _shutdown_power_observer(power_observer: PowerObserver | None) -> None:
         LOGGER.debug("power observer shutdown failed", exc_info=True)
 
 
-def _shutdown_tts(tts_pipe: voice_tts.TTSPipeline | None) -> None:
+def _shutdown_tts(
+    tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+) -> None:
     """Bound TTS owners, then stop the player and release PortAudio.
 
     The caller has already installed the pipeline's close gate and cancelled
@@ -1340,7 +1400,9 @@ def _shutdown_tts(tts_pipe: voice_tts.TTSPipeline | None) -> None:
         LOGGER.debug("tts pipeline close failed", exc_info=True)
 
 
-def _request_tts_close(tts_pipe: voice_tts.TTSPipeline | None) -> None:
+def _request_tts_close(
+    tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+) -> None:
     """Install the late-output gate before watcher cancellation; never raise."""
     if tts_pipe is None:
         return
@@ -1510,7 +1572,7 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
         # downgrades the daemon to text-only — text path must stay
         # healthy when models / SDKs / mics are missing (CI default).
         voice_pipe: voice_pipeline.VoicePipeline | None = None
-        tts_pipe: voice_tts.TTSPipeline | None = None
+        tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None = None
         wake_listener: voice_wake.WakeListener | None = None
         wake_stream: Any | None = None
         voice_pipeline_callable: Any | None = None
@@ -1537,7 +1599,11 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
                     sensevoice_dir=sensevoice_dir,
                 )
                 voice_pipeline_callable = _build_voice_pipeline_callable(voice_pipe)
-                tts_pipe = _build_tts_pipeline(broadcaster, ducker=shared_ducker)
+                tts_pipe = _build_tts_pipeline(
+                    runtime,
+                    broadcaster,
+                    ducker=shared_ducker,
+                )
                 if os.environ.get("JARVIS_VOICE_DISABLE_WAKE") == "1":
                     LOGGER.info(
                         "JARVIS_VOICE_DISABLE_WAKE=1; skipping WakeListener spawn.",

@@ -66,6 +66,36 @@ class Wave1FeatureFlags:
 
 
 @dataclass(frozen=True)
+class LegacyPresentationBinding:
+    """Stable compatibility identity minted at the existing L3/L5 seam.
+
+    This is not a second ResponseRun lifecycle.  It only gives legacy batch
+    rendering the immutable IDs required by L5 delivery and is replaced by
+    explicit ADR-0008 ResponseRun IDs when that producer is adopted.
+    """
+
+    response_id: str
+    response_group_id: str
+
+
+def stable_legacy_presentation_binding(
+    *,
+    turn_id: str,
+    response_hash: str,
+) -> LegacyPresentationBinding:
+    """Derive one migration-safe response/group binding for a batch render."""
+
+    def _derive(label: str, value: str, prefix: str) -> str:
+        derived = uuid.uuid5(uuid.NAMESPACE_URL, f"jarvis:surface:{label}:{value}")
+        return prefix + derived.hex
+
+    return LegacyPresentationBinding(
+        response_id=_derive("response", f"{turn_id}:{response_hash}", "RESP"),
+        response_group_id=_derive("group", turn_id, "RGRP"),
+    )
+
+
+@dataclass(frozen=True)
 class TerminalCommitted:
     """The caller won one lifecycle's canonical terminal CAS."""
 
@@ -194,10 +224,12 @@ __all__ = [
     "CostRecorded",
     "LLMRequestOutcome",
     "LLMUsageStatus",
+    "LegacyPresentationBinding",
     "LifecycleOwner",
     "StableAuthorizationIdentity",
     "TerminalCommitted",
     "TerminalOutcome",
     "Wave1FeatureFlags",
     "stable_authorization_identity",
+    "stable_legacy_presentation_binding",
 ]

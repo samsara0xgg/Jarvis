@@ -64,10 +64,15 @@ MUST NOT import L3 / L4 / L6 / L1 siblings. The
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 from typing import IO, TYPE_CHECKING
 
+from jarvis.shared.realtime import (
+    LegacyPresentationBinding,
+    stable_legacy_presentation_binding,
+)
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import emit_event
 from jarvis.surface.cli import (
@@ -138,13 +143,15 @@ _CLI_DEFAULT_SURFACES: frozenset[str] = frozenset(
 )
 
 
-def _emit_response_open(
+def _emit_response_open(  # noqa: PLR0913 - explicit committed event shape
     conn: sqlite3.Connection,
     *,
     turn_id: str,
     query: str,
     response_plan: ResponsePlanLike,
     attention_channel: str,
+    binding: LegacyPresentationBinding,
+    channel: str,
 ) -> None:
     """Emit the ADR-0003 Step 2 ``surface.response_open`` event.
 
@@ -174,6 +181,10 @@ def _emit_response_open(
             "kind": "text",
             "required_gate_mode": response_plan.required_gate_mode,
             "attention_channel": attention_channel,
+            "response_id": binding.response_id,
+            "response_group_id": binding.response_group_id,
+            "phase": "final",
+            "channel": channel,
         },
         correlation={"turn_id": turn_id},
     )
@@ -184,6 +195,8 @@ def _emit_response_chunks(
     *,
     turn_id: str,
     response_plan: ResponsePlanLike,
+    binding: LegacyPresentationBinding,
+    channel: str,
 ) -> None:
     """Emit one or more ADR-0003 Step 2 ``surface.response_chunk`` events.
 
@@ -203,7 +216,16 @@ def _emit_response_chunks(
         emit_event(
             conn,
             type="surface.response_chunk",
-            payload={"turn_id": turn_id, "text": chunk_text},
+            payload={
+                "turn_id": turn_id,
+                "text": chunk_text,
+                "response_id": binding.response_id,
+                "response_group_id": binding.response_group_id,
+                "sequence": sequence,
+                "phase": "final",
+                "channel": channel,
+                "segment_hash": hashlib.sha256(chunk_text.encode()).hexdigest(),
+            },
             correlation={"turn_id": turn_id},
         )
         record_realtime_trace(
@@ -328,6 +350,13 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     channels = parse_response_channels(response_plan.text)
     voice_text = channels.voice
     document_text = channels.document
+    presentation_channel = (
+        "both"
+        if voice_text.strip() and document_text.strip()
+        else "speech"
+        if voice_text.strip()
+        else "document"
+    )
 
     # 3. Surface lookup. Unknown channel -> silent_log fallback (no
     #    surface call) plus a warning. The unknown label still lands
@@ -401,32 +430,55 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     # 5. ADR-0003 Step 2 Inherent taxonomy (daemon path only). Order is
     #    open -> chunk(s) -> emitted so a downstream watcher with a single
     #    cursor over the three types sees the sequence per turn.
+    binding: LegacyPresentationBinding | None = None
     if streaming_enabled:
+        binding = stable_legacy_presentation_binding(
+            turn_id=turn_id,
+            response_hash=response_plan.response_hash,
+        )
         _emit_response_open(
             conn,
             turn_id=turn_id,
             query=query,
             response_plan=response_plan,
             attention_channel=attention_channel,
+            binding=binding,
+            channel=presentation_channel,
         )
-        _emit_response_chunks(conn, turn_id=turn_id, response_plan=response_plan)
+        _emit_response_chunks(
+            conn,
+            turn_id=turn_id,
+            response_plan=response_plan,
+            binding=binding,
+            channel=presentation_channel,
+        )
 
     # 6. Audit event. The payload preserves the Day-1 ``text`` field +
     #    adds Day-2 channel + delivery fields. ``response_hash`` is the
     #    plan's hash (the Pre-emit token) so downstream auditors can
     #    correlate this surface emission with the gate that approved it.
+    audit_payload: dict[str, object] = {
+        "turn_id": turn_id,
+        "text": response_plan.text,
+        "voice_text": voice_text,
+        "document_text": document_text,
+        "delivered_via": list(delivered_via),
+        "attention_channel": attention_channel,
+        "response_hash": response_plan.response_hash,
+    }
+    if binding is not None:
+        audit_payload.update(
+            {
+                "response_id": binding.response_id,
+                "response_group_id": binding.response_group_id,
+                "phase": "final",
+                "channel": presentation_channel,
+            },
+        )
     event = emit_event(
         conn,
         type="surface.response_emitted",
-        payload={
-            "turn_id": turn_id,
-            "text": response_plan.text,
-            "voice_text": voice_text,
-            "document_text": document_text,
-            "delivered_via": list(delivered_via),
-            "attention_channel": attention_channel,
-            "response_hash": response_plan.response_hash,
-        },
+        payload=audit_payload,
         correlation={"turn_id": turn_id},
     )
 

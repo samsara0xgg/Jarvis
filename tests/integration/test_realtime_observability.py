@@ -147,6 +147,9 @@ def test_player_distinguishes_ring_accept_from_portaudio_callback() -> None:
         None,
         None,
     )
+    # Callback only publishes into its bounded SPSC report lane.  User
+    # callbacks, trace I/O, and allocation stay on the media owner side.
+    player.poll_presentation()
 
     points = [
         point

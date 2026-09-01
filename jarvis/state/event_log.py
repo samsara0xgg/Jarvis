@@ -677,8 +677,9 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("provider_response_id", "retryable", "committed_prefix_hash"),
         schema_version=1,
     ),
-    # ADR-0006 Wave 1 — playback terminal truth only.  Streaming player and
-    # TTS behavior remain out of scope and disabled.
+    # ADR-0006 Wave 1 registered the playback terminal truth. Wave 2 starts
+    # emitting these milestones only behind realtime.streaming_output; the
+    # same response/generation CAS remains their sole terminal arbiter.
     EventTypeSchema(
         event_type="surface.playback_checkpoint",
         owner_layer="L5",
@@ -776,6 +777,10 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "voice_text",
             "document_text",
             "response_hash",
+            "response_id",
+            "response_group_id",
+            "phase",
+            "channel",
         ),
         schema_version=1,
     ),
@@ -796,7 +801,14 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # ADR-0009 D4: ``attention_channel`` rides the same header so
         # `_tts_watcher` / the WS broadcaster can drop `queue_review` /
         # `silent_log` turns before they speak (spec §3.2.5 安静优先).
-        optional_payload=("required_gate_mode", "attention_channel"),
+        optional_payload=(
+            "required_gate_mode",
+            "attention_channel",
+            "response_id",
+            "response_group_id",
+            "phase",
+            "channel",
+        ),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -804,7 +816,14 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L5",
         actor="jarvis_runtime",
         required_payload=("turn_id", "text"),
-        optional_payload=(),
+        optional_payload=(
+            "response_id",
+            "response_group_id",
+            "sequence",
+            "phase",
+            "channel",
+            "segment_hash",
+        ),
         schema_version=1,
     ),
     # Sleep/wake events per spec §3.7.8 — L6 owned (Deployment Domain).

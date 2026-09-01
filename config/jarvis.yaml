@@ -124,3 +124,20 @@ realtime:
     lifecycle_terminal_cas: false
     confirmation_dispatch_outbox: false
     exactly_once_cost_accounting: false
+  # Wave 2 rollout.  Enabling this also requires realtime.enabled plus the
+  # transactional append and lifecycle terminal CAS switches above.  Invalid
+  # combinations downgrade once to the complete legacy batch path.
+  streaming_output:
+    enabled: false
+    canonical_sample_rate_hz: 48000
+    command_queue_capacity: 64
+    response_lane_capacity: 8
+    response_text_bytes: 262144
+    session_command_capacity: 2
+    session_audio_capacity: 16
+    session_idle_close_s: 10.0
+    response_timeout_s: 45.0
+    ring_retry_s: 0.002
+    presentation_poll_s: 0.005
+    shutdown_timeout_s: 3.0
+    enable_macos_say_fallback: true
