@@ -9,9 +9,13 @@
 
 ## Testing
 
-- No new unit tests; verify each task with its acceptance command.
-  Branchy logic gets data-driven checks (input → expected tables).
-  Canaries and regression pins stay.
+- No new Python unit tests; `tests/unit` is retired. Verify Python work with
+  the task's acceptance command, data-driven checks (input → expected tables),
+  canaries, regression pins, integration/scenario harnesses, and required live
+  tests.
+- Swift protocol/reducer tests for the repository-owned Inherent app may live
+  in `InherentCardTests`; this is the explicit exception needed for strict
+  concurrency, reconnect, and UI-state verification.
 - New capability → live test before calling it done (real LLM, real run,
   result matches expectation). Small fixes / refactors skip this —
   judge by risk.
@@ -62,9 +66,9 @@ feat(state): L2 event log with SQLite append-only + EventTypeRegistry
 Step 4 of ADR 0001. Adds the append-only spine + Day-1 registry.
 
 - jarvis/state/event_log.py — EventLog class, registry validation, monotonic ts guard, append-only UPDATE/DELETE triggers.
-- tests/unit/test_event_log.py — 12 LLM-free tests covering registry rejection, source_event_id integrity, trigger enforcement.
+- event-log canary/regression acceptance — registry rejection, source-event integrity, and trigger enforcement.
 
-Tier 1: lint-imports KEPT (1/1) · ruff clean (8 files) · mypy strict clean (8 files) · 17/17 unit tests pass · wall 0.05s (< 30s budget).
+Tier 1: lint-imports KEPT (1/1) · ruff clean (8 files) · mypy strict clean (8 files) · 17/17 acceptance checks pass · wall 0.05s (< 30s budget).
 
 Legacy-bypass: jarvis-legacy/core/event_bus.py — pub/sub conflicts with append-only Event Log, spec §3.3.1.
 ```

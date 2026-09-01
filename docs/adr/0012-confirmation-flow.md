@@ -72,7 +72,9 @@ Gate check 4 rewritten:
 1. **Shape**: malformed lease (missing/mistyped keys) → `lease_validated=False`, reason `"lease_malformed"` — *never* a KeyError escaping the gate (fixes `gates.py:249-250`).
 2. **Expiry**: `expires_at_ms > now`.
 3. **Scope**: `action_request.tool_name ∈ allowed_tools` **and** the request's canonical target ∈ `allowed_targets` (byte-equal path match; fail-closed if the request has a target and the lease lists none).
-4. **Single-use**: the lease's `source_confirmation_event_id` must reference a confirmation the PendingConfirmations projection (D4) shows as `accepted` and **not yet consumed** — consumption is folded from the `gate.evaluated` pass event that carries `lease_id` in its payload. The gate stays pure: the projection is an input, the fold supplies the history. A replayed lease therefore fails in the gate itself (acceptance C5), not merely by construction.
+4. **Single-use precheck**: the lease's `source_confirmation_event_id` must reference a confirmation the PendingConfirmations projection (D4) shows as `accepted` and **not yet consumed** — historical consumption is folded from passing `gate.evaluated` events. The gate stays pure, so this rejects sequential replay but is only provisional under concurrency. Before dispatch, the accepted event must also be claimed by the L2 atomic consumption primitive below; snapshot state alone is never the authorization commit point.
+
+ADR-0008's concurrency amendment makes consumption unique by `source_confirmation_event_id`, not by freshly minted `lease_id`. In one `BEGIN IMMEDIATE` transaction L2 re-reads the current slot, revalidates expiry/scope/max_uses, claims the accepted event, appends the passing `gate.evaluated`, and inserts ADR-0014's `authorized_dispatch_outbox` row for one stable `action_id`. The same accepted event delivered twice resolves to the same authorization claim; the loser returns `AlreadyConsumed` and cannot emit another pass or outbox row. The transaction uses `append_event_in_transaction()`, never the auto-committing public `emit_event()`.
 
 Leases are never stored: minted in the accept handler, attached to exactly one ActionRequest, dropped. No lease store exists to leak or replay from.
 
@@ -84,7 +86,9 @@ Leases are never stored: minted in the accept handler, attached to exactly one A
 
 Registry count: 41 (unchanged by 0011 — its planned `entity.resolved` was already a Day-1 registration, ADR-0011 §12.4 N) → 46. Additionally, the existing `gate.evaluated` registration gains optional payload key `lease_id` — D2's single-use check folds consumption from it, so the key must be declared, not smuggled.
 
-### D4. PendingConfirmations projection — the flow's only memory
+### D4. PendingConfirmations projection — canonical semantic memory
+
+This projection remains the only semantic confirmation state exposed to L3. The accepted-event consumption claim and authorized-dispatch outbox added by ADR-0008/0014 are bounded L2 operational idempotency/debt records; they are not a second confirmation truth and are never shown to the model.
 
 Single-slot dataclass folded from `confirmation.requested/accepted/rejected` + `gate.evaluated` (lease consumption): `{confirmation_id, snapshot, template_line, expires_at_ms, state: pending | accepted_unconsumed | consumed | rejected | superseded}`. Rules:
 
@@ -111,7 +115,7 @@ Template text is fixed-vocabulary and scrub-safe (no 完成/done/verified — sa
 - **yes-set** (v1): 可以 · 好 · 好的 · 是 · 确认 · 执行吧 · 做吧 · yes · ok · go ahead
 - **no-set** (v1): 不 · 不要 · 不用 · 否 · 取消 · 算了 · 别 · no · cancel
 
-**Yes** → emit `confirmation.accepted` → mint lease (D2 fields; `expires_at_ms = now + 60_000` — the lease need only outlive gate + dispatch, seconds not minutes; `reason` = template_line; `source_confirmation_event_id` = the accepted event) → **deterministic re-proposal**: rebuild the ActionRequest from the frozen snapshot (new `action_id`, content re-read from the artifact and verified against `content_sha256` — mismatch aborts with a fixed error line), attach the lease, run the **full** `pre_action_gate` (no shortcuts: if policy/entity state changed since the ask, it fails closed and says so) → dispatch → fixed-template broadcast, `voice_notify`: 「write_file 已执行：`<path>`（<N> 字节）」 — backed by the ack→Execution Claim `executed`; wording deliberately stops at 已执行.
+**Yes** → emit or resolve the canonical `confirmation.accepted` → deterministically derive/resolve the authorization claim and stable `action_id` from that accepted event → mint the lease (D2 fields; `expires_at_ms = now + 60_000`; `reason` = template_line; `source_confirmation_event_id` = the accepted event) → **deterministic re-proposal**: rebuild the ActionRequest from the frozen snapshot, re-read and hash-check content, attach the lease, run the **full** `pre_action_gate` → if provisionally passing, commit the D2 atomic accepted-event claim + passing gate + dispatch outbox → dispatch only from that committed outbox → fixed-template broadcast, `voice_notify`: 「write_file 已执行：`<path>`（<N> 字节）」. Duplicate delivery/restart never generates another random authorization/action identity.
 
 **No** → emit `confirmation.rejected`, clear the slot, fixed text: 「好，已取消：<template_line>」. No LLM in the loop on either branch.
 
@@ -139,6 +143,7 @@ Template text is fixed-vocabulary and scrub-safe (no 完成/done/verified — sa
 | gate refuses the re-proposal (policy/entity drift since ask) | fixed line reporting the refusal reason; slot → consumed |
 | "是" with no/expired pending | grammar inactive → ordinary turn |
 | write_file handler I/O error | error observation → Limitation routing (existing machinery) |
+| two workers process the same accepted confirmation concurrently | L2 accepted-event claim lets exactly one append the passing gate/outbox; the loser receives `AlreadyConsumed` and performs no dispatch |
 
 ## 5. Spec Deviations Declared
 
@@ -158,7 +163,7 @@ Each step one commit, Tier-1 green, five-part body. 1→3 ordered; 4 after 2; 5 
 3. **PendingConfirmations** — projection + packet block 8 + note. Acceptance: fold table (requested→accepted→consumed / rejected / superseded / lazy-expired).
 4. **write_file** — registration + handler + write-target resolution extension. Acceptance: handler table (create/overwrite/append × exists/absent/out-of-scope) via direct dispatch under an injected lease.
 5. **Ask path** — both call-site seams, snapshot freeze + artifact staging, template line, `ask_confirm` Literal + finalize scan, tier0 boot rule. Acceptance: scripted decide() turn produces requested-event + spoken template + ended turn.
-6. **Answer path** — grammar + yaml + accept/reject handlers + mint + deterministic re-proposal + broadcasts + single-use fold check. Acceptance: grammar data-driven table; scripted yes/no round-trips.
+6. **Answer path** — grammar + yaml + accept/reject handlers + stable authorization/action identity + deterministic re-proposal + atomic accepted-event claim/outbox + broadcasts. Acceptance: grammar data-driven table; scripted yes/no round-trips; two-connection barrier race.
 7. **Live burn** — C1–C6 below, one session, burn log committed.
 
 ## 7. Acceptance
@@ -176,9 +181,10 @@ lint-imports KEPT · ruff clean · mypy strict clean · hermetic tests pass · w
 | C4 | pending live → 「现在几点」 | Tier 0/LLM normal; pending intact; answer turn unaffected |
 | C5 | scripted: replay a consumed lease into the gate | refuse via single-use fold check, reason names the consumed confirmation |
 | C6 | same ask → 「行吧那就写进去吧」 | grammar no-hit → LLM turn; **no lease minted**; at most a fresh `confirmation.requested` (supersede) + re-ask; zero dispatch |
+| C7 | two connections concurrently process the same accepted event, including attempts with different random lease/action IDs | exactly one accepted-event consumption, passing gate, and authorized-dispatch outbox exist; exactly one stable ActionRun may dispatch |
 
 ### Definition of Done
-All 6 rows green in one burn log · grammar and gate tables committed · registry 46 · flagship C1 spoken end-to-end (voice in, TTS question out, voice 「可以」, TTS 已执行 broadcast).
+All 7 rows green in one burn log · grammar and gate tables committed · registry 46 · flagship C1 spoken end-to-end (voice in, TTS question out, voice 「可以」, TTS 已执行 broadcast).
 
 ## 8. Consequences
 
@@ -196,6 +202,7 @@ All 6 rows green in one burn log · grammar and gate tables committed · registr
 | gate lease validation v2, `ask_confirm` Literal | `jarvis/decision/gates.py` |
 | registrations ×5 | `jarvis/state/event_log.py` |
 | PendingConfirmations fold | `jarvis/state/projections.py` |
+| accepted-event consumption CAS + gate/outbox commit + no-commit append | `jarvis/state/lifecycle_terminal.py`, `jarvis/state/authorized_dispatch_outbox.py`, `jarvis/state/event_log.py` |
 | packet block 8 + note render | `jarvis/decision/packet.py` |
 | ask/answer seams, grammar hook, mint, re-proposal, finalize scan | `jarvis/decision/__init__.py` |
 | `write_file` handler + registration | `jarvis/execution/tools.py` |
