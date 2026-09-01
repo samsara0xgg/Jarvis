@@ -10,10 +10,11 @@ bounded software milestones back to the actor.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import contextlib
 import hashlib
+import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -24,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import numpy as np
 
+from jarvis.shared import Event
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import emit_event
 from jarvis.state.lifecycle_terminal import terminalize_playback
@@ -40,14 +42,12 @@ from jarvis.surface.voice_tts import (
     TTSResponseSegment,
     TTSSegmentFinished,
     TTSSession,
-    _extract_voice_content,
     _preprocess_for_speech,
 )
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
 
-    from jarvis.shared import Event
     from jarvis.surface.voice_ducking import SystemAudioDucker
 
 LOGGER = logging.getLogger(__name__)
@@ -59,6 +59,78 @@ _MAX_SESSION_COMMANDS = 32
 _MAX_SESSION_AUDIO_EVENTS = 256
 _MAX_RESPONSE_TIMEOUT_S = 300.0
 _MAX_SHUTDOWN_TIMEOUT_S = 10.0
+_MAX_EVENT_DRAIN_BATCH = 1024
+_MAX_DURABILITY_RETRY_ATTEMPTS = 10
+_CHANNEL_TAG_RE = re.compile(r"</?(?:voice|document)>")
+_RESPONSE_EVENT_TYPES = frozenset(
+    {"surface.response_open", "surface.response_chunk", "surface.response_emitted"},
+)
+_TTS_SILENT_CHANNELS = frozenset({"queue_review", "silent_log"})
+_SELECT_EVENT_ROWS_THROUGH = (
+    "SELECT id, event_uid, type, schema_version, ts_epoch_ms, payload_json, "
+    "source_event_id, correlation_json FROM events "
+    "WHERE id > ? AND id <= ? ORDER BY id ASC LIMIT ?"
+)
+
+
+def _hydrate_event_row(row: tuple[object, ...]) -> tuple[int, Event]:
+    """Hydrate one actor-owned Event Log row while retaining its row id."""
+    (
+        row_id,
+        event_uid,
+        event_type,
+        schema_version,
+        ts_epoch_ms,
+        payload_json,
+        source_event_id,
+        correlation_json,
+    ) = row
+    if not isinstance(payload_json, str):
+        msg = "Event Log payload_json must be text"
+        raise TypeError(msg)
+    payload = json.loads(payload_json)
+    correlation = None
+    if isinstance(correlation_json, str):
+        correlation = json.loads(correlation_json)
+    return int(str(row_id)), Event(
+        event_uid=str(event_uid),
+        type=str(event_type),
+        schema_version=int(str(schema_version)),
+        ts_epoch_ms=int(str(ts_epoch_ms)),
+        payload=payload,
+        source_event_id=(None if source_event_id is None else str(source_event_id)),
+        correlation=correlation,
+    )
+
+
+def _response_id(event: Event) -> str | None:
+    value = event.payload.get("response_id")
+    return value if isinstance(value, str) else None
+
+
+_ChannelMode = Literal["plain", "voice", "document"]
+
+
+def _structured_speech_slice(raw_text: str, mode: _ChannelMode) -> tuple[str, _ChannelMode]:
+    """Extract this chunk's voice slice while carrying tag state to the next."""
+    parts: list[str] = []
+    cursor = 0
+    for match in _CHANNEL_TAG_RE.finditer(raw_text):
+        if mode == "voice":
+            parts.append(raw_text[cursor : match.start()])
+        tag = match.group(0)
+        if tag == "<voice>":
+            mode = "voice"
+        elif tag == "<document>":
+            mode = "document"
+        elif (tag == "</voice>" and mode == "voice") or (
+            tag == "</document>" and mode == "document"
+        ):
+            mode = "plain"
+        cursor = match.end()
+    if mode == "voice":
+        parts.append(raw_text[cursor:])
+    return "".join(parts), mode
 
 MediaSubmitStatus = Literal[
     "accepted",
@@ -115,6 +187,10 @@ class StreamingMediaConfig:
     ring_retry_s: float = 0.002
     presentation_poll_s: float = 0.005
     shutdown_timeout_s: float = 3.0
+    event_drain_batch: int = 128
+    terminal_retry_attempts: int = 3
+    checkpoint_retry_attempts: int = 3
+    durability_retry_s: float = 0.02
     enable_macos_say_fallback: bool = True
 
     def __post_init__(self) -> None:
@@ -126,6 +202,9 @@ class StreamingMediaConfig:
             self.response_text_bytes,
             self.session_command_capacity,
             self.session_audio_capacity,
+            self.event_drain_batch,
+            self.terminal_retry_attempts,
+            self.checkpoint_retry_attempts,
         )
         positive_floats = (
             self.session_idle_close_s,
@@ -133,6 +212,7 @@ class StreamingMediaConfig:
             self.ring_retry_s,
             self.presentation_poll_s,
             self.shutdown_timeout_s,
+            self.durability_retry_s,
         )
         if any(value <= 0 for value in positive_ints + positive_floats):
             msg = "streaming media bounds must all be positive"
@@ -145,9 +225,19 @@ class StreamingMediaConfig:
             or self.session_audio_capacity > _MAX_SESSION_AUDIO_EVENTS
             or self.response_timeout_s > _MAX_RESPONSE_TIMEOUT_S
             or self.shutdown_timeout_s > _MAX_SHUTDOWN_TIMEOUT_S
+            or self.event_drain_batch > _MAX_EVENT_DRAIN_BATCH
+            or self.terminal_retry_attempts > _MAX_DURABILITY_RETRY_ATTEMPTS
+            or self.checkpoint_retry_attempts > _MAX_DURABILITY_RETRY_ATTEMPTS
         ):
             msg = "streaming media bounds exceed validated production maxima"
             raise ValueError(msg)
+
+
+@dataclass(frozen=True)
+class _ResponseChunk:
+    sequence: int
+    raw_text: str
+    segment_hash: str
 
 
 @dataclass
@@ -160,23 +250,24 @@ class _ResponseBuffer:
     phase: str
     channel: str
     gate_mode: str
-    chunks: dict[int, str] = field(default_factory=dict)
+    chunks: dict[int, _ResponseChunk] = field(default_factory=dict)
     emitted: bool = False
 
     def speech_segments(self) -> list[tuple[int, str, str]]:
-        """Return ordered semantic segments with stable text hashes."""
-        ordered = [(key, self.chunks[key]) for key in sorted(self.chunks)]
-        raw = "".join(text for _sequence, text in ordered)
-        if "<voice>" in raw or "<document>" in raw:
-            text = _preprocess_for_speech(_extract_voice_content(raw))
-            return [(0, text, hashlib.sha256(text.encode()).hexdigest())] if text else []
+        """Parse channel tags statefully while retaining renderer identities."""
+        ordered = [self.chunks[key] for key in sorted(self.chunks)]
+        raw = "".join(chunk.raw_text for chunk in ordered)
+        structured = "<voice>" in raw or "<document>" in raw
+        mode: _ChannelMode = "plain"
         segments: list[tuple[int, str, str]] = []
-        for sequence, raw_segment in ordered:
-            text = _preprocess_for_speech(raw_segment)
+        for chunk in ordered:
+            if structured:
+                raw_speech, mode = _structured_speech_slice(chunk.raw_text, mode)
+            else:
+                raw_speech = chunk.raw_text
+            text = _preprocess_for_speech(raw_speech)
             if text:
-                segments.append(
-                    (sequence, text, hashlib.sha256(text.encode()).hexdigest()),
-                )
+                segments.append((chunk.sequence, text, chunk.segment_hash))
         return segments
 
     def speech_text(self) -> str:
@@ -188,10 +279,15 @@ class _ActiveResponse:
     response: _ResponseBuffer
     lease: GenerationLease
     task: asyncio.Task[None] | None = None
+    presentation_task: asyncio.Task[None] | None = None
     session: TTSSession | None = None
     fallback_process: asyncio.subprocess.Process | None = None
+    fallback_spawn_task: asyncio.Task[asyncio.subprocess.Process] | None = None
     output_lease: bool = False
     last_checkpoint_sequence: int | None = None
+    provider_label: str = "minimax_ws_streaming"
+    advance_after_cleanup: bool = False
+    terminal_commit_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -200,9 +296,6 @@ class _MediaCommand:
     event: Event
     origin: str
     acknowledged: asyncio.Future[MediaSubmitOutcome]
-
-
-_SHUTDOWN = object()
 
 
 class ActivePlaybackRegistry:
@@ -217,7 +310,6 @@ class ActivePlaybackRegistry:
         """Capture the only replay boundary accepted for this boot."""
         self.boot_id = "BOOT" + uuid.uuid4().hex
         self.boot_high_water_id = boot_high_water_id
-        self._delivery_high_water_id = boot_high_water_id
         self._seen_events: set[str] = set()
         self._seen_order: deque[str] = deque()
         self._registered: set[str] = set()
@@ -248,14 +340,6 @@ class ActivePlaybackRegistry:
                 event_uid=event.event_uid,
                 response_id=response_id,
             )
-        if row_id <= self._delivery_high_water_id:
-            return MediaSubmitOutcome(
-                status="historical",
-                event_uid=event.event_uid,
-                response_id=response_id,
-                detail="out-of-order or replayed current-boot Event Log row",
-            )
-        self._delivery_high_water_id = row_id
         self._remember_event(event.event_uid)
         if response_id is None or not response_id:
             return MediaSubmitOutcome(
@@ -338,6 +422,10 @@ class ActivePlaybackRegistry:
                 )
             self._emitted.add(response_id)
         return MediaSubmitOutcome("accepted", event.event_uid, response_id)
+
+    def has_seen(self, event_uid: str) -> bool:
+        """Return whether the actor already drained this committed event."""
+        return event_uid in self._seen_events
 
     def terminalize(self, response_id: str) -> None:
         """Prevent every late same-boot delivery after playback terminal."""
@@ -444,7 +532,14 @@ class StreamingTTSPipeline:
         self._queue: asyncio.Queue[_MediaCommand | object] | None = None
         self._conn: sqlite3.Connection | None = None
         self._startup_error: BaseException | None = None
-        self._shutdown_future: concurrent.futures.Future[None] | None = None
+        self._shutdown_requested = threading.Event()
+        self._shutdown_deadline = float("inf")
+        self._player_stop_started = False
+        self._player_stop_done = threading.Event()
+        self._player_stop_thread: threading.Thread | None = None
+        self._lane_isolated = False
+        self._terminal_debt: _ActiveResponse | None = None
+        self._event_cursor = boot_high_water_id
         self._responses: dict[str, _ResponseBuffer] = {}
         self._after_drain: deque[_ResponseBuffer] = deque()
         self._active: _ActiveResponse | None = None
@@ -455,9 +550,15 @@ class StreamingTTSPipeline:
         )
         self._thread.start()
         if not self._ready.wait(timeout=self._config.shutdown_timeout_s):
+            self._request_shutdown_deadline(self._config.shutdown_timeout_s)
+            self._thread.join(timeout=self._config.shutdown_timeout_s)
             msg = "persistent media owner did not start within its bound"
             raise RuntimeError(msg)
-        self._raise_startup_error()
+        try:
+            self._raise_startup_error()
+        except RuntimeError:
+            self._thread.join(timeout=self._config.shutdown_timeout_s)
+            raise
 
     def _raise_startup_error(self) -> None:
         """Surface an actor-thread failure after its readiness publication."""
@@ -496,33 +597,28 @@ class StreamingTTSPipeline:
         return await asyncio.wrap_future(future)
 
     def request_close(self) -> None:
-        """Stop admission immediately, then enqueue one bounded owner shutdown."""
+        """Stop admission and publish shutdown outside the normal command lane."""
         self._accepting.clear()
-        if self._shutdown_future is not None:
-            return
-        loop = self._loop
-        if loop is None or self._closed.is_set():
-            return
-        shutdown_coro = self._enqueue_shutdown()
-        try:
-            self._shutdown_future = asyncio.run_coroutine_threadsafe(
-                shutdown_coro,
-                loop,
-            )
-        except RuntimeError:
-            shutdown_coro.close()
-            return
+        self._request_shutdown_deadline(self._config.shutdown_timeout_s)
 
     def close(self, *, wait_timeout_s: float | None = None) -> bool:
-        """Bound shutdown and join the one non-daemon owner thread."""
-        self.request_close()
+        """Use one total deadline for admission stop, teardown, and join."""
         timeout = wait_timeout_s or self._config.shutdown_timeout_s
-        shutdown = self._shutdown_future
-        if shutdown is not None:
-            with contextlib.suppress(concurrent.futures.TimeoutError, Exception):
-                shutdown.result(timeout=timeout)
-        self._thread.join(timeout=timeout)
+        deadline = time.monotonic() + timeout
+        self._accepting.clear()
+        self._request_shutdown_deadline(max(0.0, timeout - 0.02))
+        self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
         return not self._thread.is_alive() and self._closed.is_set()
+
+    def _request_shutdown_deadline(self, timeout_s: float) -> None:
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        self._shutdown_deadline = min(self._shutdown_deadline, deadline)
+        self._shutdown_requested.set()
+
+    def _remaining_s(self, cap_s: float) -> float:
+        if self._shutdown_deadline == float("inf"):
+            return cap_s
+        return min(cap_s, max(0.0, self._shutdown_deadline - time.monotonic()))
 
     def wait_until_idle(self, *, timeout_s: float) -> bool:
         """Wait without borrowing actor-owned mutable state."""
@@ -554,20 +650,22 @@ class StreamingTTSPipeline:
         acknowledged: asyncio.Future[MediaSubmitOutcome] = (
             asyncio.get_running_loop().create_future()
         )
-        await queue_.put(
-            _MediaCommand(
-                row_id=row_id,
-                event=event,
-                origin=origin,
-                acknowledged=acknowledged,
-            ),
-        )
+        try:
+            queue_.put_nowait(
+                _MediaCommand(
+                    row_id=row_id,
+                    event=event,
+                    origin=origin,
+                    acknowledged=acknowledged,
+                ),
+            )
+        except asyncio.QueueFull:
+            return MediaSubmitOutcome(
+                "overloaded",
+                event.event_uid,
+                detail="bounded media command queue is full",
+            )
         return await acknowledged
-
-    async def _enqueue_shutdown(self) -> None:
-        queue_ = self._queue
-        if queue_ is not None:
-            await queue_.put(_SHUTDOWN)
 
     def _thread_main(self) -> None:
         loop = asyncio.new_event_loop()
@@ -576,15 +674,21 @@ class StreamingTTSPipeline:
         try:
             self._conn = self._conn_factory()
             self._queue = asyncio.Queue(
-                maxsize=self._config.command_queue_capacity + 1,
+                maxsize=self._config.command_queue_capacity,
             )
+            if self._start_player:
+                self._player.start()
             self._ready.set()
             loop.run_until_complete(self._run_owned())
         except BaseException as exc:
             self._startup_error = exc
+            if self._shutdown_deadline == float("inf"):
+                self._shutdown_deadline = time.monotonic() + self._config.shutdown_timeout_s
             self._ready.set()
             LOGGER.exception("persistent media owner crashed")
         finally:
+            if self._shutdown_deadline == float("inf"):
+                self._shutdown_deadline = time.monotonic() + self._config.shutdown_timeout_s
             pending = tuple(asyncio.all_tasks(loop))
             for task in pending:
                 task.cancel()
@@ -592,7 +696,7 @@ class StreamingTTSPipeline:
                 done, still_pending = loop.run_until_complete(
                     asyncio.wait(
                         pending,
-                        timeout=self._config.shutdown_timeout_s,
+                        timeout=max(0.0, self._shutdown_deadline - time.monotonic()),
                     ),
                 )
                 if done:
@@ -602,8 +706,7 @@ class StreamingTTSPipeline:
                         "media owner tasks ignored bounded cancellation: %s",
                         ", ".join(task.get_name() for task in still_pending),
                     )
-            with contextlib.suppress(Exception):
-                self._player.stop()
+            self._stop_player_bounded()
             if self._conn is not None:
                 with contextlib.suppress(sqlite3.Error):
                     self._conn.close()
@@ -611,9 +714,34 @@ class StreamingTTSPipeline:
             loop.close()
             self._closed.set()
 
+    def _stop_player_bounded(self) -> bool:
+        """Move potentially stuck device teardown to one controlled daemon helper."""
+        if not self._player_stop_started:
+            self._player_stop_started = True
+
+            def _stop() -> None:
+                try:
+                    self._player.stop()
+                except Exception:
+                    LOGGER.exception("streaming media player stop failed")
+                finally:
+                    self._player_stop_done.set()
+
+            self._player_stop_thread = threading.Thread(
+                target=_stop,
+                name="jarvis-media-device-stop",
+                daemon=True,
+            )
+            self._player_stop_thread.start()
+        remaining = max(0.0, self._shutdown_deadline - time.monotonic())
+        stopped = self._player_stop_done.wait(timeout=remaining)
+        if not stopped:
+            LOGGER.error(
+                "player.stop exceeded media shutdown deadline; isolated daemon helper remains",
+            )
+        return stopped
+
     async def _run_owned(self) -> None:
-        if self._start_player:
-            self._player.start()
         record_realtime_trace(
             "media_owner_started",
             boot_id=self._registry.boot_id,
@@ -623,12 +751,12 @@ class StreamingTTSPipeline:
         queue_ = self._queue
         if queue_ is None:  # pragma: no cover - constructor invariant
             return
-        while True:
-            command = await queue_.get()
+        while not self._shutdown_requested.is_set():
             try:
-                if command is _SHUTDOWN:
-                    await self._shutdown_owned()
-                    return
+                command = await asyncio.wait_for(queue_.get(), timeout=0.02)
+            except TimeoutError:
+                continue
+            try:
                 if not isinstance(command, _MediaCommand):
                     continue
                 try:
@@ -648,18 +776,81 @@ class StreamingTTSPipeline:
                     command.acknowledged.set_result(outcome)
             finally:
                 queue_.task_done()
+            # A fail-closed terminal debt may request shutdown from inside
+            # this command. Give the submit coroutine one loop turn to
+            # observe its acknowledgement before the owner closes the loop.
+            if self._shutdown_requested.is_set():
+                await asyncio.sleep(0)
+        await self._shutdown_owned()
 
-    async def _handle_command(  # noqa: PLR0911 - closed three-event dispatch
+    async def _handle_command(
         self,
         command: _MediaCommand,
     ) -> MediaSubmitOutcome:
-        outcome = self._registry.classify(row_id=command.row_id, event=command.event)
+        if command.row_id <= self._registry.boot_high_water_id:
+            return MediaSubmitOutcome(
+                "historical",
+                command.event.event_uid,
+                response_id=_response_id(command.event),
+            )
+        if command.row_id <= self._event_cursor:
+            return MediaSubmitOutcome(
+                "duplicate" if self._registry.has_seen(command.event.event_uid) else "invalid",
+                command.event.event_uid,
+                response_id=_response_id(command.event),
+                detail="committed row already crossed by ordered media drain",
+            )
+        target_outcome: MediaSubmitOutcome | None = None
+        conn = self._require_conn()
+        while self._event_cursor < command.row_id:
+            rows = conn.execute(
+                _SELECT_EVENT_ROWS_THROUGH,
+                (
+                    self._event_cursor,
+                    command.row_id,
+                    self._config.event_drain_batch,
+                ),
+            ).fetchall()
+            if not rows:
+                break
+            for raw_row in rows:
+                row_id, event = _hydrate_event_row(tuple(raw_row))
+                self._event_cursor = row_id
+                if event.type not in _RESPONSE_EVENT_TYPES:
+                    continue
+                outcome = await self._handle_event(row_id=row_id, event=event)
+                if row_id == command.row_id:
+                    if event.event_uid != command.event.event_uid:
+                        return MediaSubmitOutcome(
+                            "invalid",
+                            command.event.event_uid,
+                            detail="row id/event uid mismatch at media boundary",
+                        )
+                    target_outcome = outcome
+        if target_outcome is not None:
+            return target_outcome
+        return MediaSubmitOutcome(
+            "invalid",
+            command.event.event_uid,
+            response_id=_response_id(command.event),
+            detail="hint row was absent or not a response event",
+        )
+
+    async def _handle_event(  # noqa: PLR0911 - closed three-event dispatch
+        self,
+        *,
+        row_id: int,
+        event: Event,
+    ) -> MediaSubmitOutcome:
+        outcome = self._registry.classify(row_id=row_id, event=event)
         if outcome.status != "accepted":
             return outcome
-        event = command.event
         payload = event.payload
         response_id = str(payload["response_id"])
         if event.type == "surface.response_open":
+            if payload.get("attention_channel") in _TTS_SILENT_CHANNELS:
+                self._registry.terminalize(response_id)
+                return outcome
             response_group_raw = payload.get("response_group_id")
             if not isinstance(response_group_raw, str) or not response_group_raw:
                 self._registry.terminalize(response_id)
@@ -670,7 +861,7 @@ class StreamingTTSPipeline:
                     "streaming response open requires stable response_group_id",
                 )
             self._responses[response_id] = _ResponseBuffer(
-                row_id=command.row_id,
+                row_id=row_id,
                 source_event_id=event.event_uid,
                 response_id=response_id,
                 response_group_id=response_group_raw,
@@ -686,7 +877,9 @@ class StreamingTTSPipeline:
         if event.type == "surface.response_chunk":
             sequence = int(payload["sequence"])
             text = str(payload.get("text", ""))
-            prospective = sum(len(item.encode()) for item in response.chunks.values())
+            prospective = sum(
+                len(item.raw_text.encode()) for item in response.chunks.values()
+            )
             prospective += len(text.encode())
             if prospective > self._config.response_text_bytes:
                 self._registry.terminalize(response_id)
@@ -697,7 +890,17 @@ class StreamingTTSPipeline:
                     response_id,
                     "bounded response text budget exceeded",
                 )
-            response.chunks[sequence] = text
+            segment_hash_raw = payload.get("segment_hash")
+            segment_hash = (
+                segment_hash_raw
+                if isinstance(segment_hash_raw, str) and segment_hash_raw
+                else hashlib.sha256(text.encode()).hexdigest()
+            )
+            response.chunks[sequence] = _ResponseChunk(
+                sequence=sequence,
+                raw_text=text,
+                segment_hash=segment_hash,
+            )
             return outcome
         if event.type == "surface.response_emitted":
             response.emitted = True
@@ -705,7 +908,10 @@ class StreamingTTSPipeline:
             await self._schedule_response(response)
         return outcome
 
-    async def _schedule_response(self, response: _ResponseBuffer) -> None:
+    async def _schedule_response(  # noqa: PLR0911 - explicit lane disposition table
+        self,
+        response: _ResponseBuffer,
+    ) -> None:
         speech = response.speech_text()
         if not speech:
             self._responses.pop(response.response_id, None)
@@ -715,6 +921,23 @@ class StreamingTTSPipeline:
         active = self._active
         if active is None:
             self._start_response(response)
+            return
+        if active.terminal_commit_pending:
+            if len(self._after_drain) >= self._config.response_lane_capacity:
+                self._registry.terminalize(response.response_id)
+                self._responses.pop(response.response_id, None)
+                return
+            # A generation whose PCM eligibility is already tombstoned still
+            # owns the lane until its terminal is durable. Queue every
+            # successor behind that debt; never reinterpret a late foreground
+            # event as permission to mint a generation concurrently.
+            self._after_drain.append(response)
+            record_realtime_trace(
+                "media_terminal_debt_wait_enqueued",
+                response_id=response.response_id,
+                response_group_id=response.response_group_id,
+                lane_depth=len(self._after_drain),
+            )
             return
         if active.response.response_group_id == response.response_group_id:
             if len(self._after_drain) >= self._config.response_lane_capacity:
@@ -736,7 +959,10 @@ class StreamingTTSPipeline:
                 lane_depth=len(self._after_drain),
             )
             return
-        await self._interrupt_active(reason="foreground_superseded")
+        if not await self._interrupt_active(reason="foreground_superseded"):
+            self._registry.terminalize(response.response_id)
+            self._responses.pop(response.response_id, None)
+            return
         while self._after_drain:
             old = self._after_drain.popleft()
             self._registry.terminalize(old.response_id)
@@ -744,6 +970,10 @@ class StreamingTTSPipeline:
         self._start_response(response)
 
     def _start_response(self, response: _ResponseBuffer) -> None:
+        if self._lane_isolated:
+            self._registry.terminalize(response.response_id)
+            self._responses.pop(response.response_id, None)
+            return
         result = self._player.activate_generation(
             session_id=self._registry.boot_id,
             response_id=response.response_id,
@@ -760,6 +990,10 @@ class StreamingTTSPipeline:
             self._play_response(active),
             name=f"media-response-{response.response_id}",
         )
+        active.presentation_task = asyncio.create_task(
+            self._presentation_owner(active),
+            name=f"media-presentation-{response.response_id}",
+        )
         active.task.add_done_callback(self._response_task_done)
         record_realtime_trace(
             "tts_request_started",
@@ -770,7 +1004,7 @@ class StreamingTTSPipeline:
             measurement_semantics="media_owner_started_provider_request",
         )
 
-    async def _play_response(
+    async def _play_response(  # noqa: C901, PLR0912 - bounded lifecycle cleanup FSM
         self,
         active: _ActiveResponse,
     ) -> None:
@@ -785,11 +1019,16 @@ class StreamingTTSPipeline:
                     reason="system_output_lease_refused",
                     retryable=True,
                 )
+                if active.advance_after_cleanup:
+                    active.advance_after_cleanup = False
+                    if self._active is active:
+                        self._active = None
+                    self._advance_after_drain()
                 return
         try:
             async with asyncio.timeout(self._config.response_timeout_s):
                 completed = await self._stream_with_prefix_fallback(active, segments)
-                if self._active is not active:
+                if active.advance_after_cleanup or self._active is not active:
                     return
                 if not completed:
                     await self._fail_active(
@@ -814,12 +1053,41 @@ class StreamingTTSPipeline:
             session = active.session
             active.session = None
             if session is not None:
-                with contextlib.suppress(Exception):
-                    await session.close()
+                close_task = asyncio.create_task(session.close())
+                await self._wait_task_bounded(close_task, timeout_s=0.5)
+            # Every exit path retains and drains fallback process ownership;
+            # an exceptional ``wait()`` must not let a still-live ``say``
+            # overlap the next generation.
+            await self._cancel_fallback(active)
             if active.output_lease and self._ducker is not None:
                 active.output_lease = False
                 with contextlib.suppress(Exception):
                     self._ducker.leave_output()
+            if active.advance_after_cleanup:
+                active.advance_after_cleanup = False
+                if self._active is active:
+                    self._active = None
+                self._advance_after_drain()
+
+    async def _presentation_owner(self, active: _ActiveResponse) -> None:
+        """Persist whole-segment heard checkpoints while provider I/O continues."""
+        try:
+            while self._active is active and not self._lane_isolated:
+                snapshot = self._player.poll_generation(
+                    active.lease.playback_generation_id,
+                )
+                if isinstance(snapshot, StalePlaybackGeneration):
+                    return
+                await self._checkpoint_if_advanced(active, snapshot)
+                await asyncio.sleep(self._config.presentation_poll_s)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception(
+                "presentation checkpoint owner failed: response_id=%s generation=%d",
+                active.response.response_id,
+                active.lease.playback_generation_id,
+            )
 
     async def _stream_with_prefix_fallback(  # noqa: C901, PLR0911, PLR0912, PLR0915 - bounded endpoint FSM
         self,
@@ -939,8 +1207,8 @@ class StreamingTTSPipeline:
                 except Exception as exc:  # noqa: BLE001 - provider transport boundary
                     last_error = exc
                     if session is not None:
-                        with contextlib.suppress(Exception):
-                            await session.close()
+                        close_task = asyncio.create_task(session.close())
+                        await self._wait_task_bounded(close_task, timeout_s=0.5)
                     session = None
                     iterator = None
                     active.session = None
@@ -1015,19 +1283,29 @@ class StreamingTTSPipeline:
         active: _ActiveResponse,
         segments: list[tuple[int, str, str]],
     ) -> bool:
-        """Compatibility fallback owned by the media loop, never an executor."""
+        """Compatibility fallback with exact spawn/process cancellation ownership."""
         speech = "".join(text for _sequence, text, _hash in segments)
-        try:
-            process = await asyncio.create_subprocess_exec(
+        active.provider_label = "macos_say"
+        spawn_task = asyncio.create_task(
+            asyncio.create_subprocess_exec(
                 "say",
                 "-v",
                 "Tingting",
                 speech,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
-            )
+            ),
+            name=f"media-say-spawn-{active.response.response_id}",
+        )
+        active.fallback_spawn_task = spawn_task
+        try:
+            process = await asyncio.shield(spawn_task)
+        except asyncio.CancelledError:
+            raise
         except OSError:
+            active.fallback_spawn_task = None
             return False
+        active.fallback_spawn_task = None
         active.fallback_process = process
         record_realtime_trace(
             "tts_macos_say_started",
@@ -1035,9 +1313,8 @@ class StreamingTTSPipeline:
             playback_generation_id=active.lease.playback_generation_id,
             cursor_quality="unknown",
         )
-        try:
-            return_code = await process.wait()
-        finally:
+        return_code = await process.wait()
+        if active.fallback_process is process:
             active.fallback_process = None
         if return_code != 0 or self._active is not active:
             return False
@@ -1059,6 +1336,69 @@ class StreamingTTSPipeline:
                 return False
         return True
 
+    async def _cancel_fallback(self, active: _ActiveResponse) -> None:
+        spawn_task = active.fallback_spawn_task
+        process: asyncio.subprocess.Process | None = None
+        if spawn_task is not None:
+            # Claim the handle before the first await. The response task and a
+            # foreground interrupt may both enter cleanup, but only one owns
+            # any particular spawn/process object.
+            if active.fallback_spawn_task is spawn_task:
+                active.fallback_spawn_task = None
+            spawn_task.cancel()
+            done, pending = await asyncio.wait(
+                {spawn_task},
+                timeout=self._remaining_s(0.25),
+            )
+            if pending:
+                spawn_task.add_done_callback(self._kill_late_fallback_spawn)
+            elif done and not spawn_task.cancelled() and spawn_task.exception() is None:
+                process = spawn_task.result()
+        owned_process = active.fallback_process
+        if owned_process is not None and active.fallback_process is owned_process:
+            active.fallback_process = None
+        if process is None:
+            process = owned_process
+        if process is None:
+            return
+        await self._terminate_process(process)
+
+    @staticmethod
+    def _kill_late_fallback_spawn(
+        task: asyncio.Task[asyncio.subprocess.Process],
+    ) -> None:
+        """Kill a process returned after its bounded spawn cancellation window."""
+        if task.cancelled() or task.exception() is not None:
+            return
+        process = task.result()
+        if process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+
+    async def _terminate_process(self, process: asyncio.subprocess.Process) -> None:
+        if process.returncode is not None:
+            return
+        with contextlib.suppress(ProcessLookupError):
+            process.terminate()
+        wait_task = asyncio.create_task(process.wait())
+        done, _pending = await asyncio.wait(
+            {wait_task},
+            timeout=self._remaining_s(0.25),
+        )
+        if done:
+            try:
+                wait_task.result()
+            except asyncio.CancelledError:
+                LOGGER.warning("macOS say wait was cancelled after terminate; forcing kill")
+            except Exception as exc:  # noqa: BLE001 - cleanup must still force kill
+                LOGGER.warning("macOS say wait failed after terminate; forcing kill: %r", exc)
+            else:
+                return
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        reap_task = wait_task if not wait_task.done() else asyncio.create_task(process.wait())
+        await self._wait_task_bounded(reap_task, timeout_s=0.25)
+
     async def _drain_and_complete(
         self,
         active: _ActiveResponse,
@@ -1076,7 +1416,7 @@ class StreamingTTSPipeline:
                     retryable=True,
                 )
                 return
-            self._checkpoint_if_advanced(active, snapshot)
+            await self._checkpoint_if_advanced(active, snapshot)
             if snapshot.software_drained and not software_drain_recorded:
                 software_drain_recorded = True
                 record_realtime_trace(
@@ -1097,6 +1437,7 @@ class StreamingTTSPipeline:
                         "full_conservative_callback_plus_output_latency_horizon_not_loopback"
                     ),
                 )
+                active.terminal_commit_pending = True
                 completed = self._player.complete_generation(
                     expected_playback_generation_id=lease.playback_generation_id,
                 )
@@ -1107,7 +1448,7 @@ class StreamingTTSPipeline:
                         retryable=True,
                     )
                     return
-                self._try_commit_terminal(
+                durable = await self._commit_terminal_durable(
                     active,
                     event_type="surface.playback_completed",
                     snapshot=completed,
@@ -1115,7 +1456,12 @@ class StreamingTTSPipeline:
                     speech_text_hash=segment_hash,
                     retryable=None,
                 )
-                self._finish_active(active)
+                if durable:
+                    await self._release_active(
+                        active,
+                        event_type="surface.playback_completed",
+                        start_successor=True,
+                    )
                 return
             await asyncio.sleep(self._config.presentation_poll_s)
 
@@ -1128,62 +1474,89 @@ class StreamingTTSPipeline:
     ) -> None:
         if self._active is not active:
             return
-        snapshot = self._interrupt_snapshot(active)
-        if snapshot is not None:
-            self._try_commit_terminal(
+        active.terminal_commit_pending = True
+        snapshot = await self._interrupt_snapshot(active)
+        if snapshot is None:
+            self._isolate_terminal_debt(
                 active,
                 event_type="surface.playback_failed",
-                snapshot=snapshot,
-                reason=reason,
-                speech_text_hash=None,
-                retryable=retryable,
+                error=RuntimeError("callback publication did not settle"),
             )
-        else:
-            self._registry.terminalize(active.response.response_id)
-        self._finish_active(active)
+            return
+        durable = await self._commit_terminal_durable(
+            active,
+            event_type="surface.playback_failed",
+            snapshot=snapshot,
+            reason=reason,
+            speech_text_hash=None,
+            retryable=retryable,
+        )
+        if durable:
+            await self._release_active(
+                active,
+                event_type="surface.playback_failed",
+                start_successor=True,
+            )
 
-    async def _interrupt_active(self, *, reason: str) -> None:
+    async def _interrupt_active(self, *, reason: str) -> bool:
         active = self._active
         if active is None:
-            return
+            return not self._lane_isolated
+        active.terminal_commit_pending = True
         # Generation tombstone is the first irreversible publication.  Only
         # after it lands do we cancel network/fallback work.
-        snapshot = self._interrupt_snapshot(active)
-        self._active = None
-        if snapshot is not None:
-            self._try_commit_terminal(
+        snapshot = await self._interrupt_snapshot(active)
+        await self._cancel_active_io(active, reason=reason)
+        if snapshot is None:
+            self._isolate_terminal_debt(
                 active,
                 event_type="surface.playback_interrupted",
-                snapshot=snapshot,
-                reason=reason,
-                speech_text_hash=None,
-                retryable=None,
+                error=RuntimeError("callback publication did not settle"),
             )
+            return False
+        durable = await self._commit_terminal_durable(
+            active,
+            event_type="surface.playback_interrupted",
+            snapshot=snapshot,
+            reason=reason,
+            speech_text_hash=None,
+            retryable=None,
+        )
+        if not durable:
+            return False
+        await self._release_active(
+            active,
+            event_type="surface.playback_interrupted",
+            start_successor=False,
+        )
+        return True
+
+    async def _cancel_active_io(self, active: _ActiveResponse, *, reason: str) -> None:
         task = active.task
         if task is not None and task is not asyncio.current_task():
             task.cancel()
         session = active.session
         if session is not None:
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(session.abort(reason), timeout=1.0)
-        process = active.fallback_process
-        if process is not None and process.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                process.terminate()
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(process.wait(), timeout=0.5)
-            if process.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    process.kill()
+            abort_task = asyncio.create_task(session.abort(reason))
+            await self._wait_task_bounded(abort_task, timeout_s=0.5)
+        await self._cancel_fallback(active)
         if task is not None and task is not asyncio.current_task():
-            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=1.0)
-        self._responses.pop(active.response.response_id, None)
-        self._player.retire_generation(active.lease.playback_generation_id)
-        if not self._after_drain:
-            self._output_active.clear()
+            await self._wait_task_bounded(task, timeout_s=0.5)
 
-    def _checkpoint_if_advanced(
+    async def _wait_task_bounded(self, task: asyncio.Task[Any], *, timeout_s: float) -> bool:
+        done, pending = await asyncio.wait(
+            {task},
+            timeout=self._remaining_s(timeout_s),
+        )
+        if pending:
+            task.cancel()
+            return False
+        if done:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                task.result()
+        return True
+
+    async def _checkpoint_if_advanced(
         self,
         active: _ActiveResponse,
         snapshot: OutputTimelineSnapshot,
@@ -1191,33 +1564,53 @@ class StreamingTTSPipeline:
         sequence = snapshot.heard_through_sequence
         if sequence is None or sequence == active.last_checkpoint_sequence:
             return
-        conn = self._require_conn()
-        try:
-            emit_event(
-                conn,
-                type="surface.playback_checkpoint",
-                payload={
-                    "session_id": active.lease.session_id,
-                    "response_id": active.response.response_id,
-                    "turn_id": active.response.turn_id,
-                    "playback_generation_id": active.lease.playback_generation_id,
-                    "heard_through_sequence": sequence,
-                    "submitted_samples": snapshot.submitted_samples,
-                    "heard_text_hash": snapshot.heard_text_hash,
-                    "cursor_quality": snapshot.cursor_quality,
-                },
-                source_event_id=active.response.source_event_id,
-                correlation={"turn_id": active.response.turn_id},
-            )
-        except Exception:
-            LOGGER.exception(
-                "playback checkpoint append failed: response_id=%s generation=%d",
-                active.response.response_id,
-                active.lease.playback_generation_id,
-            )
-        active.last_checkpoint_sequence = sequence
+        for attempt in range(1, self._config.checkpoint_retry_attempts + 1):
+            conn = self._require_conn()
+            existing = conn.execute(
+                "SELECT 1 FROM events WHERE type = 'surface.playback_checkpoint' "
+                "AND json_extract(payload_json, '$.response_id') = ? "
+                "AND json_extract(payload_json, '$.playback_generation_id') = ? "
+                "AND json_extract(payload_json, '$.heard_through_sequence') = ? LIMIT 1",
+                (
+                    active.response.response_id,
+                    active.lease.playback_generation_id,
+                    sequence,
+                ),
+            ).fetchone()
+            if existing is not None:
+                active.last_checkpoint_sequence = sequence
+                return
+            try:
+                emit_event(
+                    conn,
+                    type="surface.playback_checkpoint",
+                    payload={
+                        "session_id": active.lease.session_id,
+                        "response_id": active.response.response_id,
+                        "turn_id": active.response.turn_id,
+                        "playback_generation_id": active.lease.playback_generation_id,
+                        "heard_through_sequence": sequence,
+                        "submitted_samples": snapshot.submitted_samples,
+                        "heard_text_hash": snapshot.heard_text_hash,
+                        "cursor_quality": snapshot.cursor_quality,
+                    },
+                    source_event_id=active.response.source_event_id,
+                    correlation={"turn_id": active.response.turn_id},
+                )
+            except Exception:
+                LOGGER.exception(
+                    "playback checkpoint append failed: response_id=%s generation=%d attempt=%d",
+                    active.response.response_id,
+                    active.lease.playback_generation_id,
+                    attempt,
+                )
+                if attempt < self._config.checkpoint_retry_attempts:
+                    await asyncio.sleep(self._config.durability_retry_s)
+                continue
+            active.last_checkpoint_sequence = sequence
+            return
 
-    def _try_commit_terminal(  # noqa: PLR0913 - mirrors terminal payload owner
+    async def _commit_terminal_durable(  # noqa: PLR0913 - mirrors terminal payload owner
         self,
         active: _ActiveResponse,
         *,
@@ -1227,39 +1620,60 @@ class StreamingTTSPipeline:
         speech_text_hash: str | None,
         retryable: bool | None,
     ) -> bool:
-        """Commit via the Wave 1 CAS without leaking media ownership on I/O failure."""
-        try:
-            self._commit_terminal(
-                active,
-                event_type=event_type,
-                snapshot=snapshot,
-                reason=reason,
-                speech_text_hash=speech_text_hash,
-                retryable=retryable,
-            )
-        except Exception:
-            LOGGER.exception(
-                "playback terminal append failed: type=%s response_id=%s generation=%d",
-                event_type,
-                active.response.response_id,
-                active.lease.playback_generation_id,
-            )
-            self._registry.terminalize(active.response.response_id)
-            return False
-        return True
+        """Block successor minting on bounded retry of the Wave 1 terminal CAS."""
+        last_error: BaseException | None = None
+        for attempt in range(1, self._config.terminal_retry_attempts + 1):
+            try:
+                self._commit_terminal(
+                    active,
+                    event_type=event_type,
+                    snapshot=snapshot,
+                    reason=reason,
+                    speech_text_hash=speech_text_hash,
+                    retryable=retryable,
+                )
+            except Exception as exc:
+                last_error = exc
+                LOGGER.exception(
+                    "playback terminal append failed: type=%s response_id=%s "
+                    "generation=%d attempt=%d",
+                    event_type,
+                    active.response.response_id,
+                    active.lease.playback_generation_id,
+                    attempt,
+                )
+                if attempt < self._config.terminal_retry_attempts:
+                    delay = self._remaining_s(self._config.durability_retry_s)
+                    if delay <= 0:
+                        break
+                    await asyncio.sleep(delay)
+                continue
+            return True
+        self._isolate_terminal_debt(
+            active,
+            event_type=event_type,
+            error=last_error or RuntimeError("terminal append exhausted retries"),
+        )
+        return False
 
-    def _interrupt_snapshot(
+    async def _interrupt_snapshot(
         self,
         active: _ActiveResponse,
     ) -> OutputTimelineSnapshot | None:
-        """Tombstone first, then recover conservative device-close state if needed."""
-        result = self._player.interrupt_generation(
+        """Tombstone first, then settle the callback publication linearization."""
+        self._player.interrupt_generation(
             expected_playback_generation_id=active.lease.playback_generation_id,
         )
-        if not isinstance(result, StalePlaybackGeneration):
-            return result
-        recovered = self._player.poll_generation(active.lease.playback_generation_id)
-        return None if isinstance(recovered, StalePlaybackGeneration) else recovered
+        deadline = asyncio.get_running_loop().time() + self._remaining_s(0.5)
+        while asyncio.get_running_loop().time() < deadline:
+            settled = self._player.settle_interrupted_generation(
+                expected_playback_generation_id=active.lease.playback_generation_id,
+            )
+            if settled is None:
+                await asyncio.sleep(0)
+                continue
+            return None if isinstance(settled, StalePlaybackGeneration) else settled
+        return None
 
     def _response_task_done(self, task: asyncio.Task[None]) -> None:
         """Fail closed if an unexpected task exception escaped lifecycle cleanup."""
@@ -1276,18 +1690,30 @@ class StreamingTTSPipeline:
         active = self._active
         if active is None or active.task is not task:
             return
-        snapshot = self._interrupt_snapshot(active)
-        if snapshot is not None:
-            self._try_commit_terminal(
+        if active.terminal_commit_pending:
+            self._isolate_terminal_debt(
                 active,
                 event_type="surface.playback_failed",
-                snapshot=snapshot,
-                reason=f"media_owner_task_error:{type(error).__name__}",
-                speech_text_hash=None,
-                retryable=False,
+                error=error,
             )
-        self._registry.terminalize(active.response.response_id)
-        self._finish_active(active)
+            return
+        recovery = asyncio.create_task(
+            self._fail_active(
+                active,
+                reason=f"media_owner_task_error:{type(error).__name__}",
+                retryable=False,
+            ),
+            name=f"media-task-recovery-{active.response.response_id}",
+        )
+        recovery.add_done_callback(self._log_recovery_error)
+
+    @staticmethod
+    def _log_recovery_error(task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            LOGGER.error("media task recovery escaped: %r", error)
 
     def _commit_terminal(  # noqa: PLR0913 - exact terminal shape is explicit
         self,
@@ -1304,14 +1730,10 @@ class StreamingTTSPipeline:
             "response_id": active.response.response_id,
             "turn_id": active.response.turn_id,
             "playback_generation_id": active.lease.playback_generation_id,
-            "heard_through_sequence": (
-                snapshot.heard_through_sequence
-                if snapshot.heard_through_sequence is not None
-                else -1
-            ),
+            "heard_through_sequence": snapshot.heard_through_sequence,
             "submitted_samples": snapshot.submitted_samples,
             "total_samples": snapshot.accepted_samples,
-            "provider": "minimax_ws_streaming",
+            "provider": active.provider_label,
             "cursor_quality": snapshot.cursor_quality,
         }
         if event_type == "surface.playback_completed":
@@ -1332,24 +1754,82 @@ class StreamingTTSPipeline:
         )
         self._registry.terminalize(active.response.response_id)
 
-    def _finish_active(self, active: _ActiveResponse) -> None:
+    async def _release_active(
+        self,
+        active: _ActiveResponse,
+        *,
+        event_type: str,
+        start_successor: bool,
+    ) -> None:
+        """Retire/broadcast only after durable terminal commit."""
         if self._active is not active:
             return
-        self._active = None
+        presentation = active.presentation_task
+        if presentation is not None and presentation is not asyncio.current_task():
+            presentation.cancel()
+            await self._wait_task_bounded(presentation, timeout_s=0.25)
         self._responses.pop(active.response.response_id, None)
         self._player.retire_generation(active.lease.playback_generation_id)
-        self._broadcast_spoken(active.response.turn_id)
+        self._broadcast_spoken(active.response.turn_id, event_type=event_type)
+        if start_successor and asyncio.current_task() is active.task:
+            # Keep the durable-but-cleaning response as the lane owner. New
+            # deliveries queue behind its terminal_commit_pending marker until
+            # provider/process cleanup completes in `_play_response.finally`.
+            active.advance_after_cleanup = True
+            return
+        self._active = None
+        if not start_successor:
+            self._output_active.clear()
+            return
+        self._advance_after_drain()
+
+    def _advance_after_drain(self) -> None:
+        if self._lane_isolated or self._active is not None:
+            return
         if self._after_drain:
-            next_response = self._after_drain.popleft()
-            self._start_response(next_response)
+            self._start_response(self._after_drain.popleft())
         else:
             self._output_active.clear()
 
-    def _broadcast_spoken(self, turn_id: str) -> None:
+    def _broadcast_spoken(self, turn_id: str, *, event_type: str = "no_speech") -> None:
         callback = getattr(self._broadcaster, "broadcast_voice_sync", None)
         if callable(callback):
             with contextlib.suppress(Exception):
-                callback("spoken", turn_id=turn_id)
+                callback(
+                    "spoken",
+                    turn_id=turn_id,
+                    output_outcome=event_type.removeprefix("surface.playback_"),
+                )
+
+    def _isolate_terminal_debt(
+        self,
+        active: _ActiveResponse,
+        *,
+        event_type: str,
+        error: BaseException,
+    ) -> None:
+        """Fail closed: retain the ledger and forbid every successor generation."""
+        self._lane_isolated = True
+        self._terminal_debt = active
+        self._accepting.clear()
+        self._registry.terminalize(active.response.response_id)
+        if self._active is active:
+            self._active = None
+        if active.presentation_task is not None:
+            active.presentation_task.cancel()
+        while self._after_drain:
+            queued = self._after_drain.popleft()
+            self._registry.terminalize(queued.response_id)
+        self._responses.clear()
+        self._output_active.clear()
+        record_realtime_trace(
+            "media_terminal_debt_isolated",
+            response_id=active.response.response_id,
+            playback_generation_id=active.lease.playback_generation_id,
+            terminal_type=event_type,
+            error_type=type(error).__name__,
+        )
+        self._request_shutdown_deadline(self._config.shutdown_timeout_s)
 
     async def _shutdown_owned(self) -> None:
         self._accepting.clear()
@@ -1361,15 +1841,64 @@ class StreamingTTSPipeline:
             self._responses.pop(response.response_id, None)
         request_close = getattr(self._provider, "request_close", None)
         if callable(request_close):
-            with contextlib.suppress(Exception):
-                request_close()
-        self._player.stop()
+            self._call_sync_bounded(
+                request_close,
+                thread_name="jarvis-media-provider-stop",
+            )
+        self._stop_player_bounded()
+        self._reject_queued_commands()
+        # Rejected submitters are bridge coroutines on this loop. Let their
+        # acknowledgement futures resume before loop teardown so a full normal
+        # queue cannot strand callers while shutdown uses its control event.
+        await asyncio.sleep(0)
         self._output_active.clear()
         record_realtime_trace(
             "media_owner_stopped",
             boot_id=self._registry.boot_id,
             owned_tasks_remaining=0,
         )
+
+    def _call_sync_bounded(
+        self,
+        callback: Callable[[], object],
+        *,
+        thread_name: str,
+    ) -> bool:
+        done = threading.Event()
+
+        def _call() -> None:
+            try:
+                callback()
+            except Exception:
+                LOGGER.exception("bounded shutdown callback failed: %s", thread_name)
+            finally:
+                done.set()
+
+        helper = threading.Thread(target=_call, name=thread_name, daemon=True)
+        helper.start()
+        completed = done.wait(
+            timeout=max(0.0, self._shutdown_deadline - time.monotonic()),
+        )
+        if not completed:
+            LOGGER.error("%s exceeded shutdown deadline; daemon helper isolated", thread_name)
+        return completed
+
+    def _reject_queued_commands(self) -> None:
+        queue_ = self._queue
+        if queue_ is None:
+            return
+        while True:
+            try:
+                command = queue_.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                if isinstance(command, _MediaCommand) and not command.acknowledged.done():
+                    command.acknowledged.set_result(
+                        MediaSubmitOutcome("closed", command.event.event_uid),
+                    )
+            finally:
+                queue_.task_done()
 
     def _require_conn(self) -> sqlite3.Connection:
         conn = self._conn
@@ -1452,6 +1981,22 @@ def streaming_media_config_from_mapping(
         shutdown_timeout_s=_positive_float(
             "shutdown_timeout_s",
             defaults.shutdown_timeout_s,
+        ),
+        event_drain_batch=_positive_int(
+            "event_drain_batch",
+            defaults.event_drain_batch,
+        ),
+        terminal_retry_attempts=_positive_int(
+            "terminal_retry_attempts",
+            defaults.terminal_retry_attempts,
+        ),
+        checkpoint_retry_attempts=_positive_int(
+            "checkpoint_retry_attempts",
+            defaults.checkpoint_retry_attempts,
+        ),
+        durability_retry_s=_positive_float(
+            "durability_retry_s",
+            defaults.durability_retry_s,
         ),
         enable_macos_say_fallback=macos_fallback,
     )

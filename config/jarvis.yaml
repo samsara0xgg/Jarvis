@@ -140,4 +140,8 @@ realtime:
     ring_retry_s: 0.002
     presentation_poll_s: 0.005
     shutdown_timeout_s: 3.0
+    event_drain_batch: 128
+    terminal_retry_attempts: 3
+    checkpoint_retry_attempts: 3
+    durability_retry_s: 0.02
     enable_macos_say_fallback: true

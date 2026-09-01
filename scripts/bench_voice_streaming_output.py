@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import statistics
+import subprocess
 import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+import jarvis
 from jarvis.runtime import bootstrap_runtime_app, drive_turn
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import emit_event, open_event_log
@@ -320,14 +323,79 @@ def _summary(runs: list[RunMetrics]) -> dict[str, object]:
         }
     legacy = by_mode.get("legacy_batch", [])
     streaming = by_mode.get("streaming_output", [])
-    product_gate = (
+    software_gate = (
         bool(legacy and streaming)
         and all(sample.player_accept_minus_provider_final_ms < 0 for sample in streaming)
         and statistics.median(sample.request_to_player_accept_ms for sample in streaming)
         < statistics.median(sample.request_to_player_accept_ms for sample in legacy)
     )
-    summary["product_latency_gate"] = "PASS" if product_gate else "FAIL"
+    summary["software_streaming_output_gate"] = "PASS" if software_gate else "FAIL"
+    summary["physical_dac_loopback_gate"] = "UNMEASURED"
+    summary["true_end_to_end_latency_gate"] = "UNMEASURED"
     return summary
+
+
+def _provenance(*, config_path: Path, text: str) -> dict[str, object]:
+    """Capture reproducible, non-sensitive execution provenance."""
+    repository = Path(__file__).resolve().parents[1]
+
+    def _git(*args: str) -> str:
+        result = subprocess.run(  # noqa: S603 - fixed local git executable/arguments
+            ("/usr/bin/git", "-C", str(repository), *args),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    try:
+        revision = _git("rev-parse", "HEAD")
+        dirty = bool(_git("status", "--porcelain=v1"))
+    except (OSError, subprocess.CalledProcessError):
+        revision = "unknown"
+        dirty = None
+    resolved_config = config_path.resolve()
+    config_hash = (
+        hashlib.sha256(resolved_config.read_bytes()).hexdigest()
+        if resolved_config.is_file()
+        else None
+    )
+    try:
+        import sounddevice as sd  # noqa: PLC0415
+
+        output = sd.query_devices(kind="output")
+        device: dict[str, object] = {
+            "name": str(output.get("name", "unknown")),
+            "hostapi": int(output.get("hostapi", -1)),
+            "max_output_channels": int(output.get("max_output_channels", 0)),
+            "default_samplerate_hz": float(output.get("default_samplerate", 0.0)),
+        }
+    except Exception as exc:  # noqa: BLE001 - provenance must not mask a run result
+        device = {"unavailable": type(exc).__name__}
+    return {
+        "git_revision": revision,
+        "git_dirty": dirty,
+        "jarvis_module_path": str(Path(jarvis.__file__).resolve()),
+        "config_path": str(resolved_config),
+        "config_sha256": config_hash,
+        "test_text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+        "provider": {
+            "name": "MiniMax",
+            "transport": "websocket_pcm_stream",
+            "model": "speech-2.8-turbo",
+            "input_sample_rate_hz": 32_000,
+            "canonical_output_sample_rate_hz": _SAMPLE_RATE_HZ,
+        },
+        "output_device": device,
+        "measurement": {
+            "clock": "time.monotonic_ns",
+            "player_accept": "software generation ring acceptance",
+            "first_callback": "first nonzero PortAudio host callback",
+            "estimated_audible": "software callback plus configured output-latency horizon",
+            "physical_dac_or_loopback": False,
+            "full_input_to_audible_e2e": False,
+        },
+    }
 
 
 def _system_smoke(
@@ -496,9 +564,10 @@ def main() -> int:
                 ),
             )
     payload = {
-        "schema": "jarvis.wave2.voice_latency.v1",
+        "schema": "jarvis.wave2.voice_latency.v2",
         "raw_runs": [asdict(run) for run in runs],
         "summary": _summary(runs),
+        "provenance": _provenance(config_path=args.config, text=args.text),
         "state_isolation": "TemporaryDirectory deleted after run; no production DB",
     }
     encoded = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)

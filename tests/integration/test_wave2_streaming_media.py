@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Literal, Self, cast
@@ -20,6 +21,7 @@ from jarvis.runtime import inherent_loop
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.lifecycle_terminal import terminalize_playback
 from jarvis.surface import voice_media, voice_tts
 from jarvis.surface.voice_ledger import ForegroundBusy, StalePlaybackGeneration
 
@@ -64,6 +66,7 @@ class _FakeSession:
             _Behavior(),
         )
         self._provider.opened.append((response_id, self._endpoint_index))
+        self._provider.actions.append(f"open:{response_id}")
 
     async def send(self, segment: voice_tts.TTSResponseSegment) -> None:
         if self._send_active:
@@ -92,6 +95,9 @@ class _FakeSession:
                 msg = "fake connect/read failure before prefix"
                 raise OSError(msg)
             segment = await self._segments.get()
+            gate = self._provider.segment_gates.get((self._response_id, segment.sequence))
+            while gate is not None and not gate.is_set() and not self._closed:  # noqa: ASYNC110
+                await asyncio.sleep(0.001)
             pcm = np.full(self._behavior.samples, 2000, dtype="<i2").tobytes()
             yield voice_tts.TTSAudioChunk(
                 sequence=segment.sequence,
@@ -99,10 +105,18 @@ class _FakeSession:
                 sample_rate_hz=self._behavior.sample_rate_hz,
             )
             if self._behavior.outcome == "fail_after":
+                await asyncio.sleep(self._behavior.final_delay_s)
                 msg = "fake failure after accepted prefix"
                 raise OSError(msg)
+            final_gate = self._provider.final_gates.get(
+                (self._response_id, segment.sequence),
+            )
+            while (  # noqa: ASYNC110
+                final_gate is not None and not final_gate.is_set() and not self._closed
+            ):
+                await asyncio.sleep(0.001)
             await asyncio.sleep(self._behavior.final_delay_s)
-            self._provider.provider_finals.append(self._response_id)
+            self._provider.provider_finals.append((self._response_id, segment.sequence))
             yield voice_tts.TTSSegmentFinished(sequence=segment.sequence)
 
     async def finish(self) -> None:
@@ -128,8 +142,11 @@ class _FakeProvider:
         self.opened: list[tuple[str, int]] = []
         self.sent: list[tuple[str, int]] = []
         self.reader_claims: dict[str, int] = {}
-        self.provider_finals: list[str] = []
+        self.provider_finals: list[tuple[str, int]] = []
         self.aborted: list[tuple[str, str]] = []
+        self.actions: list[str] = []
+        self.segment_gates: dict[tuple[str, int], threading.Event] = {}
+        self.final_gates: dict[tuple[str, int], threading.Event] = {}
 
     @property
     def streaming_candidate_count(self) -> int:
@@ -173,6 +190,22 @@ class _CallbackPump:
             out = np.zeros((32, 1), dtype=np.float32)
             self._player._callback(out, 32, None, None)  # noqa: SLF001
             time.sleep(0.0005)
+
+
+class _RecordingBroadcaster:
+    def __init__(self, actions: list[str]) -> None:
+        self._actions = actions
+
+    def broadcast_voice_sync(
+        self,
+        phase: str,
+        *,
+        turn_id: str,
+        **payload: object,
+    ) -> None:
+        self._actions.append(
+            f"ui:{phase}:{turn_id}:{payload.get('output_outcome', '')}",
+        )
 
 
 def _player(*, ring_seconds: float = 0.25) -> voice_tts.AudioStreamPlayer:
@@ -238,6 +271,7 @@ def _emit_response(  # noqa: PLR0913 - exact three-event fixture identity
                     "sequence": sequence,
                     "phase": phase,
                     "channel": "speech",
+                    "segment_hash": hashlib.sha256(chunk.encode()).hexdigest(),
                 },
             )
             for sequence, chunk in enumerate(texts)
@@ -288,7 +322,7 @@ def _terminal_rows(conn: sqlite3.Connection) -> list[tuple[str, dict[str, object
     return [(str(row[0]), json.loads(str(row[1]))) for row in rows]
 
 
-def test_generation_cas_races_and_thousand_cycle_churn() -> None:
+def test_generation_cas_races_and_thousand_cycle_churn() -> None:  # noqa: C901, PLR0915
     """Late PCM/cancel/drain never crosses generations or leaks ring state."""
     drain_race = voice_tts.AudioStreamPlayer(
         sample_rate_hz=8_000,
@@ -390,6 +424,41 @@ def test_generation_cas_races_and_thousand_cycle_churn() -> None:
     player.interrupt_generation(
         expected_playback_generation_id=second.playback_generation_id,
     )
+    cycle_start = threading.Barrier(3)
+    cycle_done = threading.Barrier(3)
+    current: dict[str, object] = {}
+    worker_errors: list[BaseException] = []
+    callback_outputs: list[np.ndarray] = []
+
+    def _late_provider_writer() -> None:
+        try:
+            for cycle in range(1_000):
+                cycle_start.wait()
+                lease = cast("Any", current["lease"])
+                player.write_generation(
+                    np.full(8, cycle + 1, dtype=np.float32).tobytes(),
+                    expected_playback_generation_id=lease.playback_generation_id,
+                    segment_sequence=0,
+                )
+                cycle_done.wait()
+        except BaseException as exc:  # noqa: BLE001 - barrier surfaces thread failures
+            worker_errors.append(exc)
+
+    def _concurrent_callback() -> None:
+        try:
+            for _cycle in range(1_000):
+                cycle_start.wait()
+                output = np.zeros((8, 1), dtype=np.float32)
+                player._callback(output, 8, None, None)  # noqa: SLF001
+                callback_outputs.append(output.copy())
+                cycle_done.wait()
+        except BaseException as exc:  # noqa: BLE001 - barrier surfaces thread failures
+            worker_errors.append(exc)
+
+    writer = threading.Thread(target=_late_provider_writer, name="late-provider-racer")
+    callback = threading.Thread(target=_concurrent_callback, name="callback-racer")
+    writer.start()
+    callback.start()
     for cycle in range(1_000):
         lease = player.activate_generation(
             session_id="S",
@@ -404,19 +473,30 @@ def test_generation_cas_races_and_thousand_cycle_churn() -> None:
             text="x",
             segment_hash="x",
         )
-        assert (
-            player.write_generation(
-                np.ones(8, dtype=np.float32).tobytes(),
-                expected_playback_generation_id=lease.playback_generation_id,
-                segment_sequence=0,
-            )
-            is not None
-        )
+        current["lease"] = lease
+        cycle_start.wait()
         player.interrupt_generation(
             expected_playback_generation_id=lease.playback_generation_id,
         )
-        player._callback(np.zeros((8, 1), dtype=np.float32), 8, None, None)  # noqa: SLF001
+        cycle_done.wait()
+        settled: object | None = None
+        for _settle_poll in range(1_000):
+            settled = player.settle_interrupted_generation(
+                expected_playback_generation_id=lease.playback_generation_id,
+            )
+            if settled is not None:
+                break
+            time.sleep(0)
+        assert settled is not None
         player.retire_generation(lease.playback_generation_id)
+    writer.join(timeout=2.0)
+    callback.join(timeout=2.0)
+    assert not writer.is_alive()
+    assert not callback.is_alive()
+    assert not worker_errors
+    for cycle, output in enumerate(callback_outputs):
+        nonzero = output[output != 0]
+        assert nonzero.size == 0 or np.all(nonzero == np.float32(cycle + 1))
     assert player.active_lease is None
 
     closing = player.activate_generation(
@@ -447,6 +527,162 @@ def test_generation_cas_races_and_thousand_cycle_churn() -> None:
     assert late_after_close.reason == "already_terminal"
     assert isinstance(cancel_after_close, StalePlaybackGeneration)
     assert np.count_nonzero(output_after_close) == 0
+
+
+def test_callback_interrupt_linearization_and_gain_mailbox_barriers() -> None:  # noqa: PLR0915
+    """Pre-CAS reports settle; post-CAS PCM and post-gain muted text do not."""
+    player = _player(ring_seconds=0.02)
+    lease = player.activate_generation(
+        session_id="S",
+        response_id="RBARRIER",
+        response_group_id="GBARRIER",
+        turn_id="TBARRIER",
+    )
+    assert not isinstance(lease, ForegroundBusy)
+    player.begin_generation_segment(
+        expected_playback_generation_id=lease.playback_generation_id,
+        sequence=0,
+        text="pre cas",
+        segment_hash="pre-cas",
+    )
+    player.write_generation(
+        np.ones(8, dtype=np.float32).tobytes(),
+        expected_playback_generation_id=lease.playback_generation_id,
+        segment_sequence=0,
+    )
+    player.finish_generation_segment(
+        expected_playback_generation_id=lease.playback_generation_id,
+        sequence=0,
+    )
+    report_entered = threading.Event()
+    report_release = threading.Event()
+    original_report = player._callback_reports.write  # noqa: SLF001
+
+    def _blocked_report(**kwargs: object) -> None:
+        report_entered.set()
+        assert report_release.wait(timeout=1.0)
+        original_report(**cast("Any", kwargs))
+
+    output = np.zeros((8, 1), dtype=np.float32)
+    with patch.object(player._callback_reports, "write", side_effect=_blocked_report):  # noqa: SLF001
+        callback = threading.Thread(
+            target=player._callback,  # noqa: SLF001
+            args=(output, 8, None, None),
+            name="callback-publication-barrier",
+        )
+        callback.start()
+        assert report_entered.wait(timeout=1.0)
+        player.interrupt_generation(
+            expected_playback_generation_id=lease.playback_generation_id,
+        )
+        assert (
+            player.settle_interrupted_generation(
+                expected_playback_generation_id=lease.playback_generation_id,
+            )
+            is None
+        )
+        report_release.set()
+        callback.join(timeout=1.0)
+    assert not callback.is_alive()
+    settled = player.settle_interrupted_generation(
+        expected_playback_generation_id=lease.playback_generation_id,
+    )
+    assert settled is not None
+    assert not isinstance(settled, StalePlaybackGeneration)
+    assert settled.submitted_samples == 8
+    assert np.all(output[:, 0] == 1.0)
+    player.retire_generation(lease.playback_generation_id)
+
+    post_cas = player.activate_generation(
+        session_id="S",
+        response_id="RPOST",
+        response_group_id="GPOST",
+        turn_id="TPOST",
+    )
+    assert not isinstance(post_cas, ForegroundBusy)
+    player.begin_generation_segment(
+        expected_playback_generation_id=post_cas.playback_generation_id,
+        sequence=0,
+        text="post cas",
+        segment_hash="post-cas",
+    )
+    player.write_generation(
+        np.ones(8, dtype=np.float32).tobytes(),
+        expected_playback_generation_id=post_cas.playback_generation_id,
+        segment_sequence=0,
+    )
+    player.interrupt_generation(
+        expected_playback_generation_id=post_cas.playback_generation_id,
+    )
+    post_output = np.ones((8, 1), dtype=np.float32)
+    player._callback(post_output, 8, None, None)  # noqa: SLF001
+    post_settled = player.settle_interrupted_generation(
+        expected_playback_generation_id=post_cas.playback_generation_id,
+    )
+    assert post_settled is not None
+    assert not isinstance(post_settled, StalePlaybackGeneration)
+    assert post_settled.submitted_samples == 0
+    assert np.count_nonzero(post_output) == 0
+    player.retire_generation(post_cas.playback_generation_id)
+
+    gain_player = _player(ring_seconds=0.02)
+    gain_lease = gain_player.activate_generation(
+        session_id="S",
+        response_id="RGAIN",
+        response_group_id="GGAIN",
+        turn_id="TGAIN",
+    )
+    assert not isinstance(gain_lease, ForegroundBusy)
+    gain_player.begin_generation_segment(
+        expected_playback_generation_id=gain_lease.playback_generation_id,
+        sequence=7,
+        text="must not be heard",
+        segment_hash="gain",
+    )
+    gain_player.write_generation(
+        np.ones(16, dtype=np.float32).tobytes(),
+        expected_playback_generation_id=gain_lease.playback_generation_id,
+        segment_sequence=7,
+    )
+    gain_player.finish_generation_segment(
+        expected_playback_generation_id=gain_lease.playback_generation_id,
+        sequence=7,
+    )
+    apply_entered = threading.Event()
+    apply_release = threading.Event()
+    original_apply = gain_player._gain.apply  # noqa: SLF001
+    apply_calls = 0
+
+    def _barrier_apply(block: np.ndarray) -> str:
+        nonlocal apply_calls
+        apply_calls += 1
+        if apply_calls == 1:
+            apply_entered.set()
+            assert apply_release.wait(timeout=1.0)
+        return original_apply(block)
+
+    first_gain_output = np.zeros((8, 1), dtype=np.float32)
+    with patch.object(gain_player._gain, "apply", side_effect=_barrier_apply):  # noqa: SLF001
+        gain_callback = threading.Thread(
+            target=gain_player._callback,  # noqa: SLF001
+            args=(first_gain_output, 8, None, None),
+            name="gain-command-barrier",
+        )
+        gain_callback.start()
+        assert apply_entered.wait(timeout=1.0)
+        gain_player.set_gain(0.0, ramp_ms=0.0)
+        apply_release.set()
+        gain_callback.join(timeout=1.0)
+        second_gain_output = np.ones((8, 1), dtype=np.float32)
+        gain_player._callback(second_gain_output, 8, None, None)  # noqa: SLF001
+    assert not gain_callback.is_alive()
+    snapshot = gain_player.poll_generation(gain_lease.playback_generation_id)
+    assert not isinstance(snapshot, StalePlaybackGeneration)
+    assert np.all(first_gain_output[:, 0] == 1.0)
+    assert np.count_nonzero(second_gain_output) == 0
+    assert snapshot.estimated_audible_samples == 16
+    assert snapshot.heard_text == ""
+    assert snapshot.heard_through_sequence is None
 
 
 def test_streaming_owner_first_accept_replay_dedup_and_prefix_safety(  # noqa: PLR0915
@@ -592,6 +828,369 @@ def test_streaming_owner_first_accept_replay_dedup_and_prefix_safety(  # noqa: P
     assert not any(thread.name == pipeline.media_thread_name for thread in threading.enumerate())
 
 
+@pytest.mark.parametrize("terminal_mode", ["completed", "failed", "supersede"])
+@pytest.mark.parametrize("persistent", [False, True])
+def test_terminal_debt_blocks_every_successor_until_durable(
+    tmp_path: Path,
+    terminal_mode: str,
+    persistent: bool,  # noqa: FBT001 - data-driven fault mode
+) -> None:
+    """Completed/failed/supersede all fail closed behind the terminal CAS."""
+    db_path = tmp_path / f"terminal-{terminal_mode}-{persistent}.db"
+    conn = open_event_log(db_path)
+    first_behavior = (
+        _Behavior("fail_after", final_delay_s=0.04)
+        if terminal_mode == "failed"
+        else _Behavior("success", final_delay_s=0.08)
+    )
+    provider = _FakeProvider({("RDEBT", 0): first_behavior}, candidate_count=1)
+    actions = provider.actions
+    broadcaster = _RecordingBroadcaster(actions)
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        broadcaster=broadcaster,
+        start_player=False,
+    )
+    original_terminalize = terminalize_playback
+    attempts = 0
+
+    def _faulted_terminalize(*args: object, **kwargs: object) -> object:
+        nonlocal attempts
+        payload = cast("dict[str, object]", kwargs["payload"])
+        if payload["response_id"] == "RDEBT":
+            attempts += 1
+            actions.append(f"terminal-attempt:{attempts}")
+            if persistent or attempts < 3:
+                msg = "injected playback terminal append fault"
+                raise RuntimeError(msg)
+        outcome = original_terminalize(*cast("Any", args), **cast("Any", kwargs))
+        if payload["response_id"] == "RDEBT":
+            actions.append("terminal-durable:RDEBT")
+        return outcome
+
+    try:
+        with (
+            patch.object(voice_media, "terminalize_playback", side_effect=_faulted_terminalize),
+            _CallbackPump(player),
+        ):
+            first = _emit_response(
+                conn,
+                response_id="RDEBT",
+                group_id="GDEBT",
+                turn_id="TDEBT",
+                text="old response",
+            )
+            asyncio.run(_submit_response(pipeline, first))
+            successor = _emit_response(
+                conn,
+                response_id="RNEXT",
+                group_id=("GNEXT" if terminal_mode == "supersede" else "GDEBT"),
+                turn_id="TNEXT",
+                text="successor response",
+            )
+            asyncio.run(_submit_response(pipeline, successor))
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        assert pipeline.close(wait_timeout_s=2.0)
+        conn.close()
+
+    terminals = _terminal_rows(open_event_log(db_path))
+    first_terminals = [
+        kind for kind, payload in terminals if payload["response_id"] == "RDEBT"
+    ]
+    assert attempts == 3
+    if persistent:
+        assert first_terminals == []
+        assert ("RNEXT", 0) not in provider.opened
+        assert not any(action.startswith("ui:spoken:TDEBT") for action in actions)
+        assert player._next_generation == 1  # noqa: SLF001
+    else:
+        expected = {
+            "completed": "surface.playback_completed",
+            "failed": "surface.playback_failed",
+            "supersede": "surface.playback_interrupted",
+        }[terminal_mode]
+        assert first_terminals == [expected]
+        assert ("RNEXT", 0) in provider.opened
+        terminal_index = actions.index("terminal-durable:RDEBT")
+        successor_index = actions.index("open:RNEXT")
+        ui_index = next(
+            index
+            for index, action in enumerate(actions)
+            if action.startswith("ui:spoken:TDEBT")
+        )
+        assert terminal_index < ui_index < successor_index
+
+
+def test_checkpoint_persists_during_later_provider_feed_and_retries(tmp_path: Path) -> None:
+    """A whole heard segment checkpoints before the blocked next segment final."""
+    db_path = tmp_path / "checkpoint-parallel.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    second_gate = threading.Event()
+    provider.segment_gates[("RCP", 1)] = second_gate
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    original_emit = emit_event
+    checkpoint_attempts = 0
+
+    def _transient_checkpoint(*args: object, **kwargs: object) -> object:
+        nonlocal checkpoint_attempts
+        if kwargs.get("type") == "surface.playback_checkpoint":
+            checkpoint_attempts += 1
+            if checkpoint_attempts == 1:
+                msg = "transient checkpoint append fault"
+                raise RuntimeError(msg)
+        return original_emit(*cast("Any", args), **cast("Any", kwargs))
+
+    try:
+        rows = _emit_response(
+            conn,
+            response_id="RCP",
+            group_id="GCP",
+            turn_id="TCP",
+            text=["first checkpoint. ", "blocked second."],
+        )
+        with (
+            patch.object(voice_media, "emit_event", side_effect=_transient_checkpoint),
+            _CallbackPump(player),
+        ):
+            asyncio.run(_submit_response(pipeline, rows))
+            deadline = time.monotonic() + 1.0
+            checkpoint_row: tuple[object, ...] | None = None
+            while time.monotonic() < deadline:
+                checkpoint_row = conn.execute(
+                    "SELECT payload_json FROM events "
+                    "WHERE type = 'surface.playback_checkpoint' ORDER BY id LIMIT 1",
+                ).fetchone()
+                if checkpoint_row is not None:
+                    break
+                time.sleep(0.005)
+            assert checkpoint_row is not None
+            payload = json.loads(str(checkpoint_row[0]))
+            assert payload["heard_through_sequence"] == 0
+            assert ("RCP", 1) in provider.sent
+            assert ("RCP", 0) in provider.provider_finals
+            assert ("RCP", 1) not in provider.provider_finals
+            assert checkpoint_attempts >= 2
+            second_gate.set()
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        second_gate.set()
+        assert pipeline.close()
+        conn.close()
+    checkpoint_conn = open_event_log(db_path)
+    try:
+        first_count = checkpoint_conn.execute(
+            "SELECT COUNT(*) FROM events WHERE type = 'surface.playback_checkpoint' "
+            "AND json_extract(payload_json, '$.heard_through_sequence') = 0",
+        ).fetchone()
+        assert first_count is not None
+        assert first_count[0] == 1
+    finally:
+        checkpoint_conn.close()
+
+
+def test_ordered_event_log_drain_handles_cross_source_reordering(tmp_path: Path) -> None:
+    """A later direct wake drains open/chunk/emitted once across unrelated rows."""
+    db_path = tmp_path / "ordered-drain.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    open_event = emit_event(
+        conn,
+        type="surface.response_open",
+        payload={
+            "turn_id": "TORDER",
+            "query": "q",
+            "kind": "text",
+            "response_id": "RORDER",
+            "response_group_id": "GORDER",
+        },
+    )
+    unrelated_one = emit_event(
+        conn,
+        type="surface.user_intent",
+        payload={"turn_id": "T-UNRELATED-1", "transcript": "unrelated"},
+    )
+    chunk_event = emit_event(
+        conn,
+        type="surface.response_chunk",
+        payload={
+            "turn_id": "TORDER",
+            "text": "ordered once",
+            "response_id": "RORDER",
+            "response_group_id": "GORDER",
+            "sequence": 0,
+        },
+    )
+    unrelated_two = emit_event(
+        conn,
+        type="surface.user_intent",
+        payload={"turn_id": "T-UNRELATED-2", "transcript": "unrelated"},
+    )
+    emitted_event = emit_event(
+        conn,
+        type="surface.response_emitted",
+        payload={
+            "turn_id": "TORDER",
+            "text": "ordered once",
+            "response_id": "RORDER",
+            "response_group_id": "GORDER",
+        },
+    )
+    event_ids = {
+        event.event_uid: int(
+            conn.execute(
+                "SELECT id FROM events WHERE event_uid = ?",
+                (event.event_uid,),
+            ).fetchone()[0],
+        )
+        for event in (
+            open_event,
+            unrelated_one,
+            chunk_event,
+            unrelated_two,
+            emitted_event,
+        )
+    }
+    try:
+        with _CallbackPump(player):
+            direct = asyncio.run(
+                pipeline.submit_event(
+                    row_id=event_ids[emitted_event.event_uid],
+                    event=emitted_event,
+                    origin="direct",
+                ),
+            )
+            assert direct.status == "accepted"
+            duplicate_open = asyncio.run(
+                pipeline.submit_event(
+                    row_id=event_ids[open_event.event_uid],
+                    event=open_event,
+                    origin="watcher",
+                ),
+            )
+            duplicate_chunk = asyncio.run(
+                pipeline.submit_event(
+                    row_id=event_ids[chunk_event.event_uid],
+                    event=chunk_event,
+                    origin="watcher",
+                ),
+            )
+            duplicate_emitted = asyncio.run(
+                pipeline.submit_event(
+                    row_id=event_ids[emitted_event.event_uid],
+                    event=emitted_event,
+                    origin="watcher",
+                ),
+            )
+            assert duplicate_open.status == "duplicate"
+            assert duplicate_chunk.status == "duplicate"
+            assert duplicate_emitted.status == "duplicate"
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    assert provider.opened.count(("RORDER", 0)) == 1
+    terminal_conn = open_event_log(db_path)
+    try:
+        assert len(_terminal_rows(terminal_conn)) == 1
+    finally:
+        terminal_conn.close()
+
+
+def test_structured_chunks_preserve_heard_prefix_on_mid_second_interrupt(
+    tmp_path: Path,
+) -> None:
+    """Voice/document parsing retains renderer sequence/hash across chunk tags."""
+    db_path = tmp_path / "structured-prefix.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    second_final = threading.Event()
+    provider.final_gates[("RSTRUCT", 1)] = second_final
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    try:
+        with _CallbackPump(player):
+            structured = _emit_response(
+                conn,
+                response_id="RSTRUCT",
+                group_id="GSTRUCT",
+                turn_id="TSTRUCT",
+                text=[
+                    "<voice>第一句。",
+                    "第二句。</voice><document>不可朗读。</document>",
+                ],
+            )
+            asyncio.run(_submit_response(pipeline, structured))
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                checkpoint = conn.execute(
+                    "SELECT 1 FROM events WHERE type = 'surface.playback_checkpoint' "
+                    "AND json_extract(payload_json, '$.response_id') = 'RSTRUCT' "
+                    "AND json_extract(payload_json, '$.heard_through_sequence') = 0",
+                ).fetchone()
+                if checkpoint is not None and ("RSTRUCT", 1) in provider.sent:
+                    break
+                time.sleep(0.005)
+            else:
+                pytest.fail("first structured segment never checkpointed")
+            superseding = _emit_response(
+                conn,
+                response_id="RSTRUCT-NEXT",
+                group_id="GSTRUCT-NEXT",
+                turn_id="TSTRUCT-NEXT",
+                text="new foreground",
+            )
+            asyncio.run(_submit_response(pipeline, superseding))
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        second_final.set()
+        assert pipeline.close()
+        conn.close()
+    terminal_conn = open_event_log(db_path)
+    try:
+        old_payload = next(
+            payload
+            for kind, payload in _terminal_rows(terminal_conn)
+            if kind == "surface.playback_interrupted" and payload["response_id"] == "RSTRUCT"
+        )
+    finally:
+        terminal_conn.close()
+    assert old_payload["heard_through_sequence"] == 0
+    assert old_payload["heard_text"] == "第一句。"
+    assert "第二句" not in str(old_payload["heard_text"])
+    assert "不可朗读" not in str(old_payload["heard_text"])
+
+
 def test_after_drain_same_group_and_foreground_supersede(tmp_path: Path) -> None:
     """Commentary/final queue in-group; a different foreground group interrupts."""
     db_path = tmp_path / "lane.db"
@@ -662,17 +1261,367 @@ def test_after_drain_same_group_and_foreground_supersede(tmp_path: Path) -> None
     assert terminal_kind["RS"] == "surface.playback_completed"
 
 
+def test_macos_say_process_ownership_timeout_and_terminal_payload(  # noqa: PLR0915
+    tmp_path: Path,
+) -> None:
+    """A timed-out say is killed before its queued successor starts."""
+    db_path = tmp_path / "macos-say.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=0)
+    player = _player()
+    config = replace(
+        _config(),
+        enable_macos_say_fallback=True,
+        response_timeout_s=0.05,
+    )
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=config,
+        start_player=False,
+    )
+    actions: list[str] = []
+    process_count = 0
+
+    async def _spawn(*_args: object, **_kwargs: object) -> _FakeSayProcess:
+        nonlocal process_count
+        process_count += 1
+        names = ("old", "next", "error", "after-error")
+        name = names[process_count - 1]
+        actions.append(f"spawn:{name}")
+        return _FakeSayProcess(
+            name,
+            actions,
+            complete_immediately=name in {"next", "after-error"},
+            wait_error_once=name == "error",
+        )
+
+    try:
+        with patch(
+            "jarvis.surface.voice_media.asyncio.create_subprocess_exec",
+            side_effect=_spawn,
+        ):
+            old = _emit_response(
+                conn,
+                response_id="RSAY-OLD",
+                group_id="GSAY",
+                turn_id="TSAY-OLD",
+                text="old say",
+            )
+            asyncio.run(_submit_response(pipeline, old))
+            successor = _emit_response(
+                conn,
+                response_id="RSAY-NEXT",
+                group_id="GSAY",
+                turn_id="TSAY-NEXT",
+                text="next say",
+            )
+            asyncio.run(_submit_response(pipeline, successor))
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+            error = _emit_response(
+                conn,
+                response_id="RSAY-ERROR",
+                group_id="GSAY-ERROR",
+                turn_id="TSAY-ERROR",
+                text="error say",
+            )
+            asyncio.run(_submit_response(pipeline, error))
+            after_error = _emit_response(
+                conn,
+                response_id="RSAY-AFTER-ERROR",
+                group_id="GSAY-ERROR",
+                turn_id="TSAY-AFTER-ERROR",
+                text="after error say",
+            )
+            asyncio.run(_submit_response(pipeline, after_error))
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    assert actions.index("kill:old") < actions.index("spawn:next")
+    assert "kill:error" in actions
+    assert actions.index("kill:error") < actions.index("spawn:after-error")
+    terminal_conn = open_event_log(db_path)
+    try:
+        terminals = {
+            str(payload["response_id"]): (kind, payload)
+            for kind, payload in _terminal_rows(terminal_conn)
+        }
+    finally:
+        terminal_conn.close()
+    old_kind, old_payload = terminals["RSAY-OLD"]
+    next_kind, next_payload = terminals["RSAY-NEXT"]
+    assert old_kind == "surface.playback_failed"
+    assert old_payload["heard_through_sequence"] is None
+    assert old_payload["provider"] == "macos_say"
+    assert next_kind == "surface.playback_completed"
+    assert next_payload["heard_through_sequence"] is None
+    assert next_payload["provider"] == "macos_say"
+    error_kind, error_payload = terminals["RSAY-ERROR"]
+    assert error_kind == "surface.playback_failed"
+    assert error_payload["heard_through_sequence"] is None
+    assert error_payload["provider"] == "macos_say"
+
+
+def test_macos_say_spawn_in_progress_cancellation_has_no_orphan(tmp_path: Path) -> None:
+    """Foreground supersede cancels an in-flight say spawn before replacement."""
+    db_path = tmp_path / "macos-say-spawn.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=0)
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), enable_macos_say_fallback=True),
+        start_player=False,
+    )
+    actions: list[str] = []
+    old_spawn_entered = threading.Event()
+    spawn_count = 0
+
+    async def _spawn(*_args: object, **_kwargs: object) -> _FakeSayProcess:
+        nonlocal spawn_count
+        spawn_count += 1
+        if spawn_count == 1:
+            actions.append("spawn-enter:old")
+            old_spawn_entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                actions.append("spawn-cancelled:old")
+                raise
+        actions.append("spawn:new")
+        return _FakeSayProcess("new", actions, complete_immediately=True)
+
+    try:
+        with patch(
+            "jarvis.surface.voice_media.asyncio.create_subprocess_exec",
+            side_effect=_spawn,
+        ):
+            old = _emit_response(
+                conn,
+                response_id="RSPAWN-OLD",
+                group_id="GSPAWN-OLD",
+                turn_id="TSPAWN-OLD",
+                text="old spawn",
+            )
+            asyncio.run(_submit_response(pipeline, old))
+            assert old_spawn_entered.wait(timeout=1.0)
+            new = _emit_response(
+                conn,
+                response_id="RSPAWN-NEW",
+                group_id="GSPAWN-NEW",
+                turn_id="TSPAWN-NEW",
+                text="new spawn",
+            )
+            asyncio.run(_submit_response(pipeline, new))
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    assert actions.index("spawn-cancelled:old") < actions.index("spawn:new")
+    terminal_conn = open_event_log(db_path)
+    try:
+        old_payload = next(
+            payload
+            for kind, payload in _terminal_rows(terminal_conn)
+            if kind == "surface.playback_interrupted"
+            and payload["response_id"] == "RSPAWN-OLD"
+        )
+    finally:
+        terminal_conn.close()
+    assert old_payload["heard_through_sequence"] is None
+    assert old_payload["provider"] == "macos_say"
+
+
+def test_media_owner_startup_failures_and_bounded_shutdown(tmp_path: Path) -> None:  # noqa: PLR0915
+    """Startup, full-queue, provider-stop, and device-stop failures stay bounded."""
+    db_path = tmp_path / "owner-bounds.db"
+    baseline = len(_live_media_owner_threads())
+    with pytest.raises(RuntimeError, match="failed to start"):
+        voice_media.StreamingTTSPipeline(
+            provider=_FakeProvider(candidate_count=1),
+            player=_player(),
+            conn_factory=lambda: (_ for _ in ()).throw(OSError("conn failed")),
+            boot_high_water_id=0,
+            config=replace(_config(), shutdown_timeout_s=0.2),
+        )
+    assert len(_live_media_owner_threads()) == baseline
+
+    player_start_failure = _player()
+    with (
+        patch.object(player_start_failure, "start", side_effect=OSError("device failed")),
+        pytest.raises(RuntimeError, match="failed to start"),
+    ):
+        voice_media.StreamingTTSPipeline(
+            provider=_FakeProvider(candidate_count=1),
+            player=player_start_failure,
+            conn_factory=lambda: open_event_log(db_path),
+            boot_high_water_id=0,
+            config=replace(_config(), shutdown_timeout_s=0.2),
+        )
+    assert len(_live_media_owner_threads()) == baseline
+
+    queue_conn = open_event_log(db_path)
+    queue_rows = _emit_response(
+        queue_conn,
+        response_id="RQUEUE",
+        group_id="GQUEUE",
+        turn_id="TQUEUE",
+        text="queue",
+    )
+    queue_pipeline = voice_media.StreamingTTSPipeline(
+        provider=_FakeProvider(candidate_count=1),
+        player=_player(),
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(
+            _config(),
+            command_queue_capacity=1,
+            shutdown_timeout_s=0.2,
+        ),
+        start_player=False,
+    )
+    command_entered = threading.Event()
+    command_release = threading.Event()
+    original_handle = queue_pipeline._handle_command  # noqa: SLF001
+
+    async def _blocked_handle(
+        command: voice_media._MediaCommand,
+    ) -> voice_media.MediaSubmitOutcome:
+        command_entered.set()
+        while not command_release.is_set():  # noqa: ASYNC110
+            await asyncio.sleep(0.001)
+        return await original_handle(command)
+
+    submitters: list[threading.Thread] = []
+    with patch.object(queue_pipeline, "_handle_command", side_effect=_blocked_handle):
+        for row_id, event in queue_rows[:2]:
+            submitter = threading.Thread(
+                target=asyncio.run,
+                args=(queue_pipeline.submit_event(row_id=row_id, event=event),),
+            )
+            submitter.start()
+            submitters.append(submitter)
+            if len(submitters) == 1:
+                assert command_entered.wait(timeout=1.0)
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            queue = queue_pipeline._queue  # noqa: SLF001
+            if queue is not None and queue.full():
+                break
+            time.sleep(0.001)
+        else:
+            pytest.fail("normal command queue never reached capacity")
+        queue_pipeline.request_close()
+        command_release.set()
+        started = time.monotonic()
+        assert queue_pipeline.close(wait_timeout_s=0.2)
+        assert time.monotonic() - started < 0.2
+    for submitter in submitters:
+        submitter.join(timeout=1.0)
+        assert not submitter.is_alive()
+    queue_conn.close()
+
+    provider_gate = threading.Event()
+    stuck_provider = _FakeProvider(candidate_count=1)
+
+    def _stuck_provider_close() -> None:
+        provider_gate.wait()
+
+    stuck_provider.request_close = _stuck_provider_close  # type: ignore[method-assign]
+    provider_pipeline = voice_media.StreamingTTSPipeline(
+        provider=stuck_provider,
+        player=_player(),
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), shutdown_timeout_s=0.12),
+        start_player=False,
+    )
+    started = time.monotonic()
+    assert provider_pipeline.close(wait_timeout_s=0.12)
+    assert time.monotonic() - started < 0.16
+    provider_gate.set()
+
+    player_gate = threading.Event()
+    stuck_player = _player()
+    player_pipeline = voice_media.StreamingTTSPipeline(
+        provider=_FakeProvider(candidate_count=1),
+        player=stuck_player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), shutdown_timeout_s=0.12),
+        start_player=False,
+    )
+    with patch.object(stuck_player, "stop", side_effect=player_gate.wait):
+        started = time.monotonic()
+        assert player_pipeline.close(wait_timeout_s=0.12)
+        assert time.monotonic() - started < 0.16
+    player_gate.set()
+    assert len(_live_media_owner_threads()) == baseline
+
+
 class _FakeOutputStream:
-    active = True
+    def __init__(self, *, start_error: BaseException | None = None) -> None:
+        self.active = True
+        self._start_error = start_error
 
     def start(self) -> None:
-        return
+        if self._start_error is not None:
+            raise self._start_error
 
     def stop(self) -> None:
         self.active = False
 
     def close(self) -> None:
         self.active = False
+
+
+class _FakeSayProcess:
+    def __init__(
+        self,
+        name: str,
+        actions: list[str],
+        *,
+        complete_immediately: bool,
+        wait_error_once: bool = False,
+    ) -> None:
+        self.name = name
+        self.actions = actions
+        self.returncode: int | None = 0 if complete_immediately else None
+        self._wait_error_once = wait_error_once
+        self._done = asyncio.Event()
+        if complete_immediately:
+            self._done.set()
+
+    async def wait(self) -> int:
+        if self._wait_error_once:
+            self._wait_error_once = False
+            msg = f"injected wait failure: {self.name}"
+            raise OSError(msg)
+        await self._done.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.actions.append(f"terminate:{self.name}")
+
+    def kill(self) -> None:
+        self.actions.append(f"kill:{self.name}")
+        self.returncode = -9
+        self._done.set()
+
+
+def _live_media_owner_threads() -> list[threading.Thread]:
+    return [
+        thread
+        for thread in threading.enumerate()
+        if thread.name == "jarvis-media-owner" and thread.is_alive()
+    ]
 
 
 class _FakeWebSocket:
@@ -876,4 +1825,47 @@ def test_streaming_rollout_default_off_and_production_builder_gate(
         )
         assert isinstance(invalid_config_fallback, voice_tts.TTSPipeline)
         assert invalid_config_fallback.close()
+    runtime.config = {
+        "realtime": {
+            "enabled": True,
+            "streaming_output": {"enabled": True},
+        },
+    }
+    startup_error = OSError("injected PortAudio start failure")
+    failed_stream = _FakeOutputStream(start_error=startup_error)
+    legacy_stream = _FakeOutputStream()
+    with patch.object(
+        voice_tts,
+        "_open_output_stream",
+        side_effect=[
+            failed_stream,
+            legacy_stream,
+        ],
+    ):
+        startup_fallback = inherent_loop._build_tts_pipeline(  # noqa: SLF001
+            cast("Any", runtime),
+            cast("Any", SimpleNamespace()),
+        )
+        assert isinstance(startup_fallback, voice_tts.TTSPipeline)
+        assert startup_fallback.close()
+    assert not failed_stream.active
+    assert not legacy_stream.active
+    first_failure = _FakeOutputStream(start_error=startup_error)
+    second_failure = _FakeOutputStream(start_error=startup_error)
+    with patch.object(
+        voice_tts,
+        "_open_output_stream",
+        side_effect=[
+            first_failure,
+            second_failure,
+        ],
+    ):
+        text_only = inherent_loop._build_tts_pipeline(  # noqa: SLF001
+            cast("Any", runtime),
+            cast("Any", SimpleNamespace()),
+        )
+        assert text_only is None
+    assert not first_failure.active
+    assert not second_failure.active
+    assert not _live_media_owner_threads()
     conn.close()

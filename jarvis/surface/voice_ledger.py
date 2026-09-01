@@ -198,6 +198,16 @@ class PlaybackLedger:
             return
         chunk.output_end_cursor = self._accepted_cursor
         chunk.closed = True
+        # The callback may have crossed the conservative presentation horizon
+        # while provider I/O still owned this segment. Preserve that already
+        # observed quality when the semantic boundary becomes known; otherwise
+        # a fully presented segment would remain ``unknown`` forever merely
+        # because SegmentFinished arrived after its last callback report.
+        if (
+            self._cursor_quality_observed
+            and chunk.output_end_cursor <= self._estimated_audible_cursor
+        ):
+            chunk.cursor_quality = self._cursor_quality
 
     def record_submitted(
         self,

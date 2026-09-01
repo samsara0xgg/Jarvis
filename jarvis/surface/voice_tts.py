@@ -467,9 +467,8 @@ class _GainRamp:
         """Return whether the whole next block is guaranteed unity gain."""
         return self._current == 1.0 and self._target == 1.0 and self._remaining == 0
 
-    @property
-    def audibility_class(self) -> AudibilityClass:
-        """Classify the next post-gain block without advancing the ramp."""
+    def _next_audibility_class(self) -> AudibilityClass:
+        """Classify the next post-gain block before advancing the ramp."""
         if self.is_normal:
             return "normal"
         if self._current == 0.0 and self._target == 0.0 and self._remaining == 0:
@@ -482,12 +481,14 @@ class _GainRamp:
         if self._remaining == 0:
             self._current = self._target
 
-    def apply(self, pcm_block: np.ndarray) -> None:
+    def apply(self, pcm_block: np.ndarray) -> AudibilityClass:
+        """Apply the owned ramp and return the block's conservative class."""
+        audibility_class = self._next_audibility_class()
         n = len(pcm_block)
         if self._remaining == 0:
             if self._current != 1.0:
                 pcm_block *= self._current
-            return
+            return audibility_class
 
         step = min(n, self._remaining)
         frac_end = step / self._remaining
@@ -510,6 +511,7 @@ class _GainRamp:
         self._remaining -= step
         if self._remaining == 0:
             self._current = self._target
+        return audibility_class
 
 
 def _open_output_stream(  # noqa: PLR0913 — passthrough to sd.OutputStream
@@ -565,7 +567,7 @@ class AudioStreamPlayer:
     _RECENT_TOMBSTONE_LIMIT = 4096
     _PENDING_AUDIBLE_LIMIT = 8192
 
-    def __init__(  # noqa: PLR0913 — keyword-only audio + lifecycle config
+    def __init__(  # noqa: PLR0913, PLR0915 — explicit audio/lifecycle state
         self,
         *,
         sample_rate_hz: int = 48000,
@@ -590,6 +592,11 @@ class AudioStreamPlayer:
         self._ring = _RingBuffer(ring_samples)
         self._generation_ring = _GenerationRingBuffer(ring_samples) if generation_safe else None
         self._gain = _GainRamp(max_block_size=callback_max_frames)
+        # External threads publish immutable latest-wins commands.  Only the
+        # PortAudio callback mutates/advances `_GainRamp`, closing the old
+        # classify-before-apply race without putting a lock on the hot path.
+        self._gain_command: tuple[float, int] = (1.0, 0)
+        self._gain_consumed_command = self._gain_command
         self._blocksize = int(blocksize)
         self._latency = latency
         self._device = device
@@ -627,6 +634,7 @@ class AudioStreamPlayer:
             int(estimated_output_latency_s * 1_000_000_000),
         )
         self._callback_first_generation = -1
+        self._callback_commit_generation = -1
         self._callback_report_drop_seen = 0
         self._presentation_horizon_coalesced = 0
         self._presentation_horizon_coalesced_seen = 0
@@ -642,7 +650,7 @@ class AudioStreamPlayer:
         """Open the PortAudio OutputStream if not already running."""
         if self._stream is not None:
             return
-        self._stream = _open_output_stream(
+        stream = _open_output_stream(
             sample_rate_hz=self._sample_rate_hz,
             channels=self._channels,
             blocksize=self._blocksize,
@@ -650,7 +658,13 @@ class AudioStreamPlayer:
             device=self._device,
             callback=self._callback,
         )
-        self._stream.start()
+        try:
+            stream.start()
+        except BaseException:
+            with contextlib.suppress(Exception):
+                stream.close()
+            raise
+        self._stream = stream
         LOGGER.info(
             "AudioStreamPlayer started: %dHz ch=%d blocksize=%s latency=%s",
             self._sample_rate_hz,
@@ -898,10 +912,11 @@ class AudioStreamPlayer:
         lease = self._active_lease
         if lease is None or lease.playback_generation_id != expected_playback_generation_id:
             return self._stale(expected_playback_generation_id)
-        # Tombstone is the first publication.  A callback which already read
-        # the old value performs a second validation immediately before host
-        # return; anything already returned is submitted-host tail and remains
-        # accounted conservatively.
+        # Consume reports which linearized before this call, then publish the
+        # tombstone. A callback already inside its final publication window is
+        # exposed through `_callback_commit_generation`; the actor settles it
+        # asynchronously before freezing/terminalizing this ledger.
+        self.poll_presentation()
         self._remember_tombstone(expected_playback_generation_id)
         self._active_lease = None
         with self._write_lock:
@@ -910,6 +925,29 @@ class AudioStreamPlayer:
         ledger = self._ledgers[expected_playback_generation_id]
         ledger.mark_software_drained()
         self._drained.set()
+        self.poll_presentation()
+        return ledger.snapshot()
+
+    def settle_interrupted_generation(
+        self,
+        *,
+        expected_playback_generation_id: int,
+    ) -> OutputTimelineSnapshot | StalePlaybackGeneration | None:
+        """Freeze a tombstoned ledger after every pre-CAS callback resolves.
+
+        ``None`` is a bounded-poll signal: one callback which entered its
+        publication window before the CAS still owns the decision whether its
+        block reached the host. The async media actor yields and retries; the
+        callback itself never waits.
+        """
+        if expected_playback_generation_id not in self._tombstoned_generations:
+            return self._stale(expected_playback_generation_id)
+        if self._callback_commit_generation == expected_playback_generation_id:
+            return None
+        self.poll_presentation()
+        ledger = self._ledgers.get(expected_playback_generation_id)
+        if ledger is None:
+            return self._stale(expected_playback_generation_id)
         return ledger.freeze()
 
     def complete_generation(
@@ -936,6 +974,9 @@ class AudioStreamPlayer:
         lease = self._active_lease
         if lease is not None and lease.playback_generation_id == playback_generation_id:
             msg = "cannot retire the active playback generation"
+            raise RuntimeError(msg)
+        if self._callback_commit_generation == playback_generation_id:
+            msg = "cannot retire a generation with an in-flight callback publication"
             raise RuntimeError(msg)
         self._ledgers.pop(playback_generation_id, None)
         self._pending_audible = [
@@ -1102,9 +1143,9 @@ class AudioStreamPlayer:
     # ------------------------------------------------------------------
 
     def set_gain(self, target: float, ramp_ms: float = 30.0) -> None:
-        """Smoothly ramp current gain to ``target`` over ``ramp_ms``."""
+        """Publish a latest-wins ramp command for callback-thread consumption."""
         ramp_samples = int(self._sample_rate_hz * ramp_ms / 1000.0)
-        self._gain.set_target(target, ramp_samples)
+        self._gain_command = (float(target), max(0, ramp_samples))
 
     def duck(self, target_gain: float = 0.3, ramp_ms: int = 30) -> None:
         """Ramp gain down to ``target_gain`` over ``ramp_ms`` (user-speech ducking)."""
@@ -1165,7 +1206,7 @@ class AudioStreamPlayer:
     # Callback — runs on PortAudio thread, keep it tight
     # ------------------------------------------------------------------
 
-    def _callback(  # noqa: C901 - realtime callback keeps all checks inline
+    def _callback(  # noqa: C901, PLR0912, PLR0915 - realtime path stays inline
         self,
         outdata: np.ndarray,
         frames: int,
@@ -1195,6 +1236,10 @@ class AudioStreamPlayer:
             if actual > 0 and not self._first_chunk_fired:
                 self._first_chunk_fired = True
                 self._legacy_first_chunk_pending = True
+            gain_command = self._gain_command
+            if gain_command is not self._gain_consumed_command:
+                self._gain.set_target(*gain_command)
+                self._gain_consumed_command = gain_command
             self._gain.apply(view)
             return
 
@@ -1232,31 +1277,38 @@ class AudioStreamPlayer:
         if not bool(np.all(valid)):
             view[:actual] = 0.0
             return
-        audibility_class = self._gain.audibility_class
-        self._gain.apply(view)
+        gain_command = self._gain_command
+        if gain_command is not self._gain_consumed_command:
+            self._gain.set_target(*gain_command)
+            self._gain_consumed_command = gain_command
+        audibility_class = self._gain.apply(view)
 
         # Revalidate immediately before returning the block to PortAudio.  A
         # CAS tombstone that landed during the numpy copies kills the entire
         # block; a block already returned before CAS is submitted-host tail.
-        active_final = self._active_lease
-        if active_final is None or active_final.playback_generation_id != generation:
-            view[:actual] = 0.0
-            return
-        start_cursor = int(self._callback_cursors[0])
-        end_cursor = int(self._callback_cursors[actual - 1]) + 1
-        first = self._callback_first_generation != generation
-        if first:
-            self._callback_first_generation = generation
-        self._played_samples += actual
-        self._callback_reports.write(
-            generation=generation,
-            output_start_cursor=start_cursor,
-            output_end_cursor=end_cursor,
-            audibility_class=audibility_class,
-            callback_monotonic_ns=time.monotonic_ns(),
-            presentation_delay_ns=self._estimated_output_latency_ns,
-            first_for_generation=first,
-        )
+        self._callback_commit_generation = generation
+        try:
+            active_final = self._active_lease
+            if active_final is None or active_final.playback_generation_id != generation:
+                view[:actual] = 0.0
+                return
+            start_cursor = int(self._callback_cursors[0])
+            end_cursor = int(self._callback_cursors[actual - 1]) + 1
+            first = self._callback_first_generation != generation
+            if first:
+                self._callback_first_generation = generation
+            self._played_samples += actual
+            self._callback_reports.write(
+                generation=generation,
+                output_start_cursor=start_cursor,
+                output_end_cursor=end_cursor,
+                audibility_class=audibility_class,
+                callback_monotonic_ns=time.monotonic_ns(),
+                presentation_delay_ns=self._estimated_output_latency_ns,
+                first_for_generation=first,
+            )
+        finally:
+            self._callback_commit_generation = -1
 
 
 # --- MiniMax T2A WebSocket client (ported from legacy core/tts_minimax_ws.py) ---

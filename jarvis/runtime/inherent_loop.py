@@ -820,40 +820,50 @@ def _build_tts_pipeline(
             lazy_open=True,
             generation_safe=True,
         )
-        return voice_media.StreamingTTSPipeline(
-            provider=provider,
-            player=player,
-            conn_factory=lambda: open_event_log(runtime.runtime_paths.event_log),
-            boot_high_water_id=_latest_id(runtime.conn),
-            config=media_config,
-            broadcaster=broadcaster,
-            ducker=ducker,
-        )
-    if streaming_requested and media_config is not None:
+        try:
+            return voice_media.StreamingTTSPipeline(
+                provider=provider,
+                player=player,
+                conn_factory=lambda: open_event_log(runtime.runtime_paths.event_log),
+                boot_high_water_id=_latest_id(runtime.conn),
+                config=media_config,
+                broadcaster=broadcaster,
+                ducker=ducker,
+            )
+        except Exception as exc:  # noqa: BLE001 - rollout must fail safe
+            LOGGER.warning(
+                "realtime.streaming_output startup failed (%r); downgraded to legacy TTS.",
+                exc,
+            )
+    if streaming_requested and media_config is not None and not streaming_capable:
         LOGGER.warning(
-            "realtime.streaming_output requested without transactional_event_append "
-            "and lifecycle_terminal_cas capabilities; downgraded to legacy TTS.",
+            "realtime.streaming_output capability/config validation failed; "
+            "downgraded to legacy TTS.",
         )
     # lazy_open=False so the PortAudio OutputStream is up before the first
     # MiniMax chunk lands; otherwise `write()` would fill the ring and
     # never drain, leaving `is_speaking()` permanently True and starving
     # the wake listener.
-    player = voice_tts.AudioStreamPlayer(
-        sample_rate_hz=_DEFAULT_TTS_SAMPLE_RATE_HZ,
-        # 30 s of headroom so the full-buffer write() of a long response
-        # (typical 5-30 s of f32 PCM at 48 kHz) lands in one shot — the
-        # 2 s default forces write() to block on the drain and hit its
-        # 10 s timeout, dropping the tail of any response > ~10 s.
-        ring_seconds=30.0,
-        lazy_open=False,
-    )
-    return voice_tts.TTSPipeline(
-        provider=provider,
-        player=player,
-        fallback=voice_tts.macos_say_fallback,
-        broadcaster=broadcaster,
-        ducker=ducker,
-    )
+    try:
+        player = voice_tts.AudioStreamPlayer(
+            sample_rate_hz=_DEFAULT_TTS_SAMPLE_RATE_HZ,
+            # 30 s of headroom so the full-buffer write() of a long response
+            # (typical 5-30 s of f32 PCM at 48 kHz) lands in one shot — the
+            # 2 s default forces write() to block on the drain and hit its
+            # 10 s timeout, dropping the tail of any response > ~10 s.
+            ring_seconds=30.0,
+            lazy_open=False,
+        )
+        return voice_tts.TTSPipeline(
+            provider=provider,
+            player=player,
+            fallback=voice_tts.macos_say_fallback,
+            broadcaster=broadcaster,
+            ducker=ducker,
+        )
+    except Exception as exc:  # noqa: BLE001 - final voice degradation boundary
+        LOGGER.warning("legacy TTS startup failed (%r); downgraded to text-only.", exc)
+        return None
 
 
 def _build_voice_pipeline_callable(
