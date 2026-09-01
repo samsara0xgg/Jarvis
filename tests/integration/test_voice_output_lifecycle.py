@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 from jarvis.runtime import inherent_loop
@@ -17,12 +18,14 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.surface import voice_ducking, voice_tts
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 
 def _mock_player() -> MagicMock:
     player = MagicMock(spec=voice_tts.AudioStreamPlayer)
     player.bytes_pending.return_value = 0
+    player.write.return_value = 240
     return player
 
 
@@ -177,6 +180,133 @@ def test_close_rejects_late_provider_pcm_and_fallback(late_outcome: str) -> None
     assert not pipeline.is_output_active()
     assert ducker.enter_output(timeout_s=0.0)
     ducker.leave_output()
+
+
+def test_close_invalidates_pcm_at_atomic_ring_publish() -> None:
+    """A writer paused before the atomic gate cannot publish after close."""
+    reset_realtime_trace()
+    publish_attempted = threading.Event()
+    release_publish = threading.Event()
+
+    async def _synthesize(_text: str) -> bytes:
+        await asyncio.sleep(0)
+        return np.ones(24, dtype=np.float32).tobytes()
+
+    provider = MagicMock(spec=voice_tts.MiniMaxWSClient)
+    provider.synthesize.side_effect = _synthesize
+    player = voice_tts.AudioStreamPlayer(
+        sample_rate_hz=100,
+        ring_seconds=1.0,
+        lazy_open=True,
+    )
+    pipeline = voice_tts.TTSPipeline(
+        provider=provider,
+        player=player,
+        fallback=None,
+        ducker=voice_ducking.SystemAudioDucker(enabled=False),
+    )
+    gate = pipeline._pcm_commit_gate  # noqa: SLF001 — integration seam.
+    real_publish = gate.publish
+
+    def _pause_immediately_before_atomic_publish(
+        generation: int,
+        publish: Callable[[], int],
+    ) -> int | None:
+        publish_attempted.set()
+        assert release_publish.wait(timeout=2.0)
+        return real_publish(generation, publish)
+
+    with patch.object(
+        gate,
+        "publish",
+        side_effect=_pause_immediately_before_atomic_publish,
+    ):
+        pipeline.begin_turn("T-pcm-publish-barrier", gate_mode="sentence")
+        pipeline.handle_chunk(
+            "T-pcm-publish-barrier",
+            "<voice>关闭后不得发布</voice>",
+        )
+        assert publish_attempted.wait(timeout=1.0)
+
+        started_at = time.monotonic()
+        pipeline.request_close()
+        assert time.monotonic() - started_at < 0.25
+        assert player.bytes_pending() == 0
+        release_publish.set()
+
+    assert pipeline.close(wait_timeout_s=1.0)
+    callback_buffer = np.zeros((24, 1), dtype=np.float32)
+    player._callback(  # noqa: SLF001 — deterministic PortAudio consumer seam.
+        callback_buffer,
+        24,
+        None,
+        None,
+    )
+    assert player.bytes_pending() == 0
+    assert player.played_samples == 0
+    assert not pipeline._worker_thread.is_alive()  # noqa: SLF001 — leak proof.
+    assert not pipeline.is_output_active()
+    assert any(
+        point.name == "tts_late_pcm_discarded"
+        and point.attributes.get("reason")
+        == "generation_invalidated_before_ring_publish"
+        for point in realtime_trace_snapshot()
+    )
+
+
+def test_tts_batch_work_queue_is_bounded_and_traces_overflow() -> None:
+    """Batch overload drops with telemetry; it never becomes an unbounded queue."""
+    reset_realtime_trace()
+    provider_entered = threading.Event()
+    release_provider = threading.Event()
+
+    async def _blocked_synthesize(_text: str) -> bytes:
+        provider_entered.set()
+        assert release_provider.wait(timeout=2.0)
+        await asyncio.sleep(0)
+        return b""
+
+    provider = MagicMock(spec=voice_tts.MiniMaxWSClient)
+    provider.synthesize.side_effect = _blocked_synthesize
+    player = _mock_player()
+    pipeline = voice_tts.TTSPipeline(
+        provider=provider,
+        player=player,
+        fallback=None,
+        ducker=voice_ducking.SystemAudioDucker(enabled=False),
+    )
+    pipeline.begin_turn("T-bounded-batch", gate_mode="sentence")
+    pipeline.handle_chunk("T-bounded-batch", "<voice>占住 worker</voice>")
+    assert provider_entered.wait(timeout=1.0)
+
+    for sequence in range(pipeline._MAX_PENDING_WORK_ITEMS + 8):  # noqa: SLF001
+        pipeline.handle_chunk(
+            "T-bounded-batch",
+            f"<voice>queued-{sequence}</voice>",
+        )
+
+    overflows = [
+        point
+        for point in realtime_trace_snapshot()
+        if point.name == "tts_work_queue_overflow"
+    ]
+    assert overflows
+    assert all(
+        point.attributes["overflow_policy"]
+        == "drop_and_trace_not_stream_backpressure"
+        for point in overflows
+    )
+    assert pipeline._work_queue.qsize() <= pipeline._MAX_PENDING_WORK_ITEMS  # noqa: SLF001
+
+    pipeline.request_close()
+    assert (
+        pipeline._work_queue.qsize()  # noqa: SLF001 — includes reserved sentinel.
+        <= pipeline._MAX_PENDING_WORK_ITEMS + 1  # noqa: SLF001
+    )
+    release_provider.set()
+    assert pipeline.close(wait_timeout_s=1.0)
+    assert not pipeline._worker_thread.is_alive()  # noqa: SLF001 — leak proof.
+    assert not pipeline.is_output_active()
 
 
 def test_close_wins_after_fallback_registration_before_process_start() -> None:

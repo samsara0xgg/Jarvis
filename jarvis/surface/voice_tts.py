@@ -205,6 +205,40 @@ class _RingBuffer:
         self._read_idx = 0
 
 
+class _PCMCommitGate:
+    """Linearize close-generation invalidation with ring-index publication.
+
+    The gate is held only for one non-blocking ring write, never for the
+    player's ring-full wait loop. The PortAudio consumer never takes this
+    lock: it observes either the old ``_write_idx`` or the fully-published new
+    value, while close waits only for the short producer publication.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._generation = 0
+        self._closed = False
+
+    def invalidate(self) -> int:
+        """Close the current generation and return the new generation."""
+        with self._lock:
+            self._closed = True
+            self._generation += 1
+            return self._generation
+
+    def publish(self, generation: int, publish: Callable[[], int]) -> int | None:
+        """Run one ring publish iff current; ``None`` means invalidated."""
+        with self._lock:
+            if self._closed or generation != self._generation:
+                return None
+            return publish()
+
+    def is_current(self, generation: int) -> bool:
+        """Return whether ``generation`` may still publish."""
+        with self._lock:
+            return not self._closed and generation == self._generation
+
+
 class _GainRamp:
     """Linear gain ramp applied inside the PortAudio callback.
 
@@ -410,14 +444,16 @@ class AudioStreamPlayer:
     # Write API
     # ------------------------------------------------------------------
 
-    def write(
+    def write(  # noqa: C901, PLR0913 — bounded wait plus atomic commit seam
         self,
         pcm: bytes,
         *,
         wait_if_full: bool = True,
         timeout_s: float = 10.0,
         cancel_event: threading.Event | None = None,
-    ) -> None:
+        commit_gate: _PCMCommitGate | None = None,
+        generation: int = 0,
+    ) -> int:
         """Feed mono float32 PCM ``bytes`` into the ring.
 
         Does NOT open the OutputStream — callers must :meth:`start` once
@@ -426,44 +462,65 @@ class AudioStreamPlayer:
         even when the stream is closed; this is what lets unit tests
         exercise the bytes / gain API without touching PortAudio.
 
-        Blocks until every byte is committed to the ring, unless
+        Returns the number of float32 samples accepted. Blocks until every
+        byte is committed to the ring, unless
         ``wait_if_full=False`` or ``timeout_s`` elapses. Clears any stale
         abort signal at entry; re-checks it on each ring-full retry so a
         mid-write abort exits promptly.
         """
+        samples = np.frombuffer(pcm, dtype=np.float32)
+        # Initialization shares the publication lock with flush. A close that
+        # sets ``cancel_event`` before taking this lock cannot have its abort
+        # signal cleared by a writer that resumes after close.
         with self._write_lock:
             if cancel_event is not None and cancel_event.is_set():
-                return
-            samples = np.frombuffer(pcm, dtype=np.float32)
+                return 0
             self._drained.clear()
             self._abort.clear()
-            deadline = time.monotonic() + timeout_s
-            offset = 0
-            while offset < len(samples):
-                if self._abort.is_set() or (
-                    cancel_event is not None and cancel_event.is_set()
-                ):
-                    return
-                written = self._ring.write(samples[offset:])
-                if written > 0 and not self._trace_first_ring_accept_fired:
-                    self._trace_first_ring_accept_fired = True
-                    record_realtime_trace(
-                        "tts_first_pcm_accepted_to_ring",
-                        measurement_semantics=(
-                            "first_float32_samples_committed_to_software_ring"
-                        ),
-                        **self._trace_attributes,
-                    )
-                offset += written
-                if offset >= len(samples):
-                    break
-                if not wait_if_full:
-                    LOGGER.warning("ring full, dropping %d samples", len(samples) - offset)
-                    return
-                if time.monotonic() > deadline:
-                    LOGGER.warning("write timeout, dropping %d samples", len(samples) - offset)
-                    return
-                time.sleep(0.01)
+        deadline = time.monotonic() + timeout_s
+        offset = 0
+        while offset < len(samples):
+            if self._abort.is_set() or (
+                cancel_event is not None and cancel_event.is_set()
+            ):
+                return offset
+
+            def _publish(start: int = offset) -> int:
+                with self._write_lock:
+                    if self._abort.is_set() or (
+                        cancel_event is not None and cancel_event.is_set()
+                    ):
+                        return 0
+                    return self._ring.write(samples[start:])
+
+            published = (
+                commit_gate.publish(generation, _publish)
+                if commit_gate is not None
+                else _publish()
+            )
+            if published is None:
+                return offset
+            written = published
+            if written > 0 and not self._trace_first_ring_accept_fired:
+                self._trace_first_ring_accept_fired = True
+                record_realtime_trace(
+                    "tts_first_pcm_accepted_to_ring",
+                    measurement_semantics=(
+                        "first_float32_samples_committed_to_software_ring"
+                    ),
+                    **self._trace_attributes,
+                )
+            offset += written
+            if offset >= len(samples):
+                break
+            if not wait_if_full:
+                LOGGER.warning("ring full, dropping %d samples", len(samples) - offset)
+                return offset
+            if time.monotonic() > deadline:
+                LOGGER.warning("write timeout, dropping %d samples", len(samples) - offset)
+                return offset
+            time.sleep(0.01)
+        return offset
 
     def bytes_pending(self) -> int:
         """Queued bytes not yet read by the PortAudio callback."""
@@ -1076,6 +1133,7 @@ class TTSPipeline:
     _CLOSE_WAIT_S = 2.5
     _OWNER_CANCEL_WAIT_S = 0.5
     _PROVIDER_TOTAL_TIMEOUT_S = 35.0
+    _MAX_PENDING_WORK_ITEMS = 32
 
     def __init__(
         self,
@@ -1114,6 +1172,7 @@ class TTSPipeline:
         self._buffer: list[str] = []
         self._state = threading.Condition(threading.Lock())
         self._commit_lock = threading.Lock()
+        self._pcm_commit_gate = _PCMCommitGate()
         self._close_requested = threading.Event()
         self._closed = False
         self._generation = 0
@@ -1122,7 +1181,13 @@ class TTSPipeline:
         self._fallback_owner: FallbackOwner | None = None
         self._provider_loop: asyncio.AbstractEventLoop | None = None
         self._provider_task: asyncio.Task[bytes] | None = None
-        self._work_queue: queue.Queue[_TTSWorkItem | None] = queue.Queue()
+        # One reserved slot guarantees close can enqueue its sentinel. This
+        # batch queue intentionally drops-and-traces overload; a future
+        # streaming producer must define backpressure/coalescing rather than
+        # reusing it as an unbounded chunk queue.
+        self._work_queue: queue.Queue[_TTSWorkItem | None] = queue.Queue(
+            maxsize=self._MAX_PENDING_WORK_ITEMS + 1,
+        )
         self._worker_stop_sent = False
         self._worker_thread = threading.Thread(
             target=self._worker_main,
@@ -1219,26 +1284,28 @@ class TTSPipeline:
     ) -> None:
         """Install the close gate and cancel captured side-effect owners.
 
-        ``_commit_lock`` is the linearization point shared with provider PCM
-        commits and fallback registration. Once this method returns, no new
-        fallback can register or start. A registered ``say`` owner has either
-        been prevented from spawning or terminate/kill has been attempted
-        within ``owner_cancel_timeout_s``.
+        ``_commit_lock`` linearizes provider/fallback ownership. The separate
+        ``_pcm_commit_gate`` linearizes generation invalidation with each
+        non-blocking ring-index publication. Once this method returns, no new
+        fallback can start and no stale PCM can publish. A registered ``say``
+        owner has either been prevented from spawning or terminate/kill has
+        been attempted within ``owner_cancel_timeout_s``.
         """
         fallback_owner: FallbackOwner | None
         provider_loop: asyncio.AbstractEventLoop | None
         provider_task: asyncio.Task[bytes] | None
         with self._commit_lock:
-            self._close_requested.set()
-            with self._state:
-                if not self._closed:
+            if not self._close_requested.is_set():
+                self._close_requested.set()
+                invalidated_generation = self._pcm_commit_gate.invalidate()
+                with self._state:
                     self._closed = True
-                    self._generation += 1
+                    self._generation = invalidated_generation
                     self._turn_id = None
                     self._buffer.clear()
                     if not self._worker_stop_sent:
                         self._worker_stop_sent = True
-                        self._work_queue.put(None)
+                        self._work_queue.put_nowait(None)
                     self._state.notify_all()
                     record_realtime_trace(
                         "tts_pipeline_close_requested",
@@ -1268,9 +1335,9 @@ class TTSPipeline:
                 success=cancelled,
             )
 
-        # A write already in progress observes _close_requested; flush also
-        # wakes drain/write loops. A late provider return fails the generation
-        # CAS before player.write or fallback registration.
+        # Lock order is commit -> PCM gate, then (after both are released)
+        # player write lock. The callback remains lock-free. Flush wakes
+        # drain/full-ring waits after close has invalidated every publication.
         self._player.flush()
 
     def close(self, *, wait_timeout_s: float = _CLOSE_WAIT_S) -> bool:
@@ -1352,10 +1419,30 @@ class TTSPipeline:
         with self._state:
             return not self._closed and self._generation == generation
 
-    def _enqueue_work_locked(self, item: _TTSWorkItem) -> None:
-        """Queue one item while the caller holds ``_state``."""
+    def _enqueue_work_locked(self, item: _TTSWorkItem) -> bool:
+        """Queue one item under ``_state`` or drop-and-trace bounded overload."""
+        if self._work_queue.qsize() >= self._MAX_PENDING_WORK_ITEMS:
+            record_realtime_trace(
+                "tts_work_queue_overflow",
+                turn_id=item.turn_id,
+                work_kind=item.kind,
+                capacity=self._MAX_PENDING_WORK_ITEMS,
+                overflow_policy="drop_and_trace_not_stream_backpressure",
+            )
+            return False
+        try:
+            self._work_queue.put_nowait(item)
+        except queue.Full:
+            record_realtime_trace(
+                "tts_work_queue_overflow",
+                turn_id=item.turn_id,
+                work_kind=item.kind,
+                capacity=self._MAX_PENDING_WORK_ITEMS,
+                overflow_policy="drop_and_trace_not_stream_backpressure",
+            )
+            return False
         self._active_workers += 1
-        self._work_queue.put(item)
+        return True
 
     def _worker_main(self) -> None:
         """Own all provider/fallback work outside asyncio's default executor."""
@@ -1545,6 +1632,8 @@ class TTSPipeline:
         turn_id: str | None,
     ) -> bool:
         """Commit current PCM and transfer its lease to a ring-drain owner."""
+        if not pcm:
+            return False
         with self._commit_lock:
             pcm_current = not self._close_requested.is_set() and (
                 self._generation_is_current(generation)
@@ -1556,7 +1645,33 @@ class TTSPipeline:
                 pcm_bytes=len(pcm),
             )
             return False
-        self._player.write(pcm, cancel_event=self._close_requested)
+        accepted_samples = self._player.write(
+            pcm,
+            cancel_event=self._close_requested,
+            commit_gate=self._pcm_commit_gate,
+            generation=generation,
+        )
+        if accepted_samples == 0:
+            reason = (
+                "generation_invalidated_before_ring_publish"
+                if not self._pcm_commit_gate.is_current(generation)
+                else "player_rejected_pcm_before_ring_publish"
+            )
+            record_realtime_trace(
+                "tts_late_pcm_discarded",
+                turn_id=turn_id,
+                pcm_bytes=len(pcm),
+                reason=reason,
+            )
+            return False
+        total_samples = len(pcm) // AudioStreamPlayer._BYTES_PER_SAMPLE  # noqa: SLF001
+        if isinstance(accepted_samples, int) and accepted_samples < total_samples:
+            record_realtime_trace(
+                "tts_pcm_commit_interrupted",
+                turn_id=turn_id,
+                accepted_samples=accepted_samples,
+                total_samples=total_samples,
+            )
         if self._close_requested.is_set() or self._player.bytes_pending() <= 0:
             return False
         release_thread = threading.Thread(
