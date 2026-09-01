@@ -29,6 +29,152 @@ def _mock_player() -> MagicMock:
     return player
 
 
+class _LifecycleOutputStream:
+    """Foreign OutputStream fixture with independently controlled lifecycle."""
+
+    def __init__(
+        self,
+        *,
+        stop_error: BaseException | None = None,
+        close_failures: int = 0,
+        close_entered: threading.Event | None = None,
+        close_release: threading.Event | None = None,
+        stop_release: threading.Event | None = None,
+    ) -> None:
+        self.stop_error = stop_error
+        self.close_failures = close_failures
+        self.close_entered = close_entered
+        self.close_release = close_release
+        self.stop_release = stop_release
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.close_calls = 0
+
+    def start(self) -> None:
+        self.start_calls += 1
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+        if self.stop_release is not None:
+            self.stop_release.wait()
+        if self.stop_error is not None:
+            raise self.stop_error
+
+    def close(self) -> None:
+        self.close_calls += 1
+        if self.close_entered is not None:
+            self.close_entered.set()
+        if self.close_release is not None:
+            self.close_release.wait()
+        if self.close_failures > 0:
+            self.close_failures -= 1
+            message = "injected output close failure"
+            raise OSError(message)
+
+
+def test_output_player_close_debt_blocks_successor_until_exact_retry_closes() -> None:
+    """Stop failure cannot skip close; close debt serializes retry and restart."""
+    first = _LifecycleOutputStream(
+        stop_error=OSError("injected stop failure"),
+        close_failures=1,
+    )
+    second = _LifecycleOutputStream()
+    streams = iter([first, second])
+    with patch.object(
+        voice_tts,
+        "_open_output_stream",
+        side_effect=lambda **_kwargs: next(streams),
+    ):
+        player = voice_tts.AudioStreamPlayer(lazy_open=True)
+        assert player.start().started
+        failed = player.stop(timeout_s=0.5)
+        assert not failed.definitively_closed
+        assert first.stop_calls == 1
+        assert first.close_calls == 1
+        blocked = player.start()
+        assert not blocked.started
+        assert second.start_calls == 0
+        retried = player.stop(timeout_s=0.5)
+        assert retried.definitively_closed
+        assert first.close_calls == 2
+        assert player.start().started
+        assert second.start_calls == 1
+        assert player.stop(timeout_s=0.5).definitively_closed
+
+
+def test_output_player_concurrent_close_joins_one_hung_exact_helper() -> None:
+    """Repeated stop joins one close helper and never clears timeout debt."""
+    close_entered = threading.Event()
+    close_release = threading.Event()
+    first = _LifecycleOutputStream(
+        close_entered=close_entered,
+        close_release=close_release,
+    )
+    second = _LifecycleOutputStream()
+    streams = iter([first, second])
+    with patch.object(
+        voice_tts,
+        "_open_output_stream",
+        side_effect=lambda **_kwargs: next(streams),
+    ):
+        player = voice_tts.AudioStreamPlayer(lazy_open=True)
+        assert player.start().started
+        results: list[voice_tts.PlayerStopResult] = []
+        first_stop = threading.Thread(
+            target=lambda: results.append(player.stop(timeout_s=0.02)),
+        )
+        second_stop = threading.Thread(
+            target=lambda: results.append(player.stop(timeout_s=0.02)),
+        )
+        first_stop.start()
+        assert close_entered.wait(timeout=1.0)
+        second_stop.start()
+        first_stop.join(timeout=1.0)
+        second_stop.join(timeout=1.0)
+        assert len(results) == 2
+        assert all(not result.definitively_closed for result in results)
+        assert first.stop_calls == 1
+        assert first.close_calls == 1
+        assert not player.start().started
+        assert second.start_calls == 0
+        close_release.set()
+        deadline = time.monotonic() + 1.0
+        while not player.stop(timeout_s=0.02).definitively_closed:
+            assert time.monotonic() < deadline
+        assert player.start().started
+        assert second.start_calls == 1
+        assert player.stop(timeout_s=0.5).definitively_closed
+
+
+def test_output_player_attempts_close_when_stop_hangs() -> None:
+    """A hung stop stage keeps debt after close and cannot block close attempt."""
+    stop_release = threading.Event()
+    first = _LifecycleOutputStream(stop_release=stop_release)
+    second = _LifecycleOutputStream()
+    streams = iter([first, second])
+    with patch.object(
+        voice_tts,
+        "_open_output_stream",
+        side_effect=lambda **_kwargs: next(streams),
+    ):
+        player = voice_tts.AudioStreamPlayer(lazy_open=True)
+        assert player.start().started
+        result = player.stop(timeout_s=0.5)
+        assert not result.definitively_closed
+        assert result.helper_thread_alive
+        assert first.stop_calls == 1
+        assert first.close_calls == 1
+        assert not player.start().started
+        assert second.start_calls == 0
+        stop_release.set()
+        deadline = time.monotonic() + 1.0
+        while not player.stop(timeout_s=0.02).definitively_closed:
+            assert time.monotonic() < deadline
+        assert player.start().started
+        assert second.start_calls == 1
+        assert player.stop(timeout_s=0.5).definitively_closed
+
+
 def test_tts_waits_until_restore_subprocess_finishes() -> None:
     """A TTS provider cannot start while the OS restore call is blocked."""
     reset_realtime_trace()

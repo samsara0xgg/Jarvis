@@ -12,6 +12,7 @@ import argparse
 import dataclasses
 import enum
 import hashlib
+import itertools
 import json
 import platform
 import queue
@@ -174,8 +175,17 @@ def run_live_input_smoke(*, duration_s: float) -> dict[str, object]:
             continue
         frames.append(frame)
         observed_samples += frame.frame_count
-    metrics_before_close = ingress.metrics()
+    metrics_while_open = ingress.metrics()
     clock_mapping = ingress.clock_mapping()
+    sleep_stop = ingress.stop_for_sleep()
+    while True:
+        frame = subscriber.read(timeout_s=0.01)
+        if frame is None:
+            break
+        frames.append(frame)
+        observed_samples += frame.frame_count
+    metrics_before_close = ingress.metrics()
+    subscriber.close()
     close = ingress.close()
     pcm = (
         np.concatenate(
@@ -186,29 +196,67 @@ def run_live_input_smoke(*, duration_s: float) -> dict[str, object]:
     )
     discontinuities = sum(frame.discontinuity_before for frame in frames)
     first_callback_delta_ms = (
-        (metrics_before_close.first_callback_monotonic_ns - started_at_ns) / 1_000_000
-        if metrics_before_close.first_callback_monotonic_ns is not None
+        (metrics_while_open.first_callback_monotonic_ns - started_at_ns) / 1_000_000
+        if metrics_while_open.first_callback_monotonic_ns is not None
         else None
     )
     profile = start.backend_result.profile
-    status = (
-        "observed"
-        if observed_samples >= target_samples and discontinuities == 0 and close.definitively_closed
-        else "bounded_failure"
+    profile_epoch = start.backend_result.stream_epoch
+    cursors_contiguous = bool(frames) and frames[0].sample_cursor == 0 and all(
+        current.sample_cursor == prior.sample_cursor + prior.frame_count
+        for prior, current in itertools.pairwise(frames)
     )
+    cursor_end = frames[-1].sample_cursor + frames[-1].frame_count if frames else None
+    sum_frame_count = sum(frame.frame_count for frame in frames)
+    ownership_after_close = backend.ownership_snapshot()
+    strict_checks = {
+        "target_samples_observed": observed_samples >= target_samples,
+        "one_epoch_and_device": (
+            profile is not None
+            and profile_epoch == 1
+            and all(frame.stream_epoch == profile_epoch for frame in frames)
+        ),
+        "cursor_starts_at_zero": bool(frames) and frames[0].sample_cursor == 0,
+        "adjacent_cursor_continuity": cursors_contiguous,
+        "cursor_end_equals_frame_sum": cursor_end == sum_frame_count,
+        "native_overflows_zero": metrics_before_close.native_overflows == 0,
+        "subscriber_overflows_zero": metrics_before_close.subscriber_overflows == 0,
+        "callback_deadline_misses_zero": backend.callback_deadline_misses == 0,
+        "callback_count_consistent": (
+            backend.callback_count >= metrics_before_close.callback_calls
+            and metrics_before_close.callback_frames
+            == metrics_before_close.callback_calls * input_format.callback_frame_samples
+        ),
+        "canonical_subscriber_count_consistent": (
+            metrics_before_close.callback_calls >= metrics_before_close.canonical_frames
+            and metrics_before_close.canonical_frames == len(frames)
+        ),
+        "discontinuities_zero": discontinuities == 0,
+        "sleep_stop_definitive": (
+            sleep_stop is not None and sleep_stop.definitively_closed
+        ),
+        "backend_definitively_closed": (
+            ownership_after_close.state is voice_backend.BackendLifecycleState.CLOSED
+        ),
+        "worker_definitively_closed": not close.worker_alive,
+        "subscribers_definitively_closed": close.open_subscribers == 0,
+        "ingress_definitively_closed": close.definitively_closed,
+    }
+    status = "observed" if all(strict_checks.values()) else "bounded_failure"
     return {
         "status": status,
         "duration_target_s": duration_s,
         "duration_observed_s": observed_samples / ingress_config.canonical_sample_rate_hz,
         "config": _config_record(ingress_config),
         "device": dataclasses.asdict(profile) if profile is not None else None,
-        "stream_epoch": metrics_before_close.stream_epoch,
+        "stream_epoch": profile_epoch,
         "callback_calls": metrics_before_close.callback_calls,
         "callback_frames": metrics_before_close.callback_frames,
         "canonical_frames": metrics_before_close.canonical_frames,
         "subscriber_frames": len(frames),
         "cursor_start": frames[0].sample_cursor if frames else None,
-        "cursor_end": (frames[-1].sample_cursor + frames[-1].frame_count if frames else None),
+        "cursor_end": cursor_end,
+        "sum_frame_count": sum_frame_count,
         "first_callback_delta_ms": (
             round(first_callback_delta_ms, 3) if first_callback_delta_ms is not None else None
         ),
@@ -220,12 +268,15 @@ def run_live_input_smoke(*, duration_s: float) -> dict[str, object]:
         "subscriber_overflows": metrics_before_close.subscriber_overflows,
         "late_epoch_callbacks_rejected": (metrics_before_close.late_epoch_callbacks_rejected),
         "callback_deadline_misses": backend.callback_deadline_misses,
+        "backend_callback_count": backend.callback_count,
         "pcm_min": int(np.min(pcm)) if pcm.size else None,
         "pcm_max": int(np.max(pcm)) if pcm.size else None,
         "pcm_rms": (
             round(float(np.sqrt(np.mean(pcm.astype(np.float64) ** 2))), 3) if pcm.size else None
         ),
         "close": dataclasses.asdict(close),
+        "sleep_stop": dataclasses.asdict(sleep_stop) if sleep_stop is not None else None,
+        "strict_checks": strict_checks,
     }
 
 
@@ -251,7 +302,9 @@ class _SyntheticCallbackBackend:
         attempt_id: str,
         frame_sink: voice_backend.InputFrameSink,
         render_source: voice_backend.RenderSource | None = None,
+        timeout_s: float | None = None,
     ) -> voice_backend.BackendStartResult:
+        del timeout_s
         if render_source is not None or self.active_epoch is not None:
             return voice_backend.BackendStartResult(
                 status=voice_backend.BackendStartStatus.OWNER_BUSY,
@@ -285,7 +338,9 @@ class _SyntheticCallbackBackend:
         *,
         stream_epoch: int,
         attempt_id: str,
+        timeout_s: float | None = None,
     ) -> voice_backend.BackendStopResult:
+        del timeout_s
         self.stop_count += 1
         if self.active_epoch == stream_epoch and self.active_attempt_id == attempt_id:
             self.active_epoch = None

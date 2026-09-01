@@ -38,6 +38,8 @@ from jarvis.surface.voice_ledger import (
 )
 from jarvis.surface.voice_tts import (
     AudioStreamPlayer,
+    PlayerStartResult,
+    PlayerStopResult,
     TTSAudioChunk,
     TTSResponseSegment,
     TTSSegmentFinished,
@@ -168,6 +170,7 @@ class MediaPowerTransitionResult:
     attempt_id: int
     reason: str
     helper_thread_alive: bool = False
+    deadline_exhausted: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -584,6 +587,7 @@ class StreamingTTSPipeline:
         self._power_helper: threading.Thread | None = None
         self._power_helper_done = threading.Event()
         self._power_helper_error: BaseException | None = None
+        self._power_helper_reason = ""
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue[_MediaCommand | object] | None = None
         self._conn: sqlite3.Connection | None = None
@@ -596,6 +600,8 @@ class StreamingTTSPipeline:
         self._cleanup_errors: list[str] = []
         self._player_stop_started = False
         self._player_stop_done = threading.Event()
+        self._player_stop_definitive = False
+        self._player_stop_lock = threading.Lock()
         self._player_stop_thread: threading.Thread | None = None
         self._provider_stop_started = False
         self._provider_stop_done = threading.Event()
@@ -701,6 +707,14 @@ class StreamingTTSPipeline:
         self._accepting.clear()
         self._publish_shutdown_deadline(deadline)
         self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if (
+            not self._thread.is_alive()
+            and self._closed.is_set()
+            and self._provider_stop_done.is_set()
+            and self._player_stop_done.is_set()
+            and not self._player_stop_definitive
+        ):
+            self._stop_player_bounded()
         complete = self.cleanup_complete
         if not complete:
             record_realtime_trace(
@@ -722,6 +736,7 @@ class StreamingTTSPipeline:
             and self._closed.is_set()
             and self._provider_stop_done.is_set()
             and self._player_stop_done.is_set()
+            and self._player_stop_definitive
             and clean
         )
 
@@ -763,14 +778,19 @@ class StreamingTTSPipeline:
         self,
         *,
         timeout_s: float | None = None,
+        deadline: float | None = None,
     ) -> MediaPowerTransitionResult:
         """Terminalize actor output, then prove the player stream stopped."""
-        timeout = (
-            self._config.shutdown_timeout_s
-            if timeout_s is None
-            else max(0.0, timeout_s)
+        transition_deadline = (
+            deadline
+            if deadline is not None
+            else time.monotonic()
+            + (
+                self._config.shutdown_timeout_s
+                if timeout_s is None
+                else max(0.0, timeout_s)
+            )
         )
-        deadline = time.monotonic() + timeout
         self._accepting.clear()
         loop = self._loop
         if loop is None or self._closed.is_set():
@@ -784,12 +804,15 @@ class StreamingTTSPipeline:
             loop,
         )
         try:
-            terminalized = future.result(timeout=max(0.0, deadline - time.monotonic()))
+            terminalized = future.result(
+                timeout=max(0.0, transition_deadline - time.monotonic()),
+            )
         except Exception as exc:  # noqa: BLE001 - bounded cross-loop boundary
             return MediaPowerTransitionResult(
                 "uncertain",
                 self._power_attempt_id,
                 f"actor_terminalization:{type(exc).__name__}",
+                deadline_exhausted=time.monotonic() >= transition_deadline,
             )
         if not terminalized:
             return MediaPowerTransitionResult(
@@ -799,36 +822,42 @@ class StreamingTTSPipeline:
             )
         return self._transition_player_for_power(
             action="stop",
-            deadline=deadline,
+            deadline=transition_deadline,
         )
 
     def resume_after_wake(
         self,
         *,
         timeout_s: float | None = None,
+        deadline: float | None = None,
     ) -> MediaPowerTransitionResult:
         """Open a fresh player stream before restoring output admission."""
-        timeout = (
-            self._config.shutdown_timeout_s
-            if timeout_s is None
-            else max(0.0, timeout_s)
+        transition_deadline = (
+            deadline
+            if deadline is not None
+            else time.monotonic()
+            + (
+                self._config.shutdown_timeout_s
+                if timeout_s is None
+                else max(0.0, timeout_s)
+            )
         )
-        deadline = time.monotonic() + timeout
         with self._power_lock:
             prior_state = self._power_state
             prior_done = self._power_helper_done
         if prior_state == "stopping" and not prior_done.wait(
-            timeout=max(0.0, deadline - time.monotonic()),
+            timeout=max(0.0, transition_deadline - time.monotonic()),
         ):
             return MediaPowerTransitionResult(
                 "uncertain",
                 self._power_attempt_id,
                 "prior_player_stop_debt",
                 helper_thread_alive=True,
+                deadline_exhausted=time.monotonic() >= transition_deadline,
             )
         started = self._transition_player_for_power(
             action="start",
-            deadline=deadline,
+            deadline=transition_deadline,
         )
         if started.status != "resumed":
             return started
@@ -844,12 +873,13 @@ class StreamingTTSPipeline:
             loop,
         )
         try:
-            future.result(timeout=max(0.0, deadline - time.monotonic()))
+            future.result(timeout=max(0.0, transition_deadline - time.monotonic()))
         except Exception as exc:  # noqa: BLE001 - bounded cross-loop boundary
             return MediaPowerTransitionResult(
                 "uncertain",
                 started.attempt_id,
                 f"actor_resume:{type(exc).__name__}",
+                deadline_exhausted=time.monotonic() >= transition_deadline,
             )
         with self._power_lock:
             if self._power_state == "open_unadmitted":
@@ -861,7 +891,7 @@ class StreamingTTSPipeline:
         )
         return started
 
-    def _transition_player_for_power(  # noqa: C901 - exact bounded power FSM
+    def _transition_player_for_power(  # noqa: C901, PLR0915 - exact bounded power FSM
         self,
         *,
         action: Literal["start", "stop"],
@@ -881,7 +911,7 @@ class StreamingTTSPipeline:
                     f"already_{desired}",
                 )
             allowed = (
-                {"running", "open_unadmitted"}
+                {"running", "open_unadmitted", "uncertain"}
                 if action == "stop"
                 else {"suspended"}
             )
@@ -901,21 +931,38 @@ class StreamingTTSPipeline:
                 done = threading.Event()
                 self._power_helper_done = done
                 self._power_helper_error = None
+                self._power_helper_reason = ""
                 self._power_state = transitional
 
                 def _operate() -> None:
                     error: BaseException | None = None
+                    reason = ""
                     try:
                         if action == "stop":
-                            self._player.stop()
+                            remaining = max(0.0, deadline - time.monotonic())
+                            result = self._stop_player_with_bound(remaining)
+                            if (
+                                isinstance(result, PlayerStopResult)
+                                and not result.definitively_closed
+                            ):
+                                reason = result.reason
+                                error = RuntimeError(result.reason)
                         else:
-                            self._player.start()
+                            result = self._player.start()
+                            if (
+                                isinstance(result, PlayerStartResult)
+                                and not result.started
+                            ):
+                                reason = result.reason
+                                error = RuntimeError(result.reason)
                     except BaseException as exc:  # noqa: BLE001 - lifecycle debt
                         error = exc
+                        reason = f"{type(exc).__name__}:{exc}"
                     finally:
                         with self._power_lock:
                             if self._power_attempt_id == attempt_id:
                                 self._power_helper_error = error
+                                self._power_helper_reason = reason
                                 self._power_state = desired if error is None else "uncertain"
                         done.set()
 
@@ -937,15 +984,18 @@ class StreamingTTSPipeline:
                 attempt_id,
                 f"player_{action}_timeout",
                 helper_thread_alive=bool(helper is not None and helper.is_alive()),
+                deadline_exhausted=time.monotonic() >= deadline,
             )
         with self._power_lock:
             state = self._power_state
             error = self._power_helper_error
+            operation_reason = self._power_helper_reason
         if state != desired:
             return MediaPowerTransitionResult(
                 "uncertain",
                 attempt_id,
-                f"player_{action}:{type(error).__name__ if error is not None else state}",
+                operation_reason
+                or f"player_{action}:{type(error).__name__ if error is not None else state}",
             )
         status = "suspended" if action == "stop" else "resumed"
         record_realtime_trace(
@@ -1006,7 +1056,7 @@ class StreamingTTSPipeline:
             )
         return await acknowledged
 
-    def _thread_main(self) -> None:
+    def _thread_main(self) -> None:  # noqa: C901 - explicit startup/cleanup phases
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._loop = loop
@@ -1019,7 +1069,9 @@ class StreamingTTSPipeline:
             )
             if self._start_player:
                 self._set_startup_phase("starting_player")
-                self._player.start()
+                started = self._player.start()
+                if isinstance(started, PlayerStartResult) and not started.started:
+                    self._raise_player_start_debt(started)
                 if self._startup_abandoned.is_set():
                     return
             self._set_startup_phase("running")
@@ -1062,7 +1114,13 @@ class StreamingTTSPipeline:
             self._set_startup_phase("closed")
             self._closed.set()
 
-    def _stop_player_bounded(self) -> bool:
+    @staticmethod
+    def _raise_player_start_debt(started: PlayerStartResult) -> None:
+        """Convert a typed player debt into the actor startup exception path."""
+        msg = f"player startup ownership not proven: {started.reason}"
+        raise RuntimeError(msg)
+
+    def _stop_player_bounded(self) -> bool:  # noqa: C901 - exact retry/join FSM
         """Move potentially stuck device teardown to one controlled daemon helper."""
         with self._power_lock:
             power_state = self._power_state
@@ -1079,14 +1137,32 @@ class StreamingTTSPipeline:
                 power_state = self._power_state
         if power_state == "suspended":
             self._player_stop_started = True
+            self._player_stop_definitive = True
             self._player_stop_done.set()
             return True
-        if not self._player_stop_started:
-            self._player_stop_started = True
+        with self._player_stop_lock:
+            if (
+                self._player_stop_started
+                and self._player_stop_done.is_set()
+                and not self._player_stop_definitive
+            ):
+                self._player_stop_started = False
+                self._player_stop_done = threading.Event()
+            launch_stop = not self._player_stop_started
+            if launch_stop:
+                self._player_stop_started = True
+
+        if launch_stop:
 
             def _stop() -> None:
                 try:
-                    self._player.stop()
+                    result = self._stop_player_with_bound(
+                        self._remaining_s(self._config.shutdown_timeout_s),
+                    )
+                    if isinstance(result, PlayerStopResult):
+                        self._player_stop_definitive = result.definitively_closed
+                    else:
+                        self._player_stop_definitive = True
                 except Exception as exc:
                     with self._cleanup_lock:
                         self._cleanup_errors.append(f"player:{type(exc).__name__}")
@@ -1107,7 +1183,16 @@ class StreamingTTSPipeline:
             LOGGER.error(
                 "player.stop exceeded media shutdown deadline; isolated daemon helper remains",
             )
-        return stopped
+        return stopped and self._player_stop_definitive
+
+    def _stop_player_with_bound(self, timeout_s: float) -> object:
+        """Call the typed player API while retaining legacy test-port support."""
+        try:
+            return self._player.stop(timeout_s=max(0.0, timeout_s))
+        except TypeError as exc:
+            if "timeout_s" not in str(exc):
+                raise
+            return self._player.stop()
 
     def _stop_provider_bounded(self) -> bool:
         """Close the actor's provider exactly once on an isolated daemon helper."""

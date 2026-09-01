@@ -76,19 +76,17 @@ LOGGER = logging.getLogger("jarvis.surface.inherent_output")
 class InherentBroadcaster:
     """In-memory WS client registry + per-event-type wire-envelope translator.
 
-    Holds one ``set[WebSocket]`` of connected clients guarded by a single
-    ``asyncio.Lock``. ``register`` / ``unregister`` acquire the lock for
-    the set mutation; the three ``broadcast_*`` methods snapshot the set
-    inside the lock and iterate outside so per-client ``send_json``
-    latency does not block new connections. Within-broadcast
-    serialization is implicit because the runtime watcher is the sole
-    caller and dispatches one envelope at a time.
+    Holds one ``set[WebSocket]`` plus a global sender lock. Registration
+    snapshot handoff and every live envelope share that sender sequence, so a
+    client never observes a stale capability after a newer version and never
+    receives overlapping ``send_json`` calls from response/voice producers.
     """
 
     def __init__(self) -> None:
         """Create an empty registry."""
         self._clients: set[WebSocket] = set()
         self._lock = asyncio.Lock()
+        self._send_lock = asyncio.Lock()
         # Daemon's event loop, set by ``attach_loop`` at composition root
         # (``runtime/inherent_loop.serve_inherent``). Used by the
         # ``broadcast_voice_sync`` worker-thread bridge. ``None`` until
@@ -111,19 +109,22 @@ class InherentBroadcaster:
 
     async def register(self, ws: WebSocket) -> None:
         """Add a connected WS client to the registry. Idempotent."""
-        async with self._lock:
-            self._clients.add(ws)
-            capability = (
-                dict(self._latest_voice_capability)
-                if self._latest_voice_capability is not None
-                else None
-            )
-        if capability is not None:
-            try:
-                await ws.send_json({"op": "voice_capability", "payload": capability})
-            except Exception:  # noqa: BLE001 - reconnect snapshot uses F4 removal
-                async with self._lock:
-                    self._clients.discard(ws)
+        async with self._send_lock:
+            async with self._lock:
+                self._clients.add(ws)
+                capability = (
+                    dict(self._latest_voice_capability)
+                    if self._latest_voice_capability is not None
+                    else None
+                )
+            if capability is not None:
+                try:
+                    await ws.send_json(
+                        {"op": "voice_capability", "payload": capability},
+                    )
+                except Exception:  # noqa: BLE001 - reconnect snapshot uses F4 removal
+                    async with self._lock:
+                        self._clients.discard(ws)
 
     async def unregister(self, ws: WebSocket) -> None:
         """Remove a disconnected WS client from the registry. Idempotent."""
@@ -305,17 +306,18 @@ class InherentBroadcaster:
             "ptt_upload_available": ptt_upload_available,
             "text_available": text_available,
         }
-        async with self._lock:
-            prior = self._latest_voice_capability
-            if prior is not None:
-                prior_version = prior.get("version")
-                if isinstance(prior_version, int) and prior_version >= version:
-                    return
-            self._latest_voice_capability = payload
-        await self._send_all(
-            {"op": "voice_capability", "payload": payload},
-            turn_id=f"input-capability-v{version}",
-        )
+        async with self._send_lock:
+            async with self._lock:
+                prior = self._latest_voice_capability
+                if prior is not None:
+                    prior_version = prior.get("version")
+                    if isinstance(prior_version, int) and prior_version >= version:
+                        return
+                self._latest_voice_capability = payload
+            await self._send_all_locked(
+                {"op": "voice_capability", "payload": payload},
+                turn_id=f"input-capability-v{version}",
+            )
 
     def broadcast_voice_capability_sync(  # noqa: PLR0913 - explicit wire schema
         self,
@@ -352,7 +354,17 @@ class InherentBroadcaster:
         )
 
     async def _send_all(self, msg: dict[str, object], *, turn_id: str) -> None:
-        """Send ``msg`` to every registered WS; handle F4 + F5 failure modes.
+        """Serialize one envelope with registration snapshots and live sends."""
+        async with self._send_lock:
+            await self._send_all_locked(msg, turn_id=turn_id)
+
+    async def _send_all_locked(
+        self,
+        msg: dict[str, object],
+        *,
+        turn_id: str,
+    ) -> None:
+        """Send one globally sequenced envelope; caller owns ``_send_lock``.
 
         Snapshot pattern: acquire the lock just long enough to copy the
         client set, then iterate the snapshot OUTSIDE the lock so a slow
@@ -365,11 +377,9 @@ class InherentBroadcaster:
         an ``Event`` in hand — most notably
         :meth:`broadcast_voice` — can still produce the F5 log line.
 
-        Single-caller invariant (``_response_watcher``) means no two
-        ``_send_all`` invocations can overlap on this broadcaster
-        instance, so within-broadcast ordering is implicit. The lock
-        protects ONLY the ``_clients`` set membership against concurrent
-        WS-endpoint tasks.
+        Response, voice, and capability producers may be concurrent. The
+        sender lock is therefore the ordering boundary; ``_lock`` only
+        protects membership and latest-snapshot state.
         """
         async with self._lock:
             if not self._clients:

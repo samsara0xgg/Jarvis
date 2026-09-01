@@ -41,6 +41,7 @@ class BackendStopStatus(enum.Enum):
     CLOSED = "closed"
     ALREADY_CLOSED = "already_closed"
     CLOSE_UNCERTAIN = "close_uncertain"
+    STALE_ATTEMPT = "stale_attempt"
 
 
 class BackendLifecycleState(enum.Enum):
@@ -198,6 +199,7 @@ class AudioDuplexBackend(Protocol):
         attempt_id: str,
         frame_sink: InputFrameSink,
         render_source: RenderSource | None = None,
+        timeout_s: float | None = None,
     ) -> BackendStartResult:
         """Open one epoch and start callbacks."""
         ...
@@ -207,6 +209,7 @@ class AudioDuplexBackend(Protocol):
         *,
         stream_epoch: int,
         attempt_id: str,
+        timeout_s: float | None = None,
     ) -> BackendStopResult:
         """Stop exactly the requested epoch with a hard implementation bound."""
         ...
@@ -347,6 +350,7 @@ class _StopAttempt:
     done: threading.Event
     helper: threading.Thread | None = None
     error: BaseException | None = None
+    abort_error: BaseException | None = None
 
 
 @dataclass
@@ -482,6 +486,7 @@ class SoundDeviceDuplexBackend:
         attempt_id: str,
         frame_sink: InputFrameSink,
         render_source: RenderSource | None = None,
+        timeout_s: float | None = None,
     ) -> BackendStartResult:
         """Open and start the sole default-input callback stream."""
         if render_source is not None:
@@ -671,7 +676,12 @@ class SoundDeviceDuplexBackend:
                     stream_epoch=stream_epoch,
                 )
             attempt.done.set()
-        timed_out = not attempt.done.wait(timeout=self._open_timeout_s)
+        open_timeout_s = (
+            self._open_timeout_s
+            if timeout_s is None
+            else min(self._open_timeout_s, max(0.0, timeout_s))
+        )
+        timed_out = not attempt.done.wait(timeout=open_timeout_s)
         if timed_out:
             with self._lock:
                 timed_out = not attempt.done.is_set()
@@ -804,6 +814,7 @@ class SoundDeviceDuplexBackend:
         *,
         stream_epoch: int,
         attempt_id: str,
+        timeout_s: float | None = None,
     ) -> BackendStopResult:
         """Close or join the exact physical debt; never infer from worker exit."""
         wait_event: threading.Event
@@ -825,7 +836,28 @@ class SoundDeviceDuplexBackend:
                     reason="ownership_ledger_incomplete",
                     attempt_id=attempt_id,
                 )
-            if self._state is BackendLifecycleState.OPENING or (
+            if (actual_epoch, actual_attempt_id) != (stream_epoch, attempt_id):
+                record_realtime_trace(
+                    "audio_input_stream_close_ignored",
+                    requested_stream_epoch=stream_epoch,
+                    requested_attempt_id=attempt_id,
+                    owned_stream_epoch=actual_epoch,
+                    owned_attempt_id=actual_attempt_id,
+                    reason="stale_attempt_identity",
+                )
+                return BackendStopResult(
+                    status=BackendStopStatus.STALE_ATTEMPT,
+                    stream_epoch=stream_epoch,
+                    reason=(
+                        f"requested_{stream_epoch}:{attempt_id}_does_not_match_"
+                        f"owned_{actual_epoch}:{actual_attempt_id}"
+                    ),
+                    attempt_id=attempt_id,
+                )
+            if self._close_attempt is not None and not self._close_attempt.done.is_set():
+                wait_event = self._close_attempt.done
+                close_attempt = self._close_attempt
+            elif self._state is BackendLifecycleState.OPENING or (
                 self._state is BackendLifecycleState.UNCERTAIN
                 and self._open_attempt is not None
                 and not self._open_attempt.done.is_set()
@@ -846,12 +878,6 @@ class SoundDeviceDuplexBackend:
                     )
                 wait_event = open_attempt.done
                 close_attempt = None
-            elif (
-                self._state is BackendLifecycleState.CLOSING
-                and self._close_attempt is not None
-            ):
-                wait_event = self._close_attempt.done
-                close_attempt = self._close_attempt
             else:
                 stream = self._stream
                 if stream is None:
@@ -878,6 +904,17 @@ class SoundDeviceDuplexBackend:
             def _close() -> None:
                 try:
                     owned_stream.abort()
+                except Exception as exc:  # noqa: BLE001
+                    close_attempt.abort_error = exc
+                    record_realtime_trace(
+                        "audio_input_stream_abort_failed",
+                        stream_epoch=close_attempt.stream_epoch,
+                        attempt_id=close_attempt.attempt_id,
+                        close_attempt_id=close_attempt.close_attempt_id,
+                        reason=_foreign_error_reason(exc),
+                        close_will_still_be_attempted=True,
+                    )
+                try:
                     owned_stream.close()
                 except Exception as exc:  # noqa: BLE001
                     close_attempt.error = exc
@@ -917,7 +954,12 @@ class SoundDeviceDuplexBackend:
                         )
                 close_attempt.done.set()
 
-        if not wait_event.wait(timeout=self._close_timeout_s):
+        close_timeout_s = (
+            self._close_timeout_s
+            if timeout_s is None
+            else min(self._close_timeout_s, max(0.0, timeout_s))
+        )
+        if not wait_event.wait(timeout=close_timeout_s):
             with self._lock:
                 if self._state in {
                     BackendLifecycleState.OPENING,

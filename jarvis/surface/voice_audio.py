@@ -407,6 +407,7 @@ class InputCapabilityState(enum.Enum):
     AVAILABLE = "available"
     SUSPENDED = "suspended"
     WAKE_UNAVAILABLE = "wake_unavailable"
+    OUTPUT_UNAVAILABLE = "output_unavailable"
     LOCAL_CAPTURE_UNAVAILABLE = "local_capture_unavailable"
     CLOSE_UNCERTAIN = "close_uncertain"
 
@@ -549,12 +550,14 @@ class _CallbackTimeline:
 
     stream_epoch: int
     attempt_id: str
+    native_ring: _PreallocatedPcmRing
     sequence: int = 0
     sample_cursor: int = 0
     callback_calls: int = 0
     callback_frames: int = 0
     first_callback_monotonic_ns: int | None = None
     first_callback_adc_time_s: float | None = None
+    retired_metrics_recorded: bool = False
 
 
 class _PreallocatedPcmRing:
@@ -566,7 +569,13 @@ class _PreallocatedPcmRing:
     commit index additionally rejects a slot observed during a wrap.
     """
 
-    def __init__(self, *, capacity: int, max_frame_bytes: int) -> None:
+    def __init__(
+        self,
+        *,
+        capacity: int,
+        max_frame_bytes: int,
+        serialized_publication: bool = False,
+    ) -> None:
         if capacity <= 0 or max_frame_bytes <= 0:
             msg = "PCM ring capacity and max_frame_bytes must be positive"
             raise ValueError(msg)
@@ -579,6 +588,7 @@ class _PreallocatedPcmRing:
         self._producer_pending_discontinuity = False
         self._consumer_pending_discontinuity = False
         self._publication_token: object | None = None
+        self._publication_lock = threading.Lock() if serialized_publication else None
         self._consumer_before_commit_hook: Callable[[int], None] | None = None
         self._closed = False
         self.overflow_count = 0
@@ -601,8 +611,29 @@ class _PreallocatedPcmRing:
         purpose: SubscriberPurpose,
         active: bool,
         publication_token: object | None = None,
+        _publication_lock_held: bool = False,
     ) -> bool:
         """Copy one frame without blocking; return whether it was published."""
+        publication_lock = self._publication_lock
+        if publication_lock is not None and not _publication_lock_held:
+            with publication_lock:
+                return self.write(
+                    pcm=pcm,
+                    byte_count=byte_count,
+                    stream_epoch=stream_epoch,
+                    sequence=sequence,
+                    sample_cursor=sample_cursor,
+                    sample_rate_hz=sample_rate_hz,
+                    channels=channels,
+                    frame_count=frame_count,
+                    adc_time_s=adc_time_s,
+                    captured_monotonic_ns=captured_monotonic_ns,
+                    discontinuity_before=discontinuity_before,
+                    purpose=purpose,
+                    active=active,
+                    publication_token=publication_token,
+                    _publication_lock_held=True,
+                )
         if (
             publication_token is not None
             and self._publication_token is not publication_token
@@ -656,10 +687,14 @@ class _PreallocatedPcmRing:
             and self._publication_token is not publication_token
         ):
             return False
-        slot.committed_index = self._write_index
-        self._producer_pending_discontinuity = False
-        self._write_index += 1
+        self._commit_slot(slot, self._write_index)
         return True
+
+    def _commit_slot(self, slot: _PcmSlot, write_index: int) -> None:
+        """Publish one prepared slot; native generations own disjoint rings."""
+        slot.committed_index = write_index
+        self._producer_pending_discontinuity = False
+        self._write_index = write_index + 1
 
     def read(self) -> _OwnedPcmFrame | None:
         """Return one owned frame or ``None`` when empty/closed."""
@@ -711,16 +746,37 @@ class _PreallocatedPcmRing:
 
     def set_publication_token(self, token: object | None) -> None:
         """Publish/revoke the exact attempt allowed to commit callback slots."""
-        self._publication_token = token
+        publication_lock = self._publication_lock
+        if publication_lock is None:
+            self._publication_token = token
+            return
+        with publication_lock:
+            self._publication_token = token
 
     def close(self) -> None:
         """Reject new writes and discard unread storage."""
+        publication_lock = self._publication_lock
+        if publication_lock is None:
+            self._close_unlocked()
+            return
+        with publication_lock:
+            self._close_unlocked()
+
+    def _close_unlocked(self) -> None:
         self._closed = True
         self._publication_token = None
         self._drop_before_index = self._write_index
 
     def discard_all(self, *, discontinuity: bool) -> None:
         """Drop unread frames while retaining the fixed storage allocation."""
+        publication_lock = self._publication_lock
+        if publication_lock is None:
+            self._discard_all_unlocked(discontinuity=discontinuity)
+            return
+        with publication_lock:
+            self._discard_all_unlocked(discontinuity=discontinuity)
+
+    def _discard_all_unlocked(self, *, discontinuity: bool) -> None:
         self._drop_before_index = self._write_index
         self._producer_pending_discontinuity = discontinuity
 
@@ -909,6 +965,13 @@ class AudioSubscription:
         self._ring.close()
         self._ingress._unsubscribe(self)  # noqa: SLF001 - paired owner method
 
+    def _close_from_ingress(self) -> None:
+        """Close after ingress atomically removed this membership."""
+        if self._closed:
+            return
+        self._closed = True
+        self._ring.close()
+
     @property
     def overflow_count(self) -> int:
         """Return lifetime software-subscriber overflow count."""
@@ -940,6 +1003,7 @@ class AudioIngress:
             capacity=config.native_ring_capacity,
             max_frame_bytes=native_format.bytes_per_callback,
         )
+        self._retired_native_overflows = 0
         self._canonicalizer = AudioIngressCanonicalizer(
             sample_rate_hz=config.canonical_sample_rate_hz,
             frame_samples=config.canonical_frame_samples,
@@ -947,6 +1011,7 @@ class AudioIngress:
         self._subscriber_lock = threading.Lock()
         self._subscribers: dict[str, AudioSubscription] = {}
         self._subscriber_snapshot: tuple[AudioSubscription, ...] = ()
+        self._subscribe_before_insert_hook: Callable[[], None] | None = None
         self._lifecycle_lock = threading.Lock()
         self._worker_stop = threading.Event()
         self._worker: threading.Thread | None = None
@@ -974,6 +1039,7 @@ class AudioIngress:
         self._pending_ingress_fault_code: str | None = None
         self._deferred_fault: voice_backend.BackendFault | None = None
         self._device_uid_misses = 0
+        self._capability_lock = threading.RLock()
         self._capability_version = 0
         self._capability = InputCapabilitySnapshot(
             state=InputCapabilityState.STOPPED,
@@ -1004,8 +1070,8 @@ class AudioIngress:
         ring = _PreallocatedPcmRing(
             capacity=resolved_capacity,
             max_frame_bytes=self._config.canonical_frame_samples * 2,
+            serialized_publication=True,
         )
-        ring.set_publication_token(self._active_timeline)
         subscription = AudioSubscription(
             ingress=self,
             name=name,
@@ -1014,14 +1080,21 @@ class AudioIngress:
         )
         with self._subscriber_lock:
             if self._closing:
+                ring.close()
                 msg = "audio ingress is closing"
                 raise RuntimeError(msg)
             if name in self._subscribers:
+                ring.close()
                 msg = f"audio subscriber already exists: {name}"
                 raise ValueError(msg)
             if len(self._subscribers) >= self._config.max_subscribers:
+                ring.close()
                 msg = "audio subscriber bound reached"
                 raise RuntimeError(msg)
+            ring.set_publication_token(self._active_timeline)
+            hook = self._subscribe_before_insert_hook
+            if hook is not None:
+                hook()
             self._subscribers[name] = subscription
             self._subscriber_snapshot = tuple(self._subscribers.values())
         return subscription
@@ -1047,7 +1120,8 @@ class AudioIngress:
                 msg = "audio ingress already started"
                 raise RuntimeError(msg)
             self._worker_stop.clear()
-            self._closing = False
+            with self._subscriber_lock:
+                self._closing = False
             self._worker = threading.Thread(
                 target=self._run_worker,
                 name="jarvis-audio-ingress",
@@ -1088,7 +1162,12 @@ class AudioIngress:
             backend_result=backend_result,
         )
 
-    def _open_new_epoch(self, *, reason: str) -> voice_backend.BackendStartResult:
+    def _open_new_epoch(
+        self,
+        *,
+        reason: str,
+        deadline: float | None = None,
+    ) -> voice_backend.BackendStartResult:
         ownership = self._backend.ownership_snapshot()
         if ownership.state is not voice_backend.BackendLifecycleState.CLOSED:
             return voice_backend.BackendStartResult(
@@ -1102,7 +1181,15 @@ class AudioIngress:
         epoch = self._last_epoch
         self._attempt_sequence += 1
         attempt_id = f"ingress-{id(self):x}-a{self._attempt_sequence}"
-        timeline = _CallbackTimeline(stream_epoch=epoch, attempt_id=attempt_id)
+        native_ring = _PreallocatedPcmRing(
+            capacity=self._config.native_ring_capacity,
+            max_frame_bytes=self._native_format.bytes_per_callback,
+        )
+        timeline = _CallbackTimeline(
+            stream_epoch=epoch,
+            attempt_id=attempt_id,
+            native_ring=native_ring,
+        )
         self._opening_timeline = timeline
         self._active_timeline = None
         self._native_ring.set_publication_token(None)
@@ -1118,24 +1205,40 @@ class AudioIngress:
         # Opening callbacks remain uncommitted and are dropped. Only the exact
         # successful attempt is published after backend.start() returns.
         self._canonicalizer.reset(stream_epoch=epoch, discontinuity=False)
-        self._native_ring.discard_all(discontinuity=False)
-        for subscriber in self._subscriber_snapshot:
-            subscriber._ring.discard_all(discontinuity=False)  # noqa: SLF001
-        result = self._backend.start(
-            stream_epoch=epoch,
-            attempt_id=attempt_id,
-            frame_sink=self._on_backend_frame,
-            render_source=None,
-        )
+        with self._subscriber_lock:
+            for subscriber in self._subscriber_snapshot:
+                subscriber._ring.discard_all(discontinuity=False)  # noqa: SLF001
+        timeout_s = None if deadline is None else max(0.0, deadline - time.monotonic())
+        try:
+            result = self._backend.start(
+                stream_epoch=epoch,
+                attempt_id=attempt_id,
+                frame_sink=self._on_backend_frame,
+                render_source=None,
+                timeout_s=timeout_s,
+            )
+        except TypeError as exc:
+            if "timeout_s" not in str(exc):
+                raise
+            result = self._backend.start(
+                stream_epoch=epoch,
+                attempt_id=attempt_id,
+                frame_sink=self._on_backend_frame,
+                render_source=None,
+            )
         if not result.started:
             self._opening_timeline = None
             return result
         if self._closing or self._suspended or self._worker_stop.is_set():
             self._opening_timeline = None
-            stop_result = self._backend.stop(
-                stream_epoch=epoch,
-                attempt_id=attempt_id,
-            )
+            stop_result = self._stop_backend_debt(deadline=deadline)
+            if stop_result is None:
+                stop_result = voice_backend.BackendStopResult(
+                    status=voice_backend.BackendStopStatus.CLOSED,
+                    stream_epoch=epoch,
+                    reason="revoked_open_already_closed",
+                    attempt_id=attempt_id,
+                )
             return voice_backend.BackendStartResult(
                 status=(
                     voice_backend.BackendStartStatus.FAILED_CLOSED
@@ -1149,7 +1252,7 @@ class AudioIngress:
             )
         if result.attempt_id != attempt_id or self._opening_timeline is not timeline:
             self._opening_timeline = None
-            self._backend.stop(stream_epoch=epoch, attempt_id=attempt_id)
+            self._stop_backend_debt(deadline=deadline)
             return voice_backend.BackendStartResult(
                 status=voice_backend.BackendStartStatus.OPEN_UNCERTAIN,
                 stream_epoch=epoch,
@@ -1158,11 +1261,13 @@ class AudioIngress:
                 attempt_id=attempt_id,
             )
         self._opening_timeline = None
+        self._native_ring = native_ring
         self._active_timeline = timeline
         self._active_epoch = epoch
-        self._native_ring.set_publication_token(timeline)
-        for subscriber in self._subscriber_snapshot:
-            subscriber._ring.set_publication_token(timeline)  # noqa: SLF001
+        native_ring.set_publication_token(timeline)
+        with self._subscriber_lock:
+            for subscriber in self._subscriber_snapshot:
+                subscriber._ring.set_publication_token(timeline)  # noqa: SLF001
         self._active_profile = result.profile
         record_realtime_trace(
             "audio_input_epoch_opened",
@@ -1213,8 +1318,9 @@ class AudioIngress:
         if timeline.first_callback_monotonic_ns is None:
             timeline.first_callback_adc_time_s = adc_time_s
             timeline.first_callback_monotonic_ns = captured_monotonic_ns
-        overflow_count = self._native_ring.overflow_count
-        published = self._native_ring.write(
+        native_ring = timeline.native_ring
+        overflow_count = native_ring.overflow_count
+        published = native_ring.write(
             pcm=callback_buffer,
             byte_count=frame_count * native_format.channels * 2,
             stream_epoch=stream_epoch,
@@ -1230,10 +1336,10 @@ class AudioIngress:
             active=self._capture_active,
             publication_token=timeline,
         )
-        if not published and self._active_timeline is not timeline:
+        if self._active_timeline is not timeline:
             self._late_epoch_callbacks_rejected += 1
             return
-        if not published and self._native_ring.overflow_count == overflow_count:
+        if not published and native_ring.overflow_count == overflow_count:
             self._pending_ingress_fault_epoch = stream_epoch
             self._pending_ingress_fault_code = "callback_buffer_copy_failed"
 
@@ -1243,8 +1349,14 @@ class AudioIngress:
         last_route_poll = 0.0
         while not self._worker_stop.is_set():
             did_work = False
-            native = self._native_ring.read()
+            worker_timeline = self._active_timeline
+            native_ring = (
+                worker_timeline.native_ring if worker_timeline is not None else None
+            )
+            native = native_ring.read() if native_ring is not None else None
             while native is not None:
+                if native_ring is None:
+                    break
                 did_work = True
                 active_timeline = self._active_timeline
                 if (
@@ -1253,7 +1365,7 @@ class AudioIngress:
                 ):
                     for frame in self._canonicalizer.feed(native):
                         self._fan_out(frame)
-                native = self._native_ring.read()
+                native = native_ring.read()
             timeline = self._active_timeline
             epoch = timeline.stream_epoch if timeline is not None else None
             now = time.monotonic()
@@ -1339,7 +1451,7 @@ class AudioIngress:
         self._canonical_frames += 1
         for subscriber in self._subscriber_snapshot:
             before_overflow = subscriber.overflow_count
-            subscriber._ring.write(  # noqa: SLF001 - ingress owns subscriber rings
+            published = subscriber._ring.write(  # noqa: SLF001 - ingress owns subscriber rings
                 pcm=frame.pcm16_mono,
                 byte_count=len(frame.pcm16_mono),
                 stream_epoch=frame.stream_epoch,
@@ -1367,6 +1479,14 @@ class AudioIngress:
                     ),
                     measurement_boundary="software_subscriber_ring",
                 )
+            elif not published:
+                record_realtime_trace(
+                    "audio_input_subscriber_write_rejected",
+                    stream_epoch=frame.stream_epoch,
+                    subscriber=subscriber.name,
+                    purpose=subscriber.purpose.value,
+                    measurement_boundary="software_subscriber_ring",
+                )
 
     def _revoke_publication(self) -> _CallbackTimeline | None:
         """Atomically revoke the callback generation before lifecycle work."""
@@ -1374,30 +1494,57 @@ class AudioIngress:
         self._active_timeline = None
         self._opening_timeline = None
         self._active_epoch = None
-        self._native_ring.set_publication_token(None)
-        for subscriber in self._subscriber_snapshot:
-            subscriber._ring.set_publication_token(None)  # noqa: SLF001
+        if timeline is not None:
+            timeline.native_ring.set_publication_token(None)
+            if not timeline.retired_metrics_recorded:
+                self._retired_native_overflows += timeline.native_ring.overflow_count
+                timeline.retired_metrics_recorded = True
+        with self._subscriber_lock:
+            for subscriber in self._subscriber_snapshot:
+                subscriber._ring.set_publication_token(None)  # noqa: SLF001
         return timeline
 
-    def _stop_backend_debt(self) -> voice_backend.BackendStopResult | None:
+    def _stop_backend_debt(
+        self,
+        *,
+        deadline: float | None = None,
+    ) -> voice_backend.BackendStopResult | None:
         """Close the exact physical ledger entry, if ownership remains possible."""
-        ownership = self._backend.ownership_snapshot()
-        if ownership.state is voice_backend.BackendLifecycleState.CLOSED:
-            return None
-        if ownership.stream_epoch is None or ownership.attempt_id is None:
-            return voice_backend.BackendStopResult(
-                status=voice_backend.BackendStopStatus.CLOSE_UNCERTAIN,
-                stream_epoch=ownership.stream_epoch or self._last_epoch,
-                reason="backend_ownership_identity_missing",
-                helper_thread_alive=ownership.helper_thread_alive,
-                attempt_id=ownership.attempt_id,
+        for _ in range(2):
+            ownership = self._backend.ownership_snapshot()
+            if ownership.state is voice_backend.BackendLifecycleState.CLOSED:
+                return None
+            if ownership.stream_epoch is None or ownership.attempt_id is None:
+                return voice_backend.BackendStopResult(
+                    status=voice_backend.BackendStopStatus.CLOSE_UNCERTAIN,
+                    stream_epoch=ownership.stream_epoch or self._last_epoch,
+                    reason="backend_ownership_identity_missing",
+                    helper_thread_alive=ownership.helper_thread_alive,
+                    attempt_id=ownership.attempt_id,
+                )
+            timeout_s = (
+                None if deadline is None else max(0.0, deadline - time.monotonic())
             )
-        return self._backend.stop(
-            stream_epoch=ownership.stream_epoch,
-            attempt_id=ownership.attempt_id,
-        )
+            try:
+                result = self._backend.stop(
+                    stream_epoch=ownership.stream_epoch,
+                    attempt_id=ownership.attempt_id,
+                    timeout_s=timeout_s,
+                )
+            except TypeError as exc:
+                if "timeout_s" not in str(exc):
+                    raise
+                result = self._backend.stop(
+                    stream_epoch=ownership.stream_epoch,
+                    attempt_id=ownership.attempt_id,
+                )
+            if result.status is not voice_backend.BackendStopStatus.STALE_ATTEMPT:
+                return result
+            if deadline is not None and time.monotonic() >= deadline:
+                return result
+        return result
 
-    def _handle_fault(  # noqa: PLR0911 - bounded recovery exits on each terminal state
+    def _handle_fault(  # noqa: C901, PLR0911, PLR0912 - bounded recovery exits
         self,
         fault: voice_backend.BackendFault,
     ) -> None:
@@ -1414,6 +1561,8 @@ class AudioIngress:
             self._deferred_fault = fault
             return
         try:
+            if self._closing or self._suspended or self._worker_stop.is_set():
+                return
             timeline = self._active_timeline
             if timeline is None or timeline.stream_epoch != fault.stream_epoch:
                 return
@@ -1428,6 +1577,8 @@ class AudioIngress:
                 measurement_boundary="software_backend_health",
             )
             self._stop_backend_debt()
+            if self._closing or self._suspended or self._worker_stop.is_set():
+                return
             ownership = self._backend.ownership_snapshot()
             definitively_closed = (
                 ownership.state is voice_backend.BackendLifecycleState.CLOSED
@@ -1444,6 +1595,8 @@ class AudioIngress:
             for attempt_number in range(1, self._config.reopen_attempts + 1):
                 if self._worker_stop.wait(timeout=backoff):
                     return
+                if self._closing or self._suspended or self._worker_stop.is_set():
+                    return
                 self._reopen_attempts += 1
                 record_realtime_trace(
                     "audio_input_reopen_started",
@@ -1451,7 +1604,13 @@ class AudioIngress:
                     attempt=attempt_number,
                     reason=fault.code,
                 )
+                if self._closing or self._suspended or self._worker_stop.is_set():
+                    return
                 result = self._open_new_epoch(reason=f"recovery:{fault.code}")
+                if self._closing or self._suspended or self._worker_stop.is_set():
+                    self._revoke_publication()
+                    self._stop_backend_debt()
+                    return
                 if result.started:
                     self._reopen_successes += 1
                     self._publish_capability(
@@ -1472,6 +1631,8 @@ class AudioIngress:
                     )
                     return
                 backoff = min(backoff * 2.0, self._config.reopen_max_backoff_s)
+            if self._closing or self._suspended or self._worker_stop.is_set():
+                return
             self._publish_capability(
                 InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE,
                 reason="reopen_budget_exhausted",
@@ -1485,15 +1646,26 @@ class AudioIngress:
         finally:
             self._lifecycle_lock.release()
 
-    def stop_for_sleep(self) -> voice_backend.BackendStopResult | None:
+    def stop_for_sleep(
+        self,
+        *,
+        deadline: float | None = None,
+    ) -> voice_backend.BackendStopResult | None:
         """Close the active epoch before sleep and suppress recovery."""
+        transition_deadline = (
+            time.monotonic() + self._config.shutdown_timeout_s
+            if deadline is None
+            else deadline
+        )
         self._suspended = True
         self._revoke_publication()
-        if not self._lifecycle_lock.acquire(timeout=self._config.shutdown_timeout_s):
+        if not self._lifecycle_lock.acquire(
+            timeout=max(0.0, transition_deadline - time.monotonic()),
+        ):
             # The backend ledger is independently serialized. Even when an
             # ingress recovery holds this lock, revoke publication and join or
             # cancel the exact physical debt instead of merely reporting it.
-            result = self._stop_backend_debt()
+            result = self._stop_backend_debt(deadline=transition_deadline)
             if result is None:
                 result = voice_backend.BackendStopResult(
                     status=voice_backend.BackendStopStatus.CLOSED,
@@ -1511,7 +1683,7 @@ class AudioIngress:
             )
             return result
         try:
-            result = self._stop_backend_debt()
+            result = self._stop_backend_debt(deadline=transition_deadline)
             ownership = self._backend.ownership_snapshot()
             if result is None:
                 self._publish_capability(
@@ -1529,9 +1701,20 @@ class AudioIngress:
         finally:
             self._lifecycle_lock.release()
 
-    def resume_after_wake(self) -> voice_backend.BackendStartResult | None:
+    def resume_after_wake(
+        self,
+        *,
+        deadline: float | None = None,
+    ) -> voice_backend.BackendStartResult | None:
         """Start a fresh epoch after wake; old cursor/profile state is discarded."""
-        if not self._lifecycle_lock.acquire(timeout=self._config.shutdown_timeout_s):
+        transition_deadline = (
+            time.monotonic() + self._config.shutdown_timeout_s
+            if deadline is None
+            else deadline
+        )
+        if not self._lifecycle_lock.acquire(
+            timeout=max(0.0, transition_deadline - time.monotonic()),
+        ):
             result = voice_backend.BackendStartResult(
                 status=voice_backend.BackendStartStatus.OPEN_UNCERTAIN,
                 stream_epoch=self._last_epoch + 1,
@@ -1546,7 +1729,7 @@ class AudioIngress:
         try:
             if self._closing or not self._suspended:
                 return None
-            close_result = self._stop_backend_debt()
+            close_result = self._stop_backend_debt(deadline=transition_deadline)
             ownership = self._backend.ownership_snapshot()
             if ownership.state is not voice_backend.BackendLifecycleState.CLOSED:
                 result = voice_backend.BackendStartResult(
@@ -1566,7 +1749,10 @@ class AudioIngress:
                 )
                 return result
             self._suspended = False
-            result = self._open_new_epoch(reason="system_wake")
+            result = self._open_new_epoch(
+                reason="system_wake",
+                deadline=transition_deadline,
+            )
             if result.started:
                 state = InputCapabilityState.AVAILABLE
             elif (
@@ -1605,40 +1791,41 @@ class AudioIngress:
         *,
         reason: str,
     ) -> InputCapabilitySnapshot:
-        wake_available = state is InputCapabilityState.AVAILABLE
-        local_capture_available = state in {
-            InputCapabilityState.AVAILABLE,
-            InputCapabilityState.WAKE_UNAVAILABLE,
-        }
-        ownership = self._backend.ownership_snapshot()
-        capability_epoch = self._active_epoch or ownership.stream_epoch
-        self._capability_version += 1
-        snapshot = InputCapabilitySnapshot(
-            state=state,
-            version=self._capability_version,
-            stream_epoch=capability_epoch,
-            reason=reason,
-            wake_available=wake_available,
-            local_capture_available=local_capture_available,
-        )
-        self._capability = snapshot
-        record_realtime_trace(
-            "audio_input_capability_changed",
-            version=snapshot.version,
-            state=state.value,
-            stream_epoch=capability_epoch,
-            reason=reason,
-            wake_available=snapshot.wake_available,
-            local_capture_available=snapshot.local_capture_available,
-            ptt_upload_available=snapshot.ptt_upload_available,
-            text_available=snapshot.text_available,
-        )
-        if self._capability_sink is not None:
-            try:
-                self._capability_sink(snapshot)
-            except Exception:  # noqa: BLE001 - observer cannot break media owner
-                LOGGER.warning("audio ingress capability sink failed", exc_info=True)
-        return snapshot
+        with self._capability_lock:
+            wake_available = state is InputCapabilityState.AVAILABLE
+            local_capture_available = state in {
+                InputCapabilityState.AVAILABLE,
+                InputCapabilityState.WAKE_UNAVAILABLE,
+            }
+            ownership = self._backend.ownership_snapshot()
+            capability_epoch = self._active_epoch or ownership.stream_epoch
+            self._capability_version += 1
+            snapshot = InputCapabilitySnapshot(
+                state=state,
+                version=self._capability_version,
+                stream_epoch=capability_epoch,
+                reason=reason,
+                wake_available=wake_available,
+                local_capture_available=local_capture_available,
+            )
+            self._capability = snapshot
+            record_realtime_trace(
+                "audio_input_capability_changed",
+                version=snapshot.version,
+                state=state.value,
+                stream_epoch=capability_epoch,
+                reason=reason,
+                wake_available=snapshot.wake_available,
+                local_capture_available=snapshot.local_capture_available,
+                ptt_upload_available=snapshot.ptt_upload_available,
+                text_available=snapshot.text_available,
+            )
+            if self._capability_sink is not None:
+                try:
+                    self._capability_sink(snapshot)
+                except Exception:  # noqa: BLE001 - observer cannot break media owner
+                    LOGGER.warning("audio ingress capability sink failed", exc_info=True)
+            return snapshot
 
     def report_wake_unavailable(self, *, reason: str) -> InputCapabilitySnapshot:
         """Downgrade only wake decisions while the shared input remains healthy."""
@@ -1671,10 +1858,21 @@ class AudioIngress:
         finally:
             self._lifecycle_lock.release()
 
+    def report_output_unavailable(self, *, reason: str) -> InputCapabilitySnapshot:
+        """Keep input suspended when fresh output ownership is not proven."""
+        self._suspended = True
+        return self._publish_capability(
+            InputCapabilityState.OUTPUT_UNAVAILABLE,
+            reason=reason,
+        )
+
     def metrics(self) -> IngressMetrics:
         """Return one raw software/ADC-boundary counter snapshot."""
         subscribers = self._subscriber_snapshot
         timeline = self._active_timeline
+        active_native_overflows = (
+            timeline.native_ring.overflow_count if timeline is not None else 0
+        )
         return IngressMetrics(
             stream_epoch=timeline.stream_epoch if timeline is not None else None,
             callback_calls=self._callback_calls,
@@ -1686,7 +1884,7 @@ class AudioIngress:
             canonical_frames=self._canonical_frames,
             late_epoch_callbacks_rejected=self._late_epoch_callbacks_rejected,
             callback_shape_faults=self._callback_shape_faults,
-            native_overflows=self._native_ring.overflow_count,
+            native_overflows=self._retired_native_overflows + active_native_overflows,
             subscriber_overflows=sum(sub.overflow_count for sub in subscribers),
             active_discontinuities=sum(sub.active_discontinuity_count for sub in subscribers),
             faults=self._faults,
@@ -1697,7 +1895,8 @@ class AudioIngress:
     @property
     def capability(self) -> InputCapabilitySnapshot:
         """Return the latest precise capability snapshot."""
-        return self._capability
+        with self._capability_lock:
+            return self._capability
 
     @property
     def stream_epoch(self) -> int | None:
@@ -1720,18 +1919,25 @@ class AudioIngress:
 
     def close(self) -> IngressCloseResult:
         """Reject callbacks, close the backend, and join every owned worker."""
-        self._closing = True
+        with self._subscriber_lock:
+            self._closing = True
+            subscribers = tuple(self._subscribers.values())
+            self._subscribers.clear()
+            self._subscriber_snapshot = ()
+            self._capture_active = False
         revoked = self._revoke_publication()
+        for subscriber in subscribers:
+            subscriber._close_from_ingress()  # noqa: SLF001 - paired owner method
         self._worker_stop.set()
         deadline = time.monotonic() + self._config.shutdown_timeout_s
         acquired = self._lifecycle_lock.acquire(timeout=self._config.shutdown_timeout_s)
         if acquired:
             try:
-                backend_result = self._stop_backend_debt()
+                backend_result = self._stop_backend_debt(deadline=deadline)
             finally:
                 self._lifecycle_lock.release()
         else:
-            backend_result = self._stop_backend_debt()
+            backend_result = self._stop_backend_debt(deadline=deadline)
             if backend_result is None:
                 backend_result = voice_backend.BackendStopResult(
                     status=voice_backend.BackendStopStatus.CLOSED,
@@ -1742,8 +1948,6 @@ class AudioIngress:
         worker = self._worker
         if worker is not None:
             worker.join(timeout=max(0.0, deadline - time.monotonic()))
-        for subscriber in tuple(self._subscriber_snapshot):
-            subscriber.close()
         worker_alive = worker is not None and worker.is_alive()
         ownership = self._backend.ownership_snapshot()
         definitively_closed = (
@@ -1763,7 +1967,7 @@ class AudioIngress:
             stream_epoch=epoch,
             backend_result=backend_result,
             worker_alive=worker_alive,
-            open_subscribers=len(self._subscriber_snapshot),
+            open_subscribers=0,
         )
         record_realtime_trace(
             "audio_input_owner_closed",

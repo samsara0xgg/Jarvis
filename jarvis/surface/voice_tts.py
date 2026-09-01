@@ -543,6 +543,49 @@ def _open_output_stream(  # noqa: PLR0913 — passthrough to sd.OutputStream
     )
 
 
+@dataclass(frozen=True)
+class PlayerStartResult:
+    """Exact output-device start disposition."""
+
+    status: Literal["started", "already_started", "failed_closed", "uncertain"]
+    attempt_id: int
+    reason: str
+
+    @property
+    def started(self) -> bool:
+        """Return whether one current OutputStream is proven open."""
+        return self.status in {"started", "already_started"}
+
+
+@dataclass(frozen=True)
+class PlayerStopResult:
+    """Monotonic output-device close result with explicit ownership debt."""
+
+    status: Literal["closed", "already_closed", "uncertain"]
+    attempt_id: int
+    reason: str
+    helper_thread_alive: bool = False
+
+    @property
+    def definitively_closed(self) -> bool:
+        """Return true only after the exact stream handle's close returned."""
+        return self.status in {"closed", "already_closed"}
+
+
+@dataclass
+class _PlayerCloseAttempt:
+    """One serialized close attempt against one exact physical stream."""
+
+    attempt_id: int
+    ownership_attempt_id: int
+    stream: Any
+    done: threading.Event
+    stop_done: threading.Event
+    close_error: BaseException | None = None
+    stop_error: BaseException | None = None
+    stop_helper_alive: bool = False
+
+
 class AudioStreamPlayer:
     """Persistent-stream PCM player with sample-accurate duckable gain.
 
@@ -566,6 +609,8 @@ class AudioStreamPlayer:
     _BYTES_PER_SAMPLE = 4  # float32 mono
     _RECENT_TOMBSTONE_LIMIT = 4096
     _PENDING_AUDIBLE_LIMIT = 8192
+    _DEFAULT_LIFECYCLE_TIMEOUT_S = 2.0
+    _STOP_STAGE_WAIT_S = 0.05
 
     def __init__(  # noqa: PLR0913, PLR0915 — explicit audio/lifecycle state
         self,
@@ -602,6 +647,17 @@ class AudioStreamPlayer:
         self._device = device
 
         self._stream: Any | None = None
+        self._lifecycle_lock = threading.Lock()
+        self._lifecycle_state: Literal[
+            "closed",
+            "opening",
+            "open",
+            "closing",
+            "uncertain",
+        ] = "closed"
+        self._lifecycle_attempt_id = 0
+        self._ownership_attempt_id = 0
+        self._close_attempt: _PlayerCloseAttempt | None = None
         self._underflow_count = 0
         self._callback_calls = 0
         self._drained = threading.Event()
@@ -640,31 +696,89 @@ class AudioStreamPlayer:
         self._presentation_horizon_coalesced_seen = 0
 
         if not lazy_open:
-            self.start()
+            started = self.start()
+            if not started.started:
+                msg = f"output stream start failed: {started.reason}"
+                raise RuntimeError(msg)
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def start(self) -> None:
-        """Open the PortAudio OutputStream if not already running."""
-        if self._stream is not None:
-            return
-        stream = _open_output_stream(
-            sample_rate_hz=self._sample_rate_hz,
-            channels=self._channels,
-            blocksize=self._blocksize,
-            latency=self._latency,
-            device=self._device,
-            callback=self._callback,
-        )
+    def start(self) -> PlayerStartResult:  # noqa: PLR0911 - exact lifecycle outcomes
+        """Open one OutputStream only when all earlier ownership is closed."""
+        with self._lifecycle_lock:
+            if self._lifecycle_state == "open":
+                return PlayerStartResult(
+                    "already_started",
+                    self._ownership_attempt_id,
+                    "already_open",
+                )
+            if self._lifecycle_state != "closed":
+                return PlayerStartResult(
+                    "uncertain",
+                    self._ownership_attempt_id,
+                    f"ownership_debt_{self._lifecycle_state}",
+                )
+            self._lifecycle_attempt_id += 1
+            ownership_attempt_id = self._lifecycle_attempt_id
+            self._ownership_attempt_id = ownership_attempt_id
+            self._lifecycle_state = "opening"
+        try:
+            stream = _open_output_stream(
+                sample_rate_hz=self._sample_rate_hz,
+                channels=self._channels,
+                blocksize=self._blocksize,
+                latency=self._latency,
+                device=self._device,
+                callback=self._callback,
+            )
+        except BaseException as exc:  # noqa: BLE001 - typed device boundary
+            with self._lifecycle_lock:
+                if (
+                    self._lifecycle_state == "opening"
+                    and self._ownership_attempt_id == ownership_attempt_id
+                ):
+                    self._lifecycle_state = "closed"
+            return PlayerStartResult(
+                "failed_closed",
+                ownership_attempt_id,
+                f"open:{type(exc).__name__}",
+            )
+        with self._lifecycle_lock:
+            if (
+                self._lifecycle_state != "opening"
+                or self._ownership_attempt_id != ownership_attempt_id
+            ):
+                self._stream = stream
+                self._lifecycle_state = "uncertain"
+                return PlayerStartResult(
+                    "uncertain",
+                    ownership_attempt_id,
+                    "opening_identity_changed",
+                )
+            self._stream = stream
         try:
             stream.start()
-        except BaseException:
-            with contextlib.suppress(Exception):
-                stream.close()
-            raise
-        self._stream = stream
+        except BaseException as exc:  # noqa: BLE001 - retain exact close debt
+            with self._lifecycle_lock:
+                if self._ownership_attempt_id == ownership_attempt_id:
+                    self._lifecycle_state = "uncertain"
+            closed = self.stop(timeout_s=self._DEFAULT_LIFECYCLE_TIMEOUT_S)
+            return PlayerStartResult(
+                "failed_closed" if closed.definitively_closed else "uncertain",
+                ownership_attempt_id,
+                f"start:{type(exc).__name__};{closed.reason}",
+            )
+        with self._lifecycle_lock:
+            if self._ownership_attempt_id != ownership_attempt_id:
+                self._lifecycle_state = "uncertain"
+                return PlayerStartResult(
+                    "uncertain",
+                    ownership_attempt_id,
+                    "start_identity_changed",
+                )
+            self._lifecycle_state = "open"
         LOGGER.info(
             "AudioStreamPlayer started: %dHz ch=%d blocksize=%s latency=%s",
             self._sample_rate_hz,
@@ -672,16 +786,181 @@ class AudioStreamPlayer:
             self._blocksize,
             self._latency,
         )
+        return PlayerStartResult("started", ownership_attempt_id, "stream_started")
 
-    def stop(self) -> None:
-        """Stop and close the OutputStream. Safe to call repeatedly."""
-        if self._stream is not None:
+    def stop(
+        self,
+        *,
+        timeout_s: float | None = None,
+    ) -> PlayerStopResult:
+        """Stop software playback and prove or retain exact stream close debt."""
+        self._terminalize_software_playback()
+        timeout = (
+            self._DEFAULT_LIFECYCLE_TIMEOUT_S
+            if timeout_s is None
+            else max(0.0, timeout_s)
+        )
+        deadline = time.monotonic() + timeout
+        with self._lifecycle_lock:
+            if self._lifecycle_state == "closed":
+                return PlayerStopResult(
+                    "already_closed",
+                    self._ownership_attempt_id,
+                    "already_closed",
+                )
+            if self._lifecycle_state == "opening":
+                return PlayerStopResult(
+                    "uncertain",
+                    self._ownership_attempt_id,
+                    "open_attempt_in_flight",
+                    helper_thread_alive=True,
+                )
+            close_attempt = self._close_attempt
+            if (
+                close_attempt is not None
+                and close_attempt.done.is_set()
+                and close_attempt.close_error is not None
+                and close_attempt.stop_helper_alive
+            ):
+                return PlayerStopResult(
+                    "uncertain",
+                    close_attempt.attempt_id,
+                    "prior_stop_helper_in_flight_after_close_failure",
+                    helper_thread_alive=True,
+                )
+            if close_attempt is None or close_attempt.done.is_set():
+                stream = self._stream
+                if stream is None:
+                    self._lifecycle_state = "uncertain"
+                    return PlayerStopResult(
+                        "uncertain",
+                        self._ownership_attempt_id,
+                        "stream_handle_missing_with_ownership_debt",
+                    )
+                self._lifecycle_attempt_id += 1
+                close_attempt = _PlayerCloseAttempt(
+                    attempt_id=self._lifecycle_attempt_id,
+                    ownership_attempt_id=self._ownership_attempt_id,
+                    stream=stream,
+                    done=threading.Event(),
+                    stop_done=threading.Event(),
+                )
+                self._close_attempt = close_attempt
+                self._lifecycle_state = "closing"
+                helper = threading.Thread(
+                    target=self._close_exact_stream,
+                    args=(close_attempt,),
+                    name=f"jarvis-output-close-a{close_attempt.attempt_id}",
+                    daemon=True,
+                )
+                try:
+                    helper.start()
+                except RuntimeError as exc:
+                    close_attempt.close_error = exc
+                    self._lifecycle_state = "uncertain"
+                    close_attempt.done.set()
+            attempt_id = close_attempt.attempt_id
+        if not close_attempt.done.wait(timeout=max(0.0, deadline - time.monotonic())):
+            return PlayerStopResult(
+                "uncertain",
+                attempt_id,
+                "close_timeout",
+                helper_thread_alive=True,
+            )
+        if close_attempt.close_error is None and close_attempt.stop_helper_alive:
+            close_attempt.stop_done.wait(
+                timeout=max(0.0, deadline - time.monotonic()),
+            )
+        status, reason, stop_helper_alive = self._close_attempt_result(close_attempt)
+        if status == "closed":
+            LOGGER.info(
+                "AudioStreamPlayer stopped; lifetime callbacks=%d underflows=%d",
+                self._callback_calls,
+                self._underflow_count,
+            )
+        return PlayerStopResult(
+            status,
+            attempt_id,
+            reason,
+            helper_thread_alive=stop_helper_alive,
+        )
+
+    def _close_attempt_result(
+        self,
+        attempt: _PlayerCloseAttempt,
+    ) -> tuple[Literal["closed", "uncertain"], str, bool]:
+        """Snapshot a late-helper-aware close result without stale narrowing."""
+        with self._lifecycle_lock:
+            if (
+                attempt.close_error is None
+                and not attempt.stop_helper_alive
+                and self._lifecycle_state == "closed"
+            ):
+                reason = (
+                    "close_returned_after_stop_error"
+                    if attempt.stop_error is not None
+                    else "close_returned"
+                )
+                return "closed", reason, False
+            if attempt.close_error is not None:
+                return (
+                    "uncertain",
+                    f"close:{type(attempt.close_error).__name__}",
+                    attempt.stop_helper_alive,
+                )
+            return (
+                "uncertain",
+                "stop_helper_in_flight_after_close_return",
+                attempt.stop_helper_alive,
+            )
+
+    def _close_exact_stream(self, attempt: _PlayerCloseAttempt) -> None:
+        """Attempt stop and close once; close runs even if stop raises or hangs."""
+        def _stop_stream() -> None:
             try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.warning("stream close error (ignored): %s", exc)
-            self._stream = None
+                attempt.stream.stop()
+            except BaseException as exc:  # noqa: BLE001 - recorded lifecycle debt
+                attempt.stop_error = exc
+            finally:
+                attempt.stop_helper_alive = False
+                with self._lifecycle_lock:
+                    if (
+                        self._close_attempt is attempt
+                        and attempt.close_error is None
+                        and self._lifecycle_state == "uncertain"
+                    ):
+                        self._stream = None
+                        self._lifecycle_state = "closed"
+                attempt.stop_done.set()
+
+        stop_helper = threading.Thread(
+            target=_stop_stream,
+            name=f"jarvis-output-stop-a{attempt.attempt_id}",
+            daemon=True,
+        )
+        try:
+            attempt.stop_helper_alive = True
+            stop_helper.start()
+            attempt.stop_done.wait(timeout=self._STOP_STAGE_WAIT_S)
+        except RuntimeError as exc:
+            attempt.stop_helper_alive = False
+            attempt.stop_error = exc
+        try:
+            attempt.stream.close()
+        except BaseException as exc:  # noqa: BLE001 - exact ownership retained
+            attempt.close_error = exc
+        finally:
+            with self._lifecycle_lock:
+                if self._close_attempt is attempt:
+                    if attempt.close_error is None and not attempt.stop_helper_alive:
+                        self._stream = None
+                        self._lifecycle_state = "closed"
+                    else:
+                        self._lifecycle_state = "uncertain"
+            attempt.done.set()
+
+    def _terminalize_software_playback(self) -> None:
+        """Invalidate buffered PCM independently of physical close proof."""
         if self._generation_ring is not None:
             if self._active_lease is not None:
                 self._remember_tombstone(self._active_lease.playback_generation_id)
@@ -692,21 +971,22 @@ class AudioStreamPlayer:
             self._ring.reset()
         self._played_samples = 0
         self._drained.set()
-        LOGGER.info(
-            "AudioStreamPlayer stopped; lifetime callbacks=%d underflows=%d",
-            self._callback_calls,
-            self._underflow_count,
-        )
 
-    def close(self) -> None:
+    def close(self, *, timeout_s: float | None = None) -> PlayerStopResult:
         """Alias for :meth:`stop` — matches ADR-0005 §4.2 surface."""
-        self.stop()
+        return self.stop(timeout_s=timeout_s)
 
-    def restart(self) -> None:
+    def restart(self, *, timeout_s: float | None = None) -> PlayerStartResult:
         """Close + reopen — used by watchdog when device change detected."""
         LOGGER.warning("AudioStreamPlayer restart (likely device change)")
-        self.stop()
-        self.start()
+        closed = self.stop(timeout_s=timeout_s)
+        if not closed.definitively_closed:
+            return PlayerStartResult(
+                "uncertain",
+                closed.attempt_id,
+                f"restart_blocked:{closed.reason}",
+            )
+        return self.start()
 
     # ------------------------------------------------------------------
     # Write API
@@ -2543,15 +2823,27 @@ class TTSPipeline:
                 active_leases,
             )
         self._player.flush()
-        self._player.stop()
+        player_closed: object = self._player.stop(
+            timeout_s=max(0.0, deadline - time.monotonic()),
+        )
+        if isinstance(player_closed, PlayerStopResult):
+            device_closed = player_closed.definitively_closed
+            device_close_reason = player_closed.reason
+        else:
+            # Test/port adapters predating the typed lifecycle return are
+            # synchronous: a normal return remains their close proof.
+            device_closed = True
+            device_close_reason = "synchronous_adapter_return"
         record_realtime_trace(
             "tts_pipeline_closed",
-            success=idle,
+            success=idle and device_closed,
             active_workers=active_workers,
             active_output_leases=active_leases,
             worker_stopped=worker_stopped,
+            device_closed=device_closed,
+            device_close_reason=device_close_reason,
         )
-        return idle
+        return idle and device_closed
 
     def wait_until_idle(self, *, timeout_s: float) -> bool:
         """Wait for queued/running work and output leases without closing."""
@@ -2974,6 +3266,8 @@ __all__ = [
     "MacOSSayProcessOwner",
     "MiniMaxUnavailableError",
     "MiniMaxWSClient",
+    "PlayerStartResult",
+    "PlayerStopResult",
     "TTSPipeline",
     "_preprocess_for_speech",
     "macos_say_fallback",

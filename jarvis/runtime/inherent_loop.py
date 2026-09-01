@@ -1062,15 +1062,30 @@ class _SingleIngressActivation:
 
 
 @dataclasses.dataclass(frozen=True)
+class _VoiceInputOwners:
+    """Composition-root input branch selected for this boot."""
+
+    duplex_session: voice_session.DuplexVoiceSession | None
+    wake_listener: voice_wake.WakeListener | None
+    wake_stream: object | None
+    single_ingress_attempted: bool
+
+
+@dataclasses.dataclass(frozen=True)
 class _VoicePowerTransition:
     """Auditable ordered input/output transition at the power boundary."""
 
     input_result: object | None
     output_result: voice_media.MediaPowerTransitionResult | None
+    deadline_monotonic: float
+    elapsed_s: float
+    input_skipped_reason: str | None = None
 
 
 class _VoicePowerCoordinator:
     """Serialize power lifecycle without exposing a speech-cancel seam."""
+
+    _TOTAL_TRANSITION_BOUND_S = 2.75
 
     def __init__(
         self,
@@ -1084,17 +1099,94 @@ class _VoicePowerCoordinator:
 
     def before_sleep(self) -> _VoicePowerTransition:
         """Close input first, then terminalize and stop output."""
-        with self._lock:
-            input_result = self._session.ingress.stop_for_sleep()
-            output_result = self._media.suspend_for_sleep()
-            return _VoicePowerTransition(input_result, output_result)
+        started = time.monotonic()
+        deadline = started + self._TOTAL_TRANSITION_BOUND_S
+        if not self._lock.acquire(
+            timeout=max(0.0, deadline - time.monotonic()),
+        ):
+            output_result = voice_media.MediaPowerTransitionResult(
+                "uncertain",
+                0,
+                "coordinator_lock_timeout",
+                deadline_exhausted=True,
+            )
+            return _VoicePowerTransition(
+                None,
+                output_result,
+                deadline,
+                time.monotonic() - started,
+                "coordinator_lock_timeout",
+            )
+        try:
+            input_result = self._session.ingress.stop_for_sleep(deadline=deadline)
+            output_result = self._media.suspend_for_sleep(deadline=deadline)
+            elapsed_s = time.monotonic() - started
+            record_realtime_trace(
+                "voice_power_before_sleep_completed",
+                elapsed_s=elapsed_s,
+                total_bound_s=self._TOTAL_TRANSITION_BOUND_S,
+                deadline_exhausted=time.monotonic() >= deadline,
+                output_status=output_result.status,
+                output_reason=output_result.reason,
+            )
+            return _VoicePowerTransition(
+                input_result,
+                output_result,
+                deadline,
+                elapsed_s,
+            )
+        finally:
+            self._lock.release()
 
     def on_wake(self) -> _VoicePowerTransition:
         """Create fresh output ownership before re-enabling input decisions."""
-        with self._lock:
-            output_result = self._media.resume_after_wake()
-            input_result = self._session.ingress.resume_after_wake()
-            return _VoicePowerTransition(input_result, output_result)
+        started = time.monotonic()
+        deadline = started + self._TOTAL_TRANSITION_BOUND_S
+        if not self._lock.acquire(
+            timeout=max(0.0, deadline - time.monotonic()),
+        ):
+            reason = "coordinator_lock_timeout"
+            output_result = voice_media.MediaPowerTransitionResult(
+                "uncertain",
+                0,
+                reason,
+                deadline_exhausted=True,
+            )
+            return _VoicePowerTransition(
+                None,
+                output_result,
+                deadline,
+                time.monotonic() - started,
+                reason,
+            )
+        try:
+            output_result = self._media.resume_after_wake(deadline=deadline)
+            skipped_reason: str | None = None
+            if output_result.status == "resumed" and output_result.succeeded:
+                input_result = self._session.ingress.resume_after_wake(deadline=deadline)
+            else:
+                skipped_reason = f"output_{output_result.status}:{output_result.reason}"
+                input_result = None
+                self._session.ingress.report_output_unavailable(reason=skipped_reason)
+            elapsed_s = time.monotonic() - started
+            record_realtime_trace(
+                "voice_power_wake_completed",
+                elapsed_s=elapsed_s,
+                total_bound_s=self._TOTAL_TRANSITION_BOUND_S,
+                deadline_exhausted=time.monotonic() >= deadline,
+                output_status=output_result.status,
+                output_reason=output_result.reason,
+                input_skipped_reason=skipped_reason,
+            )
+            return _VoicePowerTransition(
+                input_result,
+                output_result,
+                deadline,
+                elapsed_s,
+                skipped_reason,
+            )
+        finally:
+            self._lock.release()
 
 
 def _single_ingress_activation(  # noqa: PLR0911 - each fail-closed prerequisite has a named result
@@ -1312,6 +1404,43 @@ def _spawn_single_ingress_session(  # noqa: PLR0911 - each pre/post-device downg
         )
         return None, True
     return session, True
+
+
+def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependencies
+    *,
+    runtime: JarvisRuntime,
+    pipeline: voice_pipeline.VoicePipeline,
+    broadcaster: InherentBroadcaster,
+    silero_path: Path,
+    tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+    ducker: voice_ducking.SystemAudioDucker,
+) -> _VoiceInputOwners:
+    """Select Wave 3 or legacy wake without ever opening both input owners."""
+    duplex_session, attempted = _spawn_single_ingress_session(
+        runtime=runtime,
+        pipeline=pipeline,
+        broadcaster=broadcaster,
+        silero_path=silero_path,
+        tts=tts,
+    )
+    wake_listener: voice_wake.WakeListener | None = None
+    wake_stream: object | None = None
+    if duplex_session is None and not attempted:
+        legacy = _spawn_wake_listener(
+            pipeline=pipeline,
+            broadcaster=broadcaster,
+            silero_path=silero_path,
+            tts=tts,
+            ducker=ducker,
+        )
+        if legacy is not None:
+            wake_listener, wake_stream = legacy
+    return _VoiceInputOwners(
+        duplex_session=duplex_session,
+        wake_listener=wake_listener,
+        wake_stream=wake_stream,
+        single_ingress_attempted=attempted,
+    )
 
 
 # --- ADR-0009 D4: supervisor sweep control plane ---------------------------
@@ -1785,7 +1914,20 @@ def _shutdown_duplex_voice_session(
     return result
 
 
-async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring branch necessarily inflates body length + branch count.
+def _request_voice_input_branch_shutdown(
+    owners: _VoiceInputOwners,
+    tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+) -> None:
+    """Select the exact Wave-3 or legacy shutdown order used by serve."""
+    if owners.duplex_session is not None:
+        _shutdown_duplex_voice_session(owners.duplex_session)
+        _request_tts_close(tts_pipe)
+        return
+    _request_tts_close(tts_pipe)
+    _shutdown_wake(owners.wake_listener, owners.wake_stream)
+
+
+async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring branch necessarily inflates body length + branch count.
     runtime: JarvisRuntime,
     *,
     host: str = "127.0.0.1",
@@ -1916,9 +2058,13 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
         # healthy when models / SDKs / mics are missing (CI default).
         voice_pipe: voice_pipeline.VoicePipeline | None = None
         tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None = None
-        wake_listener: voice_wake.WakeListener | None = None
-        wake_stream: Any | None = None
         duplex_voice_session: voice_session.DuplexVoiceSession | None = None
+        voice_input_owners = _VoiceInputOwners(
+            duplex_session=None,
+            wake_listener=None,
+            wake_stream=None,
+            single_ingress_attempted=False,
+        )
         voice_pipeline_callable: Any | None = None
         # ADR-0005 §5.1 / §5.3: ONE shared SystemAudioDucker arbitrates
         # wake-capture muting against TTS provider/playback output leases.
@@ -1953,23 +2099,15 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
                         "JARVIS_VOICE_DISABLE_WAKE=1; skipping WakeListener spawn.",
                     )
                 else:
-                    duplex_voice_session, single_ingress_attempted = _spawn_single_ingress_session(
+                    voice_input_owners = _spawn_voice_input_owners(
                         runtime=runtime,
                         pipeline=voice_pipe,
                         broadcaster=broadcaster,
                         silero_path=silero_path,
                         tts=tts_pipe,
+                        ducker=shared_ducker,
                     )
-                    if duplex_voice_session is None and not single_ingress_attempted:
-                        spawn_result = _spawn_wake_listener(
-                            pipeline=voice_pipe,
-                            broadcaster=broadcaster,
-                            silero_path=silero_path,
-                            tts=tts_pipe,
-                            ducker=shared_ducker,
-                        )
-                        if spawn_result is not None:
-                            wake_listener, wake_stream = spawn_result
+                    duplex_voice_session = voice_input_owners.duplex_session
             except Exception:
                 LOGGER.exception(
                     "voice subsystem construction failed; running text-only.",
@@ -1977,9 +2115,13 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
                 voice_pipe = None
                 voice_pipeline_callable = None
                 tts_pipe = None
-                wake_listener = None
-                wake_stream = None
                 duplex_voice_session = None
+                voice_input_owners = _VoiceInputOwners(
+                    duplex_session=None,
+                    wake_listener=None,
+                    wake_stream=None,
+                    single_ingress_attempted=False,
+                )
 
         deps = InherentDeps(
             submit_callable=submit_callable,
@@ -2068,17 +2210,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
             # below (wake / TTS / ducker / watcher cancel) is loop-thread
             # work that would otherwise be racing that notification.
             _shutdown_power_observer(power_observer)
-            if duplex_voice_session is not None:
-                # ADR-0006 F14: revoke the input epoch first. Wave 3 never
-                # turns captured speech into playback hard-cancel; TTS close
-                # remains an independent output-owner transition below.
-                _shutdown_duplex_voice_session(duplex_voice_session)
-                _request_tts_close(tts_pipe)
-            else:
-                # Feature-off legacy order is intentionally unchanged: gate
-                # TTS first so legacy capture ducking cannot mute new output.
-                _request_tts_close(tts_pipe)
-                _shutdown_wake(wake_listener, wake_stream)
+            # ADR-0006 F14: Wave 3 revokes input before output. Feature-off
+            # retains the legacy output-gate-before-wake order.
+            _request_voice_input_branch_shutdown(voice_input_owners, tts_pipe)
             # Cancel/await watcher ownership before PortAudio teardown. A
             # provider thread may still exist, but the closed generation owns
             # no right to write or invoke fallback.
