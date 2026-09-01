@@ -1326,13 +1326,12 @@ def _shutdown_power_observer(power_observer: PowerObserver | None) -> None:
 
 
 def _shutdown_tts(tts_pipe: voice_tts.TTSPipeline | None) -> None:
-    """Stop the TTS pipeline's audio player and release the PortAudio device.
+    """Bound TTS owners, then stop the player and release PortAudio.
 
-    Idempotent. The AudioStreamPlayer is constructed with lazy_open=False,
-    so its OutputStream + PortAudio callback thread are live as soon as
-    _build_tts_pipeline runs. Without this teardown the device handle
-    leaks past daemon exit, blocking clean re-launch and matching the
-    historical bare-pytest segfault pattern.
+    The caller has already installed the pipeline's close gate and cancelled
+    the watcher.  ``asyncio.to_thread`` cancellation cannot kill a provider
+    thread, so :meth:`TTSPipeline.close` also waits for generation owners up to
+    a bound; any later provider return is discarded by the closed generation.
     """
     if tts_pipe is None:
         return
@@ -1340,6 +1339,16 @@ def _shutdown_tts(tts_pipe: voice_tts.TTSPipeline | None) -> None:
         tts_pipe.close()
     except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
         LOGGER.debug("tts pipeline close failed", exc_info=True)
+
+
+def _request_tts_close(tts_pipe: voice_tts.TTSPipeline | None) -> None:
+    """Install the late-output gate before watcher cancellation; never raise."""
+    if tts_pipe is None:
+        return
+    try:
+        tts_pipe.request_close()
+    except Exception:  # noqa: BLE001 — continue the remaining teardown.
+        LOGGER.debug("tts pipeline close request failed", exc_info=True)
 
 
 def _shutdown_wake(
@@ -1625,11 +1634,18 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
             # below (wake / TTS / ducker / watcher cancel) is loop-thread
             # work that would otherwise be racing that notification.
             _shutdown_power_observer(power_observer)
-            # Shutdown order is load-bearing: wake first (releases the mic so
-            # any ducker bracket the listener held is unwound), TTS second
-            # (releases the speaker / PortAudio output stream), ducker last
-            # (force-restore in case a duck escaped on the way down).
+            # Install the TTS generation gate BEFORE cancelling the watcher:
+            # cancelling an asyncio.to_thread await does not terminate its
+            # provider thread. Late PCM/fallback is rejected from this point.
+            _request_tts_close(tts_pipe)
+            # Wake then releases the mic and unwinds any capture duck.
             _shutdown_wake(wake_listener, wake_stream)
+            # Cancel/await watcher ownership before PortAudio teardown. A
+            # provider thread may still exist, but the closed generation owns
+            # no right to write or invoke fallback.
+            for w in watchers:
+                w.cancel()
+            await asyncio.gather(*watchers, return_exceptions=True)
             _shutdown_tts(tts_pipe)
             # Force-restore output volume in case a duck escaped a finally
             # block on the way down (best-effort; idempotent if depth == 0).
@@ -1637,9 +1653,6 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
                 shared_ducker.restore_all()
             except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
                 LOGGER.debug("shared_ducker.restore_all failed", exc_info=True)
-            for w in watchers:
-                w.cancel()
-            await asyncio.gather(*watchers, return_exceptions=True)
             LOGGER.info("serve_inherent: shutdown complete")
 
 

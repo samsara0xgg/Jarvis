@@ -44,6 +44,7 @@ LOGGER = logging.getLogger(__name__)
 SILERO_CHUNK_SAMPLES = 512  # silero fixed-size per inference (32 ms @ 16 kHz)
 _LSTM_SHAPE = (2, 1, 64)
 _SAMPLE_RATE = 16000
+_SILERO_FRAME_MS = SILERO_CHUNK_SAMPLES / _SAMPLE_RATE * 1000.0
 _PREWARM_FRAMES = 5
 
 
@@ -296,6 +297,10 @@ class SileroVad:
                     "endpoint_candidate",
                     vad_mode=self._mode,
                     consecutive_silence_frames=self._misses,
+                    consecutive_silence_audio_ms=round(
+                        self._misses * _SILERO_FRAME_MS,
+                        3,
+                    ),
                 )
         else:
             # ACTIVE + still speech.

@@ -33,6 +33,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 
+from jarvis.shared.realtime_trace import record_realtime_trace
+
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
     from pathlib import Path
@@ -528,6 +530,13 @@ class LLMClient:
                 kwargs["tool_choice"] = tool_choice
 
         LOGGER.info("Sending request to OpenAI (model=%s base=%s)", self._model, self._base_url)
+        record_realtime_trace(
+            "llm_sdk_request_call_started_upper_bound",
+            provider="openai",
+            model=self._model,
+            streaming=False,
+            measurement_semantics="immediately_before_sdk_call_not_network_send",
+        )
         response = client.chat.completions.create(**kwargs)
 
         choice = response.choices[0]
@@ -613,7 +622,15 @@ class LLMClient:
         self._last_metadata["model"] = self._model
 
         finish_reason: str | None = None
+        record_realtime_trace(
+            "llm_sdk_request_call_started_upper_bound",
+            provider="openai",
+            model=self._model,
+            streaming=True,
+            measurement_semantics="immediately_before_sdk_call_not_network_send",
+        )
         response = client.chat.completions.create(**kwargs)
+        first_text_delta = True
         for chunk in response:
             choices = getattr(chunk, "choices", None) or []
             if not choices:
@@ -624,6 +641,14 @@ class LLMClient:
             if fr:
                 finish_reason = fr
             if text:
+                if first_text_delta:
+                    first_text_delta = False
+                    record_realtime_trace(
+                        "llm_provider_first_text_delta",
+                        provider="openai",
+                        model=self._model,
+                        measurement_semantics="first_nonempty_sdk_stream_delta",
+                    )
                 yield ChatStreamChunk(text=text, is_final=False, finish_reason=None)
         self._last_finish_reason = finish_reason
         yield ChatStreamChunk(text=None, is_final=True, finish_reason=finish_reason)
@@ -660,6 +685,13 @@ class LLMClient:
             kwargs["tools"] = tools
 
         LOGGER.info("Sending request to Anthropic (model=%s)", self._model)
+        record_realtime_trace(
+            "llm_sdk_request_call_started_upper_bound",
+            provider="anthropic",
+            model=self._model,
+            streaming=False,
+            measurement_semantics="immediately_before_sdk_call_not_network_send",
+        )
         response = client.messages.create(**kwargs)
 
         usage = getattr(response, "usage", None)
@@ -747,6 +779,14 @@ class LLMClient:
         self._last_metadata["model"] = self._model
 
         finish_reason: str | None = None
+        first_text_delta = True
+        record_realtime_trace(
+            "llm_sdk_request_call_started_upper_bound",
+            provider="anthropic",
+            model=self._model,
+            streaming=True,
+            measurement_semantics="immediately_before_sdk_call_not_network_send",
+        )
         with client.messages.stream(**kwargs) as stream:
             for event in stream:
                 etype = getattr(event, "type", None)
@@ -754,6 +794,14 @@ class LLMClient:
                     delta = getattr(event, "delta", None)
                     text = getattr(delta, "text", None) if delta is not None else None
                     if text:
+                        if first_text_delta:
+                            first_text_delta = False
+                            record_realtime_trace(
+                                "llm_provider_first_text_delta",
+                                provider="anthropic",
+                                model=self._model,
+                                measurement_semantics="first_nonempty_sdk_stream_delta",
+                            )
                         yield ChatStreamChunk(text=text, is_final=False, finish_reason=None)
                 elif etype == "message_delta":
                     delta = getattr(event, "delta", None)

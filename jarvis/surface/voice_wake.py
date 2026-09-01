@@ -49,6 +49,7 @@ import secrets
 import threading
 from typing import TYPE_CHECKING, Protocol
 
+from jarvis.shared.realtime_trace import realtime_trace_context
 from jarvis.surface import voice_pipeline
 
 if TYPE_CHECKING:
@@ -296,6 +297,7 @@ class WakeListener:
         self._ducker = ducker
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._session_id = "S" + secrets.token_hex(4)
 
     # -- thread lifecycle -------------------------------------------------
 
@@ -447,7 +449,12 @@ class WakeListener:
                 LOGGER.debug("wake: ducker.duck() failed", exc_info=True)
         try:
             try:
-                return self._capture_callable()
+                with realtime_trace_context(
+                    session_id=self._session_id,
+                    turn_id=turn_id,
+                    channel="inherent_wake",
+                ):
+                    return self._capture_callable()
             except Exception:
                 LOGGER.exception("wake: capture failed; turn_id=%s", turn_id)
                 self._broadcast("error", turn_id=turn_id, reason="capture_error")

@@ -28,11 +28,15 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Callable, Mapping
 
     from jarvis.surface import voice_ducking
 
-from jarvis.shared.realtime_trace import record_realtime_trace
+from jarvis.shared.realtime_trace import (
+    TraceValue,
+    realtime_trace_context,
+    record_realtime_trace,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -335,9 +339,13 @@ class AudioStreamPlayer:
         self._drained = threading.Event()
         self._drained.set()
         self._abort = threading.Event()
+        self._write_lock = threading.Lock()
         self._played_samples: int = 0
         self._on_first_chunk: Callable[[], None] | None = on_first_chunk
         self._first_chunk_fired: bool = False
+        self._trace_attributes: dict[str, TraceValue] = {}
+        self._trace_first_ring_accept_fired = False
+        self._trace_first_callback_fired = False
 
         if not lazy_open:
             self.start()
@@ -406,6 +414,7 @@ class AudioStreamPlayer:
         *,
         wait_if_full: bool = True,
         timeout_s: float = 10.0,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         """Feed mono float32 PCM ``bytes`` into the ring.
 
@@ -420,25 +429,39 @@ class AudioStreamPlayer:
         abort signal at entry; re-checks it on each ring-full retry so a
         mid-write abort exits promptly.
         """
-        samples = np.frombuffer(pcm, dtype=np.float32)
-        self._drained.clear()
-        self._abort.clear()
-        deadline = time.monotonic() + timeout_s
-        offset = 0
-        while offset < len(samples):
-            if self._abort.is_set():
+        with self._write_lock:
+            if cancel_event is not None and cancel_event.is_set():
                 return
-            written = self._ring.write(samples[offset:])
-            offset += written
-            if offset >= len(samples):
-                break
-            if not wait_if_full:
-                LOGGER.warning("ring full, dropping %d samples", len(samples) - offset)
-                return
-            if time.monotonic() > deadline:
-                LOGGER.warning("write timeout, dropping %d samples", len(samples) - offset)
-                return
-            time.sleep(0.01)
+            samples = np.frombuffer(pcm, dtype=np.float32)
+            self._drained.clear()
+            self._abort.clear()
+            deadline = time.monotonic() + timeout_s
+            offset = 0
+            while offset < len(samples):
+                if self._abort.is_set() or (
+                    cancel_event is not None and cancel_event.is_set()
+                ):
+                    return
+                written = self._ring.write(samples[offset:])
+                if written > 0 and not self._trace_first_ring_accept_fired:
+                    self._trace_first_ring_accept_fired = True
+                    record_realtime_trace(
+                        "tts_first_pcm_accepted_to_ring",
+                        measurement_semantics=(
+                            "first_float32_samples_committed_to_software_ring"
+                        ),
+                        **self._trace_attributes,
+                    )
+                offset += written
+                if offset >= len(samples):
+                    break
+                if not wait_if_full:
+                    LOGGER.warning("ring full, dropping %d samples", len(samples) - offset)
+                    return
+                if time.monotonic() > deadline:
+                    LOGGER.warning("write timeout, dropping %d samples", len(samples) - offset)
+                    return
+                time.sleep(0.01)
 
     def bytes_pending(self) -> int:
         """Queued bytes not yet read by the PortAudio callback."""
@@ -446,9 +469,10 @@ class AudioStreamPlayer:
 
     def flush(self) -> None:
         """Drop every queued sample and signal in-flight writes to bail."""
-        self._ring.reset()
-        self._drained.set()
         self._abort.set()
+        with self._write_lock:
+            self._ring.reset()
+            self._drained.set()
 
     def drain(self, timeout_s: float = 30.0) -> bool:
         """Block until the ring is empty (or timeout/abort). Returns True if drained."""
@@ -512,6 +536,19 @@ class AudioStreamPlayer:
         """Re-arm the first-chunk callback for the next TTS turn."""
         self._first_chunk_fired = False
 
+    def begin_trace_turn(
+        self,
+        attributes: Mapping[str, TraceValue],
+        *,
+        enabled: bool = True,
+    ) -> None:
+        """Correlate the next ring write and non-silent PortAudio callback."""
+        self._trace_attributes = dict(attributes)
+        self._trace_first_ring_accept_fired = not enabled
+        self._trace_first_callback_fired = not enabled
+        if enabled:
+            self.reset_first_chunk()
+
     # ------------------------------------------------------------------
     # Callback — runs on PortAudio thread, keep it tight
     # ------------------------------------------------------------------
@@ -536,6 +573,17 @@ class AudioStreamPlayer:
         view = outdata[:, 0] if outdata.ndim > 1 else outdata
         actual = self._ring.read_into(view, frames)
         self._played_samples += actual
+
+        if actual > 0 and not self._trace_first_callback_fired:
+            self._trace_first_callback_fired = True
+            record_realtime_trace(
+                "audio_output_first_nonzero_callback",
+                measurement_semantics=(
+                    "portaudio_callback_buffer_submission_not_dac_audible"
+                ),
+                frames_submitted=actual,
+                **self._trace_attributes,
+            )
 
         if actual > 0 and not self._first_chunk_fired and self._on_first_chunk is not None:
             # never crash the audio thread due to caller bugs
@@ -650,7 +698,15 @@ class MiniMaxWSClient:
         websockets error, falls back to the secondary endpoint. If both fail,
         raises :class:`MiniMaxUnavailableError`.
         """
-        chunks = [chunk async for chunk in self.synthesize_stream(text)]
+        chunks: list[bytes] = []
+        async for chunk in self.synthesize_stream(text):
+            if not chunks:
+                record_realtime_trace(
+                    "tts_provider_first_pcm_received",
+                    measurement_semantics="first_pcm_chunk_yielded_by_provider_adapter",
+                    pcm_bytes=len(chunk),
+                )
+            chunks.append(chunk)
         return b"".join(chunks)
 
     async def synthesize_stream(self, text: str) -> AsyncIterator[bytes]:
@@ -856,6 +912,8 @@ class TTSPipeline:
     :class:`MiniMaxWSClient` for the contract.
     """
 
+    _CLOSE_WAIT_S = 2.5
+
     def __init__(
         self,
         *,
@@ -889,14 +947,34 @@ class TTSPipeline:
         self._turn_id: str | None = None
         self._gate_mode: GateMode = "sentence"
         self._buffer: list[str] = []
-        self._output_active_lock = threading.Lock()
+        self._state = threading.Condition(threading.Lock())
+        self._commit_lock = threading.Lock()
+        self._close_requested = threading.Event()
+        self._closed = False
+        self._generation = 0
+        self._active_workers = 0
         self._output_active_leases = 0
 
     def begin_turn(self, turn_id: str, *, gate_mode: GateMode | None) -> None:
         """Called on ``surface.response_open``. Resets buffer + routing mode."""
-        self._turn_id = turn_id
-        self._gate_mode = gate_mode or "sentence"
-        self._buffer.clear()
+        with self._state:
+            if self._closed:
+                LOGGER.info("TTSPipeline: ignoring begin_turn after close: %s", turn_id)
+                return
+            self._turn_id = turn_id
+            self._gate_mode = gate_mode or "sentence"
+            self._buffer.clear()
+        prior_pcm_pending = self._player.bytes_pending() > 0
+        if prior_pcm_pending:
+            record_realtime_trace(
+                "audio_trace_correlation_unavailable",
+                turn_id=turn_id,
+                reason="prior_turn_pcm_still_in_software_ring",
+            )
+        self._player.begin_trace_turn(
+            {"turn_id": turn_id},
+            enabled=not prior_pcm_pending,
+        )
 
     def handle_chunk(self, turn_id: str, text: str) -> None:
         """Called on ``surface.response_chunk``.
@@ -910,21 +988,24 @@ class TTSPipeline:
         Full_text / structured: accumulate as before, flush on
         ``handle_emitted``.
         """
-        if turn_id != self._turn_id:
-            LOGGER.warning(
-                "TTSPipeline: chunk for unknown turn_id=%s (current=%s)",
-                turn_id,
-                self._turn_id,
-            )
-            return
-        self._buffer.append(text)
-        if self._gate_mode == "sentence" and "</voice>" in text:
+        with self._state:
+            if self._closed or turn_id != self._turn_id:
+                LOGGER.warning(
+                    "TTSPipeline: chunk for unknown/closed turn_id=%s (current=%s)",
+                    turn_id,
+                    self._turn_id,
+                )
+                return
+            self._buffer.append(text)
+            flush_now = self._gate_mode == "sentence" and "</voice>" in text
+        if flush_now:
             self._flush_buffer()
 
     def handle_emitted(self, turn_id: str) -> None:
         """Called on ``surface.response_emitted``. Flushes any pending buffer."""
-        if turn_id != self._turn_id:
-            return
+        with self._state:
+            if self._closed or turn_id != self._turn_id:
+                return
         self.end_turn(turn_id)
 
     def end_turn(self, turn_id: str) -> None:
@@ -935,37 +1016,93 @@ class TTSPipeline:
         a full ``handle_emitted`` event.
         """
         self._flush_buffer()
+        with self._state:
+            if self._closed or turn_id != self._turn_id:
+                return
         broadcast = getattr(self._broadcaster, "broadcast_voice_sync", None)
         if callable(broadcast):
             try:
                 broadcast("spoken", turn_id=turn_id)
             except Exception as exc:  # noqa: BLE001 — broadcast must not crash TTS
                 LOGGER.warning("broadcast_voice_sync(spoken) failed: %r", exc)
-        self._turn_id = None
-        self._buffer.clear()
+        with self._state:
+            if not self._closed and turn_id == self._turn_id:
+                self._turn_id = None
+                self._buffer.clear()
 
     def _flush_buffer(self) -> None:
         """Synth whatever is in the buffer (if any), then clear it."""
-        if not self._buffer:
-            return
-        joined = "".join(self._buffer)
-        self._buffer.clear()
+        with self._state:
+            if self._closed or not self._buffer:
+                return
+            joined = "".join(self._buffer)
+            self._buffer.clear()
         if joined:
             self._speak(joined)
 
-    def close(self) -> None:
-        """Stop the audio player and release the PortAudio device.
+    def request_close(self) -> None:
+        """Atomically reject future/late output, then flush queued PCM."""
+        self._close_requested.set()
+        with self._state:
+            if not self._closed:
+                self._closed = True
+                self._generation += 1
+                self._turn_id = None
+                self._buffer.clear()
+                self._state.notify_all()
+                record_realtime_trace(
+                    "tts_pipeline_close_requested",
+                    generation=self._generation,
+                )
+        # A write already in progress observes _close_requested; flush also
+        # wakes drain/write loops. A late provider return fails the generation
+        # CAS before player.write or fallback is invoked.
+        self._player.flush()
 
-        Idempotent — safe to call multiple times or when the player is
-        already stopped. Delegates to :meth:`AudioStreamPlayer.stop` which
-        guards on ``self._stream is None``. The MiniMax WS provider needs
-        no teardown (it opens a fresh connection per ``synthesize`` call).
+    def close(self, *, wait_timeout_s: float = _CLOSE_WAIT_S) -> bool:
+        """Close the gate, bound worker drain, then stop PortAudio.
+
+        Returns ``True`` when every synth/ring-output owner released before
+        the bound. A provider thread that outlives the bound remains harmless:
+        its generation is stale and it cannot write PCM or start fallback.
         """
+        self.request_close()
+        deadline = time.monotonic() + max(0.0, wait_timeout_s)
+        with self._state:
+            while self._active_workers > 0 or self._output_active_leases > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._state.wait(timeout=remaining)
+            idle = self._active_workers == 0 and self._output_active_leases == 0
+            active_workers = self._active_workers
+            active_leases = self._output_active_leases
+        if not idle:
+            record_realtime_trace(
+                "tts_pipeline_close_bounded",
+                success=False,
+                active_workers=active_workers,
+                active_output_leases=active_leases,
+                wait_timeout_s=wait_timeout_s,
+            )
+            LOGGER.warning(
+                "TTSPipeline close bounded with workers=%d output_leases=%d",
+                active_workers,
+                active_leases,
+            )
+        self._player.flush()
         self._player.stop()
+        record_realtime_trace(
+            "tts_pipeline_closed",
+            success=idle,
+            active_workers=active_workers,
+            active_output_leases=active_leases,
+        )
+        return idle
 
     def is_output_active(self) -> bool:
         """Return whether synthesis, fallback, or queued playback owns output."""
-        with self._output_active_lock:
+        with self._state:
             if self._output_active_leases > 0:
                 return True
         return self._player.bytes_pending() > 0
@@ -974,37 +1111,101 @@ class TTSPipeline:
         """Compatibility alias for the unified output-active lifecycle."""
         return self.is_output_active()
 
-    def _enter_output_active(self) -> None:
+    def _generation_is_current(self, generation: int) -> bool:
+        with self._state:
+            return not self._closed and self._generation == generation
+
+    def _begin_worker(self) -> tuple[int, str | None] | None:
+        with self._state:
+            if self._closed or self._close_requested.is_set():
+                return None
+            self._active_workers += 1
+            return self._generation, self._turn_id
+
+    def _finish_worker(self) -> None:
+        with self._state:
+            if self._active_workers <= 0:
+                msg = "TTS worker released without a matching owner"
+                raise RuntimeError(msg)
+            self._active_workers -= 1
+            self._state.notify_all()
+
+    def _enter_output_active(self, generation: int) -> bool:
         """Acquire one synth-before-first-PCM output lease."""
-        if self._ducker is not None:
-            self._ducker.enter_output()
-        with self._output_active_lock:
-            self._output_active_leases += 1
+        if self._ducker is not None and not self._ducker.enter_output():
+            record_realtime_trace(
+                "tts_output_lease_refused",
+                turn_id=self._turn_id,
+                reason="system_output_not_ready",
+            )
+            return False
+        with self._state:
+            if self._closed or self._generation != generation:
+                stale = True
+            else:
+                stale = False
+                self._output_active_leases += 1
+        if stale:
+            if self._ducker is not None:
+                self._ducker.leave_output()
+            return False
+        return True
 
     def _leave_output_active(self) -> None:
         """Release one output lease without disturbing concurrent synthesis."""
-        with self._output_active_lock:
-            if self._output_active_leases <= 0:
-                msg = "output-active lease released without a matching acquire"
-                raise RuntimeError(msg)
-            self._output_active_leases -= 1
-        if self._ducker is not None:
-            self._ducker.leave_output()
-
-    def _release_output_after_playback(self) -> None:
-        """Hold the synth lease until queued PCM has left the player ring."""
         try:
-            self._player.drain()
+            if self._ducker is not None:
+                self._ducker.leave_output()
+        finally:
+            with self._state:
+                if self._output_active_leases <= 0:
+                    msg = "output-active lease released without a matching acquire"
+                    raise RuntimeError(msg)
+                self._output_active_leases -= 1
+                self._state.notify_all()
+
+    def _release_output_after_ring_empty(self, *, turn_id: str | None) -> None:
+        """Hold the lease until the software ring empties, not until DAC output."""
+        try:
+            drained = self._player.drain()
+            record_realtime_trace(
+                "audio_ring_empty_observed",
+                turn_id=turn_id,
+                ring_drained=drained,
+                measurement_semantics="software_ring_empty_not_dac_audible_horizon",
+            )
         finally:
             self._leave_output_active()
+
+    def _fallback_if_current(
+        self,
+        cleaned: str,
+        *,
+        generation: int,
+        turn_id: str | None,
+    ) -> None:
+        """CAS fallback authorization against close/generation ownership."""
+        with self._commit_lock:
+            if self._close_requested.is_set() or not self._generation_is_current(
+                generation,
+            ):
+                record_realtime_trace(
+                    "tts_fallback_suppressed",
+                    turn_id=turn_id,
+                    reason="pipeline_closed_or_stale_generation",
+                )
+                return
+            record_realtime_trace("tts_fallback_started", turn_id=turn_id)
+            self._fallback(cleaned)
+            record_realtime_trace("tts_fallback_completed", turn_id=turn_id)
 
     def _speak(self, text: str) -> None:
         """Synthesize ``text`` and push the PCM bytes to the player.
 
-        ADR §5.3: while the synth + write hits the speakers, mute system
-        output (refcounted) so any other macOS audio source does not
-        layer on top. Ducker failures are logged at DEBUG and never
-        break TTS — the synth path itself must keep working.
+        The output lease begins before provider I/O and remains held until the
+        software ring empties. Ring-empty is not a claim that CoreAudio/DAC
+        playback is physically complete; a later playback ledger owns that
+        horizon. The OS-volume ducker is only used by capture.
 
         On :class:`MiniMaxUnavailableError` (both endpoints down) or any
         unexpected synth/playback exception, route the cleaned text to
@@ -1021,6 +1222,10 @@ class TTSPipeline:
         cleaned = _preprocess_for_speech(voice_only)
         if not cleaned:
             return
+        worker = self._begin_worker()
+        if worker is None:
+            return
+        generation, turn_id = worker
         # NOTE: do NOT wrap synth+write in SystemAudioDucker. That ducker
         # zeroes the macOS master output volume — which silences the TTS
         # output stream itself for the duration of write() (write blocks
@@ -1028,47 +1233,75 @@ class TTSPipeline:
         # PCM-level gain duck inside the player for barge-in; the
         # OS-level master-volume duck only belongs on the wake-capture
         # path (mute speakers while the mic is open).
-        self._enter_output_active()
-        record_realtime_trace(
-            "tts_text_pushed",
-            turn_id=self._turn_id,
-            provider_mode="batch",
-        )
-        release_after_playback = False
+        lease_acquired = False
+        release_after_ring_empty = False
         try:
+            lease_acquired = self._enter_output_active(generation)
+            if not lease_acquired:
+                return
+            record_realtime_trace(
+                "tts_batch_synthesis_started",
+                turn_id=turn_id,
+                provider_mode="batch",
+                measurement_semantics="before_provider_adapter_call_upper_bound",
+            )
             try:
-                pcm = asyncio.run(self._provider.synthesize(cleaned))
+                with realtime_trace_context(turn_id=turn_id, provider_mode="batch"):
+                    pcm = asyncio.run(self._provider.synthesize(cleaned))
                 if pcm:
                     record_realtime_trace(
-                        "tts_first_pcm",
-                        turn_id=self._turn_id,
-                        provider_mode="batch_upper_bound",
+                        "tts_batch_synthesis_completed",
+                        turn_id=turn_id,
+                        provider_mode="batch",
+                        measurement_semantics="all_provider_pcm_aggregated_not_first_pcm",
                         pcm_bytes=len(pcm),
                     )
-                self._player.write(pcm)
-                if self._player.bytes_pending() > 0:
+                with self._commit_lock:
+                    if self._close_requested.is_set() or not self._generation_is_current(
+                        generation,
+                    ):
+                        record_realtime_trace(
+                            "tts_late_pcm_discarded",
+                            turn_id=turn_id,
+                            pcm_bytes=len(pcm),
+                        )
+                        return
+                    self._player.write(pcm, cancel_event=self._close_requested)
+                if not self._close_requested.is_set() and self._player.bytes_pending() > 0:
                     release_thread = threading.Thread(
-                        target=self._release_output_after_playback,
+                        target=self._release_output_after_ring_empty,
+                        kwargs={"turn_id": turn_id},
                         name="jarvis-tts-output-lease",
                         daemon=True,
                     )
                     release_thread.start()
-                    release_after_playback = True
+                    release_after_ring_empty = True
             except MiniMaxUnavailableError:
                 LOGGER.warning(
                     "MiniMax unavailable; falling back to macos_say for: %r",
                     cleaned,
                 )
-                self._fallback(cleaned)
+                self._fallback_if_current(
+                    cleaned,
+                    generation=generation,
+                    turn_id=turn_id,
+                )
             except Exception:
                 # TTS path must never crash the daemon; F7 fallback.
                 LOGGER.exception(
-                    "TTS synth failed for turn_id=%s", self._turn_id,
+                    "TTS synth failed for turn_id=%s", turn_id,
                 )
-                self._fallback(cleaned)
+                self._fallback_if_current(
+                    cleaned,
+                    generation=generation,
+                    turn_id=turn_id,
+                )
         finally:
-            if not release_after_playback:
-                self._leave_output_active()
+            try:
+                if lease_acquired and not release_after_ring_empty:
+                    self._leave_output_active()
+            finally:
+                self._finish_worker()
 
 
 def macos_say_fallback(text: str, *, voice: str = "Tingting") -> None:

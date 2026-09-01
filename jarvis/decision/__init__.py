@@ -105,7 +105,7 @@ from jarvis.shared import (
     RawResultBundle,
 )
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
-from jarvis.shared.realtime_trace import record_realtime_trace
+from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
 from jarvis.shared.text import truncate_utf8
 from jarvis.state.event_log import emit_event
 from jarvis.state.projections import make_snapshot
@@ -1087,16 +1087,22 @@ def _run_tool_use_loop(
     while iteration < ctx.max_tool_iterations:
         iteration += 1
         record_realtime_trace(
-            "llm_request_sent",
+            "llm_chat_call_started_upper_bound",
             turn_id=scratch.turn_id,
             request_kind="decision",
             iteration=iteration,
+            measurement_semantics="before_llm_client_call_not_transport_send",
         )
-        chat_result = ctx.llm_client.chat(
-            messages=messages, system=ctx.system_prompt, tools=tools,
-        )
+        with realtime_trace_context(
+            turn_id=scratch.turn_id,
+            request_kind="decision",
+            iteration=iteration,
+        ):
+            chat_result = ctx.llm_client.chat(
+                messages=messages, system=ctx.system_prompt, tools=tools,
+            )
         record_realtime_trace(
-            "llm_response_completed",
+            "llm_batch_response_completed",
             turn_id=scratch.turn_id,
             request_kind="decision",
             iteration=iteration,
@@ -1368,8 +1374,28 @@ def _run_tier0_path(
     ctx.lifecycle.register(action_id)
     ctx.lifecycle.transition(action_id, "authorized")
 
+    record_realtime_trace(
+        "action_dispatch_started",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=hit.tool_name,
+    )
     bundle = ctx.tool_registry.dispatch(
         action_request, ctx.conn, ctx.runtime_paths, ctx.lifecycle,
+    )
+    record_realtime_trace(
+        "action_dispatch_returned",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=hit.tool_name,
+        result_slots=len(bundle.slots),
+    )
+    record_realtime_trace(
+        "action_result_available",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=hit.tool_name,
+        result_source="synchronous_dispatch_return",
     )
     result_observed_uid = _latest_event_uid_of_type(
         ctx.conn, event_type="action.result_observed",
@@ -1783,12 +1809,33 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     #    spawn_worker and action.result_observed for sync tools).
     #    Day-2 § RawResultBundle contract: dispatcher returns a bundle
     #    uniformly; single-slot tools are wrapped at the L4 boundary.
+    record_realtime_trace(
+        "action_dispatch_started",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=name,
+    )
     bundle = ctx.tool_registry.dispatch(
         action_request,
         ctx.conn,
         ctx.runtime_paths,
         ctx.lifecycle,
     )
+    record_realtime_trace(
+        "action_dispatch_returned",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=name,
+        result_slots=len(bundle.slots),
+    )
+    if not tool_def.is_async:
+        record_realtime_trace(
+            "action_result_available",
+            turn_id=scratch.turn_id,
+            action_id=action_id,
+            tool_name=name,
+            result_source="synchronous_dispatch_return",
+        )
     primary_slot = bundle.slots[0]
 
     # 6b. ADR-0002 Step 3: when L4 returns RawResult.metadata["cost"]
@@ -2572,6 +2619,23 @@ def _emit_pre_emit_gate_event(
         correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
     )
     scratch.events.append(gate_event)
+    permitted = not plan.downgrade_required
+    record_realtime_trace(
+        "response_candidate_gate_evaluated",
+        turn_id=scratch.turn_id,
+        gate_attempt=attempt,
+        permitted=permitted,
+        permission=plan.permission,
+        measurement_semantics="completed_batch_candidate_not_stream_delta",
+    )
+    if permitted:
+        record_realtime_trace(
+            "response_candidate_permitted",
+            turn_id=scratch.turn_id,
+            gate_attempt=attempt,
+            permission=plan.permission,
+            measurement_semantics="first_permitted_completed_candidate_not_stream_delta",
+        )
     return gate_event
 
 
@@ -2684,18 +2748,24 @@ def _finalize_response(
             },
         ]
         record_realtime_trace(
-            "llm_request_sent",
+            "llm_chat_call_started_upper_bound",
             turn_id=scratch.turn_id,
             request_kind="pre_emit_retry",
             iteration=1,
+            measurement_semantics="before_llm_client_call_not_transport_send",
         )
-        retry_result = ctx.llm_client.chat(
-            messages=retry_messages,
-            system=ctx.system_prompt,
-            tools=None,
-        )
+        with realtime_trace_context(
+            turn_id=scratch.turn_id,
+            request_kind="pre_emit_retry",
+            iteration=1,
+        ):
+            retry_result = ctx.llm_client.chat(
+                messages=retry_messages,
+                system=ctx.system_prompt,
+                tools=None,
+            )
         record_realtime_trace(
-            "llm_response_completed",
+            "llm_batch_response_completed",
             turn_id=scratch.turn_id,
             request_kind="pre_emit_retry",
             iteration=1,
@@ -3462,8 +3532,28 @@ def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per
     ctx.lifecycle.register(action_id)
     ctx.lifecycle.transition(action_id, "authorized")
 
+    record_realtime_trace(
+        "action_dispatch_started",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=tool_name,
+    )
     bundle = ctx.tool_registry.dispatch(
         action_request, ctx.conn, ctx.runtime_paths, ctx.lifecycle,
+    )
+    record_realtime_trace(
+        "action_dispatch_returned",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=tool_name,
+        result_slots=len(bundle.slots),
+    )
+    record_realtime_trace(
+        "action_result_available",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=tool_name,
+        result_source="synchronous_confirmation_dispatch_return",
     )
     primary_result_slot = bundle.slots[0]
 

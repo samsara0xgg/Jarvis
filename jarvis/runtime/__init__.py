@@ -88,7 +88,10 @@ from jarvis.execution.tools import (
     turn_action_ids,
 )
 from jarvis.shared import CallerPrincipal, Event
-from jarvis.shared.realtime_trace import record_realtime_trace
+from jarvis.shared.realtime_trace import (
+    configure_realtime_trace_jsonl,
+    record_realtime_trace,
+)
 from jarvis.state.event_log import iter_events, open_event_log
 from jarvis.surface.cli import (
     PreEmitTokenError,
@@ -791,6 +794,31 @@ def _build_vision_client(config: Mapping[str, Any], preset_name: str) -> VisionC
     return _LLMVisionClient(llm_client)
 
 
+def _configure_realtime_trace_export(paths: RuntimePaths) -> None:
+    """Enable the controlled JSONL live-burn seam without touching Event Log."""
+    trace_jsonl_raw = os.environ.get("JARVIS_REALTIME_TRACE_JSONL")
+    if not trace_jsonl_raw:
+        configure_realtime_trace_jsonl(None)
+        return
+    trace_jsonl = Path(trace_jsonl_raw).expanduser()
+    if not trace_jsonl.is_absolute():
+        trace_jsonl = paths.root / trace_jsonl
+    if trace_jsonl.resolve() == paths.event_log.resolve():
+        msg = "JARVIS_REALTIME_TRACE_JSONL must not target the production Event Log"
+        raise RuntimeBootstrapError(msg)
+    try:
+        configure_realtime_trace_jsonl(trace_jsonl)
+    except OSError as exc:
+        msg = f"runtime: cannot open realtime trace JSONL {trace_jsonl}: {exc}"
+        raise RuntimeBootstrapError(msg) from exc
+
+
+def _load_runtime_env_and_trace(paths: RuntimePaths) -> None:
+    """Load fill-only runtime env, then apply its optional trace destination."""
+    load_env_file(paths.root)
+    _configure_realtime_trace_export(paths)
+
+
 def bootstrap_runtime_app(
     *,
     config_path: Path | None = None,
@@ -860,7 +888,10 @@ def bootstrap_runtime_app(
     # 1b. ADR-0009 D1 — fill-only ``${runtime_root}/env`` loader, BEFORE
     #     any surface preflight reads the environment (launchd strips the
     #     shell env; secrets must not live in the 0644 plist).
-    load_env_file(paths.root)
+    # Optional live-burn seam. This JSONL is diagnostic-only and must never be
+    # the canonical SQLite Event Log. Relative paths stay inside runtime_root;
+    # no path means the exporter is disabled (the production default).
+    _load_runtime_env_and_trace(paths)
 
     # 2. L2 event log.
     conn = open_event_log(paths.event_log)
@@ -1206,7 +1237,7 @@ def run_turn(
     )
 
 
-def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set is the cross-surface contract (CLI + daemon watcher) and intentionally explicit.
+def drive_turn(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; argument set + traced multi-trigger loop are the cross-surface contract.
     runtime: JarvisRuntime,
     *,
     user_intent_event: Event,
@@ -1368,11 +1399,41 @@ def drive_turn(  # noqa: PLR0913 — composition-root entrypoint; argument set i
             # ADR-0009 D4 / F9 — the waiter is scoped to the actions THIS
             # turn dispatched. Read fresh each iteration: the action
             # that paused decide() was registered inside the call above.
-            next_event, last_seen_id = _wait_for_next_trigger(
-                runtime.conn,
-                after_id=last_seen_id,
-                action_ids=turn_action_ids(effective_turn_id),
-                timeout=trigger_timeout_s,
+            owned_action_ids = turn_action_ids(effective_turn_id)
+            record_realtime_trace(
+                "action_wait_started",
+                turn_id=effective_turn_id,
+                action_count=len(owned_action_ids),
+                timeout_s=trigger_timeout_s,
+            )
+            try:
+                next_event, last_seen_id = _wait_for_next_trigger(
+                    runtime.conn,
+                    after_id=last_seen_id,
+                    action_ids=owned_action_ids,
+                    timeout=trigger_timeout_s,
+                )
+            except TriggerWaitTimeout:
+                record_realtime_trace(
+                    "action_wait_completed",
+                    turn_id=effective_turn_id,
+                    outcome="bounded_timeout",
+                    timeout_s=trigger_timeout_s,
+                )
+                raise
+            action_id = _event_action_id(next_event)
+            record_realtime_trace(
+                "action_wait_completed",
+                turn_id=effective_turn_id,
+                outcome="trigger_observed",
+                trigger_type=next_event.type,
+                action_id=action_id,
+            )
+            record_realtime_trace(
+                "action_result_available",
+                turn_id=effective_turn_id,
+                action_id=action_id,
+                result_source=next_event.type,
             )
             trigger_event = next_event
 

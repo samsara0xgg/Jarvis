@@ -8,6 +8,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.surface import voice_audio
 
 
@@ -61,6 +62,7 @@ def test_reused_vad_resets_prewarms_and_waits_for_consecutive_silence(
     required_misses: int,
 ) -> None:
     """Two captures on one VAD must have identical utterance-local endpoints."""
+    reset_realtime_trace()
     thresholds = voice_audio.VadThresholds(
         prob_threshold=0.4,
         db_threshold=-45.0,
@@ -98,3 +100,15 @@ def test_reused_vad_resets_prewarms_and_waits_for_consecutive_silence(
     assert session.run_count == 2 * (5 + expected_frames), (
         "each utterance must run five silent prewarm inferences before real frames"
     )
+    endpoint_points = [
+        point for point in realtime_trace_snapshot() if point.name == "endpoint_candidate"
+    ]
+    assert [point.attributes["consecutive_silence_frames"] for point in endpoint_points] == [
+        required_misses,
+        required_misses,
+    ]
+    assert [
+        point.attributes["consecutive_silence_audio_ms"] for point in endpoint_points
+    ] == [
+        pytest.approx(required_misses * voice_audio.SILERO_CHUNK_SAMPLES / 16_000 * 1_000)
+    ] * 2
