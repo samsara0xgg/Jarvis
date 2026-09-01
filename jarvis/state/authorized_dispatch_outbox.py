@@ -6,7 +6,8 @@ import hashlib
 import json
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Final, Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from jarvis.shared.realtime import (
     AlreadyConsumed,
@@ -82,6 +83,10 @@ class AuthorizedDispatchTransactionStateError(AuthorizedDispatchError):
     """The primitive cannot own its required ``BEGIN IMMEDIATE``."""
 
 
+class AuthorizedDispatchCorruptionError(AuthorizedDispatchError):
+    """Persisted dispatch debt failed recovery integrity validation."""
+
+
 def ensure_authorized_dispatch_schema(conn: sqlite3.Connection) -> None:
     """Install the bounded operational claim/outbox tables idempotently."""
     if conn.in_transaction:
@@ -140,31 +145,67 @@ def _request_json(payload: Mapping[str, object]) -> tuple[str, str]:
     return encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _load_dispatch_by_source(
+@dataclass(frozen=True)
+class _PersistedDispatchRow:
+    confirmation_id: str
+    authorization_id: str
+    lease_id: str
+    action_id: str
+    dispatch_id: str
+    gate_event_uid: str
+    tool_name: str
+    target_entity_ref: str | None
+    request_json: str
+    request_hash: str
+
+
+def _fetch_dispatch_row(
     conn: sqlite3.Connection,
     source_confirmation_event_id: str,
-) -> AuthorizedDispatch | None:
-    row = conn.execute(
+) -> _PersistedDispatchRow | None:
+    raw = conn.execute(
         "SELECT confirmation_id, authorization_id, lease_id, action_id, "
-        "dispatch_id, gate_event_uid, tool_name, target_entity_ref, request_json "
-        "FROM authorized_dispatch_outbox WHERE source_confirmation_event_id = ?",
+        "dispatch_id, gate_event_uid, tool_name, target_entity_ref, request_json, "
+        "request_hash FROM authorized_dispatch_outbox "
+        "WHERE source_confirmation_event_id = ?",
         (source_confirmation_event_id,),
     ).fetchone()
-    if row is None:
+    if raw is None:
         return None
-    (
-        confirmation_id,
-        authorization_id,
-        lease_id,
-        action_id,
-        dispatch_id,
-        gate_event_uid,
-        tool_name,
-        target_entity_ref,
-        request_json,
-    ) = row
+    required_strings = (*raw[:7], *raw[8:10])
+    if not all(isinstance(value, str) and value for value in required_strings):
+        msg = "authorized-dispatch row contains malformed string fields"
+        raise AuthorizedDispatchCorruptionError(msg)
+    if raw[7] is not None and not isinstance(raw[7], str):
+        msg = "authorized-dispatch target_entity_ref is malformed"
+        raise AuthorizedDispatchCorruptionError(msg)
+    return _PersistedDispatchRow(
+        confirmation_id=cast("str", raw[0]),
+        authorization_id=cast("str", raw[1]),
+        lease_id=cast("str", raw[2]),
+        action_id=cast("str", raw[3]),
+        dispatch_id=cast("str", raw[4]),
+        gate_event_uid=cast("str", raw[5]),
+        tool_name=cast("str", raw[6]),
+        target_entity_ref=raw[7],
+        request_json=cast("str", raw[8]),
+        request_hash=cast("str", raw[9]),
+    )
+
+
+def _validate_stable_rows(
+    conn: sqlite3.Connection,
+    *,
+    source_confirmation_event_id: str,
+    row: _PersistedDispatchRow,
+) -> None:
     identity = stable_authorization_identity(source_confirmation_event_id)
-    persisted_ids = (authorization_id, lease_id, action_id, dispatch_id)
+    persisted_ids = (
+        row.authorization_id,
+        row.lease_id,
+        row.action_id,
+        row.dispatch_id,
+    )
     expected_ids = (
         identity.authorization_id,
         identity.lease_id,
@@ -173,22 +214,177 @@ def _load_dispatch_by_source(
     )
     if persisted_ids != expected_ids:
         msg = "authorized-dispatch stable identity does not match accepted Event UID"
-        raise AuthorizedDispatchError(msg)
-    gate_event = get_event(conn, str(gate_event_uid))
+        raise AuthorizedDispatchCorruptionError(msg)
+    claim = conn.execute(
+        "SELECT confirmation_id, authorization_id, lease_id, action_id, "
+        "dispatch_id, gate_event_uid FROM confirmation_consumption_claims "
+        "WHERE source_confirmation_event_id = ?",
+        (source_confirmation_event_id,),
+    ).fetchone()
+    expected_claim = (
+        row.confirmation_id,
+        row.authorization_id,
+        row.lease_id,
+        row.action_id,
+        row.dispatch_id,
+        row.gate_event_uid,
+    )
+    if claim is None or tuple(claim) != expected_claim:
+        msg = "authorized-dispatch claim and outbox rows do not agree"
+        raise AuthorizedDispatchCorruptionError(msg)
+
+
+def _load_frozen_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    source_confirmation_event_id: str,
+    confirmation_id: str,
+) -> dict[str, object]:
+    accepted_event = get_event(conn, source_confirmation_event_id)
+    if accepted_event is None or accepted_event.type != "confirmation.accepted":
+        msg = "authorized-dispatch source is not confirmation.accepted"
+        raise AuthorizedDispatchCorruptionError(msg)
+    if accepted_event.payload.get("confirmation_id") != confirmation_id:
+        msg = "authorized-dispatch confirmation_id differs from its acceptance"
+        raise AuthorizedDispatchCorruptionError(msg)
+    requested_event = (
+        None
+        if accepted_event.source_event_id is None
+        else get_event(conn, accepted_event.source_event_id)
+    )
+    if requested_event is None or requested_event.type != "confirmation.requested":
+        msg = "authorized-dispatch acceptance has no confirmation request"
+        raise AuthorizedDispatchCorruptionError(msg)
+    if requested_event.payload.get("confirmation_id") != confirmation_id:
+        msg = "authorized-dispatch confirmation_id differs from its request"
+        raise AuthorizedDispatchCorruptionError(msg)
+    snapshot = requested_event.payload.get("action_snapshot")
+    if not isinstance(snapshot, dict):
+        msg = "authorized-dispatch request has no frozen action snapshot"
+        raise AuthorizedDispatchCorruptionError(msg)
+    return snapshot
+
+
+def _load_valid_gate(
+    conn: sqlite3.Connection,
+    *,
+    source_confirmation_event_id: str,
+    row: _PersistedDispatchRow,
+) -> Event:
+    gate_event = get_event(conn, row.gate_event_uid)
     if gate_event is None:
-        msg = f"outbox gate event {gate_event_uid!r} is missing"
-        raise AuthorizedDispatchError(msg)
-    request_payload_raw: Any = json.loads(str(request_json))
+        msg = f"outbox gate event {row.gate_event_uid!r} is missing"
+        raise AuthorizedDispatchCorruptionError(msg)
+    if gate_event.type != "gate.evaluated":
+        msg = "authorized-dispatch debt does not reference gate.evaluated"
+        raise AuthorizedDispatchCorruptionError(msg)
+    if gate_event.source_event_id != source_confirmation_event_id:
+        msg = "authorized-dispatch gate is not sourced by its canonical acceptance"
+        raise AuthorizedDispatchCorruptionError(msg)
+    expected_payload = {
+        "gate": "pre_action",
+        "outcome": "pass",
+        "action_id": row.action_id,
+        "lease_id": row.lease_id,
+        "authorization_id": row.authorization_id,
+        "dispatch_id": row.dispatch_id,
+    }
+    if any(gate_event.payload.get(key) != value for key, value in expected_payload.items()):
+        msg = "authorized-dispatch gate payload does not match stable outbox identity"
+        raise AuthorizedDispatchCorruptionError(msg)
+    return gate_event
+
+
+def _load_valid_request(
+    row: _PersistedDispatchRow,
+    *,
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    recomputed_hash = hashlib.sha256(row.request_json.encode("utf-8")).hexdigest()
+    if row.request_hash != recomputed_hash:
+        msg = "authorized-dispatch request_hash does not match request_json"
+        raise AuthorizedDispatchCorruptionError(msg)
+    try:
+        request_payload_raw: Any = json.loads(row.request_json)
+    except json.JSONDecodeError as exc:
+        msg = "outbox request_json is not valid JSON"
+        raise AuthorizedDispatchCorruptionError(msg) from exc
     if not isinstance(request_payload_raw, dict):
         msg = "outbox request_json is not an object"
-        raise AuthorizedDispatchError(msg)
+        raise AuthorizedDispatchCorruptionError(msg)
+    canonical_json = json.dumps(request_payload_raw, sort_keys=True, separators=(",", ":"))
+    if canonical_json != row.request_json:
+        msg = "authorized-dispatch request_json is not canonical"
+        raise AuthorizedDispatchCorruptionError(msg)
+    row_bindings = {
+        "action_id": row.action_id,
+        "tool_name": row.tool_name,
+        "target_entity_ref": row.target_entity_ref,
+    }
+    if any(request_payload_raw.get(key) != value for key, value in row_bindings.items()):
+        msg = "authorized-dispatch request_json does not match its outbox row"
+        raise AuthorizedDispatchCorruptionError(msg)
+
+    args_meta = snapshot.get("args_meta")
+    if not isinstance(args_meta, dict):
+        msg = "authorized-dispatch frozen arguments are malformed"
+        raise AuthorizedDispatchCorruptionError(msg)
+    metadata_keys = {"content_sha256", "content_bytes", "content_artifact"}
+    expected_arguments = {
+        key: value for key, value in args_meta.items() if key not in metadata_keys
+    }
+    expected_arguments["content_ref"] = {
+        "artifact": args_meta.get("content_artifact"),
+        "sha256": args_meta.get("content_sha256"),
+        "bytes": args_meta.get("content_bytes"),
+    }
+    snapshot_bindings = {
+        "tool_name": snapshot.get("tool_name"),
+        "target_entity_ref": snapshot.get("target_entity_ref"),
+        "caller_principal": snapshot.get("caller"),
+        "risk_level": snapshot.get("risk_level"),
+        "arguments": expected_arguments,
+        "payload": None,
+    }
+    if any(
+        request_payload_raw.get(key) != value for key, value in snapshot_bindings.items()
+    ):
+        msg = "authorized-dispatch request_json differs from its frozen confirmation"
+        raise AuthorizedDispatchCorruptionError(msg)
+    return request_payload_raw
+
+
+def _load_dispatch_by_source(
+    conn: sqlite3.Connection,
+    source_confirmation_event_id: str,
+) -> AuthorizedDispatch | None:
+    row = _fetch_dispatch_row(conn, source_confirmation_event_id)
+    if row is None:
+        return None
+    identity = stable_authorization_identity(source_confirmation_event_id)
+    _validate_stable_rows(
+        conn,
+        source_confirmation_event_id=source_confirmation_event_id,
+        row=row,
+    )
+    snapshot = _load_frozen_snapshot(
+        conn,
+        source_confirmation_event_id=source_confirmation_event_id,
+        confirmation_id=row.confirmation_id,
+    )
+    gate_event = _load_valid_gate(
+        conn,
+        source_confirmation_event_id=source_confirmation_event_id,
+        row=row,
+    )
+    request_payload = _load_valid_request(row, snapshot=snapshot)
     return AuthorizedDispatch(
         identity=identity,
-        confirmation_id=str(confirmation_id),
+        confirmation_id=row.confirmation_id,
         gate_event=gate_event,
-        tool_name=str(tool_name),
-        target_entity_ref=(None if target_entity_ref is None else str(target_entity_ref)),
-        request_payload=request_payload_raw,
+        tool_name=row.tool_name,
+        target_entity_ref=row.target_entity_ref,
+        request_payload=request_payload,
     )
 
 
@@ -387,6 +583,12 @@ def authorize_confirmation_dispatch(  # noqa: PLR0913 - transaction inputs mirro
     if gate_payload.get("gate") != "pre_action" or gate_payload.get("outcome") != "pass":
         msg = "only an L3 passing gate may create authorized dispatch debt"
         raise ConfirmationRevalidationError(msg)
+    if (
+        gate_source_event_id is not None
+        and gate_source_event_id != source_confirmation_event_id
+    ):
+        msg = "passing gate source must be the canonical acceptance Event UID"
+        raise ConfirmationRevalidationError(msg)
 
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -424,7 +626,7 @@ def authorize_confirmation_dispatch(  # noqa: PLR0913 - transaction inputs mirro
             conn,
             type="gate.evaluated",
             payload=effective_gate_payload,
-            source_event_id=gate_source_event_id or accepted_event.event_uid,
+            source_event_id=accepted_event.event_uid,
             correlation=correlation,
         )
         _inject(failure_injector, "after_gate_append")
@@ -487,6 +689,7 @@ def authorize_confirmation_dispatch(  # noqa: PLR0913 - transaction inputs mirro
 
 
 __all__ = [
+    "AuthorizedDispatchCorruptionError",
     "AuthorizedDispatchError",
     "AuthorizedDispatchTransactionStateError",
     "ConfirmationRevalidationError",

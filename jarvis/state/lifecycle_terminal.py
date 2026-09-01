@@ -70,7 +70,6 @@ def _existing_terminal(
     if owner == "playback":
         row = conn.execute(
             "SELECT event_uid FROM events WHERE type IN (?, ?, ?) "
-            "AND json_extract(payload_json, '$.session_id') = ? "
             "AND json_extract(payload_json, '$.response_id') = ? "
             "AND json_extract(payload_json, '$.playback_generation_id') = ? "
             "ORDER BY id ASC LIMIT 1",
@@ -78,7 +77,6 @@ def _existing_terminal(
                 "surface.playback_completed",
                 "surface.playback_interrupted",
                 "surface.playback_failed",
-                payload["session_id"],
                 payload["response_id"],
                 payload["playback_generation_id"],
             ),
@@ -191,7 +189,7 @@ def terminalize_playback(  # noqa: PLR0913 - explicit Event fields are intention
     if not isinstance(generation, int) or isinstance(generation, bool) or generation < 0:
         msg = "playback terminal requires non-negative playback_generation_id"
         raise LifecycleTerminalError(msg)
-    identity = f"{session_id}:{response_id}:{generation}"
+    identity = f"{response_id}:{generation}"
     return _terminalize(
         conn,
         owner="playback",

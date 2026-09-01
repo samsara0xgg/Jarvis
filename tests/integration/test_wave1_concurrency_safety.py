@@ -15,8 +15,11 @@ from typing import TYPE_CHECKING, Any, Self, cast
 import pytest
 import yaml
 
+from jarvis.decision import DecideContext, decide
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import ChatStreamChunk, LLMClient
+from jarvis.execution.tools import ActionLifecycle, build_default_registry
+from jarvis.runtime import VisionCallError, _build_vision_cost_recorder, _LLMVisionClient
 from jarvis.shared import ActionRequest, AuthorizationLease, CallerPrincipal
 from jarvis.shared.realtime import (
     AlreadyConsumed,
@@ -24,13 +27,16 @@ from jarvis.shared.realtime import (
     AuthorizedDispatch,
     CostAccountingDisposition,
     CostAlreadyRecorded,
+    CostRecorded,
     TerminalCommitted,
     Wave1FeatureFlags,
 )
 from jarvis.state.authorized_dispatch_outbox import (
+    AuthorizedDispatchCorruptionError,
     ConfirmationRevalidationError,
     authorize_confirmation_dispatch,
     ensure_authorized_dispatch_schema,
+    get_authorized_dispatch,
 )
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.cost_accounting import (
@@ -188,7 +194,6 @@ def test_lifecycle_terminal_two_connection_race_has_one_winner(
     bus.subscribe(_published)
     if owner == "playback":
         base = {
-            "session_id": "S1",
             "response_id": "R-playback",
             "turn_id": "T1",
             "playback_generation_id": 7,
@@ -199,13 +204,18 @@ def test_lifecycle_terminal_two_connection_race_has_one_winner(
             lambda conn: terminalize_playback(
                 conn,
                 event_type="surface.playback_completed",
-                payload={**base, "speech_text_hash": "full"},
+                payload={**base, "session_id": "S-one", "speech_text_hash": "full"},
                 committed_event_bus=bus,
             ),
             lambda conn: terminalize_playback(
                 conn,
                 event_type="surface.playback_interrupted",
-                payload={**base, "heard_text_hash": "partial", "reason": "race"},
+                payload={
+                    **base,
+                    "session_id": "S-two",
+                    "heard_text_hash": "partial",
+                    "reason": "race",
+                },
                 committed_event_bus=bus,
             ),
         )
@@ -249,6 +259,9 @@ def test_lifecycle_terminal_two_connection_race_has_one_winner(
     assert sum(isinstance(outcome, AlreadyTerminal) for outcome in outcomes) == 1
     assert outcomes[0].event.event_uid == outcomes[1].event.event_uid
     assert published == [outcomes[0].event.event_uid]
+    if owner == "playback":
+        assert {outcome.identity for outcome in outcomes} == {"R-playback:7"}
+        assert outcomes[0].event.payload["session_id"] in {"S-one", "S-two"}
 
     check = _raw_connection(path)
     placeholders = ",".join("?" for _ in terminal_types)
@@ -272,6 +285,35 @@ _RESPONSE_TYPES = frozenset({"response.completed", "response.cancelled", "respon
 _ACTION_TYPES = frozenset(
     {"action.result_observed", "action.failed", "action.timeout_assumed", "action.cancelled"},
 )
+
+
+def test_playback_terminal_index_migrates_from_session_scoped_definition(
+    tmp_path: Path,
+) -> None:
+    """Opening a Wave 1 database installs the corrected two-part CAS index."""
+    path = tmp_path / "playback-index-migration.db"
+    legacy = open_event_log(path)
+    legacy.execute("DROP INDEX idx_events_playback_terminal_v2")
+    legacy.execute(
+        "CREATE INDEX idx_events_playback_terminal "
+        "ON events(type, json_extract(payload_json, '$.session_id'), "
+        "json_extract(payload_json, '$.response_id'), "
+        "json_extract(payload_json, '$.playback_generation_id'))",
+    )
+    legacy.commit()
+    legacy.close()
+
+    migrated = open_event_log(path)
+    row = migrated.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' "
+        "AND name = 'idx_events_playback_terminal_v2'",
+    ).fetchone()
+    assert row is not None
+    definition = str(row[0])
+    assert "session_id" not in definition
+    assert "response_id" in definition
+    assert "playback_generation_id" in definition
+    migrated.close()
 
 
 def test_terminal_failure_after_append_rolls_back_without_publish(tmp_path: Path) -> None:
@@ -450,6 +492,111 @@ def test_confirmation_acceptance_two_connection_race_has_one_dispatch(tmp_path: 
 
 
 @pytest.mark.parametrize(
+    "tamper",
+    ["request_hash", "request_binding", "claim_binding", "gate_source", "gate_payload"],
+)
+def test_authorized_dispatch_recovery_rejects_persisted_tampering(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    """Recovery never returns dispatchable debt from a mismatched durable chain."""
+    conn = open_event_log(tmp_path / f"dispatch-recovery-{tamper}.db")
+    accepted, snapshot = _seed_accepted_confirmation(conn, suffix=tamper)
+    request, lease = _confirmation_candidate(
+        accepted.event_uid,
+        snapshot,
+        random_suffix=tamper,
+    )
+    outcome = authorize_confirmation_dispatch(
+        conn,
+        source_confirmation_event_id=accepted.event_uid,
+        action_request=request,
+        lease=lease,
+        gate_payload={"gate": "pre_action", "outcome": "pass", "reasons": []},
+        now_ms=2_010_000,
+    )
+    assert isinstance(outcome, AuthorizedDispatch)
+
+    if tamper == "request_hash":
+        conn.execute(
+            "UPDATE authorized_dispatch_outbox SET request_hash = ?",
+            ("0" * 64,),
+        )
+    elif tamper == "request_binding":
+        row = conn.execute(
+            "SELECT request_json FROM authorized_dispatch_outbox",
+        ).fetchone()
+        assert row is not None
+        request_payload = json.loads(str(row[0]))
+        request_payload["tool_name"] = "unapproved_tool"
+        encoded = json.dumps(request_payload, sort_keys=True, separators=(",", ":"))
+        conn.execute(
+            "UPDATE authorized_dispatch_outbox SET request_json = ?, request_hash = ?",
+            (encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()),
+        )
+    elif tamper == "claim_binding":
+        conn.execute(
+            "UPDATE confirmation_consumption_claims SET confirmation_id = ?",
+            ("CONF-unrelated",),
+        )
+    else:
+        bad_payload = dict(outcome.gate_event.payload)
+        source_event_id: str | None = accepted.event_uid
+        if tamper == "gate_source":
+            source_event_id = accepted.source_event_id
+            assert source_event_id is not None
+        else:
+            bad_payload["dispatch_id"] = "DISP-unrelated"
+        bad_gate = emit_event(
+            conn,
+            type="gate.evaluated",
+            payload=bad_payload,
+            source_event_id=source_event_id,
+        )
+        conn.execute(
+            "UPDATE confirmation_consumption_claims SET gate_event_uid = ?",
+            (bad_gate.event_uid,),
+        )
+        conn.execute(
+            "UPDATE authorized_dispatch_outbox SET gate_event_uid = ?",
+            (bad_gate.event_uid,),
+        )
+    conn.commit()
+
+    with pytest.raises(AuthorizedDispatchCorruptionError):
+        get_authorized_dispatch(conn, accepted.event_uid)
+    conn.close()
+
+
+def test_confirmation_gate_source_override_cannot_escape_accepted_uid(
+    tmp_path: Path,
+) -> None:
+    """Callers cannot redirect the passing gate's cause chain."""
+    conn = open_event_log(tmp_path / "confirmation-gate-source.db")
+    accepted, snapshot = _seed_accepted_confirmation(conn, suffix="gate-source")
+    request, lease = _confirmation_candidate(
+        accepted.event_uid,
+        snapshot,
+        random_suffix="gate-source",
+    )
+    assert accepted.source_event_id is not None
+    with pytest.raises(ConfirmationRevalidationError, match="canonical acceptance"):
+        authorize_confirmation_dispatch(
+            conn,
+            source_confirmation_event_id=accepted.event_uid,
+            action_request=request,
+            lease=lease,
+            gate_payload={"gate": "pre_action", "outcome": "pass", "reasons": []},
+            gate_source_event_id=accepted.source_event_id,
+            now_ms=2_010_000,
+        )
+    assert _event_count(conn, "gate.evaluated") == 0
+    assert _table_count(conn, "confirmation_consumption_claims") == 0
+    assert _table_count(conn, "authorized_dispatch_outbox") == 0
+    conn.close()
+
+
+@pytest.mark.parametrize(
     "failure_stage",
     ["after_gate_append", "after_consumption_claim", "after_outbox_insert"],
 )
@@ -545,6 +692,10 @@ class _FakeOpenAICompletions:
     def create(self, **kwargs: object) -> object:
         if self.mode == "error":
             message = "provider exploded"
+            raise RuntimeError(message)
+        if self.mode == "vision_error":
+            encoded = "A" * 96
+            message = f"provider echoed data:image/png;base64,{encoded}"
             raise RuntimeError(message)
         if kwargs.get("stream") is not True:
             return SimpleNamespace(
@@ -779,6 +930,106 @@ def test_cost_guard_covers_batch_stream_cancel_error_and_terminal_usage(tmp_path
     conn.close()
 
 
+def test_stream_completion_accounting_failure_is_not_reclassified_as_provider_error(
+    tmp_path: Path,
+) -> None:
+    """A failed completion commit propagates without a second disposition attempt."""
+    conn = open_event_log(tmp_path / "stream-accounting-failure.db")
+    attempts = 0
+
+    def _fail_once(stage: str) -> None:
+        nonlocal attempts
+        if stage == "after_begin":
+            attempts += 1
+            if attempts == 1:
+                message = "completion accounting failed"
+                raise RuntimeError(message)
+
+    recorder = CostRecorder(conn, failure_injector=cast("Any", _fail_once))
+    with pytest.raises(RuntimeError, match="completion accounting failed"):
+        _stream_all(recorder, _openai_client("stream"))
+
+    assert attempts == 1
+    assert _event_count(conn, "cost.recorded") == 0
+    assert _table_count(conn, "cost_accounting_dispositions") == 0
+    conn.close()
+
+
+def test_cost_disposition_two_connection_race_preserves_first_committed_truth(
+    tmp_path: Path,
+) -> None:
+    """Conflicting replays share one event and return the winner's disposition."""
+    path = tmp_path / "cost-race.db"
+    setup = open_event_log(path)
+    ensure_cost_accounting_schema(setup)
+    setup.close()
+    barrier = threading.Barrier(3)
+    bus = CommittedEventBus()
+    published: list[str] = []
+    publish_lock = threading.Lock()
+    dispositions = (
+        CostAccountingDisposition(
+            llm_request_id="LLM-shared-race",
+            kind="decision",
+            provider="openai",
+            model="gpt-race",
+            outcome="completed",
+            usage_status="provider_final",
+            input_tokens=10,
+            output_tokens=4,
+        ),
+        CostAccountingDisposition(
+            llm_request_id="LLM-shared-race",
+            kind="decision",
+            provider="openai",
+            model="gpt-race",
+            outcome="error",
+            usage_status="unavailable",
+            error_code="ConflictingReplay",
+        ),
+    )
+
+    def _publish(event: Event) -> None:
+        with publish_lock:
+            published.append(event.event_uid)
+
+    def _worker(disposition: CostAccountingDisposition) -> CostRecorded | CostAlreadyRecorded:
+        conn = _raw_connection(path)
+        try:
+            barrier.wait()
+            return record_cost_disposition_once(
+                conn,
+                disposition,
+                committed_event_bus=bus,
+            )
+        finally:
+            conn.close()
+
+    bus.subscribe(_publish)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(_worker, disposition) for disposition in dispositions]
+        barrier.wait()
+        outcomes = tuple(future.result(timeout=10) for future in futures)
+
+    assert sum(isinstance(outcome, CostRecorded) for outcome in outcomes) == 1
+    assert sum(isinstance(outcome, CostAlreadyRecorded) for outcome in outcomes) == 1
+    winner = next(outcome for outcome in outcomes if isinstance(outcome, CostRecorded))
+    loser = next(outcome for outcome in outcomes if isinstance(outcome, CostAlreadyRecorded))
+    assert loser.disposition == winner.disposition
+    assert loser.event.event_uid == winner.event.event_uid
+    assert published == [winner.event.event_uid]
+
+    check = _raw_connection(path)
+    assert _event_count(check, "cost.recorded") == 1
+    assert _table_count(check, "cost_accounting_dispositions") == 1
+    payload_row = check.execute(
+        "SELECT payload_json FROM events WHERE type = 'cost.recorded'",
+    ).fetchone()
+    assert payload_row is not None
+    assert json.loads(str(payload_row[0]))["disposition"] == winner.disposition.outcome
+    check.close()
+
+
 def test_cost_failure_injection_rolls_back_event_and_claim(tmp_path: Path) -> None:
     """A failed accounting transaction is absent and retryable."""
     conn = open_event_log(tmp_path / "cost-failure.db")
@@ -811,6 +1062,102 @@ def test_cost_failure_injection_rolls_back_event_and_claim(tmp_path: Path) -> No
     assert _event_count(conn, "cost.recorded") == 0
     assert _table_count(conn, "cost_accounting_dispositions") == 0
     assert published == []
+    conn.close()
+
+
+def test_flag_on_decide_path_records_one_production_cost_disposition(
+    tmp_path: Path,
+) -> None:
+    """The real decide orchestration uses the guard, not only its L2 primitive."""
+    path = tmp_path / "flag-on-decide.db"
+    conn = open_event_log(path)
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    client = _openai_client("batch")
+    ctx = DecideContext(
+        conn=conn,
+        runtime_paths=cast(
+            "Any",
+            SimpleNamespace(event_log=path, artifacts_root=artifacts),
+        ),
+        tool_registry=cast("Any", build_default_registry()),
+        lifecycle=cast("Any", ActionLifecycle()),
+        llm_client=client,
+        system_prompt="integration system",
+        wave1_features=Wave1FeatureFlags(exactly_once_cost_accounting=True),
+    )
+    trigger = emit_event(
+        conn,
+        type="surface.user_intent",
+        payload={"transcript": "hello", "turn_id": "T-wave1-wiring"},
+        correlation={"turn_id": "T-wave1-wiring"},
+    )
+
+    result = decide(trigger, ctx)
+
+    assert result.response_plan is not None
+    assert result.response_plan.text == "batch"
+    assert _event_count(conn, "cost.recorded") == 1
+    assert _table_count(conn, "cost_accounting_dispositions") == 1
+    row = conn.execute(
+        "SELECT payload_json FROM events WHERE type = 'cost.recorded'",
+    ).fetchone()
+    assert row is not None
+    payload = json.loads(str(row[0]))
+    assert payload["kind"] == "decision"
+    assert payload["disposition"] == "completed"
+    assert payload["llm_request_id"] == client.last_llm_request_id
+    conn.close()
+
+
+def test_vision_cost_guard_flag_on_success_error_and_flag_off_compatibility(
+    tmp_path: Path,
+) -> None:
+    """Composition-root vision calls share L3 accounting and redaction."""
+    conn = open_event_log(tmp_path / "vision-cost.db")
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(b"not-a-real-png")
+    guarded_recorder = _build_vision_cost_recorder(
+        conn,
+        Wave1FeatureFlags(exactly_once_cost_accounting=True),
+        pricing_path=tmp_path / "missing-pricing.json",
+    )
+    assert guarded_recorder is not None
+
+    guarded_success = _LLMVisionClient(
+        _openai_client("batch"),
+        cost_recorder=guarded_recorder,
+    )
+    assert guarded_success.describe_image(image_path, question="what?") == "batch"
+
+    guarded_error = _LLMVisionClient(
+        _openai_client("vision_error"),
+        cost_recorder=guarded_recorder,
+    )
+    with pytest.raises(VisionCallError) as captured:
+        guarded_error.describe_image(image_path, question=None)
+    assert "[redacted-base64]" in str(captured.value)
+    assert "base64," not in str(captured.value)
+
+    rows = conn.execute(
+        "SELECT payload_json FROM events WHERE type = 'cost.recorded' ORDER BY id",
+    ).fetchall()
+    payloads = [json.loads(str(row[0])) for row in rows]
+    assert len(payloads) == 2
+    assert {payload["kind"] for payload in payloads} == {"vision"}
+    assert {payload["disposition"] for payload in payloads} == {"completed", "error"}
+    assert len({payload["llm_request_id"] for payload in payloads}) == 2
+
+    legacy_recorder = _build_vision_cost_recorder(
+        conn,
+        Wave1FeatureFlags(),
+        pricing_path=tmp_path / "missing-pricing.json",
+    )
+    assert legacy_recorder is None
+    legacy = _LLMVisionClient(_openai_client("batch"), cost_recorder=legacy_recorder)
+    assert legacy.describe_image(image_path, question=None) == "batch"
+    assert _event_count(conn, "cost.recorded") == 2
+    assert _table_count(conn, "cost_accounting_dispositions") == 2
     conn.close()
 
 

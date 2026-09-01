@@ -56,6 +56,7 @@ from jarvis.decision import (
     decide,
 )
 from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_confirm_grammar
+from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import LLMClient, load_llm_config
 from jarvis.decision.policy import (
     PolicyConsistencyError,
@@ -88,6 +89,7 @@ from jarvis.execution.tools import (
     turn_action_ids,
 )
 from jarvis.shared import CallerPrincipal, Event
+from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.shared.realtime_trace import (
     configure_realtime_trace_jsonl,
@@ -718,9 +720,15 @@ class _LLMVisionClient:
     back.
     """
 
-    def __init__(self, llm_client: LLMClient) -> None:
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        *,
+        cost_recorder: CostRecorder | None = None,
+    ) -> None:
         """Wrap a vision-preset-bound `LLMClient` (see `_build_vision_client`)."""
         self._llm_client = llm_client
+        self._cost_recorder = cost_recorder
 
     def describe_image(self, image_path: Path, *, question: str | None) -> str:
         """Send one image + optional question to the vision preset; return text.
@@ -743,13 +751,30 @@ class _LLMVisionClient:
             },
         ]
         try:
-            result = self._llm_client.chat(messages=messages, system=_VISION_SYSTEM_PROMPT)
+            if self._cost_recorder is None:
+                result = self._llm_client.chat(
+                    messages=messages,
+                    system=_VISION_SYSTEM_PROMPT,
+                )
+            else:
+                result = self._cost_recorder.chat(
+                    self._llm_client,
+                    messages=messages,
+                    system=_VISION_SYSTEM_PROMPT,
+                    kind="vision",
+                    turn_id=None,
+                )
         except Exception as exc:  # noqa: BLE001 — deliberately re-raised, scrubbed, as VisionCallError; see MUST-FIX 1a.
             raise VisionCallError(_redact_vision_error(exc)) from None
         return result.text or ""
 
 
-def _build_vision_client(config: Mapping[str, Any], preset_name: str) -> VisionClient | None:
+def _build_vision_client(
+    config: Mapping[str, Any],
+    preset_name: str,
+    *,
+    cost_recorder: CostRecorder | None = None,
+) -> VisionClient | None:
     """Build the `screen_look` vision seam from `llm.presets.<preset_name>` (ADR-0011 D7).
 
     Returns `None` when the preset is absent/malformed — either
@@ -802,7 +827,22 @@ def _build_vision_client(config: Mapping[str, Any], preset_name: str) -> VisionC
             exc,
         )
         return None
-    return _LLMVisionClient(llm_client)
+    return _LLMVisionClient(llm_client, cost_recorder=cost_recorder)
+
+
+def _build_vision_cost_recorder(
+    conn: sqlite3.Connection,
+    wave1_features: Wave1FeatureFlags,
+    *,
+    pricing_path: Path,
+) -> CostRecorder | None:
+    """Map the rollout flag to the shared L3 guard at the composition root."""
+    if not wave1_features.exactly_once_cost_accounting:
+        return None
+    return CostRecorder(
+        conn,
+        pricing_table=load_pricing_table(pricing_path),
+    )
 
 
 def _configure_realtime_trace_export(paths: RuntimePaths) -> None:
@@ -830,7 +870,7 @@ def _load_runtime_env_and_trace(paths: RuntimePaths) -> None:
     _configure_realtime_trace_export(paths)
 
 
-def bootstrap_runtime_app(
+def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays explicit
     *,
     config_path: Path | None = None,
     prompt_path: Path | None = None,
@@ -913,6 +953,7 @@ def bootstrap_runtime_app(
     #    the registry at build time (ADR-0011 D7) — L4 handlers do not
     #    load YAML themselves.
     full_config = _load_full_config(config_path)
+    wave1_features = _wave1_feature_flags(full_config)
     (
         web_search_max_results,
         web_fetch_max_bytes,
@@ -921,6 +962,11 @@ def bootstrap_runtime_app(
     ) = _web_tools_config(full_config)
     web_search_provider, web_search_api_key = _web_search_provider_config(full_config)
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
+    vision_cost_recorder = _build_vision_cost_recorder(
+        conn,
+        wave1_features,
+        pricing_path=repo_root / "data" / "pricing.json",
+    )
     registry = build_default_registry(
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
@@ -929,7 +975,11 @@ def bootstrap_runtime_app(
         web_fetch_max_bytes=web_fetch_max_bytes,
         web_fetch_max_text_bytes=web_fetch_max_text_bytes,
         web_timeout_s=web_timeout_s,
-        vision_client=_build_vision_client(full_config, vision_preset_name),
+        vision_client=_build_vision_client(
+            full_config,
+            vision_preset_name,
+            cost_recorder=vision_cost_recorder,
+        ),
         screen_max_width_px=screen_max_width_px,
     )
     lifecycle = ActionLifecycle()
@@ -1017,7 +1067,7 @@ def bootstrap_runtime_app(
         tier0_table=tier0_table,
         entity_bookmarks=entity_bookmarks,
         confirm_grammar_table=confirm_grammar_table,
-        wave1_features=_wave1_feature_flags(full_config),
+        wave1_features=wave1_features,
     )
 
 

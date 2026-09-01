@@ -116,9 +116,10 @@ _CREATE_INDEXES_SQL: Final[tuple[str, ...]] = (
     "ON events(type, json_extract(payload_json, '$.response_id'))",
     "CREATE INDEX IF NOT EXISTS idx_events_action_terminal "
     "ON events(type, json_extract(payload_json, '$.action_id'))",
-    "CREATE INDEX IF NOT EXISTS idx_events_playback_terminal "
-    "ON events(type, json_extract(payload_json, '$.session_id'), "
-    "json_extract(payload_json, '$.response_id'), "
+    # New name is a deliberate migration: SQLite would retain Wave 1's
+    # original three-column definition under CREATE INDEX IF NOT EXISTS.
+    "CREATE INDEX IF NOT EXISTS idx_events_playback_terminal_v2 "
+    "ON events(type, json_extract(payload_json, '$.response_id'), "
     "json_extract(payload_json, '$.playback_generation_id'))",
 )
 

@@ -12,7 +12,7 @@ from jarvis.shared.realtime import (
     LLMRequestOutcome,
     LLMUsageStatus,
 )
-from jarvis.state.cost_accounting import record_cost_disposition_once
+from jarvis.state.cost_accounting import FailureInjector, record_cost_disposition_once
 
 if TYPE_CHECKING:
     import sqlite3
@@ -35,11 +35,13 @@ class CostRecorder:
         *,
         pricing_table: Mapping[str, Mapping[str, float]] | None = None,
         committed_event_bus: CommittedEventBus | None = None,
+        failure_injector: FailureInjector | None = None,
     ) -> None:
         """Bind one Event Log connection and optional pricing snapshot."""
         self._conn = conn
         self._pricing_table = {} if pricing_table is None else dict(pricing_table)
         self._committed_event_bus = committed_event_bus
+        self._failure_injector = failure_injector
         self._last_outcome: CostAccountingOutcome | None = None
 
     @property
@@ -72,6 +74,7 @@ class CostRecorder:
             disposition,
             correlation=self._correlation(turn_id=turn_id, run_id=run_id),
             committed_event_bus=self._committed_event_bus,
+            failure_injector=self._failure_injector,
         )
         self._last_outcome = outcome
         return outcome
@@ -232,7 +235,7 @@ class CostRecorder:
         )
         return result
 
-    def chat_stream(  # noqa: PLR0913 - mirrors the existing adapter plus correlation
+    def chat_stream(  # noqa: C901, PLR0913 - explicit provider/accounting state machine
         self,
         client: LLMClient,
         *,
@@ -253,49 +256,67 @@ class CostRecorder:
         stream = client.chat_stream(messages=messages, system=system, tools=tools)
         recorded = False
         try:
-            for chunk in stream:
+            while True:
+                try:
+                    chunk = next(stream)
+                except StopIteration:
+                    break
+                except BaseException as exc:
+                    outcome: LLMRequestOutcome = (
+                        "cancelled" if isinstance(exc, asyncio.CancelledError) else "error"
+                    )
+                    self._commit(
+                        self._from_client(
+                            client,
+                            kind=kind,
+                            outcome=outcome,
+                            error_code=type(exc).__name__,
+                        ),
+                        turn_id=turn_id,
+                        run_id=run_id,
+                    )
+                    raise
+
                 if chunk.is_final and not recorded:
+                    # Deliberately outside the provider-iteration exception
+                    # boundary above: an accounting failure is not a provider
+                    # failure and must never trigger a second, contradictory
+                    # outcome="error" disposition.
                     self._commit(
                         self._from_client(client, kind=kind, outcome="completed"),
                         turn_id=turn_id,
                         run_id=run_id,
                     )
                     recorded = True
-                yield chunk
-        except GeneratorExit:
-            close = getattr(stream, "close", None)
-            if callable(close):
-                close()
-            if not recorded:
-                self._commit(
-                    self._from_client(client, kind=kind, outcome="cancelled"),
-                    turn_id=turn_id,
-                    run_id=run_id,
-                )
-            raise
-        except BaseException as exc:
-            if not recorded:
-                outcome: LLMRequestOutcome = (
-                    "cancelled" if isinstance(exc, asyncio.CancelledError) else "error"
-                )
-                self._commit(
-                    self._from_client(
-                        client,
-                        kind=kind,
-                        outcome=outcome,
-                        error_code=type(exc).__name__,
-                    ),
-                    turn_id=turn_id,
-                    run_id=run_id,
-                )
-            raise
-        else:
+                try:
+                    yield chunk
+                except GeneratorExit:
+                    if not recorded:
+                        self._commit(
+                            self._from_client(client, kind=kind, outcome="cancelled"),
+                            turn_id=turn_id,
+                            run_id=run_id,
+                        )
+                    raise
+                except BaseException:
+                    if not recorded:
+                        self._commit(
+                            self._from_client(client, kind=kind, outcome="cancelled"),
+                            turn_id=turn_id,
+                            run_id=run_id,
+                        )
+                    raise
+
             if not recorded:
                 self._commit(
                     self._from_client(client, kind=kind, outcome="completed"),
                     turn_id=turn_id,
                     run_id=run_id,
                 )
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
 
 
 __all__ = ["CostRecorder", "MissingLLMRequestIdentityError"]
