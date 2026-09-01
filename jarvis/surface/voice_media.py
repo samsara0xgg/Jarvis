@@ -111,13 +111,19 @@ def _response_id(event: Event) -> str | None:
 _ChannelMode = Literal["plain", "voice", "document"]
 
 
-def _structured_speech_slice(raw_text: str, mode: _ChannelMode) -> tuple[str, _ChannelMode]:
-    """Extract this chunk's voice slice while carrying tag state to the next."""
-    parts: list[str] = []
+def _structured_voice_spans(raw_text: str) -> list[tuple[int, int]]:
+    """Return voice-only spans after lexing the complete bounded response text.
+
+    Parsing the joined response is the lexical carry: a tag may be split at
+    any byte boundary between renderer chunks, while the returned spans are
+    later projected back onto those original chunk identities.
+    """
+    spans: list[tuple[int, int]] = []
+    mode: _ChannelMode = "plain"
     cursor = 0
     for match in _CHANNEL_TAG_RE.finditer(raw_text):
-        if mode == "voice":
-            parts.append(raw_text[cursor : match.start()])
+        if mode == "voice" and cursor < match.start():
+            spans.append((cursor, match.start()))
         tag = match.group(0)
         if tag == "<voice>":
             mode = "voice"
@@ -128,9 +134,9 @@ def _structured_speech_slice(raw_text: str, mode: _ChannelMode) -> tuple[str, _C
         ):
             mode = "plain"
         cursor = match.end()
-    if mode == "voice":
-        parts.append(raw_text[cursor:])
-    return "".join(parts), mode
+    if mode == "voice" and cursor < len(raw_text):
+        spans.append((cursor, len(raw_text)))
+    return spans
 
 MediaSubmitStatus = Literal[
     "accepted",
@@ -152,6 +158,22 @@ class MediaSubmitOutcome:
     event_uid: str
     response_id: str | None = None
     detail: str = ""
+
+
+class StreamingMediaStartupError(RuntimeError):
+    """Bounded startup failure with an explicit audio-device isolation debt."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase: str,
+        device_state_uncertain: bool,
+    ) -> None:
+        """Record the phase and whether another audio backend is unsafe."""
+        super().__init__(message)
+        self.phase = phase
+        self.device_state_uncertain = device_state_uncertain
 
 
 class StreamingTTSProvider(Protocol):
@@ -254,20 +276,27 @@ class _ResponseBuffer:
     emitted: bool = False
 
     def speech_segments(self) -> list[tuple[int, str, str]]:
-        """Parse channel tags statefully while retaining renderer identities."""
+        """Map joined structured spans back to exact renderer identities."""
         ordered = [self.chunks[key] for key in sorted(self.chunks)]
         raw = "".join(chunk.raw_text for chunk in ordered)
-        structured = "<voice>" in raw or "<document>" in raw
-        mode: _ChannelMode = "plain"
+        structured = _CHANNEL_TAG_RE.search(raw) is not None
+        voice_spans = _structured_voice_spans(raw) if structured else []
         segments: list[tuple[int, str, str]] = []
+        chunk_start = 0
         for chunk in ordered:
             if structured:
-                raw_speech, mode = _structured_speech_slice(chunk.raw_text, mode)
+                chunk_end = chunk_start + len(chunk.raw_text)
+                raw_speech = "".join(
+                    raw[max(chunk_start, start) : min(chunk_end, end)]
+                    for start, end in voice_spans
+                    if start < chunk_end and end > chunk_start
+                )
             else:
                 raw_speech = chunk.raw_text
             text = _preprocess_for_speech(raw_speech)
             if text:
                 segments.append((chunk.sequence, text, chunk.segment_hash))
+            chunk_start += len(chunk.raw_text)
         return segments
 
     def speech_text(self) -> str:
@@ -283,6 +312,7 @@ class _ActiveResponse:
     session: TTSSession | None = None
     fallback_process: asyncio.subprocess.Process | None = None
     fallback_spawn_task: asyncio.Task[asyncio.subprocess.Process] | None = None
+    fallback_janitor_task: asyncio.Task[bool] | None = None
     output_lease: bool = False
     last_checkpoint_sequence: int | None = None
     provider_label: str = "minimax_ws_streaming"
@@ -500,7 +530,7 @@ class _SegmentResampler:
 class StreamingTTSPipeline:
     """One persistent async L5 media actor behind a bounded sync/async bridge."""
 
-    def __init__(  # noqa: PLR0913 - explicit ownership dependencies
+    def __init__(  # noqa: PLR0913, PLR0915 - explicit ownership dependencies
         self,
         *,
         provider: StreamingTTSProvider,
@@ -512,7 +542,7 @@ class StreamingTTSPipeline:
         ducker: SystemAudioDucker | None = None,
         start_player: bool = True,
     ) -> None:
-        """Start one non-daemon thread and its daemon-lifetime asyncio loop."""
+        """Start one persistent actor without letting stuck startup pin exit."""
         self._provider = provider
         self._player = player
         self._conn_factory = conn_factory
@@ -526,19 +556,31 @@ class StreamingTTSPipeline:
         self._accepting = threading.Event()
         self._accepting.set()
         self._ready = threading.Event()
+        self._startup_finished = threading.Event()
+        self._startup_abandoned = threading.Event()
+        self._startup_lock = threading.Lock()
+        self._startup_phase = "opening_connection"
         self._closed = threading.Event()
         self._output_active = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue[_MediaCommand | object] | None = None
         self._conn: sqlite3.Connection | None = None
         self._startup_error: BaseException | None = None
+        self._startup_error_phase: str | None = None
         self._shutdown_requested = threading.Event()
+        self._deadline_lock = threading.Lock()
         self._shutdown_deadline = float("inf")
+        self._cleanup_lock = threading.Lock()
+        self._cleanup_errors: list[str] = []
         self._player_stop_started = False
         self._player_stop_done = threading.Event()
         self._player_stop_thread: threading.Thread | None = None
+        self._provider_stop_started = False
+        self._provider_stop_done = threading.Event()
+        self._provider_stop_thread: threading.Thread | None = None
         self._lane_isolated = False
         self._terminal_debt: _ActiveResponse | None = None
+        self._fallback_janitors: set[asyncio.Task[bool]] = set()
         self._event_cursor = boot_high_water_id
         self._responses: dict[str, _ResponseBuffer] = {}
         self._after_drain: deque[_ResponseBuffer] = deque()
@@ -546,26 +588,51 @@ class StreamingTTSPipeline:
         self._thread = threading.Thread(
             target=self._thread_main,
             name="jarvis-media-owner",
-            daemon=False,
+            # A permanently stuck third-party connection/device constructor
+            # cannot be interrupted by Python. The actor is therefore daemon
+            # backed, publishes explicit degraded cleanup state, and rejects
+            # successors until late startup has been isolated and closed.
+            daemon=True,
         )
         self._thread.start()
-        if not self._ready.wait(timeout=self._config.shutdown_timeout_s):
-            self._request_shutdown_deadline(self._config.shutdown_timeout_s)
-            self._thread.join(timeout=self._config.shutdown_timeout_s)
-            msg = "persistent media owner did not start within its bound"
-            raise RuntimeError(msg)
-        try:
+        deadline = time.monotonic() + self._config.shutdown_timeout_s
+        finished = self._startup_finished.wait(
+            timeout=max(0.0, deadline - time.monotonic()),
+        )
+        if not finished:
+            phase = self._get_startup_phase()
+            self._startup_abandoned.set()
+            self._accepting.clear()
+            self._publish_shutdown_deadline(deadline)
+            self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            message = "persistent media owner did not start within its bound"
+            raise StreamingMediaStartupError(
+                message,
+                phase=phase,
+                device_state_uncertain=phase == "starting_player",
+            )
+        if not self._ready.is_set():
+            self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
             self._raise_startup_error()
-        except RuntimeError:
-            self._thread.join(timeout=self._config.shutdown_timeout_s)
-            raise
 
     def _raise_startup_error(self) -> None:
         """Surface an actor-thread failure after its readiness publication."""
         error = self._startup_error
         if error is not None:
             msg = "persistent media owner failed to start"
-            raise RuntimeError(msg) from error
+            raise StreamingMediaStartupError(
+                msg,
+                phase=self._startup_error_phase or self._get_startup_phase(),
+                device_state_uncertain=False,
+            ) from error
+
+    def _set_startup_phase(self, phase: str) -> None:
+        with self._startup_lock:
+            self._startup_phase = phase
+
+    def _get_startup_phase(self) -> str:
+        with self._startup_lock:
+            return self._startup_phase
 
     @property
     def boot_high_water_event_log_id(self) -> int:
@@ -602,23 +669,56 @@ class StreamingTTSPipeline:
         self._request_shutdown_deadline(self._config.shutdown_timeout_s)
 
     def close(self, *, wait_timeout_s: float | None = None) -> bool:
-        """Use one total deadline for admission stop, teardown, and join."""
-        timeout = wait_timeout_s or self._config.shutdown_timeout_s
+        """Return true only after actor, provider, and device cleanup complete."""
+        timeout = (
+            self._config.shutdown_timeout_s
+            if wait_timeout_s is None
+            else max(0.0, wait_timeout_s)
+        )
         deadline = time.monotonic() + timeout
         self._accepting.clear()
-        self._request_shutdown_deadline(max(0.0, timeout - 0.02))
+        self._publish_shutdown_deadline(deadline)
         self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
-        return not self._thread.is_alive() and self._closed.is_set()
+        complete = self.cleanup_complete
+        if not complete:
+            record_realtime_trace(
+                "media_owner_cleanup_degraded",
+                actor_stopped=not self._thread.is_alive(),
+                provider_stopped=self._provider_stop_done.is_set(),
+                player_stopped=self._player_stop_done.is_set(),
+                startup_phase=self._get_startup_phase(),
+            )
+        return complete
+
+    @property
+    def cleanup_complete(self) -> bool:
+        """Report confirmed teardown, including late daemon-janitor completion."""
+        with self._cleanup_lock:
+            clean = not self._cleanup_errors
+        return (
+            not self._thread.is_alive()
+            and self._closed.is_set()
+            and self._provider_stop_done.is_set()
+            and self._player_stop_done.is_set()
+            and clean
+        )
 
     def _request_shutdown_deadline(self, timeout_s: float) -> None:
         deadline = time.monotonic() + max(0.0, timeout_s)
-        self._shutdown_deadline = min(self._shutdown_deadline, deadline)
+        self._publish_shutdown_deadline(deadline)
+
+    def _publish_shutdown_deadline(self, deadline: float) -> None:
+        """Atomically publish an absolute deadline that can only move earlier."""
+        with self._deadline_lock:
+            self._shutdown_deadline = min(self._shutdown_deadline, deadline)
         self._shutdown_requested.set()
 
     def _remaining_s(self, cap_s: float) -> float:
-        if self._shutdown_deadline == float("inf"):
+        with self._deadline_lock:
+            deadline = self._shutdown_deadline
+        if deadline == float("inf"):
             return cap_s
-        return min(cap_s, max(0.0, self._shutdown_deadline - time.monotonic()))
+        return min(cap_s, max(0.0, deadline - time.monotonic()))
 
     def wait_until_idle(self, *, timeout_s: float) -> bool:
         """Wait without borrowing actor-owned mutable state."""
@@ -673,22 +773,29 @@ class StreamingTTSPipeline:
         self._loop = loop
         try:
             self._conn = self._conn_factory()
+            if self._startup_abandoned.is_set():
+                return
             self._queue = asyncio.Queue(
                 maxsize=self._config.command_queue_capacity,
             )
             if self._start_player:
+                self._set_startup_phase("starting_player")
                 self._player.start()
+                if self._startup_abandoned.is_set():
+                    return
+            self._set_startup_phase("running")
             self._ready.set()
+            self._startup_finished.set()
             loop.run_until_complete(self._run_owned())
         except BaseException as exc:
             self._startup_error = exc
-            if self._shutdown_deadline == float("inf"):
-                self._shutdown_deadline = time.monotonic() + self._config.shutdown_timeout_s
-            self._ready.set()
+            self._startup_error_phase = self._get_startup_phase()
+            self._request_shutdown_deadline(self._config.shutdown_timeout_s)
+            self._startup_finished.set()
             LOGGER.exception("persistent media owner crashed")
         finally:
-            if self._shutdown_deadline == float("inf"):
-                self._shutdown_deadline = time.monotonic() + self._config.shutdown_timeout_s
+            self._request_shutdown_deadline(self._config.shutdown_timeout_s)
+            self._startup_finished.set()
             pending = tuple(asyncio.all_tasks(loop))
             for task in pending:
                 task.cancel()
@@ -696,7 +803,7 @@ class StreamingTTSPipeline:
                 done, still_pending = loop.run_until_complete(
                     asyncio.wait(
                         pending,
-                        timeout=max(0.0, self._shutdown_deadline - time.monotonic()),
+                        timeout=self._remaining_s(self._config.shutdown_timeout_s),
                     ),
                 )
                 if done:
@@ -706,12 +813,14 @@ class StreamingTTSPipeline:
                         "media owner tasks ignored bounded cancellation: %s",
                         ", ".join(task.get_name() for task in still_pending),
                     )
+            self._stop_provider_bounded()
             self._stop_player_bounded()
             if self._conn is not None:
                 with contextlib.suppress(sqlite3.Error):
                     self._conn.close()
                 self._conn = None
             loop.close()
+            self._set_startup_phase("closed")
             self._closed.set()
 
     def _stop_player_bounded(self) -> bool:
@@ -722,7 +831,9 @@ class StreamingTTSPipeline:
             def _stop() -> None:
                 try:
                     self._player.stop()
-                except Exception:
+                except Exception as exc:
+                    with self._cleanup_lock:
+                        self._cleanup_errors.append(f"player:{type(exc).__name__}")
                     LOGGER.exception("streaming media player stop failed")
                 finally:
                     self._player_stop_done.set()
@@ -733,11 +844,46 @@ class StreamingTTSPipeline:
                 daemon=True,
             )
             self._player_stop_thread.start()
-        remaining = max(0.0, self._shutdown_deadline - time.monotonic())
-        stopped = self._player_stop_done.wait(timeout=remaining)
+        stopped = self._player_stop_done.wait(
+            timeout=self._remaining_s(self._config.shutdown_timeout_s),
+        )
         if not stopped:
             LOGGER.error(
                 "player.stop exceeded media shutdown deadline; isolated daemon helper remains",
+            )
+        return stopped
+
+    def _stop_provider_bounded(self) -> bool:
+        """Close the actor's provider exactly once on an isolated daemon helper."""
+        request_close = getattr(self._provider, "request_close", None)
+        if not callable(request_close):
+            self._provider_stop_done.set()
+            return True
+        if not self._provider_stop_started:
+            self._provider_stop_started = True
+
+            def _stop() -> None:
+                try:
+                    request_close()
+                except Exception as exc:
+                    with self._cleanup_lock:
+                        self._cleanup_errors.append(f"provider:{type(exc).__name__}")
+                    LOGGER.exception("streaming media provider stop failed")
+                finally:
+                    self._provider_stop_done.set()
+
+            self._provider_stop_thread = threading.Thread(
+                target=_stop,
+                name="jarvis-media-provider-stop",
+                daemon=True,
+            )
+            self._provider_stop_thread.start()
+        stopped = self._provider_stop_done.wait(
+            timeout=self._remaining_s(self._config.shutdown_timeout_s),
+        )
+        if not stopped:
+            LOGGER.error(
+                "provider stop exceeded media shutdown deadline; isolated daemon helper remains",
             )
         return stopped
 
@@ -970,7 +1116,7 @@ class StreamingTTSPipeline:
         self._start_response(response)
 
     def _start_response(self, response: _ResponseBuffer) -> None:
-        if self._lane_isolated:
+        if self._lane_isolated or self._shutdown_requested.is_set():
             self._registry.terminalize(response.response_id)
             self._responses.pop(response.response_id, None)
             return
@@ -1336,50 +1482,79 @@ class StreamingTTSPipeline:
                 return False
         return True
 
-    async def _cancel_fallback(self, active: _ActiveResponse) -> None:
+    async def _cancel_fallback(
+        self,
+        active: _ActiveResponse,
+    ) -> None:
+        existing_janitor = active.fallback_janitor_task
+        if existing_janitor is not None:
+            quiescent = await asyncio.shield(existing_janitor)
+            if active.fallback_janitor_task is existing_janitor:
+                active.fallback_janitor_task = None
+            if not quiescent:
+                self._isolate_fallback_cleanup(active)
+            return
         spawn_task = active.fallback_spawn_task
-        process: asyncio.subprocess.Process | None = None
+        owned_process = active.fallback_process
+        if spawn_task is None and owned_process is None:
+            return
+        # Claim every handle and publish the janitor before the first await.
+        # The response task and foreground interrupt can enter cleanup
+        # concurrently, but the second caller will now join the same debt.
+        active.fallback_spawn_task = None
+        active.fallback_process = None
+        janitor = asyncio.create_task(
+            self._cleanup_fallback_handles(spawn_task, owned_process),
+            name=f"media-say-janitor-{active.response.response_id}",
+        )
+        active.fallback_janitor_task = janitor
+        self._fallback_janitors.add(janitor)
+        janitor.add_done_callback(self._fallback_janitors.discard)
+        quiescent = await asyncio.shield(janitor)
+        if active.fallback_janitor_task is janitor:
+            active.fallback_janitor_task = None
+        if not quiescent:
+            self._isolate_fallback_cleanup(active)
+
+    async def _cleanup_fallback_handles(
+        self,
+        spawn_task: asyncio.Task[asyncio.subprocess.Process] | None,
+        owned_process: asyncio.subprocess.Process | None,
+    ) -> bool:
+        """Own claimed spawn/process handles through terminate/kill/reap."""
+        spawned_process: asyncio.subprocess.Process | None = None
         if spawn_task is not None:
-            # Claim the handle before the first await. The response task and a
-            # foreground interrupt may both enter cleanup, but only one owns
-            # any particular spawn/process object.
-            if active.fallback_spawn_task is spawn_task:
-                active.fallback_spawn_task = None
             spawn_task.cancel()
-            done, pending = await asyncio.wait(
+            _done, pending = await asyncio.wait(
                 {spawn_task},
                 timeout=self._remaining_s(0.25),
             )
             if pending:
-                spawn_task.add_done_callback(self._kill_late_fallback_spawn)
-            elif done and not spawn_task.cancelled() and spawn_task.exception() is None:
-                process = spawn_task.result()
-        owned_process = active.fallback_process
-        if owned_process is not None and active.fallback_process is owned_process:
-            active.fallback_process = None
-        if process is None:
-            process = owned_process
-        if process is None:
-            return
-        await self._terminate_process(process)
+                try:
+                    spawned_process = await spawn_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    LOGGER.exception("late macOS say spawn failed")
+            elif not spawn_task.cancelled() and spawn_task.exception() is None:
+                spawned_process = spawn_task.result()
+        processes = [
+            process
+            for process in (spawned_process, owned_process)
+            if process is not None
+        ]
+        for index, process in enumerate(processes):
+            if index > 0 and process is processes[0]:
+                continue
+            if not await self._terminate_process(process):
+                return False
+        return True
 
-    @staticmethod
-    def _kill_late_fallback_spawn(
-        task: asyncio.Task[asyncio.subprocess.Process],
-    ) -> None:
-        """Kill a process returned after its bounded spawn cancellation window."""
-        if task.cancelled() or task.exception() is not None:
-            return
-        process = task.result()
+    async def _terminate_process(self, process: asyncio.subprocess.Process) -> bool:
+        """Terminate, kill if needed, and never report quiescent before reap."""
         if process.returncode is None:
             with contextlib.suppress(ProcessLookupError):
-                process.kill()
-
-    async def _terminate_process(self, process: asyncio.subprocess.Process) -> None:
-        if process.returncode is not None:
-            return
-        with contextlib.suppress(ProcessLookupError):
-            process.terminate()
+                process.terminate()
         wait_task = asyncio.create_task(process.wait())
         done, _pending = await asyncio.wait(
             {wait_task},
@@ -1393,11 +1568,33 @@ class StreamingTTSPipeline:
             except Exception as exc:  # noqa: BLE001 - cleanup must still force kill
                 LOGGER.warning("macOS say wait failed after terminate; forcing kill: %r", exc)
             else:
-                return
+                return True
         with contextlib.suppress(ProcessLookupError):
             process.kill()
         reap_task = wait_task if not wait_task.done() else asyncio.create_task(process.wait())
-        await self._wait_task_bounded(reap_task, timeout_s=0.25)
+        try:
+            # Reap completion is presentation ownership debt. A pathological
+            # child may make close() return degraded, but cannot overlap a
+            # successor or pin process exit because the actor is daemon-backed.
+            await asyncio.shield(reap_task)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("macOS say could not be reaped after kill")
+            return False
+        return True
+
+    def _isolate_fallback_cleanup(self, active: _ActiveResponse) -> None:
+        """Fail closed when exact subprocess quiescence cannot be established."""
+        self._lane_isolated = True
+        self._accepting.clear()
+        active.advance_after_cleanup = False
+        record_realtime_trace(
+            "media_fallback_cleanup_isolated",
+            response_id=active.response.response_id,
+            playback_generation_id=active.lease.playback_generation_id,
+        )
+        self._request_shutdown_deadline(self._config.shutdown_timeout_s)
 
     async def _drain_and_complete(
         self,
@@ -1835,16 +2032,19 @@ class StreamingTTSPipeline:
         self._accepting.clear()
         if self._active is not None:
             await self._interrupt_active(reason="media_owner_shutdown")
+        while self._fallback_janitors:
+            # Shutdown owns late-spawn debt too. Waiting here may make the
+            # caller observe degraded bounded close, but the daemon actor
+            # remains the sole janitor and will finish once the spawn returns.
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in tuple(self._fallback_janitors)),
+                return_exceptions=True,
+            )
         while self._after_drain:
             response = self._after_drain.popleft()
             self._registry.terminalize(response.response_id)
             self._responses.pop(response.response_id, None)
-        request_close = getattr(self._provider, "request_close", None)
-        if callable(request_close):
-            self._call_sync_bounded(
-                request_close,
-                thread_name="jarvis-media-provider-stop",
-            )
+        self._stop_provider_bounded()
         self._stop_player_bounded()
         self._reject_queued_commands()
         # Rejected submitters are bridge coroutines on this loop. Let their
@@ -1857,31 +2057,6 @@ class StreamingTTSPipeline:
             boot_id=self._registry.boot_id,
             owned_tasks_remaining=0,
         )
-
-    def _call_sync_bounded(
-        self,
-        callback: Callable[[], object],
-        *,
-        thread_name: str,
-    ) -> bool:
-        done = threading.Event()
-
-        def _call() -> None:
-            try:
-                callback()
-            except Exception:
-                LOGGER.exception("bounded shutdown callback failed: %s", thread_name)
-            finally:
-                done.set()
-
-        helper = threading.Thread(target=_call, name=thread_name, daemon=True)
-        helper.start()
-        completed = done.wait(
-            timeout=max(0.0, self._shutdown_deadline - time.monotonic()),
-        )
-        if not completed:
-            LOGGER.error("%s exceeded shutdown deadline; daemon helper isolated", thread_name)
-        return completed
 
     def _reject_queued_commands(self) -> None:
         queue_ = self._queue
@@ -2006,6 +2181,7 @@ __all__ = [
     "ActivePlaybackRegistry",
     "MediaSubmitOutcome",
     "StreamingMediaConfig",
+    "StreamingMediaStartupError",
     "StreamingTTSPipeline",
     "StreamingTTSProvider",
     "streaming_media_config_from_mapping",

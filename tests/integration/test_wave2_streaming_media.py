@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
+import os
+import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -26,7 +31,6 @@ from jarvis.surface import voice_media, voice_tts
 from jarvis.surface.voice_ledger import ForegroundBusy, StalePlaybackGeneration
 
 if TYPE_CHECKING:
-    import sqlite3
     from collections.abc import AsyncIterator
     from typing import Any
 
@@ -39,6 +43,7 @@ class _Behavior:
     final_delay_s: float = 0.01
     samples: int = 160
     sample_rate_hz: int = 8_000
+    late_after_abort: bool = False
 
 
 class _FakeSession:
@@ -108,14 +113,31 @@ class _FakeSession:
                 await asyncio.sleep(self._behavior.final_delay_s)
                 msg = "fake failure after accepted prefix"
                 raise OSError(msg)
-            final_gate = self._provider.final_gates.get(
-                (self._response_id, segment.sequence),
-            )
-            while (  # noqa: ASYNC110
-                final_gate is not None and not final_gate.is_set() and not self._closed
-            ):
-                await asyncio.sleep(0.001)
-            await asyncio.sleep(self._behavior.final_delay_s)
+            try:
+                final_gate = self._provider.final_gates.get(
+                    (self._response_id, segment.sequence),
+                )
+                while (  # noqa: ASYNC110
+                    final_gate is not None and not final_gate.is_set() and not self._closed
+                ):
+                    await asyncio.sleep(0.001)
+                await asyncio.sleep(self._behavior.final_delay_s)
+            except asyncio.CancelledError:
+                if not self._behavior.late_after_abort:
+                    raise
+                while not self._provider.late_pcm_release.is_set():
+                    try:
+                        await asyncio.sleep(0.001)
+                    except asyncio.CancelledError:
+                        continue
+                self._provider.late_yields.append((self._response_id, segment.sequence))
+                yield voice_tts.TTSAudioChunk(
+                    sequence=segment.sequence,
+                    pcm=np.full(self._behavior.samples, -2000, dtype="<i2").tobytes(),
+                    sample_rate_hz=self._behavior.sample_rate_hz,
+                )
+                yield voice_tts.TTSSegmentFinished(sequence=segment.sequence)
+                return
             self._provider.provider_finals.append((self._response_id, segment.sequence))
             yield voice_tts.TTSSegmentFinished(sequence=segment.sequence)
 
@@ -147,6 +169,8 @@ class _FakeProvider:
         self.actions: list[str] = []
         self.segment_gates: dict[tuple[str, int], threading.Event] = {}
         self.final_gates: dict[tuple[str, int], threading.Event] = {}
+        self.late_pcm_release = threading.Event()
+        self.late_yields: list[tuple[str, int]] = []
 
     @property
     def streaming_candidate_count(self) -> int:
@@ -424,21 +448,54 @@ def test_generation_cas_races_and_thousand_cycle_churn() -> None:  # noqa: C901,
     player.interrupt_generation(
         expected_playback_generation_id=second.playback_generation_id,
     )
+    assert player.settle_interrupted_generation(
+        expected_playback_generation_id=first.playback_generation_id,
+    ) is not None
+    assert player.settle_interrupted_generation(
+        expected_playback_generation_id=second.playback_generation_id,
+    ) is not None
+    player.retire_generation(first.playback_generation_id)
+    player.retire_generation(second.playback_generation_id)
     cycle_start = threading.Barrier(3)
     cycle_done = threading.Barrier(3)
+    writer_precommit = threading.Event()
+    writer_release = threading.Event()
+    callback_read = threading.Event()
+    callback_release = threading.Event()
     current: dict[str, object] = {}
     worker_errors: list[BaseException] = []
+    writer_results: list[object] = []
     callback_outputs: list[np.ndarray] = []
+    original_frombuffer = np.frombuffer
+    generation_ring = player._generation_ring  # noqa: SLF001
+    assert generation_ring is not None
+    original_read_into = generation_ring.read_into
+
+    def _barrier_frombuffer(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        result = original_frombuffer(*args, **kwargs)
+        if threading.current_thread().name == "late-provider-racer":
+            writer_precommit.set()
+            assert writer_release.wait(timeout=1.0)
+        return result
+
+    def _barrier_read_into(*args: Any, **kwargs: Any) -> int:  # noqa: ANN401
+        result = original_read_into(*args, **kwargs)
+        if threading.current_thread().name == "callback-racer":
+            callback_read.set()
+            assert callback_release.wait(timeout=1.0)
+        return result
 
     def _late_provider_writer() -> None:
         try:
             for cycle in range(1_000):
                 cycle_start.wait()
                 lease = cast("Any", current["lease"])
-                player.write_generation(
-                    np.full(8, cycle + 1, dtype=np.float32).tobytes(),
-                    expected_playback_generation_id=lease.playback_generation_id,
-                    segment_sequence=0,
+                writer_results.append(
+                    player.write_generation(
+                        np.full(8, -(cycle + 1), dtype=np.float32).tobytes(),
+                        expected_playback_generation_id=lease.playback_generation_id,
+                        segment_sequence=0,
+                    ),
                 )
                 cycle_done.wait()
         except BaseException as exc:  # noqa: BLE001 - barrier surfaces thread failures
@@ -457,47 +514,94 @@ def test_generation_cas_races_and_thousand_cycle_churn() -> None:  # noqa: C901,
 
     writer = threading.Thread(target=_late_provider_writer, name="late-provider-racer")
     callback = threading.Thread(target=_concurrent_callback, name="callback-racer")
-    writer.start()
-    callback.start()
-    for cycle in range(1_000):
-        lease = player.activate_generation(
-            session_id="S",
-            response_id=f"RC{cycle}",
-            response_group_id=f"GC{cycle}",
-            turn_id=f"TC{cycle}",
-        )
-        assert not isinstance(lease, ForegroundBusy)
-        player.begin_generation_segment(
-            expected_playback_generation_id=lease.playback_generation_id,
-            sequence=0,
-            text="x",
-            segment_hash="x",
-        )
-        current["lease"] = lease
-        cycle_start.wait()
-        player.interrupt_generation(
-            expected_playback_generation_id=lease.playback_generation_id,
-        )
-        cycle_done.wait()
-        settled: object | None = None
-        for _settle_poll in range(1_000):
-            settled = player.settle_interrupted_generation(
-                expected_playback_generation_id=lease.playback_generation_id,
+    with (
+        patch.object(np, "frombuffer", side_effect=_barrier_frombuffer),
+        patch.object(generation_ring, "read_into", side_effect=_barrier_read_into),
+    ):
+        writer.start()
+        callback.start()
+        for cycle in range(1_000):
+            old_lease = player.activate_generation(
+                session_id="S",
+                response_id=f"RN{cycle}",
+                response_group_id=f"GN{cycle}",
+                turn_id=f"TN{cycle}",
             )
-            if settled is not None:
-                break
-            time.sleep(0)
-        assert settled is not None
-        player.retire_generation(lease.playback_generation_id)
+            assert not isinstance(old_lease, ForegroundBusy)
+            player.begin_generation_segment(
+                expected_playback_generation_id=old_lease.playback_generation_id,
+                sequence=0,
+                text="old",
+                segment_hash="old",
+            )
+            player.write_generation(
+                np.full(8, -0.5, dtype=np.float32).tobytes(),
+                expected_playback_generation_id=old_lease.playback_generation_id,
+                segment_sequence=0,
+            )
+            current["lease"] = old_lease
+            writer_precommit.clear()
+            writer_release.clear()
+            callback_read.clear()
+            callback_release.clear()
+            cycle_start.wait()
+            assert writer_precommit.wait(timeout=1.0)
+            assert callback_read.wait(timeout=1.0)
+            player.interrupt_generation(
+                expected_playback_generation_id=old_lease.playback_generation_id,
+            )
+            new_value = np.float32((cycle + 1) / 1_001)
+            new_lease = player.activate_generation(
+                session_id="S",
+                response_id=f"RNEXT{cycle}",
+                response_group_id=f"GNEXT{cycle}",
+                turn_id=f"TNEXT{cycle}",
+            )
+            assert not isinstance(new_lease, ForegroundBusy)
+            player.begin_generation_segment(
+                expected_playback_generation_id=new_lease.playback_generation_id,
+                sequence=0,
+                text="new",
+                segment_hash="new",
+            )
+            player.write_generation(
+                np.full(8, new_value, dtype=np.float32).tobytes(),
+                expected_playback_generation_id=new_lease.playback_generation_id,
+                segment_sequence=0,
+            )
+            writer_release.set()
+            callback_release.set()
+            cycle_done.wait()
+            assert np.count_nonzero(callback_outputs[-1]) == 0
+            new_output = np.zeros((8, 1), dtype=np.float32)
+            player._callback(new_output, 8, None, None)  # noqa: SLF001
+            assert np.all(new_output[:, 0] == new_value)
+            settled = player.settle_interrupted_generation(
+                expected_playback_generation_id=old_lease.playback_generation_id,
+            )
+            assert settled is not None
+            player.retire_generation(old_lease.playback_generation_id)
+            player.interrupt_generation(
+                expected_playback_generation_id=new_lease.playback_generation_id,
+            )
+            settled_new = player.settle_interrupted_generation(
+                expected_playback_generation_id=new_lease.playback_generation_id,
+            )
+            assert settled_new is not None
+            player.retire_generation(new_lease.playback_generation_id)
     writer.join(timeout=2.0)
     callback.join(timeout=2.0)
     assert not writer.is_alive()
     assert not callback.is_alive()
     assert not worker_errors
-    for cycle, output in enumerate(callback_outputs):
-        nonzero = output[output != 0]
-        assert nonzero.size == 0 or np.all(nonzero == np.float32(cycle + 1))
+    assert len(writer_results) == 1_000
+    assert all(isinstance(result, StalePlaybackGeneration) for result in writer_results)
+    stale_writer_results = cast("list[StalePlaybackGeneration]", writer_results)
+    assert all(result.reason == "already_terminal" for result in stale_writer_results)
+    assert all(np.count_nonzero(output) == 0 for output in callback_outputs)
     assert player.active_lease is None
+    assert player.bytes_pending() == 0
+    assert not player._ledgers  # noqa: SLF001
 
     closing = player.activate_generation(
         session_id="S",
@@ -828,6 +932,99 @@ def test_streaming_owner_first_accept_replay_dedup_and_prefix_safety(  # noqa: P
     assert not any(thread.name == pipeline.media_thread_name for thread in threading.enumerate())
 
 
+def test_aborted_provider_late_pcm_cannot_pollute_active_successor(  # noqa: PLR0915
+    tmp_path: Path,
+) -> None:
+    """A cancellation-resistant N provider may yield late, but only N+1 reaches host."""
+    db_path = tmp_path / "late-provider.db"
+    conn = open_event_log(db_path)
+    old_final = threading.Event()
+    provider = _FakeProvider(
+        {
+            ("RLATE-N", 0): _Behavior(
+                "success",
+                final_delay_s=1.0,
+                late_after_abort=True,
+            ),
+            ("RLATE-NEXT", 0): _Behavior("success", final_delay_s=0.01),
+        },
+        candidate_count=1,
+    )
+    provider.final_gates[("RLATE-N", 0)] = old_final
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), response_timeout_s=3.0),
+        start_player=False,
+    )
+    try:
+        old = _emit_response(
+            conn,
+            response_id="RLATE-N",
+            group_id="GLATE-N",
+            turn_id="TLATE-N",
+            text="old provider",
+        )
+        asyncio.run(_submit_response(pipeline, old))
+        deadline = time.monotonic() + 1.0
+        while player.bytes_pending() == 0 and time.monotonic() < deadline:
+            time.sleep(0.002)
+        assert player.bytes_pending() > 0
+        successor = _emit_response(
+            conn,
+            response_id="RLATE-NEXT",
+            group_id="GLATE-NEXT",
+            turn_id="TLATE-NEXT",
+            text="new provider",
+        )
+        asyncio.run(_submit_response(pipeline, successor))
+        deadline = time.monotonic() + 1.0
+        while (
+            (("RLATE-NEXT", 0) not in provider.sent or player.bytes_pending() == 0)
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.002)
+        assert ("RLATE-NEXT", 0) in provider.sent
+        assert player.bytes_pending() > 0
+        provider.late_pcm_release.set()
+        deadline = time.monotonic() + 1.0
+        while not provider.late_yields and time.monotonic() < deadline:
+            time.sleep(0.002)
+        assert provider.late_yields == [("RLATE-N", 0)]
+        host_block = np.zeros((320, 1), dtype=np.float32)
+        player._callback(host_block, 320, None, None)  # noqa: SLF001
+        nonzero = host_block[host_block != 0]
+        assert nonzero.size > 0
+        assert np.all(nonzero > 0), "late N uses negative PCM and must be generation-dropped"
+        deadline = time.monotonic() + 2.0
+        while not pipeline.wait_until_idle(timeout_s=0.0) and time.monotonic() < deadline:
+            player._callback(np.zeros((320, 1), dtype=np.float32), 320, None, None)  # noqa: SLF001
+            time.sleep(0.002)
+        assert pipeline.wait_until_idle(timeout_s=0.05)
+    finally:
+        old_final.set()
+        provider.late_pcm_release.set()
+        assert pipeline.close()
+        conn.close()
+    terminal_conn = open_event_log(db_path)
+    try:
+        terminals = [
+            (kind, payload)
+            for kind, payload in _terminal_rows(terminal_conn)
+            if payload["response_id"] in {"RLATE-N", "RLATE-NEXT"}
+        ]
+    finally:
+        terminal_conn.close()
+    assert len(terminals) == 2
+    assert {kind for kind, _payload in terminals} == {
+        "surface.playback_interrupted",
+        "surface.playback_completed",
+    }
+
+
 @pytest.mark.parametrize("terminal_mode", ["completed", "failed", "supersede"])
 @pytest.mark.parametrize("persistent", [False, True])
 def test_terminal_debt_blocks_every_successor_until_durable(
@@ -1120,6 +1317,138 @@ def test_ordered_event_log_drain_handles_cross_source_reordering(tmp_path: Path)
         terminal_conn.close()
 
 
+def test_watcher_retries_overloaded_final_row_without_a_later_wakeup(  # noqa: C901, PLR0915
+    tmp_path: Path,
+) -> None:
+    """A full media queue cannot strand the last durable emitted row."""
+    db_path = tmp_path / "watcher-overload.db"
+    conn = open_event_log(db_path)
+    rows = _emit_response(
+        conn,
+        response_id="RWATCH-LAST",
+        group_id="GWATCH-LAST",
+        turn_id="TWATCH-LAST",
+        text="last committed row",
+    )
+    provider = _FakeProvider(candidate_count=1)
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), command_queue_capacity=1),
+        start_player=False,
+    )
+    command_entered = threading.Event()
+    command_release = threading.Event()
+    original_handle = pipeline._handle_command  # noqa: SLF001
+    original_submit = pipeline.submit_event
+    watcher_statuses: list[str] = []
+    blocked_once = False
+
+    async def _blocked_handle(
+        command: voice_media._MediaCommand,
+    ) -> voice_media.MediaSubmitOutcome:
+        nonlocal blocked_once
+        if not blocked_once:
+            blocked_once = True
+            command_entered.set()
+            while not command_release.is_set():  # noqa: ASYNC110
+                await asyncio.sleep(0.001)
+        return await original_handle(command)
+
+    async def _recording_submit(
+        *,
+        row_id: int,
+        event: Event,
+        origin: str = "watcher",
+    ) -> voice_media.MediaSubmitOutcome:
+        outcome = await original_submit(row_id=row_id, event=event, origin=origin)
+        if origin == "watcher":
+            watcher_statuses.append(outcome.status)
+        return outcome
+
+    submitters: list[threading.Thread] = []
+    watcher_conn = open_event_log(db_path)
+
+    async def _watch_until_terminal() -> None:
+        watcher = asyncio.create_task(
+            inherent_loop._tts_watcher(  # noqa: SLF001 - production watcher integration
+                conn=watcher_conn,
+                pipeline=pipeline,
+                poll_interval_s=0.005,
+            ),
+        )
+        try:
+            deadline = time.monotonic() + 1.0
+            while "overloaded" not in watcher_statuses:
+                if time.monotonic() >= deadline:
+                    pytest.fail("watcher never observed bounded queue overload")
+                await asyncio.sleep(0.002)
+            command_release.set()
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if conn.execute(
+                    "SELECT 1 FROM events WHERE type = 'surface.playback_completed' "
+                    "AND json_extract(payload_json, '$.response_id') = 'RWATCH-LAST'",
+                ).fetchone():
+                    return
+                await asyncio.sleep(0.005)
+            pytest.fail("final emitted row remained stranded after capacity freed")
+        finally:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
+
+    try:
+        with (
+            _CallbackPump(player),
+            patch.object(pipeline, "_handle_command", side_effect=_blocked_handle),
+            patch.object(pipeline, "submit_event", side_effect=_recording_submit),
+        ):
+            for row_id, event in rows[:2]:
+                submitter = threading.Thread(
+                    target=asyncio.run,
+                    args=(original_submit(row_id=row_id, event=event, origin="direct"),),
+                )
+                submitter.start()
+                submitters.append(submitter)
+                if len(submitters) == 1:
+                    assert command_entered.wait(timeout=1.0)
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                queue = pipeline._queue  # noqa: SLF001
+                if queue is not None and queue.full():
+                    break
+                time.sleep(0.001)
+            else:
+                pytest.fail("direct delivery did not fill the media queue")
+            asyncio.run(_watch_until_terminal())
+        assert pipeline.wait_until_idle(timeout_s=1.0)
+    finally:
+        command_release.set()
+        assert pipeline.close()
+        watcher_conn.close()
+        conn.close()
+    for submitter in submitters:
+        submitter.join(timeout=1.0)
+        assert not submitter.is_alive()
+    assert watcher_statuses.count("overloaded") >= 1
+    terminal_conn = open_event_log(db_path)
+    try:
+        terminals = [
+            payload
+            for kind, payload in _terminal_rows(terminal_conn)
+            if kind == "surface.playback_completed"
+            and payload["response_id"] == "RWATCH-LAST"
+        ]
+    finally:
+        terminal_conn.close()
+    assert len(terminals) == 1
+    assert provider.opened.count(("RWATCH-LAST", 0)) == 1
+
+
 def test_structured_chunks_preserve_heard_prefix_on_mid_second_interrupt(
     tmp_path: Path,
 ) -> None:
@@ -1189,6 +1518,77 @@ def test_structured_chunks_preserve_heard_prefix_on_mid_second_interrupt(
     assert old_payload["heard_text"] == "第一句。"
     assert "第二句" not in str(old_payload["heard_text"])
     assert "不可朗读" not in str(old_payload["heard_text"])
+
+
+@pytest.mark.parametrize(
+    ("tag", "tag_offset"),
+    [
+        (tag, offset)
+        for tag in ("<voice>", "</voice>", "<document>", "</document>")
+        for offset in range(1, len(tag))
+    ],
+)
+def test_structured_lexer_carries_every_split_tag_without_losing_chunk_identity(
+    tag: str,
+    tag_offset: int,
+) -> None:
+    """Every lexical split keeps tags/documents silent and renderer ids exact."""
+    raw = "<voice>spoken</voice><document>hidden</document>"
+    cut = raw.index(tag) + tag_offset
+    parts = (raw[:cut], raw[cut:])
+    response = voice_media._ResponseBuffer(  # noqa: SLF001 - integration seam
+        row_id=1,
+        source_event_id="SOURCE",
+        response_id="RLEX",
+        response_group_id="GLEX",
+        turn_id="TLEX",
+        phase="final",
+        channel="speech",
+        gate_mode="sentence",
+        chunks={
+            sequence: voice_media._ResponseChunk(  # noqa: SLF001
+                sequence=sequence,
+                raw_text=text,
+                segment_hash=f"hash-{sequence}",
+            )
+            for sequence, text in enumerate(parts)
+        },
+    )
+    segments = response.speech_segments()
+    assert "".join(text for _sequence, text, _hash in segments) == "spoken"
+    assert all("hidden" not in text and "<" not in text for _, text, _ in segments)
+    spoken_start = raw.index("spoken")
+    spoken_end = spoken_start + len("spoken")
+    expected_sequences = [
+        sequence
+        for sequence, (start, end) in enumerate(((0, cut), (cut, len(raw))))
+        if start < spoken_end and end > spoken_start
+    ]
+    assert [sequence for sequence, _text, _hash in segments] == expected_sequences
+    assert [segment_hash for _sequence, _text, segment_hash in segments] == [
+        f"hash-{sequence}" for sequence in expected_sequences
+    ]
+
+
+def test_structured_lexer_handles_adjacent_voice_document_transition() -> None:
+    """An adjacent close/open transition never leaks document text into speech."""
+    raw = "<voice>heard</voice><document>silent</document>"
+    cut = raw.index("</voice>") + len("</voice>")
+    response = voice_media._ResponseBuffer(  # noqa: SLF001 - integration seam
+        row_id=1,
+        source_event_id="SOURCE",
+        response_id="RSWITCH",
+        response_group_id="GSWITCH",
+        turn_id="TSWITCH",
+        phase="final",
+        channel="speech",
+        gate_mode="sentence",
+        chunks={
+            7: voice_media._ResponseChunk(7, raw[:cut], "hash-7"),  # noqa: SLF001
+            8: voice_media._ResponseChunk(8, raw[cut:], "hash-8"),  # noqa: SLF001
+        },
+    )
+    assert response.speech_segments() == [(7, "heard", "hash-7")]
 
 
 def test_after_drain_same_group_and_foreground_supersede(tmp_path: Path) -> None:
@@ -1438,7 +1838,101 @@ def test_macos_say_spawn_in_progress_cancellation_has_no_orphan(tmp_path: Path) 
     assert old_payload["provider"] == "macos_say"
 
 
-def test_media_owner_startup_failures_and_bounded_shutdown(tmp_path: Path) -> None:  # noqa: PLR0915
+def test_macos_say_late_spawn_debt_blocks_successor_until_reaped(  # noqa: PLR0915
+    tmp_path: Path,
+) -> None:
+    """A spawn ignoring its first cancellation remains actor-owned lane debt."""
+    db_path = tmp_path / "macos-say-late-spawn.db"
+    conn = open_event_log(db_path)
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=_FakeProvider(candidate_count=0),
+        player=_player(),
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), enable_macos_say_fallback=True),
+        start_player=False,
+    )
+    actions: list[str] = []
+    old_spawn_entered = threading.Event()
+    allow_late_return = threading.Event()
+    spawned = 0
+
+    async def _spawn(*_args: object, **_kwargs: object) -> _FakeSayProcess:
+        nonlocal spawned
+        spawned += 1
+        if spawned == 1:
+            actions.append("spawn-enter:old")
+            old_spawn_entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                actions.append("spawn-cancel-ignored:old")
+                while not allow_late_return.is_set():  # noqa: ASYNC110
+                    await asyncio.sleep(0.001)
+            actions.append("spawn-return:old")
+            return _FakeSayProcess("old", actions, complete_immediately=False)
+        actions.append("spawn:new")
+        return _FakeSayProcess("new", actions, complete_immediately=True)
+
+    successor_error: list[BaseException] = []
+
+    def _submit_successor(rows: list[tuple[int, Event]]) -> None:
+        try:
+            asyncio.run(_submit_response(pipeline, rows))
+        except BaseException as exc:  # noqa: BLE001 - surface thread assertion
+            successor_error.append(exc)
+
+    successor_thread: threading.Thread | None = None
+    try:
+        with patch(
+            "jarvis.surface.voice_media.asyncio.create_subprocess_exec",
+            side_effect=_spawn,
+        ):
+            old = _emit_response(
+                conn,
+                response_id="RLATE-SPAWN-OLD",
+                group_id="GLATE-SPAWN-OLD",
+                turn_id="TLATE-SPAWN-OLD",
+                text="old late spawn",
+            )
+            asyncio.run(_submit_response(pipeline, old))
+            assert old_spawn_entered.wait(timeout=1.0)
+            successor = _emit_response(
+                conn,
+                response_id="RLATE-SPAWN-NEW",
+                group_id="GLATE-SPAWN-NEW",
+                turn_id="TLATE-SPAWN-NEW",
+                text="new spawn",
+            )
+            successor_thread = threading.Thread(
+                target=_submit_successor,
+                args=(successor,),
+                name="late-say-successor-submit",
+            )
+            successor_thread.start()
+            time.sleep(0.32)
+            assert "spawn:new" not in actions
+            assert successor_thread.is_alive()
+            allow_late_return.set()
+            successor_thread.join(timeout=2.0)
+            assert not successor_thread.is_alive()
+            assert not successor_error
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        allow_late_return.set()
+        if successor_thread is not None:
+            successor_thread.join(timeout=2.0)
+        assert pipeline.close()
+        conn.close()
+    assert actions.index("spawn-return:old") < actions.index("kill:old")
+    assert actions.index("kill:old") < actions.index("reaped:old")
+    assert actions.index("reaped:old") < actions.index("spawn:new")
+    assert not pipeline._fallback_janitors  # noqa: SLF001
+
+
+def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: C901, PLR0915
+    tmp_path: Path,
+) -> None:
     """Startup, full-queue, provider-stop, and device-stop failures stay bounded."""
     db_path = tmp_path / "owner-bounds.db"
     baseline = len(_live_media_owner_threads())
@@ -1543,9 +2037,14 @@ def test_media_owner_startup_failures_and_bounded_shutdown(tmp_path: Path) -> No
         start_player=False,
     )
     started = time.monotonic()
-    assert provider_pipeline.close(wait_timeout_s=0.12)
+    assert not provider_pipeline.close(wait_timeout_s=0.12)
     assert time.monotonic() - started < 0.16
+    assert not provider_pipeline.cleanup_complete
     provider_gate.set()
+    deadline = time.monotonic() + 1.0
+    while not provider_pipeline.cleanup_complete and time.monotonic() < deadline:
+        time.sleep(0.002)
+    assert provider_pipeline.close(wait_timeout_s=0.01)
 
     player_gate = threading.Event()
     stuck_player = _player()
@@ -1559,10 +2058,125 @@ def test_media_owner_startup_failures_and_bounded_shutdown(tmp_path: Path) -> No
     )
     with patch.object(stuck_player, "stop", side_effect=player_gate.wait):
         started = time.monotonic()
-        assert player_pipeline.close(wait_timeout_s=0.12)
+        assert not player_pipeline.close(wait_timeout_s=0.12)
         assert time.monotonic() - started < 0.16
-    player_gate.set()
+        assert not player_pipeline.cleanup_complete
+        player_gate.set()
+        deadline = time.monotonic() + 1.0
+        while not player_pipeline.cleanup_complete and time.monotonic() < deadline:
+            time.sleep(0.002)
+        assert player_pipeline.close(wait_timeout_s=0.01)
     assert len(_live_media_owner_threads()) == baseline
+
+
+def test_media_owner_stuck_startup_is_daemon_isolated_and_late_closed(
+    tmp_path: Path,
+) -> None:
+    """Stuck conn/player startup returns once and closes every late resource."""
+    db_path = tmp_path / "stuck-startup.db"
+    baseline = len(_live_media_owner_threads())
+    conn_gate = threading.Event()
+    late_connections: list[sqlite3.Connection] = []
+
+    def _stuck_conn() -> sqlite3.Connection:
+        conn_gate.wait()
+        connection = open_event_log(db_path)
+        late_connections.append(connection)
+        return connection
+
+    started = time.monotonic()
+    with pytest.raises(voice_media.StreamingMediaStartupError) as conn_error:
+        voice_media.StreamingTTSPipeline(
+            provider=_FakeProvider(candidate_count=1),
+            player=_player(),
+            conn_factory=_stuck_conn,
+            boot_high_water_id=0,
+            config=replace(_config(), shutdown_timeout_s=0.06),
+            start_player=False,
+        )
+    assert time.monotonic() - started < 0.1
+    assert conn_error.value.phase == "opening_connection"
+    assert not conn_error.value.device_state_uncertain
+    live_after_conn_timeout = _live_media_owner_threads()
+    assert live_after_conn_timeout
+    assert all(thread.daemon for thread in live_after_conn_timeout)
+    conn_gate.set()
+    deadline = time.monotonic() + 1.0
+    while len(_live_media_owner_threads()) != baseline and time.monotonic() < deadline:
+        time.sleep(0.002)
+    assert len(_live_media_owner_threads()) == baseline
+    assert len(late_connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        late_connections[0].execute("SELECT 1")
+
+    player_gate = threading.Event()
+    player_stopped = threading.Event()
+    stuck_player = _player()
+
+    def _stuck_start() -> None:
+        player_gate.wait()
+
+    def _late_stop() -> None:
+        player_stopped.set()
+
+    with (
+        patch.object(stuck_player, "start", side_effect=_stuck_start),
+        patch.object(stuck_player, "stop", side_effect=_late_stop),
+    ):
+        started = time.monotonic()
+        with pytest.raises(voice_media.StreamingMediaStartupError) as player_error:
+            voice_media.StreamingTTSPipeline(
+                provider=_FakeProvider(candidate_count=1),
+                player=stuck_player,
+                conn_factory=lambda: open_event_log(db_path),
+                boot_high_water_id=0,
+                config=replace(_config(), shutdown_timeout_s=0.06),
+            )
+        assert time.monotonic() - started < 0.1
+        assert player_error.value.phase == "starting_player"
+        assert player_error.value.device_state_uncertain
+        assert all(thread.daemon for thread in _live_media_owner_threads())
+        player_gate.set()
+        assert player_stopped.wait(timeout=1.0)
+        deadline = time.monotonic() + 1.0
+        while len(_live_media_owner_threads()) != baseline and time.monotonic() < deadline:
+            time.sleep(0.002)
+    assert len(_live_media_owner_threads()) == baseline
+
+
+def test_shutdown_deadline_is_concurrent_monotonic_min(tmp_path: Path) -> None:
+    """A later long request cannot overwrite an earlier shutdown deadline."""
+    db_path = tmp_path / "deadline-min.db"
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=_FakeProvider(candidate_count=1),
+        player=_player(),
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), shutdown_timeout_s=0.5),
+        start_player=False,
+    )
+    publish = threading.Barrier(3)
+
+    def _publish(timeout_s: float) -> None:
+        publish.wait()
+        pipeline._request_shutdown_deadline(timeout_s)  # noqa: SLF001
+
+    long_thread = threading.Thread(target=_publish, args=(0.4,), name="deadline-long")
+    short_thread = threading.Thread(target=_publish, args=(0.05,), name="deadline-short")
+    long_thread.start()
+    short_thread.start()
+    started = time.monotonic()
+    publish.wait()
+    long_thread.join(timeout=1.0)
+    short_thread.join(timeout=1.0)
+    assert not long_thread.is_alive()
+    assert not short_thread.is_alive()
+    with pipeline._deadline_lock:  # noqa: SLF001
+        chosen = pipeline._shutdown_deadline  # noqa: SLF001
+    assert chosen <= started + 0.08
+    close_started = time.monotonic()
+    assert pipeline.close(wait_timeout_s=0.4)
+    assert time.monotonic() - close_started < 0.1
 
 
 class _FakeOutputStream:
@@ -1605,6 +2219,7 @@ class _FakeSayProcess:
             raise OSError(msg)
         await self._done.wait()
         assert self.returncode is not None
+        self.actions.append(f"reaped:{self.name}")
         return self.returncode
 
     def terminate(self) -> None:
@@ -1767,7 +2382,7 @@ def test_minimax_session_single_reader_writer_backpressure_and_watchdog() -> Non
     asyncio.run(_body())
 
 
-def test_streaming_rollout_default_off_and_production_builder_gate(
+def test_streaming_rollout_default_off_and_production_builder_gate(  # noqa: PLR0915
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1834,19 +2449,26 @@ def test_streaming_rollout_default_off_and_production_builder_gate(
     startup_error = OSError("injected PortAudio start failure")
     failed_stream = _FakeOutputStream(start_error=startup_error)
     legacy_stream = _FakeOutputStream()
-    with patch.object(
-        voice_tts,
-        "_open_output_stream",
-        side_effect=[
-            failed_stream,
-            legacy_stream,
-        ],
+    streaming_provider = _FakeProvider(candidate_count=1)
+    legacy_provider = _FakeProvider(candidate_count=1)
+    with (
+        patch.object(
+            voice_tts,
+            "_open_output_stream",
+            side_effect=[failed_stream, legacy_stream],
+        ),
+        patch.object(
+            voice_tts,
+            "MiniMaxWSClient",
+            side_effect=[streaming_provider, legacy_provider],
+        ),
     ):
         startup_fallback = inherent_loop._build_tts_pipeline(  # noqa: SLF001
             cast("Any", runtime),
             cast("Any", SimpleNamespace()),
         )
         assert isinstance(startup_fallback, voice_tts.TTSPipeline)
+        assert cast("object", startup_fallback._provider) is legacy_provider  # noqa: SLF001
         assert startup_fallback.close()
     assert not failed_stream.active
     assert not legacy_stream.active
@@ -1867,5 +2489,81 @@ def test_streaming_rollout_default_off_and_production_builder_gate(
         assert text_only is None
     assert not first_failure.active
     assert not second_failure.active
+
+    runtime.config["realtime"]["streaming_output"]["shutdown_timeout_s"] = 0.06
+    stuck_player = _player()
+    player_start_gate = threading.Event()
+    late_player_stopped = threading.Event()
+
+    def _stuck_player_start() -> None:
+        player_start_gate.wait()
+
+    with (
+        patch.object(
+            voice_tts,
+            "AudioStreamPlayer",
+            return_value=stuck_player,
+        ) as player_factory,
+        patch.object(stuck_player, "start", side_effect=_stuck_player_start),
+        patch.object(stuck_player, "stop", side_effect=late_player_stopped.set),
+        patch.object(
+            voice_tts,
+            "MiniMaxWSClient",
+            return_value=_FakeProvider(candidate_count=1),
+        ) as provider_factory,
+    ):
+        started = time.monotonic()
+        startup_timeout_text_only = inherent_loop._build_tts_pipeline(  # noqa: SLF001
+            cast("Any", runtime),
+            cast("Any", SimpleNamespace()),
+        )
+        assert startup_timeout_text_only is None
+        assert time.monotonic() - started < 0.1
+        assert player_factory.call_count == 1
+        assert provider_factory.call_count == 1
+        assert all(thread.daemon for thread in _live_media_owner_threads())
+        player_start_gate.set()
+        assert late_player_stopped.wait(timeout=1.0)
+        deadline = time.monotonic() + 1.0
+        while _live_media_owner_threads() and time.monotonic() < deadline:
+            time.sleep(0.002)
     assert not _live_media_owner_threads()
     conn.close()
+
+
+def test_voice_bench_provenance_fails_closed_before_provider_use(tmp_path: Path) -> None:
+    """Revision/config provenance debt makes the software gate ineligible/nonzero."""
+    output = tmp_path / "ineligible.json"
+    config_copy = tmp_path / "jarvis.yaml"
+    config_copy.write_text(Path("config/jarvis.yaml").read_text())
+    env = dict(os.environ)
+    env.pop("MINIMAX_API_KEY", None)
+    result = subprocess.run(  # noqa: S603 - fixed local script under test
+        [
+            sys.executable,
+            "scripts/bench_voice_streaming_output.py",
+            "--runs",
+            "1",
+            "--expected-revision",
+            "0" * 40,
+            "--config",
+            str(config_copy),
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5.0,
+    )
+    assert result.returncode == 2
+    payload = json.loads(output.read_text())
+    assert payload["raw_runs"] == []
+    assert payload["summary"]["software_streaming_output_gate"] == "INELIGIBLE"
+    assert payload["summary"]["physical_dac_loopback_gate"] == "UNMEASURED"
+    assert payload["summary"]["true_end_to_end_latency_gate"] == "UNMEASURED"
+    reasons = payload["provenance"]["software_gate_ineligibility_reasons"]
+    assert "git_revision_mismatch" in reasons
+    assert "effective_config_source_mismatch" in reasons

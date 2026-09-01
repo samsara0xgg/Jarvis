@@ -606,7 +606,7 @@ async def _response_watcher(
         raise
 
 
-async def _tts_watcher(
+async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
     *,
     conn: sqlite3.Connection,
     pipeline: object,  # voice_tts.TTSPipeline protocol; loosely typed to avoid cycles
@@ -678,7 +678,7 @@ async def _tts_watcher(
                 ),
             )
             for row_id, ev in new_events:
-                after_id = max(after_id, row_id)
+                advance_cursor = True
                 try:
                     turn_id = str(ev.payload.get("turn_id", ""))
                     if _drop_for_silent_channel(
@@ -688,13 +688,20 @@ async def _tts_watcher(
                         silent_channels=_TTS_SILENT_CHANNELS,
                         consumer="tts_watcher",
                     ):
+                        after_id = max(after_id, row_id)
                         continue
                     if streaming_pipeline is not None:
-                        await streaming_pipeline.submit_event(
+                        outcome = await streaming_pipeline.submit_event(
                             row_id=row_id,
                             event=ev,
                             origin="watcher",
                         )
+                        if outcome.status == "overloaded":
+                            # The Event Log is the durable queue. Retain the
+                            # cursor so even the final committed row is retried
+                            # after bounded media capacity becomes available.
+                            advance_cursor = False
+                            break
                         continue
                     if ev.type == "surface.response_open":
                         gate_mode = ev.payload.get("required_gate_mode", "sentence")
@@ -713,12 +720,19 @@ async def _tts_watcher(
                             turn_id,
                         )
                 except Exception as exc:  # noqa: BLE001 — log + continue; TTS must not crash watcher.
+                    if streaming_pipeline is not None:
+                        advance_cursor = False
                     LOGGER.warning(
                         "tts_watcher: dispatch raised on %s turn_id=%s: %r",
                         ev.type,
                         ev.payload.get("turn_id"),
                         exc,
                     )
+                finally:
+                    if advance_cursor:
+                        after_id = max(after_id, row_id)
+                if not advance_cursor:
+                    break
             await asyncio.sleep(poll_interval_s)
     except asyncio.CancelledError:
         LOGGER.info("tts_watcher cancelled")
@@ -756,7 +770,7 @@ def _build_voice_pipeline(
     )
 
 
-def _build_tts_pipeline(
+def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     runtime: JarvisRuntime,
     broadcaster: InherentBroadcaster,
     *,
@@ -787,11 +801,14 @@ def _build_tts_pipeline(
     # the device at the system-native rate prevents CoreAudio from
     # forcing a hardware-rate switch on every play, which was producing
     # audible pops/clicks for any other app sharing the speaker.
-    provider = voice_tts.MiniMaxWSClient(
-        api_key=api_key,
-        sample_rate_in=32000,
-        sample_rate_out=_DEFAULT_TTS_SAMPLE_RATE_HZ,
-    )
+    def _new_provider() -> voice_tts.MiniMaxWSClient:
+        return voice_tts.MiniMaxWSClient(
+            api_key=api_key,
+            sample_rate_in=32000,
+            sample_rate_out=_DEFAULT_TTS_SAMPLE_RATE_HZ,
+        )
+
+    provider = _new_provider()
     realtime_raw = runtime.config.get("realtime")
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
     streaming_raw = realtime.get("streaming_output")
@@ -830,11 +847,28 @@ def _build_tts_pipeline(
                 broadcaster=broadcaster,
                 ducker=ducker,
             )
-        except Exception as exc:  # noqa: BLE001 - rollout must fail safe
+        except voice_media.StreamingMediaStartupError as exc:
+            if exc.device_state_uncertain:
+                LOGGER.warning(
+                    "realtime.streaming_output startup timed out while opening the "
+                    "audio device; isolated owner will close any late device, and "
+                    "this boot is downgraded to text-only.",
+                )
+                return None
             LOGGER.warning(
-                "realtime.streaming_output startup failed (%r); downgraded to legacy TTS.",
+                "realtime.streaming_output startup failed in %s (%r); "
+                "downgraded using an independent legacy provider.",
+                exc.phase,
                 exc,
             )
+            provider = _new_provider()
+        except Exception as exc:  # noqa: BLE001 - rollout must fail safe
+            LOGGER.warning(
+                "realtime.streaming_output startup failed (%r); downgraded using "
+                "an independent legacy provider.",
+                exc,
+            )
+            provider = _new_provider()
     if streaming_requested and media_config is not None and not streaming_capable:
         LOGGER.warning(
             "realtime.streaming_output capability/config validation failed; "
