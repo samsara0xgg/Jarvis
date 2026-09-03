@@ -104,12 +104,22 @@ from jarvis.runtime import (
     _observer_poll_interval_s,
     _observer_repo_paths,
     _positive_float,
+    _positive_int,
     drive_turn,
     make_response_cancel_callable,
 )
 from jarvis.shared import Event
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.input_claim import (
+    REALTIME_INTENT_CONSUMER,
+    ConflictingTurnClaimError,
+    InputClaimed,
+    InputClaimError,
+    adopt_consumer,
+    claim_input_once,
+    recoverable_inputs,
+)
 from jarvis.surface import (
     voice_asr,
     voice_audio,
@@ -606,6 +616,240 @@ async def _user_intent_watcher(
     except asyncio.CancelledError:
         LOGGER.info("user_intent_watcher cancelled")
         raise
+
+
+@dataclasses.dataclass(frozen=True)
+class _IntentPumpBoot:
+    """What the boot scan established before the pump started polling."""
+
+    adoption_row_id: int
+    live_cursor_id: int
+    recovered: tuple[Event, ...]
+    adopted_now: bool
+
+
+def _boot_intent_pump_in_thread(event_log_path: Path) -> _IntentPumpBoot:
+    """Record the adoption watermark and scan for inputs a restart still owes.
+
+    ADR-0008 D8. Runs on an ``asyncio.to_thread`` worker with its OWN
+    connection, for the same ``check_same_thread`` reason as the other boot
+    reconcilers, and inside the startup barrier so no watcher can race it.
+
+    The live cursor is read **before** the recovery scan. A row that lands
+    between the two is then seen twice — once by the scan and once by the
+    poll loop — and the pump's own dispatched-turn set collapses that, which
+    is the safe direction; reading it after would let such a row fall through
+    both and be lost.
+    """
+    conn = open_event_log(event_log_path)
+    try:
+        adoption = adopt_consumer(conn, name=REALTIME_INTENT_CONSUMER)
+        live_cursor_id = _latest_id(conn)
+        recovered = recoverable_inputs(
+            conn,
+            adoption_row_id=adoption.adoption_row_id,
+            trigger_types=_USER_INTENT_TRIGGER_TYPES,
+        )
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    return _IntentPumpBoot(
+        adoption_row_id=adoption.adoption_row_id,
+        live_cursor_id=live_cursor_id,
+        recovered=tuple(event for _row_id, event in recovered),
+        adopted_now=adoption.adopted_now,
+    )
+
+
+def _claim_intent_in_thread(event_log_path: Path, trigger_event: Event) -> bool:
+    """Durably claim one trigger; return whether this process should drive it.
+
+    ``True`` for a fresh claim and for a claim this process finds unfinished
+    (crash after claim, before any milestone — the scan only offers those).
+    ``False`` for a trigger that cannot be driven at all, which is only the
+    conflicting-turn_id case: two different utterances asserting one turn
+    identity is a bug upstream, and driving either would be a guess.
+    """
+    conn = open_event_log(event_log_path)
+    try:
+        outcome = claim_input_once(conn, trigger_event=trigger_event)
+    except ConflictingTurnClaimError:
+        LOGGER.warning(
+            "intent_pump: refusing trigger %s — its turn_id is claimed by another input",
+            trigger_event.event_uid,
+        )
+        return False
+    except InputClaimError:
+        LOGGER.warning(
+            "intent_pump: trigger %s cannot be claimed",
+            trigger_event.event_uid,
+            exc_info=True,
+        )
+        return False
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    record_realtime_trace(
+        "intent_claimed",
+        turn_id=outcome.turn_id,
+        trigger_event_uid=trigger_event.event_uid,
+        fresh=isinstance(outcome, InputClaimed),
+    )
+    return True
+
+
+async def _intent_pump_watcher(
+    runtime: JarvisRuntime,
+    queue: asyncio.Queue[Event],
+    boot: _IntentPumpBoot,
+    dispatched: set[str],
+    *,
+    poll_interval_s: float,
+) -> None:
+    """Claim every trigger durably, then hand it to a bounded turn queue.
+
+    ADR-0008 D8's four ordered steps: poll the next committed trigger, claim
+    it, enqueue the claimed turn, and advance the cursor **only after both**.
+    The cursor therefore never runs ahead of durable work, and a full queue
+    is backpressure — ``queue.put`` blocks here rather than dropping an
+    utterance that is already on disk.
+
+    ``dispatched`` is the in-process guard against driving one turn twice:
+    the boot scan and the poll loop deliberately overlap, and a restart
+    re-examines everything after the adoption watermark.
+    """
+    after_id = boot.live_cursor_id
+    LOGGER.info(
+        "intent_pump started (adoption_row_id=%d, after_id=%d, recovered=%d)",
+        boot.adoption_row_id,
+        after_id,
+        len(boot.recovered),
+    )
+    try:
+        for event in boot.recovered:
+            await _offer_intent(runtime, queue, dispatched, event)
+        while True:
+            for row_id, event in _fetch_events_after(
+                runtime.conn,
+                after_id=after_id,
+                event_types=_USER_INTENT_TRIGGER_TYPES,
+            ):
+                await _offer_intent(runtime, queue, dispatched, event)
+                after_id = max(after_id, row_id)
+            await asyncio.sleep(poll_interval_s)
+    except asyncio.CancelledError:
+        LOGGER.info("intent_pump cancelled")
+        raise
+
+
+async def _offer_intent(
+    runtime: JarvisRuntime,
+    queue: asyncio.Queue[Event],
+    dispatched: set[str],
+    event: Event,
+) -> None:
+    """Claim one trigger and enqueue it, unless this process already drove it."""
+    turn_id = event.payload.get("turn_id")
+    if isinstance(turn_id, str) and turn_id in dispatched:
+        return
+    if not await asyncio.to_thread(
+        _claim_intent_in_thread,
+        runtime.runtime_paths.event_log,
+        event,
+    ):
+        return
+    if isinstance(turn_id, str):
+        dispatched.add(turn_id)
+    await queue.put(event)
+    record_realtime_trace(
+        "intent_queue_accepted",
+        turn_id=turn_id if isinstance(turn_id, str) else None,
+        source="intent_pump",
+        queue_depth=queue.qsize(),
+    )
+
+
+async def _intent_worker(
+    runtime: JarvisRuntime,
+    queue: asyncio.Queue[Event],
+) -> None:
+    """Drive claimed turns off the queue, one at a time, forever.
+
+    One task per configured concurrent turn. Each drives its turn on a
+    thread, which is what lets a second utterance be answered while a
+    background worker from an earlier turn is still running — the property
+    ADR-0008 Step 4 is built for.
+    """
+    try:
+        while True:
+            event = await queue.get()
+            try:
+                await asyncio.to_thread(
+                    _drive_turn_in_worker_thread,
+                    runtime,
+                    user_intent_event=event,
+                )
+            except ResponseCancelledError:
+                # ADR-0008 D10: an operator's cancel is not a turn failure.
+                LOGGER.info(
+                    "intent_pump: response cancelled for turn_id=%s",
+                    event.payload.get("turn_id"),
+                )
+            except Exception as exc:  # noqa: BLE001 — ADR-0003 D9 F3 catch-all: log + audit + continue.
+                LOGGER.warning(
+                    "intent_pump: drive_turn raised on turn_id=%s: %r",
+                    event.payload.get("turn_id"),
+                    exc,
+                )
+                _emit_turn_failed(
+                    runtime.conn,
+                    intent_event=event,
+                    exception_repr=repr(exc),
+                )
+            finally:
+                queue.task_done()
+    except asyncio.CancelledError:
+        LOGGER.info("intent_pump worker cancelled")
+        raise
+
+
+async def _start_intent_pump(
+    runtime: JarvisRuntime,
+    *,
+    poll_interval_s: float,
+    queue_capacity: int,
+    max_concurrent_turns: int,
+) -> list[asyncio.Task[None]]:
+    """Adopt the input stream, recover what a crash owes, and start the pump."""
+    boot = await asyncio.to_thread(
+        _boot_intent_pump_in_thread,
+        runtime.runtime_paths.event_log,
+    )
+    if boot.adopted_now:
+        LOGGER.info(
+            "intent_pump adopted the input stream at events.id=%d; "
+            "earlier utterances are history and are never replayed",
+            boot.adoption_row_id,
+        )
+    queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=queue_capacity)
+    dispatched: set[str] = set()
+    tasks = [
+        asyncio.create_task(
+            _intent_pump_watcher(
+                runtime,
+                queue,
+                boot,
+                dispatched,
+                poll_interval_s=poll_interval_s,
+            ),
+            name="intent_pump_watcher",
+        ),
+    ]
+    tasks.extend(
+        asyncio.create_task(_intent_worker(runtime, queue), name=f"intent_worker_{index}")
+        for index in range(max_concurrent_turns)
+    )
+    return tasks
 
 
 async def _response_watcher(
@@ -2573,16 +2817,42 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
         )
         server = uvicorn.Server(config)
 
-        watchers: list[asyncio.Task[None]] = [
-            asyncio.create_task(
-                _user_intent_watcher(runtime, poll_interval_s=poll_interval_s),
-                name="user_intent_watcher",
-            ),
+        watchers: list[asyncio.Task[None]] = []
+        if runtime.input_flags.intent_pump:
+            # ADR-0008 D8 (Step 4). Adoption and the recovery scan happen
+            # inside the startup barrier, before any task exists that could
+            # race them.
+            watchers.extend(
+                await _start_intent_pump(
+                    runtime,
+                    poll_interval_s=poll_interval_s,
+                    queue_capacity=_positive_int(
+                        runtime.config,
+                        section="input",
+                        key="queue_capacity",
+                        fallback=8,
+                    ),
+                    max_concurrent_turns=_positive_int(
+                        runtime.config,
+                        section="input",
+                        key="max_concurrent_turns",
+                        fallback=2,
+                    ),
+                ),
+            )
+        else:
+            watchers.append(
+                asyncio.create_task(
+                    _user_intent_watcher(runtime, poll_interval_s=poll_interval_s),
+                    name="user_intent_watcher",
+                ),
+            )
+        watchers.append(
             asyncio.create_task(
                 _response_watcher(runtime, broadcaster, poll_interval_s=poll_interval_s),
                 name="response_watcher",
             ),
-        ]
+        )
         if tts_pipe is not None:
             watchers.append(
                 asyncio.create_task(
@@ -2655,6 +2925,23 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
             for w in watchers:
                 w.cancel()
             await asyncio.gather(*watchers, return_exceptions=True)
+            # ADR-0008 D9 (Step 4). With truly background workers a Codex
+            # subprocess can still be running once the watchers are gone.
+            # Draining it here means a stopped daemon leaves a terminalized
+            # action and a restored tree, not an orphan holding a stashed
+            # repository until the next boot's quarantine scan finds it.
+            if runtime.action_runner is not None:
+                drained = await asyncio.to_thread(
+                    runtime.action_runner.shutdown,
+                    cancel=True,
+                    reason="daemon_shutdown",
+                )
+                if drained:
+                    LOGGER.info(
+                        "shutdown cancelled %d in-flight action(s): %s",
+                        len(drained),
+                        ", ".join(drained),
+                    )
             _shutdown_tts(tts_pipe)
             # Force-restore output volume in case a duck escaped a finally
             # block on the way down (best-effort; idempotent if depth == 0).

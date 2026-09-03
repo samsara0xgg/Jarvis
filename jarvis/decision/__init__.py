@@ -1042,6 +1042,23 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
 # --- surface.user_intent branch --------------------------------------------
 
 
+def _claimed_turn_started(conn: sqlite3.Connection, trigger_event_uid: str) -> Event | None:
+    """Return the durable turn claim for this trigger, if the pump made one.
+
+    ADR-0008 D8's ``claim_input_once`` keys the claim by the trigger's
+    ``event_uid``, which is exactly what ``source_event_id`` holds, so the
+    lookup needs no new index or payload field.
+    """
+    return next(
+        (
+            event
+            for event in iter_events_of_types(conn, ("turn.started",))
+            if event.source_event_id == trigger_event_uid
+        ),
+        None,
+    )
+
+
 def _handle_utterance(
     packet: SituationPacket,
     policy: EffectivePolicy,
@@ -1050,17 +1067,29 @@ def _handle_utterance(
 ) -> DecideResult:
     """Process a ``surface.user_intent`` trigger end-to-end (Day-1)."""
     trigger = packet.trigger_event
-    turn_id = packet.current_turn_id or _new_turn_id()
+    # ADR-0008 D8: when the runtime's intent pump durably claimed this
+    # trigger, the claim IS this turn's `turn.started` and its turn_id is
+    # authoritative. Hydrating it here rather than emitting a second one is
+    # what keeps one utterance to one turn row; with the pump off there is
+    # never a claim and this is the unchanged Day-1 path.
+    claimed = _claimed_turn_started(ctx.conn, trigger.event_uid)
+    turn_id = (
+        str(claimed.payload["turn_id"])
+        if claimed is not None
+        else (packet.current_turn_id or _new_turn_id())
+    )
     scratch.turn_id = turn_id
 
-    started_event = emit_event(
-        ctx.conn,
-        type="turn.started",
-        payload={"turn_id": turn_id, "trigger": trigger.event_uid},
-        source_event_id=trigger.event_uid,
-        correlation={"turn_id": turn_id},
-    )
-    scratch.events.append(started_event)
+    if claimed is None:
+        scratch.events.append(
+            emit_event(
+                ctx.conn,
+                type="turn.started",
+                payload={"turn_id": turn_id, "trigger": trigger.event_uid},
+                source_event_id=trigger.event_uid,
+                correlation={"turn_id": turn_id},
+            ),
+        )
 
     # ADR-0012 §3 D6 — the answer-path grammar hook, BEFORE
     # `tier_0_match`. THE LOAD-BEARING INVARIANT this ADR builds
