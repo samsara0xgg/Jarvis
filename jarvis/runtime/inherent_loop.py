@@ -86,6 +86,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jarvis.deployment.sleep_wake import PowerObserver
+    from jarvis.execution.action_runner import ActionRunner
     from jarvis.state.committed_event_bus import CommittedEventBus
 
 from jarvis.decision.response_run import (
@@ -451,6 +452,24 @@ def _reconcile_open_responses_in_thread(
         with contextlib.suppress(sqlite3.Error):
             conn.close()
     return len(events)
+
+
+def _reconcile_action_quarantine_in_thread(
+    action_runner: ActionRunner,
+    event_log_path: Path,
+) -> tuple[str, ...]:
+    """Re-establish repository quarantine at boot (ADR-0008 D9 / F23).
+
+    Runs on an ``asyncio.to_thread`` worker with its OWN connection, for the
+    same ``check_same_thread`` reason as the response reconciler above.
+    Returns the action ids whose leases were re-taken.
+    """
+    conn = open_event_log(event_log_path)
+    try:
+        return action_runner.reconcile_quarantine(conn)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
 
 
 def _drive_turn_in_worker_thread(
@@ -2301,7 +2320,7 @@ def _request_voice_input_branch_shutdown(
     _shutdown_wake(owners.wake_listener, owners.wake_stream)
 
 
-async def serve_inherent(  # noqa: C901, PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring branch necessarily inflates body length + branch count.
+async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring plus boot-reconciliation branches necessarily inflate body length + branch count.
     runtime: JarvisRuntime,
     *,
     host: str = "127.0.0.1",
@@ -2510,6 +2529,27 @@ async def serve_inherent(  # noqa: C901, PLR0913, PLR0915 — composition-root e
                 LOGGER.info(
                     "boot reconciliation closed %d open response run(s)",
                     closed_runs,
+                )
+
+        # ADR-0008 D9 / F23 — a previous process may have died holding a
+        # repository: its action reached a canonical terminal but never wrote
+        # a cleanup event, and the in-process lease table died with it. Re-take
+        # those leases here, inside the startup barrier, so no new conflicting
+        # work is accepted against a tree whose stash was never restored. The
+        # re-taken lease has no execution context, so nothing in this process
+        # can release it — clearing it is a human's job, which is the point.
+        if runtime.action_runner is not None:
+            quarantined = await asyncio.to_thread(
+                _reconcile_action_quarantine_in_thread,
+                runtime.action_runner,
+                runtime.runtime_paths.event_log,
+            )
+            if quarantined:
+                LOGGER.warning(
+                    "boot reconciliation re-quarantined %d repository lease(s) "
+                    "for action(s) that terminated without cleanup: %s",
+                    len(quarantined),
+                    ", ".join(quarantined),
                 )
 
         deps = InherentDeps(

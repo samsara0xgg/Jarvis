@@ -21,6 +21,7 @@ import json
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -51,7 +52,7 @@ from jarvis.execution.tools import (
     default_resource_key_resolver,
     turn_action_ids,
 )
-from jarvis.runtime import JarvisRuntime, _wave4_action_flags
+from jarvis.runtime import JarvisRuntime, _wave4_action_flags, inherent_loop
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.shared.realtime import Wave4ActionFlags
 from jarvis.state.event_log import emit_event, open_event_log
@@ -1285,3 +1286,60 @@ def test_same_turn_guard_never_dissolves_a_stronger_mode(
             fixture.runner.leases.release(held)
     finally:
         fixture.close()
+
+
+def test_boot_helper_requarantines_on_its_own_connection(tmp_path: Path) -> None:
+    """The daemon's boot helper re-takes leases without the event-loop's conn.
+
+    ``serve_inherent`` runs on the event-loop thread and ``open_event_log``
+    uses ``check_same_thread=True``, so the reconciler has to open its own
+    connection — which is what this helper exists for.
+    """
+    path = tmp_path / "boot.db"
+    conn = open_event_log(path)
+    try:
+        dispatched = emit_event(
+            conn,
+            type="action.dispatched",
+            payload={"action_id": "A-boot"},
+            correlation={"action_id": "A-boot"},
+        )
+        running = emit_event(
+            conn,
+            type="action.running",
+            payload={
+                "action_id": "A-boot",
+                "resource_keys": "repo:/tmp/boot",
+                "resource_mode": "write_exclusive",
+            },
+            source_event_id=dispatched.event_uid,
+            correlation={"action_id": "A-boot"},
+        )
+        emit_event(
+            conn,
+            type="action.failed",
+            payload={"action_id": "A-boot", "error": "daemon_died"},
+            source_event_id=running.event_uid,
+            correlation={"action_id": "A-boot"},
+        )
+    finally:
+        conn.close()
+
+    runner = ActionRunner(event_log_path=path, lease_timeout_s=0.1)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            quarantined = pool.submit(
+                inherent_loop._reconcile_action_quarantine_in_thread,  # noqa: SLF001
+                runner,
+                path,
+            ).result(timeout=10)
+        assert quarantined == ("A-boot",)
+        with pytest.raises(TimeoutError):
+            runner.leases.acquire(
+                action_id="A-newcomer",
+                keys=frozenset({"repo:/tmp/boot"}),
+                mode="write_exclusive",
+                timeout_s=0.1,
+            )
+    finally:
+        runner.shutdown()
