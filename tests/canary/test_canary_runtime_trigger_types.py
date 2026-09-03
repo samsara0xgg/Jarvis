@@ -1,4 +1,4 @@
-"""Canary — ``_RUNTIME_TRIGGER_TYPES`` pins the 4-trigger set (B-0003b).
+"""Canary — ``_RUNTIME_TRIGGER_TYPES`` pins the 5-trigger set (B-0003b).
 
 Per B-0003b, the runtime waiter must wake on:
 
@@ -6,8 +6,12 @@ Per B-0003b, the runtime waiter must wake on:
 - ``action.result_observed`` (defensive — sync tools emit inline)
 - ``action.timeout_assumed`` (Codex 10-min turn timeout)
 - ``action.failed`` (Codex subprocess crash)
+- ``action.cancelled`` (ADR-0008 D9 Step 4 — the operator stopped a
+  background worker; the runner, not the handler, writes this terminal,
+  so a waiter blind to it sleeps out its whole trigger timeout on a turn
+  whose action is already durably over)
 
-Drift away from this 4-tuple — e.g. removing the terminal-failure
+Drift away from this 5-tuple — e.g. removing the terminal-failure
 events to "simplify" the waiter, or adding a Stage-2 trigger
 without thinking through the deadlock implications — would silently
 regress the B-0003 fix and leave decide() blind to the terminal
@@ -30,6 +34,7 @@ _EXPECTED_TRIGGER_TYPES: tuple[str, ...] = (
     "action.result_observed",
     "action.timeout_assumed",
     "action.failed",
+    "action.cancelled",
 )
 
 
@@ -79,7 +84,7 @@ def _string_constants_in_tuple(value: ast.AST) -> tuple[str, ...]:
 
 
 def test_canary_runtime_trigger_types_exact_set() -> None:
-    """``_RUNTIME_TRIGGER_TYPES`` is exactly the 4-trigger B-0003b set."""
+    """``_RUNTIME_TRIGGER_TYPES`` is exactly the 5-trigger B-0003b set."""
     path = repo_root() / "jarvis" / "runtime" / "__init__.py"
     module = parse(path)
 
@@ -100,7 +105,7 @@ def test_canary_runtime_trigger_types_exact_set() -> None:
     actual = _string_constants_in_tuple(value)
     assert actual == _EXPECTED_TRIGGER_TYPES, (
         "B-0003b: _RUNTIME_TRIGGER_TYPES drifted from the canonical "
-        f"4-tuple. Expected {_EXPECTED_TRIGGER_TYPES!r}, got {actual!r}. "
+        f"5-tuple. Expected {_EXPECTED_TRIGGER_TYPES!r}, got {actual!r}. "
         "Removing action.timeout_assumed / action.failed leaves the "
         "runtime waiter deadlocked on the spawn_worker terminal failure "
         "paths; adding new triggers without updating this canary risks "

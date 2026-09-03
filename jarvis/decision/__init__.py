@@ -109,7 +109,7 @@ from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
 from jarvis.shared.text import truncate_utf8
-from jarvis.state.event_log import emit_event
+from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.projections import make_snapshot
 
 if TYPE_CHECKING:
@@ -436,6 +436,59 @@ def _emit_cost_recorded_from_metadata(
     cost = metadata.get("cost")
     if not isinstance(cost, Mapping):
         return None
+    return _append_cost_recorded(ctx, cost, turn_id=turn_id)
+
+
+def _emit_cost_recorded_for_run(
+    ctx: DecideContext,
+    *,
+    run_id: str,
+    turn_id: str | None,
+) -> Event | None:
+    """Emit one ``cost.recorded`` for a run from its durable executor report.
+
+    ADR-0008 Step 4: a truly background `spawn_worker` hands its
+    ``RawResult`` to the ActionRunner, so ``metadata["cost"]`` never reaches
+    this layer. L4 instead stamps the run's tokens onto
+    ``task.executor_reported``, and L3 — still the only permitted emit-site —
+    reads them back here when the run re-enters ``decide``.
+
+    Idempotent by the durable fold: a run that already has a
+    ``cost.recorded`` row (the foreground path records it at dispatch) gets
+    nothing further, so the same re-entry is safe under either dispatch mode.
+    """
+    report: Mapping[str, Any] | None = None
+    for event in iter_events_of_types(
+        ctx.conn,
+        ("cost.recorded", "task.executor_reported"),
+    ):
+        if event.payload.get("run_id") != run_id:
+            continue
+        if event.type == "cost.recorded":
+            return None
+        report = event.payload
+    if report is None or not isinstance(report.get("model"), str):
+        return None
+    return _append_cost_recorded(
+        ctx,
+        {
+            "kind": report.get("executor", "codex"),
+            "model": report["model"],
+            "tokens_in": report.get("tokens_in", 0),
+            "tokens_out": report.get("tokens_out", 0),
+            "run_id": run_id,
+        },
+        turn_id=turn_id,
+    )
+
+
+def _append_cost_recorded(
+    ctx: DecideContext,
+    cost: Mapping[str, Any],
+    *,
+    turn_id: str | None,
+) -> Event | None:
+    """Price one cost mapping and append the single ``cost.recorded`` row."""
     model = cost.get("model")
     if not isinstance(model, str) or not model:
         # No model → cost.recorded would fail the required-field check.
@@ -968,7 +1021,11 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
         return _handle_worker_reported(packet, policy, ctx, scratch)
     if trigger.type == "action.result_observed":
         return _handle_result_observed(packet, policy, ctx, scratch)
-    if trigger.type in ("action.timeout_assumed", "action.failed"):
+    if trigger.type in ("action.timeout_assumed", "action.failed", "action.cancelled"):
+        # ADR-0008 D9/D10 (Step 4): a cancelled ActionRun is a third terminal
+        # the paused turn has to be woken by. It is a limitation, not a
+        # failure of Jarvis, and it re-enters through the same arm because
+        # the Result Interpreter row it needs is identical.
         return _handle_action_terminal_failure(packet, policy, ctx, scratch)
 
     # Unknown trigger: emit nothing, return an empty plan. Stage 2 may
@@ -2311,6 +2368,16 @@ def _handle_worker_reported(
     scratch.turn_id = turn_id_from_corr if isinstance(turn_id_from_corr, str) else None
     if isinstance(run_id, str):
         scratch.last_run_id = run_id
+        # ADR-0008 Step 4: a background worker's cost never came back on a
+        # RawResult, so record it here from the run's durable executor
+        # report. A no-op when the foreground path already recorded it.
+        cost_event = _emit_cost_recorded_for_run(
+            ctx,
+            run_id=run_id,
+            turn_id=scratch.turn_id,
+        )
+        if cost_event is not None:
+            scratch.events.append(cost_event)
 
     if not isinstance(action_id, str):
         LOGGER.warning("worker.reported missing action_id payload — no-op")
@@ -2514,6 +2581,16 @@ def _handle_result_observed(
 # no LLM retry round-trip.
 _TIMEOUT_LIMITATION_TEXT: Final[str] = "Codex 超时，未完成"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
 _FAILED_LIMITATION_TEXT: Final[str] = "Codex 跑挂了，没新 diff"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+# ADR-0008 D9 (Step 4). A cancelled run is a limitation with a different
+# cause: nothing broke, somebody stopped it. Matched by the ``r"已停止"``
+# pattern added alongside the two above.
+_CANCELLED_LIMITATION_TEXT: Final[str] = "任务已停止，未完成"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+
+_ACTION_TERMINAL_LIMITATION_TEXT: Final[Mapping[str, str]] = {
+    "action.timeout_assumed": _TIMEOUT_LIMITATION_TEXT,
+    "action.failed": _FAILED_LIMITATION_TEXT,
+    "action.cancelled": _CANCELLED_LIMITATION_TEXT,
+}
 
 
 def _handle_action_terminal_failure(
@@ -2560,6 +2637,16 @@ def _handle_action_terminal_failure(
     scratch.turn_id = turn_id_corr if isinstance(turn_id_corr, str) else None
     if isinstance(run_id_corr, str):
         scratch.last_run_id = run_id_corr
+        # Same reason as the worker.reported arm: a background worker that
+        # timed out, crashed or was cancelled still burned tokens, and this
+        # is the only layer allowed to say so.
+        cost_event = _emit_cost_recorded_for_run(
+            ctx,
+            run_id=run_id_corr,
+            turn_id=scratch.turn_id,
+        )
+        if cost_event is not None:
+            scratch.events.append(cost_event)
     if isinstance(task_id_corr, str):
         scratch.active_subject_ref = task_id_corr
 
@@ -2611,10 +2698,9 @@ def _handle_action_terminal_failure(
         )
         scratch.events.extend(interpreted)
 
-    canonical_text = (
-        _TIMEOUT_LIMITATION_TEXT
-        if trigger.type == "action.timeout_assumed"
-        else _FAILED_LIMITATION_TEXT
+    canonical_text = _ACTION_TERMINAL_LIMITATION_TEXT.get(
+        trigger.type,
+        _FAILED_LIMITATION_TEXT,
     )
 
     return _finalize_response(canonical_text, packet, ctx, scratch)

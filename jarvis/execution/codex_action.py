@@ -82,6 +82,12 @@ _HEARTBEAT_INTERVAL_S: float = 30.0
 # thread isn't busy-spinning.
 _POLL_INTERVAL_S: float = 0.25
 
+# ADR-0008 D9 (Step 4): the canonical error tag for a turn the caller asked
+# us to stop. Deliberately distinct from ``codex_turn_timeout`` — a cancel is
+# an operator decision and a timeout is a budget overrun, and only the caller
+# that requested the cancel is allowed to write the resulting terminal.
+CODEX_CANCELLED_ERROR: str = "codex_cancelled"
+
 # Prefix for the per-spawn empty ``CODEX_HOME`` directory created in
 # :func:`run_codex_action`. The directory exists for the lifetime of a
 # single Codex turn and is removed in the result-finalize path. Its sole
@@ -638,6 +644,7 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
     model: str = "gpt-5.5",
     reasoning_effort: str = "xhigh",
     env: dict[str, str] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> CodexActionResult:
     """Run one Codex turn and return a structured :class:`CodexActionResult`.
 
@@ -678,6 +685,16 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
             ``env`` mapping, so user-local or parent-process Codex config
             cannot contaminate the worker (P-0009). Pass
             ``env={"CODEX_HOME": ...}`` to override.
+        should_cancel: ADR-0008 D9 (Step 4) cancellation seam, polled once
+            per notification tick. When it returns True the driver sends
+            ``turn/interrupt`` and returns with
+            ``error=CODEX_CANCELLED_ERROR``; the finalizer then closes the
+            client, which terminates the ``codex app-server`` subprocess, so
+            the caller's ``CancelOutcome.cancelled`` really does mean the
+            child process is gone. Checked before the deadline so a stop
+            issued in the same tick as an expiring budget is reported as the
+            operator decision it was. ``None`` (the default, and every
+            pre-Step-4 caller) leaves the loop exactly as it was.
 
     Returns:
         :class:`CodexActionResult` with at least ``error`` and ``interrupted``
@@ -852,6 +869,14 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
 
     while True:
         now = time.monotonic()
+        if should_cancel is not None and should_cancel():
+            # Ask the server to stop the turn; `_result` then closes the
+            # client, which terminates and (if needed) kills the subprocess.
+            with contextlib.suppress(Exception):
+                client.request("turn/interrupt", {"threadId": thread_id})
+            interrupted = True
+            error = CODEX_CANCELLED_ERROR
+            break
         if now >= deadline:
             # Timeout — interrupt the turn and bail.
             with contextlib.suppress(Exception):

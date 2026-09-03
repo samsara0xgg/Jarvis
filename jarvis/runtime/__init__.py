@@ -166,6 +166,12 @@ _RUNTIME_TRIGGER_TYPES: tuple[str, ...] = (
     "action.result_observed",
     "action.timeout_assumed",
     "action.failed",
+    # ADR-0008 D9 (Step 4). Once `spawn_worker` is truly background, a cancel
+    # is a fourth way for the action a turn is waiting on to end, and it is
+    # the only one the handler does not write itself. Without it here the
+    # cancelled turn sits in the waiter until its trigger timeout expires
+    # even though its terminal is already durable.
+    "action.cancelled",
 )
 
 # Default polling cadence for ``_wait_for_next_trigger``. 10 ms balances

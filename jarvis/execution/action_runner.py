@@ -509,6 +509,15 @@ class ActionJob:
     carries_cleanup_debt: bool
     on_terminal: Callable[[str], None] | None = None
     """Optional hook for the terminals the runner writes instead of the handler."""
+    on_dispatch_failure: Callable[[sqlite3.Connection, BaseException], None] | None = None
+    """Called on the worker's own connection when the job never reached its handler.
+
+    Resource-key resolution already happened at submit time, so the only way
+    to land here is a lease that could not be taken. Nothing downstream will
+    write that action's terminal — and on the background path nobody is
+    holding the handle to notice — so the owner is given the worker's
+    connection and told to record one.
+    """
 
 
 class ActionHandle:
@@ -718,7 +727,12 @@ class ActionRunner:
         context: ActionExecutionContext | None = None
         slot_held = False
         try:
-            scope = self._enter_scope(job)
+            try:
+                scope = self._enter_scope(job)
+            except BaseException as exc:
+                if job.on_dispatch_failure is not None:
+                    job.on_dispatch_failure(conn, exc)
+                raise
             # The run slot is taken only now, with the lease already in hand,
             # so a blocked waiter never holds one.
             self._run_slots.acquire()

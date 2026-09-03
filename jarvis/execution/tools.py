@@ -110,8 +110,10 @@ from jarvis.execution.action_runner import (
     CancellationMode,
     ResourceKeyResolutionError,
     ToolConcurrency,
+    current_execution_context,
 )
 from jarvis.execution.codex_action import (
+    CODEX_CANCELLED_ERROR,
     CodexActionResult,
     CodexVersionTooLowError,
     ensure_codex_version_supported,
@@ -653,6 +655,139 @@ def _emit_worker_heartbeat_factory(  # noqa: PLR0913 — all kwargs are immutabl
     return _emit
 
 
+def _emit_executor_reported(  # noqa: PLR0913 — one keyword per durable field of the run's end-of-run row.
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: str,
+    status: str,
+    summary: str,
+    source_event_id: str,
+    correlation: Mapping[str, str],
+    diff_path: str | None = None,
+    cost: Mapping[str, Any] | None = None,
+) -> None:
+    """Emit one ``task.executor_reported`` row for a finished Codex run.
+
+    ADR-0008 Step 4 makes this the durable home of the run's accounting
+    facts. A truly background `spawn_worker` hands its ``RawResult`` to the
+    runner, not to L3, so ``metadata["cost"]`` no longer reaches the only
+    layer allowed to emit ``cost.recorded``; L3 reads them back from here at
+    re-entry instead. L4 still never emits ``cost.recorded`` itself.
+    """
+    payload: dict[str, Any] = {
+        "task_id": task_id,
+        "run_id": run_id,
+        "status": status,
+        "summary": summary,
+    }
+    if diff_path is not None:
+        payload["diff_path"] = diff_path
+    if cost is not None:
+        model = cost.get("model")
+        if isinstance(model, str) and model:
+            payload["model"] = model
+        kind = cost.get("kind")
+        if isinstance(kind, str) and kind:
+            payload["executor"] = kind
+        payload["tokens_in"] = int(cost.get("tokens_in", 0) or 0)
+        payload["tokens_out"] = int(cost.get("tokens_out", 0) or 0)
+    emit_event(
+        conn,
+        type="task.executor_reported",
+        payload=payload,
+        source_event_id=source_event_id,
+        correlation=dict(correlation),
+    )
+
+
+def _spawn_worker_classify_failure(
+    codex_result: CodexActionResult,
+) -> tuple[Literal["action.failed", "action.timeout_assumed"], str, str] | None:
+    """Classify a finished Codex turn into its terminal, or ``None`` if it succeeded.
+
+    Returns ``(event_type, error_code, error_message)``. The two rows are the
+    ones ADR-0002's Negative-path appendix names: an interrupt or an expired
+    budget is ``action.timeout_assumed`` under the canonical
+    ``codex_turn_timeout`` tag, and every other structured error is
+    ``action.failed`` with the upstream tag preserved. A cancelled turn never
+    reaches here — the caller returns before this, because its terminal
+    belongs to whoever asked for the cancel (ADR-0008 D9).
+    """
+    if codex_result.interrupted or codex_result.error == "codex_turn_timeout":
+        return (
+            "action.timeout_assumed",
+            "codex_turn_timeout",
+            codex_result.error or "codex turn timed out",
+        )
+    if codex_result.error is not None:
+        return (
+            "action.failed",
+            codex_result.error.split(":", 1)[0],
+            codex_result.error,
+        )
+    return None
+
+
+def _spawn_worker_cancel_seam(stash_ref: str | None) -> Callable[[], bool] | None:
+    """Record the pre-task stash on the running job and return its cancel poll.
+
+    ADR-0008 D9 (Step 4). Both halves need the same object, and both are
+    no-ops off the runner: `current_execution_context()` returns ``None`` on
+    the pre-Step-3 inline path, where the handler writes its own terminal and
+    that terminal already carries the stash ref.
+    """
+    context = current_execution_context()
+    if context is None:
+        return None
+    context.record_stash_ref(stash_ref)
+    return lambda: context.is_cancel_requested
+
+
+def _spawn_worker_cancelled_result(  # noqa: PLR0913 — one keyword per durable id the cancelled run still has to report.
+    *,
+    conn: sqlite3.Connection,
+    action_id: str,
+    task_id: str,
+    run_id: str,
+    source_event_id: str,
+    correlation: Mapping[str, str],
+    cost: Mapping[str, Any],
+    stash_ref: str | None,
+) -> RawResult:
+    """Report a Codex turn the caller stopped, without writing a terminal.
+
+    ADR-0008 D9 gives ``action.cancelled`` to the canceller, which may write
+    it only once the runner confirms quiescence. Racing a terminal in from
+    this thread would relabel an operator's stop as a timeout and make the
+    cancel answer ``already_terminal``. The run still owes the ledger an
+    end-of-run row and its token accounting, so those are emitted here; the
+    pre-task stash reached the runner through the execution context, so the
+    cleanup finalizer restores the tree either way.
+    """
+    _emit_executor_reported(
+        conn,
+        task_id=task_id,
+        run_id=run_id,
+        status="cancelled",
+        summary="codex turn cancelled on request",
+        source_event_id=source_event_id,
+        correlation=correlation,
+        cost=cost,
+    )
+    return RawResult(
+        action_id=action_id,
+        semantics="error",
+        payload={"run_id": run_id, "status": "cancelled", "error": CODEX_CANCELLED_ERROR},
+        tool_output=tool_error(
+            "codex turn cancelled on request",
+            code=CODEX_CANCELLED_ERROR,
+        ),
+        error=CODEX_CANCELLED_ERROR,
+        metadata={"cost": dict(cost), "stash_ref": stash_ref},
+    )
+
+
 def _spawn_worker_emit_terminal_failure(  # noqa: PLR0913 — Day-2 failure paths fold seven correlation ids + a typed event-type discriminator; combining them masks the action.failed / action.timeout_assumed split.
     *,
     conn: sqlite3.Connection,
@@ -707,17 +842,15 @@ def _spawn_worker_emit_terminal_failure(  # noqa: PLR0913 — Day-2 failure path
         # The Task Ledger projection bridges through run.started for
         # task_id; emit task.executor_reported with a failure status so
         # the projection sees a terminal report on this run.
-        emit_event(
+        _emit_executor_reported(
             conn,
-            type="task.executor_reported",
-            payload={
-                "task_id": task_id,
-                "run_id": run_id,
-                "status": executor_status,
-                "summary": error_message,
-            },
+            task_id=task_id,
+            run_id=run_id,
+            status=executor_status,
+            summary=error_message,
             source_event_id=source_event_id,
             correlation=correlation,
+            cost=cost,
         )
     terminal_state: LifecycleState = (
         "failed" if event_type == "action.failed" else "timeout_assumed"
@@ -901,6 +1034,7 @@ def spawn_worker_handler(
     # RawResult.metadata; the runtime composition (Step 17) pops it
     # AFTER verify_diff exits (ADR-0002 Dirty-tree policy).
     stash_ref = isolate_pretask_changes(repo_path, run_id=run_id)
+    should_cancel = _spawn_worker_cancel_seam(stash_ref)
 
     # 6. Run Codex with the heartbeat closure.
     on_heartbeat = _emit_worker_heartbeat_factory(
@@ -925,6 +1059,7 @@ def spawn_worker_handler(
             timeout_s=_resolve_codex_turn_timeout_s(),
             on_heartbeat=on_heartbeat,
             heartbeat_interval_s=_resolve_codex_heartbeat_interval_s(),
+            should_cancel=should_cancel,
         )
     except Exception as exc:  # noqa: BLE001 — any Codex spawn failure folds into one action.failed.
         return _spawn_worker_emit_terminal_failure(
@@ -949,29 +1084,32 @@ def spawn_worker_handler(
         "run_id": run_id,
     }
 
-    # 7a. Timeout -- turn/interrupt was issued by the driver. Emit
-    # action.timeout_assumed and end here (no worker.reported).
-    if codex_result.interrupted or codex_result.error == "codex_turn_timeout":
-        return _spawn_worker_emit_terminal_failure(
+    # 7-. Cancelled -- somebody asked this action to stop and the Codex
+    # subprocess is being torn down. Deliberately NO terminal here: ADR-0008
+    # D9 gives `action.cancelled` to the canceller, which may write it only
+    # after the runner confirms quiescence. Racing a terminal in from this
+    # thread would label an operator's stop as a timeout and make the cancel
+    # answer `already_terminal`. The stash ref already reached the runner via
+    # the execution context, so the cleanup finalizer still restores the tree.
+    if codex_result.error == CODEX_CANCELLED_ERROR:
+        return _spawn_worker_cancelled_result(
             conn=conn,
-            lifecycle=lifecycle,
             action_id=action_request.action_id,
             task_id=task_id,
             run_id=run_id,
             source_event_id=running_event_uid,
-            error_code="codex_turn_timeout",
-            error_message=codex_result.error or "codex turn timed out",
-            event_type="action.timeout_assumed",
-            stash_ref=stash_ref,
+            correlation=correlation,
             cost=cost,
-            turn_id=action_request.turn_id,
+            stash_ref=stash_ref,
         )
 
-    # 7b. Crash (initialize / thread/start / turn/start / subprocess). The
-    # canonical tags are "codex_initialize_failed", "codex_thread_start_failed",
-    # "codex_turn_start_failed", "codex_subprocess_crashed". All map to
-    # action.failed with the upstream tag preserved.
-    if codex_result.error is not None:
+    # 7a/7b. Timeout (turn/interrupt was issued by the driver ->
+    # action.timeout_assumed) and crash (initialize / thread/start /
+    # turn/start / subprocess -> action.failed with the upstream tag
+    # preserved). Both end here, with no worker.reported.
+    classified = _spawn_worker_classify_failure(codex_result)
+    if classified is not None:
+        event_type, error_code, error_message = classified
         return _spawn_worker_emit_terminal_failure(
             conn=conn,
             lifecycle=lifecycle,
@@ -979,9 +1117,9 @@ def spawn_worker_handler(
             task_id=task_id,
             run_id=run_id,
             source_event_id=running_event_uid,
-            error_code=codex_result.error.split(":", 1)[0],
-            error_message=codex_result.error,
-            event_type="action.failed",
+            error_code=error_code,
+            error_message=error_message,
+            event_type=event_type,
             stash_ref=stash_ref,
             cost=cost,
             turn_id=action_request.turn_id,
@@ -1054,19 +1192,17 @@ def spawn_worker_handler(
     )
 
     # 12. task.executor_reported -- projection-side terminal signal for
-    # this run.
-    emit_event(
+    # this run, and the durable home of its token accounting.
+    _emit_executor_reported(
         conn,
-        type="task.executor_reported",
-        payload={
-            "task_id": task_id,
-            "run_id": run_id,
-            "status": report_status,
-            "summary": report_summary,
-            "diff_path": str(diff_artifact_path),
-        },
+        task_id=task_id,
+        run_id=run_id,
+        status=report_status,
+        summary=report_summary,
         source_event_id=running_event_uid,
         correlation=correlation,
+        diff_path=str(diff_artifact_path),
+        cost=cost,
     )
 
     # 13. Build the RawResult. Lifecycle stays at `running` per Day-1's
@@ -4460,6 +4596,7 @@ class ToolRegistry:
         *,
         action_runner: ActionRunner | None = None,
         resource_key_resolver: ResourceKeyResolver | None = None,
+        background_async: bool = False,
     ) -> None:
         """Construct an empty registry (no tools yet).
 
@@ -4469,10 +4606,21 @@ class ToolRegistry:
         ActionRun and waits on its handle: the events, the ordering and the
         returned bundle are identical, but the handler executes on the
         runner's thread under a resolved resource lease.
+
+        ``background_async`` is ADR-0008 Step 4: an ``is_async`` tool then
+        returns from ``dispatch`` as soon as it is accepted, and its result
+        reaches L3 the way the tool always claimed it would — through the
+        durable ``worker.reported`` / terminal row that re-enters ``decide``.
+        It requires a runner, because there is nothing to own the work
+        otherwise.
         """
+        if background_async and action_runner is None:
+            msg = "background_async dispatch requires an ActionRunner"
+            raise ActionRunnerError(msg)
         self._tools: dict[str, ToolDefinition] = {}
         self._lock = threading.RLock()
         self._action_runner = action_runner
+        self._background_async = background_async
         self._resource_key_resolver = (
             resource_key_resolver
             if resource_key_resolver is not None
@@ -4483,6 +4631,11 @@ class ToolRegistry:
     def action_runner(self) -> ActionRunner | None:
         """Return the installed ActionRunner, or ``None`` on the legacy path."""
         return self._action_runner
+
+    @property
+    def background_async(self) -> bool:
+        """Return whether declared-async tools dispatch without being awaited."""
+        return self._background_async
 
     def register(self, tool_def: ToolDefinition) -> None:
         """Register a ToolDefinition. Raises DuplicateToolError on re-register.
@@ -4584,20 +4737,32 @@ class ToolRegistry:
             dispatched_event_uid=dispatched_event.event_uid,
             runner=self._action_runner,
         )
-        try:
-            return submission.handle.result()
-        except (ActionRunnerError, TimeoutError) as exc:
-            # The job never reached its handler, so nothing else will write a
-            # terminal for it. Record one before the caller sees the failure.
-            self._fail_before_running(
-                action_request,
-                conn,
-                lifecycle,
-                source_event_id=dispatched_event.event_uid,
-                error_code="resource_lease",
-                message=str(exc),
+        if self._background_async and tool_def.is_async:
+            # ADR-0008 D9: "submit returns after dispatch, not after the
+            # action finishes". L3 gets an acknowledgement and pauses on the
+            # durable trigger; the handle is owned by the runner, whose
+            # finalizer closes the cleanup debt when the worker really ends.
+            return RawResultBundle(
+                slots=(
+                    RawResult(
+                        action_id=action_request.action_id,
+                        semantics="ack",
+                        payload={
+                            "action_id": action_request.action_id,
+                            "dispatch": "background",
+                        },
+                        tool_output=tool_result(
+                            {
+                                "action_id": action_request.action_id,
+                                "dispatch": "background",
+                            },
+                        ),
+                        error=None,
+                        metadata=None,
+                    ),
+                ),
             )
-            raise
+        return submission.handle.result()
 
     def submit(
         self,
@@ -4783,6 +4948,41 @@ class ToolRegistry:
             """Advance the in-process lifecycle once `action.running` committed."""
             lifecycle.transition(action_id, "running")
 
+        def _on_terminal(event_type: str) -> None:
+            """Advance the in-process lifecycle for a runner-written terminal.
+
+            A cancel or an assumed timeout is written by the runner, not by
+            the handler, so without this the FSM would keep calling a
+            cancelled action ``running``.
+            """
+            state: LifecycleState = (
+                "cancelled" if event_type == "action.cancelled" else "timeout_assumed"
+            )
+            if lifecycle.state_of(action_id) in ("dispatched", "running"):
+                lifecycle.transition(action_id, state)
+
+        def _on_dispatch_failure(
+            worker_conn: sqlite3.Connection,
+            exc: BaseException,
+        ) -> None:
+            """Terminalize a job that never reached its handler.
+
+            The lease could not be taken, so nothing downstream will ever
+            write this action's terminal. On the background path there is no
+            caller left holding the handle to notice, which is exactly why
+            this is the runner's hook rather than a `try` around `result()`.
+            The runner hands over its own connection: this runs on the worker
+            thread, and ``conn`` above belongs to the dispatching thread.
+            """
+            self._fail_before_running(
+                action_request,
+                worker_conn,
+                lifecycle,
+                source_event_id=dispatched_event_uid,
+                error_code="resource_lease",
+                message=str(exc),
+            )
+
         return runner.submit(
             ActionJob(
                 action_id=action_id,
@@ -4803,6 +5003,8 @@ class ToolRegistry:
                     and concurrency.parent_action_id is None
                     and action_request.turn_id is not None
                 ),
+                on_terminal=_on_terminal,
+                on_dispatch_failure=_on_dispatch_failure,
             ),
         )
 
@@ -5529,6 +5731,15 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             # `JARVIS_CODEX_TURN_TIMEOUT_S` moves the persisted deadline
             # in step with the in-process driver deadline.
             result_budget_s=_resolve_codex_turn_timeout_s,
+            # ADR-0008 D9 (Step 4). `spawn_worker_handler` polls its
+            # execution context and hands `run_codex_action` a
+            # `should_cancel`; the driver sends `turn/interrupt` and the
+            # finalizer closes the client, which terminates and if needed
+            # kills the `codex app-server` subprocess. "terminate_process"
+            # rather than "cooperative" because that is what actually
+            # happens to the child — the declaration has to survive being
+            # read as a promise about the OS process.
+            cancellation_mode="terminate_process",
         )
     )
     registry.register(VERIFY_DIFF_TOOL_DEF)
