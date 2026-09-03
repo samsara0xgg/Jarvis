@@ -52,9 +52,12 @@ from jarvis.execution.tools import (
     ToolRegistry,
     canonical_resource_key,
     default_resource_key_resolver,
+    live_action_ids,
+    running_action_ids,
     turn_action_ids,
 )
 from jarvis.runtime import JarvisRuntime, TriggerWaitTimeout
+from jarvis.runtime.inherent_loop import _run_supervisor_sweep
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state.event_log import emit_event, open_event_log
 
@@ -500,7 +503,13 @@ def test_turn_cleanup_runs_inline_when_nothing_is_still_running(
         # returned.
         assert _event_count(fixture.conn, "action.cleanup_completed") == 1
         assert fixture.runner.leases.live_scopes() == ()
+        # Both liveness owners have let go, which is what licenses L6 to
+        # touch the action at all. `turn_action_ids` alone would not say
+        # this: `drive_turn`'s `finally` empties it on the background path
+        # too, while the worker runs on — see
+        # `test_the_sweep_spares_a_worker_the_runner_still_owns`.
         assert turn_action_ids("T-quick") == frozenset()
+        assert "A-quick" not in live_action_ids()
     finally:
         fixture.close()
 
@@ -992,4 +1001,82 @@ def test_a_turn_with_no_background_worker_still_times_out_at_the_default(
         # dispatched nothing.
         assert elapsed_s < 2.0
     finally:
+        fixture.close()
+
+
+# --- the row's "live-action cleanup" ----------------------------------------
+
+
+def test_the_sweep_spares_a_worker_the_runner_still_owns(
+    tmp_path: Path,
+    repo_a: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L6 must not ``assume_timeout`` a background action L4 has not finished.
+
+    ADR-0009 D4 keeps ``release_turn_actions`` in ``drive_turn``'s
+    ``finally``, so a background worker leaves the per-turn live set the
+    instant its turn returns. The supervisor sweep reads that set to avoid
+    terminalizing a running action — so on the registry view alone it would
+    close a live Codex worker as soon as its turn unwound. The runner's
+    in-flight set is the missing half of the answer.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _body(request: ActionRequest, _conn: sqlite3.Connection) -> RawResult:
+        entered.set()
+        assert release.wait(timeout=10)
+        return _ack(request)
+
+    fixture = _Fixture(
+        tmp_path,
+        tools=(_async_tool("slow", _body),),
+        resolver=_fixed_resolver(
+            {
+                "slow": ToolConcurrency(
+                    resource_keys=(canonical_resource_key(repo_a),),
+                    mode="write_exclusive",
+                ),
+            },
+        ),
+    )
+    try:
+        _drive_one_turn(
+            fixture,
+            monkeypatch,
+            turn_id="T-sweep",
+            tool_name="slow",
+            action_id="A-sweep",
+            after_dispatch=lambda: entered.wait(timeout=10),
+        )
+        # The turn is over and its registry entry is gone; the worker is not.
+        assert turn_action_ids("T-sweep") == frozenset()
+        assert "A-sweep" in running_action_ids()
+        assert "A-sweep" in live_action_ids()
+
+        # A genuine orphan, so the sweep has something to close and cannot
+        # pass this test by doing nothing at all.
+        emit_event(
+            fixture.conn,
+            type="action.dispatched",
+            payload={"action_id": "A-sweep-orphan"},
+            correlation={"action_id": "A-sweep-orphan"},
+        )
+        # At a zero budget every open action is overdue.
+        closed = _run_supervisor_sweep(
+            _turn_runtime(fixture),
+            default_budget_s=0.0,
+        )
+        assert closed == 1
+        assert _payloads(fixture.conn, "action.timeout_assumed") == [
+            {"action_id": "A-sweep-orphan", "reason": "supervisor_sweep"},
+        ]
+
+        release.set()
+        assert _wait_until(lambda: _event_count(fixture.conn, "action.cleanup_completed") == 1)
+        # Only once L4 has let go does the action leave L6's protected view.
+        assert "A-sweep" not in live_action_ids()
+    finally:
+        release.set()
         fixture.close()

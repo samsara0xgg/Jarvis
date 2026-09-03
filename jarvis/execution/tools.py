@@ -4995,30 +4995,46 @@ class ToolRegistry:
                 message=str(exc),
             )
 
-        return runner.submit(
-            ActionJob(
-                action_id=action_id,
-                turn_id=action_request.turn_id,
-                run_id=action_request.run_id,
-                concurrency=concurrency,
-                cancellation_mode=tool_def.cancellation_mode,
-                dispatched_event_uid=dispatched_event_uid,
-                correlation=_action_correlation(action_request),
-                run=_run,
-                on_running=_on_running,
-                # Only a mutating, turn-owned lease survives quiescence: the
-                # turn's `drive_turn` finalizer is what releases it, after
-                # verify-then-stash-restore. A read-shared or untracked action
-                # has nothing left to clean up and frees at quiescence.
-                carries_cleanup_debt=(
-                    concurrency.mode != "read_shared"
-                    and concurrency.parent_action_id is None
-                    and action_request.turn_id is not None
+        def _on_finished() -> None:
+            """Un-publish the action once the runner is completely done with it."""
+            release_running_action(action_id)
+
+        # Published BEFORE `submit`, for the same reason `_emit_dispatched`
+        # publishes before `action.dispatched` lands: a sweep tick in
+        # between must never see the action unprotected.
+        register_running_action(action_id)
+        try:
+            return runner.submit(
+                ActionJob(
+                    action_id=action_id,
+                    turn_id=action_request.turn_id,
+                    run_id=action_request.run_id,
+                    concurrency=concurrency,
+                    cancellation_mode=tool_def.cancellation_mode,
+                    dispatched_event_uid=dispatched_event_uid,
+                    correlation=_action_correlation(action_request),
+                    run=_run,
+                    on_running=_on_running,
+                    # Only a mutating, turn-owned lease survives quiescence:
+                    # the turn's `drive_turn` finalizer is what releases it,
+                    # after verify-then-stash-restore. A read-shared or
+                    # untracked action has nothing left to clean up and frees
+                    # at quiescence.
+                    carries_cleanup_debt=(
+                        concurrency.mode != "read_shared"
+                        and concurrency.parent_action_id is None
+                        and action_request.turn_id is not None
+                    ),
+                    on_terminal=_on_terminal,
+                    on_finished=_on_finished,
+                    on_dispatch_failure=_on_dispatch_failure,
                 ),
-                on_terminal=_on_terminal,
-                on_dispatch_failure=_on_dispatch_failure,
-            ),
-        )
+            )
+        except BaseException:
+            # `submit` refused the job outright (shutdown), so no
+            # `on_finished` will ever fire for it.
+            release_running_action(action_id)
+            raise
 
     def _fail_before_running(  # noqa: PLR0913 — one terminal payload per keyword.
         self,
@@ -5301,6 +5317,20 @@ def _result_expected_by_ms(tool_def: ToolDefinition) -> int | None:
 _LIVE_ACTIONS_LOCK: Final[threading.Lock] = threading.Lock()
 _LIVE_ACTIONS_BY_TURN: Final[dict[str, set[str]]] = {}
 
+# The runner's half of the same question. ADR-0008 Step 4 gave actions a
+# SECOND owner: with `true_async_workers` on, `dispatch` returns an ack and
+# the ActionRunner keeps running the job after `drive_turn`'s `finally` has
+# dropped the turn's whole entry above. The turn table alone therefore
+# reports a live Codex worker as unowned the instant its turn unwinds, and
+# the supervisor sweep would `assume_timeout` it out from under L4.
+#
+# Keyed by action_id, not by turn: a runner job outlives its turn, and one
+# with no turn at all (`turn_id=None`) was never in the table above.
+# Registered by the dispatch path just before `submit`, dropped by the
+# runner's `on_finished` hook once the job — cleanup included — is done.
+_RUNNING_ACTIONS_LOCK: Final[threading.Lock] = threading.Lock()
+_RUNNING_ACTIONS: Final[set[str]] = set()
+
 
 def register_live_action(*, turn_id: str, action_id: str) -> None:
     """Publish ``action_id`` as driven by ``turn_id`` (idempotent)."""
@@ -5314,14 +5344,39 @@ def release_turn_actions(turn_id: str) -> None:
         _LIVE_ACTIONS_BY_TURN.pop(turn_id, None)
 
 
+def register_running_action(action_id: str) -> None:
+    """Publish ``action_id`` as owned by the ActionRunner (idempotent)."""
+    with _RUNNING_ACTIONS_LOCK:
+        _RUNNING_ACTIONS.add(action_id)
+
+
+def release_running_action(action_id: str) -> None:
+    """Drop the runner's claim on ``action_id``. No-op if unknown."""
+    with _RUNNING_ACTIONS_LOCK:
+        _RUNNING_ACTIONS.discard(action_id)
+
+
+def running_action_ids() -> frozenset[str]:
+    """Snapshot every action_id the ActionRunner has not finished."""
+    with _RUNNING_ACTIONS_LOCK:
+        return frozenset(_RUNNING_ACTIONS)
+
+
 def live_action_ids() -> frozenset[str]:
-    """Snapshot every action_id currently driven by some live turn."""
+    """Snapshot every action_id L4 still owns, from EITHER owner.
+
+    The union of the two claims: an action a live turn is driving, and an
+    action whose runner job has not finished. L6 must see both — since
+    ADR-0008 Step 4 a background worker outlives the turn that dispatched
+    it, so "no turn owns it" no longer implies "nothing is running".
+    """
     with _LIVE_ACTIONS_LOCK:
-        return frozenset(
+        turn_owned = frozenset(
             action_id
             for action_ids in _LIVE_ACTIONS_BY_TURN.values()
             for action_id in action_ids
         )
+    return turn_owned | running_action_ids()
 
 
 def turn_action_ids(turn_id: str) -> frozenset[str]:

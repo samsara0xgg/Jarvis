@@ -96,7 +96,7 @@ from jarvis.decision.response_run import (
 )
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
-from jarvis.execution.tools import live_action_ids
+from jarvis.execution.tools import live_action_ids, running_action_ids
 from jarvis.runtime import (
     JarvisRuntime,
     _event_action_id,
@@ -2189,6 +2189,14 @@ async def _system_trigger_watcher(
        skips it and advances the cursor past it. The two predicates
        partition the terminal-event stream: no row is claimed twice, and
        no row with an ``action_id`` is dropped by both.
+    3. **A row the RUNNER still owns is held, not dropped.** Since
+       ADR-0008 Step 4 a background worker outlives its turn, so
+       :func:`live_action_ids` covers two claims and only one of them —
+       the live turn's — implies somebody will consume the row. For the
+       runner's claim the cursor still advances (the row is off the
+       query), but the row itself waits in ``held`` until L4 lets go;
+       otherwise an ``action.failed`` written a millisecond before the
+       runner's ``on_finished`` hook fires would be silently lost.
 
     The system turn itself is just ``drive_turn`` on a worker thread with
     the terminal row as its trigger: L3's
@@ -2201,6 +2209,11 @@ async def _system_trigger_watcher(
     """
     after_id = anchor_id
     LOGGER.info("system_trigger_watcher started (after_id=%d)", after_id)
+    # Rows whose action the runner had not finished yet. HELD, never
+    # dropped: the cursor has already advanced past them, so a `continue`
+    # would lose the row for good, and L4 letting go a millisecond later
+    # is precisely when the orphan becomes real.
+    held: list[Event] = []
     # Set BEFORE the first poll and before anything that could raise: the
     # caller is blocked on this event and will not run the bootstrap
     # sweep until it fires.
@@ -2212,10 +2225,22 @@ async def _system_trigger_watcher(
                 after_id=after_id,
                 event_types=_SYSTEM_TRIGGER_TYPES,
             )
-            for row_id, ev in new_events:
+            pending = [*held, *(ev for _row_id, ev in new_events)]
+            held = []
+            for row_id, _ev in new_events:
                 after_id = max(after_id, row_id)
+            for ev in pending:
                 action_id = _event_action_id(ev)
-                if action_id is None or action_id in live_action_ids():
+                if action_id is None:
+                    continue
+                if action_id in live_action_ids():
+                    if action_id in running_action_ids():
+                        # L4 has not finished this action. It is not an
+                        # orphan yet — but nothing else will re-offer the
+                        # row, so hold it rather than drop it.
+                        held.append(ev)
+                    # Otherwise a live turn is driving it and will fold its
+                    # own terminal; a system turn would double-handle it.
                     continue
                 trigger = _system_trigger_event(ev)
                 try:

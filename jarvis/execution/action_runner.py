@@ -558,6 +558,14 @@ class ActionJob:
     carries_cleanup_debt: bool
     on_terminal: Callable[[str], None] | None = None
     """Optional hook for the terminals the runner writes instead of the handler."""
+    on_finished: Callable[[], None] | None = None
+    """Called once the job is completely done, cleanup included.
+
+    The dispatch path's release hook for
+    :func:`jarvis.execution.tools.register_running_action`. The runner
+    cannot call that module itself — `tools` imports this one — so it
+    reports completion and L4's dispatch side owns both halves.
+    """
     on_dispatch_failure: Callable[[sqlite3.Connection, BaseException], None] | None = None
     """Called on the worker's own connection when the job never reached its handler.
 
@@ -1182,19 +1190,34 @@ class ActionRunner:
         """Drop one job's in-flight marker and settle its turn if it is now quiet."""
         with self._lock:
             self._inflight.pop(job.action_id, None)
-        if job.turn_id is None:
-            return
         try:
-            self._run_turn_cleanup_if_ready(job.turn_id)
-        except Exception:
-            # This runs in the job's `finally`. A finalizer that raised here
-            # would replace the handler's own result or exception on the
-            # future, which is the one thing the caller cannot recover from.
-            LOGGER.exception(
-                "action runner: deferred turn cleanup failed (turn_id=%r, action_id=%r)",
-                job.turn_id,
-                job.action_id,
-            )
+            if job.turn_id is None:
+                return
+            try:
+                self._run_turn_cleanup_if_ready(job.turn_id)
+            except Exception:
+                # This runs in the job's `finally`. A finalizer that raised
+                # here would replace the handler's own result or exception on
+                # the future, which is the one thing the caller cannot
+                # recover from.
+                LOGGER.exception(
+                    "action runner: deferred turn cleanup failed (turn_id=%r, action_id=%r)",
+                    job.turn_id,
+                    job.action_id,
+                )
+        finally:
+            # LAST, and unconditionally: this un-publishes the action from
+            # L4's live set, which is what lets the supervisor sweep touch
+            # it. Anything still owed — including the turn cleanup above —
+            # has to have run first.
+            if job.on_finished is not None:
+                try:
+                    job.on_finished()
+                except Exception:
+                    LOGGER.exception(
+                        "action runner: on_finished hook failed (action_id=%r)",
+                        job.action_id,
+                    )
 
     def _run_turn_cleanup_if_ready(self, turn_id: str) -> tuple[str, ...]:
         """Run an armed turn cleanup once no action of that turn is live.
