@@ -1140,7 +1140,13 @@ def open_event_log(path: Path) -> sqlite3.Connection:
     idempotent — schema is not recreated, triggers are not duplicated.
 
     Connection behavior:
-        - Default `isolation_level` (deferred transactions).
+        - Default `isolation_level`, but `emit_event` opens its write with
+          an explicit `BEGIN IMMEDIATE`: its `source_event_id` validation
+          SELECT would otherwise take a read snapshot first and turn the
+          INSERT into a read->write upgrade, which SQLite refuses with an
+          immediate `SQLITE_BUSY` without ever calling the busy handler.
+          Reserving the write lock up front keeps the `busy_timeout` below
+          in force for every contended write.
         - `PRAGMA journal_mode = WAL` enables reader/writer concurrency.
           The mode persists in the db file once set; reapplying on every
           open is a no-op. Required because the daemon touches the event
@@ -1407,7 +1413,7 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
         )
         raise NestedEventTransactionError(msg)
 
-    conn.execute("BEGIN")
+    conn.execute("BEGIN IMMEDIATE")
     try:
         event = append_event_in_transaction(
             conn,

@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -151,6 +152,59 @@ def test_transactional_append_rolls_back_and_bus_observes_only_commit(tmp_path: 
         )
     assert _event_count(observer, "surface.user_intent") == 1
     observer.close()
+    conn.close()
+
+
+def test_emit_event_with_source_event_id_waits_for_contended_writer_instead_of_failing_fast(
+    tmp_path: Path,
+) -> None:
+    """emit_event's BEGIN IMMEDIATE keeps busy_timeout alive on the source-id path.
+
+    A deferred BEGIN lets the `source_event_id` validation SELECT take a read
+    snapshot, so the INSERT becomes a read->write upgrade that SQLite fails
+    instantly with SQLITE_BUSY, bypassing the busy handler entirely.
+    """
+    path = tmp_path / "contended.db"
+    conn = open_event_log(path)
+    seed = emit_event(
+        conn,
+        type="surface.user_intent",
+        payload={"transcript": "seed", "turn_id": "T-seed"},
+    )
+
+    hold_seconds = 0.3
+    holding = threading.Event()
+
+    def _hold_write_lock() -> None:
+        writer = _raw_connection(path)
+        try:
+            writer.execute("BEGIN IMMEDIATE")
+            holding.set()
+            time.sleep(hold_seconds)
+            writer.execute("COMMIT")
+        finally:
+            holding.set()
+            writer.close()
+
+    holder = threading.Thread(target=_hold_write_lock)
+    holder.start()
+    assert holding.wait(timeout=10)
+    try:
+        started = time.perf_counter()
+        contended = emit_event(
+            conn,
+            type="surface.user_intent",
+            payload={"transcript": "contended", "turn_id": "T-contended"},
+            source_event_id=seed.event_uid,
+        )
+        elapsed = time.perf_counter() - started
+    finally:
+        holder.join(timeout=10)
+
+    assert contended.source_event_id == seed.event_uid
+    assert elapsed >= hold_seconds * 0.6
+    assert elapsed < 5.0
+    assert _event_count(conn, "surface.user_intent") == 2
     conn.close()
 
 
