@@ -5649,6 +5649,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     screen_max_width_px: int = DEFAULT_SCREEN_MAX_WIDTH_PX,
     action_runner: ActionRunner | None = None,
     resource_key_resolver: ResourceKeyResolver | None = None,
+    background_async: bool = False,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry (Day-1 six + ADR-0011 D5 seven).
 
@@ -5700,6 +5701,10 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             ActionRunner is installed; a test injects one to declare
             resource semantics for a tool the default resolver would
             classify by `read_only` alone.
+        background_async: ADR-0008 Step 4. `True` makes `dispatch` return
+            an acknowledgement for an `is_async` tool as soon as its
+            ActionRun is accepted, instead of blocking on the handle.
+            Requires `action_runner`.
     """
     vault_root = (
         obsidian_vault_root if obsidian_vault_root is not None else DEFAULT_OBSIDIAN_VAULT_ROOT
@@ -5707,6 +5712,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     registry = ToolRegistry(
         action_runner=action_runner,
         resource_key_resolver=resource_key_resolver,
+        background_async=background_async,
     )
     registry.register(
         ToolDefinition(

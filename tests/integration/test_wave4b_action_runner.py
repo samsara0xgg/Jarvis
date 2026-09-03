@@ -1055,13 +1055,17 @@ def test_drive_turn_finalizes_cleanup_after_the_stash_pop(
     monkeypatch.setattr(runtime_module, "_pop_pending_stashes", _record_pop)
 
     assert fixture.runner is not None
-    real_finalize = fixture.runner.finalize_turn_cleanup
+    # ADR-0008 Step 4 moved the *decision* to `finalize_turn_cleanup`, which
+    # the driver now calls first and which may defer; the probe therefore
+    # records the write itself — `finalize_cleanup` is what emits the cleanup
+    # terminal and releases the lease, and that is what must follow the pop.
+    real_finalize = fixture.runner.finalize_cleanup
 
-    def _record_finalize(turn_id: str, **kwargs: Any) -> tuple[str, ...]:  # noqa: ANN401
+    def _record_finalize(action_id: str, **kwargs: Any) -> str | None:  # noqa: ANN401
         order.append("cleanup")
-        return real_finalize(turn_id, **kwargs)
+        return real_finalize(action_id, **kwargs)
 
-    monkeypatch.setattr(fixture.runner, "finalize_turn_cleanup", _record_finalize)
+    monkeypatch.setattr(fixture.runner, "finalize_cleanup", _record_finalize)
 
     runtime = _turn_runtime(fixture)
     intent = emit_event(

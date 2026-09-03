@@ -1109,8 +1109,19 @@ class ActionRunner:
         """Drop one job's in-flight marker and settle its turn if it is now quiet."""
         with self._lock:
             self._inflight.pop(job.action_id, None)
-        if job.turn_id is not None:
+        if job.turn_id is None:
+            return
+        try:
             self._run_turn_cleanup_if_ready(job.turn_id)
+        except Exception:
+            # This runs in the job's `finally`. A finalizer that raised here
+            # would replace the handler's own result or exception on the
+            # future, which is the one thing the caller cannot recover from.
+            LOGGER.exception(
+                "action runner: deferred turn cleanup failed (turn_id=%r, action_id=%r)",
+                job.turn_id,
+                job.action_id,
+            )
 
     def _run_turn_cleanup_if_ready(self, turn_id: str) -> tuple[str, ...]:
         """Run an armed turn cleanup once no action of that turn is live.

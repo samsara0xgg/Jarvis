@@ -121,17 +121,53 @@ class Wave4ActionFlags:
     """
 
     action_runner: bool = False
+    true_async_workers: bool = False
+    """ADR-0008 §6 / Step 4: an ``is_async`` tool is no longer awaited.
+
+    ``dispatch`` returns an acknowledgement as soon as the ActionRun is
+    accepted, and the result reaches L3 through the durable trigger the
+    tool's async shape always promised. Requires ``action_runner``: without
+    a runner there is nothing to own the work after ``dispatch`` returns.
+    """
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object] | None) -> Wave4ActionFlags:
         """Parse exact booleans, treating absent values as disabled."""
         values = {} if raw is None else raw
-        return cls(action_runner=values.get("action_runner") is True)
+        return cls(
+            action_runner=values.get("action_runner") is True,
+            true_async_workers=values.get("true_async_workers") is True,
+        )
 
     @property
     def all_disabled(self) -> bool:
         """Return whether the runtime must retain the inline dispatch path."""
-        return not self.action_runner
+        return not (self.action_runner or self.true_async_workers)
+
+
+@dataclass(frozen=True)
+class Wave5InputFlags:
+    """Production adoption switch for ADR-0008 D8's intent pump (Step 4).
+
+    ``intent_pump`` replaces the daemon's "poll one event, await its whole
+    turn" watcher with a durable-claim queue: the watcher claims each trigger
+    with one idempotent ``turn.started``, advances its cursor only after that
+    claim is accepted, and hands the turn to a bounded pool. Off, the daemon
+    keeps the serial watcher and its startup ``MAX(events.id)`` anchor.
+    """
+
+    intent_pump: bool = False
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, object] | None) -> Wave5InputFlags:
+        """Parse exact booleans, treating absent values as disabled."""
+        values = {} if raw is None else raw
+        return cls(intent_pump=values.get("intent_pump") is True)
+
+    @property
+    def all_disabled(self) -> bool:
+        """Return whether the runtime must retain the serial watcher."""
+        return not self.intent_pump
 
 
 @dataclass(frozen=True)
@@ -345,6 +381,7 @@ __all__ = [
     "Wave1FeatureFlags",
     "Wave4ActionFlags",
     "Wave4ResponseFlags",
+    "Wave5InputFlags",
     "new_response_id",
     "stable_authorization_identity",
     "stable_legacy_presentation_binding",

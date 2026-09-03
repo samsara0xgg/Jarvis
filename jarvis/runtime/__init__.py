@@ -32,11 +32,13 @@ imported by ``jarvis.cli`` only.
 from __future__ import annotations
 
 import base64
+import contextlib
 import io
 import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 import time
 import uuid
@@ -112,6 +114,7 @@ from jarvis.shared.realtime import (
     Wave1FeatureFlags,
     Wave4ActionFlags,
     Wave4ResponseFlags,
+    Wave5InputFlags,
     new_response_id,
 )
 from jarvis.shared.realtime_trace import (
@@ -130,7 +133,6 @@ from jarvis.surface.cli import (
 from jarvis.surface.cli_render import render_response
 
 if TYPE_CHECKING:
-    import sqlite3
     from collections.abc import Callable
 
     from jarvis.decision import ResponsePlan
@@ -402,6 +404,7 @@ class JarvisRuntime:
     llm_session_factory: LLMSessionFactory | None = None
     response_runs: ResponseRunRegistry | None = None
     committed_event_bus: CommittedEventBus | None = None
+    input_flags: Wave5InputFlags = field(default_factory=Wave5InputFlags)
 
 
 @dataclass(frozen=True)
@@ -647,14 +650,54 @@ def _wave4_action_flags(config: Mapping[str, Any]) -> Wave4ActionFlags:
     elif not (wave1.transactional_event_append and wave1.lifecycle_terminal_cas):
         reason = "wave1_primitives_disabled"
     if reason is None:
+        if requested.true_async_workers and not requested.action_runner:
+            # Nothing would own the work after `dispatch` returned.
+            LOGGER.warning(
+                "realtime.actions downgraded (action_runner_disabled): requested "
+                "true_async_workers=True; effective true_async_workers=False",
+            )
+            record_realtime_trace(
+                "action_activation_downgraded",
+                reason="action_runner_disabled",
+            )
+            return Wave4ActionFlags(action_runner=False, true_async_workers=False)
         return requested
     LOGGER.warning(
-        "realtime.actions downgraded (%s): requested action_runner=True; "
-        "effective action_runner=False",
+        "realtime.actions downgraded (%s): requested action_runner=%s, "
+        "true_async_workers=%s; effective both False",
         reason,
+        requested.action_runner,
+        requested.true_async_workers,
     )
     record_realtime_trace("action_activation_downgraded", reason=reason)
     return Wave4ActionFlags()
+
+
+def _wave5_input_flags(config: Mapping[str, Any]) -> Wave5InputFlags:
+    """Resolve the ADR-0008 D8 intent-pump switch.
+
+    The pump's durable claim owns its own ``BEGIN IMMEDIATE``, so it does not
+    depend on the Wave-1 append switch; it does require ``realtime.enabled``,
+    because turning it on rewrites how the daemon consumes every utterance.
+    """
+    realtime = config.get("realtime")
+    if not isinstance(realtime, Mapping):
+        return Wave5InputFlags()
+    input_raw = realtime.get("input")
+    requested = Wave5InputFlags.from_mapping(
+        input_raw if isinstance(input_raw, Mapping) else None,
+    )
+    if requested.all_disabled or realtime.get("enabled") is True:
+        return requested
+    LOGGER.warning(
+        "realtime.input downgraded (realtime_parent_disabled): requested "
+        "intent_pump=True; effective intent_pump=False",
+    )
+    record_realtime_trace(
+        "input_activation_downgraded",
+        reason="realtime_parent_disabled",
+    )
+    return Wave5InputFlags()
 
 
 def _positive_int(
@@ -1238,6 +1281,9 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     )
     registry = build_default_registry(
         action_runner=action_runner,
+        # ADR-0008 Step 4: with this on, `dispatch` returns as soon as an
+        # is_async ActionRun is accepted and the runner owns the rest.
+        background_async=action_flags.true_async_workers,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
         web_search_provider=web_search_provider,
@@ -1365,6 +1411,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         llm_session_factory=llm_session_factory,
         response_runs=response_runs,
         committed_event_bus=committed_event_bus,
+        input_flags=_wave5_input_flags(full_config),
     )
 
 
@@ -2097,37 +2144,51 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         # guard keeps the finally from masking the original exception.
         if run is not None and runtime.response_runs is not None:
             runtime.response_runs.unregister(run.response_id)
-        try:
-            _pop_pending_stashes(
-                runtime.conn,
-                artifacts_root=runtime.runtime_paths.artifacts_root,
-                turn_id=effective_turn_id,
-            )
-        except Exception:
-            LOGGER.exception(
-                "drive_turn: stash-pop finalizer failed (turn_id=%r)",
-                effective_turn_id,
-            )
-        # ADR-0008 D9 (Wave 4B) — the repository stays quarantined until
-        # cleanup, and cleanup is only true once verify_diff has run and the
-        # pre-task stash is back. That is exactly here: lexically after
-        # `_pop_pending_stashes`, so an unrelated same-repo action stays
-        # blocked through the whole verify-then-restore window. Wave 5 moves
-        # this trigger into the runner's own finalizer.
-        if runtime.action_runner is not None:
+
+        def _finalize_turn_resources() -> VerificationOutcome:
+            """Restore this turn's stashes, release its actions, report the outcome.
+
+            ADR-0008 D9 (Step 4): the runner decides *when* this runs — here
+            on this thread when every action of the turn already finished,
+            or on a background worker's own thread the moment it does. Either
+            way it opens its own Event Log connection, because
+            ``runtime.conn`` belongs to whichever thread ``drive_turn`` is on
+            and SQLite would refuse it from the worker.
+
+            Order is the ADR-0002 Dirty-tree policy: verify_diff has already
+            reached its terminal by the time the driver asks, the stash goes
+            back next, and only then may the cleanup terminal say the repo is
+            safe.
+            """
+            finalizer_conn = open_event_log(runtime.runtime_paths.event_log)
             try:
+                _pop_pending_stashes(
+                    finalizer_conn,
+                    artifacts_root=runtime.runtime_paths.artifacts_root,
+                    turn_id=effective_turn_id,
+                )
+                return _turn_verification_outcome(finalizer_conn, effective_turn_id)
+            finally:
+                with contextlib.suppress(sqlite3.Error):
+                    finalizer_conn.close()
+
+        try:
+            if runtime.action_runner is None:
+                _finalize_turn_resources()
+            else:
                 runtime.action_runner.finalize_turn_cleanup(
                     effective_turn_id,
-                    verification_outcome=_turn_verification_outcome(
-                        runtime.conn,
-                        effective_turn_id,
-                    ),
+                    # Overridden by whatever `_finalize_turn_resources`
+                    # derives; this is the value for a turn whose finalizer
+                    # could not run at all.
+                    verification_outcome="verification_skipped",
+                    on_finalize=_finalize_turn_resources,
                 )
-            except Exception:
-                LOGGER.exception(
-                    "drive_turn: action cleanup finalizer failed (turn_id=%r)",
-                    effective_turn_id,
-                )
+        except Exception:
+            LOGGER.exception(
+                "drive_turn: turn cleanup finalizer failed (turn_id=%r)",
+                effective_turn_id,
+            )
         release_turn_actions(effective_turn_id)
 
 

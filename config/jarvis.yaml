@@ -146,8 +146,27 @@ realtime:
   # value, and a knob whose only legal setting is its default is a config lie.
   actions:
     action_runner: false
+    # ADR-0008 Step 4 (Wave 5).  true_async_workers stops the driver from
+    # awaiting a declared-async tool: `dispatch` returns as soon as the
+    # ActionRun is accepted and the runner owns quiescence, verification,
+    # stash restore and lease release through its own finalizer.  Requires
+    # action_runner, and downgrades once with a warning without it.
+    true_async_workers: false
     max_concurrent_runs: 1
     lease_timeout_s: 900
+  # ADR-0008 D8 (Wave 5).  intent_pump replaces the daemon's "poll one
+  # event, await its whole turn" watcher with a durable-claim queue: each
+  # trigger is claimed once by an idempotent turn.started, the cursor
+  # advances only after the claim is accepted, and a bounded pool drives
+  # the turns.  First activation records one consumer.adopted watermark, so
+  # historical utterances are never replayed.  queue_capacity full means
+  # backpressure — the watcher leaves the row unconsumed rather than
+  # dropping a durable utterance.  ADR-0008 §6 names no key for this block;
+  # the shape mirrors realtime.actions.
+  input:
+    intent_pump: false
+    queue_capacity: 8
+    max_concurrent_turns: 2
   # Wave 2 rollout.  Enabling this also requires realtime.enabled plus the
   # transactional append and lifecycle terminal CAS switches above.  Invalid
   # combinations downgrade once to the complete legacy batch path.
