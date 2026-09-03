@@ -180,6 +180,49 @@ def test_output_player_attempts_close_when_stop_hangs() -> None:
         assert player.stop(timeout_s=0.5).definitively_closed
 
 
+def test_output_stop_final_cas_is_atomic_against_repeated_stop() -> None:
+    """No retry can enter between stop-helper liveness and final close CAS."""
+    stop_release = threading.Event()
+    final_cas_entered = threading.Event()
+    final_cas_release = threading.Event()
+    stream = _LifecycleOutputStream(stop_release=stop_release)
+    with patch.object(voice_tts, "_open_output_stream", return_value=stream):
+        player = voice_tts.AudioStreamPlayer(lazy_open=True)
+        assert player.start().started
+        first = player.stop(timeout_s=0.08)
+        assert not first.definitively_closed
+        assert stream.stop_calls == 1
+        assert stream.close_calls == 1
+
+        def _hold_final_cas() -> None:
+            final_cas_entered.set()
+            assert final_cas_release.wait(timeout=1.0)
+
+        with patch.object(
+            player,
+            "_stop_before_final_cas_hook",
+            _hold_final_cas,
+        ):
+            stop_release.set()
+            assert final_cas_entered.wait(timeout=1.0)
+            results: list[voice_tts.PlayerStopResult] = []
+            repeated = threading.Thread(
+                target=lambda: results.append(player.stop(timeout_s=0.5)),
+            )
+            repeated.start()
+            time.sleep(0.02)
+            assert repeated.is_alive()
+            assert stream.stop_calls == 1
+            assert stream.close_calls == 1
+            final_cas_release.set()
+            repeated.join(timeout=1.0)
+            assert not repeated.is_alive()
+            assert len(results) == 1
+            assert results[0].definitively_closed
+            assert stream.stop_calls == 1
+            assert stream.close_calls == 1
+
+
 def test_tts_waits_until_restore_subprocess_finishes() -> None:
     """A TTS provider cannot start while the OS restore call is blocked."""
     reset_realtime_trace()

@@ -138,7 +138,7 @@ def _drain_accepted_tail(
     subscriber: voice_audio.AudioSubscription,
     frames: list[voice_audio.CanonicalAudioFrame],
     deadline: float,
-) -> tuple[bool, int]:
+) -> tuple[bool, int, bool]:
     """Drain accepted native work until exact counts are stably equal."""
     stable_empty_polls = 0
     stable_counts: tuple[int, int, int] | None = None
@@ -146,12 +146,16 @@ def _drain_accepted_tail(
         frame = subscriber.read(
             timeout_s=min(0.01, max(0.0, deadline - time.monotonic())),
         )
+        if time.monotonic() >= deadline:
+            return False, stable_empty_polls, True
         if frame is not None:
             frames.append(frame)
             stable_empty_polls = 0
             stable_counts = None
             continue
         drain_metrics = ingress.metrics()
+        if time.monotonic() >= deadline:
+            return False, stable_empty_polls, True
         counts = (
             drain_metrics.callback_calls,
             drain_metrics.canonical_frames,
@@ -161,11 +165,13 @@ def _drain_accepted_tail(
             stable_empty_polls = stable_empty_polls + 1 if counts == stable_counts else 1
             stable_counts = counts
             if stable_empty_polls >= _TAIL_DRAIN_STABLE_EMPTY_POLLS:
-                return True, stable_empty_polls
+                if time.monotonic() >= deadline:
+                    return False, stable_empty_polls, True
+                return True, stable_empty_polls, False
         else:
             stable_empty_polls = 0
             stable_counts = counts
-    return False, stable_empty_polls
+    return False, stable_empty_polls, True
 
 
 def run_live_input_smoke(
@@ -218,16 +224,18 @@ def run_live_input_smoke(
         observed_samples += frame.frame_count
     metrics_while_open = ingress.metrics()
     clock_mapping = ingress.clock_mapping()
-    sleep_stop = ingress.stop_for_sleep()
+    sleep_stop = ingress.stop_for_sleep(deadline=deadline)
     # A single empty poll does not prove that the worker has drained the
     # already-accepted native tail.  Stay within the original absolute bench
     # bound and require two stable empty observations after all three counts
     # converge exactly.
-    tail_drain_completed, stable_empty_polls = _drain_accepted_tail(
+    tail_drain_completed, stable_empty_polls, deadline_exhausted = (
+        _drain_accepted_tail(
         ingress=ingress,
         subscriber=subscriber,
         frames=frames,
         deadline=deadline,
+        )
     )
     observed_samples = sum(frame.frame_count for frame in frames)
     metrics_before_close = ingress.metrics()
@@ -279,6 +287,7 @@ def run_live_input_smoke(
             == len(frames)
         ),
         "tail_drain_completed": tail_drain_completed,
+        "absolute_deadline_not_exhausted": not deadline_exhausted,
         "discontinuities_zero": discontinuities == 0,
         "sleep_stop_definitive": (
             sleep_stop is not None and sleep_stop.definitively_closed
@@ -304,6 +313,7 @@ def run_live_input_smoke(
         "subscriber_frames": len(frames),
         "tail_drain_completed": tail_drain_completed,
         "tail_drain_stable_empty_polls": stable_empty_polls,
+        "deadline_exhausted": deadline_exhausted,
         "cursor_start": frames[0].sample_cursor if frames else None,
         "cursor_end": cursor_end,
         "sum_frame_count": sum_frame_count,

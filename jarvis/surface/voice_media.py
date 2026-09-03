@@ -595,6 +595,7 @@ class StreamingTTSPipeline:
         self._power_helper_error: BaseException | None = None
         self._power_helper_reason = ""
         self._power_last_timed_out_attempt_id: int | None = None
+        self._power_shutdown = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue[_MediaCommand | object] | None = None
         self._conn: sqlite3.Connection | None = None
@@ -760,7 +761,9 @@ class StreamingTTSPipeline:
         """Atomically publish an absolute deadline that can only move earlier."""
         with self._deadline_lock:
             self._shutdown_deadline = min(self._shutdown_deadline, deadline)
-        self._shutdown_requested.set()
+        with self._power_lock:
+            self._power_shutdown = True
+            self._shutdown_requested.set()
 
     def _remaining_s(self, cap_s: float) -> float:
         with self._deadline_lock:
@@ -1004,7 +1007,7 @@ class StreamingTTSPipeline:
         )
         return started
 
-    def _transition_player_for_power(  # noqa: C901, PLR0915 - exact bounded power FSM
+    def _transition_player_for_power(  # noqa: C901, PLR0911, PLR0915 - exact bounded power FSM
         self,
         *,
         action: Literal["start", "stop"],
@@ -1014,6 +1017,12 @@ class StreamingTTSPipeline:
         desired = "suspended" if action == "stop" else "open_unadmitted"
         transitional = "stopping" if action == "stop" else "starting"
         with self._power_lock:
+            if action == "start" and (self._power_shutdown or self._closed.is_set()):
+                return MediaPowerTransitionResult(
+                    "closed",
+                    self._power_attempt_id,
+                    "shutdown_revoked_player_start",
+                )
             if self._power_state == desired:
                 status: Literal["suspended", "resumed"] = (
                     "suspended" if action == "stop" else "resumed"
@@ -1047,9 +1056,10 @@ class StreamingTTSPipeline:
                 self._power_helper_reason = ""
                 self._power_state = transitional
 
-                def _operate() -> None:
+                def _operate() -> None:  # noqa: C901, PLR0912, PLR0915 - exact start/revoke compensation
                     error: BaseException | None = None
                     reason = ""
+                    shutdown_cleanup: bool | None = None
                     try:
                         if action == "stop":
                             remaining = max(0.0, deadline - time.monotonic())
@@ -1061,22 +1071,102 @@ class StreamingTTSPipeline:
                                 reason = result.reason
                                 error = RuntimeError(result.reason)
                         else:
-                            result = self._player.start()
-                            if (
-                                isinstance(result, PlayerStartResult)
-                                and not result.started
-                            ):
-                                reason = result.reason
-                                error = RuntimeError(result.reason)
+                            with self._power_lock:
+                                revoked_before_start = (
+                                    self._power_attempt_id != attempt_id
+                                    or self._power_shutdown
+                                    or self._closed.is_set()
+                                )
+                            if revoked_before_start:
+                                reason = "shutdown_revoked_before_player_start"
+                                shutdown_cleanup = True
+                            else:
+                                result = self._player.start()
+                                typed_started = not isinstance(result, PlayerStartResult) or (
+                                    result.started
+                                )
+                                typed_failed_closed = (
+                                    isinstance(result, PlayerStartResult)
+                                    and result.status == "failed_closed"
+                                )
+                                if not typed_started:
+                                    reason = result.reason
+                                    error = RuntimeError(result.reason)
+                                with self._power_lock:
+                                    revoked_after_start = (
+                                        self._power_attempt_id != attempt_id
+                                        or self._power_shutdown
+                                        or self._closed.is_set()
+                                    )
+                                if revoked_after_start:
+                                    if typed_failed_closed:
+                                        shutdown_cleanup = True
+                                    else:
+                                        try:
+                                            stopped = self._stop_player_with_bound(
+                                                self._config.shutdown_timeout_s,
+                                            )
+                                            if isinstance(stopped, PlayerStopResult):
+                                                shutdown_cleanup = (
+                                                    stopped.definitively_closed
+                                                )
+                                                if not shutdown_cleanup:
+                                                    reason = stopped.reason
+                                            else:
+                                                shutdown_cleanup = True
+                                        except BaseException as stop_exc:  # noqa: BLE001
+                                            shutdown_cleanup = False
+                                            reason = (
+                                                "shutdown_compensating_stop:"
+                                                f"{type(stop_exc).__name__}"
+                                            )
+                                    if not shutdown_cleanup:
+                                        error = RuntimeError(reason)
                     except BaseException as exc:  # noqa: BLE001 - lifecycle debt
                         error = exc
                         reason = f"{type(exc).__name__}:{exc}"
+                        if action == "start":
+                            with self._power_lock:
+                                revoked_after_error = (
+                                    self._power_attempt_id != attempt_id
+                                    or self._power_shutdown
+                                    or self._closed.is_set()
+                                )
+                            if revoked_after_error:
+                                try:
+                                    stopped = self._stop_player_with_bound(
+                                        self._config.shutdown_timeout_s,
+                                    )
+                                    shutdown_cleanup = (
+                                        stopped.definitively_closed
+                                        if isinstance(stopped, PlayerStopResult)
+                                        else True
+                                    )
+                                except BaseException:  # noqa: BLE001 - retained debt
+                                    shutdown_cleanup = False
                     finally:
                         with self._power_lock:
                             if self._power_attempt_id == attempt_id:
                                 self._power_helper_error = error
                                 self._power_helper_reason = reason
-                                self._power_state = desired if error is None else "uncertain"
+                                if action == "start" and shutdown_cleanup is not None:
+                                    self._power_state = (
+                                        "suspended" if shutdown_cleanup else "uncertain"
+                                    )
+                                else:
+                                    self._power_state = (
+                                        desired if error is None else "uncertain"
+                                    )
+                        if action == "start" and shutdown_cleanup is not None:
+                            self._record_shutdown_player_cleanup(
+                                definitive=shutdown_cleanup,
+                            )
+                            record_realtime_trace(
+                                "media_power_start_revoked",
+                                attempt_id=attempt_id,
+                                compensating_stop_definitive=shutdown_cleanup,
+                                reason=reason or "shutdown_revoked_late_start",
+                            )
                         done.set()
 
                 helper = threading.Thread(
@@ -1103,6 +1193,13 @@ class StreamingTTSPipeline:
             state = self._power_state
             error = self._power_helper_error
             operation_reason = self._power_helper_reason
+            shutdown = self._power_shutdown or self._closed.is_set()
+        if action == "start" and shutdown:
+            return MediaPowerTransitionResult(
+                "closed",
+                attempt_id,
+                operation_reason or "shutdown_revoked_player_start",
+            )
         if state != desired:
             return MediaPowerTransitionResult(
                 "uncertain",
@@ -1243,6 +1340,13 @@ class StreamingTTSPipeline:
         """Convert a typed player debt into the actor startup exception path."""
         msg = f"player startup ownership not proven: {started.reason}"
         raise RuntimeError(msg)
+
+    def _record_shutdown_player_cleanup(self, *, definitive: bool) -> None:
+        """Publish late start compensation into the pipeline cleanup ledger."""
+        with self._player_stop_lock:
+            self._player_stop_started = True
+            self._player_stop_definitive = definitive
+            self._player_stop_done.set()
 
     def _stop_player_bounded(self) -> bool:  # noqa: C901 - exact retry/join FSM
         """Move potentially stuck device teardown to one controlled daemon helper."""

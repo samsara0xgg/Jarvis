@@ -1093,6 +1093,13 @@ class _VoicePowerCoordinator:
         self._session = session
         self._media = media
         self._lock = threading.Lock()
+        self._shutdown = threading.Event()
+        self._pending_wake_generation = 0
+        self._pending_wake_thread: threading.Thread | None = None
+        self._pending_wake_done = threading.Event()
+        self._pending_wake_done.set()
+        self._pending_wake_active = False
+        self._pending_wake_succeeded = False
 
     def before_sleep(self) -> _VoicePowerTransition:
         """Close input first, then terminalize and stop output."""
@@ -1115,6 +1122,9 @@ class _VoicePowerCoordinator:
                 "coordinator_lock_timeout",
             )
         try:
+            self._pending_wake_generation += 1
+            self._pending_wake_active = False
+            self._pending_wake_succeeded = False
             input_result = self._session.ingress.stop_for_sleep(deadline=deadline)
             output_result = self._media.suspend_for_sleep(deadline=deadline)
             elapsed_s = time.monotonic() - started
@@ -1157,6 +1167,26 @@ class _VoicePowerCoordinator:
                 reason,
             )
         try:
+            pending = self._pending_wake_thread
+            if self._pending_wake_active:
+                pending_alive = pending is not None and pending.is_alive()
+                output_result = voice_media.MediaPowerTransitionResult(
+                    "resumed" if self._pending_wake_succeeded else "uncertain",
+                    self._pending_wake_generation,
+                    (
+                        "pending_wake_already_resumed"
+                        if self._pending_wake_succeeded
+                        else "pending_wake_continuation_in_flight"
+                    ),
+                    helper_thread_alive=pending_alive,
+                )
+                return _VoicePowerTransition(
+                    None,
+                    output_result,
+                    deadline,
+                    time.monotonic() - started,
+                    output_result.reason,
+                )
             output_result = self._media.resume_after_wake(deadline=deadline)
             skipped_reason: str | None = None
             if output_result.status == "resumed" and output_result.succeeded:
@@ -1165,6 +1195,8 @@ class _VoicePowerCoordinator:
                 skipped_reason = f"output_{output_result.status}:{output_result.reason}"
                 input_result = None
                 self._session.ingress.report_output_unavailable(reason=skipped_reason)
+                if output_result.helper_thread_alive and not self._shutdown.is_set():
+                    self._schedule_pending_wake_locked()
             elapsed_s = time.monotonic() - started
             record_realtime_trace(
                 "voice_power_wake_completed",
@@ -1184,6 +1216,96 @@ class _VoicePowerCoordinator:
             )
         finally:
             self._lock.release()
+
+    def _schedule_pending_wake_locked(self) -> None:
+        """Keep one deduplicated wake continuation after an exact stop debt."""
+        pending = self._pending_wake_thread
+        if pending is not None and pending.is_alive():
+            return
+        self._pending_wake_generation += 1
+        generation = self._pending_wake_generation
+        self._pending_wake_active = True
+        self._pending_wake_succeeded = False
+        done = threading.Event()
+        self._pending_wake_done = done
+
+        def _continue_wake() -> None:
+            output_result: voice_media.MediaPowerTransitionResult | None = None
+            input_result: object | None = None
+            reason = ""
+            deadline = time.monotonic() + self._TOTAL_TRANSITION_BOUND_S
+            acquired = self._lock.acquire(
+                timeout=max(0.0, deadline - time.monotonic()),
+            )
+            try:
+                if not acquired:
+                    reason = "pending_wake_coordinator_lock_timeout"
+                    return
+                if (
+                    self._shutdown.is_set()
+                    or generation != self._pending_wake_generation
+                ):
+                    reason = "pending_wake_revoked"
+                    return
+                output_result = self._media.resume_after_wake(deadline=deadline)
+                if (
+                    output_result.status == "resumed"
+                    and output_result.succeeded
+                    and not self._shutdown.is_set()
+                    and generation == self._pending_wake_generation
+                ):
+                    input_result = self._session.ingress.resume_after_wake(
+                        deadline=deadline,
+                    )
+                    self._pending_wake_succeeded = input_result is not None
+                    reason = "pending_wake_resumed"
+                else:
+                    reason = f"output_{output_result.status}:{output_result.reason}"
+                    if not self._shutdown.is_set():
+                        self._session.ingress.report_output_unavailable(reason=reason)
+            finally:
+                if acquired:
+                    self._lock.release()
+                record_realtime_trace(
+                    "voice_power_pending_wake_completed",
+                    generation=generation,
+                    output_status=(
+                        output_result.status if output_result is not None else "not_attempted"
+                    ),
+                    input_resumed=input_result is not None,
+                    reason=reason,
+                    deadline_exhausted=time.monotonic() >= deadline,
+                )
+                done.set()
+
+        thread = threading.Thread(
+            target=_continue_wake,
+            name=f"jarvis-power-pending-wake-g{generation}",
+            daemon=True,
+        )
+        self._pending_wake_thread = thread
+        try:
+            thread.start()
+        except RuntimeError:
+            done.set()
+            LOGGER.exception("failed to start pending wake continuation")
+
+    def close(self, *, timeout_s: float | None = None) -> bool:
+        """Revoke any pending wake before input/output owner shutdown."""
+        self._shutdown.set()
+        timeout = self._TOTAL_TRANSITION_BOUND_S if timeout_s is None else max(0.0, timeout_s)
+        deadline = time.monotonic() + timeout
+        if self._lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            try:
+                self._pending_wake_generation += 1
+                self._pending_wake_active = False
+                self._pending_wake_succeeded = False
+            finally:
+                self._lock.release()
+        pending = self._pending_wake_thread
+        if pending is not None:
+            pending.join(timeout=max(0.0, deadline - time.monotonic()))
+        return pending is None or not pending.is_alive()
 
 
 def _single_ingress_activation(  # noqa: PLR0911 - each fail-closed prerequisite has a named result
@@ -2224,6 +2346,8 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
             # below (wake / TTS / ducker / watcher cancel) is loop-thread
             # work that would otherwise be racing that notification.
             _shutdown_power_observer(power_observer)
+            if power_coordinator is not None:
+                power_coordinator.close(timeout_s=0.1)
             # ADR-0006 F14: Wave 3 revokes input before output. Feature-off
             # retains the legacy output-gate-before-wake order.
             _request_voice_input_branch_shutdown(voice_input_owners, tts_pipe)

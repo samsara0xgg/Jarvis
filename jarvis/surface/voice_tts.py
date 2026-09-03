@@ -658,6 +658,7 @@ class AudioStreamPlayer:
         self._lifecycle_attempt_id = 0
         self._ownership_attempt_id = 0
         self._close_attempt: _PlayerCloseAttempt | None = None
+        self._stop_before_final_cas_hook: Callable[[], None] | None = None
         self._underflow_count = 0
         self._callback_calls = 0
         self._drained = threading.Event()
@@ -723,6 +724,7 @@ class AudioStreamPlayer:
             self._lifecycle_attempt_id += 1
             ownership_attempt_id = self._lifecycle_attempt_id
             self._ownership_attempt_id = ownership_attempt_id
+            self._close_attempt = None
             self._lifecycle_state = "opening"
         try:
             stream = _open_output_stream(
@@ -823,7 +825,8 @@ class AudioStreamPlayer:
             # one OutputStream.
             if close_attempt is None or (
                 close_attempt.done.is_set()
-                and not close_attempt.stop_helper_alive
+                and close_attempt.stop_done.is_set()
+                and close_attempt.close_error is not None
             ):
                 stream = self._stream
                 if stream is None:
@@ -853,7 +856,9 @@ class AudioStreamPlayer:
                     helper.start()
                 except RuntimeError as exc:
                     close_attempt.close_error = exc
+                    close_attempt.stop_helper_alive = False
                     self._lifecycle_state = "uncertain"
+                    close_attempt.stop_done.set()
                     close_attempt.done.set()
             attempt_id = close_attempt.attempt_id
         if not close_attempt.done.wait(timeout=max(0.0, deadline - time.monotonic())):
@@ -918,8 +923,11 @@ class AudioStreamPlayer:
             except BaseException as exc:  # noqa: BLE001 - recorded lifecycle debt
                 attempt.stop_error = exc
             finally:
-                attempt.stop_helper_alive = False
                 with self._lifecycle_lock:
+                    attempt.stop_helper_alive = False
+                    hook = self._stop_before_final_cas_hook
+                    if hook is not None:
+                        hook()
                     if (
                         self._close_attempt is attempt
                         and attempt.close_error is None
@@ -927,7 +935,7 @@ class AudioStreamPlayer:
                     ):
                         self._stream = None
                         self._lifecycle_state = "closed"
-                attempt.stop_done.set()
+                    attempt.stop_done.set()
 
         stop_helper = threading.Thread(
             target=_stop_stream,
@@ -939,8 +947,10 @@ class AudioStreamPlayer:
             stop_helper.start()
             attempt.stop_done.wait(timeout=self._STOP_STAGE_WAIT_S)
         except RuntimeError as exc:
-            attempt.stop_helper_alive = False
-            attempt.stop_error = exc
+            with self._lifecycle_lock:
+                attempt.stop_helper_alive = False
+                attempt.stop_error = exc
+                attempt.stop_done.set()
         try:
             attempt.stream.close()
         except BaseException as exc:  # noqa: BLE001 - exact ownership retained
@@ -953,7 +963,7 @@ class AudioStreamPlayer:
                         self._lifecycle_state = "closed"
                     else:
                         self._lifecycle_state = "uncertain"
-            attempt.done.set()
+                attempt.done.set()
 
     def _terminalize_software_playback(self) -> None:
         """Invalidate buffered PCM independently of physical close proof."""

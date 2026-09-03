@@ -1276,6 +1276,87 @@ def test_sleep_generation_rejects_fault_terminal_publish_after_timeout() -> None
     assert ingress.close().definitively_closed
 
 
+def test_foreign_reopen_returning_after_sleep_close_is_never_admitted() -> None:
+    """Terminal control revokes an in-flight foreign open without lock inflation."""
+
+    class _BlockedReopenBackend(_FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reopen_entered = threading.Event()
+            self.reopen_release = threading.Event()
+
+        def start(
+            self,
+            *,
+            stream_epoch: int,
+            attempt_id: str,
+            frame_sink: voice_backend.InputFrameSink,
+            render_source: voice_backend.RenderSource | None = None,
+            timeout_s: float | None = None,
+        ) -> voice_backend.BackendStartResult:
+            if self.start_count == 1:
+                self.reopen_entered.set()
+                assert self.reopen_release.wait(timeout=1.0)
+            return super().start(
+                stream_epoch=stream_epoch,
+                attempt_id=attempt_id,
+                frame_sink=frame_sink,
+                render_source=render_source,
+                timeout_s=timeout_s,
+            )
+
+    backend = _BlockedReopenBackend()
+    ingress = voice_audio.AudioIngress(
+        backend=backend,
+        config=replace(
+            voice_audio.AudioIngressConfig(),
+            reopen_initial_backoff_s=0.001,
+            reopen_max_backoff_s=0.001,
+            shutdown_timeout_s=0.03,
+            route_poll_s=60.0,
+        ),
+    )
+    assert ingress.start().started
+    epoch = ingress.stream_epoch
+    assert epoch == 1
+    fault = voice_backend.BackendFault(
+        stream_epoch=epoch,
+        code="blocked_foreign_reopen",
+        detail="integration",
+        recoverable=True,
+        attempt_id=backend.active_attempt_id,
+    )
+    recovery = threading.Thread(target=lambda: ingress._handle_fault(fault))
+    recovery.start()
+    assert backend.reopen_entered.wait(timeout=1.0)
+    ingress.stop_for_sleep(deadline=time.monotonic() + 0.02)
+    assert ingress.capability.state is voice_audio.InputCapabilityState.SUSPENDED
+    close_started = time.monotonic()
+    first_close = ingress.close()
+    close_wall_s = time.monotonic() - close_started
+    assert close_wall_s < 0.08
+    assert not first_close.definitively_closed
+    assert ingress.stream_epoch is None
+    terminal_version = ingress.capability.version
+    assert ingress.capability.state.value == "close_uncertain"
+    backend.reopen_release.set()
+    recovery.join(timeout=1.0)
+    assert not recovery.is_alive()
+    assert ingress.stream_epoch is None
+    assert backend.start_count == 2
+    assert backend.stop_count == 2
+    assert backend.max_active_owner_count == 1
+    assert backend.active_epoch is None
+    assert ingress.capability.version == terminal_version
+    assert ingress.capability.state.value == "close_uncertain"
+    assert ingress.close().definitively_closed
+    assert ingress.capability.state.value == "stopped"
+    stopped_version = ingress.capability.version
+    ingress.report_output_unavailable(reason="late_power_callback_after_shutdown")
+    assert ingress.capability.state.value == "stopped"
+    assert ingress.capability.version == stopped_version
+
+
 def test_duplex_session_runs_two_silero_utterances_without_second_round_truncation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2287,16 +2368,50 @@ def test_live_bench_tail_drain_waits_past_initial_empty_worker_poll() -> None:
     ingress = MagicMock(spec=voice_audio.AudioIngress)
     ingress.metrics.side_effect = [delayed, converged, converged]
     frames: list[voice_audio.CanonicalAudioFrame] = []
-    completed, stable_polls = voice_input_bench._drain_accepted_tail(
+    completed, stable_polls, deadline_exhausted = (
+        voice_input_bench._drain_accepted_tail(
         ingress=ingress,
         subscriber=subscriber,
         frames=frames,
         deadline=time.monotonic() + 0.2,
+        )
     )
     assert completed
+    assert not deadline_exhausted
     assert stable_polls == 2
     assert frames == [frame]
     assert subscriber.read.call_count == 4
+
+
+def test_live_bench_second_stable_poll_crossing_deadline_fails_closed() -> None:
+    """Count convergence after the absolute deadline is never a passing drain."""
+    subscriber = MagicMock(spec=voice_audio.AudioSubscription)
+    reads = 0
+
+    def _read(*, timeout_s: float) -> None:
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            time.sleep(timeout_s + 0.01)
+
+    subscriber.read.side_effect = _read
+    converged = MagicMock()
+    converged.callback_calls = 0
+    converged.canonical_frames = 0
+    ingress = MagicMock(spec=voice_audio.AudioIngress)
+    ingress.metrics.return_value = converged
+    completed, stable_polls, deadline_exhausted = (
+        voice_input_bench._drain_accepted_tail(
+            ingress=ingress,
+            subscriber=subscriber,
+            frames=[],
+            deadline=time.monotonic() + 0.015,
+        )
+    )
+    assert not completed
+    assert deadline_exhausted
+    assert stable_polls == 1
+    assert reads == 2
 
 
 def test_power_coordinator_orders_input_then_output_and_fresh_output_before_input() -> None:
@@ -2485,6 +2600,149 @@ def test_power_coordinator_real_media_success_preserves_cross_device_order(
     assert ingress.close().definitively_closed
 
 
+def test_pending_wake_auto_resumes_output_then_input_after_late_sleep_stop(
+    tmp_path: Path,
+) -> None:
+    """One consumed OS wake is replayed once after the exact stop debt closes."""
+
+    class _PendingWakePlayer:
+        def __init__(self) -> None:
+            self.stop_release = threading.Event()
+            self.start_calls = 0
+            self.stop_calls = 0
+            self.active_owners = 0
+            self.max_owners = 0
+
+        def start(self) -> voice_tts.PlayerStartResult:
+            self.start_calls += 1
+            self.active_owners += 1
+            self.max_owners = max(self.max_owners, self.active_owners)
+            return voice_tts.PlayerStartResult("started", self.start_calls, "opened")
+
+        def stop(self, *, timeout_s: float | None = None) -> voice_tts.PlayerStopResult:
+            del timeout_s
+            self.stop_calls += 1
+            if self.stop_calls == 1:
+                assert self.stop_release.wait(timeout=1.0)
+            self.active_owners = 0
+            return voice_tts.PlayerStopResult("closed", self.stop_calls, "closed")
+
+    db_path = tmp_path / "pending-wake-replay.db"
+    open_event_log(db_path).close()
+    player = _PendingWakePlayer()
+    provider = MagicMock()
+    provider.streaming_candidate_count = 1
+    media = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,  # type: ignore[arg-type]
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        start_player=False,
+    )
+    input_resumed = threading.Event()
+    session = MagicMock(spec=voice_session.DuplexVoiceSession)
+    session.ingress.stop_for_sleep.return_value = None
+
+    def _resume_input(**_kwargs: object) -> object:
+        input_resumed.set()
+        return object()
+
+    session.ingress.resume_after_wake.side_effect = _resume_input
+    with patch.object(
+        inherent_loop._VoicePowerCoordinator,
+        "_TOTAL_TRANSITION_BOUND_S",
+        0.05,
+    ):
+        coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+        slept = coordinator.before_sleep()
+        assert slept.output_result is not None
+        assert slept.output_result.status == "uncertain"
+        woke = coordinator.on_wake()
+        assert woke.output_result is not None
+        assert woke.output_result.status == "uncertain"
+        assert woke.output_result.helper_thread_alive
+        _wait_until(
+            lambda: coordinator._pending_wake_thread is not None
+            and coordinator._pending_wake_thread.is_alive(),
+        )
+        duplicate_results: list[inherent_loop._VoicePowerTransition] = []
+        duplicate = threading.Thread(
+            target=lambda: duplicate_results.append(coordinator.on_wake()),
+        )
+        duplicate.start()
+        player.stop_release.set()
+        assert input_resumed.wait(timeout=1.0)
+        duplicate.join(timeout=1.0)
+        assert not duplicate.is_alive()
+        assert len(duplicate_results) == 1
+        assert player.start_calls == 1
+        assert player.max_owners == 1
+        session.ingress.resume_after_wake.assert_called_once()
+        assert coordinator.close(timeout_s=0.2)
+    assert media.close(wait_timeout_s=0.5)
+
+
+def test_pending_wake_is_revoked_by_shutdown_without_output_reopen(
+    tmp_path: Path,
+) -> None:
+    """Shutdown consumes pending wake generation before any fresh output open."""
+
+    class _ShutdownPendingPlayer:
+        def __init__(self) -> None:
+            self.stop_release = threading.Event()
+            self.start_calls = 0
+            self.stop_calls = 0
+
+        def start(self) -> voice_tts.PlayerStartResult:
+            self.start_calls += 1
+            return voice_tts.PlayerStartResult("started", self.start_calls, "opened")
+
+        def stop(self, *, timeout_s: float | None = None) -> voice_tts.PlayerStopResult:
+            del timeout_s
+            self.stop_calls += 1
+            if self.stop_calls == 1:
+                assert self.stop_release.wait(timeout=1.0)
+            return voice_tts.PlayerStopResult("closed", self.stop_calls, "closed")
+
+    db_path = tmp_path / "pending-wake-shutdown.db"
+    open_event_log(db_path).close()
+    player = _ShutdownPendingPlayer()
+    provider = MagicMock()
+    provider.streaming_candidate_count = 1
+    media = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,  # type: ignore[arg-type]
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        start_player=False,
+    )
+    session = MagicMock(spec=voice_session.DuplexVoiceSession)
+    session.ingress.stop_for_sleep.return_value = None
+    with patch.object(
+        inherent_loop._VoicePowerCoordinator,
+        "_TOTAL_TRANSITION_BOUND_S",
+        0.04,
+    ):
+        coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+        coordinator.before_sleep()
+        woke = coordinator.on_wake()
+        assert woke.output_result is not None
+        assert woke.output_result.helper_thread_alive
+        _wait_until(
+            lambda: coordinator._pending_wake_thread is not None
+            and coordinator._pending_wake_thread.is_alive(),
+        )
+        coordinator.close(timeout_s=0.01)
+        media.request_close()
+        player.stop_release.set()
+        assert media.close(wait_timeout_s=0.5)
+        assert coordinator.close(timeout_s=0.2)
+    assert player.start_calls == 0
+    session.ingress.resume_after_wake.assert_not_called()
+
+
 def test_media_sleep_timeout_late_terminalization_continues_exact_stop_and_wake(
     tmp_path: Path,
 ) -> None:
@@ -2541,6 +2799,73 @@ def test_media_sleep_timeout_late_terminalization_continues_exact_stop_and_wake(
         assert player.start.call_count == 1
         assert media._power_attempt_id == attempt_id + 1
     assert media.close(wait_timeout_s=1.0)
+
+
+def test_media_shutdown_revokes_blocked_wake_start_and_late_closes_exact_owner(
+    tmp_path: Path,
+) -> None:
+    """A start returning after actor exit compensates and completes cleanup."""
+
+    class _BlockedWakePlayer:
+        def __init__(self) -> None:
+            self.start_entered = threading.Event()
+            self.start_release = threading.Event()
+            self.start_calls = 0
+            self.stop_calls = 0
+            self.physical_open = False
+            self.max_owners = 0
+
+        def start(self) -> voice_tts.PlayerStartResult:
+            self.start_calls += 1
+            self.start_entered.set()
+            assert self.start_release.wait(timeout=1.0)
+            self.physical_open = True
+            self.max_owners = max(self.max_owners, int(self.physical_open))
+            return voice_tts.PlayerStartResult(
+                "started",
+                self.start_calls,
+                "late_stream_started",
+            )
+
+        def stop(self, *, timeout_s: float | None = None) -> voice_tts.PlayerStopResult:
+            del timeout_s
+            self.stop_calls += 1
+            self.physical_open = False
+            return voice_tts.PlayerStopResult(
+                "closed",
+                self.stop_calls,
+                "exact_stream_closed",
+            )
+
+    db_path = tmp_path / "shutdown-revokes-wake-start.db"
+    open_event_log(db_path).close()
+    provider = MagicMock()
+    provider.streaming_candidate_count = 1
+    player = _BlockedWakePlayer()
+    media = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,  # type: ignore[arg-type]
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.04),
+        start_player=False,
+    )
+    assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
+    wake = media.resume_after_wake(timeout_s=0.03)
+    assert wake.status == "uncertain"
+    assert wake.helper_thread_alive
+    assert player.start_entered.wait(timeout=1.0)
+    assert not media.close(wait_timeout_s=0.04)
+    _wait_until(media._closed.is_set)
+    assert not media.cleanup_complete
+    player.start_release.set()
+    _wait_until(lambda: media.cleanup_complete)
+    assert not player.physical_open
+    assert player.start_calls == 1
+    assert player.stop_calls == 2  # initial suspend + late-start compensation
+    assert player.max_owners == 1
+    assert media._power_state == "suspended"
+    assert media.close(wait_timeout_s=0.2)
 
 
 def test_wave3_prewarm_is_flag_gated_and_failure_preserves_legacy_before_device() -> None:
