@@ -1124,3 +1124,164 @@ def _turn_runtime(fixture: _Fixture) -> JarvisRuntime:
         system_prompt="",
         action_runner=fixture.runner,
     )
+
+
+def test_a_blocked_lease_waiter_never_occupies_a_run_slot(
+    tmp_path: Path,
+    repo_a: Path,
+) -> None:
+    """Regression: a queued same-repo action must not starve its own releaser.
+
+    With the shipped ``max_concurrent_runs: 1`` and a fixed worker pool, the
+    blocked waiter took the only worker thread, so the follow-up action whose
+    turn would have released the lease could never start — both sides waited
+    until the lease timeout. ADR-0008 D9 says ``max_concurrent_runs`` limits
+    jobs "only after resource leases are respected", which is exactly the fix:
+    waiting for a lease costs a thread, never a run slot.
+    """
+    key = canonical_resource_key(repo_a)
+    fixture = _Fixture(
+        tmp_path,
+        tools=(
+            _fixture_tool("holder", lambda r, _c: _ack(r)),
+            _fixture_tool("blocked", lambda r, _c: _ack(r)),
+            _fixture_tool("child", lambda r, _c: _ack(r), read_only=True),
+        ),
+        max_concurrent_runs=1,
+        lease_timeout_s=30.0,
+        resolver=_fixed_resolver(
+            {
+                "holder": ToolConcurrency(resource_keys=(key,), mode="write_exclusive"),
+                "blocked": ToolConcurrency(resource_keys=(key,), mode="write_exclusive"),
+                "child": ToolConcurrency(resource_keys=(key,), mode="read_shared"),
+            },
+        ),
+    )
+    try:
+        assert fixture.runner is not None
+        # Turn A takes the repository and keeps it through cleanup.
+        fixture.dispatch(_request("holder", "A-holder", turn_id="T-a"))
+        assert [s.action_id for s in fixture.runner.leases.live_scopes()] == ["A-holder"]
+
+        # Turn B queues behind it. Sleep so its thread is really parked on the
+        # lease before the next dispatch — the whole point is what that parked
+        # thread is holding while it waits.
+        blocked = fixture.submit(_request("blocked", "A-blocked", turn_id="T-b"))
+        time.sleep(0.3)
+        assert not blocked.handle.is_done()
+
+        # Turn A's own follow-up must still get a run slot; before the fix the
+        # single worker was held by the blocked waiter and this call hung.
+        started = time.monotonic()
+        fixture.dispatch(_request("child", "A-child", turn_id="T-a"))
+        assert time.monotonic() - started < 5.0
+
+        fixture.runner.finalize_turn_cleanup("T-a", verification_outcome="verified")
+        assert blocked.handle.result(timeout=10).slots[0].semantics == "ack"
+    finally:
+        fixture.close()
+
+
+def test_verify_diff_key_comes_from_the_run_it_verifies(tmp_path: Path) -> None:
+    """A verification with no explicit repo_path still names its parent's repo.
+
+    Regression: the key used to fall back to ``Path.cwd()`` while the parent
+    `spawn_worker` had leased the task's repo, so the subset check refused the
+    borrow and a verification that used to run fine failed closed.
+    """
+    repo = tmp_path / "task-repo"
+    repo.mkdir()
+    conn = open_event_log(tmp_path / "provenance.db")
+    try:
+        created = emit_event(
+            conn,
+            type="task.created",
+            payload={
+                "task_id": "T_abc",
+                "goal": "ship it",
+                "source": "allen",
+                "repo_path": str(repo),
+            },
+            correlation={"task_id": "T_abc"},
+        )
+        emit_event(
+            conn,
+            type="run.started",
+            payload={"run_id": "R_1", "task_id": "T_abc", "runner": "codex"},
+            source_event_id=created.event_uid,
+            correlation={"action_id": "A-parent", "run_id": "R_1", "task_id": "T_abc"},
+        )
+
+        tool = _fixture_tool("verify_diff", lambda r, _c: _ack(r), read_only=True)
+        resolved = default_resource_key_resolver(
+            _request("verify_diff", "A-verify", arguments={"run_id": "R_1"}),
+            tool,
+            conn,
+        )
+        assert resolved.resource_keys == (canonical_resource_key(repo),)
+        assert resolved.mode == "read_shared"
+        assert resolved.parent_action_id == "A-parent"
+
+        # An explicit repo_path still wins, and naming another tree is then a
+        # genuine cross-repo verify rather than a borrow of the parent's.
+        other = tmp_path / "other-repo"
+        other.mkdir()
+        explicit = default_resource_key_resolver(
+            _request(
+                "verify_diff",
+                "A-other",
+                arguments={"run_id": "R_1", "repo_path": str(other)},
+            ),
+            tool,
+            conn,
+        )
+        assert explicit.resource_keys == (canonical_resource_key(other),)
+    finally:
+        conn.close()
+
+
+def test_same_turn_guard_never_dissolves_a_stronger_mode(
+    tmp_path: Path,
+    repo_a: Path,
+) -> None:
+    """The no-self-wait guard covers keys AND mode, so it cannot over-grant.
+
+    A same-turn job that wants a stronger lease than its sibling holds is a
+    real conflict, not a self-wait: it must queue on the normal acquire path
+    and time out visibly rather than be handed a scope it did not earn.
+    """
+    key = canonical_resource_key(repo_a)
+    fixture = _Fixture(
+        tmp_path,
+        tools=(
+            _fixture_tool("reader", lambda r, _c: _ack(r), read_only=True),
+            _fixture_tool("writer", lambda r, _c: _ack(r)),
+        ),
+        lease_timeout_s=0.3,
+        resolver=_fixed_resolver(
+            {
+                "reader": ToolConcurrency(resource_keys=(key,), mode="read_shared"),
+                "writer": ToolConcurrency(resource_keys=(key,), mode="global_exclusive"),
+            },
+        ),
+    )
+    try:
+        assert fixture.runner is not None
+        # A read_shared holder with cleanup debt keeps its scope alive.
+        reader_submission = fixture.submit(_request("reader", "A-reader", turn_id="T-same"))
+        assert reader_submission.handle.result(timeout=10).slots[0].semantics == "ack"
+        # read_shared frees at quiescence, so pin the scope explicitly instead.
+        held = fixture.runner.leases.acquire(
+            action_id="A-holder",
+            keys=frozenset({key}),
+            mode="write_exclusive",
+            timeout_s=1.0,
+        )
+        try:
+            escalating = fixture.submit(_request("writer", "A-writer", turn_id="T-same"))
+            with pytest.raises(TimeoutError):
+                escalating.handle.result(timeout=10)
+        finally:
+            fixture.runner.leases.release(held)
+    finally:
+        fixture.close()

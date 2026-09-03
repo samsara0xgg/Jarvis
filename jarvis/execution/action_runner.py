@@ -37,9 +37,10 @@ import contextvars
 import logging
 import sqlite3
 import threading
+import time
 import uuid
 from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -88,6 +89,13 @@ _MODE_RANK: Final[dict[str, int]] = {
 
 _LATE_WRITE_CAP: Final[int] = 100
 """ADR-0008 D9 bound on per-action late-worker telemetry records."""
+
+_LEASE_POLL_STEP_S: Final[float] = 0.05
+"""Re-check cadence for a blocked lease waiter.
+
+The wait is notified on every release, so this only bounds how quickly a
+``cancelled`` predicate or an expired deadline is noticed.
+"""
 
 _DEFAULT_LEASE_TIMEOUT_S: Final[float] = 900.0
 """Ceiling on waiting for a contended resource lease.
@@ -203,7 +211,11 @@ class ResourceLeaseTable:
             TimeoutError: ``timeout_s`` elapsed with the request still blocked.
             ActionRunnerError: ``cancelled`` reported the wait is pointless.
         """
-        deadline = threading.TIMEOUT_MAX if timeout_s <= 0 else timeout_s
+        # A monotonic deadline, not a count of wait() calls: Condition.wait
+        # returns early on every notify_all, so summing the poll step would
+        # over-estimate elapsed time and time a waiter out while its holder is
+        # still making progress.
+        deadline = None if timeout_s <= 0 else time.monotonic() + timeout_s
         scope = ResourceScope(
             scope_id="RSCOPE" + uuid.uuid4().hex,
             action_id=action_id,
@@ -211,20 +223,22 @@ class ResourceLeaseTable:
             mode=mode,
         )
         with self._condition:
-            waited = 0.0
-            step = 0.05
             while self._blocked(scope):
                 if cancelled is not None and cancelled():
                     msg = f"resource lease wait cancelled for action {action_id!r}"
                     raise ActionRunnerError(msg)
-                if waited >= deadline:
+                if deadline is not None and time.monotonic() >= deadline:
                     msg = (
                         f"resource lease for {sorted(keys)!r} ({mode}) was still held "
-                        f"after {deadline}s; action {action_id!r} refuses to run unlocked"
+                        f"after {timeout_s}s; action {action_id!r} refuses to run unlocked"
                     )
                     raise TimeoutError(msg)
-                self._condition.wait(step)
-                waited += step
+                remaining = (
+                    _LEASE_POLL_STEP_S
+                    if deadline is None
+                    else min(_LEASE_POLL_STEP_S, max(0.0, deadline - time.monotonic()))
+                )
+                self._condition.wait(remaining)
             self._scopes[scope.scope_id] = scope
             return scope
 
@@ -555,13 +569,22 @@ class ActionRunner:
         self._lease_timeout_s = lease_timeout_s
         self._committed_event_bus = committed_event_bus
         self._leases = leases if leases is not None else ResourceLeaseTable()
-        self._executor = ThreadPoolExecutor(
-            max_workers=max(1, max_concurrent_runs),
-            thread_name_prefix="jarvis-action",
-        )
+        # One thread per submitted job, and a semaphore that bounds only the
+        # jobs actually RUNNING. ADR-0008 D9 puts it exactly this way —
+        # "max_concurrent_runs limits jobs only after resource leases are
+        # respected" — and the ordering is load-bearing, not stylistic. A
+        # fixed worker pool lets a job that is merely *waiting* for a
+        # contended repository occupy a slot; with the shipped
+        # max_concurrent_runs=1 that starves the very turn whose cleanup would
+        # release the lease, and the two sides wait for each other until the
+        # lease timeout expires. Waiting for a lease must therefore cost a
+        # thread, never a run slot.
+        self._run_slots = threading.BoundedSemaphore(max(1, max_concurrent_runs))
         self._lock = threading.Lock()
         self._contexts: dict[str, ActionExecutionContext] = {}
         self._epochs: dict[str, int] = {}
+        self._threads: list[threading.Thread] = []
+        self._shutdown = threading.Event()
 
     @property
     def leases(self) -> ResourceLeaseTable:
@@ -581,11 +604,24 @@ class ActionRunner:
         already committed before this returns, and `action.running` is written
         only once the lease is actually held (ADR-0008 D9).
         """
+        if self._shutdown.is_set():
+            msg = "ActionRunner is shut down and cannot accept new jobs"
+            raise ActionRunnerError(msg)
         with self._lock:
             epoch = self._epochs.get(job.action_id, -1) + 1
             self._epochs[job.action_id] = epoch
         context_ready = threading.Event()
-        future = self._executor.submit(self._execute, job, epoch, context_ready)
+        future: Future[RawResultBundle] = Future()
+        thread = threading.Thread(
+            target=self._run_job,
+            args=(job, epoch, context_ready, future),
+            name=f"jarvis-action-{job.action_id}",
+            daemon=True,
+        )
+        with self._lock:
+            self._threads = [t for t in self._threads if t.is_alive()]
+            self._threads.append(thread)
+        thread.start()
         return ActionSubmission(
             handle=ActionHandle(
                 action_id=job.action_id,
@@ -597,6 +633,23 @@ class ActionRunner:
             initial_events=(job.dispatched_event_uid,),
         )
 
+    def _run_job(
+        self,
+        job: ActionJob,
+        epoch: int,
+        context_ready: threading.Event,
+        future: Future[RawResultBundle],
+    ) -> None:
+        """Own one job's thread: settle its future exactly once, always."""
+        if not future.set_running_or_notify_cancel():  # pragma: no cover - never cancelled
+            context_ready.set()
+            return
+        try:
+            future.set_result(self._execute(job, epoch, context_ready))
+        except BaseException as exc:  # noqa: BLE001 — the future is the only reporting channel.
+            context_ready.set()
+            future.set_exception(exc)
+
     def _execute(
         self,
         job: ActionJob,
@@ -607,8 +660,13 @@ class ActionRunner:
         conn = open_event_log(self._event_log_path)
         scope: ResourceScope | None = None
         context: ActionExecutionContext | None = None
+        slot_held = False
         try:
             scope = self._enter_scope(job)
+            # The run slot is taken only now, with the lease already in hand,
+            # so a blocked waiter never holds one.
+            self._run_slots.acquire()
+            slot_held = True
             # `resource_keys`/`resource_mode` are what a later boot reads to
             # re-establish quarantine for an action that terminated without a
             # cleanup event; the in-process lease table dies with the process.
@@ -651,6 +709,8 @@ class ActionRunner:
         finally:
             context_ready.set()
             self._quiesce(conn, job, context, scope)
+            if slot_held:
+                self._run_slots.release()
             with contextlib.suppress(sqlite3.Error):
                 conn.close()
 
@@ -686,7 +746,15 @@ class ActionRunner:
         )
 
     def _same_turn_scope_holder(self, job: ActionJob, keys: frozenset[str]) -> str | None:
-        """Return this turn's live scope holder whose keys cover ``keys``."""
+        """Return this turn's live scope holder that fully covers this job.
+
+        "Fully covers" means both the keys and the mode: this implicit path
+        may only ever propose a borrow that will validate. A same-turn job
+        that wants a STRONGER mode than its sibling holds is not a self-wait
+        to be dissolved — it is a genuine conflict, and it belongs in the
+        normal acquire queue where it blocks visibly instead of being handed a
+        scope it did not earn.
+        """
         if job.turn_id is None or not keys:
             return None
         with self._lock:
@@ -701,7 +769,9 @@ class ActionRunner:
             (
                 scope.action_id
                 for scope in self._leases.live_scopes()
-                if scope.action_id in turn_actions and keys <= scope.resource_keys
+                if scope.action_id in turn_actions
+                and keys <= scope.resource_keys
+                and _MODE_RANK[job.concurrency.mode] <= _MODE_RANK[scope.mode]
             ),
             None,
         )
@@ -912,9 +982,16 @@ class ActionRunner:
                 quarantined.append(action_id)
         return tuple(quarantined)
 
-    def shutdown(self, *, wait: bool = True) -> None:
-        """Stop accepting jobs and drain the executor."""
-        self._executor.shutdown(wait=wait)
+    def shutdown(self, *, wait: bool = True, timeout_s: float = 30.0) -> None:
+        """Stop accepting jobs and drain the in-flight ones."""
+        self._shutdown.set()
+        if not wait:
+            return
+        with self._lock:
+            threads = list(self._threads)
+        deadline = time.monotonic() + timeout_s
+        for thread in threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
 
 
 def _cancel_outcome(

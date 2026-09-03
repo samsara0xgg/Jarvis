@@ -4892,28 +4892,72 @@ def _spawn_worker_resource_key(
     return canonical_resource_key(repo)
 
 
-def _verify_diff_parent_action_id(
+@dataclass(frozen=True)
+class _VerifiedRun:
+    """The durable provenance of the run one `verify_diff` is checking."""
+
+    parent_action_id: str | None
+    task_id: str | None
+
+
+def _verify_diff_run_provenance(
     action_request: ActionRequest,
     conn: sqlite3.Connection,
-) -> str | None:
-    """Return the `spawn_worker` action whose run this verification checks.
+) -> _VerifiedRun:
+    """Resolve the run this verification checks back to its creator.
 
     Durable provenance, not a caller assertion: the child names a ``run_id``,
-    and ``run.started``'s correlation is what binds that run to the action
-    that created it. ``None`` means no such run is on the log, in which case
-    the runner falls back to its same-turn guard.
+    and ``run.started`` is what binds that run to both the action that created
+    it (through the correlation) and the task it belongs to (through the
+    payload). Empty fields mean no such run is on the log.
     """
     run_id = action_request.arguments.get("run_id")
     if not isinstance(run_id, str) or not run_id:
-        return None
+        return _VerifiedRun(parent_action_id=None, task_id=None)
     for event in iter_events(conn):
         if event.type != "run.started" or event.payload.get("run_id") != run_id:
             continue
-        correlation = event.correlation or {}
-        parent = correlation.get("action_id")
-        if isinstance(parent, str) and parent:
-            return parent
-    return None
+        parent = (event.correlation or {}).get("action_id")
+        task_id = event.payload.get("task_id")
+        return _VerifiedRun(
+            parent_action_id=parent if isinstance(parent, str) and parent else None,
+            task_id=task_id if isinstance(task_id, str) and task_id else None,
+        )
+    return _VerifiedRun(parent_action_id=None, task_id=None)
+
+
+def _verify_diff_resource_key(
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+    provenance: _VerifiedRun,
+) -> str:
+    """Return the canonical repo key this verification reads.
+
+    An explicit ``repo_path`` wins, exactly as ``_resolve_repo_path`` reads
+    it. Otherwise the repo is taken from the verified run's own task record
+    rather than from ``Path.cwd()``. That matters: the parent `spawn_worker`
+    leased the task's repo, so a cwd fallback would name a DIFFERENT key, the
+    subset check would refuse the borrow, and a verification that used to run
+    fine would fail closed. Deriving both keys from one source keeps them
+    equal in the path that actually happens, and leaves a genuine cross-repo
+    verify_diff — one that explicitly names another tree — correctly refused.
+    """
+    payload_repo = (
+        action_request.payload.get("repo_path")
+        if action_request.payload is not None
+        else None
+    )
+    if isinstance(payload_repo, str) and payload_repo:
+        return canonical_resource_key(Path(payload_repo))
+    args_repo = action_request.arguments.get("repo_path")
+    if isinstance(args_repo, str) and args_repo:
+        return canonical_resource_key(Path(args_repo))
+    if provenance.task_id is not None:
+        record = _load_task_record(conn, provenance.task_id)
+        raw_repo = record.get("repo_path") if record is not None else None
+        if isinstance(raw_repo, str) and raw_repo:
+            return canonical_resource_key(Path(raw_repo))
+    return canonical_resource_key(Path.cwd())
 
 
 def default_resource_key_resolver(
@@ -4940,10 +4984,11 @@ def default_resource_key_resolver(
             mode="write_exclusive",
         )
     if tool_def.name == _VERIFY_DIFF_TOOL_NAME:
+        provenance = _verify_diff_run_provenance(action_request, conn)
         return ToolConcurrency(
-            resource_keys=(canonical_resource_key(_resolve_repo_path(action_request)),),
+            resource_keys=(_verify_diff_resource_key(action_request, conn, provenance),),
             mode="read_shared",
-            parent_action_id=_verify_diff_parent_action_id(action_request, conn),
+            parent_action_id=provenance.parent_action_id,
         )
     if tool_def.read_only:
         return ToolConcurrency(resource_keys=(), mode="read_shared")
