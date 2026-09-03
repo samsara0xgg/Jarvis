@@ -365,6 +365,8 @@ class ActionExecutionContext:
     _state: ActionCleanupState = "worker_active"
     _cancel_reason: str | None = None
     _stash_ref: str | None = None
+    _worker_run_id: str | None = None
+    _worker_task_id: str | None = None
     _late_writes: deque[str] = field(default_factory=lambda: deque(maxlen=_LATE_WRITE_CAP))
 
     @property
@@ -416,6 +418,34 @@ class ActionExecutionContext:
         with self._lock:
             return self._stash_ref
 
+    def record_worker_identity(self, *, run_id: str, task_id: str) -> None:
+        """Record the run/task ids the handler minted after dispatch.
+
+        A stash ref alone cannot be restored. The cleanup finalizer needs the
+        ``run_id`` to key its conflict artifact and to dedup, and the
+        ``task_id`` to resolve which repository the ref belongs to — and it
+        reads both off the terminal event. ``spawn_worker`` mints its
+        ``run_id`` at ``run.started``, inside the handler and therefore after
+        the dispatcher built this context, which is why ``ActionJob.run_id``
+        is empty for exactly the tool that needs this most. Without these the
+        ref recorded above names a stash nothing can ever pop.
+        """
+        with self._lock:
+            self._worker_run_id = run_id
+            self._worker_task_id = task_id
+
+    @property
+    def worker_run_id(self) -> str | None:
+        """Return the handler-minted run id, if the handler recorded one."""
+        with self._lock:
+            return self._worker_run_id
+
+    @property
+    def worker_task_id(self) -> str | None:
+        """Return the handler-minted task id, if the handler recorded one."""
+        with self._lock:
+            return self._worker_task_id
+
     def mark_quiesced(self) -> None:
         """Record that the owned worker stopped running."""
         self.advance("worker_quiesced")
@@ -448,6 +478,25 @@ class ActionExecutionContext:
         """Return the bounded late-write telemetry for this job."""
         with self._lock:
             return tuple(self._late_writes)
+
+
+def _stamp_worker_identity(
+    payload: dict[str, object],
+    context: ActionExecutionContext,
+) -> None:
+    """Add the handler-minted ``run_id`` / ``task_id`` to a stash-bearing terminal.
+
+    Only called where a ``stash_ref`` was just written, because those two ids
+    exist on this event for one reason: the cleanup finalizer resolves the
+    stash's repository from ``task_id`` and keys its conflict artifact on
+    ``run_id``. A terminal that names a stash but neither id names a stash the
+    finalizer must skip, which leaves the user's pre-task changes shelved with
+    nothing left to unshelve them.
+    """
+    if context.worker_run_id is not None:
+        payload["run_id"] = context.worker_run_id
+    if context.worker_task_id is not None:
+        payload["task_id"] = context.worker_task_id
 
 
 @dataclass(frozen=True)
@@ -951,6 +1000,7 @@ class ActionRunner:
             payload["requested_by_turn_id"] = context.turn_id
         if context.stash_ref is not None:
             payload["stash_ref"] = context.stash_ref
+            _stamp_worker_identity(payload, context)
         outcome = self._terminalize(
             event_type="action.cancelled",
             payload=payload,
@@ -967,6 +1017,7 @@ class ActionRunner:
         payload: dict[str, object] = {"action_id": action_id, "reason": reason}
         if context.stash_ref is not None:
             payload["stash_ref"] = context.stash_ref
+            _stamp_worker_identity(payload, context)
         outcome = self._terminalize(
             event_type="action.timeout_assumed",
             payload=payload,

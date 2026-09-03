@@ -389,7 +389,13 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         required_payload=("action_id",),
         # `stash_ref` — the runtime stash-pop finalizer needs it to
         # restore the pre-task stash on failure paths.
-        optional_payload=("error", "reason", "stash_ref"),
+        # `run_id` / `task_id` ride with `stash_ref` (Step 4): the finalizer
+        # resolves the stash's repository from `task_id` and keys its conflict
+        # artifact on `run_id`.  Both terminals below are written by the
+        # ActionRunner, whose correlation is the canonical
+        # {action_id, run_id?, turn_id?} triple with no task slot, so the ids
+        # have to ride the payload.
+        optional_payload=("error", "reason", "stash_ref", "run_id", "task_id"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -410,6 +416,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "cancel_scope",
             "cancellation_mode",
             "stash_ref",
+            "run_id",
+            "task_id",
         ),
         schema_version=1,
     ),

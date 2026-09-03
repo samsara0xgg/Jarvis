@@ -729,18 +729,30 @@ def _spawn_worker_classify_failure(
     return None
 
 
-def _spawn_worker_cancel_seam(stash_ref: str | None) -> Callable[[], bool] | None:
-    """Record the pre-task stash on the running job and return its cancel poll.
+def _spawn_worker_cancel_seam(
+    stash_ref: str | None,
+    *,
+    run_id: str,
+    task_id: str,
+) -> Callable[[], bool] | None:
+    """Record this run's stash and identity, and return its cancel poll.
 
-    ADR-0008 D9 (Step 4). Both halves need the same object, and both are
-    no-ops off the runner: `current_execution_context()` returns ``None`` on
-    the pre-Step-3 inline path, where the handler writes its own terminal and
-    that terminal already carries the stash ref.
+    ADR-0008 D9 (Step 4). All three need the same object, and all are no-ops
+    off the runner: `current_execution_context()` returns ``None`` on the
+    pre-Step-3 inline path, where the handler writes its own terminal and that
+    terminal already carries the stash ref and both ids.
+
+    The identity travels with the ref because the runner writes the cancel and
+    timeout terminals, and the cleanup finalizer needs ``task_id`` to find the
+    repository the stash belongs to and ``run_id`` to key its artifacts. Only
+    the handler knows them: ``run_id`` is minted at ``run.started``, after the
+    dispatcher built the context.
     """
     context = current_execution_context()
     if context is None:
         return None
     context.record_stash_ref(stash_ref)
+    context.record_worker_identity(run_id=run_id, task_id=task_id)
     return lambda: context.is_cancel_requested
 
 
@@ -1034,7 +1046,7 @@ def spawn_worker_handler(
     # RawResult.metadata; the runtime composition (Step 17) pops it
     # AFTER verify_diff exits (ADR-0002 Dirty-tree policy).
     stash_ref = isolate_pretask_changes(repo_path, run_id=run_id)
-    should_cancel = _spawn_worker_cancel_seam(stash_ref)
+    should_cancel = _spawn_worker_cancel_seam(stash_ref, run_id=run_id, task_id=task_id)
 
     # 6. Run Codex with the heartbeat closure.
     on_heartbeat = _emit_worker_heartbeat_factory(

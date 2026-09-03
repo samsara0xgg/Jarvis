@@ -2255,13 +2255,19 @@ def _pop_pending_stashes(  # noqa: C901 — composition walker folds the clean /
     """Restore every pre-task stash recorded by this turn's terminal events.
 
     Walks the event log for terminal worker / action events —
-    ``worker.reported``, ``action.failed``, ``action.timeout_assumed`` —
-    whose ``correlation.turn_id`` matches ``turn_id``. L4's
-    ``spawn_worker_handler`` stamps the ``stash_ref`` onto each of
-    those payloads at emit time (success via the ``worker.reported``
-    literal, failure paths via ``_spawn_worker_emit_terminal_failure``);
-    the ``run_id`` rides on the payload (``worker.reported``) or on the
-    correlation (failure events). For each stash_ref-carrying row we
+    ``worker.reported``, ``action.failed``, ``action.timeout_assumed``,
+    ``action.cancelled`` — whose ``correlation.turn_id`` matches
+    ``turn_id``. L4's ``spawn_worker_handler`` stamps the ``stash_ref``
+    onto each of those payloads at emit time (success via the
+    ``worker.reported`` literal, failure paths via
+    ``_spawn_worker_emit_terminal_failure``); the ``run_id`` rides on the
+    payload (``worker.reported``) or on the correlation (failure events).
+    The cancel and assumed-timeout terminals are written by the
+    ActionRunner rather than by L4 once ``spawn_worker`` is truly
+    background, so those carry ``stash_ref`` plus ``run_id`` and
+    ``task_id`` on the payload — see
+    :func:`jarvis.execution.action_runner._stamp_worker_identity`. For
+    each stash_ref-carrying row we
     call :func:`jarvis.execution.diff_capture.restore_pretask_changes`
     with the repo cwd resolved from ``task.created.repo_path``. The
     runtime invokes this finalizer from ``drive_turn``'s ``finally`` —
@@ -2294,7 +2300,20 @@ def _pop_pending_stashes(  # noqa: C901 — composition walker folds the clean /
     # Terminal event types that may carry a pre-task stash_ref. A run that
     # appears under two types (e.g. worker.reported + action.timeout_assumed)
     # is popped once via the shared seen_run_ids dedup below.
-    terminal_types = {"worker.reported", "action.failed", "action.timeout_assumed"}
+    #
+    # `action.cancelled` belongs here for the same reason the other three do:
+    # ADR-0008 §12 lists "cancelled-stash cleanup" among the paths that must
+    # reach a cleanup terminal, and once `spawn_worker` runs in the background
+    # the cancel terminal is written by the runner rather than the handler —
+    # so it is the ONLY durable row naming the stash of a cancelled run. Omit
+    # it and cancelling a Codex worker silently shelves the user's uncommitted
+    # work with nothing left to restore it.
+    terminal_types = {
+        "worker.reported",
+        "action.failed",
+        "action.timeout_assumed",
+        "action.cancelled",
+    }
     seen_run_ids: set[str] = set()
     for evt in iter_events(conn):
         if evt.type not in terminal_types:
@@ -2307,7 +2326,13 @@ def _pop_pending_stashes(  # noqa: C901 — composition walker folds the clean /
         if not isinstance(run_id_raw, str):
             run_id_raw = evt.correlation.get("run_id")
         stash_ref_raw = evt.payload.get("stash_ref")
+        # Handler-written terminals carry task_id on the correlation; the two
+        # the runner writes (cancel, assumed timeout) carry it on the payload,
+        # because the runner's correlation is the canonical
+        # {action_id, run_id?, turn_id?} triple and has no task slot.
         task_id_raw = evt.correlation.get("task_id") if evt.correlation is not None else None
+        if not isinstance(task_id_raw, str):
+            task_id_raw = evt.payload.get("task_id")
         if not isinstance(run_id_raw, str) or run_id_raw in seen_run_ids:
             continue
         seen_run_ids.add(run_id_raw)

@@ -750,3 +750,85 @@ def test_shutdown_drains_a_live_cancellable_worker(tmp_path: Path, repo_a: Path)
     finally:
         with contextlib.suppress(sqlite3.Error):
             fixture.conn.close()
+
+
+def test_a_cancelled_run_still_has_its_pre_task_stash_restored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`action.cancelled` is a stash-bearing terminal the finalizer must read.
+
+    Once ``spawn_worker`` is truly background the ActionRunner, not the
+    handler, writes the cancel terminal — so that row is the *only* durable
+    record naming a cancelled run's pre-task stash. The finalizer walked
+    ``worker.reported`` / ``action.failed`` / ``action.timeout_assumed`` only,
+    so cancelling a Codex worker shelved the user's uncommitted work and left
+    nothing able to restore it. ADR-0008 §12 lists "cancelled-stash cleanup"
+    among the paths that must reach a cleanup terminal.
+
+    Restoring also needs two ids the runner's canonical correlation has no
+    room for: ``task_id`` resolves the repository and ``run_id`` keys the
+    conflict artifact. Both ride the payload, so both are asserted here.
+    """
+    paths = bootstrap_runtime(tmp_path)
+    conn = open_event_log(paths.event_log)
+    repo = tmp_path / "cancelled-repo"
+    repo.mkdir()
+    calls: list[tuple[str, str, str]] = []
+
+    def _spy(
+        repo_path: Path,
+        stash_ref: str,
+        *,
+        artifact_dir: Path,
+        run_id: str,
+    ) -> None:
+        """Record the restore the finalizer asked for, and report no conflict."""
+        assert artifact_dir == paths.artifacts_root
+        calls.append((str(repo_path), stash_ref, run_id))
+
+    monkeypatch.setattr(runtime_module, "restore_pretask_changes", _spy)
+    try:
+        proposed = emit_event(
+            conn,
+            type="action.proposed",
+            payload={
+                "action_id": "A-cancel",
+                "tool_name": "spawn_worker",
+                "caller_principal": "jarvis_llm",
+                "risk_level": "L2",
+            },
+            correlation={"turn_id": "T-cancel"},
+        )
+        emit_event(
+            conn,
+            type="task.created",
+            payload={"task_id": "TK-cancel", "goal": "改点东西", "repo_path": str(repo)},
+            correlation={"turn_id": "T-cancel"},
+        )
+        emit_event(
+            conn,
+            type="action.cancelled",
+            payload={
+                "action_id": "A-cancel",
+                "reason": "user_stop",
+                "cancellation_mode": "terminate_process",
+                # The three fields `_stamp_worker_identity` puts on this row.
+                "stash_ref": "stash@{0}",
+                "run_id": "RUN-cancel",
+                "task_id": "TK-cancel",
+            },
+            source_event_id=proposed.event_uid,
+            correlation={"turn_id": "T-cancel", "action_id": "A-cancel"},
+        )
+
+        runtime_module._pop_pending_stashes(  # noqa: SLF001 — the finalizer under test.
+            conn,
+            artifacts_root=paths.artifacts_root,
+            turn_id="T-cancel",
+        )
+
+        assert calls == [(str(repo), "stash@{0}", "RUN-cancel")]
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
