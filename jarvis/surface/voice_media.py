@@ -48,6 +48,7 @@ from jarvis.surface.voice_tts import (
 )
 
 if TYPE_CHECKING:
+    import concurrent.futures
     from collections.abc import AsyncIterator, Callable, Mapping
 
     from jarvis.surface.voice_ducking import SystemAudioDucker
@@ -596,6 +597,9 @@ class StreamingTTSPipeline:
         self._power_helper_reason = ""
         self._power_last_timed_out_attempt_id: int | None = None
         self._power_shutdown = False
+        self._power_actor_resume_attempt_id: int | None = None
+        self._power_actor_resume_future: concurrent.futures.Future[None] | None = None
+        self._unadmitted_wake_attempt_id: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue[_MediaCommand | object] | None = None
         self._conn: sqlite3.Connection | None = None
@@ -941,7 +945,7 @@ class StreamingTTSPipeline:
             "actor_terminalized_and_player_closed",
         )
 
-    def resume_after_wake(
+    def resume_after_wake(  # noqa: PLR0911 - exact player/actor/debt outcomes
         self,
         *,
         timeout_s: float | None = None,
@@ -984,12 +988,28 @@ class StreamingTTSPipeline:
                 started.attempt_id,
                 "actor_closed_after_start",
             )
-        future = asyncio.run_coroutine_threadsafe(
-            self._resume_after_wake_owned(),
-            loop,
-        )
+        with self._power_lock:
+            future = self._power_actor_resume_future
+            if (
+                future is None
+                or self._power_actor_resume_attempt_id != started.attempt_id
+            ):
+                future = asyncio.run_coroutine_threadsafe(
+                    self._resume_after_wake_owned(),
+                    loop,
+                )
+                self._power_actor_resume_attempt_id = started.attempt_id
+                self._power_actor_resume_future = future
         try:
             future.result(timeout=max(0.0, transition_deadline - time.monotonic()))
+        except TimeoutError:
+            return MediaPowerTransitionResult(
+                "uncertain",
+                started.attempt_id,
+                "actor_resume_timeout",
+                helper_thread_alive=True,
+                deadline_exhausted=time.monotonic() >= transition_deadline,
+            )
         except Exception as exc:  # noqa: BLE001 - bounded cross-loop boundary
             return MediaPowerTransitionResult(
                 "uncertain",
@@ -998,6 +1018,12 @@ class StreamingTTSPipeline:
                 deadline_exhausted=time.monotonic() >= transition_deadline,
             )
         with self._power_lock:
+            if self._power_shutdown or self._closed.is_set():
+                return MediaPowerTransitionResult(
+                    "closed",
+                    started.attempt_id,
+                    "shutdown_revoked_actor_resume",
+                )
             if self._power_state == "open_unadmitted":
                 self._power_state = "running"
         record_realtime_trace(
@@ -1006,6 +1032,40 @@ class StreamingTTSPipeline:
             ownership="fresh_player_stream",
         )
         return started
+
+    def revoke_wake_starts_for_shutdown(self) -> None:
+        """Revoke wake-created output without stopping an existing running owner."""
+        with self._power_lock:
+            self._power_shutdown = True
+            compensate_open_unadmitted = self._power_state == "open_unadmitted" or (
+                self._power_state == "running"
+                and self._unadmitted_wake_attempt_id is not None
+            )
+            state = self._power_state
+        record_realtime_trace(
+            "media_power_wake_start_revoked",
+            power_state=state,
+            compensate_open_unadmitted=compensate_open_unadmitted,
+        )
+        if compensate_open_unadmitted:
+            # Launch the exact stop helper but do not make coordinator shutdown
+            # wait for it. Full media close remains ordered after input close.
+            self._transition_player_for_power(
+                action="stop",
+                deadline=time.monotonic(),
+            )
+
+    def admit_wake_start(self, *, attempt_id: int) -> bool:
+        """Commit one fresh output only after coordinator restored input."""
+        with self._power_lock:
+            if (
+                self._power_shutdown
+                or self._power_state != "running"
+                or self._unadmitted_wake_attempt_id != attempt_id
+            ):
+                return False
+            self._unadmitted_wake_attempt_id = None
+            return True
 
     def _transition_player_for_power(  # noqa: C901, PLR0911, PLR0915 - exact bounded power FSM
         self,
@@ -1055,6 +1115,8 @@ class StreamingTTSPipeline:
                 self._power_helper_error = None
                 self._power_helper_reason = ""
                 self._power_state = transitional
+                if action == "start":
+                    self._unadmitted_wake_attempt_id = attempt_id
 
                 def _operate() -> None:  # noqa: C901, PLR0912, PLR0915 - exact start/revoke compensation
                     error: BaseException | None = None
@@ -1153,10 +1215,14 @@ class StreamingTTSPipeline:
                                     self._power_state = (
                                         "suspended" if shutdown_cleanup else "uncertain"
                                     )
+                                    if shutdown_cleanup:
+                                        self._unadmitted_wake_attempt_id = None
                                 else:
                                     self._power_state = (
                                         desired if error is None else "uncertain"
                                     )
+                                    if action == "stop" and error is None:
+                                        self._unadmitted_wake_attempt_id = None
                         if action == "start" and shutdown_cleanup is not None:
                             self._record_shutdown_player_cleanup(
                                 definitive=shutdown_cleanup,
@@ -1233,7 +1299,11 @@ class StreamingTTSPipeline:
 
     async def _resume_after_wake_owned(self) -> None:
         self._power_suspended = False
-        if not self._shutdown_requested.is_set() and not self._lane_isolated:
+        if (
+            not self._shutdown_requested.is_set()
+            and not self._power_shutdown
+            and not self._lane_isolated
+        ):
             self._accepting.set()
 
     async def _submit_owned(
@@ -1346,7 +1416,72 @@ class StreamingTTSPipeline:
         with self._player_stop_lock:
             self._player_stop_started = True
             self._player_stop_definitive = definitive
-            self._player_stop_done.set()
+            if definitive:
+                self._player_stop_done.set()
+                return
+            self._player_stop_done.clear()
+            existing = self._player_stop_thread
+            if existing is not None and existing.is_alive():
+                return
+
+            def _join_exact_close_debt() -> None:
+                retries = 0
+                while True:
+                    try:
+                        result = self._stop_player_with_bound(
+                            self._config.shutdown_timeout_s,
+                        )
+                        closed = (
+                            result.definitively_closed
+                            if isinstance(result, PlayerStopResult)
+                            else True
+                        )
+                    except BaseException as exc:  # noqa: BLE001 - retained typed debt
+                        retries += 1
+                        record_realtime_trace(
+                            "media_shutdown_player_cleanup_retry",
+                            retry=retries,
+                            reason=f"{type(exc).__name__}:{exc}",
+                        )
+                        time.sleep(min(0.1, 0.005 * (2 ** min(retries, 4))))
+                        continue
+                    if not closed:
+                        retries += 1
+                        record_realtime_trace(
+                            "media_shutdown_player_cleanup_retry",
+                            retry=retries,
+                            reason=(
+                                result.reason
+                                if isinstance(result, PlayerStopResult)
+                                else "untyped_close_debt"
+                            ),
+                        )
+                        time.sleep(min(0.1, 0.005 * (2 ** min(retries, 4))))
+                        continue
+                    with self._player_stop_lock:
+                        self._player_stop_definitive = True
+                        self._player_stop_done.set()
+                    record_realtime_trace(
+                        "media_shutdown_player_cleanup_complete",
+                        retries=retries,
+                    )
+                    return
+
+            thread = threading.Thread(
+                target=_join_exact_close_debt,
+                name="jarvis-media-shutdown-player-debt",
+                daemon=True,
+            )
+            self._player_stop_thread = thread
+        try:
+            thread.start()
+        except RuntimeError:
+            with self._player_stop_lock:
+                if self._player_stop_thread is thread:
+                    self._player_stop_thread = None
+                    self._player_stop_started = False
+                    self._player_stop_done.set()
+            LOGGER.exception("late player cleanup janitor failed to start")
 
     def _stop_player_bounded(self) -> bool:  # noqa: C901 - exact retry/join FSM
         """Move potentially stuck device teardown to one controlled daemon helper."""

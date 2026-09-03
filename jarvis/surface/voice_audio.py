@@ -51,6 +51,7 @@ _SILERO_FRAME_MS = SILERO_CHUNK_SAMPLES / _SAMPLE_RATE * 1000.0
 _PREWARM_FRAMES = 5
 _DEFAULT_DEVICE_MISS_LIMIT = 3
 _REQUIRED_SESSION_SUBSCRIBERS = 3
+_CAPABILITY_DISPATCH_CAPACITY = 32
 
 
 class VadEvent(enum.Enum):
@@ -508,6 +509,69 @@ class _CapabilitySink(Protocol):
     def __call__(self, snapshot: InputCapabilitySnapshot) -> None:
         """Observe one precise capability transition."""
         ...
+
+
+class _CapabilityDispatcher:
+    """One bounded observer lane that never runs user code under owner locks."""
+
+    def __init__(self, sink: _CapabilitySink) -> None:
+        self._sink = sink
+        self._condition = threading.Condition()
+        self._pending: deque[InputCapabilitySnapshot] = deque()
+        self._closing = False
+        self._dropped = 0
+        self._thread = threading.Thread(
+            target=self._run,
+            name="jarvis-audio-capability-dispatch",
+            daemon=True,
+        )
+        self._started = False
+        try:
+            self._thread.start()
+            self._started = True
+        except RuntimeError:
+            LOGGER.exception("audio capability dispatcher failed to start")
+
+    def submit(self, snapshot: InputCapabilitySnapshot) -> None:
+        """Enqueue without waiting for the observer; retain newest ordered state."""
+        with self._condition:
+            if not self._started or self._closing:
+                return
+            if len(self._pending) >= _CAPABILITY_DISPATCH_CAPACITY:
+                self._pending.popleft()
+                self._dropped += 1
+            self._pending.append(snapshot)
+            self._condition.notify()
+
+    def request_close(self) -> None:
+        """Drain queued snapshots after any in-flight observer returns."""
+        with self._condition:
+            self._closing = True
+            self._condition.notify()
+
+    @property
+    def thread_alive(self) -> bool:
+        """Expose bounded-lane liveness for integration shutdown assertions."""
+        return self._started and self._thread.is_alive()
+
+    @property
+    def dropped(self) -> int:
+        """Return snapshots replaced before observer delivery."""
+        with self._condition:
+            return self._dropped
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while not self._pending and not self._closing:
+                    self._condition.wait()
+                if not self._pending:
+                    return
+                snapshot = self._pending.popleft()
+            try:
+                self._sink(snapshot)
+            except Exception:  # noqa: BLE001 - observer cannot break input owner
+                LOGGER.warning("audio ingress capability sink failed", exc_info=True)
 
 
 @dataclass
@@ -996,7 +1060,6 @@ class AudioIngress:
         """Build a stopped ingress; subscribers may register before ``start``."""
         self._backend = backend
         self._config = config
-        self._capability_sink = capability_sink
         native_format = backend.input_format()
         self._native_format = native_format
         self._native_ring = _PreallocatedPcmRing(
@@ -1044,6 +1107,7 @@ class AudioIngress:
         self._pending_ingress_fault_code: str | None = None
         self._deferred_fault: voice_backend.BackendFault | None = None
         self._device_uid_misses = 0
+        self._capability_publish_lock = threading.Lock()
         self._capability_lock = threading.RLock()
         self._capability_version = 0
         self._capability = InputCapabilitySnapshot(
@@ -1053,6 +1117,12 @@ class AudioIngress:
             reason="not_started",
             wake_available=False,
             local_capture_available=False,
+        )
+        # Start the observer lane only after every constructor operation that
+        # can fail; otherwise a failed ingress construction would leak a
+        # waiting dispatcher with no owner able to close it.
+        self._capability_dispatcher = (
+            _CapabilityDispatcher(capability_sink) if capability_sink is not None else None
         )
 
     @property
@@ -1918,47 +1988,61 @@ class AudioIngress:
             ),
         )
 
+    def _commit_capability_locked(
+        self,
+        state: InputCapabilityState,
+        *,
+        reason: str,
+    ) -> InputCapabilitySnapshot:
+        """Commit one version while the caller owns ``_capability_lock``."""
+        wake_available = state is InputCapabilityState.AVAILABLE
+        local_capture_available = state in {
+            InputCapabilityState.AVAILABLE,
+            InputCapabilityState.WAKE_UNAVAILABLE,
+        }
+        ownership = self._backend.ownership_snapshot()
+        capability_epoch = self._active_epoch or ownership.stream_epoch
+        self._capability_version += 1
+        snapshot = InputCapabilitySnapshot(
+            state=state,
+            version=self._capability_version,
+            stream_epoch=capability_epoch,
+            reason=reason,
+            wake_available=wake_available,
+            local_capture_available=local_capture_available,
+        )
+        self._capability = snapshot
+        return snapshot
+
+    def _trace_capability(self, snapshot: InputCapabilitySnapshot) -> None:
+        """Trace committed state after all owner locks are released."""
+        record_realtime_trace(
+            "audio_input_capability_changed",
+            version=snapshot.version,
+            state=snapshot.state.value,
+            stream_epoch=snapshot.stream_epoch,
+            reason=snapshot.reason,
+            wake_available=snapshot.wake_available,
+            local_capture_available=snapshot.local_capture_available,
+            ptt_upload_available=snapshot.ptt_upload_available,
+            text_available=snapshot.text_available,
+        )
+
     def _publish_capability(
         self,
         state: InputCapabilityState,
         *,
         reason: str,
     ) -> InputCapabilitySnapshot:
-        with self._capability_lock:
-            wake_available = state is InputCapabilityState.AVAILABLE
-            local_capture_available = state in {
-                InputCapabilityState.AVAILABLE,
-                InputCapabilityState.WAKE_UNAVAILABLE,
-            }
-            ownership = self._backend.ownership_snapshot()
-            capability_epoch = self._active_epoch or ownership.stream_epoch
-            self._capability_version += 1
-            snapshot = InputCapabilitySnapshot(
-                state=state,
-                version=self._capability_version,
-                stream_epoch=capability_epoch,
-                reason=reason,
-                wake_available=wake_available,
-                local_capture_available=local_capture_available,
-            )
-            self._capability = snapshot
-            record_realtime_trace(
-                "audio_input_capability_changed",
-                version=snapshot.version,
-                state=state.value,
-                stream_epoch=capability_epoch,
-                reason=reason,
-                wake_available=snapshot.wake_available,
-                local_capture_available=snapshot.local_capture_available,
-                ptt_upload_available=snapshot.ptt_upload_available,
-                text_available=snapshot.text_available,
-            )
-            if self._capability_sink is not None:
-                try:
-                    self._capability_sink(snapshot)
-                except Exception:  # noqa: BLE001 - observer cannot break media owner
-                    LOGGER.warning("audio ingress capability sink failed", exc_info=True)
-            return snapshot
+        """Commit in version order and enqueue without invoking observer code."""
+        with self._capability_publish_lock:
+            with self._capability_lock:
+                snapshot = self._commit_capability_locked(state, reason=reason)
+            dispatcher = self._capability_dispatcher
+            if dispatcher is not None:
+                dispatcher.submit(snapshot)
+        self._trace_capability(snapshot)
+        return snapshot
 
     def _publish_capability_if_current(
         self,
@@ -1968,10 +2052,16 @@ class AudioIngress:
         reason: str,
     ) -> InputCapabilitySnapshot | None:
         """Publish only if the exact running generation still owns control."""
-        with self._control_lock, self._capability_lock:
-            if not self._control_allows_running(expected_control_generation):
-                return None
-            return self._publish_capability(state, reason=reason)
+        with self._capability_publish_lock:
+            with self._control_lock, self._capability_lock:
+                if not self._control_allows_running(expected_control_generation):
+                    return None
+                snapshot = self._commit_capability_locked(state, reason=reason)
+            dispatcher = self._capability_dispatcher
+            if dispatcher is not None:
+                dispatcher.submit(snapshot)
+        self._trace_capability(snapshot)
+        return snapshot
 
     def _publish_capability_for_intent(
         self,
@@ -1982,13 +2072,19 @@ class AudioIngress:
         reason: str,
     ) -> InputCapabilitySnapshot | None:
         """Publish a terminal snapshot only for its exact control generation."""
-        with self._control_lock, self._capability_lock:
-            if (
-                self._control_generation != expected_control_generation
-                or self._control_intent != expected_intent
-            ):
-                return None
-            return self._publish_capability(state, reason=reason)
+        with self._capability_publish_lock:
+            with self._control_lock, self._capability_lock:
+                if (
+                    self._control_generation != expected_control_generation
+                    or self._control_intent != expected_intent
+                ):
+                    return None
+                snapshot = self._commit_capability_locked(state, reason=reason)
+            dispatcher = self._capability_dispatcher
+            if dispatcher is not None:
+                dispatcher.submit(snapshot)
+        self._trace_capability(snapshot)
+        return snapshot
 
     def report_wake_unavailable(self, *, reason: str) -> InputCapabilitySnapshot:
         """Downgrade only wake decisions while the shared input remains healthy."""
@@ -2145,6 +2241,12 @@ class AudioIngress:
             ),
             reason=("shutdown_complete" if definitively_closed else "shutdown_uncertain"),
         )
+        dispatcher = self._capability_dispatcher
+        if dispatcher is not None:
+            # Observer execution is deliberately outside the shutdown proof.
+            # A stuck sink may delay its own terminal notification, never the
+            # input owner's absolute close deadline.
+            dispatcher.request_close()
         result = IngressCloseResult(
             definitively_closed=definitively_closed,
             stream_epoch=epoch,
@@ -2160,6 +2262,7 @@ class AudioIngress:
             open_subscribers=result.open_subscribers,
             measurement_boundary="software_resource_ownership",
             pending_open_attempt=pending_open_attempt,
+            capability_observer_drops=(dispatcher.dropped if dispatcher is not None else 0),
         )
         return result
 
