@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from pathlib import Path
 
+    from jarvis.shared import Event
     from jarvis.shared.realtime import TerminalOutcome
     from jarvis.state.committed_event_bus import CommittedEventBus
 
@@ -351,11 +352,19 @@ class ActionExecutionContext:
     resource_scope: ResourceScope
     cancellation_mode: CancellationMode
     correlation: Mapping[str, str]
+    on_terminal: Callable[[str], None] | None = None
+    """Called with the event type when the *runner* writes this action's terminal.
+
+    A cancel or an assumed timeout is the one terminal the handler does not
+    write itself, so without this hook the in-process ``ActionLifecycle``
+    would keep reporting a cancelled action as ``running``.
+    """
     _cancel_requested: threading.Event = field(default_factory=threading.Event)
     _quiesced: threading.Event = field(default_factory=threading.Event)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _state: ActionCleanupState = "worker_active"
     _cancel_reason: str | None = None
+    _stash_ref: str | None = None
     _late_writes: deque[str] = field(default_factory=lambda: deque(maxlen=_LATE_WRITE_CAP))
 
     @property
@@ -388,6 +397,24 @@ class ActionExecutionContext:
         """Return the reason of the first cancel request, if any."""
         with self._lock:
             return self._cancel_reason
+
+    def record_stash_ref(self, stash_ref: str | None) -> None:
+        """Record the pre-task stash this job set aside before it started.
+
+        The handler is the only code that knows the ref, and on a cancelled
+        or timed-out action the handler does not write the terminal — the
+        runner does. Carrying the ref here is what lets that terminal name
+        the stash, so the one durable source the cleanup finalizer reads
+        stays complete on every path.
+        """
+        with self._lock:
+            self._stash_ref = stash_ref
+
+    @property
+    def stash_ref(self) -> str | None:
+        """Return the recorded pre-task stash ref, if the handler set one."""
+        with self._lock:
+            return self._stash_ref
 
     def mark_quiesced(self) -> None:
         """Record that the owned worker stopped running."""
@@ -480,6 +507,8 @@ class ActionJob:
     run: Callable[[sqlite3.Connection, ActionExecutionContext], RawResult | RawResultBundle]
     on_running: Callable[[str], None]
     carries_cleanup_debt: bool
+    on_terminal: Callable[[str], None] | None = None
+    """Optional hook for the terminals the runner writes instead of the handler."""
 
 
 class ActionHandle:
@@ -552,6 +581,21 @@ class ActionSubmission:
     initial_events: tuple[str, ...]
 
 
+@dataclass
+class _TurnCleanupRequest:
+    """A turn owner's standing request to close its actions' cleanup debt.
+
+    ADR-0008 D9 Step 4 moves cleanup ownership off the driver: the driver
+    only *asks*, and the runner runs the finalizer at the one moment it is
+    legal — after every action of that turn has quiesced. A background
+    `spawn_worker` outlives its turn, so a driver that finalized directly
+    would release a repository while Codex was still writing to it.
+    """
+
+    verification_outcome: VerificationOutcome
+    on_finalize: Callable[[], VerificationOutcome | None] | None
+
+
 class ActionRunner:
     """Owns the executor, the leases, and terminal arbitration for L4 actions."""
 
@@ -585,6 +629,11 @@ class ActionRunner:
         self._epochs: dict[str, int] = {}
         self._threads: list[threading.Thread] = []
         self._shutdown = threading.Event()
+        # action_id -> turn_id for every accepted job that has not finished.
+        # A job that is still queued behind a contended lease has no context
+        # yet, so `_contexts` alone cannot answer "is this turn quiet?".
+        self._inflight: dict[str, str | None] = {}
+        self._turn_cleanups: dict[str, _TurnCleanupRequest] = {}
 
     @property
     def leases(self) -> ResourceLeaseTable:
@@ -610,6 +659,7 @@ class ActionRunner:
         with self._lock:
             epoch = self._epochs.get(job.action_id, -1) + 1
             self._epochs[job.action_id] = epoch
+            self._inflight[job.action_id] = job.turn_id
         context_ready = threading.Event()
         future: Future[RawResultBundle] = Future()
         thread = threading.Thread(
@@ -621,7 +671,13 @@ class ActionRunner:
         with self._lock:
             self._threads = [t for t in self._threads if t.is_alive()]
             self._threads.append(thread)
-        thread.start()
+        try:
+            thread.start()
+        except BaseException:
+            # An unstartable thread will never reach `_finish_job`, so drop
+            # the in-flight marker here or this turn's cleanup waits forever.
+            self._finish_job(job)
+            raise
         return ActionSubmission(
             handle=ActionHandle(
                 action_id=job.action_id,
@@ -691,6 +747,7 @@ class ActionRunner:
                 resource_scope=scope,
                 cancellation_mode=job.cancellation_mode,
                 correlation=dict(job.correlation),
+                on_terminal=job.on_terminal,
             )
             with self._lock:
                 self._contexts[job.action_id] = context
@@ -713,6 +770,10 @@ class ActionRunner:
                 self._run_slots.release()
             with contextlib.suppress(sqlite3.Error):
                 conn.close()
+            # Last: dropping the in-flight marker is what can make this
+            # turn's armed cleanup runnable, and the finalizer opens its own
+            # connection, so it must not run while this one is still open.
+            self._finish_job(job)
 
     def _enter_scope(self, job: ActionJob) -> ResourceScope:
         """Acquire or borrow this job's resource scope before it runs.
@@ -792,7 +853,6 @@ class ActionRunner:
         restore (ADR-0008 F26).
         """
         if context is not None:
-            context.mark_quiesced()
             try:
                 emit_event(
                     conn,
@@ -813,6 +873,11 @@ class ActionRunner:
                     "action runner could not record worker.quiesced (action_id=%r)",
                     job.action_id,
                 )
+            # Set the flag only after the row is durable. A canceller that
+            # is blocked in `wait_quiesced` writes `action.cancelled` the
+            # instant this flips, and a cleanup terminal that overtook its
+            # own `worker.quiesced` would reorder the D9 trio in the log.
+            context.mark_quiesced()
         if scope is None:
             return
         if not job.carries_cleanup_debt or scope.is_borrowed:
@@ -858,31 +923,79 @@ class ActionRunner:
             return CancelUnsupported(action_id=action_id)
         context = self.context_of(action_id)
         if context is None:
-            return CancelUnconfirmed(action_id=action_id, reason="no_live_context")
+            return self._answer_without_context(action_id)
         context.advance("quiescing")
         context.request_cancel(reason)
         if not context.wait_quiesced(timeout_s):
             return CancelUnconfirmed(action_id=action_id, reason="quiescence_timeout")
+        payload: dict[str, object] = {
+            "action_id": action_id,
+            "reason": reason,
+            "cancellation_mode": cancellation_mode,
+        }
+        if context.turn_id is not None:
+            payload["requested_by_turn_id"] = context.turn_id
+        if context.stash_ref is not None:
+            payload["stash_ref"] = context.stash_ref
         outcome = self._terminalize(
             event_type="action.cancelled",
-            payload={"action_id": action_id, "reason": reason},
+            payload=payload,
             source_event_id=context.running_event_uid,
             correlation=context.correlation,
         )
-        return _cancel_outcome(action_id, outcome, expected="action.cancelled")
+        return self._cancel_result(context, outcome, expected="action.cancelled")
 
     def assume_timeout(self, action_id: str, *, reason: str) -> CancelOutcome:
         """Claim `action.timeout_assumed` and keep the resource quarantined."""
         context = self.context_of(action_id)
         if context is None:
-            return CancelUnconfirmed(action_id=action_id, reason="no_live_context")
+            return self._answer_without_context(action_id)
+        payload: dict[str, object] = {"action_id": action_id, "reason": reason}
+        if context.stash_ref is not None:
+            payload["stash_ref"] = context.stash_ref
         outcome = self._terminalize(
             event_type="action.timeout_assumed",
-            payload={"action_id": action_id, "reason": reason},
+            payload=payload,
             source_event_id=context.running_event_uid,
             correlation=context.correlation,
         )
-        return _cancel_outcome(action_id, outcome, expected="action.timeout_assumed")
+        return self._cancel_result(context, outcome, expected="action.timeout_assumed")
+
+    def _answer_without_context(self, action_id: str) -> CancelOutcome:
+        """Answer a cancel/timeout request for an action with no live context.
+
+        A reaped context is not the same fact as an unknown action. When the
+        durable fold already holds a canonical terminal, the honest answer is
+        `already_terminal` — the request arrived too late, which is exactly
+        what ADR-0008 D9 says a completed action returns. Only a genuinely
+        untracked action stays `no_live_context`.
+        """
+        conn = open_event_log(self._event_log_path)
+        try:
+            terminal = _canonical_terminal_of(conn, action_id)
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+        if terminal is None:
+            return CancelUnconfirmed(action_id=action_id, reason="no_live_context")
+        return CancelAlreadyTerminal(
+            action_id=action_id,
+            event_uid=terminal.event_uid,
+            terminal_type=terminal.type,
+        )
+
+    def _cancel_result(
+        self,
+        context: ActionExecutionContext,
+        outcome: TerminalOutcome,
+        *,
+        expected: str,
+    ) -> CancelOutcome:
+        """Translate a terminal CAS result and tell the caller's FSM about it."""
+        result = _cancel_outcome(context.action_id, outcome, expected=expected)
+        if isinstance(result, CancelAccepted) and context.on_terminal is not None:
+            context.on_terminal(expected)
+        return result
 
     # --- cleanup ------------------------------------------------------------
 
@@ -943,21 +1056,78 @@ class ActionRunner:
         turn_id: str,
         *,
         verification_outcome: VerificationOutcome,
+        on_finalize: Callable[[], VerificationOutcome | None] | None = None,
     ) -> tuple[str, ...]:
-        """Finalize every outstanding cleanup this turn's actions still hold."""
+        """Ask the runner to close this turn's cleanup debt.
+
+        ADR-0008 D9 Step 4: the turn owner asks, the runner decides *when*.
+        If every action of this turn has already finished — which is always
+        true while the driver awaits each handle — the finalizer runs inline
+        on the caller's thread and this returns the cleanup event uids, the
+        exact Wave-4B behaviour. If a truly background worker is still
+        running, the request is armed instead and the finalizer runs on that
+        worker's own thread the moment it finishes. Releasing a repository
+        earlier would hand a tree Codex is still writing to the next action.
+
+        Args:
+            turn_id: The turn whose actions should be cleaned up.
+            verification_outcome: What to record when ``on_finalize`` does
+                not derive one itself.
+            on_finalize: Runtime-owned work that must happen before any
+                cleanup terminal — stash restore and live-action release.
+                It runs at most once per request, on whichever thread ends
+                up owning the cleanup, and may return the outcome it just
+                established (a stash conflict, say) to override the
+                argument above.
+
+        Returns:
+            The cleanup event uids emitted synchronously; empty when the
+            request was armed for a still-running worker.
+        """
         with self._lock:
+            self._turn_cleanups[turn_id] = _TurnCleanupRequest(
+                verification_outcome=verification_outcome,
+                on_finalize=on_finalize,
+            )
+        return self._run_turn_cleanup_if_ready(turn_id)
+
+    def _finish_job(self, job: ActionJob) -> None:
+        """Drop one job's in-flight marker and settle its turn if it is now quiet."""
+        with self._lock:
+            self._inflight.pop(job.action_id, None)
+        if job.turn_id is not None:
+            self._run_turn_cleanup_if_ready(job.turn_id)
+
+    def _run_turn_cleanup_if_ready(self, turn_id: str) -> tuple[str, ...]:
+        """Run an armed turn cleanup once no action of that turn is live.
+
+        The claim of the request out of ``_turn_cleanups`` happens under the
+        lock, so exactly one thread ever runs a given request even when the
+        driver and the last worker arrive together.
+        """
+        with self._lock:
+            request = self._turn_cleanups.get(turn_id)
+            if request is None:
+                return ()
+            if any(owner == turn_id for owner in self._inflight.values()):
+                return ()
+            del self._turn_cleanups[turn_id]
             action_ids = [
                 action_id
                 for action_id, context in self._contexts.items()
                 if context.turn_id == turn_id
             ]
-        emitted = [
+
+        outcome = request.verification_outcome
+        if request.on_finalize is not None:
+            derived = request.on_finalize()
+            if derived is not None:
+                outcome = derived
+        return tuple(
             uid
             for action_id in action_ids
-            if (uid := self.finalize_cleanup(action_id, verification_outcome=verification_outcome))
-            is not None
-        ]
-        return tuple(emitted)
+            if (uid := self.finalize_cleanup(action_id, verification_outcome=outcome)) is not None
+        )
 
     def reconcile_quarantine(self, conn: sqlite3.Connection) -> tuple[str, ...]:
         """Re-establish quarantine for terminated actions that never cleaned up.
@@ -982,16 +1152,54 @@ class ActionRunner:
                 quarantined.append(action_id)
         return tuple(quarantined)
 
-    def shutdown(self, *, wait: bool = True, timeout_s: float = 30.0) -> None:
-        """Stop accepting jobs and drain the in-flight ones."""
+    def shutdown(
+        self,
+        *,
+        wait: bool = True,
+        timeout_s: float = 30.0,
+        cancel: bool = False,
+        reason: str = "daemon_shutdown",
+    ) -> tuple[str, ...]:
+        """Stop accepting jobs and drain the in-flight ones.
+
+        With ``cancel=True`` — what the daemon passes — every live action
+        whose tool declares a cancellation capability is asked to stop and
+        then terminalized, so a background Codex worker is genuinely drained
+        instead of abandoned mid-turn with its repository stashed. Actions
+        that declare no capability are left to finish; F9 forbids writing a
+        cancel terminal we cannot stand behind.
+
+        Returns the action ids that reached a cancel terminal here.
+        """
         self._shutdown.set()
+        cancelled: list[str] = []
+        if cancel:
+            deadline = time.monotonic() + timeout_s
+            with self._lock:
+                live = [
+                    context
+                    for action_id, context in self._contexts.items()
+                    if action_id in self._inflight
+                ]
+            for context in live:
+                if context.cancellation_mode == "unsupported":
+                    continue
+                outcome = self.cancel_action(
+                    context.action_id,
+                    reason=reason,
+                    timeout_s=max(0.0, deadline - time.monotonic()),
+                    cancellation_mode=context.cancellation_mode,
+                )
+                if isinstance(outcome, CancelAccepted):
+                    cancelled.append(context.action_id)
         if not wait:
-            return
+            return tuple(cancelled)
         with self._lock:
             threads = list(self._threads)
         deadline = time.monotonic() + timeout_s
         for thread in threads:
             thread.join(max(0.0, deadline - time.monotonic()))
+        return tuple(cancelled)
 
 
 def _cancel_outcome(
@@ -1020,6 +1228,18 @@ _CLEANUP_TERMINALS: Final[tuple[str, ...]] = (
     "action.cleanup_completed",
     "action.cleanup_failed",
 )
+
+
+def _canonical_terminal_of(conn: sqlite3.Connection, action_id: str) -> Event | None:
+    """Return this action's canonical terminal from the durable fold, if any."""
+    return next(
+        (
+            event
+            for event in iter_events_of_types(conn, _CANONICAL_ACTION_TERMINALS)
+            if event.payload.get("action_id") == action_id
+        ),
+        None,
+    )
 
 
 def _actions_awaiting_cleanup(conn: sqlite3.Connection) -> dict[str, frozenset[str]]:

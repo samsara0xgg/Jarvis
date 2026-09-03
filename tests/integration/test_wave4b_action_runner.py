@@ -723,7 +723,14 @@ def test_cooperative_cancel_terminalizes_once_after_quiescence(
 
         cancelled = _payloads(fixture.conn, "action.cancelled")
         assert len(cancelled) == 1
-        assert cancelled[0] == {"action_id": "A-stop", "reason": "user_stop"}
+        # ADR-0008 §4.2's additive fields on action.cancelled are populated
+        # by the runner, which is the only writer that knows them.
+        assert cancelled[0] == {
+            "action_id": "A-stop",
+            "reason": "user_stop",
+            "cancellation_mode": "cooperative",
+            "requested_by_turn_id": "T-stop",
+        }
         assert _event_count(fixture.conn, "action.result_observed") == 0
         # Quiescence is recorded before the terminal is allowed to be true.
         types = _ordered_types(fixture.conn)
