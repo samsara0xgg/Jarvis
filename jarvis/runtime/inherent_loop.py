@@ -1093,6 +1093,7 @@ class _VoicePowerCoordinator:
         self._session = session
         self._media = media
         self._lock = threading.Lock()
+        self._intent_lock = threading.Lock()
         self._shutdown = threading.Event()
         self._pending_wake_generation = 0
         self._pending_wake_thread: threading.Thread | None = None
@@ -1100,10 +1101,28 @@ class _VoicePowerCoordinator:
         self._pending_wake_done.set()
         self._pending_wake_state: Literal["idle", "in_flight", "recovered"] = "idle"
 
+    @staticmethod
+    def _input_resume_succeeded(result: object | None) -> bool:
+        """Interpret the typed production port and explicit legacy test adapter."""
+        if isinstance(result, voice_backend.BackendStartResult):
+            return result.started
+        return result is not None
+
+    @staticmethod
+    def _input_resume_reason(result: object | None) -> str:
+        if isinstance(result, voice_backend.BackendStartResult):
+            return result.status.value
+        return "none" if result is None else "legacy_adapter_success"
+
     def before_sleep(self) -> _VoicePowerTransition:
         """Close input first, then terminalize and stop output."""
         started = time.monotonic()
         deadline = started + self._TOTAL_TRANSITION_BOUND_S
+        # Revoke older wake work before waiting for the operation lock. A
+        # continuation may be inside a foreign media wait, but it can no
+        # longer restore input/output after this linearization point.
+        with self._intent_lock:
+            self._pending_wake_generation += 1
         if not self._lock.acquire(
             timeout=max(0.0, deadline - time.monotonic()),
         ):
@@ -1121,7 +1140,6 @@ class _VoicePowerCoordinator:
                 "coordinator_lock_timeout",
             )
         try:
-            self._pending_wake_generation += 1
             self._pending_wake_state = "idle"
             input_result = self._session.ingress.stop_for_sleep(deadline=deadline)
             output_result = self._media.suspend_for_sleep(deadline=deadline)
@@ -1143,7 +1161,9 @@ class _VoicePowerCoordinator:
         finally:
             self._lock.release()
 
-    def on_wake(self) -> _VoicePowerTransition:
+    def on_wake(  # noqa: C901, PLR0912, PLR0915 - ordered cross-device CAS
+        self,
+    ) -> _VoicePowerTransition:
         """Create fresh output ownership before re-enabling input decisions."""
         started = time.monotonic()
         deadline = started + self._TOTAL_TRANSITION_BOUND_S
@@ -1164,6 +1184,7 @@ class _VoicePowerCoordinator:
                 time.monotonic() - started,
                 reason,
             )
+        lock_owned = True
         try:
             pending = self._pending_wake_thread
             if self._pending_wake_state == "in_flight" and not (
@@ -1193,31 +1214,86 @@ class _VoicePowerCoordinator:
                     time.monotonic() - started,
                     output_result.reason,
                 )
+            with self._intent_lock:
+                wake_generation = self._pending_wake_generation
+            self._lock.release()
+            lock_owned = False
             output_result = self._media.resume_after_wake(deadline=deadline)
-            skipped_reason: str | None = None
-            if (
-                output_result.status == "resumed"
-                and output_result.succeeded
-                and not self._shutdown.is_set()
+            if not self._lock.acquire(
+                timeout=max(0.0, deadline - time.monotonic()),
             ):
-                input_result = self._session.ingress.resume_after_wake(deadline=deadline)
-                admitted = (
-                    input_result is not None
-                    and not self._shutdown.is_set()
-                    and self._media.admit_wake_start(
-                        attempt_id=output_result.attempt_id,
-                    )
+                self._media.abort_wake_start(
+                    attempt_id=output_result.attempt_id,
+                    reason="wake_operation_lock_timeout",
+                    deadline=deadline,
                 )
-                if input_result is not None and not admitted:
-                    self._session.ingress.stop_for_sleep(deadline=deadline)
-                    self._media.revoke_wake_starts_for_shutdown()
-                    skipped_reason = "wake_revoked_during_input_resume"
+                return _VoicePowerTransition(
+                    None,
+                    output_result,
+                    deadline,
+                    time.monotonic() - started,
+                    "wake_operation_lock_timeout",
+                )
+            lock_owned = True
+            skipped_reason: str | None = None
+            with self._intent_lock:
+                wake_current = (
+                    wake_generation == self._pending_wake_generation
+                    and not self._shutdown.is_set()
+                )
+            if output_result.status == "resumed" and output_result.succeeded and wake_current:
+                input_result = self._session.ingress.resume_after_wake(deadline=deadline)
+                with self._intent_lock:
+                    wake_current = (
+                        wake_generation == self._pending_wake_generation
+                        and not self._shutdown.is_set()
+                    )
+                    admitted = (
+                        wake_current
+                        and self._input_resume_succeeded(input_result)
+                        and self._media.admit_wake_start(
+                            attempt_id=output_result.attempt_id,
+                        )
+                    )
             else:
-                skipped_reason = f"output_{output_result.status}:{output_result.reason}"
                 input_result = None
-                self._session.ingress.report_output_unavailable(reason=skipped_reason)
-                if output_result.helper_thread_alive and not self._shutdown.is_set():
-                    self._schedule_pending_wake_locked()
+                admitted = False
+            if output_result.status == "resumed" and output_result.succeeded:
+                if not admitted:
+                    if not wake_current:
+                        if self._input_resume_succeeded(input_result):
+                            self._session.ingress.stop_for_sleep(deadline=deadline)
+                        self._media.abort_wake_start(
+                            attempt_id=output_result.attempt_id,
+                            reason="wake_generation_revoked",
+                            deadline=deadline,
+                        )
+                        skipped_reason = "wake_generation_revoked"
+                    else:
+                        input_reason = self._input_resume_reason(input_result)
+                        aborted = self._media.abort_wake_start(
+                            attempt_id=output_result.attempt_id,
+                            reason=f"input_resume_{input_reason}",
+                            deadline=deadline,
+                        )
+                        skipped_reason = (
+                            f"input_resume_{input_reason};output_{aborted.status}:"
+                            f"{aborted.reason}"
+                        )
+            else:
+                input_result = None
+                if wake_current:
+                    skipped_reason = f"output_{output_result.status}:{output_result.reason}"
+                    self._session.ingress.report_output_unavailable(reason=skipped_reason)
+                    if output_result.helper_thread_alive and not self._shutdown.is_set():
+                        self._schedule_pending_wake_locked(wake_generation)
+                else:
+                    self._media.abort_wake_start(
+                        attempt_id=output_result.attempt_id,
+                        reason="wake_generation_revoked",
+                        deadline=deadline,
+                    )
+                    skipped_reason = "wake_generation_revoked"
             elapsed_s = time.monotonic() - started
             record_realtime_trace(
                 "voice_power_wake_completed",
@@ -1236,22 +1312,22 @@ class _VoicePowerCoordinator:
                 skipped_reason,
             )
         finally:
-            self._lock.release()
+            if lock_owned:
+                self._lock.release()
 
     def _schedule_pending_wake_locked(  # noqa: C901, PLR0915 - one exact retry owner
         self,
+        generation: int,
     ) -> None:
         """Keep one deduplicated wake continuation after an exact stop debt."""
         pending = self._pending_wake_thread
         if pending is not None and pending.is_alive():
             return
-        self._pending_wake_generation += 1
-        generation = self._pending_wake_generation
         self._pending_wake_state = "in_flight"
         done = threading.Event()
         self._pending_wake_done = done
 
-        def _continue_wake() -> None:
+        def _continue_wake() -> None:  # noqa: C901, PLR0912, PLR0915 - exact debt loop
             output_result: voice_media.MediaPowerTransitionResult | None = None
             input_result: object | None = None
             reason = ""
@@ -1259,45 +1335,92 @@ class _VoicePowerCoordinator:
             try:
                 while not self._shutdown.is_set():
                     deadline = time.monotonic() + self._TOTAL_TRANSITION_BOUND_S
+                    with self._intent_lock:
+                        generation_current = (
+                            generation == self._pending_wake_generation
+                            and not self._shutdown.is_set()
+                        )
+                    if not generation_current:
+                        reason = "pending_wake_revoked"
+                        return
+                    # Never hold the coordinator operation lock across the
+                    # foreign media wait. A newer sleep can acquire it and
+                    # complete while this exact debt remains joinable here.
+                    output_result = self._media.resume_after_wake(deadline=deadline)
                     acquired = self._lock.acquire(
                         timeout=max(0.0, deadline - time.monotonic()),
                     )
                     if not acquired:
                         reason = "pending_wake_coordinator_lock_timeout"
+                        self._media.abort_wake_start(
+                            attempt_id=output_result.attempt_id,
+                            reason=reason,
+                            deadline=deadline,
+                        )
                         continue
                     retry_exact_debt = False
                     try:
-                        if (
-                            self._shutdown.is_set()
-                            or generation != self._pending_wake_generation
-                        ):
-                            reason = "pending_wake_revoked"
-                            return
-                        output_result = self._media.resume_after_wake(deadline=deadline)
+                        with self._intent_lock:
+                            generation_current = (
+                                generation == self._pending_wake_generation
+                                and not self._shutdown.is_set()
+                            )
                         if (
                             output_result.status == "resumed"
                             and output_result.succeeded
-                            and not self._shutdown.is_set()
-                            and generation == self._pending_wake_generation
+                            and generation_current
                         ):
                             input_result = self._session.ingress.resume_after_wake(
                                 deadline=deadline,
                             )
-                            admitted = (
-                                input_result is not None
-                                and not self._shutdown.is_set()
-                                and self._media.admit_wake_start(
-                                    attempt_id=output_result.attempt_id,
+                            with self._intent_lock:
+                                generation_current = (
+                                    generation == self._pending_wake_generation
+                                    and not self._shutdown.is_set()
                                 )
-                            )
+                                admitted = (
+                                    generation_current
+                                    and self._input_resume_succeeded(input_result)
+                                    and self._media.admit_wake_start(
+                                        attempt_id=output_result.attempt_id,
+                                    )
+                                )
+                        else:
+                            input_result = None
+                            admitted = False
+                        if output_result.status == "resumed" and output_result.succeeded:
                             if admitted:
                                 self._pending_wake_state = "recovered"
                                 reason = "pending_wake_resumed"
                                 return
-                            if input_result is not None:
-                                self._session.ingress.stop_for_sleep(deadline=deadline)
-                                self._media.revoke_wake_starts_for_shutdown()
-                            reason = "pending_wake_input_not_resumed"
+                            if not generation_current:
+                                if self._input_resume_succeeded(input_result):
+                                    self._session.ingress.stop_for_sleep(deadline=deadline)
+                                self._media.abort_wake_start(
+                                    attempt_id=output_result.attempt_id,
+                                    reason="pending_wake_generation_revoked",
+                                    deadline=deadline,
+                                )
+                                reason = "pending_wake_generation_revoked"
+                            else:
+                                input_reason = self._input_resume_reason(input_result)
+                                aborted = self._media.abort_wake_start(
+                                    attempt_id=output_result.attempt_id,
+                                    reason=f"input_resume_{input_reason}",
+                                    deadline=deadline,
+                                )
+                                reason = (
+                                    f"pending_input_resume_{input_reason};"
+                                    f"output_{aborted.status}:{aborted.reason}"
+                                )
+                            return
+                        if not generation_current:
+                            self._media.abort_wake_start(
+                                attempt_id=output_result.attempt_id,
+                                reason="pending_wake_generation_revoked",
+                                deadline=deadline,
+                            )
+                            reason = "pending_wake_generation_revoked"
                             return
                         reason = f"output_{output_result.status}:{output_result.reason}"
                         if not self._shutdown.is_set():
@@ -1350,12 +1473,13 @@ class _VoicePowerCoordinator:
     def close(self, *, timeout_s: float | None = None) -> bool:
         """Revoke any pending wake before input/output owner shutdown."""
         self._shutdown.set()
+        with self._intent_lock:
+            self._pending_wake_generation += 1
         self._media.revoke_wake_starts_for_shutdown()
         timeout = self._TOTAL_TRANSITION_BOUND_S if timeout_s is None else max(0.0, timeout_s)
         deadline = time.monotonic() + timeout
         if self._lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
             try:
-                self._pending_wake_generation += 1
                 self._pending_wake_state = "idle"
             finally:
                 self._lock.release()
@@ -1519,6 +1643,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0915 - each pre/po
             text_available=snapshot.text_available,
         )
 
+    ingress: voice_audio.AudioIngress | None = None
     try:
         backend = voice_backend.SoundDeviceDuplexBackend(
             input_format=voice_backend.AudioInputFormat(
@@ -1550,6 +1675,9 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0915 - each pre/po
             "realtime.single_audio_ingress construction failed before device open; "
             "downgraded to legacy wake.",
         )
+        if ingress is not None:
+            with contextlib.suppress(Exception):
+                ingress.close()
         with contextlib.suppress(Exception):
             engine.close()
         return None, False

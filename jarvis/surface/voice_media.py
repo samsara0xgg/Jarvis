@@ -597,9 +597,12 @@ class StreamingTTSPipeline:
         self._power_helper_reason = ""
         self._power_last_timed_out_attempt_id: int | None = None
         self._power_shutdown = False
+        self._power_admission_generation = 0
         self._power_actor_resume_attempt_id: int | None = None
-        self._power_actor_resume_future: concurrent.futures.Future[None] | None = None
+        self._power_actor_resume_generation: int | None = None
+        self._power_actor_resume_future: concurrent.futures.Future[bool] | None = None
         self._unadmitted_wake_attempt_id: int | None = None
+        self._power_abort_attempt_id: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue[_MediaCommand | object] | None = None
         self._conn: sqlite3.Connection | None = None
@@ -810,6 +813,11 @@ class StreamingTTSPipeline:
                 else max(0.0, timeout_s)
             )
         )
+        with self._power_lock:
+            # Linearize sleep before any actor-side admission from an older
+            # wake Future. The coroutine validates this generation while it
+            # owns the same lock around every side effect.
+            self._power_admission_generation += 1
         self._accepting.clear()
         loop = self._loop
         if loop is None or self._closed.is_set():
@@ -825,7 +833,16 @@ class StreamingTTSPipeline:
                     self._power_attempt_id,
                     "already_suspended",
                 )
-            if self._power_state == "stopping":
+            if self._power_state == "starting":
+                # A sleep generation must revoke a wake open already inside
+                # foreign ``player.start``. The exact start helper owns the
+                # compensating close when it returns; this caller only joins.
+                attempt_id = self._power_attempt_id
+                self._power_abort_attempt_id = attempt_id
+                done = self._power_helper_done
+                helper = self._power_helper
+                launch = False
+            elif self._power_state == "stopping":
                 attempt_id = self._power_attempt_id
                 done = self._power_helper_done
                 helper = self._power_helper
@@ -990,18 +1007,26 @@ class StreamingTTSPipeline:
             )
         with self._power_lock:
             future = self._power_actor_resume_future
+            admission_generation = self._power_admission_generation
             if (
                 future is None
                 or self._power_actor_resume_attempt_id != started.attempt_id
+                or self._power_actor_resume_generation != admission_generation
             ):
                 future = asyncio.run_coroutine_threadsafe(
-                    self._resume_after_wake_owned(),
+                    self._resume_after_wake_owned(
+                        attempt_id=started.attempt_id,
+                        admission_generation=admission_generation,
+                    ),
                     loop,
                 )
                 self._power_actor_resume_attempt_id = started.attempt_id
+                self._power_actor_resume_generation = admission_generation
                 self._power_actor_resume_future = future
         try:
-            future.result(timeout=max(0.0, transition_deadline - time.monotonic()))
+            actor_admitted = future.result(
+                timeout=max(0.0, transition_deadline - time.monotonic()),
+            )
         except TimeoutError:
             return MediaPowerTransitionResult(
                 "uncertain",
@@ -1017,15 +1042,30 @@ class StreamingTTSPipeline:
                 f"actor_resume:{type(exc).__name__}",
                 deadline_exhausted=time.monotonic() >= transition_deadline,
             )
+        if not actor_admitted:
+            return MediaPowerTransitionResult(
+                "uncertain",
+                started.attempt_id,
+                "actor_resume_generation_revoked",
+            )
         with self._power_lock:
-            if self._power_shutdown or self._closed.is_set():
+            if (
+                self._power_shutdown
+                or self._closed.is_set()
+                or self._power_admission_generation != admission_generation
+                or self._unadmitted_wake_attempt_id != started.attempt_id
+                or self._power_state != "open_unadmitted"
+            ):
                 return MediaPowerTransitionResult(
-                    "closed",
+                    "closed" if self._power_shutdown or self._closed.is_set() else "uncertain",
                     started.attempt_id,
-                    "shutdown_revoked_actor_resume",
+                    (
+                        "shutdown_revoked_actor_resume"
+                        if self._power_shutdown or self._closed.is_set()
+                        else "actor_resume_generation_revoked"
+                    ),
                 )
-            if self._power_state == "open_unadmitted":
-                self._power_state = "running"
+            self._power_state = "running"
         record_realtime_trace(
             "media_power_resumed",
             attempt_id=started.attempt_id,
@@ -1066,6 +1106,46 @@ class StreamingTTSPipeline:
                 return False
             self._unadmitted_wake_attempt_id = None
             return True
+
+    def abort_wake_start(
+        self,
+        *,
+        attempt_id: int,
+        reason: str,
+        deadline: float | None = None,
+    ) -> MediaPowerTransitionResult:
+        """Abort one unadmitted wake output without disabling future wakes."""
+        with self._power_lock:
+            if self._unadmitted_wake_attempt_id != attempt_id:
+                return MediaPowerTransitionResult(
+                    "closed",
+                    attempt_id,
+                    "wake_attempt_already_retired",
+                )
+            self._power_abort_attempt_id = attempt_id
+            self._power_admission_generation += 1
+            state = self._power_state
+        self._accepting.clear()
+        record_realtime_trace(
+            "media_power_wake_start_aborted",
+            attempt_id=attempt_id,
+            power_state=state,
+            reason=reason,
+        )
+        if state in {"open_unadmitted", "running"}:
+            return self.suspend_for_sleep(
+                deadline=(
+                    deadline
+                    if deadline is not None
+                    else time.monotonic() + self._config.shutdown_timeout_s
+                ),
+            )
+        return MediaPowerTransitionResult(
+            "uncertain",
+            attempt_id,
+            "wake_start_abort_joining_start_helper",
+            helper_thread_alive=state == "starting",
+        )
 
     def _transition_player_for_power(  # noqa: C901, PLR0911, PLR0915 - exact bounded power FSM
         self,
@@ -1116,7 +1196,9 @@ class StreamingTTSPipeline:
                 self._power_helper_reason = ""
                 self._power_state = transitional
                 if action == "start":
+                    self._power_admission_generation += 1
                     self._unadmitted_wake_attempt_id = attempt_id
+                    self._power_abort_attempt_id = None
 
                 def _operate() -> None:  # noqa: C901, PLR0912, PLR0915 - exact start/revoke compensation
                     error: BaseException | None = None
@@ -1125,18 +1207,13 @@ class StreamingTTSPipeline:
                     try:
                         if action == "stop":
                             remaining = max(0.0, deadline - time.monotonic())
-                            result = self._stop_player_with_bound(remaining)
-                            if (
-                                isinstance(result, PlayerStopResult)
-                                and not result.definitively_closed
-                            ):
-                                reason = result.reason
-                                error = RuntimeError(result.reason)
+                            self._stop_player_until_definitive(remaining)
                         else:
                             with self._power_lock:
                                 revoked_before_start = (
                                     self._power_attempt_id != attempt_id
                                     or self._power_shutdown
+                                    or self._power_abort_attempt_id == attempt_id
                                     or self._closed.is_set()
                                 )
                             if revoked_before_start:
@@ -1158,6 +1235,7 @@ class StreamingTTSPipeline:
                                     revoked_after_start = (
                                         self._power_attempt_id != attempt_id
                                         or self._power_shutdown
+                                        or self._power_abort_attempt_id == attempt_id
                                         or self._closed.is_set()
                                     )
                                 if revoked_after_start:
@@ -1169,11 +1247,14 @@ class StreamingTTSPipeline:
                                                 self._config.shutdown_timeout_s,
                                             )
                                             if isinstance(stopped, PlayerStopResult):
-                                                shutdown_cleanup = (
-                                                    stopped.definitively_closed
-                                                )
+                                                shutdown_cleanup = stopped.definitively_closed
                                                 if not shutdown_cleanup:
                                                     reason = stopped.reason
+                                                    if not self._power_shutdown:
+                                                        self._stop_player_until_definitive(
+                                                            self._config.shutdown_timeout_s,
+                                                        )
+                                                        shutdown_cleanup = True
                                             else:
                                                 shutdown_cleanup = True
                                         except BaseException as stop_exc:  # noqa: BLE001
@@ -1192,6 +1273,7 @@ class StreamingTTSPipeline:
                                 revoked_after_error = (
                                     self._power_attempt_id != attempt_id
                                     or self._power_shutdown
+                                    or self._power_abort_attempt_id == attempt_id
                                     or self._closed.is_set()
                                 )
                             if revoked_after_error:
@@ -1217,21 +1299,28 @@ class StreamingTTSPipeline:
                                     )
                                     if shutdown_cleanup:
                                         self._unadmitted_wake_attempt_id = None
+                                        self._power_abort_attempt_id = None
                                 else:
                                     self._power_state = (
                                         desired if error is None else "uncertain"
                                     )
                                     if action == "stop" and error is None:
                                         self._unadmitted_wake_attempt_id = None
+                                        self._power_abort_attempt_id = None
                         if action == "start" and shutdown_cleanup is not None:
-                            self._record_shutdown_player_cleanup(
-                                definitive=shutdown_cleanup,
-                            )
+                            if self._power_shutdown:
+                                self._record_shutdown_player_cleanup(
+                                    definitive=shutdown_cleanup,
+                                )
                             record_realtime_trace(
                                 "media_power_start_revoked",
                                 attempt_id=attempt_id,
                                 compensating_stop_definitive=shutdown_cleanup,
                                 reason=reason or "shutdown_revoked_late_start",
+                            )
+                        elif action == "stop" and self._power_shutdown:
+                            self._record_shutdown_player_cleanup(
+                                definitive=error is None,
                             )
                         done.set()
 
@@ -1297,14 +1386,27 @@ class StreamingTTSPipeline:
         self._output_active.clear()
         return not self._lane_isolated and self._active is None
 
-    async def _resume_after_wake_owned(self) -> None:
-        self._power_suspended = False
-        if (
-            not self._shutdown_requested.is_set()
-            and not self._power_shutdown
-            and not self._lane_isolated
-        ):
+    async def _resume_after_wake_owned(
+        self,
+        *,
+        attempt_id: int,
+        admission_generation: int,
+    ) -> bool:
+        """Apply actor admission only for the exact current wake generation."""
+        with self._power_lock:
+            if (
+                self._power_admission_generation != admission_generation
+                or self._unadmitted_wake_attempt_id != attempt_id
+                or self._power_state != "open_unadmitted"
+                or self._power_abort_attempt_id == attempt_id
+                or self._shutdown_requested.is_set()
+                or self._power_shutdown
+                or self._lane_isolated
+            ):
+                return False
+            self._power_suspended = False
             self._accepting.set()
+            return True
 
     async def _submit_owned(
         self,
@@ -1483,7 +1585,7 @@ class StreamingTTSPipeline:
                     self._player_stop_done.set()
             LOGGER.exception("late player cleanup janitor failed to start")
 
-    def _stop_player_bounded(self) -> bool:  # noqa: C901 - exact retry/join FSM
+    def _stop_player_bounded(self) -> bool:
         """Move potentially stuck device teardown to one controlled daemon helper."""
         with self._power_lock:
             power_state = self._power_state
@@ -1519,13 +1621,10 @@ class StreamingTTSPipeline:
 
             def _stop() -> None:
                 try:
-                    result = self._stop_player_with_bound(
+                    self._stop_player_until_definitive(
                         self._remaining_s(self._config.shutdown_timeout_s),
                     )
-                    if isinstance(result, PlayerStopResult):
-                        self._player_stop_definitive = result.definitively_closed
-                    else:
-                        self._player_stop_definitive = True
+                    self._player_stop_definitive = True
                 except Exception as exc:
                     with self._cleanup_lock:
                         self._cleanup_errors.append(f"player:{type(exc).__name__}")
@@ -1556,6 +1655,33 @@ class StreamingTTSPipeline:
             if "timeout_s" not in str(exc):
                 raise
             return self._player.stop()
+
+    def _stop_player_until_definitive(self, first_timeout_s: float) -> object:
+        """Join/retry one typed player debt on the current helper thread."""
+        timeout_s = max(0.0, first_timeout_s)
+        retries = 0
+        while True:
+            try:
+                result = self._stop_player_with_bound(timeout_s)
+            except BaseException as exc:  # noqa: BLE001 - retained exact debt
+                retries += 1
+                record_realtime_trace(
+                    "media_player_stop_debt_retry",
+                    retry=retries,
+                    reason=f"{type(exc).__name__}:{exc}",
+                )
+            else:
+                if not isinstance(result, PlayerStopResult) or result.definitively_closed:
+                    return result
+                retries += 1
+                record_realtime_trace(
+                    "media_player_stop_debt_retry",
+                    retry=retries,
+                    reason=result.reason,
+                    helper_thread_alive=result.helper_thread_alive,
+                )
+            time.sleep(min(0.1, 0.005 * (2 ** min(retries, 4))))
+            timeout_s = self._config.shutdown_timeout_s
 
     def _stop_provider_bounded(self) -> bool:
         """Close the actor's provider exactly once on an isolated daemon helper."""

@@ -536,6 +536,7 @@ class _CapabilityDispatcher:
         """Enqueue without waiting for the observer; retain newest ordered state."""
         with self._condition:
             if not self._started or self._closing:
+                self._dropped += 1
                 return
             if len(self._pending) >= _CAPABILITY_DISPATCH_CAPACITY:
                 self._pending.popleft()
@@ -1075,6 +1076,7 @@ class AudioIngress:
         self._subscribers: dict[str, AudioSubscription] = {}
         self._subscriber_snapshot: tuple[AudioSubscription, ...] = ()
         self._subscribe_before_insert_hook: Callable[[], None] | None = None
+        self._wake_report_before_commit_hook: Callable[[], None] | None = None
         self._lifecycle_lock = threading.Lock()
         self._control_lock = threading.RLock()
         self._control_generation = 0
@@ -2086,34 +2088,80 @@ class AudioIngress:
         self._trace_capability(snapshot)
         return snapshot
 
+    def _publish_wake_capability_if_current(
+        self,
+        expected_control_generation: int,
+        expected_state: InputCapabilityState,
+        state: InputCapabilityState,
+        *,
+        reason: str,
+    ) -> InputCapabilitySnapshot | None:
+        """CAS a wake-only transition against exact running state."""
+        with self._capability_publish_lock:
+            with self._control_lock, self._capability_lock:
+                if (
+                    not self._control_allows_running(expected_control_generation)
+                    or self._active_epoch is None
+                    or self._capability.state is not expected_state
+                ):
+                    return None
+                snapshot = self._commit_capability_locked(state, reason=reason)
+            dispatcher = self._capability_dispatcher
+            if dispatcher is not None:
+                dispatcher.submit(snapshot)
+        self._trace_capability(snapshot)
+        return snapshot
+
     def report_wake_unavailable(self, *, reason: str) -> InputCapabilitySnapshot:
         """Downgrade only wake decisions while the shared input remains healthy."""
         if not self._lifecycle_lock.acquire(blocking=False):
-            return self._capability
+            return self.capability
         try:
-            if (
-                self._active_epoch is None
-                or self._capability.state is not InputCapabilityState.AVAILABLE
-            ):
-                return self._capability
-            return self._publish_capability(
+            with self._control_lock, self._capability_lock:
+                if (
+                    self._active_epoch is None
+                    or not self._control_allows_running(self._control_generation)
+                    or self._capability.state is not InputCapabilityState.AVAILABLE
+                ):
+                    return self._capability
+                control_generation = self._control_generation
+            hook = self._wake_report_before_commit_hook
+            if hook is not None:
+                hook()
+            snapshot = self._publish_wake_capability_if_current(
+                control_generation,
+                InputCapabilityState.AVAILABLE,
                 InputCapabilityState.WAKE_UNAVAILABLE,
                 reason=reason,
             )
+            return self.capability if snapshot is None else snapshot
         finally:
             self._lifecycle_lock.release()
 
     def report_wake_available(self, *, reason: str) -> InputCapabilitySnapshot:
         """Restore wake capability after a successful model decision."""
         if not self._lifecycle_lock.acquire(blocking=False):
-            return self._capability
+            return self.capability
         try:
-            if (
-                self._active_epoch is None
-                or self._capability.state is not InputCapabilityState.WAKE_UNAVAILABLE
-            ):
-                return self._capability
-            return self._publish_capability(InputCapabilityState.AVAILABLE, reason=reason)
+            with self._control_lock, self._capability_lock:
+                if (
+                    self._active_epoch is None
+                    or not self._control_allows_running(self._control_generation)
+                    or self._capability.state
+                    is not InputCapabilityState.WAKE_UNAVAILABLE
+                ):
+                    return self._capability
+                control_generation = self._control_generation
+            hook = self._wake_report_before_commit_hook
+            if hook is not None:
+                hook()
+            snapshot = self._publish_wake_capability_if_current(
+                control_generation,
+                InputCapabilityState.WAKE_UNAVAILABLE,
+                InputCapabilityState.AVAILABLE,
+                reason=reason,
+            )
+            return self.capability if snapshot is None else snapshot
         finally:
             self._lifecycle_lock.release()
 
@@ -2242,7 +2290,7 @@ class AudioIngress:
             reason=("shutdown_complete" if definitively_closed else "shutdown_uncertain"),
         )
         dispatcher = self._capability_dispatcher
-        if dispatcher is not None:
+        if dispatcher is not None and definitively_closed:
             # Observer execution is deliberately outside the shutdown proof.
             # A stuck sink may delay its own terminal notification, never the
             # input owner's absolute close deadline.
