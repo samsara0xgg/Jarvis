@@ -208,6 +208,51 @@ class _FakeBackend:
         )
 
 
+class _ScriptedWakeBackend(_FakeBackend):
+    """Inject one typed wake-open result while retaining real owner accounting."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.next_start_status: voice_backend.BackendStartStatus | None = None
+
+    def start(
+        self,
+        *,
+        stream_epoch: int,
+        attempt_id: str,
+        frame_sink: voice_backend.InputFrameSink,
+        render_source: voice_backend.RenderSource | None = None,
+        timeout_s: float | None = None,
+    ) -> voice_backend.BackendStartResult:
+        status = self.next_start_status
+        if status is None:
+            return super().start(
+                stream_epoch=stream_epoch,
+                attempt_id=attempt_id,
+                frame_sink=frame_sink,
+                render_source=render_source,
+                timeout_s=timeout_s,
+            )
+        self.next_start_status = None
+        if status is voice_backend.BackendStartStatus.OPEN_UNCERTAIN:
+            super().start(
+                stream_epoch=stream_epoch,
+                attempt_id=attempt_id,
+                frame_sink=frame_sink,
+                render_source=render_source,
+                timeout_s=timeout_s,
+            )
+        else:
+            self.start_count += 1
+        return voice_backend.BackendStartResult(
+            status=status,
+            stream_epoch=stream_epoch,
+            profile=None,
+            reason=f"injected_{status.value}",
+            attempt_id=attempt_id,
+        )
+
+
 class _EnergySession:
     """ONNX-shaped Silero fixture whose probability follows sample energy."""
 
@@ -2659,11 +2704,195 @@ def test_power_coordinator_admits_output_only_after_typed_input_start(
         assert result.input_skipped_reason is None
         media.admit_wake_start.assert_called_once_with(attempt_id=81)
         media.abort_wake_start.assert_not_called()
+        session.ingress.stop_for_sleep.assert_not_called()
     else:
         assert result.input_skipped_reason is not None
         media.admit_wake_start.assert_not_called()
         media.abort_wake_start.assert_called_once()
+        if input_result is None:
+            session.ingress.stop_for_sleep.assert_not_called()
+        else:
+            session.ingress.stop_for_sleep.assert_called_once()
     media.revoke_wake_starts_for_shutdown.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        voice_backend.BackendStartStatus.FAILED_CLOSED,
+        voice_backend.BackendStartStatus.OWNER_BUSY,
+        voice_backend.BackendStartStatus.OPEN_UNCERTAIN,
+    ],
+)
+def test_unadmitted_typed_input_result_rolls_back_real_ingress_and_retries(
+    status: voice_backend.BackendStartStatus,
+) -> None:
+    """Every attempted input result rolls back before output abort and can retry."""
+    backend = _ScriptedWakeBackend()
+    ingress = _ingress(backend)
+    assert ingress.start().started
+    initial_stop = ingress.stop_for_sleep()
+    assert initial_stop is not None
+    assert initial_stop.definitively_closed
+    backend.next_start_status = status
+    session = MagicMock(spec=voice_session.DuplexVoiceSession)
+    session.ingress = ingress
+    media = MagicMock(spec=voice_media.StreamingTTSPipeline)
+    media.resume_after_wake.return_value = voice_media.MediaPowerTransitionResult(
+        "resumed",
+        101,
+        "fresh_output",
+    )
+    media.admit_wake_start.return_value = True
+    abort_saw_closed_input = threading.Event()
+
+    def _abort_after_input_close(**_kwargs: object) -> voice_media.MediaPowerTransitionResult:
+        assert (
+            backend.ownership_snapshot().state
+            is voice_backend.BackendLifecycleState.CLOSED
+        )
+        abort_saw_closed_input.set()
+        return voice_media.MediaPowerTransitionResult(
+            "suspended",
+            101,
+            "output_aborted_after_input_rollback",
+        )
+
+    media.abort_wake_start.side_effect = _abort_after_input_close
+    coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+    failed = coordinator.on_wake()
+    assert isinstance(failed.input_result, voice_backend.BackendStartResult)
+    assert failed.input_result.status is status
+    assert abort_saw_closed_input.is_set()
+    assert ingress._control_intent == "suspended"
+    assert ingress._suspended
+    assert (
+        backend.ownership_snapshot().state
+        is voice_backend.BackendLifecycleState.CLOSED
+    )
+    assert backend.active_owner_count == 0
+    media.admit_wake_start.assert_not_called()
+
+    retry = coordinator.on_wake()
+    assert isinstance(retry.input_result, voice_backend.BackendStartResult)
+    assert retry.input_result.started
+    assert retry.input_skipped_reason is None
+    assert backend.active_owner_count == 1
+    assert backend.max_active_owner_count == 1
+    media.admit_wake_start.assert_called_once_with(attempt_id=101)
+    assert coordinator.close(timeout_s=0.2)
+    assert ingress.close().definitively_closed
+
+
+def test_started_input_is_exactly_closed_when_output_admit_cas_loses() -> None:
+    """A successful input reopen is rolled back if output admission loses CAS."""
+    backend = _FakeBackend()
+    ingress = _ingress(backend)
+    assert ingress.start().started
+    initial_stop = ingress.stop_for_sleep()
+    assert initial_stop is not None
+    assert initial_stop.definitively_closed
+    session = MagicMock(spec=voice_session.DuplexVoiceSession)
+    session.ingress = ingress
+    media = MagicMock(spec=voice_media.StreamingTTSPipeline)
+    media.resume_after_wake.return_value = voice_media.MediaPowerTransitionResult(
+        "resumed",
+        111,
+        "fresh_output",
+    )
+    media.admit_wake_start.side_effect = [False, True]
+
+    def _abort_after_input_close(**_kwargs: object) -> voice_media.MediaPowerTransitionResult:
+        assert (
+            backend.ownership_snapshot().state
+            is voice_backend.BackendLifecycleState.CLOSED
+        )
+        return voice_media.MediaPowerTransitionResult(
+            "suspended",
+            111,
+            "output_admit_cas_lost",
+        )
+
+    media.abort_wake_start.side_effect = _abort_after_input_close
+    coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+    lost = coordinator.on_wake()
+    assert isinstance(lost.input_result, voice_backend.BackendStartResult)
+    assert lost.input_result.started
+    assert lost.input_skipped_reason is not None
+    assert ingress._control_intent == "suspended"
+    assert ingress._suspended
+    assert backend.active_owner_count == 0
+    assert backend.stop_count == 2
+
+    retry = coordinator.on_wake()
+    assert isinstance(retry.input_result, voice_backend.BackendStartResult)
+    assert retry.input_result.started
+    assert retry.input_skipped_reason is None
+    assert backend.active_owner_count == 1
+    assert backend.max_active_owner_count == 1
+    assert coordinator.close(timeout_s=0.2)
+    assert ingress.close().definitively_closed
+
+
+def test_pending_wake_input_failure_rolls_back_real_ingress_before_output_abort() -> None:
+    """The pending continuation uses the same input-first transaction rollback."""
+    backend = _ScriptedWakeBackend()
+    ingress = _ingress(backend)
+    assert ingress.start().started
+    initial_stop = ingress.stop_for_sleep()
+    assert initial_stop is not None
+    assert initial_stop.definitively_closed
+    backend.next_start_status = voice_backend.BackendStartStatus.FAILED_CLOSED
+    session = MagicMock(spec=voice_session.DuplexVoiceSession)
+    session.ingress = ingress
+    media = MagicMock(spec=voice_media.StreamingTTSPipeline)
+    media.resume_after_wake.side_effect = [
+        voice_media.MediaPowerTransitionResult(
+            "uncertain",
+            121,
+            "prior_stop_debt",
+            helper_thread_alive=True,
+        ),
+        voice_media.MediaPowerTransitionResult("resumed", 122, "debt_closed"),
+        voice_media.MediaPowerTransitionResult("resumed", 123, "retry_output"),
+    ]
+    media.admit_wake_start.return_value = True
+    rollback_before_abort = threading.Event()
+
+    def _abort_after_input_close(**_kwargs: object) -> voice_media.MediaPowerTransitionResult:
+        assert ingress._control_intent == "suspended"
+        assert (
+            backend.ownership_snapshot().state
+            is voice_backend.BackendLifecycleState.CLOSED
+        )
+        rollback_before_abort.set()
+        return voice_media.MediaPowerTransitionResult(
+            "suspended",
+            122,
+            "pending_output_aborted",
+        )
+
+    media.abort_wake_start.side_effect = _abort_after_input_close
+    coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+    initial = coordinator.on_wake()
+    assert initial.output_result is not None
+    assert initial.output_result.helper_thread_alive
+    assert rollback_before_abort.wait(timeout=1.0)
+    pending = coordinator._pending_wake_thread
+    assert pending is not None
+    pending.join(timeout=1.0)
+    assert not pending.is_alive()
+    assert ingress._control_intent == "suspended"
+    assert backend.active_owner_count == 0
+
+    retry = coordinator.on_wake()
+    assert isinstance(retry.input_result, voice_backend.BackendStartResult)
+    assert retry.input_result.started
+    assert retry.input_skipped_reason is None
+    assert backend.active_owner_count == 1
+    assert backend.max_active_owner_count == 1
+    assert coordinator.close(timeout_s=0.2)
+    assert ingress.close().definitively_closed
 
 
 def test_typed_input_start_debt_re_suspends_real_media_owner(tmp_path: Path) -> None:

@@ -1261,7 +1261,7 @@ class _VoicePowerCoordinator:
             if output_result.status == "resumed" and output_result.succeeded:
                 if not admitted:
                     if not wake_current:
-                        if self._input_resume_succeeded(input_result):
+                        if input_result is not None:
                             self._session.ingress.stop_for_sleep(deadline=deadline)
                         self._media.abort_wake_start(
                             attempt_id=output_result.attempt_id,
@@ -1271,6 +1271,8 @@ class _VoicePowerCoordinator:
                         skipped_reason = "wake_generation_revoked"
                     else:
                         input_reason = self._input_resume_reason(input_result)
+                        if input_result is not None:
+                            self._session.ingress.stop_for_sleep(deadline=deadline)
                         aborted = self._media.abort_wake_start(
                             attempt_id=output_result.attempt_id,
                             reason=f"input_resume_{input_reason}",
@@ -1394,7 +1396,7 @@ class _VoicePowerCoordinator:
                                 reason = "pending_wake_resumed"
                                 return
                             if not generation_current:
-                                if self._input_resume_succeeded(input_result):
+                                if input_result is not None:
                                     self._session.ingress.stop_for_sleep(deadline=deadline)
                                 self._media.abort_wake_start(
                                     attempt_id=output_result.attempt_id,
@@ -1404,6 +1406,8 @@ class _VoicePowerCoordinator:
                                 reason = "pending_wake_generation_revoked"
                             else:
                                 input_reason = self._input_resume_reason(input_result)
+                                if input_result is not None:
+                                    self._session.ingress.stop_for_sleep(deadline=deadline)
                                 aborted = self._media.abort_wake_start(
                                     attempt_id=output_result.attempt_id,
                                     reason=f"input_resume_{input_reason}",
