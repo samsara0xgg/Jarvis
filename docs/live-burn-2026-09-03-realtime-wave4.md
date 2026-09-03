@@ -149,6 +149,27 @@ immediately" is not claimed and is not true yet.
 **Burn 3 did not exercise the LLM.** Tier 0 answered it. The row is honest
 about being a Tier-0 dispatch; burn 4 covers the LLM-driven action path.
 
+## Re-verified at `cef1801`
+
+The boot-quarantine wiring landed after the numbers above were taken, so all
+four burns were run again against `cef1801`. All four pass. Second-run
+numbers, for variance:
+
+| Metric | Burn 1 | Burn 2 | Burn 3 | Burn 4 |
+|---|---:|---:|---:|---:|
+| total turn latency | 4 683 ms | 102 596 ms | 5 ms | 125 553 ms |
+| `response.started` → terminal | 4 682 ms | 8 016 ms | 4 ms | — |
+| cancel request → terminal | — | **4 ms** | — | — |
+| terminal → turn unwound | — | 94 583 ms | — | — |
+| repo held `action.running` → cleanup | — | — | — | **115 541 ms** |
+| `verification_outcome` | — | — | — | `verified` |
+
+Provider latency varies by an order of magnitude between runs (4.7 s vs
+16.9 s for the same one-sentence question); the lifecycle assertions do not.
+Burn 2's second run is the sharper illustration of the Step-6 gap: the
+response was terminally cancelled 4 ms after the request, and the provider
+kept generating for a further **94.6 s**.
+
 ## Verdict
 
 **PASS.** Both ADR-0008 Step 2 and Step 3 acceptance rows are met live:
