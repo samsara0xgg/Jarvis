@@ -41,6 +41,7 @@ from jarvis.state.input_claim import (
     InputClaimed,
     adopt_consumer,
     claim_input_once,
+    recoverable_inputs,
 )
 
 if TYPE_CHECKING:
@@ -289,6 +290,59 @@ def test_a_claimed_turn_that_already_worked_is_not_replayed(runtime: JarvisRunti
     asyncio.run(_body())
 
     assert recorder.driven == []
+
+
+def test_a_row_landing_during_the_boot_scan_is_not_lost(runtime: JarvisRuntime) -> None:
+    """The live cursor must be read BEFORE the recovery scan, never after.
+
+    ``_boot_intent_pump_in_thread`` reads ``live_cursor_id`` first and only
+    then scans for recoverable rows, so a trigger committed between the two is
+    seen twice — once by the scan, once by the poll loop — and the pump's
+    dispatched-turn set collapses that. Reading the cursor *after* the scan
+    inverts the overlap into a gap: such a row is inside neither window and is
+    silently never driven, which for a durable utterance is data loss.
+
+    The interleaving is forced deterministically by letting the real scan run
+    and only then committing a trigger, on its own connection, before the boot
+    function reads whatever it reads next. That connection is opened inside the
+    wrapper because the boot scan runs on an ``asyncio.to_thread`` worker and
+    the Event Log's connections are ``check_same_thread``.
+    """
+    adopt_consumer(runtime.conn, name=REALTIME_INTENT_CONSUMER)
+    real_scan = recoverable_inputs
+
+    def _scan_then_commit(conn: sqlite3.Connection, **kwargs: Any) -> Any:  # noqa: ANN401 - delegates to the real signature.
+        """Run the real scan, then land a row the scan could not have seen."""
+        found = real_scan(conn, **kwargs)
+        late = open_event_log(runtime.runtime_paths.event_log)
+        try:
+            emit_event(
+                late,
+                type="surface.user_intent",
+                payload={
+                    "transcript": "刚好挤进来的",
+                    "turn_id": "T-mid-boot",
+                    "channel": "cli_stdin",
+                    "language": "zh-CN",
+                },
+                correlation={"turn_id": "T-mid-boot"},
+            )
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                late.close()
+        return found
+
+    recorder = _Recorder()
+
+    async def _body() -> None:
+        with patch.object(inherent_loop, "recoverable_inputs", _scan_then_commit):
+            await _drain(runtime, recorder, expect=1)
+
+    asyncio.run(_body())
+
+    # Driven exactly once: the scan missed it, so the poll loop owes it.
+    assert recorder.driven == ["T-mid-boot"]
+    assert _count(runtime.conn, "turn.started") == 1
 
 
 # --- no double dispatch -----------------------------------------------------
