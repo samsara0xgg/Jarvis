@@ -15,9 +15,13 @@ Two static assertions over ``jarvis/``:
   ``jarvis/decision/response_run.py`` — the single L3 owner.
 
 Both are green on production code that predates Wave 4A, so this canary guards
-the new lifecycle rather than documenting an existing debt.  The action-side
-equivalent (``jarvis/execution/tools.py``) is Wave 4B's slice, deliberately not
-asserted here so the two remain independently revertible.
+the new lifecycle rather than documenting an existing debt.
+
+Wave 4B (ADR-0008 Step 3) adds the third assertion, over the four canonical
+**action** terminals.  ``jarvis/execution/tools.py`` used to append them with
+plain ``emit_event``, which is exactly what F8 forbids once a cancel or a
+supervisor timeout can race a result: two writers with no compare-and-set
+would produce two canonical terminals for one ``action_id``.
 """
 
 from __future__ import annotations
@@ -30,11 +34,20 @@ from tests.canary._helpers import iter_jarvis_py_files, parse, relative_to_repo
 _RESPONSE_TERMINAL_TYPES: Final[frozenset[str]] = frozenset(
     {"response.completed", "response.cancelled", "response.failed"},
 )
+_ACTION_TERMINAL_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "action.result_observed",
+        "action.failed",
+        "action.timeout_assumed",
+        "action.cancelled",
+    },
+)
 _APPEND_FUNCTIONS: Final[frozenset[str]] = frozenset(
     {"emit_event", "append_event_in_transaction"},
 )
 _TERMINAL_CAS_OWNER: Final[str] = "jarvis/state/lifecycle_terminal.py"
 _RESPONSE_TERMINALIZER_OWNER: Final[str] = "jarvis/decision/response_run.py"
+_ACTION_RESULT_REENTRY_EXEMPTION: Final[str] = "jarvis/decision/__init__.py"
 
 
 def _callee_name(call: ast.Call) -> str | None:
@@ -88,6 +101,47 @@ def test_canary_response_terminals_only_appended_by_the_cas_owner() -> None:
         "response-terminal-only-through-CAS canary — response.completed / "
         "response.cancelled / response.failed may only be appended by "
         f"{_TERMINAL_CAS_OWNER}:\n  " + "\n  ".join(violations)
+    )
+
+
+def test_canary_action_terminals_only_appended_by_the_cas_owner() -> None:
+    """Fail if L4 or L6 appends a canonical action terminal outside the CAS.
+
+    The three operational cleanup types (``worker.quiesced``,
+    ``action.cleanup_completed``, ``action.cleanup_failed``) are deliberately
+    NOT in this set: ADR-0008 D9 makes them bounded L4 operational events
+    rather than ActionLifecycle terminals, so a plain append is correct for
+    them and a CAS would wrongly imply exactly-one-per-action semantics.
+
+    ``jarvis/decision/__init__.py`` is exempt for now and the exemption is
+    load-bearing, not laziness. L3 deliberately appends a SECOND
+    ``action.result_observed`` for a ``verify_diff`` bundle's slot 2, and the
+    ``task.verified`` evidence chain hangs off that row; routing it through a
+    CAS today would return ``AlreadyTerminal`` and silently drop the
+    verification event. ADR-0008 Step 11 ("migrate action-result re-entry")
+    is the step that reconciles the two-slot fan-out with exactly-one-terminal
+    and removes this exemption.
+    """
+    violations: list[str] = []
+    for path in iter_jarvis_py_files():
+        rel = relative_to_repo(path)
+        if rel in (_TERMINAL_CAS_OWNER, _ACTION_RESULT_REENTRY_EXEMPTION):
+            continue
+        for node in ast.walk(parse(path)):
+            if not isinstance(node, ast.Call):
+                continue
+            if _callee_name(node) not in _APPEND_FUNCTIONS:
+                continue
+            violations.extend(
+                f"{rel}:{node.lineno}: appends {literal!r} without the terminal CAS"
+                for literal in _event_type_literals(node)
+                if literal in _ACTION_TERMINAL_TYPES
+            )
+
+    assert not violations, (
+        "action-terminal-only-through-CAS canary — action.result_observed / "
+        "action.failed / action.timeout_assumed / action.cancelled may only be "
+        f"appended by {_TERMINAL_CAS_OWNER}:\n  " + "\n  ".join(violations)
     )
 
 
