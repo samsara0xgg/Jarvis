@@ -397,13 +397,19 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="jarvis_runtime",
         required_payload=("action_id",),
-        # ADR-0008 §4.2 additive fields on the existing type.
+        # ADR-0008 §4.2 additive fields on the existing type, plus
+        # `stash_ref` (Step 4).  A cancelled `spawn_worker` stashed Allen's
+        # pre-task tree before it started, and the runner — not the handler —
+        # owns this terminal, so the ref has to ride the terminal the same way
+        # `action.failed` / `action.timeout_assumed` already carry it.  The
+        # cleanup finalizer reads exactly one durable source.
         optional_payload=(
             "error",
             "reason",
             "requested_by_turn_id",
             "cancel_scope",
             "cancellation_mode",
+            "stash_ref",
         ),
         schema_version=1,
     ),
@@ -634,7 +640,21 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="codex_worker",
         required_payload=("task_id", "run_id", "status"),
-        optional_payload=("summary", "diff_path"),
+        # ADR-0008 Step 4: `executor` / `model` / `tokens_in` / `tokens_out`
+        # are the run's accounting facts.  A truly background `spawn_worker`
+        # returns its RawResult to the runner, not to L3, so the cost that
+        # used to travel on `RawResult.metadata["cost"]` needs a durable home
+        # for L3 to read at re-entry.  This row is emitted on every path
+        # (report, timeout, crash), which is exactly the set of runs that
+        # burned tokens.  L3 remains the sole `cost.recorded` emit-site.
+        optional_payload=(
+            "summary",
+            "diff_path",
+            "executor",
+            "model",
+            "tokens_in",
+            "tokens_out",
+        ),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -663,6 +683,19 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "disposition",
             "error_code",
         ),
+        schema_version=1,
+    ),
+    # ADR-0008 §4.2 / D8 (Step 4) — the adoption watermark.  One row per
+    # named consumer, appended the first time it starts reading, recording
+    # `MAX(events.id)` at that instant.  Recovery considers only rows after
+    # it, which is what stops a freshly enabled realtime consumer from
+    # replaying every historical utterance in the log (F24).
+    EventTypeSchema(
+        event_type="consumer.adopted",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("name", "adoption_row_id"),
+        optional_payload=(),
         schema_version=1,
     ),
     # ADR-0008 Wave 1 — L3 response lifecycle.  These registrations are
