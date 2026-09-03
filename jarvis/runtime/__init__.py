@@ -186,8 +186,13 @@ _DEFAULT_POLL_INTERVAL_S: float = 0.01
 # so 50 is ample headroom.
 _DEFAULT_MAX_ITERATIONS: int = 50
 
-# Default per-trigger wait. The spawn_worker Timer fires at ~10 ms in
-# Day-1; ``verify_diff`` re-entry happens inline. 5 s is generous.
+# Conversational per-trigger wait: the budget for a turn with NO
+# background async worker of its own in flight. The spawn_worker Timer
+# fires at ~10 ms in Day-1; ``verify_diff`` re-entry happens inline. 5 s
+# is generous, and small enough that a stuck ordinary turn cannot pin one
+# of ``max_concurrent_turns`` for long. A turn that IS waiting on a
+# background worker gets the runner's lease timeout instead — see
+# :func:`_trigger_wait_budget`.
 _DEFAULT_TRIGGER_TIMEOUT_S: float = 5.0
 
 # Fallback for a runtime whose config carries no ``observer:`` block
@@ -1715,13 +1720,48 @@ def _wait_for_next_trigger(  # noqa: PLR0913 — one defaulted cancel predicate 
         time.sleep(poll_interval_s)
 
 
+def _trigger_wait_budget(
+    runtime: JarvisRuntime,
+    *,
+    turn_id: str,
+    override: float | None,
+) -> float:
+    """Return this iteration's per-trigger wait budget, in seconds.
+
+    The single timeout authority for an in-turn action wait:
+
+    * An explicit caller value always wins. Scenarios and any surface that
+      wants its own budget keep it.
+    * Otherwise, while the ActionRunner still owns one of this turn's
+      actions, the budget is that runner's lease timeout
+      (``realtime.actions.lease_timeout_s``, ADR-0008 §6). That is exactly
+      the ADR-0008 Step 4 ``true_async_workers`` case: a foreground
+      dispatch has already been awaited by the time control reaches this
+      wait, so a job still in flight here is a background worker whose
+      ``worker.reported`` is minutes away. Reusing the lease clock keeps
+      one authority — a turn's wait can then neither expire before the
+      action it waits on nor outlive it.
+    * Otherwise the conversational default, so an ordinary turn still
+      cannot pin one of ``max_concurrent_turns`` for a quarter of an hour.
+
+    Read fresh on every iteration, like ``turn_action_ids`` beside it: the
+    action that paused ``decide()`` was registered inside the call above.
+    """
+    if override is not None:
+        return override
+    runner = runtime.action_runner
+    if runner is not None and runner.turn_has_inflight(turn_id):
+        return runner.lease_timeout_s
+    return _DEFAULT_TRIGGER_TIMEOUT_S
+
+
 def run_turn(
     runtime: JarvisRuntime,
     *,
     utterance: str,
     turn_id: str | None = None,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
-    trigger_timeout_s: float = _DEFAULT_TRIGGER_TIMEOUT_S,
+    trigger_timeout_s: float | None = None,
 ) -> RunTurnResult:
     """Drive one conversation turn end-to-end (CLI / scenario entrypoint).
 
@@ -1748,7 +1788,9 @@ def run_turn(
         utterance: User text to drive the turn.
         turn_id: Optional explicit turn id (tests). Default: minted.
         max_iterations: Hard ceiling on decide() invocations.
-        trigger_timeout_s: Per-trigger wait timeout.
+        trigger_timeout_s: Explicit per-trigger wait timeout. ``None``
+            (production) resolves per iteration via
+            :func:`_trigger_wait_budget`.
 
     Returns:
         Frozen :class:`RunTurnResult` describing what was written and
@@ -1776,7 +1818,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     user_intent_event: Event,
     available_surfaces: frozenset[str] | None = None,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
-    trigger_timeout_s: float = _DEFAULT_TRIGGER_TIMEOUT_S,
+    trigger_timeout_s: float | None = None,
     streaming_enabled: bool = False,
 ) -> RunTurnResult:
     """Drive the post-emit body of one turn from an already-emitted intent event.
@@ -1837,7 +1879,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             :func:`jarvis.surface.cli_render.render_response`; daemon
             callers use ``frozenset()`` to suppress physical surfaces.
         max_iterations: Hard ceiling on decide() invocations.
-        trigger_timeout_s: Per-trigger wait timeout.
+        trigger_timeout_s: Explicit per-trigger wait timeout. ``None``
+            (production) resolves per iteration via
+            :func:`_trigger_wait_budget`.
         streaming_enabled: Forwarded to
             :func:`jarvis.surface.cli_render.render_response`; the
             daemon watcher (ADR-0003 Step 2 Build 5) passes ``True``
@@ -1978,11 +2022,16 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # turn dispatched. Read fresh each iteration: the action
             # that paused decide() was registered inside the call above.
             owned_action_ids = turn_action_ids(effective_turn_id)
+            wait_timeout_s = _trigger_wait_budget(
+                runtime,
+                turn_id=effective_turn_id,
+                override=trigger_timeout_s,
+            )
             record_realtime_trace(
                 "action_wait_started",
                 turn_id=effective_turn_id,
                 action_count=len(owned_action_ids),
-                timeout_s=trigger_timeout_s,
+                timeout_s=wait_timeout_s,
             )
             if run is not None:
                 _raise_if_cancelled("before the action wait")
@@ -1992,7 +2041,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                     runtime.conn,
                     after_id=last_seen_id,
                     action_ids=owned_action_ids,
-                    timeout=trigger_timeout_s,
+                    timeout=wait_timeout_s,
                     cancelled=_run_cancelled if run is not None else None,
                 )
             except TriggerWaitTimeout:
@@ -2000,7 +2049,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                     "action_wait_completed",
                     turn_id=effective_turn_id,
                     outcome="bounded_timeout",
-                    timeout_s=trigger_timeout_s,
+                    timeout_s=wait_timeout_s,
                 )
                 raise
             if run is not None:

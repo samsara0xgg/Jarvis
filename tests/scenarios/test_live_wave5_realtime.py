@@ -79,15 +79,6 @@ _CODEX_GOAL = (
     "Do not change any test logic."
 )
 
-_WORKER_TRIGGER_TIMEOUT_S = 900.0
-"""Per-trigger wait for the turn that owns a background worker.
-
-Production's ``drive_turn`` default is 5 s, which is fine while a declared-
-async tool is awaited inside ``decide``. With ``true_async_workers`` on the
-wait spans the whole Codex turn, so the burn passes the budget the ADR's
-turn actually needs.
-"""
-
 _RUNNING_WAIT_S = 300.0
 """How long the burn waits for the write-exclusive ActionRun to open."""
 
@@ -331,9 +322,16 @@ def _drive_on_own_connection(
     runtime: JarvisRuntime,
     *,
     user_intent_event: Event,
-    trigger_timeout_s: float,
 ) -> RunTurnResult:
-    """Run ``drive_turn`` the way the daemon's turn worker thread runs it."""
+    """Run ``drive_turn`` the way the daemon's turn worker thread runs it.
+
+    No ``trigger_timeout_s``: production passes none either, so the burn
+    exercises the real budget resolution — ``jarvis.runtime`` reads the
+    runner's ``realtime.actions.lease_timeout_s`` for a turn with a
+    background worker in flight and the 5 s conversational default for
+    every other turn. An override here would hide exactly the defect the
+    fix cycle closed.
+    """
     conn = open_event_log(runtime.runtime_paths.event_log)
     try:
         return drive_turn(
@@ -341,7 +339,6 @@ def _drive_on_own_connection(
             user_intent_event=user_intent_event,
             available_surfaces=frozenset(),
             streaming_enabled=True,
-            trigger_timeout_s=trigger_timeout_s,
         )
     finally:
         with contextlib.suppress(sqlite3.Error):
@@ -506,7 +503,6 @@ def test_live_background_worker_answers_a_second_utterance(
             _drive_on_own_connection,
             live_runtime,
             user_intent_event=worker_intent,
-            trigger_timeout_s=_WORKER_TRIGGER_TIMEOUT_S,
         )
         running = _await_write_exclusive_running(conn, timeout_s=_RUNNING_WAIT_S)
         worker_action_id = str(running["payload"]["action_id"])
@@ -646,7 +642,6 @@ def test_live_cancel_kills_the_codex_process_and_frees_the_repo(
             _drive_on_own_connection,
             live_runtime,
             user_intent_event=intent,
-            trigger_timeout_s=_WORKER_TRIGGER_TIMEOUT_S,
         )
         running = _await_write_exclusive_running(conn, timeout_s=_RUNNING_WAIT_S)
         action_id = str(running["payload"]["action_id"])

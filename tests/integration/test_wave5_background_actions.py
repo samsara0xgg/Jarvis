@@ -54,7 +54,7 @@ from jarvis.execution.tools import (
     default_resource_key_resolver,
     turn_action_ids,
 )
-from jarvis.runtime import JarvisRuntime
+from jarvis.runtime import JarvisRuntime, TriggerWaitTimeout
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state.event_log import emit_event, open_event_log
 
@@ -832,3 +832,164 @@ def test_a_cancelled_run_still_has_its_pre_task_stash_restored(
     finally:
         with contextlib.suppress(sqlite3.Error):
             conn.close()
+
+
+# --- the row's trigger budget ------------------------------------------------
+
+
+def _dispatch_in_decide(ctx: Any, *, tool_name: str, action_id: str, turn_id: str) -> None:  # noqa: ANN401 - scripted DecideContext.
+    """Dispatch one action from inside a scripted ``decide``."""
+    _authorize(ctx.lifecycle, action_id)
+    ctx.tool_registry.dispatch(
+        _request(tool_name, action_id, turn_id=turn_id),
+        ctx.conn,
+        ctx.runtime_paths,
+        ctx.lifecycle,
+    )
+
+
+def _drive_paused_turn(
+    fixture: _Fixture,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    turn_id: str,
+    on_first_decide: Callable[[Any], None] | None = None,
+) -> None:
+    """Drive a turn whose FIRST decide() returns no plan, so the driver waits.
+
+    Returning ``response_plan=None`` is the one thing that puts
+    ``drive_turn`` into its in-turn action wait — the branch the trigger
+    budget governs. Any later iteration answers, so the turn ends the
+    instant a trigger the waiter accepts lands.
+    """
+    intent = emit_event(
+        fixture.conn,
+        type="surface.user_intent",
+        payload={
+            "transcript": "跑一下",
+            "turn_id": turn_id,
+            "channel": "cli_stdin",
+            "language": "zh-CN",
+        },
+        correlation={"turn_id": turn_id},
+    )
+    iterations = {"n": 0}
+
+    def _decide(_trigger: Any, ctx: Any) -> Any:  # noqa: ANN401 - scripted DecideResult.
+        iterations["n"] += 1
+        if iterations["n"] == 1:
+            if on_first_decide is not None:
+                on_first_decide(ctx)
+            return SimpleNamespace(
+                response_plan=None,
+                events_emitted=(),
+                turn_id=turn_id,
+                attention_channel="voice_notify",
+            )
+        return SimpleNamespace(
+            response_plan=_turn_plan(),
+            events_emitted=(),
+            turn_id=turn_id,
+            attention_channel="voice_notify",
+        )
+
+    monkeypatch.setattr(runtime_module, "decide", _decide)
+    runtime_module.drive_turn(
+        _turn_runtime(fixture),
+        user_intent_event=intent,
+        available_surfaces=frozenset(),
+        streaming_enabled=False,
+    )
+
+
+def test_a_background_worker_turn_outlives_the_conversational_default(
+    tmp_path: Path,
+    repo_a: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A turn waiting on a background worker gets the runner's lease clock.
+
+    The defect ADR-0008 Step 4 introduced: with ``true_async_workers`` on,
+    ``dispatch`` returns an ack and the driver waits for ``worker.reported``
+    — which for a real Codex turn arrives minutes later. On the 5 s
+    conversational default that wait raises ``TriggerWaitTimeout`` and the
+    intent pump writes ``turn.failed`` while the worker runs on.
+
+    The default is shrunk here so the property is pinned in under a second;
+    the burn runs it at full scale with a 103 s worker.
+    """
+    monkeypatch.setattr(runtime_module, "_DEFAULT_TRIGGER_TIMEOUT_S", 0.15)
+
+    def _body(request: ActionRequest, conn: sqlite3.Connection) -> RawResult:
+        # Far past the conversational default, far inside the 10 s lease.
+        time.sleep(0.6)
+        emit_event(
+            conn,
+            type="worker.reported",
+            payload={
+                "run_id": "RUN-wait",
+                "action_id": request.action_id,
+                "status": "completed",
+            },
+            correlation={"action_id": request.action_id},
+        )
+        return _ack(request)
+
+    fixture = _Fixture(
+        tmp_path,
+        tools=(_async_tool("slow", _body),),
+        resolver=_fixed_resolver(
+            {
+                "slow": ToolConcurrency(
+                    resource_keys=(canonical_resource_key(repo_a),),
+                    mode="write_exclusive",
+                ),
+            },
+        ),
+    )
+    try:
+        began = time.monotonic()
+        # No TriggerWaitTimeout: the wait outlived the conversational
+        # default and folded the worker's real terminal.
+        _drive_paused_turn(
+            fixture,
+            monkeypatch,
+            turn_id="T-wait",
+            on_first_decide=lambda ctx: _dispatch_in_decide(
+                ctx,
+                tool_name="slow",
+                action_id="A-wait",
+                turn_id="T-wait",
+            ),
+        )
+        elapsed_s = time.monotonic() - began
+        assert _event_count(fixture.conn, "worker.reported") == 1
+        # It waited for the worker rather than for the lease to expire.
+        assert 0.6 <= elapsed_s < 5.0
+    finally:
+        fixture.close()
+
+
+def test_a_turn_with_no_background_worker_still_times_out_at_the_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The conversational default still bounds a turn with nothing in flight.
+
+    The other direction of the same rule: handing every turn the runner's
+    900 s lease budget would let one stuck ordinary turn pin a
+    ``max_concurrent_turns`` slot for a quarter of an hour.
+    """
+    monkeypatch.setattr(runtime_module, "_DEFAULT_TRIGGER_TIMEOUT_S", 0.15)
+    fixture = _Fixture(tmp_path, tools=())
+    try:
+        began = time.monotonic()
+        with pytest.raises(TriggerWaitTimeout):
+            _drive_paused_turn(fixture, monkeypatch, turn_id="T-idle")
+        elapsed_s = time.monotonic() - began
+        # The runner's lease budget in this fixture is 10 s; anything at or
+        # above it means the background branch answered for a turn that
+        # dispatched nothing.
+        assert elapsed_s < 2.0
+    finally:
+        fixture.close()

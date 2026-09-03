@@ -698,10 +698,32 @@ class ActionRunner:
         """Return the lease table this runner arbitrates through."""
         return self._leases
 
+    @property
+    def lease_timeout_s(self) -> float:
+        """Return the lease-acquisition budget this runner arbitrates with.
+
+        Also the outer bound on how long anything may wait for one of this
+        runner's actions: an action cannot outlive the lease it waited on.
+        The composition root reads it rather than inventing a second clock
+        (:func:`jarvis.runtime._trigger_wait_budget`).
+        """
+        return self._lease_timeout_s
+
     def context_of(self, action_id: str) -> ActionExecutionContext | None:
         """Return the live execution context for ``action_id``, if any."""
         with self._lock:
             return self._contexts.get(action_id)
+
+    def turn_has_inflight(self, turn_id: str) -> bool:
+        """Return whether any accepted job of ``turn_id`` has not finished.
+
+        The same question :meth:`_run_turn_cleanup_if_ready` asks before it
+        runs an armed cleanup, exposed for the composition root's in-turn
+        trigger wait. Not delegated to from there: this takes ``self._lock``
+        and that path already holds it.
+        """
+        with self._lock:
+            return any(owner == turn_id for owner in self._inflight.values())
 
     def submit(self, job: ActionJob) -> ActionSubmission:
         """Accept one job and return after dispatch, not after completion.
