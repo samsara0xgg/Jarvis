@@ -248,6 +248,8 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     available_surfaces: frozenset[str] | None = None,
     streaming_enabled: bool = False,
     query: str = "",
+    response_id: str | None = None,
+    response_group_id: str | None = None,
 ) -> tuple[SurfaceState, Event]:
     """Render an approved ResponsePlan across all surfaces for ``attention_channel``.
 
@@ -321,6 +323,13 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
         query: User transcript that triggered this turn. Lands on the
             ``surface.response_open`` payload; only consulted when
             ``streaming_enabled=True``. Empty string allowed.
+        response_id: ADR-0008 Wave 4A — the L3 ResponseRun's own id.
+            When both this and ``response_group_id`` are supplied the
+            three ``surface.response_*`` events carry them verbatim, so
+            L5 delivery names the same response as ``response.started``.
+            ``None`` (every legacy caller) keeps the uuid5 derivation.
+        response_group_id: The L3 ResponseRun's group id; see
+            ``response_id``. Both must be supplied together.
 
     Returns:
         ``(next_state, event)`` — the :class:`SurfaceState` with the
@@ -432,9 +441,21 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     #    cursor over the three types sees the sequence per turn.
     binding: LegacyPresentationBinding | None = None
     if streaming_enabled:
-        binding = stable_legacy_presentation_binding(
-            turn_id=turn_id,
-            response_hash=response_plan.response_hash,
+        # ADR-0008 Wave 4A: when L3 opened an explicit ResponseRun it owns
+        # the identity, and these L5 events must name the SAME response as
+        # `response.started` (ADR-0014's never-reused rule). With no run —
+        # every legacy caller — this falls back to the uuid5 derivation,
+        # byte-for-byte as before.
+        binding = (
+            LegacyPresentationBinding(
+                response_id=response_id,
+                response_group_id=response_group_id,
+            )
+            if response_id is not None and response_group_id is not None
+            else stable_legacy_presentation_binding(
+                turn_id=turn_id,
+                response_hash=response_plan.response_hash,
+            )
         )
         _emit_response_open(
             conn,

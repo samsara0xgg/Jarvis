@@ -77,6 +77,11 @@ _DURATIONS: tuple[tuple[str, str, str], ...] = (
         "audio_ring_empty_observed",
     ),
     ("action_wait_ms", "action_wait_started", "action_wait_completed"),
+    (
+        "cancel_requested_to_response_terminal_ms",
+        "response_cancel_requested",
+        "response_run_terminalized",
+    ),
 )
 
 

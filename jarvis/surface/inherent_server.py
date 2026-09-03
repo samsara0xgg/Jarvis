@@ -137,6 +137,20 @@ class SubmitRequest(BaseModel):
     text: str
 
 
+class CancelResponseRequest(BaseModel):
+    """Body of ``POST /inherent/cancel-response`` (ADR-0008 D10).
+
+    ``scope`` defaults to ``"generation"`` — the only scope implemented in
+    Wave 4A. ``"foreground_output"`` needs a playback lease that does not
+    exist yet and is answered with ``{"outcome": "unsupported_scope"}``,
+    as is any unrecognized string.
+    """
+
+    response_id: str
+    scope: str = "generation"
+    reason: str = "operator_request"
+
+
 @dataclass(frozen=True)
 class InherentDeps:
     """Injectable dependencies for the FastAPI app.
@@ -175,11 +189,23 @@ class InherentDeps:
             text-only fixtures stay backward compatible — when unset
             the ``/inherent/asr-submit`` handler 501s instead of
             attempting ASR.
+        cancel_response_callable: ADR-0008 D10 — bound to the runtime's
+            ``make_response_cancel_callable`` when
+            ``realtime.response.independent_response_cancel`` is on.
+            Takes ``(response_id, scope, reason)`` and returns one of
+            ``cancelled`` / ``already_terminal`` / ``unknown_response``
+            / ``unsupported_scope`` / ``timeout``. The injected-callable
+            shape is what keeps ``jarvis/surface`` free of any
+            ``jarvis.decision`` import. ``None`` (the default) means the
+            ``/inherent/cancel-response`` route is never registered, so
+            the route table and OpenAPI schema stay exactly as they are
+            today.
     """
 
     submit_callable: Callable[[str], str | None]
     broadcaster: InherentBroadcaster
     voice_pipeline_callable: Callable[[bytes, str, str, str], Event] | None = None
+    cancel_response_callable: Callable[[str, str, str], str] | None = None
 
 
 async def _run_asr_submit(
@@ -265,7 +291,7 @@ async def _run_asr_submit(
     }
 
 
-def create_app(deps: InherentDeps) -> FastAPI:
+def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901 — one closed route table; the cancel route is registered only when injected.
     """Build the FastAPI app with all 5 endpoints registered.
 
     The factory takes the injected deps once and closes over them in
@@ -306,6 +332,29 @@ def create_app(deps: InherentDeps) -> FastAPI:
             raise HTTPException(status_code=400, detail="text required")
         turn_id = await asyncio.to_thread(deps.submit_callable, text)
         return {"status": "accepted", "turn_id": turn_id or ""}
+
+    if deps.cancel_response_callable is not None:
+        cancel_response_callable = deps.cancel_response_callable
+
+        @app.post("/inherent/cancel-response", status_code=200)
+        async def cancel_response(req: CancelResponseRequest) -> dict[str, str]:
+            """Request generation cancellation for one ResponseRun.
+
+            Always 200 with an outcome body — an unknown id is
+            ``{"outcome": "unknown_response"}``, never a 500, because the
+            caller cannot distinguish "already finished" from "never
+            existed" and neither is a server fault. The callable is sync
+            (it owns a SQLite CAS) and is offloaded via
+            ``asyncio.to_thread`` exactly like ``/inherent/submit``, which
+            is what keeps the ``BEGIN IMMEDIATE`` off the event loop.
+            """
+            outcome = await asyncio.to_thread(
+                cancel_response_callable,
+                req.response_id,
+                req.scope,
+                req.reason,
+            )
+            return {"outcome": outcome}
 
     @app.websocket("/inherent/ws")
     async def ws_endpoint(ws: WebSocket) -> None:

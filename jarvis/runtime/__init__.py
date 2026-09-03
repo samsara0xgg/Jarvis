@@ -58,10 +58,25 @@ from jarvis.decision import (
 from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import LLMClient, load_llm_config
+from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.policy import (
     PolicyConsistencyError,
     effective_policy,
     validate_requires_confirmation,
+)
+from jarvis.decision.response_run import (
+    CancelAccepted,
+    CancelAlreadyTerminal,
+    CancelTimedOut,
+    ResponseCancelledError,
+    ResponseCancelRequest,
+    ResponseRun,
+    ResponseRunRegistry,
+    ResponseTerminalizer,
+    evidence_snapshot_hash,
+    legacy_full_text_policy,
+    request_response_cancel,
+    start_response_run,
 )
 from jarvis.decision.result_interpreter import emit_stash_conflict_surfacing
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
@@ -90,11 +105,18 @@ from jarvis.execution.tools import (
 )
 from jarvis.shared import CallerPrincipal, Event
 from jarvis.shared.pricing import load_pricing_table
-from jarvis.shared.realtime import Wave1FeatureFlags
+from jarvis.shared.realtime import (
+    RESPONSE_CANCEL_REASONS,
+    AlreadyTerminal,
+    Wave1FeatureFlags,
+    Wave4ResponseFlags,
+    new_response_id,
+)
 from jarvis.shared.realtime_trace import (
     configure_realtime_trace_jsonl,
     record_realtime_trace,
 )
+from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import iter_events, open_event_log
 from jarvis.surface.cli import (
     PreEmitTokenError,
@@ -107,10 +129,12 @@ from jarvis.surface.cli_render import render_response
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Callable
 
     from jarvis.decision import ResponsePlan
     from jarvis.decision.confirm_grammar import ConfirmGrammarTable
     from jarvis.decision.tier0 import Tier0Table
+    from jarvis.shared.realtime_trace import TraceValue
 
 
 LOGGER = logging.getLogger("jarvis.runtime")
@@ -168,6 +192,12 @@ _FALLBACK_OBSERVER_POLL_INTERVAL_S: float = 60.0
 # ``_FALLBACK_OBSERVER_POLL_INTERVAL_S`` above keeps its own mirror
 # rather than importing ``packet.DEFAULT_OBSERVER_POLL_INTERVAL_S``).
 _FALLBACK_CONFIRMATION_TTL_MS: int = 600_000
+
+# ADR-0008 §6 `realtime.response.cancel_timeout_ms` default. Implemented as
+# the cancel connection's SQLite `busy_timeout`, so it bounds how long the
+# terminal CAS waits for a contended writer — never an in-flight provider
+# call, which has no cancellation seam until ADR-0008 Step 6.
+_FALLBACK_CANCEL_TIMEOUT_MS: int = 500
 
 # Default `tools.screen.vision_preset` (ADR-0011 D7) — the `llm.presets.*`
 # key `screen_look` reads for its one vision call when the config's
@@ -302,7 +332,15 @@ class JarvisRuntime:
     Frozen so the composition root can hand it across to ``run_turn``
     and tests / canary scans without worrying about mutation. The
     ``conn`` field is the only mutable resource by nature
-    (``sqlite3.Connection``); everything else is immutable values.
+    (``sqlite3.Connection``); everything else is immutable values —
+    with two deliberate ADR-0008 Wave-4A exceptions, ``response_runs``
+    and ``committed_event_bus``. Both are internally locked live
+    resources shared BY REFERENCE through the ``dataclasses.replace``
+    copy the daemon hands to each turn worker thread, which is the
+    mechanism: the event-loop thread's cancel route must be able to see
+    a run the worker thread registered. Same posture as ``conn`` and
+    ``lifecycle``, which are already mutable resources on this frozen
+    dataclass.
 
     L5 :class:`SurfaceState` is deliberately not a field here.
     Per spec §3.6.7 (Inherent boundaries), local surface state has no
@@ -346,6 +384,10 @@ class JarvisRuntime:
     entity_bookmarks: tuple[tuple[str, str], ...] = ()
     confirm_grammar_table: ConfirmGrammarTable = ()
     wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
+    response_flags: Wave4ResponseFlags = field(default_factory=Wave4ResponseFlags)
+    llm_session_factory: LLMSessionFactory | None = None
+    response_runs: ResponseRunRegistry | None = None
+    committed_event_bus: CommittedEventBus | None = None
 
 
 @dataclass(frozen=True)
@@ -459,6 +501,131 @@ def _wave1_feature_flags(config: Mapping[str, Any]) -> Wave1FeatureFlags:
         return Wave1FeatureFlags()
     safety = realtime.get("concurrency_safety")
     return Wave1FeatureFlags.from_mapping(safety if isinstance(safety, Mapping) else None)
+
+
+@dataclass(frozen=True)
+class _Wave4ResponseActivation:
+    """Validated Wave-4A activation decision; the whole flag graph, once."""
+
+    flags: Wave4ResponseFlags
+    requested: Wave4ResponseFlags
+    reason: str
+
+
+def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActivation:
+    """Resolve the ADR-0008 Step 2 flag graph in exactly one place.
+
+    Every precondition for the two Wave-4A switches lives here rather than
+    being re-derived at each combination point — that ad-hoc ladder is the
+    root cause of the flag drift the Wave 0-3 audit found. Rules run in
+    order and produce at most one downgrade per boot, each with one warning
+    and one ``response_activation_downgraded`` trace point:
+
+    1. ``realtime`` absent / not a mapping / ``realtime.enabled`` not True.
+    2. ``response_run_lifecycle`` requested without the Wave-1
+       transactional-append and lifecycle-terminal-CAS primitives it writes
+       through.
+    3. ``independent_response_cancel`` requested without a surviving
+       ``response_run_lifecycle`` — otherwise every cancel would route to a
+       registry no run was ever added to and return ``unknown_response``.
+    """
+    realtime = config.get("realtime")
+    if not isinstance(realtime, Mapping):
+        return _Wave4ResponseActivation(
+            flags=Wave4ResponseFlags(),
+            requested=Wave4ResponseFlags(),
+            reason="not_requested",
+        )
+    response_raw = realtime.get("response")
+    requested = Wave4ResponseFlags.from_mapping(
+        response_raw if isinstance(response_raw, Mapping) else None,
+    )
+    if realtime.get("enabled") is not True:
+        if not requested.all_disabled:
+            return _downgraded_response_activation(requested, "realtime_parent_disabled")
+        return _Wave4ResponseActivation(
+            flags=Wave4ResponseFlags(),
+            requested=requested,
+            reason="not_requested",
+        )
+
+    wave1 = _wave1_feature_flags(config)
+    if requested.response_run_lifecycle and not (
+        wave1.transactional_event_append and wave1.lifecycle_terminal_cas
+    ):
+        return _downgraded_response_activation(requested, "wave1_primitives_disabled")
+    if requested.independent_response_cancel and not requested.response_run_lifecycle:
+        return _downgraded_response_activation(requested, "lifecycle_flag_disabled")
+    return _Wave4ResponseActivation(
+        flags=requested,
+        requested=requested,
+        reason="validated" if not requested.all_disabled else "not_requested",
+    )
+
+
+def _downgraded_response_activation(
+    requested: Wave4ResponseFlags,
+    reason: str,
+) -> _Wave4ResponseActivation:
+    """Log and trace one downgrade, then return the safe flag set.
+
+    ``lifecycle_flag_disabled`` drops only the cancel seam and keeps whatever
+    the operator asked for on the lifecycle switch; every other reason drops
+    both switches, because the run lifecycle is what the cancel seam needs to
+    exist at all. A downgrade never *enables* a switch the config left off.
+    """
+    flags = (
+        Wave4ResponseFlags(
+            response_run_lifecycle=requested.response_run_lifecycle,
+            independent_response_cancel=False,
+        )
+        if reason == "lifecycle_flag_disabled"
+        else Wave4ResponseFlags()
+    )
+    LOGGER.warning(
+        "realtime.response downgraded (%s): requested response_run_lifecycle=%s "
+        "independent_response_cancel=%s; effective response_run_lifecycle=%s "
+        "independent_response_cancel=%s",
+        reason,
+        requested.response_run_lifecycle,
+        requested.independent_response_cancel,
+        flags.response_run_lifecycle,
+        flags.independent_response_cancel,
+    )
+    record_realtime_trace(
+        "response_activation_downgraded",
+        reason=reason,
+        requested=(
+            f"response_run_lifecycle={requested.response_run_lifecycle},"
+            f"independent_response_cancel={requested.independent_response_cancel}"
+        ),
+    )
+    return _Wave4ResponseActivation(flags=flags, requested=requested, reason=reason)
+
+
+def _wave4_response_flags(config: Mapping[str, Any]) -> Wave4ResponseFlags:
+    """Return the validated Wave-4A flags for ``config``."""
+    return _wave4_response_activation(config).flags
+
+
+def _cancel_timeout_ms(config: Mapping[str, Any]) -> int:
+    """Read ``realtime.response.cancel_timeout_ms``; fail closed to 500 ms."""
+    realtime = config.get("realtime")
+    if not isinstance(realtime, Mapping):
+        return _FALLBACK_CANCEL_TIMEOUT_MS
+    response = realtime.get("response")
+    if not isinstance(response, Mapping):
+        return _FALLBACK_CANCEL_TIMEOUT_MS
+    value = response.get("cancel_timeout_ms")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        if value is not None:
+            LOGGER.warning(
+                "realtime.response.cancel_timeout_ms=%r is not a positive int; using %d",
+                value,
+                _FALLBACK_CANCEL_TIMEOUT_MS,
+            )
+        return _FALLBACK_CANCEL_TIMEOUT_MS
+    return value
 
 
 def _observer_repo_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
@@ -1053,6 +1220,27 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     llm_config = load_llm_config(config_path)
     llm_client = LLMClient(llm_config)
 
+    # 4b. ADR-0008 Step 2 (Wave 4A). The whole flag graph is resolved once,
+    #     here; every downstream site reads the validated result. With the
+    #     switches off nothing below is constructed: no session factory, no
+    #     registry, no extra env read and no extra SDK transport.
+    response_activation = _wave4_response_activation(full_config)
+    response_flags = response_activation.flags
+    realtime_raw = full_config.get("realtime")
+    # The bus is gated on `realtime.enabled` rather than a Wave-4A switch so
+    # Waves 4B/4C reuse this same line. It is inert while nobody subscribes.
+    committed_event_bus = (
+        CommittedEventBus()
+        if isinstance(realtime_raw, Mapping) and realtime_raw.get("enabled") is True
+        else None
+    )
+    llm_session_factory = (
+        LLMSessionFactory(llm_config) if response_flags.response_run_lifecycle else None
+    )
+    response_runs = (
+        ResponseRunRegistry() if response_flags.independent_response_cancel else None
+    )
+
     # 5. Prompt.
     system_prompt = prompt_path.read_text(encoding="utf-8")
 
@@ -1068,7 +1256,122 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         entity_bookmarks=entity_bookmarks,
         confirm_grammar_table=confirm_grammar_table,
         wave1_features=wave1_features,
+        response_flags=response_flags,
+        llm_session_factory=llm_session_factory,
+        response_runs=response_runs,
+        committed_event_bus=committed_event_bus,
     )
+
+
+# --- ADR-0008 Wave 4A ResponseRun seams -------------------------------------
+
+
+def _start_drive_turn_response(
+    runtime: JarvisRuntime,
+    *,
+    user_intent_event: Event,
+    turn_id: str,
+) -> tuple[ResponseRun, ResponseTerminalizer] | None:
+    """Open one durable ResponseRun for this turn, or ``None`` when flagged off.
+
+    ``runtime`` here is ``drive_turn``'s own runtime — in the daemon that is
+    the ``dataclasses.replace(conn=worker_conn)`` copy, so the run's
+    ``BEGIN IMMEDIATE`` lands on the worker thread's own connection and never
+    on the asyncio event loop's.
+    """
+    if not runtime.response_flags.response_run_lifecycle:
+        return None
+    if runtime.llm_session_factory is None:  # pragma: no cover - bootstrap pairs them
+        return None
+
+    response_id = new_response_id()
+    snapshot = runtime.llm_session_factory.snapshot(None)
+    request_client = runtime.llm_session_factory.create(snapshot, response_id=response_id)
+    policy = legacy_full_text_policy(
+        evidence_snapshot_hash=evidence_snapshot_hash(runtime.conn),
+        preset_snapshot_hash=snapshot.snapshot_hash,
+    )
+    run = start_response_run(
+        runtime.conn,
+        turn_id=turn_id,
+        trigger_event_uid=user_intent_event.event_uid,
+        request_client=request_client,
+        policy=policy,
+        response_id=response_id,
+        committed_event_bus=runtime.committed_event_bus,
+    )
+    terminalizer = ResponseTerminalizer(
+        lambda: runtime.conn,
+        close_after=False,
+        committed_event_bus=runtime.committed_event_bus,
+    )
+    if runtime.response_flags.independent_response_cancel and runtime.response_runs is not None:
+        runtime.response_runs.register(run)
+    return run, terminalizer
+
+
+def make_response_cancel_callable(
+    runtime: JarvisRuntime,
+) -> Callable[[str, str, str], str]:
+    """Build the injectable ``(response_id, scope, reason) -> outcome`` seam.
+
+    Returned strings: ``"cancelled"``, ``"already_terminal"``,
+    ``"unknown_response"``, ``"unsupported_scope"``, ``"timeout"``.
+
+    The callable opens its OWN connection per call. That is mandatory, not
+    stylistic: ``open_event_log`` uses ``check_same_thread=True`` and the
+    surface offloads this onto an ``asyncio.to_thread`` worker. The
+    connection also carries ``PRAGMA busy_timeout = cancel_timeout_ms``,
+    which is what gives ``realtime.response.cancel_timeout_ms`` a concrete
+    meaning: a contended ``BEGIN IMMEDIATE`` gives up after that many
+    milliseconds, no terminal is written, and the caller may retry.
+    """
+    cancel_timeout_ms = _cancel_timeout_ms(runtime.config)
+    event_log_path = runtime.runtime_paths.event_log
+    committed_event_bus = runtime.committed_event_bus
+    registry = runtime.response_runs
+
+    def _connect() -> sqlite3.Connection:
+        conn = open_event_log(event_log_path)
+        conn.execute(f"PRAGMA busy_timeout = {int(cancel_timeout_ms)}")
+        return conn
+
+    def _cancel(response_id: str, scope: str, reason: str) -> str:
+        if registry is None:  # pragma: no cover - wiring pairs the two flags
+            return "unknown_response"
+        if scope not in ("generation", "foreground_output"):
+            return "unsupported_scope"
+        normalized_reason = reason
+        if normalized_reason not in RESPONSE_CANCEL_REASONS:
+            LOGGER.warning(
+                "cancel-response: reason %r is outside the closed vocabulary; "
+                "recording it as 'operator_request'",
+                reason,
+            )
+            normalized_reason = "operator_request"
+        outcome = request_response_cancel(
+            registry,
+            ResponseTerminalizer(
+                _connect,
+                close_after=True,
+                committed_event_bus=committed_event_bus,
+            ),
+            ResponseCancelRequest(
+                request_id="CREQ" + uuid.uuid4().hex,
+                response_id=response_id,
+                scope="generation" if scope == "generation" else "foreground_output",
+                reason=normalized_reason,
+            ),
+        )
+        if isinstance(outcome, CancelAccepted):
+            return "cancelled"
+        if isinstance(outcome, CancelAlreadyTerminal):
+            return "already_terminal"
+        if isinstance(outcome, CancelTimedOut):
+            return "timeout"
+        return outcome.reason
+
+    return _cancel
 
 
 # --- run_turn ---------------------------------------------------------------
@@ -1157,13 +1460,14 @@ def _event_action_id(event: Event) -> str | None:
     return None
 
 
-def _wait_for_next_trigger(
+def _wait_for_next_trigger(  # noqa: PLR0913 — one defaulted cancel predicate on top of the existing waiter contract.
     conn: sqlite3.Connection,
     *,
     after_id: int,
     action_ids: frozenset[str],
     timeout: float,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+    cancelled: Callable[[], bool] | None = None,
 ) -> tuple[Event, int]:
     """Poll the event log for the next L3 trigger event after ``after_id``.
 
@@ -1212,6 +1516,13 @@ def _wait_for_next_trigger(
         timeout: Hard wall-clock cap in seconds; raise
             :class:`TriggerWaitTimeout` if exceeded.
         poll_interval_s: Sleep between polls (default 10 ms).
+        cancelled: ADR-0008 Wave 4A — optional predicate checked once
+            per poll tick. When it returns True the wait aborts with
+            :class:`~jarvis.decision.response_run.ResponseCancelledError`.
+            This is the single line that makes a response cancel land
+            within one poll interval during a 600 s action wait instead
+            of after it. ``None`` (the default, and what every caller
+            passes with the flag off) restores the exact legacy loop.
 
     Returns:
         Tuple of ``(event, new_after_id)`` — the freshly-folded
@@ -1221,6 +1532,8 @@ def _wait_for_next_trigger(
     Raises:
         TriggerWaitTimeout: No matching trigger arrived within
             ``timeout`` seconds.
+        ResponseCancelledError: ``cancelled`` reported that this turn's
+            ResponseRun already reached a cancelled terminal.
     """
     deadline = time.monotonic() + timeout
     cursor_id = after_id
@@ -1234,6 +1547,12 @@ def _wait_for_next_trigger(
             event = _hydrate_event_row(row)
             if _event_action_id(event) in action_ids:
                 return event, cursor_id
+        if cancelled is not None and cancelled():
+            msg = (
+                "runtime: response run cancelled while waiting for a trigger of "
+                f"types {_RUNTIME_TRIGGER_TYPES!r} (after_id={after_id})."
+            )
+            raise ResponseCancelledError(msg)
         if time.monotonic() >= deadline:
             msg = (
                 f"runtime: no trigger event of types {_RUNTIME_TRIGGER_TYPES!r} "
@@ -1299,7 +1618,7 @@ def run_turn(
     )
 
 
-def drive_turn(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; argument set + traced multi-trigger loop are the cross-surface contract.
+def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; argument set + traced multi-trigger loop are the cross-surface contract, and every ResponseRun branch is flag-guarded.
     runtime: JarvisRuntime,
     *,
     user_intent_event: Event,
@@ -1383,10 +1702,49 @@ def drive_turn(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; argum
         turn_id=effective_turn_id,
         source="runtime_drive_turn",
     )
+    # ADR-0008 Step 2 (Wave 4A) — open the durable ResponseRun before the
+    # decide loop so the per-run request client, the terminal owner and the
+    # L5 ids all name the same response. Returns None with the flag off, and
+    # every use below is guarded on that None.
+    run_pair = _start_drive_turn_response(
+        runtime,
+        user_intent_event=user_intent_event,
+        turn_id=effective_turn_id,
+    )
+    run: ResponseRun | None = None
+    terminalizer: ResponseTerminalizer | None = None
+    if run_pair is not None:
+        run, terminalizer = run_pair
+
+    def _run_cancelled() -> bool:
+        """Return whether this turn's ResponseRun has been cancelled."""
+        return run is not None and run.cancellation_token.is_cancelled
+
+    def _raise_if_cancelled(where: str) -> None:
+        """Abort the turn when this run's cancel already won its terminal.
+
+        Called at every point where the run's FSM would otherwise advance.
+        The cancel path commits ``response.cancelled`` before it sets the
+        token, so observing the token means the terminal is already durable
+        and there is nothing left for this turn to write.
+        """
+        if run is not None and run.cancellation_token.is_cancelled:
+            msg = (
+                f"drive_turn: response run cancelled {where} "
+                f"(turn_id={effective_turn_id!r})."
+            )
+            raise ResponseCancelledError(msg)
+
+    response_trace_ids: dict[str, TraceValue] = (
+        {}
+        if run is None
+        else {"response_id": run.response_id, "response_group_id": run.response_group_id}
+    )
     record_realtime_trace(
         "response_started",
         turn_id=effective_turn_id,
         trigger_type=user_intent_event.type,
+        **response_trace_ids,
     )
     # ADR-0009 D4 — every action this turn dispatches registers itself
     # in the L4 live set (`ToolRegistry.dispatch`). The release MUST run
@@ -1404,7 +1762,11 @@ def drive_turn(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; argum
             # return types as a conflict.
             tool_registry=cast("ToolRegistryLike", runtime.tool_registry),
             lifecycle=cast("LifecycleLike", runtime.lifecycle),
-            llm_client=runtime.llm_client,
+            # ADR-0008 D4 — with the Wave-4A flag on, this turn's provider
+            # identity is the run's own immutable client, so two overlapping
+            # runs can never read each other's last-call metadata. With the
+            # flag off this is the same shared client object as before.
+            llm_client=run.request_client if run is not None else runtime.llm_client,
             system_prompt=runtime.system_prompt,
             tier0_table=runtime.tier0_table,
             # ADR-0009 D5/D6 — the Status Board note calls an observation
@@ -1449,6 +1811,7 @@ def drive_turn(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; argum
         iterations = 0
 
         while response_plan is None and iterations < max_iterations:
+            _raise_if_cancelled("before a decide iteration")
             iterations += 1
             result = decide(trigger_event, decide_ctx)
             collected_events.extend(result.events_emitted)
@@ -1469,12 +1832,16 @@ def drive_turn(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; argum
                 action_count=len(owned_action_ids),
                 timeout_s=trigger_timeout_s,
             )
+            if run is not None:
+                _raise_if_cancelled("before the action wait")
+                run.mark("waiting_action")
             try:
                 next_event, last_seen_id = _wait_for_next_trigger(
                     runtime.conn,
                     after_id=last_seen_id,
                     action_ids=owned_action_ids,
                     timeout=trigger_timeout_s,
+                    cancelled=_run_cancelled if run is not None else None,
                 )
             except TriggerWaitTimeout:
                 record_realtime_trace(
@@ -1484,6 +1851,9 @@ def drive_turn(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; argum
                     timeout_s=trigger_timeout_s,
                 )
                 raise
+            if run is not None:
+                _raise_if_cancelled("while waiting on an action")
+                run.mark("generating")
             action_id = _event_action_id(next_event)
             record_realtime_trace(
                 "action_wait_completed",
@@ -1501,11 +1871,17 @@ def drive_turn(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; argum
             trigger_event = next_event
 
         if response_plan is None:
+            if run is not None and terminalizer is not None:
+                terminalizer.fail(
+                    run.facts,
+                    reason="turn_exhausted_iterations",
+                    retryable=False,
+                )
             msg = (
                 f"drive_turn: exhausted max_iterations={max_iterations} without a final "
                 f"ResponsePlan (turn_id={effective_turn_id!r})."
             )
-            raise RuntimeBootstrapError(msg)
+            raise RuntimeBootstrapError(msg)  # noqa: TRY301 — the turn's own failure, not a helper's.
 
         # L5 emission (Step 18 — channel-split + multi-surface dispatch).
         # The Pre-emit token guard inside render_response() preserves the
@@ -1516,6 +1892,34 @@ def drive_turn(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; argum
         # and discarded once render_response returns the cleared state.
         surface_state = SurfaceState(last_gate_response_hash=None)
         primed_state = record_pre_emit_token(surface_state, response_plan.response_hash)
+
+        # ADR-0008 D1 — generation completion, not physical delivery, is the
+        # ResponseRun's terminal condition, so the terminal is written BEFORE
+        # render. The accepted consequence is pinned by
+        # `test_completed_without_delivery_when_render_raises`: if render
+        # then raises, the log holds response.completed with no
+        # surface.response_emitted. The opposite ordering is unrecoverable —
+        # it would let a cancel land after the words were already spoken.
+        if run is not None and terminalizer is not None:
+            _raise_if_cancelled("before finalizing")
+            run.mark("finalizing")
+            completion = terminalizer.complete(
+                run.facts,
+                response_hash=response_plan.response_hash,
+            )
+            if isinstance(completion, AlreadyTerminal):
+                # A cancel won the CAS between the check above and this
+                # append. Nothing is rendered — the words must not be spoken
+                # for a response the operator already stopped — and the turn
+                # ends the same way every other cancelled turn does, so the
+                # daemon watcher does not record it as a completed answer.
+                msg = (
+                    "drive_turn: response run reached "
+                    f"{completion.event.type} before its completion CAS "
+                    f"(turn_id={effective_turn_id!r})."
+                )
+                raise ResponseCancelledError(msg)  # noqa: TRY301 — the turn's own outcome, not a helper's.
+            run.mark("completed")
 
         # The in-memory capture stream serves two ends at once. First the
         # operator console: render_response() writes the cli_stdout slice
@@ -1538,6 +1942,8 @@ def drive_turn(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; argum
             available_surfaces=available_surfaces,
             streaming_enabled=streaming_enabled,
             query=query,
+            response_id=run.response_id if run is not None else None,
+            response_group_id=run.response_group_id if run is not None else None,
         )
         rendered = capture.getvalue()
         sys.stdout.write(rendered)
@@ -1558,6 +1964,24 @@ def drive_turn(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; argum
             events_emitted=tuple(collected_events),
             attention_channel=final_attention_channel,
         )
+    except ResponseCancelledError:
+        # The cancel caller already committed response.cancelled. Re-raise so
+        # the daemon watcher can tell a cancelled turn from a failed one.
+        raise
+    except Exception:
+        if run is not None and terminalizer is not None:
+            # The turn's own exception is the one the caller must see. A CAS
+            # that cannot reach the log here leaves the run open, and the boot
+            # reconciler closes it as daemon_restart — losing the terminal is
+            # recoverable, masking the real failure is not.
+            try:
+                terminalizer.fail(run.facts, reason="turn_raised", retryable=False)
+            except Exception:
+                LOGGER.exception(
+                    "drive_turn: could not write response.failed (response_id=%r)",
+                    run.response_id,
+                )
+        raise
     finally:
         # --- Stash-pop finalizer (ADR-0002 § Dirty-tree policy, amended
         # 2026-08-25). Lives in the finally: lexically after the last
@@ -1566,6 +1990,8 @@ def drive_turn(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; argum
         # tree — and unconditionally, so an exception between decide()
         # and finalization cannot orphan Allen's pre-task stash. The
         # guard keeps the finally from masking the original exception.
+        if run is not None and runtime.response_runs is not None:
+            runtime.response_runs.unregister(run.response_id)
         try:
             _pop_pending_stashes(
                 runtime.conn,

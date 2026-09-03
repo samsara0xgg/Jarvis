@@ -86,7 +86,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jarvis.deployment.sleep_wake import PowerObserver
+    from jarvis.state.committed_event_bus import CommittedEventBus
 
+from jarvis.decision.response_run import (
+    ResponseCancelledError,
+    ResponseTerminalizer,
+    reconcile_open_responses,
+)
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
 from jarvis.execution.tools import live_action_ids
@@ -98,6 +104,7 @@ from jarvis.runtime import (
     _observer_repo_paths,
     _positive_float,
     drive_turn,
+    make_response_cancel_callable,
 )
 from jarvis.shared import Event
 from jarvis.shared.realtime_trace import record_realtime_trace
@@ -414,6 +421,38 @@ def _emit_turn_failed(
     )
 
 
+def _reconcile_open_responses_in_thread(
+    event_log_path: Path,
+    committed_event_bus: CommittedEventBus | None,
+) -> int:
+    """Close every open ResponseRun once at boot (ADR-0008 F14 / §4.4).
+
+    Runs on an ``asyncio.to_thread`` worker with its OWN connection. The
+    offload is mandatory, not stylistic: ``serve_inherent``'s body executes
+    on the event-loop thread and ``runtime.conn`` was opened there with
+    ``check_same_thread=True``, so the reconciler's ``BEGIN IMMEDIATE``
+    could not legally run on it. Doing this inside the startup barrier,
+    before any watcher task exists, also means the reconciler and a fresh
+    run can never contend.
+
+    Returns the number of runs it closed.
+    """
+    conn = open_event_log(event_log_path)
+    try:
+        events = reconcile_open_responses(
+            conn,
+            ResponseTerminalizer(
+                lambda: conn,
+                close_after=False,
+                committed_event_bus=committed_event_bus,
+            ),
+        )
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    return len(events)
+
+
 def _drive_turn_in_worker_thread(
     runtime: JarvisRuntime,
     *,
@@ -523,6 +562,16 @@ async def _user_intent_watcher(
                         runtime,
                         user_intent_event=ev,
                     )
+                except ResponseCancelledError:
+                    # ADR-0008 D10: a cancelled response is an operator
+                    # decision, not a turn failure — it must not become
+                    # turn.failed. The `continue` advances to the next
+                    # trigger row, which is the right granularity.
+                    LOGGER.info(
+                        "user_intent_watcher: response cancelled for turn_id=%s",
+                        ev.payload.get("turn_id"),
+                    )
+                    continue
                 except Exception as exc:  # noqa: BLE001 — ADR-0003 D9 F3 catch-all: log + audit + continue.
                     LOGGER.warning(
                         "user_intent_watcher: drive_turn raised on turn_id=%s: %r",
@@ -2252,7 +2301,7 @@ def _request_voice_input_branch_shutdown(
     _shutdown_wake(owners.wake_listener, owners.wake_stream)
 
 
-async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring branch necessarily inflates body length + branch count.
+async def serve_inherent(  # noqa: C901, PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring branch necessarily inflates body length + branch count.
     runtime: JarvisRuntime,
     *,
     host: str = "127.0.0.1",
@@ -2448,10 +2497,30 @@ async def serve_inherent(  # noqa: PLR0913, PLR0915 — composition-root entrypo
                     single_ingress_attempted=False,
                 )
 
+        # ADR-0008 F14 / §4.4 — close ResponseRuns a previous process
+        # abandoned, once, inside the startup barrier and before any
+        # watcher task exists. Off unless the lifecycle flag is on.
+        if runtime.response_flags.response_run_lifecycle:
+            closed_runs = await asyncio.to_thread(
+                _reconcile_open_responses_in_thread,
+                runtime.runtime_paths.event_log,
+                runtime.committed_event_bus,
+            )
+            if closed_runs:
+                LOGGER.info(
+                    "boot reconciliation closed %d open response run(s)",
+                    closed_runs,
+                )
+
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
             voice_pipeline_callable=voice_pipeline_callable,
+            cancel_response_callable=(
+                make_response_cancel_callable(runtime)
+                if runtime.response_flags.independent_response_cancel
+                else None
+            ),
         )
         app = create_app(deps)
 
