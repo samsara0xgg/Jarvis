@@ -273,9 +273,10 @@ def test_background_dispatch_returns_before_the_worker_finishes(
         bundle = fixture.dispatch(_request("slow", "A-slow", turn_id="T-bg"))
         returned_ms = (time.monotonic() - began) * 1000
 
-        # The handler is still inside its body.
+        # The handler is still inside its body — asked of the runner, which
+        # is what owns the answer, not of the test's own release Event.
         assert entered.wait(timeout=5)
-        assert not release.is_set()
+        assert fixture.runner.turn_has_inflight("T-bg")
         # Sub-second: this is the acknowledgement, not the result.
         assert returned_ms < 1000
         assert bundle.slots[0].semantics == "ack"
@@ -494,9 +495,14 @@ def test_turn_cleanup_runs_inline_when_nothing_is_still_running(
             tool_name="quick",
             action_id="A-quick",
             # Let the worker genuinely finish first, so the driver's request
-            # finds nothing in flight and runs the finalizer on its own thread.
+            # finds nothing in flight and runs the finalizer on its own
+            # thread. Waited on the runner's in-flight set, which is the
+            # predicate `_run_turn_cleanup_if_ready` reads: `worker.quiesced`
+            # is durable several statements earlier, and a driver landing in
+            # that window would arm the request instead and take the
+            # deferred path this test is not about.
             after_dispatch=lambda: _wait_until(
-                lambda: _event_count(fixture.conn, "worker.quiesced") == 1,
+                lambda: not fixture.runner.turn_has_inflight("T-quick"),
             ),
         )
         # No waiting: the cleanup terminal was already durable when drive_turn
