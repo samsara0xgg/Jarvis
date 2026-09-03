@@ -6,11 +6,13 @@ under :mod:`jarvis.decision` must share a function body with either the legacy
 cost emitter or the Wave 1 exactly-once ``CostRecorder`` guard. Forgetting the
 guard silently drops spend attribution or an explicit unavailable disposition.
 
-The scan recursively covers every Python module under ``jarvis/decision`` and
-the composition-root vision adapter.  Only the provider adapter implementation
-module is excluded; the two CostRecorder implementation methods are checked
-against their exact internal commit seam.  Adding a future ``response_stream.py`` with an unguarded
-``chat_stream`` therefore fails this canary without maintaining a file list.
+The scan recursively covers every Python module under ``jarvis/decision``,
+``jarvis/runtime`` and ``jarvis/surface`` — no file list is maintained.  Only
+the provider adapter implementation module is excluded; the two CostRecorder
+implementation methods are checked against their exact internal commit seam.
+Adding a future ``response_stream.py`` with an unguarded ``chat_stream``
+therefore fails this canary, and so does a nested ``def`` that hides a raw
+call inside an otherwise-guarded outer function.
 
 The "same function body" pairing is conservative: the canary does not require
 strict adjacency, only a direct ``CostRecorder.chat``/``chat_stream`` branch in
@@ -37,21 +39,21 @@ _COST_RECORDER_IMPLEMENTATION_METHODS = frozenset(
         ("jarvis/decision/cost_guard.py", "CostRecorder.chat_stream"),
     },
 )
-_COMPOSITION_ROOT_CALLERS = ("jarvis/runtime/__init__.py",)
+_SCANNED_PACKAGES = ("jarvis/decision", "jarvis/runtime", "jarvis/surface")
 
 
 def _modules_in_scope() -> list[Path]:
-    """Recursively discover decision code plus known cross-layer adapters."""
+    """Recursively discover every module in the scanned packages."""
     root = repo_root()
-    decision_modules = [
-        path
-        for path in (root / "jarvis" / "decision").rglob("*.py")
-        if relative_to_repo(path) not in _PROVIDER_ADAPTER_MODULES
-    ]
-    composition_callers = [
-        root / rel for rel in _COMPOSITION_ROOT_CALLERS if (root / rel).is_file()
-    ]
-    return sorted((*decision_modules, *composition_callers))
+    found: set[Path] = set()
+    for package in _SCANNED_PACKAGES:
+        for path in (root / package).rglob("*.py"):
+            if "__pycache__" in path.parts:
+                continue
+            if relative_to_repo(path) in _PROVIDER_ADAPTER_MODULES:
+                continue
+            found.add(path)
+    return sorted(found)
 
 
 def _is_chat_call(node: ast.AST) -> bool:
@@ -101,18 +103,39 @@ def _is_cost_recorder_internal_commit(node: ast.AST) -> bool:
 def _function_walks(
     module: ast.Module,
 ) -> list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
-    """Return top-level functions and class methods with stable qualified names."""
+    """Return every function scope, nested ones included, with a dotted name.
+
+    A nested ``def`` becomes its own scope named
+    ``outer.<locals>.inner`` so a raw ``chat`` call hidden inside a closure
+    cannot borrow its enclosing function's CostRecorder guard.
+    """
     found: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
-    for node in module.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            found.append((node.name, node))
-        elif isinstance(node, ast.ClassDef):
-            found.extend(
-                (f"{node.name}.{child.name}", child)
-                for child in node.body
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-            )
+    _collect_function_walks(module.body, prefix="", found=found)
     return found
+
+
+def _collect_function_walks(
+    body: list[ast.stmt],
+    *,
+    prefix: str,
+    found: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]],
+) -> None:
+    """Append every function scope in ``body`` under ``prefix`` to ``found``."""
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            qualified = f"{prefix}{node.name}"
+            found.append((qualified, node))
+            _collect_function_walks(
+                node.body,
+                prefix=f"{qualified}.<locals>.",
+                found=found,
+            )
+        elif isinstance(node, ast.ClassDef):
+            _collect_function_walks(
+                node.body,
+                prefix=f"{prefix}{node.name}.",
+                found=found,
+            )
 
 
 def _calls(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Call]:

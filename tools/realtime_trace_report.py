@@ -37,6 +37,11 @@ _DURATIONS: tuple[tuple[str, str, str], ...] = (
     ),
     ("asr_final_to_durable_utterance_ms", "asr_final", "utterance_committed"),
     (
+        "response_started_to_llm_request_ms",
+        "response_started",
+        "llm_sdk_request_call_started_upper_bound",
+    ),
+    (
         "llm_sdk_call_start_to_batch_complete_ms",
         "llm_sdk_request_call_started_upper_bound",
         "llm_batch_response_completed",
