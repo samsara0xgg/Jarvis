@@ -351,7 +351,13 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="jarvis_runtime",
         required_payload=("action_id",),
-        optional_payload=(),
+        # ADR-0008 D9: `action.running` is emitted only after the runner
+        # holds the action's resource lease, so it is the one durable
+        # record of what a crashed process was holding. A later boot reads
+        # these two to re-establish quarantine for a write-exclusive action
+        # that reached a canonical terminal without a cleanup event.
+        # Optional so the legacy dispatcher's rows stay valid.
+        optional_payload=("resource_keys", "resource_mode"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -391,7 +397,45 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="jarvis_runtime",
         required_payload=("action_id",),
-        optional_payload=("error", "reason"),
+        # ADR-0008 §4.2 additive fields on the existing type.
+        optional_payload=(
+            "error",
+            "reason",
+            "requested_by_turn_id",
+            "cancel_scope",
+            "cancellation_mode",
+        ),
+        schema_version=1,
+    ),
+    # --- ADR-0008 D9 operational cleanup trio (Wave 4B) ---------------------
+    #
+    # These three are NOT ActionLifecycle terminals. The canonical terminal
+    # says what the action concluded; `worker.quiesced` says the owned worker
+    # stopped writing; the cleanup pair says the repository is safe to hand to
+    # the next action. Collapsing them would make a supervisor-declared
+    # `action.timeout_assumed` release a repo whose process is still alive.
+    EventTypeSchema(
+        event_type="worker.quiesced",
+        owner_layer="L4",
+        actor="jarvis_runtime",
+        required_payload=("action_id", "worker_epoch"),
+        optional_payload=("run_id", "exit_code", "reason"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="action.cleanup_completed",
+        owner_layer="L4",
+        actor="jarvis_runtime",
+        required_payload=("action_id", "worker_epoch", "verification_outcome"),
+        optional_payload=("stash_ref", "resource_keys"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="action.cleanup_failed",
+        owner_layer="L4",
+        actor="jarvis_runtime",
+        required_payload=("action_id", "worker_epoch", "reason"),
+        optional_payload=("stash_ref", "resource_keys", "quarantine_reason"),
         schema_version=1,
     ),
     EventTypeSchema(

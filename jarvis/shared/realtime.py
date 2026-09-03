@@ -110,6 +110,31 @@ class Wave4ResponseFlags:
 
 
 @dataclass(frozen=True)
+class Wave4ActionFlags:
+    """Production adoption switch for ADR-0008 Step 3 (Wave 4B).
+
+    ``action_runner`` routes ``ToolRegistry.dispatch`` through the L4
+    ActionRunner: the handler runs on the runner's own thread and Event Log
+    connection under a resolved resource lease, and the driver waits on the
+    returned handle.  Off in the shipped configuration, so ``dispatch`` runs
+    handlers inline exactly as it did before.
+    """
+
+    action_runner: bool = False
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, object] | None) -> Wave4ActionFlags:
+        """Parse exact booleans, treating absent values as disabled."""
+        values = {} if raw is None else raw
+        return cls(action_runner=values.get("action_runner") is True)
+
+    @property
+    def all_disabled(self) -> bool:
+        """Return whether the runtime must retain the inline dispatch path."""
+        return not self.action_runner
+
+
+@dataclass(frozen=True)
 class ResponseInterruptPolicy:
     """ADR-0008 D10 frozen interrupt contract, issued when a run starts.
 
@@ -318,6 +343,7 @@ __all__ = [
     "TerminalCommitted",
     "TerminalOutcome",
     "Wave1FeatureFlags",
+    "Wave4ActionFlags",
     "Wave4ResponseFlags",
     "new_response_id",
     "stable_authorization_identity",

@@ -87,6 +87,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from jarvis.state.event_log import emit_event, iter_events
+from jarvis.state.lifecycle_terminal import terminalize_action
 
 if TYPE_CHECKING:
     import asyncio
@@ -743,9 +744,13 @@ def reconcile_after_wake(event_log: sqlite3.Connection | None) -> int:
                 "action_id": action.action_id,
             },
         )
-        emit_event(
+        # ADR-0008 F8 — a supervisor terminal races L4's own result. The CAS
+        # picks one winner inside `BEGIN IMMEDIATE`; the loser gets
+        # `AlreadyTerminal` and appends nothing, so an action can never carry
+        # two canonical terminals.
+        terminalize_action(
             conn,
-            type="action.timeout_assumed",
+            event_type="action.timeout_assumed",
             payload={
                 "action_id": action.action_id,
                 "reason": "lost_to_sleep",
@@ -832,9 +837,12 @@ def sweep_overdue_actions(
         correlation = {"action_id": action.action_id}
         if action.run_id is not None:
             correlation["run_id"] = action.run_id
-        emit_event(
+        # ADR-0008 F8 — `_has_terminal_event` above is a cheap pre-filter,
+        # not the arbiter: it is a check-then-act that a concurrent L4 result
+        # can slip through. The CAS is what actually decides.
+        terminalize_action(
             conn,
-            type="action.timeout_assumed",
+            event_type="action.timeout_assumed",
             payload={
                 "action_id": action.action_id,
                 "reason": _SWEEP_TIMEOUT_REASON,

@@ -81,6 +81,7 @@ from jarvis.decision.response_run import (
 from jarvis.decision.result_interpreter import emit_stash_conflict_surfacing
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
+from jarvis.execution.action_runner import ActionRunner, VerificationOutcome
 from jarvis.execution.diff_capture import StashError, restore_pretask_changes
 from jarvis.execution.path_resolver import (
     FileTargetsConfigError,
@@ -109,6 +110,7 @@ from jarvis.shared.realtime import (
     RESPONSE_CANCEL_REASONS,
     AlreadyTerminal,
     Wave1FeatureFlags,
+    Wave4ActionFlags,
     Wave4ResponseFlags,
     new_response_id,
 )
@@ -198,6 +200,10 @@ _FALLBACK_CONFIRMATION_TTL_MS: int = 600_000
 # terminal CAS waits for a contended writer — never an in-flight provider
 # call, which has no cancellation seam until ADR-0008 Step 6.
 _FALLBACK_CANCEL_TIMEOUT_MS: int = 500
+
+# ADR-0008 §6 `realtime.actions.lease_timeout_s` default — see
+# `jarvis.execution.action_runner._DEFAULT_LEASE_TIMEOUT_S` for why 900 s.
+_FALLBACK_LEASE_TIMEOUT_S: float = 900.0
 
 # Default `tools.screen.vision_preset` (ADR-0011 D7) — the `llm.presets.*`
 # key `screen_look` reads for its one vision call when the config's
@@ -385,6 +391,8 @@ class JarvisRuntime:
     confirm_grammar_table: ConfirmGrammarTable = ()
     wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
     response_flags: Wave4ResponseFlags = field(default_factory=Wave4ResponseFlags)
+    action_flags: Wave4ActionFlags = field(default_factory=Wave4ActionFlags)
+    action_runner: ActionRunner | None = None
     llm_session_factory: LLMSessionFactory | None = None
     response_runs: ResponseRunRegistry | None = None
     committed_event_bus: CommittedEventBus | None = None
@@ -606,6 +614,69 @@ def _downgraded_response_activation(
 def _wave4_response_flags(config: Mapping[str, Any]) -> Wave4ResponseFlags:
     """Return the validated Wave-4A flags for ``config``."""
     return _wave4_response_activation(config).flags
+
+
+def _wave4_action_flags(config: Mapping[str, Any]) -> Wave4ActionFlags:
+    """Resolve the ADR-0008 Step 3 switch, with the same preconditions as 4A.
+
+    ``action_runner`` writes `action.running`, the cleanup trio and every
+    canonical terminal through the Wave-1 transactional-append and
+    lifecycle-terminal-CAS primitives, so requesting it without them (or
+    without ``realtime.enabled``) downgrades once, with one warning, to the
+    inline dispatch path.
+    """
+    realtime = config.get("realtime")
+    if not isinstance(realtime, Mapping):
+        return Wave4ActionFlags()
+    actions_raw = realtime.get("actions")
+    requested = Wave4ActionFlags.from_mapping(
+        actions_raw if isinstance(actions_raw, Mapping) else None,
+    )
+    if requested.all_disabled:
+        return requested
+    wave1 = _wave1_feature_flags(config)
+    reason: str | None = None
+    if realtime.get("enabled") is not True:
+        reason = "realtime_parent_disabled"
+    elif not (wave1.transactional_event_append and wave1.lifecycle_terminal_cas):
+        reason = "wave1_primitives_disabled"
+    if reason is None:
+        return requested
+    LOGGER.warning(
+        "realtime.actions downgraded (%s): requested action_runner=True; "
+        "effective action_runner=False",
+        reason,
+    )
+    record_realtime_trace("action_activation_downgraded", reason=reason)
+    return Wave4ActionFlags()
+
+
+def _positive_int(
+    config: Mapping[str, Any],
+    *,
+    section: str,
+    key: str,
+    fallback: int,
+) -> int:
+    """Read one positive int from ``realtime.<section>.<key>``; fail closed."""
+    realtime = config.get("realtime")
+    if not isinstance(realtime, Mapping):
+        return fallback
+    block = realtime.get(section)
+    if not isinstance(block, Mapping):
+        return fallback
+    value = block.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        if value is not None:
+            LOGGER.warning(
+                "realtime.%s.%s=%r is not a positive int; using %d",
+                section,
+                key,
+                value,
+                fallback,
+            )
+        return fallback
+    return value
 
 
 def _cancel_timeout_ms(config: Mapping[str, Any]) -> int:
@@ -1134,7 +1205,33 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         wave1_features,
         pricing_path=repo_root / "data" / "pricing.json",
     )
+    # 3a. ADR-0008 Step 3 (Wave 4B). The runner is built before the registry
+    #     because the registry closes over it; with the switch off it stays
+    #     None and `dispatch` keeps running handlers inline.
+    action_flags = _wave4_action_flags(full_config)
+    action_runner = (
+        ActionRunner(
+            event_log_path=paths.event_log,
+            max_concurrent_runs=_positive_int(
+                full_config,
+                section="actions",
+                key="max_concurrent_runs",
+                fallback=1,
+            ),
+            lease_timeout_s=float(
+                _positive_int(
+                    full_config,
+                    section="actions",
+                    key="lease_timeout_s",
+                    fallback=int(_FALLBACK_LEASE_TIMEOUT_S),
+                ),
+            ),
+        )
+        if action_flags.action_runner
+        else None
+    )
     registry = build_default_registry(
+        action_runner=action_runner,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
         web_search_provider=web_search_provider,
@@ -1257,6 +1354,8 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         confirm_grammar_table=confirm_grammar_table,
         wave1_features=wave1_features,
         response_flags=response_flags,
+        action_flags=action_flags,
+        action_runner=action_runner,
         llm_session_factory=llm_session_factory,
         response_runs=response_runs,
         committed_event_bus=committed_event_bus,
@@ -2003,7 +2102,57 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 "drive_turn: stash-pop finalizer failed (turn_id=%r)",
                 effective_turn_id,
             )
+        # ADR-0008 D9 (Wave 4B) — the repository stays quarantined until
+        # cleanup, and cleanup is only true once verify_diff has run and the
+        # pre-task stash is back. That is exactly here: lexically after
+        # `_pop_pending_stashes`, so an unrelated same-repo action stays
+        # blocked through the whole verify-then-restore window. Wave 5 moves
+        # this trigger into the runner's own finalizer.
+        if runtime.action_runner is not None:
+            try:
+                runtime.action_runner.finalize_turn_cleanup(
+                    effective_turn_id,
+                    verification_outcome=_turn_verification_outcome(
+                        runtime.conn,
+                        effective_turn_id,
+                    ),
+                )
+            except Exception:
+                LOGGER.exception(
+                    "drive_turn: action cleanup finalizer failed (turn_id=%r)",
+                    effective_turn_id,
+                )
         release_turn_actions(effective_turn_id)
+
+
+def _turn_verification_outcome(
+    conn: sqlite3.Connection,
+    turn_id: str,
+) -> VerificationOutcome:
+    """Report what this turn's cleanup actually established, not what it hoped.
+
+    ADR-0008 D9 makes ``verification_outcome`` a durable claim about the
+    repository's state, so it is derived from the turn's own rows rather than
+    assumed: a surfaced stash conflict outranks everything, a
+    ``semantics="verification"`` result means ``verify_diff`` passed, and the
+    remaining case is honestly ``verification_skipped`` — the common one,
+    because most turns dispatch no verifying action at all.
+    """
+    verified = False
+    for event in iter_events(conn):
+        if (event.correlation or {}).get("turn_id") != turn_id:
+            continue
+        if (
+            event.type == "worker.artifact_observed"
+            and event.payload.get("kind") == "stash_conflict"
+        ):
+            return "conflict_surfaced"
+        if (
+            event.type == "action.result_observed"
+            and event.payload.get("semantics") == "verification"
+        ):
+            verified = True
+    return "verified" if verified else "verification_skipped"
 
 
 # --- Stash-pop finalizer (ADR-0002 § Dirty-tree policy) --------------------
