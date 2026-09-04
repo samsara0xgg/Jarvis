@@ -3,11 +3,11 @@
 Goal: close the audited authorization, cancellation, ownership, continuation,
 and accounting correctness gaps while preserving the existing realtime design.
 
-Independent review of 22e363a is NOT ACCEPTED. Current acceptance additionally
-requires post-lock TTL checks, progress or prompt refusal for a same-turn root
-blocked by cleanup debt, physical close on every worker exit, ordered provider
-and reviewer admission, and durable recognition of completed trigger processing
-when the optional consumption marker fails. These are repairs in this scope.
+Status: code repairs at 3a6856a6bb4aa7d7a612c4a98d963513a6f93eab passed
+controller review and independent non-live acceptance. The five counterexamples
+from the rejected historical 22e363a checkpoint have been replayed successfully.
+The overall goal is not complete: live/E2E acceptance remains unmet. All work
+is paused after documentation closeout; further work needs a new user instruction.
 
 Done criteria and evidence:
 - R1: two real decisions on one confirmation yield one canonical acceptance,

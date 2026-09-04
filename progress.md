@@ -1,8 +1,15 @@
 # Current repair checkpoint
 
-Review checkpoint 22e363a: NOT ACCEPTED (five reproduced P1 findings).
-Evidence: /tmp/jarvis-resume-audit.jYH7jz/review-22e363a.md.
-F1–F5 repairs now pass local acceptance; controller re-review remains required.
+Current verified code SHA: 3a6856a6bb4aa7d7a612c4a98d963513a6f93eab.
+Controller independently replayed all five review counterexamples successfully;
+code repair review passed, with no known blocking code P0/P1. Its complete
+non-live rerun: 442 passed / 63 deselected / 28.13 s; ruff PASS, strict mypy
+178 files PASS, lint-imports 72 files / 200 deps / 1 kept, diff check PASS.
+Its temporary .venv link was removed and this worktree was restored clean.
+
+Historical review checkpoint 22e363a: NOT ACCEPTED (five reproduced P1 findings).
+Historical evidence: /tmp/jarvis-resume-audit.jYH7jz/review-22e363a.md.
+Code acceptance does not complete the overall goal: live/E2E remains unmet.
 Live r4 failed on the first decision APIConnectionError before worker startup;
 no E2E latency/audio/concurrency result. Later provider attempts remain paused
 pending controller-managed exact destination/payload authorization. Local report:
@@ -10,7 +17,8 @@ pending controller-managed exact destination/payload authorization. Local report
 
 Base HEAD: 6ed7280d2884c6a1e26a1c2d4a04d72060e729e5 (verified clean before edits).
 Wave 3 ancestor: 7b69a53eb7f837b15abfaf76c0572fa8f818df3b (verified).
-Verified implementation HEAD: 84d9a06ac56b0784bad394edb5e6d6cbe5e68ef5.
+Historical implementation checkpoint: 84d9a06ac56b0784bad394edb5e6d6cbe5e68ef5
+(superseded by the current verified code SHA above).
 Module import: this worktree's jarvis/__init__.py; shared installed interpreter
 /Users/alllllenshi/Projects/jarvis/.venv/bin/python. Branch codex/wave45-takeover-fix.
 
@@ -30,7 +38,8 @@ Implemented and integration-verified: R1–R11, including durable outbox admissi
 cancel fences/deadline, explicit debt/borrowing, shutdown and restart quarantine,
 terminal consumption, vision/request accounting and legacy key compatibility.
 Also fixed verified Codex close uncertainty and verify-command/lease cwd mismatch.
-Remaining acceptance: exact clean HEAD live daemon burn and controller review.
+Remaining acceptance: successful live/E2E evidence and exact destination/payload
+authorization, managed by the controller with the user; no automatic retry.
 No claim of end-to-end audio or physical playback evidence has been made.
 
 Independent-review correction evidence (parent checkpoint 22e363a):
@@ -66,14 +75,12 @@ the production local was renamed cost_recorder and the full suite rerun.
 Independent local probes additionally reproduced the F1/F4/F5 review barriers
 against these changes without changing source or contacting a provider.
 
-Coordination: runtime shared edits land through the lead; authorization and
-cancellation agents coordinate decision/tools slices before applying changes;
-ActionRunner/process safety is independent. No new user tasks or next wave.
+Stop status: documentation closeout only, then all implementation, tests,
+subagents, and live attempts stop. No subsequent Wave/features/automatic run.
+Continuation requires a new user instruction; pending live evidence is not
+permission to resume it independently.
 
-Mandatory stop: finish this Wave 4–5 repair, notify controller, resolve only its
-in-scope review findings, then stop. No subsequent Wave/features/automatic run.
-
-Latest evidence: 429 passed / 63 deselected, 27.93 s with explicit worktree
+Historical checkpoint evidence (84d9a06): 429 passed / 63 deselected, 27.93 s with explicit worktree
 PYTHONPATH (needed by child Python processes using shared venv). A temporary
 .venv symlink let the layer-import canary run; it was removed after validation.
 Ruff, strict mypy (177 source files), 6-layer import contract and diff check passed.

@@ -566,6 +566,8 @@ That telemetry is L4-owned, keyed by `(action_id, worker_epoch)`, capped at 100 
 
 ### D10. Response cancellation and action cancellation are separate protocols
 
+Current migration boundary: pending authorized-dispatch outbox rows have no daemon automatic recovery scan, so accepted admission does not guarantee eventual execution.
+
 The shared contracts are complete and frozen:
 
 ```text
