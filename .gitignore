@@ -41,7 +41,10 @@ dist/
 .ipynb_checkpoints/
 
 # Local agent / draft / eval (per-machine, not committed)
-.claude/
+.claude/*
+!.claude/rules/
+!.claude/skills/
+!.claude/agents/
 Harness/
 evals/
 AGENTS.md

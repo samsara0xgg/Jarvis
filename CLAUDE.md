@@ -1,83 +1,62 @@
-# Jarvis — Allen 的私人 state-centric runtime
+# Jarvis
 
-## Rules
+Jarvis is Allen's private state-centric runtime.
 
-- Discuss first, write code later.
-- Commit OK, **never push** unless explicitly asked.
-- **No Co-Authored-By** in commit messages.
-- Don't violate layer boundaries — `lint-imports` enforces them.
+## Working Contract
 
-## Testing
-
-- No new unit tests; verify each task with its acceptance command.
-  Branchy logic gets data-driven checks (input → expected tables).
-  Canaries and regression pins stay.
-- New capability → live test before calling it done (real LLM, real run,
-  result matches expectation). Small fixes / refactors skip this —
-  judge by risk.
-
-## Models
-
-- Default: `opus` — orchestrates, writes task cards, reviews.
-- `fable` — design, ADRs, major changes.
-- `sonnet` — turning settled designs / ADRs into code.
-- `haiku` — lookups, mechanical sweeps.
-- Unlisted cases: pick by judgment; escalate when stuck.
-
-## Git
-
-- Conventional Commits: `type(scope): English description`. Types: `feat fix refactor test docs chore perf data`.
-- One thing per commit. Forbidden: `git add .` / `git add -A` · `git commit -am` · `push --force` to `main` · `--no-verify` / any hook bypass.
-- Multi-layer atomic changes use comma scopes: `feat(surface,runtime,cli): ...`. Use sparingly.
-
-### Commit body template
-
-For any commit landing implementation, the body has five parts:
-
-```
-<one-line opener — "Step N of ADR XXXX." when implementing a build step>
-
-- <path> — <what this file contributes>
-- <path> — <...>
-
-Tier 1: lint-imports KEPT (1/1) · ruff clean (N files) · mypy strict clean (N files) · M/M hermetic tests pass · wall <t>s (< 30s budget).
-
-Legacy-bypass: <legacy/path> — <reason it was not reused>.
-Legacy consulted: <legacy/path> (<what slice was borrowed>).
-```
-
-Rules:
-
-- Title and body both English; title ≤ 72 chars.
-- One bullet per file (or per closely-related file group); em-dash separator; wrap ~72 cols.
-- `Tier 1:` is one line, mid-dot `·` separators, includes wall-clock. Docs-only commits write `Tier 1: docs-only — gates not run.`
-- `Legacy-bypass:` for files that **could plausibly have been reused** but were not (one per file). `Legacy consulted:` for files read and partially borrowed. A file appears in at most one trailer.
-- No `Co-Authored-By`.
-
-One-line example:
-
-```
-feat(state): L2 event log with SQLite append-only + EventTypeRegistry
-
-Step 4 of ADR 0001. Adds the append-only spine + Day-1 registry.
-
-- jarvis/state/event_log.py — EventLog class, registry validation, monotonic ts guard, append-only UPDATE/DELETE triggers.
-- tests/unit/test_event_log.py — 12 LLM-free tests covering registry rejection, source_event_id integrity, trigger enforcement.
-
-Tier 1: lint-imports KEPT (1/1) · ruff clean (8 files) · mypy strict clean (8 files) · 17/17 unit tests pass · wall 0.05s (< 30s budget).
-
-Legacy-bypass: jarvis-legacy/core/event_bus.py — pub/sub conflicts with append-only Event Log, spec §3.3.1.
-```
-
-See `docs/git-guide.md` § 2 for the full template, scopes, branch policy, and recovery commands.
+- For changes that alter cross-layer contracts, persistent state semantics,
+  public interfaces, or architectural ownership, settle the design before
+  implementation. Record durable architectural decisions as ADRs.
+- For local changes whose behavior and boundaries are already clear, implement
+  directly without creating design ceremony.
+- Keep changes scoped to the requested behavior.
+- Investigate the actual code path before making claims about repository behavior.
+- Do not introduce abstractions or compatibility layers for hypothetical needs.
+- New behavior needs observable acceptance evidence before it is considered done.
+- When a change alters a documented contract, invariant, ownership boundary, or
+  externally relevant behavior, update the canonical document that owns that
+  fact: `docs/spec.html` for what the system must satisfy, `docs/adr/` for why
+  it is designed that way. Do not document what the code already makes clear,
+  and do not duplicate a fact across documents.
 
 ## Architecture
 
-6 layers (see `docs/spec.html` for the full spec):
+Jarvis has six layers:
 
-```
-L1 constitution   L2 state      L3 decision
-L4 execution      L5 surface    L6 deployment
-```
+L1 constitution
+L2 state
+L3 decision
+L4 execution
+L5 surface
+L6 deployment
 
 `runtime/` is the only place allowed to wire across layers.
+
+Do not violate layer boundaries. `lint-imports` is an architectural gate.
+
+The full architecture specification is in `docs/spec.html`. §3 is the source
+of truth when sections disagree. Read the relevant section when architecture
+details are needed rather than preloading the entire specification.
+
+## Verification
+
+- Verification must demonstrate the requested behavior, not merely make an
+  existing test suite green.
+- New capabilities require a real live run when the behavior depends on an LLM
+  or external runtime interaction.
+- Small fixes and refactors use risk-appropriate acceptance checks.
+- Language-specific testing rules load from `.claude/rules/`.
+
+## Git
+
+- Commits are allowed.
+- Never push unless the user explicitly asks.
+- Never force-push `main`.
+- Never bypass hooks.
+- Never add `Co-Authored-By`.
+- Stage explicit paths only; never use `git add .`, `git add -A`, or
+  `git commit -am`.
+- One logical change per commit.
+- Use Conventional Commits: `type(scope): English description`.
+- When creating a commit, use the project commit skill.
+- `docs/git-guide.md` §2 is the detailed source of truth for unusual cases.
