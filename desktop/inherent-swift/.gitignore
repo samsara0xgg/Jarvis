@@ -1,0 +1,5 @@
+InherentCard.xcodeproj/
+build/
+*.xcuserstate
+DerivedData/
+xcuserdata/
