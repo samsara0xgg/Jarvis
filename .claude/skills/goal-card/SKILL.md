@@ -16,6 +16,11 @@ The card is ready only when "Open questions" is empty. The design session
 does not edit canonical docs; it records design intent in the card. The
 implementation session updates canonical docs after the facts land in code.
 
+The card names contracts, boundaries, and acceptance evidence. It does not
+contain an ordered step plan. Files listed under "Affected contracts and
+files" are a starting hint; the implementation session decides which files
+change and in what order, and records that under Progress as it goes.
+
 ## Template
 
     # Goal: <slug>
@@ -78,7 +83,9 @@ cannot run commands or open files. So:
 
 ## Launching the implementation session
 
-In a fresh session:
+Stay in the design session if its context is still clean. Start a fresh
+session when the design transcript is polluted with rejected approaches or
+stale instructions. Either way:
 
 1. First message: "Implement docs/goals/<slug>.md. Read it fully before
    touching code."
@@ -89,8 +96,10 @@ During the run:
 - Work in verifiable vertical slices. After each slice, commit with the
   commit skill and append a line to Progress.
 - Intermediate gates may be delegated to subagents that report failures
-  only. The final acceptance command is run by the main session with its
-  output visible, so the judge can see it.
+  only. The final acceptance and regression commands are run by the main
+  session as `rtk proxy <command>`, so the judge sees the raw output. The
+  rtk hook compresses ordinary Bash output, and the judge cannot tell a
+  summary from the real thing.
 - If the card contradicts the repository, stop and report; do not redesign.
 
 ## Verification
