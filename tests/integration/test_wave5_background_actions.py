@@ -29,6 +29,7 @@ import json
 import sqlite3
 import threading
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -183,7 +184,8 @@ def _fixed_resolver(
         declared = mapping.get(tool_def.name)
         if declared is None:
             return default_resource_key_resolver(action_request, tool_def, conn)
-        return declared
+        # These fixture workers own repository verification/stash cleanup.
+        return replace(declared, carries_cleanup_debt=declared.mode == "write_exclusive")
 
     return _resolve
 

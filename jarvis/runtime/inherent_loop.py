@@ -120,6 +120,7 @@ from jarvis.state.input_claim import (
     claim_input_once,
     recoverable_inputs,
 )
+from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
     voice_asr,
     voice_audio,
@@ -2241,6 +2242,8 @@ async def _system_trigger_watcher(
                         held.append(ev)
                     # Otherwise a live turn is driving it and will fold its
                     # own terminal; a system turn would double-handle it.
+                    continue
+                if trigger_was_consumed(runtime.conn, ev.event_uid):
                     continue
                 trigger = _system_trigger_event(ev)
                 try:

@@ -53,6 +53,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from jarvis.execution.action_runner import current_execution_context
 from jarvis.execution.codex_client import CodexAppServerClient
 
 if TYPE_CHECKING:
@@ -468,9 +469,7 @@ def _extract_completed_mcp_tool(
     return (tool_name if isinstance(tool_name, str) else None, args)
 
 
-def _auto_respond_server_request(
-    client: CodexAppServerClient, req: Mapping[str, Any]
-) -> None:
+def _auto_respond_server_request(client: CodexAppServerClient, req: Mapping[str, Any]) -> None:
     """Auto-respond to Codex server-initiated JSON-RPC so the turn doesn't hang.
 
     Codex 0.130 sends ``mcpServer/elicitation/request`` for every
@@ -500,9 +499,7 @@ def _auto_respond_server_request(
     # a broken pipe here to mask the real timeout/crash error.
     with contextlib.suppress(Exception):
         if method == "mcpServer/elicitation/request":
-            client.respond(
-                req_id, {"action": "accept", "content": None, "_meta": None}
-            )
+            client.respond(req_id, {"action": "accept", "content": None, "_meta": None})
         elif "approval" in method:
             client.respond(req_id, {"decision": "approve"})
         else:
@@ -786,9 +783,14 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
         interrupted: bool,
         thread_id: str | None,
     ) -> CodexActionResult:
-        # Close best-effort; never let close() failure clobber the real outcome.
-        with contextlib.suppress(Exception):
+        # A returned handler must not be mistaken for physical process exit.
+        try:
             client.close(timeout=3.0)
+        except Exception:
+            context = current_execution_context()
+            if context is not None:
+                context.record_unconfirmed_quiescence()
+            raise
         # Remove the per-spawn empty CODEX_HOME if we created one.
         # ``ignore_errors=True`` ensures a stuck file (e.g. NFS lock) never
         # masks the real result; the dir is a few bytes empty in steady state.

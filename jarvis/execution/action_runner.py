@@ -141,6 +141,7 @@ class ToolConcurrency:
     mode: ResourceMode
     independence_declared: bool = False
     parent_action_id: str | None = None
+    carries_cleanup_debt: bool = False
 
 
 @dataclass(frozen=True)
@@ -197,6 +198,23 @@ class ResourceLeaseTable:
         self._condition = threading.Condition(threading.Lock())
         self._scopes: dict[str, ResourceScope] = {}
 
+    def restore_quarantine(
+        self, *, action_id: str, keys: frozenset[str], mode: ResourceMode,
+    ) -> None:
+        """Restore debt without allowing older overlapping debt to hide it.
+
+        This grants no execution permission. Every restored scope must block
+        new work even when several crashed actions touched overlapping scopes.
+        """
+        scope = ResourceScope(
+            scope_id="QUARANTINE:" + action_id,
+            action_id=action_id,
+            resource_keys=keys,
+            mode=mode,
+        )
+        with self._condition:
+            self._scopes[scope.scope_id] = scope
+
     def acquire(
         self,
         *,
@@ -240,6 +258,9 @@ class ResourceLeaseTable:
                     else min(_LEASE_POLL_STEP_S, max(0.0, deadline - time.monotonic()))
                 )
                 self._condition.wait(remaining)
+            if cancelled is not None and cancelled():
+                msg = f"resource lease wait cancelled for action {action_id!r}"
+                raise ActionRunnerError(msg)
             self._scopes[scope.scope_id] = scope
             return scope
 
@@ -320,8 +341,8 @@ class ResourceLeaseTable:
             return tuple(self._scopes.values())
 
 
-_CURRENT_CONTEXT: contextvars.ContextVar[ActionExecutionContext | None] = (
-    contextvars.ContextVar("jarvis_action_execution_context", default=None)
+_CURRENT_CONTEXT: contextvars.ContextVar[ActionExecutionContext | None] = contextvars.ContextVar(
+    "jarvis_action_execution_context", default=None
 )
 
 
@@ -363,6 +384,7 @@ class ActionExecutionContext:
     _quiesced: threading.Event = field(default_factory=threading.Event)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _state: ActionCleanupState = "worker_active"
+    _quiescence_unconfirmed: bool = False
     _cancel_reason: str | None = None
     _stash_ref: str | None = None
     _worker_run_id: str | None = None
@@ -445,6 +467,17 @@ class ActionExecutionContext:
         """Return the handler-minted task id, if the handler recorded one."""
         with self._lock:
             return self._worker_task_id
+
+    def record_unconfirmed_quiescence(self) -> None:
+        """Retain ownership when an external process could not be confirmed stopped."""
+        with self._lock:
+            self._quiescence_unconfirmed = True
+
+    @property
+    def quiescence_unconfirmed(self) -> bool:
+        """Return whether physical worker shutdown failed."""
+        with self._lock:
+            return self._quiescence_unconfirmed
 
     def mark_quiesced(self) -> None:
         """Record that the owned worker stopped running."""
@@ -531,9 +564,7 @@ class CancelUnconfirmed:
     reason: str
 
 
-type CancelOutcome = (
-    CancelAccepted | CancelAlreadyTerminal | CancelUnsupported | CancelUnconfirmed
-)
+type CancelOutcome = CancelAccepted | CancelAlreadyTerminal | CancelUnsupported | CancelUnconfirmed
 
 
 @dataclass(frozen=True)
@@ -741,10 +772,8 @@ class ActionRunner:
         already committed before this returns, and `action.running` is written
         only once the lease is actually held (ADR-0008 D9).
         """
-        if self._shutdown.is_set():
-            msg = "ActionRunner is shut down and cannot accept new jobs"
-            raise ActionRunnerError(msg)
         with self._lock:
+            self._check_admission()
             epoch = self._epochs.get(job.action_id, -1) + 1
             self._epochs[job.action_id] = epoch
             self._inflight[job.action_id] = job.turn_id
@@ -758,14 +787,13 @@ class ActionRunner:
         )
         with self._lock:
             self._threads = [t for t in self._threads if t.is_alive()]
-            self._threads.append(thread)
-        try:
-            thread.start()
-        except BaseException:
-            # An unstartable thread will never reach `_finish_job`, so drop
-            # the in-flight marker here or this turn's cleanup waits forever.
-            self._finish_job(job)
-            raise
+            try:
+                self._check_admission()
+                thread.start()
+                self._threads.append(thread)
+            except BaseException:
+                self._inflight.pop(job.action_id, None)
+                raise
         return ActionSubmission(
             handle=ActionHandle(
                 action_id=job.action_id,
@@ -805,49 +833,49 @@ class ActionRunner:
         scope: ResourceScope | None = None
         context: ActionExecutionContext | None = None
         slot_held = False
+        handler_started = False
         try:
-            try:
-                scope = self._enter_scope(job)
-            except BaseException as exc:
-                if job.on_dispatch_failure is not None:
-                    job.on_dispatch_failure(conn, exc)
-                raise
+            scope = self._enter_scope(job)
             # The run slot is taken only now, with the lease already in hand,
             # so a blocked waiter never holds one.
-            self._run_slots.acquire()
+            while not self._run_slots.acquire(timeout=_LEASE_POLL_STEP_S):
+                self._check_admission()
             slot_held = True
-            # `resource_keys`/`resource_mode` are what a later boot reads to
-            # re-establish quarantine for an action that terminated without a
-            # cleanup event; the in-process lease table dies with the process.
-            running_event = emit_event(
-                conn,
-                type="action.running",
-                payload={
-                    "action_id": job.action_id,
-                    "resource_keys": ",".join(sorted(scope.resource_keys)),
-                    "resource_mode": scope.mode,
-                },
-                source_event_id=job.dispatched_event_uid,
-                correlation=dict(job.correlation),
-                committed_event_bus=self._committed_event_bus,
-            )
-            context = ActionExecutionContext(
-                action_id=job.action_id,
-                worker_epoch=epoch,
-                running_event_uid=running_event.event_uid,
-                turn_id=job.turn_id,
-                run_id=job.run_id,
-                resource_scope=scope,
-                cancellation_mode=job.cancellation_mode,
-                correlation=dict(job.correlation),
-                on_terminal=job.on_terminal,
-            )
             with self._lock:
+                self._check_admission()
+                # `resource_keys`/`resource_mode` are what a later boot reads to
+                # re-establish quarantine for an action that terminated without a
+                # cleanup event; the in-process lease table dies with the process.
+                running_event = emit_event(
+                    conn,
+                    type="action.running",
+                    payload={
+                        "action_id": job.action_id,
+                        "resource_keys": ",".join(sorted(scope.resource_keys)),
+                        "resource_mode": scope.mode,
+                    },
+                    source_event_id=job.dispatched_event_uid,
+                    correlation=dict(job.correlation),
+                    committed_event_bus=self._committed_event_bus,
+                )
+                context = ActionExecutionContext(
+                    action_id=job.action_id,
+                    worker_epoch=epoch,
+                    running_event_uid=running_event.event_uid,
+                    turn_id=job.turn_id,
+                    run_id=job.run_id,
+                    resource_scope=scope,
+                    cancellation_mode=job.cancellation_mode,
+                    correlation=dict(job.correlation),
+                    on_terminal=job.on_terminal,
+                )
                 self._contexts[job.action_id] = context
             context_ready.set()
             job.on_running(running_event.event_uid)
+            self._check_admission()
             token = _CURRENT_CONTEXT.set(context)
             try:
+                handler_started = True
                 handler_result = job.run(conn, context)
             finally:
                 _CURRENT_CONTEXT.reset(token)
@@ -856,10 +884,14 @@ class ActionRunner:
                 if isinstance(handler_result, RawResultBundle)
                 else RawResultBundle(slots=(handler_result,))
             )
+        except BaseException as exc:
+            if not handler_started and job.on_dispatch_failure is not None:
+                job.on_dispatch_failure(conn, exc)
+            raise
         finally:
             context_ready.set()
             self._quiesce(conn, job, context, scope)
-            if slot_held:
+            if slot_held and (context is None or context.is_quiesced):
                 self._run_slots.release()
             with contextlib.suppress(sqlite3.Error):
                 conn.close()
@@ -868,66 +900,56 @@ class ActionRunner:
             # connection, so it must not run while this one is still open.
             self._finish_job(job)
 
-    def _enter_scope(self, job: ActionJob) -> ResourceScope:
-        """Acquire or borrow this job's resource scope before it runs.
+    def _check_admission(self) -> None:
+        """Refuse work after shutdown wins the admission lock."""
+        if self._shutdown.is_set():
+            msg = "ActionRunner is shut down and cannot start new jobs"
+            raise ActionRunnerError(msg)
 
-        A parent is used when the resolver named one, and otherwise when this
-        turn already holds a covering scope. That second rule is the
-        no-self-wait guard from ADR-0008 F26: while the legacy driver awaits
-        each handle, one turn runs one action at a time, so a turn can never
-        be "unrelated same-repo work" against itself — a `verify_diff` whose
-        parent lookup came up empty must still borrow rather than block on the
-        `spawn_worker` lease its own turn is holding. The borrow is validated
-        exactly like an explicit one, so a child that asks for more keys or a
-        stronger mode than the parent holds is still refused.
-        """
+    def _enter_scope(self, job: ActionJob) -> ResourceScope:
+        """Acquire a root scope or validate an explicit quiescent verification parent."""
+        self._check_admission()
         keys = frozenset(job.concurrency.resource_keys)
         parent_action_id = job.concurrency.parent_action_id
-        if parent_action_id is None:
-            parent_action_id = self._same_turn_scope_holder(job, keys)
         if parent_action_id is not None:
-            return self._leases.borrow(
-                action_id=job.action_id,
-                keys=keys,
-                mode=job.concurrency.mode,
-                parent_action_id=parent_action_id,
-            )
+            with self._lock:
+                parent = self._contexts.get(parent_action_id)
+                parent_state = None if parent is None else parent.cleanup_state
+                if (
+                    parent is None
+                    or job.turn_id is None
+                    or parent.turn_id != job.turn_id
+                    or job.concurrency.mode != "read_shared"
+                    or parent_state == "cleanup_failed"
+                ):
+                    msg = "verification child requires a quiescent, unpoisoned same-turn parent"
+                    raise ResourceScopeEscalationError(msg)
+            # worker.reported is durable before its handler returns. A legal
+            # verifier may arrive in that interval, but must wait for actual
+            # worker quiescence before borrowing the still-owned repository.
+            deadline = time.monotonic() + self._lease_timeout_s
+            while not parent.wait_quiesced(_LEASE_POLL_STEP_S):
+                self._check_admission()
+                if self._lease_timeout_s > 0 and time.monotonic() >= deadline:
+                    msg = "verification parent has not confirmed quiescence"
+                    raise TimeoutError(msg)
+            with self._lock:
+                self._check_admission()
+                if parent.cleanup_state == "cleanup_failed":
+                    msg = "verification parent is quarantined"
+                    raise ResourceScopeEscalationError(msg)
+                return self._leases.borrow(
+                    action_id=job.action_id,
+                    keys=keys,
+                    mode=job.concurrency.mode,
+                    parent_action_id=parent_action_id,
+                )
         return self._leases.acquire(
             action_id=job.action_id,
             keys=keys,
             mode=job.concurrency.mode,
             timeout_s=self._lease_timeout_s,
-        )
-
-    def _same_turn_scope_holder(self, job: ActionJob, keys: frozenset[str]) -> str | None:
-        """Return this turn's live scope holder that fully covers this job.
-
-        "Fully covers" means both the keys and the mode: this implicit path
-        may only ever propose a borrow that will validate. A same-turn job
-        that wants a STRONGER mode than its sibling holds is not a self-wait
-        to be dissolved — it is a genuine conflict, and it belongs in the
-        normal acquire queue where it blocks visibly instead of being handed a
-        scope it did not earn.
-        """
-        if job.turn_id is None or not keys:
-            return None
-        with self._lock:
-            turn_actions = {
-                action_id
-                for action_id, context in self._contexts.items()
-                if context.turn_id == job.turn_id and action_id != job.action_id
-            }
-        if not turn_actions:
-            return None
-        return next(
-            (
-                scope.action_id
-                for scope in self._leases.live_scopes()
-                if scope.action_id in turn_actions
-                and keys <= scope.resource_keys
-                and _MODE_RANK[job.concurrency.mode] <= _MODE_RANK[scope.mode]
-            ),
-            None,
+            cancelled=self._shutdown.is_set,
         )
 
     def _quiesce(
@@ -946,6 +968,8 @@ class ActionRunner:
         restore (ADR-0008 F26).
         """
         if context is not None:
+            if context.quiescence_unconfirmed:
+                return
             try:
                 emit_event(
                     conn,
@@ -966,6 +990,7 @@ class ActionRunner:
                     "action runner could not record worker.quiesced (action_id=%r)",
                     job.action_id,
                 )
+                return
             # Set the flag only after the row is durable. A canceller that
             # is blocked in `wait_quiesced` writes `action.cancelled` the
             # instant this flips, and a cleanup terminal that overtook its
@@ -973,7 +998,21 @@ class ActionRunner:
             context.mark_quiesced()
         if scope is None:
             return
-        if not job.carries_cleanup_debt or scope.is_borrowed:
+        if context is None or not job.carries_cleanup_debt or scope.is_borrowed:
+            if context is not None and scope.mode != "read_shared" and not scope.is_borrowed:
+                emit_event(
+                    conn,
+                    type="action.cleanup_completed",
+                    payload={
+                        "action_id": job.action_id,
+                        "worker_epoch": context.worker_epoch,
+                        "resource_keys": ",".join(sorted(scope.resource_keys)),
+                        "verification_outcome": "verification_skipped",
+                    },
+                    source_event_id=context.running_event_uid,
+                    correlation=dict(job.correlation),
+                    committed_event_bus=self._committed_event_bus,
+                )
             self._leases.release(scope)
             with self._lock:
                 self._contexts.pop(job.action_id, None)
@@ -1108,7 +1147,7 @@ class ActionRunner:
         freed at quiescence).
         """
         context = self.context_of(action_id)
-        if context is None:
+        if context is None or not context.is_quiesced:
             return None
         failed = context.cleanup_state == "cleanup_failed" or bool(context.late_writes)
         payload: dict[str, object] = {
@@ -1189,6 +1228,10 @@ class ActionRunner:
     def _finish_job(self, job: ActionJob) -> None:
         """Drop one job's in-flight marker and settle its turn if it is now quiet."""
         with self._lock:
+            context = self._contexts.get(job.action_id)
+            if context is not None and not context.is_quiesced:
+                # A Python handler returning does not prove its OS worker stopped.
+                return
             self._inflight.pop(job.action_id, None)
         try:
             if job.turn_id is None:
@@ -1260,17 +1303,11 @@ class ActionRunner:
         Returns the action ids re-quarantined.
         """
         quarantined: list[str] = []
-        for action_id, keys in _actions_awaiting_cleanup(conn).items():
+        for action_id, (keys, mode) in _actions_awaiting_cleanup(conn).items():
             if not keys:
                 continue
-            with contextlib.suppress(TimeoutError, ActionRunnerError):
-                self._leases.acquire(
-                    action_id=action_id,
-                    keys=keys,
-                    mode="write_exclusive",
-                    timeout_s=0.001,
-                )
-                quarantined.append(action_id)
+            self._leases.restore_quarantine(action_id=action_id, keys=keys, mode=mode)
+            quarantined.append(action_id)
         return tuple(quarantined)
 
     def shutdown(
@@ -1292,7 +1329,8 @@ class ActionRunner:
 
         Returns the action ids that reached a cancel terminal here.
         """
-        self._shutdown.set()
+        with self._lock:
+            self._shutdown.set()
         cancelled: list[str] = []
         if cancel:
             deadline = time.monotonic() + timeout_s
@@ -1363,39 +1401,32 @@ def _canonical_terminal_of(conn: sqlite3.Connection, action_id: str) -> Event | 
     )
 
 
-def _actions_awaiting_cleanup(conn: sqlite3.Connection) -> dict[str, frozenset[str]]:
-    """Fold write-exclusive actions that terminated with no cleanup event.
+def _actions_awaiting_cleanup(
+    conn: sqlite3.Connection,
+) -> dict[str, tuple[frozenset[str], ResourceMode]]:
+    """Recover unresolved writes even when the crash preceded a canonical terminal.
 
-    `action.running` carries the keys the runner actually leased, so this is
-    the only durable record of what a crashed process was holding. An action
-    whose `action.running` declared no write-exclusive keys is not
-    re-quarantined: it held nothing that a later action could corrupt.
+    Cleanup failure remains debt. Only a later successful cleanup proves the
+    resource safe, and the original global mode must survive a restart.
     """
-    leased: dict[str, frozenset[str]] = {}
-    terminated: set[str] = set()
-    cleaned: set[str] = set()
-    for event in iter_events_of_types(
-        conn,
-        ("action.running", *_CANONICAL_ACTION_TERMINALS, *_CLEANUP_TERMINALS),
-    ):
+    leased: dict[str, tuple[frozenset[str], ResourceMode]] = {}
+    for event in iter_events_of_types(conn, ("action.running", *_CLEANUP_TERMINALS)):
         action_id = event.payload.get("action_id")
         if not isinstance(action_id, str) or not action_id:
             continue
-        if event.type in _CLEANUP_TERMINALS:
-            cleaned.add(action_id)
-        elif event.type in _CANONICAL_ACTION_TERMINALS:
-            terminated.add(action_id)
-        elif event.payload.get("resource_mode") == "read_shared":
-            continue
-        else:
+        if event.type == "action.cleanup_completed":
+            leased.pop(action_id, None)
+        elif event.type == "action.running":
+            mode = event.payload.get("resource_mode")
+            if mode == "read_shared":
+                continue
             raw_keys = event.payload.get("resource_keys")
             if isinstance(raw_keys, str):
-                leased[action_id] = frozenset(part for part in raw_keys.split(",") if part)
-    return {
-        action_id: keys
-        for action_id, keys in leased.items()
-        if action_id in terminated and action_id not in cleaned
-    }
+                leased[action_id] = (
+                    frozenset(part for part in raw_keys.split(",") if part),
+                    "write_exclusive" if mode == "write_exclusive" else "global_exclusive",
+                )
+    return leased
 
 
 __all__ = [

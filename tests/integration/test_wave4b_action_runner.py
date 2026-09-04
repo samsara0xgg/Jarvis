@@ -22,6 +22,7 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -188,7 +189,12 @@ def _fixed_resolver(
         declared = mapping.get(tool_def.name)
         if declared is None:
             return default_resource_key_resolver(action_request, tool_def, conn)
-        return declared
+        # This harness models repository workers with explicit cleanup debt;
+        # ordinary registry tools retain the resolver's debt-free default.
+        return replace(
+            declared,
+            carries_cleanup_debt=declared.mode == "write_exclusive",
+        )
 
     return _resolve
 
@@ -496,7 +502,11 @@ def test_child_borrows_parent_scope_without_self_wait(
         resolver=_fixed_resolver(
             {
                 "parent": ToolConcurrency(resource_keys=(key,), mode="write_exclusive"),
-                "child": ToolConcurrency(resource_keys=(key,), mode="read_shared"),
+                "child": ToolConcurrency(
+                    resource_keys=(key,),
+                    mode="read_shared",
+                    parent_action_id="A-parent",
+                ),
                 "stranger": ToolConcurrency(resource_keys=(key,), mode="write_exclusive"),
             },
         ),
@@ -506,8 +516,7 @@ def test_child_borrows_parent_scope_without_self_wait(
         fixture.dispatch(_request("parent", "A-parent", turn_id="T-same"))
         assert [s.action_id for s in fixture.runner.leases.live_scopes()] == ["A-parent"]
 
-        # Same turn, same repo, no declared parent: the runner's no-self-wait
-        # guard must resolve this to a borrow rather than a lease wait.
+        # A proven parent is explicit; turn identity alone grants no borrow.
         started = time.monotonic()
         fixture.dispatch(_request("child", "A-child", turn_id="T-same"))
         assert time.monotonic() - started < 2.0
@@ -1165,7 +1174,9 @@ def test_a_blocked_lease_waiter_never_occupies_a_run_slot(
             {
                 "holder": ToolConcurrency(resource_keys=(key,), mode="write_exclusive"),
                 "blocked": ToolConcurrency(resource_keys=(key,), mode="write_exclusive"),
-                "child": ToolConcurrency(resource_keys=(key,), mode="read_shared"),
+                "child": ToolConcurrency(
+                    resource_keys=(key,), mode="read_shared", parent_action_id="A-holder",
+                ),
             },
         ),
     )

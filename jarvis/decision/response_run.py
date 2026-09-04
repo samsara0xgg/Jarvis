@@ -24,6 +24,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+import time
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -39,7 +40,7 @@ from jarvis.state.lifecycle_terminal import terminalize_response
 from jarvis.state.response_runs import append_response_started, open_response_runs
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from jarvis.decision.llm_session import LLMRequestClient
     from jarvis.shared import Event
@@ -225,9 +226,23 @@ class ResponseRun:
         self._interrupt_policy = interrupt_policy
         self._request_client = request_client
         self._cancellation_token = ResponseCancellationToken()
+        self.admission_lock = threading.Lock()
         self._lock = threading.Lock()
         self._state: ResponseRunState = "idle"
         self._linked_action_ids: list[str] = []
+
+    @contextlib.contextmanager
+    def admission_guard(self) -> Iterator[None]:
+        """Linearize new action admission against response cancellation."""
+        with self.admission_lock:
+            self.check_cancelled("before action admission")
+            yield
+
+    def check_cancelled(self, where: str) -> None:
+        """Reject work proposed by a response whose cancellation won."""
+        if self.cancellation_token.is_cancelled or self.state == "cancelled":
+            message = f"response {self.response_id} cancelled {where}"
+            raise ResponseCancelledError(message)
 
     @property
     def facts(self) -> ResponseRunFacts:
@@ -614,10 +629,12 @@ def start_response_run(  # noqa: PLR0913 — the ADR-0008 §4.2 response.started
     return run
 
 
-def request_response_cancel(
+def request_response_cancel(  # noqa: PLR0911 — policy, timeout, and CAS outcomes remain distinct.
     registry: ResponseRunRegistry,
     terminalizer: ResponseTerminalizer,
     request: ResponseCancelRequest,
+    *,
+    deadline: float | None = None,
 ) -> CancelOutcome:
     """Cancel one live ResponseRun's generation, terminal-first.
 
@@ -647,25 +664,33 @@ def request_response_cancel(
             reason="policy_hash_mismatch",
         )
 
-    try:
-        outcome = terminalizer.cancel(
-            run.facts,
-            reason=request.reason,
-            cancel_scope=request.scope,
-            interrupted_by_utterance_id=request.source_utterance_id,
-            source_event_id=request.source_event_uid,
-        )
-    except sqlite3.OperationalError:
+    acquired = run.admission_lock.acquire(
+        timeout=-1 if deadline is None else max(0.0, deadline - time.monotonic()),
+    )
+    if not acquired:
         return CancelTimedOut(response_id=request.response_id)
+    try:
+        try:
+            outcome = terminalizer.cancel(
+                run.facts,
+                reason=request.reason,
+                cancel_scope=request.scope,
+                interrupted_by_utterance_id=request.source_utterance_id,
+                source_event_id=request.source_event_uid,
+            )
+        except sqlite3.OperationalError:
+            return CancelTimedOut(response_id=request.response_id)
 
-    if isinstance(outcome, AlreadyTerminal):
-        return CancelAlreadyTerminal(
-            response_id=request.response_id,
-            event=outcome.event,
-        )
-    run.mark("cancelled")
-    run.cancellation_token.cancel(reason=request.reason, scope=request.scope)
-    return CancelAccepted(response_id=request.response_id, event=outcome.event)
+        if isinstance(outcome, AlreadyTerminal):
+            return CancelAlreadyTerminal(
+                response_id=request.response_id,
+                event=outcome.event,
+            )
+        run.mark("cancelled")
+        run.cancellation_token.cancel(reason=request.reason, scope=request.scope)
+        return CancelAccepted(response_id=request.response_id, event=outcome.event)
+    finally:
+        run.admission_lock.release()
 
 
 def reconcile_open_responses(

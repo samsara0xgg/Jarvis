@@ -132,6 +132,9 @@ class LLMSessionFactory:
             msg = f"unsupported provider {provider_raw!r}; expected 'openai' or 'anthropic'"
             raise ValueError(msg)
         provider: Provider = "openai" if provider_raw == "openai" else "anthropic"
+        if resolved is None and api_key_env is None:
+            # Synthetic presets must retain the legacy flat-config fallback.
+            api_key_env = "OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY"
 
         raw_timeout = self._config.get("timeout_s")
         timeout_s = (

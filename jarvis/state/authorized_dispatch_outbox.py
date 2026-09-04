@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
+from jarvis.shared import CallerPrincipal
 from jarvis.shared.realtime import (
     AlreadyConsumed,
     AuthorizedDispatch,
@@ -85,6 +87,156 @@ class AuthorizedDispatchTransactionStateError(AuthorizedDispatchError):
 
 class AuthorizedDispatchCorruptionError(AuthorizedDispatchError):
     """Persisted dispatch debt failed recovery integrity validation."""
+
+
+class AuthorizedDispatchAlreadyStarted(AuthorizedDispatchError):  # noqa: N818 - admission outcome
+    """The durable action admission already won; never repeat its effect."""
+
+
+def answer_confirmation_once(  # noqa: PLR0913 - atomic validation and commit
+    conn: sqlite3.Connection,
+    *,
+    confirmation_id: str,
+    accepted: bool,
+    utterance_raw: str,
+    grammar_rule_id: str,
+    correlation: Mapping[str, str] | None = None,
+) -> Event:
+    """Linearize a pending slot's answer and reuse its canonical Event UID.
+
+    Re-read under the write lock: two stale L3 packets cannot create distinct
+    acceptance identities, answer a superseded slot or override a rejection.
+    """
+    if conn.in_transaction:
+        message = "answer requires an idle connection"
+        raise AuthorizedDispatchTransactionStateError(message)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        events = tuple(iter_events_of_types(conn, (
+            "confirmation.requested", "confirmation.accepted",
+            "confirmation.rejected", "gate.evaluated",
+        )))
+        slot = PendingConfirmations.from_events(events).slot
+        if slot is None or slot.confirmation_id != confirmation_id:
+            message = "confirmation was superseded"
+            raise ConfirmationRevalidationError(message)  # noqa: TRY301 - atomic transaction owns rollback
+        if accepted and slot.accepted_event_uid is not None and slot.state != "rejected":
+            existing = get_event(conn, slot.accepted_event_uid)
+            if existing is None:
+                message = "canonical acceptance disappeared"
+                raise AuthorizedDispatchCorruptionError(message)  # noqa: TRY301 - atomic transaction owns rollback
+            conn.commit()
+            return existing
+        if not slot.is_live(int(time.time() * 1000)):
+            message = "confirmation is no longer pending"
+            raise ConfirmationRevalidationError(message)  # noqa: TRY301 - atomic transaction owns rollback
+        requested = next(event for event in reversed(events) if (
+            event.type == "confirmation.requested"
+            and event.payload.get("confirmation_id") == confirmation_id
+        ))
+        event = append_event_in_transaction(
+            conn,
+            type="confirmation.accepted" if accepted else "confirmation.rejected",
+            payload={"confirmation_id": confirmation_id, "utterance_raw": utterance_raw,
+                     "grammar_rule_id": grammar_rule_id},
+            source_event_id=requested.event_uid,
+            correlation=correlation,
+            event_uid=uuid.uuid5(uuid.NAMESPACE_URL, f"jarvis:answer:{requested.event_uid}").hex,
+        )
+        conn.commit()
+        return event  # noqa: TRY300 - atomic transaction owns rollback
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def admit_authorized_dispatch(  # noqa: C901, PLR0915 - atomic fail-closed validation
+    conn: sqlite3.Connection,
+    action_request: ActionRequest,
+    *,
+    payload: Mapping[str, object],
+    correlation: Mapping[str, str] | None = None,
+) -> Event:
+    """Consume one outbox row and append its L4 admission in one transaction.
+
+    A crash before commit leaves retryable pending debt. After commit the
+    effect may have started: preserve ``dispatched`` and never blindly replay
+    it, including when no terminal event survived the crash.
+    """
+    lease = action_request.authorization_lease
+    if lease is None:
+        message = "authorized dispatch requires a lease"
+        raise ConfirmationRevalidationError(message)
+    if (
+        lease["granted_by"] != "allen"
+        or lease["granted_to"] != action_request.caller_principal
+        or action_request.caller_principal != CallerPrincipal.JARVIS_LLM
+        or action_request.tool_name not in lease["allowed_tools"]
+        or action_request.target_entity_ref not in lease["allowed_targets"]
+        or lease["max_uses"] != 1
+        or int(time.time() * 1000) >= lease["expires_at_ms"]
+    ):
+        message = "dispatch lease expired or does not permit this action"
+        raise ConfirmationRevalidationError(message)
+    if conn.in_transaction:
+        message = "dispatch requires an idle connection"
+        raise AuthorizedDispatchTransactionStateError(message)
+    ensure_authorized_dispatch_schema(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        dispatch = _load_dispatch_by_source(conn, lease["source_confirmation_event_id"])
+        if dispatch is None:
+            message = "confirmation has no authorized dispatch debt"
+            raise ConfirmationRevalidationError(message)  # noqa: TRY301 - atomic transaction owns rollback
+        identity = dispatch.identity
+        if action_request.action_id != identity.action_id or lease["lease_id"] != identity.lease_id:
+            message = "dispatch identity differs from authorization"
+            raise ConfirmationRevalidationError(message)  # noqa: TRY301 - atomic transaction owns rollback
+        accepted = get_event(conn, identity.source_confirmation_event_id)
+        requested = None if accepted is None or accepted.source_event_id is None else get_event(
+            conn, accepted.source_event_id,
+        )
+        if requested is None:
+            message = "confirmation request disappeared"
+            raise AuthorizedDispatchCorruptionError(message)  # noqa: TRY301 - atomic transaction owns rollback
+        snapshot = cast("Mapping[str, object]", requested.payload["action_snapshot"])
+        actual = _canonical_request_payload(
+            action_request, stable_action_id=identity.action_id, frozen_snapshot=snapshot,
+        )
+        if actual != dispatch.request_payload:
+            message = "dispatch request differs from authorized request"
+            raise ConfirmationRevalidationError(message)  # noqa: TRY301 - atomic transaction owns rollback
+        metadata = cast("Mapping[str, object]", snapshot["args_meta"])
+        content = action_request.arguments.get("content")
+        if not isinstance(content, str) or (
+            hashlib.sha256(content.encode("utf-8")).hexdigest() != metadata["content_sha256"]
+            or len(content.encode("utf-8")) != metadata["content_bytes"]
+        ):
+            message = "dispatch content differs from authorized content"
+            raise ConfirmationRevalidationError(message)  # noqa: TRY301 - atomic transaction owns rollback
+        expected_arguments = {key: value for key, value in metadata.items() if key not in (
+            "content_sha256", "content_bytes", "content_artifact",
+        )}
+        expected_arguments["content"] = content
+        if dict(action_request.arguments) != expected_arguments:
+            message = "dispatch arguments differ from authorization"
+            raise ConfirmationRevalidationError(message)  # noqa: TRY301 - atomic transaction owns rollback
+        cursor = conn.execute(
+            "UPDATE authorized_dispatch_outbox SET state = 'dispatched' "
+            "WHERE dispatch_id = ? AND state = 'pending'", (identity.dispatch_id,),
+        )
+        if cursor.rowcount != 1:
+            message = "authorized action was already admitted"
+            raise AuthorizedDispatchAlreadyStarted(message)  # noqa: TRY301 - atomic transaction owns rollback
+        event = append_event_in_transaction(
+            conn, type="action.dispatched", payload=payload,
+            source_event_id=dispatch.gate_event.event_uid, correlation=correlation,
+        )
+        conn.commit()
+        return event  # noqa: TRY300 - atomic transaction owns rollback
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def ensure_authorized_dispatch_schema(conn: sqlite3.Connection) -> None:

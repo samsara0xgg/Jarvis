@@ -134,7 +134,9 @@ from jarvis.shared import (
     ResultSemantics,
     RiskLevel,
 )
+from jarvis.shared.action_admission import action_admission_guard
 from jarvis.shared.text import truncate_utf8
+from jarvis.state.authorized_dispatch_outbox import admit_authorized_dispatch
 from jarvis.state.event_log import emit_event, iter_events
 from jarvis.state.lifecycle_terminal import terminalize_action
 from jarvis.state.projections import make_snapshot
@@ -841,13 +843,6 @@ def _spawn_worker_emit_terminal_failure(  # noqa: PLR0913 — Day-2 failure path
         # failure events too — carry the ref so timeout / crash paths
         # restore Allen's pre-task stash instead of orphaning it.
         failure_payload["stash_ref"] = stash_ref
-    terminalize_action(
-        conn,
-        event_type=event_type,
-        payload=failure_payload,
-        source_event_id=source_event_id,
-        correlation=correlation,
-    )
 
     executor_status = "failed" if event_type == "action.failed" else "timeout"
     if task_id is not None and run_id is not None:
@@ -864,6 +859,14 @@ def _spawn_worker_emit_terminal_failure(  # noqa: PLR0913 — Day-2 failure path
             correlation=correlation,
             cost=cost,
         )
+    terminalize_action(
+        conn,
+        event_type=event_type,
+        payload=failure_payload,
+        source_event_id=source_event_id,
+        correlation=correlation,
+    )
+
     terminal_state: LifecycleState = (
         "failed" if event_type == "action.failed" else "timeout_assumed"
     )
@@ -1187,6 +1190,21 @@ def spawn_worker_handler(
         report_summary = "(no summary -- submit_report missing)"
     else:
         report_summary = ""
+    # 12. task.executor_reported -- projection-side terminal signal for
+    # this run, and the durable home of its token accounting.
+    _emit_executor_reported(
+        conn,
+        task_id=task_id,
+        run_id=run_id,
+        status=report_status,
+        summary=report_summary,
+        source_event_id=running_event_uid,
+        correlation=correlation,
+        diff_path=str(diff_artifact_path),
+        cost=cost,
+    )
+
+    # Publish the reentry trigger only after its accounting facts commit.
     emit_event(
         conn,
         type="worker.reported",
@@ -1201,20 +1219,6 @@ def spawn_worker_handler(
         },
         source_event_id=running_event_uid,
         correlation=correlation,
-    )
-
-    # 12. task.executor_reported -- projection-side terminal signal for
-    # this run, and the durable home of its token accounting.
-    _emit_executor_reported(
-        conn,
-        task_id=task_id,
-        run_id=run_id,
-        status=report_status,
-        summary=report_summary,
-        source_event_id=running_event_uid,
-        correlation=correlation,
-        diff_path=str(diff_artifact_path),
-        cost=cost,
     )
 
     # 13. Build the RawResult. Lifecycle stays at `running` per Day-1's
@@ -1358,7 +1362,7 @@ def verify_diff_handler(
         )
         return RawResultBundle(slots=(observation_slot,))
 
-    repo_path = _resolve_repo_path(action_request)
+    repo_path = _resolve_repo_path(action_request, conn=conn)
     verification_slot = _build_verification_slot(
         action_id=action_request.action_id,
         verify_command=verify_command,
@@ -1405,14 +1409,15 @@ def _resolve_diff_artifact_path(
     raise KeyError(msg)
 
 
-def _resolve_repo_path(action_request: ActionRequest) -> Path:
+def _resolve_repo_path(
+    action_request: ActionRequest, *, conn: sqlite3.Connection | None = None,
+) -> Path:
     """Return the repo cwd for the verify_command subprocess.
 
     Order: ``action_request.payload["repo_path"]`` (preferred — L3 plumbs
     it from the Task Ledger), then ``arguments["repo_path"]`` (test /
-    direct call), then :func:`Path.cwd`. The cwd fallback keeps Day-2
-    unit tests using ``tmp_path`` for the artifact while letting the
-    verify_command runs in the same dir succeed.
+    direct call), then the verified run's task repository, then ``Path.cwd``.
+    Both the resource lease and the actual subprocess use this resolver.
     """
     payload_repo = (
         action_request.payload.get("repo_path")
@@ -1424,6 +1429,13 @@ def _resolve_repo_path(action_request: ActionRequest) -> Path:
     args_repo = action_request.arguments.get("repo_path")
     if isinstance(args_repo, str) and args_repo:
         return Path(args_repo)
+    if conn is not None:
+        provenance = _verify_diff_run_provenance(action_request, conn)
+        if provenance.task_id is not None:
+            record = _load_task_record(conn, provenance.task_id)
+            raw_repo = record.get("repo_path") if record is not None else None
+            if isinstance(raw_repo, str) and raw_repo:
+                return Path(raw_repo)
     return Path.cwd()
 
 
@@ -4609,6 +4621,7 @@ class ToolRegistry:
         action_runner: ActionRunner | None = None,
         resource_key_resolver: ResourceKeyResolver | None = None,
         background_async: bool = False,
+        confirmation_dispatch_outbox: bool = False,
     ) -> None:
         """Construct an empty registry (no tools yet).
 
@@ -4633,6 +4646,7 @@ class ToolRegistry:
         self._lock = threading.RLock()
         self._action_runner = action_runner
         self._background_async = background_async
+        self._confirmation_dispatch_outbox = confirmation_dispatch_outbox
         self._resource_key_resolver = (
             resource_key_resolver
             if resource_key_resolver is not None
@@ -4860,13 +4874,23 @@ class ToolRegistry:
         result_expected_by_ms = _result_expected_by_ms(tool_def)
         if result_expected_by_ms is not None:
             dispatched_payload["result_expected_by_ms"] = result_expected_by_ms
-        dispatched_event = emit_event(
-            conn,
-            type="action.dispatched",
-            payload=dispatched_payload,
-            correlation=_action_correlation(action_request),
-        )
-        lifecycle.transition(action_request.action_id, "dispatched")
+        with action_admission_guard():
+            if (
+                self._confirmation_dispatch_outbox
+                and action_request.authorization_lease is not None
+            ):
+                dispatched_event = admit_authorized_dispatch(
+                    conn, action_request, payload=dispatched_payload,
+                    correlation=_action_correlation(action_request),
+                )
+            else:
+                dispatched_event = emit_event(
+                    conn,
+                    type="action.dispatched",
+                    payload=dispatched_payload,
+                    correlation=_action_correlation(action_request),
+                )
+            lifecycle.transition(action_request.action_id, "dispatched")
         return dispatched_event
 
     def _run_inline(  # noqa: PLR0913 — the four dispatch arguments plus the two values `dispatch` already computed.
@@ -5021,7 +5045,7 @@ class ToolRegistry:
                     # untracked action has nothing left to clean up and frees
                     # at quiescence.
                     carries_cleanup_debt=(
-                        concurrency.mode != "read_shared"
+                        concurrency.carries_cleanup_debt
                         and concurrency.parent_action_id is None
                         and action_request.turn_id is not None
                     ),
@@ -5156,40 +5180,6 @@ def _verify_diff_run_provenance(
     return _VerifiedRun(parent_action_id=None, task_id=None)
 
 
-def _verify_diff_resource_key(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    provenance: _VerifiedRun,
-) -> str:
-    """Return the canonical repo key this verification reads.
-
-    An explicit ``repo_path`` wins, exactly as ``_resolve_repo_path`` reads
-    it. Otherwise the repo is taken from the verified run's own task record
-    rather than from ``Path.cwd()``. That matters: the parent `spawn_worker`
-    leased the task's repo, so a cwd fallback would name a DIFFERENT key, the
-    subset check would refuse the borrow, and a verification that used to run
-    fine would fail closed. Deriving both keys from one source keeps them
-    equal in the path that actually happens, and leaves a genuine cross-repo
-    verify_diff — one that explicitly names another tree — correctly refused.
-    """
-    payload_repo = (
-        action_request.payload.get("repo_path")
-        if action_request.payload is not None
-        else None
-    )
-    if isinstance(payload_repo, str) and payload_repo:
-        return canonical_resource_key(Path(payload_repo))
-    args_repo = action_request.arguments.get("repo_path")
-    if isinstance(args_repo, str) and args_repo:
-        return canonical_resource_key(Path(args_repo))
-    if provenance.task_id is not None:
-        record = _load_task_record(conn, provenance.task_id)
-        raw_repo = record.get("repo_path") if record is not None else None
-        if isinstance(raw_repo, str) and raw_repo:
-            return canonical_resource_key(Path(raw_repo))
-    return canonical_resource_key(Path.cwd())
-
-
 def default_resource_key_resolver(
     action_request: ActionRequest,
     tool_def: ToolDefinition,
@@ -5212,11 +5202,12 @@ def default_resource_key_resolver(
         return ToolConcurrency(
             resource_keys=(_spawn_worker_resource_key(action_request, conn),),
             mode="write_exclusive",
+            carries_cleanup_debt=True,
         )
     if tool_def.name == _VERIFY_DIFF_TOOL_NAME:
         provenance = _verify_diff_run_provenance(action_request, conn)
         return ToolConcurrency(
-            resource_keys=(_verify_diff_resource_key(action_request, conn, provenance),),
+            resource_keys=(canonical_resource_key(_resolve_repo_path(action_request, conn=conn)),),
             mode="read_shared",
             parent_action_id=provenance.parent_action_id,
         )
@@ -5717,6 +5708,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     action_runner: ActionRunner | None = None,
     resource_key_resolver: ResourceKeyResolver | None = None,
     background_async: bool = False,
+    confirmation_dispatch_outbox: bool = False,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry (Day-1 six + ADR-0011 D5 seven).
 
@@ -5763,6 +5755,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         action_runner: ADR-0008 Step 3 execution boundary. `None` (the
             default, and every caller before Wave 4B) keeps `dispatch`
             running handlers inline on the calling thread.
+        confirmation_dispatch_outbox: Require atomic L2 admission of
+            confirmation-backed authorized dispatch debt when enabled.
         resource_key_resolver: Overrides
             :func:`default_resource_key_resolver`. Only consulted when an
             ActionRunner is installed; a test injects one to declare
@@ -5780,6 +5774,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         action_runner=action_runner,
         resource_key_resolver=resource_key_resolver,
         background_async=background_async,
+        confirmation_dispatch_outbox=confirmation_dispatch_outbox,
     )
     registry.register(
         ToolDefinition(

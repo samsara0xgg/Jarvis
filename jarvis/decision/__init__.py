@@ -51,7 +51,7 @@ import math
 import re
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
@@ -106,9 +106,16 @@ from jarvis.shared import (
     RawResultBundle,
 )
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
-from jarvis.shared.realtime import Wave1FeatureFlags
+from jarvis.shared.realtime import AlreadyConsumed, Wave1FeatureFlags, stable_authorization_identity
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
 from jarvis.shared.text import truncate_utf8
+from jarvis.state.authorized_dispatch_outbox import (
+    AuthorizedDispatchAlreadyStarted,
+    ConfirmationRevalidationError,
+    answer_confirmation_once,
+    authorize_confirmation_dispatch,
+)
+from jarvis.state.cost_accounting import record_run_cost_once
 from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.projections import make_snapshot
 
@@ -386,6 +393,12 @@ def _emit_cost_recorded(
     )
 
 
+def _check_response_cancelled(ctx: DecideContext, where: str) -> None:
+    """Stop new response work while preserving already accepted actions."""
+    if ctx.cancellation_checkpoint is not None:
+        ctx.cancellation_checkpoint(where)
+
+
 def _run_llm_chat_with_cost_guard(  # noqa: PLR0913 - mirrors the provider call plus audit keys
     ctx: DecideContext,
     *,
@@ -397,6 +410,7 @@ def _run_llm_chat_with_cost_guard(  # noqa: PLR0913 - mirrors the provider call 
     tool_choice: str | None = "auto",
 ) -> ChatResult:
     """Use the exactly-once guard only when its Wave 1 flag is enabled."""
+    _check_response_cancelled(ctx, "before provider request")
     if not ctx.wave1_features.exactly_once_cost_accounting:
         return ctx.llm_client.chat(
             messages=messages,
@@ -525,6 +539,10 @@ def _append_cost_recorded(
         correlation["turn_id"] = turn_id
     if run_id is not None:
         correlation["run_id"] = run_id
+    if run_id is not None:
+        return record_run_cost_once(
+            ctx.conn, run_id=run_id, payload=payload, correlation=correlation or None,
+        )
     return emit_event(
         ctx.conn,
         type="cost.recorded",
@@ -800,6 +818,7 @@ class DecideContext:
     confirmation_ttl_ms: int = _DEFAULT_CONFIRMATION_TTL_MS
     confirm_grammar_table: ConfirmGrammarTable = ()
     wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
+    cancellation_checkpoint: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -1255,6 +1274,7 @@ def _run_tool_use_loop(
             ),
         )
 
+        _check_response_cancelled(ctx, "after provider response")
         if chat_result.tool_calls:
             # Append the assistant turn (with tool_calls) so the next
             # iteration sees the LLM's tool requests in history.
@@ -1262,6 +1282,7 @@ def _run_tool_use_loop(
 
             dispatch_outcome: _DispatchOutcome = "continue"
             for tool_call in chat_result.tool_calls:
+                _check_response_cancelled(ctx, "before tool proposal")
                 dispatch_outcome = _dispatch_one_tool_call(
                     tool_call=tool_call,
                     packet=packet,
@@ -1516,6 +1537,7 @@ def _run_tier0_path(
         action_id=action_id,
         tool_name=hit.tool_name,
     )
+    _check_response_cancelled(ctx, "before tool dispatch")
     bundle = ctx.tool_registry.dispatch(
         action_request, ctx.conn, ctx.runtime_paths, ctx.lifecycle,
     )
@@ -1951,6 +1973,7 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
         action_id=action_id,
         tool_name=name,
     )
+    _check_response_cancelled(ctx, "before tool dispatch")
     bundle = ctx.tool_registry.dispatch(
         action_request,
         ctx.conn,
@@ -2198,6 +2221,7 @@ def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are 
             if ctx.wave1_features.exactly_once_cost_accounting
             else None
         )
+        _check_response_cancelled(ctx, "before reviewer request")
         reviewer_verdict = review_diff(
             task_goal=task_goal,
             diff_text=diff_text,
@@ -2227,6 +2251,7 @@ def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are 
                 ),
             )
 
+    _check_response_cancelled(ctx, "after reviewer response")
     emitted, verdict = interpret_verify_diff_bundle(
         bundle,
         source_event_ids_by_semantics=source_event_ids_by_semantics,
@@ -2961,6 +2986,7 @@ def _finalize_response(
                 ctx, retry_result, kind="decision", turn_id=scratch.turn_id,
             ),
         )
+        _check_response_cancelled(ctx, "after retry provider response")
         retry_text = retry_result.text or ""
         retry_plan = pre_emit_gate(retry_text, projections.claim_evidence, active_subject)
         last_gate_event = _emit_pre_emit_gate_event(
@@ -3473,6 +3499,30 @@ def _new_lease_id() -> str:
     return "L" + uuid.uuid4().hex[:8]
 
 
+def _record_confirmation_answer(
+    slot: PendingConfirmationSlot,
+    grammar_hit: ConfirmGrammarHit,
+    transcript: str,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> Event:
+    correlation = {"turn_id": scratch.turn_id} if scratch.turn_id else None
+    if ctx.wave1_features.confirmation_dispatch_outbox:
+        return answer_confirmation_once(
+            ctx.conn, confirmation_id=slot.confirmation_id,
+            accepted=grammar_hit.decision == "yes", utterance_raw=transcript,
+            grammar_rule_id=grammar_hit.rule_id, correlation=correlation,
+        )
+    return emit_event(
+        ctx.conn,
+        type="confirmation.accepted" if grammar_hit.decision == "yes" else "confirmation.rejected",
+        payload={"confirmation_id": slot.confirmation_id, "utterance_raw": transcript,
+                 "grammar_rule_id": grammar_hit.rule_id},
+        source_event_id=_latest_event_uid_of_type(ctx.conn, event_type="confirmation.requested"),
+        correlation=correlation,
+    )
+
+
 def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answer-path input; each is load-bearing, splitting would only relocate the arg list.
     slot: PendingConfirmationSlot,
     grammar_hit: ConfirmGrammarHit,
@@ -3493,20 +3543,11 @@ def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answe
     again (a later 「可以」 either hits a NEWER slot or, with none
     pending, is an ordinary utterance).
     """
-    requested_event_uid = _latest_event_uid_of_type(
-        ctx.conn, event_type="confirmation.requested",
-    )
-    rejected_event = emit_event(
-        ctx.conn,
-        type="confirmation.rejected",
-        payload={
-            "confirmation_id": slot.confirmation_id,
-            "utterance_raw": transcript,
-            "grammar_rule_id": grammar_hit.rule_id,
-        },
-        source_event_id=requested_event_uid,
-        correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
-    )
+    try:
+        rejected_event = _record_confirmation_answer(slot, grammar_hit, transcript, ctx, scratch)
+    except ConfirmationRevalidationError:
+        scratch.confirmation_answered_this_turn = True
+        return _finalize_response("确认已被处理或失效。未接纳新的写入。", packet, ctx, scratch)
     scratch.events.append(rejected_event)
     scratch.confirmation_answered_this_turn = True
 
@@ -3514,7 +3555,7 @@ def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answe
     return _finalize_response(draft, packet, ctx, scratch)
 
 
-def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per D6 answer-path input (each load-bearing); single-pass mint+re-propose+gate+dispatch+interpret mirrors `_dispatch_one_tool_call`'s own noqa'd shape — splitting would only scatter the audit trace.
+def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one audited accept/gate/dispatch trace with explicit fail-closed exits.
     slot: PendingConfirmationSlot,
     grammar_hit: ConfirmGrammarHit,
     transcript: str,
@@ -3553,20 +3594,11 @@ def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per
        dispatch via the L4 registry, Result Interpreter on the
        returned slot, fixed broadcast.
     """
-    requested_event_uid = _latest_event_uid_of_type(
-        ctx.conn, event_type="confirmation.requested",
-    )
-    accepted_event = emit_event(
-        ctx.conn,
-        type="confirmation.accepted",
-        payload={
-            "confirmation_id": slot.confirmation_id,
-            "utterance_raw": transcript,
-            "grammar_rule_id": grammar_hit.rule_id,
-        },
-        source_event_id=requested_event_uid,
-        correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
-    )
+    try:
+        accepted_event = _record_confirmation_answer(slot, grammar_hit, transcript, ctx, scratch)
+    except ConfirmationRevalidationError:
+        scratch.confirmation_answered_this_turn = True
+        return _finalize_response("确认已被处理或失效。未接纳新的写入。", packet, ctx, scratch)
     scratch.events.append(accepted_event)
     scratch.confirmation_answered_this_turn = True
 
@@ -3612,8 +3644,10 @@ def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per
     }
     reproposal_arguments["content"] = content_text
 
+    identity = stable_authorization_identity(accepted_event.event_uid)
+    atomic_dispatch = ctx.wave1_features.confirmation_dispatch_outbox
     lease: AuthorizationLease = {
-        "lease_id": _new_lease_id(),
+        "lease_id": identity.lease_id if atomic_dispatch else _new_lease_id(),
         "granted_by": "allen",
         "granted_to": CallerPrincipal.JARVIS_LLM,
         "allowed_tools": frozenset({tool_name}),
@@ -3627,7 +3661,7 @@ def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per
     }
 
     # --- 4. Deterministic re-proposal ---------------------------------------
-    action_id = _new_action_id()
+    action_id = identity.action_id if atomic_dispatch else _new_action_id()
     action_request = ActionRequest(
         action_id=action_id,
         tool_name=tool_name,
@@ -3689,7 +3723,20 @@ def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per
         # scenario needs it on a `refuse` too for the audit trail.
         "lease_id": lease["lease_id"],
     }
-    gate_event = emit_event(
+    if atomic_dispatch and gate.outcome == "pass":
+        try:
+            authorization = authorize_confirmation_dispatch(
+                ctx.conn, source_confirmation_event_id=accepted_event.event_uid,
+                action_request=action_request, lease=lease, gate_payload=gate_payload,
+                correlation=_action_correlation(action_request),
+            )
+        except ConfirmationRevalidationError:
+            return _finalize_response("确认已被处理或失效。未接纳新的写入。", packet, ctx, scratch)
+        if isinstance(authorization, AlreadyConsumed):
+            return _finalize_response("该确认已接纳。执行状态请以结果为准。", packet, ctx, scratch)
+        gate_event = authorization.gate_event
+    else:
+        gate_event = emit_event(
         ctx.conn,
         type="gate.evaluated",
         payload=gate_payload,
@@ -3720,9 +3767,13 @@ def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per
         action_id=action_id,
         tool_name=tool_name,
     )
-    bundle = ctx.tool_registry.dispatch(
-        action_request, ctx.conn, ctx.runtime_paths, ctx.lifecycle,
-    )
+    _check_response_cancelled(ctx, "before tool dispatch")
+    try:
+        bundle = ctx.tool_registry.dispatch(
+            action_request, ctx.conn, ctx.runtime_paths, ctx.lifecycle,
+        )
+    except AuthorizedDispatchAlreadyStarted:
+        return _finalize_response("该确认已接纳。执行状态请以结果为准。", packet, ctx, scratch)
     record_realtime_trace(
         "action_dispatch_returned",
         turn_id=scratch.turn_id,

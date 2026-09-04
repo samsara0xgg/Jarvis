@@ -1285,6 +1285,37 @@ def open_event_log(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def open_runtime_event_log(
+    path: Path,
+    *,
+    deadline: float | None = None,
+) -> sqlite3.Connection:
+    """Connect to an already bootstrapped log without migrations or writes.
+
+    A monotonic deadline covers connection setup and the subsequent write
+    lock wait. Hot paths must not rerun boot migrations with a fresh timeout.
+    Missing or incompatible logs fail closed; only ``open_event_log`` may
+    create or migrate them.
+    """
+    remaining = 5.0 if deadline is None else max(0.0, deadline - time.monotonic())
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True, timeout=remaining)
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] != _SCHEMA_USER_VERSION:
+            message = "runtime Event Log requires bootstrap migration"
+            raise sqlite3.OperationalError(message)  # noqa: TRY301 - atomic transaction owns rollback
+        conn.execute("PRAGMA synchronous = NORMAL")
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                message = "runtime Event Log connection deadline exceeded"
+                raise sqlite3.OperationalError(message)  # noqa: TRY301 - atomic transaction owns rollback
+            conn.execute(f"PRAGMA busy_timeout = {int(remaining * 1000)}")
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
 # --- emit_event --------------------------------------------------------------
 
 

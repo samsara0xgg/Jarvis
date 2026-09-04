@@ -36,7 +36,7 @@ from tests.canary._helpers import iter_jarvis_py_files, parse, relative_to_repo
 # - DELETE FROM <table> must be followed by WHERE / ORDER / LIMIT /
 #   RETURNING / `;` / end-of-string / `)`.
 _SQL_WRITE_RE = re.compile(
-    r"\bINSERT\s+INTO\s+(?P<insert_table>\w+)\s*"
+    r"\bINSERT\s+(?:OR\s+IGNORE\s+)?INTO\s+(?P<insert_table>\w+)\s*"
     r"(?:\(|VALUES\b|SELECT\b|DEFAULT\b|SET\b|$)"
     r"|\bUPDATE\s+(?P<update_table>\w+)\s+SET\b"
     r"|\bDELETE\s+FROM\s+(?P<delete_table>\w+)\s*"
@@ -50,6 +50,7 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
         {"confirmation_consumption_claims", "authorized_dispatch_outbox"},
     ),
     "jarvis/state/cost_accounting.py": frozenset({"cost_accounting_dispositions"}),
+    "jarvis/state/trigger_consumption.py": frozenset({"decision_trigger_consumptions"}),
 }
 
 
@@ -71,7 +72,13 @@ _MIGRATION_MARKER = "/* L2 schema migration"
 
 
 def _allowed_migration_update(rel_path: str, source: str, table: str) -> bool:
-    """Whitelist: tagged migration backfill UPDATEs inside ``event_log.py``."""
+    """Allow tagged migrations and the L2 outbox's one-way admission CAS."""
+    if rel_path == "jarvis/state/authorized_dispatch_outbox.py":
+        return (
+            table.lower() == "authorized_dispatch_outbox"
+            and source == "UPDATE authorized_dispatch_outbox SET state = 'dispatched' "
+            "WHERE dispatch_id = ? AND state = 'pending'"
+        )
     return (
         rel_path == "jarvis/state/event_log.py"
         and table.lower() == "events"

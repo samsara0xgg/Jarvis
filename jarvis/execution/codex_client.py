@@ -173,7 +173,6 @@ class CodexAppServerClient:
         """Close stdin and wait for the subprocess to exit, escalating to kill."""
         if self._closed:
             return
-        self._closed = True
         try:
             if self._proc.stdin and not self._proc.stdin.closed:
                 self._proc.stdin.close()
@@ -188,6 +187,10 @@ class CodexAppServerClient:
                 self._proc.wait(timeout=1.0)
             except Exception:
                 pass
+
+        if self._proc.poll() is None:
+            raise RuntimeError("Codex process shutdown is unconfirmed")
+        self._closed = True
 
     def __enter__(self) -> "CodexAppServerClient":
         return self

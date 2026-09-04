@@ -107,6 +107,7 @@ from jarvis.execution.tools import (
     turn_action_ids,
 )
 from jarvis.shared import CallerPrincipal, Event
+from jarvis.shared.action_admission import bind_action_admission
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
     RESPONSE_CANCEL_REASONS,
@@ -122,7 +123,8 @@ from jarvis.shared.realtime_trace import (
     record_realtime_trace,
 )
 from jarvis.state.committed_event_bus import CommittedEventBus
-from jarvis.state.event_log import iter_events, open_event_log
+from jarvis.state.event_log import iter_events, open_event_log, open_runtime_event_log
+from jarvis.state.trigger_consumption import mark_trigger_consumed
 from jarvis.surface.cli import (
     PreEmitTokenError,
     SurfaceState,
@@ -681,9 +683,8 @@ def _wave4_action_flags(config: Mapping[str, Any]) -> Wave4ActionFlags:
 def _wave5_input_flags(config: Mapping[str, Any]) -> Wave5InputFlags:
     """Resolve the ADR-0008 D8 intent-pump switch.
 
-    The pump's durable claim owns its own ``BEGIN IMMEDIATE``, so it does not
-    depend on the Wave-1 append switch; it does require ``realtime.enabled``,
-    because turning it on rewrites how the daemon consumes every utterance.
+    Parallel decisions require authorization consumption, isolated response
+    clients, atomic accounting, and runner ownership as well as input claims.
     """
     realtime = config.get("realtime")
     if not isinstance(realtime, Mapping):
@@ -692,15 +693,33 @@ def _wave5_input_flags(config: Mapping[str, Any]) -> Wave5InputFlags:
     requested = Wave5InputFlags.from_mapping(
         input_raw if isinstance(input_raw, Mapping) else None,
     )
-    if requested.all_disabled or realtime.get("enabled") is True:
+    if requested.all_disabled:
+        return requested
+    wave1 = _wave1_feature_flags(config)
+    reason: str | None = None
+    if realtime.get("enabled") is not True:
+        reason = "realtime_parent_disabled"
+    elif not all((
+        wave1.transactional_event_append,
+        wave1.lifecycle_terminal_cas,
+        wave1.confirmation_dispatch_outbox,
+        wave1.exactly_once_cost_accounting,
+    )):
+        reason = "concurrency_safety_disabled"
+    elif not _wave4_response_flags(config).response_run_lifecycle:
+        reason = "response_lifecycle_disabled"
+    elif not _wave4_action_flags(config).action_runner:
+        reason = "action_runner_disabled"
+    if reason is None:
         return requested
     LOGGER.warning(
-        "realtime.input downgraded (realtime_parent_disabled): requested "
+        "realtime.input downgraded (%s): requested "
         "intent_pump=True; effective intent_pump=False",
+        reason,
     )
     record_realtime_trace(
         "input_activation_downgraded",
-        reason="realtime_parent_disabled",
+        reason=reason,
     )
     return Wave5InputFlags()
 
@@ -1061,11 +1080,43 @@ class _LLMVisionClient:
         return result.text or ""
 
 
+class _RequestScopedVisionClient:
+    """Mint isolated provider and accounting state in the calling worker."""
+
+    def __init__(
+        self,
+        config: Mapping[str, Any],
+        *,
+        event_log_path: Path | None,
+        pricing_path: Path | None,
+    ) -> None:
+        self._factory = LLMSessionFactory(config)
+        self._snapshot = self._factory.snapshot()
+        self._event_log_path = event_log_path
+        self._pricing = {} if pricing_path is None else load_pricing_table(pricing_path)
+
+    def describe_image(self, image_path: Path, *, question: str | None) -> str:
+        """Perform one bounded request with its own SQLite connection."""
+        client = self._factory.create(self._snapshot, response_id=new_response_id())
+        with contextlib.ExitStack() as stack:
+            recorder = None
+            if self._event_log_path is not None:
+                conn = stack.enter_context(
+                    contextlib.closing(open_runtime_event_log(self._event_log_path)),
+                )
+                recorder = CostRecorder(conn, pricing_table=self._pricing)
+            return _LLMVisionClient(client, cost_recorder=recorder).describe_image(
+                image_path, question=question,
+            )
+
+
 def _build_vision_client(
     config: Mapping[str, Any],
     preset_name: str,
     *,
-    cost_recorder: CostRecorder | None = None,
+    event_log_path: Path | None = None,
+    pricing_path: Path | None = None,
+    account_cost: bool = False,
 ) -> VisionClient | None:
     """Build the `screen_look` vision seam from `llm.presets.<preset_name>` (ADR-0011 D7).
 
@@ -1109,7 +1160,7 @@ def _build_vision_client(
         "max_retries": _VISION_CALL_MAX_RETRIES,
     }
     try:
-        llm_client = LLMClient(vision_llm_config)
+        LLMClient(vision_llm_config)
     except (ValueError, TypeError) as exc:
         LOGGER.warning(
             "screen_look: llm.presets.%s is malformed (%s: %s); screen_look will "
@@ -1119,7 +1170,14 @@ def _build_vision_client(
             exc,
         )
         return None
-    return _LLMVisionClient(llm_client, cost_recorder=cost_recorder)
+    if account_cost and event_log_path is None:
+        message = "vision accounting requires an Event Log path"
+        raise ValueError(message)
+    return _RequestScopedVisionClient(
+        vision_llm_config,
+        event_log_path=event_log_path if account_cost else None,
+        pricing_path=pricing_path,
+    )
 
 
 def _build_vision_cost_recorder(
@@ -1254,11 +1312,6 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     ) = _web_tools_config(full_config)
     web_search_provider, web_search_api_key = _web_search_provider_config(full_config)
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
-    vision_cost_recorder = _build_vision_cost_recorder(
-        conn,
-        wave1_features,
-        pricing_path=repo_root / "data" / "pricing.json",
-    )
     # 3a. ADR-0008 Step 3 (Wave 4B). The runner is built before the registry
     #     because the registry closes over it; with the switch off it stays
     #     None and `dispatch` keeps running handlers inline.
@@ -1286,6 +1339,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     )
     registry = build_default_registry(
         action_runner=action_runner,
+        confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         # ADR-0008 Step 4: with this on, `dispatch` returns as soon as an
         # is_async ActionRun is accepted and the runner owns the rest.
         background_async=action_flags.true_async_workers,
@@ -1299,7 +1353,9 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         vision_client=_build_vision_client(
             full_config,
             vision_preset_name,
-            cost_recorder=vision_cost_recorder,
+            event_log_path=paths.event_log,
+            pricing_path=repo_root / "data" / "pricing.json",
+            account_cost=wave1_features.exactly_once_cost_accounting,
         ),
         screen_max_width_px=screen_max_width_px,
     )
@@ -1488,12 +1544,12 @@ def make_response_cancel_callable(
     committed_event_bus = runtime.committed_event_bus
     registry = runtime.response_runs
 
-    def _connect() -> sqlite3.Connection:
-        conn = open_event_log(event_log_path)
-        conn.execute(f"PRAGMA busy_timeout = {int(cancel_timeout_ms)}")
-        return conn
-
     def _cancel(response_id: str, scope: str, reason: str) -> str:
+        deadline = time.monotonic() + cancel_timeout_ms / 1000
+
+        def _connect() -> sqlite3.Connection:
+            return open_runtime_event_log(event_log_path, deadline=deadline)
+
         if registry is None:  # pragma: no cover - wiring pairs the two flags
             return "unknown_response"
         if scope not in ("generation", "foreground_output"):
@@ -1519,6 +1575,7 @@ def make_response_cancel_callable(
                 scope="generation" if scope == "generation" else "foreground_output",
                 reason=normalized_reason,
             ),
+            deadline=deadline,
         )
         if isinstance(outcome, CancelAccepted):
             return "cancelled"
@@ -1988,6 +2045,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # way tier0_table is threaded.
             confirm_grammar_table=runtime.confirm_grammar_table,
             wave1_features=runtime.wave1_features,
+            cancellation_checkpoint=run.check_cancelled if run is not None else None,
         )
 
         # SQLite row id of the surface.user_intent event — used as the
@@ -2009,7 +2067,14 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         while response_plan is None and iterations < max_iterations:
             _raise_if_cancelled("before a decide iteration")
             iterations += 1
-            result = decide(trigger_event, decide_ctx)
+            with bind_action_admission(
+                run.admission_guard if run is not None else contextlib.nullcontext,
+            ):
+                result = decide(trigger_event, decide_ctx)
+            if trigger_event.type in {
+                "worker.reported", "action.failed", "action.timeout_assumed", "action.cancelled",
+            }:
+                mark_trigger_consumed(runtime.conn, trigger_event.event_uid, effective_turn_id)
             collected_events.extend(result.events_emitted)
             response_plan = result.response_plan
             if response_plan is not None:

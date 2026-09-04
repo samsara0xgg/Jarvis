@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Mapping
 
+    from jarvis.shared import Event
     from jarvis.state.committed_event_bus import CommittedEventBus
 
 FailureStage = Literal[
@@ -232,3 +233,34 @@ __all__ = [
     "ensure_cost_accounting_schema",
     "record_cost_disposition_once",
 ]
+
+
+def record_run_cost_once(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    payload: Mapping[str, object],
+    correlation: Mapping[str, str] | None = None,
+) -> Event | None:
+    """Atomically append a worker run's cost, honoring historical cost rows."""
+    if conn.in_transaction:
+        message = "run cost requires transaction ownership"
+        raise CostAccountingTransactionStateError(message)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        existing = conn.execute(
+            "SELECT event_uid FROM events WHERE type = 'cost.recorded' "
+            "AND json_extract(payload_json, '$.run_id') = ? LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        if existing is not None:
+            conn.commit()
+            return None
+        event = append_event_in_transaction(
+            conn, type="cost.recorded", payload=payload, correlation=correlation,
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return event

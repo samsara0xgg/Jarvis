@@ -857,7 +857,9 @@ def test_cancel_times_out_without_writing_a_terminal(tmp_path: Path) -> None:
         ),
     )
     try:
+        started = time.monotonic()
         assert cancel(run.response_id, "generation", "user_stop") == "timeout"
+        assert time.monotonic() - started < 0.25
         assert _event_count(runtime.conn, "response.cancelled") == 0
         # Read into locals: the token is a property, and mypy would narrow a
         # direct `is False` assertion into the later `is True` one.
