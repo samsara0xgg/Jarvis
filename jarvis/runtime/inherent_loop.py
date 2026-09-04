@@ -99,18 +99,22 @@ from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_a
 from jarvis.execution.tools import live_action_ids, running_action_ids
 from jarvis.runtime import (
     JarvisRuntime,
+    TriggerWaitTimeout,
+    TurnSuspended,
+    WaitingTurn,
     _event_action_id,
     _new_turn_id,
     _observer_poll_interval_s,
     _observer_repo_paths,
     _positive_float,
     _positive_int,
+    _wait_for_next_trigger,
     drive_turn,
     make_response_cancel_callable,
 )
 from jarvis.shared import Event
 from jarvis.shared.realtime_trace import record_realtime_trace
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.event_log import emit_event, open_event_log, open_runtime_event_log
 from jarvis.state.input_claim import (
     REALTIME_INTENT_CONSUMER,
     ConflictingTurnClaimError,
@@ -483,16 +487,22 @@ def _reconcile_action_quarantine_in_thread(
             conn.close()
 
 
+class TurnConnectionUnavailableError(Exception):
+    """The driver did not take ownership because its connection could not open."""
+
+
 def _drive_turn_in_worker_thread(
     runtime: JarvisRuntime,
     *,
     user_intent_event: Event,
-) -> None:
+    continuation: WaitingTurn | None = None,
+    suspend_when_waiting: bool = False,
+) -> WaitingTurn | None:
     """Open a fresh SQLite connection and call :func:`drive_turn` on this thread.
 
     The watcher coroutine dispatches this function via
     :func:`asyncio.to_thread`. Because
-    :func:`jarvis.state.event_log.open_event_log` opens connections with
+    :func:`jarvis.state.event_log.open_runtime_event_log` opens connections with
     the default ``check_same_thread=True``, the parent ``runtime.conn``
     (opened on the event-loop thread) cannot be used here — we open a
     fresh per-call connection to the same DB file and pass a shallow
@@ -504,7 +514,10 @@ def _drive_turn_in_worker_thread(
     every cross-thread emit-site opens its own SQLite connection so the
     ``check_same_thread`` invariant holds.
     """
-    worker_conn = open_event_log(runtime.runtime_paths.event_log)
+    try:
+        worker_conn = open_runtime_event_log(runtime.runtime_paths.event_log)
+    except sqlite3.Error as exc:
+        raise TurnConnectionUnavailableError(str(exc)) from exc
     try:
         worker_runtime = dataclasses.replace(runtime, conn=worker_conn)
         drive_turn(
@@ -512,10 +525,15 @@ def _drive_turn_in_worker_thread(
             user_intent_event=user_intent_event,
             available_surfaces=frozenset(),
             streaming_enabled=True,
+            suspend_when_waiting=suspend_when_waiting,
+            continuation=continuation,
         )
+    except TurnSuspended as suspended:
+        return suspended.checkpoint
     finally:
         with contextlib.suppress(sqlite3.Error):
             worker_conn.close()
+    return None
 
 
 # Event types the inherent-loop user-intent watcher folds into ONE
@@ -701,7 +719,7 @@ def _claim_intent_in_thread(event_log_path: Path, trigger_event: Event) -> bool:
 
 async def _intent_pump_watcher(
     runtime: JarvisRuntime,
-    queue: asyncio.Queue[Event],
+    queue: asyncio.Queue[Event | WaitingTurn],
     boot: _IntentPumpBoot,
     dispatched: set[str],
     *,
@@ -745,7 +763,7 @@ async def _intent_pump_watcher(
 
 async def _offer_intent(
     runtime: JarvisRuntime,
-    queue: asyncio.Queue[Event],
+    queue: asyncio.Queue[Event | WaitingTurn],
     dispatched: set[str],
     event: Event,
 ) -> None:
@@ -770,9 +788,31 @@ async def _offer_intent(
     )
 
 
+async def _advance_intent_step(
+    runtime: JarvisRuntime, event: Event, continuation: WaitingTurn | None,
+) -> WaitingTurn | None:
+    """Keep thread ownership through coroutine cancellation and settle its handoff."""
+    kwargs = {} if continuation is None else {"continuation": continuation}
+    step = asyncio.create_task(asyncio.to_thread(
+        _drive_turn_in_worker_thread, runtime,
+        user_intent_event=event, suspend_when_waiting=True, **kwargs,
+    ))
+    try:
+        return await asyncio.shield(step)
+    except asyncio.CancelledError:
+        # Cancelling to_thread does not stop its OS thread. Retain ownership
+        # until the step hands back or settles itself.
+        with contextlib.suppress(Exception):
+            checkpoint = await step
+            if checkpoint is not None:
+                await _close_waiting_turn(runtime, checkpoint)
+        raise
+
+
 async def _intent_worker(
     runtime: JarvisRuntime,
-    queue: asyncio.Queue[Event],
+    queue: asyncio.Queue[Event | WaitingTurn],
+    waiting: dict[str, WaitingTurn] | None = None,
 ) -> None:
     """Drive claimed turns off the queue, one at a time, forever.
 
@@ -783,13 +823,29 @@ async def _intent_worker(
     """
     try:
         while True:
-            event = await queue.get()
+            item = await queue.get()
+            continuation = item if isinstance(item, WaitingTurn) else None
+            event = item.intent if isinstance(item, WaitingTurn) else item
+            if continuation is not None and waiting is not None:
+                waiting.pop(str(event.payload["turn_id"]), None)
             try:
-                await asyncio.to_thread(
-                    _drive_turn_in_worker_thread,
-                    runtime,
-                    user_intent_event=event,
-                )
+                checkpoint = await _advance_intent_step(runtime, event, continuation)
+                if checkpoint is not None:
+                    if waiting is None:
+                        message = "suspended turn requires a continuation scheduler"
+                        raise RuntimeError(message)  # noqa: TRY301 — invalid runtime wiring
+                    waiting[str(event.payload["turn_id"])] = checkpoint
+            except TurnConnectionUnavailableError as exc:
+                if continuation is None or waiting is None:
+                    _emit_turn_failed(
+                        runtime.conn, intent_event=event, exception_repr=repr(exc),
+                    )
+                else:
+                    # No driver finally ran: retain all response/action ownership
+                    # and retry the same ready trigger without repeating dispatch.
+                    waiting[str(event.payload["turn_id"])] = dataclasses.replace(
+                        continuation, queued=False,
+                    )
             except ResponseCancelledError:
                 # ADR-0008 D10: an operator's cancel is not a turn failure.
                 LOGGER.info(
@@ -814,6 +870,74 @@ async def _intent_worker(
         raise
 
 
+def _poll_waiting_turn(runtime: JarvisRuntime, waiting: WaitingTurn) -> WaitingTurn | None:
+    """Poll once on a fresh thread-local connection; never park an executor thread."""
+    if waiting.run is not None and waiting.run.cancellation_token.is_cancelled:
+        return dataclasses.replace(waiting, failure=ResponseCancelledError("response cancelled"))
+    conn = open_runtime_event_log(runtime.runtime_paths.event_log)
+    try:
+        try:
+            event, cursor = _wait_for_next_trigger(
+                conn, after_id=waiting.after_id, action_ids=waiting.action_ids, timeout=0,
+            )
+        except TriggerWaitTimeout as exc:
+            if time.monotonic() >= waiting.deadline:
+                return dataclasses.replace(waiting, failure=exc)
+            return None
+        return dataclasses.replace(waiting, trigger=event, after_id=cursor)
+    finally:
+        conn.close()
+
+
+async def _close_waiting_turn(runtime: JarvisRuntime, checkpoint: WaitingTurn) -> None:
+    """Settle one suspended driver through its normal exception and cleanup path."""
+    failed = dataclasses.replace(checkpoint, failure=RuntimeError("daemon shutdown"))
+    with contextlib.suppress(Exception):
+        await asyncio.to_thread(
+            _drive_turn_in_worker_thread, runtime,
+            user_intent_event=checkpoint.intent, continuation=failed,
+        )
+
+
+async def _waiting_turn_watcher(
+    runtime: JarvisRuntime,
+    queue: asyncio.Queue[Event | WaitingTurn],
+    waiting: dict[str, WaitingTurn],
+    *,
+    poll_interval_s: float,
+) -> None:
+    """Requeue ready turns without consuming input workers during action waits."""
+    try:
+        while True:
+            for turn_id, checkpoint in tuple(waiting.items()):
+                if checkpoint.queued:
+                    continue
+                ready: WaitingTurn | None
+                try:
+                    if checkpoint.trigger is not None or checkpoint.failure is not None:
+                        ready = checkpoint
+                    else:
+                        ready = await asyncio.to_thread(_poll_waiting_turn, runtime, checkpoint)
+                except sqlite3.Error as exc:
+                    # A transient read failure must not kill the sole scheduler
+                    # or close unrelated turns. The existing wait deadline bounds retries.
+                    if time.monotonic() < checkpoint.deadline:
+                        continue
+                    ready = dataclasses.replace(checkpoint, failure=exc)
+                except Exception as exc:  # noqa: BLE001 — fail this turn, keep the scheduler alive.
+                    ready = dataclasses.replace(checkpoint, failure=exc)
+                if ready is not None:
+                    waiting[turn_id] = dataclasses.replace(ready, queued=True)
+                    await queue.put(ready)
+            await asyncio.sleep(poll_interval_s)
+    finally:
+        # These turns still own live-action and response claims. Settle them
+        # through the same driver finally; the runner retains physical cleanup.
+        for checkpoint in tuple(waiting.values()):
+            await _close_waiting_turn(runtime, checkpoint)
+        waiting.clear()
+
+
 async def _start_intent_pump(
     runtime: JarvisRuntime,
     *,
@@ -832,8 +956,9 @@ async def _start_intent_pump(
             "earlier utterances are history and are never replayed",
             boot.adoption_row_id,
         )
-    queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=queue_capacity)
+    queue: asyncio.Queue[Event | WaitingTurn] = asyncio.Queue(maxsize=queue_capacity)
     dispatched: set[str] = set()
+    waiting: dict[str, WaitingTurn] = {}
     tasks = [
         asyncio.create_task(
             _intent_pump_watcher(
@@ -847,9 +972,13 @@ async def _start_intent_pump(
         ),
     ]
     tasks.extend(
-        asyncio.create_task(_intent_worker(runtime, queue), name=f"intent_worker_{index}")
+        asyncio.create_task(_intent_worker(runtime, queue, waiting), name=f"intent_worker_{index}")
         for index in range(max_concurrent_turns)
     )
+    tasks.append(asyncio.create_task(
+        _waiting_turn_watcher(runtime, queue, waiting, poll_interval_s=poll_interval_s),
+        name="waiting_turn_watcher",
+    ))
     return tasks
 
 

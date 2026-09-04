@@ -25,7 +25,7 @@ import pytest
 
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, inherent_loop
+from jarvis.runtime import JarvisRuntime, WaitingTurn, inherent_loop
 from jarvis.runtime.inherent_loop import (
     _boot_intent_pump_in_thread,
     _intent_pump_watcher,
@@ -381,7 +381,7 @@ def test_the_boot_scan_and_the_poll_loop_do_not_both_dispatch(
             "_drive_turn_in_worker_thread",
             side_effect=recorder,
         ):
-            queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=8)
+            queue: asyncio.Queue[Event | WaitingTurn] = asyncio.Queue(maxsize=8)
             dispatched: set[str] = set()
             tasks = [
                 asyncio.create_task(

@@ -443,6 +443,31 @@ class RunTurnResult:
     attention_channel: str
 
 
+@dataclass(frozen=True)
+class WaitingTurn:
+    """Connection-free checkpoint while L4 works; live turn ownership stays held."""
+
+    intent: Event
+    run: ResponseRun | None
+    after_id: int
+    action_ids: frozenset[str]
+    deadline: float
+    iterations: int
+    events: tuple[Event, ...]
+    trigger: Event | None = None
+    failure: Exception | None = None
+    queued: bool = False
+
+
+class TurnSuspended(Exception):  # noqa: N818 — internal scheduler handoff, not a failure.
+    """Transfer a quiet turn back to the runtime scheduler."""
+
+    def __init__(self, checkpoint: WaitingTurn) -> None:
+        """Carry only connection-free state across worker invocations."""
+        super().__init__(checkpoint.intent.payload["turn_id"])
+        self.checkpoint = checkpoint
+
+
 # --- bootstrap_runtime_app --------------------------------------------------
 
 
@@ -1877,6 +1902,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     trigger_timeout_s: float | None = None,
     streaming_enabled: bool = False,
+    suspend_when_waiting: bool = False,
+    continuation: WaitingTurn | None = None,
 ) -> RunTurnResult:
     """Drive the post-emit body of one turn from an already-emitted intent event.
 
@@ -1944,6 +1971,10 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             daemon watcher (ADR-0003 Step 2 Build 5) passes ``True``
             so the renderer emits the 3-event Inherent taxonomy.
             Default ``False`` preserves CLI single-emit semantics.
+        suspend_when_waiting: Yield a connection-free checkpoint instead of
+            occupying an input worker while L4 runs.
+        continuation: Resume a previously suspended turn with a ready trigger
+            or failure supplied by the runtime scheduler.
 
     Returns:
         Frozen :class:`RunTurnResult` describing what was written and
@@ -1951,7 +1982,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     """
     effective_turn_id = str(user_intent_event.payload["turn_id"])
     record_realtime_trace(
-        "intent_queue_accepted",
+        "intent_queue_accepted" if continuation is None else "turn_continuation_resumed",
         turn_id=effective_turn_id,
         source="runtime_drive_turn",
     )
@@ -1959,15 +1990,21 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     # decide loop so the per-run request client, the terminal owner and the
     # L5 ids all name the same response. Returns None with the flag off, and
     # every use below is guarded on that None.
-    run_pair = _start_drive_turn_response(
+    run_pair = None if continuation is not None else _start_drive_turn_response(
         runtime,
         user_intent_event=user_intent_event,
         turn_id=effective_turn_id,
     )
-    run: ResponseRun | None = None
+    run: ResponseRun | None = continuation.run if continuation is not None else None
     terminalizer: ResponseTerminalizer | None = None
     if run_pair is not None:
         run, terminalizer = run_pair
+    elif run is not None:
+        terminalizer = ResponseTerminalizer(
+            lambda: runtime.conn, close_after=False,
+            committed_event_bus=runtime.committed_event_bus,
+        )
+    suspended = False
 
     def _run_cancelled() -> bool:
         """Return whether this turn's ResponseRun has been cancelled."""
@@ -1994,7 +2031,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         else {"response_id": run.response_id, "response_group_id": run.response_group_id}
     )
     record_realtime_trace(
-        "response_started",
+        "response_started" if continuation is None else "response_resumed",
         turn_id=effective_turn_id,
         trigger_type=user_intent_event.type,
         **response_trace_ids,
@@ -2005,6 +2042,12 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     # sweep will refuse to close for the life of the process, so a crashed
     # turn would permanently protect the very orphan it created.
     try:
+        if continuation is not None:
+            _raise_if_cancelled("before continuation")
+            if continuation.failure is not None:
+                raise continuation.failure  # noqa: TRY301 — resume through the same failure owner
+            if run is not None:
+                run.mark("generating")
         decide_ctx = DecideContext(
             conn=runtime.conn,
             runtime_paths=runtime.runtime_paths,
@@ -2054,10 +2097,16 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
 
         # SQLite row id of the surface.user_intent event — used as the
         # "after_id" anchor for the trigger poll loop.
-        last_seen_id = _latest_row_id(runtime.conn)
+        last_seen_id = (
+            continuation.after_id if continuation is not None else _latest_row_id(runtime.conn)
+        )
 
-        collected_events: list[Event] = []
-        trigger_event: Event = user_intent_event
+        collected_events: list[Event] = list(continuation.events) if continuation else []
+        trigger_event: Event = (
+            continuation.trigger
+            if continuation is not None and continuation.trigger is not None
+            else user_intent_event
+        )
         response_plan: ResponsePlan | None = None
         # Track the attention_channel from the final decide() iteration so
         # we can route the response to the right surfaces in Step 18.
@@ -2066,7 +2115,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         # field; the L3 Attention Policy emits one of the 9 channels for
         # canonical branches today.
         final_attention_channel: str = "voice_notify"
-        iterations = 0
+        iterations = continuation.iterations if continuation is not None else 0
 
         while response_plan is None and iterations < max_iterations:
             _raise_if_cancelled("before a decide iteration")
@@ -2105,6 +2154,13 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             if run is not None:
                 _raise_if_cancelled("before the action wait")
                 run.mark("waiting_action")
+            if suspend_when_waiting:
+                suspended = True
+                raise TurnSuspended(WaitingTurn(  # noqa: TRY301 — scheduler handoff preserves finally ownership
+                    intent=user_intent_event, run=run, after_id=last_seen_id,
+                    action_ids=owned_action_ids, deadline=time.monotonic() + wait_timeout_s,
+                    iterations=iterations, events=tuple(collected_events),
+                ))
             try:
                 next_event, last_seen_id = _wait_for_next_trigger(
                     runtime.conn,
@@ -2234,6 +2290,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             events_emitted=tuple(collected_events),
             attention_channel=final_attention_channel,
         )
+    except TurnSuspended:
+        raise
     except ResponseCancelledError:
         # The cancel caller already committed response.cancelled. Re-raise so
         # the daemon watcher can tell a cancelled turn from a failed one.
@@ -2253,61 +2311,62 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 )
         raise
     finally:
-        # --- Stash-pop finalizer (ADR-0002 § Dirty-tree policy, amended
-        # 2026-08-25). Lives in the finally: lexically after the last
-        # decide() call — canary ``test_canary_stash_pop_after_verify``
-        # enforces the ordering, so verify_diff read exactly Codex's
-        # tree — and unconditionally, so an exception between decide()
-        # and finalization cannot orphan Allen's pre-task stash. The
-        # guard keeps the finally from masking the original exception.
-        if run is not None and runtime.response_runs is not None:
-            runtime.response_runs.unregister(run.response_id)
+        if not suspended:
+            # --- Stash-pop finalizer (ADR-0002 § Dirty-tree policy, amended
+            # 2026-08-25). Lives in the finally: lexically after the last
+            # decide() call — canary ``test_canary_stash_pop_after_verify``
+            # enforces the ordering, so verify_diff read exactly Codex's
+            # tree — and unconditionally, so an exception between decide()
+            # and finalization cannot orphan Allen's pre-task stash. The
+            # guard keeps the finally from masking the original exception.
+            if run is not None and runtime.response_runs is not None:
+                runtime.response_runs.unregister(run.response_id)
 
-        def _finalize_turn_resources() -> VerificationOutcome:
-            """Restore this turn's stashes, release its actions, report the outcome.
+            def _finalize_turn_resources() -> VerificationOutcome:
+                """Restore this turn's stashes, release its actions, report the outcome.
 
-            ADR-0008 D9 (Step 4): the runner decides *when* this runs — here
-            on this thread when every action of the turn already finished,
-            or on a background worker's own thread the moment it does. Either
-            way it opens its own Event Log connection, because
-            ``runtime.conn`` belongs to whichever thread ``drive_turn`` is on
-            and SQLite would refuse it from the worker.
+                ADR-0008 D9 (Step 4): the runner decides *when* this runs — here
+                on this thread when every action of the turn already finished,
+                or on a background worker's own thread the moment it does. Either
+                way it opens its own Event Log connection, because
+                ``runtime.conn`` belongs to whichever thread ``drive_turn`` is on
+                and SQLite would refuse it from the worker.
 
-            Order is the ADR-0002 Dirty-tree policy: verify_diff has already
-            reached its terminal by the time the driver asks, the stash goes
-            back next, and only then may the cleanup terminal say the repo is
-            safe.
-            """
-            finalizer_conn = open_event_log(runtime.runtime_paths.event_log)
+                Order is the ADR-0002 Dirty-tree policy: verify_diff has already
+                reached its terminal by the time the driver asks, the stash goes
+                back next, and only then may the cleanup terminal say the repo is
+                safe.
+                """
+                finalizer_conn = open_event_log(runtime.runtime_paths.event_log)
+                try:
+                    _pop_pending_stashes(
+                        finalizer_conn,
+                        artifacts_root=runtime.runtime_paths.artifacts_root,
+                        turn_id=effective_turn_id,
+                    )
+                    return _turn_verification_outcome(finalizer_conn, effective_turn_id)
+                finally:
+                    with contextlib.suppress(sqlite3.Error):
+                        finalizer_conn.close()
+
             try:
-                _pop_pending_stashes(
-                    finalizer_conn,
-                    artifacts_root=runtime.runtime_paths.artifacts_root,
-                    turn_id=effective_turn_id,
-                )
-                return _turn_verification_outcome(finalizer_conn, effective_turn_id)
-            finally:
-                with contextlib.suppress(sqlite3.Error):
-                    finalizer_conn.close()
-
-        try:
-            if runtime.action_runner is None:
-                _finalize_turn_resources()
-            else:
-                runtime.action_runner.finalize_turn_cleanup(
+                if runtime.action_runner is None:
+                    _finalize_turn_resources()
+                else:
+                    runtime.action_runner.finalize_turn_cleanup(
+                        effective_turn_id,
+                        # Overridden by whatever `_finalize_turn_resources`
+                        # derives; this is the value for a turn whose finalizer
+                        # could not run at all.
+                        verification_outcome="verification_skipped",
+                        on_finalize=_finalize_turn_resources,
+                    )
+            except Exception:
+                LOGGER.exception(
+                    "drive_turn: turn cleanup finalizer failed (turn_id=%r)",
                     effective_turn_id,
-                    # Overridden by whatever `_finalize_turn_resources`
-                    # derives; this is the value for a turn whose finalizer
-                    # could not run at all.
-                    verification_outcome="verification_skipped",
-                    on_finalize=_finalize_turn_resources,
                 )
-        except Exception:
-            LOGGER.exception(
-                "drive_turn: turn cleanup finalizer failed (turn_id=%r)",
-                effective_turn_id,
-            )
-        release_turn_actions(effective_turn_id)
+            release_turn_actions(effective_turn_id)
 
 
 def _turn_verification_outcome(
