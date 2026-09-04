@@ -107,6 +107,16 @@ The L2 operation cannot call today's auto-committing `emit_event()` from inside 
 
 Runtime never writes a L3 terminal directly. On restart it calls the L3 recovery port, which folds open ResponseRuns and asks `ResponseTerminalizer` to close them.
 
+Request admission and response cancellation share an ordering fence. A token
+checkpoint before prompt/pricing/client setup is insufficient: cancellation can
+win during that setup. L3 therefore commits a `response.request_admitted` fact
+under the response fence after setup, then releases the fence before provider
+I/O. A request admitted first may finish after cancellation; cancellation first
+prevents admission. Admission is neither a provider-success nor an output fact.
+Decision and fresh-context reviewer requests use this boundary. The cancellation
+deadline includes waiting for this fence and for SQLite, so network lifetime
+must never become lock lifetime. The event contract is in spec §5.4.4.
+
 `ResponseRun` owns:
 
 ```text
@@ -433,6 +443,15 @@ If the queue is full, the watcher leaves the event unconsumed and applies backpr
 
 Group continuation is distinct from foreground supersession. When an ActionGroup barrier reaches its declared terminal/deadline, L3 uses the stable source action/barrier event UID to atomically claim at most one successor `response.started(phase="final", response_group_id=<same group>)`. A duplicate callback or restart scan returns the existing response ID instead of creating another final. Same-group successors enter a coordinator-owned semantic continuation queue and never call `supersede_foreground`; a background group may create and publish its document final while a newer group owns foreground speech. A speech successor uses ADR-0006 `enqueue_after_drain` only while that same group owns the active presentation lane. Otherwise it remains pending until explicit foreground policy selects it or degrades to document/silent delivery; it cannot displace another group. Startup reconciliation re-enqueues a durable action/barrier terminal only when its continuation claim has no final milestone.
 
+The current turn-driven migration needs a narrower completion guarantee before
+that full continuation design is available. Semantic completion identifies its
+consumed trigger durably on `turn.ended` (spec §5.4.4); a separate operational
+consumption marker may optimize recognition but cannot be its sole proof.
+Otherwise a marker write failure after completed effects would cause a held
+terminal to be driven again when live ownership releases. A true orphan remains
+eligible. This does not make partial decision effects, delivery, and provider
+requests one crash-atomic transaction.
+
 Turn concurrency is forbidden from relying on the current snapshot-only confirmation single-use check. The pure Pre-action Gate remains a provisional decision, but any confirmation-backed pass must commit through one L2 primitive:
 
 ```text
@@ -447,6 +466,10 @@ COMMIT
 ```
 
 Consumption uniqueness is keyed by `source_confirmation_event_id`, not the freshly generated `lease_id`: duplicate handling of one `confirmation.accepted` must resolve to the same stable action/authorization claim. A loser cannot append a second passing gate or outbox row. This atomic claim is a prerequisite for enabling more than one concurrent intent worker and amends ADR-0012's sequential snapshot-only single-use mechanism.
+
+Expiry is evaluated after the write lock is acquired at both authorization and
+L4 outbox admission. Time spent waiting for SQLite cannot extend a lease: a
+pre-lock clock sample would silently authorize work after its permission ended.
 
 ### D9. `spawn_worker` becomes a true ActionRun
 
@@ -482,6 +505,16 @@ True asynchrony also transfers the current synchronous cleanup ownership:
 - the current live-action/stash canaries are adapted and kept.
 
 `verify_diff` remains an independently gated and audited child ActionRun because its configured command is not safe to invoke as an ungated L4 helper. To avoid self-deadlock, L4 adds `resource_scope_id` and `parent_action_id`. After the normal L3 gate passes, a child may borrow the parent's existing resource lease only when L4 proves that every requested resource key is a subset of the parent's scope. The child receives no raw lease token, cannot expand or release the scope, and does not reacquire the repo lock. Its terminal unblocks verification but only the root action's cleanup terminal releases the lease. An unrelated same-repo action remains blocked through verification and stash cleanup; different repos may proceed. Verification-needed lifecycle events travel through runtime back to L3—an L4 finalizer never calls L3 directly.
+
+Current migration limitation: a new root in the same turn that conflicts with a
+predecessor's cleanup debt is promptly refused with an explicit instruction to
+finish the turn before retrying. Turn cleanup waits for that turn's in-flight
+jobs, so accepting a successor that waits for the predecessor's lease creates
+a cycle, even if the predecessor already quiesced. Submission-order reservations
+also cover predecessors still awaiting a lease. This refusal preserves physical
+debt instead of borrowing a sibling scope or restoring the stash early; it is
+not support for consecutive conflicting roots within one turn. Cross-turn
+serialization and explicit read-only verification children remain supported.
 
 Canonical action terminal, worker quiescence, and repository cleanup are three separate facts. `ActionExecutionContext` owns an explicit cleanup state until the resource is safe:
 

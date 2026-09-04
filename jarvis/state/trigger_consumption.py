@@ -31,6 +31,8 @@ def trigger_was_consumed(conn: sqlite3.Connection, event_uid: str) -> bool:
     _ensure_schema(conn)
     return conn.execute(
         "SELECT 1 FROM decision_trigger_consumptions WHERE event_uid = ? "
-        "UNION ALL SELECT 1 FROM events WHERE type = 'turn.ended' AND source_event_id = ? LIMIT 1",
-        (event_uid, event_uid),
+        "UNION ALL SELECT 1 FROM events WHERE type = 'turn.ended' AND "
+        "(source_event_id = ? OR json_extract(payload_json, '$.consumed_trigger_event_uid') = ?) "
+        "LIMIT 1",
+        (event_uid, event_uid, event_uid),
     ).fetchone() is not None

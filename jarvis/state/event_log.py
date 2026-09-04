@@ -251,7 +251,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L3",
         actor="jarvis_runtime",
         required_payload=("turn_id",),
-        optional_payload=("final_response_hash",),
+        optional_payload=("final_response_hash", "consumed_trigger_event_uid"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -709,6 +709,14 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     # ADR-0008 Wave 1 — L3 response lifecycle.  These registrations are
     # inert until the corresponding feature flag routes callers through the
     # shared lifecycle terminal owner.
+    EventTypeSchema(
+        event_type="response.request_admitted",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("response_id", "admission_id", "kind"),
+        optional_payload=(),
+        schema_version=1,
+    ),
     EventTypeSchema(
         event_type="response.started",
         owner_layer="L3",

@@ -731,6 +731,10 @@ class ActionRunner:
         # yet, so `_contexts` alone cannot answer "is this turn quiet?".
         self._inflight: dict[str, str | None] = {}
         self._turn_cleanups: dict[str, _TurnCleanupRequest] = {}
+        # Submission order also covers roots not yet holding a scope. A
+        # same-turn successor must not wait on debt whose finalizer waits for
+        # that successor; preserve the predecessor until cleanup completes.
+        self._root_reservations: dict[str, ActionJob] = {}
 
     @property
     def leases(self) -> ResourceLeaseTable:
@@ -777,6 +781,8 @@ class ActionRunner:
             epoch = self._epochs.get(job.action_id, -1) + 1
             self._epochs[job.action_id] = epoch
             self._inflight[job.action_id] = job.turn_id
+            if job.concurrency.parent_action_id is None:
+                self._root_reservations[job.action_id] = job
         context_ready = threading.Event()
         future: Future[RawResultBundle] = Future()
         thread = threading.Thread(
@@ -793,6 +799,7 @@ class ActionRunner:
                 self._threads.append(thread)
             except BaseException:
                 self._inflight.pop(job.action_id, None)
+                self._root_reservations.pop(job.action_id, None)
                 raise
         return ActionSubmission(
             handle=ActionHandle(
@@ -944,6 +951,23 @@ class ActionRunner:
                     mode=job.concurrency.mode,
                     parent_action_id=parent_action_id,
                 )
+        with self._lock:
+            for predecessor in self._root_reservations.values():
+                if predecessor.action_id == job.action_id:
+                    break
+                if (
+                    job.turn_id is not None
+                    and predecessor.turn_id == job.turn_id
+                    and predecessor.carries_cleanup_debt
+                    and _conflicts(
+                        held_keys=frozenset(predecessor.concurrency.resource_keys),
+                        held_mode=predecessor.concurrency.mode,
+                        want_keys=keys,
+                        want_mode=job.concurrency.mode,
+                    )
+                ):
+                    msg = "same-turn root blocked by cleanup debt; finish this turn before retrying"
+                    raise ActionRunnerError(msg)
         return self._leases.acquire(
             action_id=job.action_id,
             keys=keys,
@@ -1183,6 +1207,8 @@ class ActionRunner:
             self._leases.release(context.resource_scope)
         with self._lock:
             self._contexts.pop(action_id, None)
+            if not failed:
+                self._root_reservations.pop(action_id, None)
         return event.event_uid
 
     def finalize_turn_cleanup(
@@ -1233,6 +1259,8 @@ class ActionRunner:
                 # A Python handler returning does not prove its OS worker stopped.
                 return
             self._inflight.pop(job.action_id, None)
+            if context is None or not job.carries_cleanup_debt:
+                self._root_reservations.pop(job.action_id, None)
         try:
             if job.turn_id is None:
                 return

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +16,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+import jarvis.runtime as runtime_module
 from jarvis.decision import DecideContext, _append_cost_recorded, _emit_cost_recorded_for_run
 from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.decision.llm_session import LLMRequestClient
@@ -28,7 +30,7 @@ from jarvis.runtime import (
 )
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_action
-from jarvis.state.trigger_consumption import trigger_was_consumed
+from jarvis.state.trigger_consumption import mark_trigger_consumed, trigger_was_consumed
 from tests.integration.test_wave4a_response_run import (
     _drive_turn_on_own_connection,
     _emit_intent,
@@ -201,20 +203,36 @@ def test_two_reentries_record_one_worker_cost(tmp_path: Path) -> None:
     runtime.conn.close()
 
 
+@pytest.mark.parametrize("marker_fails", [False, True])
 def test_held_terminal_consumed_by_original_turn_is_not_replayed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    marker_fails: bool,
 ) -> None:
     """Run the real asynchronous watcher and its driver on isolated state."""
-    asyncio.run(_held_terminal_scenario(tmp_path, monkeypatch))
+    asyncio.run(_held_terminal_scenario(tmp_path, monkeypatch, marker_fails=marker_fails))
 
 
-async def _held_terminal_scenario(
+async def _held_terminal_scenario(  # noqa: PLR0915 - held and orphan watcher phases
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    marker_fails: bool = False,
 ) -> None:
     """The actual watcher distinguishes a consumed held row from a true orphan."""
     runtime = _make_runtime(tmp_path)
+    mark = mark_trigger_consumed
+    marker_calls: list[str] = []
+
+    def marker(conn: sqlite3.Connection, uid: str, turn_id: str) -> None:
+        marker_calls.append(uid)
+        if marker_fails and len(marker_calls) == 1:
+            message = "injected consumption marker failure after semantic completion"
+            raise sqlite3.OperationalError(message)
+        mark(conn, uid, turn_id)
+
+    monkeypatch.setattr(runtime_module, "mark_trigger_consumed", marker)
     execution_tools.register_live_action(turn_id="held-turn", action_id="held-action")
     execution_tools.register_running_action("held-action")
     terminal = emit_event(
@@ -250,11 +268,17 @@ async def _held_terminal_scenario(
     try:
         await asyncio.wait_for(seen_live.wait(), 5)
         trigger = replace(terminal, payload={**terminal.payload, "turn_id": "held-turn"})
-        drive_turn(runtime, user_intent_event=trigger, available_surfaces=frozenset())
+        if marker_fails:
+            with pytest.raises(sqlite3.OperationalError, match="marker failure"):
+                drive_turn(runtime, user_intent_event=trigger, available_surfaces=frozenset())
+        else:
+            drive_turn(runtime, user_intent_event=trigger, available_surfaces=frozenset())
+        assert _event_count(runtime.conn, "turn.ended") == 1
         assert trigger_was_consumed(runtime.conn, terminal.event_uid)
         execution_tools.release_running_action("held-action")
         await asyncio.sleep(0.03)
         assert driven == []
+        assert _event_count(runtime.conn, "turn.ended") == 1
         orphan = emit_event(
             runtime.conn,
             type="action.failed",

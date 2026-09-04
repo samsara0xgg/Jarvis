@@ -2046,6 +2046,10 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             confirm_grammar_table=runtime.confirm_grammar_table,
             wave1_features=runtime.wave1_features,
             cancellation_checkpoint=run.check_cancelled if run is not None else None,
+            request_admission=(
+                (lambda kind: run.admit_request(runtime.conn, kind))
+                if run is not None else None
+            ),
         )
 
         # SQLite row id of the surface.user_intent event — used as the

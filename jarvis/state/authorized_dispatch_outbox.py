@@ -174,7 +174,6 @@ def admit_authorized_dispatch(  # noqa: C901, PLR0915 - atomic fail-closed valid
         or action_request.tool_name not in lease["allowed_tools"]
         or action_request.target_entity_ref not in lease["allowed_targets"]
         or lease["max_uses"] != 1
-        or int(time.time() * 1000) >= lease["expires_at_ms"]
     ):
         message = "dispatch lease expired or does not permit this action"
         raise ConfirmationRevalidationError(message)
@@ -184,6 +183,9 @@ def admit_authorized_dispatch(  # noqa: C901, PLR0915 - atomic fail-closed valid
     ensure_authorized_dispatch_schema(conn)
     conn.execute("BEGIN IMMEDIATE")
     try:
+        if int(time.time() * 1000) >= lease["expires_at_ms"]:
+            message = "dispatch lease expired while awaiting admission"
+            raise ConfirmationRevalidationError(message)  # noqa: TRY301
         dispatch = _load_dispatch_by_source(conn, lease["source_confirmation_event_id"])
         if dispatch is None:
             message = "confirmation has no authorized dispatch debt"
@@ -730,7 +732,6 @@ def authorize_confirmation_dispatch(  # noqa: PLR0913 - transaction inputs mirro
         msg = "authorized-dispatch primitive requires transaction ownership"
         raise AuthorizedDispatchTransactionStateError(msg)
     ensure_authorized_dispatch_schema(conn)
-    effective_now_ms = int(time.time() * 1000) if now_ms is None else now_ms
     identity = stable_authorization_identity(source_confirmation_event_id)
     if gate_payload.get("gate") != "pre_action" or gate_payload.get("outcome") != "pass":
         msg = "only an L3 passing gate may create authorized dispatch debt"
@@ -745,6 +746,7 @@ def authorize_confirmation_dispatch(  # noqa: PLR0913 - transaction inputs mirro
     conn.execute("BEGIN IMMEDIATE")
     try:
         _inject(failure_injector, "after_begin")
+        effective_now_ms = int(time.time() * 1000) if now_ms is None else now_ms
         existing = _load_dispatch_by_source(conn, source_confirmation_event_id)
         if existing is not None:
             conn.commit()

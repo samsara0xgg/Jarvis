@@ -411,14 +411,20 @@ def _run_llm_chat_with_cost_guard(  # noqa: PLR0913 - mirrors the provider call 
 ) -> ChatResult:
     """Use the exactly-once guard only when its Wave 1 flag is enabled."""
     _check_response_cancelled(ctx, "before provider request")
-    if not ctx.wave1_features.exactly_once_cost_accounting:
+    cost_recorder = (
+        CostRecorder(ctx.conn, pricing_table=_pricing_table())
+        if ctx.wave1_features.exactly_once_cost_accounting else None
+    )
+    if ctx.request_admission is not None:
+        ctx.request_admission(kind)
+    if cost_recorder is None:
         return ctx.llm_client.chat(
             messages=messages,
             system=system,
             tools=tools,
             tool_choice=tool_choice,
         )
-    return CostRecorder(ctx.conn, pricing_table=_pricing_table()).chat(
+    return cost_recorder.chat(
         ctx.llm_client,
         messages=messages,
         system=system,
@@ -819,6 +825,7 @@ class DecideContext:
     confirm_grammar_table: ConfirmGrammarTable = ()
     wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
     cancellation_checkpoint: Callable[[str], None] | None = None
+    request_admission: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -2228,6 +2235,7 @@ def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are 
             llm_client=ctx.llm_client,
             cost_recorder=reviewer_cost_recorder,
             turn_id=scratch.turn_id,
+            request_admission=ctx.request_admission,
         )
         # ADR-0002 § Reviewer contract line 743: the reviewer module
         # returns token counts on :class:`ReviewerVerdict`; this
@@ -3064,7 +3072,11 @@ def _finalize_response(
         ended_event = emit_event(
             ctx.conn,
             type="turn.ended",
-            payload={"turn_id": scratch.turn_id, "final_response_hash": plan.response_hash},
+            payload={
+                "turn_id": scratch.turn_id,
+                "final_response_hash": plan.response_hash,
+                "consumed_trigger_event_uid": packet.trigger_event.event_uid,
+            },
             source_event_id=last_gate_event.event_uid,
             correlation={"turn_id": scratch.turn_id},
         )

@@ -25,6 +25,7 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -36,6 +37,7 @@ from jarvis.shared.realtime import (
     stable_response_group_id,
 )
 from jarvis.shared.realtime_trace import record_realtime_trace
+from jarvis.state.event_log import emit_event
 from jarvis.state.lifecycle_terminal import terminalize_response
 from jarvis.state.response_runs import append_response_started, open_response_runs
 
@@ -233,9 +235,9 @@ class ResponseRun:
 
     @contextlib.contextmanager
     def admission_guard(self) -> Iterator[None]:
-        """Linearize new action admission against response cancellation."""
+        """Linearize new work admission against response cancellation."""
         with self.admission_lock:
-            self.check_cancelled("before action admission")
+            self.check_cancelled("before work admission")
             yield
 
     def check_cancelled(self, where: str) -> None:
@@ -243,6 +245,26 @@ class ResponseRun:
         if self.cancellation_token.is_cancelled or self.state == "cancelled":
             message = f"response {self.response_id} cancelled {where}"
             raise ResponseCancelledError(message)
+
+    def admit_request(self, conn: sqlite3.Connection, kind: str) -> None:
+        """Commit request admission against cancellation; release before network I/O.
+
+        A cancelled response may still receive an already admitted request's
+        result. The admission row distinguishes that case from new work that
+        cancellation must prevent; it is not evidence of provider execution.
+        """
+        with self.admission_guard():
+            emit_event(
+                conn,
+                type="response.request_admitted",
+                payload={
+                    "response_id": self.response_id,
+                    "admission_id": "REQADM" + uuid.uuid4().hex,
+                    "kind": kind,
+                },
+                source_event_id=self.facts.started_event_uid,
+                correlation={"turn_id": self.facts.turn_id},
+            )
 
     @property
     def facts(self) -> ResponseRunFacts:

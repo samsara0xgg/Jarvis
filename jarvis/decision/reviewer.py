@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from jarvis.decision.cost_guard import CostRecorder
     from jarvis.decision.llm import LLMClient
 
@@ -146,6 +148,7 @@ def review_diff(  # noqa: PLR0913 - provider call plus optional Wave 1 accountin
     model: str = "gpt-5.5",
     cost_recorder: CostRecorder | None = None,
     turn_id: str | None = None,
+    request_admission: Callable[[str], None] | None = None,
 ) -> ReviewerVerdict:
     """Run the reviewer LLM on ``diff_text`` against ``task_goal``.
 
@@ -174,6 +177,8 @@ def review_diff(  # noqa: PLR0913 - provider call plus optional Wave 1 accountin
         cost_recorder: Optional Wave 1 L3 guard. When present it owns the
             request's completion/error accounting transaction.
         turn_id: Optional turn correlation supplied to ``cost_recorder``.
+        request_admission: Optional response fence that commits admission after
+            prompt/client setup and releases before the provider request.
 
     Returns:
         A :class:`ReviewerVerdict` with ``verdict``, ``reasons``,
@@ -200,6 +205,8 @@ def review_diff(  # noqa: PLR0913 - provider call plus optional Wave 1 accountin
     # stateless so this is a structural marker today — see
     # :meth:`LLMClient.fresh_context` docstring for the rationale.
     with llm_client.fresh_context() as fresh:
+        if request_admission is not None:
+            request_admission("reviewer")
         if cost_recorder is None:
             chat_result = fresh.chat(
                 messages=[{"role": "user", "content": user_text}],

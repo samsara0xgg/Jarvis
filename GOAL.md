@@ -3,13 +3,20 @@
 Goal: close the audited authorization, cancellation, ownership, continuation,
 and accounting correctness gaps while preserving the existing realtime design.
 
+Independent review of 22e363a is NOT ACCEPTED. Current acceptance additionally
+requires post-lock TTL checks, progress or prompt refusal for a same-turn root
+blocked by cleanup debt, physical close on every worker exit, ordered provider
+and reviewer admission, and durable recognition of completed trigger processing
+when the optional consumption marker fails. These are repairs in this scope.
+
 Done criteria and evidence:
 - R1: two real decisions on one confirmation yield one canonical acceptance,
   one authorization/outbox claim, and at most one L4 handler acceptance;
   replay and crash ambiguity fail closed. Unsafe pump configurations stay off.
 - R2–R3: cancellation winning admission prevents late tool/provider work;
   a 50 ms SQLite cancel budget includes connection and admission-lock waits.
-- R4–R7: short tools do not retain fictitious debt; mutating siblings serialize;
+- R4–R7: short tools do not retain fictitious debt; mutating siblings serialize
+  across turns or promptly refuse unsupported same-turn cleanup dependencies;
   restart restores unresolved original-mode debt; shutdown rejects queued work;
   failed process close never proves physical quiescence.
 - R8–R10: one terminal has one semantic continuation; concurrent vision calls

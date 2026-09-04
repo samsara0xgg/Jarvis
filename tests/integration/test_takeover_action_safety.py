@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -27,14 +28,16 @@ from tests.integration.test_wave4b_action_runner import (
 )
 
 if TYPE_CHECKING:
-    import sqlite3
     from pathlib import Path
 
     from jarvis.shared import ActionRequest, RawResult
 
 
-def test_same_turn_mutators_cannot_borrow_an_active_sibling(tmp_path: Path) -> None:
-    """A real second handler stays queued until the first repo cleanup commits."""
+@pytest.mark.parametrize("first_finished", [False, True])
+def test_same_turn_mutators_refuse_cleanup_self_wait(
+    tmp_path: Path, *, first_finished: bool,
+) -> None:
+    """Reject an unsupported root dependency so production turn cleanup can run."""
     entered = threading.Event()
     release = threading.Event()
     second_entered = threading.Event()
@@ -57,13 +60,28 @@ def test_same_turn_mutators_cannot_borrow_an_active_sibling(tmp_path: Path) -> N
         assert fixture.runner is not None
         first = fixture.submit(_request("write", "first", turn_id="same"))
         assert entered.wait(3)
+        if first_finished:
+            release.set()
+            first.handle.result(timeout=3)
         second = fixture.submit(_request("write", "second", turn_id="same"))
-        assert not second_entered.wait(0.15)
+        with pytest.raises(ActionRunnerError, match="same-turn root blocked by cleanup debt"):
+            second.handle.result(timeout=.5)
+        finalized = threading.Event()
+        fixture.runner.finalize_turn_cleanup(
+            "same", verification_outcome="verified", on_finalize=finalized.set,
+        )
+        if not first_finished:
+            assert not finalized.is_set()
+            assert len(fixture.runner.leases.live_scopes()) == 1
         release.set()
         first.handle.result(timeout=3)
+        assert finalized.wait(1)
         assert not second_entered.is_set()
-        fixture.runner.finalize_cleanup("first", verification_outcome="verified")
-        second.handle.result(timeout=3)
+        assert fixture.runner.leases.live_scopes() == ()
+        assert len(_payloads(fixture.conn, "action.failed")) == 1
+        # A subsequent turn can use the repository after real turn cleanup.
+        third = fixture.submit(_request("write", "third", turn_id="next"))
+        third.handle.result(timeout=3)
         assert second_entered.is_set()
     finally:
         release.set()
@@ -178,6 +196,86 @@ def test_failed_codex_close_retains_physical_worker_debt(
         assert len(fixture.runner.leases.live_scopes()) == 1
     finally:
         kill()
+        process.wait(timeout=3)
+        process.stdout.close()
+        fixture.close()
+
+
+@pytest.mark.parametrize("failure_site", ["heartbeat", "notification", "server_request"])
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_worker_loop_exceptions_settle_physical_ownership(  # noqa: PLR0915 - process lifecycle oracle
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_site: str, *, close_fails: bool,
+) -> None:
+    """Unexpected loop failures close a real child or retain its physical debt."""
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import signal,time; "
+         "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+         "print('ready',flush=True); time.sleep(30)"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline() == b"ready\n"
+    kill = process.kill
+    client = CodexAppServerClient.__new__(CodexAppServerClient)
+    client._proc = process  # noqa: SLF001 - actual child with protocol failure injection
+    client._closed = False  # noqa: SLF001
+    close = client.close
+    close_calls: list[int] = []
+
+    def fail(**_kwargs: object) -> None:
+        message = "injected SQLite worker-loop failure"
+        raise sqlite3.OperationalError(message)
+
+    def close_child(**_kwargs: object) -> None:
+        close_calls.append(1)
+        close(timeout=.02)
+
+    def heartbeat(_payload: object) -> None:
+        fail()
+
+    if close_fails:
+        monkeypatch.setattr(process, "kill", fail)
+    monkeypatch.setattr(client, "initialize", lambda **_kwargs: None)
+    monkeypatch.setattr(client, "request", lambda *_args, **_kwargs: {"thread": {"id": "test"}})
+    monkeypatch.setattr(client, "take_server_request",
+                        fail if failure_site == "server_request" else lambda **_kwargs: None)
+    monkeypatch.setattr(client, "take_notification",
+                        fail if failure_site == "notification" else lambda **_kwargs: None)
+    monkeypatch.setattr(client, "close", close_child)
+    monkeypatch.setattr(codex_action, "CodexAppServerClient", lambda **_kwargs: client)
+
+    def body(request: ActionRequest, _conn: sqlite3.Connection) -> RawResult:
+        codex_action.run_codex_action(
+            task_goal="fixture", cwd=tmp_path, env={"CODEX_HOME": str(tmp_path)},
+            timeout_s=2, on_heartbeat=heartbeat, heartbeat_interval_s=0,
+        )
+        return _ack(request)
+
+    fixture = _Fixture(
+        tmp_path, tools=(_fixture_tool("worker", body),),
+        resolver=_fixed_resolver({"worker": ToolConcurrency(("repo",), "write_exclusive")}),
+    )
+    finalized = threading.Event()
+    try:
+        assert fixture.runner is not None
+        submission = fixture.submit(_request("worker", "loop-error", turn_id="loop-turn"))
+        with pytest.raises((RuntimeError, sqlite3.OperationalError)):
+            submission.handle.result(timeout=3)
+        assert close_calls == [1]
+        context = fixture.runner.context_of("loop-error")
+        assert context is not None
+        assert context.is_quiesced is not close_fails
+        assert (process.poll() is None) is close_fails
+        assert len(_payloads(fixture.conn, "worker.quiesced")) == (0 if close_fails else 1)
+        fixture.runner.finalize_turn_cleanup(
+            "loop-turn", verification_outcome="verification_skipped", on_finalize=finalized.set,
+        )
+        assert finalized.is_set() is not close_fails
+        assert fixture.runner.turn_has_inflight("loop-turn") is close_fails
+        assert len(fixture.runner.leases.live_scopes()) == (1 if close_fails else 0)
+    finally:
+        if process.poll() is None:
+            kill()
         process.wait(timeout=3)
         process.stdout.close()
         fixture.close()
