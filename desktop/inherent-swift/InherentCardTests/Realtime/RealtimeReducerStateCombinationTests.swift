@@ -208,4 +208,52 @@ final class RealtimeReducerStateCombinationTests: XCTestCase {
     )
     XCTAssertEqual(run.state.backgroundShelf, [])
   }
+
+  /// the local cancel overlay and the durable cancel request
+  ///
+  /// The overlay has no producer yet, so both directions seed it directly:
+  /// what is under test is which of the two cancel notions an upsert leaves
+  /// standing, not how the overlay is set.
+  private func runningActionWithOverlay() throws -> Reducing {
+    var run = Reducing()
+    try run.goLive()
+    try run.durable(cursor: 1, [Fx.action("A-1", group: "G-1", state: "running", revision: 1)])
+    run.state.actions[ActionID("A-1")]?.commandOverlay = .cancelSubmitting
+    return run
+  }
+
+  func test_upsertWithoutACancelRequestKeepsTheLocalOverlay() throws {
+    var run = try runningActionWithOverlay()
+
+    // The key dropped entirely, as a server that predates it sends it: every
+    // other action fixture carries the explicit null this one omits.
+    var upsert = Fx.action("A-1", group: "G-1", state: "running", revision: 2)
+    upsert["cancel_request"] = nil
+    try run.durable(cursor: 2, [upsert])
+
+    let action = run.state.actions[ActionID("A-1")]
+    XCTAssertEqual(action?.commandOverlay, ActionCommandOverlay.cancelSubmitting)
+    XCTAssertNil(action?.cancelRequest, "no cancel_request is no cancel truth")
+  }
+
+  func test_upsertCarryingACancelRequestRetiresTheLocalOverlay() throws {
+    var run = try runningActionWithOverlay()
+
+    try run.durable(
+      cursor: 2,
+      [
+        Fx.action(
+          "A-1", group: "G-1", state: "running", revision: 2,
+          cancel: ["request_id": "ACANCEL", "state": "rejected", "revision_cursor": 2,
+                   "reason_code": "target_already_terminal"]
+        )
+      ]
+    )
+
+    let action = run.state.actions[ActionID("A-1")]
+    XCTAssertEqual(action?.commandOverlay, ActionCommandOverlay.none, "the server answered")
+    XCTAssertEqual(action?.cancelRequest?.requestId, "ACANCEL")
+    XCTAssertEqual(action?.cancelRequest?.state, .rejected)
+    XCTAssertEqual(action?.cancelRequest?.reasonCode, "target_already_terminal")
+  }
 }

@@ -255,6 +255,35 @@ public struct PlaybackStateChange: Decodable, Equatable, Sendable {
   }
 }
 
+/// D13 `CancelRequestState`: the A5 request's own state machine, which never
+/// enters the canonical `ActionCanonicalState`.
+public enum CancelRequestState: String, Decodable, Equatable, Sendable {
+  case received
+  case authorized
+  case quiescing
+  case rejected
+  case failed
+  case resolved
+}
+
+/// The durable cancel request held against its target action (D13).
+///
+/// `target_action_id` duplicates the enclosing `ActionUpsert.actionId` and
+/// `proposed_event_uid` is fold-internal provenance, so neither is sent.
+public struct CancelRequestView: Decodable, Equatable, Sendable {
+  public var requestId: String
+  public var state: CancelRequestState
+  public var revisionCursor: Int
+  public var reasonCode: String?
+
+  enum CodingKeys: String, CodingKey {
+    case requestId = "request_id"
+    case state
+    case revisionCursor = "revision_cursor"
+    case reasonCode = "reason_code"
+  }
+}
+
 /// `action.upsert`.
 public struct ActionUpsert: Decodable, Equatable, Sendable {
   public var actionId: String
@@ -266,6 +295,7 @@ public struct ActionUpsert: Decodable, Equatable, Sendable {
   public var revision: Int
   public var cancellable: Bool
   public var freshnessMs: Int?
+  public var cancelRequest: CancelRequestView?
 
   enum CodingKeys: String, CodingKey {
     case actionId = "action_id"
@@ -277,6 +307,7 @@ public struct ActionUpsert: Decodable, Equatable, Sendable {
     case revision
     case cancellable
     case freshnessMs = "freshness_ms"
+    case cancelRequest = "cancel_request"
   }
 }
 

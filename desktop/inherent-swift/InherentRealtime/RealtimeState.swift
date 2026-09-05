@@ -331,6 +331,9 @@ public struct ActionViewState: Equatable, Sendable {
   public var revision: Int
   public var cancellable: Bool
   public var freshnessMs: Int?
+  /// The durable A5 request the server folded, which supersedes the local
+  /// `commandOverlay` the moment it arrives.
+  public var cancelRequest: CancelRequestView?
   public var commandOverlay: ActionCommandOverlay
   public var progressHint: ActionProgressHint?
 
@@ -344,6 +347,7 @@ public struct ActionViewState: Equatable, Sendable {
     revision: Int = 0,
     cancellable: Bool = false,
     freshnessMs: Int? = nil,
+    cancelRequest: CancelRequestView? = nil,
     commandOverlay: ActionCommandOverlay = .none,
     progressHint: ActionProgressHint? = nil
   ) {
@@ -356,6 +360,7 @@ public struct ActionViewState: Equatable, Sendable {
     self.revision = revision
     self.cancellable = cancellable
     self.freshnessMs = freshnessMs
+    self.cancelRequest = cancelRequest
     self.commandOverlay = commandOverlay
     self.progressHint = progressHint
   }
