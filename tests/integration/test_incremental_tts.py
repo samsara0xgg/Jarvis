@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
+import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
+
+import pytest
 
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
+from jarvis.surface import voice_media, voice_tts
+from tests.integration.test_wave2_streaming_media import (
+    _CallbackPump,
+    _config,
+    _emit_response,
+    _FakeProvider,
+    _player,
+    _submit_response,
+)
 
 if TYPE_CHECKING:
     import sqlite3
@@ -280,3 +295,313 @@ def test_voice_suffix_beyond_the_committed_chunks_is_one_more_prepared_segment(
         assert _spoken(conn) == (True, _SEGMENTS[0] + "这是没有被门放行的长尾巴。")
     finally:
         conn.close()
+
+
+# --- L5 media owner: speak from the first permitted segment ------------------
+
+
+def _pipeline(
+    db_path: Path,
+    provider: _FakeProvider,
+    *,
+    speak_from_segments: bool,
+) -> tuple[voice_media.StreamingTTSPipeline, voice_tts.AudioStreamPlayer]:
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), speak_from_segments=speak_from_segments),
+        start_player=False,
+    )
+    return pipeline, player
+
+
+def _row(conn: sqlite3.Connection, event: Event) -> tuple[int, Event]:
+    found = conn.execute("SELECT id FROM events WHERE event_uid = ?", (event.event_uid,)).fetchone()
+    assert found is not None
+    return int(found[0]), event
+
+
+def _open(
+    conn: sqlite3.Connection,
+    response_id: str,
+    *,
+    kind: str = "stream",
+    attention_channel: str | None = None,
+) -> tuple[int, Event]:
+    payload: dict[str, Any] = {
+        "turn_id": "T-" + response_id,
+        "query": "q",
+        "kind": kind,
+        "response_id": response_id,
+        "response_group_id": "G-" + response_id,
+        "phase": "final",
+        "channel": "speech",
+    }
+    if attention_channel is not None:
+        payload["attention_channel"] = attention_channel
+    return _row(conn, emit_event(conn, type="surface.response_open", payload=payload))
+
+
+def _chunk(
+    conn: sqlite3.Connection, response_id: str, sequence: int, text: str
+) -> tuple[int, Event]:
+    return _row(
+        conn,
+        emit_event(
+            conn,
+            type="surface.response_chunk",
+            payload={
+                "turn_id": "T-" + response_id,
+                "text": text,
+                "response_id": response_id,
+                "response_group_id": "G-" + response_id,
+                "sequence": sequence,
+                "phase": "final",
+                "channel": "speech",
+                "segment_hash": _sha(text),
+            },
+        ),
+    )
+
+
+def _emitted(conn: sqlite3.Connection, response_id: str, voice_text: str) -> tuple[int, Event]:
+    return _row(
+        conn,
+        emit_event(
+            conn,
+            type="surface.response_emitted",
+            payload={
+                "turn_id": "T-" + response_id,
+                "text": voice_text,
+                "voice_text": voice_text,
+                "response_id": response_id,
+                "response_group_id": "G-" + response_id,
+                "phase": "final",
+                "channel": "speech",
+            },
+        ),
+    )
+
+
+def _rows(
+    conn: sqlite3.Connection, event_type: str, response_id: str
+) -> list[tuple[int, dict[str, Any], str | None]]:
+    found = conn.execute(
+        "SELECT id, payload_json, source_event_id FROM events WHERE type = ? "
+        "AND json_extract(payload_json, '$.response_id') = ? ORDER BY id",
+        (event_type, response_id),
+    ).fetchall()
+    return [(int(row[0]), json.loads(str(row[1])), row[2]) for row in found]
+
+
+def _wait_for(conn: sqlite3.Connection, event_type: str, response_id: str, count: int) -> None:
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if len(_rows(conn, event_type, response_id)) >= count:
+            return
+        time.sleep(0.005)
+    pytest.fail(f"{event_type} x{count} for {response_id} never became durable")
+
+
+_SUFFIX = "这是没有被门放行的长尾巴。"
+
+
+def test_stream_response_starts_speaking_from_its_first_permitted_segment(
+    tmp_path: Path,
+) -> None:
+    """playback_started and the first prepared segment land before response_emitted."""
+    db_path = tmp_path / "stream.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    pipeline, player = _pipeline(db_path, provider, speak_from_segments=True)
+    try:
+        with _CallbackPump(player):
+            open_row = _open(conn, "RS")
+            asyncio.run(_submit_response(pipeline, [open_row, _chunk(conn, "RS", 0, _SEGMENTS[0])]))
+            _wait_for(conn, "surface.playback_segment_prepared", "RS", 1)
+            late = [_chunk(conn, "RS", 1, _SEGMENTS[1]), _chunk(conn, "RS", 2, _SEGMENTS[2])]
+            emitted_row = _emitted(conn, "RS", "".join(_SEGMENTS) + _SUFFIX)
+            outcomes = asyncio.run(_submit_response(pipeline, [*late, emitted_row]))
+            assert [outcome.status for outcome in outcomes] == ["accepted"] * 3
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    conn = open_event_log(db_path)
+    try:
+        started = _rows(conn, "surface.playback_started", "RS")
+        prepared = _rows(conn, "surface.playback_segment_prepared", "RS")
+        completed = _rows(conn, "surface.playback_completed", "RS")
+    finally:
+        conn.close()
+    assert len(started) == 1
+    assert started[0][1]["incremental"] is True
+    assert started[0][1]["speech_text_hash"] == _sha(_SEGMENTS[0])
+    assert started[0][2] == open_row[1].event_uid
+    assert started[0][0] < prepared[0][0] < emitted_row[0] < prepared[1][0]
+    assert [row[1]["sequence"] for row in prepared] == [0, 1, 2, 3]
+    assert [row[1]["speech_text"] for row in prepared] == [*_SEGMENTS, _SUFFIX]
+    assert prepared[3][1]["source_chunk_event_uid"] == emitted_row[1].event_uid
+    assert len(completed) == 1
+    spoken = "".join(row[1]["speech_text"] for row in prepared)
+    assert completed[0][1]["speech_text_hash"] == _sha(spoken)
+    assert completed[0][1]["heard_text"] == spoken
+    assert provider.sent == [("RS", 0), ("RS", 1), ("RS", 2), ("RS", 3)]
+
+
+def _legacy_trail(tmp_path: Path, *, speak_from_segments: bool) -> list[tuple[Any, ...]]:
+    db_path = tmp_path / f"legacy-{int(speak_from_segments)}.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    pipeline, player = _pipeline(db_path, provider, speak_from_segments=speak_from_segments)
+    try:
+        with _CallbackPump(player):
+            rows = _emit_response(
+                conn,
+                response_id="RLEG",
+                group_id="GLEG",
+                turn_id="TLEG",
+                text=["<voice>第一句。", "第二句。</voice><document>不可朗读。</document>"],
+            )
+            outcomes = asyncio.run(_submit_response(pipeline, rows))
+            assert [outcome.status for outcome in outcomes] == ["accepted"] * 4
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    conn = open_event_log(db_path)
+    try:
+        found = conn.execute(
+            "SELECT type, payload_json FROM events WHERE type IN (?, ?, ?, ?) ORDER BY id",
+            (
+                "surface.response_emitted",
+                "surface.playback_started",
+                "surface.playback_segment_prepared",
+                "surface.playback_completed",
+            ),
+        ).fetchall()
+    finally:
+        conn.close()
+    trail: list[tuple[Any, ...]] = []
+    for kind, raw in found:
+        payload = json.loads(str(raw))
+        trail.append(
+            (
+                kind,
+                payload.get("sequence"),
+                payload.get("speech_text"),
+                payload.get("speech_text_hash"),
+                payload.get("incremental"),
+            ),
+        )
+    return trail
+
+
+def test_legacy_text_response_keeps_the_emitted_time_trail_with_the_flag_on(
+    tmp_path: Path,
+) -> None:
+    """A kind="text" response with tags produces the flag-off trail exactly."""
+    off = _legacy_trail(tmp_path, speak_from_segments=False)
+    on = _legacy_trail(tmp_path, speak_from_segments=True)
+    assert on == off
+    kinds = [row[0] for row in on]
+    assert kinds.index("surface.response_emitted") < kinds.index("surface.playback_started")
+    assert [row[2] for row in on if row[0] == "surface.playback_segment_prepared"] == [
+        "第一句。",
+        "第二句。",
+    ]
+    assert all(row[4] is None for row in on)
+
+
+def test_queue_review_open_never_starts_playback(tmp_path: Path) -> None:
+    """The silent-channel guard is evaluated on the open row, ahead of any chunk."""
+    db_path = tmp_path / "silent.db"
+    conn = open_event_log(db_path)
+    pipeline, _ = _pipeline(db_path, _FakeProvider(), speak_from_segments=True)
+    try:
+        rows = [
+            _open(conn, "RQ", attention_channel="queue_review"),
+            _chunk(conn, "RQ", 0, _SEGMENTS[0]),
+            _emitted(conn, "RQ", _SEGMENTS[0]),
+        ]
+        outcomes = asyncio.run(_submit_response(pipeline, rows))
+        assert [outcome.status for outcome in outcomes] == ["accepted", "terminal", "terminal"]
+        assert pipeline.wait_until_idle(timeout_s=1.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    conn = open_event_log(db_path)
+    try:
+        assert _rows(conn, "surface.playback_started", "RQ") == []
+    finally:
+        conn.close()
+
+
+def test_tag_before_playback_started_falls_back_to_emitted_time_speaking(
+    tmp_path: Path,
+) -> None:
+    """A tagged chunk before any playback keeps the run on the emitted-time path."""
+    db_path = tmp_path / "tag-before.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    pipeline, player = _pipeline(db_path, provider, speak_from_segments=True)
+    try:
+        with _CallbackPump(player):
+            rows = [
+                _open(conn, "RTB"),
+                _chunk(conn, "RTB", 0, "<voice>第一句。"),
+                _chunk(conn, "RTB", 1, "第二句。</voice>"),
+            ]
+            emitted_row = _emitted(conn, "RTB", "第一句。第二句。")
+            outcomes = asyncio.run(_submit_response(pipeline, [*rows, emitted_row]))
+            assert [outcome.status for outcome in outcomes] == ["accepted"] * 4
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    conn = open_event_log(db_path)
+    try:
+        started = _rows(conn, "surface.playback_started", "RTB")
+        prepared = _rows(conn, "surface.playback_segment_prepared", "RTB")
+        completed = _rows(conn, "surface.playback_completed", "RTB")
+    finally:
+        conn.close()
+    assert len(started) == 1
+    assert started[0][0] > emitted_row[0]
+    assert "incremental" not in started[0][1]
+    assert [row[1]["speech_text"] for row in prepared] == ["第一句。", "第二句。"]
+    assert completed[0][1]["speech_text_hash"] == _sha("第一句。第二句。")
+
+
+def test_tag_after_playback_started_fails_the_run_and_stops_segments(tmp_path: Path) -> None:
+    """A tag after playback started stops segments with playback_failed(stream_chunk_tagged)."""
+    db_path = tmp_path / "tag-after.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    pipeline, player = _pipeline(db_path, provider, speak_from_segments=True)
+    try:
+        with _CallbackPump(player):
+            first = [_open(conn, "RTA"), _chunk(conn, "RTA", 0, _SEGMENTS[0])]
+            asyncio.run(_submit_response(pipeline, first))
+            _wait_for(conn, "surface.playback_segment_prepared", "RTA", 1)
+            tagged = _chunk(conn, "RTA", 1, "<document>不可朗读。</document>")
+            assert asyncio.run(_submit_response(pipeline, [tagged]))[0].status == "accepted"
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+            late = _emitted(conn, "RTA", _SEGMENTS[0] + "<document>不可朗读。</document>")
+            assert asyncio.run(_submit_response(pipeline, [late]))[0].status == "terminal"
+    finally:
+        assert pipeline.close()
+        conn.close()
+    conn = open_event_log(db_path)
+    try:
+        failed = _rows(conn, "surface.playback_failed", "RTA")
+        prepared = _rows(conn, "surface.playback_segment_prepared", "RTA")
+    finally:
+        conn.close()
+    assert [row[1]["sequence"] for row in prepared] == [0]
+    assert len(failed) == 1
+    assert failed[0][1]["reason"] == "stream_chunk_tagged"
+    assert failed[0][0] > prepared[0][0]

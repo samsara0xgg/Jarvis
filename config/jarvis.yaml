@@ -219,6 +219,10 @@ realtime:
     checkpoint_retry_attempts: 3
     durability_retry_s: 0.02
     enable_macos_say_fallback: true
+    # Speak a kind="stream" response from its first permitted segment instead
+    # of waiting for surface.response_emitted; a kind="text" response keeps
+    # speaking at emitted time.
+    speak_from_segments: false
   # ADR-0006 Step 5. Disabled by default. When enabled it additionally
   # requires the Wave-1 transactional/terminal switches above and a live
   # Wave-2 StreamingTTSPipeline; failed validation happens before device open
