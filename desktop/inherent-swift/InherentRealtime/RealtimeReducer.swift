@@ -11,10 +11,10 @@ import Foundation
 public enum InherentReducer {
   /// Folds one event into the state and returns the effects it earned.
   ///
-  /// `now` is the injected monotonic time (D4).  This card's only time-shaped
-  /// effect is `scheduleLocalFade`, whose delay is a `Duration` the runner
-  /// schedules, so `now` is carried but never read: the reducer must never
-  /// grow a wall clock later.
+  /// `now` is the injected monotonic time (D4).  Both time-shaped effects,
+  /// `scheduleLocalFade` and `scheduleAckFlush`, carry a `Duration` the runner
+  /// schedules and answer with an event, so `now` is carried but never read:
+  /// the reducer must never grow a wall clock later.
   public static func reduce(
     state: inout InherentUXState,
     event: InherentClientEvent,
@@ -53,6 +53,10 @@ public enum InherentReducer {
     case .durable(let epoch, let envelope):
       guard isLive(epoch, state) else { return [] }
       return applyDurable(envelope, to: &state)
+
+    case .ackDeadline(let epoch):
+      guard isLive(epoch, state) else { return [] }
+      return flushAck(&state.synchronization)
 
     case .ephemeral(let epoch, let envelope):
       guard isLive(epoch, state) else { return [] }
@@ -205,6 +209,8 @@ public enum InherentReducer {
     state.synchronization.recentMessageIDs = []
     state.synchronization.resyncRequested = false
     state.synchronization.needsSnapshotRepair = false
+    // The adoption ACK covers everything through H, so no durable is pending.
+    state.synchronization.unackedDurableCount = 0
     state.connection = .live
 
     // D18: a reconnect or resync never moves the foreground by itself; it only
@@ -254,7 +260,27 @@ public enum InherentReducer {
       )
     }
     state = draft
-    return effects
+    return effects + ackEffects(&state.synchronization)
+  }
+
+  /// D11 rule 8: ACK at `ackBatchMessages`, otherwise arm the `ackBatchMilliseconds`
+  /// deadline once for the batch this frame opened.  Every applied durable frame
+  /// is therefore ACKed within one batch window of the batch's first frame — a
+  /// burst that stops is flushed by the deadline, not left in the server's window.
+  private static func ackEffects(_ sync: inout SynchronizationState) -> [InherentEffect] {
+    sync.unackedDurableCount += 1
+    if sync.unackedDurableCount >= SynchronizationState.ackBatchMessages {
+      return flushAck(&sync)
+    }
+    guard sync.unackedDurableCount == 1 else { return [] }
+    return [.scheduleAckFlush(after: .milliseconds(SynchronizationState.ackBatchMilliseconds))]
+  }
+
+  /// The cumulative durable ACK: no snapshot id, `through_cursor` = last applied.
+  private static func flushAck(_ sync: inout SynchronizationState) -> [InherentEffect] {
+    guard sync.unackedDurableCount > 0 else { return [] }
+    sync.unackedDurableCount = 0
+    return [.sendAck(snapshotID: nil, throughCursor: sync.lastAppliedCursor)]
   }
 
   /// D17: a resync is one request, and `resyncRequested` records that one is

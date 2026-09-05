@@ -83,8 +83,15 @@ public struct SynchronizationState: Equatable, Sendable {
   public var resyncRequested: Bool
   /// D17 rule 10: the rendered prefix is complete but the tail needs a snapshot.
   public var needsSnapshotRepair: Bool
+  /// D11 rule 8: durable frames applied since the last cumulative ACK.
+  public var unackedDurableCount: Int
 
   public static let recentMessageIDLimit = 256
+  /// D11 rule 8, the count half.  A constant, never negotiated: `server.hello`
+  /// carries no cadence field and both sides ship the same D11 default.
+  public static let ackBatchMessages = 25
+  /// D11 rule 8, the time half, in milliseconds.
+  public static let ackBatchMilliseconds = 100
 
   public init(
     activeSocketEpoch: Int = 0,
@@ -96,7 +103,8 @@ public struct SynchronizationState: Equatable, Sendable {
     recentMessageIDs: [String] = [],
     lastEphemeralSequence: Int = 0,
     resyncRequested: Bool = false,
-    needsSnapshotRepair: Bool = false
+    needsSnapshotRepair: Bool = false,
+    unackedDurableCount: Int = 0
   ) {
     self.activeSocketEpoch = activeSocketEpoch
     self.activeConnectionID = activeConnectionID
@@ -108,6 +116,7 @@ public struct SynchronizationState: Equatable, Sendable {
     self.lastEphemeralSequence = lastEphemeralSequence
     self.resyncRequested = resyncRequested
     self.needsSnapshotRepair = needsSnapshotRepair
+    self.unackedDurableCount = unackedDurableCount
   }
 }
 

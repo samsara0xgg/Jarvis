@@ -50,6 +50,8 @@ public enum InherentClientEvent: Sendable, Equatable {
   case snapshotAdopted(socketEpoch: Int, VerifiedSnapshot)
   case snapshotFailed(socketEpoch: Int, reason: String)
   case durable(socketEpoch: Int, ServerEnvelope<ViewDeltaPayload>)
+  /// The `scheduleAckFlush` deadline elapsed (D11 rule 8's time half).
+  case ackDeadline(socketEpoch: Int)
   case ephemeral(socketEpoch: Int, ServerEnvelope<EphemeralUpdate>)
   case local(LocalPresentationEvent)
 }
@@ -57,8 +59,12 @@ public enum InherentClientEvent: Sendable, Equatable {
 /// Everything the reducer emits.  There is deliberately no speech or play
 /// effect: snapshot adoption never creates one (D8).
 public enum InherentEffect: Sendable, Equatable {
-  /// D8 step 4: the exact snapshot id and high water the client adopted.
-  case sendAck(snapshotID: String, throughCursor: EventCursor)
+  /// D8 step 4 with the snapshot id, or D11 rule 6's cumulative durable ACK
+  /// with none: `throughCursor` is what the MainActor has applied.
+  case sendAck(snapshotID: String?, throughCursor: EventCursor)
+  /// D11 rule 8: come back with `.ackDeadline` after this, so a burst that
+  /// stops never leaves an applied durable frame unACKed.
+  case scheduleAckFlush(after: Duration)
   case requestResync(reason: ResyncReason)
   case scheduleLocalFade(groupID: ResponseGroupID, after: Duration)
   case announceAccessibilityMilestone(String)
