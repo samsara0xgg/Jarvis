@@ -38,6 +38,7 @@ def test_spawn_wake_listener_passes_real_frame_factory(tmp_path: Path) -> None:
 
     with patch.object(voice_wake.WakeListener, "__init__", _spy_init), \
          patch.object(voice_wake.WakeListener, "start"), \
+         patch.object(voice_wake.WakeEngine, "start") as model_start, \
          patch("jarvis.surface.voice_audio.SileroVad") as mock_silero, \
          patch.object(inherent_loop, "_open_wake_input_stream", return_value=fake_stream):
         mock_silero.return_value = MagicMock()
@@ -48,6 +49,7 @@ def test_spawn_wake_listener_passes_real_frame_factory(tmp_path: Path) -> None:
             tts=tts_pipeline,
         )
         assert listener is not None
+        model_start.assert_called_once()
         assert captured.get("frame_factory") is not None, (
             "_spawn_wake_listener must pass a real frame_factory (not the zero-frame default)"
         )
@@ -78,6 +80,7 @@ def test_spawn_wake_listener_forwards_ducker(tmp_path: Path) -> None:
 
     with patch.object(voice_wake.WakeListener, "__init__", _spy_init), \
          patch.object(voice_wake.WakeListener, "start"), \
+         patch.object(voice_wake.WakeEngine, "start") as model_start, \
          patch("jarvis.surface.voice_audio.SileroVad") as mock_silero, \
          patch.object(inherent_loop, "_open_wake_input_stream", return_value=fake_stream):
         mock_silero.return_value = MagicMock()
@@ -88,6 +91,7 @@ def test_spawn_wake_listener_forwards_ducker(tmp_path: Path) -> None:
             tts=tts_pipeline,
             ducker=shared_ducker,
         )
+        model_start.assert_called_once()
         assert captured.get("ducker") is shared_ducker, (
             "_spawn_wake_listener must forward `ducker` into WakeListener"
         )
@@ -347,6 +351,7 @@ def test_serve_inherent_shutdown_joins_wake_thread_before_stream_close(
     tts_pipeline.is_speaking = lambda: False
 
     with patch.object(voice_wake.WakeListener, "start"), \
+         patch.object(voice_wake.WakeEngine, "start") as model_start, \
          patch("jarvis.surface.voice_audio.SileroVad") as mock_silero, \
          patch.object(inherent_loop, "_open_wake_input_stream", return_value=fake_stream):
         mock_silero.return_value = MagicMock()
@@ -357,6 +362,7 @@ def test_serve_inherent_shutdown_joins_wake_thread_before_stream_close(
             tts=tts_pipeline,
         )
         assert _result is not None
+        model_start.assert_called_once()
         listener, stream = _result
         assert stream is not None
 
