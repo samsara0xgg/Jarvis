@@ -1299,16 +1299,49 @@ def _commentary_terminalizer(runtime: JarvisRuntime) -> ResponseTerminalizer:
     )
 
 
-def _commentary_turn_id(conn: sqlite3.Connection, action_event: Event) -> str | None:
-    """Return the user-originated turn this action belongs to, or ``None``.
+def _commentary_action_turn_id(conn: sqlite3.Connection, action_event: Event) -> str | None:
+    """Return the turn an action row belongs to, following its own chain.
 
-    Two durable reads and no heuristics: the action's correlation names its
-    turn, that turn's ``turn.started`` names the trigger it was claimed from,
-    and the trigger's own type decides whether Allen asked for this.
+    The row's correlation is read first, but it is not always filled: the
+    ActionRunner's canonical terminals reach
+    :func:`jarvis.state.lifecycle_terminal.terminalize_action` with an empty
+    correlation on the inline synchronous path, so ``action.result_observed``
+    commits without a ``turn_id``. The action's own ``action.dispatched`` row
+    always carries one (``_action_correlation`` fills it from the
+    ActionRequest), and joining through it is the same causal chain A5's
+    ``ActionAdmissions`` exposes — durable and unambiguous, unlike guessing
+    from the surrounding rows.
     """
     correlation = action_event.correlation or {}
     turn_id = correlation.get("turn_id")
-    if not isinstance(turn_id, str) or not turn_id:
+    if isinstance(turn_id, str) and turn_id:
+        return turn_id
+    action_id = action_event.payload.get("action_id")
+    if not isinstance(action_id, str) or not action_id:
+        return None
+    dispatched = next(
+        (
+            event
+            for event in iter_events_of_types(conn, ("action.dispatched",))
+            if event.payload.get("action_id") == action_id
+        ),
+        None,
+    )
+    if dispatched is None or dispatched.correlation is None:
+        return None
+    dispatched_turn = dispatched.correlation.get("turn_id")
+    return dispatched_turn if isinstance(dispatched_turn, str) and dispatched_turn else None
+
+
+def _commentary_turn_id(conn: sqlite3.Connection, action_event: Event) -> str | None:
+    """Return the user-originated turn this action belongs to, or ``None``.
+
+    Durable reads and no heuristics: the action names its turn, that turn's
+    ``turn.started`` names the trigger it was claimed from, and the trigger's
+    own type decides whether Allen asked for this.
+    """
+    turn_id = _commentary_action_turn_id(conn, action_event)
+    if turn_id is None:
         return None
     started = next(
         (

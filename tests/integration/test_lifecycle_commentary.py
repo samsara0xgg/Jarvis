@@ -830,3 +830,35 @@ def test_the_observer_task_is_created_only_under_the_flag() -> None:
     ]
     assert len(guards) == 1
     assert "_commentary_watcher" in "\n".join(ast.unparse(stmt) for stmt in guards[0].body)
+
+
+def test_a_terminal_row_with_no_correlation_finds_its_turn_through_dispatch(
+    tmp_path: Path,
+) -> None:
+    """The runner's inline terminals carry no correlation; the chain still holds.
+
+    Observed live: `terminalize_action` commits `action.result_observed` with
+    an empty correlation on the synchronous path, so the turn has to come from
+    the action's own `action.dispatched` row.
+    """
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    _user_turn(runtime.conn, "T-join")
+    with _Observer(runtime):
+        dispatched = _action_row(
+            runtime.conn, "action.dispatched", action_id="ACT-j", turn_id="T-join",
+        )
+        _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
+        emit_event(
+            runtime.conn,
+            type="action.result_observed",
+            payload={"action_id": "ACT-j", "semantics": "observation"},
+            source_event_id=dispatched.event_uid,
+            correlation=None,
+        )
+        _wait_until(lambda: _count(reader, "surface.response_emitted") == 2)
+
+    started = _typed_payloads(reader, "response.started")
+    assert [payload["turn_id"] for payload in started] == ["T-join", "T-join"]
+    chunks = [payload["text"] for payload in _typed_payloads(reader, "surface.response_chunk")]
+    assert chunks == ["我开始处理了。", "结果回来了，我整理一下。"]  # noqa: RUF001 — intentional Chinese punctuation.
