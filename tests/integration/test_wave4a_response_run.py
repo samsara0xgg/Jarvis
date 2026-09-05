@@ -1359,3 +1359,24 @@ def test_wave4_response_flags_ship_disabled() -> None:
 def _unused_iterator() -> Iterator[int]:  # pragma: no cover - typing import anchor
     """Keep the ``Iterator`` typing import honest for the TYPE_CHECKING block."""
     yield 0
+
+
+def test_run_client_keeps_the_presets_request_body_identity() -> None:
+    """A run client sends the preset's extra_body / reasoning_effort, and the hash sees them.
+
+    Found live 2026-09-04: with ``response_run_lifecycle`` on, every decision
+    request went through a snapshot that had neither field, so DeepSeek's
+    ``thinking: {type: disabled}`` never reached the wire and a 3 700-character
+    reasoning trace consumed the whole ``max_tokens`` budget.
+    """
+    config = json.loads(json.dumps(_LLM_CONFIG))
+    config["presets"]["fast"]["extra_body"] = {"thinking": {"type": "disabled"}}
+    config["presets"]["fast"]["reasoning_effort"] = "minimal"
+    factory = LLMSessionFactory(config)
+    fast = factory.snapshot("fast")
+    client = factory.create(fast, response_id=new_response_id())
+    assert client._extra_body == {"thinking": {"type": "disabled"}}  # noqa: SLF001 - request identity seam
+    assert client._reasoning_effort == "minimal"  # noqa: SLF001 - request identity seam
+    plain = LLMSessionFactory(_LLM_CONFIG).snapshot("fast")
+    assert fast.snapshot_hash != plain.snapshot_hash
+    assert factory.create(plain, response_id=new_response_id())._extra_body == {}  # noqa: SLF001
