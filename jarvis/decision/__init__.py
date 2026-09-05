@@ -74,6 +74,7 @@ from jarvis.decision.intent import (
     tier_0_match,
     tool_definitions_for_llm,
 )
+from jarvis.decision.llm_stream import LLMResponseFailed, LLMTextDelta
 from jarvis.decision.packet import (
     DEFAULT_OBSERVER_POLL_INTERVAL_S,
     EVIDENCE_NOTE_PREFIX,
@@ -98,6 +99,15 @@ from jarvis.decision.result_interpreter import (
     result_interpreter,
 )
 from jarvis.decision.reviewer import ReviewerVerdict, review_diff
+from jarvis.decision.stream_envelope import (
+    StreamEnvelopeSplitter,
+    compose_envelope,
+    split_envelope,
+)
+from jarvis.decision.stream_finalize import StreamFinalizationFailure, finalize_stream
+from jarvis.decision.stream_gate import stream_emission_gate
+from jarvis.decision.stream_risk import SegmentRiskClassifier
+from jarvis.decision.stream_sentences import SemanticAssembler
 from jarvis.decision.tier0 import render_tier0_response
 from jarvis.shared import (
     ActionRequest,
@@ -119,12 +129,15 @@ from jarvis.state.authorized_dispatch_outbox import (
 from jarvis.state.cost_accounting import record_run_cost_once
 from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.projections import make_snapshot
+from jarvis.state.stream_emission import committed_text_prefix
 
 if TYPE_CHECKING:
     import sqlite3
 
     from jarvis.decision.confirm_grammar import ConfirmGrammarHit, ConfirmGrammarTable
     from jarvis.decision.llm import ChatResult, LLMClient
+    from jarvis.decision.pre_route import RoutineStreamRoute, StreamCorrection
+    from jarvis.decision.stream_sentences import SemanticCandidate
     from jarvis.decision.tier0 import Tier0Hit, Tier0Table
     from jarvis.shared import AuthorizationLease, EvidenceLevel, RiskLevel
     from jarvis.state.projections import PendingConfirmationSlot
@@ -828,6 +841,12 @@ class DecideContext:
     cancellation_checkpoint: Callable[[str], None] | None = None
     request_admission: Callable[[str], None] | None = None
     typed_conversation_history: bool = False
+    # ADR-0008 Step 8. ``routine_stream`` is the pre-routed streaming seam the
+    # runtime bound for this run (None on every other turn, so decide() keeps
+    # the batch tool loop). ``stream_correction`` marks a full-text run that
+    # continues the exposed prefix of a failed stream.
+    routine_stream: RoutineStreamRoute | None = None
+    stream_correction: StreamCorrection | None = None
 
 
 @dataclass(frozen=True)
@@ -849,12 +868,26 @@ class DecideResult:
         attention_channel: Output of
             :func:`jarvis.decision.gates.attention_policy` for the
             packet that drove this invocation.
+        route: ADR-0008 Step 8 — ``"casual_or_explanatory"`` when this
+            invocation streamed through the routine route; ``None`` on
+            the batch path.
+        emitted_segments: Permitted segments already exposed as durable
+            ``surface.response_chunk`` rows before the plan was final.
+        last_gate_event_uid: The last ``gate.evaluated(stream_emit)``
+            this invocation committed; the runtime's ``turn.ended``
+            source on the routine route.
+        stream_failure: A typed finalization refusal; the runtime fails
+            the run with its prefix hash and opens a correction run.
     """
 
     response_plan: ResponsePlan | None
     events_emitted: tuple[Event, ...]
     turn_id: str | None
     attention_channel: AttentionChannel = "queue_review"
+    route: str | None = None
+    emitted_segments: int = 0
+    last_gate_event_uid: str | None = None
+    stream_failure: StreamFinalizationFailure | None = None
 
 
 # --- Internal scratch state for one decide() invocation --------------------
@@ -1241,8 +1274,10 @@ def _run_tool_use_loop(
             attention_channel="voice_notify",
         )
 
-    messages = build_llm_messages(packet)
-    _insert_system_notes(messages, packet, scratch, ctx)
+    if ctx.routine_stream is not None:
+        return _run_routine_stream(packet, ctx, ctx.routine_stream, scratch)
+
+    messages = _loop_messages(packet, scratch, ctx)
     llm_surface = surface_for(policy, ctx.tool_registry, CallerPrincipal.JARVIS_LLM)
     tools = tool_definitions_for_llm([_tool_to_dict(t) for t in llm_surface])
 
@@ -2805,7 +2840,267 @@ def _tool_name_for_action_id(
     return "spawn_worker"
 
 
+def _loop_messages(
+    packet: SituationPacket,
+    scratch: _Scratch,
+    ctx: DecideContext,
+) -> list[dict[str, Any]]:
+    """Build the tool loop's messages: history, system notes, correction prefix."""
+    messages = build_llm_messages(packet)
+    _insert_system_notes(messages, packet, scratch, ctx)
+    if ctx.stream_correction is not None:
+        # The failed stream's exposed prefix is the model's own prior text;
+        # the correction continues it and never rewrites it (ADR-0008 D3).
+        messages.append(_assistant_text_message(ctx.stream_correction.committed_prefix))
+    return messages
+
+
+def _with_correction_prefix(plan: ResponsePlan, ctx: DecideContext) -> ResponsePlan:
+    """Prepend a failed stream's exposed prefix to a correction run's plan.
+
+    Same re-hash discipline as the template-line guard in
+    :func:`_finalize_response`; a plan that already starts with the prefix
+    is returned as is.
+    """
+    correction = ctx.stream_correction
+    if correction is None:
+        return plan
+    voice, document, enveloped = split_envelope(plan.text)
+    if voice.startswith(correction.committed_prefix):
+        return plan
+    joined = correction.committed_prefix + voice
+    corrected = compose_envelope(joined, document) if enveloped else joined
+    return replace(
+        plan,
+        text=corrected,
+        response_hash=hashlib.sha256(corrected.encode("utf-8")).hexdigest(),
+    )
+
+
+# --- ADR-0008 Step 8: routine streaming route -------------------------------
+
+
+@dataclass(frozen=True)
+class _StreamedText:
+    """One provider stream's outcome: exposed prefix, remaining tail, envelope."""
+
+    prefix: str
+    suffix: str
+    document: str
+    enveloped: bool
+    emitted_segments: int
+    last_gate_event_uid: str | None
+
+
+def _stream_routine_text(  # noqa: C901 - one provider stream feeding one gate loop
+    ctx: DecideContext,
+    route: RoutineStreamRoute,
+    messages: list[dict[str, Any]],
+    scratch: _Scratch,
+    *,
+    gate_segments: bool,
+) -> _StreamedText:
+    """Stream one no-tool answer, permitting and exposing sentences until sealed.
+
+    Every delta passes the envelope splitter first, so the assembler and the
+    durable chunks only ever see tag-free voice text. A denied candidate seals
+    the run (D2 rule 2); everything after the exposed prefix is the suffix the
+    finalizer judges. ``gate_segments=False`` regenerates a suffix only.
+    """
+    _check_response_cancelled(ctx, "before provider request")
+    if ctx.request_admission is not None:
+        ctx.request_admission("decision")
+    cost_recorder = CostRecorder(
+        ctx.conn,
+        pricing_table=_pricing_table(),
+        committed_event_bus=route.committed_event_bus,
+    )
+    stream = route.open_stream(
+        cost_recorder.stream_events(
+            ctx.llm_client,
+            messages=messages,
+            system=ctx.system_prompt,
+            tools=None,
+            kind="decision",
+            turn_id=scratch.turn_id,
+        ),
+    )
+    splitter = StreamEnvelopeSplitter()
+    assembler = SemanticAssembler()
+    classifier = SegmentRiskClassifier()
+    prefix = ""
+    voice = ""
+    emitted = 0
+    sealed = not gate_segments
+    last_gate: str | None = None
+    failed: LLMResponseFailed | None = None
+
+    def admit(candidate: SemanticCandidate) -> bool:
+        nonlocal emitted, last_gate, prefix, sealed
+        with route.segment_guard():
+            outcome = stream_emission_gate(
+                ctx.conn,
+                policy=route.policy,
+                context=route.context,
+                segment=candidate,
+                sequence=emitted,
+                phase="final",
+                channel="both",
+                classifier=classifier,
+                committed_event_bus=route.committed_event_bus,
+            )
+            scratch.events.append(outcome.event)
+            last_gate = outcome.event.event_uid
+            if outcome.permit is None:
+                sealed = True
+                return False
+            scratch.events.append(route.emit_segment(outcome.permit, candidate.text))
+        prefix += candidate.text
+        emitted += 1
+        return True
+
+    def assemble(text: str, *, final: bool = False) -> None:
+        if sealed or assembler.blocked_reason is not None:
+            return
+        candidates = assembler.finish() if final else assembler.feed(text)
+        for candidate in candidates:
+            if not admit(candidate):
+                return
+
+    try:
+        for event in stream:
+            _check_response_cancelled(ctx, "while streaming")
+            if isinstance(event, LLMTextDelta):
+                safe = splitter.feed(event.text)
+                voice += safe
+                assemble(safe)
+            elif isinstance(event, LLMResponseFailed):
+                failed = event
+    finally:
+        stream.close()
+    _check_response_cancelled(ctx, "after provider stream")
+    if failed is not None:
+        message = f"routine stream failed before completion ({failed.error_code})"
+        raise RuntimeError(message)
+    tail = splitter.finish()
+    voice += tail.voice_tail
+    assemble(tail.voice_tail)
+    assemble("", final=True)
+    return _StreamedText(
+        prefix=prefix,
+        suffix=voice[len(prefix) :],
+        document=tail.document,
+        enveloped=tail.enveloped,
+        emitted_segments=emitted,
+        last_gate_event_uid=last_gate,
+    )
+
+
+def _run_routine_stream(
+    packet: SituationPacket,
+    ctx: DecideContext,
+    route: RoutineStreamRoute,
+    scratch: _Scratch,
+) -> DecideResult:
+    """ADR-0008 Step 8: stream a pre-routed casual answer, then finalize it.
+
+    The finalizer writes nothing; a typed failure goes back to the runtime,
+    which fails the run with the durable prefix hash and opens a correction
+    run. ``suffix_rejected`` earns exactly one suffix regeneration first.
+    """
+    messages = build_llm_messages(packet)
+    _insert_system_notes(messages, packet, scratch, ctx)
+    streamed = _stream_routine_text(ctx, route, messages, scratch, gate_segments=True)
+    attention = attention_policy(packet, make_snapshot(ctx.conn).claim_evidence)
+    response_id = route.context.response_id
+    document = streamed.document
+    outcome: ResponsePlan | StreamFinalizationFailure
+    if attention != route.context.attention_channel:
+        outcome = StreamFinalizationFailure(
+            response_id,
+            "policy_mismatch",
+            committed_text_prefix(ctx.conn, response_id).prefix_hash,
+            ("attention_channel_differs_from_pinned_policy",),
+        )
+    else:
+        outcome = finalize_stream(
+            ctx.conn,
+            committed_prefix=streamed.prefix,
+            uncommitted_suffix=streamed.suffix,
+            policy=route.policy,
+            context=route.context,
+        )
+        if isinstance(outcome, StreamFinalizationFailure) and outcome.reason == "suffix_rejected":
+            again = _stream_routine_text(
+                ctx,
+                route,
+                [*messages, _assistant_text_message(streamed.prefix)],
+                scratch,
+                gate_segments=False,
+            )
+            document = again.document or document
+            outcome = finalize_stream(
+                ctx.conn,
+                committed_prefix=streamed.prefix,
+                uncommitted_suffix=again.suffix,
+                policy=route.policy,
+                context=route.context,
+            )
+    if isinstance(outcome, StreamFinalizationFailure):
+        return DecideResult(
+            response_plan=None,
+            events_emitted=tuple(scratch.events),
+            turn_id=scratch.turn_id,
+            attention_channel=attention,
+            route="casual_or_explanatory",
+            emitted_segments=streamed.emitted_segments,
+            last_gate_event_uid=streamed.last_gate_event_uid,
+            stream_failure=outcome,
+        )
+    plan = outcome
+    if streamed.enveloped:
+        text = compose_envelope(plan.text, document)
+        plan = replace(
+            plan, text=text, response_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        )
+    return DecideResult(
+        response_plan=plan,
+        events_emitted=tuple(scratch.events),
+        turn_id=scratch.turn_id,
+        attention_channel=attention,
+        route="casual_or_explanatory",
+        emitted_segments=streamed.emitted_segments,
+        last_gate_event_uid=streamed.last_gate_event_uid,
+    )
+
+
 # --- Finalization (Pre-emit Gate + turn.ended) -----------------------------
+
+
+def emit_turn_ended(
+    conn: sqlite3.Connection,
+    *,
+    turn_id: str,
+    final_response_hash: str,
+    consumed_trigger_event_uid: str,
+    source_event_id: str,
+) -> Event:
+    """Append the turn's closing row; L3 owns its shape wherever it is written.
+
+    The routine streaming route writes it from the runtime after the
+    response terminal, since the finalizer itself writes no events.
+    """
+    return emit_event(
+        conn,
+        type="turn.ended",
+        payload={
+            "turn_id": turn_id,
+            "final_response_hash": final_response_hash,
+            "consumed_trigger_event_uid": consumed_trigger_event_uid,
+        },
+        source_event_id=source_event_id,
+        correlation={"turn_id": turn_id},
+    )
 
 
 def _emit_pre_emit_gate_event(
@@ -3072,21 +3367,22 @@ def _finalize_response(
             response_hash=hashlib.sha256(guarded_text.encode("utf-8")).hexdigest(),
         )
 
+    # ADR-0008 D3: a correction run delivers the failed stream's exposed
+    # prefix unchanged, then its own continuation.
+    plan = _with_correction_prefix(plan, ctx)
+
     # turn.ended. ``source_event_id`` references the last gate verdict
     # on the chain (attempt 0 / 1 / 2 depending on how far retry went).
     if scratch.turn_id is not None:
-        ended_event = emit_event(
-            ctx.conn,
-            type="turn.ended",
-            payload={
-                "turn_id": scratch.turn_id,
-                "final_response_hash": plan.response_hash,
-                "consumed_trigger_event_uid": packet.trigger_event.event_uid,
-            },
-            source_event_id=last_gate_event.event_uid,
-            correlation={"turn_id": scratch.turn_id},
+        scratch.events.append(
+            emit_turn_ended(
+                ctx.conn,
+                turn_id=scratch.turn_id,
+                final_response_hash=plan.response_hash,
+                consumed_trigger_event_uid=packet.trigger_event.event_uid,
+                source_event_id=last_gate_event.event_uid,
+            ),
         )
-        scratch.events.append(ended_event)
 
     # B-0005/B-0006: a Limitation Claim emitted THIS turn must reach the
     # operator (ADR K5 row) — scan the turn's own events, not the folded
@@ -4020,6 +4316,7 @@ __all__ = [
     "attention_policy",
     "decide",
     "effective_policy",
+    "emit_turn_ended",
     "pre_action_gate",
     "pre_emit_gate",
     "resolve_task_ref",

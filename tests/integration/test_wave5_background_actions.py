@@ -397,6 +397,9 @@ def _drive_one_turn(  # noqa: PLR0913 — one keyword per identity the scripted 
         return SimpleNamespace(
             response_plan=_turn_plan(),
             events_emitted=(),
+            stream_failure=None,
+            route=None,
+            last_gate_event_uid=None,
             turn_id=turn_id,
             attention_channel="voice_notify",
         )
@@ -900,12 +903,18 @@ def _drive_paused_turn(
             return SimpleNamespace(
                 response_plan=None,
                 events_emitted=(),
+                stream_failure=None,
+                route=None,
+                last_gate_event_uid=None,
                 turn_id=turn_id,
                 attention_channel="voice_notify",
             )
         return SimpleNamespace(
             response_plan=_turn_plan(),
             events_emitted=(),
+            stream_failure=None,
+            route=None,
+            last_gate_event_uid=None,
             turn_id=turn_id,
             attention_channel="voice_notify",
         )

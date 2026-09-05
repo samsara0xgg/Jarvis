@@ -11,10 +11,10 @@ import asyncio
 import json
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 
     from jarvis.shared.realtime import LLMRequestOutcome, LLMUsageStatus
 
@@ -105,6 +105,32 @@ type LLMStreamEvent = (
     LLMTextDelta | LLMToolCallStarted | LLMToolArgumentsDelta | LLMToolCallCompleted
     | LLMUsageCompleted | LLMResponseCompleted | LLMResponseFailed
 )
+
+
+class SyncTokenStream(Protocol):
+    """A synchronous view of one typed stream for a thread that owns no event loop.
+
+    ``decide()`` iterates deltas, may ``cancel`` between them, and reads the
+    settled ``disposition`` afterwards; the runtime supplies the loop that
+    actually drives the :class:`LLMStreamHandle`.
+    """
+
+    def __iter__(self) -> Iterator[LLMStreamEvent]:
+        """Yield typed events in order; the iterator ends when the stream settles."""
+        ...
+
+    def cancel(self, reason: str) -> None:
+        """Stop reading and settle the stream as cancelled, once."""
+        ...
+
+    def close(self) -> None:
+        """Release the stream and its loop; settles an unsettled stream as cancelled."""
+        ...
+
+    @property
+    def disposition(self) -> StreamDisposition | None:
+        """Return the settled outcome, ``None`` while the stream is open."""
+        ...
 
 
 @dataclass(frozen=True)
