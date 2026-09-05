@@ -2906,3 +2906,52 @@ def test_bounded_smoke_persists_player_counters_after_accept_and_deadline() -> N
     after_cleanup = smoke["player_state_after_cleanup"]
     assert isinstance(after_cleanup, dict)
     assert after_cleanup["is_running"] is False
+
+
+def test_segment_closed_before_audible_horizon_still_becomes_heard() -> None:
+    """Live ordering: SegmentFinished precedes the deferred presentation horizon."""
+    player = voice_tts.AudioStreamPlayer(
+        sample_rate_hz=8_000,
+        ring_seconds=0.25,
+        lazy_open=True,
+        generation_safe=True,
+        estimated_output_latency_s=0.2,
+    )
+    lease = player.activate_generation(
+        session_id="S",
+        response_id="RHEARD",
+        response_group_id="GHEARD",
+        turn_id="THEARD",
+    )
+    assert not isinstance(lease, ForegroundBusy)
+    player.begin_generation_segment(
+        expected_playback_generation_id=lease.playback_generation_id,
+        sequence=0,
+        text="第一句。",
+        segment_hash="heard-0",
+    )
+    player.write_generation(
+        np.ones(16, dtype=np.float32).tobytes(),
+        expected_playback_generation_id=lease.playback_generation_id,
+        segment_sequence=0,
+    )
+    output = np.zeros((16, 1), dtype=np.float32)
+    player._callback(output, 16, None, None)  # noqa: SLF001
+    # Network-paced generation closes the semantic boundary while the
+    # presentation horizon is still deferred by the output latency estimate,
+    # so `finish_segment`'s escape hatch cannot fire for this segment.
+    player.finish_generation_segment(
+        expected_playback_generation_id=lease.playback_generation_id,
+        sequence=0,
+    )
+    early = player.poll_generation(lease.playback_generation_id)
+    assert not isinstance(early, StalePlaybackGeneration)
+    assert early.estimated_audible_samples == 0
+    assert early.heard_through_sequence is None
+    time.sleep(0.3)
+    settled = player.poll_generation(lease.playback_generation_id)
+    assert not isinstance(settled, StalePlaybackGeneration)
+    assert settled.estimated_audible_samples == 16
+    assert settled.cursor_quality == "estimated"
+    assert settled.heard_through_sequence == 0
+    assert settled.heard_text == "第一句。"

@@ -83,6 +83,7 @@ class SpeechChunk:
     audibility_class: AudibilityClass
     segment_hash: str
     closed: bool = False
+    cursor_quality_observed: bool = False
 
 
 @dataclass(frozen=True)
@@ -261,7 +262,19 @@ class PlaybackLedger:
         self._cursor_quality_observed = True
         for chunk in self._chunks.values():
             if chunk.output_end_cursor is not None and chunk.output_end_cursor <= bounded:
-                chunk.cursor_quality = _least_quality(chunk.cursor_quality, cursor_quality)
+                # ``_least_quality`` combines two already observed qualities, so
+                # the birth sentinel must not be fed to it: ``unknown`` outranks
+                # everything and would pin the chunk there forever, leaving the
+                # heard prefix permanently empty. The first observation assigns
+                # the ledger's accumulated quality instead, which is never more
+                # certain than whatever ``finish_segment`` may already have
+                # written from the same source.
+                chunk.cursor_quality = (
+                    _least_quality(chunk.cursor_quality, cursor_quality)
+                    if chunk.cursor_quality_observed
+                    else self._cursor_quality
+                )
+                chunk.cursor_quality_observed = True
 
     def mark_software_drained(self) -> None:
         """Record ring exhaustion without treating it as audible completion."""
