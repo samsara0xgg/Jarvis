@@ -459,6 +459,50 @@ Implement docs/goals/confirmation-expiry-terminalizer.md on the current branch. 
   `Executed 174 tests, with 0 failures` and `git diff --stat -- desktop/`
   empty (R10) · R6 pin held: `git diff 8b63a05..HEAD` touches neither
   `is_live`'s body nor any of its four readers.
+- verifier pass (fresh context, opus, range `8b63a05..HEAD`) — confirmed the
+  R6/R10 pins, the CAS-plus-precondition single-transaction structure, the
+  three existing siblings' unchanged behavior, thread/connection safety, the
+  teardown path, flag-off inertness, and the live evidence; re-ran the gates
+  and the suite independently. Fixed what it confirmed:
+  - **d77b676** — the sweep's fold read `gate.evaluated` and so re-scanned the
+    log's highest-volume type and re-accumulated an unbounded
+    `consumed_lease_ids` set every tick, on a timer. Dropped: its only slot
+    effect is `accepted_unconsumed` -> `consumed`, both of which the sweep
+    skips. Also corrected the docstring's "opens no transaction at all".
+  - **49766ac** — the R11 case fed the row a timestamp BEFORE the deadline,
+    which no sweep can produce, so it never covered the production shape.
+    Added a case folding the committed row at its own timestamp (where the
+    lazy and durable paths can both fire, pinning exactly one clear), a case
+    driving the row through `InherentViewSequencer` end to end (verified to
+    fail 1-delta-not-2 with the row-query line reverted), and a completeness
+    pin on `_CLEAR_REASON_OF_TYPE`.
+  - **aa3d742** — the D14 built note read as if all of D14 had landed, beside
+    D14's standing "terminalizer is the sole accepted/rejected/expired exit"
+    rule. Scoped to the expiry leg, with one sentence recording that accept
+    and reject still append through `emit_event`, so "at most one terminal row
+    per `confirmation_id`" holds among terminalizer callers rather than
+    universally.
+  Not changed, with reasons: the accept/reject legs themselves — routing them
+  through the terminalizer requires editing `jarvis/decision/`, which this
+  card's Boundaries forbid, so it is recorded in D14 and reported as a
+  follow-up. `is_live`'s docstring, which now enumerates the non-pending
+  states without `"expired"` — the /goal condition pins "not editing
+  `PendingConfirmationSlot.is_live`", its leading rule ("any state other than
+  `pending` returns False") is still exactly right, and its "§3 D4's state
+  enum has no `expired` member" remains true of D4 itself
+  (`docs/adr/0012-confirmation-flow.md:94`); the reconciliation is recorded at
+  `PendingConfirmationState`'s own docstring instead.
+- post-verifier gates — lint-imports KEPT (1/1) exit 0 · ruff
+  `All checks passed!` exit 0 · mypy strict 241 files exit 0 · full hermetic
+  `1054 passed / 64 deselected` in 51.37s = the 1041 branch baseline plus this
+  card's 13 tests, zero failures.
+- follow-up for the owner (pre-existing, not this card's) —
+  `sweep_overdue_actions` calls `terminalize_action`
+  (`jarvis/deployment/sleep_wake.py:843`), which runs `BEGIN IMMEDIATE` on
+  `runtime.conn` from the event-loop thread, contradicting
+  `_run_supervisor_sweep`'s docstring claim that it is "a bounded typed fold
+  over the log, not a blocking call". The card anticipated this and said to
+  report rather than copy it; the expiry sweep uses `asyncio.to_thread`.
 - NOTE for the hub — `realtime-integration` advanced after this lane's merge
   (lanes A and B landed), so `realtime-integration..HEAD` no longer isolates
   lane C's diff; the range for this card's work is `8b63a05..HEAD`.
