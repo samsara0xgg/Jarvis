@@ -30,7 +30,12 @@ from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
 from jarvis.surface import voice_media, voice_tts
-from jarvis.surface.voice_ledger import ForegroundBusy, StalePlaybackGeneration
+from jarvis.surface.voice_ledger import (
+    ForegroundBusy,
+    GenerationLease,
+    PlaybackLedger,
+    StalePlaybackGeneration,
+)
 from scripts import bench_voice_streaming_output as voice_bench
 
 if TYPE_CHECKING:
@@ -2906,3 +2911,91 @@ def test_bounded_smoke_persists_player_counters_after_accept_and_deadline() -> N
     after_cleanup = smoke["player_state_after_cleanup"]
     assert isinstance(after_cleanup, dict)
     assert after_cleanup["is_running"] is False
+
+
+def test_segment_closed_before_audible_horizon_still_becomes_heard() -> None:
+    """Live ordering: SegmentFinished precedes the deferred presentation horizon."""
+    player = voice_tts.AudioStreamPlayer(
+        sample_rate_hz=8_000,
+        ring_seconds=0.25,
+        lazy_open=True,
+        generation_safe=True,
+        estimated_output_latency_s=0.2,
+    )
+    lease = player.activate_generation(
+        session_id="S",
+        response_id="RHEARD",
+        response_group_id="GHEARD",
+        turn_id="THEARD",
+    )
+    assert not isinstance(lease, ForegroundBusy)
+    player.begin_generation_segment(
+        expected_playback_generation_id=lease.playback_generation_id,
+        sequence=0,
+        text="第一句。",
+        segment_hash="heard-0",
+    )
+    player.write_generation(
+        np.ones(16, dtype=np.float32).tobytes(),
+        expected_playback_generation_id=lease.playback_generation_id,
+        segment_sequence=0,
+    )
+    output = np.zeros((16, 1), dtype=np.float32)
+    player._callback(output, 16, None, None)  # noqa: SLF001
+    # Network-paced generation closes the semantic boundary while the
+    # presentation horizon is still deferred by the output latency estimate,
+    # so `finish_segment`'s escape hatch cannot fire for this segment.
+    player.finish_generation_segment(
+        expected_playback_generation_id=lease.playback_generation_id,
+        sequence=0,
+    )
+    early = player.poll_generation(lease.playback_generation_id)
+    assert not isinstance(early, StalePlaybackGeneration)
+    assert early.estimated_audible_samples == 0
+    assert early.heard_through_sequence is None
+    time.sleep(0.3)
+    settled = player.poll_generation(lease.playback_generation_id)
+    assert not isinstance(settled, StalePlaybackGeneration)
+    assert settled.estimated_audible_samples == 16
+    assert settled.cursor_quality == "estimated"
+    assert settled.heard_through_sequence == 0
+    assert settled.heard_text == "第一句。"
+
+
+def test_escape_hatch_quality_survives_a_later_audible_report() -> None:
+    """The first-observation branch preserves what `finish_segment` observed."""
+    lease = GenerationLease(
+        session_id="S",
+        response_id="RHATCH",
+        response_group_id="GHATCH",
+        turn_id="THATCH",
+        playback_generation_id=1,
+        timeline_epoch=1,
+    )
+    ledger = PlaybackLedger(lease, sample_rate=8_000)
+    ledger.begin_segment(sequence=0, text="已经听到的部分", segment_hash="hatch-0")
+    ledger.accept_samples(sequence=0, sample_count=100)
+    ledger.record_submitted(
+        output_start_cursor=0,
+        output_end_cursor=100,
+        audibility_class="normal",
+    )
+    # The horizon crosses while the chunk is still open, so `record_audible`
+    # skips it by its own `output_end_cursor is not None` guard and only
+    # `finish_segment`'s escape hatch can write its quality — the ordering the
+    # new first-observation branch must not disturb.
+    ledger.record_audible(output_cursor=100, cursor_quality="estimated")
+    ledger.finish_segment(sequence=0)
+    assert ledger.snapshot().heard_through_sequence == 0
+    # A later callback-report gap degrades the ledger cursor to an observed
+    # `unknown`; the chunk keeps what the hatch observed for it.
+    ledger.record_submitted(
+        output_start_cursor=150,
+        output_end_cursor=200,
+        audibility_class="normal",
+    )
+    ledger.record_audible(output_cursor=100, cursor_quality="estimated")
+    snapshot = ledger.snapshot()
+    assert snapshot.cursor_quality == "unknown"
+    assert snapshot.heard_through_sequence == 0
+    assert snapshot.heard_text == "已经听到的部分"

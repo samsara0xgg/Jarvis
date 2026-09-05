@@ -242,6 +242,8 @@ index 0 and 1, then `tts_macos_say_started`. Cause in finding 1.
    prefix no longer than the last checkpoint" branch is unreachable live;
    ADR-0008 §4.4's "spoken assistant context: only the heard_text boundary"
    is empty in practice. Report to the hub; not fixed under this card.
+   Fixed afterwards on `lane/b`; evidence in
+   `docs/goals/live-heard-cursor.md`.
 4. **Whether a run opens a stream at all is not under the test's control,
    and a run that opens none speaks late or never.** Three shapes were
    observed, all of which the scenario now treats as "no window, next
