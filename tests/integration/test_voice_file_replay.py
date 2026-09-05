@@ -203,7 +203,7 @@ def test_two_burst_replay_commits_two_utterances_through_the_duplex_session(
     assert len(pipeline.calls) == 2
     assert pipeline.calls[0]["utterance_id"] != pipeline.calls[1]["utterance_id"]
     assert [call["endpoint_reason"] for call in pipeline.calls] == [
-        "stable_prefix_complete",
-        "stable_prefix_complete",
+        "semantic_complete",
+        "semantic_complete",
     ]
     assert session.metrics().endpoint_commits == 2

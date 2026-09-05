@@ -712,7 +712,7 @@ class UtteranceAssembler:
         if hold_opens:
             self._set_phase(EndpointPhase.ENDPOINT_PENDING, self._utterance_id)
             self._hold_frames = 0
-            self._decide("hold", "acoustic_pause_candidate")
+            self._decide("hold", "acoustic_pause")
         if not self._degraded:
             self._frames_since_snapshot += 1
             if hold_opens or self._frames_since_snapshot >= self._interval_frames:
@@ -730,8 +730,8 @@ class UtteranceAssembler:
         if self._previous_partial == self._stable_prefix and voice_asr.looks_complete(
             self._stable_prefix,
         ):
-            self._decide("commit", "stable_prefix_complete")
-            return "stable_prefix_complete"
+            self._decide("commit", "semantic_complete")
+            return "semantic_complete"
         if self._hold_frames >= self._max_hold_frames:
             self._decide("commit", "max_hold")
             return "max_hold"

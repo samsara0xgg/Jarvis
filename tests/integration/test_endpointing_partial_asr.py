@@ -202,10 +202,10 @@ def test_complete_stable_prefix_commits_before_max_hold() -> None:
     utterance = outcomes[-1]
     assert outcomes[:-1] == [None] * 4
     assert isinstance(utterance, voice_session.CapturedUtterance)
-    assert utterance.endpoint_reason == "stable_prefix_complete"
+    assert utterance.endpoint_reason == "semantic_complete"
     assert _decisions() == [
-        ("hold", "acoustic_pause_candidate", 0.0),
-        ("commit", "stable_prefix_complete", 0.0),
+        ("hold", "acoustic_pause", 0.0),
+        ("commit", "semantic_complete", 0.0),
     ]
     assert float(str(_decisions()[-1][2])) < 160
     # post-roll: three speech frames + one silence frame, not the whole hold.
@@ -224,10 +224,10 @@ def test_short_first_sentence_still_opens_the_hold_under_shipped_min_voiced() ->
     utterance = outcomes[-1]
     assert outcomes[:-1] == [None] * 6
     assert isinstance(utterance, voice_session.CapturedUtterance)
-    assert utterance.endpoint_reason == "stable_prefix_complete"
+    assert utterance.endpoint_reason == "semantic_complete"
     assert _decisions() == [
-        ("hold", "acoustic_pause_candidate", 0.0),
-        ("commit", "stable_prefix_complete", 0.0),
+        ("hold", "acoustic_pause", 0.0),
+        ("commit", "semantic_complete", 0.0),
     ]
 
 
@@ -247,7 +247,7 @@ def test_incomplete_stable_prefix_holds_until_max_hold_then_commits() -> None:
     assert utterance.endpoint_reason == "max_hold"
     assert silence_frames == 2 + 5, "candidate (2 frames) + max_hold (5 frames)"
     assert _decisions() == [
-        ("hold", "acoustic_pause_candidate", 0.0),
+        ("hold", "acoustic_pause", 0.0),
         ("commit", "max_hold", 160.0),
     ]
 
@@ -266,7 +266,7 @@ def test_unstable_suffix_defers_completeness_until_the_hypothesis_converges() ->
         outcomes.append(harness.feed(_SILENCE))
         assert outcomes == [None] * 5
         assert harness.assembler.stable_prefix == "今天下雨"
-        assert _decisions() == [("hold", "acoustic_pause_candidate", 0.0)]
+        assert _decisions() == [("hold", "acoustic_pause", 0.0)]
         silence_frames = 2
         utterance = None
         while utterance is None:
@@ -293,7 +293,7 @@ def test_speech_resume_during_hold_returns_to_speech_active_without_commit() -> 
     assert outcomes == [None] * 8
     assert phase is voice_session.EndpointPhase.SPEECH_ACTIVE
     assert _decisions() == [
-        ("hold", "acoustic_pause_candidate", 0.0),
+        ("hold", "acoustic_pause", 0.0),
         ("resume", "speech_resumed", 32.0),
     ]
 
@@ -323,7 +323,7 @@ def test_slow_partial_decode_degrades_to_acoustic_endpointing() -> None:
     assert isinstance(utterance, voice_session.CapturedUtterance)
     assert utterance.endpoint_reason == "acoustic_pause"
     assert _decisions() == [
-        ("hold", "acoustic_pause_candidate", 0.0),
+        ("hold", "acoustic_pause", 0.0),
         ("commit", "acoustic_pause", 64.0),
     ]
 
