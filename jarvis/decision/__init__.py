@@ -1015,6 +1015,12 @@ def _insert_system_notes(
     open_tasks_note = _format_open_tasks_note(packet)
     if open_tasks_note is not None:
         messages.insert(0, {"role": "user", "content": open_tasks_note})
+    # ADR-0008 D10: the non-terminal actions, so a cancel utterance can
+    # name its target; `cancel_action`'s resolver still trusts only the
+    # L2 fold, never this rendering.
+    open_actions_note = _format_open_actions_note(packet)
+    if open_actions_note is not None:
+        messages.insert(0, {"role": "user", "content": open_actions_note})
     # ADR-0009 D6 (render half of Step 11): folded Status Board with its
     # §3.6.9 freshness wording, so "repo X 现在什么状态" is answered from
     # observer-folded state instead of the LLM reaching for git (M6).
@@ -3601,6 +3607,32 @@ def _format_open_tasks_note(packet: SituationPacket) -> str | None:
         "may instead pass `since_ts` and `until_ts` (epoch milliseconds) "
         "as extra arguments — the resolver runs a time-window query "
         "against the Task Ledger. Yesterday = [now - 86400000, now]."
+    )
+
+
+def _format_open_actions_note(packet: SituationPacket) -> str | None:
+    """Render the Status Board's open actions as a system note, or None.
+
+    ADR-0008 D10: `cancel_action` takes a `target_action_id`, so the LLM
+    has to see which actions are still running. Same shape as
+    :func:`_format_open_tasks_note` — None when nothing is open.
+    """
+    if not packet.status_board.open_actions:
+        return None
+    now_ms = int(time.time() * 1000)
+    bullets = "\n".join(
+        f"- action_id={action.action_id!r}, dispatched "
+        f"{max(0, (now_ms - action.dispatched_ts_ms) // 1000)} s ago, no terminal yet"
+        for action in packet.status_board.open_actions
+    )
+    return (
+        "[system context] Open actions (Status Board snapshot — dispatched, "
+        "not finished):\n"
+        f"{bullets}\n"
+        "When Allen asks to stop, cancel or abort what is running, pass the "
+        "matching `action_id` from this list as `target_action_id` to "
+        "`cancel_action`; with exactly one open action, that is the one. "
+        "Do not invent action_ids."
     )
 
 

@@ -492,6 +492,7 @@ class _ScriptedLLM:
     def __init__(self) -> None:
         self.script: list[ChatResult | None] = []
         self.model = "scripted"
+        self.seen: list[list[dict[str, Any]]] = []
 
     @property
     def last_input_tokens(self) -> int | None:
@@ -518,6 +519,7 @@ class _ScriptedLLM:
         tool_choice: str | None = "auto",  # noqa: ARG002
     ) -> ChatResult:
         assert self.script, "the scripted LLM ran out of replies"
+        self.seen.append([dict(m) for m in messages])
         step = self.script.pop(0)
         if step is not None:
             return step
@@ -719,6 +721,15 @@ def _spoken(result: DecideResult) -> str:
     return result.response_plan.text
 
 
+def _open_actions_notes(rig: _Rig) -> list[str]:
+    """Every open-actions system note the LLM saw on its last chat call."""
+    return [
+        str(m["content"])
+        for m in rig.llm.seen[-1]
+        if isinstance(m.get("content"), str) and "Open actions" in m["content"]
+    ]
+
+
 def _assert_no_confirmation_and_no_lease(rig: _Rig) -> None:
     """The cancel path asks nothing and mints nothing."""
     assert not [e for e in iter_events(rig.conn) if e.type.startswith("confirmation.")]
@@ -770,6 +781,7 @@ def test_no_open_action_answers_without_proposing(tmp_path: Path) -> None:
     rig = _Rig(tmp_path, workers=(), keys={})
     try:
         result = rig.cancel()
+        assert _open_actions_notes(rig) == []
         assert _spoken(result) == _NONE_ANSWER
         assert result.attention_channel == "voice_notify"
         assert rig.payloads("action.proposed") == []
@@ -823,6 +835,11 @@ def test_cancel_stops_the_one_running_action(tmp_path: Path) -> None:
 
         result = rig.cancel()
 
+        # The LLM was shown the open action it can name.
+        notes = _open_actions_notes(rig)
+        assert len(notes) == 1
+        assert f"action_id={target!r}" in notes[0]
+        assert "cancel_action" in notes[0]
         proposed = [p for p in rig.payloads("action.proposed") if p["tool_name"] == "cancel_action"]
         assert len(proposed) == 1
         assert proposed[0]["risk_level"] == "L2"
