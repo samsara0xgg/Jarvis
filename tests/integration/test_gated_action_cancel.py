@@ -15,7 +15,14 @@ import pytest
 
 from jarvis.decision.gates import pre_action_gate
 from jarvis.decision.packet import assemble_packet
-from jarvis.decision.policy import effective_policy
+from jarvis.decision.policy import effective_policy, validate_requires_confirmation
+from jarvis.execution.action_runner import ActionRunner
+from jarvis.execution.tools import (
+    ToolDefinition,
+    ToolRegistry,
+    build_default_registry,
+    default_resource_key_resolver,
+)
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state.decision_snapshot import read_decision_snapshot
 from jarvis.state.event_log import emit_event, open_event_log
@@ -349,3 +356,61 @@ def test_the_packet_carries_the_admission_lookup(tmp_path: Path) -> None:
         assert "action:A1" in packet.entity_registry
     finally:
         conn.close()
+
+
+# --- (10) the L4 tool: registered only with a runner, no resource key --------
+
+
+def _cancel_tool_def(registry: ToolRegistry) -> ToolDefinition:
+    """The registered `cancel_action` definition."""
+    return registry.for_caller(CallerPrincipal.JARVIS_LLM)[-1]
+
+
+def test_cancel_action_is_registered_only_when_a_runner_is_supplied(tmp_path: Path) -> None:
+    """Without an ActionRunner the LLM's tool list is byte-identical to today's."""
+    without = build_default_registry()
+    runner = ActionRunner(event_log_path=tmp_path / "events.db", max_concurrent_runs=1)
+    try:
+        with_runner = build_default_registry(action_runner=runner)
+        names_without = [t.name for t in without.for_caller(CallerPrincipal.JARVIS_LLM)]
+        names_with = [t.name for t in with_runner.for_caller(CallerPrincipal.JARVIS_LLM)]
+        assert "cancel_action" not in names_without
+        assert names_with == [*names_without, "cancel_action"]
+
+        tool = _cancel_tool_def(with_runner)
+        assert tool.name == "cancel_action"
+        assert tool.risk_level == "L2"
+        assert tool.requires_confirmation is False
+        assert tool.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
+        assert tool.result_semantics == "ack"
+        assert tool.is_async is False
+        assert tool.domain == "agent_control"
+        assert tool.read_only is False
+        assert tool.requires_entity is True
+        assert tool.post_action_check is None
+        assert tool.result_budget_s is None
+        assert tool.input_schema["required"] == ["target_action_id", "reason"]
+        assert tool.input_schema["additionalProperties"] is False
+        assert set(tool.input_schema["properties"]) == {"target_action_id", "reason"}
+        # Boot validation: L2 under the L3 threshold must declare False.
+        validate_requires_confirmation(
+            with_runner.for_caller(CallerPrincipal.JARVIS_LLM),
+            effective_policy().confirmation_threshold,
+        )
+    finally:
+        runner.shutdown(wait=False)
+
+
+def test_cancel_action_takes_no_resource_key(tmp_path: Path) -> None:
+    """The cancel signals a handle; it must not queue behind the target's lease."""
+    runner = ActionRunner(event_log_path=tmp_path / "events.db", max_concurrent_runs=1)
+    conn = open_event_log(tmp_path / "events.db")
+    try:
+        tool = _cancel_tool_def(build_default_registry(action_runner=runner))
+        request = _cancel_request("A1", claimed_gate_uid="evt-1")
+        concurrency = default_resource_key_resolver(request, tool, conn)
+        assert concurrency.resource_keys == ()
+        assert concurrency.mode == "read_shared"
+    finally:
+        conn.close()
+        runner.shutdown(wait=False)
