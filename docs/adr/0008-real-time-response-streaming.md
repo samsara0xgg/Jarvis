@@ -234,7 +234,7 @@ finalize_stream(committed_prefix, uncommitted_suffix, policy)
 ```
 
 - every permitted segment whose `surface.response_chunk` committed is appended to `committed_text_prefix`; a permit without its chunk was never exposed and is not prefix;
-- the committed prefix is reconstructed from the Event Log, never trusted from memory: the finalizer validates the caller's prefix against that reconstruction under the policy the permits were issued with, and a mismatch on either is a typed failure;
+- the `committed_text_prefix` a ResponseRun carries (D1) is a running copy, not the authority: at finalization it is validated against the prefix reconstructed from the Event Log under the policy the permits were issued with, and a mismatch on either is a typed failure;
 - the final gate may inspect the accumulated full answer, but a retry may regenerate only the uncommitted suffix;
 - the final `ResponsePlan.text` must be byte-for-byte `committed_prefix + approved_suffix`;
 - a retry or rewrite may not alter text already spoken;
