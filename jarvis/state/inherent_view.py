@@ -1,7 +1,7 @@
-"""Inherent response-group view fold — ADR-0014 D8/D9/D16 (L2).
+"""Inherent view fold — ADR-0014 D8/D9/D13/D14/D16 (L2).
 
 The v2 panel's durable truth is derived here and nowhere else: one
-:class:`InherentView` folds ``surface.response_{open,chunk,emitted}`` rows in
+:class:`InherentView` folds the Inherent-relevant Event Log rows in
 ``events.id`` order and answers two questions the runtime sequencer asks —
 "what changed on this row?" (:class:`ViewTransition`) and "what does a new
 client need to see?" (:class:`InherentViewCheckpoint`).  Both answers are
@@ -9,31 +9,61 @@ immutable values; the sequencer owns the scan watermark and the wake, the
 presenter owns the wire shape, and neither re-derives what this fold holds
 (D9: "L2 owns all fold logic and immutable projection snapshots").
 
-Two bounds live here because they bound the *truth kept*, not the bytes
-sent (D16):
+Three sections of truth are folded:
+
+- **response groups** from ``surface.response_{open,chunk,emitted}``, with
+  each response's L3 lifecycle joined from the ``response.*`` rows that name
+  it — reported from committed events, never assumed;
+- the bounded **action projection** (D13) from the eight registered
+  ``action.*`` lifecycle types plus ``worker.quiesced`` and the cleanup pair,
+  carrying each action's canonical state, its cleanup state and — folded but
+  never serialized, because the shipped ``ActionUpsert`` has no slot for it —
+  the A5 :class:`CancelRequestView`;
+- the single globally unique **confirmation slot** (D14) from
+  ``confirmation.requested`` / ``.accepted`` / ``.rejected``.  Expiry is
+  judged lazily against the timestamp of the rows folded past the deadline,
+  which is ``PendingConfirmationSlot.is_live`` evaluated at fold time; the
+  durable ``confirmation.expired`` terminalizer is a later card.
+
+Three bounds live here because they bound the *truth kept*, not the bytes
+sent (D16, and D13's "bounded ActionViewProjection"):
 
 - at most :data:`RECENT_TERMINAL_GROUP_LIMIT` terminal groups are retained,
   oldest evicted first, so a snapshot carries every open group plus a bounded
   recent history and the fold never grows with the log;
+- at most :data:`RECENT_TERMINAL_ACTION_LIMIT` actions in a canonical terminal
+  are retained, oldest evicted first, for the same reason, and an action the
+  Pre-action Gate refused is retired at its verdict — L3 dispatches nothing
+  after a non-``pass`` outcome, so it would otherwise sit in every snapshot
+  as ``proposed`` for the life of the log;
 - a closed response whose segments exceed :data:`INLINE_DOCUMENT_BUDGET_BYTES`
   of UTF-8 keeps a whole-segment prefix as its preview plus a
   :class:`DocumentReference` naming the durable row that carries the complete
   body.  Open responses are never cut: a live client extends them by
   ``sequence`` and a trimmed prefix would only send it into a resync loop.
 
-Only rows carrying a ``response_id`` are Inherent-relevant.  The three
-production emitters (``cli_render`` and the L2 stream emission path) always
-bind one; a legacy row without it advances the cursor and nothing else.
+A row produces a transition — exactly one durable envelope — when it is a
+response row carrying a ``response_id`` (even when nothing changed: a
+duplicate open, a late or repeated segment) or when it moved something the
+wire carries.  A row that moves only fold-internal truth — an action's
+cleanup state, the cancel request's own state machine, a lifecycle for a
+response this fold never opened, the D21 correlation — advances the cursor
+and produces nothing: no wire field changed, and an empty durable envelope
+would only cost the client an ACK.
 
-Layer rules (L2): stdlib only.  The fold takes plain row fields rather than
-an ``Event`` so this module names no other package at all.
+Layer rules (L2): stdlib plus ``jarvis.shared`` for the one migration-stable
+group-id derivation.  The fold takes plain row fields rather than an
+``Event``, so it names no layer package at all.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Final, Literal
+
+from jarvis.shared.realtime import stable_response_group_id
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -43,18 +73,121 @@ RESPONSE_EVENT_TYPES: Final[tuple[str, ...]] = (
     "surface.response_chunk",
     "surface.response_emitted",
 )
+RESPONSE_LIFECYCLE_EVENT_TYPES: Final[tuple[str, ...]] = (
+    "response.started",
+    "response.completed",
+    "response.cancelled",
+    "response.failed",
+)
+ACTION_EVENT_TYPES: Final[tuple[str, ...]] = (
+    "action.proposed",
+    "action.authorized",
+    "action.dispatched",
+    "action.running",
+    "action.result_observed",
+    "action.timeout_assumed",
+    "action.failed",
+    "action.cancelled",
+)
+CLEANUP_EVENT_TYPES: Final[tuple[str, ...]] = (
+    "worker.quiesced",
+    "action.cleanup_completed",
+    "action.cleanup_failed",
+)
+CONFIRMATION_EVENT_TYPES: Final[tuple[str, ...]] = (
+    "confirmation.requested",
+    "confirmation.accepted",
+    "confirmation.rejected",
+)
+INPUT_CORRELATION_TYPE: Final[str] = "surface.user_intent"
+GATE_EVENT_TYPE: Final[str] = "gate.evaluated"
+FOLD_EVENT_TYPES: Final[tuple[str, ...]] = (
+    *RESPONSE_EVENT_TYPES,
+    *RESPONSE_LIFECYCLE_EVENT_TYPES,
+    *ACTION_EVENT_TYPES,
+    *CLEANUP_EVENT_TYPES,
+    *CONFIRMATION_EVENT_TYPES,
+    INPUT_CORRELATION_TYPE,
+    GATE_EVENT_TYPE,
+)
+"""Every type this fold reads; the sequencer's row query selects exactly these."""
+
 INLINE_DOCUMENT_BUDGET_BYTES: Final[int] = 16384
 RECENT_TERMINAL_GROUP_LIMIT: Final[int] = 20
-INPUT_CORRELATION_TYPE: Final[str] = "surface.user_intent"
+RECENT_TERMINAL_ACTION_LIMIT: Final[int] = 20
 PENDING_REQUEST_LIMIT: Final[int] = 64
+CANCEL_TOOL_NAME: Final[str] = "cancel_action"
 
 PanelStream = Literal["open", "closed"]
-ChangeKind = Literal["response.opened", "response.segment", "response.delivery"]
+ResponseLifecycle = Literal["generating", "completed", "cancelled", "failed"]
+ActionCanonicalState = Literal[
+    "proposed",
+    "authorized",
+    "dispatched",
+    "running",
+    "result_observed",
+    "timeout_assumed",
+    "failed",
+    "cancelled",
+]
+CleanupState = Literal["none", "quiesced", "completed", "quarantined"]
+CancelRequestState = Literal[
+    "received", "authorized", "quiescing", "rejected", "failed", "resolved",
+]
+ConfirmationClearReason = Literal["accepted", "rejected", "expired", "superseded"]
+ChangeKind = Literal[
+    "response.opened",
+    "response.segment",
+    "response.delivery",
+    "response.lifecycle",
+    "action.upsert",
+    "confirmation.upsert",
+    "confirmation.cleared",
+]
 
 _PHASES: Final[frozenset[str]] = frozenset({"commentary", "final"})
 _CHANNELS: Final[frozenset[str]] = frozenset({"speech", "document", "both"})
 _DEFAULT_PHASE: Final[str] = "final"
 _DEFAULT_CHANNEL: Final[str] = "document"
+_DEFAULT_ACTION_TYPE: Final[str] = "unknown"
+_CONFIRMATION_OPTIONS: Final[tuple[str, ...]] = ("accept", "reject")
+# The row's own type is the canonical state, one-to-one with the shipped
+# Swift ``ActionCanonicalState``; the four below are its terminals, which is
+# the same open-set rule ``_ActionFoldState.fold`` applies in projections.py.
+_ACTION_STATE_OF_TYPE: Final[dict[str, ActionCanonicalState]] = {
+    "action.proposed": "proposed",
+    "action.authorized": "authorized",
+    "action.dispatched": "dispatched",
+    "action.running": "running",
+    "action.result_observed": "result_observed",
+    "action.timeout_assumed": "timeout_assumed",
+    "action.failed": "failed",
+    "action.cancelled": "cancelled",
+}
+_TERMINAL_ACTION_STATES: Final[frozenset[str]] = frozenset(
+    {"result_observed", "timeout_assumed", "failed", "cancelled"},
+)
+# Why the target stopped, as the CancelRequestView's ``reason_code`` (D13).
+_CANCEL_RESOLUTION_OF_STATE: Final[dict[str, str]] = {
+    "cancelled": "cancelled",
+    "result_observed": "completed_before_cancel",
+    "failed": "failed",
+    "timeout_assumed": "failed",
+}
+_CANCEL_SETTLED_STATES: Final[frozenset[str]] = frozenset({"rejected", "resolved"})
+_CANCEL_LIVE_STATES: Final[frozenset[str]] = frozenset({"received", "authorized", "quiescing"})
+_DEFAULT_RISK: Final[str] = "unknown"
+_CLEANUP_STATE_OF_TYPE: Final[dict[str, CleanupState]] = {
+    "worker.quiesced": "quiesced",
+    "action.cleanup_completed": "completed",
+    "action.cleanup_failed": "quarantined",
+}
+_LIFECYCLE_OF_TYPE: Final[dict[str, ResponseLifecycle]] = {
+    "response.started": "generating",
+    "response.completed": "completed",
+    "response.cancelled": "cancelled",
+    "response.failed": "failed",
+}
 
 
 @dataclass(frozen=True)
@@ -98,6 +231,12 @@ class ResponseView:
     segments: tuple[SegmentView, ...] = ()
     document_reference: DocumentReference | None = None
     source_client_request_id: str | None = None
+    #: The L3 ResponseRun lifecycle, from the ``response.*`` rows naming this
+    #: response.  A response opened through the legacy uuid5 binding has no
+    #: such row and stays ``generating``: ``surface.response_emitted`` is
+    #: delivery production truth and never stands in for a terminal (§16.9).
+    lifecycle: ResponseLifecycle = "generating"
+    terminal_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +259,81 @@ class ResponseGroupView:
 
 
 @dataclass(frozen=True)
+class CancelRequestView:
+    """One A5 cancel request's own state machine (D13).
+
+    Keyed by the request's own ``action_id`` (``CancelActionRequest.request_id``)
+    and held against its target.  "Cancel requested" never enters the canonical
+    eight-state ``ActionLifecycle``: only ``action.cancelled`` moves the
+    target's own state.  Folded and checkpointed but never serialized — the
+    shipped ``ActionUpsert`` has no ``cancel_request`` key.
+    """
+
+    request_id: str
+    target_action_id: str
+    state: CancelRequestState
+    revision_cursor: int
+    #: The request's ``action.proposed`` row, which its ``gate.evaluated``
+    #: verdict names in ``events.source_event_id``.
+    proposed_event_uid: str
+    reason_code: str | None = None
+
+
+@dataclass(frozen=True)
+class ActionView:
+    """One registered action's panel truth (D13 ``ActionView``).
+
+    It holds no raw tool arguments, no secrets, no unbounded stdout, no lease
+    and no unverified tool self-report: ``failure_code`` is the reason code of
+    a terminal, never its free-text ``error``.
+    """
+
+    action_id: str
+    action_type: str
+    canonical_state: ActionCanonicalState
+    state_revision_cursor: int
+    updated_at_ms: int
+    task_id: str | None = None
+    response_group_id: str | None = None
+    started_at_ms: int | None = None
+    safe_target_ref: str | None = None
+    result_available: bool = False
+    failure_code: str | None = None
+    cleanup_state: CleanupState = "none"
+    #: D13 ``cancellable_hint``, computed here because L5 never derives it.
+    cancellable: bool = False
+    cancel_request: CancelRequestView | None = None
+
+
+@dataclass(frozen=True)
+class ConfirmationView:
+    """The one live confirmation ask (D14), mirroring ``PendingConfirmations``.
+
+    Nothing else from the ``action_snapshot`` reaches this value: no
+    ``args_meta``, no ``content_artifact``, no lease.
+    """
+
+    confirmation_id: str
+    summary: str
+    risk: str
+    expires_at_ms: int
+    revision: int
+    options: tuple[str, ...] = _CONFIRMATION_OPTIONS
+    target: str | None = None
+    action_id: str | None = None
+    response_group_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ConfirmationCleared:
+    """Why and at which cursor the confirmation slot emptied (D14)."""
+
+    confirmation_id: str
+    reason: ConfirmationClearReason
+    revision: int
+
+
+@dataclass(frozen=True)
 class InherentViewCheckpoint:
     """The bounded, immutable state a snapshot is built from (D8 step 1).
 
@@ -131,15 +345,20 @@ class InherentViewCheckpoint:
     through_cursor: int
     groups: tuple[ResponseGroupView, ...]
     pending_requests: tuple[tuple[str, str], ...] = ()
+    actions: tuple[ActionView, ...] = ()
+    pending_confirmation: ConfirmationView | None = None
 
 
 @dataclass(frozen=True)
 class ViewChange:
-    """One typed mutation; ``segment`` is set only for ``response.segment``."""
+    """One typed mutation; exactly one payload field is set per ``kind``."""
 
     kind: ChangeKind
-    response: ResponseView
+    response: ResponseView | None = None
     segment: SegmentView | None = None
+    action: ActionView | None = None
+    confirmation: ConfirmationView | None = None
+    cleared: ConfirmationCleared | None = None
 
 
 @dataclass(frozen=True)
@@ -159,6 +378,51 @@ def _string(payload: Mapping[str, Any], key: str) -> str | None:
 def _enum(payload: Mapping[str, Any], key: str, allowed: frozenset[str], default: str) -> str:
     value = payload.get(key)
     return value if isinstance(value, str) and value in allowed else default
+
+
+def _ack_status(payload: Mapping[str, Any]) -> str | None:
+    """Read only ``status`` out of a ``cancel_action`` ack's ``tool_output``.
+
+    Nothing else in that JSON — and no free text anywhere — reaches the view.
+    """
+    raw = payload.get("tool_output")
+    if not isinstance(raw, str):
+        return None
+    try:
+        decoded = json.loads(raw)
+    except ValueError:
+        return None
+    return _string(decoded, "status") if isinstance(decoded, dict) else None
+
+
+def _confirmation_of_request(
+    cursor: int, payload: Mapping[str, Any], correlation: Mapping[str, Any] | None,
+) -> ConfirmationView | None:
+    """Build the slot from one ``confirmation.requested`` row, or None if malformed.
+
+    ``summary`` is the runtime-rendered ``template_line`` (ADR-0012 D5's fixed
+    vocabulary, never LLM text); the ask's identity, target and risk are the
+    only things read out of ``action_snapshot``.
+    """
+    identity = _string(payload, "confirmation_id")
+    snapshot = payload.get("action_snapshot")
+    template = _string(payload, "template_line")
+    expiry = payload.get("expires_at_ms")
+    if identity is None or template is None or not isinstance(snapshot, dict):
+        return None
+    if type(expiry) is not int:
+        return None
+    turn_id = None if correlation is None else _string(correlation, "turn_id")
+    return ConfirmationView(
+        confirmation_id=identity,
+        summary=template,
+        risk=_string(snapshot, "risk_level") or _DEFAULT_RISK,
+        expires_at_ms=expiry,
+        revision=cursor,
+        target=_string(snapshot, "canonical_target"),
+        action_id=None if correlation is None else _string(correlation, "action_id"),
+        response_group_id=None if turn_id is None else stable_response_group_id(turn_id),
+    )
 
 
 def _utf8_len(text: str) -> int:
@@ -224,8 +488,10 @@ class InherentView:
         through_cursor: int = 0,
         groups: Iterable[ResponseGroupView] = (),
         pending_requests: Iterable[tuple[str, str]] = (),
+        actions: Iterable[ActionView] = (),
+        pending_confirmation: ConfirmationView | None = None,
     ) -> None:
-        """Start from ``groups`` as truth folded through ``through_cursor``."""
+        """Start from ``groups`` and ``actions`` as truth folded through ``through_cursor``."""
         self._through_cursor = through_cursor
         self._request_of_turn: dict[str, str] = dict(pending_requests)
         self._groups: dict[str, ResponseGroupView] = {
@@ -236,6 +502,23 @@ class InherentView:
             for group in self._groups.values()
             for response in group.responses
         }
+        self._actions: dict[str, ActionView] = {}
+        # ``cancellable`` is exactly "dispatched seen, no terminal seen", so a
+        # restored action that is still cancellable is one whose dispatch this
+        # fold saw; a terminal one can never become cancellable again.
+        self._dispatched: set[str] = set()
+        self._cancels: dict[str, CancelRequestView] = {}
+        self._cancel_of_target: dict[str, str] = {}
+        for action in actions:
+            self._actions[action.action_id] = replace(
+                action, cancellable=False, cancel_request=None,
+            )
+            if action.cancellable:
+                self._dispatched.add(action.action_id)
+            if action.cancel_request is not None:
+                self._cancels[action.cancel_request.request_id] = action.cancel_request
+                self._cancel_of_target[action.action_id] = action.cancel_request.request_id
+        self._confirmation = pending_confirmation
 
     @classmethod
     def from_checkpoint(cls, checkpoint: InherentViewCheckpoint) -> InherentView:
@@ -244,6 +527,8 @@ class InherentView:
             through_cursor=checkpoint.through_cursor,
             groups=checkpoint.groups,
             pending_requests=checkpoint.pending_requests,
+            actions=checkpoint.actions,
+            pending_confirmation=checkpoint.pending_confirmation,
         )
 
     @property
@@ -274,9 +559,11 @@ class InherentView:
             through_cursor=through_cursor,
             groups=tuple(ordered),
             pending_requests=tuple(self._request_of_turn.items()),
+            actions=tuple(self._action_view(action) for action in self._actions.values()),
+            pending_confirmation=self._confirmation,
         )
 
-    def fold(
+    def fold(  # noqa: PLR0913 — one keyword per Event Log row column the fold reads.
         self,
         *,
         cursor: int,
@@ -284,15 +571,24 @@ class InherentView:
         event_type: str,
         ts_epoch_ms: int,
         payload: Mapping[str, Any],
+        source_event_id: str | None = None,
+        correlation: Mapping[str, Any] | None = None,
     ) -> ViewTransition | None:
         """Apply one Event Log row and report what it changed.
 
         Rows must arrive in strictly ascending ``cursor`` order (D6: cursor
-        regression is not legal).  An irrelevant row — another type, or a
-        response row without a ``response_id`` — advances the cursor and
-        returns None.  A relevant row always returns a transition, possibly
-        with no changes (a duplicate open, a late or repeated segment), so
-        every relevant row maps to exactly one durable envelope.
+        regression is not legal).  A response row carrying a ``response_id``
+        always returns a transition, possibly with no changes (a duplicate
+        open, a late or repeated segment).  Every other row returns a
+        transition only when it moved something the wire carries; a row that
+        moved only fold-internal truth, or nothing at all, advances the cursor
+        and returns None.  So every returned transition is exactly one durable
+        envelope.
+
+        The confirmation deadline is judged here, against this row's
+        ``ts_epoch_ms``: the fold has no clock, so the first row folded at or
+        past a live slot's ``expires_at_ms`` clears it, before that row's own
+        changes.
 
         Args:
             cursor: ``events.id`` of the row.
@@ -300,9 +596,13 @@ class InherentView:
             event_type: The row's ``type``.
             ts_epoch_ms: The row's timestamp; a new response's creation time.
             payload: The decoded ``payload_json``.
+            source_event_id: The row's ``events.source_event_id`` column; the
+                cancel trail's gate verdict names its request's proposal here.
+            correlation: The row's decoded ``correlation_json`` column; a
+                confirmation ask carries its ``action_id`` / ``turn_id`` here.
 
         Returns:
-            The transition, or None for an irrelevant row.
+            The transition, or None for a row that changed nothing on the wire.
 
         Raises:
             ValueError: ``cursor`` does not exceed the fold's cursor.
@@ -311,14 +611,63 @@ class InherentView:
             msg = f"cursor {cursor} does not advance past {self._through_cursor}"
             raise ValueError(msg)
         self._through_cursor = cursor
-        if event_type == INPUT_CORRELATION_TYPE:
-            self._remember_request(payload)
-        if event_type not in RESPONSE_EVENT_TYPES:
+        changes: list[ViewChange] = []
+        expiry = self._expire_confirmation(cursor, ts_epoch_ms)
+        if expiry is not None:
+            changes.append(expiry)
+        folded = self._fold_row(
+            cursor, event_uid, event_type, ts_epoch_ms, payload, source_event_id, correlation,
+        )
+        if folded is None and not changes:
             return None
+        changes.extend(folded or ())
+        return ViewTransition(cursor=cursor, event_uid=event_uid, changes=tuple(changes))
+
+    # --- row dispatch -------------------------------------------------------
+
+    def _fold_row(  # noqa: PLR0913 — one positional per row column, as `fold` takes them.
+        self,
+        cursor: int,
+        event_uid: str,
+        event_type: str,
+        ts_epoch_ms: int,
+        payload: Mapping[str, Any],
+        source_event_id: str | None,
+        correlation: Mapping[str, Any] | None,
+    ) -> list[ViewChange] | None:
+        """Route one row to its family; None when it earns no envelope."""
+        if event_type in RESPONSE_EVENT_TYPES:
+            return self._fold_response(cursor, event_uid, event_type, ts_epoch_ms, payload)
+        if event_type in _LIFECYCLE_OF_TYPE:
+            return self._fold_lifecycle(cursor, event_type, payload) or None
+        if event_type in _ACTION_STATE_OF_TYPE:
+            return (
+                self._fold_action(cursor, event_uid, event_type, ts_epoch_ms, payload) or None
+            )
+        if event_type in _CLEANUP_STATE_OF_TYPE:
+            self._fold_cleanup(event_type, ts_epoch_ms, payload)
+        elif event_type in CONFIRMATION_EVENT_TYPES:
+            return self._fold_confirmation(cursor, event_type, payload, correlation) or None
+        elif event_type == GATE_EVENT_TYPE:
+            self._fold_gate(cursor, payload, source_event_id)
+        elif event_type == INPUT_CORRELATION_TYPE:
+            self._remember_request(payload)
+        return None
+
+    # --- response groups ----------------------------------------------------
+
+    def _fold_response(
+        self,
+        cursor: int,
+        event_uid: str,
+        event_type: str,
+        ts_epoch_ms: int,
+        payload: Mapping[str, Any],
+    ) -> list[ViewChange] | None:
+        """Fold one ``surface.response_*`` row; None when it names no response."""
         response_id = _string(payload, "response_id")
         if response_id is None:
             return None
-
         changes: list[ViewChange] = []
         response = self._response(response_id)
         if response is None:
@@ -343,7 +692,334 @@ class InherentView:
             )
             changes.append(ViewChange("response.delivery", response))
             self._evict_terminal_groups()
-        return ViewTransition(cursor=cursor, event_uid=event_uid, changes=tuple(changes))
+        return changes
+
+    def _fold_lifecycle(
+        self, cursor: int, event_type: str, payload: Mapping[str, Any],
+    ) -> list[ViewChange]:
+        """Join one L3 ``response.*`` row to the response it names.
+
+        A response this fold never opened — the legacy uuid5 binding emits no
+        ``response.*`` row at all, and an evicted group is gone — changes
+        nothing: the client holds no such response and a lifecycle naming one
+        would only send it into a resync.
+        """
+        response_id = _string(payload, "response_id")
+        response = None if response_id is None else self._response(response_id)
+        if response is None:
+            return []
+        lifecycle = _LIFECYCLE_OF_TYPE[event_type]
+        reason = _string(payload, "reason")
+        if response.lifecycle == lifecycle and response.terminal_reason == reason:
+            return []
+        updated = self._store(
+            replace(response, lifecycle=lifecycle, terminal_reason=reason, revision=cursor),
+            cursor,
+        )
+        return [ViewChange("response.lifecycle", updated)]
+
+    # --- actions ------------------------------------------------------------
+
+    def _fold_action(
+        self,
+        cursor: int,
+        event_uid: str,
+        event_type: str,
+        ts_epoch_ms: int,
+        payload: Mapping[str, Any],
+    ) -> list[ViewChange]:
+        """Fold one registered ``action.*`` row into its :class:`ActionView`."""
+        action_id = _string(payload, "action_id")
+        if action_id is None:
+            return []
+        state = _ACTION_STATE_OF_TYPE[event_type]
+        known = self._actions.get(action_id)
+        action = ActionView(
+            action_id=action_id,
+            # An action dispatched with no proposed row — the same gap
+            # `ActionAdmission` documents — has no tool name to report.
+            action_type=_DEFAULT_ACTION_TYPE if known is None else known.action_type,
+            canonical_state=state,
+            state_revision_cursor=cursor,
+            updated_at_ms=ts_epoch_ms,
+        ) if known is None else replace(
+            known,
+            canonical_state=state,
+            state_revision_cursor=cursor,
+            updated_at_ms=ts_epoch_ms,
+        )
+        if event_type == "action.proposed":
+            turn_id = _string(payload, "turn_id")
+            action = replace(
+                action,
+                action_type=_string(payload, "tool_name") or _DEFAULT_ACTION_TYPE,
+                safe_target_ref=_string(payload, "target_entity_ref"),
+                response_group_id=(
+                    stable_response_group_id(turn_id)
+                    if turn_id is not None
+                    else action.response_group_id
+                ),
+            )
+            self._open_cancel_request(cursor, event_uid, action_id, payload)
+        elif event_type == "action.dispatched":
+            self._dispatched.add(action_id)
+            self._move_cancel(cursor, action_id, "quiescing")
+        elif event_type == "action.running":
+            action = replace(action, started_at_ms=ts_epoch_ms)
+        elif event_type == "action.result_observed":
+            action = replace(action, result_available=True)
+            self._fold_cancel_ack(cursor, action_id, payload)
+        if state in _TERMINAL_ACTION_STATES:
+            action = self._terminalize(action, cursor, event_type, payload)
+        self._actions[action_id] = action
+        view = self._action_view(action)
+        if state in _TERMINAL_ACTION_STATES:
+            self._evict_terminal_actions()
+        return [ViewChange("action.upsert", action=view)]
+
+    def _terminalize(
+        self, action: ActionView, cursor: int, event_type: str, payload: Mapping[str, Any],
+    ) -> ActionView:
+        """Stamp a terminal row's safe fields and settle any cancel request.
+
+        ``failure_code`` is ``payload.reason`` and never ``payload.error``:
+        D13 bars unbounded stdout and unverified self-report from this view.
+        """
+        if event_type != "action.result_observed":
+            action = replace(action, failure_code=_string(payload, "reason"))
+            self._move_cancel(cursor, action.action_id, "failed", _string(payload, "reason"))
+        if event_type == "action.timeout_assumed":
+            action = replace(action, task_id=_string(payload, "task_id") or action.task_id)
+        self._resolve_cancel_of_target(cursor, action.action_id, action.canonical_state)
+        return action
+
+    def _fold_cleanup(
+        self, event_type: str, ts_epoch_ms: int, payload: Mapping[str, Any],
+    ) -> None:
+        """Record the D9 cleanup trio on a known action; the wire carries none of it."""
+        action_id = _string(payload, "action_id")
+        action = None if action_id is None else self._actions.get(action_id)
+        if action is None or action_id is None:
+            return
+        self._actions[action_id] = replace(
+            action, cleanup_state=_CLEANUP_STATE_OF_TYPE[event_type], updated_at_ms=ts_epoch_ms,
+        )
+
+    def _action_view(self, action: ActionView) -> ActionView:
+        """Materialize the two derived fields L5 is forbidden to compute."""
+        request_id = self._cancel_of_target.get(action.action_id)
+        return replace(
+            action,
+            cancellable=(
+                action.action_id in self._dispatched
+                and action.canonical_state not in _TERMINAL_ACTION_STATES
+            ),
+            cancel_request=None if request_id is None else self._cancels.get(request_id),
+        )
+
+    def _evict_terminal_actions(self) -> None:
+        terminal = sorted(
+            (
+                action
+                for action in self._actions.values()
+                if action.canonical_state in _TERMINAL_ACTION_STATES
+            ),
+            key=lambda action: action.state_revision_cursor,
+        )
+        for action in terminal[: max(0, len(terminal) - RECENT_TERMINAL_ACTION_LIMIT)]:
+            self._forget_action(action.action_id)
+
+    def _forget_action(self, action_id: str) -> None:
+        del self._actions[action_id]
+        self._dispatched.discard(action_id)
+        request_id = self._cancel_of_target.pop(action_id, None)
+        if request_id is not None:  # it was a cancel target
+            self._cancels.pop(request_id, None)
+        cancel = self._cancels.pop(action_id, None)
+        if cancel is not None:  # it was a cancel request
+            self._cancel_of_target.pop(cancel.target_action_id, None)
+
+    # --- the A5 cancel trail ------------------------------------------------
+
+    def _open_cancel_request(
+        self, cursor: int, event_uid: str, request_id: str, payload: Mapping[str, Any],
+    ) -> None:
+        """Start a :class:`CancelRequestView` on a ``cancel_action`` proposal."""
+        if _string(payload, "tool_name") != CANCEL_TOOL_NAME:
+            return
+        arguments = payload.get("arguments")
+        target = _string(arguments, "target_action_id") if isinstance(arguments, dict) else None
+        if target is None or target not in self._actions:
+            # The trail is only reachable through its target's view, so a
+            # target this fold does not hold is nothing to attach it to; that
+            # also keeps the trail bounded by the actions it hangs off.
+            return
+        live = self._cancels.get(self._cancel_of_target.get(target, ""))
+        if live is not None and live.state in _CANCEL_LIVE_STATES:
+            # D13: a second request while one is received / authorized /
+            # quiescing resolves to the existing request rather than creating
+            # a second cancel state.
+            return
+        self._cancels[request_id] = CancelRequestView(
+            request_id=request_id,
+            target_action_id=target,
+            state="received",
+            revision_cursor=cursor,
+            proposed_event_uid=event_uid,
+        )
+        self._cancel_of_target[target] = request_id
+
+    def _move_cancel(
+        self, cursor: int, request_id: str, state: CancelRequestState, reason: str | None = None,
+    ) -> None:
+        cancel = self._cancels.get(request_id)
+        if cancel is None or cancel.state in _CANCEL_SETTLED_STATES:
+            return
+        self._cancels[request_id] = replace(
+            cancel, state=state, revision_cursor=cursor, reason_code=reason or cancel.reason_code,
+        )
+
+    def _fold_gate(
+        self, cursor: int, payload: Mapping[str, Any], source_event_id: str | None,
+    ) -> None:
+        """Apply one Pre-action Gate verdict to the action it names.
+
+        It settles a cancel request and, when it does not pass, retires the
+        action it refused: L3 returns without dispatching on any non-``pass``
+        outcome, so no terminal will ever arrive for that ``action_id`` and no
+        wire state resolves a stuck ``proposed``.  An accepted confirmation re-proposes,
+        which folds a fresh view.
+        """
+        if payload.get("gate") != "pre_action":
+            return
+        passed = payload.get("outcome") == "pass"
+        self._settle_cancel_on_gate(cursor, payload, source_event_id, passed=passed)
+        action_id = _string(payload, "action_id")
+        if passed or action_id is None:
+            return
+        self._actions.pop(action_id, None)
+        self._dispatched.discard(action_id)
+
+    def _settle_cancel_on_gate(
+        self,
+        cursor: int,
+        payload: Mapping[str, Any],
+        source_event_id: str | None,
+        *,
+        passed: bool,
+    ) -> None:
+        """Move a received cancel request on its own verdict.
+
+        Its :class:`CancelRequestView` outlives the retirement above: D13 keeps
+        a rejected request visible against its target.
+        """
+        cancel = self._cancel_of_gate(payload, source_event_id)
+        if cancel is None or cancel.state != "received":
+            return
+        if passed:
+            self._move_cancel(cursor, cancel.request_id, "authorized")
+            return
+        reasons = payload.get("reasons")
+        reason = reasons[0] if isinstance(reasons, list) and reasons else None
+        self._move_cancel(
+            cursor, cancel.request_id, "rejected", reason if isinstance(reason, str) else None,
+        )
+
+    def _cancel_of_gate(
+        self, payload: Mapping[str, Any], source_event_id: str | None,
+    ) -> CancelRequestView | None:
+        """Resolve a verdict's request by ``action_id``, else by its source row.
+
+        ``action_id`` is an optional payload key on ``gate.evaluated``, while
+        the verdict's ``events.source_event_id`` always names the
+        ``action.proposed`` row it answers.
+        """
+        request_id = _string(payload, "action_id")
+        cancel = None if request_id is None else self._cancels.get(request_id)
+        if cancel is not None or source_event_id is None:
+            return cancel
+        return next(
+            (
+                candidate
+                for candidate in self._cancels.values()
+                if candidate.proposed_event_uid == source_event_id
+            ),
+            None,
+        )
+
+    def _fold_cancel_ack(self, cursor: int, request_id: str, payload: Mapping[str, Any]) -> None:
+        """Move the request on its handler's ack; ``accepted`` waits for the target."""
+        if request_id not in self._cancels:
+            return
+        status = _ack_status(payload)
+        if status == "unsupported":
+            self._move_cancel(cursor, request_id, "rejected", "unsupported")
+        elif status == "unconfirmed":
+            self._move_cancel(cursor, request_id, "failed", "unconfirmed")
+        elif status == "already_terminal":
+            self._move_cancel(cursor, request_id, "resolved", "already_terminal")
+
+    def _resolve_cancel_of_target(
+        self, cursor: int, target_id: str, state: ActionCanonicalState,
+    ) -> None:
+        """Resolve the request when its target reaches any canonical terminal."""
+        request_id = self._cancel_of_target.get(target_id)
+        cancel = None if request_id is None else self._cancels.get(request_id)
+        if cancel is None or request_id is None or cancel.state in _CANCEL_SETTLED_STATES:
+            return
+        self._cancels[request_id] = replace(
+            cancel,
+            state="resolved",
+            revision_cursor=cursor,
+            reason_code=_CANCEL_RESOLUTION_OF_STATE[state],
+        )
+
+    # --- the confirmation slot ----------------------------------------------
+
+    def _fold_confirmation(
+        self,
+        cursor: int,
+        event_type: str,
+        payload: Mapping[str, Any],
+        correlation: Mapping[str, Any] | None,
+    ) -> list[ViewChange]:
+        """Fold one confirmation row into the one globally unique slot (D14)."""
+        if event_type == "confirmation.requested":
+            changes: list[ViewChange] = []
+            if self._confirmation is not None:
+                changes.append(self._clear_confirmation(self._confirmation, "superseded", cursor))
+            view = _confirmation_of_request(cursor, payload, correlation)
+            if view is None:
+                # A malformed successor cannot leave an older ask executable.
+                return changes
+            self._confirmation = view
+            changes.append(ViewChange("confirmation.upsert", confirmation=view))
+            return changes
+        slot = self._confirmation
+        if slot is None or _string(payload, "confirmation_id") != slot.confirmation_id:
+            return []
+        reason: ConfirmationClearReason = (
+            "accepted" if event_type == "confirmation.accepted" else "rejected"
+        )
+        return [self._clear_confirmation(slot, reason, cursor)]
+
+    def _expire_confirmation(self, cursor: int, ts_epoch_ms: int) -> ViewChange | None:
+        """Clear a slot whose deadline this row's timestamp has reached."""
+        slot = self._confirmation
+        if slot is None or ts_epoch_ms < slot.expires_at_ms:
+            return None
+        return self._clear_confirmation(slot, "expired", cursor)
+
+    def _clear_confirmation(
+        self, slot: ConfirmationView, reason: ConfirmationClearReason, cursor: int,
+    ) -> ViewChange:
+        self._confirmation = None
+        return ViewChange(
+            "confirmation.cleared",
+            cleared=ConfirmationCleared(
+                confirmation_id=slot.confirmation_id, reason=reason, revision=cursor,
+            ),
+        )
 
     # --- internals ---------------------------------------------------------
 
@@ -467,11 +1143,23 @@ class InherentView:
 
 
 __all__ = [
+    "ACTION_EVENT_TYPES",
+    "CANCEL_TOOL_NAME",
+    "CLEANUP_EVENT_TYPES",
+    "CONFIRMATION_EVENT_TYPES",
+    "FOLD_EVENT_TYPES",
+    "GATE_EVENT_TYPE",
     "INLINE_DOCUMENT_BUDGET_BYTES",
     "INPUT_CORRELATION_TYPE",
     "PENDING_REQUEST_LIMIT",
+    "RECENT_TERMINAL_ACTION_LIMIT",
     "RECENT_TERMINAL_GROUP_LIMIT",
     "RESPONSE_EVENT_TYPES",
+    "RESPONSE_LIFECYCLE_EVENT_TYPES",
+    "ActionView",
+    "CancelRequestView",
+    "ConfirmationCleared",
+    "ConfirmationView",
     "DocumentReference",
     "InherentView",
     "InherentViewCheckpoint",
