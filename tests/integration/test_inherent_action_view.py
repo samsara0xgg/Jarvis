@@ -630,6 +630,36 @@ def test_the_snapshot_advertises_the_three_sections_it_produced() -> None:
     assert items[1][0]["cancellable"] is True
 
 
+def test_page_index_restarts_at_zero_in_every_section() -> None:
+    """D8: the adopter keys staged pages by (section, page_index)."""
+    fold = _Fold()
+    for index in range(12):
+        fold.row(
+            "surface.response_open", _open_payload(f"RESP{index}", f"RGRP{index}", f"T{index}"),
+        )
+        fold.row(
+            "surface.response_chunk",
+            {**_open_payload(f"RESP{index}", f"RGRP{index}", f"T{index}"),
+             "sequence": 0, "text": "x" * 12_000},
+        )
+    fold.row("action.proposed", _proposed("A1", "write_file"))
+
+    plan = build_snapshot_plan(
+        fold.view.checkpoint(through_cursor=fold.cursor),
+        snapshot_id="Smulti", view_schema_version=1, encode=_encoder("C1"),
+    )
+    begin, pages = _decode(plan)
+    indices = [(page["payload"]["section"], page["payload"]["page_index"]) for page in pages]
+
+    assert begin["payload"]["counts"]["response_groups"] > 1
+    assert begin["payload"]["counts"]["actions"] == 1
+    assert indices[-1] == ("actions", 0)
+    assert [index for section, index in indices if section == "response_groups"] == list(
+        range(begin["payload"]["counts"]["response_groups"]),
+    )
+    assert len(indices) == sum(begin["payload"]["counts"].values())
+
+
 def test_the_content_hash_covers_every_section_page_in_send_order() -> None:
     """D8: SHA-256 over the exact page frames, section then page."""
     fold = _three_section_checkpoint()
