@@ -138,6 +138,30 @@ def test_keyword_two_stage_only_when_configured_and_listed_jack_resolves_natural
     assert other_mic.allowed_barge_mode == "ptt"
 
 
+def test_listed_profiles_never_promote_an_observed_speaker() -> None:
+    """A listing lifts unknown to headphones/natural; an observed speaker stays ptt."""
+    speaker_key = replace(_JACK_KEY, output_uid=_SPEAKERS.uid)
+    listed_speaker = voice_backend.resolve_device_profile(
+        input_profile=_INPUT_PROFILE,
+        output=_SPEAKERS,
+        stream_epoch=1,
+        detection_mode="ptt",
+        accepted_natural_profiles=(speaker_key,),
+    )
+    assert listed_speaker.key.route_kind is RouteKind.SPEAKER
+    assert listed_speaker.allowed_barge_mode == "ptt"
+    usb = OutputRoute("USB-DAC-UID", "USB Headset", "usb ", None, 48_000)
+    listed_unknown = voice_backend.resolve_device_profile(
+        input_profile=_INPUT_PROFILE,
+        output=usb,
+        stream_epoch=1,
+        detection_mode="ptt",
+        accepted_natural_profiles=(replace(_JACK_KEY, output_uid=usb.uid),),
+    )
+    assert listed_unknown.key.route_kind is RouteKind.HEADPHONES
+    assert listed_unknown.allowed_barge_mode == "natural"
+
+
 def _key_mapping(**overrides: object) -> dict[str, object]:
     base: dict[str, object] = {
         "input_uid": _JACK_KEY.input_uid,

@@ -198,11 +198,15 @@ def resolve_device_profile(
         input_sample_rate=input_profile.input_format.sample_rate_hz,
         output_sample_rate=output.sample_rate_hz if output is not None else None,
     )
+    # A listing may only lift an unobservable route (unknown) or confirm a jack;
+    # an observed speaker/line-out is never promoted, listed or not.
+    promotable = key.route_kind in {RouteKind.UNKNOWN, RouteKind.HEADPHONES}
     for accepted in accepted_natural_profiles:
-        if accepted.route_kind is RouteKind.HEADPHONES and replace(
-            accepted,
-            route_kind=key.route_kind,
-        ) == key:
+        if (
+            promotable
+            and accepted.route_kind is RouteKind.HEADPHONES
+            and replace(accepted, route_kind=key.route_kind) == key
+        ):
             return DeviceProfileSnapshot(
                 key=replace(key, route_kind=RouteKind.HEADPHONES),
                 stream_epoch=stream_epoch,
