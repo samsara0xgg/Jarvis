@@ -433,11 +433,10 @@ def _wait_for_kill_window(db: Path, turn_id: str) -> tuple[str, bool] | _Sealed:
     Returns ``(response_id, saw_checkpoint)``. Returns ``_Sealed`` when the
     run reached a terminal without a ``kind="stream"`` ``surface.response_open``
     row: the request took the full-text route, or the stream sealed before
-    its first permit (completed silently, or failed as ``suffix_rejected``
-    ahead of a correction run). Either way nothing was spoken early and the
-    caller should try another question. Fails, naming the window, when an
-    opened stream reaches a terminal before playback started or during the
-    checkpoint grace period.
+    its first permit and was delivered as full text on the same run. Either
+    way nothing was spoken early and the caller should try another question.
+    Fails, naming the window, when an opened stream reaches a terminal before
+    playback started or during the checkpoint grace period.
     """
     deadline = time.monotonic() + _SPEECH_WAIT_S
     grace_until: float | None = None

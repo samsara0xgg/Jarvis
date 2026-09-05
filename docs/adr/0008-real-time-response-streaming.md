@@ -240,7 +240,7 @@ finalize_stream(committed_prefix, uncommitted_suffix, policy)
 - the final `ResponsePlan.text` must be byte-for-byte `committed_prefix + approved_suffix`;
 - a retry or rewrite may not alter text already spoken;
 - the finalizer writes no terminal. If it finds the committed prefix itself invalid, the caller terminalizes the current response as failed/limited with `committed_prefix_hash` populated and creates a separate correction ResponseRun linked by `corrects_response_id`. It never performs an old whole-answer retry or silently resets voice history.
-- a stream sealed with zero permits never reaches that machinery: nothing was exposed, so there is no prefix to protect. It degrades to `full_text` in place — the text already generated is judged by the ordinary Pre-emit Gate on the same ResponseRun, with no regeneration and no correction run (D2 rules 1 and 4).
+- a stream sealed with zero permits never reaches that machinery: nothing was exposed, so there is no prefix to protect. It degrades to full-text delivery in place — the text already generated is judged by the ordinary Pre-emit Gate on the same ResponseRun, with no regeneration and no correction run (D2 rules 1 and 4). The run keeps the `routine_stream` policy it opened under; only the delivery shape changes.
 
 For `full_text/structured`, the existing gate/retry path remains unchanged and no prefix is committed early.
 
