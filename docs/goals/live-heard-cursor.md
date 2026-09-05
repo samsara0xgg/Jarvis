@@ -306,42 +306,67 @@ Or stop after 30 turns.
 
 ## Progress
 
-- Slice 1 (the fix and its hermetic pin; 114ce9f) — `record_audible`'s per-chunk
-  merge gains `SpeechChunk.cursor_quality_observed`; first observation assigns
-  the ledger's accumulated quality (never more certain than what
-  `finish_segment` may already have written, so a gap-degraded `unknown` cannot
-  be upgraded), later observations merge through `_least_quality` unchanged.
-  `_least_quality`, `_QUALITY_RANK`, `record_submitted`, the `snapshot()` gate,
-  the ledger-level `_cursor_quality` logic and the escape hatch are unedited; no
-  caller special-cased, no config key, no flag. New test
+- Slice 1 (first cut of the fix and its hermetic pin; 114ce9f) — superseded by
+  slice 3; see there for what shipped. `record_audible`'s per-chunk merge gained
+  `SpeechChunk.cursor_quality_observed`, but first observation assigned the
+  ledger's accumulated `_cursor_quality` rather than the reported one. New test
   `test_segment_closed_before_audible_horizon_still_becomes_heard` drives the
   player with `estimated_output_latency_s=0.2` so `finish_segment` precedes the
   deferred horizon: on the parent commit it fails with
   `AssertionError: assert None == 0` (`heard_text=''`), with the fix it passes.
-  Escape hatch still pinned by `test_checkpoint_persists_during_later_provider_feed_and_retries`
-  and `test_structured_chunks_preserve_heard_prefix_on_mid_second_interrupt`,
-  both unedited and passing. Baseline 1018 passed / 64 deselected at 0f670d5 →
-  1019 passed / 64 deselected (delta +1, exactly the new test). lint-imports
-  KEPT (1 kept, 0 broken), ruff all checks passed, mypy strict clean (239
-  files). No `desktop/` file changed.
-- Slice 2 (live run and docs disposition) — real daemon from this worktree,
-  runtime root and port owned by the lane (`--port 8017`, keys sourced from
-  `~/.jarvis/env` into the shell so the quoted `MINIMAX_API_KEY` is unquoted
-  before the daemon reads it). Turn `Tccdd32bf` wrote 9
-  `surface.playback_checkpoint` rows, the last with
-  `heard_through_sequence: 3`, `cursor_quality: "estimated"` and a 125-char
-  `heard_text`; its terminal `surface.playback_completed` carries
-  `provider: "minimax_ws_streaming"`. Follow-up turn `T3f7be5d7` in the same
-  session renders `spoken_heard` non-`None` with `cursor_quality: "estimated"`
-  and `text` byte-equal to that checkpoint's `heard_text`
-  (`source_event_uid` resolves to the generation's terminal row), so the
-  crash-recovery heard-prefix branch is reachable live; nothing downstream was
-  changed. Audio: pre-run route `MacBook Pro Speakers`, no switch made by this
-  run; another lane left the system on `BlackHole 16ch` during it, and the
-  captured pre-run route was restored (`MacBook Pro Speakers`) with no capture
-  process running. The 8006 daemon (pid 53955, root `~/.jarvis-realtime-test`)
-  was never signalled or stopped. Docs: ADR-0006 `:347`/`:349` and ADR-0008
-  §4.4 judged unchanged — the fix restores them, no sentence is contradicted;
-  `docs/spec.html` has 0 occurrences of "heard", unchanged; the two historical
-  run records get a one-line pointer to this card and keep their own account of
-  what was observed.
+
+- Slice 2 (live run and docs disposition; 496aa0d) — first live evidence, taken
+  on 114ce9f; re-taken on the shipped code in slice 3. Docs judgements, which
+  stand: ADR-0006 `:347`/`:349` and ADR-0008 §4.4 unchanged — the fix restores
+  them and contradicts no sentence; `docs/spec.html` has 0 occurrences of
+  "heard", unchanged; the two historical run records get a one-line pointer to
+  this card and keep their own account of what was observed.
+
+- Slice 3 (the shipped design and the escape hatch's pin; 91ceccb) — first
+  observation assigns the *reported* `cursor_quality`, exactly the ledger-level
+  `_cursor_quality_observed` idiom three lines above. Slice 1's extra caution
+  was removed because it changed the escape hatch's effect: a chunk the hatch
+  legitimately observed as `estimated` was degraded to `unknown` by any later
+  gap, taking back a heard prefix the pre-fix code kept. New test
+  `test_escape_hatch_quality_survives_a_later_audible_report` pins that: it
+  passes on the parent commit, fails on 496aa0d, passes on HEAD — a regression
+  pin for "the fix does not change what the hatch does", not for new behavior.
+  `_least_quality`, `_QUALITY_RANK`, `record_submitted`, the `snapshot()` gate,
+  the ledger-level `_cursor_quality` logic and the escape hatch are unedited; no
+  caller special-cased, no config key, no flag. Baseline 1018 passed / 64
+  deselected at 0f670d5 → 1020 passed / 64 deselected (delta +2, exactly the two
+  new tests). lint-imports KEPT (1 kept, 0 broken), ruff all checks passed, mypy
+  strict clean (239 files), each exit 0. No `desktop/` file changed.
+
+- Slice 3 live run (shipped code, runtime root and port owned by the lane,
+  `--port 8019`; keys sourced from `~/.jarvis/env` into the shell so the quoted
+  `MINIMAX_API_KEY` is unquoted before the daemon reads it). Response
+  `RESP6c7fdfdd` (turn `Te1708420`): last `surface.playback_checkpoint` carries
+  `heard_through_sequence: 3`, `cursor_quality: "estimated"` and a non-empty
+  `heard_text`; its terminal carries `provider: "minimax_ws_streaming"`, not
+  `macos_say`. The following turn's L3 prompt context renders `spoken_heard`
+  non-`None` with `cursor_quality: "estimated"` and `text` byte-equal to that
+  checkpoint's `heard_text`, so the crash-recovery heard-prefix branch is
+  reachable live; nothing downstream was changed. Audio: pre-run route
+  `MacBook Pro Speakers`, and this run switched no device (it needs the default
+  route, not the loopback). The 8006 daemon (pid 53955, root
+  `~/.jarvis-realtime-test`) was never signalled or stopped.
+
+- Verifier (fresh context, opus, range `0f670d5..HEAD`) — confirmed the scope,
+  the fail-then-pass evidence, both regression pins, all four gates, and the
+  docs judgements. One finding accepted and NOT fixed, because fixing it would
+  require editing something this card forbids: a chunk that closes carrying the
+  birth sentinel *before* a callback-report gap keeps `audibility_class="normal"`
+  (the gap loop only touches chunks with `output_end_cursor is None` or beyond
+  the submitted cursor) and is never seen by the escape hatch, so a later
+  `record_audible` gives it `"estimated"` and it becomes heard even though the
+  ledger cursor is an observed `"unknown"`. That contradicts this card's own
+  Target behavior line ("still degrades every later merge to `unknown`"), which
+  no implementation can satisfy alongside "first observation assigns" and "the
+  escape hatch stays unedited" — the three constraints are mutually
+  unsatisfiable, so the card, not the code, needs the ruling. Downstream is
+  unaffected: the checkpoint payload's `cursor_quality` is the ledger-level
+  value (`jarvis/surface/voice_media.py:2818`), and
+  `jarvis/state/conversation_playback.py:212-213` accepts only
+  `{"estimated", "measured_dac"}`, so `spoken_heard` cannot be polluted by it.
+  Reported to the hub for a decision.
