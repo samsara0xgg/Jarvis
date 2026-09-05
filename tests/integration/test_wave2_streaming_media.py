@@ -30,7 +30,12 @@ from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
 from jarvis.surface import voice_media, voice_tts
-from jarvis.surface.voice_ledger import ForegroundBusy, StalePlaybackGeneration
+from jarvis.surface.voice_ledger import (
+    ForegroundBusy,
+    GenerationLease,
+    PlaybackLedger,
+    StalePlaybackGeneration,
+)
 from scripts import bench_voice_streaming_output as voice_bench
 
 if TYPE_CHECKING:
@@ -2955,3 +2960,42 @@ def test_segment_closed_before_audible_horizon_still_becomes_heard() -> None:
     assert settled.cursor_quality == "estimated"
     assert settled.heard_through_sequence == 0
     assert settled.heard_text == "第一句。"
+
+
+def test_escape_hatch_quality_survives_a_later_audible_report() -> None:
+    """The first-observation branch preserves what `finish_segment` observed."""
+    lease = GenerationLease(
+        session_id="S",
+        response_id="RHATCH",
+        response_group_id="GHATCH",
+        turn_id="THATCH",
+        playback_generation_id=1,
+        timeline_epoch=1,
+    )
+    ledger = PlaybackLedger(lease, sample_rate=8_000)
+    ledger.begin_segment(sequence=0, text="已经听到的部分", segment_hash="hatch-0")
+    ledger.accept_samples(sequence=0, sample_count=100)
+    ledger.record_submitted(
+        output_start_cursor=0,
+        output_end_cursor=100,
+        audibility_class="normal",
+    )
+    # The horizon crosses while the chunk is still open, so `record_audible`
+    # skips it by its own `output_end_cursor is not None` guard and only
+    # `finish_segment`'s escape hatch can write its quality — the ordering the
+    # new first-observation branch must not disturb.
+    ledger.record_audible(output_cursor=100, cursor_quality="estimated")
+    ledger.finish_segment(sequence=0)
+    assert ledger.snapshot().heard_through_sequence == 0
+    # A later callback-report gap degrades the ledger cursor to an observed
+    # `unknown`; the chunk keeps what the hatch observed for it.
+    ledger.record_submitted(
+        output_start_cursor=150,
+        output_end_cursor=200,
+        audibility_class="normal",
+    )
+    ledger.record_audible(output_cursor=100, cursor_quality="estimated")
+    snapshot = ledger.snapshot()
+    assert snapshot.cursor_quality == "unknown"
+    assert snapshot.heard_through_sequence == 0
+    assert snapshot.heard_text == "已经听到的部分"

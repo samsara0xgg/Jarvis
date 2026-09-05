@@ -262,17 +262,14 @@ class PlaybackLedger:
         self._cursor_quality_observed = True
         for chunk in self._chunks.values():
             if chunk.output_end_cursor is not None and chunk.output_end_cursor <= bounded:
-                # ``_least_quality`` combines two already observed qualities, so
-                # the birth sentinel must not be fed to it: ``unknown`` outranks
-                # everything and would pin the chunk there forever, leaving the
-                # heard prefix permanently empty. The first observation assigns
-                # the ledger's accumulated quality instead, which is never more
-                # certain than whatever ``finish_segment`` may already have
-                # written from the same source.
+                # ``_least_quality`` combines two already observed qualities,
+                # so the birth sentinel must not be fed to it: ``unknown``
+                # outranks everything and would pin the chunk there forever,
+                # leaving the heard prefix permanently empty.
                 chunk.cursor_quality = (
                     _least_quality(chunk.cursor_quality, cursor_quality)
                     if chunk.cursor_quality_observed
-                    else self._cursor_quality
+                    else cursor_quality
                 )
                 chunk.cursor_quality_observed = True
 
