@@ -1,0 +1,459 @@
+[
+  {
+    "name": "client_missing_message_id",
+    "kind": "client_hello",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "client.hello",
+      "client_instance_id": "Ifixture0001",
+      "connection_id": null,
+      "sent_at_ms": 1788200000000,
+      "payload": {
+        "supported_versions": [
+          2
+        ],
+        "client_build": "fixture",
+        "view_schema_versions": [
+          1
+        ],
+        "capabilities": [
+          "paged_snapshot",
+          "transport_ack",
+          "response_control",
+          "confirmation_control"
+        ],
+        "last_log_epoch": null,
+        "last_applied_cursor": 0,
+        "has_complete_local_state": false
+      }
+    }
+  },
+  {
+    "name": "client_hello_carrying_connection_id",
+    "kind": "client_hello",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "client.hello",
+      "message_id": "Rfixture0001",
+      "client_instance_id": "Ifixture0001",
+      "connection_id": "Cfixture0001",
+      "sent_at_ms": 1788200000000,
+      "payload": {
+        "supported_versions": [
+          2
+        ],
+        "client_build": "fixture",
+        "view_schema_versions": [
+          1
+        ],
+        "capabilities": [
+          "paged_snapshot",
+          "transport_ack",
+          "response_control",
+          "confirmation_control"
+        ],
+        "last_log_epoch": null,
+        "last_applied_cursor": 0,
+        "has_complete_local_state": false
+      }
+    }
+  },
+  {
+    "name": "client_build_over_256_chars",
+    "kind": "client_hello",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "client.hello",
+      "message_id": "Rfixture0001",
+      "client_instance_id": "Ifixture0001",
+      "connection_id": null,
+      "sent_at_ms": 1788200000000,
+      "payload": {
+        "supported_versions": [
+          2
+        ],
+        "client_build": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "view_schema_versions": [
+          1
+        ],
+        "capabilities": [
+          "paged_snapshot",
+          "transport_ack",
+          "response_control",
+          "confirmation_control"
+        ],
+        "last_log_epoch": null,
+        "last_applied_cursor": 0,
+        "has_complete_local_state": false
+      }
+    }
+  },
+  {
+    "name": "message_id_over_128_chars",
+    "kind": "client_hello",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "client.hello",
+      "message_id": "R00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "client_instance_id": "Ifixture0001",
+      "connection_id": null,
+      "sent_at_ms": 1788200000000,
+      "payload": {
+        "supported_versions": [
+          2
+        ],
+        "client_build": "fixture",
+        "view_schema_versions": [
+          1
+        ],
+        "capabilities": [
+          "paged_snapshot",
+          "transport_ack",
+          "response_control",
+          "confirmation_control"
+        ],
+        "last_log_epoch": null,
+        "last_applied_cursor": 0,
+        "has_complete_local_state": false
+      }
+    }
+  },
+  {
+    "name": "sent_at_ms_is_boolean",
+    "kind": "client_hello",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "client.hello",
+      "message_id": "Rfixture0001",
+      "client_instance_id": "Ifixture0001",
+      "connection_id": null,
+      "sent_at_ms": true,
+      "payload": {
+        "supported_versions": [
+          2
+        ],
+        "client_build": "fixture",
+        "view_schema_versions": [
+          1
+        ],
+        "capabilities": [
+          "paged_snapshot",
+          "transport_ack",
+          "response_control",
+          "confirmation_control"
+        ],
+        "last_log_epoch": null,
+        "last_applied_cursor": 0,
+        "has_complete_local_state": false
+      }
+    }
+  },
+  {
+    "name": "protocol_version_is_string",
+    "kind": "client_hello",
+    "frame": {
+      "protocol_version": "2",
+      "message_type": "client.hello",
+      "message_id": "Rfixture0001",
+      "client_instance_id": "Ifixture0001",
+      "connection_id": null,
+      "sent_at_ms": 1788200000000,
+      "payload": {
+        "supported_versions": [
+          2
+        ],
+        "client_build": "fixture",
+        "view_schema_versions": [
+          1
+        ],
+        "capabilities": [
+          "paged_snapshot",
+          "transport_ack",
+          "response_control",
+          "confirmation_control"
+        ],
+        "last_log_epoch": null,
+        "last_applied_cursor": 0,
+        "has_complete_local_state": false
+      }
+    }
+  },
+  {
+    "name": "empty_supported_versions",
+    "kind": "client_hello",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "client.hello",
+      "message_id": "Rfixture0001",
+      "client_instance_id": "Ifixture0001",
+      "connection_id": null,
+      "sent_at_ms": 1788200000000,
+      "payload": {
+        "supported_versions": [],
+        "client_build": "fixture",
+        "view_schema_versions": [
+          1
+        ],
+        "capabilities": [
+          "paged_snapshot",
+          "transport_ack",
+          "response_control",
+          "confirmation_control"
+        ],
+        "last_log_epoch": null,
+        "last_applied_cursor": 0,
+        "has_complete_local_state": false
+      }
+    }
+  },
+  {
+    "name": "capabilities_not_a_list",
+    "kind": "client_hello",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "client.hello",
+      "message_id": "Rfixture0001",
+      "client_instance_id": "Ifixture0001",
+      "connection_id": null,
+      "sent_at_ms": 1788200000000,
+      "payload": {
+        "supported_versions": [
+          2
+        ],
+        "client_build": "fixture",
+        "view_schema_versions": [
+          1
+        ],
+        "capabilities": "paged_snapshot",
+        "last_log_epoch": null,
+        "last_applied_cursor": 0,
+        "has_complete_local_state": false
+      }
+    }
+  },
+  {
+    "name": "unknown_delivery_class",
+    "kind": "server",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "view.delta",
+      "message_id": "Rfixture0001",
+      "delivery_class": "bulk",
+      "connection_id": "Cfixture0001",
+      "log_epoch": "Lfixture0001",
+      "boot_id": "Bfixture0001",
+      "event_cursor": 1842,
+      "ephemeral_sequence": null,
+      "sent_at_ms": 1788200000001,
+      "payload": {
+        "source_event_uid": "Rfixture0001",
+        "changes": []
+      }
+    }
+  },
+  {
+    "name": "durable_with_negative_event_cursor",
+    "kind": "server",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "view.delta",
+      "message_id": "Rfixture0001",
+      "delivery_class": "durable",
+      "connection_id": "Cfixture0001",
+      "log_epoch": "Lfixture0001",
+      "boot_id": "Bfixture0001",
+      "event_cursor": -1,
+      "ephemeral_sequence": null,
+      "sent_at_ms": 1788200000001,
+      "payload": {
+        "source_event_uid": "Rfixture0001",
+        "changes": []
+      }
+    }
+  },
+  {
+    "name": "durable_without_event_cursor",
+    "kind": "server",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "view.delta",
+      "message_id": "Rfixture0001",
+      "delivery_class": "durable",
+      "connection_id": "Cfixture0001",
+      "log_epoch": "Lfixture0001",
+      "boot_id": "Bfixture0001",
+      "event_cursor": null,
+      "ephemeral_sequence": null,
+      "sent_at_ms": 1788200000001,
+      "payload": {
+        "source_event_uid": "Rfixture0001",
+        "changes": []
+      }
+    }
+  },
+  {
+    "name": "ephemeral_with_negative_sequence",
+    "kind": "server",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "input.partial",
+      "message_id": "Rfixture0001",
+      "delivery_class": "ephemeral",
+      "connection_id": "Cfixture0001",
+      "log_epoch": "Lfixture0001",
+      "boot_id": "Bfixture0001",
+      "event_cursor": null,
+      "ephemeral_sequence": -1,
+      "sent_at_ms": 1788200000001,
+      "payload": {
+        "text": "你好"
+      }
+    }
+  },
+  {
+    "name": "ephemeral_carrying_event_cursor",
+    "kind": "server",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "input.partial",
+      "message_id": "Rfixture0001",
+      "delivery_class": "ephemeral",
+      "connection_id": "Cfixture0001",
+      "log_epoch": "Lfixture0001",
+      "boot_id": "Bfixture0001",
+      "event_cursor": 1842,
+      "ephemeral_sequence": 7,
+      "sent_at_ms": 1788200000001,
+      "payload": {
+        "text": "你好"
+      }
+    }
+  },
+  {
+    "name": "protocol_carrying_ephemeral_sequence",
+    "kind": "server",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "connection.notice",
+      "message_id": "Rfixture0001",
+      "delivery_class": "protocol",
+      "connection_id": "Cfixture0001",
+      "log_epoch": "Lfixture0001",
+      "boot_id": "Bfixture0001",
+      "ephemeral_sequence": 7,
+      "sent_at_ms": 1788200000001,
+      "payload": {
+        "notice": "hold"
+      }
+    }
+  },
+  {
+    "name": "server_protocol_version_3",
+    "kind": "server",
+    "frame": {
+      "protocol_version": 3,
+      "message_type": "connection.notice",
+      "message_id": "Rfixture0001",
+      "delivery_class": "protocol",
+      "connection_id": "Cfixture0001",
+      "log_epoch": "Lfixture0001",
+      "boot_id": "Bfixture0001",
+      "sent_at_ms": 1788200000001,
+      "payload": {
+        "notice": "hold"
+      }
+    }
+  },
+  {
+    "name": "server_hello_unknown_resume_mode",
+    "kind": "server_hello",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "server.hello",
+      "message_id": "Rfixture0001",
+      "delivery_class": "protocol",
+      "connection_id": "Cfixture0001",
+      "log_epoch": "Lfixture0001",
+      "boot_id": "Bfixture0001",
+      "sent_at_ms": 1788200000001,
+      "payload": {
+        "selected_version": 2,
+        "view_schema_version": 1,
+        "resume_mode": "teleport",
+        "server_high_water_cursor": 1840,
+        "required_client_capabilities": [
+          "paged_snapshot",
+          "transport_ack"
+        ],
+        "runtime_capabilities": {
+          "text_input": true,
+          "image_input": false,
+          "voice_input": true,
+          "response_interrupt": true,
+          "action_cancel": true,
+          "confirmation_actions": true,
+          "natural_barge_in": false,
+          "aec_profile": "headphones_only"
+        }
+      }
+    }
+  },
+  {
+    "name": "server_hello_selected_version_3",
+    "kind": "server_hello",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "server.hello",
+      "message_id": "Rfixture0001",
+      "delivery_class": "protocol",
+      "connection_id": "Cfixture0001",
+      "log_epoch": "Lfixture0001",
+      "boot_id": "Bfixture0001",
+      "sent_at_ms": 1788200000001,
+      "payload": {
+        "selected_version": 3,
+        "view_schema_version": 1,
+        "resume_mode": "snapshot",
+        "server_high_water_cursor": 1840,
+        "required_client_capabilities": [
+          "paged_snapshot",
+          "transport_ack"
+        ],
+        "runtime_capabilities": {
+          "text_input": true,
+          "image_input": false,
+          "voice_input": true,
+          "response_interrupt": true,
+          "action_cancel": true,
+          "confirmation_actions": true,
+          "natural_barge_in": false,
+          "aec_profile": "headphones_only"
+        }
+      }
+    }
+  },
+  {
+    "name": "server_hello_missing_runtime_capabilities",
+    "kind": "server_hello",
+    "frame": {
+      "protocol_version": 2,
+      "message_type": "server.hello",
+      "message_id": "Rfixture0001",
+      "delivery_class": "protocol",
+      "connection_id": "Cfixture0001",
+      "log_epoch": "Lfixture0001",
+      "boot_id": "Bfixture0001",
+      "sent_at_ms": 1788200000001,
+      "payload": {
+        "selected_version": 2,
+        "view_schema_version": 1,
+        "resume_mode": "snapshot",
+        "server_high_water_cursor": 1840,
+        "required_client_capabilities": [
+          "paged_snapshot",
+          "transport_ack"
+        ]
+      }
+    }
+  }
+]
