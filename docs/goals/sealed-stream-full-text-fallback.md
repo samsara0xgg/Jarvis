@@ -60,3 +60,81 @@ ADR-0008 D2 rule 1 makes ambiguity default to `full_text` (docs/adr/0008-real-ti
 Implement docs/goals/sealed-stream-full-text-fallback.md on the current branch. The goal is met when all of the following appear in the transcript: (1) the diff makes a routine stream with `emitted_segments == 0` return the full-text `DecideResult` shape from `decide()` — plan set, `route` unset, `stream_failure` None, `turn.ended` from the ordinary Pre-emit Gate path — so the same ResponseRun delivers the already generated text with exactly one LLM generation, no `response.failed` and no correction run, and separately strips a duplicated committed prefix from the one `gate_segments=False` regeneration on the seal-after-a-permit path, with no change to jarvis/decision/stream_risk.py, jarvis/decision/stream_gate.py, jarvis/state/stream_emission.py, jarvis/surface/, the A2/A3 flags, or desktop/; (2) raw pytest output covering the four hermetic cases in Acceptance evidence — zero-permit seal delivers as `kind="text"` with one provider request and is scheduled for playback by the A3 media doubles, zero-permit seal with a Pre-emit rejection keeps today's failure/correction sequence, the existing seal-after-one-permit and correction-run tests still pass, and a prefix-repeating regeneration is de-duplicated — ending in a pass line; (3) raw output of the live run quoting both response_ids: Q1 "从一数到二十，用中文数字" sealed with exactly one LLM request in the trace, its `surface.response_emitted` carrying the full count, and `surface.playback_started` plus `surface.playback_completed` for that response_id; Q2 "为什么天空是蓝色的" still opening `kind="stream"` with at least one permit, or its gate reasons recorded as an owner follow-up; (4) raw output of `PYTHONPATH=. .venv/bin/python -m pytest -q -m "not live_llm and not live_codex"` ending in `N passed, 64 deselected` with N = 868 + the new cases and zero failures, plus `lint-imports`, `ruff check .`, and `mypy --strict jarvis tests scripts tools` each exiting 0; (5) the ADR-0008 D3 sentence at :242 amended with the zero-permit degrade, and ADR-0008 D2 and docs/spec.html each explicitly judged unchanged, following the rule: update the canonical document that owns a changed contract, do not document what the code already makes clear, do not duplicate a fact across documents; (6) each slice committed with the project commit skill and `git status` clean; (7) a Progress line per slice in the card. Or stop after 50 turns.
 
 ## Progress
+- Zero-permit degrade — 9731365 — `_run_routine_stream` hands a stream
+  sealed before its first permit to `_finalize_response`; hermetic
+  `11 passed` on tests/integration/test_wire_routine_streaming.py, the new
+  degrade test asserting one provider request, `kind="text"`, one
+  `surface.response_emitted` carrying the whole answer, no `response.failed`,
+  and `surface.playback_started`/`surface.playback_completed` from the real
+  L5 media owner; the Pre-emit-refusal test comparing 9 events and both gate
+  verdicts against the same turn with routine streaming off. Suite
+  `914 passed, 64 deselected`.
+- Prefix de-duplication — 93a10a4 — `_without_repeated_prefix` strips a
+  regeneration's restatement of the committed prefix; the new test fails
+  (`ResponsePlan.text` carries the sentence twice) with the call reverted and
+  passes with it, existing seal/correction tests untouched. Suite
+  `915 passed, 64 deselected`.
+- Live run — daemon from this worktree, DeepSeek v4-flash direct + MiniMax TTS,
+  overlay from config/jarvis.yaml with realtime.enabled, the three
+  concurrency_safety switches, response_run_lifecycle,
+  independent_response_cancel, routine_streaming.enabled,
+  streaming_output.enabled + speak_from_segments, single_audio_ingress off;
+  output "BlackHole 16ch" during, "MacBook Pro Speakers" restored after. One
+  fresh runtime root per question — a root that already holds a completed turn
+  makes `pre_route` return `unknown` (the A3(c) history observation), and the
+  stream route never opens. Q1 "从一数到二十，用中文数字" on ~/.jarvis-lane-a-q1
+  port 8031, RESP867aea258dd0415c9124bc5d50356add: `response.started` route
+  `casual_or_explanatory` / `routine_stream`, sealed at sequence 0
+  (`gate.evaluated` id 5, `stream_emit`/`buffer_full_text`, candidate_risk
+  `unknown`, reasons `outside_evaluated_candidate_form` +
+  `routine_ceiling_not_met`), exactly one LLM request (trace
+  `llm_sdk_request_call_started_upper_bound` x1, one `cost.recorded`, one
+  `response.request_admitted`), trace `routine_stream_degraded_to_full_text`
+  (148 chars), `surface.response_open` id 10 `kind="text"` /
+  `attention_channel: voice_notify`, `surface.response_emitted` id 17 carrying
+  the whole count 一…二十, `surface.playback_started` id 18 and
+  `surface.playback_completed` id 25 for the same response_id, 0
+  `response.failed`, 1 `response.started`.
+- Owner follow-up (not a blocker, allow-list quality): Q2 "为什么天空是蓝色的"
+  on ~/.jarvis-lane-a-q2 port 8032, RESPa0ab87fcf8954980b2ac0841383ad5c8 sealed
+  too — first candidate "这个问题其实很好回答。" (segment_hash 85c1e9f7…),
+  `stream_emit`/`buffer_full_text`, reasons `outside_evaluated_candidate_form` +
+  `routine_ceiling_not_met`: the sentence carries no `_EXPLANATORY_FORM`
+  keyword, so `_supported_candidate` refuses it. The degrade delivered it
+  anyway on one generation — `kind="text"` open id 10, emitted id 32,
+  `surface.playback_started` id 33 (the answer was still speaking at 547
+  characters when the daemon was stopped); before this card the same turn cost
+  a `suffix_rejected` regeneration and a correction run.
+- Acceptance evidence (b), read as the retry chain, not a run failure — a
+  Pre-emit Gate refusal after the degrade is structurally unreachable in
+  production: `pre_route` returns `unknown` whenever a task is open
+  (jarvis/decision/pre_route.py:119), and `scratch.active_subject_ref` is only
+  set on resolver/tool paths the routine stream never takes, so
+  `_active_subject_or_default` returns None on this path and `pre_emit_gate`
+  short-circuits to pass-through. The card's "keeps today's failure/correction
+  sequence" is therefore tested as Target-behavior line 22 states it — the
+  retry chain inside `_finalize_response`, compared event for event against the
+  same turn with routine streaming off — with the subject forced identically on
+  both sides. Owner call to confirm this reading; nothing in the card can be
+  satisfied literally.
+- Verifier pass — 82e75bc, 2ec098a — confirmed and fixed: (1) the
+  de-duplication cut inside a word ("好的。" + "好的话我们继续。" became
+  "好的。话我们继续。") and re-normalized every slice, 18s on 20k characters of
+  punctuation — now one pass, a repeat accepted only when the next character is
+  not compared text, 0.007s, with two tests (a regeneration that only starts
+  like the prefix is kept whole; one that restates nothing but the prefix ships
+  the exposed sentence once); (2) the ADR sentence read as if the run's
+  `emission_mode` changed — it still records `routine_stream`, only delivery
+  changes; (3) `tests/scenarios/test_live_crash_recovery.py` `_Sealed` docstring
+  listed outcomes a zero-permit seal no longer has. Confirmed clean: the
+  DecideResult shape and the untouched runtime, the boundary files (empty diff
+  for stream_risk / stream_gate / stream_emission / surface / desktop / config),
+  the three-test revert check (3 failed with the change reverted, 9 existing
+  passed), the ADR D2 and spec.html unchanged judgements, and the enveloped /
+  cancel / cost / attention / duplicate-open / gate-mode risk review. Noted, not
+  fixed: `?? .venv` in `git status` is a symlink that `.gitignore`'s `.venv/`
+  pattern cannot match — pre-existing worktree setup, never staged. Suite
+  `917 passed, 64 deselected`; the card's "868 + new cases" is the launch-time
+  number — the integration baseline is 912 at d120d1a (verifier measured the
+  same at 5a75f2a), and 912 + 5 = 917.
+

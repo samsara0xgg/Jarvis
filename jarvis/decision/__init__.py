@@ -50,6 +50,7 @@ import logging
 import math
 import re
 import time
+import unicodedata
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -3082,6 +3083,48 @@ def _stream_routine_text(  # noqa: C901 - one provider stream feeding one gate l
     )
 
 
+def _comparable(text: str) -> str:
+    """The text's identity for prefix comparison: no case folding, no punctuation."""
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFKC", text)
+        if not char.isspace() and not unicodedata.category(char).startswith("P")
+    )
+
+
+def _without_repeated_prefix(prefix: str, suffix: str) -> str:
+    """Drop a regenerated tail's restatement of the prefix already committed.
+
+    A3(b): the one ``gate_segments=False`` regeneration is prompted with the
+    exposed prefix as the model's own prior turn, and a model that repeats it
+    would make ``ResponsePlan.text`` say the same sentence twice. One pass,
+    and a repeat only counts when it ends where the text does: a regeneration
+    that opens with the prefix and then runs straight on into a longer word is
+    not a restatement, and cutting inside that word would corrupt what the
+    model actually wrote.
+    """
+    target = _comparable(prefix)
+    if not target:
+        return suffix
+    matched = 0
+    for index, char in enumerate(suffix):
+        piece = _comparable(char)
+        if not piece:
+            continue
+        if target[matched : matched + len(piece)] != piece:
+            return suffix
+        matched += len(piece)
+        if matched != len(target):
+            continue
+        cut = index + 1
+        if cut < len(suffix) and _comparable(suffix[cut]):
+            return suffix
+        while cut < len(suffix) and not _comparable(suffix[cut]):
+            cut += 1
+        return suffix[cut:]
+    return suffix
+
+
 def _run_routine_stream(
     packet: SituationPacket,
     ctx: DecideContext,
@@ -3093,10 +3136,29 @@ def _run_routine_stream(
     The finalizer writes nothing; a typed failure goes back to the runtime,
     which fails the run with the durable prefix hash and opens a correction
     run. ``suffix_rejected`` earns exactly one suffix regeneration first.
+    A stream sealed before its first permit never gets that far: it degrades
+    to the ordinary full-text path in place, on the text it already has.
     """
     messages = build_llm_messages(packet)
     _insert_system_notes(messages, packet, scratch, ctx)
     streamed = _stream_routine_text(ctx, route, messages, scratch, gate_segments=True)
+    if streamed.emitted_segments == 0:
+        # D2 rules 1 and 4: a seal before the first permit exposed nothing, so
+        # there is no prefix for D3's correction machinery to protect. The text
+        # already generated becomes an ordinary full-text candidate on this same
+        # run — one generation, judged by the Pre-emit Gate like any answer.
+        draft = (
+            compose_envelope(streamed.suffix, streamed.document)
+            if streamed.enveloped
+            else streamed.suffix
+        )
+        record_realtime_trace(
+            "routine_stream_degraded_to_full_text",
+            turn_id=scratch.turn_id,
+            response_id=route.context.response_id,
+            text_characters=len(draft),
+        )
+        return _finalize_response(draft, packet, ctx, scratch)
     attention = attention_policy(packet, make_snapshot(ctx.conn).claim_evidence)
     response_id = route.context.response_id
     document = streamed.document
@@ -3128,7 +3190,7 @@ def _run_routine_stream(
             outcome = finalize_stream(
                 ctx.conn,
                 committed_prefix=streamed.prefix,
-                uncommitted_suffix=again.suffix,
+                uncommitted_suffix=_without_repeated_prefix(streamed.prefix, again.suffix),
                 policy=route.policy,
                 context=route.context,
             )
