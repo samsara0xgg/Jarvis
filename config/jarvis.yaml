@@ -246,3 +246,12 @@ realtime:
     backend_close_timeout_s: 2.0
     shutdown_timeout_s: 2.0
     session_shutdown_timeout_s: 3.0
+    # ADR-0006 D7. Rolling partial SenseVoice decode plus a semantic endpoint
+    # hold. Off by default (acoustic endpointing only); the values are the
+    # D7 calibration candidates, not promises.
+    partial_asr:
+      enabled: false
+      interval_ms: 240
+      candidate_ms: 256
+      max_hold_ms: 900
+      post_roll_ms: 200

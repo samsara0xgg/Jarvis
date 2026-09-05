@@ -87,6 +87,15 @@ class VoicePipeline:
             raise TypeError(msg)
         prewarm()
 
+    def partial_text(self, audio_bytes: bytes) -> str:
+        """Decode one bounded snapshot for the L5 endpoint decision (ADR-0006 D7)."""
+        partial = getattr(self._recognizer, "partial_text", None)
+        if not callable(partial):
+            msg = "configured ASR recognizer does not expose partial_text()"
+            raise TypeError(msg)
+        text: str = partial(audio_bytes)
+        return text
+
     def run_turn(  # noqa: C901, PLR0912, PLR0913 — wake/PTT toggles widen the signature; splitting would shred the single locked critical section.
         self,
         *,

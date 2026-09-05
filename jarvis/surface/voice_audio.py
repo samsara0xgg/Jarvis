@@ -239,6 +239,11 @@ class SileroVad:
         return self._state == "ACTIVE"
 
     @property
+    def endpoint_silence_frames(self) -> int:
+        """Consecutive silence frames that end an ACTIVE utterance (``required_misses``)."""
+        return self._t.required_misses
+
+    @property
     def last_start_perf(self) -> float | None:
         """``time.perf_counter()`` at last IDLE→ACTIVE transition (``None`` if never)."""
         return self._last_start_perf
