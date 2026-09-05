@@ -1238,7 +1238,7 @@ def _run_tool_use_loop(
             response_plan=plan,
             events_emitted=tuple(scratch.events),
             turn_id=scratch.turn_id,
-            attention_channel="queue_review",
+            attention_channel="voice_notify",
         )
 
     messages = build_llm_messages(packet)
@@ -3112,12 +3112,13 @@ def _finalize_response(
     # event (worker.reported + no verified Postcondition → silent_log per
     # ``test_attention_silent_log_on_worker_reported_without_verified``).
     # When the Pre-emit Gate retry chain exhausted to _hard_refusal_plan,
-    # the fixed limitation text IS the user-facing surface — swallowing it
+    # the fixed limitation text IS the user-facing answer — swallowing it
     # to silent_log strands the operator after a long wait. Promote to
-    # queue_review so cli_stdout fires; the message itself still uses
-    # limitation language so the "审核了再告诉我" spirit holds.
+    # voice_notify so it is spoken like any other direct answer; the
+    # message itself still uses limitation language so the "审核了再告诉我"
+    # spirit holds.
     if hard_refusal_used and attention == "silent_log":
-        attention = "queue_review"
+        attention = "voice_notify"
 
     # ADR-0012 D5: a `confirmation.requested` emitted THIS turn always
     # routes to `ask_confirm` — the same finalize-scan-override pattern

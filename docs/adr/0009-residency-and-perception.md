@@ -110,6 +110,19 @@ Mechanism pinned: `IORegisterForSystemPower` via **ctypes against IOKit + CoreFo
 - **Turn-driving**: `_system_trigger_watcher` (same cursor pattern as `_user_intent_watcher`) starts a system-triggered decide() turn for orphan terminal events. The Result Interpreter + `_handle_action_terminal_failure` branch already produce the Limitation claim + limitation utterance, and the ADR-0002 amendment pins the channel to `queue_review`. The sweep is an emitter, not a second brain.
 - **System turns are silent, enforced**: the daemon streams every turn (`streaming_enabled=True`) and `_tts_watcher` currently feeds **every** response chunk to TTS regardless of channel — a 3am orphan closure would speak. Pinned: `surface.response_open` gains optional `attention_channel` (registry change); `_tts_watcher` skips `queue_review`/`silent_log` turns, and the WS broadcaster skips `silent_log` only. (Corrected at Step 8 — the original text had the broadcaster skip both, which is wrong. `attention_policy`'s final `return` makes `queue_review` the **default** verdict for an ordinary user utterance, and `ATTENTION_CHANNEL_TO_SURFACES` maps it to `("cli_stdout",)` — a text surface — while `silent_log` maps to `()`. The daemon renders with `available_surfaces=frozenset()`, so the WS *is* that `cli_stdout`. Skipping `queue_review` on the wire would blank the Inherent text surface for nearly every turn and hang D2's forwarding CLI to its 120s timeout on the happy path. "Silent" here means no audio, not no text: a queued turn still lands on the card, which is what "queue for review" means.) Canary: `test_canary_system_turns_never_tts`. (This closes the gap for ALL queue_review turns, aligning L5 streaming with the ADR-0002 routing amendment.)
 
+> **Amendment (2026-09-05) — D4 governs system-triggered turns only.**
+> The Step-8 parenthetical above described `queue_review` as
+> `attention_policy`'s default verdict for an ordinary user utterance.
+> That default was a fall-through, not a decision: Allen's "出声，因为本身
+> 就是语音助手" (docs/goals/speak-ordinary-answers.md) routes a direct
+> answer to the user's utterance to `voice_notify`, and pins the
+> reconciliation terminals (`action.timeout_assumed` / `action.failed` /
+> `action.cancelled`) to `queue_review` by trigger type rather than by the
+> Limitation's presence (a terminal without `action_id` emits no claim).
+> The two suppression sets, the WS-broadcaster asymmetry and the canary are
+> unchanged: a system turn still lands on the card without audio; an
+> ordinary answer now speaks.
+
 Rejected alternatives — **query ActionLifecycle FSM**: per-process memory, empty after every restart. **Sweep emits Limitation directly**: duplicates the Result Interpreter's ladder and violates emit-ownership (§5.4.2 precedent). **Reusing `_in_progress_actions` unchanged**: inherits the run.started blind spot; see fold bullet.
 
 ### D5. Repo observer v0: an L5 input adapter under the `observer` principal
