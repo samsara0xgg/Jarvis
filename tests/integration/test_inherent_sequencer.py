@@ -8,7 +8,8 @@ cursor asserted here is a genuine ``events.id``.
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+import json
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -17,6 +18,26 @@ from jarvis.state.inherent_view import (
     RECENT_TERMINAL_GROUP_LIMIT,
     InherentView,
 )
+from jarvis.surface.inherent_presenter import (
+    SNAPSHOT_PAGE_MAX_BYTES,
+    SnapshotPlan,
+    build_snapshot_plan,
+    delta_payload,
+)
+from jarvis.surface.inherent_protocol import (
+    ResponseDelivery,
+    ResponseGroupSnapshotItem,
+    ResponseOpened,
+    ResponseSegment,
+    ServerEnvelope,
+    SnapshotBeginPayload,
+    SnapshotEndPayload,
+    SnapshotPagePayload,
+    ViewDeltaPayload,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
 
 # --- fold helpers -----------------------------------------------------------
 
@@ -176,3 +197,144 @@ def test_a_single_oversized_first_segment_is_cut_on_a_character_boundary() -> No
     assert preview.truncated is True
     assert len(preview.text.encode()) == INLINE_DOCUMENT_BUDGET_BYTES // 3 * 3 == 16383
     assert preview.segment_hash == hashlib.sha256(big.encode()).hexdigest()
+
+
+# --- presenter -----------------------------------------------------------------
+
+
+def _protocol_encoder(connection_id: str) -> Callable[[str, str, Mapping[str, Any]], str]:
+    """Bind a protocol-class ServerEnvelope encoder the way the hub does."""
+
+    def encode(message_type: str, message_id: str, payload: Mapping[str, Any]) -> str:
+        return ServerEnvelope(
+            protocol_version=2,
+            message_type=message_type,
+            message_id=message_id,
+            delivery_class="protocol",
+            connection_id=connection_id,
+            log_epoch="Lfixture0001",
+            boot_id="Bfixture0001",
+            sent_at_ms=1_788_200_000_000,
+            payload=dict(payload),
+        ).model_dump_json()
+
+    return encode
+
+
+def _decode_frames(
+    plan: SnapshotPlan,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    begin = json.loads(plan.begin_frame)
+    pages = [json.loads(frame) for frame in plan.page_frames]
+    end = json.loads(plan.end_frame)
+    return begin, pages, end
+
+
+def test_delta_payload_carries_the_source_uid_and_typed_ordered_changes() -> None:
+    """The presenter's delta decodes with the D10 DTOs, kinds in fold order."""
+    rows = _Rows()
+    opened = rows.fold("surface.response_open", _open_payload("RESP1", "RGRP1", "T1", "why?"))
+    segment = rows.fold("surface.response_chunk", _chunk_payload("RESP1", "RGRP1", "T1", 0, "a"))
+    closed = rows.fold("surface.response_emitted", _emitted_payload("RESP1", "RGRP1", "T1", "a"))
+
+    decoded = [ViewDeltaPayload.model_validate(delta_payload(t)) for t in (opened, segment, closed)]
+
+    assert [d.source_event_uid for d in decoded] == ["uid1", "uid2", "uid3"]
+    assert [[c.kind for c in d.changes] for d in decoded] == [
+        ["response.opened", "response.delivery"],
+        ["response.segment"],
+        ["response.delivery"],
+    ]
+    first = decoded[0].changes[0]
+    assert isinstance(first, ResponseOpened)
+    assert (first.question, first.lifecycle, first.revision) == ("why?", "generating", 1)
+    assert first.turn_id == "T1"
+    delivery = decoded[0].changes[1]
+    assert isinstance(delivery, ResponseDelivery)
+    assert delivery.panel_stream == "open"
+    seg = decoded[1].changes[0]
+    assert isinstance(seg, ResponseSegment)
+    assert (seg.sequence, seg.text, seg.segment_hash) == (0, "a", hashlib.sha256(b"a").hexdigest())
+    last = decoded[2].changes[0]
+    assert isinstance(last, ResponseDelivery)
+    assert last.panel_stream == "closed"
+
+
+def test_a_snapshot_larger_than_one_page_splits_into_pages_within_64_kib() -> None:
+    """D8: contiguous page_index, counts equal to pages sent, every page frame <= 64 KiB."""
+    rows = _Rows()
+    for index in range(12):
+        rows.turn(index, close=False, text="x" * 12_000)
+    checkpoint = rows.view.checkpoint(through_cursor=rows.cursor)
+
+    plan = build_snapshot_plan(
+        checkpoint, snapshot_id="Ssnap1", view_schema_version=1, encode=_protocol_encoder("C1"),
+    )
+    begin, pages, end = _decode_frames(plan)
+
+    assert len(pages) > 1
+    assert all(len(frame.encode()) <= SNAPSHOT_PAGE_MAX_BYTES for frame in plan.page_frames)
+    assert max(len(frame.encode()) for frame in plan.page_frames) > SNAPSHOT_PAGE_MAX_BYTES // 2
+    assert [page["payload"]["page_index"] for page in pages] == list(range(len(pages)))
+    assert {page["payload"]["section"] for page in pages} == {"response_groups"}
+    assert begin["payload"]["section_order"] == ["response_groups"]
+    assert begin["payload"]["counts"] == {"response_groups": len(pages)}
+    assert begin["payload"]["through_cursor"] == end["payload"]["through_cursor"] == rows.cursor
+    assert begin["delivery_class"] == "protocol"
+    assert begin["event_cursor"] is None
+    SnapshotBeginPayload.model_validate(begin["payload"])
+    SnapshotEndPayload.model_validate(end["payload"])
+    items = [
+        item
+        for page in pages
+        for item in SnapshotPagePayload.model_validate(page["payload"]).items
+    ]
+    assert [ResponseGroupSnapshotItem.model_validate(item).response_group_id for item in items] == [
+        f"RGRP{i}" for i in range(12)
+    ]
+
+
+def test_content_hash_covers_the_sent_page_bytes_and_a_mutated_page_fails() -> None:
+    """D8: SHA-256 over the exact page frames in section-then-page order; one byte breaks it."""
+    rows = _Rows()
+    for index in range(6):
+        rows.turn(index, text="汉" * 9_000)
+    checkpoint = rows.view.checkpoint(through_cursor=rows.cursor)
+
+    plan = build_snapshot_plan(
+        checkpoint, snapshot_id="Ssnap2", view_schema_version=1, encode=_protocol_encoder("C1"),
+    )
+
+    digest = hashlib.sha256()
+    for frame in plan.page_frames:
+        digest.update(frame.encode("utf-8"))
+    end_hash = json.loads(plan.end_frame)["payload"]["content_hash"]
+    assert plan.content_hash == digest.hexdigest() == end_hash
+    assert len(plan.page_frames) >= 2
+    mutated = [*plan.page_frames]
+    mutated[1] = mutated[1].replace("汉", "汗", 1)
+    digest = hashlib.sha256()
+    for frame in mutated:
+        digest.update(frame.encode("utf-8"))
+    assert digest.hexdigest() != plan.content_hash
+
+
+def test_snapshot_item_carries_the_preview_and_reference_for_an_over_budget_body() -> None:
+    """D16 on the wire: the item holds the prefix segments plus response_id + event_uid."""
+    rows = _Rows()
+    rows.turn(0, text="汉" * 6000)
+    checkpoint = rows.view.checkpoint(through_cursor=rows.cursor)
+
+    plan = build_snapshot_plan(
+        checkpoint, snapshot_id="Ssnap3", view_schema_version=1, encode=_protocol_encoder("C1"),
+    )
+    _, pages, _ = _decode_frames(plan)
+    item = ResponseGroupSnapshotItem.model_validate(pages[0]["payload"]["items"][0])
+
+    (response,) = item.responses
+    assert response.document_reference is not None
+    assert response.document_reference.response_id == "RESP0"
+    assert response.document_reference.event_uid == "uid3"
+    assert response.document_reference.utf8_bytes == 18000
+    assert len(plan.page_frames[0].encode()) < 18000
+    assert response.segments[0].truncated is True
