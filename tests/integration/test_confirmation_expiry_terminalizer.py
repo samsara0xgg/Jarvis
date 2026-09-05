@@ -1,7 +1,8 @@
 """ADR-0014 D14 acceptance: the durable ``confirmation.expired`` terminal.
 
-Covers the L2 primitive (one row, its CAS races) and the two folds that read
-the durable row back.
+Covers the L2 primitive (one row, its CAS races), the two folds that read it,
+and the L6 sweep plus its boot reconciler — every one of them driven by an
+injected ``now_ms``, never by a real clock or an ``asyncio`` task.
 """
 
 from __future__ import annotations
@@ -11,6 +12,10 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from jarvis.runtime.inherent_loop import (
+    _reconcile_confirmation_expiry_in_thread,
+    _run_confirmation_expiry_sweep,
+)
 from jarvis.shared.realtime import AlreadyTerminal, StaleConfirmation, TerminalCommitted
 from jarvis.state.event_log import (
     _REGISTRY_MAP,
@@ -312,3 +317,69 @@ def test_the_expired_row_clears_the_panel_with_reason_expired_at_its_cursor(
     assert change.cleared.revision == expired_cursor
 
 
+# --- the runtime sweep, called directly (R4) ---------------------------------
+
+
+def test_the_sweep_body_writes_one_row_and_then_none(conn: sqlite3.Connection) -> None:
+    """R4: no asyncio.sleep, no task — the plain function with an injected clock."""
+    _request(conn, "CONF-sweep")
+
+    before_deadline = _run_confirmation_expiry_sweep(conn, now_ms=_EXPIRES_AT_MS - 1)
+    assert before_deadline is None
+    assert _terminal_count(conn, "CONF-sweep") == 0
+
+    first = _run_confirmation_expiry_sweep(conn, now_ms=_EXPIRES_AT_MS)
+    assert isinstance(first, TerminalCommitted)
+    assert first.event.payload == {
+        "confirmation_id": "CONF-sweep",
+        "expired_at_ms": _EXPIRES_AT_MS,
+    }
+    count_after_first = _terminal_count(conn, "CONF-sweep")
+    print(f"terminal rows after sweep pass 1: {count_after_first}")  # noqa: T201 - evidence
+    assert count_after_first == 1
+
+    second = _run_confirmation_expiry_sweep(conn, now_ms=_EXPIRES_AT_MS + 5_000)
+    assert second is None
+    count_after_second = _terminal_count(conn, "CONF-sweep")
+    print(f"terminal rows after sweep pass 2: {count_after_second}")  # noqa: T201 - evidence
+    assert count_after_second == 1
+
+
+def test_the_sweep_leaves_an_answered_confirmation_alone(conn: sqlite3.Connection) -> None:
+    """A rejected slot is not pending, so the sweep never opens a transaction."""
+    requested = _request(conn, "CONF-rejected")
+    emit_event(
+        conn,
+        type="confirmation.rejected",
+        payload={
+            "confirmation_id": "CONF-rejected",
+            "utterance_raw": "不要",
+            "grammar_rule_id": "no.plain",
+        },
+        source_event_id=requested.event_uid,
+    )
+
+    assert _run_confirmation_expiry_sweep(conn, now_ms=_EXPIRES_AT_MS + 60_000) is None
+    assert _terminal_count(conn, "CONF-rejected") == 1
+
+
+# --- boot idempotency (R5) ---------------------------------------------------
+
+
+def test_two_boot_reconciler_runs_leave_exactly_one_terminal_row(tmp_path: Path) -> None:
+    """R5: the boot reconciler is idempotent across restarts of the same root."""
+    path = tmp_path / "events.db"
+    seed = open_event_log(path)
+    _request(seed, "CONF-boot")
+    seed.close()
+
+    counts: list[int] = []
+    for boot in (1, 2):
+        _reconcile_confirmation_expiry_in_thread(path, None, _EXPIRES_AT_MS + 1_000)
+        reader = open_event_log(path)
+        count = _terminal_count(reader, "CONF-boot")
+        reader.close()
+        print(f"terminal rows for CONF-boot after boot {boot}: {count}")  # noqa: T201 - evidence
+        counts.append(count)
+
+    assert counts == [1, 1]

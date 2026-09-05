@@ -137,6 +137,12 @@ tools:
 # 不用碰代码。
 confirmation:
   ttl_ms: 600000
+  # ADR-0014 D14 — how often the durable expiry sweep asks whether the live
+  # ask has passed ttl_ms.  Only read when
+  # realtime.confirmation.durable_expiry.enabled is on.  Clamped to a floor
+  # of 5 seconds, with one warning: the sweep writes, and a tighter cadence
+  # would contend with real turns for the SQLite writer for no gain.
+  expiry_sweep_interval_s: 30
 
 # ADR-0006/0008 Wave 1 safety primitives.  All adoption switches remain
 # disabled: this wave proves transaction/CAS/accounting behavior without
@@ -207,6 +213,19 @@ realtime:
     intent_pump: false
     queue_capacity: 8
     max_concurrent_turns: 2
+  # ADR-0014 D14.  durable_expiry lets a runtime sweep and one boot
+  # reconciler append a `confirmation.expired` terminal once a live ask
+  # passes `expires_at_ms`, so an idle connected panel is cleared by a
+  # committed row instead of by its own clock.  It additionally requires
+  # realtime.enabled and downgrades once, with one warning, without it.
+  # Default false because this writes durable rows and a row cannot be
+  # unwritten; read-time expiry (`PendingConfirmationSlot.is_live`) is
+  # unchanged either way.  Cadence is confirmation.expiry_sweep_interval_s
+  # and the deadline is confirmation.ttl_ms — both above, never redefined
+  # here.
+  confirmation:
+    durable_expiry:
+      enabled: false
   # Wave 2 rollout.  Enabling this also requires realtime.enabled plus the
   # transactional append and lifecycle terminal CAS switches above.  Invalid
   # combinations downgrade once to the complete legacy batch path.

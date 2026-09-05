@@ -119,6 +119,8 @@ from jarvis.runtime import (
     TriggerWaitTimeout,
     TurnSuspended,
     WaitingTurn,
+    _confirmation_expiry_sweep_interval_s,
+    _durable_confirmation_expiry_enabled,
     _event_action_id,
     _new_turn_id,
     _observer_poll_interval_s,
@@ -134,6 +136,9 @@ from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.shared import Event
 from jarvis.shared.realtime import (
     AlreadyTerminal,
+    StaleConfirmation,
+    TerminalCommitted,
+    TerminalOutcome,
     new_boot_id,
     new_connection_id,
     new_response_id,
@@ -166,7 +171,8 @@ from jarvis.state.input_submission_inbox import (
     resolve_asr_request,
     submit_text_once,
 )
-from jarvis.state.projections import rebuild_projections
+from jarvis.state.lifecycle_terminal import terminalize_confirmation
+from jarvis.state.projections import PendingConfirmations, rebuild_projections
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
     voice_asr,
@@ -2810,6 +2816,105 @@ def _run_supervisor_sweep(runtime: JarvisRuntime, *, default_budget_s: float) ->
     return closed
 
 
+# --- ADR-0014 D14 durable confirmation expiry ---------------------------------
+
+_CONFIRMATION_FOLD_TYPES: tuple[str, ...] = (
+    "confirmation.requested",
+    "confirmation.accepted",
+    "confirmation.rejected",
+    "confirmation.expired",
+    "gate.evaluated",
+)
+
+
+def _run_confirmation_expiry_sweep(
+    conn: sqlite3.Connection,
+    *,
+    now_ms: int,
+    committed_event_bus: CommittedEventBus | None = None,
+) -> TerminalOutcome | StaleConfirmation | None:
+    """Run ONE expiry pass over the confirmation slot. Swallows every failure.
+
+    ``now_ms`` is supplied by the caller rather than read here, which is what
+    makes this body directly callable with an injected clock — the same
+    property :func:`_run_supervisor_sweep` has, and the reason neither needs
+    a task or a sleep to be exercised.
+
+    Returns None when nothing was due (no slot, an answered slot, or a
+    deadline still in the future), so a quiet daemon opens no transaction at
+    all; otherwise the terminalizer's outcome, which may be
+    :class:`AlreadyTerminal` or :class:`StaleConfirmation` when a real answer
+    or a fresher ask won the CAS.
+
+    Unlike :func:`_run_supervisor_sweep` this must NOT run on the event-loop
+    thread: it appends through ``BEGIN IMMEDIATE`` over the connection it is
+    handed, and ``runtime.conn`` is loop-thread-only by ``check_same_thread``.
+    :func:`_reconcile_confirmation_expiry_in_thread` is the offload both the
+    periodic task and the boot reconciler go through.
+    """
+    try:
+        events = tuple(iter_events_of_types(conn, _CONFIRMATION_FOLD_TYPES))
+        slot = PendingConfirmations.from_events(events).slot
+        if slot is None or slot.state != "pending" or now_ms < slot.expires_at_ms:
+            return None
+        row = conn.execute(
+            "SELECT id, event_uid, json_extract(payload_json, '$.confirmation_id') "
+            "FROM events WHERE type = 'confirmation.requested' ORDER BY id DESC LIMIT 1",
+        ).fetchone()
+        if row is None or str(row[2]) != slot.confirmation_id:
+            # The single-slot fold cannot disagree with the newest request
+            # row; if it somehow does, the slot this pass folded is not the
+            # one a CAS would guard, so append nothing.
+            return None
+        outcome = terminalize_confirmation(
+            conn,
+            event_type="confirmation.expired",
+            payload={
+                "confirmation_id": slot.confirmation_id,
+                "expired_at_ms": now_ms,
+            },
+            expected_revision=int(row[0]),
+            source_event_id=str(row[1]),
+            committed_event_bus=committed_event_bus,
+        )
+    except Exception:
+        LOGGER.exception("confirmation expiry sweep pass failed; daemon continues.")
+        return None
+    if isinstance(outcome, TerminalCommitted):
+        LOGGER.info(
+            "confirmation expiry sweep expired %s (deadline %d, observed %d)",
+            slot.confirmation_id,
+            slot.expires_at_ms,
+            now_ms,
+        )
+    return outcome
+
+
+def _reconcile_confirmation_expiry_in_thread(
+    event_log_path: Path,
+    committed_event_bus: CommittedEventBus | None,
+    now_ms: int,
+) -> TerminalOutcome | StaleConfirmation | None:
+    """Run one expiry pass on an ``asyncio.to_thread`` worker's OWN connection.
+
+    Same offload as the two boot reconcilers above and for the same
+    ``check_same_thread`` reason, and it is literally the same body the
+    periodic task runs — a boot is just the tick that happens to be first,
+    so two boots against one overdue ask leave one row by the terminalizer's
+    CAS, not by a separate recovery rule.
+    """
+    conn = open_event_log(event_log_path)
+    try:
+        return _run_confirmation_expiry_sweep(
+            conn,
+            now_ms=now_ms,
+            committed_event_bus=committed_event_bus,
+        )
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+
 def _system_trigger_event(terminal_event: Event) -> Event:
     """Wrap an orphan's terminal row as the trigger for a system turn.
 
@@ -2957,6 +3062,33 @@ async def _supervisor_sweep_task(
             _run_supervisor_sweep(runtime, default_budget_s=default_budget_s)
     except asyncio.CancelledError:
         LOGGER.info("supervisor_sweep cancelled")
+        raise
+
+
+async def _confirmation_expiry_sweep_task(
+    runtime: JarvisRuntime,
+    *,
+    interval_s: float,
+) -> None:
+    """Background task: run the confirmation expiry sweep every ``interval_s``.
+
+    Sleeps FIRST — the boot reconciler in :func:`serve_inherent` already
+    covered t=0, exactly as :func:`_supervisor_sweep_task` defers to its own
+    bootstrap pass. Every pass goes through ``asyncio.to_thread`` because it
+    writes; the loop thread owns no part of it.
+    """
+    LOGGER.info("confirmation_expiry_sweep started (interval=%.1fs)", interval_s)
+    try:
+        while True:
+            await asyncio.sleep(interval_s)
+            await asyncio.to_thread(
+                _reconcile_confirmation_expiry_in_thread,
+                runtime.runtime_paths.event_log,
+                runtime.committed_event_bus,
+                int(time.time() * 1000),
+            )
+    except asyncio.CancelledError:
+        LOGGER.info("confirmation_expiry_sweep cancelled")
         raise
 
 
@@ -3479,6 +3611,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
             already holds the lock for this runtime root.
     """
     with acquire_exclusive(lock_path):
+        # ADR-0014 D14 — read once, so the boot reconciler and the periodic
+        # sweep can never disagree about whether this daemon writes durable
+        # expiry rows.
+        durable_confirmation_expiry = _durable_confirmation_expiry_enabled(runtime.config)
         broadcaster = InherentBroadcaster()
         broadcaster.attach_loop(asyncio.get_running_loop())
 
@@ -3617,6 +3753,19 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
                     ", ".join(quarantined),
                 )
 
+        # ADR-0014 D14 — a confirmation may have passed `expires_at_ms`
+        # while no process was running to notice. Re-drive the same expiry
+        # sweep once here, after both reconcilers above, so a panel that
+        # reconnects to this boot is cleared by a committed row. The
+        # terminalizer's CAS is what makes a second boot append nothing.
+        if durable_confirmation_expiry:
+            await asyncio.to_thread(
+                _reconcile_confirmation_expiry_in_thread,
+                runtime.runtime_paths.event_log,
+                runtime.committed_event_bus,
+                int(time.time() * 1000),
+            )
+
         cancel_response_callable = (
             make_response_cancel_callable(runtime)
             if runtime.response_flags.independent_response_cancel
@@ -3742,6 +3891,21 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
                 asyncio.create_task(
                     _commentary_watcher(runtime, poll_interval_s=poll_interval_s),
                     name="commentary_watcher",
+                ),
+            )
+
+        if durable_confirmation_expiry:
+            # ADR-0014 D14 (Step 3). Flag off, no task exists and the event
+            # log is byte-identical to a build without this sweep. Joins
+            # `watchers` so the existing teardown cancels it with no new
+            # teardown path.
+            watchers.append(
+                asyncio.create_task(
+                    _confirmation_expiry_sweep_task(
+                        runtime,
+                        interval_s=_confirmation_expiry_sweep_interval_s(runtime.config),
+                    ),
+                    name="confirmation_expiry_sweep",
                 ),
             )
 
