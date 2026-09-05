@@ -60,12 +60,6 @@ _OWNER_ENV = Path.home() / ".jarvis" / "env"
 _FORBIDDEN_PORT = 8006
 _EVENT_LOG_NAME = "mac_events.db"
 _SILENT_DEVICE = "BlackHole 16ch"
-"""Restore target when the captured route is ALREADY the loopback.
-
-Two overlapping lanes once left the owner with no speaker output: the
-second lane captured ``BlackHole 16ch`` as "before" and faithfully put it
-back. Restoring the loopback is never the right answer.
-"""
 _SWITCH_AUDIO = "SwitchAudioSource"
 _INSTALL_HINT = "brew install switchaudio-osx blackhole-16ch"
 

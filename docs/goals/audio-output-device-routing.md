@@ -81,7 +81,7 @@ shared mutable global instead of guarding it.
   `:241-254`, dumped at `:256`).
   Read-only `SwitchAudioSource` calls stay: the `-a -t output` presence guard
   (skip when BlackHole is absent) and the `-c -t output` readings, which become
-  this card's canary. The `_echo` at `:725` stops calling the value a restore
+  this card's canary. The `_echo` at `:848` stops calling the value a restore
   target.
 
 ## Affected contracts and files
@@ -298,8 +298,10 @@ Or stop after 25 turns.
   `_current_output_device`, `_set_output_device`, the switch/collision guard,
   the restore `finally` and `import subprocess`; `--output-device` now reaches
   the daemon through a copied config tree (bootstrap derives Tier-0/grammar/cue
-  paths from the config's parent and pricing from its grandparent, so a bare
-  tmp file would not boot). The `silent_output_device` fixture keeps only
+  paths from the config's parent and pricing from its grandparent; each of those
+  loaders degrades to an empty table on a missing file, so a lone tmp yaml would
+  boot but silently without Tier 0 — the copy is for fidelity, not for booting).
+  The `silent_output_device` fixture keeps only
   read-only `SwitchAudioSource` calls and asserts the system route is identical
   before and after; `_build_overlay` sets `realtime.output_device`.
   `grep -n "SwitchAudioSource -s\|_set_output_device"` over both files: no hits.
@@ -324,10 +326,33 @@ Or stop after 25 turns.
 - Docs to sync: `config/jarvis.yaml` — the key's comment is the documentation,
   written. `docs/spec.html` — unchanged: zero occurrences of `streaming_output`,
   no config-key inventory, and no sentence claiming the TTS stream always uses
-  the system default (`grep -in "output device|system default|OutputStream"`
-  finds nothing). `docs/adr/` — unchanged: the only output-device mentions are
+  the system default (`grep -in "output device\|system default\|OutputStream"`
+  finds nothing; the single `output_device` hit at `docs/spec.html:2197` is a
+  WorldState Room slice field, a different fact under the same name).
+  `docs/adr/` — unchanged: the only output-device mentions are
   ADR-0006:125/675/694/872 (input+output stream shape, prewarm, and F10
   device-CHANGE handling, an explicit non-goal here) and ADR-0014:1231; none
   states which device the stream opens, so no ADR owns this fact.
+- Verifier pass (`verifier`, opus, fresh context, `352f2d1..HEAD`) — one
+  CONFIRMED defect and two weak checks, all fixed in `9412700` and this commit:
+  the deleted `_FALLBACK_DEVICE`'s docstring had dangled onto `_SILENT_DEVICE`,
+  still describing the loopback as a restore target; the fail-closed test
+  asserted no fallback without pinning it; and the `isinstance(str)` guard on
+  the config read made a mistyped key degrade silently to the system default.
+  The verifier independently re-ran the gates (1050 / 64, KEPT, clean, Success)
+  and mutation-tested the new pins: deleting either `device=` pass-through, or
+  restoring the reconciler gate, fails the corresponding test. Its two
+  speculative notes are recorded, not acted on: the response reconciler at
+  `inherent_loop.py:3613` keeps the symmetric `response_run_lifecycle` gate
+  (out of scope, and reachable only by flipping the flag off between boots),
+  and `--config` pointing at a directory that also holds a runtime root would
+  make `replay_barge_in.py` copy that root into tmp (wasteful, not wrong).
+- Live burn re-run on the final tip (`4b669cd`, after the verifier fixes changed
+  the config read) — `1 passed in 32.19s`, root
+  `~/.jarvis-lane-b-test/crash-20260905T232547Z`, port 56714. Warm-up spoke with
+  `playback provider='minimax_ws_streaming'`; SIGKILL pid 59044; boot 2 logged
+  `boot reconciliation closed 1 open playback generation(s)`, `COUNT(*)` = 1,
+  restart 3 appended nothing. `SwitchAudioSource -c -t output` =
+  `'MacBook Pro Speakers'` BEFORE and AFTER, fixture echo `unchanged=True`.
 - Owner follow-up, not a blocker: nothing in the burn is mic-in-the-loop, and
   the loopback route was verified by device open rather than by listening.

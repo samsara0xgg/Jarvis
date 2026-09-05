@@ -328,7 +328,8 @@ def main(argv: list[str] | None = None) -> int:
         # `runtime.config` is a read-only Mapping, so the key goes in on disk —
         # in a copy of the config tree, since `bootstrap_runtime_app` derives the
         # Tier-0/grammar/cue paths from the config's parent and pricing from its
-        # grandparent.
+        # grandparent, and each of those loaders degrades to an empty table on a
+        # missing file. A lone tmp yaml would still boot, silently without Tier 0.
         overlay = Path(tmp) / "repo"
         shutil.copytree(args.config.parent, overlay / "config")
         (overlay / "data").symlink_to((args.config.parent.parent / "data").resolve())
