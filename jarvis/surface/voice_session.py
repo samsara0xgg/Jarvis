@@ -98,6 +98,7 @@ class PartialRevision:
     revision: int
     text: str
     decode_ms: float
+    failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -356,7 +357,18 @@ class PartialAsrLane:
         if snapshot is None:
             return False
         started = time.perf_counter()
-        text = self._decoder.partial_text(snapshot.audio_bytes)
+        text = ""
+        failed = False
+        try:
+            text = self._decoder.partial_text(snapshot.audio_bytes)
+        except Exception:  # noqa: BLE001 - a failed partial degrades, never kills the lane
+            failed = True
+            LOGGER.warning(
+                "partial decode failed utterance_id=%s revision=%s",
+                snapshot.utterance_id,
+                snapshot.revision,
+                exc_info=True,
+            )
         decode_ms = (time.perf_counter() - started) * 1_000.0
         with self._condition:
             self.decodes += 1
@@ -368,6 +380,7 @@ class PartialAsrLane:
                 revision=snapshot.revision,
                 text=text,
                 decode_ms=decode_ms,
+                failed=failed,
             )
         return True
 
@@ -456,6 +469,9 @@ class UtteranceAssembler:
         self._degraded = False
         self._phase: EndpointPhase | None = None
         self._phase_utterance_id = ""
+        # The commit thread marks COMMITTED while the capture thread may start
+        # the next utterance; the lock keeps that check-then-set atomic.
+        self._phase_lock = threading.Lock()
 
     @property
     def endpoint_phase(self) -> EndpointPhase | None:
@@ -467,10 +483,19 @@ class UtteranceAssembler:
         """Return the normalized prefix that survived two consecutive revisions."""
         return self._stable_prefix
 
+    def _set_phase(self, phase: EndpointPhase | None, utterance_id: str) -> None:
+        with self._phase_lock:
+            self._phase = phase
+            self._phase_utterance_id = utterance_id
+
     def mark_committed(self, utterance_id: str) -> None:
         """Record the durable ``utterance.received`` commit for one utterance."""
-        if self._phase_utterance_id == utterance_id and self._phase is EndpointPhase.FINALIZING_ASR:
-            self._phase = EndpointPhase.COMMITTED
+        with self._phase_lock:
+            if (
+                self._phase_utterance_id == utterance_id
+                and self._phase is EndpointPhase.FINALIZING_ASR
+            ):
+                self._phase = EndpointPhase.COMMITTED
 
     @property
     def active(self) -> bool:
@@ -596,8 +621,7 @@ class UtteranceAssembler:
             self._audio_frames = [item.pcm16_mono for item in self._speech_pre_roll]
             self._start_cursor = self._speech_pre_roll[0].sample_cursor
             self._speech_pre_roll.clear()
-            self._phase = EndpointPhase.SPEECH_ACTIVE
-            self._phase_utterance_id = self._utterance_id
+            self._set_phase(EndpointPhase.SPEECH_ACTIVE, self._utterance_id)
         else:
             self._audio_frames.append(frame.pcm16_mono)
         if event is voice_audio.VadEvent.SPEECH_ACTIVE:
@@ -652,8 +676,7 @@ class UtteranceAssembler:
             audio_bytes=b"".join(frames),
         )
         self.reset_to_idle()
-        self._phase = EndpointPhase.FINALIZING_ASR
-        self._phase_utterance_id = utterance.utterance_id
+        self._set_phase(EndpointPhase.FINALIZING_ASR, utterance.utterance_id)
         return utterance
 
     def _semantic_endpoint(self, *, speech: bool) -> str | None:
@@ -676,7 +699,7 @@ class UtteranceAssembler:
         if self._phase is EndpointPhase.ENDPOINT_PENDING:
             if speech:
                 self._decide("resume", "speech_resumed")
-                self._phase = EndpointPhase.SPEECH_ACTIVE
+                self._set_phase(EndpointPhase.SPEECH_ACTIVE, self._utterance_id)
             else:
                 self._hold_frames += 1
         # D7 step 1 opens the hold on the pause alone; false onsets are rejected
@@ -687,7 +710,7 @@ class UtteranceAssembler:
             and self._consecutive_silence >= self._candidate_frames
         )
         if hold_opens:
-            self._phase = EndpointPhase.ENDPOINT_PENDING
+            self._set_phase(EndpointPhase.ENDPOINT_PENDING, self._utterance_id)
             self._hold_frames = 0
             self._decide("hold", "acoustic_pause_candidate")
         if not self._degraded:
@@ -731,6 +754,10 @@ class UtteranceAssembler:
             return
         self._frames_since_snapshot = 0
         self._snapshot_count += 1
+        # ponytail: whole-utterance snapshot, bounded by max_utterance_s and the
+        # over-budget degrade (measured ~15 ms decode per audio second, so
+        # utterances beyond ~15 s fall back to acoustic endpointing); upgrade
+        # path is a suffix-anchored rolling window.
         drops = self._lane.submit(
             PartialSnapshot(
                 utterance_id=self._utterance_id,
@@ -752,6 +779,9 @@ class UtteranceAssembler:
         ):
             return
         self._accepted_revision = revision.revision
+        if revision.failed:
+            self._degrade("partial_decode_failed", decode_ms=round(revision.decode_ms, 3))
+            return
         normalized = voice_asr.normalize_partial_text(revision.text)
         if self._previous_partial is not None:
             common = os.path.commonprefix([self._previous_partial, normalized])
@@ -805,7 +835,7 @@ class UtteranceAssembler:
         self._previous_partial = None
         self._stable_prefix = ""
         self._degraded = False
-        self._phase = None
+        self._set_phase(None, "")
 
 
 class DuplexVoiceSession:

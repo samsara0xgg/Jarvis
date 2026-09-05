@@ -76,9 +76,10 @@ class _EnergySession:
 class _ScriptedDecoder:
     """Return scripted partial hypotheses in order; the last one repeats."""
 
-    def __init__(self, texts: list[str], *, delay_s: float = 0.0) -> None:
+    def __init__(self, texts: list[str], *, delay_s: float = 0.0, fail: bool = False) -> None:
         self._texts = list(texts)
         self._delay_s = delay_s
+        self._fail = fail
         self.calls = 0
 
     def partial_text(self, audio_bytes: bytes) -> str:
@@ -87,6 +88,9 @@ class _ScriptedDecoder:
             time.sleep(self._delay_s)
         index = min(self.calls, len(self._texts) - 1)
         self.calls += 1
+        if self._fail:
+            msg = "injected partial decode failure"
+            raise RuntimeError(msg)
         return self._texts[index]
 
 
@@ -322,6 +326,28 @@ def test_slow_partial_decode_degrades_to_acoustic_endpointing() -> None:
         ("hold", "acoustic_pause_candidate", 0.0),
         ("commit", "acoustic_pause", 64.0),
     ]
+
+
+def test_partial_decode_failure_degrades_to_acoustic_endpointing() -> None:
+    """A raising decoder degrades the utterance once; no partial is accepted."""
+    harness = _Harness(
+        _ScriptedDecoder(["把灯打开。"], fail=True),
+        partial=_partial(interval_ms=32),
+        required_misses=4,
+    )
+    try:
+        outcomes = harness.feed_many([_SPEECH] * 3 + [_SILENCE] * 4)
+    finally:
+        harness.close()
+    degraded = _traces("partial_asr_degraded")
+    assert len(degraded) == 1
+    assert degraded[0].attributes["reason"] == "partial_decode_failed"
+    assert _traces("asr_partial") == []
+    assert harness.lane.decodes == 1, "cancel after degrade stops further decodes"
+    utterance = outcomes[-1]
+    assert outcomes[:-1] == [None] * 6
+    assert isinstance(utterance, voice_session.CapturedUtterance)
+    assert utterance.endpoint_reason == "acoustic_pause"
 
 
 def test_three_consecutive_snapshot_drops_degrade() -> None:
