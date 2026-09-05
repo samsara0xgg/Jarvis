@@ -1,10 +1,14 @@
-"""L2 acceptance for the ADR-0014 D6 ``log_epoch`` (lane C slice 1).
+"""Identity acceptance for the Inherent v2 handshake (ADR-0014 D5/D6).
 
 The epoch names one Event Log lineage.  A realtime client compares the
 epoch it last saw against the one in ``server.hello`` to decide whether it
 may resume from its cursor or must take a fresh snapshot, so the value has
 to be assigned exactly once per file and then survive every operation that
 preserves the log's contents: restart, ``VACUUM``, and a byte copy.
+
+The D5 bearer token is the connection's other half of that identity, with
+the opposite lifetime: a fresh secret every boot, readable by nobody but its
+owner.  Both live here so the handshake's inputs stay in one place.
 """
 
 from __future__ import annotations
@@ -16,6 +20,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from jarvis.deployment import (
+    InherentTokenError,
+    inherent_v2_token_matches,
+    rotate_inherent_v2_token,
+)
 from jarvis.state.event_log import (
     open_event_log,
     open_runtime_event_log,
@@ -104,3 +113,86 @@ def test_read_log_epoch_raises_when_the_row_is_missing(tmp_path: Path) -> None:
         conn.commit()
         with pytest.raises(sqlite3.OperationalError, match="no log_epoch row"):
             read_log_epoch(conn)
+
+
+def test_inherent_v2_token_rotation_is_private_and_fresh(tmp_path: Path) -> None:
+    """Each boot writes a new 256-bit secret readable only by its owner."""
+    path = tmp_path / "inherent-v2.token"
+
+    first = rotate_inherent_v2_token(path)
+    assert len(first) == 64
+    assert set(first) <= set("0123456789abcdef")
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.read_text(encoding="utf-8") == first + "\n"
+
+    second = rotate_inherent_v2_token(path)
+    assert second != first
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.read_text(encoding="utf-8") == second + "\n"
+
+
+def test_inherent_v2_token_refuses_a_symlink_at_the_path(tmp_path: Path) -> None:
+    """A planted link must not redirect the secret to someone else's file."""
+    victim = tmp_path / "victim"
+    victim.write_text("untouched", encoding="utf-8")
+    path = tmp_path / "inherent-v2.token"
+    path.symlink_to(victim)
+
+    with pytest.raises(InherentTokenError, match="not a regular file"):
+        rotate_inherent_v2_token(path)
+
+    assert victim.read_text(encoding="utf-8") == "untouched"
+    assert path.is_symlink()
+
+
+def test_inherent_v2_token_refuses_a_directory_at_the_path(tmp_path: Path) -> None:
+    """A directory is not something rotation may replace."""
+    path = tmp_path / "inherent-v2.token"
+    path.mkdir()
+
+    with pytest.raises(InherentTokenError, match="not a regular file"):
+        rotate_inherent_v2_token(path)
+
+    assert path.is_dir()
+
+
+def test_inherent_v2_token_refuses_a_world_readable_predecessor(tmp_path: Path) -> None:
+    """A 0644 token file already leaked; do not write a new secret into it."""
+    path = tmp_path / "inherent-v2.token"
+    path.write_text("stale\n", encoding="utf-8")
+    path.chmod(0o644)
+
+    with pytest.raises(InherentTokenError, match="beyond its owner"):
+        rotate_inherent_v2_token(path)
+
+    assert path.read_text(encoding="utf-8") == "stale\n"
+
+
+def test_inherent_v2_token_refuses_a_writable_parent(tmp_path: Path) -> None:
+    """A group-writable directory lets anyone swap the file after we write it."""
+    parent = tmp_path / "runtime"
+    parent.mkdir()
+    parent.chmod(0o775)
+
+    with pytest.raises(InherentTokenError, match="group- or world-writable"):
+        rotate_inherent_v2_token(parent / "inherent-v2.token")
+
+    assert not (parent / "inherent-v2.token").exists()
+
+
+def test_inherent_v2_token_matches_only_the_exact_token(tmp_path: Path) -> None:
+    """Comparison accepts the real token and rejects everything else.
+
+    The wrong-owner branch of `rotate_inherent_v2_token` is not exercised
+    here: giving a file or directory a uid other than `os.geteuid()`
+    requires root, which the hermetic suite never has.
+    """
+    token = rotate_inherent_v2_token(tmp_path / "inherent-v2.token")
+
+    assert inherent_v2_token_matches(token, token) is True
+    wrong = ("0" if token[0] != "0" else "1") + token[1:]
+    assert inherent_v2_token_matches(token, wrong) is False
+    assert inherent_v2_token_matches(token, "") is False
+    assert inherent_v2_token_matches(token, "not-a-token") is False
+    assert inherent_v2_token_matches(token, token + "\n") is False
+    assert inherent_v2_token_matches(token, "你好") is False
