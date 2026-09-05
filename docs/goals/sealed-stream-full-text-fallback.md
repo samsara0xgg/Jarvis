@@ -69,3 +69,9 @@ Implement docs/goals/sealed-stream-full-text-fallback.md on the current branch. 
   L5 media owner; the Pre-emit-refusal test comparing 9 events and both gate
   verdicts against the same turn with routine streaming off. Suite
   `914 passed, 64 deselected`.
+- Prefix de-duplication — 93a10a4 — `_without_repeated_prefix` strips a
+  regeneration's restatement of the committed prefix; the new test fails
+  (`ResponsePlan.text` carries the sentence twice) with the call reverted and
+  passes with it, existing seal/correction tests untouched. Suite
+  `915 passed, 64 deselected`.
+
