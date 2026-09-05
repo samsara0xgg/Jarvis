@@ -85,4 +85,90 @@ ADR-0006 D9's blocking question — whether macOS `VoiceProcessingIO` AEC is goo
 Implement docs/goals/hardware-aec-voiceprocessingio-spike.md on the current branch. The goal is met when the transcript shows all of: (1) `git diff --stat` proving nothing under jarvis/, config/, desktop/, Project.yml, or any pre-existing script or test changed — the diff touches only scripts/spike_voiceprocessingio_aec.swift, scripts/spike_voiceprocessingio_aec.py, one new tests/integration/ module, docs/live-burn-<run date YYYY-MM-DD>-voiceprocessingio-aec.md, one sentence of docs/adr/0006-full-duplex-voice-session.md D9, and the card's Progress; (2) raw output of the live acoustic run: `swift scripts/spike_voiceprocessingio_aec.swift ...` invoked twice on the real MacBook Pro Microphone (index 3) and MacBook Pro Speakers (index 4), once with inputNode.setVoiceProcessingEnabled(true) and once with it disabled, with BlackHole used as neither the capture nor the playback route, `osascript -e 'output volume of (get volume settings)'` shown before, `set volume output volume 25` applied, the original value restored and shown afterwards, and each configuration's playback under 20 s; (3) raw output of `PYTHONPATH=. .venv/bin/python scripts/spike_voiceprocessingio_aec.py ...` over the two captured WAVs printing concrete numbers — residual echo (RMS dBFS over the far-end-playback window minus RMS dBFS over the silence window) for AEC off and AEC on plus the delta; false-candidate raw count and extrapolated per-minute rate with the window length, for the record profile (prob 0.4 / dB -45) and the tts profile (prob 0.5 / dB -22), on both captures; and the format facts — what sample rate and channel format inputNode reported with voice processing enabled and whether 16 kHz mono int16 was still obtainable; (4) an explicit statement of which far-end WAV was used, that it was generated because no *.wav exists in the repository, and its duration; (5) raw output of `PYTHONPATH=. .venv/bin/python -m pytest -q tests/integration/test_spike_voiceprocessingio_aec.py` passing, covering an echo-like signal at -20 dBFS versus silence yielding the expected residual and the expected VAD crossing count on synthetic WAVs; (6) raw output of `PYTHONPATH=. .venv/bin/python -m pytest -q -m "not live_llm and not live_codex"` with the passed count equal to the integration count at launch plus the new test's cases and the deselected count unchanged, plus `lint-imports`, `ruff check .`, and `mypy --strict jarvis tests scripts tools` each exit 0 with raw output; (7) docs/live-burn-<run date YYYY-MM-DD>-voiceprocessingio-aec.md created with the invocation, an AEC-off vs AEC-on numbers table, the format facts, a recommendation containing exactly one of `viable, proceed to a VoiceProcessingIOBackend card`, `not viable on this hardware`, or `inconclusive, needs the near-end trial`, and the recorded follow-up that an observed SPEAKER route is never promotable today (jarvis/surface/voice_backend.py:203-214) and aec_mode has no writer (:138); (8) ADR-0006 D9 gained exactly one sentence citing that burn document, and docs/spec.html was explicitly judged unchanged — following the rule that a changed contract is updated in the canonical document owning it, what the code already makes clear is not documented, and no fact is duplicated across documents; (9) near-end recall and double-talk recall were not attempted and are recorded in Progress as an Allen follow-up with the exact command; (10) if microphone permission is denied to the swift process, that denial is shown verbatim, recorded as an Allen follow-up with the exact System Settings steps, and no app bundle was built to work around it; (11) the port-8006 daemon on runtime root ~/.jarvis-realtime-test was never signalled or stopped, stated explicitly; (12) each slice committed with the project commit skill, `git status` clean, and a Progress line per slice in the card. Or stop after 50 turns.
 
 ## Progress
-- (none yet)
+- Slice 1 analysis half — 764ccbf — `scripts/spike_voiceprocessingio_aec.py` +
+  `tests/integration/test_spike_voiceprocessingio_aec.py`; 3 passed hermetic,
+  full suite 950 passed / 64 deselected (integration baseline 947 + 3),
+  lint-imports KEPT 1/1, ruff clean, mypy strict clean (232 files).
+- Slice 2 capture half — cdfa022 — `scripts/spike_voiceprocessingio_aec.swift`;
+  `swiftc -typecheck` clean; live acoustic run, both configurations exit 0,
+  15.97 s playback each (bound 20 s), 19.89 s captures at 16000 Hz 1ch 16-bit
+  accepted by `FileReplayBackend`. Two platform findings folded into the
+  script: `engine.start()` returns -10875 on `kAUInitialize` unless
+  `mainMixerNode` is instantiated before `setVoiceProcessingEnabled`, and the
+  processed input bus is 9 identical channels (channel 0 taken by an explicit
+  `AVAudioConverter.channelMap`). Guard: volume 56 -> 25 -> 56 in a `trap
+  EXIT`; output route `MacBook Pro Speakers` and input `MacBook Pro
+  Microphone` before, during and after; `BlackHole 16ch` was neither leg.
+- Slice 3 disposition — docs/live-burn-2026-09-05-voiceprocessingio-aec.md +
+  one sentence in ADR-0006 D9. Numbers: residual echo +13.81 dB (AEC off) vs
+  +31.49 dB (AEC on), delta +17.69 dB — the ratio inverted because voice
+  processing dropped the idle floor 25 dB while dropping the echo 7.5 dB;
+  false candidates `record` 22.48/min -> 7.53/min, `tts` 0.00/min -> 0.00/min;
+  16 kHz mono int16 still obtainable with voice processing on, though
+  `inputNode` goes 1 ch -> 9 ch. Verdict: `inconclusive, needs the near-end
+  trial`. `docs/spec.html` judged unchanged: it carries no AEC or barge-in
+  fact at all (`grep -ci "aec\|barge" docs/spec.html` = 0).
+- Allen follow-up (not a blocker) — near-end interrupt recall and double-talk
+  recall need a human speaking over playback and were not attempted. Exact
+  command, one run per case, speaking a short interrupt over the far-end at
+  roughly 5 s and again at 10 s:
+
+      osascript -e 'output volume of (get volume settings)'
+      osascript -e 'set volume output volume 25'
+      swift scripts/spike_voiceprocessingio_aec.swift \
+        --far-end ~/.jarvis-lane-b-test/aec-spike/far-end.wav \
+        --out ~/.jarvis-lane-b-test/aec-spike/capture-nearend-on.wav \
+        --aec on --lead 2.0 --tail 2.0
+      osascript -e 'set volume output volume <captured value>'
+
+  then score it against the far-end-only capture with
+  `scripts/spike_voiceprocessingio_aec.py --aec-off <far-end-only> --aec-on
+  <near-end>`: the crossing count above the far-end-only baseline is the
+  near-end recall evidence.
+- Microphone permission was already granted: `AVCaptureDevice
+  .authorizationStatus(for: .audio)` returned rawValue 3 (authorized), so no
+  denial had to be recorded and no app bundle was built.
+- The port-8006 daemon on runtime root `~/.jarvis-realtime-test` was never
+  signalled or stopped; this card started no daemon of its own.
+- Card drift, recorded not redesigned: the card's device indices (`3` mic /
+  `4` speakers) are a stale `sd.query_devices()` snapshot; today the same
+  named devices enumerate at `4` and `5` (`BlackHole 16ch` moved to `3`). The
+  run is bound to the device names and CoreAudio uids, not the indices.
+  Likewise the card cites ADR-0006 D9 at `:472`; after the integration merge
+  the blocker sentence is at `:516`.
+- Slice 4 verifier corrections — the `verifier` agent (fresh context, opus)
+  over `15192fc..HEAD` confirmed four defects, all fixed here. (a) The burn
+  document called `tts` "the profile that actually runs while Jarvis is
+  speaking"; it is the opposite — see the production finding below. (b) The
+  claim that the −22 dB gate sits 15 dB above the loudest echo compared the
+  gate to the window *mean*: the loudest 32 ms frame is −30.45 dBFS (AEC off)
+  and −20.45 dBFS (AEC on), the latter already **over** the −22 gate and held
+  to 0 crossings only by five-frame smoothing (peak smoothed −33.31). The
+  analysis script now prints both peaks so the corrected sentence is
+  reproducible from the committed tool, and `peak_levels` is pinned by two
+  hermetic cases. (c) The 7.5 dB drop was attributed to cancellation in both
+  the burn document and the ADR sentence, but `isVoiceProcessingAGCEnabled`
+  is true by default and the peak frame *rose* 10 dB — cancellation and AGC
+  are not separable in this run, and both documents now say so. (d)
+  `--silero`'s "using the library default" fallback was a lie:
+  `_load_silero_session` raises `ValueError` on `model_path=None`
+  (`jarvis/surface/voice_audio.py:100-102`), so the branch and the two
+  docstrings repeating it are gone; the path is now forwarded unconditionally
+  as `scripts/replay_endpointing.py:181` does.
+- Production finding, recorded not fixed (card boundary: "If the spike exposes
+  a defect in production code, record it in Progress and report; do not fix it
+  under this card"). **`_MODE_THRESHOLDS["tts"]` has no caller.** The only two
+  `SileroVad` construction sites in `jarvis/` are
+  `jarvis/runtime/inherent_loop.py:1467` and `:2128`, both `mode="record"`,
+  and `SileroVad.thresholds()` is called from nowhere in `jarvis/`. The
+  stricter prob ≥ 0.5 / dB ≥ −22 playback gate that ADR-0006 D9 leans on is
+  never installed, so the detector that runs while Jarvis speaks uses the
+  `record` gate — the profile this spike measures at 7.53/min against D9's
+  0.5/min target. That makes the false-candidate gap real rather than
+  academic, and it is a decision for the owner, not this card.
+- Verifier finding not fixed: 764ccbf is typed `test(scripts):` while its
+  larger artifact is the 309-line script, so `feat(scripts):` would have been
+  the better type, and its Tier 1 line writes `ruff clean (all checks passed)`
+  rather than the skill's `(N files)` and omits the `(< 30s budget)` note.
+  Rewriting three commits' history to relabel one of them buys nothing the
+  report cannot say, so the history stands and the mismatch is reported.
