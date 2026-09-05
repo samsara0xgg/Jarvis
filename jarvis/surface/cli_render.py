@@ -32,8 +32,10 @@ Voice / document split convention (Day-2 minimum):
     skip (deliver_voice/deliver_banner already short-circuit on
     empty input).
 
-For each turn the function emits exactly one
-``surface.response_emitted`` event whose payload carries:
+Each call emits exactly one ``surface.response_emitted`` event —
+one per response, not one per turn: ADR-0008 D6 lets a turn carry a
+``commentary`` response before its ``final`` one, and the two are
+separate calls with separate ``response_id``s. Its payload carries:
 
 - ``turn_id`` (required)
 - ``text`` (full response text; preserved Day-1 contract)
@@ -152,10 +154,11 @@ def _emit_response_open(  # noqa: PLR0913 - explicit committed event shape
     attention_channel: str,
     binding: LegacyPresentationBinding,
     channel: str,
+    phase: str,
 ) -> None:
     """Emit the ADR-0003 Step 2 ``surface.response_open`` event.
 
-    Single emission per turn. Payload carries ``turn_id``, ``query``
+    Single emission per response. Payload carries ``turn_id``, ``query``
     (the user transcript that triggered the turn — empty string allowed),
     ``kind`` (always ``"text"`` for A1), ``required_gate_mode``
     (ADR-0005 §7: L5 TTS consumers read this off the open header to
@@ -183,20 +186,21 @@ def _emit_response_open(  # noqa: PLR0913 - explicit committed event shape
             "attention_channel": attention_channel,
             "response_id": binding.response_id,
             "response_group_id": binding.response_group_id,
-            "phase": "final",
+            "phase": phase,
             "channel": channel,
         },
         correlation={"turn_id": turn_id},
     )
 
 
-def _emit_response_chunks(
+def _emit_response_chunks(  # noqa: PLR0913 - explicit committed event shape
     conn: sqlite3.Connection,
     *,
     turn_id: str,
     response_plan: ResponsePlanLike,
     binding: LegacyPresentationBinding,
     channel: str,
+    phase: str,
 ) -> None:
     """Emit one or more ADR-0003 Step 2 ``surface.response_chunk`` events.
 
@@ -222,7 +226,7 @@ def _emit_response_chunks(
                 "response_id": binding.response_id,
                 "response_group_id": binding.response_group_id,
                 "sequence": sequence,
-                "phase": "final",
+                "phase": phase,
                 "channel": channel,
                 "segment_hash": hashlib.sha256(chunk_text.encode()).hexdigest(),
             },
@@ -251,6 +255,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     response_id: str | None = None,
     response_group_id: str | None = None,
     delivery_terminal_only: bool = False,
+    phase: str = "final",
 ) -> tuple[SurfaceState, Event]:
     """Render an approved ResponsePlan across all surfaces for ``attention_channel``.
 
@@ -337,6 +342,13 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
             only ``surface.response_emitted`` for that same ``response_id``;
             never a second open or a duplicate chunk. Requires
             ``response_id``/``response_group_id``.
+        phase: ADR-0008 D6 — the phase of the ResponseRun being
+            delivered, stamped verbatim on all three
+            ``surface.response_*`` payloads. Default ``"final"`` keeps
+            every existing caller byte-identical; a lifecycle-commentary
+            run passes ``"commentary"``, which is what makes
+            :mod:`jarvis.surface.voice_media` buffer it as a commentary
+            and stamp the phase on ``surface.playback_started``.
 
     Returns:
         ``(next_state, event)`` — the :class:`SurfaceState` with the
@@ -478,6 +490,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
                 attention_channel=attention_channel,
                 binding=binding,
                 channel=presentation_channel,
+                phase=phase,
             )
             _emit_response_chunks(
                 conn,
@@ -485,6 +498,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
                 response_plan=response_plan,
                 binding=binding,
                 channel=presentation_channel,
+                phase=phase,
             )
 
     # 6. Audit event. The payload preserves the Day-1 ``text`` field +
@@ -505,7 +519,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
             {
                 "response_id": binding.response_id,
                 "response_group_id": binding.response_group_id,
-                "phase": "final",
+                "phase": phase,
                 "channel": presentation_channel,
             },
         )
