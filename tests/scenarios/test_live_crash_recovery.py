@@ -345,11 +345,14 @@ def _stop(proc: subprocess.Popen[bytes]) -> None:
 
 @pytest.fixture
 def silent_output_device() -> Iterator[str]:
-    """Route the default output to ``BlackHole 16ch``; restore what was there before.
+    """Route the default output to ``BlackHole 16ch``; restore a real speaker after.
 
     The device to restore is captured from ``SwitchAudioSource -c -t output``
-    before switching. A missing tool or device skips the burn rather than
-    letting it play through the speakers.
+    before switching, EXCEPT when that capture is already the loopback — an
+    overlapping lane having switched first — in which case the restore target
+    is ``MacBook Pro Speakers``, because putting the loopback back would leave
+    the owner with no audible output. A missing tool or device skips the burn
+    rather than letting it play through the speakers.
     """
     if shutil.which(_SWITCH_AUDIO) is None:
         pytest.skip(f"{_SWITCH_AUDIO} not installed; run: {_INSTALL_HINT}")
@@ -735,6 +738,7 @@ def _assert_playback_closed_once(
     db: Path,
     facts: _PreKill,
     response_id: str,
+    turn_id: str,
     boot2_text: str,
 ) -> None:
     """(f) ADR-0008 §4.4: boot writes exactly one daemon_restart playback terminal."""
@@ -771,6 +775,12 @@ def _assert_playback_closed_once(
     )[0]
     _echo(f"SELECT COUNT(*) surface.playback_interrupted for the pair = {count}")
     assert int(str(count)) == 1, count
+    # The reconstructed payload has to survive the replay fold, not just the
+    # registry: a wrong source_event_id or a stray speech_text_hash would
+    # flip this to False.
+    record = _record_for(db, turn_id, response_id)
+    _echo(f"fold after reconciliation: record.consistent={record.consistent}")
+    assert record.consistent, record
 
 
 def _assert_second_restart_appends_nothing(
@@ -888,7 +898,7 @@ def test_live_sigkill_mid_speech_recovers_without_respeaking(
         _echo("boot2 log header:\n  " + "\n  ".join(boot2_text.splitlines()[:12]))
 
         _assert_closed_once_and_silent(db, facts, response_id, warm_response)
-        _assert_playback_closed_once(db, facts, response_id, boot2_text)
+        _assert_playback_closed_once(db, facts, response_id, turn_id, boot2_text)
         _assert_heard_prefix(db, turn_id, response_id, facts)
         _assert_boot2_anchored(trace_path, trace_offset, boot2_log, facts.max_id)
 

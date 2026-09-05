@@ -30,7 +30,10 @@ hang, or a wrong answer.
   (`jarvis/runtime/inherent_loop.py:3084-3094`, via `_reconcile_open_responses_in_thread`
   at `:467-496`) then action quarantine (`:3103-3115`, via
   `_reconcile_action_quarantine_in_thread` at `:499-514`). Line numbers as of
-  f914d20 — re-pin, see Boundaries.
+  f914d20 — re-pin, see Boundaries. RE-PINNED at implementation, on the merge of
+  `realtime-integration` (0f670d5) into `lane/a`: the two helpers are at
+  `:493-522` and `:525-540`, and the barrier calls them at `:3604-3617` and
+  `:3619-3638`.
 - Live-verified orphan: `RESP2b75e178e097471487044c6f158c27bb` generation 2,
   `surface.playback_started` id 25, no terminal
   (`docs/live-burn-2026-09-05-crash-recovery.md:204-212`, recorded as "Not fixed
@@ -92,6 +95,9 @@ hang, or a wrong answer.
   unchanged.
 - runtime `jarvis/runtime/inherent_loop.py` — a new `_reconcile_..._in_thread` helper
   beside `:467-514`, called in the startup barrier after `:3115`. RE-PIN both regions.
+  As built: the helper is `_reconcile_open_playback_in_thread` at `:543-559` and the
+  barrier block is `:3640-3654`, immediately after the action-quarantine block and
+  before `cancel_response_callable` at `:3656`.
 - tests — one hermetic integration test (see Acceptance evidence).
 - `tests/scenarios/test_live_crash_recovery.py` — extend the existing rig with the
   playback-terminal assertions and the second restart.
@@ -107,7 +113,8 @@ hang, or a wrong answer.
   `jarvis/runtime/inherent_loop.py:3186-3234`). This card writes in the one-shot
   startup barrier (currently `:3081-3116`). Different regions, both additive, but
   every `inherent_loop.py` line number in this card must be re-pinned against the
-  merged tree before editing.
+  merged tree before editing. Done: after the merge the barrier is `:3604-3654`
+  and the commentary watcher sits in the untouched build-out region below it.
 - Non-goals: the heard-cursor / checkpoint defect (lane B's separate
   live-heard-cursor card); barge-in; sleep/wake; action-run or intent-pump
   recovery; the unbuilt `authorized_dispatch_outbox` boot reconciliation
@@ -274,3 +281,31 @@ Or stop after 40 turns.
   branch (`checkpoint_seen=False`), which is finding 3 of
   `docs/live-burn-2026-09-05-crash-recovery.md` — lane B's live-heard-cursor
   card. The checkpoint carry-forward branch is covered hermetically only.
+- Verifier pass (fresh context, opus) over `0f670d5..HEAD`: gates independently
+  reproduced, scope confirmed clean, live DB re-read and the fold re-computed to
+  `consistent=True`. One CONFIRMED defect fixed — a `surface.playback_started`
+  whose `session_id` is not a non-empty string is legal to append (registry
+  validates key presence only) but makes `terminalize_playback` raise straight
+  out of the startup barrier, so the daemon would not boot; the reconciler now
+  skips such a row with a warning and
+  `test_boot_reconciler_skips_a_started_row_without_a_session_id` pins it. Two
+  CONFIRMED doc defects fixed: the stale `silent_output_device` docstring and
+  this card's un-re-pinned `inherent_loop.py` line numbers. The live rig now
+  ASSERTS `record.consistent` after reconciliation instead of only echoing it.
+- Live re-run after those fixes — root
+  `~/.jarvis-lane-b-test/crash-20260905T225205Z`, port 53309, `1 passed in
+  47.10s`. SIGKILL pid 3945; orphan pair
+  `(RESPccc823aca034410982f76bfa2c1ec68f, 3)`; `surface.playback_started` id 72
+  `event_uid=c9bddbf24318474a8da22de061a13d2b`. Restart 1 appended exactly one
+  `surface.playback_interrupted` (id 76, matching `source_event_id`,
+  `"reason":"daemon_restart"`), `COUNT(*)` = 1, `fold after reconciliation:
+  record.consistent=True`. Restart 2 (pid 5479) appended zero rows for the pair,
+  `COUNT(*)` still 1, no reconciliation log line. Audio restored to
+  `'MacBook Pro Speakers'` (restored=True) by both the fixture and the shell guard.
+- Reported to the hub, not changed (the card decided them): the reconciler's gate
+  is `response_run_lifecycle` per the card while the orphan-producing playback
+  actor is gated on `realtime.streaming_output.enabled`, so a config with
+  streaming on and the lifecycle flag off would accumulate orphans no boot closes
+  (both ship `false`; the live overlay sets both `true`). And ADR-0006:639 still
+  says `PlaybackTerminalizer` "is the sole L5 exit" for playback terminals, which
+  now has two L5 callers of the same L2 CAS; the card forbids ADR edits.

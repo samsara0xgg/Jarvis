@@ -10,6 +10,7 @@ and reconstructs every payload field from the log alone.
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import TYPE_CHECKING, Final
 
 from jarvis.shared.realtime import TerminalCommitted
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
 
     from jarvis.shared import Event
     from jarvis.state.committed_event_bus import CommittedEventBus
+
+LOGGER = logging.getLogger("jarvis.surface.playback_recovery")
 
 _PLAYBACK_STARTED: Final[str] = "surface.playback_started"
 _PLAYBACK_CHECKPOINT: Final[str] = "surface.playback_checkpoint"
@@ -106,9 +109,25 @@ def reconcile_open_playback(
         if identity in terminated:
             continue
         response_id, generation = identity
+        session_id = start.payload.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            # The identity is legal but `terminalize_playback` additionally
+            # requires a non-empty `session_id` and the registry validates
+            # key presence only, so an unreadable historical row would
+            # otherwise raise straight out of the startup barrier and stop
+            # the daemon from booting. Skip it loudly, as
+            # `repo_observer.recover_baselines` does with its own.
+            LOGGER.warning(
+                "playback_recovery: surface.playback_started %s carries no usable "
+                "session_id; leaving (%s, %d) open",
+                start.event_uid,
+                response_id,
+                generation,
+            )
+            continue
         turn_id = str(start.payload.get("turn_id", ""))
         payload: dict[str, object] = {
-            "session_id": start.payload.get("session_id"),
+            "session_id": session_id,
             "response_id": response_id,
             "turn_id": turn_id,
             "playback_generation_id": generation,

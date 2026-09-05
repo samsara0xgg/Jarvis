@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
@@ -10,7 +11,7 @@ import pytest
 
 from jarvis.runtime import inherent_loop
 from jarvis.state.conversation import fold_conversation_history
-from jarvis.state.event_log import iter_events, open_event_log
+from jarvis.state.event_log import emit_event, iter_events, open_event_log
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from tests.integration.test_conversation_history import _display, _playback
 
@@ -80,6 +81,42 @@ def test_boot_reconciler_closes_open_playback_exactly_once(
 
         # Fold safety: the reconciled log still replays consistent.
         assert fold_conversation_history(iter_events(conn)).consistent
+
+
+def test_boot_reconciler_skips_a_started_row_without_a_session_id(tmp_path: Path) -> None:
+    """One unreadable historical row must not stop the daemon from booting.
+
+    ``terminalize_playback`` requires a non-empty ``session_id`` while the
+    registry validates key presence only, so the row is legal to append and
+    would otherwise raise straight out of the startup barrier.
+    """
+    with contextlib.closing(open_event_log(tmp_path / "malformed.db")) as conn:
+        _display(conn)
+        start = _rows(conn, "surface.playback_started")[-1]
+        emit_event(
+            conn,
+            type="surface.playback_started",
+            payload={
+                "session_id": None,
+                "response_id": "R-malformed",
+                "turn_id": "previous",
+                "playback_generation_id": 3,
+                "phase": "final",
+                "channel": "speech",
+                "speech_text_hash": hashlib.sha256(b"").hexdigest(),
+            },
+            source_event_id=start.event_uid,
+        )
+
+        closed = reconcile_open_playback(conn)
+        assert [event.payload["response_id"] for event in closed] == [_ORPHAN[0]]
+        malformed = [
+            event
+            for event in iter_events(conn)
+            if event.type == "surface.playback_interrupted"
+            and event.payload["response_id"] == "R-malformed"
+        ]
+        assert malformed == []
 
 
 def test_boot_helper_closes_playback_on_its_own_connection(tmp_path: Path) -> None:
