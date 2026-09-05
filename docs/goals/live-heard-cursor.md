@@ -68,10 +68,12 @@ so the whole downstream heard-state chain is dead on real hardware.
   a later `record_audible(..., cursor_quality="estimated")`, ends with
   `cursor_quality == "estimated"`; `snapshot()` then advances
   `heard_through_sequence` and returns a non-empty `heard_text`.
-- A segment whose quality is genuinely observed as `"unknown"` (the
-  `record_submitted` gap path at `:225-234`, which sets the ledger cursor to
-  `"unknown"` and marks it observed) still degrades every later merge to
-  `"unknown"`. Conservatism is not weakened anywhere.
+- A chunk that closes carrying the birth sentinel before a callback-report gap
+  can still be assigned a reported quality by a later `record_audible`, so the
+  residue is a checkpoint row with a non-empty `heard_text` and
+  `cursor_quality` `"unknown"`; that residue cannot reach `spoken_heard`
+  because the fold's quality gate (`jarvis/state/conversation_playback.py:212-213`)
+  accepts only `"estimated"` and `"measured_dac"`.
 - `finish_segment`'s escape hatch stays and stays *reachable*: it covers the
   opposite ordering, where the horizon crosses while the chunk is still open and
   `output_end_cursor is None`, which the `record_audible` loop skips by its own
