@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import time
@@ -11,9 +12,11 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from jarvis.runtime import inherent_loop
+from jarvis.shared import Event
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
-from jarvis.state.lifecycle_terminal import terminalize_playback
+from jarvis.state.lifecycle_terminal import terminalize_playback, terminalize_response
 from jarvis.surface import voice_media, voice_tts
 from tests.integration.test_wave2_streaming_media import (
     _CallbackPump,
@@ -27,8 +30,6 @@ from tests.integration.test_wave2_streaming_media import (
 if TYPE_CHECKING:
     import sqlite3
     from pathlib import Path
-
-    from jarvis.shared import Event
 
 _SEGMENTS = ("第一句。", "第二句。", "第三句。")
 
@@ -605,3 +606,162 @@ def test_tag_after_playback_started_fails_the_run_and_stops_segments(tmp_path: P
     assert len(failed) == 1
     assert failed[0][1]["reason"] == "stream_chunk_tagged"
     assert failed[0][0] > prepared[0][0]
+
+
+# --- Mid-stream cancel reaches the active playback --------------------------
+
+
+def _cancel(conn: sqlite3.Connection, response_id: str) -> tuple[int, Event]:
+    outcome = terminalize_response(
+        conn,
+        event_type="response.cancelled",
+        payload={
+            "response_id": response_id,
+            "response_group_id": "G-" + response_id,
+            "turn_id": "T-" + response_id,
+            "reason": "operator_request",
+        },
+    )
+    return _row(conn, outcome.event)
+
+
+def test_cancel_mid_stream_interrupts_playback_through_the_real_watcher(
+    tmp_path: Path,
+) -> None:
+    """_tts_watcher feeds response.cancelled to the media owner, which interrupts."""
+    db_path = tmp_path / "cancel.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    pipeline, player = _pipeline(db_path, provider, speak_from_segments=True)
+    watcher_conn = open_event_log(db_path)
+
+    async def _watch(until: str) -> None:
+        watcher = asyncio.create_task(
+            inherent_loop._tts_watcher(  # noqa: SLF001 - production watcher integration
+                conn=watcher_conn,
+                pipeline=pipeline,
+                poll_interval_s=0.005,
+            ),
+        )
+        try:
+            deadline = time.monotonic() + 2.0
+            while not _rows(conn, until, "RC"):
+                if time.monotonic() >= deadline:
+                    pytest.fail(f"{until} never became durable")
+                await asyncio.sleep(0.005)
+        finally:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
+
+    try:
+        with _CallbackPump(player):
+            _open(conn, "RC")
+            _chunk(conn, "RC", 0, _SEGMENTS[0])
+            asyncio.run(_watch("surface.playback_segment_prepared"))
+            cancel_row = _cancel(conn, "RC")
+            asyncio.run(_watch("surface.playback_interrupted"))
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+            late = _chunk(conn, "RC", 1, _SEGMENTS[1])
+            assert asyncio.run(_submit_response(pipeline, [late]))[0].status == "terminal"
+            assert not pipeline._after_drain  # noqa: SLF001
+    finally:
+        assert pipeline.close()
+        watcher_conn.close()
+        conn.close()
+    conn = open_event_log(db_path)
+    try:
+        interrupted = _rows(conn, "surface.playback_interrupted", "RC")
+        prepared = _rows(conn, "surface.playback_segment_prepared", "RC")
+    finally:
+        conn.close()
+    assert len(interrupted) == 1
+    assert interrupted[0][1]["reason"] == "response_cancelled"
+    assert cancel_row[0] < interrupted[0][0]
+    assert [row[1]["sequence"] for row in prepared] == [0]
+    assert all(row[0] < interrupted[0][0] for row in prepared)
+    assert provider.aborted == [("RC", "response_cancelled")]
+
+
+def test_cancel_of_the_active_response_drains_the_queued_lane(tmp_path: Path) -> None:
+    """After the interrupt the cancel path leaves nothing pending in _after_drain."""
+    db_path = tmp_path / "cancel-lane.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    pipeline, player = _pipeline(db_path, provider, speak_from_segments=True)
+    try:
+        with _CallbackPump(player):
+            first = [_open(conn, "RA"), _chunk(conn, "RA", 0, "第一句。")]
+            asyncio.run(_submit_response(pipeline, first))
+            _wait_for(conn, "surface.playback_segment_prepared", "RA", 1)
+            queued = _emit_response(
+                conn, response_id="RB", group_id="G-RA", turn_id="T-RA", text="排队的后续。"
+            )
+            statuses = [o.status for o in asyncio.run(_submit_response(pipeline, queued))]
+            assert statuses == ["accepted"] * 3
+            assert len(pipeline._after_drain) == 1  # noqa: SLF001
+            cancelled = asyncio.run(_submit_response(pipeline, [_cancel(conn, "RA")]))
+            assert cancelled[0].status == "accepted"
+            assert not pipeline._after_drain  # noqa: SLF001
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    conn = open_event_log(db_path)
+    try:
+        assert len(_rows(conn, "surface.playback_interrupted", "RA")) == 1
+        assert _rows(conn, "surface.playback_started", "RB") == []
+    finally:
+        conn.close()
+
+
+def test_flag_off_cancel_drops_the_buffered_response(tmp_path: Path) -> None:
+    """The terminal wiring is ungated: a cancelled run never speaks at emitted time."""
+    db_path = tmp_path / "cancel-off.db"
+    conn = open_event_log(db_path)
+    pipeline, _ = _pipeline(db_path, _FakeProvider(), speak_from_segments=False)
+    try:
+        rows = [
+            _open(conn, "RD"),
+            _chunk(conn, "RD", 0, _SEGMENTS[0]),
+            _cancel(conn, "RD"),
+            _emitted(conn, "RD", _SEGMENTS[0]),
+        ]
+        outcomes = asyncio.run(_submit_response(pipeline, rows))
+        assert [o.status for o in outcomes] == ["accepted", "accepted", "accepted", "terminal"]
+        assert pipeline.wait_until_idle(timeout_s=1.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    conn = open_event_log(db_path)
+    try:
+        assert _rows(conn, "surface.playback_started", "RD") == []
+    finally:
+        conn.close()
+
+
+def test_silent_turn_is_forgotten_on_the_run_terminal() -> None:
+    """A cancelled queue_review turn leaves no entry behind in silent_turns."""
+    silent: set[str] = set()
+    opened = Event(
+        event_uid="E-open",
+        type="surface.response_open",
+        schema_version=1,
+        ts_epoch_ms=0,
+        payload={"turn_id": "TQ", "attention_channel": "queue_review"},
+        source_event_id=None,
+        correlation={},
+    )
+    cancelled = replace(
+        opened, event_uid="E-cancel", type="response.cancelled", payload={"turn_id": "TQ"}
+    )
+    kwargs: dict[str, Any] = {
+        "turn_id": "TQ",
+        "silent_turns": silent,
+        "silent_channels": inherent_loop._TTS_SILENT_CHANNELS,  # noqa: SLF001
+        "consumer": "test",
+    }
+    assert inherent_loop._drop_for_silent_channel(opened, **kwargs)  # noqa: SLF001
+    assert silent == {"TQ"}
+    assert inherent_loop._drop_for_silent_channel(cancelled, **kwargs)  # noqa: SLF001
+    assert silent == set()

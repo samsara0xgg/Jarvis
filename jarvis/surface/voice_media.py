@@ -65,8 +65,10 @@ _MAX_SHUTDOWN_TIMEOUT_S = 10.0
 _MAX_EVENT_DRAIN_BATCH = 1024
 _MAX_DURABILITY_RETRY_ATTEMPTS = 10
 _CHANNEL_TAG_RE = re.compile(r"</?(?:voice|document)>")
+_RESPONSE_TERMINAL_TYPES = frozenset({"response.cancelled", "response.failed"})
 _RESPONSE_EVENT_TYPES = frozenset(
-    {"surface.response_open", "surface.response_chunk", "surface.response_emitted"},
+    {"surface.response_open", "surface.response_chunk", "surface.response_emitted"}
+    | _RESPONSE_TERMINAL_TYPES,
 )
 _TTS_SILENT_CHANNELS = frozenset({"queue_review", "silent_log"})
 _SELECT_EVENT_ROWS_THROUGH = (
@@ -1921,7 +1923,25 @@ class StreamingTTSPipeline:
             return outcome
         if event.type == "surface.response_emitted":
             await self._response_emitted(response, event)
+        else:
+            await self._response_terminal(response, event)
         return outcome
+
+    async def _response_terminal(self, response: _ResponseBuffer, event: Event) -> None:
+        """L3 ended the run: stop an active playback, or drop a buffered one."""
+        reason = event.type.replace(".", "_")
+        active = self._active
+        if active is not None and active.response is response:
+            await self._interrupt_active(reason=reason)
+            while self._after_drain:
+                queued = self._after_drain.popleft()
+                self._registry.terminalize(queued.response_id)
+                self._responses.pop(queued.response_id, None)
+            self._output_active.clear()
+            return
+        self._unschedule(response)
+        self._responses.pop(response.response_id, None)
+        self._registry.terminalize(response.response_id)
 
     async def _response_emitted(self, response: _ResponseBuffer, event: Event) -> None:
         """Complete the buffer; a scheduled response finishes its own segment loop."""
