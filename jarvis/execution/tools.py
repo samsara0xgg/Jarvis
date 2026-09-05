@@ -5095,7 +5095,7 @@ class ToolRegistry:
 _SPAWN_WORKER_TOOL_NAME: Final[str] = "spawn_worker"
 _VERIFY_DIFF_TOOL_NAME: Final[str] = "verify_diff"
 _CANCEL_ACTION_TOOL_NAME: Final[str] = "cancel_action"
-"""The two tools whose resource keys are resolved dynamically.
+"""The tools whose resource keys are resolved by name.
 
 Matched by name rather than by a new ``ToolDefinition`` field because these
 are the only two tools whose keys depend on runtime state (the Task Ledger's
@@ -5414,11 +5414,7 @@ _CANCEL_ACTION_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
     "properties": {
         "target_action_id": {
             "type": "string",
-            "description": (
-                "action_id of the running action to stop, from the open "
-                "actions list; leave it to the one open action when Allen "
-                "does not name one."
-            ),
+            "description": "action_id of the open action to stop, from the open actions list.",
         },
         "reason": {
             "type": "string",
