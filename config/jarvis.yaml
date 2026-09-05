@@ -252,6 +252,6 @@ realtime:
     partial_asr:
       enabled: false
       interval_ms: 240
-      candidate_ms: 256
+      candidate_ms: 320
       max_hold_ms: 900
       post_roll_ms: 200

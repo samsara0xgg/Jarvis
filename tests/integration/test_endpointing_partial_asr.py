@@ -563,10 +563,13 @@ def test_late_partial_revision_is_discarded_and_only_final_text_is_committed(
         ("今天天气不错", True),
         ("我们还去公园吗？", True),  # noqa: RUF001
         ("明天下雨的话", False),
+        ("如果明天下雨的话。", False),
+        ("我想问一下。", False),
         ("我想问一下，", False),  # noqa: RUF001
         ("然后", False),
         ("turn on the light.", True),
         ("Turn on the light", True),
+        ("turn on the light, and", False),
         ("I want to", False),
         ("I want to go and", False),
         ("", False),

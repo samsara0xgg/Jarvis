@@ -665,6 +665,8 @@ _DANGLING_SUFFIXES: tuple[str, ...] = (
     "还有",
     "以及",
     "帮我",
+    "问一下",
+    "请问",
     "把",
     "被",
     "给",
@@ -698,11 +700,11 @@ def normalize_partial_text(text: str) -> str:
 
 def looks_complete(text: str) -> bool:
     """Return whether a normalized stable prefix reads as a finished clause."""
-    stripped = text.strip()
+    # SenseVoice appends a period to every snapshot ("...的话。"), so the
+    # dangling-clause check runs on the text with terminal punctuation removed.
+    stripped = text.rstrip().rstrip("".join(_TERMINAL_PUNCTUATION)).rstrip()
     if not stripped:
         return False
-    if stripped[-1] in _TERMINAL_PUNCTUATION:
-        return True
     return not stripped.endswith(_DANGLING_SUFFIXES)
 
 

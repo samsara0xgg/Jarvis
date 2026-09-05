@@ -48,7 +48,7 @@ class PartialAsrConfig:
 
     enabled: bool = False
     interval_ms: int = 240
-    candidate_ms: int = 256
+    candidate_ms: int = 320
     max_hold_ms: int = 900
     post_roll_ms: int = 200
 
