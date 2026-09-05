@@ -746,6 +746,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "model",
             "risk_context_hash",
             "classifier_rule_version",
+            "corrects_response_id",
         ),
         schema_version=1,
     ),

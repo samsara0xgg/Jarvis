@@ -11,15 +11,18 @@ import pytest
 
 from jarvis.decision.gates import ResponsePlan
 from jarvis.decision.llm_stream import LLMResponseCompleted, LLMTextDelta
+from jarvis.decision.response_run import start_response_run
 from jarvis.decision.stream_finalize import StreamFinalizationFailure, finalize_stream
+from jarvis.decision.stream_gate import routine_stream_policy
 from jarvis.decision.stream_risk import SegmentRiskClassifier
 from jarvis.decision.stream_sentences import SemanticAssembler
 from jarvis.shared.realtime import TerminalCommitted
-from jarvis.state.event_log import iter_events, open_event_log
+from jarvis.state.event_log import get_event, iter_events, open_event_log
 from jarvis.state.stream_emission import StreamEmissionError, committed_text_prefix
 from tests.integration.test_stream_emission_gate import _context, _Run
 
 if TYPE_CHECKING:
+    import sqlite3
     from pathlib import Path
 
     from jarvis.decision.llm_stream import LLMStreamEvent
@@ -184,3 +187,59 @@ def test_policy_hash_differing_from_permits_yields_policy_mismatch(tmp_path: Pat
                 policy=run.policy,
                 context=replace(run.context, evidence_snapshot_hash="c" * 64),
             )
+
+
+def test_invalid_prefix_fails_the_run_and_starts_a_correction_run(tmp_path: Path) -> None:
+    """Memory that disagrees with the log is failed, never re-spoken or retried whole."""
+    with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
+        run = _Run(conn, _context())
+        prefix = _commit_prefix(run, _SEGMENTS)
+        failure = finalize_stream(
+            conn,
+            committed_prefix=prefix + "还在继续。",
+            uncommitted_suffix=_TAIL,
+            policy=run.policy,
+            context=run.context,
+        )
+        assert isinstance(failure, StreamFinalizationFailure)
+        assert failure.reason == "committed_prefix_invalid"
+        assert failure.committed_prefix_hash == _sha256(prefix)
+        failed = run.terminalizer.fail(
+            run.run.facts,
+            reason=failure.reason,
+            retryable=False,
+            committed_prefix_hash=failure.committed_prefix_hash,
+        )
+        assert isinstance(failed, TerminalCommitted)
+        assert failed.event.type == "response.failed"
+        assert failed.event.payload["committed_prefix_hash"] == _sha256(prefix)
+        correction_context = replace(run.context, response_id="response-correction")
+        correction = start_response_run(
+            conn,
+            turn_id=run.context.turn_id,
+            trigger_event_uid=_started_source(conn, run.run.facts.started_event_uid),
+            request_client=run.run.request_client,
+            policy=routine_stream_policy(correction_context, preset_snapshot_hash="b" * 64),
+            response_id=correction_context.response_id,
+            corrects_response_id=run.run.response_id,
+        )
+        started = next(
+            event
+            for event in iter_events(conn)
+            if event.type == "response.started"
+            and event.payload["response_id"] == correction.response_id
+        )
+        assert started.payload["corrects_response_id"] == run.run.response_id
+        assert started.payload["response_group_id"] == run.run.response_group_id
+        assert committed_text_prefix(conn, correction.response_id).text == ""
+        assert committed_text_prefix(conn, run.run.response_id).text == prefix
+        print(failed.event.type, failed.event.payload)  # noqa: T201 - acceptance evidence
+        print(started.type, started.payload)  # noqa: T201 - acceptance evidence
+
+
+def _started_source(conn: sqlite3.Connection, started_event_uid: str) -> str:
+    """Return the user trigger that caused a response start."""
+    started = get_event(conn, started_event_uid)
+    assert started is not None
+    assert started.source_event_id is not None
+    return started.source_event_id
