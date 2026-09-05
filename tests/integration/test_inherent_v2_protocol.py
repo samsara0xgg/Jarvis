@@ -112,8 +112,9 @@ def test_every_malformed_frame_is_rejected() -> None:
 
     for case in cases:
         model = _DECODERS[case["kind"]]
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as excinfo:
             model.model_validate(case["frame"])
+        assert excinfo.value.errors()[0]["loc"] == tuple(case["loc"]), case["name"]
 
 
 def test_hello_support_requires_both_sides_to_agree() -> None:

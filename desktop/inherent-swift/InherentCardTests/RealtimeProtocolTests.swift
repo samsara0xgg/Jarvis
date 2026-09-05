@@ -122,9 +122,19 @@ final class RealtimeProtocolTests: XCTestCase {
     for entry in entries {
       let name = try XCTUnwrap(entry["name"] as? String)
       let kind = try XCTUnwrap(entry["kind"] as? String)
+      let swiftError = try XCTUnwrap(entry["swift_error"] as? String)
       let frame = try XCTUnwrap(entry["frame"])
       let data = try JSONSerialization.data(withJSONObject: frame)
-      XCTAssertThrowsError(try Self.decode(kind: kind, data: data), "\(kind)/\(name) must fail")
+      do {
+        try Self.decode(kind: kind, data: data)
+        XCTFail("\(kind)/\(name) must fail")
+      } catch is DecodingError {
+        XCTAssertEqual(swiftError, "decoding", "\(kind)/\(name) threw DecodingError, fixture expects \(swiftError)")
+      } catch is RealtimeProtocolError {
+        XCTAssertEqual(swiftError, "protocol", "\(kind)/\(name) threw RealtimeProtocolError, fixture expects \(swiftError)")
+      } catch {
+        XCTFail("\(kind)/\(name) threw unexpected error type \(error)")
+      }
     }
   }
 
