@@ -220,7 +220,9 @@ def test_a_refold_from_a_checkpoint_stamps_the_same_request_id() -> None:
         payload={"response_id": "R1", "response_group_id": "G1", "turn_id": "T1"},
     )
     assert transition is not None
-    assert transition.changes[0].response.source_client_request_id == "req-1"
+    opened = transition.changes[0].response
+    assert opened is not None
+    assert opened.source_client_request_id == "req-1"
     # The entry is dropped once its group opens.
     assert replay.checkpoint(through_cursor=2).pending_requests == ()
 

@@ -10,6 +10,9 @@ values to the JSON-ready shapes the v2 socket carries:
   frames, each page at most :data:`SNAPSHOT_PAGE_MAX_BYTES`, with
   ``content_hash`` computed over the exact UTF-8 bytes of the page frames it
   hands back — the bytes the hub sends are the bytes that were hashed.
+  Sections page independently in :data:`SECTION_ORDER`, ``page_index``
+  restarts at 0 in each, and a section the checkpoint left empty is omitted
+  from both ``section_order`` and ``counts``.
 
 The presenter never derives canonical action state, confirmation validity
 or cancellability (D9); it does not even build the envelope — the runtime
@@ -28,18 +31,27 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from jarvis.state.inherent_view import (
+        ActionView,
+        ConfirmationCleared,
+        ConfirmationView,
         InherentViewCheckpoint,
         ResponseGroupView,
         ResponseView,
         SegmentView,
+        ViewChange,
         ViewTransition,
     )
 
 SNAPSHOT_PAGE_MAX_BYTES: Final[int] = 64 * 1024
 RESPONSE_GROUPS_SECTION: Final[str] = "response_groups"
-# The L3 lifecycle fold (D13 card) is what can report a terminal; until it
-# lands, every response this fold projects is at most known to be underway.
-_LIFECYCLE_PENDING: Final[str] = "generating"
+ACTIONS_SECTION: Final[str] = "actions"
+PENDING_CONFIRMATION_SECTION: Final[str] = "pending_confirmation"
+SECTION_ORDER: Final[tuple[str, ...]] = (
+    RESPONSE_GROUPS_SECTION,
+    ACTIONS_SECTION,
+    PENDING_CONFIRMATION_SECTION,
+)
+"""The D8 sections this presenter produces, in the order it advertises them."""
 
 FrameEncoder = Callable[[str, str, "Mapping[str, Any]"], str]
 """``(message_type, message_id, payload) -> frame text`` for one connection."""
@@ -53,12 +65,22 @@ def _opened_change(response: ResponseView) -> dict[str, Any]:
         "turn_id": response.turn_id,
         "phase": response.phase,
         "channel": response.channel,
-        "lifecycle": _LIFECYCLE_PENDING,
+        "lifecycle": response.lifecycle,
         "question": response.question,
         "summary": None,
         "created_at_ms": response.created_at_ms,
         "revision": response.revision,
         "source_client_request_id": response.source_client_request_id,
+    }
+
+
+def _lifecycle_change(response: ResponseView) -> dict[str, Any]:
+    return {
+        "kind": "response.lifecycle",
+        "response_id": response.response_id,
+        "lifecycle": response.lifecycle,
+        "terminal_reason": response.terminal_reason,
+        "revision": response.revision,
     }
 
 
@@ -86,6 +108,74 @@ def _delivery_change(response: ResponseView) -> dict[str, Any]:
     }
 
 
+def action_item(action: ActionView) -> dict[str, Any]:
+    """Map one action to its ``ActionUpsert`` wire shape (D13).
+
+    ``freshness_ms`` is omitted: no clock reaches a pure fold, and the shipped
+    decoder reads its absence as fresh.  ``cleanup_state`` and
+    ``cancel_request`` have no key on the shipped ``ActionUpsert`` and stay
+    inside the fold.
+    """
+    return {
+        "action_id": action.action_id,
+        "response_group_id": action.response_group_id,
+        "task_id": action.task_id,
+        "state": action.canonical_state,
+        "label": action.action_type,
+        "target": action.safe_target_ref,
+        "revision": action.state_revision_cursor,
+        "cancellable": action.cancellable,
+    }
+
+
+def confirmation_item(confirmation: ConfirmationView) -> dict[str, Any]:
+    """Map the live slot to its ``ConfirmationUpsert`` wire shape (D14)."""
+    return {
+        "confirmation_id": confirmation.confirmation_id,
+        "response_group_id": confirmation.response_group_id,
+        "action_id": confirmation.action_id,
+        "summary": confirmation.summary,
+        "target": confirmation.target,
+        "risk": confirmation.risk,
+        "options": list(confirmation.options),
+        "expires_at_ms": confirmation.expires_at_ms,
+        "revision": confirmation.revision,
+    }
+
+
+def _cleared_change(cleared: ConfirmationCleared) -> dict[str, Any]:
+    return {
+        "kind": "confirmation.cleared",
+        "confirmation_id": cleared.confirmation_id,
+        "reason": cleared.reason,
+        "revision": cleared.revision,
+    }
+
+
+def _response_change(change: ViewChange) -> dict[str, Any] | None:
+    response = change.response
+    if response is None:
+        return None
+    if change.kind == "response.opened":
+        return _opened_change(response)
+    if change.kind == "response.lifecycle":
+        return _lifecycle_change(response)
+    if change.kind == "response.segment" and change.segment is not None:
+        return _segment_item(response.response_id, change.segment)
+    return _delivery_change(response)
+
+
+def _change_payload(change: ViewChange) -> dict[str, Any] | None:
+    """Map one typed fold mutation to its D10 wire shape."""
+    if change.kind == "action.upsert" and change.action is not None:
+        return {"kind": "action.upsert", **action_item(change.action)}
+    if change.kind == "confirmation.upsert" and change.confirmation is not None:
+        return {"kind": "confirmation.upsert", **confirmation_item(change.confirmation)}
+    if change.kind == "confirmation.cleared" and change.cleared is not None:
+        return _cleared_change(change.cleared)
+    return _response_change(change)
+
+
 def delta_payload(transition: ViewTransition) -> dict[str, Any]:
     """Map one fold transition to the ``view.delta`` payload (D6/D10).
 
@@ -95,15 +185,11 @@ def delta_payload(transition: ViewTransition) -> dict[str, Any]:
     Returns:
         ``{"source_event_uid": ..., "changes": [...]}`` in the fold's order.
     """
-    changes: list[dict[str, Any]] = []
-    for change in transition.changes:
-        if change.kind == "response.opened":
-            changes.append(_opened_change(change.response))
-        elif change.kind == "response.segment" and change.segment is not None:
-            changes.append(_segment_item(change.response.response_id, change.segment))
-        else:
-            changes.append(_delivery_change(change.response))
-    return {"source_event_uid": transition.event_uid, "changes": changes}
+    changes = [_change_payload(change) for change in transition.changes]
+    return {
+        "source_event_uid": transition.event_uid,
+        "changes": [change for change in changes if change is not None],
+    }
 
 
 def response_group_item(group: ResponseGroupView) -> dict[str, Any]:
@@ -114,7 +200,7 @@ def response_group_item(group: ResponseGroupView) -> dict[str, Any]:
             "response_id": response.response_id,
             "phase": response.phase,
             "channel": response.channel,
-            "lifecycle": _LIFECYCLE_PENDING,
+            "lifecycle": response.lifecycle,
             "revision": response.revision,
             "panel_stream": response.panel_stream,
             "segments": [
@@ -163,15 +249,16 @@ class SnapshotPlan:
 def _page_frame(
     encode: FrameEncoder,
     snapshot_id: str,
+    section: str,
     page_index: int,
     items: list[dict[str, Any]],
 ) -> str:
     return encode(
         "snapshot.page",
-        f"{snapshot_id}:page:{RESPONSE_GROUPS_SECTION}:{page_index}",
+        f"{snapshot_id}:page:{section}:{page_index}",
         {
             "snapshot_id": snapshot_id,
-            "section": RESPONSE_GROUPS_SECTION,
+            "section": section,
             "page_index": page_index,
             "items": items,
         },
@@ -185,12 +272,15 @@ def _utf8_len(frame: str) -> int:
 def _pack_pages(
     encode: FrameEncoder,
     snapshot_id: str,
+    section: str,
     items: list[dict[str, Any]],
 ) -> list[str]:
-    """Fill pages greedily so every page frame stays within the byte cap.
+    """Fill one section's pages greedily so every frame stays within the byte cap.
 
-    A group is never split across pages: the Swift adopter keys groups by
-    id, so a repeated group item would replace rather than extend the first.
+    ``page_index`` restarts at 0 per section — the adopter keys staged pages
+    by ``(section, page_index)``.  An item is never split across pages: the
+    Swift adopter keys groups and actions by id, so a repeated item would
+    replace rather than extend the first.
     """
     # ponytail: each candidate page is re-encoded whole (quadratic in items
     # per page); size the measurement incrementally if snapshots ever hold
@@ -199,19 +289,31 @@ def _pack_pages(
     # through gap -> resync.
     pages: list[str] = []
     current: list[dict[str, Any]] = []
-    current_frame = _page_frame(encode, snapshot_id, 0, current)
+    current_frame = _page_frame(encode, snapshot_id, section, 0, current)
     for item in items:
-        candidate = _page_frame(encode, snapshot_id, len(pages), [*current, item])
+        candidate = _page_frame(encode, snapshot_id, section, len(pages), [*current, item])
         if current and _utf8_len(candidate) > SNAPSHOT_PAGE_MAX_BYTES:
             pages.append(current_frame)
             current = [item]
-            candidate = _page_frame(encode, snapshot_id, len(pages), current)
+            candidate = _page_frame(encode, snapshot_id, section, len(pages), current)
         else:
             current.append(item)
         current_frame = candidate
     if current:
         pages.append(current_frame)
     return pages
+
+
+def _section_items(checkpoint: InherentViewCheckpoint) -> dict[str, list[dict[str, Any]]]:
+    """The items of each D8 section this presenter produces, empties included."""
+    confirmation = checkpoint.pending_confirmation
+    return {
+        RESPONSE_GROUPS_SECTION: [response_group_item(group) for group in checkpoint.groups],
+        ACTIONS_SECTION: [action_item(action) for action in checkpoint.actions],
+        PENDING_CONFIRMATION_SECTION: (
+            [] if confirmation is None else [confirmation_item(confirmation)]
+        ),
+    }
 
 
 def build_snapshot_plan(
@@ -232,12 +334,17 @@ def build_snapshot_plan(
     Returns:
         The plan whose ``through_cursor`` is the checkpoint's cursor.
     """
-    items = [response_group_item(group) for group in checkpoint.groups]
-    page_frames = _pack_pages(encode, snapshot_id, items)
+    pages_of_section = {
+        section: _pack_pages(encode, snapshot_id, section, items)
+        for section, items in _section_items(checkpoint).items()
+        if items
+    }
+    page_frames = [frame for pages in pages_of_section.values() for frame in pages]
     digest = hashlib.sha256()
     for frame in page_frames:
         digest.update(frame.encode("utf-8"))
     content_hash = digest.hexdigest()
+    section_order = [section for section in SECTION_ORDER if section in pages_of_section]
     begin_frame = encode(
         "snapshot.begin",
         f"{snapshot_id}:begin",
@@ -245,8 +352,8 @@ def build_snapshot_plan(
             "snapshot_id": snapshot_id,
             "through_cursor": checkpoint.through_cursor,
             "view_schema_version": view_schema_version,
-            "section_order": [RESPONSE_GROUPS_SECTION],
-            "counts": {RESPONSE_GROUPS_SECTION: len(page_frames)},
+            "section_order": section_order,
+            "counts": {section: len(pages_of_section[section]) for section in section_order},
         },
     )
     end_frame = encode(
@@ -269,11 +376,16 @@ def build_snapshot_plan(
 
 
 __all__ = [
+    "ACTIONS_SECTION",
+    "PENDING_CONFIRMATION_SECTION",
     "RESPONSE_GROUPS_SECTION",
+    "SECTION_ORDER",
     "SNAPSHOT_PAGE_MAX_BYTES",
     "FrameEncoder",
     "SnapshotPlan",
+    "action_item",
     "build_snapshot_plan",
+    "confirmation_item",
     "delta_payload",
     "response_group_item",
 ]

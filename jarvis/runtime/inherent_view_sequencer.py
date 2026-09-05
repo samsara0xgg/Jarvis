@@ -36,7 +36,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from jarvis.state.inherent_view import InherentView, InherentViewCheckpoint
 from jarvis.surface.inherent_presenter import delta_payload
@@ -58,19 +58,40 @@ CATCH_UP_BYTE_BUDGET: Final[int] = 1_048_576
 """D8 step 6: the same for the catch-up's total encoded UTF-8 bytes."""
 
 _SELECT_HIGH_WATER_SQL: Final[str] = "SELECT COALESCE(MAX(id), 0) FROM events"
-# The three Inherent-relevant types plus the D21 input row, bounded above so a
-# drain projects exactly the rows its captured H covers (D9 step 2).  Static
-# literal, no placeholders for the type list — same posture as the v1 watcher's
-# SELECT.  ``surface.user_intent`` is fed to the fold for its
-# ``turn_id -> source_client_request_id`` map only: the fold returns None for
-# it, so it produces no frame and the wire is unchanged.
+# Every type the fold reads (`FOLD_EVENT_TYPES`, pinned against this list by
+# the sequencer acceptance), bounded above so a drain projects exactly the rows
+# its captured H covers (D9 step 2).  Static literal, no placeholders for the
+# type list — same posture as the v1 watcher's SELECT.  Several of these types
+# feed the fold without producing a frame: `surface.user_intent` carries the
+# D21 correlation, `gate.evaluated` the cancel request's verdict, and the
+# cleanup trio an action's cleanup state.  `source_event_id` and
+# `correlation_json` ride along because the fold is fed by this query and sees
+# nothing else: the cancel join reads the verdict's source row, the
+# confirmation join its `action_id` / `turn_id`.
 _SELECT_RESPONSE_ROWS_SQL: Final[str] = (
-    "SELECT id, event_uid, type, ts_epoch_ms, payload_json FROM events "
-    "WHERE id > ? AND id <= ? AND type IN ("
+    "SELECT id, event_uid, type, ts_epoch_ms, payload_json, source_event_id, correlation_json "
+    "FROM events WHERE id > ? AND id <= ? AND type IN ("
     "'surface.response_open', 'surface.response_chunk', 'surface.response_emitted', "
-    "'surface.user_intent'"
+    "'response.started', 'response.completed', 'response.cancelled', 'response.failed', "
+    "'action.proposed', 'action.authorized', 'action.dispatched', 'action.running', "
+    "'action.result_observed', 'action.timeout_assumed', 'action.failed', 'action.cancelled', "
+    "'worker.quiesced', 'action.cleanup_completed', 'action.cleanup_failed', "
+    "'confirmation.requested', 'confirmation.accepted', 'confirmation.rejected', "
+    "'surface.user_intent', 'gate.evaluated'"
     ") ORDER BY id ASC"
 )
+
+
+class ViewRow(NamedTuple):
+    """One Event Log row as the fold takes it."""
+
+    cursor: int
+    event_uid: str
+    event_type: str
+    ts_epoch_ms: int
+    payload: dict[str, Any]
+    source_event_id: str | None
+    correlation: dict[str, Any] | None
 
 
 @dataclass
@@ -174,15 +195,15 @@ class InherentViewSequencer:
                 if not self._wake.is_set():
                     return projected
                 continue
-            for cursor, event_uid, event_type, ts_epoch_ms, payload in self._rows(
-                self._scan_cursor, high,
-            ):
+            for row in self._rows(self._scan_cursor, high):
                 transition = self._view.fold(
-                    cursor=cursor,
-                    event_uid=event_uid,
-                    event_type=event_type,
-                    ts_epoch_ms=ts_epoch_ms,
-                    payload=payload,
+                    cursor=row.cursor,
+                    event_uid=row.event_uid,
+                    event_type=row.event_type,
+                    ts_epoch_ms=row.ts_epoch_ms,
+                    payload=row.payload,
+                    source_event_id=row.source_event_id,
+                    correlation=row.correlation,
                 )
                 if transition is None:
                     continue
@@ -190,11 +211,13 @@ class InherentViewSequencer:
                 frame_payload = delta_payload(transition)
                 # A copy: a lane that hits backpressure detaches itself mid-loop.
                 for lane in list(self._lanes.values()):
-                    if lane.live_frontier is None or cursor <= lane.live_frontier:
+                    if lane.live_frontier is None or row.cursor <= lane.live_frontier:
                         continue
                     try:
-                        frame = self._durable_frame(lane, cursor, event_uid, frame_payload)
-                        lane.enqueue(frame, cursor)
+                        frame = self._durable_frame(
+                            lane, row.cursor, row.event_uid, frame_payload,
+                        )
+                        lane.enqueue(frame, row.cursor)
                     except Exception:  # One lane's fault never stops the producer.
                         LOGGER.exception("inherent v2 fan-out to %s raised", lane.connection_id)
                         self.detach(lane)
@@ -237,19 +260,21 @@ class InherentViewSequencer:
         replay = InherentView.from_checkpoint(staging.checkpoint)
         frames: list[tuple[str, int]] = []
         total_bytes = 0
-        for cursor, event_uid, event_type, ts_epoch_ms, payload in self._rows(
-            staging.through_cursor, high,
-        ):
+        for row in self._rows(staging.through_cursor, high):
             transition = replay.fold(
-                cursor=cursor,
-                event_uid=event_uid,
-                event_type=event_type,
-                ts_epoch_ms=ts_epoch_ms,
-                payload=payload,
+                cursor=row.cursor,
+                event_uid=row.event_uid,
+                event_type=row.event_type,
+                ts_epoch_ms=row.ts_epoch_ms,
+                payload=row.payload,
+                source_event_id=row.source_event_id,
+                correlation=row.correlation,
             )
             if transition is None:
                 continue
-            frame = self._durable_frame(lane, cursor, event_uid, delta_payload(transition))
+            frame = self._durable_frame(
+                lane, row.cursor, row.event_uid, delta_payload(transition),
+            )
             total_bytes += len(frame.encode("utf-8"))
             if len(frames) >= CATCH_UP_FRAME_BUDGET or total_bytes > CATCH_UP_BYTE_BUDGET:
                 msg = (
@@ -258,7 +283,7 @@ class InherentViewSequencer:
                     f"between cursors {staging.through_cursor} and {high}"
                 )
                 raise CatchUpBudgetExceededError(msg)
-            frames.append((frame, cursor))
+            frames.append((frame, row.cursor))
         for frame, cursor in frames:
             lane.enqueue(frame, cursor)
         lane.live_frontier = high
@@ -323,13 +348,19 @@ class InherentViewSequencer:
         row = self._conn.execute(_SELECT_HIGH_WATER_SQL).fetchone()
         return 0 if row is None else int(row[0])
 
-    def _rows(
-        self, after_id: int, through_id: int,
-    ) -> list[tuple[int, str, str, int, dict[str, Any]]]:
+    def _rows(self, after_id: int, through_id: int) -> list[ViewRow]:
         cursor = self._conn.execute(_SELECT_RESPONSE_ROWS_SQL, (after_id, through_id))
         return [
-            (int(id_), str(event_uid), str(type_), int(ts_epoch_ms), json.loads(payload_json))
-            for id_, event_uid, type_, ts_epoch_ms, payload_json in cursor
+            ViewRow(
+                cursor=int(id_),
+                event_uid=str(event_uid),
+                event_type=str(type_),
+                ts_epoch_ms=int(ts_epoch_ms),
+                payload=json.loads(payload_json),
+                source_event_id=None if source is None else str(source),
+                correlation=None if correlation_json is None else json.loads(correlation_json),
+            )
+            for id_, event_uid, type_, ts_epoch_ms, payload_json, source, correlation_json in cursor
         ]
 
     def _durable_frame(
@@ -361,4 +392,5 @@ __all__ = [
     "ClientLane",
     "InherentViewSequencer",
     "SnapshotStaging",
+    "ViewRow",
 ]
