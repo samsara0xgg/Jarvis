@@ -178,13 +178,14 @@ _TTS_SILENT_CHANNELS: frozenset[str] = frozenset({"queue_review", "silent_log"})
 # - ``silent_log`` maps to ``()`` in ``ATTENTION_CHANNEL_TO_SURFACES``:
 #   no physical surface at all. Dropping its envelopes is exactly what
 #   aligns the wire with the routing table.
-# - ``queue_review`` maps to ``("cli_stdout",)`` — it is a TEXT channel,
-#   and it is ``attention_policy``'s DEFAULT verdict for an ordinary
-#   user utterance (jarvis/decision/gates.py: the final ``return``).
-#   The daemon passes ``available_surfaces=frozenset()``, so this WS is
-#   the substitute for that ``cli_stdout``. Suppressing it would blank
-#   the Inherent text surface for nearly every turn and hang ADR-0009
-#   D2's forwarding CLI until its 120s timeout (exit 4).
+# - ``queue_review`` maps to ``("cli_stdout",)`` — it is a TEXT channel:
+#   the verdict for reconciliation terminals and needs-review worker
+#   reports (jarvis/decision/gates.py ``attention_policy``; an ordinary
+#   user utterance defaults to ``voice_notify``). The daemon passes
+#   ``available_surfaces=frozenset()``, so this WS is the substitute for
+#   that ``cli_stdout``. Suppressing it would blank the Inherent text
+#   surface for those turns and hang ADR-0009 D2's forwarding CLI until
+#   its 120s timeout (exit 4).
 #
 # "Silent" in D4 means no audio, not no text: the queue_review turn
 # still lands on the card so Allen can read it when he comes back —

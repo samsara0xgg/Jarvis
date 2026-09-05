@@ -837,6 +837,14 @@ check (`jarvis.decision.__init__`). Other 5 channels map to
 silent_log."""
 
 
+# Terminal triggers that re-enter L3 through ``_handle_action_terminal_failure``
+# (runtime waiter + ADR-0009 D4 supervisor sweep). Their Limitation queues for
+# review instead of speaking to an empty room (spec §3.2.5 安静优先).
+_RECONCILIATION_TRIGGER_TYPES: frozenset[str] = frozenset(
+    {"action.timeout_assumed", "action.failed", "action.cancelled"}
+)
+
+
 def attention_policy(  # noqa: C901 — small branch tree but ruff counts each ``if`` separately.
     packet: SituationPacket,
     claim_evidence: ClaimEvidenceProjection,
@@ -862,12 +870,17 @@ def attention_policy(  # noqa: C901 — small branch tree but ruff counts each `
     - If trigger is ``worker.reported`` and no verified evidence
       yet -> ``"silent_log"`` (Allen said "审核了再告诉我";
       reporting an unverified status would violate the spirit).
-    - Default -> ``"queue_review"``. This deliberately covers the
-      ``action.timeout_assumed`` / ``action.failed`` Limitation
-      paths (B-0005 pinned): after a worker timeout Allen has
-      typically walked away, so the limitation queues for review;
-      badge escalation is deferred until the Inherent cockpit
-      exists.
+    - If trigger is a reconciliation terminal
+      (``action.timeout_assumed`` / ``action.failed`` /
+      ``action.cancelled``) -> ``"queue_review"`` (B-0005 pinned):
+      after a worker timeout Allen has typically walked away, so the
+      limitation queues for review; badge escalation is deferred
+      until the Inherent cockpit exists. Keyed on the trigger, not on
+      ``limitation_emitted`` — a terminal without ``action_id`` emits
+      no claim, and a 3am system turn must never speak.
+    - Default -> ``"voice_notify"``: everything left is a direct
+      answer to the user's own utterance, and Jarvis is a voice
+      assistant (docs/goals/speak-ordinary-answers.md).
 
     Args:
         packet: Current SituationPacket (trigger + open tasks +
@@ -929,7 +942,7 @@ def attention_policy(  # noqa: C901 — small branch tree but ruff counts each `
         # Placement below both voice branches makes this a promotion
         # only — never a voice demotion.
         return "queue_review" if needs_human_review else "silent_log"
-    return "queue_review"
+    return "queue_review" if trigger_type in _RECONCILIATION_TRIGGER_TYPES else "voice_notify"
 
 
 __all__ = [
