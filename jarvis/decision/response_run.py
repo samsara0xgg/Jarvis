@@ -613,6 +613,7 @@ def start_response_run(  # noqa: PLR0913 — the ADR-0008 §4.2 response.started
     channel: ResponseChannel = "both",
     committed_event_bus: CommittedEventBus | None = None,
     corrects_response_id: str | None = None,
+    route: str | None = None,
 ) -> ResponseRun:
     """Open one durable ResponseRun and return it already generating.
 
@@ -642,6 +643,8 @@ def start_response_run(  # noqa: PLR0913 — the ADR-0008 §4.2 response.started
     }
     if corrects_response_id is not None:
         payload["corrects_response_id"] = corrects_response_id
+    if route is not None:
+        payload["route"] = route
     started = append_response_started(
         conn,
         payload=payload,
