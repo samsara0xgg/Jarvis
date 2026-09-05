@@ -1,11 +1,17 @@
-"""Single L2 owner for playback, response, and action terminal CAS writes."""
+"""Single L2 owner for playback, response, action and confirmation terminal CAS writes."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Final, Literal
 
-from jarvis.shared.realtime import AlreadyTerminal, TerminalCommitted, TerminalOutcome
+from jarvis.shared.realtime import (
+    AlreadyTerminal,
+    LifecycleOwner,
+    StaleConfirmation,
+    TerminalCommitted,
+    TerminalOutcome,
+)
 from jarvis.state.event_log import append_event_in_transaction, get_event
 
 if TYPE_CHECKING:
@@ -41,6 +47,13 @@ _ACTION_TERMINALS: Final[frozenset[str]] = frozenset(
         "action.cancelled",
     },
 )
+_CONFIRMATION_TERMINALS: Final[frozenset[str]] = frozenset(
+    {
+        "confirmation.accepted",
+        "confirmation.rejected",
+        "confirmation.expired",
+    },
+)
 
 
 class LifecycleTerminalError(RuntimeError):
@@ -63,7 +76,7 @@ def _inject(injector: FailureInjector | None, stage: FailureStage) -> None:
 def _existing_terminal(
     conn: sqlite3.Connection,
     *,
-    owner: Literal["playback", "response", "action"],
+    owner: LifecycleOwner,
     payload: Mapping[str, object],
 ) -> Event | None:
     """Return the first canonical terminal for one lifecycle identity."""
@@ -93,7 +106,7 @@ def _existing_terminal(
                 payload["response_id"],
             ),
         ).fetchone()
-    else:
+    elif owner == "action":
         row = conn.execute(
             "SELECT event_uid FROM events WHERE type IN (?, ?, ?, ?) "
             "AND json_extract(payload_json, '$.action_id') = ? "
@@ -106,6 +119,18 @@ def _existing_terminal(
                 payload["action_id"],
             ),
         ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT event_uid FROM events WHERE type IN (?, ?, ?) "
+            "AND json_extract(payload_json, '$.confirmation_id') = ? "
+            "ORDER BY id ASC LIMIT 1",
+            (
+                "confirmation.accepted",
+                "confirmation.rejected",
+                "confirmation.expired",
+                payload["confirmation_id"],
+            ),
+        ).fetchone()
     if row is None:
         return None
     event = get_event(conn, str(row[0]))
@@ -115,10 +140,10 @@ def _existing_terminal(
     return event
 
 
-def _terminalize(  # noqa: PLR0913 - mirrors the canonical Event append shape
+def _terminalize[Precondition](  # noqa: PLR0913 - mirrors the canonical Event append shape
     conn: sqlite3.Connection,
     *,
-    owner: Literal["playback", "response", "action"],
+    owner: LifecycleOwner,
     identity: str,
     terminal_types: frozenset[str],
     event_type: str,
@@ -127,7 +152,18 @@ def _terminalize(  # noqa: PLR0913 - mirrors the canonical Event append shape
     correlation: Mapping[str, str] | None,
     committed_event_bus: CommittedEventBus | None = None,
     failure_injector: FailureInjector | None = None,
-) -> TerminalOutcome:
+    precondition: Callable[[sqlite3.Connection], Precondition | None] | None = None,
+) -> TerminalOutcome | Precondition:
+    """Append at most one canonical terminal for one lifecycle identity.
+
+    ``precondition`` is ADR-0014 D14's expected-revision check, and the
+    three pre-D14 siblings do not pass it: it runs INSIDE this function's
+    ``BEGIN IMMEDIATE``, after the existing-terminal CAS, and whatever
+    non-None value it returns is returned verbatim in place of a terminal
+    while nothing is appended. Omitted, the type variable is unsolved and
+    the return type collapses to :data:`TerminalOutcome`, so the three
+    existing siblings keep their exact signature and behavior.
+    """
     if event_type not in terminal_types:
         msg = f"{event_type!r} is not a {owner} terminal"
         raise InvalidTerminalEventError(msg)
@@ -146,6 +182,11 @@ def _terminalize(  # noqa: PLR0913 - mirrors the canonical Event append shape
         if existing is not None:
             conn.commit()
             return AlreadyTerminal(owner=owner, identity=identity, event=existing)
+        if precondition is not None:
+            refusal = precondition(conn)
+            if refusal is not None:
+                conn.commit()
+                return refusal
         _inject(failure_injector, "after_terminal_check")
         event = append_event_in_transaction(
             conn,
@@ -262,6 +303,66 @@ def terminalize_action(  # noqa: PLR0913 - explicit Event fields are intentional
     )
 
 
+def _newest_requested_revision(conn: sqlite3.Connection) -> int | None:
+    """Return ``events.id`` of the newest ``confirmation.requested`` row."""
+    row = conn.execute(
+        "SELECT id FROM events WHERE type = 'confirmation.requested' "
+        "ORDER BY id DESC LIMIT 1",
+    ).fetchone()
+    return None if row is None else int(row[0])
+
+
+def terminalize_confirmation(  # noqa: PLR0913 - explicit Event fields are intentional
+    conn: sqlite3.Connection,
+    *,
+    event_type: str,
+    payload: Mapping[str, object],
+    expected_revision: int,
+    source_event_id: str | None = None,
+    correlation: Mapping[str, str] | None = None,
+    committed_event_bus: CommittedEventBus | None = None,
+    failure_injector: FailureInjector | None = None,
+) -> TerminalOutcome | StaleConfirmation:
+    """Atomically append one confirmation terminal per ``confirmation_id``.
+
+    ADR-0014 D14's terminalizer. Beyond its three siblings it evaluates one
+    precondition inside the same transaction: the newest
+    ``confirmation.requested`` row must still be the one the caller folded.
+    That is :func:`jarvis.state.projections._fold_pending_confirmations`'s
+    single-slot rule — a new ``requested`` unconditionally replaces the slot
+    — checked at CAS time, so a sweep whose fold has been overtaken by a
+    fresh ask appends nothing and reports :class:`StaleConfirmation`.
+    """
+    confirmation_id = payload.get("confirmation_id")
+    if not isinstance(confirmation_id, str) or not confirmation_id:
+        msg = "confirmation terminal requires non-empty confirmation_id"
+        raise LifecycleTerminalError(msg)
+
+    def _still_newest(open_conn: sqlite3.Connection) -> StaleConfirmation | None:
+        actual = _newest_requested_revision(open_conn)
+        if actual == expected_revision:
+            return None
+        return StaleConfirmation(
+            confirmation_id=confirmation_id,
+            expected_revision=expected_revision,
+            actual_revision=actual,
+        )
+
+    return _terminalize(
+        conn,
+        owner="confirmation",
+        identity=confirmation_id,
+        terminal_types=_CONFIRMATION_TERMINALS,
+        event_type=event_type,
+        payload=payload,
+        source_event_id=source_event_id,
+        correlation=correlation,
+        committed_event_bus=committed_event_bus,
+        failure_injector=failure_injector,
+        precondition=_still_newest,
+    )
+
+
 __all__ = [
     "FailureInjector",
     "FailureStage",
@@ -269,6 +370,7 @@ __all__ = [
     "LifecycleTerminalError",
     "LifecycleTransactionStateError",
     "terminalize_action",
+    "terminalize_confirmation",
     "terminalize_playback",
     "terminalize_response",
 ]

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Final, Literal
 if TYPE_CHECKING:
     from jarvis.shared import Event
 
-LifecycleOwner = Literal["playback", "response", "action"]
+LifecycleOwner = Literal["playback", "response", "action", "confirmation"]
 LLMRequestOutcome = Literal["completed", "cancelled", "error"]
 LLMUsageStatus = Literal["provider_final", "partial", "unavailable"]
 ResponseCancelScope = Literal["foreground_output", "generation"]
@@ -363,6 +363,29 @@ class AlreadyTerminal:
     event: Event
 
 
+@dataclass(frozen=True)
+class StaleConfirmation:
+    """The confirmation slot the caller folded is no longer the newest ask.
+
+    Deliberately outside :data:`TerminalOutcome`: only the confirmation
+    terminalizer can produce it, and widening the shared union would force
+    every L3/L4 consumer of a playback, response or action terminal to
+    handle a case it can never receive.
+
+    Attributes:
+        confirmation_id: The ask the caller meant to terminalize.
+        expected_revision: ``events.id`` of the ``confirmation.requested``
+            row the caller folded.
+        actual_revision: ``events.id`` of the newest ``confirmation.requested``
+            row seen inside the CAS transaction, or None when the log holds
+            no such row at all.
+    """
+
+    confirmation_id: str
+    expected_revision: int
+    actual_revision: int | None
+
+
 TerminalOutcome = TerminalCommitted | AlreadyTerminal
 
 
@@ -482,6 +505,7 @@ __all__ = [
     "ResponseCancelScope",
     "ResponseInterruptPolicy",
     "StableAuthorizationIdentity",
+    "StaleConfirmation",
     "TerminalCommitted",
     "TerminalOutcome",
     "Wave1FeatureFlags",

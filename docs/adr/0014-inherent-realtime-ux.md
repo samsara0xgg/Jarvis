@@ -1053,12 +1053,20 @@ mirrors `PendingConfirmations`' rules row for row rather than exporting that
 whole-log projection: its `args_meta`, staged content artifact and accepted
 event uid must not reach Swift.
 
-Not built yet: the `confirmation.expired` event, `ConfirmationTerminalizer`,
-the runtime expiry timer and boot reconciliation belong to the
-`confirmation-expiry-terminalizer` card. Until they land, the Inherent fold
-clears an expired slot lazily — the first row it folds at or past
-`expires_at_ms` produces `confirmation.cleared(reason="expired")` — so an idle
-panel with no further committed row keeps showing an expired ask.
+Built, for the **expiry leg only**: `confirmation.expired` is registered in
+`jarvis/state/event_log.py`, the terminalizer is `terminalize_confirmation` in
+`jarvis/state/lifecycle_terminal.py` (a fourth sibling over the existing
+`_terminalize`, not a class), and the expiry timer and boot reconciler are
+`_run_confirmation_expiry_sweep` and `_reconcile_confirmation_expiry_in_thread`
+in `jarvis/runtime/inherent_loop.py`, behind
+`realtime.confirmation.durable_expiry.enabled` (default false). The lazy
+fold-time clear above remains, and is still the only one with the flag off.
+
+The "sole exit" rule above is therefore not yet fully realized: the accept and
+reject legs still append through `emit_event` on the ADR-0012 answer path and
+do not pass the terminalizer's CAS, so "at most one terminal row per
+`confirmation_id`" holds among terminalizer callers rather than universally.
+Routing them through it is a later card.
 
 ### D15. Keep response generation, panel delivery, and playback separate
 

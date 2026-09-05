@@ -370,4 +370,139 @@ These are the only two doc edits this card expects.
 Implement docs/goals/confirmation-expiry-terminalizer.md on the current branch. Read it fully first. If `action-and-confirmation-projections` is not already merged into this branch, stop and report. The goal is met when the transcript shows: (1) a diff adding a `confirmation.expired` registry entry (owner_layer L3, actor jarvis_runtime, payload exactly confirmation_id and expired_at_ms), a fourth `terminalize_confirmation` sibling in jarvis/state/lifecycle_terminal.py returning TerminalCommitted, AlreadyTerminal or a new StaleConfirmation, one `confirmation.expired` branch in `_fold_pending_confirmations`, and a plain sweep function plus its asyncio task and a third boot reconciler in jarvis/runtime/inherent_loop.py behind `realtime.confirmation.durable_expiry.enabled` (default false) — changing no file under desktop/inherent-swift/ and not editing `PendingConfirmationSlot.is_live` or its four readers; (2) raw pytest output ending in a pass line covering: one `confirmation.expired` row carrying only confirmation_id and expired_at_ms, its source_event_id the `confirmation.requested` event_uid; the AlreadyTerminal race, where the terminalizer runs after an accept and the printed count of accepted/rejected/expired rows for that confirmation_id is 1; the Stale race, where a newer `confirmation.requested` makes the call return StaleConfirmation and append nothing; the fold moving the slot to `expired` with `is_live` false while a non-matching id changes nothing; the sweep body called directly with an injected now_ms, no sleep and no task, writing one row and none on a second call; and boot idempotency, two reconciler runs against the same expired confirmation each printing exactly one terminal row; (3) the flag-off byte-identity proof: the same scenario driven against a `git archive` export of the pre-change commit and against this worktree with the flag absent, both event logs dumped as id, type, payload_json, source_event_id ordered by id, `diff` printed empty, and no expiry task or third reconciler line in the flag-off run; (4) the pre-change branch baseline count recorded before any edit, then raw output of `PYTHONPATH=. .venv/bin/python -m pytest -q -m "not live_llm and not live_codex"` showing that recorded baseline plus this card's new tests, zero failures; (5) raw output of `bash scripts/test_inherent_swift.sh` showing 174 passed, 0 failures, and `git diff --stat -- desktop/` empty; (6) raw output of `PYTHONPATH=. .venv/bin/lint-imports`, `PYTHONPATH=. .venv/bin/ruff check .` and `PYTHONPATH=. .venv/bin/mypy --strict jarvis tests scripts tools`, each exiting 0 with printed counts; (7) a live run — daemon from this worktree, own runtime root, port other than 8006, flag on, `confirmation.ttl_ms: 15000`, `confirmation.expiry_sweep_interval_s: 5`, one `write_file` question then no further input — quoting the `confirmation.requested` row's events.id, event_uid, confirmation_id, expires_at_ms, then the `confirmation.expired` row that appeared unprompted with a strictly greater events.id, byte-equal confirmation_id, expired_at_ms at or past expires_at_ms, source_event_id equal to that event_uid, actor jarvis_runtime, a printed terminal-row count of 1, a restart against the same runtime root leaving it 1, plus statements that no input was sent between the two rows and the system default output device was never switched; (8) both doc edits made — the ADR-0012 §10 erratum sentence and the replaced ADR-0014 D14 "not yet built" sentence — with docs/spec.html judged unchanged, following the rule: update the canonical document that owns a changed contract, invariant, ownership boundary or externally relevant behavior; do not document what the code makes clear; do not duplicate a fact across documents; (9) each slice committed with the project commit skill and `git status` clean; (10) one Progress line per slice. If the card contradicts the repository, stop and report instead of redesigning. Or stop after 70 turns.
 
 ## Progress
-- (empty)
+- launch re-pins — merge of `realtime-integration` into `lane/c` was a
+  fast-forward to `8b63a05`; branch baseline recorded there before any edit:
+  `1041 passed / 64 deselected` in 49.02s. **R11 RESOLVED in favour**:
+  `ConfirmationCleared` carries `reason: ConfirmationClearReason`
+  (`jarvis/state/inherent_view.py:332`) and the presenter serializes it
+  (`jarvis/surface/inherent_presenter.py:150`); `ConfirmationClearReason`
+  already lists `expired` (`:137`). No STOP branch taken. **R12 RESOLVED in
+  favour**: C6 left `_fold_pending_confirmations` unchanged — single-slot
+  replace at `projections.py:1549-1550`, id-matching accepted/rejected at
+  `:1551-1564` — so the new branch is purely additive.
+- slice 1 the L2 primitive — b1772eb — `StaleConfirmation` +
+  `LifecycleOwner` widened (shared/realtime.py, `TerminalOutcome` union
+  unchanged); `confirmation.expired` registered L3 / `jarvis_runtime` /
+  `(confirmation_id, expired_at_ms)`; `_CONFIRMATION_TERMINALS`, a
+  confirmation branch in `_existing_terminal`, and `terminalize_confirmation`
+  as a fourth sibling. `_terminalize` gained one optional keyword-only
+  `precondition` hook evaluated inside its `BEGIN IMMEDIATE`; unpassed, the
+  PEP-695 type parameter is unsolved and the three existing siblings' return
+  type collapses to `TerminalOutcome`, so their signature and behavior are
+  identical. 4/4 new checks, lint-imports KEPT (1/1), ruff clean, mypy strict
+  241 files.
+- slice 2 the two folds — 737d142 — `PendingConfirmationState` gains
+  `"expired"` and `_fold_pending_confirmations` one branch under the same
+  id-matching rule; `confirmation.expired` joined `CONFIRMATION_EVENT_TYPES`
+  and a new `_CLEAR_REASON_OF_TYPE` table, so a folded row yields one
+  `confirmation.cleared(reason="expired")` at its own cursor. The sequencer's
+  acceptance pin
+  (`test_inherent_action_view.py::test_the_row_query_selects_exactly_the_types_the_fold_reads`)
+  caught a real gap: `_SELECT_RESPONSE_ROWS_SQL` is a static list and never
+  selected the new type, so a v2 panel would have kept showing the expired
+  ask. Fixed in `jarvis/runtime/inherent_view_sequencer.py`. 7/7 new checks.
+- slice 3 the runtime — 25b56eb — `realtime.confirmation.durable_expiry.enabled`
+  (default false, requires `realtime.enabled`, downgrades once with one
+  warning) and `confirmation.expiry_sweep_interval_s: 30` under the existing
+  top-level `confirmation:` block, clamped to a 5s floor with one warning;
+  `_run_confirmation_expiry_sweep` as a plain function taking `now_ms`,
+  `_reconcile_confirmation_expiry_in_thread` as the `asyncio.to_thread` +
+  `open_event_log` offload both the periodic task and the boot reconciler go
+  through, `_confirmation_expiry_sweep_task` joined to `watchers` so the
+  existing teardown cancels it, and a third boot reconciler after the two
+  existing ones. All four config paths verified live (off / on / parent-off
+  downgrade / interval clamp). 10/10 new checks.
+- slice 4 docs — 2b60522 — ADR-0014 D14's "Not built yet" sentence replaced
+  by one naming where each piece landed and its flag; ADR-0012 §10.8 erratum
+  recording that D14 supersedes D4's "no expiry event, no timer" clause for a
+  live confirmation, with the D4 bullet unedited. `docs/spec.html` judged
+  explicitly unchanged: D14 already owns this rule.
+- flag-off byte-identity (R9) — the same seeded confirmation scenario driven
+  against a `git archive 8b63a05` export (root-pre, port 8041) and against
+  this worktree (root-post, port 8042), both with an overlay whose
+  `realtime.confirmation` key is deleted outright — absent, not false — and a
+  20s wait (4 sweep intervals). Both logs dumped as
+  `SELECT id, type, payload_json, source_event_id, correlation_json ... ORDER BY id`;
+  `diff` printed empty. The flag-off watcher list is user_intent_watcher,
+  response_watcher, tts_watcher, system_trigger_watcher, supervisor_sweep —
+  no `confirmation_expiry_sweep` — and the boot log has no third reconciler
+  line (`grep -c` for the sweep = 0).
+- live run — daemon from this worktree, runtime root
+  `$CLAUDE_JOB_DIR/tmp/root-live`, port 8043, overlay `realtime.enabled: true`
+  + `durable_expiry.enabled: true` + `confirmation.ttl_ms: 15000` +
+  `expiry_sweep_interval_s: 5`; log line
+  `confirmation_expiry_sweep started (interval=5.0s)`. Two earlier phrasings
+  routed around the machine ask (ADR-0012 §10.6 N: the first took `open_path`,
+  the second proposed `write_file` but the pre_action gate refused on
+  `entity_trusted: entity_required` because the target did not resolve); the
+  third, against an existing `~/Desktop/jarvis-lane-c.md` (created for the run
+  and deleted after), reached `confirm_required`. Chain:
+  `confirmation.requested` id 75, `event_uid` 4b567d4fb9164f06a02d313a8f8ec95f,
+  `confirmation_id` C3928a77e, `expires_at_ms` 1788649480696 →
+  `confirmation.expired` id 83 (strictly greater), payload exactly
+  `{"confirmation_id":"C3928a77e","expired_at_ms":1788649483986}` (at/past the
+  deadline), `source_event_id` column 4b567d4fb9164f06a02d313a8f8ec95f
+  (byte-equal to the requested uid), `actor` `jarvis_runtime`; terminal-row
+  count for C3928a77e = 1; sweep log line
+  `confirmation expiry sweep expired C3928a77e (deadline 1788649480696, observed 1788649483986)`.
+  No input of any kind was sent between rows 75 and 83 — rows 77-82 are the
+  tail of the already-submitted turn. Restart against the SAME runtime root:
+  count still 1, `MAX(events.id)` still 83, so the boot reconciler appended
+  nothing. The run needed no audio: the SYSTEM DEFAULT OUTPUT DEVICE was never
+  switched (`SwitchAudioSource -c -t output` read "MacBook Pro Speakers" before
+  and after, read-only) and `JARVIS_VOICE_DISABLE_WAKE=1` kept the wake
+  listener shut. The other worktree's daemon on 8006 was left running.
+- final gates — lint-imports KEPT (1/1, 97 files / 303 dependencies) exit 0 ·
+  ruff `All checks passed!` exit 0 · mypy strict 241 files exit 0 · full
+  hermetic `1051 passed / 64 deselected` in 50.28s = the 1041 branch baseline
+  plus this card's 10 new tests, zero failures · Swift
+  `Executed 174 tests, with 0 failures` and `git diff --stat -- desktop/`
+  empty (R10) · R6 pin held: `git diff 8b63a05..HEAD` touches neither
+  `is_live`'s body nor any of its four readers.
+- verifier pass (fresh context, opus, range `8b63a05..HEAD`) — confirmed the
+  R6/R10 pins, the CAS-plus-precondition single-transaction structure, the
+  three existing siblings' unchanged behavior, thread/connection safety, the
+  teardown path, flag-off inertness, and the live evidence; re-ran the gates
+  and the suite independently. Fixed what it confirmed:
+  - **d77b676** — the sweep's fold read `gate.evaluated` and so re-scanned the
+    log's highest-volume type and re-accumulated an unbounded
+    `consumed_lease_ids` set every tick, on a timer. Dropped: its only slot
+    effect is `accepted_unconsumed` -> `consumed`, both of which the sweep
+    skips. Also corrected the docstring's "opens no transaction at all".
+  - **49766ac** — the R11 case fed the row a timestamp BEFORE the deadline,
+    which no sweep can produce, so it never covered the production shape.
+    Added a case folding the committed row at its own timestamp (where the
+    lazy and durable paths can both fire, pinning exactly one clear), a case
+    driving the row through `InherentViewSequencer` end to end (verified to
+    fail 1-delta-not-2 with the row-query line reverted), and a completeness
+    pin on `_CLEAR_REASON_OF_TYPE`.
+  - **aa3d742** — the D14 built note read as if all of D14 had landed, beside
+    D14's standing "terminalizer is the sole accepted/rejected/expired exit"
+    rule. Scoped to the expiry leg, with one sentence recording that accept
+    and reject still append through `emit_event`, so "at most one terminal row
+    per `confirmation_id`" holds among terminalizer callers rather than
+    universally.
+  Not changed, with reasons: the accept/reject legs themselves — routing them
+  through the terminalizer requires editing `jarvis/decision/`, which this
+  card's Boundaries forbid, so it is recorded in D14 and reported as a
+  follow-up. `is_live`'s docstring, which now enumerates the non-pending
+  states without `"expired"` — the /goal condition pins "not editing
+  `PendingConfirmationSlot.is_live`", its leading rule ("any state other than
+  `pending` returns False") is still exactly right, and its "§3 D4's state
+  enum has no `expired` member" remains true of D4 itself
+  (`docs/adr/0012-confirmation-flow.md:94`); the reconciliation is recorded at
+  `PendingConfirmationState`'s own docstring instead.
+- post-verifier gates — lint-imports KEPT (1/1) exit 0 · ruff
+  `All checks passed!` exit 0 · mypy strict 241 files exit 0 · full hermetic
+  `1054 passed / 64 deselected` in 51.37s = the 1041 branch baseline plus this
+  card's 13 tests, zero failures.
+- follow-up for the owner (pre-existing, not this card's) —
+  `sweep_overdue_actions` calls `terminalize_action`
+  (`jarvis/deployment/sleep_wake.py:843`), which runs `BEGIN IMMEDIATE` on
+  `runtime.conn` from the event-loop thread, contradicting
+  `_run_supervisor_sweep`'s docstring claim that it is "a bounded typed fold
+  over the log, not a blocking call". The card anticipated this and said to
+  report rather than copy it; the expiry sweep uses `asyncio.to_thread`.
+- NOTE for the hub — `realtime-integration` advanced after this lane's merge
+  (lanes A and B landed), so `realtime-integration..HEAD` no longer isolates
+  lane C's diff; the range for this card's work is `8b63a05..HEAD`.

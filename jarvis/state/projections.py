@@ -1386,8 +1386,18 @@ PendingConfirmationState = Literal[
     "consumed",
     "rejected",
     "superseded",
+    "expired",
 ]
-"""Single-slot lifecycle state (ADR-0012 §3 D4).
+"""Single-slot lifecycle state (ADR-0012 §3 D4, plus ADR-0014 D14).
+
+`"expired"` is the one member D4's enum does not name: ADR-0014 D14
+supersedes D4's "no expiry event, no timer" clause for a live
+confirmation, and this fold moves the slot there when it folds the
+durable `confirmation.expired` terminal that D14's terminalizer
+appends. Read-time expiry is untouched and remains the truth in the
+window between the deadline and the sweep tick that commits the row
+(:meth:`PendingConfirmationSlot.is_live`, whose `state == "pending"`
+test already returns False for this member without being edited).
 
 Day-1's single-slot fold (:func:`_fold_pending_confirmations`) never
 returns a slot whose CURRENT state is `"superseded"` — a new
@@ -1509,7 +1519,7 @@ def _pending_slot_from_requested(event: Event) -> PendingConfirmationSlot | None
     )
 
 
-def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations:
+def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations:  # noqa: C901 - a flat one-branch-per-event-type dispatch; merging the three id-matching terminals to satisfy the counter would hide that each has its own rule
     """Single-pass fold producing the PendingConfirmations projection.
 
     Fold rules (ADR-0012 §3 D4, decisions pinned 2026-08-26):
@@ -1531,6 +1541,12 @@ def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations
       mints a lease on rejection, so no lease could ever carry a uid
       pointing at a `confirmation.rejected` event — there is no
       consumer for that join key.
+    - `confirmation.expired` moves the slot to `expired` under exactly
+      the accepted/rejected id-matching rule above: a durable expiry
+      naming a superseded ask's id does not match the (already
+      replaced) current slot and is ignored. It carries no analogous
+      uid field — no lease is ever minted from an expiry (ADR-0014
+      D14), so there is no join key to stamp.
     - `gate.evaluated` with `outcome == "pass"` and a string `lease_id`
       payload key adds that id to `consumed_lease_ids` unconditionally
       (every passing leased gate evaluation is a real consumption, not
@@ -1562,6 +1578,12 @@ def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations
                 and str(evt.payload["confirmation_id"]) == slot.confirmation_id
             ):
                 slot = replace(slot, state="rejected")
+        elif evt.type == "confirmation.expired":
+            if (
+                slot is not None
+                and str(evt.payload["confirmation_id"]) == slot.confirmation_id
+            ):
+                slot = replace(slot, state="expired")
         elif evt.type == "gate.evaluated" and evt.payload.get("outcome") == "pass":
             lease_id = evt.payload.get("lease_id")
             if isinstance(lease_id, str) and lease_id:

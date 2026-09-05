@@ -367,3 +367,10 @@ now-redundant instruction (the machine asks, so the LLM need not), not accreting
   point back at the surface being dismissed, which a real emitter will likely need. Acceptable because
   `emit_event` accepts undeclared extra keys Day-1 (§5.4 strict-mode deferred), so the emitter can carry a
   target ref without a registry change.
+
+### 10.8 Superseded by ADR-0014
+
+**O (confirmation-expiry-terminalizer).** ADR-0014 D14 supersedes D4's "**Lazy TTL** … No expiry
+event, no timer" clause (§3 D4) for a confirmation that is live, adding the durable
+`confirmation.expired` terminal and the timer that appends it; fold-time judgement
+(`PendingConfirmationSlot.is_live`) stays the read-time truth and is unchanged.
