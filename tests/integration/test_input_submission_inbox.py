@@ -272,7 +272,7 @@ def test_a_crashed_run_that_committed_its_utterance_resolves_by_lookup(tmp_path:
     conn.close()
 
 
-def test_releasing_a_failed_lease_frees_the_request_id(tmp_path: Path) -> None:
+def test_releasing_a_failed_lease_lets_the_retry_resume_at_once(tmp_path: Path) -> None:
     """An empty or busy ASR run must not lock the request id out for the TTL."""
     conn = _log(tmp_path)
     first = claim_asr_request(conn, key=_KEY, audio_sha256="a" * 64, now_ms=1_000)
@@ -281,7 +281,7 @@ def test_releasing_a_failed_lease_frees_the_request_id(tmp_path: Path) -> None:
 
     retried = claim_asr_request(conn, key=_KEY, audio_sha256="a" * 64, now_ms=1_500)
     assert isinstance(retried, AsrProcessingLease)
-    assert retried.turn_id != first.turn_id
+    assert retried.turn_id == first.turn_id
     conn.close()
 
 

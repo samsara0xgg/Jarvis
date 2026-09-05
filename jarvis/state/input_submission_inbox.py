@@ -402,16 +402,21 @@ def resolve_asr_request(  # noqa: PLR0913 — one keyword per stored receipt col
 
 
 def release_asr_request(conn: sqlite3.Connection, *, key: SubmissionKey) -> None:
-    """Drop an unresolved lease so a failed upload can be retried immediately.
+    """Expire an unresolved lease so a failed upload can be retried at once.
 
-    Only a ``processing`` row is removed: an accepted receipt is durable
-    truth and a later identical retry must still replay it.
+    A run that raised — empty recognition, a busy input lock — committed no
+    ``utterance.received``, so holding its lease for the full TTL would answer
+    an immediate honest retry with 503 for no reason.  The lease is expired
+    rather than removed: D21 lets an identical re-upload *resume* the same
+    request, and keeping the row is what preserves that ``turn_id``.  An
+    accepted receipt is durable truth and is never touched.
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute(
-            "DELETE FROM input_submission_receipts WHERE authenticated_principal = ? "
-            "AND client_instance_id = ? AND request_id = ? AND state = 'processing'",
+            "UPDATE input_submission_receipts SET state = 'released' "
+            "WHERE authenticated_principal = ? AND client_instance_id = ? "
+            "AND request_id = ? AND state = 'processing'",
             (key.authenticated_principal, key.client_instance_id, key.request_id),
         )
         conn.commit()
@@ -520,7 +525,14 @@ def _resolve_processing_lease(
     now_ms: int,
     lease_ttl_ms: int,
 ) -> AsrClaim:
-    """Answer a retry that found a ``processing`` lease (D21 recovery)."""
+    """Answer a retry that found an unresolved lease (D21 recovery).
+
+    Three shapes, in order: the crashed run had already committed its
+    ``utterance.received`` and only the receipt was lost, so resolve from the
+    durable row; the lease was explicitly released or its TTL ran out, so the
+    retry resumes under the same ``turn_id``; or the lease is genuinely live,
+    which is a concurrent duplicate upload rather than a recovery.
+    """
     committed = conn.execute(_UTTERANCE_FOR_TURN_SQL, (row.turn_id,)).fetchone()
     if committed is not None:
         # The crashed run had already committed its utterance; the receipt is
@@ -544,11 +556,11 @@ def _resolve_processing_lease(
             turn_id=row.turn_id,
             replayed=True,
         )
-    if now_ms - row.leased_at_ms < lease_ttl_ms:
+    if row.state != "released" and now_ms - row.leased_at_ms < lease_ttl_ms:
         msg = f"request {key.request_id!r} is still being processed"
         raise SubmissionInProgressError(msg)
     conn.execute(
-        "UPDATE input_submission_receipts SET leased_at_ms = ? "
+        "UPDATE input_submission_receipts SET state = 'processing', leased_at_ms = ? "
         "WHERE authenticated_principal = ? AND client_instance_id = ? AND request_id = ?",
         (now_ms, key.authenticated_principal, key.client_instance_id, key.request_id),
     )

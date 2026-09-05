@@ -428,8 +428,8 @@ def test_asr_submit_v2_empty_recognition_is_422(tmp_path: Path) -> None:
     assert resp.status_code == 422
 
     conn = _log(tmp_path)
-    leases = conn.execute("SELECT COUNT(*) FROM input_submission_receipts").fetchone()
-    assert int(leases[0]) == 0
+    state = conn.execute("SELECT state FROM input_submission_receipts").fetchone()
+    assert str(state[0]) == "released"
     conn.close()
 
 
