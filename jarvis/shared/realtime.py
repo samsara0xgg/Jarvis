@@ -8,12 +8,11 @@ Those responsibilities remain with their numbered layers.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from jarvis.shared import Event
 
 LifecycleOwner = Literal["playback", "response", "action"]
@@ -84,13 +83,17 @@ class Wave4ResponseFlags:
     ResponseRun with an immutable per-run request client.
     ``independent_response_cancel`` additionally exposes the generation
     cancel seam. ``typed_conversation_history`` adds explicit heard/available
-    history to L3 prompts under the same lifecycle parent. All stay off in the
-    shipped configuration, preserving the complete legacy batch prompt.
+    history to L3 prompts under the same lifecycle parent.
+    ``routine_streaming`` (ADR-0008 Step 8, ``routine_streaming.enabled``)
+    streams permitted sentences of a pre-routed casual answer while the model
+    is still generating. All stay off in the shipped configuration,
+    preserving the complete legacy batch prompt.
     """
 
     response_run_lifecycle: bool = False
     independent_response_cancel: bool = False
     typed_conversation_history: bool = False
+    routine_streaming: bool = False
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object] | None) -> Wave4ResponseFlags:
@@ -100,10 +103,12 @@ class Wave4ResponseFlags:
         non-boolean truthy value never enables a lifecycle-sensitive path.
         """
         values = {} if raw is None else raw
+        routine = values.get("routine_streaming")
         return cls(
             response_run_lifecycle=values.get("response_run_lifecycle") is True,
             independent_response_cancel=values.get("independent_response_cancel") is True,
             typed_conversation_history=values.get("typed_conversation_history") is True,
+            routine_streaming=isinstance(routine, Mapping) and routine.get("enabled") is True,
         )
 
     @property
@@ -114,6 +119,7 @@ class Wave4ResponseFlags:
                 self.response_run_lifecycle,
                 self.independent_response_cancel,
                 self.typed_conversation_history,
+                self.routine_streaming,
             )
         )
 
@@ -232,6 +238,40 @@ def new_response_id() -> str:
     renders of one turn with identical text collide; a ResponseRun does not.
     """
     return "RESP" + uuid.uuid4().hex
+
+
+def new_log_epoch() -> str:
+    """Mint the identity of one Event Log lineage (ADR-0014 D6).
+
+    Assigned exactly once per log file and never re-minted afterwards: a
+    client that presents a different epoch is holding state from another
+    log and must resynchronize from a snapshot.
+    """
+    return "L" + uuid.uuid4().hex
+
+
+def new_boot_id() -> str:
+    """Mint one daemon process's boot identity (ADR-0014 D6).
+
+    A change of ``boot_id`` under an unchanged ``log_epoch`` means the
+    process restarted while the log survived, which is the case that
+    invalidates in-flight ephemeral sequences but not durable cursors.
+    """
+    return "B" + uuid.uuid4().hex
+
+
+def new_connection_id() -> str:
+    """Mint one accepted realtime socket's identity (ADR-0014 D6)."""
+    return "C" + uuid.uuid4().hex
+
+
+def new_client_instance_id() -> str:
+    """Mint one client instance's identity (ADR-0014 D6).
+
+    Stable across reconnects of the same client process, unlike
+    ``connection_id`` which is per socket.
+    """
+    return "I" + uuid.uuid4().hex
 
 
 def stable_legacy_presentation_binding(
@@ -391,6 +431,10 @@ __all__ = [
     "Wave4ActionFlags",
     "Wave4ResponseFlags",
     "Wave5InputFlags",
+    "new_boot_id",
+    "new_client_instance_id",
+    "new_connection_id",
+    "new_log_epoch",
     "new_response_id",
     "stable_authorization_identity",
     "stable_legacy_presentation_binding",

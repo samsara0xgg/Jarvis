@@ -1,0 +1,26 @@
+{
+  "protocol_version": 2,
+  "message_type": "client.hello",
+  "message_id": "Rfixture0001",
+  "client_instance_id": "Ifixture0001",
+  "connection_id": null,
+  "sent_at_ms": 1788200000000,
+  "payload": {
+    "supported_versions": [
+      2
+    ],
+    "client_build": "fixture",
+    "view_schema_versions": [
+      1
+    ],
+    "capabilities": [
+      "paged_snapshot",
+      "transport_ack",
+      "response_control",
+      "confirmation_control"
+    ],
+    "last_log_epoch": null,
+    "last_applied_cursor": 0,
+    "has_complete_local_state": false
+  }
+}

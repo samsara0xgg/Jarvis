@@ -43,7 +43,8 @@ import sys
 import time
 import uuid
 from collections.abc import Mapping  # runtime use: isinstance in the config readers.
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -56,15 +57,27 @@ from jarvis.decision import (
     ResolvedEntityLike,
     ToolRegistryLike,
     decide,
+    emit_turn_ended,
 )
 from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import LLMClient, load_llm_config
 from jarvis.decision.llm_session import LLMSessionFactory
+from jarvis.decision.packet import assemble_packet
 from jarvis.decision.policy import (
     PolicyConsistencyError,
     effective_policy,
     validate_requires_confirmation,
+)
+from jarvis.decision.pre_route import (
+    ROUTINE_ATTENTION_CHANNEL,
+    RoutineStreamRoute,
+    StreamCorrection,
+    ToolCueConfigError,
+    ToolCueTable,
+    load_tool_cues,
+    pre_route,
+    routine_risk_context,
 )
 from jarvis.decision.response_run import (
     CancelAccepted,
@@ -81,6 +94,7 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.decision.result_interpreter import emit_stash_conflict_surfacing
+from jarvis.decision.stream_gate import routine_stream_policy
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.execution.action_runner import ActionRunner, VerificationOutcome
@@ -106,6 +120,7 @@ from jarvis.execution.tools import (
     release_turn_actions,
     turn_action_ids,
 )
+from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.shared import CallerPrincipal, Event
 from jarvis.shared.action_admission import bind_action_admission
 from jarvis.shared.pricing import load_pricing_table
@@ -124,6 +139,7 @@ from jarvis.shared.realtime_trace import (
 )
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import iter_events, open_event_log, open_runtime_event_log
+from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
 from jarvis.surface.cli import (
     PreEmitTokenError,
@@ -133,6 +149,7 @@ from jarvis.surface.cli import (
     record_pre_emit_token,
 )
 from jarvis.surface.cli_render import render_response
+from jarvis.surface.stream_emission import emit_permitted_segment
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -412,6 +429,10 @@ class JarvisRuntime:
     response_runs: ResponseRunRegistry | None = None
     committed_event_bus: CommittedEventBus | None = None
     input_flags: Wave5InputFlags = field(default_factory=Wave5InputFlags)
+    # ADR-0008 Step 8 — tool cues loaded from ``config/tool_cues.yaml``;
+    # empty tuple = no cue can veto the routine route (the other pre-route
+    # conditions still apply).
+    tool_cues: ToolCueTable = ()
 
 
 @dataclass(frozen=True)
@@ -574,9 +595,10 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
     2. ``response_run_lifecycle`` requested without the Wave-1
        transactional-append and lifecycle-terminal-CAS primitives it writes
        through.
-    3. ``independent_response_cancel`` or ``typed_conversation_history``
-       requested without a surviving ``response_run_lifecycle``. Cancellation
-       and typed history both require stable response lifecycle identities.
+    3. ``independent_response_cancel``, ``typed_conversation_history`` or
+       ``routine_streaming`` requested without a surviving
+       ``response_run_lifecycle``. Cancellation, typed history and routine
+       streaming all require stable response lifecycle identities.
     """
     realtime = config.get("realtime")
     if not isinstance(realtime, Mapping):
@@ -604,7 +626,9 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
     ):
         return _downgraded_response_activation(requested, "wave1_primitives_disabled")
     if (
-        requested.independent_response_cancel or requested.typed_conversation_history
+        requested.independent_response_cancel
+        or requested.typed_conversation_history
+        or requested.routine_streaming
     ) and not requested.response_run_lifecycle:
         return _downgraded_response_activation(requested, "lifecycle_flag_disabled")
     return _Wave4ResponseActivation(
@@ -635,16 +659,19 @@ def _downgraded_response_activation(
     )
     LOGGER.warning(
         "realtime.response downgraded (%s): requested response_run_lifecycle=%s "
-        "independent_response_cancel=%s typed_conversation_history=%s; "
-        "effective response_run_lifecycle=%s independent_response_cancel=%s "
-        "typed_conversation_history=%s",
+        "independent_response_cancel=%s typed_conversation_history=%s "
+        "routine_streaming=%s; effective response_run_lifecycle=%s "
+        "independent_response_cancel=%s typed_conversation_history=%s "
+        "routine_streaming=%s",
         reason,
         requested.response_run_lifecycle,
         requested.independent_response_cancel,
         requested.typed_conversation_history,
+        requested.routine_streaming,
         flags.response_run_lifecycle,
         flags.independent_response_cancel,
         flags.typed_conversation_history,
+        flags.routine_streaming,
     )
     record_realtime_trace(
         "response_activation_downgraded",
@@ -652,7 +679,8 @@ def _downgraded_response_activation(
         requested=(
             f"response_run_lifecycle={requested.response_run_lifecycle},"
             f"independent_response_cancel={requested.independent_response_cancel},"
-            f"typed_conversation_history={requested.typed_conversation_history}"
+            f"typed_conversation_history={requested.typed_conversation_history},"
+            f"routine_streaming={requested.routine_streaming}"
         ),
     )
     return _Wave4ResponseActivation(flags=flags, requested=requested, reason=reason)
@@ -1457,6 +1485,14 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         msg = f"runtime: {confirm_grammar_path} invalid: {exc}"
         raise RuntimeBootstrapError(msg) from exc
 
+    # 3d. ADR-0008 Step 8 tool cues — same posture as the grammar table.
+    tool_cues_path = config_path.parent / "tool_cues.yaml"
+    try:
+        tool_cues = load_tool_cues(tool_cues_path)
+    except ToolCueConfigError as exc:
+        msg = f"runtime: {tool_cues_path} invalid: {exc}"
+        raise RuntimeBootstrapError(msg) from exc
+
     # 4. L3 LLM client. `full_config` was already loaded at step 3 above.
     llm_config = load_llm_config(config_path)
     llm_client = LLMClient(llm_config)
@@ -1504,6 +1540,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         response_runs=response_runs,
         committed_event_bus=committed_event_bus,
         input_flags=_wave5_input_flags(full_config),
+        tool_cues=tool_cues,
     )
 
 
@@ -1515,13 +1552,19 @@ def _start_drive_turn_response(
     *,
     user_intent_event: Event,
     turn_id: str,
-) -> tuple[ResponseRun, ResponseTerminalizer] | None:
+    correction: StreamCorrection | None = None,
+) -> tuple[ResponseRun, ResponseTerminalizer, RoutineStreamRoute | None] | None:
     """Open one durable ResponseRun for this turn, or ``None`` when flagged off.
 
     ``runtime`` here is ``drive_turn``'s own runtime — in the daemon that is
     the ``dataclasses.replace(conn=worker_conn)`` copy, so the run's
     ``BEGIN IMMEDIATE`` lands on the worker thread's own connection and never
     on the asyncio event loop's.
+
+    ADR-0008 Step 8: with ``routine_streaming`` on, the route is decided here,
+    before the run opens, and a ``casual_or_explanatory`` turn opens under
+    ``routine_stream_policy`` with the streaming seam bound; every other turn
+    (and every correction run) keeps ``legacy_full_text_policy``.
     """
     if not runtime.response_flags.response_run_lifecycle:
         return None
@@ -1535,6 +1578,26 @@ def _start_drive_turn_response(
         evidence_snapshot_hash=evidence_snapshot_hash(runtime.conn),
         preset_snapshot_hash=snapshot.snapshot_hash,
     )
+    route: str | None = None
+    context = None
+    if runtime.response_flags.routine_streaming and correction is None:
+        packet = assemble_packet(
+            user_intent_event, runtime.conn, entity_bookmarks=runtime.entity_bookmarks,
+        )
+        route = pre_route(
+            packet,
+            tier0_table=runtime.tier0_table,
+            tool_cues=runtime.tool_cues,
+            now_ms=int(time.time() * 1000),
+        )
+        if route == "casual_or_explanatory":
+            context = routine_risk_context(packet, response_id=response_id, turn_id=turn_id)
+            routine = routine_stream_policy(context, preset_snapshot_hash=snapshot.snapshot_hash)
+            if routine.emission_mode == "routine_stream":
+                policy = routine
+            else:
+                # The risk floor of the request itself refused; D2 rule 1.
+                route, context = "unknown", None
     run = start_response_run(
         runtime.conn,
         turn_id=turn_id,
@@ -1543,6 +1606,8 @@ def _start_drive_turn_response(
         policy=policy,
         response_id=response_id,
         committed_event_bus=runtime.committed_event_bus,
+        corrects_response_id=correction.corrects_response_id if correction else None,
+        route=route,
     )
     terminalizer = ResponseTerminalizer(
         lambda: runtime.conn,
@@ -1551,7 +1616,31 @@ def _start_drive_turn_response(
     )
     if runtime.response_flags.independent_response_cancel and runtime.response_runs is not None:
         runtime.response_runs.register(run)
-    return run, terminalizer
+    if context is None:
+        return run, terminalizer, None
+    transcript_raw = user_intent_event.payload.get("transcript", "")
+    query = transcript_raw if isinstance(transcript_raw, str) else ""
+    seam = RoutineStreamRoute(
+        policy=policy,
+        context=context,
+        open_stream=lambda handle: LoopBoundTokenStream(
+            handle, cancellation_token=run.cancellation_token,
+        ),
+        emit_segment=lambda permit, text: emit_permitted_segment(
+            runtime.conn,
+            permit,
+            text,
+            query=query,
+            attention_channel=ROUTINE_ATTENTION_CHANNEL,
+            committed_event_bus=runtime.committed_event_bus,
+        ).event,
+        segment_guard=run.admission_guard,
+        committed_event_bus=runtime.committed_event_bus,
+    )
+    record_realtime_trace(
+        "routine_stream_route_opened", turn_id=turn_id, response_id=response_id,
+    )
+    return run, terminalizer, seam
 
 
 def make_response_cancel_callable(
@@ -2033,8 +2122,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     )
     run: ResponseRun | None = continuation.run if continuation is not None else None
     terminalizer: ResponseTerminalizer | None = None
+    stream_route: RoutineStreamRoute | None = None
     if run_pair is not None:
-        run, terminalizer = run_pair
+        run, terminalizer, stream_route = run_pair
     elif run is not None:
         terminalizer = ResponseTerminalizer(
             lambda: runtime.conn, close_after=False,
@@ -2127,9 +2217,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             typed_conversation_history=runtime.response_flags.typed_conversation_history,
             cancellation_checkpoint=run.check_cancelled if run is not None else None,
             request_admission=(
-                (lambda kind: run.admit_request(runtime.conn, kind))
-                if run is not None else None
+                partial(run.admit_request, runtime.conn) if run is not None else None
             ),
+            routine_stream=stream_route,
         )
 
         # SQLite row id of the surface.user_intent event — used as the
@@ -2153,6 +2243,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         # canonical branches today.
         final_attention_channel: str = "voice_notify"
         iterations = continuation.iterations if continuation is not None else 0
+        streamed = False
+        last_gate_event_uid: str | None = None
 
         while response_plan is None and iterations < max_iterations:
             _raise_if_cancelled("before a decide iteration")
@@ -2166,9 +2258,54 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             }:
                 mark_trigger_consumed(runtime.conn, trigger_event.event_uid, effective_turn_id)
             collected_events.extend(result.events_emitted)
+            if result.stream_failure is not None and run is not None and terminalizer is not None:
+                # ADR-0008 D3: the stream could not be finalized. The run
+                # fails naming what it exposed, and a full-text correction
+                # run continues that prefix for the same turn.
+                failure = result.stream_failure
+                terminalizer.fail(
+                    run.facts,
+                    reason=failure.reason,
+                    retryable=False,
+                    committed_prefix_hash=failure.committed_prefix_hash,
+                )
+                run.mark("failed")
+                if runtime.response_runs is not None:
+                    runtime.response_runs.unregister(run.response_id)
+                correction = StreamCorrection(
+                    corrects_response_id=run.response_id,
+                    committed_prefix=committed_text_prefix(runtime.conn, run.response_id).text,
+                )
+                record_realtime_trace(
+                    "routine_stream_correction_opened",
+                    turn_id=effective_turn_id,
+                    failed_response_id=run.response_id,
+                    reason=failure.reason,
+                )
+                replacement = _start_drive_turn_response(
+                    runtime,
+                    user_intent_event=user_intent_event,
+                    turn_id=effective_turn_id,
+                    correction=correction,
+                )
+                if replacement is None:  # pragma: no cover - the flag graph pins lifecycle on
+                    msg = "drive_turn: correction run requires response_run_lifecycle"
+                    raise RuntimeBootstrapError(msg)  # noqa: TRY301
+                run, terminalizer, _ = replacement
+                decide_ctx = replace(
+                    decide_ctx,
+                    llm_client=run.request_client,
+                    routine_stream=None,
+                    stream_correction=correction,
+                    cancellation_checkpoint=run.check_cancelled,
+                    request_admission=partial(run.admit_request, runtime.conn),
+                )
+                continue
             response_plan = result.response_plan
             if response_plan is not None:
                 final_attention_channel = result.attention_channel
+                streamed = result.route == "casual_or_explanatory"
+                last_gate_event_uid = result.last_gate_event_uid
                 break
 
             # No final plan -> decide() paused on an async tool. Wait for the
@@ -2284,6 +2421,18 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 )
                 raise ResponseCancelledError(msg)  # noqa: TRY301 — the turn's own outcome, not a helper's.
             run.mark("completed")
+            if streamed:
+                # The finalizer wrote nothing; the turn closes after the
+                # terminal, sourced on the last stream gate verdict.
+                collected_events.append(
+                    emit_turn_ended(
+                        runtime.conn,
+                        turn_id=effective_turn_id,
+                        final_response_hash=response_plan.response_hash,
+                        consumed_trigger_event_uid=user_intent_event.event_uid,
+                        source_event_id=last_gate_event_uid or run.facts.started_event_uid,
+                    ),
+                )
 
         # The in-memory capture stream serves two ends at once. First the
         # operator console: render_response() writes the cli_stdout slice
@@ -2308,6 +2457,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             query=query,
             response_id=run.response_id if run is not None else None,
             response_group_id=run.response_group_id if run is not None else None,
+            delivery_terminal_only=streamed,
         )
         rendered = capture.getvalue()
         sys.stdout.write(rendered)
@@ -2341,7 +2491,12 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # reconciler closes it as daemon_restart — losing the terminal is
             # recoverable, masking the real failure is not.
             try:
-                terminalizer.fail(run.facts, reason="turn_raised", retryable=False)
+                terminalizer.fail(
+                    run.facts,
+                    reason="turn_raised",
+                    retryable=False,
+                    committed_prefix_hash=terminalizer.committed_prefix_hash(run),
+                )
             except Exception:
                 LOGGER.exception(
                     "drive_turn: could not write response.failed (response_id=%r)",

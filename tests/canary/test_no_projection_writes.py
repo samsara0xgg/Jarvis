@@ -50,6 +50,9 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
         {"confirmation_consumption_claims", "authorized_dispatch_outbox"},
     ),
     "jarvis/state/cost_accounting.py": frozenset({"cost_accounting_dispositions"}),
+    # ADR-0014 D6: the log's own lineage row, written once per file by
+    # `_assign_log_epoch_once`. Operational, not projection truth.
+    "jarvis/state/event_log.py": frozenset({"event_log_metadata"}),
     "jarvis/state/trigger_consumption.py": frozenset({"decision_trigger_consumptions"}),
 }
 

@@ -27,7 +27,10 @@ artifact placement).
 
 from __future__ import annotations
 
+import hmac
 import os
+import secrets
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,12 +60,17 @@ class RuntimePaths:
         registry: File-backed EventTypeRegistry path at `${root}/registry.json`,
             available if Step 4's L2 chooses file-backing. Just a path; L6
             does not create or open it.
+        inherent_v2_token: Bearer token for the Inherent realtime v2 socket
+            at `${root}/inherent-v2.token` (ADR-0014 D5). L6 owns the
+            placement and, via `rotate_inherent_v2_token`, the file's
+            permissions; the daemon rewrites it on every boot.
     """
 
     root: Path
     event_log: Path
     artifacts_root: Path
     registry: Path
+    inherent_v2_token: Path
 
     def artifact_dir_for_run(self, run_id: str) -> Path:
         """Return (and create) the per-run artifact directory.
@@ -197,4 +205,101 @@ def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
         event_log=resolved_root / "mac_events.db",
         artifacts_root=artifacts_root,
         registry=resolved_root / "registry.json",
+        inherent_v2_token=resolved_root / "inherent-v2.token",
     )
+
+
+class InherentTokenError(OSError):
+    """The Inherent v2 token file is missing its required safety properties."""
+
+
+def _require_safe_parent(parent: Path) -> None:
+    """Refuse a token directory anyone but its owner could write into."""
+    try:
+        info = parent.stat()
+    except OSError as exc:
+        message = f"token directory {parent} is unusable"
+        raise InherentTokenError(message) from exc
+    if not stat.S_ISDIR(info.st_mode):
+        message = f"token directory {parent} is not a directory"
+        raise InherentTokenError(message)
+    if info.st_uid != os.geteuid():
+        message = f"token directory {parent} is not owned by this user"
+        raise InherentTokenError(message)
+    if info.st_mode & 0o022:
+        message = f"token directory {parent} is group- or world-writable"
+        raise InherentTokenError(message)
+
+
+def _require_safe_existing_file(path: Path) -> None:
+    """Refuse to replace anything but our own private regular file.
+
+    `lstat` deliberately does not follow symlinks: a link planted at the
+    token path would otherwise redirect `os.replace` and hand the secret
+    to whoever owns the target.
+    """
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        message = f"token file {path} is unusable"
+        raise InherentTokenError(message) from exc
+    if not stat.S_ISREG(info.st_mode):
+        message = f"token path {path} is not a regular file"
+        raise InherentTokenError(message)
+    if info.st_uid != os.geteuid():
+        message = f"token file {path} is not owned by this user"
+        raise InherentTokenError(message)
+    if info.st_mode & 0o177:
+        message = f"token file {path} is readable or writable beyond its owner"
+        raise InherentTokenError(message)
+
+
+def rotate_inherent_v2_token(path: Path) -> str:
+    """Mint a fresh 256-bit Inherent v2 bearer token at `path` (ADR-0014 D5).
+
+    Called once per daemon boot, so a token recovered from a stale file
+    stops working as soon as the daemon restarts. The value is returned to
+    the caller and written to disk; it must never reach a log line, a URL,
+    an environment variable, or a frame.
+
+    Args:
+        path: The token file, normally `RuntimePaths.inherent_v2_token`.
+
+    Returns:
+        The new token as 64 lowercase hex characters (no trailing newline;
+        the file gets one).
+
+    Raises:
+        InherentTokenError: The parent directory or an existing file at
+            `path` fails a safety check, and rotating would either leak the
+            secret or trust a file this user does not exclusively control.
+    """
+    _require_safe_parent(path.parent)
+    _require_safe_existing_file(path)
+
+    token = secrets.token_hex(32)
+    temp_path = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        fd = os.open(
+            temp_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+        )
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, (token + "\n").encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        temp_path.replace(path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+    return token
+
+
+def inherent_v2_token_matches(expected: str, presented: str) -> bool:
+    """Compare two bearer tokens without leaking their shared prefix length."""
+    return hmac.compare_digest(expected.encode("utf-8"), presented.encode("utf-8"))

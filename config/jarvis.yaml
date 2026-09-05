@@ -159,6 +159,13 @@ realtime:
     response_run_lifecycle: false
     independent_response_cancel: false
     cancel_timeout_ms: 500
+    # ADR-0008 Step 8.  routine_streaming lets a pre-routed casual, no-tool
+    # answer stream its permitted sentences to the surface while the model is
+    # still generating (TTS still starts at surface.response_emitted).  It
+    # additionally requires response_run_lifecycle and downgrades once, with
+    # one warning, without it.
+    routine_streaming:
+      enabled: false
   # ADR-0008 Step 3 (Wave 4B).  action_runner routes ToolRegistry.dispatch
   # through the L4 ActionRunner: the handler runs on the runner's own thread
   # and connection under a resolved resource lease, while the driver still

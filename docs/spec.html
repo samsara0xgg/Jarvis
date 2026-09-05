@@ -1404,7 +1404,7 @@ Jarvis 是一个以 State Object 为本体的私人运行时。IO adapters 把�
 <section id="event-log">
 <h2>5. Event Log</h2>
 
-<p>SQLite append-only 表，immutable。<strong>Jarvis-observed history 的事实源，不是宇宙真理</strong>——每条 event 是带 provenance 的 claim，不是 fact。</p>
+<p>SQLite append-only 表，immutable。<strong>Jarvis-observed history 的事实源，不是宇宙真理</strong>——每条 event 是带 provenance 的 claim，不是 fact。同一个 SQLite 文件还持有一张 one-row operational metadata 表 <code>event_log_metadata</code>，记录 <code>log_epoch</code>——一条 append-only lineage 的身份（ADR-0014 D6）；它不是 event，也不是 projection truth。</p>
 
 <h3>5.1 表 schema</h3>
 <pre><code>CREATE TABLE events (

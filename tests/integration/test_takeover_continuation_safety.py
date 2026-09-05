@@ -103,7 +103,7 @@ def test_cancel_deadline_includes_admission_lock(tmp_path: Path) -> None:
     intent = _emit_intent(runtime.conn, "lock-budget", "fixture")
     opened = _start_drive_turn_response(runtime, user_intent_event=intent, turn_id="lock-budget")
     assert opened is not None
-    run, _terminalizer = opened
+    run, _terminalizer, _route = opened
     cancel = make_response_cancel_callable(runtime)
     with run.admission_lock, ThreadPoolExecutor(max_workers=1) as pool:
         start = time.monotonic()

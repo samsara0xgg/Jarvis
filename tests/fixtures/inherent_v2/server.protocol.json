@@ -1,0 +1,13 @@
+{
+  "protocol_version": 2,
+  "message_type": "connection.notice",
+  "message_id": "Rfixture0001",
+  "delivery_class": "protocol",
+  "connection_id": "Cfixture0001",
+  "log_epoch": "Lfixture0001",
+  "boot_id": "Bfixture0001",
+  "sent_at_ms": 1788200000001,
+  "payload": {
+    "notice": "hold"
+  }
+}

@@ -163,7 +163,7 @@ def test_reviewer_admission_orders_cancel_without_holding_network_lock(
     intent = _emit_intent(runtime.conn, "review-cancel", "fixture")
     opened = _start_drive_turn_response(runtime, user_intent_event=intent, turn_id="review-cancel")
     assert opened is not None
-    run, _terminalizer = opened
+    run, _terminalizer, _route = opened
     entered, release = threading.Event(), threading.Event()
     calls: list[int] = []
 

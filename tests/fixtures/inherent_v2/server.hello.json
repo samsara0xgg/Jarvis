@@ -1,0 +1,30 @@
+{
+  "protocol_version": 2,
+  "message_type": "server.hello",
+  "message_id": "Rfixture0001",
+  "delivery_class": "protocol",
+  "connection_id": "Cfixture0001",
+  "log_epoch": "Lfixture0001",
+  "boot_id": "Bfixture0001",
+  "sent_at_ms": 1788200000001,
+  "payload": {
+    "selected_version": 2,
+    "view_schema_version": 1,
+    "resume_mode": "snapshot",
+    "server_high_water_cursor": 1840,
+    "required_client_capabilities": [
+      "paged_snapshot",
+      "transport_ack"
+    ],
+    "runtime_capabilities": {
+      "text_input": true,
+      "image_input": false,
+      "voice_input": true,
+      "response_interrupt": true,
+      "action_cancel": true,
+      "confirmation_actions": true,
+      "natural_barge_in": false,
+      "aec_profile": "headphones_only"
+    }
+  }
+}

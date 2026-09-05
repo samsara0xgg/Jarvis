@@ -250,6 +250,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     query: str = "",
     response_id: str | None = None,
     response_group_id: str | None = None,
+    delivery_terminal_only: bool = False,
 ) -> tuple[SurfaceState, Event]:
     """Render an approved ResponsePlan across all surfaces for ``attention_channel``.
 
@@ -330,6 +331,12 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
             ``None`` (every legacy caller) keeps the uuid5 derivation.
         response_group_id: The L3 ResponseRun's group id; see
             ``response_id``. Both must be supplied together.
+        delivery_terminal_only: ADR-0008 Step 8 — the run already exposed
+            its ``surface.response_open`` and permitted chunks while
+            streaming, so this call performs physical delivery and emits
+            only ``surface.response_emitted`` for that same ``response_id``;
+            never a second open or a duplicate chunk. Requires
+            ``response_id``/``response_group_id``.
 
     Returns:
         ``(next_state, event)`` — the :class:`SurfaceState` with the
@@ -440,12 +447,17 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     #    open -> chunk(s) -> emitted so a downstream watcher with a single
     #    cursor over the three types sees the sequence per turn.
     binding: LegacyPresentationBinding | None = None
-    if streaming_enabled:
+    if delivery_terminal_only and (response_id is None or response_group_id is None):
+        msg = "render_response: delivery_terminal_only requires the run's response ids"
+        raise ValueError(msg)
+    if streaming_enabled or delivery_terminal_only:
         # ADR-0008 Wave 4A: when L3 opened an explicit ResponseRun it owns
         # the identity, and these L5 events must name the SAME response as
         # `response.started` (ADR-0014's never-reused rule). With no run —
         # every legacy caller — this falls back to the uuid5 derivation,
-        # byte-for-byte as before.
+        # byte-for-byte as before. A run whose chunks already streamed
+        # binds its audit event even for a caller that never asked for the
+        # three-event taxonomy: the chunks in the log carry its ids.
         binding = (
             LegacyPresentationBinding(
                 response_id=response_id,
@@ -457,22 +469,23 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
                 response_hash=response_plan.response_hash,
             )
         )
-        _emit_response_open(
-            conn,
-            turn_id=turn_id,
-            query=query,
-            response_plan=response_plan,
-            attention_channel=attention_channel,
-            binding=binding,
-            channel=presentation_channel,
-        )
-        _emit_response_chunks(
-            conn,
-            turn_id=turn_id,
-            response_plan=response_plan,
-            binding=binding,
-            channel=presentation_channel,
-        )
+        if streaming_enabled and not delivery_terminal_only:
+            _emit_response_open(
+                conn,
+                turn_id=turn_id,
+                query=query,
+                response_plan=response_plan,
+                attention_channel=attention_channel,
+                binding=binding,
+                channel=presentation_channel,
+            )
+            _emit_response_chunks(
+                conn,
+                turn_id=turn_id,
+                response_plan=response_plan,
+                binding=binding,
+                channel=presentation_channel,
+            )
 
     # 6. Audit event. The payload preserves the Day-1 ``text`` field +
     #    adds Day-2 channel + delivery fields. ``response_hash`` is the

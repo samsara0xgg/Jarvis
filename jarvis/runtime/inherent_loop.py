@@ -94,6 +94,7 @@ from jarvis.decision.response_run import (
     ResponseTerminalizer,
     reconcile_open_responses,
 )
+from jarvis.deployment import inherent_v2_token_matches, rotate_inherent_v2_token
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
 from jarvis.execution.tools import live_action_ids, running_action_ids
@@ -113,8 +114,14 @@ from jarvis.runtime import (
     make_response_cancel_callable,
 )
 from jarvis.shared import Event
+from jarvis.shared.realtime import new_boot_id, new_connection_id
 from jarvis.shared.realtime_trace import record_realtime_trace
-from jarvis.state.event_log import emit_event, open_event_log, open_runtime_event_log
+from jarvis.state.event_log import (
+    emit_event,
+    open_event_log,
+    open_runtime_event_log,
+    read_log_epoch,
+)
 from jarvis.state.input_claim import (
     REALTIME_INTENT_CONSUMER,
     ConflictingTurnClaimError,
@@ -138,7 +145,8 @@ from jarvis.surface import (
 )
 from jarvis.surface.cli import emit_surface_user_intent
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_protocol import RuntimeCapabilities
+from jarvis.surface.inherent_server import InherentDeps, InherentV2Deps, create_app
 from jarvis.surface.repo_observer import RepoObserver
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
@@ -2725,6 +2733,31 @@ def _request_voice_input_branch_shutdown(
     _shutdown_wake(owners.wake_listener, owners.wake_stream)
 
 
+def _v2_runtime_capabilities(
+    *,
+    voice_input: bool,
+    response_interrupt: bool,
+) -> RuntimeCapabilities:
+    """Report what this daemon can actually do, for the D7 server hello.
+
+    Discovered from the wiring rather than declared: ``image_input`` is
+    false because ``/inherent/image-submit`` is still a 501 stub, and the
+    action / confirmation controls are false because no route accepts them
+    yet. ``aec_profile`` is ``headphones_only`` — there is no acoustic echo
+    canceller, so barge-in over speakers is not offered.
+    """
+    return RuntimeCapabilities(
+        text_input=True,
+        image_input=False,
+        voice_input=voice_input,
+        response_interrupt=response_interrupt,
+        action_cancel=False,
+        confirmation_actions=False,
+        natural_barge_in=False,
+        aec_profile="headphones_only",
+    )
+
+
 async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring plus boot-reconciliation branches necessarily inflate body length + branch count.
     runtime: JarvisRuntime,
     *,
@@ -2957,14 +2990,32 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
                     ", ".join(quarantined),
                 )
 
+        cancel_response_callable = (
+            make_response_cancel_callable(runtime)
+            if runtime.response_flags.independent_response_cancel
+            else None
+        )
+        # ADR-0014 D5: a fresh 256-bit bearer token every boot, written
+        # 0600 under the runtime root. Rotating INSIDE the process lock is
+        # what makes it safe — no second daemon can be mid-read of the
+        # file this one is replacing.
+        v2_token = rotate_inherent_v2_token(runtime.runtime_paths.inherent_v2_token)
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
             voice_pipeline_callable=voice_pipeline_callable,
-            cancel_response_callable=(
-                make_response_cancel_callable(runtime)
-                if runtime.response_flags.independent_response_cancel
-                else None
+            cancel_response_callable=cancel_response_callable,
+            v2=InherentV2Deps(
+                token_matches=functools.partial(inherent_v2_token_matches, v2_token),
+                mint_connection_id=new_connection_id,
+                boot_id=new_boot_id(),
+                log_epoch=read_log_epoch(runtime.conn),
+                high_water_cursor=functools.partial(_latest_id, runtime.conn),
+                runtime_capabilities=functools.partial(
+                    _v2_runtime_capabilities,
+                    voice_input=voice_pipeline_callable is not None,
+                    response_interrupt=cancel_response_callable is not None,
+                ),
             ),
         )
         app = create_app(deps)

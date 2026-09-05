@@ -1096,6 +1096,9 @@ def test_drive_turn_finalizes_cleanup_after_the_stash_pop(
         return SimpleNamespace(
             response_plan=_turn_plan(),
             events_emitted=(),
+            stream_failure=None,
+            route=None,
+            last_gate_event_uid=None,
             turn_id="T-turn",
             attention_channel="voice_notify",
         )
