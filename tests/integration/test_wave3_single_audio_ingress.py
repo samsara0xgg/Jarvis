@@ -168,6 +168,9 @@ class _FakeBackend:
     def current_device_uid(self) -> str | None:
         return self.device_uid
 
+    def current_output_route(self) -> voice_backend.OutputRoute | None:
+        return None
+
     def input_format(self) -> voice_backend.AudioInputFormat:
         return self.format
 

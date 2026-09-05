@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jarvis.shared import Event
+    from jarvis.surface import voice_backend
 
 LOGGER = logging.getLogger("jarvis.surface.voice_session")
 
@@ -984,6 +985,11 @@ class DuplexVoiceSession:
             stream_epoch=self._ingress.stream_epoch,
             hard_cancel_enabled=False,
             natural_barge_in_enabled=False,
+            allowed_barge_mode=(
+                self.device_profile.allowed_barge_mode
+                if self.device_profile is not None
+                else "ptt"
+            ),
         )
         return VoiceSessionStartResult(started=True, ingress=ingress_result)
 
@@ -1272,6 +1278,11 @@ class DuplexVoiceSession:
                 lane.late_revisions_discarded if lane is not None else 0
             ),
         )
+
+    @property
+    def device_profile(self) -> voice_backend.DeviceProfileSnapshot | None:
+        """Expose the ingress-owned D9 snapshot for later barge-in decisions."""
+        return self._ingress.device_profile
 
     @property
     def ingress(self) -> voice_audio.AudioIngress:

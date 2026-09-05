@@ -744,6 +744,7 @@ Steps 1–5 can land before ADR-0008. Step 6 requires ADR-0008's independent Res
 
 ```text
 audio_frame_arrived
+audio_route_changed
 vad_speech_started
 duck_requested
 duck_gain_reached
