@@ -142,6 +142,8 @@ def _wave5_overlay(tmp_path: Path) -> Path:
     realtime["enabled"] = True
     realtime["concurrency_safety"]["transactional_event_append"] = True
     realtime["concurrency_safety"]["lifecycle_terminal_cas"] = True
+    realtime["concurrency_safety"]["confirmation_dispatch_outbox"] = True
+    realtime["concurrency_safety"]["exactly_once_cost_accounting"] = True
     realtime["response"]["response_run_lifecycle"] = True
     realtime["response"]["independent_response_cancel"] = True
     realtime["actions"]["action_runner"] = True
