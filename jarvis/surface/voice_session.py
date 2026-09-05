@@ -73,6 +73,7 @@ class RealtimeInputSessionConfig:
     wake_failure_threshold: int = 3
     worker_poll_s: float = 0.005
     shutdown_timeout_s: float = 3.0
+    output_active_vad_mode: str = "tts"
     partial_asr: PartialAsrConfig = PartialAsrConfig()
     barge_in: voice_interrupt.BargeInConfig = field(
         default_factory=voice_interrupt.BargeInConfig,
@@ -414,10 +415,13 @@ class UtteranceAssembler:
         session_id: str,
         lane: PartialAsrLane | None = None,
         barge_in: voice_interrupt.BargeInRouter | None = None,
+        output_active: Callable[[], bool] | None = None,
     ) -> None:
         """Create bounded idle/pre-roll/utterance storage around one VAD."""
         self._vad = vad
         self._config = config
+        self._output_active = output_active
+        self._output_active_vad_mode = config.output_active_vad_mode
         self._sample_rate_hz = sample_rate_hz
         self._frame_samples = frame_samples
         self._session_id = session_id
@@ -573,6 +577,23 @@ class UtteranceAssembler:
                 outcomes.append(outcome)
         return tuple(outcomes)
 
+    def _apply_output_vad_mode(self) -> None:
+        """Select the VAD profile for the next frame from the output state.
+
+        Deliberately unlike the wake loop's fail-to-suppressed behaviour: an
+        ``output_active`` that raises keeps whatever profile is in effect,
+        because failing to the stricter profile on an unknown output state
+        could truncate an utterance already in progress.
+        """
+        if self._output_active is None:
+            return
+        try:
+            speaking = self._output_active()
+        except Exception:  # noqa: BLE001 - unknown output state keeps the current profile
+            LOGGER.warning("output activity query failed; VAD profile unchanged", exc_info=True)
+            return
+        self._vad.set_mode(self._output_active_vad_mode if speaking else "record")
+
     def feed(  # noqa: C901 - linear ARMED/ACTIVE endpoint state machine
         self,
         frame: voice_audio.CanonicalAudioFrame,
@@ -624,6 +645,7 @@ class UtteranceAssembler:
             self._vad.prepare_utterance()
             self.observe_idle(frame)
             return expired
+        self._apply_output_vad_mode()
         event = self._vad.feed(frame.pcm16_mono)
         if self._state is _AssemblerState.ARMED:
             self._speech_pre_roll.append(frame)
@@ -917,6 +939,7 @@ class DuplexVoiceSession:
             session_id=self._session_id,
             lane=self._partial_lane,
             barge_in=self._barge_in,
+            output_active=output_active,
         )
         self._detections: queue.Queue[WakeDetection] = queue.Queue(
             maxsize=config.detection_queue_capacity,
@@ -1459,6 +1482,14 @@ def realtime_input_session_config_from_mapping(
             raise ValueError(msg)
         return float(value)
 
+    def _vad_mode(key: str, fallback: str) -> str:
+        value = values.get(key)
+        mode = fallback if value is None else str(value)
+        # Unknown names raise ValueError here, which the pre-device path
+        # already downgrades to invalid_input_config before anything opens.
+        voice_audio.SileroVad.thresholds(mode)
+        return mode
+
     return RealtimeInputSessionConfig(
         pre_roll_ms=_positive_int("pre_roll_ms", defaults.pre_roll_ms),
         max_utterance_s=_positive_float(
@@ -1498,6 +1529,10 @@ def realtime_input_session_config_from_mapping(
         shutdown_timeout_s=_positive_float(
             "session_shutdown_timeout_s",
             defaults.shutdown_timeout_s,
+        ),
+        output_active_vad_mode=_vad_mode(
+            "output_active_vad_mode",
+            defaults.output_active_vad_mode,
         ),
         partial_asr=_partial_asr_config_from_mapping(values.get("partial_asr")),
         barge_in=voice_interrupt.barge_in_config_from_mapping(values.get("barge_in")),

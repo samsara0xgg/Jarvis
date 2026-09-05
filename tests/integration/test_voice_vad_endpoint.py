@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
-from jarvis.surface import voice_audio
+from jarvis.surface import voice_audio, voice_session
 
 
 class _EnergySession:
@@ -114,3 +114,147 @@ def test_reused_vad_resets_prewarms_and_waits_for_consecutive_silence(
     ] == [
         pytest.approx(required_misses * voice_audio.SILERO_CHUNK_SAMPLES / 16_000 * 1_000)
     ] * 2
+
+
+class _FixedSession:
+    """ONNX-shaped session returning one probability for every frame."""
+
+    def __init__(self, probability: float) -> None:
+        self._probability = probability
+
+    def run(
+        self,
+        _output_names: object,
+        inputs: dict[str, np.ndarray],
+    ) -> list[np.ndarray]:
+        return [
+            np.asarray([[self._probability]], dtype=np.float32),
+            inputs["h"].copy(),
+            inputs["c"].copy(),
+        ]
+
+
+def _between_profiles_frame(index: int) -> voice_audio.CanonicalAudioFrame:
+    """A frame at -35 dBFS: speech under ``record``, silence under ``tts``."""
+    return voice_audio.CanonicalAudioFrame(
+        stream_epoch=1,
+        sequence=index,
+        sample_cursor=index * voice_audio.SILERO_CHUNK_SAMPLES,
+        sample_rate_hz=16_000,
+        frame_count=voice_audio.SILERO_CHUNK_SAMPLES,
+        adc_time_s=None,
+        captured_monotonic_ns=index,
+        discontinuity_before=False,
+        pcm16_mono=np.full(
+            voice_audio.SILERO_CHUNK_SAMPLES,
+            583,
+            dtype="<i2",
+        ).tobytes(),
+    )
+
+
+def _armed_assembler(
+    speaking: list[bool],
+) -> tuple[voice_session.UtteranceAssembler, voice_audio.SileroVad]:
+    """One assembler armed at cursor 0 whose output state follows ``speaking``."""
+    vad = voice_audio.SileroVad(mode="record")
+    assembler = voice_session.UtteranceAssembler(
+        vad=vad,
+        config=voice_session.RealtimeInputSessionConfig(),
+        sample_rate_hz=16_000,
+        frame_samples=voice_audio.SILERO_CHUNK_SAMPLES,
+        session_id="S-vad-profile",
+        output_active=lambda: speaking[0],
+    )
+    assembler.prepare()
+    assembler.arm(
+        voice_session.WakeDetection(
+            stream_epoch=1,
+            input_sample_cursor=0,
+            observed_monotonic_ns=0,
+            probability=1.0,
+        ),
+    )
+    return assembler, vad
+
+
+def test_strict_profile_classifies_playback_bleed_as_silence_while_output_active() -> None:
+    """While output is active the tts profile rejects frames record accepts."""
+    reset_realtime_trace()
+    speaking = [True]
+    with patch.object(
+        voice_audio,
+        "_load_silero_session",
+        return_value=_FixedSession(0.45),
+    ):
+        assembler, vad = _armed_assembler(speaking)
+        for index in range(12):
+            assert assembler.feed(_between_profiles_frame(index)) is None
+
+        assert not vad.is_speech_detected(), (
+            "frames between the two profiles must not start speech under tts"
+        )
+        assert vad._mode == "tts"  # noqa: SLF001
+
+        # The same frames under the record profile do start speech, and the
+        # trace names the profile actually in effect for that frame.
+        speaking[0] = False
+        for index in range(12, 20):
+            assembler.feed(_between_profiles_frame(index))
+
+    assert vad.is_speech_detected()
+    started = [
+        point for point in realtime_trace_snapshot() if point.name == "vad_speech_started"
+    ]
+    assert [point.attributes["vad_mode"] for point in started] == ["record"]
+
+
+def test_profile_switch_carries_detector_state_and_reported_mode() -> None:
+    """Flipping the output state moves thresholds and vad_mode, nothing else."""
+    reset_realtime_trace()
+    speaking = [False]
+    with patch.object(
+        voice_audio,
+        "_load_silero_session",
+        return_value=_FixedSession(0.45),
+    ):
+        assembler, vad = _armed_assembler(speaking)
+        for index in range(6):
+            assembler.feed(_between_profiles_frame(index))
+        assert vad.is_speech_detected()
+        state_before = (vad._state, vad._hits, vad._misses)  # noqa: SLF001
+        window_before = list(vad._prob_window)  # noqa: SLF001
+
+        speaking[0] = True
+        assembler.feed(_between_profiles_frame(6))
+
+        # The switch moved the thresholds and the reported mode and left the
+        # state machine, the counters and the smoothing windows running.
+        assert vad._t == voice_audio._MODE_THRESHOLDS["tts"]  # noqa: SLF001
+        assert vad._mode == "tts"  # noqa: SLF001
+        assert (vad._state, vad._hits) == state_before[:2]  # noqa: SLF001
+        assert vad._misses == state_before[2] + 1  # noqa: SLF001
+        assert list(vad._prob_window)[:-1] == window_before[1:]  # noqa: SLF001
+
+        endpoint_frames = vad.endpoint_silence_frames
+        for index in range(7, 6 + endpoint_frames):
+            assembler.feed(_between_profiles_frame(index))
+        assert not vad.is_speech_detected()
+
+        # Reverting the output state makes the same frames speech again.
+        speaking[0] = False
+        for index in range(6 + endpoint_frames, 12 + endpoint_frames):
+            assembler.feed(_between_profiles_frame(index))
+
+    assert vad.is_speech_detected()
+    assert vad._mode == "record"  # noqa: SLF001
+    modes = [
+        (point.name, point.attributes["vad_mode"])
+        for point in realtime_trace_snapshot()
+        if point.name in {"vad_speech_started", "vad_endpoint_candidate"}
+    ]
+    assert modes == [
+        ("vad_speech_started", "record"),
+        ("vad_endpoint_candidate", "tts"),
+        ("vad_speech_started", "record"),
+    ]

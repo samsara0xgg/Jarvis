@@ -171,6 +171,20 @@ class SileroVad:
     # State management
     # ------------------------------------------------------------------
 
+    def set_mode(self, mode: str) -> None:
+        """Point the detector at another :data:`_MODE_THRESHOLDS` profile.
+
+        Rebinds the thresholds and the ``vad_mode`` the traces report, and
+        nothing else: the ONNX session, the LSTM state, the smoothing deques,
+        the hit/miss counters and the IDLE/ACTIVE state all survive the switch,
+        so a profile may change mid-utterance. Switching to the mode already in
+        effect is a no-op.
+        """
+        if mode == self._mode:
+            return
+        self._t = self.thresholds(mode)
+        self._mode = mode
+
     def reset(self) -> None:
         """Clear LSTM state and state-machine bookkeeping. Call before each session."""
         self._h = np.zeros(_LSTM_SHAPE, dtype=np.float32)
