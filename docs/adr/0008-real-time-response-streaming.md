@@ -803,7 +803,7 @@ response.started
             phase, channel, emission_mode, output_risk_class,
             required_gate_mode, policy_hash, active_subject_ref,
             evidence_snapshot_hash
-  optional: provider, model, corrects_response_id
+  optional: provider, model, corrects_response_id, route
 
 response.completed
   required: response_id, response_group_id, turn_id, response_hash
@@ -974,6 +974,7 @@ This section is a historical seed for goal cards under `docs/goals/`, not an acc
 Canonical configuration is the top-level `realtime:` block in `config/jarvis.yaml`; ADR-0006 §5 owns the master `realtime.enabled` gate and the Wave-1 `concurrency_safety` primitives. Keys this ADR owns:
 
 - `realtime.response.{response_run_lifecycle,independent_response_cancel,cancel_timeout_ms}`, plus `typed_conversation_history`, which the reader (`Wave4ResponseFlags` in `jarvis/shared/realtime.py`) supports but the yaml does not yet set — response lifecycle, cancellation, and typed heard/available history. `independent_response_cancel` and `typed_conversation_history` both require `response_run_lifecycle`; `jarvis/runtime/__init__.py` downgrades an invalid combination once, with one warning, to the legacy batch path.
+- `realtime.response.routine_streaming.enabled` (Step 8, default false) — the D2 `routine_stream` route for a pre-routed `casual_or_explanatory` turn; requires `response_run_lifecycle` and downgrades the same way. The pre-route's tool cues live in `config/tool_cues.yaml` next to the Tier 0 patterns.
 - `realtime.actions.{action_runner,true_async_workers,max_concurrent_runs,lease_timeout_s}` — ActionRunner dispatch and true-async workers; `true_async_workers` requires `action_runner`.
 - `realtime.input.{intent_pump,queue_capacity,max_concurrent_turns}` — D8's durable-claim intent queue.
 
