@@ -230,6 +230,36 @@ def test_incomplete_stable_prefix_holds_until_max_hold_then_commits() -> None:
     ]
 
 
+def test_unstable_suffix_defers_completeness_until_the_hypothesis_converges() -> None:
+    """A dangling connective still in the unstable suffix must not let the prefix commit."""
+    harness = _Harness(
+        _ScriptedDecoder(["今天下雨", "今天下雨", "今天下雨的话"]),
+        partial=_partial(),
+    )
+    try:
+        outcomes = harness.feed_many([_SPEECH] * 3)
+        # Revision 3 ("...的话") is pulled here; its successor stays undecoded so
+        # the hold opens while stable="今天下雨" lags the latest hypothesis.
+        outcomes.append(harness.feed(_SILENCE, decode=False))
+        outcomes.append(harness.feed(_SILENCE))
+        assert outcomes == [None] * 5
+        assert harness.assembler.stable_prefix == "今天下雨"
+        assert _decisions() == [("hold", "acoustic_pause_candidate", 0.0)]
+        silence_frames = 2
+        utterance = None
+        while utterance is None:
+            utterance = harness.feed(_SILENCE)
+            silence_frames += 1
+    finally:
+        harness.close()
+    # The commit reset the assembler; the last accepted revision proves the
+    # hypothesis converged onto the dangling clause before max_hold fired.
+    assert _traces("asr_partial")[-1].attributes["stable_prefix_len"] == len("今天下雨的话")
+    assert utterance.endpoint_reason == "max_hold"
+    assert silence_frames == 2 + 5
+    assert _decisions()[-1] == ("commit", "max_hold", 160.0)
+
+
 def test_speech_resume_during_hold_returns_to_speech_active_without_commit() -> None:
     """Speech inside the hold reopens speech_active and commits nothing."""
     harness = _Harness(_ScriptedDecoder(["把灯打开然后"]), partial=_partial())

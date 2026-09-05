@@ -699,7 +699,12 @@ class UtteranceAssembler:
                 self._decide("commit", "acoustic_pause")
                 return "acoustic_pause"
             return None
-        if voice_asr.looks_complete(self._stable_prefix):
+        # The stable prefix lags the latest hypothesis by one revision, so a
+        # dangling connective can hide in the unstable suffix; judge
+        # completeness only once the hypothesis has converged onto the prefix.
+        if self._previous_partial == self._stable_prefix and voice_asr.looks_complete(
+            self._stable_prefix,
+        ):
             self._decide("commit", "stable_prefix_complete")
             return "stable_prefix_complete"
         if self._hold_frames >= self._max_hold_frames:
