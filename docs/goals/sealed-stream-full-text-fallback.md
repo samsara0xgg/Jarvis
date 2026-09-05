@@ -74,4 +74,35 @@ Implement docs/goals/sealed-stream-full-text-fallback.md on the current branch. 
   (`ResponsePlan.text` carries the sentence twice) with the call reverted and
   passes with it, existing seal/correction tests untouched. Suite
   `915 passed, 64 deselected`.
+- Live run — daemon from this worktree, DeepSeek v4-flash direct + MiniMax TTS,
+  overlay from config/jarvis.yaml with realtime.enabled, the three
+  concurrency_safety switches, response_run_lifecycle,
+  independent_response_cancel, routine_streaming.enabled,
+  streaming_output.enabled + speak_from_segments, single_audio_ingress off;
+  output "BlackHole 16ch" during, "MacBook Pro Speakers" restored after. One
+  fresh runtime root per question — a root that already holds a completed turn
+  makes `pre_route` return `unknown` (the A3(c) history observation), and the
+  stream route never opens. Q1 "从一数到二十，用中文数字" on ~/.jarvis-lane-a-q1
+  port 8031, RESP867aea258dd0415c9124bc5d50356add: `response.started` route
+  `casual_or_explanatory` / `routine_stream`, sealed at sequence 0
+  (`gate.evaluated` id 5, `stream_emit`/`buffer_full_text`, candidate_risk
+  `unknown`, reasons `outside_evaluated_candidate_form` +
+  `routine_ceiling_not_met`), exactly one LLM request (trace
+  `llm_sdk_request_call_started_upper_bound` x1, one `cost.recorded`, one
+  `response.request_admitted`), trace `routine_stream_degraded_to_full_text`
+  (148 chars), `surface.response_open` id 10 `kind="text"` /
+  `attention_channel: voice_notify`, `surface.response_emitted` id 17 carrying
+  the whole count 一…二十, `surface.playback_started` id 18 and
+  `surface.playback_completed` id 25 for the same response_id, 0
+  `response.failed`, 1 `response.started`.
+- Owner follow-up (not a blocker, allow-list quality): Q2 "为什么天空是蓝色的"
+  on ~/.jarvis-lane-a-q2 port 8032, RESPa0ab87fcf8954980b2ac0841383ad5c8 sealed
+  too — first candidate "这个问题其实很好回答。" (segment_hash 85c1e9f7…),
+  `stream_emit`/`buffer_full_text`, reasons `outside_evaluated_candidate_form` +
+  `routine_ceiling_not_met`: the sentence carries no `_EXPLANATORY_FORM`
+  keyword, so `_supported_candidate` refuses it. The degrade delivered it
+  anyway on one generation — `kind="text"` open id 10, emitted id 32,
+  `surface.playback_started` id 33 (the answer was still speaking at 547
+  characters when the daemon was stopped); before this card the same turn cost
+  a `suffix_rejected` regeneration and a correction run.
 
