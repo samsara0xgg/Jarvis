@@ -58,13 +58,17 @@ CATCH_UP_BYTE_BUDGET: Final[int] = 1_048_576
 """D8 step 6: the same for the catch-up's total encoded UTF-8 bytes."""
 
 _SELECT_HIGH_WATER_SQL: Final[str] = "SELECT COALESCE(MAX(id), 0) FROM events"
-# The three Inherent-relevant types, bounded above so a drain projects exactly
-# the rows its captured H covers (D9 step 2).  Static literal, no placeholders
-# for the type list — same posture as the v1 watcher's SELECT.
+# The three Inherent-relevant types plus the D21 input row, bounded above so a
+# drain projects exactly the rows its captured H covers (D9 step 2).  Static
+# literal, no placeholders for the type list — same posture as the v1 watcher's
+# SELECT.  ``surface.user_intent`` is fed to the fold for its
+# ``turn_id -> source_client_request_id`` map only: the fold returns None for
+# it, so it produces no frame and the wire is unchanged.
 _SELECT_RESPONSE_ROWS_SQL: Final[str] = (
     "SELECT id, event_uid, type, ts_epoch_ms, payload_json FROM events "
     "WHERE id > ? AND id <= ? AND type IN ("
-    "'surface.response_open', 'surface.response_chunk', 'surface.response_emitted'"
+    "'surface.response_open', 'surface.response_chunk', 'surface.response_emitted', "
+    "'surface.user_intent'"
     ") ORDER BY id ASC"
 )
 

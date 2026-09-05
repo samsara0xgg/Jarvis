@@ -58,6 +58,7 @@ def _opened_change(response: ResponseView) -> dict[str, Any]:
         "summary": None,
         "created_at_ms": response.created_at_ms,
         "revision": response.revision,
+        "source_client_request_id": response.source_client_request_id,
     }
 
 
@@ -134,6 +135,7 @@ def response_group_item(group: ResponseGroupView) -> dict[str, Any]:
         "question": group.question,
         "created_at_ms": group.created_at_ms,
         "responses": responses,
+        "source_client_request_id": group.source_client_request_id,
     }
 
 
