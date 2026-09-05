@@ -63,18 +63,24 @@ _SWITCH_AUDIO = "SwitchAudioSource"
 _INSTALL_HINT = "brew install switchaudio-osx blackhole-16ch"
 
 # Every question takes the routine stream route (ADR-0008 Step 8): a plain
-# "introduce X" request whose first sentence is a "<X>是..." explanation the
+# knowledge request whose first sentence is a "<X>是..." explanation the
 # ``routine-zh-en-v1`` classifier permits, so speech starts from the first
-# permitted segment while the model is still generating. The model sometimes
-# opens with a preamble instead ("好的 我用十句话..."), which the classifier
-# buffers, and the run then seals before any permit; the long questions are
-# tried in order until one opens the window.
+# permitted segment while the model is still generating. Neither the route
+# nor the first sentence is under the test's control: the decision layer
+# sometimes answers the same request on the full-text route
+# (``emission_mode=full_text``, speech only at ``surface.response_emitted``),
+# and a preamble ("好的 我用十句话...") or a plain statement without an
+# explanatory marker ("温哥华位于...") is buffered, so the stream seals
+# before any permit. The long questions are tried in order, twice over,
+# until one opens the window; the order follows the live permit rate
+# measured on 2026-09-05 (docs/live-burn-2026-09-05-crash-recovery.md).
 _WARMUP_QUESTION = "用两句话介绍一下温哥华"
 _LONG_QUESTIONS = (
+    "什么是海岸山脉 请详细介绍 至少十句话",
     "用十句话介绍一下温哥华的气候和地理",
-    "温哥华的气候和地理是什么样的 请详细讲讲 至少十句话 不要开场白 第一句就从事实开始",
-    "为什么温哥华的冬天比加拿大大多数城市温暖 请详细解释 至少十句话 不要开场白",
+    "什么是温带海洋性气候 请详细解释 至少十句话",
 )
+_LONG_ROUNDS = 2
 _RESPONSE_TERMINALS = ("response.completed", "response.failed", "response.cancelled")
 _PLAYBACK_TERMINALS = (
     "surface.playback_completed",
@@ -91,7 +97,7 @@ _CHECKPOINT_GRACE_S = 1.5
 _POLL_S = 0.02
 _STOP_WAIT_S = 20.0
 _SEALED_QUIET_S = 2.0
-"""After a sealed answer is emitted, how long with no playback before the next question."""
+"""How long a sealed turn must append nothing, with nothing open, before the next question."""
 
 _RECONCILE_LINE = "boot reconciliation closed 1 open response run(s)"
 _WATCHER_LINE = "tts_watcher started (after_id="
@@ -414,9 +420,10 @@ def _wait_for_spoken_completion(db: Path, turn_id: str, label: str) -> str:
 
 
 class _Sealed(NamedTuple):
-    """The run reached a terminal without ever opening the stream (no first permit)."""
+    """The run reached a terminal without ever opening a stream: no early speech."""
 
     response_id: str
+    emission_mode: str
     gate_reasons: tuple[str, ...]
 
 
@@ -424,10 +431,13 @@ def _wait_for_kill_window(db: Path, turn_id: str) -> tuple[str, bool] | _Sealed:
     """Block until playback has started and no response terminal exists.
 
     Returns ``(response_id, saw_checkpoint)``. Returns ``_Sealed`` when the
-    run terminated without a ``surface.response_open`` row, i.e. the first
-    sentence was never permitted and the caller should try another question.
-    Fails, naming the window, when an opened stream reaches a terminal before
-    playback started or during the checkpoint grace period.
+    run reached a terminal without a ``kind="stream"`` ``surface.response_open``
+    row: the request took the full-text route, or the stream sealed before
+    its first permit (completed silently, or failed as ``suffix_rejected``
+    ahead of a correction run). Either way nothing was spoken early and the
+    caller should try another question. Fails, naming the window, when an
+    opened stream reaches a terminal before playback started or during the
+    checkpoint grace period.
     """
     deadline = time.monotonic() + _SPEECH_WAIT_S
     grace_until: float | None = None
@@ -438,20 +448,33 @@ def _wait_for_kill_window(db: Path, turn_id: str) -> tuple[str, bool] | _Sealed:
             if response_id is None:
                 time.sleep(_POLL_S)
                 continue
-        types = [event.type for event in _events_for_response(db, response_id)]
+        events = _events_for_response(db, response_id)
+        types = [event.type for event in events]
         terminal = next((t for t in types if t in _RESPONSE_TERMINALS), None)
         started = "surface.playback_started" in types
         if terminal is not None:
-            if "surface.response_open" not in types:
+            stream_open = any(
+                e.type == "surface.response_open" and e.payload.get("kind") == "stream"
+                for e in events
+            )
+            if not stream_open:
+                mode = next(
+                    (
+                        str(e.payload.get("emission_mode"))
+                        for e in events
+                        if e.type == "response.started"
+                    ),
+                    "?",
+                )
                 reasons = next(
                     (
-                        tuple(str(r) for r in event.payload.get("reasons", ()))
-                        for event in _events_for_response(db, response_id)
-                        if event.type == "gate.evaluated"
+                        tuple(str(r) for r in e.payload.get("reasons", ()))
+                        for e in events
+                        if e.type == "gate.evaluated"
                     ),
                     (),
                 )
-                return _Sealed(response_id, reasons)
+                return _Sealed(response_id, mode, reasons)
             phase = "before playback started" if not started else "during the checkpoint grace"
             pytest.fail(
                 f"kill window missed: {response_id} reached {terminal} {phase}; "
@@ -468,34 +491,47 @@ def _wait_for_kill_window(db: Path, turn_id: str) -> tuple[str, bool] | _Sealed:
     pytest.fail(f"turn {turn_id} never reached surface.playback_started within {_SPEECH_WAIT_S}s")
 
 
-def _wait_for_sealed_answer(db: Path, response_id: str) -> None:
-    """Let a sealed answer settle before the next question goes in.
+def _wait_for_turn_quiet(db: Path, turn_id: str) -> None:
+    """Let a turn that opened no stream settle before the next question goes in.
 
-    A zero-permit seal writes no ``surface.response_open``, so the media
-    owner has nothing to schedule and the answer is silent
-    (``docs/goals/sealed-stream-full-text-fallback.md``): the wait ends once
-    ``surface.response_emitted`` has landed and no playback started in the
-    quiet window. Once that card lands the sealed answer speaks, and a next
-    response would queue behind it and complete before it speaks, so an
-    observed playback is waited to its terminal instead.
+    Such a turn either completes silently (zero-permit seal: no
+    ``surface.response_open``, so the media owner has nothing to schedule),
+    fails its run as ``suffix_rejected`` and opens a full-text correction run
+    under the same ``turn_id`` that re-asks the LLM and speaks the result
+    (``docs/goals/sealed-stream-full-text-fallback.md`` for both), or took
+    the full-text route and speaks at ``surface.response_emitted``. A next
+    response would queue behind that playback and complete before it speaks,
+    so the wait ends only once the turn has appended nothing for the quiet
+    window while no response run and no playback of it is open.
     """
     deadline = time.monotonic() + _WARMUP_WAIT_S
-    quiet_from: float | None = None
+    seen = -1
+    quiet_from = time.monotonic()
     while time.monotonic() < deadline:
-        types = {event.type for event in _events_for_response(db, response_id)}
-        if "surface.playback_started" in types:
-            quiet_from = None
-            if types & set(_PLAYBACK_TERMINALS):
-                _echo(f"sealed answer {response_id}: emitted and spoken to a playback terminal")
-                return
-        elif "surface.response_emitted" in types:
-            if quiet_from is None:
-                quiet_from = time.monotonic()
-            elif time.monotonic() - quiet_from >= _SEALED_QUIET_S:
-                _echo(f"sealed answer {response_id}: emitted, no playback in {_SEALED_QUIET_S}s")
-                return
+        types = [
+            str(row[0])
+            for row in _rows(
+                db,
+                "SELECT type FROM events WHERE json_extract(payload_json, '$.turn_id') = ? "
+                "ORDER BY id",
+                (turn_id,),
+            )
+        ]
+        runs = types.count("response.started")
+        playbacks = types.count("surface.playback_started")
+        open_runs = runs - sum(types.count(t) for t in _RESPONSE_TERMINALS)
+        open_playbacks = playbacks - sum(types.count(t) for t in _PLAYBACK_TERMINALS)
+        if len(types) != seen or open_runs > 0 or open_playbacks > 0:
+            seen = len(types)
+            quiet_from = time.monotonic()
+        elif time.monotonic() - quiet_from >= _SEALED_QUIET_S:
+            _echo(
+                f"sealed turn {turn_id}: quiet for {_SEALED_QUIET_S}s after {seen} rows "
+                f"({runs} response run(s), {playbacks} playback(s))",
+            )
+            return
         time.sleep(0.1)
-    pytest.fail(f"sealed answer {response_id} never settled in {_WARMUP_WAIT_S}s")
+    pytest.fail(f"sealed turn {turn_id} never went quiet in {_WARMUP_WAIT_S}s")
 
 
 def _open_kill_window(db: Path, port: int) -> tuple[str, str, bool]:
@@ -503,18 +539,19 @@ def _open_kill_window(db: Path, port: int) -> tuple[str, str, bool]:
 
     Returns ``(turn_id, response_id, saw_checkpoint)``.
     """
-    for attempt, question in enumerate(_LONG_QUESTIONS, start=1):
+    attempts = _LONG_QUESTIONS * _LONG_ROUNDS
+    for attempt, question in enumerate(attempts, start=1):
         turn_id = _submit(port, question)
         window = _wait_for_kill_window(db, turn_id)
         if not isinstance(window, _Sealed):
-            _echo(f"kill window: question {attempt}/{len(_LONG_QUESTIONS)} {question!r} opened it")
+            _echo(f"kill window: question {attempt}/{len(attempts)} {question!r} opened it")
             return turn_id, window[0], window[1]
         _echo(
-            f"retry: question {attempt}/{len(_LONG_QUESTIONS)} {question!r} sealed before "
-            f"the first permit (no surface.response_open) as {window.response_id}; "
-            f"gate reasons={window.gate_reasons}",
+            f"retry: question {attempt}/{len(attempts)} {question!r} opened no stream as "
+            f"{window.response_id} (emission_mode={window.emission_mode}, "
+            f"gate reasons={window.gate_reasons})",
         )
-        _wait_for_sealed_answer(db, window.response_id)
+        _wait_for_turn_quiet(db, turn_id)
     pytest.fail(f"every long question sealed before the first permit: {_LONG_QUESTIONS}")
 
 
