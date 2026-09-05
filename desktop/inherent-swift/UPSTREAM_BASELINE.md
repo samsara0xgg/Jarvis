@@ -74,6 +74,10 @@ v1 streaming with keyed state. The old launcher still trusts an existing
 binary and only uses YAML mtime for project regeneration; its invalidation
 repair and isolated test-host behavior remain pending.
 
+The v2 realtime core lives in the new `InherentRealtime` library target, and
+the baseline `InherentCard` target, its settings, and v1 files are unchanged,
+except that card 1's relocated `RealtimeProtocol.swift` is the only file that moved.
+
 ## Import normalization
 
 `NativeCardModelTests.swift` spells the two trailing Markdown spaces in one
