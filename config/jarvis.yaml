@@ -3,17 +3,17 @@ llm:
   provider: openai
 
   # 运行时可切换的模型预设（"小月，快速模式" / "小月，深度模式"）
-  default_preset: deep
+  default_preset: grok-fast
 
   presets:
     fast:
       model: gpt-5.4-mini
-      base_url: "https://openrouter.icu/v1"
+      base_url: "https://rehdasu.cn/v1"
       api_key_env: OPENROUTER_PROXY_KEY
       max_tokens: 2048
     deep:
-      model: gpt-5.5
-      base_url: "https://openrouter.icu/v1"
+      model: gpt-5.6-luna
+      base_url: "https://rehdasu.cn/v1"
       api_key_env: OPENROUTER_PROXY_KEY
       max_tokens: 32768
     # screen_look 专用（ADR-0011 D7）：多模态模型，同一个代理、同一把
@@ -21,9 +21,23 @@ llm:
     # jarvis.runtime 注入的独立 LLMClient 实例上用一次。
     vision:
       model: gpt-5.5
-      base_url: "https://openrouter.icu/v1"
+      base_url: "https://rehdasu.cn/v1"
       api_key_env: OPENROUTER_PROXY_KEY
       max_tokens: 1024
+    # xAI 直连。实测 2026-09-04：首 token 1.4s，思考约 50 token，V9 1.5T 底座。
+    grok-fast:
+      model: grok-4.5
+      base_url: "https://api.x.ai/v1"
+      api_key_env: XAI_API_KEY
+      max_tokens: 2048
+      reasoning_effort: minimal
+    # 严格零推理，首 token 0.6s，1M 上下文，$1.25/$2.5。
+    grok-instant:
+      model: grok-4.3
+      base_url: "https://api.x.ai/v1"
+      api_key_env: XAI_API_KEY
+      max_tokens: 2048
+      reasoning_effort: none
 
   # 流式回复的句子切分调优
   sentence_divider:
