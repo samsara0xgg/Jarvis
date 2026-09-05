@@ -3,27 +3,37 @@ llm:
   provider: openai
 
   # 运行时可切换的模型预设（"小月，快速模式" / "小月，深度模式"）
-  default_preset: grok-fast
+  default_preset: fast
 
   presets:
+    # DeepSeek 直连（2026-09-04 定案，全套）。本机实测 fast：短答首 token
+    # 0.45s、总时长 0.72s，3k token 历史 0.43s，4 路并发最大 0.64s。
+    # v4 系列默认开思考；fast 关掉，deep 保留。
     fast:
-      model: gpt-5.4-mini
-      base_url: "https://rehdasu.cn/v1"
-      api_key_env: OPENROUTER_PROXY_KEY
+      model: deepseek-v4-flash
+      base_url: "https://api.deepseek.com/v1"
+      api_key_env: DEEPSEEK_API_KEY
       max_tokens: 2048
+      extra_body:
+        thinking:
+          type: disabled
+    # 思考开：中等问题首个思考 token 约 1s、首个正文 2.6s；带工具调用 1.8s。
     deep:
-      model: gpt-5.6-luna
-      base_url: "https://rehdasu.cn/v1"
-      api_key_env: OPENROUTER_PROXY_KEY
+      model: deepseek-v4-pro
+      base_url: "https://api.deepseek.com/v1"
+      api_key_env: DEEPSEEK_API_KEY
       max_tokens: 32768
-    # screen_look 专用（ADR-0011 D7）：多模态模型，同一个代理、同一把
-    # key。决策 LLM（deep/fast 两档）从不切到这个预设——vision 只在
-    # jarvis.runtime 注入的独立 LLMClient 实例上用一次。
+    # screen_look 专用（ADR-0011 D7）：多模态模型。决策 LLM（deep/fast
+    # 两档）从不切到这个预设——vision 只在 jarvis.runtime 注入的独立
+    # LLMClient 实例上用一次。实验版模型，本机读图实测 1.3s。
     vision:
-      model: gpt-5.5
-      base_url: "https://rehdasu.cn/v1"
-      api_key_env: OPENROUTER_PROXY_KEY
+      model: deepseek-v4-flash-vision-exp
+      base_url: "https://api.deepseek.com/v1"
+      api_key_env: DEEPSEEK_API_KEY
       max_tokens: 1024
+      extra_body:
+        thinking:
+          type: disabled
     # xAI 直连。实测 2026-09-04：首 token 1.4s，思考约 50 token，V9 1.5T 底座。
     grok-fast:
       model: grok-4.5
