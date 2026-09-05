@@ -1139,6 +1139,23 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    EventTypeSchema(
+        # ADR-0014 D14 — the third confirmation terminal, and the only one
+        # no human utters: the runtime expiry sweep and its boot reconciler
+        # append it once a live ask passes `expires_at_ms`, so an idle panel
+        # is cleared by a committed row instead of by its own clock.
+        # `actor` is `jarvis_runtime` (deterministic runtime machinery), not
+        # `user` like its two siblings, because no one answered.
+        # `source_event_id` again points at the exact
+        # `confirmation.requested` event — an `emit_event` column, not a
+        # payload key (see the `confirmation.accepted` entry's comment).
+        event_type="confirmation.expired",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("confirmation_id", "expired_at_ms"),
+        optional_payload=(),
+        schema_version=1,
+    ),
     # `surface.dismissed` / `surface.clarified` — spec §3.6.3-named
     # UserResponse durable forms; ADR-0012 §3 D3 registers them as
     # placeholders with NO emitter yet, same idiom as `claim.accepted`
