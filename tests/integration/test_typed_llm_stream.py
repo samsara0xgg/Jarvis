@@ -23,6 +23,7 @@ from jarvis.decision.llm_stream import (
     LLMUsageCompleted,
     StreamProtocolError,
 )
+from jarvis.decision.stream_sentences import SemanticAssembler
 from jarvis.state.event_log import open_event_log
 
 if TYPE_CHECKING:
@@ -254,6 +255,82 @@ def _costs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "SELECT payload_json FROM events WHERE type = 'cost.recorded' ORDER BY id",
         )
     ]
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+def test_semantic_candidate_arrives_before_stalled_provider_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: Literal["openai", "anthropic"],
+) -> None:
+    """Actual SDK text forms a candidate before EOF; cancel closes the same stream."""
+    monkeypatch.setenv("TYPED_STREAM_FIXTURE_KEY", "synthetic")
+    frames = _frames(provider)
+    if provider == "openai":
+        frames[0]["choices"][0]["delta"]["content"] = "Ice absorbs heat. Then"
+        frames[1:] = [_oai({}, "stop")]
+        pause_after = 1
+    else:
+        frames[2]["delta"]["text"] = "Ice absorbs heat. Then"
+        frames[4:] = [
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 6},
+            },
+            {"type": "message_stop"},
+        ]
+        pause_after = 3
+
+    async def scenario() -> None:
+        peer = _SSE(frames, pause_after=pause_after)
+        conn = open_event_log(tmp_path / "events.db")
+        try:
+            async with peer.running() as url:
+                cost_recorder = CostRecorder(conn)
+                handle = cost_recorder.stream_events(
+                    _client(provider, url),
+                    messages=[],
+                    system="synthetic",
+                    kind="decision",
+                    turn_id="typed-semantic-candidate",
+                )
+                assembler = SemanticAssembler()
+                candidate_ready = asyncio.Event()
+                candidates: list[str] = []
+                seen: list[LLMStreamEvent] = []
+
+                async def consume() -> None:
+                    async for event in handle.events():
+                        seen.append(event)
+                        if isinstance(event, LLMTextDelta):
+                            candidates.extend(part.text for part in assembler.feed(event.text))
+                            if candidates:
+                                candidate_ready.set()
+
+                consumer = asyncio.create_task(consume())
+                await asyncio.wait_for(candidate_ready.wait(), 2)
+                assert candidates == ["Ice absorbs heat."]
+                assert not any(isinstance(event, LLMResponseCompleted) for event in seen)
+                assert handle.result is None
+                await handle.cancel("test_stop")
+                await consumer
+                await asyncio.wait_for(peer.peer_closed.wait(), 1)
+                assert candidates == ["Ice absorbs heat."]
+                assert len(_costs(conn)) == 1
+                assert _costs(conn)[0]["disposition"] == "cancelled"
+                # No safety gate is called, so a candidate must not become a
+                # surface event or any claim of permitted/physical output.
+                assert (
+                    conn.execute(
+                        "SELECT COUNT(*) FROM events WHERE type='surface.response_chunk'",
+                    ).fetchone()[0]
+                    == 0
+                )
+        finally:
+            conn.close()
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])

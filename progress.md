@@ -10,6 +10,36 @@ Contract: GOAL.md; architecture: docs/spec.html and docs/adr.
 
 ## Current work
 
+Incremental SemanticAssembler now preserves the exact text prefix, uses a
+60-code-point speech cap, and splits only at stable sentence/subclause
+boundaries. Advancing one common character prefix makes results independent
+of provider chunking. Decimal/grouping punctuation, English abbreviations,
+quotations, code/Markdown, XML, URLs and email local-part punctuation are
+covered; unsupported syntax and unbounded fragments buffer instead of
+producing arbitrary cuts. Candidates are NOT permits and emit no surface event.
+
+Current checks: 41 boundary tables plus 31 actual SDK/SSE/SQLite scenarios
+passed in 1.06 s. Two SDK scenarios prove a candidate exists before withheld
+provider completion, and cancellation stops both the socket and future
+candidates. Full regression: 528 passed / 63 deselected in 28.82 s, exit 0;
+ruff clean, strict mypy 183 files, layers 74 files / 203 dependencies kept.
+Evidence: /tmp/jarvis-realtime-semantic-assembly-nonlive-r2.log.
+Prior run: 527 passed / 63 deselected in 28.96 s, before the adjacent !? email
+counterexample was repaired. Evidence: same log name without -r2.
+
+Next: complete L3 risk context and actual SituationPacket snapshot hash,
+versioned candidate classifier, durable source-bound emission permits and
+prefix-preserving finalizer; then connect the no-tool route to streaming TTS.
+The existing ResponseRun is opened before decide with immutable full_text:
+prepare the L3 route/packet before policy minting, never loosen it afterward.
+Reuse the prepared packet in decide so prompts and policy hash cannot read
+different snapshots. Keep confirmation/Tier0 precedence, request admission,
+L3 cost ownership, and separate legacy full-text fallback before the first
+permit. No whole-answer restart/replay after a committed prefix.
+Ordinary safe first-sentence/TTS production streaming remains unimplemented.
+
+## Typed transport checkpoint (aed2acf)
+
 Typed async LLM transport is implemented in jarvis/decision/llm_stream.py
 and LLMClient.stream_events: stable request identity before I/O, text/tool
 DTOs, bounded argument assembly, all-proposal validation at protocol EOF,
@@ -27,7 +57,7 @@ tool/text, cancel before I/O and stalled socket reads, consumer cancellation,
 and accounting rollback/retry are covered. This is transport evidence, not
 cloud-model, safe segment, TTS or physical playback acceptance.
 
-Current full self-check: 485 passed / 63 deselected, 29.03 s, exit 0;
+Typed transport self-check: 485 passed / 63 deselected, 29.03 s, exit 0;
 ruff clean, strict mypy 181 files, layers 73 files / 203 dependencies kept.
 Evidence: /tmp/jarvis-realtime-typed-stream-nonlive-r3.log. The first run
 passed all assertions in 30.21 s but aborted at native teardown; it is NOT a
@@ -37,10 +67,6 @@ telemetry HTTP callback/static-destructor mutex failure. R2 exited 0 in 31.43 s
 but still had the isolation defect. Commit 123dff6 patches three wake wiring
 tests' eager WakeEngine.start seam; the nine checks pass with an import-audit
 blocker and zero openwakeword/onnxruntime import attempts. R3 is after that fix.
-
-Next: complete L3 risk context, stable semantic assembler, durable emission
-permit and prefix-preserving finalizer; then connect the no-tool route to
-actual streaming TTS. Ordinary low-risk first sentence remains unimplemented.
 
 ## Retained checkpoints
 
@@ -121,7 +147,7 @@ before _run_tool_use_loop model call. Current ResponseRun opens earlier with
 immutable full_text policy; move preparation before policy minting instead of
 loosening it later. Typed async tool/usage/error/cancel transport now exists.
 Missing ResponseRiskContext and actual packet snapshot hash, permit classifier/gate,
-syntax-aware assembler and immutable-prefix finalizer. Keep L3 cost/admission
+and immutable-prefix finalizer. Semantic assembler now exists. Keep L3 cost/admission
 fences; no full-response retry or renderer replay after first permit. Details
 in ADR-0008 D2–D5; production streaming route remains disabled/unimplemented.
 Latest hub message authorizes goal-required live tests with synthetic payloads.
