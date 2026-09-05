@@ -426,23 +426,48 @@ def test_consequential_segment_buffers_seals_and_suffix_is_regenerated_once(tmp_
     assert len(_rows(conn, "response.completed")) == 1
 
 
+_CONSEQUENTIAL = "我已经删除了文件。"
+
+
+def _seal_then_regenerate(tmp_path: Path, name: str, regenerated: str) -> Any:  # noqa: ANN401
+    """Seal after one permit, then answer the one regeneration with ``regenerated``."""
+    sealed = _SENTENCES[0] + _CONSEQUENTIAL + _SENTENCES[2]
+    with _Provider([sealed, regenerated]) as provider:
+        runtime = _runtime(tmp_path / name, provider.url)
+        result = _drive(runtime, _intent(runtime.conn, f"turn-{name}"))
+        assert len(provider.requests) == 2
+    conn = runtime.conn
+    assert [row[2]["text"] for row in _rows(conn, "surface.response_chunk")] == [_SENTENCES[0]]
+    assert not _rows(conn, "response.failed")
+    assert len(_rows(conn, "response.completed")) == 1
+    return result, conn
+
+
 def test_regenerated_suffix_repeating_the_committed_prefix_keeps_it_once(
     tmp_path: Path,
 ) -> None:
     """A3(b): the regeneration restates the exposed sentence; the plan says it once."""
-    consequential = "我已经删除了文件。"
     repeat = "冰从周围吸收热量，所以冰会变成水。"  # noqa: RUF001 — the prefix restated without its 。
-    with _Provider([_SENTENCES[0] + consequential + _SENTENCES[2], repeat]) as provider:
-        runtime = _runtime(tmp_path, provider.url)
-        result = _drive(runtime, _intent(runtime.conn, "turn-dedup"))
-        assert len(provider.requests) == 2
-    conn = runtime.conn
-    assert [row[2]["text"] for row in _rows(conn, "surface.response_chunk")] == [_SENTENCES[0]]
+    result, conn = _seal_then_regenerate(tmp_path, "dedup", repeat)
     assert result.response_plan.text == _SENTENCES[0] + _SENTENCES[2]
     assert result.response_plan.text.count(_SENTENCES[0]) == 1
     assert _payloads(conn, "surface.response_emitted")[0]["voice_text"].count(_SENTENCES[0]) == 1
-    assert not _rows(conn, "response.failed")
-    assert len(_rows(conn, "response.completed")) == 1
+
+
+def test_regeneration_that_only_starts_like_the_prefix_is_kept_whole(tmp_path: Path) -> None:
+    """A restatement ends where the text does; a longer word is not one, and is not cut."""
+    longer = "冰从周围吸收热量的过程是融化。"
+    result, _ = _seal_then_regenerate(tmp_path, "nodedup", longer)
+    assert result.response_plan.text == _SENTENCES[0] + longer
+
+
+def test_regeneration_that_adds_nothing_leaves_the_exposed_sentence_alone(
+    tmp_path: Path,
+) -> None:
+    """A regeneration that only restates the prefix ships the prefix, never twice."""
+    result, conn = _seal_then_regenerate(tmp_path, "onlyrepeat", _SENTENCES[0])
+    assert result.response_plan.text == _SENTENCES[0]
+    assert _payloads(conn, "surface.response_emitted")[0]["voice_text"] == _SENTENCES[0]
 
 
 def test_cancel_mid_stream_records_prefix_hash_and_one_cost(tmp_path: Path) -> None:

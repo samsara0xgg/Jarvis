@@ -3097,22 +3097,31 @@ def _without_repeated_prefix(prefix: str, suffix: str) -> str:
 
     A3(b): the one ``gate_segments=False`` regeneration is prompted with the
     exposed prefix as the model's own prior turn, and a model that repeats it
-    would make ``ResponsePlan.text`` say the same sentence twice. The scan is
-    bounded by the prefix: it stops at the first character that cannot extend
-    it.
+    would make ``ResponsePlan.text`` say the same sentence twice. One pass,
+    and a repeat only counts when it ends where the text does: a regeneration
+    that opens with the prefix and then runs straight on into a longer word is
+    not a restatement, and cutting inside that word would corrupt what the
+    model actually wrote.
     """
     target = _comparable(prefix)
     if not target:
         return suffix
-    for index in range(1, len(suffix) + 1):
-        seen = _comparable(suffix[:index])
-        if seen == target:
-            cut = index
-            while cut < len(suffix) and not _comparable(suffix[cut]):
-                cut += 1
-            return suffix[cut:]
-        if not target.startswith(seen):
-            break
+    matched = 0
+    for index, char in enumerate(suffix):
+        piece = _comparable(char)
+        if not piece:
+            continue
+        if target[matched : matched + len(piece)] != piece:
+            return suffix
+        matched += len(piece)
+        if matched != len(target):
+            continue
+        cut = index + 1
+        if cut < len(suffix) and _comparable(suffix[cut]):
+            return suffix
+        while cut < len(suffix) and not _comparable(suffix[cut]):
+            cut += 1
+        return suffix[cut:]
     return suffix
 
 
