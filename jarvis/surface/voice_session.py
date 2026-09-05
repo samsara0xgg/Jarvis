@@ -679,9 +679,11 @@ class UtteranceAssembler:
                 self._phase = EndpointPhase.SPEECH_ACTIVE
             else:
                 self._hold_frames += 1
+        # D7 step 1 opens the hold on the pause alone; false onsets are rejected
+        # downstream by the final-ASR empty filter. Gating the hold on
+        # min_voiced merged a short first sentence into the next one.
         hold_opens = (
             self._phase is EndpointPhase.SPEECH_ACTIVE
-            and self._voiced_frames >= self._min_voiced_frames
             and self._consecutive_silence >= self._candidate_frames
         )
         if hold_opens:

@@ -111,6 +111,7 @@ class _Harness:
         *,
         partial: voice_session.PartialAsrConfig,
         required_misses: int = 10,
+        min_voiced_s: float = 0.032,
     ) -> None:
         reset_realtime_trace()
         self._patch = patch.object(
@@ -126,7 +127,7 @@ class _Harness:
             vad=vad,
             config=replace(
                 voice_session.RealtimeInputSessionConfig(),
-                min_voiced_s=0.032,
+                min_voiced_s=min_voiced_s,
                 partial_asr=partial,
             ),
             sample_rate_hz=16_000,
@@ -207,6 +208,23 @@ def test_complete_stable_prefix_commits_before_max_hold() -> None:
     assert len(utterance.audio_bytes) == 4 * _FRAME * 2
     assert utterance.end_sample_cursor == 4 * _FRAME
     assert harness.assembler.endpoint_phase is voice_session.EndpointPhase.FINALIZING_ASR
+
+
+def test_short_first_sentence_still_opens_the_hold_under_shipped_min_voiced() -> None:
+    """The hold opens on the pause alone; min_voiced_s must not merge two sentences."""
+    harness = _Harness(_ScriptedDecoder(["把灯打开。"]), partial=_partial(), min_voiced_s=1.0)
+    try:
+        outcomes = harness.feed_many([_SPEECH] * 5 + [_SILENCE, _SILENCE])
+    finally:
+        harness.close()
+    utterance = outcomes[-1]
+    assert outcomes[:-1] == [None] * 6
+    assert isinstance(utterance, voice_session.CapturedUtterance)
+    assert utterance.endpoint_reason == "stable_prefix_complete"
+    assert _decisions() == [
+        ("hold", "acoustic_pause_candidate", 0.0),
+        ("commit", "stable_prefix_complete", 0.0),
+    ]
 
 
 def test_incomplete_stable_prefix_holds_until_max_hold_then_commits() -> None:

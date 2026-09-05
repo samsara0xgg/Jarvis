@@ -159,7 +159,7 @@ def test_two_burst_replay_commits_two_utterances_through_the_duplex_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Tier 2 seed: two tone bursts split by 0.3 s silence commit as two utterances."""
+    """Tier 2 seed: two 0.4 s bursts split by 0.3 s commit as two under shipped min_voiced."""
     monkeypatch.setitem(
         voice_audio._MODE_THRESHOLDS,  # noqa: SLF001
         "record",
@@ -183,7 +183,6 @@ def test_two_burst_replay_commits_two_utterances_through_the_duplex_session(
             config=replace(
                 voice_session.RealtimeInputSessionConfig(),
                 pre_roll_ms=64,
-                min_voiced_s=0.032,
                 max_utterance_s=2.0,
                 worker_poll_s=0.001,
                 shutdown_timeout_s=1.0,
