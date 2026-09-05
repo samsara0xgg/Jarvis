@@ -394,3 +394,51 @@ Implement docs/goals/lifecycle-commentary.md on the current branch. The goal is 
   The acceptance evidence requires an observable `superseded` cancel, so the run
   is closed through `ResponseTerminalizer.complete(...)` at
   `surface.playback_started` instead of immediately after render.
+- Verifier pass (opus, fresh context, `5094bb0..HEAD`) — three confirmed defects
+  fixed in 9401cb4, each with a regression pin that fails on the pre-fix code:
+  (a) **high** — the run declared `channel="speech"` but the untagged phrase made
+  L5 derive `channel="both"`, so `_bind_identity` marked the record inconsistent,
+  `ConversationHistory.consistent` went False and `pre_route` answered `unknown`
+  for every later turn in the window, silently switching routine streaming off;
+  the phrase is now wrapped in `<voice>` by `commentary_speech_text`.
+  (b) **medium** — the Pre-emit Gate verdict reached L5 with no durable
+  `gate.evaluated(pre_emit)` row (ADR-0001 § Gate contracts); the commentary path
+  calls the gate itself, so it now appends that row itself.
+  (c) **medium-low** — the teardown cancel ran an unbounded SQLite CAS on the
+  event-loop thread (up to 5 s per unheard run); it now carries a 0.5 s budget.
+  Also from the same pass: D1's unconditional playback sentence now points at the
+  D6 exception, `_complete_commentary` no longer raises on a run a cancel already
+  terminalized, both silence tests gained positive controls, and the frozen /
+  never-an-event assertion is now real.
+- Live-run finding, fixed in the same commit: the supersede decision read the
+  observer's cursor position rather than the log. The action row that supersedes a
+  phrase is always written *before* that phrase's playback begins, so it has the
+  lower row id — the second live run cut off a commentary mid-speech
+  (`surface.playback_interrupted` at 22:09:15.669Z). `_commentary_reached_the_speaker`
+  makes "already playing" a durable read, so such a run is completed, not cancelled.
+- Final live run (post-fix), turn `T319cbaa4`: commentary
+  `RESP56bff6382d7f4b7aba215796c4ef842a` `surface.playback_started phase=commentary
+  channel=speech` at 22:14:14.543Z, `response.completed` at 22:14:14.546Z; final
+  `RESP7f115e410e524a9c80e54903cc16af98` `surface.playback_started phase=final` at
+  22:14:18.243Z — 1 ms after the commentary's `playback_completed` at 22:14:18.242Z,
+  spoken through to `playback_completed` at 22:14:23.899Z. No
+  `surface.playback_interrupted`, no `response.cancelled`, commentary
+  `document_text=''`, `ConversationHistory.consistent = True` with two records under
+  one turn. Flag off, turn `T3555a30a`: zero `phase="commentary"` rows, zero
+  `commentary_watcher` lines in the daemon log. Audio `MacBook Pro Speakers` before
+  and after, `BlackHole 16ch` during, restored from a trap; microphone never opened.
+- Verifier findings deliberately **not** fixed, for the card owner:
+  - A commentary run is registered only in the observer's own
+    `ResponseRunRegistry`, not in `runtime.response_runs`, so
+    `/cancel_response` answers `unknown_response` for a playing commentary. Making
+    a commentary user-cancellable is a design decision the card does not take, so
+    it is left as a gap rather than added here.
+  - A commentary that never reaches `surface.playback_started` (no TTS provider, or
+    a silenced attention channel) stays open until teardown, which cancels it as
+    `shutdown`; `open_by_action` holds one entry per such action for the process
+    lifetime. Bounded by the process, honest in the log, but a text-only
+    deployment with commentary on is a misconfiguration worth a louder answer than
+    this card specifies.
+  - `git status` shows `?? .venv`: a pre-existing local symlink that `.gitignore`'s
+    `.venv/` (directory-only) does not match. The tracked tree is clean; the
+    symlink predates this branch and is not this card's to change.
