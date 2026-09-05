@@ -179,6 +179,11 @@ class SileroVad:
         the hit/miss counters and the IDLE/ACTIVE state all survive the switch,
         so a profile may change mid-utterance. Switching to the mode already in
         effect is a no-op.
+
+        Safe mid-utterance only because every profile shares the debounce
+        fields: ``reset`` sizes the smoothing deques from
+        ``smoothing_window`` and the assembler snapshots ``required_misses``
+        once, so a profile that changed either would desynchronise both.
         """
         if mode == self._mode:
             return

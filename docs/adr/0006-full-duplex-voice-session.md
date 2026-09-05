@@ -811,9 +811,8 @@ estimated_first_audible
 playback_completed
 ```
 
-`vad_speech_started` and `vad_endpoint_candidate` carry `vad_mode`, which is
-per-frame and may change within one session: capture selects the
-`output_active_vad_mode` profile while output is active and `record` otherwise.
+`vad_speech_started` carries `vad_mode`, which names the threshold profile
+that classified that frame and is not a per-session constant.
 
 Each trace carries session/turn/response IDs and, only for playback work, the
 explicit `playback_generation_id` where applicable. Trace rows may be sampled

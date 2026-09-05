@@ -108,3 +108,19 @@ Implement docs/goals/speaking-window-vad-profile.md on the current branch. The g
   improvement. Owner follow-up: a mic-in-the-loop run with a human speaking over
   the answer's tail, and a re-run once natural barge-in can arm capture during
   output, are the two ways to make this measurement non-vacuous.
+- 2026-09-05 slice 3 (verifier pass, `realtime-integration..HEAD` re-scoped to
+  `81a772d..HEAD` because lane/a landed on the integration branch after this
+  branch merged it): no blocking defect; the verifier's mutation run confirms
+  test 2 dies if `set_mode` also calls `reset()` and both tests die if the mode
+  goes stale or the switch never happens. Three findings fixed — the per-frame
+  `LOGGER.warning` on the `output_active` failure path was removed (it could
+  format a traceback ~31 times a second on the capture thread, and the wake loop
+  already reports the same failure); `set_mode`'s docstring now names the shared
+  debounce fields that make a mid-utterance switch safe; the test fixture now
+  varies the probability and grows the LSTM so a cleared window or LSTM is
+  observable rather than indistinguishable from a fresh one. ADR-0006 §10.1 was
+  trimmed to the one fact it owns and no longer names `vad_endpoint_candidate`,
+  which is not in that list. Not fixed, by design: the exception-path semantics
+  have no test (the card caps this file at exactly two) and the `"tts"` default
+  ships unexercised by any live run — both are owner decisions recorded in the
+  burn document, not defects.

@@ -590,7 +590,8 @@ class UtteranceAssembler:
         try:
             speaking = self._output_active()
         except Exception:  # noqa: BLE001 - unknown output state keeps the current profile
-            LOGGER.warning("output activity query failed; VAD profile unchanged", exc_info=True)
+            # Not logged: this runs per classified frame, and the wake loop
+            # already reports a failing output_active at its own rate.
             return
         self._vad.set_mode(self._output_active_vad_mode if speaking else "record")
 

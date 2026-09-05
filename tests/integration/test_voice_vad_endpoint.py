@@ -116,21 +116,29 @@ def test_reused_vad_resets_prewarms_and_waits_for_consecutive_silence(
     ] * 2
 
 
-class _FixedSession:
-    """ONNX-shaped session returning one probability for every frame."""
+class _BetweenProfilesSession:
+    """ONNX-shaped session whose probabilities all sit between the profiles.
 
-    def __init__(self, probability: float) -> None:
-        self._probability = probability
+    The probability varies frame to frame and the recurrent state counts
+    frames, so a smoothing window or an LSTM cleared by a profile switch is
+    observable rather than indistinguishable from a fresh one.
+    """
+
+    def __init__(self) -> None:
+        self._probabilities = (0.44, 0.45, 0.46)
+        self.calls = 0
 
     def run(
         self,
         _output_names: object,
         inputs: dict[str, np.ndarray],
     ) -> list[np.ndarray]:
+        probability = self._probabilities[self.calls % len(self._probabilities)]
+        self.calls += 1
         return [
-            np.asarray([[self._probability]], dtype=np.float32),
-            inputs["h"].copy(),
-            inputs["c"].copy(),
+            np.asarray([[probability]], dtype=np.float32),
+            inputs["h"] + 1.0,
+            inputs["c"] + 1.0,
         ]
 
 
@@ -185,7 +193,7 @@ def test_strict_profile_classifies_playback_bleed_as_silence_while_output_active
     with patch.object(
         voice_audio,
         "_load_silero_session",
-        return_value=_FixedSession(0.45),
+        return_value=_BetweenProfilesSession(),
     ):
         assembler, vad = _armed_assembler(speaking)
         for index in range(12):
@@ -216,7 +224,7 @@ def test_profile_switch_carries_detector_state_and_reported_mode() -> None:
     with patch.object(
         voice_audio,
         "_load_silero_session",
-        return_value=_FixedSession(0.45),
+        return_value=_BetweenProfilesSession(),
     ):
         assembler, vad = _armed_assembler(speaking)
         for index in range(6):
@@ -224,6 +232,7 @@ def test_profile_switch_carries_detector_state_and_reported_mode() -> None:
         assert vad.is_speech_detected()
         state_before = (vad._state, vad._hits, vad._misses)  # noqa: SLF001
         window_before = list(vad._prob_window)  # noqa: SLF001
+        lstm_before = vad._h.copy()  # noqa: SLF001
 
         speaking[0] = True
         assembler.feed(_between_profiles_frame(6))
@@ -235,6 +244,7 @@ def test_profile_switch_carries_detector_state_and_reported_mode() -> None:
         assert (vad._state, vad._hits) == state_before[:2]  # noqa: SLF001
         assert vad._misses == state_before[2] + 1  # noqa: SLF001
         assert list(vad._prob_window)[:-1] == window_before[1:]  # noqa: SLF001
+        assert np.array_equal(vad._h, lstm_before + 1.0)  # noqa: SLF001
 
         endpoint_frames = vad.endpoint_silence_frames
         for index in range(7, 6 + endpoint_frames):
