@@ -1269,6 +1269,21 @@ a crashed processing lease expires, an identical re-upload may resume the
 same request; no event existed before the final transaction. A different
 hash is rejected.
 
+**Deviation as built (v2-input-endpoints).** The ASR half does not append
+`utterance.received` inside the final transaction, and an event therefore
+*can* exist before it. `VoicePipeline.run_turn` commits that row itself, on
+its own connection, and `jarvis/surface/voice_*` was outside the implementing
+card's boundary. So the inbox mints the `turn_id`, hands it to the pipeline,
+and the final `BEGIN IMMEDIATE` records the ids of the row the pipeline
+already committed. The duplicate window is closed by **lookup** rather than
+by transaction: a retry whose lease is `processing` first asks whether an
+`utterance.received` already carries that `turn_id` and resolves the original
+result from it. One accepted request still yields one `utterance.received`,
+with one stated edge — a recognition that outruns the lease TTL is assumed
+dead and its `turn_id` is handed to the retry. Making the append transactional,
+or the pipeline idempotent per `turn_id`, is the work that would retire this
+deviation. Text and image keep the transactional shape described above.
+
 `input.ptt_cancel` releases an unclaimed capture and is sent on Escape,
 recording failure, or explicit abort. Client crash/timeout expires it
 automatically. A stale expected playback generation is a safe no-op for
@@ -1298,8 +1313,9 @@ artifact, then commits the idempotency receipt plus canonical input event
 that references it. A crash before the Event Log commit may leave only an
 unreferenced content-addressed artifact, which startup GC may remove; it may
 not leave a submitted turn without its artifact. Identical retries resolve
-the receipt/reference rather than restaging. Until this route exists the
-advertised capability remains false.
+the receipt/reference rather than restaging. Until the **image** route
+exists the advertised `image_input` capability remains false; the text and
+ASR routes are built.
 
 The accepted response returns
 `status, request_id, input_event_uid, turn_id, session_id?, artifact_ref?`.
@@ -1332,8 +1348,9 @@ receipt-without-event or event-without-result window.
 The inbox server-mints `turn_id` before that final transaction and writes it
 into the canonical `surface.user_intent`/`utterance.received` payload and
 receipt/result. Clients never choose a turn ID. ADR-0008's
-`claim_turn_once(trigger_event_uid)` reuses that exact payload turn ID when it
-appends `turn.started`; it may not mint a replacement.
+`claim_input_once(trigger_event)` — named `claim_turn_once` in this ADR's
+first draft — reuses that exact payload turn ID when it appends
+`turn.started`; it may not mint a replacement.
 
 ### D22. Cancel task
 

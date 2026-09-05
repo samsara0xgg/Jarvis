@@ -63,7 +63,7 @@ public enum InherentReducer {
       return applyEphemeral(envelope, to: &state)
 
     case .local(let local):
-      apply(local, to: &state.presentation)
+      apply(local, to: &state)
       return []
     }
   }
@@ -327,6 +327,12 @@ public enum InherentReducer {
   private static func applyOpened(
     _ opened: ResponseOpened, to state: inout InherentUXState
   ) -> [InherentEffect] {
+    // D21: the server just named the group this client's submission produced.
+    // An id this client never sent is simply not ours — another window, an
+    // older process — and is ignored rather than treated as a mismatch.
+    if let requestID = opened.sourceClientRequestId {
+      state.pendingInputs.removeValue(forKey: requestID)
+    }
     let groupID = ResponseGroupID(opened.responseGroupId)
     let responseID = ResponseID(opened.responseId)
     if state.responseGroups[groupID] == nil {
@@ -798,6 +804,27 @@ public enum InherentReducer {
   /// Nothing here leaves the client and nothing here is server truth: hiding
   /// the window flips one flag and cancels nothing.
   private static func apply(
+    _ event: LocalPresentationEvent, to state: inout InherentUXState
+  ) {
+    // D21: the only local event that is not presentation — a pending input is
+    // this client's own bookkeeping about a submission the server has not yet
+    // answered with a group.
+    guard case .inputSubmitted(let pending) = event else {
+      apply(event, to: &state.presentation)
+      return
+    }
+    state.pendingInputs[pending.requestID] = pending
+    while state.pendingInputs.count > pendingInputLimit {
+      guard
+        let oldest = state.pendingInputs.values.min(by: {
+          ($0.submittedAtMs, $0.requestID) < ($1.submittedAtMs, $1.requestID)
+        })
+      else { break }
+      state.pendingInputs.removeValue(forKey: oldest.requestID)
+    }
+  }
+
+  private static func apply(
     _ event: LocalPresentationEvent, to presentation: inout LocalPresentationState
   ) {
     switch event {
@@ -813,6 +840,7 @@ public enum InherentReducer {
     case .setReduceMotion(let reduce): presentation.reduceMotion = reduce
     case .setPanelFrame(let frame): presentation.panelFrame = frame
     case .setScrollAnchor(let anchor): presentation.scrollAnchor = anchor
+    case .inputSubmitted: break  // handled by the InherentUXState overload
     }
   }
 }

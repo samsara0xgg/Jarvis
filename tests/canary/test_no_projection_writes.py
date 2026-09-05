@@ -54,7 +54,22 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # `_assign_log_epoch_once`. Operational, not projection truth.
     "jarvis/state/event_log.py": frozenset({"event_log_metadata"}),
     "jarvis/state/trigger_consumption.py": frozenset({"decision_trigger_consumptions"}),
+    # ADR-0014 D21: the authenticated v2 input receipt, written in the same
+    # transaction as the canonical input event it names.
+    "jarvis/state/input_submission_inbox.py": frozenset({"input_submission_receipts"}),
 }
+
+# A receipt that could never move from `processing` to `accepted` would be a
+# write-once table that cannot record its own result, so the D21 lease resolves
+# in place. This allowlist is coarser than the outbox's rule below, which pins
+# one exact SQL string: the lease is written by four different statements
+# (claim, resolve, release, resume), so it is scoped by owning file plus table
+# instead. Any UPDATE from any other file, or on any other table, still trips
+# H1, and the table is bounded operational debt, never a projection.
+_L2_OPERATIONAL_UPDATES: dict[str, frozenset[str]] = {
+    "jarvis/state/input_submission_inbox.py": frozenset({"input_submission_receipts"}),
+}
+
 
 
 def _allowed_insert(rel_path: str, table: str) -> bool:
@@ -75,7 +90,9 @@ _MIGRATION_MARKER = "/* L2 schema migration"
 
 
 def _allowed_migration_update(rel_path: str, source: str, table: str) -> bool:
-    """Allow tagged migrations and the L2 outbox's one-way admission CAS."""
+    """Allow tagged migrations and an L2 owner resolving its own debt."""
+    if table.lower() in _L2_OPERATIONAL_UPDATES.get(rel_path, frozenset()):
+        return True
     if rel_path == "jarvis/state/authorized_dispatch_outbox.py":
         return (
             table.lower() == "authorized_dispatch_outbox"

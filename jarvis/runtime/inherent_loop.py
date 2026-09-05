@@ -78,7 +78,7 @@ import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 import uvicorn
 
@@ -133,6 +133,16 @@ from jarvis.state.input_claim import (
     claim_input_once,
     recoverable_inputs,
 )
+from jarvis.state.input_submission_inbox import (
+    InputReceipt,
+    PayloadConflictError,
+    SubmissionInProgressError,
+    SubmissionKey,
+    claim_asr_request,
+    release_asr_request,
+    resolve_asr_request,
+    submit_text_once,
+)
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
     voice_asr,
@@ -148,7 +158,12 @@ from jarvis.surface import (
 from jarvis.surface.cli import emit_surface_user_intent
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_protocol import RuntimeCapabilities
-from jarvis.surface.inherent_server import InherentDeps, InherentV2Deps, create_app
+from jarvis.surface.inherent_server import (
+    InherentDeps,
+    InherentV2Deps,
+    InputSubmissionOutcome,
+    create_app,
+)
 from jarvis.surface.repo_observer import RepoObserver
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
@@ -2767,6 +2782,106 @@ def _v2_runtime_capabilities(
     )
 
 
+V2_PRINCIPAL: Final[str] = "inherent_v2"
+"""The ADR-0014 D21 ``authenticated_principal``.
+
+The v2 socket authenticates one shared per-boot bearer token, not a user, so
+this constant names that credential rather than a person.  The idempotency key
+still separates clients through ``client_instance_id``; a per-user principal
+arrives with a real identity mechanism.
+"""
+
+
+def _v2_accepted(receipt: InputReceipt) -> InputSubmissionOutcome:
+    """Carry a durable receipt across the L2 -> L5 boundary as a plain value."""
+    return InputSubmissionOutcome(
+        outcome="accepted",
+        request_id=receipt.request_id,
+        input_event_uid=receipt.input_event_uid,
+        turn_id=receipt.turn_id,
+        session_id=receipt.session_id,
+        utterance_id=receipt.utterance_id,
+        text=receipt.text,
+        emotion=receipt.emotion,
+    )
+
+
+def _submit_text_v2(
+    event_log_path: Path,
+    request_id: str,
+    client_instance_id: str,
+    text: str,
+) -> InputSubmissionOutcome:
+    """ADR-0014 D21 — the inbox behind ``POST /inherent/submit/v2``.
+
+    Bound at daemon start and run on an ``asyncio.to_thread`` worker, so it
+    opens its own connection exactly as ``submit_callable`` does.
+    """
+    key = SubmissionKey(V2_PRINCIPAL, client_instance_id, request_id)
+    inner_conn = open_event_log(event_log_path)
+    try:
+        return _v2_accepted(submit_text_once(inner_conn, key=key, transcript=text))
+    except PayloadConflictError:
+        return InputSubmissionOutcome(outcome="payload_conflict")
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            inner_conn.close()
+
+
+def _submit_asr_v2(  # noqa: PLR0913 — the bound path and pipeline plus the four request fields.
+    event_log_path: Path,
+    voice_pipeline_callable: Callable[[bytes, str, str, str], Event],
+    pcm: bytes,
+    request_id: str,
+    client_instance_id: str,
+    audio_sha256: str,
+    language: str,
+) -> InputSubmissionOutcome:
+    """ADR-0014 D21 — the lease around ``POST /inherent/asr-submit/v2``.
+
+    The lease is claimed and released on this connection while ASR itself runs
+    outside any transaction, which is the whole point of the two-phase shape:
+    a SenseVoice pass may take seconds and must never hold the write lock.
+    A pipeline failure releases the lease so the same ``request_id`` can be
+    retried at once rather than waiting out the TTL.
+    """
+    key = SubmissionKey(V2_PRINCIPAL, client_instance_id, request_id)
+    inner_conn = open_event_log(event_log_path)
+    try:
+        try:
+            claim = claim_asr_request(
+                inner_conn, key=key, audio_sha256=audio_sha256, language=language,
+            )
+        except PayloadConflictError:
+            return InputSubmissionOutcome(outcome="payload_conflict")
+        except SubmissionInProgressError:
+            return InputSubmissionOutcome(outcome="in_progress")
+        if isinstance(claim, InputReceipt):
+            return _v2_accepted(claim)
+        try:
+            event = voice_pipeline_callable(pcm, claim.turn_id, "inherent_ptt", language)
+        except BaseException:
+            release_asr_request(inner_conn, key=key)
+            raise
+        utterance_id = event.payload.get("utterance_id")
+        return _v2_accepted(
+            resolve_asr_request(
+                inner_conn,
+                key=key,
+                audio_sha256=audio_sha256,
+                language=language,
+                turn_id=claim.turn_id,
+                input_event_uid=event.event_uid,
+                utterance_id=utterance_id if isinstance(utterance_id, str) else None,
+                text=str(event.payload.get("transcript", "")),
+                emotion=str(event.payload.get("emotion", "") or ""),
+            ),
+        )
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            inner_conn.close()
+
+
 async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring plus boot-reconciliation branches necessarily inflate body length + branch count.
     runtime: JarvisRuntime,
     *,
@@ -3043,6 +3158,18 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
                     response_interrupt=cancel_response_callable is not None,
                 ),
                 attach_client=None if inherent_view is None else inherent_view.attach_client,
+                submit_text=functools.partial(
+                    _submit_text_v2, runtime.runtime_paths.event_log,
+                ),
+                submit_asr=(
+                    None
+                    if voice_pipeline_callable is None
+                    else functools.partial(
+                        _submit_asr_v2,
+                        runtime.runtime_paths.event_log,
+                        voice_pipeline_callable,
+                    )
+                ),
             ),
         )
         app = create_app(deps)

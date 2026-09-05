@@ -45,6 +45,8 @@ RESPONSE_EVENT_TYPES: Final[tuple[str, ...]] = (
 )
 INLINE_DOCUMENT_BUDGET_BYTES: Final[int] = 16384
 RECENT_TERMINAL_GROUP_LIMIT: Final[int] = 20
+INPUT_CORRELATION_TYPE: Final[str] = "surface.user_intent"
+PENDING_REQUEST_LIMIT: Final[int] = 64
 
 PanelStream = Literal["open", "closed"]
 ChangeKind = Literal["response.opened", "response.segment", "response.delivery"]
@@ -95,6 +97,7 @@ class ResponseView:
     panel_stream: PanelStream
     segments: tuple[SegmentView, ...] = ()
     document_reference: DocumentReference | None = None
+    source_client_request_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +111,7 @@ class ResponseGroupView:
     opened_cursor: int
     last_cursor: int
     responses: tuple[ResponseView, ...]
+    source_client_request_id: str | None = None
 
     @property
     def terminal(self) -> bool:
@@ -117,10 +121,16 @@ class ResponseGroupView:
 
 @dataclass(frozen=True)
 class InherentViewCheckpoint:
-    """The bounded, immutable state a snapshot is built from (D8 step 1)."""
+    """The bounded, immutable state a snapshot is built from (D8 step 1).
+
+    ``pending_requests`` carries the D21 ``turn_id -> source_client_request_id``
+    entries whose group has not opened yet, so a catch-up re-fold from this
+    checkpoint stamps the same correlation a live client saw.
+    """
 
     through_cursor: int
     groups: tuple[ResponseGroupView, ...]
+    pending_requests: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -213,9 +223,11 @@ class InherentView:
         *,
         through_cursor: int = 0,
         groups: Iterable[ResponseGroupView] = (),
+        pending_requests: Iterable[tuple[str, str]] = (),
     ) -> None:
         """Start from ``groups`` as truth folded through ``through_cursor``."""
         self._through_cursor = through_cursor
+        self._request_of_turn: dict[str, str] = dict(pending_requests)
         self._groups: dict[str, ResponseGroupView] = {
             group.response_group_id: group for group in groups
         }
@@ -228,7 +240,11 @@ class InherentView:
     @classmethod
     def from_checkpoint(cls, checkpoint: InherentViewCheckpoint) -> InherentView:
         """Clone a checkpoint into a fold that accepts rows past its cursor."""
-        return cls(through_cursor=checkpoint.through_cursor, groups=checkpoint.groups)
+        return cls(
+            through_cursor=checkpoint.through_cursor,
+            groups=checkpoint.groups,
+            pending_requests=checkpoint.pending_requests,
+        )
 
     @property
     def through_cursor(self) -> int:
@@ -254,7 +270,11 @@ class InherentView:
             raise ValueError(msg)
         self._through_cursor = through_cursor
         ordered = sorted(self._groups.values(), key=lambda group: group.opened_cursor)
-        return InherentViewCheckpoint(through_cursor=through_cursor, groups=tuple(ordered))
+        return InherentViewCheckpoint(
+            through_cursor=through_cursor,
+            groups=tuple(ordered),
+            pending_requests=tuple(self._request_of_turn.items()),
+        )
 
     def fold(
         self,
@@ -291,6 +311,8 @@ class InherentView:
             msg = f"cursor {cursor} does not advance past {self._through_cursor}"
             raise ValueError(msg)
         self._through_cursor = cursor
+        if event_type == INPUT_CORRELATION_TYPE:
+            self._remember_request(payload)
         if event_type not in RESPONSE_EVENT_TYPES:
             return None
         response_id = _string(payload, "response_id")
@@ -345,6 +367,15 @@ class InherentView:
         group_id = _string(payload, "response_group_id") or response_id
         turn_id = _string(payload, "turn_id") or ""
         question = _string(payload, "query")
+        group = self._groups.get(group_id)
+        # D21: the correlation is consumed when the group first opens; a
+        # sibling response of an already-open group inherits what the group
+        # carries, exactly as it shares the group's turn.
+        request_id = (
+            self._request_of_turn.pop(turn_id, None)
+            if group is None
+            else group.source_client_request_id
+        )
         response = ResponseView(
             response_id=response_id,
             response_group_id=group_id,
@@ -355,8 +386,8 @@ class InherentView:
             created_at_ms=ts_epoch_ms,
             revision=cursor,
             panel_stream="open",
+            source_client_request_id=request_id,
         )
-        group = self._groups.get(group_id)
         if group is None:
             group = ResponseGroupView(
                 response_group_id=group_id,
@@ -366,6 +397,7 @@ class InherentView:
                 opened_cursor=cursor,
                 last_cursor=cursor,
                 responses=(),
+                source_client_request_id=request_id,
             )
         self._groups[group_id] = replace(
             group,
@@ -375,6 +407,22 @@ class InherentView:
         )
         self._group_of[response_id] = group_id
         return response
+
+    def _remember_request(self, payload: Mapping[str, Any]) -> None:
+        """Hold one D21 ``turn_id -> request_id`` until its group opens.
+
+        The row itself stays irrelevant: it produces no transition and no
+        envelope, because the next ``response.opened`` already carries the
+        fact.  The map is bounded so an input row whose turn never opens a
+        response — a refused turn, a crash — cannot grow the fold with the log.
+        """
+        turn_id = _string(payload, "turn_id")
+        request_id = _string(payload, "source_client_request_id")
+        if turn_id is None or request_id is None:
+            return
+        self._request_of_turn[turn_id] = request_id
+        while len(self._request_of_turn) > PENDING_REQUEST_LIMIT:
+            self._request_of_turn.pop(next(iter(self._request_of_turn)))
 
     def _store(self, response: ResponseView, cursor: int) -> ResponseView:
         group = self._groups[response.response_group_id]
@@ -420,6 +468,8 @@ class InherentView:
 
 __all__ = [
     "INLINE_DOCUMENT_BUDGET_BYTES",
+    "INPUT_CORRELATION_TYPE",
+    "PENDING_REQUEST_LIMIT",
     "RECENT_TERMINAL_GROUP_LIMIT",
     "RESPONSE_EVENT_TYPES",
     "DocumentReference",

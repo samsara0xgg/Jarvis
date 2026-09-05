@@ -31,6 +31,9 @@ public enum LocalPresentationEvent: Sendable, Equatable {
   case setReduceMotion(Bool)
   case setPanelFrame(PanelFrame?)
   case setScrollAnchor(String?)
+  /// D21: this client accepted a receipt for a submission and is waiting for
+  /// the turn it started to open a response group.
+  case inputSubmitted(PendingInputState)
 }
 
 /// Everything the reducer accepts.  Socket-scoped cases carry the epoch they
