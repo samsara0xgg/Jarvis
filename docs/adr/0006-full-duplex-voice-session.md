@@ -413,6 +413,31 @@ The current production issues are fixed before tuning: reset Silero state for ev
 
 The normal intent watcher cannot be the only stop path: it currently waits for `drive_turn` and can leave a stop utterance queued behind the response it should interrupt.
 
+**What shipped (`keyword-ptt-safe-barge-in`).** Both stages are *spoken*,
+per D9: there is no VAD candidate stage, because without validated AEC the
+speaker's own audio produces speech verdicts constantly. The candidate is a
+**wake hit while output is active**, which opens a bounded
+`candidate_window_ms` window and arms capture so the partial-ASR lane runs;
+the confirm is a configured **interrupt keyword found in a partial-ASR
+revision inside that window**, or a **PTT upload during output**, which is a
+deliberate press and cannot be echo. A window that elapses with no keyword is
+dropped as typed telemetry and cancels nothing. `natural` is downgraded to
+`keyword_two_stage` with one warning, and `keyword_two_stage` without
+`partial_asr.enabled` fails closed to PTT confirms only. Config:
+`realtime.single_audio_ingress.barge_in.{enabled, candidate_window_ms,
+confirm_timeout_ms, interrupt_keywords}`, off by default.
+
+The shipped `BargeInRouter` (L5, `jarvis/surface/voice_interrupt.py`) is the
+receiver of `BargeInSignal` values and nothing else: it owns the window, the
+keyword matcher, and one injected interrupt callable bounded by
+`confirm_timeout_ms`. It is a different object from the transcript-routing
+`InterruptUtteranceRouter` described at the end of this decision, which stays
+unbuilt and keeps its name. Phase 1's `duck_gain` ramp and F11's unduck are
+**deferred, not rejected**, to a later card; nothing ducks today.
+`ResponseInterruptPolicy.confirmed_playback` now defaults to
+`interrupt_expected_playback_generation`, so the runtime's mechanical
+application of the L3-issued policy has an effect instead of always ignoring.
+
 Two phases:
 
 1. **Speech candidate**
@@ -751,7 +776,9 @@ duck_gain_reached
 endpoint_candidate
 utterance_committed
 asr_final
+barge_in_candidate
 barge_in_confirmed
+barge_in_candidate_dropped
 playback_cas_interrupt
 response_cancel_requested
 last_nonzero_buffer_submitted
