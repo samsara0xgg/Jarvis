@@ -494,6 +494,11 @@ class InherentClient:
             reason=reason,
         )
         if notify:
+            # The lane stays bounded: on a closing client the notice matters
+            # more than a queued ephemeral.clear, so it replaces the oldest
+            # control frame rather than growing past control_frames.
+            if len(self._control) >= self._limits.control_frames:
+                self._control.popleft()
             self._control.append(
                 self._protocol_frame(_RESYNC_MESSAGE_TYPE, _new_message_id(), {"reason": reason}),
             )

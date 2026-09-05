@@ -120,10 +120,12 @@ def test_a_durable_enqueue_past_the_frame_limit_closes_only_the_blocked_client(
             slow_socket.hold()
             handed_before = len(slow_socket.frames)
             turns = 0
-            while not slow.closed:
+            # Bounded so a lost limit fails the case instead of hanging it.
+            while not slow.closed and turns * 3 < 2 * _D11_DEFAULTS.durable_frames:
                 rig.turn(turns)
                 turns += 1
                 await _settle(0.01)
+            assert slow.closed
             # One frame sat in the blocked send; the lane behind it held the limit.
             assert len(slow_socket.frames) == handed_before + 1
             assert slow.unacked_frames == 1
