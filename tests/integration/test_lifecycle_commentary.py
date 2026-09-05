@@ -14,10 +14,11 @@ import contextlib
 import json
 import threading
 import time
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Final
 
+import pytest
 import yaml
 
 from jarvis import runtime as runtime_module
@@ -25,6 +26,8 @@ from jarvis.decision.commentary import COMMENTARY_ATTENTION_CHANNEL, commentary_
 from jarvis.decision.gates import ResponsePlan
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
+from jarvis.decision.packet import assemble_packet
+from jarvis.decision.pre_route import pre_route
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import JarvisRuntime, _wave4_response_activation, drive_turn, inherent_loop
@@ -32,8 +35,10 @@ from jarvis.shared import Event
 from jarvis.shared.realtime import Wave1FeatureFlags, stable_response_group_id
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.committed_event_bus import CommittedEventBus
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.conversation import fold_conversation_history
+from jarvis.state.event_log import emit_event, iter_events, open_event_log
 from jarvis.surface import voice_media
+from jarvis.surface.cli import parse_response_channels
 from tests.canary._helpers import repo_root
 from tests.integration.test_wave2_streaming_media import (
     _CallbackPump,
@@ -49,8 +54,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
     from typing import Self
-
-    import pytest
 
 # --- helpers ---------------------------------------------------------------
 
@@ -121,7 +124,29 @@ def test_intent_is_frozen_and_never_an_event() -> None:
         "content_hint",
         "freshness_required",
     )
+    with pytest.raises(FrozenInstanceError):
+        intent.content_hint = "别的话"  # type: ignore[misc]
     assert COMMENTARY_ATTENTION_CHANNEL == "voice_notify"
+
+
+def test_no_jarvis_module_appends_a_presentation_intent() -> None:
+    """The Contract-vs-Event note, enforced: no emit call site names the type."""
+    naming = [
+        path
+        for path in (repo_root() / "jarvis").rglob("*.py")
+        if "PresentationIntent" in path.read_text(encoding="utf-8")
+    ]
+    assert naming, "the type should exist somewhere"
+    for path in naming:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            callee = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if callee not in {"emit_event", "append_event_in_transaction"}:
+                continue
+            rendered = ast.unparse(node)
+            assert "PresentationIntent" not in rendered, path
 
 
 # --- flag graph ------------------------------------------------------------
@@ -239,13 +264,18 @@ def _make_runtime(tmp_path: Path, *, commentary: bool = True) -> JarvisRuntime:
     )
 
 
-def _user_turn(conn: sqlite3.Connection, turn_id: str) -> Event:
+def _user_turn(
+    conn: sqlite3.Connection,
+    turn_id: str,
+    *,
+    transcript: str = "现在几点",
+) -> Event:
     """Emit the user-intent trigger and the turn claim it originates."""
     intent = emit_event(
         conn,
         type="surface.user_intent",
         payload={
-            "transcript": "现在几点",
+            "transcript": transcript,
             "turn_id": turn_id,
             "channel": "cli_stdin",
             "language": "zh-CN",
@@ -294,6 +324,25 @@ def _typed_payloads(conn: sqlite3.Connection, event_type: str) -> list[dict[str,
             "SELECT payload_json FROM events WHERE type = ? ORDER BY id ASC",
             (event_type,),
         )
+    ]
+
+
+def _spoken(conn: sqlite3.Connection) -> list[str]:
+    """Return the voice text of every commentary response, tags stripped."""
+    return [
+        parse_response_channels(payload["text"]).voice
+        for payload in _typed_payloads(conn, "surface.response_emitted")
+        if payload.get("phase") == "commentary"
+    ]
+
+
+def opens_chunks_emitted(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return every `surface.response_*` payload in append order."""
+    return [
+        payload
+        for event_type in ("surface.response_open", "surface.response_chunk",
+                           "surface.response_emitted")
+        for payload in _typed_payloads(conn, event_type)
     ]
 
 
@@ -404,17 +453,20 @@ def test_action_row_speaks_one_commentary_run_in_the_turn_group(tmp_path: Path) 
     assert source[0] == dispatched.event_uid
     assert source[0] != intent.event_uid
 
-    for event_type in ("surface.response_open", "surface.response_chunk",
-                       "surface.response_emitted"):
-        payloads = _typed_payloads(reader, event_type)
-        assert len(payloads) == 1, event_type
-        assert payloads[0]["phase"] == "commentary", event_type
-        assert payloads[0]["response_id"] == started[0]["response_id"], event_type
-        assert payloads[0]["response_group_id"] == started[0]["response_group_id"]
-    assert _typed_payloads(reader, "surface.response_chunk")[0]["text"] == "我开始处理了。"
+    assert _count(reader, "surface.response_open") == 1
+    assert _count(reader, "surface.response_emitted") == 1
+    for payload in opens_chunks_emitted(reader):
+        assert payload["phase"] == "commentary"
+        assert payload["response_id"] == started[0]["response_id"]
+        assert payload["response_group_id"] == started[0]["response_group_id"]
+    assert _spoken(reader) == ["我开始处理了。"]
     assert _typed_payloads(reader, "surface.response_open")[0]["attention_channel"] == (
         COMMENTARY_ATTENTION_CHANNEL
     )
+    # The run says speech; L5 must derive the same channel from the text, or
+    # `ConversationHistory` folds the disagreement into `consistent=False`.
+    assert {payload["channel"] for payload in opens_chunks_emitted(reader)} == {"speech"}
+    assert _typed_payloads(reader, "surface.response_emitted")[0]["document_text"] == ""
     assert _count(reader, "cost.recorded") == 0
 
 
@@ -429,8 +481,14 @@ def test_action_on_a_turn_with_no_turn_started_stays_silent(tmp_path: Path) -> N
         _action_row(runtime.conn, "action.dispatched", action_id="ACT-sys", turn_id="T-sys")
         _action_row(runtime.conn, "action.running", action_id="ACT-sys", turn_id="T-sys")
         _settle()
-    assert _count(reader, "response.started") == 0
-    assert _count(reader, "surface.response_open") == 0
+        assert _count(reader, "response.started") == 0
+        assert _count(reader, "surface.response_open") == 0
+        # Positive control: the same observer, alive, does speak for a claimed
+        # turn — the silence above is the filter, not a stalled watcher.
+        _user_turn(runtime.conn, "T-user")
+        _action_row(runtime.conn, "action.dispatched", action_id="ACT-user", turn_id="T-user")
+        _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
+    assert _typed_payloads(reader, "response.started")[0]["active_subject_ref"] == "ACT-user"
 
 
 def test_reconciliation_originated_turn_stays_silent(tmp_path: Path) -> None:
@@ -453,7 +511,12 @@ def test_reconciliation_originated_turn_stays_silent(tmp_path: Path) -> None:
     with _Observer(runtime):
         _action_row(runtime.conn, "action.dispatched", action_id="ACT-r", turn_id="T-recon")
         _settle()
-    assert _count(reader, "response.started") == 0
+        assert _count(reader, "response.started") == 0
+        # Positive control, as above.
+        _user_turn(runtime.conn, "T-user")
+        _action_row(runtime.conn, "action.dispatched", action_id="ACT-user", turn_id="T-user")
+        _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
+    assert _typed_payloads(reader, "response.started")[0]["active_subject_ref"] == "ACT-user"
 
 
 # --- observer: confirmation guard ------------------------------------------
@@ -492,7 +555,7 @@ def test_live_pending_confirmation_silences_commentary(tmp_path: Path) -> None:
         )
         _action_row(runtime.conn, "action.running", action_id="ACT-c", turn_id="T-conf")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
-    assert _typed_payloads(reader, "surface.response_chunk")[0]["text"] == "任务已经在运行。"
+    assert _spoken(reader) == ["任务已经在运行。"]
 
 
 # --- observer: coalescing and supersession ---------------------------------
@@ -523,8 +586,7 @@ def test_repeats_are_dropped_and_an_unheard_commentary_is_superseded(
 
     started = _typed_payloads(reader, "response.started")
     assert len(started) == 2
-    chunks = [payload["text"] for payload in _typed_payloads(reader, "surface.response_chunk")]
-    assert chunks == ["我开始处理了。", "任务已经在运行。"]
+    assert _spoken(reader) == ["我开始处理了。", "任务已经在运行。"]
     superseded = [
         payload
         for payload in _typed_payloads(reader, "response.cancelled")
@@ -674,10 +736,9 @@ def test_final_shares_the_group_keeps_phase_final_and_plays_after_the_commentary
 
     opens = _typed_payloads(reader, "surface.response_open")
     assert [payload["phase"] for payload in opens] == ["commentary", "final"]
-    assert [payload["phase"] for payload in _typed_payloads(reader, "surface.response_chunk")] == [
-        "commentary",
-        "final",
-    ]
+    assert {
+        payload["phase"] for payload in _typed_payloads(reader, "surface.response_chunk")
+    } == {"commentary", "final"}
     emitted = _typed_payloads(reader, "surface.response_emitted")
     assert [payload["phase"] for payload in emitted] == ["commentary", "final"]
     group = stable_response_group_id("T-both")
@@ -735,6 +796,7 @@ def _log_shape(
     conn: sqlite3.Connection,
     *,
     drop_response_ids: frozenset[str] = frozenset(),
+    drop_response_hashes: frozenset[str] = frozenset(),
 ) -> list[tuple[str, dict[str, Any]]]:
     """Return `(type, payload)` for the whole log, in append order."""
     shape: list[tuple[str, dict[str, Any]]] = []
@@ -743,6 +805,8 @@ def _log_shape(
     ):
         payload = json.loads(raw)
         if str(payload.get("response_id", "")) in drop_response_ids:
+            continue
+        if str(payload.get("response_hash", "")) in drop_response_hashes:
             continue
         shape.append(
             (
@@ -761,6 +825,19 @@ def _commentary_response_ids(conn: sqlite3.Connection) -> frozenset[str]:
     return frozenset(
         str(payload["response_id"])
         for payload in _typed_payloads(conn, "response.started")
+        if payload.get("phase") == "commentary"
+    )
+
+
+def _commentary_response_hashes(conn: sqlite3.Connection) -> frozenset[str]:
+    """The plan hashes of those runs; the only way to name their gate rows.
+
+    `gate.evaluated(pre_emit)` carries no `response_id`, so the commentary's
+    own verdict row has to be identified by the hash it approved.
+    """
+    return frozenset(
+        str(payload["response_hash"])
+        for payload in _typed_payloads(conn, "surface.response_emitted")
         if payload.get("phase") == "commentary"
     )
 
@@ -798,6 +875,7 @@ def test_flag_off_event_log_is_what_the_observer_never_touched(
     assert _log_shape(off_reader) == _log_shape(
         on_reader,
         drop_response_ids=_commentary_response_ids(on_reader),
+        drop_response_hashes=_commentary_response_hashes(on_reader),
     )
     off_phases = {
         payload.get("phase")
@@ -860,5 +938,120 @@ def test_a_terminal_row_with_no_correlation_finds_its_turn_through_dispatch(
 
     started = _typed_payloads(reader, "response.started")
     assert [payload["turn_id"] for payload in started] == ["T-join", "T-join"]
-    chunks = [payload["text"] for payload in _typed_payloads(reader, "surface.response_chunk")]
-    assert chunks == ["我开始处理了。", "结果回来了，我整理一下。"]  # noqa: RUF001 — intentional Chinese punctuation.
+    assert _spoken(reader) == ["我开始处理了。", "结果回来了，我整理一下。"]  # noqa: RUF001 — intentional Chinese punctuation.
+
+
+# --- the per-turn assumption the card asked the lane to prove ---------------
+
+
+def test_two_presentation_records_under_one_turn_stay_consistent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A commentary plus its final fold into one consistent ConversationTurn.
+
+    The card's disposition table names this: `MAX_RESPONSES_PER_TURN = 8` and
+    the fold is keyed by `response_id`, so two records are admissible. What is
+    NOT free is agreement — `_bind_identity` marks a record inconsistent if a
+    response's `channel` changes between its `response.started` and its
+    surface rows, one inconsistent record makes the whole history
+    inconsistent, and `pre_route` then answers `unknown` for every later turn
+    in the window, silently switching routine streaming off. That is exactly
+    what an untagged commentary phrase used to do.
+    """
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    intent = _user_turn(runtime.conn, "T-fold")
+    _script_final(monkeypatch)
+    with _Observer(runtime):
+        _action_row(runtime.conn, "action.dispatched", action_id="ACT-f", turn_id="T-fold")
+        _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
+        _drive_final(runtime, intent)
+        _settle()
+
+    history = fold_conversation_history(iter_events(reader))
+    assert history.consistent is True
+    assert len(history.turns) == 1
+    records = history.turns[0].responses
+    assert [record.phase for record in records] == ["commentary", "final"]
+    assert [record.channel for record in records] == ["speech", "both"]
+    assert len({record.response_id for record in records}) == 2
+    assert all(record.consistent for record in records)
+
+
+def test_commentary_leaves_the_next_turns_pre_route_alone(tmp_path: Path) -> None:
+    """The regression that motivates the `<voice>` tag, pinned end to end."""
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    _user_turn(runtime.conn, "T-route")
+    with _Observer(runtime):
+        dispatched = _action_row(
+            runtime.conn, "action.dispatched", action_id="ACT-rt", turn_id="T-route",
+        )
+        _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
+    # Close the action so the status board is quiet; the history is then the
+    # only thing that could still force `unknown`.
+    _action_row(
+        runtime.conn, "action.result_observed", action_id="ACT-rt", turn_id="T-route",
+        source_event_id=dispatched.event_uid,
+    )
+    later = _user_turn(reader, "T-next", transcript="随便说点什么吧")
+    packet = assemble_packet(later, reader, entity_bookmarks=())
+    assert fold_conversation_history(iter_events(reader)).consistent is True
+    assert pre_route(
+        packet,
+        tier0_table=runtime.tier0_table,
+        tool_cues=runtime.tool_cues,
+        now_ms=int(time.time() * 1000),
+    ) == "casual_or_explanatory"
+
+
+def test_a_playing_commentary_is_completed_not_cut_off(tmp_path: Path) -> None:
+    """D6: a commentary already playing finishes; only an unheard one is cut.
+
+    Deterministic reconstruction of a race the live run hit. The action row
+    that supersedes a phrase is written *before* that phrase's playback
+    begins, so it has the lower row id — an observer that judged "already
+    playing" from its own cursor position would always decide too early. Here
+    the two helper calls stand in for the two cursor positions, with the
+    `surface.playback_started` row landing between them.
+    """
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    _user_turn(runtime.conn, "T-cut")
+    dispatched = _action_row(
+        runtime.conn, "action.dispatched", action_id="ACT-cut", turn_id="T-cut",
+    )
+    first = inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
+        runtime, action_event=dispatched, previous=None,
+    )
+    assert first is not None
+    emit_event(
+        runtime.conn,
+        type="surface.playback_started",
+        payload={
+            "session_id": "SESS-cut",
+            "response_id": first.run.response_id,
+            "turn_id": "T-cut",
+            "playback_generation_id": 1,
+            "phase": "commentary",
+            "channel": "speech",
+            "speech_text_hash": "deadbeef",
+        },
+        correlation={"turn_id": "T-cut"},
+    )
+    running = _action_row(
+        runtime.conn, "action.running", action_id="ACT-cut", turn_id="T-cut",
+        source_event_id=dispatched.event_uid,
+    )
+    second = inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
+        runtime, action_event=running, previous=first,
+    )
+    assert second is not None
+
+    assert _typed_payloads(reader, "response.cancelled") == []
+    completed = [
+        payload["response_id"] for payload in _typed_payloads(reader, "response.completed")
+    ]
+    assert completed == [first.run.response_id]
+    assert _spoken(reader) == ["我开始处理了。", "任务已经在运行。"]

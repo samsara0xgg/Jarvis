@@ -74,4 +74,27 @@ def commentary_intent_for(event: Event) -> PresentationIntent | None:
     )
 
 
-__all__ = ["COMMENTARY_ATTENTION_CHANNEL", "commentary_intent_for"]
+def commentary_speech_text(intent: PresentationIntent) -> str:
+    """Render one intent as the channelized text L5 splits into surfaces.
+
+    Commentary is speech and never a document: the run declares
+    ``channel="speech"`` and its policy admits no other channel.  L5 does not
+    read that declaration — it derives the delivered channel from the text
+    itself (``parse_response_channels``), and an untagged phrase lands in both
+    slots, so the run and its own surface rows would disagree.  That
+    disagreement is not cosmetic: ``ConversationHistory`` folds a
+    ``speech`` -> ``both`` change on one response into ``consistent=False``,
+    and ``pre_route`` answers ``unknown`` for every later turn in the history
+    window, silently switching routine streaming off.
+
+    The ``<voice>`` tag is the same L3 -> L5 convention every ordinary answer
+    already uses, so nothing downstream learns a new shape.
+    """
+    return f"<voice>{intent.content_hint}</voice>"
+
+
+__all__ = [
+    "COMMENTARY_ATTENTION_CHANNEL",
+    "commentary_intent_for",
+    "commentary_speech_text",
+]

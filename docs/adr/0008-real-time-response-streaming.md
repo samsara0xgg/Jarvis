@@ -100,7 +100,7 @@ Rules:
 - cancellation is idempotent;
 - `waiting_action` means the response is quiet while linked actions continue; it does not occupy the input watcher;
 - an action result may resume the same logical group with a new response or continue the existing run according to the route policy;
-- physical playback completion is not a ResponseRun terminal condition. L3 generation and L5 delivery are separate truths.
+- physical playback completion is not a ResponseRun terminal condition. L3 generation and L5 delivery are separate truths. The one exception is a D6 lifecycle-commentary run, whose text is a fixed phrase with no generation to complete; see D6.
 
 Exactly-one is a mechanism, not an assertion. L3 owns a single `ResponseTerminalizer`; completion, cancel, provider failure, shutdown, and recovery all call it. The terminalizer invokes one L2 atomic append operation: inside the same `BEGIN IMMEDIATE` transaction it verifies that `response_id` has no terminal, appends exactly one canonical terminal event, and commits, returning `Event | AlreadyTerminal`. There is no separate claim marker followed by a later emit. Losing callers cannot append another terminal.
 

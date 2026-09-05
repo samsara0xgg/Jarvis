@@ -92,8 +92,12 @@ if TYPE_CHECKING:
     from jarvis.state.committed_event_bus import CommittedEventBus
     from jarvis.state.projections import ClaimEvidenceProjection
 
-from jarvis.decision.commentary import COMMENTARY_ATTENTION_CHANNEL, commentary_intent_for
-from jarvis.decision.gates import pre_emit_gate
+from jarvis.decision.commentary import (
+    COMMENTARY_ATTENTION_CHANNEL,
+    commentary_intent_for,
+    commentary_speech_text,
+)
+from jarvis.decision.gates import ResponsePlan, pre_emit_gate
 from jarvis.decision.response_run import (
     ResponseCancelledError,
     ResponseCancelRequest,
@@ -1255,6 +1259,9 @@ terminals, and the registry has already dropped them by the time they are
 observed, so no such check applies to them.
 """
 
+_COMMENTARY_SHUTDOWN_BUDGET_S: Final[float] = 0.5
+"""Whole-budget SQLite wait the teardown cancel may spend on the event loop."""
+
 _COMMENTARY_ORIGIN_TRIGGER_TYPES: Final[frozenset[str]] = frozenset(
     {"surface.user_intent", "utterance.received"},
 )
@@ -1278,24 +1285,65 @@ class _OpenCommentary:
 
     action_id: str
     run: ResponseRun
-    terminalizer: ResponseTerminalizer
     registry: ResponseRunRegistry
     response_hash: str
 
 
-def _commentary_terminalizer(runtime: JarvisRuntime) -> ResponseTerminalizer:
+def _commentary_terminalizer(
+    runtime: JarvisRuntime,
+    *,
+    deadline: float | None = None,
+) -> ResponseTerminalizer:
     """Build a terminalizer that owns its connection, like the cancel seam.
 
     The run outlives the worker call that opened it, so the terminal owner
     cannot close over that call's connection; ``close_after=True`` with a
     per-call ``open_runtime_event_log`` is the established shape
     (:func:`jarvis.runtime.make_response_cancel_callable`).
+
+    ``deadline`` becomes the connection's SQLite ``busy_timeout``. The
+    teardown path passes one because it runs on the event-loop thread: an
+    unbounded wait there would hold the loop for the default five seconds per
+    unheard run while a worker owns the writer.
     """
     event_log_path = runtime.runtime_paths.event_log
     return ResponseTerminalizer(
-        lambda: open_runtime_event_log(event_log_path),
+        lambda: open_runtime_event_log(event_log_path, deadline=deadline),
         close_after=True,
         committed_event_bus=runtime.committed_event_bus,
+    )
+
+
+def _emit_pre_emit_verdict(
+    conn: sqlite3.Connection,
+    *,
+    plan: ResponsePlan,
+    turn_id: str,
+) -> None:
+    """Record the Pre-emit Gate verdict this commentary was approved under.
+
+    ADR-0001 § Gate contracts: the gate emits
+    ``gate.evaluated(gate="pre_emit", ...)`` before any byte of the response
+    reaches L5. The commentary path calls the gate itself rather than going
+    through ``decide()``, so it owns that append too; the payload is the same
+    shape ``jarvis.decision``'s emitter writes.
+    """
+    emit_event(
+        conn,
+        type="gate.evaluated",
+        payload={
+            "gate": "pre_emit",
+            "outcome": plan.permission,
+            "reasons": [
+                f"permission={plan.permission}",
+                f"downgrade_required={plan.downgrade_required}",
+                f"active_claim_levels={list(plan.active_claim_levels)}",
+            ],
+            "response_hash": plan.response_hash,
+            "claim_levels": list(plan.active_claim_levels),
+            "attempt": 0,
+        },
+        correlation={"turn_id": turn_id},
     )
 
 
@@ -1359,11 +1407,51 @@ def _commentary_turn_id(conn: sqlite3.Connection, action_event: Event) -> str | 
     return turn_id
 
 
-def _cancel_unheard_commentary(entry: _OpenCommentary, *, reason: str) -> None:
+_SELECT_COMMENTARY_PLAYBACK_SQL = (
+    "SELECT 1 FROM events WHERE type = 'surface.playback_started' "
+    "AND json_extract(payload_json, '$.response_id') = ? LIMIT 1"
+)
+
+
+def _commentary_reached_the_speaker(conn: sqlite3.Connection, response_id: str) -> bool:
+    """Return whether ``surface.playback_started`` already named this run.
+
+    Read from the log rather than from the observer's cursor position, and
+    that difference is the whole point. The action row that supersedes a
+    commentary is written *before* that commentary's playback begins, so it
+    always has the lower row id: by cursor order alone the observer would
+    reach the supersede decision while still believing the earlier phrase had
+    never been heard, and cut off speech that was already coming out of the
+    speaker (observed live: `surface.playback_interrupted` mid-phrase). D6's
+    "a commentary already playing finishes" is only true if this is a durable
+    read.
+    """
+    return conn.execute(_SELECT_COMMENTARY_PLAYBACK_SQL, (response_id,)).fetchone() is not None
+
+
+def _retire_superseded_commentary(
+    runtime: JarvisRuntime,
+    conn: sqlite3.Connection,
+    previous: _OpenCommentary,
+) -> None:
+    """Close the phrase a newer lifecycle row replaces, the right way."""
+    if _commentary_reached_the_speaker(conn, previous.run.response_id):
+        _complete_commentary(runtime, previous)
+        return
+    _cancel_unheard_commentary(runtime, previous, reason="superseded")
+
+
+def _cancel_unheard_commentary(
+    runtime: JarvisRuntime,
+    entry: _OpenCommentary,
+    *,
+    reason: str,
+    deadline: float | None = None,
+) -> None:
     """Cancel a commentary run that never reached the speaker."""
     request_response_cancel(
         entry.registry,
-        entry.terminalizer,
+        _commentary_terminalizer(runtime, deadline=deadline),
         ResponseCancelRequest(
             request_id="CREQ" + uuid.uuid4().hex,
             response_id=entry.run.response_id,
@@ -1373,10 +1461,14 @@ def _cancel_unheard_commentary(entry: _OpenCommentary, *, reason: str) -> None:
     )
 
 
-def _complete_commentary(entry: _OpenCommentary) -> None:
+def _complete_commentary(runtime: JarvisRuntime, entry: _OpenCommentary) -> None:
     """Close a commentary run whose phrase reached the speaker."""
+    if not entry.run.is_open:
+        # A cancel already won the CAS — playback of a superseded phrase that
+        # started anyway is not a reason to raise out of the watcher.
+        return
     entry.run.mark("finalizing")
-    outcome = entry.terminalizer.complete(
+    outcome = _commentary_terminalizer(runtime).complete(
         entry.run.facts,
         response_hash=entry.response_hash,
     )
@@ -1433,7 +1525,8 @@ def _render_commentary(  # noqa: PLR0913 - the run's five independent inputs
     # No subject is in scope for a fixed lifecycle phrase, so the Pre-emit
     # Gate short-circuits to its routine pass-through and hands back the
     # token `render_response` demands.
-    plan = pre_emit_gate(intent.content_hint, claim_evidence, None)
+    plan = pre_emit_gate(commentary_speech_text(intent), claim_evidence, None)
+    _emit_pre_emit_verdict(conn, plan=plan, turn_id=turn_id)
     render_response(
         record_pre_emit_token(
             SurfaceState(last_gate_response_hash=None),
@@ -1460,7 +1553,6 @@ def _render_commentary(  # noqa: PLR0913 - the run's five independent inputs
     return _OpenCommentary(
         action_id=intent.subject_ref,
         run=run,
-        terminalizer=_commentary_terminalizer(runtime),
         registry=registry,
         response_hash=plan.response_hash,
     )
@@ -1509,7 +1601,7 @@ def _open_commentary_in_worker_thread(
         ):
             return None
         if previous is not None:
-            _cancel_unheard_commentary(previous, reason="superseded")
+            _retire_superseded_commentary(runtime, conn, previous)
         return _render_commentary(
             runtime,
             conn,
@@ -1560,7 +1652,7 @@ async def _commentary_watcher(
                 after_id = max(after_id, row_id)
                 try:
                     if ev.type == "surface.playback_started":
-                        await _commentary_heard(open_by_action, ev)
+                        await _commentary_heard(runtime, open_by_action, ev)
                         continue
                     action_id = _event_action_id(ev)
                     if action_id is None or (action_id, ev.type) in spoken:
@@ -1583,14 +1675,21 @@ async def _commentary_watcher(
                     )
             await asyncio.sleep(poll_interval_s)
     except asyncio.CancelledError:
+        shutdown_deadline = time.monotonic() + _COMMENTARY_SHUTDOWN_BUDGET_S
         for entry in open_by_action.values():
             with contextlib.suppress(Exception):
-                _cancel_unheard_commentary(entry, reason="shutdown")
+                _cancel_unheard_commentary(
+                    runtime,
+                    entry,
+                    reason="shutdown",
+                    deadline=shutdown_deadline,
+                )
         LOGGER.info("commentary_watcher cancelled")
         raise
 
 
 async def _commentary_heard(
+    runtime: JarvisRuntime,
     open_by_action: dict[str, _OpenCommentary],
     event: Event,
 ) -> None:
@@ -1603,7 +1702,7 @@ async def _commentary_heard(
     if entry is None:
         return
     del open_by_action[entry.action_id]
-    await asyncio.to_thread(_complete_commentary, entry)
+    await asyncio.to_thread(_complete_commentary, runtime, entry)
 
 
 def _build_voice_pipeline(
