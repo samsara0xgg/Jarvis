@@ -60,13 +60,6 @@ _OWNER_ENV = Path.home() / ".jarvis" / "env"
 _FORBIDDEN_PORT = 8006
 _EVENT_LOG_NAME = "mac_events.db"
 _SILENT_DEVICE = "BlackHole 16ch"
-_FALLBACK_DEVICE = "MacBook Pro Speakers"
-"""Restore target when the captured route is ALREADY the loopback.
-
-Two overlapping lanes once left the owner with no speaker output: the
-second lane captured ``BlackHole 16ch`` as "before" and faithfully put it
-back. Restoring the loopback is never the right answer.
-"""
 _SWITCH_AUDIO = "SwitchAudioSource"
 _INSTALL_HINT = "brew install switchaudio-osx blackhole-16ch"
 
@@ -254,6 +247,9 @@ def _build_overlay(root: Path) -> Path:
     realtime["response"]["routine_streaming"]["enabled"] = True
     realtime["streaming_output"]["enabled"] = True
     realtime["streaming_output"]["speak_from_segments"] = True
+    # The daemon opens this device itself, so the burn is silent without
+    # touching the system default output that every other app shares.
+    realtime["output_device"] = _SILENT_DEVICE
     assert realtime["single_audio_ingress"]["enabled"] is False
     path = overlay / "config" / "jarvis.yaml"
     path.write_text(yaml.safe_dump(shipped, allow_unicode=True), encoding="utf-8")
@@ -345,14 +341,13 @@ def _stop(proc: subprocess.Popen[bytes]) -> None:
 
 @pytest.fixture
 def silent_output_device() -> Iterator[str]:
-    """Route the default output to ``BlackHole 16ch``; restore a real speaker after.
+    """Guard that the burn can be silent, and pin the system route it must not touch.
 
-    The device to restore is captured from ``SwitchAudioSource -c -t output``
-    before switching, EXCEPT when that capture is already the loopback — an
-    overlapping lane having switched first — in which case the restore target
-    is ``MacBook Pro Speakers``, because putting the loopback back would leave
-    the owner with no audible output. A missing tool or device skips the burn
-    rather than letting it play through the speakers.
+    The daemon opens ``BlackHole 16ch`` per process through
+    ``realtime.output_device``, so nothing here switches the default output —
+    the shared mutable global two overlapping lanes once fought over is gone.
+    All that remains is read-only: skip when the loopback device is absent, and
+    assert the system route reads the same before and after the burn.
     """
     if shutil.which(_SWITCH_AUDIO) is None:
         pytest.skip(f"{_SWITCH_AUDIO} not installed; run: {_INSTALL_HINT}")
@@ -371,30 +366,9 @@ def silent_output_device() -> Iterator[str]:
         text=True,
     ).stdout.strip()
     _echo(f"audio: `{_SWITCH_AUDIO} -c -t output` before = {before!r}")
-    restore = _FALLBACK_DEVICE if before == _SILENT_DEVICE else before
-    if restore != before:
-        if restore not in listed:
-            pytest.skip(f"{restore!r} absent and the captured route is the loopback")
-        _echo(
-            f"audio: captured route is already the loopback; "
-            f"restore target overridden to {restore!r}",
-        )
-    subprocess.run(  # noqa: S603 - fixed argv
-        [_SWITCH_AUDIO, "-s", _SILENT_DEVICE, "-t", "output"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    _echo(f"audio: switched default output to {_SILENT_DEVICE!r}")
     try:
-        yield restore
+        yield before
     finally:
-        subprocess.run(  # noqa: S603 - fixed argv
-            [_SWITCH_AUDIO, "-s", restore, "-t", "output"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
         after = subprocess.run(  # noqa: S603 - fixed argv
             [_SWITCH_AUDIO, "-c", "-t", "output"],
             check=True,
@@ -403,8 +377,9 @@ def silent_output_device() -> Iterator[str]:
         ).stdout.strip()
         _echo(
             f"audio: `{_SWITCH_AUDIO} -c -t output` after = {after!r} "
-            f"(restored={after == restore})",
+            f"(unchanged={after == before})",
         )
+        assert after == before, (before, after)
 
 
 @pytest.fixture
@@ -864,7 +839,7 @@ def test_live_sigkill_mid_speech_recovers_without_respeaking(
     config_path = _build_overlay(root)
     port = _pick_free_port()
     assert port != _FORBIDDEN_PORT
-    _echo(f"root={root} port={port} audio_restore_target={silent_output_device!r}")
+    _echo(f"root={root} port={port} system_output_route={silent_output_device!r}")
 
     boot1_log = root / "boot1.log"
     proc = _boot(root, config_path, port, boot1_log)

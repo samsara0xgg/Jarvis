@@ -20,7 +20,7 @@ import asyncio
 import contextlib
 import json
 import os
-import subprocess
+import shutil
 import sys
 import tempfile
 import threading
@@ -47,7 +47,6 @@ from jarvis.surface import (
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
 
-_SPEAKER_FALLBACK = "MacBook Pro Speakers"
 _TRAIL_NAMES = frozenset(
     {
         "barge_in_candidate",
@@ -75,34 +74,6 @@ _ANSWER = (
 def _wav_duration_s(path: Path) -> float:
     with contextlib.closing(wave.open(str(path), "rb")) as handle:
         return handle.getnframes() / float(handle.getframerate())
-
-
-def _current_output_device() -> str | None:
-    try:
-        result = subprocess.run(
-            ["SwitchAudioSource", "-c", "-t", "output"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return result.stdout.strip() or None
-
-
-def _set_output_device(name: str) -> bool:
-    try:
-        subprocess.run(  # noqa: S603 - fixed argv, never shell
-            ["SwitchAudioSource", "-s", name, "-t", "output"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return True
 
 
 def _print_trail() -> None:
@@ -338,7 +309,7 @@ def _replay(  # noqa: PLR0913, PLR0915 - one composition root, printed end to en
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Switch output to the loopback device, replay once, restore the route."""
+    """Replay once with playback routed to ``--output-device``."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wav", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
@@ -350,34 +321,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tail-s", type=float, default=6.0)
     args = parser.parse_args(argv)
 
-    previous = _current_output_device()
-    sys.stdout.write(f"SwitchAudioSource -c -t output (before): {previous}\n")
-    if previous == args.output_device:
-        # Another lane's guard is mid-run. Restoring the loopback device would
-        # leave this machine with no audible output, so restore to the speakers.
-        previous = _SPEAKER_FALLBACK
-        sys.stdout.write(f"  pre-run device is the loopback; will restore {previous!r}\n")
-    if previous is None:
-        sys.stdout.write("  SwitchAudioSource unavailable; not switching the route\n")
-    elif not _set_output_device(args.output_device):
-        sys.stdout.write(f"  could not select {args.output_device!r}; keeping {previous!r}\n")
-    try:
-        with tempfile.TemporaryDirectory(prefix="jarvis-barge-in-") as tmp:
-            root = args.runtime_root if args.runtime_root is not None else Path(tmp)
-            return _replay(
-                args.wav,
-                config_path=args.config,
-                runtime_root=root,
-                sensevoice_dir=args.sensevoice_dir,
-                silero=args.silero,
-                speak_lead_s=args.speak_lead_s,
-                tail_s=args.tail_s,
-            )
-    finally:
-        if previous is not None:
-            _set_output_device(previous)
-        sys.stdout.write(
-            f"SwitchAudioSource -c -t output (after): {_current_output_device()}\n",
+    with tempfile.TemporaryDirectory(prefix="jarvis-barge-in-") as tmp:
+        root = args.runtime_root if args.runtime_root is not None else Path(tmp)
+        # The player opens the named device itself; the system default output is
+        # never touched, so overlapping runs cannot fight over one global route.
+        # `runtime.config` is a read-only Mapping, so the key goes in on disk —
+        # in a copy of the config tree, since `bootstrap_runtime_app` derives the
+        # Tier-0/grammar/cue paths from the config's parent and pricing from its
+        # grandparent, and each of those loaders degrades to an empty table on a
+        # missing file. A lone tmp yaml would still boot, silently without Tier 0.
+        overlay = Path(tmp) / "repo"
+        shutil.copytree(args.config.parent, overlay / "config")
+        (overlay / "data").symlink_to((args.config.parent.parent / "data").resolve())
+        config_path = overlay / "config" / args.config.name
+        shipped = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        shipped["realtime"]["output_device"] = args.output_device
+        config_path.write_text(yaml.safe_dump(shipped, allow_unicode=True), encoding="utf-8")
+        sys.stdout.write(f"realtime.output_device = {args.output_device!r}\n")
+        return _replay(
+            args.wav,
+            config_path=config_path,
+            runtime_root=root,
+            sensevoice_dir=args.sensevoice_dir,
+            silero=args.silero,
+            speak_lead_s=args.speak_lead_s,
+            tail_s=args.tail_s,
         )
 
 

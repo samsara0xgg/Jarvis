@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +14,7 @@ from jarvis.runtime import inherent_loop
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
 from jarvis.surface.playback_recovery import reconcile_open_playback
+from tests.canary._helpers import repo_root
 from tests.integration.test_conversation_history import _display, _playback
 
 if TYPE_CHECKING:
@@ -141,3 +143,31 @@ def test_boot_helper_closes_playback_on_its_own_connection(tmp_path: Path) -> No
     with contextlib.closing(open_event_log(path)) as conn:
         terminals = _rows(conn, "surface.playback_interrupted")
         assert [event.payload["reason"] for event in terminals] == ["daemon_restart"]
+
+
+def test_the_boot_playback_reconciler_stands_under_no_flag_gate() -> None:
+    """No config may produce a playback generation no boot can close.
+
+    The actor that writes ``surface.playback_started`` is gated on
+    ``realtime.streaming_output``; a gate here on any other flag would admit
+    a legal config that accumulates orphans forever.
+    """
+    tree = ast.parse(
+        (repo_root() / "jarvis" / "runtime" / "inherent_loop.py").read_text(encoding="utf-8"),
+    )
+    serve = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "serve_inherent"
+    )
+    helper = "_reconcile_open_playback_in_thread"
+    references = [
+        node for node in ast.walk(serve) if isinstance(node, ast.Name) and node.id == helper
+    ]
+    assert len(references) == 1
+    guards = [
+        ast.unparse(node.test)
+        for node in ast.walk(serve)
+        if isinstance(node, ast.If) and helper in ast.unparse(node)
+    ]
+    assert guards == []

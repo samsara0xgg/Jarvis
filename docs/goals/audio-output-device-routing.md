@@ -27,12 +27,13 @@ shared mutable global instead of guarding it.
   on zero matches and on an ambiguous non-exact match under
   `raise_on_error=True`, which `_get_stream_parameters` always uses.
 - Neither production construction site passes `device`, both inside
-  `_build_tts_pipeline` (`jarvis/runtime/inherent_loop.py:1755`):
-  streaming at `:1816-1821`, legacy fallback at `:1864-1873`. (Line numbers
-  re-verified on `realtime-integration` at `0f670d5`; the recon's `:1313`/`:1361`
-  are pre-merge and stale.)
+  `_build_tts_pipeline` (`jarvis/runtime/inherent_loop.py:1775`):
+  streaming at `:1840-1845`, legacy fallback at `:1889-1898`. (Line numbers
+  re-pinned at launch on `lane/a` at `352f2d1`, after the boot playback
+  reconciler moved the file again; the card's `:1755`/`:1816`/`:1864` and the
+  recon's `:1313`/`:1361` are both stale.)
 - `realtime` is already read with the Mapping-guard idiom at
-  `jarvis/runtime/inherent_loop.py:1794-1795`, in the same function, above both
+  `jarvis/runtime/inherent_loop.py:1814-1815`, in the same function, above both
   sites.
 - `start()` already wraps the open in `except BaseException`
   (`jarvis/surface/voice_tts.py:709-749`, catch at `:738`) and returns
@@ -56,12 +57,12 @@ shared mutable global instead of guarding it.
 
 ## Target behavior
 - One config key, `realtime.output_device`, a string device name or absent/null.
-  It governs BOTH construction sites — the legacy path at `:1864` is not under
+  It governs BOTH construction sites — the legacy path at `:1889` is not under
   `realtime.streaming_output` and must honour the same setting.
 - The configured string is passed STRAIGHT THROUGH to
   `AudioStreamPlayer(device=...)`. `sounddevice` does the name-to-index
   resolution; Jarvis resolves nothing.
-- Read once, next to the existing `realtime` read at `:1794-1795`, with the same
+- Read once, next to the existing `realtime` read at `:1814-1815`, with the same
   Mapping-guard idiom. Absent/null yields `device=None` at both sites, which is
   today's behavior byte-for-byte.
 - Unresolvable name fails CLOSED. Today's generic catch already does this; keep
@@ -76,11 +77,11 @@ shared mutable global instead of guarding it.
 - The `silent_output_device` fixture stops MUTATING the system default: the `-s`
   switch and the restore `finally` go away, and the device name reaches the
   daemon through the overlay config `_build_overlay` writes
-  (`tests/scenarios/test_live_crash_recovery.py:206-250`, `realtime` mutated at
-  `:234-247`, dumped at `:249`).
+  (`tests/scenarios/test_live_crash_recovery.py:213-257`, `realtime` mutated at
+  `:241-254`, dumped at `:256`).
   Read-only `SwitchAudioSource` calls stay: the `-a -t output` presence guard
   (skip when BlackHole is absent) and the `-c -t output` readings, which become
-  this card's canary. The `_echo` at `:725` stops calling the value a restore
+  this card's canary. The `_echo` at `:848` stops calling the value a restore
   target.
 
 ## Affected contracts and files
@@ -88,7 +89,7 @@ shared mutable global instead of guarding it.
   or null by default, with a one-line comment that it names the TTS output
   device and that unset means the system default.
 - runtime `jarvis/runtime/inherent_loop.py:_build_tts_pipeline` — one read at
-  `:1794-1795`, two `device=` pass-throughs at `:1816-1821` and `:1864-1873`.
+  `:1814-1815`, two `device=` pass-throughs at `:1840-1845` and `:1889-1898`.
 - L5 `jarvis/surface/voice_tts.py:744-749` — the `failed_closed` reason string
   names the configured device when `self._device` is not None.
 - `scripts/replay_barge_in.py` — dead after the conversion, delete all of it:
@@ -139,7 +140,7 @@ than forcing the edit.
   — REJECTED. That routes a test run out of the owner's real speakers, which is
   the exact failure this card exists to remove. Fail closed instead.
 - Putting the key under `realtime.streaming_output` — the legacy path at
-  `:1864` is not governed by that block and must honour the same setting.
+  `:1889` is not governed by that block and must honour the same setting.
 - Extending `device-profile-resolver` — it classifies the CURRENT default route
   to gate `allowed_barge_mode` and explicitly disclaims this work
   (`docs/goals/device-profile-resolver.md`, Boundaries and non-goals).
@@ -264,4 +265,94 @@ call-site conversions.
 Or stop after 25 turns.
 
 ## Progress
-- (none yet)
+- Pre-edit baseline on `lane/a` at `352f2d1` (after `git merge realtime-integration`,
+  a clean fast-forward): `1047 passed, 64 deselected in 49.54s`. A first run of the
+  same command printed `1 failed, 1046 passed` on
+  `test_post_ingress_construction_failure_closes_capability_dispatcher[silero]`
+  ("condition did not become true before bounded deadline"); that item passes
+  alone (`2 passed in 0.03s`) and passed in every later full run — a timing flake
+  under load, not a branch state.
+- Hub-added slice, NOT part of this card's acceptance — boot playback reconciler
+  gate widened — `cb4bafa` — the actor that produces a playback generation is
+  gated on `realtime.streaming_output` while the boot reconciler was gated on
+  `response_run_lifecycle`, so "streaming on, lifecycle off" was a legal config
+  accumulating orphans no boot closed. The guard is gone; the fold appends
+  nothing when no generation is open. Pinned by an AST test in
+  `tests/integration/test_boot_playback_reconciliation.py` (the helper is named
+  once inside `serve_inherent` and no `if` encloses it), verified failing with
+  the guard temporarily restored. Suite 1048 / 64. ADR-0008 §4.4 already says
+  "runtime asks L5 to close any active playback state" with no flag, so the
+  change moves the code toward the ADR, not away.
+- Config key + both pass-throughs + failure-reason string — `242c2f3` —
+  `realtime.output_device` (null by default) read once at
+  `inherent_loop.py:1814-1819` and forwarded to both `_build_tts_pipeline`
+  player sites (`:1845`, `:1897`). No jarvis-side resolver was written: the
+  string goes straight to `AudioStreamPlayer(device=...)` and `sounddevice`
+  maps it inside `sd.OutputStream`. `voice_tts.py` names the device in the
+  failed_closed reason. New hermetic tests: both sites receive
+  `"BlackHole 16ch"` when configured and `None` when absent, with
+  `_open_output_stream` patched so no device opens; the unresolvable name
+  yields `status='failed_closed'` and a reason carrying the name. Suite 1050 / 64.
+- Both live rigs converted, system-default switching deleted — `3a7d771` —
+  `scripts/replay_barge_in.py` lost `_SPEAKER_FALLBACK`,
+  `_current_output_device`, `_set_output_device`, the switch/collision guard,
+  the restore `finally` and `import subprocess`; `--output-device` now reaches
+  the daemon through a copied config tree (bootstrap derives Tier-0/grammar/cue
+  paths from the config's parent and pricing from its grandparent; each of those
+  loaders degrades to an empty table on a missing file, so a lone tmp yaml would
+  boot but silently without Tier 0 — the copy is for fidelity, not for booting).
+  The `silent_output_device` fixture keeps only
+  read-only `SwitchAudioSource` calls and asserts the system route is identical
+  before and after; `_build_overlay` sets `realtime.output_device`.
+  `grep -n "SwitchAudioSource -s\|_set_output_device"` over both files: no hits.
+  Suite 1050 / 64.
+- Live burn — `1 passed in 29.01s`, root
+  `~/.jarvis-lane-b-test/crash-20260905T230921Z`, port 55244, overlay line 76
+  `output_device: BlackHole 16ch`. Warm-up spoke with
+  `playback provider='minimax_ws_streaming'`; SIGKILL pid 37510 left orphan pair
+  `(RESP5ec41e3027794c50b76e162c5a91ba59, 2)`; boot 2 logged both
+  `boot reconciliation closed 1 open response run(s)` and
+  `closed 1 open playback generation(s)`, `COUNT(*)` = 1, restart 3 appended
+  nothing. `SwitchAudioSource -c -t output` = `'MacBook Pro Speakers'` BEFORE and
+  `'MacBook Pro Speakers'` AFTER (fixture echo `unchanged=True`). The run never
+  switched the system default, so the standing audio rule is satisfied by not
+  switching; no restore trap was added because there is nothing to restore.
+- Real-device canary (proves the name reaches CoreAudio, not just the kwarg):
+  `AudioStreamPlayer(device='BlackHole 16ch').start()` →
+  `status='started' reason='stream_started'` against real PortAudio, and
+  `device='No Such Device'` → `status='failed_closed'
+  reason="open:ValueError device='No Such Device'"`. System route
+  `'MacBook Pro Speakers'` before and after.
+- Docs to sync: `config/jarvis.yaml` — the key's comment is the documentation,
+  written. `docs/spec.html` — unchanged: zero occurrences of `streaming_output`,
+  no config-key inventory, and no sentence claiming the TTS stream always uses
+  the system default (`grep -in "output device\|system default\|OutputStream"`
+  finds nothing; the single `output_device` hit at `docs/spec.html:2197` is a
+  WorldState Room slice field, a different fact under the same name).
+  `docs/adr/` — unchanged: the only output-device mentions are
+  ADR-0006:125/675/694/872 (input+output stream shape, prewarm, and F10
+  device-CHANGE handling, an explicit non-goal here) and ADR-0014:1231; none
+  states which device the stream opens, so no ADR owns this fact.
+- Verifier pass (`verifier`, opus, fresh context, `352f2d1..HEAD`) — one
+  CONFIRMED defect and two weak checks, all fixed in `9412700` and this commit:
+  the deleted `_FALLBACK_DEVICE`'s docstring had dangled onto `_SILENT_DEVICE`,
+  still describing the loopback as a restore target; the fail-closed test
+  asserted no fallback without pinning it; and the `isinstance(str)` guard on
+  the config read made a mistyped key degrade silently to the system default.
+  The verifier independently re-ran the gates (1050 / 64, KEPT, clean, Success)
+  and mutation-tested the new pins: deleting either `device=` pass-through, or
+  restoring the reconciler gate, fails the corresponding test. Its two
+  speculative notes are recorded, not acted on: the response reconciler at
+  `inherent_loop.py:3613` keeps the symmetric `response_run_lifecycle` gate
+  (out of scope, and reachable only by flipping the flag off between boots),
+  and `--config` pointing at a directory that also holds a runtime root would
+  make `replay_barge_in.py` copy that root into tmp (wasteful, not wrong).
+- Live burn re-run on the final tip (`4b669cd`, after the verifier fixes changed
+  the config read) — `1 passed in 32.19s`, root
+  `~/.jarvis-lane-b-test/crash-20260905T232547Z`, port 56714. Warm-up spoke with
+  `playback provider='minimax_ws_streaming'`; SIGKILL pid 59044; boot 2 logged
+  `boot reconciliation closed 1 open playback generation(s)`, `COUNT(*)` = 1,
+  restart 3 appended nothing. `SwitchAudioSource -c -t output` =
+  `'MacBook Pro Speakers'` BEFORE and AFTER, fixture echo `unchanged=True`.
+- Owner follow-up, not a blocker: nothing in the burn is mic-in-the-loop, and
+  the loopback route was verified by device open rather than by listening.

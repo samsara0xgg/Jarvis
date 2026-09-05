@@ -776,3 +776,29 @@ def test_minimax_request_close_cancels_and_closes_active_session() -> None:
         assert connection_closed.is_set()
 
     asyncio.run(_body())
+
+
+def test_a_configured_device_that_will_not_resolve_fails_closed_by_name() -> None:
+    """An unresolvable device name fails the open closed and says which name.
+
+    `sounddevice` raises `ValueError` for a name that matches no device. There
+    is no fallback to the system default: routing a run out of the owner's real
+    speakers is the failure this configuration exists to remove.
+    """
+    with patch.object(
+        voice_tts,
+        "_open_output_stream",
+        side_effect=ValueError("no output device matching 'No Such Device'"),
+    ) as opener:
+        named = voice_tts.AudioStreamPlayer(lazy_open=True, device="No Such Device").start()
+        # Exactly one open attempt, carrying the configured device: a retry with
+        # device=None would be the fallback this asserts does not happen.
+        assert opener.call_count == 1
+        assert opener.call_args.kwargs["device"] == "No Such Device"
+        default = voice_tts.AudioStreamPlayer(lazy_open=True).start()
+
+    assert named.status == "failed_closed"
+    assert not named.started
+    assert "No Such Device" in named.reason
+    assert default.status == "failed_closed"
+    assert default.reason == "open:ValueError"

@@ -1813,6 +1813,11 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     provider = _new_provider()
     realtime_raw = runtime.config.get("realtime")
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
+    # Passed straight through to sd.OutputStream, which maps a name to a device
+    # index itself; an unresolvable value raises there and `start()` fails closed.
+    # Deliberately unvalidated: a type guard here would turn a mistyped key into
+    # a silent fall back to the system default, out of the owner's speakers.
+    output_device = realtime.get("output_device")
     streaming_raw = realtime.get("streaming_output")
     streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
     streaming_requested = realtime.get("enabled") is True and streaming.get("enabled") is True
@@ -1838,6 +1843,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             ring_seconds=2.0,
             lazy_open=True,
             generation_safe=True,
+            device=output_device,
         )
         try:
             return voice_media.StreamingTTSPipeline(
@@ -1889,6 +1895,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             # 10 s timeout, dropping the tail of any response > ~10 s.
             ring_seconds=30.0,
             lazy_open=False,
+            device=output_device,
         )
         return voice_tts.TTSPipeline(
             provider=provider,
@@ -3641,17 +3648,20 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
         # playback terminal, so a process killed mid-playback leaves its
         # generation open forever. Close each one here, third and last, in
         # the ADR's own bullet order (responses, actions, playback).
-        if runtime.response_flags.response_run_lifecycle:
-            closed_playback = await asyncio.to_thread(
-                _reconcile_open_playback_in_thread,
-                runtime.runtime_paths.event_log,
-                runtime.committed_event_bus,
+        # Ungated on purpose: the actor that PRODUCES a playback generation
+        # is gated on realtime.streaming_output, not on response_run_lifecycle,
+        # so any flag gate here admits a legal config whose orphans no boot
+        # ever closes. The fold appends nothing when no generation is open.
+        closed_playback = await asyncio.to_thread(
+            _reconcile_open_playback_in_thread,
+            runtime.runtime_paths.event_log,
+            runtime.committed_event_bus,
+        )
+        if closed_playback:
+            LOGGER.info(
+                "boot reconciliation closed %d open playback generation(s)",
+                closed_playback,
             )
-            if closed_playback:
-                LOGGER.info(
-                    "boot reconciliation closed %d open playback generation(s)",
-                    closed_playback,
-                )
 
         cancel_response_callable = (
             make_response_cancel_callable(runtime)
