@@ -248,6 +248,11 @@ local action command overlay:
   none | cancel_submitting | cancel_requested | cancel_rejected
 ```
 
+Of the ResponseRun lifecycle, only `generating`, `completed`, `cancelled` and
+`failed` have a committed event source today (`response.started` and the three
+`response.*` terminals); `waiting_action` and `finalizing` have none, so the
+Inherent fold reports the four it can prove and never infers the other two.
+
 These states intentionally coexist. Examples:
 
 - `listening + playback.ducked + action.running`;
@@ -952,6 +957,19 @@ user_action_required
 
 `cancellable_hint` only controls whether a button is offered. The server revalidates live state and policy when clicked.
 
+Built in `jarvis/state/inherent_view.py`: the ActionViewProjection is folded
+there, beside the response groups, from the registered action lifecycle, the
+quiescence/cleanup trio and the A5 cancel trail, bounded like the response
+groups by a recent-terminal limit. Four facts the build pinned:
+`cleanup_state` never reports `pending`, which has no committed source — no
+event marks cleanup as started; `freshness` is reported by *omitting* the
+wire's `freshness_ms`, which the client reads as fresh, because no clock
+reaches a pure fold; `cancellable_hint` is computed in that fold rather than
+in L3, which has no producer, using the same open set the cancel resolver
+reads; and `cancel_request`, `progress_label` and `user_action_required` have
+no key on the shipped `ActionUpsert`, so the first is folded and checkpointed
+but unsent, and the other two are unmodelled until a Swift card adds a slot.
+
 “Cancel requested” is not added to the canonical eight-state ActionLifecycle.
 The UI may show an immediate local submitting overlay. After reconnect, the
 separate durable `CancelRequestView` is folded from the canonical
@@ -1025,6 +1043,13 @@ one `view.delta` sourced by B's request contains ordered
 `confirmation.upsert(B)`. There is no unregistered
 `confirmation.superseded` event. A queued decision for A subsequently fails
 the exact terminalizer CAS as stale.
+
+Not built yet: the `confirmation.expired` event, `ConfirmationTerminalizer`,
+the runtime expiry timer and boot reconciliation belong to the
+`confirmation-expiry-terminalizer` card. Until they land, the Inherent fold
+clears an expired slot lazily — the first row it folds at or past
+`expires_at_ms` produces `confirmation.cleared(reason="expired")` — so an idle
+panel with no further committed row keeps showing an expired ask.
 
 ### D15. Keep response generation, panel delivery, and playback separate
 
@@ -1763,7 +1788,7 @@ Under `desktop/inherent-swift/InherentCardTests/`:
 - `jarvis/runtime/inherent_hub.py` — per-connection client sessions, snapshot staging, ACK/backpressure; runtime rather than L5 because D9 gives client orchestration to the runtime.
 - `jarvis/surface/legacy_v1_serializer.py` — one pinned compatible final/document stream per v1 turn.
 - `jarvis/runtime/inherent_view_sequencer.py` — ordered Event Log drain, projector, snapshot/live barrier.
-- `jarvis/state/inherent_view.py` — the L2 Inherent view fold: response-group truth from `surface.response_*` rows, immutable checkpoints, and the terminal-group and inline-body bounds of D16.
+- `jarvis/state/inherent_view.py` — the L2 Inherent view fold: response-group truth from `surface.response_*` rows joined to the `response.*` lifecycle, the D13 ActionViewProjection with its cancel trail, the D14 confirmation slot, immutable checkpoints, and the terminal-group, terminal-action and inline-body bounds of D16.
 - `jarvis/state/control_inbox.py` — operational idempotency receipt plus same-transaction canonical UserResponse append; never a competing domain truth.
 - `jarvis/state/input_submission_inbox.py` — authenticated text/image/ASR request receipts, processing leases, same-transaction canonical input append/result correlation, and crash recovery.
 - `jarvis/state/authorized_dispatch_outbox.py` — gate-bound debt, stable ActionRequest identity, lease claim, dispatched-before-effect handoff, and boot reconciliation for all authorized external actions.
@@ -1779,7 +1804,7 @@ Under `desktop/inherent-swift/InherentCardTests/`:
 - `jarvis/deployment/__init__.py` — unique runtime token path/creation/permission owner.
 - `jarvis/state/event_log.py` — immutable log-epoch metadata; v2/expiry/failure registrations and conditional validators.
 - `jarvis/state/lifecycle_terminal.py` — confirmation and surface-delivery atomic terminalizers alongside ADR-0006/0008 terminal primitives.
-- `jarvis/state/projections.py` — ActionViewProjection and snapshot support; reuse ResponseLedger/PendingConfirmations.
+- `jarvis/state/projections.py` — unchanged by the Inherent view: the ActionViewProjection is folded incrementally in `inherent_view.py` instead, and this module's `action:` registry, `ActionAdmissions` and `PendingConfirmations` stay the whole-log provenance whose rules that fold mirrors.
 - `jarvis/shared/realtime.py` — reuse IDs/contracts from ADR-0006/0008; do not duplicate wire DTOs here.
 - shared `UserResponse` contract — typed confirmation/cancel/dismiss sources and exact target revisions.
 - `jarvis/decision/__init__.py` / `confirm_grammar.py` / `policy.py` — shared ConfirmationDecisionRunner, typed source metadata, exact response interrupt/action cancel policy.
