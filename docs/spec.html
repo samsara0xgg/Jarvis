@@ -1099,6 +1099,7 @@ PresentationIntent.intent_type:
 <li>它不能直接把 task 标成 done，不能直接触发 patch / terminal，不能相信 agent final message。</li>
 <li>它可以拥有 layout、scroll、expanded rows、selected tab、animation state 等 local UI state。</li>
 <li>Local UI state 不携带 truth，不影响 decision，不写回 State Object；丢失后不影响 Jarvis identity。</li>
+<li>Inherent 的 projection 真值只经由 daemon 侧的 InherentViewSequencer 到达：新 v2 连接先收到一份有界、分页、带 <code>content_hash</code> 的 snapshot 并 ACK，之后只接收按 <code>events.id</code> 游标排序的 <code>view.delta</code>；Inherent 不自行折叠 Event Log（ADR-0014 D8/D9）。</li>
 </ul>
 
 <h4>3.6.8 Multimodal staging</h4>

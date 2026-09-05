@@ -1080,7 +1080,7 @@ The floating cockpit snapshot includes:
 
 Older content remains in the Event Log/artifact store and can be loaded through an explicit history/detail request later. It is not copied into every reconnect snapshot.
 
-Large document bodies above the inline budget are represented by a projection-backed artifact reference plus a bounded preview. Fetching an artifact is a read-only surface operation and must verify the reference; Swift does not invent filesystem paths.
+Large document bodies above the inline budget are represented by a projection-backed artifact reference plus a bounded preview. The inline budget is 16384 bytes of UTF-8 per response document body: a body at or under it is inlined in full; above it the snapshot carries a bounded preview plus the durable reference (`response_id` and the `surface.response_emitted` `event_uid`). Fetching an artifact is a read-only surface operation and must verify the reference; Swift does not invent filesystem paths.
 
 ## 7. Swift reducer rules
 
@@ -1738,9 +1738,10 @@ Under `desktop/inherent-swift/InherentCardTests/`:
 
 - `jarvis/surface/inherent_protocol.py` — v2 DTO schemas/codec; imports shared IDs but owns L5 wire.
 - `jarvis/surface/inherent_presenter.py` — projection/event to safe view DTO mapping.
-- `jarvis/surface/inherent_hub.py` — authenticated client sessions, bounded queues, ACK/backpressure.
+- `jarvis/runtime/inherent_hub.py` — per-connection client sessions, snapshot staging, ACK/backpressure; runtime rather than L5 because D9 gives client orchestration to the runtime.
 - `jarvis/surface/legacy_v1_serializer.py` — one pinned compatible final/document stream per v1 turn.
 - `jarvis/runtime/inherent_view_sequencer.py` — ordered Event Log drain, projector, snapshot/live barrier.
+- `jarvis/state/inherent_view.py` — the L2 Inherent view fold: response-group truth from `surface.response_*` rows, immutable checkpoints, and the terminal-group and inline-body bounds of D16.
 - `jarvis/state/control_inbox.py` — operational idempotency receipt plus same-transaction canonical UserResponse append; never a competing domain truth.
 - `jarvis/state/input_submission_inbox.py` — authenticated text/image/ASR request receipts, processing leases, same-transaction canonical input append/result correlation, and crash recovery.
 - `jarvis/state/authorized_dispatch_outbox.py` — gate-bound debt, stable ActionRequest identity, lease claim, dispatched-before-effect handoff, and boot reconciliation for all authorized external actions.
@@ -1828,7 +1829,8 @@ off:
 
 shadow:
   v2 sequencer/projection/fixtures run; no production Swift cutover;
-  legacy ingress policy remains explicit
+  legacy ingress policy remains explicit;
+  selected by realtime.inherent.v2_sequencer.enabled (requires realtime.enabled)
 
 dual:
   v1 CLI endpoint + v2 endpoint; repository CLI and Swift authenticate every
