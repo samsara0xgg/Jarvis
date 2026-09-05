@@ -64,7 +64,7 @@ _PROMPT_CHAT = "用一句话说明天空为什么是蓝色的"
 _PROMPT_LONG = "用三段话讲讲量子纠缠的历史 从 EPR 论文讲到贝尔不等式的实验验证"
 _PROMPT_TIME = "现在几点了"
 _PROMPT_CODEX = "昨天那个 task 给 codex 跑一下 做完审核了再告诉我"
-_CANCEL_SETTLE_S = 8.0
+_CANCEL_SETTLE_S = 2.0
 """How long the cancel burn lets a real generation run before stopping it."""
 
 _RESPONSE_TERMINALS = ("response.completed", "response.cancelled", "response.failed")
