@@ -2421,7 +2421,7 @@ Situation Packet 是 Runtime Decision 从 State Object projections 组装给 dec
 </tbody>
 </table>
 
-<p>对用户话语的直接回答默认走 <code>voice_notify</code>；<code>silent_log</code> 留给不需要出声的轮次，系统触发的 reconciliation 轮次（<code>action.timeout_assumed</code> / <code>action.failed</code>）仍进 <code>queue_review</code>。</p>
+<p>对用户话语的直接回答默认走 <code>voice_notify</code>；<code>silent_log</code> 留给不需要出声的轮次，系统触发的 reconciliation 轮次（<code>action.timeout_assumed</code> / <code>action.failed</code> / <code>action.cancelled</code>）仍进 <code>queue_review</code>。</p>
 
 <h3>12.5 决策规则：hard gates → channel scoring → feedback adjustment</h3>
 
