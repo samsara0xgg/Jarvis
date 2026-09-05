@@ -8,10 +8,15 @@ through the real ``decide()`` with a scripted LLM and a real ActionRunner.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
+from jarvis.decision.gates import pre_action_gate
+from jarvis.decision.packet import assemble_packet
+from jarvis.decision.policy import effective_policy
+from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state.decision_snapshot import read_decision_snapshot
 from jarvis.state.event_log import emit_event, open_event_log
 
@@ -19,8 +24,9 @@ if TYPE_CHECKING:
     import sqlite3
     from pathlib import Path
 
+    from jarvis.decision.gates import GateResult
     from jarvis.shared import Event
-    from jarvis.state.projections import ProjectionSet
+    from jarvis.state.projections import ActionAdmissions, ProjectionSet
 
 _ACTION_TERMINALS: tuple[str, ...] = (
     "action.result_observed",
@@ -181,5 +187,165 @@ def test_each_action_terminal_evicts_the_entry(tmp_path: Path, terminal: str) ->
         # The sibling is untouched.
         assert "action:A2" in projections.entity_registry
         assert projections.action_admissions.get("A2") is not None
+    finally:
+        conn.close()
+
+
+# --- (6)/(8) the Pre-action Gate's `cancel_action` arm ------------------------
+
+_CANCEL_SURFACE = {CallerPrincipal.JARVIS_LLM: frozenset({"cancel_action", "create_task"})}
+_CANCEL_TOOL_LIKE = SimpleNamespace(requires_entity=True)
+_MISMATCH_CASES: tuple[tuple[str, str, str | None], ...] = (
+    # (case, target_action_id, claimed uid — "<gate>" for the real one, None for absent)
+    ("stale", "A1", "evt-stale"),
+    ("absent", "A1", None),
+    ("unknown_target", "A-nope", "<gate>"),
+    ("no_admissions", "A1", "<gate>"),
+    ("ungated_target", "A-ungated", "evt-any"),
+)
+
+
+def _cancel_request(
+    target_action_id: str,
+    *,
+    claimed_gate_uid: str | None,
+    tool_name: str = "cancel_action",
+) -> ActionRequest:
+    """One L2 `cancel_action` request shaped the way L3 builds it."""
+    return ActionRequest(
+        action_id="C1",
+        tool_name=tool_name,
+        target_entity_ref=f"action:{target_action_id}",
+        caller_principal=CallerPrincipal.JARVIS_LLM,
+        risk_level="L2",
+        arguments={"target_action_id": target_action_id, "reason": "user_stop"},
+        authorization_lease=None,
+        run_id=None,
+        turn_id="T-cancel",
+        payload=(
+            None
+            if claimed_gate_uid is None
+            else {"authorization_gate_event_uid": claimed_gate_uid}
+        ),
+    )
+
+
+def _gate(
+    conn: sqlite3.Connection,
+    request: ActionRequest,
+    *,
+    admissions: ActionAdmissions | None,
+) -> GateResult:
+    """Run the real gate against the folded registry and the given lookup."""
+    projections = _projections(conn)
+    return pre_action_gate(
+        request,
+        effective_policy(_CANCEL_SURFACE),
+        projections.task_ledger.snapshot(),
+        tool_def=_CANCEL_TOOL_LIKE,
+        entity_registry=projections.entity_registry,
+        action_admissions=admissions,
+    )
+
+
+def test_the_cancel_arm_passes_when_the_request_names_the_admitting_gate(
+    tmp_path: Path,
+) -> None:
+    """A well-formed L2 cancel passes with no lease and no confirmation."""
+    conn = open_event_log(tmp_path / "events.db")
+    try:
+        gate, _ = _admit(conn, "A1")
+        admissions = _projections(conn).action_admissions
+        result = _gate(
+            conn, _cancel_request("A1", claimed_gate_uid=gate.event_uid), admissions=admissions,
+        )
+        assert result.outcome == "pass", result.reasons
+        assert result.check_results["admission_matched"] is True
+        assert result.check_results["entity_trusted"] is True
+        assert result.check_results["lease_validated"] is True
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("case", "target", "claimed"),
+    _MISMATCH_CASES,
+    ids=[case[0] for case in _MISMATCH_CASES],
+)
+def test_a_mismatched_admission_refuses_and_never_asks(
+    tmp_path: Path,
+    case: str,
+    target: str,
+    claimed: str | None,
+) -> None:
+    """Absent, unknown or mismatched gate uid → `refuse`, never `confirm_required`."""
+    conn = open_event_log(tmp_path / "events.db")
+    try:
+        gate, _ = _admit(conn, "A1")
+        emit_event(conn, type="action.dispatched", payload={"action_id": "A-ungated"})
+        # The unknown target still needs to be trusted as an entity so the
+        # refusal is attributable to the arm under test, not to check 2.
+        emit_event(conn, type="action.dispatched", payload={"action_id": "A-nope"})
+        projections = _projections(conn)
+        admissions = None if case == "no_admissions" else projections.action_admissions
+        if case == "unknown_target":
+            admissions = type(projections.action_admissions)(
+                by_action_id={"A1": projections.action_admissions.by_action_id["A1"]},
+            )
+        claimed_uid = gate.event_uid if claimed == "<gate>" else claimed
+        result = _gate(
+            conn, _cancel_request(target, claimed_gate_uid=claimed_uid), admissions=admissions,
+        )
+        assert result.outcome == "refuse", (case, result.reasons)
+        assert result.check_results["admission_matched"] is False
+        assert result.check_results["entity_trusted"] is True
+    finally:
+        conn.close()
+
+
+def test_a_non_cancel_request_never_sees_the_arm(tmp_path: Path) -> None:
+    """Checks 1-4 are unchanged: the arm runs only for `cancel_action`."""
+    conn = open_event_log(tmp_path / "events.db")
+    try:
+        _admit(conn, "A1")
+        request = _cancel_request("A1", claimed_gate_uid=None, tool_name="create_task")
+        result = _gate(conn, request, admissions=_projections(conn).action_admissions)
+        assert "admission_matched" not in result.check_results
+    finally:
+        conn.close()
+
+
+def test_the_entity_check_refuses_a_terminated_action(tmp_path: Path) -> None:
+    """A live `action:` id passes check 2; the same id after its terminal refuses."""
+    conn = open_event_log(tmp_path / "events.db")
+    try:
+        gate, _ = _admit(conn, "A1")
+        request = _cancel_request("A1", claimed_gate_uid=gate.event_uid)
+        live = _gate(conn, request, admissions=_projections(conn).action_admissions)
+        assert live.outcome == "pass"
+        emit_event(conn, type="action.cancelled", payload={"action_id": "A1"})
+        after = _gate(conn, request, admissions=_projections(conn).action_admissions)
+        assert after.outcome == "refuse"
+        assert after.check_results["entity_trusted"] is False
+    finally:
+        conn.close()
+
+
+def test_the_packet_carries_the_admission_lookup(tmp_path: Path) -> None:
+    """`assemble_packet` threads `ProjectionSet.action_admissions` onto the packet."""
+    conn = open_event_log(tmp_path / "events.db")
+    try:
+        gate, _ = _admit(conn, "A1")
+        trigger = emit_event(
+            conn,
+            type="surface.user_intent",
+            payload={"transcript": "取消刚才那个", "turn_id": "T1"},
+            correlation={"turn_id": "T1"},
+        )
+        packet = assemble_packet(trigger, conn)
+        admission = packet.action_admissions.get("A1")
+        assert admission is not None
+        assert admission.admission_gate_uid == gate.event_uid
+        assert "action:A1" in packet.entity_registry
     finally:
         conn.close()

@@ -24,7 +24,7 @@ import hashlib
 import re
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 from jarvis.decision.policy import risk_rank
 from jarvis.shared import CallerPrincipal
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from jarvis.decision.policy import EffectivePolicy
     from jarvis.shared import ActionRequest, AuthorizationLease, EvidenceLevel
     from jarvis.state.projections import (
+        ActionAdmissions,
         ClaimEvidenceProjection,
         EntityRegistry,
         PendingConfirmations,
@@ -239,6 +240,64 @@ def _check_entity_trusted(
     )
 
 
+_CANCEL_ACTION_TOOL_NAME: Final[str] = "cancel_action"
+"""The one tool check 5 (`admission_matched`) runs for (ADR-0008 D10)."""
+
+
+def _check_cancel_admission(
+    action_request: ActionRequest,
+    action_admissions: ActionAdmissions | None,
+    checks: dict[str, bool],
+    reasons: list[str],
+) -> bool:
+    """Evaluate check 5 (admission_matched); a no-op for any other tool.
+
+    ADR-0008 D10: for a ``cancel_action`` request, its
+    ``authorization_gate_event_uid`` (frozen by L3 from the target's
+    recorded admission) must equal the L2 lookup's ``admission_gate_uid``
+    for ``target_action_id``. Absent, unknown, or mismatched all fail —
+    and the caller refuses, never ``confirm_required``: Allen re-granting
+    cannot fix a stale uid. This arm is the single truth source for the
+    match; nothing downstream re-checks it. Records the verdict into
+    ``checks``/``reasons`` and returns it (``True`` for a non-cancel).
+    """
+    if action_request.tool_name != _CANCEL_ACTION_TOOL_NAME:
+        return True
+    matched, reason = _cancel_admission_verdict(action_request, action_admissions)
+    checks["admission_matched"] = matched
+    reasons.append(reason)
+    return matched
+
+
+def _cancel_admission_verdict(
+    action_request: ActionRequest,
+    action_admissions: ActionAdmissions | None,
+) -> tuple[bool, str]:
+    """The (matched, reason) pair behind :func:`_check_cancel_admission`."""
+    target = action_request.arguments.get("target_action_id")
+    payload = action_request.payload or {}
+    claimed = payload.get("authorization_gate_event_uid")
+    admission = (
+        action_admissions.get(target)
+        if action_admissions is not None and isinstance(target, str)
+        else None
+    )
+    if admission is None:
+        return False, f"admission_matched: target_action_id={target!r} has no admission record"
+    if admission.admission_gate_uid is None:
+        return False, (
+            f"admission_matched: target {target!r} was dispatched without a passing "
+            "pre_action gate"
+        )
+    if not isinstance(claimed, str) or not claimed:
+        return False, "admission_matched: request carries no authorization_gate_event_uid"
+    matched = claimed == admission.admission_gate_uid
+    return matched, (
+        "admission_matched: authorization_gate_event_uid "
+        f"{'matches' if matched else 'does not match'} the target's admission gate"
+    )
+
+
 def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-0012 D2.4 adds the fourth gate input alongside `entity_registry`, same load-bearing shape.
     action_request: ActionRequest,
     policy: EffectivePolicy,
@@ -247,6 +306,7 @@ def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-
     tool_def: _EntityGateToolLike | None,
     entity_registry: EntityRegistry | None = None,
     pending_confirmations: PendingConfirmations | None = None,
+    action_admissions: ActionAdmissions | None = None,
 ) -> GateResult:
     """Evaluate the four MUST-checks per ADR § Gate contracts.
 
@@ -302,6 +362,9 @@ def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-
        ``pending_confirmations.consumed_lease_ids`` (folded from a
        prior passing ``gate.evaluated`` that carried this same
        ``lease_id`` — see :func:`_lease_single_use_ok`).
+    5. **admission_matched** (ADR-0008 D10) — runs only for a
+       ``cancel_action`` request: see :func:`_check_cancel_admission`.
+       A failure here always refuses.
 
     Outcome ladder — ``lease_hard_invalid`` (see that local variable's
     definition below) distinguishes "the lease is corrupt or spent"
@@ -369,6 +432,11 @@ def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-
             see :func:`_lease_single_use_ok`'s docstring for the
             fail-closed rationale and why it differs from
             ``entity_registry=None``'s posture).
+        action_admissions: The folded ActionAdmissions projection
+            (``packet.action_admissions``), or ``None``. ADR-0008 D10:
+            check 5 reads the target's recorded admission gate uid
+            from it. Only consulted for a ``cancel_action`` request;
+            ``None`` then means "no admission record" and refuses.
 
     Returns:
         Frozen :class:`GateResult` with per-check bool + reason.
@@ -458,6 +526,11 @@ def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-
         )
     checks["lease_validated"] = lease_validated
 
+    # 5. admission_matched (ADR-0008 D10) — cancel_action only.
+    admission_matched = _check_cancel_admission(
+        action_request, action_admissions, checks, reasons,
+    )
+
     # Outcome decision
     all_pass = all(checks.values())
     if all_pass:
@@ -474,6 +547,7 @@ def pre_action_gate(  # noqa: PLR0913 — one keyword per MUST-check input; ADR-
         and caller_allowed
         and entity_trusted
         and risk_within_ceiling
+        and admission_matched
     ):
         # The action is otherwise legal but lacks a valid authorization
         # lease; Allen could grant (or re-grant) one. Surface as

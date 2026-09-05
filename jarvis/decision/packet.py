@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from jarvis.state.authorization_snapshot import AuthorizationSnapshot
     from jarvis.state.conversation import ConversationHistory
     from jarvis.state.projections import (
+        ActionAdmissions,
         CommitObservation,
         EntityRegistry,
         PendingConfirmations,
@@ -82,6 +83,11 @@ class SituationPacket:
             evaluation has consumed. The answer-path grammar hook
             (Step 6) and `format_pending_confirmation_note` both read
             this field.
+        action_admissions: Folded ActionAdmissions (ADR-0008 D10) — the
+            admitting `gate.evaluated` uid, dispatched uid and
+            `run.started` run_id of every non-terminal action. L3's
+            `resolve_cancellable_action` and the Pre-action Gate's
+            `cancel_action` arm read this field.
     """
 
     trigger_event: Event
@@ -93,6 +99,7 @@ class SituationPacket:
     status_board: StatusBoard
     entity_registry: EntityRegistry
     pending_confirmation: PendingConfirmations
+    action_admissions: ActionAdmissions
     conversation_history: ConversationHistory | None = None
     authorization_snapshot: AuthorizationSnapshot | None = None
     event_cursor: int | None = None
@@ -155,6 +162,7 @@ def assemble_packet(
         status_board=projections.status_board,
         entity_registry=projections.entity_registry,
         pending_confirmation=projections.pending_confirmations,
+        action_admissions=projections.action_admissions,
         conversation_history=projections.conversation_history,
         authorization_snapshot=state.authorizations,
         event_cursor=state.event_cursor,
