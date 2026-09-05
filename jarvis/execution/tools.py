@@ -107,7 +107,11 @@ from jarvis.execution.action_runner import (
     ActionRunner,
     ActionRunnerError,
     ActionSubmission,
+    CancelAccepted,
+    CancelAlreadyTerminal,
     CancellationMode,
+    CancelOutcome,
+    CancelUnconfirmed,
     ResourceKeyResolutionError,
     ToolConcurrency,
     current_execution_context,
@@ -5090,7 +5094,8 @@ class ToolRegistry:
 
 _SPAWN_WORKER_TOOL_NAME: Final[str] = "spawn_worker"
 _VERIFY_DIFF_TOOL_NAME: Final[str] = "verify_diff"
-"""The two tools whose resource keys are resolved dynamically.
+_CANCEL_ACTION_TOOL_NAME: Final[str] = "cancel_action"
+"""The tools whose resource keys are resolved by name.
 
 Matched by name rather than by a new ``ToolDefinition`` field because these
 are the only two tools whose keys depend on runtime state (the Task Ledger's
@@ -5211,7 +5216,10 @@ def default_resource_key_resolver(
             mode="read_shared",
             parent_action_id=provenance.parent_action_id,
         )
-    if tool_def.read_only:
+    if tool_def.read_only or tool_def.name == _CANCEL_ACTION_TOOL_NAME:
+        # ADR-0008 D10: `cancel_action` signals a handle and mutates no
+        # resource. Taking the target's key — in any mode — would queue the
+        # cancel behind the very `write_exclusive` lease it is releasing.
         return ToolConcurrency(resource_keys=(), mode="read_shared")
     return ToolConcurrency(
         resource_keys=(GLOBAL_RESOURCE_KEY,),
@@ -5392,6 +5400,115 @@ def _action_correlation(action_request: ActionRequest) -> dict[str, str]:
     if action_request.turn_id is not None:
         out["turn_id"] = action_request.turn_id
     return out
+
+
+# --- cancel_action (ADR-0008 D10) --------------------------------------------
+#
+# The L2 control command that stops one exact, currently cancellable
+# ActionRun. Registered only when an ActionRunner exists: without one there
+# is no background action to cancel, and the registry, the LLM's tool list
+# and every event trail stay byte-identical to the runner-less build.
+
+_CANCEL_ACTION_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "target_action_id": {
+            "type": "string",
+            "description": "action_id of the open action to stop, from the open actions list.",
+        },
+        "reason": {
+            "type": "string",
+            "description": "Why Allen wants it stopped, in a few words.",
+        },
+    },
+    "required": ["target_action_id", "reason"],
+    "additionalProperties": False,
+}
+
+_CANCEL_ACTION_QUIESCENCE_BUDGET_S: Final[float] = 30.0
+"""How long the handler waits for the target to quiesce.
+
+The same budget the runner gives its own shutdown cancel
+(:meth:`ActionRunner.shutdown`). A target that does not quiesce in time
+keeps running and gets no `action.cancelled` (ADR-0008 F9); the ack then
+says so.
+"""
+
+
+def _cancel_outcome_payload(outcome: CancelOutcome) -> dict[str, Any]:
+    """Serialize one :data:`CancelOutcome` variant as the tool's ack payload."""
+    payload: dict[str, Any] = {"target_action_id": outcome.action_id}
+    if isinstance(outcome, CancelAccepted):
+        payload.update(status="accepted", event_uid=outcome.event_uid)
+    elif isinstance(outcome, CancelAlreadyTerminal):
+        payload.update(
+            status="already_terminal",
+            terminal_type=outcome.terminal_type,
+            event_uid=outcome.event_uid,
+        )
+    elif isinstance(outcome, CancelUnconfirmed):
+        payload.update(status="unconfirmed", reason=outcome.reason)
+    else:
+        payload["status"] = "unsupported"
+    return payload
+
+
+def _make_cancel_action_handler(runner: ActionRunner) -> ToolHandler:
+    """Close the `cancel_action` handler over the live ActionRunner."""
+
+    def cancel_action_handler(
+        action_request: ActionRequest,
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,  # noqa: ARG001 — handler signature uniformity.
+        lifecycle: ActionLifecycle,
+    ) -> RawResult:
+        """Ask the runner to cancel the target; ack with what it answered.
+
+        Writes no event about the target: `action.cancelled` stays the
+        runner's, written only after confirmed quiescence. The only row
+        this handler emits is this control action's own sync terminal.
+        """
+        target = action_request.arguments.get("target_action_id")
+        target_id = target if isinstance(target, str) else ""
+        reason = action_request.arguments.get("reason")
+        context = runner.context_of(target_id)
+        # The target's own declared mode, read from its live context. With
+        # no context (dispatched but not yet running, or already reaped)
+        # the runner answers from the durable fold whatever the mode, so
+        # any supported mode reaches that path — "unsupported" would
+        # short-circuit to `CancelUnsupported` before it.
+        mode: CancellationMode = (
+            context.cancellation_mode if context is not None else "cooperative"
+        )
+        outcome = runner.cancel_action(
+            target_id,
+            reason=reason if isinstance(reason, str) else "",
+            timeout_s=_CANCEL_ACTION_QUIESCENCE_BUDGET_S,
+            cancellation_mode=mode,
+        )
+        payload = _cancel_outcome_payload(outcome)
+        tool_output_str = tool_result(payload)
+        terminalize_action(
+            conn,
+            event_type="action.result_observed",
+            payload={
+                "action_id": action_request.action_id,
+                "semantics": "ack",
+                "tool_output": tool_output_str,
+            },
+            source_event_id=_get_running_event_uid(conn, action_request.action_id),
+            correlation=_action_correlation(action_request),
+        )
+        lifecycle.transition(action_request.action_id, "result_observed")
+        return RawResult(
+            action_id=action_request.action_id,
+            semantics="ack",
+            payload=payload,
+            tool_output=tool_output_str,
+            error=None,
+        )
+
+    return cancel_action_handler
 
 
 # --- write_file (ADR-0012 D1) ------------------------------------------------
@@ -6070,6 +6187,36 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             requires_confirmation=True,
         )
     )
+    if action_runner is not None:
+        # ponytail: the cancel still takes one runner run slot, so with
+        # `max_concurrent_runs=1` it waits behind its own target; skip the
+        # slot for resource-free control actions if that ever ships.
+        registry.register(
+            ToolDefinition(
+                name=_CANCEL_ACTION_TOOL_NAME,
+                description=(
+                    "Request cancellation of one exact, currently cancellable "
+                    "ActionRun. Use when Allen asks to stop, cancel or abort a "
+                    "running action."
+                ),
+                allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+                # ADR-0008 D10: L2 is the fixed risk of the cancellation
+                # command; the target's risk never transfers. Under the L3
+                # confirmation threshold that makes `requires_confirmation`
+                # False, which boot validation requires at L2.
+                risk_level="L2",
+                result_semantics="ack",
+                is_async=False,
+                input_schema=_CANCEL_ACTION_INPUT_SCHEMA,
+                handler=_make_cancel_action_handler(action_runner),
+                domain="agent_control",
+                read_only=False,
+                requires_entity=True,
+                requires_confirmation=False,
+                post_action_check=None,
+                result_budget_s=None,
+            )
+        )
     return registry
 
 

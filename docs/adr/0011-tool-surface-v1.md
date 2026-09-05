@@ -114,8 +114,8 @@ Migration of the existing six:
 ```python
 @dataclass(frozen=True)
 class EntityRegistryEntry:
-    entity_id: str        # deterministic natural key: "file:<abs-path>" | "repo:<abs-path>" | "task:<task-id>"
-    entity_type: str      # open enum, v1 folds: "file" | "repo" | "task" ("device" joins with the smart_home ADR — no reshaping needed)
+    entity_id: str        # deterministic natural key: "file:<abs-path>" | "repo:<abs-path>" | "task:<task-id>" | "action:<action-id>"
+    entity_type: str      # open enum, v1 folds: "file" | "repo" | "task"; "action" joined with ADR-0008 D10 ("device" joins with the smart_home ADR — no reshaping needed)
     canonical: str        # the resolved absolute path / task id
     aliases: tuple[str, ...]   # raw refs that resolved here (bounded: last 8, dedup)
     confidence: str       # "exact" | "fuzzy" | "bookmark" | "config"

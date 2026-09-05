@@ -1018,10 +1018,11 @@ class EntityRegistryEntry:
 
     Attributes:
         entity_id: Deterministic natural key — ``"file:<abs-path>"`` |
-            ``"repo:<abs-path>"`` | ``"task:<task-id>"``.
-        entity_type: ``"file"`` | ``"repo"`` | ``"task"`` (open enum;
-            ``"device"`` joins with the smart_home ADR).
-        canonical: The resolved absolute path / task id.
+            ``"repo:<abs-path>"`` | ``"task:<task-id>"`` |
+            ``"action:<action-id>"``.
+        entity_type: ``"file"`` | ``"repo"`` | ``"task"`` | ``"action"``
+            (open enum; ``"device"`` joins with the smart_home ADR).
+        canonical: The resolved absolute path / task id / action id.
         aliases: Raw refs that resolved to this entity, in first-seen
             order, deduped, bounded to the last `_ALIAS_CAP` (8).
         confidence: ``"exact"`` | ``"fuzzy"`` | ``"bookmark"`` |
@@ -1166,10 +1167,13 @@ def _fold_entity_registry(
     events: Iterable[Event],
     task_records: Mapping[str, TaskLedgerRecord],
     entity_bookmarks: Sequence[tuple[str, str]],
-) -> dict[str, EntityRegistryEntry]:
+) -> tuple[dict[str, EntityRegistryEntry], dict[str, ActionAdmission]]:
     """Single-pass fold producing the EntityRegistry (ADR-0011 D4).
 
-    Three routes plus one seed, folded in this order so a real
+    Returns ``(entries, admissions)``: the registry rows, and the
+    ADR-0008 D10 admission lookup for every ``action:`` row still in it.
+
+    Four routes plus one seed, folded in this order so a real
     resolution always supersedes a mere config declaration:
 
     1. **Seed** — `entity_bookmarks` (alias, absolute-path) pairs from
@@ -1191,8 +1195,20 @@ def _fold_entity_registry(
        `_add_alias`; `source_event_id` is the resolving event's uid,
        superseding any earlier seed/event row for the same `entity_id`
        (except a `confidence="config"` row, which the helper keeps).
+    5. **`action.dispatched`** (ADR-0008 D10) → `action:` entries,
+       `confidence="exact"`, registered at the first durable action
+       event — the same opener `StatusBoard.open_actions` uses — and
+       evicted by any of `_STATUS_BOARD_TERMINAL_ACTION_TYPES`, so the
+       `action:` universe is exactly the non-terminal set and the
+       gate's entity check refuses a terminated id with no new arm.
+       The same route records the action's `ActionAdmission`: the
+       last passing `gate.evaluated(gate="pre_action")` uid seen for
+       that `action_id` (with its `lease_id`), and the `run_id` a
+       later `run.started` row joins through the action's
+       `action.running` uid or correlation.
     """
     entries: dict[str, EntityRegistryEntry] = {}
+    actions = _ActionFoldState()
 
     for alias, abs_path in entity_bookmarks:
         entity_id = f"file:{abs_path}"
@@ -1236,8 +1252,130 @@ def _fold_entity_registry(
             if update is not None:
                 entity_id, entry = update
                 entries[entity_id] = entry
+        else:
+            actions.fold(entries, evt)
 
-    return entries
+    return entries, actions.admissions
+
+
+@dataclass
+class _ActionFoldState:
+    """Route 5's per-pass scratch: the `action:` entries' admission side."""
+
+    admissions: dict[str, ActionAdmission] = field(default_factory=dict)
+    gate_uid_by_action: dict[str, str] = field(default_factory=dict)
+    lease_by_action: dict[str, str] = field(default_factory=dict)
+    action_by_running_uid: dict[str, str] = field(default_factory=dict)
+
+    def fold(self, entries: dict[str, EntityRegistryEntry], evt: Event) -> None:
+        """Fold one event's action-lifecycle contribution, if it has one."""
+        if evt.type == "gate.evaluated":
+            self._note_pre_action_pass(evt)
+        elif evt.type == "action.dispatched":
+            action_id = str(evt.payload["action_id"])
+            entries[f"action:{action_id}"] = EntityRegistryEntry(
+                entity_id=f"action:{action_id}",
+                entity_type="action",
+                canonical=action_id,
+                aliases=(),
+                confidence="exact",
+                source_event_id=evt.event_uid,
+                last_seen_ms=evt.ts_epoch_ms,
+            )
+            self.admissions[action_id] = ActionAdmission(
+                action_id=action_id,
+                dispatched_event_uid=evt.event_uid,
+                admission_gate_uid=self.gate_uid_by_action.get(action_id),
+                lease_id=self.lease_by_action.get(action_id),
+            )
+        elif evt.type == "action.running":
+            self.action_by_running_uid[evt.event_uid] = str(evt.payload["action_id"])
+        elif evt.type == "run.started":
+            self._join_run_started(evt)
+        elif evt.type in _STATUS_BOARD_TERMINAL_ACTION_TYPES:
+            action_id = str(evt.payload["action_id"])
+            entries.pop(f"action:{action_id}", None)
+            self.admissions.pop(action_id, None)
+
+    def _note_pre_action_pass(self, evt: Event) -> None:
+        """Remember the latest passing pre-action verdict per `action_id`.
+
+        ADR-0008 D10: the admission uid is read from `gate.evaluated` and
+        not from `action.dispatched.source_event_id`, because the ordinary
+        dispatch path sets no source there — only the confirmation-backed
+        outbox path does.
+        """
+        if evt.payload.get("gate") != "pre_action" or evt.payload.get("outcome") != "pass":
+            return
+        action_id = evt.payload.get("action_id")
+        if not isinstance(action_id, str):
+            return
+        self.gate_uid_by_action[action_id] = evt.event_uid
+        lease_id = evt.payload.get("lease_id")
+        if isinstance(lease_id, str):
+            self.lease_by_action[action_id] = lease_id
+        else:
+            self.lease_by_action.pop(action_id, None)
+
+    def _join_run_started(self, evt: Event) -> None:
+        """Join one `run.started` row's `run_id` onto its action's admission.
+
+        Matched through the row's `source_event_id` (the action's
+        `action.running` uid, which is how `spawn_worker_handler` emits
+        it) or, failing that, its correlation `action_id`.
+        `action.running` carries no `run_id` and is never read for one.
+        """
+        action_id = self.action_by_running_uid.get(evt.source_event_id or "")
+        if action_id is None and evt.correlation is not None:
+            correlated = evt.correlation.get("action_id")
+            action_id = correlated if isinstance(correlated, str) else None
+        if action_id is None:
+            return
+        admission = self.admissions.get(action_id)
+        if admission is not None:
+            self.admissions[action_id] = replace(admission, run_id=str(evt.payload["run_id"]))
+
+
+# --- ActionAdmissions (ADR-0008 D10) -------------------------------------------
+
+
+@dataclass(frozen=True)
+class ActionAdmission:
+    """Durable provenance of one non-terminal action (ADR-0008 D10).
+
+    Attributes:
+        action_id: The action's stable id.
+        dispatched_event_uid: `event_uid` of the `action.dispatched` row
+            that opened the action.
+        admission_gate_uid: `event_uid` of the last passing
+            `gate.evaluated(gate="pre_action")` row for this action seen
+            before its dispatch, or `None` when no passing verdict
+            preceded it (a directly dispatched fixture action).
+        lease_id: The `lease_id` that verdict carried, if any.
+        run_id: The `run_id` of the `run.started` row joined to this
+            action, or `None` when none has been minted.
+    """
+
+    action_id: str
+    dispatched_event_uid: str
+    admission_gate_uid: str | None
+    lease_id: str | None = None
+    run_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ActionAdmissions:
+    """Folded `action_id -> ActionAdmission` for every non-terminal action.
+
+    The Pre-action Gate's `cancel_action` arm reads this to check that a
+    cancel request names the gate event that admitted its target.
+    """
+
+    by_action_id: Mapping[str, ActionAdmission] = field(default_factory=dict)
+
+    def get(self, action_id: str) -> ActionAdmission | None:
+        """Return the admission record for `action_id`, or None if absent."""
+        return self.by_action_id.get(action_id)
 
 
 # --- PendingConfirmations ------------------------------------------------------
@@ -1451,6 +1589,10 @@ class ProjectionSet:
         status_board: Folded Status Board (ADR-0009 D6).
         entity_registry: Folded EntityRegistry (ADR-0011 D4).
         pending_confirmations: Folded PendingConfirmations (ADR-0012 D4).
+        action_admissions: Folded ActionAdmissions (ADR-0008 D10) — the
+            admitting gate uid, dispatched uid and `run.started` run_id
+            of every non-terminal action, folded in the EntityRegistry
+            pass.
     """
 
     task_ledger: TaskLedger
@@ -1459,6 +1601,7 @@ class ProjectionSet:
     status_board: StatusBoard
     entity_registry: EntityRegistry
     pending_confirmations: PendingConfirmations
+    action_admissions: ActionAdmissions
     conversation_history: ConversationHistory = field(default_factory=ConversationHistory)
 
 
@@ -1517,18 +1660,17 @@ def fold_projections(
         claim_evidence=claim_evidence,
     )
     recent_trace = RecentTrace.from_events(materialized, max_size=recent_trace_size)
-    entity_registry = EntityRegistry(
-        entries_by_id=_fold_entity_registry(
-            materialized, task_ledger.records_by_task_id, entity_bookmarks,
-        ),
+    entries, admissions = _fold_entity_registry(
+        materialized, task_ledger.records_by_task_id, entity_bookmarks,
     )
     return ProjectionSet(
         task_ledger=task_ledger,
         recent_trace=recent_trace,
         claim_evidence=claim_evidence,
         status_board=_fold_status_board(materialized),
-        entity_registry=entity_registry,
+        entity_registry=EntityRegistry(entries_by_id=entries),
         pending_confirmations=_fold_pending_confirmations(materialized),
+        action_admissions=ActionAdmissions(by_action_id=admissions),
         conversation_history=fold_conversation_history(materialized),
     )
 
@@ -1548,6 +1690,8 @@ def make_snapshot(
 
 
 __all__ = [
+    "ActionAdmission",
+    "ActionAdmissions",
     "ClaimEvidenceProjection",
     "CommitObservation",
     "EntityRegistry",

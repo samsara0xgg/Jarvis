@@ -56,6 +56,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
+from jarvis.decision.action_cancel import (
+    CANCEL_ACTION_TOOL_NAME,
+    build_cancel_action_request,
+    cancel_resolution_answer,
+    render_cancel_result_for_llm,
+    resolve_cancellable_action,
+)
 from jarvis.decision.confirm_grammar import match_confirm_grammar
 from jarvis.decision.conversation import conversation_history_note
 from jarvis.decision.cost_guard import CostRecorder
@@ -931,6 +938,14 @@ class _Scratch:
     # silent_log/queue_review candidate. Same flag-to-finalize idiom as
     # `pending_confirmation_template_line` above.
     confirmation_answered_this_turn: bool = False
+    # ADR-0008 D10: the deterministic answer for a `cancel_action` whose
+    # target resolved to none or to several open actions — a plain spoken
+    # answer or a clarifying question, never a confirmation ask. Stamped
+    # by `_dispatch_one_tool_call`, read one frame up by
+    # `_run_tool_use_loop` to end the turn with it (the same
+    # flag-to-finalize idiom as `pending_confirmation_template_line`), so
+    # the LLM cannot pick a candidate on Allen's behalf.
+    cancel_answer_text: str | None = None
 
 
 def _active_subject_or_default(
@@ -1000,6 +1015,12 @@ def _insert_system_notes(
     open_tasks_note = _format_open_tasks_note(packet)
     if open_tasks_note is not None:
         messages.insert(0, {"role": "user", "content": open_tasks_note})
+    # ADR-0008 D10: the non-terminal actions, so a cancel utterance can
+    # name its target; `cancel_action`'s resolver still trusts only the
+    # L2 fold, never this rendering.
+    open_actions_note = _format_open_actions_note(packet)
+    if open_actions_note is not None:
+        messages.insert(0, {"role": "user", "content": open_actions_note})
     # ADR-0009 D6 (render half of Step 11): folded Status Board with its
     # §3.6.9 freshness wording, so "repo X 现在什么状态" is answered from
     # observer-folded state instead of the LLM reaching for git (M6).
@@ -1353,20 +1374,9 @@ def _run_tool_use_loop(
                 if dispatch_outcome == "async_pause":
                     break
 
-            if _confirmation_already_requested_this_turn(scratch):
-                # ADR-0012 D5: the ask ends the tool loop here — no more
-                # LLM calls this turn, regardless of which tool_call in
-                # the batch (or which loop iteration) triggered it. The
-                # draft is THIS response's own LLM text (optional 铺垫,
-                # if any — goes through the normal Pre-emit Gate scrub
-                # below like any other draft) plus the runtime-rendered
-                # template line frozen at staging time
-                # (`_stage_and_request_confirmation`), never composed by
-                # the LLM.
-                llm_preamble = (chat_result.text or "").strip()
-                template_line = scratch.pending_confirmation_template_line or ""
-                draft = f"{llm_preamble}\n\n{template_line}" if llm_preamble else template_line
-                return _finalize_response(draft, packet, ctx, scratch)
+            turn_ending_draft = _turn_ending_draft(scratch, chat_result.text)
+            if turn_ending_draft is not None:
+                return _finalize_response(turn_ending_draft, packet, ctx, scratch)
 
             if dispatch_outcome == "async_pause":
                 # spawn_worker is async; lifecycle stays at running and
@@ -1404,6 +1414,30 @@ def _run_tool_use_loop(
     LOGGER.warning("decide(): tool-use loop hit max_iterations=%d", ctx.max_tool_iterations)
     fallback = "tool-use loop exhausted; turn incomplete."
     return _finalize_response(fallback, packet, ctx, scratch)
+
+
+def _turn_ending_draft(scratch: _Scratch, llm_text: str | None) -> str | None:
+    """The draft that ends the tool loop this turn, or None to keep looping.
+
+    ADR-0012 D5: the first ``confirm_required`` ends the tool loop here —
+    no more LLM calls this turn, regardless of which tool_call in the
+    batch (or which loop iteration) triggered it. The draft is THIS
+    response's own LLM text (optional 铺垫, if any — goes through the
+    normal Pre-emit Gate scrub like any other draft) plus the
+    runtime-rendered template line frozen at staging time
+    (`_stage_and_request_confirmation`), never composed by the LLM.
+
+    ADR-0008 D10: an unresolved ``cancel_action`` ends the turn with its
+    deterministic answer (a question when several actions are open, a
+    plain no-op answer when none is). It is not a confirmation: no ask,
+    no pending slot, no lease. Allen's reply is a new turn that resolves
+    to one candidate.
+    """
+    if _confirmation_already_requested_this_turn(scratch):
+        llm_preamble = (llm_text or "").strip()
+        template_line = scratch.pending_confirmation_template_line or ""
+        return f"{llm_preamble}\n\n{template_line}" if llm_preamble else template_line
+    return scratch.cancel_answer_text
 
 
 _TIER0_GATE_REFUSED_TEXT: Final[str] = "这条指令被 Pre-action Gate 拦下，未执行。"  # noqa: RUF001 — fullwidth comma/period are intentional Chinese punctuation.
@@ -1539,6 +1573,7 @@ def _run_tier0_path(
         packet.task_ledger_snapshot,
         tool_def=tool_def,
         entity_registry=packet.entity_registry,
+        action_admissions=packet.action_admissions,
     )
     gate_event = emit_event(
         ctx.conn,
@@ -1756,6 +1791,38 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
                 if "task_id" in arguments:
                     arguments["task_id"] = resolver_result.resolved_to
 
+    # ADR-0008 D10: `cancel_action` resolves its target from the L2 fold
+    # (`packet.action_admissions`, mirrored by the `action:` EntityRegistry
+    # kind), never from the LLM's raw `target_action_id` alone. Runs before
+    # the resolve-on-propose block below so a `requires_entity=True` cancel
+    # never reaches the file resolver. An unresolved target (none open, or
+    # several) ends the turn with a deterministic answer and proposes
+    # nothing — no `action.proposed`, no `gate.evaluated`, no ask.
+    cancel_target: str | None = None
+    if name == CANCEL_ACTION_TOOL_NAME:
+        resolution = resolve_cancellable_action(
+            packet, requested=arguments.get("target_action_id"),
+        )
+        if resolution.action_id is None:
+            scratch.cancel_answer_text = cancel_resolution_answer(resolution)
+            messages.append(
+                _tool_result_message(
+                    call_id=call_id,
+                    content=json.dumps(
+                        {
+                            "status": resolution.kind,
+                            "candidates": list(resolution.candidates),
+                            "message": scratch.cancel_answer_text,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            return "continue"
+        cancel_target = resolution.action_id
+        target_entity_ref = resolution.action_ref
+        arguments["target_action_id"] = cancel_target
+
     # ADR-0011 D4 (resolve-on-propose): a tool that declares
     # `requires_entity=True` (e.g. `read_file`) but has no
     # `target_entity_ref` yet gets one shot at the injected entity
@@ -1880,6 +1947,17 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     )
 
     action_id = _new_action_id()
+    if cancel_target is not None:
+        # ADR-0008 D10: freeze the target's recorded admission gate uid
+        # into the request; the gate's `admission_matched` arm compares it.
+        reason_raw = arguments.get("reason")
+        action_payload = build_cancel_action_request(
+            packet,
+            request_id=action_id,
+            target_action_id=cancel_target,
+            reason=reason_raw if isinstance(reason_raw, str) else "",
+            requested_by_turn_id=scratch.turn_id,
+        ).as_action_payload()
     action_request = ActionRequest(
         action_id=action_id,
         tool_name=name,
@@ -1921,6 +1999,7 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
         packet.task_ledger_snapshot,
         tool_def=tool_def,
         entity_registry=gate_entity_registry,
+        action_admissions=packet.action_admissions,
     )
     gate_outcome = gate.outcome
     gate_reasons = list(gate.reasons)
@@ -2159,11 +2238,18 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
 
     # 8. Append the tool result back into the messages list so the LLM
     #    can see it on the next iteration. Multi-slot returns: render
-    #    the bundle as a JSON object so the LLM sees both outputs.
+    #    the bundle as a JSON object so the LLM sees both outputs. A
+    #    `cancel_action` ack also carries its spoken meaning per
+    #    `CancelOutcome` variant (ADR-0008 D10) — an unconfirmed cancel
+    #    is reported as not stopped, never as a success.
     messages.append(
         _tool_result_message(
             call_id=call_id,
-            content=_render_bundle_for_llm(bundle),
+            content=(
+                render_cancel_result_for_llm(primary_slot.payload)
+                if name == CANCEL_ACTION_TOOL_NAME
+                else _render_bundle_for_llm(bundle)
+            ),
         )
     )
     return "continue"
@@ -3521,6 +3607,32 @@ def _format_open_tasks_note(packet: SituationPacket) -> str | None:
         "may instead pass `since_ts` and `until_ts` (epoch milliseconds) "
         "as extra arguments — the resolver runs a time-window query "
         "against the Task Ledger. Yesterday = [now - 86400000, now]."
+    )
+
+
+def _format_open_actions_note(packet: SituationPacket) -> str | None:
+    """Render the Status Board's open actions as a system note, or None.
+
+    ADR-0008 D10: `cancel_action` takes a `target_action_id`, so the LLM
+    has to see which actions are still running. Same shape as
+    :func:`_format_open_tasks_note` — None when nothing is open.
+    """
+    if not packet.status_board.open_actions:
+        return None
+    now_ms = int(time.time() * 1000)
+    bullets = "\n".join(
+        f"- action_id={action.action_id!r}, dispatched "
+        f"{max(0, (now_ms - action.dispatched_ts_ms) // 1000)} s ago, no terminal yet"
+        for action in packet.status_board.open_actions
+    )
+    return (
+        "[system context] Open actions (Status Board snapshot — dispatched, "
+        "not finished):\n"
+        f"{bullets}\n"
+        "When Allen asks to stop, cancel or abort what is running, pass the "
+        "matching `action_id` from this list as `target_action_id` to "
+        "`cancel_action`; with exactly one open action, that is the one. "
+        "Do not invent action_ids."
     )
 
 
