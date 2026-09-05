@@ -186,6 +186,160 @@ class ServerHello(ServerEnvelope):
     payload: ServerHelloPayload  # type: ignore[assignment]
 
 
+# --- Durable deltas, snapshot frames and transport ACK (D8, D10, D11) --------
+
+Sha256Hex = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
+ResponsePhase = Literal["commentary", "final"]
+ResponseChannel = Literal["speech", "document", "both"]
+ResponseLifecycle = Literal[
+    "generating", "waiting_action", "finalizing", "completed", "cancelled", "failed"
+]
+PanelStreamState = Literal["unopened", "open", "closed", "failed"]
+
+
+class ResponseOpened(BaseModel):
+    """D10 ``response.opened``: a response and, on first sight, its group."""
+
+    model_config = _BASE_CONFIG
+
+    kind: Literal["response.opened"]
+    response_id: Identity
+    response_group_id: Identity
+    turn_id: ShortText
+    phase: ResponsePhase
+    channel: ResponseChannel
+    lifecycle: ResponseLifecycle
+    question: StrictStr | None
+    summary: StrictStr | None
+    created_at_ms: EpochMs
+    revision: Cursor
+
+
+class ResponseSegment(BaseModel):
+    """D10 ``response.segment``: one permitted panel segment.
+
+    ``truncated`` appears only inside a snapshot preview whose first segment
+    alone exceeded the inline budget; a live segment never carries it.
+    """
+
+    model_config = _BASE_CONFIG
+
+    kind: Literal["response.segment"]
+    response_id: Identity
+    sequence: Cursor
+    phase: ResponsePhase
+    channel: ResponseChannel
+    text: StrictStr
+    segment_hash: Sha256Hex
+    truncated: StrictBool = False
+
+
+class ResponseDelivery(BaseModel):
+    """D10 ``response.delivery``: the panel stream state of one response."""
+
+    model_config = _BASE_CONFIG
+
+    kind: Literal["response.delivery"]
+    response_id: Identity
+    panel_stream: PanelStreamState
+    reason: StrictStr | None
+
+
+ViewMutation = Annotated[
+    ResponseOpened | ResponseSegment | ResponseDelivery,
+    Field(discriminator="kind"),
+]
+
+
+class ViewDeltaPayload(BaseModel):
+    """The payload of one durable ``view.delta``: one ordered mutation batch (D6/D9)."""
+
+    model_config = _BASE_CONFIG
+
+    source_event_uid: Identity
+    changes: list[ViewMutation]
+
+
+class DocumentReferenceItem(BaseModel):
+    """D16 reference to a body the snapshot did not inline."""
+
+    model_config = _BASE_CONFIG
+
+    response_id: Identity
+    event_uid: Identity
+    utf8_bytes: Cursor
+
+
+class ResponseSnapshotItem(BaseModel):
+    """One response inside a ``response_groups`` snapshot item."""
+
+    model_config = _BASE_CONFIG
+
+    response_id: Identity
+    phase: ResponsePhase
+    channel: ResponseChannel
+    lifecycle: ResponseLifecycle
+    revision: Cursor
+    panel_stream: PanelStreamState
+    segments: list[ResponseSegment]
+    playbacks: list[dict[str, Any]]
+    document_reference: DocumentReferenceItem | None = None
+
+
+class ResponseGroupSnapshotItem(BaseModel):
+    """One item of the ``response_groups`` section (D8)."""
+
+    model_config = _BASE_CONFIG
+
+    response_group_id: Identity
+    turn_id: ShortText
+    question: StrictStr | None
+    created_at_ms: EpochMs
+    responses: list[ResponseSnapshotItem]
+
+
+class SnapshotBeginPayload(BaseModel):
+    """D8 ``snapshot.begin``; ``counts`` is pages per section, keyed as in ``section_order``."""
+
+    model_config = _BASE_CONFIG
+
+    snapshot_id: Identity
+    through_cursor: Cursor
+    view_schema_version: Literal[1]
+    section_order: list[ShortText]
+    counts: dict[str, Cursor]
+
+
+class SnapshotPagePayload(BaseModel):
+    """D8 ``snapshot.page``; ``items`` decode by ``section``."""
+
+    model_config = _BASE_CONFIG
+
+    snapshot_id: Identity
+    section: ShortText
+    page_index: Cursor
+    items: list[dict[str, Any]]
+
+
+class SnapshotEndPayload(BaseModel):
+    """D8 ``snapshot.end``; ``content_hash`` covers the exact page frame bytes."""
+
+    model_config = _BASE_CONFIG
+
+    snapshot_id: Identity
+    through_cursor: Cursor
+    content_hash: Sha256Hex
+
+
+class TransportAckPayload(BaseModel):
+    """D11 rule 6 cumulative ACK; ``snapshot_id`` is set only for a snapshot ACK."""
+
+    model_config = _BASE_CONFIG
+
+    snapshot_id: Identity | None = None
+    through_cursor: Cursor
+
+
 def hello_is_supported(hello: ClientHello) -> bool:
     """Report whether this client can be served, or needs ``upgrade_required``.
 

@@ -113,6 +113,7 @@ from jarvis.runtime import (
     drive_turn,
     make_response_cancel_callable,
 )
+from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.shared import Event
 from jarvis.shared.realtime import new_boot_id, new_connection_id
 from jarvis.shared.realtime_trace import record_realtime_trace
@@ -3006,6 +3007,18 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
         # what makes it safe — no second daemon can be mid-read of the
         # file this one is replacing.
         v2_token = rotate_inherent_v2_token(runtime.runtime_paths.inherent_v2_token)
+        boot_id = new_boot_id()
+        log_epoch = read_log_epoch(runtime.conn)
+        # ADR-0014 D8/D9 — the v2 sequencer and client hub, behind
+        # realtime.inherent.v2_sequencer.enabled. It drains the log through
+        # the current high-water before returning; None leaves the v2 socket
+        # exactly as card 1 left it (hello, then silence) and v1 untouched.
+        inherent_view = await start_inherent_view(
+            runtime,
+            boot_id=boot_id,
+            log_epoch=log_epoch,
+            poll_interval_s=poll_interval_s,
+        )
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
@@ -3014,14 +3027,15 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
             v2=InherentV2Deps(
                 token_matches=functools.partial(inherent_v2_token_matches, v2_token),
                 mint_connection_id=new_connection_id,
-                boot_id=new_boot_id(),
-                log_epoch=read_log_epoch(runtime.conn),
+                boot_id=boot_id,
+                log_epoch=log_epoch,
                 high_water_cursor=functools.partial(_latest_id, runtime.conn),
                 runtime_capabilities=functools.partial(
                     _v2_runtime_capabilities,
                     voice_input=voice_pipeline_callable is not None,
                     response_interrupt=cancel_response_callable is not None,
                 ),
+                attach_client=None if inherent_view is None else inherent_view.attach_client,
             ),
         )
         app = create_app(deps)
@@ -3035,7 +3049,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
         )
         server = uvicorn.Server(config)
 
-        watchers: list[asyncio.Task[None]] = []
+        watchers: list[asyncio.Task[None]] = (
+            [] if inherent_view is None else list(inherent_view.tasks)
+        )
         if runtime.input_flags.intent_pump:
             # ADR-0008 D8 (Step 4). Adoption and the recovery scan happen
             # inside the startup barrier, before any task exists that could
