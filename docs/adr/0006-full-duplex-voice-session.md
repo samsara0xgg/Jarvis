@@ -636,7 +636,7 @@ interrupted_response_id
 
 `submitted_samples` is the generation-local count handed to the host output timeline, not an assertion that those samples are already acoustic. Heard state uses `heard_through_sequence` and cursor quality.
 
-`PlaybackTerminalizer` is the sole L5 exit for `completed/interrupted/failed` playback. It calls one L2 atomic append primitive keyed by `(response_id, playback_generation_id)`: inside the same `BEGIN IMMEDIATE` transaction it verifies no terminal exists, appends the canonical terminal event, and commits, returning `Event | AlreadyTerminal`. There is no separate claim marker or post-claim emit window. Checkpoints are non-terminal.
+The sole exit for `completed/interrupted/failed` playback is the L2 atomic append primitive `terminalize_playback` (`jarvis/state/lifecycle_terminal.py`), keyed by `(response_id, playback_generation_id)`: inside the same `BEGIN IMMEDIATE` transaction it verifies no terminal exists, appends the canonical terminal event, and commits, returning `Event | AlreadyTerminal`. There is no separate claim marker or post-claim emit window. Checkpoints are non-terminal. No class named `PlaybackTerminalizer` exists; L5 reaches this primitive through two callers today — `voice_media.py`'s `_commit_terminal` and the boot reconciler in `playback_recovery.py` — and the at-most-one-terminal-per-`(response_id, playback_generation_id)` invariant holds across both because they share the one CAS primitive.
 
 The new `response.*` lifecycle and additive `surface.response_*` fields are owned by ADR-0008.
 
