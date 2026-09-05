@@ -100,7 +100,7 @@ Rules:
 - cancellation is idempotent;
 - `waiting_action` means the response is quiet while linked actions continue; it does not occupy the input watcher;
 - an action result may resume the same logical group with a new response or continue the existing run according to the route policy;
-- physical playback completion is not a ResponseRun terminal condition. L3 generation and L5 delivery are separate truths.
+- physical playback completion is not a ResponseRun terminal condition. L3 generation and L5 delivery are separate truths. The one exception is a D6 lifecycle-commentary run, whose text is a fixed phrase with no generation to complete; see D6.
 
 Exactly-one is a mechanism, not an assertion. L3 owns a single `ResponseTerminalizer`; completion, cancel, provider failure, shutdown, and recovery all call it. The terminalizer invokes one L2 atomic append operation: inside the same `BEGIN IMMEDIATE` transaction it verifies that `response_id` has no terminal, appends exactly one canonical terminal event, and commits, returning `Event | AlreadyTerminal`. There is no separate claim marker followed by a later emit. Losing callers cannot append another terminal.
 
@@ -365,7 +365,9 @@ Forbidden examples without corresponding evidence:
 - “已经查到了。” before `action.result_observed`.
 - timer-based fake progress when no lifecycle changed.
 
-`PresentationIntent(acknowledge/progress/error)` is to be introduced by this D6 lifecycle-commentary work as an ephemeral L3→L5 contract; it does not exist in `jarvis/` yet. Spec §3.6.3 owns its definition and field set (`intent_type`, `surface_hint`, `subject_ref`, `content_hint`, `freshness_required`); the table above only lists which of §3.6.3's `intent_type` values this ADR uses and the phrases they map to. A commentary segment may be durable as a delivered response segment, but its truth derives from the durable action event. Repeated progress is coalesced; a timer may decide when to surface a new known state, but may not invent a new state.
+`PresentationIntent(acknowledge/progress/error)` is the ephemeral L3→L5 contract this D6 work introduced: the type lives in `jarvis/shared/realtime.py`, the four-row mapping from a committed action event in `jarvis/decision/commentary.py`, and delivery is a `phase="commentary"` ResponseRun opened by a runtime durable-cursor observer over the action types. Spec §3.6.3 owns its definition and field set (`intent_type`, `surface_hint`, `subject_ref`, `content_hint`, `freshness_required`); the table above only lists which of §3.6.3's `intent_type` values this ADR uses and the phrases they map to. A commentary segment may be durable as a delivered response segment, but its truth derives from the durable action event: the run's `source_event_id` IS that event. Repeated progress is coalesced; a timer may decide when to surface a new known state, but may not invent a new state.
+
+A commentary run is the one exception to D1's "generation completion, not physical delivery, is the terminal condition". Its text is a fixed phrase, so generation has nothing to complete; the run instead stays open until `surface.playback_started` names it, and that is what makes "a newer lifecycle row cancels an unheard earlier phrase as `superseded`" reachable at all. A commentary already playing is past that point and finishes.
 
 Commentary is always routine, short, interruptible, and independently permitted. Final output follows its own policy. A deep model is never called only to generate “我在查.”
 
@@ -1181,7 +1183,7 @@ Fast preset adoption is a separate decision inside Step 12. Streaming the strong
 ## 10. Spec changes and explicit deviations
 
 1. Spec §3.4.13's sentence/full-text/structured gate remains authoritative. This ADR adds a conservative pre-route policy, explicit segment risk derivation, durable `gate.evaluated(stream_emit)`, and per-segment permit; it does not weaken full/high-risk gates.
-2. Spec §3.6.3's L3→L5 ephemeral PresentationIntent is defined there and is still to be introduced in code; action lifecycle is its truth source.
+2. Spec §3.6.3's L3→L5 ephemeral PresentationIntent is defined there and is now in code as `jarvis.shared.realtime.PresentationIntent`, still a contract object and never an Event Log row; action lifecycle is its truth source.
 3. Spec §3.6.6 remains: L5 consumes permits and does not decide risk.
 4. ADR-0003 post-hoc replay remains the compatibility path but is superseded as the target default for routine realtime responses.
 5. The ADR-0003 deferred `surface.response_reset` approach is not adopted for voice because already-heard output cannot be reset.

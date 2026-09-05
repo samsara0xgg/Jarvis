@@ -145,6 +145,38 @@ def legacy_full_text_policy(
     )
 
 
+def deterministic_commentary_policy(
+    *,
+    active_subject_ref: str,
+    evidence_snapshot_hash: str,
+    preset_snapshot_hash: str,
+) -> ResponseEmissionPolicy:
+    """Return the policy for one ADR-0008 D6 lifecycle-commentary run.
+
+    The first constructor for the ``"deterministic"`` emission mode: the text
+    is a fixed phrase chosen by :mod:`jarvis.decision.commentary` from a
+    committed action event, so there is no model stream to gate and no risk
+    to derive — D6 states commentary is always routine.  ``allowed_phases``
+    and ``allowed_channels`` are singletons rather than the wider unions the
+    other two constructors use, which is what keeps a commentary policy from
+    ever being reused to emit a ``final``.
+
+    ``active_subject_ref`` is the action id the phrase is about — the same
+    value as the intent's ``subject_ref`` — not ``legacy_full_text_policy``'s
+    ``"unknown"``: here the subject genuinely is known.
+    """
+    return ResponseEmissionPolicy(
+        emission_mode="deterministic",
+        output_risk_class="routine",
+        required_gate_mode="sentence",
+        allowed_phases=("commentary",),
+        allowed_channels=("speech",),
+        active_subject_ref=active_subject_ref,
+        evidence_snapshot_hash=evidence_snapshot_hash,
+        preset_snapshot_hash=preset_snapshot_hash,
+    )
+
+
 def evidence_snapshot_hash(conn: sqlite3.Connection) -> str:
     """Hash the log position this run started from.
 

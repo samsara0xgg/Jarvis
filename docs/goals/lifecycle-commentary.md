@@ -336,3 +336,109 @@ minutes of nothing.
 Implement docs/goals/lifecycle-commentary.md on the current branch. The goal is met when all of the following appear in the transcript: (1) the diff adds an ephemeral `PresentationIntent` in jarvis/shared/realtime.py with exactly spec §3.6.3's five fields and no Event Log write, a pure jarvis/decision/commentary.py mapping the four ADR-0008 D6 action rows to acknowledge/progress/error intents with the action_id as subject_ref and every other event type to None, a `deterministic` commentary ResponseRun policy with `allowed_phases=("commentary",)`, a runtime durable-cursor observer over `action.dispatched|running|result_observed|failed` anchored at boot high-water that opens one `phase="commentary"` run per intent in the turn's own `response_group_id` and delivers its single segment through `render_response`, the phase argument replacing cli_render's hardcoded `"phase": "final"`, and the default-false `realtime.commentary.enabled` flag — while leaving `_RUNTIME_TRIGGER_TYPES`, `attention_policy()`, every other function in jarvis/decision/gates.py, jarvis/execution/, desktop/, the ResponsePlan schema, and the routine_stream permits and their L2 validators unchanged; (2) raw pytest output of the new hermetic test file covering the four-row mapping plus non-mapped events returning None, the origin filter (an action whose turn has no user-input `turn.started` yields no commentary), the live-pending-confirmation guard, coalescing per (action_id, row) with an unstarted earlier run cancelled `superseded`, a final run in the same response_group_id still emitted and enqueued after drain, `phase="commentary"` on the run's open/chunk/emitted while an unchanged caller still writes "final", and no cost disposition for a commentary run — ending in a pass line; (3) raw output showing that with the flag off the same driven turn produces an event log byte-identical to today: event types, payloads and order compared and shown equal, zero `phase="commentary"` rows, and no observer task registered; (4) raw live-run output from a daemon with the flag on and a routine tool route, quoting the commentary `response_id` and its `surface.playback_started` row carrying `phase="commentary"`, the final's `response_id` and its later `surface.playback_started`, both timestamps proving the final played after, and the same question with the flag off showing zero commentary rows — plus `SwitchAudioSource -c -t output` before and after with the same device restored and a statement that the microphone was never opened; (5) raw output of the named regression files and of the full hermetic suite excluding live tests, with the observed passed/deselected counts compared against the 852 passed / 63 deselected baseline recorded at 88011b0 and any delta explained, plus `lint-imports`, `ruff check .`, and `mypy --strict jarvis tests scripts tools`, each ending with a pass line or exit 0; (6) each entry under Docs to sync updated or explicitly judged unchanged, following the rule: update the canonical document that owns a changed contract, do not document what the code makes clear, do not duplicate a fact across documents; (7) each slice committed with the project commit skill and `git status` clean; (8) a Progress line per slice in the card. Or stop after 70 turns.
 
 ## Progress
+- Contract + mapping + policy — 90db339 — `pytest -q tests/integration/test_lifecycle_commentary.py` 4 passed; lint-imports KEPT 1/1, ruff clean, mypy strict clean 229 files.
+- Phase argument through render_response — a3a1d1f — 81 passed (streaming media, routine-streaming wire, tts watcher, silent-turn canary).
+- realtime.commentary flag in the activation graph — dad0bd7 — 43 passed (new file + Wave-4A response-run suite); shipped config asserted off.
+- Runtime observer + hermetic acceptance — b7b5aad — 946 passed / 64 deselected
+  (baseline 927/64 at `5094bb0` plus this file's 19 checks); flag-off log shown
+  equal to the flag-on log minus its commentary rows (8 rows, sequences equal).
+- ADR-0008 D6 / §10 rule 2 updated — 56d129c — spec §3.6.3, ADR-0014:226-231 and
+  ADR-0006:251-262 judged **unchanged** with evidence: the five fields and the
+  seven-value `intent_type` vocabulary are used verbatim, `PresentationIntent`
+  reaches no `emit_event` call site (grep: 0), the phase vocabulary already reads
+  `commentary | final`, and the handoff shipped as `enqueue_after_drain` in one
+  `response_group_id`.
+- Live run (daemon from this worktree, own runtime root
+  `~/.claude/jobs/f3902c8d/tmp/lane-a-rt`, port 8016, DeepSeek presets untouched,
+  `JARVIS_VOICE_DISABLE_WAKE=1` so the microphone is never opened, text submit
+  only). Flag on, turn `T97212ea1`: commentary `RESPb91d93c4f168459da7809665d038b22e`
+  `surface.playback_started phase=commentary` at 21:40:41.014Z, final
+  `RESPf6e6c04e679f470f870ee9acfd35d12a` `surface.playback_started phase=final` at
+  21:40:43.952Z — 2.938 s later and 2 ms after the commentary's
+  `playback_completed`, i.e. enqueued after drain in one group
+  `RGRPce5e913d78ea5095b9362b3bb51c06ef`; the final was spoken through to
+  `playback_completed` at 21:40:51.228Z. Zero `cost.recorded` names the commentary
+  run. Flag off, turn `T043ad1e5`: zero `phase="commentary"` rows and no
+  `commentary_watcher` line in the daemon log. Audio guard:
+  `SwitchAudioSource -c -t output` = `MacBook Pro Speakers` before and after,
+  routed to `BlackHole 16ch` for the run and restored from a trap (hub's
+  2026-09-05 rule followed: a captured `BlackHole 16ch` would have restored to
+  `MacBook Pro Speakers` instead).
+- Live-run finding, fixed — e08aa39 — the ActionRunner's inline synchronous path
+  commits `action.result_observed` with an empty correlation, so the origin
+  filter could not name its turn. The observer now joins through the action's own
+  `action.dispatched` row.
+- Live-run finding, no change needed: on a sub-millisecond synchronous tool the
+  action's terminal commits ~1 ms after `action.dispatched`, before the observer's
+  10 ms poll, so the acknowledge and progress rows are correctly suppressed by the
+  non-terminal guard and only the `action.result_observed` phrase speaks. That is
+  the card's "never speaks progress for an action whose terminal already
+  committed" working as specified.
+- `_tts_watcher` per-turn keying, verified as the card asks: the legacy
+  (non-`voice_media`) `TTSPipeline` holds a single `self._turn_id`
+  (jarvis/surface/voice_tts.py:2645-2698). Two open→emitted sequences under one
+  `turn_id` are handled sequentially with no loss — the second `begin_turn` resets
+  the buffer and, the turn id being identical, no chunk hits the
+  `turn_id != self._turn_id` drop. The degraded case is interleaving: if the
+  final's `surface.response_open` commits between the commentary's open and its
+  chunk, the two texts flush as one utterance. Nothing crashes or is dropped. It
+  cannot arise on the `voice_media.StreamingTTSPipeline` path (buffers keyed by
+  `response_id`, lane by `response_group_id`), which is what
+  `realtime.streaming_output` selects (jarvis/runtime/inherent_loop.py:1683-1700)
+  and what the live run exercised. No code change: `jarvis/surface/voice_tts.py`
+  is outside this card's may-change list.
+- Card tension resolved, recorded in ADR-0008 D6: "the run is then closed through
+  `complete(...)`" and "a newer intent cancels an earlier unheard run with
+  `reason="superseded"`" cannot both hold if the run is terminalized right after
+  render — a completed run's cancel returns `AlreadyTerminal` and writes nothing.
+  The acceptance evidence requires an observable `superseded` cancel, so the run
+  is closed through `ResponseTerminalizer.complete(...)` at
+  `surface.playback_started` instead of immediately after render.
+- Verifier pass (opus, fresh context, `5094bb0..HEAD`) — three confirmed defects
+  fixed in 9401cb4, each with a regression pin that fails on the pre-fix code:
+  (a) **high** — the run declared `channel="speech"` but the untagged phrase made
+  L5 derive `channel="both"`, so `_bind_identity` marked the record inconsistent,
+  `ConversationHistory.consistent` went False and `pre_route` answered `unknown`
+  for every later turn in the window, silently switching routine streaming off;
+  the phrase is now wrapped in `<voice>` by `commentary_speech_text`.
+  (b) **medium** — the Pre-emit Gate verdict reached L5 with no durable
+  `gate.evaluated(pre_emit)` row (ADR-0001 § Gate contracts); the commentary path
+  calls the gate itself, so it now appends that row itself.
+  (c) **medium-low** — the teardown cancel ran an unbounded SQLite CAS on the
+  event-loop thread (up to 5 s per unheard run); it now carries a 0.5 s budget.
+  Also from the same pass: D1's unconditional playback sentence now points at the
+  D6 exception, `_complete_commentary` no longer raises on a run a cancel already
+  terminalized, both silence tests gained positive controls, and the frozen /
+  never-an-event assertion is now real.
+- Live-run finding, fixed in the same commit: the supersede decision read the
+  observer's cursor position rather than the log. The action row that supersedes a
+  phrase is always written *before* that phrase's playback begins, so it has the
+  lower row id — the second live run cut off a commentary mid-speech
+  (`surface.playback_interrupted` at 22:09:15.669Z). `_commentary_reached_the_speaker`
+  makes "already playing" a durable read, so such a run is completed, not cancelled.
+- Final live run (post-fix), turn `T319cbaa4`: commentary
+  `RESP56bff6382d7f4b7aba215796c4ef842a` `surface.playback_started phase=commentary
+  channel=speech` at 22:14:14.543Z, `response.completed` at 22:14:14.546Z; final
+  `RESP7f115e410e524a9c80e54903cc16af98` `surface.playback_started phase=final` at
+  22:14:18.243Z — 1 ms after the commentary's `playback_completed` at 22:14:18.242Z,
+  spoken through to `playback_completed` at 22:14:23.899Z. No
+  `surface.playback_interrupted`, no `response.cancelled`, commentary
+  `document_text=''`, `ConversationHistory.consistent = True` with two records under
+  one turn. Flag off, turn `T3555a30a`: zero `phase="commentary"` rows, zero
+  `commentary_watcher` lines in the daemon log. Audio `MacBook Pro Speakers` before
+  and after, `BlackHole 16ch` during, restored from a trap; microphone never opened.
+- Verifier findings deliberately **not** fixed, for the card owner:
+  - A commentary run is registered only in the observer's own
+    `ResponseRunRegistry`, not in `runtime.response_runs`, so
+    `/cancel_response` answers `unknown_response` for a playing commentary. Making
+    a commentary user-cancellable is a design decision the card does not take, so
+    it is left as a gap rather than added here.
+  - A commentary that never reaches `surface.playback_started` (no TTS provider, or
+    a silenced attention channel) stays open until teardown, which cancels it as
+    `shutdown`; `open_by_action` holds one entry per such action for the process
+    lifetime. Bounded by the process, honest in the log, but a text-only
+    deployment with commentary on is a misconfiguration worth a louder answer than
+    this card specifies.
+  - `git status` shows `?? .venv`: a pre-existing local symlink that `.gitignore`'s
+    `.venv/` (directory-only) does not match. The tracked tree is clean; the
+    symlink predates this branch and is not this card's to change.
