@@ -38,9 +38,17 @@ from jarvis.runtime import (
 )
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.committed_event_bus import CommittedEventBus
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
+from jarvis.surface import voice_media
 from jarvis.surface.cli import SurfaceState, parse_response_channels, record_pre_emit_token
 from jarvis.surface.cli_render import render_response
+from tests.integration.test_wave2_streaming_media import (
+    _CallbackPump,
+    _config,
+    _FakeProvider,
+    _player,
+    _submit_response,
+)
 
 if TYPE_CHECKING:
     from jarvis.shared import Event
@@ -545,3 +553,168 @@ def test_delivery_terminal_only_binds_the_run_without_the_streaming_flag(tmp_pat
             available_surfaces=frozenset(),
             delivery_terminal_only=True,
         )
+
+
+# --- A zero-permit seal degrades to full text on the same run ---------------
+
+_COUNT_QUERY = "从一数到十五，用中文数字"  # noqa: RUF001 — the live Q1 verbatim, fullwidth comma included.
+_COUNT = "一二三四五六七八九十。十一十二十三十四十五。"
+
+
+def _media_rows(conn: sqlite3.Connection, response_id: str) -> list[tuple[int, Event]]:
+    """The response's surface trail as ``(row_id, event)``, the media owner's input."""
+    rows: list[tuple[int, Event]] = []
+    for event in iter_events_of_types(
+        conn,
+        ("surface.response_open", "surface.response_chunk", "surface.response_emitted"),
+    ):
+        if event.payload.get("response_id") != response_id:
+            continue
+        found = conn.execute(
+            "SELECT id FROM events WHERE event_uid = ?", (event.event_uid,)
+        ).fetchone()
+        assert found is not None
+        rows.append((int(found[0]), event))
+    return rows
+
+
+def _play(db_path: Path, rows: list[tuple[int, Event]]) -> None:
+    """Hand the trail to the real L5 media owner with the A3 test doubles."""
+    provider = _FakeProvider(candidate_count=1)
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=replace(_config(), speak_from_segments=True),
+        start_player=False,
+    )
+    try:
+        with _CallbackPump(player):
+            outcomes = asyncio.run(_submit_response(pipeline, rows))
+            assert [outcome.status for outcome in outcomes] == ["accepted"] * len(rows)
+            assert pipeline.wait_until_idle(timeout_s=5.0)
+    finally:
+        assert pipeline.close()
+
+
+def test_zero_permit_seal_delivers_the_generated_text_as_full_text(tmp_path: Path) -> None:
+    """A stream sealed before its first permit speaks its own text on the same run."""
+    with _Provider([_COUNT]) as provider:
+        runtime = _runtime(tmp_path, provider.url)
+        intent = _intent(runtime.conn, "turn-degrade", _COUNT_QUERY)
+        result = _drive(runtime, intent)
+        assert len(provider.requests) == 1
+        assert provider.requests[0].get("stream") is True
+    conn = runtime.conn
+    started = _payloads(conn, "response.started")
+    assert len(started) == 1
+    assert (started[0]["route"], started[0]["emission_mode"]) == (
+        "casual_or_explanatory",
+        "routine_stream",
+    )
+    response_id = started[0]["response_id"]
+    assert not _rows(conn, "response.failed")
+    gates = _rows(conn, "gate.evaluated")
+    assert [(row[2]["gate"], row[2]["outcome"]) for row in gates] == [
+        ("stream_emit", "buffer_full_text"),
+        ("pre_emit", "allow_completion_language"),
+    ]
+    assert gates[0][2]["reasons"] == [
+        "outside_evaluated_candidate_form",
+        "routine_ceiling_not_met",
+    ]
+    assert gates[1][2]["attempt"] == 0
+    opens = _payloads(conn, "surface.response_open")
+    assert len(opens) == 1
+    assert (opens[0]["kind"], opens[0]["response_id"]) == ("text", response_id)
+    assert opens[0]["attention_channel"] == "voice_notify"
+    chunks = _rows(conn, "surface.response_chunk")
+    assert "".join(row[2]["text"] for row in chunks) == _COUNT
+    assert all(row[2]["response_id"] == response_id for row in chunks)
+    emitted = _rows(conn, "surface.response_emitted")
+    assert len(emitted) == 1
+    assert emitted[0][2]["voice_text"] == _COUNT
+    assert emitted[0][2]["response_id"] == response_id
+    assert result.response_plan.text == _COUNT
+    assert [cost["disposition"] for cost in _payloads(conn, "cost.recorded")] == ["completed"]
+    ended = _rows(conn, "turn.ended")
+    assert len(ended) == 1
+    assert ended[0][3] == gates[1][4]
+    assert ended[0][2]["final_response_hash"] == result.response_plan.response_hash
+    assert [row[1] for row in _rows(
+        conn,
+        "response.started",
+        "response.completed",
+        "response.failed",
+        "surface.response_open",
+        "turn.ended",
+        "surface.response_emitted",
+    )] == [
+        "response.started",
+        "turn.ended",
+        "response.completed",
+        "surface.response_open",
+        "surface.response_emitted",
+    ]
+
+    _play(runtime.runtime_paths.event_log, _media_rows(conn, response_id))
+    playback = _rows(conn, "surface.playback_started", "surface.playback_completed")
+    assert [row[1] for row in playback] == [
+        "surface.playback_started",
+        "surface.playback_completed",
+    ]
+    assert all(row[2]["response_id"] == response_id for row in playback)
+    assert playback[1][2]["heard_text"] == _COUNT
+
+
+_CLAIM = "我已经完成了这个任务。"
+_LIMITED = "根据 agent 报告，任务状态未验证。"  # noqa: RUF001 — fullwidth comma in real limitation text.
+
+
+def _pre_emit_trail(conn: sqlite3.Connection) -> list[Any]:
+    """The pre-emit verdicts, and every event appended from the first one on."""
+    gates = [row for row in _rows(conn, "gate.evaluated") if row[2]["gate"] == "pre_emit"]
+    first = gates[0][0]
+    rows = conn.execute("SELECT id, type FROM events ORDER BY id").fetchall()
+    return [
+        [(row[2]["outcome"], row[2]["attempt"], row[2]["response_hash"]) for row in gates],
+        [str(row[1]) for row in rows if int(row[0]) >= first],
+    ]
+
+
+def test_zero_permit_seal_keeps_the_pre_emit_refusal_path_of_a_full_text_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The degraded candidate is refused, retried and delivered as an ungated turn is.
+
+    ``pre_route`` refuses the streaming route whenever a task is open, so a real
+    subject and a streamed answer never meet; the subject is forced here — the
+    gate verdicts themselves are the real ones — and the same forcing drives the
+    flag-off run, so the two trails are comparable event for event.
+    """
+    monkeypatch.setattr(
+        decision_module, "_active_subject_or_default", lambda *_args: "task-ungated"
+    )
+    trails = []
+    for routine in (True, False):
+        with _Provider([_CLAIM, _LIMITED]) as provider:
+            runtime = _runtime(tmp_path / f"gate-{int(routine)}", provider.url, routine=routine)
+            result = _drive(runtime, _intent(runtime.conn, f"turn-gate-{int(routine)}"))
+            assert len(provider.requests) == 2
+            assert provider.requests[0].get("stream") is (True if routine else None)
+        conn = runtime.conn
+        sealed = [
+            row[2] for row in _rows(conn, "gate.evaluated") if row[2]["gate"] == "stream_emit"
+        ]
+        assert [row["outcome"] for row in sealed] == (["buffer_full_text"] if routine else [])
+        assert not _rows(conn, "response.failed")
+        assert len(_payloads(conn, "response.started")) == 1
+        assert result.response_plan.text == _LIMITED
+        trails.append(_pre_emit_trail(conn))
+    assert trails[0][0] == [
+        ("force_limitation_language", 0, _sha256(_CLAIM)),
+        ("force_limitation_language", 1, _sha256(_LIMITED)),
+    ]
+    assert trails[0] == trails[1]

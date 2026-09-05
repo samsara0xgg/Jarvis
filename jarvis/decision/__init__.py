@@ -3093,10 +3093,29 @@ def _run_routine_stream(
     The finalizer writes nothing; a typed failure goes back to the runtime,
     which fails the run with the durable prefix hash and opens a correction
     run. ``suffix_rejected`` earns exactly one suffix regeneration first.
+    A stream sealed before its first permit never gets that far: it degrades
+    to the ordinary full-text path in place, on the text it already has.
     """
     messages = build_llm_messages(packet)
     _insert_system_notes(messages, packet, scratch, ctx)
     streamed = _stream_routine_text(ctx, route, messages, scratch, gate_segments=True)
+    if streamed.emitted_segments == 0:
+        # D2 rules 1 and 4: a seal before the first permit exposed nothing, so
+        # there is no prefix for D3's correction machinery to protect. The text
+        # already generated becomes an ordinary full-text candidate on this same
+        # run — one generation, judged by the Pre-emit Gate like any answer.
+        draft = (
+            compose_envelope(streamed.suffix, streamed.document)
+            if streamed.enveloped
+            else streamed.suffix
+        )
+        record_realtime_trace(
+            "routine_stream_degraded_to_full_text",
+            turn_id=scratch.turn_id,
+            response_id=route.context.response_id,
+            text_characters=len(draft),
+        )
+        return _finalize_response(draft, packet, ctx, scratch)
     attention = attention_policy(packet, make_snapshot(ctx.conn).claim_evidence)
     response_id = route.context.response_id
     document = streamed.document
