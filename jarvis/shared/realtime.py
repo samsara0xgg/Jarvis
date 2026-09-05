@@ -94,13 +94,29 @@ class Wave4ResponseFlags:
     independent_response_cancel: bool = False
     typed_conversation_history: bool = False
     routine_streaming: bool = False
+    lifecycle_commentary: bool = False
+    """ADR-0008 D6 (Step 5, ``realtime.commentary.enabled``).
+
+    A committed action lifecycle row on a user-originated turn opens one
+    short deterministic ``phase="commentary"`` ResponseRun.  Its config
+    block is a sibling of ``realtime.response`` rather than a member of it —
+    the switch is about a second response *phase*, not about how the answer
+    itself is produced — so :meth:`from_mapping` takes it separately.
+    """
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, object] | None) -> Wave4ResponseFlags:
+    def from_mapping(
+        cls,
+        raw: Mapping[str, object] | None,
+        *,
+        commentary: Mapping[str, object] | None = None,
+    ) -> Wave4ResponseFlags:
         """Parse exact booleans, treating absent values as disabled.
 
         Same fail-closed rule as :meth:`Wave1FeatureFlags.from_mapping`: a
         non-boolean truthy value never enables a lifecycle-sensitive path.
+        ``commentary`` is the ``realtime.commentary`` block; omitted, the
+        commentary switch reads as off exactly like an absent key.
         """
         values = {} if raw is None else raw
         routine = values.get("routine_streaming")
@@ -109,6 +125,7 @@ class Wave4ResponseFlags:
             independent_response_cancel=values.get("independent_response_cancel") is True,
             typed_conversation_history=values.get("typed_conversation_history") is True,
             routine_streaming=isinstance(routine, Mapping) and routine.get("enabled") is True,
+            lifecycle_commentary=commentary is not None and commentary.get("enabled") is True,
         )
 
     @property
@@ -120,6 +137,7 @@ class Wave4ResponseFlags:
                 self.independent_response_cancel,
                 self.typed_conversation_history,
                 self.routine_streaming,
+                self.lifecycle_commentary,
             )
         )
 

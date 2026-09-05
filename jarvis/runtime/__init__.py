@@ -595,10 +595,12 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
     2. ``response_run_lifecycle`` requested without the Wave-1
        transactional-append and lifecycle-terminal-CAS primitives it writes
        through.
-    3. ``independent_response_cancel``, ``typed_conversation_history`` or
-       ``routine_streaming`` requested without a surviving
-       ``response_run_lifecycle``. Cancellation, typed history and routine
-       streaming all require stable response lifecycle identities.
+    3. ``independent_response_cancel``, ``typed_conversation_history``,
+       ``routine_streaming`` or ``lifecycle_commentary`` requested without a
+       surviving ``response_run_lifecycle``. Cancellation, typed history,
+       routine streaming and D6 commentary all require stable response
+       lifecycle identities — without the lifecycle switch no ResponseRun,
+       terminalizer or registry is constructed at all.
     """
     realtime = config.get("realtime")
     if not isinstance(realtime, Mapping):
@@ -608,8 +610,10 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
             reason="not_requested",
         )
     response_raw = realtime.get("response")
+    commentary_raw = realtime.get("commentary")
     requested = Wave4ResponseFlags.from_mapping(
         response_raw if isinstance(response_raw, Mapping) else None,
+        commentary=commentary_raw if isinstance(commentary_raw, Mapping) else None,
     )
     if realtime.get("enabled") is not True:
         if not requested.all_disabled:
@@ -629,6 +633,7 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
         requested.independent_response_cancel
         or requested.typed_conversation_history
         or requested.routine_streaming
+        or requested.lifecycle_commentary
     ) and not requested.response_run_lifecycle:
         return _downgraded_response_activation(requested, "lifecycle_flag_disabled")
     return _Wave4ResponseActivation(
@@ -660,18 +665,21 @@ def _downgraded_response_activation(
     LOGGER.warning(
         "realtime.response downgraded (%s): requested response_run_lifecycle=%s "
         "independent_response_cancel=%s typed_conversation_history=%s "
-        "routine_streaming=%s; effective response_run_lifecycle=%s "
-        "independent_response_cancel=%s typed_conversation_history=%s "
-        "routine_streaming=%s",
+        "routine_streaming=%s lifecycle_commentary=%s; effective "
+        "response_run_lifecycle=%s independent_response_cancel=%s "
+        "typed_conversation_history=%s routine_streaming=%s "
+        "lifecycle_commentary=%s",
         reason,
         requested.response_run_lifecycle,
         requested.independent_response_cancel,
         requested.typed_conversation_history,
         requested.routine_streaming,
+        requested.lifecycle_commentary,
         flags.response_run_lifecycle,
         flags.independent_response_cancel,
         flags.typed_conversation_history,
         flags.routine_streaming,
+        flags.lifecycle_commentary,
     )
     record_realtime_trace(
         "response_activation_downgraded",
@@ -680,7 +688,8 @@ def _downgraded_response_activation(
             f"response_run_lifecycle={requested.response_run_lifecycle},"
             f"independent_response_cancel={requested.independent_response_cancel},"
             f"typed_conversation_history={requested.typed_conversation_history},"
-            f"routine_streaming={requested.routine_streaming}"
+            f"routine_streaming={requested.routine_streaming},"
+            f"lifecycle_commentary={requested.lifecycle_commentary}"
         ),
     )
     return _Wave4ResponseActivation(flags=flags, requested=requested, reason=reason)
