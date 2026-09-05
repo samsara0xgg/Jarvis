@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
     from jarvis.decision.llm import ChatResult, ChatStreamChunk, LLMClient
+    from jarvis.decision.llm_stream import LLMStreamHandle, StreamDisposition
     from jarvis.state.committed_event_bus import CommittedEventBus
 
 
@@ -317,6 +318,39 @@ class CostRecorder:
             close = getattr(stream, "close", None)
             if callable(close):
                 close()
+
+    def stream_events(  # noqa: PLR0913 — request plus audit correlation
+        self, client: LLMClient, *, messages: list[dict[str, Any]], system: str,
+        tools: list[dict[str, Any]] | None = None, kind: str, turn_id: str | None,
+        run_id: str | None = None,
+    ) -> LLMStreamHandle:
+        """Bind exactly-once accounting before any typed-stream network I/O."""
+        provider, model = client.provider, client.model
+
+        def settled(result: StreamDisposition) -> CostAccountingOutcome:
+            usage = result.usage
+            return self._commit(
+                CostAccountingDisposition(
+                    llm_request_id=result.llm_request_id, kind=kind,
+                    provider=provider, model=model, outcome=result.outcome,
+                    provider_response_id=result.provider_response_id,
+                    usage_status=usage.usage_status, input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens, cache_read_tokens=usage.cache_read_tokens,
+                    cache_write_tokens=usage.cache_write_tokens,
+                    cost_usd=self._known_cost(
+                        model=model, input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        cache_read_tokens=usage.cache_read_tokens,
+                        cache_write_tokens=usage.cache_write_tokens,
+                    ),
+                    error_code=result.error_code,
+                ),
+                turn_id=turn_id, run_id=run_id,
+            )
+
+        return client.stream_events(
+            messages=messages, system=system, tools=tools, on_settled=settled,
+        )
 
 
 __all__ = ["CostRecorder", "MissingLLMRequestIdentityError"]

@@ -24,6 +24,7 @@ forbidden by ``.importlinter``).
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -34,12 +35,15 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 
+from jarvis.decision.llm_stream import LLMStreamHandle, StreamNormalizer
 from jarvis.shared.realtime import LLMUsageStatus
 from jarvis.shared.realtime_trace import record_realtime_trace
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping
+    from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
     from pathlib import Path
+
+    from jarvis.decision.llm_stream import StreamDisposition
 
 LOGGER = logging.getLogger(__name__)
 
@@ -512,6 +516,75 @@ class LLMClient:
         if self._provider == "openai":
             return self._chat_stream_openai(messages=messages, system=system, tools=tools)
         return self._chat_stream_anthropic(messages=messages, system=system, tools=tools)
+
+    def stream_events(
+        self, *, messages: list[dict[str, Any]], system: str,
+        tools: list[dict[str, Any]] | None = None,
+        on_settled: Callable[[StreamDisposition], object],
+    ) -> LLMStreamHandle:
+        """Prepare an isolated typed stream; L3 must supply its cost settlement owner."""
+        request_id = _new_llm_request_id()
+        # Capture everything before returning the lazy source. Later preset or
+        # caller-message mutations cannot redirect this request or its payload.
+        options: dict[str, Any] = {"api_key": self._api_key}
+        if self._base_url:
+            options["base_url"] = self._base_url
+        if self._timeout_s is not None:
+            options["timeout"] = self._timeout_s
+        if self._max_retries is not None:
+            options["max_retries"] = self._max_retries
+        body: dict[str, Any] = {"model": self._model, "stream": True}
+        if self._provider == "openai":
+            token_key = "max_completion_tokens" if self._model.startswith("gpt-5") else "max_tokens"
+            body.update({
+                token_key: self._max_tokens,
+                "messages": [{"role": "system", "content": system}, *copy.deepcopy(messages)],
+                "stream_options": {"include_usage": True},
+            })
+            if tools:
+                body["tools"] = _tools_to_openai(copy.deepcopy(tools))
+        else:
+            body.update({
+                "max_tokens": self._max_tokens, "system": system,
+                "messages": copy.deepcopy(messages),
+            })
+            if tools:
+                body["tools"] = copy.deepcopy(tools)
+        return LLMStreamHandle(
+            normalizer=StreamNormalizer(self._provider, request_id),
+            source=self._typed_provider_events(self._provider, options, body),
+            on_settled=on_settled,
+        )
+
+    @staticmethod
+    async def _typed_provider_events(
+        provider: Provider, options: dict[str, Any], body: dict[str, Any],
+    ) -> AsyncIterator[Mapping[str, Any]]:
+        """Own and close one async SDK client/stream, including cancelled reads."""
+        if not options.get("api_key"):
+            message = "provider API key is unset; check the request preset"
+            raise MissingAPIKeyError(message)
+        record_realtime_trace(
+            "llm_sdk_request_call_started_upper_bound", provider=provider,
+            model=body["model"], streaming=True,
+            measurement_semantics="immediately_before_sdk_call_not_network_send",
+        )
+        if provider == "openai":
+            from openai import AsyncOpenAI  # noqa: PLC0415 — lazy provider construction
+
+            async with AsyncOpenAI(**options) as client:
+                response = await client.chat.completions.create(**body)
+                async with response:
+                    async for chunk in response:
+                        yield chunk.model_dump(exclude_none=True)
+        else:
+            from anthropic import AsyncAnthropic  # noqa: PLC0415 — lazy provider construction
+
+            async with AsyncAnthropic(**options) as anthropic_client:
+                response = await anthropic_client.messages.create(**body)
+                async with response:
+                    async for chunk in response:
+                        yield chunk.model_dump(exclude_none=True)
 
     # ---- fresh-context contextmanager (ADR-0002 Step 9) ---------------
 

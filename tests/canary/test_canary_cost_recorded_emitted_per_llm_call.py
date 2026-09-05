@@ -1,4 +1,4 @@
-"""Every production ``chat``/``chat_stream`` site has an L3 cost guard.
+"""Every production full, legacy-stream or typed-stream site has an L3 guard.
 
 Per ADR-0002 § Tier 1 canaries, ADR-0008 §4.1, and spec §5.4.1
 (``cost.recorded.owner_layer == L3``): every full or streamed provider call
@@ -8,7 +8,7 @@ guard silently drops spend attribution or an explicit unavailable disposition.
 
 The scan recursively covers every Python module under ``jarvis/decision``,
 ``jarvis/runtime`` and ``jarvis/surface`` — no file list is maintained.  Only
-the provider adapter implementation module is excluded; the two CostRecorder
+the provider adapter implementation module is excluded; the CostRecorder
 implementation methods are checked against their exact internal commit seam.
 Adding a future ``response_stream.py`` with an unguarded ``chat_stream``
 therefore fails this canary, and so does a nested ``def`` that hides a raw
@@ -27,6 +27,8 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING
 
+import pytest
+
 from tests.canary._helpers import parse, relative_to_repo, repo_root
 
 if TYPE_CHECKING:
@@ -40,6 +42,7 @@ _COST_RECORDER_IMPLEMENTATION_METHODS = frozenset(
     },
 )
 _SCANNED_PACKAGES = ("jarvis/decision", "jarvis/runtime", "jarvis/surface")
+_LLM_METHODS = {"chat", "chat_stream", "stream_events"}
 
 
 def _modules_in_scope() -> list[Path]:
@@ -67,7 +70,7 @@ def _is_chat_call(node: ast.AST) -> bool:
     if not isinstance(node, ast.Call):
         return False
     func = node.func
-    return isinstance(func, ast.Attribute) and func.attr in ("chat", "chat_stream")
+    return isinstance(func, ast.Attribute) and func.attr in _LLM_METHODS
 
 
 def _is_cost_recorder_call(node: ast.AST) -> bool:
@@ -75,7 +78,7 @@ def _is_cost_recorder_call(node: ast.AST) -> bool:
     if not isinstance(node, ast.Call):
         return False
     func = node.func
-    if not isinstance(func, ast.Attribute) or func.attr not in ("chat", "chat_stream"):
+    if not isinstance(func, ast.Attribute) or func.attr not in _LLM_METHODS:
         return False
     owner = func.value
     if isinstance(owner, ast.Name):
@@ -166,34 +169,94 @@ class _DirectCallCollector(ast.NodeVisitor):
         return
 
 
+def _has_settlement_callback(
+    func: ast.FunctionDef | ast.AsyncFunctionDef,
+    call: ast.Call,
+) -> bool:
+    """Typed guard binds its direct local committing callback before returning."""
+    if not isinstance(call.func, ast.Attribute) or call.func.attr != "stream_events":
+        return False
+    callback = next((arg.value for arg in call.keywords if arg.arg == "on_settled"), None)
+    if not isinstance(callback, ast.Name):
+        return False
+    return any(
+        isinstance(stmt, ast.FunctionDef)
+        and stmt.name == callback.id
+        and any(_is_cost_recorder_internal_commit(inner) for inner in _calls(stmt))
+        for stmt in func.body
+    )
+
+
+def _violations(module: ast.Module, rel: str) -> list[str]:
+    violations: list[str] = []
+    for qualified_name, func in _function_walks(module):
+        calls = _calls(func)
+        raw_chat_calls = [
+            call for call in calls if _is_chat_call(call) and not _is_cost_recorder_call(call)
+        ]
+        if not raw_chat_calls:
+            continue
+        legacy_calls_only = all(
+            isinstance(call.func, ast.Attribute) and call.func.attr != "stream_events"
+            for call in raw_chat_calls
+        )
+        if legacy_calls_only and any(_is_cost_recorder_call(call) for call in calls):
+            continue
+        if (
+            legacy_calls_only
+            and (rel, qualified_name) in _COST_RECORDER_IMPLEMENTATION_METHODS
+            and any(_is_cost_recorder_internal_commit(call) for call in calls)
+        ):
+            continue
+        if (rel, qualified_name) == (
+            "jarvis/decision/cost_guard.py",
+            "CostRecorder.stream_events",
+        ) and all(_has_settlement_callback(func, call) for call in raw_chat_calls):
+            continue
+        violations.append(
+            f"{rel}:{func.lineno}: function {qualified_name!r} calls chat/stream "
+            "without a direct CostRecorder guard in the same body"
+        )
+    return violations
+
+
 def test_canary_cost_recorded_emitted_per_llm_call() -> None:
     """Fail if any L3 LLM-caller function lacks a cost.recorded emit."""
-    violations: list[str] = []
-    for path in _modules_in_scope():
-        module = parse(path)
-        rel = relative_to_repo(path)
-        for qualified_name, func in _function_walks(module):
-            calls = _calls(func)
-            raw_chat_calls = [
-                call
-                for call in calls
-                if _is_chat_call(call) and not _is_cost_recorder_call(call)
-            ]
-            if not raw_chat_calls:
-                continue
-            if any(_is_cost_recorder_call(call) for call in calls):
-                continue
-            if (rel, qualified_name) in _COST_RECORDER_IMPLEMENTATION_METHODS and any(
-                _is_cost_recorder_internal_commit(call) for call in calls
-            ):
-                continue
-            violations.append(
-                f"{rel}:{func.lineno}: function {qualified_name!r} calls chat/stream "
-                "without a direct CostRecorder guard in the same body"
-            )
-
+    violations = [
+        violation
+        for path in _modules_in_scope()
+        for violation in _violations(parse(path), relative_to_repo(path))
+    ]
     assert not violations, (
         "cost-recorded-per-llm-call canary — every production chat/stream site "
-        "must use the L3 CostRecorder seam:\n  "
-        + "\n  ".join(violations)
+        "must use the L3 CostRecorder seam:\n  " + "\n  ".join(violations)
     )
+
+
+@pytest.mark.parametrize(
+    ("body", "accepted"),
+    [
+        ("return client.stream_events(on_settled=lambda _: None)", False),
+        ("self._commit(result)\nreturn client.stream_events()", False),
+        ("cost_recorder.chat(client)\nreturn client.stream_events()", False),
+        ("def done(result):\n    self._commit(result)\nreturn client.stream_events()", False),
+        ("def done(result):\n    pass\nreturn client.stream_events(on_settled=done)", False),
+        (
+            "def done(result):\n    def hidden():\n        self._commit(result)\n"
+            "return client.stream_events(on_settled=done)",
+            False,
+        ),
+        (
+            "def done(result):\n    self._commit(result)\n"
+            "return client.stream_events(on_settled=done)",
+            True,
+        ),
+    ],
+)
+def test_typed_guard_requires_bound_local_accounting(body: str, *, accepted: bool) -> None:
+    """A missing/no-op/unbound callback cannot borrow another function's guard."""
+    indented = "\n".join("        " + line for line in body.splitlines())
+    module = ast.parse("class CostRecorder:\n    def stream_events(self, client):\n" + indented)
+    assert (not _violations(module, "jarvis/decision/cost_guard.py")) == accepted
+    # The internal callback exception is not a production caller exemption.
+    assert _violations(module, "jarvis/decision/new_response_stream.py")

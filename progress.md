@@ -10,6 +10,40 @@ Contract: GOAL.md; architecture: docs/spec.html and docs/adr.
 
 ## Current work
 
+Typed async LLM transport is implemented in jarvis/decision/llm_stream.py
+and LLMClient.stream_events: stable request identity before I/O, text/tool
+DTOs, bounded argument assembly, all-proposal validation at protocol EOF,
+explicit partial/unavailable usage, owning-loop cancellation that closes the
+actual SDK/TCP read. CostRecorder binds one immutable settlement before I/O;
+cost commit failure retries the same disposition without another request.
+Same-chunk tool signals precede text; Anthropic initial usage is never promoted
+to provider-final without an actual terminal usage count. The legacy path is
+unchanged and the typed path is not yet selected by production routing.
+
+Actual OpenAI/Anthropic SDKs against localhost SSE and real SQLite accounting:
+29 integration scenarios, plus 8 cost canaries, passed in 1.23 s. Malformed
+JSON, duplicate keys/IDs, nonfinite numbers, protocol tails/errors, mixed
+tool/text, cancel before I/O and stalled socket reads, consumer cancellation,
+and accounting rollback/retry are covered. This is transport evidence, not
+cloud-model, safe segment, TTS or physical playback acceptance.
+
+Current full self-check: 485 passed / 63 deselected, 29.03 s, exit 0;
+ruff clean, strict mypy 181 files, layers 73 files / 203 dependencies kept.
+Evidence: /tmp/jarvis-realtime-typed-stream-nonlive-r3.log. The first run
+passed all assertions in 30.21 s but aborted at native teardown; it is NOT a
+passing gate. /tmp/jarvis-realtime-typed-stream-nonlive.log and macOS report
+~/Library/Logs/DiagnosticReports/python3.12-2026-09-04-172018.ips show ONNX
+telemetry HTTP callback/static-destructor mutex failure. R2 exited 0 in 31.43 s
+but still had the isolation defect. Commit 123dff6 patches three wake wiring
+tests' eager WakeEngine.start seam; the nine checks pass with an import-audit
+blocker and zero openwakeword/onnxruntime import attempts. R3 is after that fix.
+
+Next: complete L3 risk context, stable semantic assembler, durable emission
+permit and prefix-preserving finalizer; then connect the no-tool route to
+actual streaming TTS. Ordinary low-risk first sentence remains unimplemented.
+
+## Retained checkpoints
+
 Implemented resumable action waits: the intent pump releases both configured
 worker slots while L4 runs; readiness returns the same response/turn through a
 fresh per-step SQLite connection. Existing serial callers remain serial.
@@ -85,12 +119,18 @@ L3 streaming orientation: complete SituationPacket is first available in decide
 before _handle_utterance. Prepare route after confirmation/Tier0 branches and
 before _run_tool_use_loop model call. Current ResponseRun opens earlier with
 immutable full_text policy; move preparation before policy minting instead of
-loosening it later. Missing typed async tool/usage/error/cancel stream,
-ResponseRiskContext and actual packet snapshot hash, permit classifier/gate,
+loosening it later. Typed async tool/usage/error/cancel transport now exists.
+Missing ResponseRiskContext and actual packet snapshot hash, permit classifier/gate,
 syntax-aware assembler and immutable-prefix finalizer. Keep L3 cost/admission
 fences; no full-response retry or renderer replay after first permit. Details
-in ADR-0008 D2–D5; no new code for streaming yet.
+in ADR-0008 D2–D5; production streaming route remains disabled/unimplemented.
 Latest hub message authorizes goal-required live tests with synthetic payloads.
 Inspect exact endpoint/payload and prior refusal evidence before resuming; do not
 carry real history, profile or production state to providers.
 Physical microphone/playback, quality and latency acceptance still outstanding.
+
+Hub workflow update: no periodic queries or milestone messages. Contact only
+on final clean candidate after all implementation/self/live checks, or a
+specific external blocker requiring a hub/user decision. Final independent
+verification remains required. Current provider endpoint blocker was already
+reported; await corrected endpoint/credential mapping, do not repeat the ask.
