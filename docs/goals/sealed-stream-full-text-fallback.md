@@ -105,4 +105,36 @@ Implement docs/goals/sealed-stream-full-text-fallback.md on the current branch. 
   `surface.playback_started` id 33 (the answer was still speaking at 547
   characters when the daemon was stopped); before this card the same turn cost
   a `suffix_rejected` regeneration and a correction run.
+- Acceptance evidence (b), read as the retry chain, not a run failure — a
+  Pre-emit Gate refusal after the degrade is structurally unreachable in
+  production: `pre_route` returns `unknown` whenever a task is open
+  (jarvis/decision/pre_route.py:119), and `scratch.active_subject_ref` is only
+  set on resolver/tool paths the routine stream never takes, so
+  `_active_subject_or_default` returns None on this path and `pre_emit_gate`
+  short-circuits to pass-through. The card's "keeps today's failure/correction
+  sequence" is therefore tested as Target-behavior line 22 states it — the
+  retry chain inside `_finalize_response`, compared event for event against the
+  same turn with routine streaming off — with the subject forced identically on
+  both sides. Owner call to confirm this reading; nothing in the card can be
+  satisfied literally.
+- Verifier pass — 82e75bc, 2ec098a — confirmed and fixed: (1) the
+  de-duplication cut inside a word ("好的。" + "好的话我们继续。" became
+  "好的。话我们继续。") and re-normalized every slice, 18s on 20k characters of
+  punctuation — now one pass, a repeat accepted only when the next character is
+  not compared text, 0.007s, with two tests (a regeneration that only starts
+  like the prefix is kept whole; one that restates nothing but the prefix ships
+  the exposed sentence once); (2) the ADR sentence read as if the run's
+  `emission_mode` changed — it still records `routine_stream`, only delivery
+  changes; (3) `tests/scenarios/test_live_crash_recovery.py` `_Sealed` docstring
+  listed outcomes a zero-permit seal no longer has. Confirmed clean: the
+  DecideResult shape and the untouched runtime, the boundary files (empty diff
+  for stream_risk / stream_gate / stream_emission / surface / desktop / config),
+  the three-test revert check (3 failed with the change reverted, 9 existing
+  passed), the ADR D2 and spec.html unchanged judgements, and the enveloped /
+  cancel / cost / attention / duplicate-open / gate-mode risk review. Noted, not
+  fixed: `?? .venv` in `git status` is a symlink that `.gitignore`'s `.venv/`
+  pattern cannot match — pre-existing worktree setup, never staged. Suite
+  `917 passed, 64 deselected`; the card's "868 + new cases" is the launch-time
+  number — the integration baseline is 912 at d120d1a (verifier measured the
+  same at 5a75f2a), and 912 + 5 = 917.
 
