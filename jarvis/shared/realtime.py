@@ -234,6 +234,40 @@ def new_response_id() -> str:
     return "RESP" + uuid.uuid4().hex
 
 
+def new_log_epoch() -> str:
+    """Mint the identity of one Event Log lineage (ADR-0014 D6).
+
+    Assigned exactly once per log file and never re-minted afterwards: a
+    client that presents a different epoch is holding state from another
+    log and must resynchronize from a snapshot.
+    """
+    return "L" + uuid.uuid4().hex
+
+
+def new_boot_id() -> str:
+    """Mint one daemon process's boot identity (ADR-0014 D6).
+
+    A change of ``boot_id`` under an unchanged ``log_epoch`` means the
+    process restarted while the log survived, which is the case that
+    invalidates in-flight ephemeral sequences but not durable cursors.
+    """
+    return "B" + uuid.uuid4().hex
+
+
+def new_connection_id() -> str:
+    """Mint one accepted realtime socket's identity (ADR-0014 D6)."""
+    return "C" + uuid.uuid4().hex
+
+
+def new_client_instance_id() -> str:
+    """Mint one client instance's identity (ADR-0014 D6).
+
+    Stable across reconnects of the same client process, unlike
+    ``connection_id`` which is per socket.
+    """
+    return "I" + uuid.uuid4().hex
+
+
 def stable_legacy_presentation_binding(
     *,
     turn_id: str,
@@ -391,6 +425,10 @@ __all__ = [
     "Wave4ActionFlags",
     "Wave4ResponseFlags",
     "Wave5InputFlags",
+    "new_boot_id",
+    "new_client_instance_id",
+    "new_connection_id",
+    "new_log_epoch",
     "new_response_id",
     "stable_authorization_identity",
     "stable_legacy_presentation_binding",

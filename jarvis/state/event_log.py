@@ -42,6 +42,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import Event
+from jarvis.shared.realtime import new_log_epoch
 from jarvis.state.committed_event_bus import CommittedEventBus
 
 if TYPE_CHECKING:
@@ -51,6 +52,9 @@ if TYPE_CHECKING:
 # --- Schema constants --------------------------------------------------------
 
 # Single table — projections (Step 5) live in their own module, no caches here.
+# The one exception is `event_log_metadata` below: the ADR-0014 D6 operational
+# row that names this log's lineage. It is not an event and not projection
+# truth — nothing is ever derived from it by replay.
 _TABLE_NAME: Final[str] = "events"
 
 # Schema v1 (spec §5.1 backfill, 2026-08-25). Deviations from the spec's
@@ -74,7 +78,12 @@ _TABLE_NAME: Final[str] = "events"
 #   authority is `id` / `ts_epoch_ms`). Old rows could never be
 #   re-minted anyway (`source_event_id` references them). Revisit at
 #   federation.
-_SCHEMA_USER_VERSION: Final[int] = 1
+# Schema v2 (2026-09-04) adds `event_log_metadata` and its one `log_epoch`
+# row. A v1-stamped file has no such table, so `open_runtime_event_log`
+# refuses it with "requires bootstrap migration" until `open_event_log` has
+# run — the intended fail-closed contract, and harmless in practice because
+# the daemon always bootstraps before any runtime connection is opened.
+_SCHEMA_USER_VERSION: Final[int] = 2
 
 _TS_GENERATED_EXPR: Final[str] = (
     "strftime('%Y-%m-%dT%H:%M:%fZ', ts_epoch_ms / 1000.0, 'unixepoch')"
@@ -95,6 +104,16 @@ CREATE TABLE IF NOT EXISTS events (
     ingestion_node TEXT NOT NULL DEFAULT 'mac',
     ts TEXT GENERATED ALWAYS AS ({_TS_GENERATED_EXPR}) VIRTUAL,
     correlation_id TEXT GENERATED ALWAYS AS ({_CORRELATION_ID_GENERATED_EXPR}) VIRTUAL
+)
+"""
+
+# ADR-0014 D6 operational metadata: one row, one column of interest. Not an
+# event, not a projection — the log's own lineage identity, which a client
+# compares against the epoch it last saw to decide resume vs. resnapshot.
+_CREATE_METADATA_TABLE_SQL: Final[str] = """
+CREATE TABLE IF NOT EXISTS event_log_metadata (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    log_epoch TEXT NOT NULL
 )
 """
 
@@ -1259,6 +1278,42 @@ def _migrate_schema_v0_to_v1(conn: sqlite3.Connection) -> None:
         raise
 
 
+def _assign_log_epoch_once(conn: sqlite3.Connection) -> None:
+    """Give this log file its one and only `log_epoch` (ADR-0014 D6).
+
+    Runs on every `open_event_log`, but `INSERT OR IGNORE` under
+    `BEGIN IMMEDIATE` means only the first open of a given file ever
+    writes a row: the primary key is the constant 1. That is what keeps
+    the epoch identical across restart, `VACUUM`, and a byte copy of the
+    file, and different for a log that was recreated from scratch.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO event_log_metadata (singleton, log_epoch) VALUES (1, ?)",
+            (new_log_epoch(),),
+        )
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def read_log_epoch(conn: sqlite3.Connection) -> str:
+    """Return this log's `log_epoch`, failing closed when it is absent.
+
+    A missing row means the connection was opened against a file that
+    `open_event_log` never bootstrapped; serving a realtime hello without
+    an epoch would let a client resume against an unnamed log.
+    """
+    row = conn.execute("SELECT log_epoch FROM event_log_metadata WHERE singleton = 1").fetchone()
+    if row is None:
+        message = "Event Log has no log_epoch row"
+        raise sqlite3.OperationalError(message)
+    epoch: str = row[0]
+    return epoch
+
+
 def open_event_log(path: Path) -> sqlite3.Connection:
     """Open (or create) the SQLite Event Log at `path`.
 
@@ -1321,6 +1376,8 @@ def open_event_log(path: Path) -> sqlite3.Connection:
         conn.execute(index_sql)
     conn.execute(_CREATE_TRIGGER_NO_UPDATE_SQL)
     conn.execute(_CREATE_TRIGGER_NO_DELETE_SQL)
+    conn.execute(_CREATE_METADATA_TABLE_SQL)
+    _assign_log_epoch_once(conn)
     # Stamped after table + indexes + triggers exist; idempotent.
     conn.execute(f"PRAGMA user_version = {_SCHEMA_USER_VERSION}")
     conn.commit()
