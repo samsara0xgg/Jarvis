@@ -551,7 +551,8 @@ class LLMClient:
                 body["tools"] = _tools_to_openai(copy.deepcopy(tools))
             if self._reasoning_effort:
                 body["reasoning_effort"] = self._reasoning_effort
-            body.update(copy.deepcopy(self._extra_body))
+            if self._extra_body:
+                body["extra_body"] = copy.deepcopy(self._extra_body)
         else:
             body.update({
                 "max_tokens": self._max_tokens, "system": system,

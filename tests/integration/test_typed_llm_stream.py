@@ -850,3 +850,42 @@ def test_actual_sdk_commits_permitted_prefix_before_provider_completion(
                     await task
 
     asyncio.run(scenario())
+
+
+def test_openai_stream_sends_preset_extra_body_on_the_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preset `extra_body` reaches the JSON body instead of the SDK signature.
+
+    Found live at b298be8: the DeepSeek `thinking: {type: disabled}` preset made
+    `stream_events` fail with `TypeError` before any network I/O, because the
+    mapping was merged into `create(**body)` rather than passed as `extra_body`.
+    """
+    monkeypatch.setenv("TYPED_STREAM_FIXTURE_KEY", "synthetic")
+
+    async def scenario() -> None:
+        peer = _SSE([_oai({"content": "ok"}, "stop")])
+        async with peer.running() as url:
+            client = LLMClient(
+                {
+                    "provider": "openai",
+                    "base_url": url,
+                    "model": "fixture-model",
+                    "api_key_env": "TYPED_STREAM_FIXTURE_KEY",
+                    "max_tokens": 256,
+                    "timeout_s": 5,
+                    "max_retries": 0,
+                    "extra_body": {"thinking": {"type": "disabled"}},
+                }
+            )
+            handle = client.stream_events(
+                messages=[{"role": "user", "content": "q"}],
+                system="s",
+                on_settled=lambda _disposition: None,
+            )
+            events = [event async for event in handle.events()]
+            assert isinstance(events[-1], LLMResponseCompleted), events[-1]
+            assert peer.body["thinking"] == {"type": "disabled"}
+            assert "extra_body" not in peer.body
+
+    asyncio.run(scenario())

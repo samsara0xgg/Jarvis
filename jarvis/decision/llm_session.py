@@ -62,6 +62,15 @@ class LLMPresetSnapshot:
     timeout_s: float | None
     max_retries: int | None
     snapshot_hash: str
+    # Request-body identity (found live 2026-09-04: a run client built without
+    # these dropped DeepSeek's ``thinking: {type: disabled}``, the model
+    # reasoned through the whole ``max_tokens`` budget and answered nothing).
+    reasoning_effort: str | None = None
+    extra_body_json: str = "{}"
+
+
+def _optional_str(value: object) -> str | None:
+    return str(value) if value else None
 
 
 def _snapshot_hash(fields: Mapping[str, object]) -> str:
@@ -109,6 +118,8 @@ class LLMSessionFactory:
         max_tokens = int(self._config.get("max_tokens", 0) or 0)
         api_key_env_raw = self._config.get("api_key_env")
         api_key_env = str(api_key_env_raw) if api_key_env_raw else None
+        reasoning_effort = _optional_str(self._config.get("reasoning_effort"))
+        extra_body = dict(self._config.get("extra_body") or {})
 
         if resolved is not None:
             preset = presets.get(resolved)
@@ -124,6 +135,8 @@ class LLMSessionFactory:
                 max_tokens = int(preset["max_tokens"])
             preset_key_env = preset.get("api_key_env")
             api_key_env = str(preset_key_env) if preset_key_env else None
+            reasoning_effort = _optional_str(preset.get("reasoning_effort"))
+            extra_body = dict(preset.get("extra_body") or {})
         elif preset_name is not None:
             msg = f"preset {preset_name!r} is not configured under llm.presets"
             raise UnknownRequestPresetError(msg)
@@ -158,6 +171,8 @@ class LLMSessionFactory:
             "api_key_env": api_key_env,
             "timeout_s": timeout_s,
             "max_retries": max_retries,
+            "reasoning_effort": reasoning_effort,
+            "extra_body": extra_body,
         }
         return LLMPresetSnapshot(
             preset_name=resolved,
@@ -169,6 +184,8 @@ class LLMSessionFactory:
             timeout_s=timeout_s,
             max_retries=max_retries,
             snapshot_hash=_snapshot_hash(fields),
+            reasoning_effort=reasoning_effort,
+            extra_body_json=json.dumps(extra_body, sort_keys=True, separators=(",", ":")),
         )
 
     def create(
@@ -206,6 +223,11 @@ class LLMRequestClient(LLMClient):
         }
         if snapshot.api_key_env is not None:
             preset["api_key_env"] = snapshot.api_key_env
+        if snapshot.reasoning_effort is not None:
+            preset["reasoning_effort"] = snapshot.reasoning_effort
+        extra_body = json.loads(snapshot.extra_body_json)
+        if extra_body:
+            preset["extra_body"] = extra_body
         request_config: dict[str, Any] = {
             "provider": snapshot.provider,
             "presets": {preset_name: preset},

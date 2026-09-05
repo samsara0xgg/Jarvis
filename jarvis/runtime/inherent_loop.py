@@ -878,7 +878,8 @@ def _poll_waiting_turn(runtime: JarvisRuntime, waiting: WaitingTurn) -> WaitingT
     try:
         try:
             event, cursor = _wait_for_next_trigger(
-                conn, after_id=waiting.after_id, action_ids=waiting.action_ids, timeout=0,
+                conn, after_id=waiting.after_id, action_ids=waiting.action_ids,
+                lifecycle=runtime.lifecycle, timeout=0,
             )
         except TriggerWaitTimeout as exc:
             if time.monotonic() >= waiting.deadline:

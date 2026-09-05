@@ -13,7 +13,7 @@ llm:
       model: deepseek-v4-flash
       base_url: "https://api.deepseek.com/v1"
       api_key_env: DEEPSEEK_API_KEY
-      max_tokens: 2048
+      max_tokens: 16384
       extra_body:
         thinking:
           type: disabled
