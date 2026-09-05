@@ -1,5 +1,6 @@
 import XCTest
 @testable import InherentCard
+@testable import InherentRealtime
 
 /// Swift half of the ADR-0014 D6/D7 wire contract, checked against the same
 /// golden fixtures the Python DTO tests decode.

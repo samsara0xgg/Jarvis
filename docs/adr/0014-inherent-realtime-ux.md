@@ -1779,6 +1779,7 @@ Python generates/validates the JSON fixtures stored in the Swift test fixture di
 - `LegacyBridgeAdapter` may translate v1 into a synthetic single response group for fallback.
 - `RealtimeReducer` never accepts a v1 dictionary.
 - A client selects one mode for one socket.
+- The v2 client model lives in its own Swift module, the `InherentRealtime` static library target (Swift 6 language mode, strict concurrency complete), while v1 stays in the `InherentCard` target.
 
 `LegacyV1Serializer` is the only producer for future v2-identified events on
 the v1 endpoint. Per submitted turn it selects at most one eligible stream:
