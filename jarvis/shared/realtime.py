@@ -204,6 +204,40 @@ class ResponseInterruptPolicy:
     action_action: Literal["never"] = "never"
 
 
+PresentationIntentType = Literal[
+    "emphasize",
+    "acknowledge",
+    "progress",
+    "stale_warn",
+    "confirm_request",
+    "review_needed",
+    "error",
+]
+"""Spec §3.6.3's closed ``PresentationIntent.intent_type`` vocabulary."""
+
+
+@dataclass(frozen=True)
+class PresentationIntent:
+    """Spec §3.6.3 L3→L5 render contract, finer-grained than the channel.
+
+    Ephemeral by construction: spec §3.6.3's Contract-vs-Event note makes
+    this a message between the layers, never an Event Log row.  The durable
+    trace of a delivered intent is the ResponseRun it opens and that run's
+    ``surface.response_*`` rows — nothing here is appended.
+
+    It lives beside :class:`ResponseInterruptPolicy` and
+    :class:`LegacyPresentationBinding` for the same reason they do: it is an
+    L3→L5 contract object, and ``shared`` is the only module both layers may
+    import under the layer DAG.
+    """
+
+    intent_type: PresentationIntentType
+    surface_hint: str
+    subject_ref: str
+    content_hint: str
+    freshness_required: bool
+
+
 @dataclass(frozen=True)
 class LegacyPresentationBinding:
     """Stable compatibility identity minted at the existing L3/L5 seam.
@@ -422,6 +456,8 @@ __all__ = [
     "LLMUsageStatus",
     "LegacyPresentationBinding",
     "LifecycleOwner",
+    "PresentationIntent",
+    "PresentationIntentType",
     "ResponseCancelScope",
     "ResponseInterruptPolicy",
     "StableAuthorizationIdentity",
