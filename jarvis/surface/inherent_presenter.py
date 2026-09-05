@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
     from jarvis.state.inherent_view import (
         ActionView,
+        CancelRequestView,
         ConfirmationCleared,
         ConfirmationView,
         InherentViewCheckpoint,
@@ -108,13 +109,29 @@ def _delivery_change(response: ResponseView) -> dict[str, Any]:
     }
 
 
+def _cancel_request_item(cancel: CancelRequestView | None) -> dict[str, Any] | None:
+    """Map the A5 request to the four fields D13 sends, ``null`` when absent.
+
+    ``target_action_id`` duplicates the enclosing item's ``action_id`` and
+    ``proposed_event_uid`` is fold-internal provenance no client can join on;
+    neither reaches the wire.
+    """
+    if cancel is None:
+        return None
+    return {
+        "request_id": cancel.request_id,
+        "state": cancel.state,
+        "revision_cursor": cancel.revision_cursor,
+        "reason_code": cancel.reason_code,
+    }
+
+
 def action_item(action: ActionView) -> dict[str, Any]:
     """Map one action to its ``ActionUpsert`` wire shape (D13).
 
     ``freshness_ms`` is omitted: no clock reaches a pure fold, and the shipped
-    decoder reads its absence as fresh.  ``cleanup_state`` and
-    ``cancel_request`` have no key on the shipped ``ActionUpsert`` and stay
-    inside the fold.
+    decoder reads its absence as fresh.  ``cleanup_state`` has no key on the
+    shipped ``ActionUpsert`` and stays inside the fold.
     """
     return {
         "action_id": action.action_id,
@@ -125,6 +142,7 @@ def action_item(action: ActionView) -> dict[str, Any]:
         "target": action.safe_target_ref,
         "revision": action.state_revision_cursor,
         "cancellable": action.cancellable,
+        "cancel_request": _cancel_request_item(action.cancel_request),
     }
 
 

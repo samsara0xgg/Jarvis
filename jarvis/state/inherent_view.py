@@ -273,8 +273,9 @@ class CancelRequestView:
     Keyed by the request's own ``action_id`` (``CancelActionRequest.request_id``)
     and held against its target.  "Cancel requested" never enters the canonical
     eight-state ``ActionLifecycle``: only ``action.cancelled`` moves the
-    target's own state.  Folded and checkpointed but never serialized — the
-    shipped ``ActionUpsert`` has no ``cancel_request`` key.
+    target's own state.  L5 sends four of these fields as the ``ActionUpsert``
+    ``cancel_request`` object; ``target_action_id`` and ``proposed_event_uid``
+    stay inside the fold.
     """
 
     request_id: str

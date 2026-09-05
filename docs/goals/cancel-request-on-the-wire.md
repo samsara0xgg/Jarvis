@@ -95,3 +95,4 @@ Implement docs/goals/cancel-request-on-the-wire.md on the current branch. Read i
 
 ## Progress
 - (appended by the implementation session, one line per slice)
+- Slice 1, Python wire key — presenter emits `cancel_request` (four fields, `null` when absent), both docstrings corrected, `ACTION_WIRE_KEYS` grown and the absence assertion flipped to an exact four-key object — baseline 1063 passed / 64 deselected, after 1063 passed / 64 deselected (no new Python test function: the card names line-level flips), lint-imports KEPT 1/1, ruff 0, mypy 243 files.
