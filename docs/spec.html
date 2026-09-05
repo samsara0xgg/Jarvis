@@ -1051,7 +1051,7 @@ PresentationIntent.intent_type:
 
 <h4>3.6.4 Channel -> physical surface mapping</h4>
 
-<p>Layer 3 决定 channel class；Layer 5 在这个 channel 内选择具体 physical surface。Channel 到 surface 是 many-to-many：</p>
+<p>Layer 3 决定 channel class；Layer 5 在这个 channel 内选择具体 physical surface。对用户话语的直接回答，Layer 3 默认给出 <code>voice_notify</code>（§12.4）。Channel 到 surface 是 many-to-many：</p>
 
 <ul>
 <li><code>badge</code> 可以落在 Inherent、OLED、menu bar。</li>
@@ -2420,6 +2420,8 @@ Situation Packet 是 Runtime Decision 从 State Object projections 组装给 dec
 <tr><td><code>suppress</code></td><td>主动抑制</td><td>历史上 Allen 反复拒绝此类事件</td></tr>
 </tbody>
 </table>
+
+<p>对用户话语的直接回答默认走 <code>voice_notify</code>；<code>silent_log</code> 留给不需要出声的轮次，系统触发的 reconciliation 轮次（<code>action.timeout_assumed</code> / <code>action.failed</code>）仍进 <code>queue_review</code>。</p>
 
 <h3>12.5 决策规则：hard gates → channel scoring → feedback adjustment</h3>
 
