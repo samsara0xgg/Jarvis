@@ -931,7 +931,7 @@ result_available
 failure_code?
 cleanup_state: none | pending | quiesced | completed | quarantined
 cancel_request: CancelRequestView?
-freshness: fresh | stale
+freshness_ms?
 
 CancelRequestView
   request_id
@@ -964,15 +964,15 @@ recent-terminal limit like the response groups', and retirement of an action
 the Pre-action Gate refused, which L3 never dispatches and no terminal ever
 resolves. Four facts the build pinned:
 `cleanup_state` never reports `pending`, which has no committed source — no
-event marks cleanup as started; `freshness` is reported by *omitting* the
+event marks cleanup as started; freshness is reported by *omitting* the
 wire's `freshness_ms`, which the client reads as fresh, because no clock
 reaches a pure fold; `cancellable_hint` is computed in that fold, which
 supersedes "L3 computes `cancellable_hint`" above for this field — L3 has no
 producer, and the fold applies the same open set the cancel resolver reads
 (`user_action_required` keeps that sentence, having no producer at all yet);
-and `cancel_request`, `progress_label` and `user_action_required` have
-no key on the shipped `ActionUpsert`, so the first is folded and checkpointed
-but unsent, and the other two are unmodelled until a Swift card adds a slot.
+and `cancel_request` is serialized as the four fields named above, while
+`progress_label` and `user_action_required` have no key on the shipped
+`ActionUpsert` and stay unmodelled until something computes them.
 
 “Cancel requested” is not added to the canonical eight-state ActionLifecycle.
 The UI may show an immediate local submitting overlay. After reconnect, the
@@ -1412,7 +1412,7 @@ Runtime converts this into a `UserResponse`/`surface.user_intent`. L3:
 - applies the existing tool surface, entity trust, policy, lease, and confirmation rules;
 - dispatches the registered `cancel_action` only after a durable gate pass.
 
-Swift may show `cancel_submitting` and then `cancel_requested` as local overlays. It must keep the canonical row “running” until `action.cancelled` appears. Unsupported cancel restores the canonical running display and explains the safe reason. Cleanup pending/quarantined remains visible after the action terminal when resources are not yet safely released.
+Swift may show `cancel_submitting` and then `cancel_requested` as local overlays. It must keep the canonical row “running” until `action.cancelled` appears. The durable value supersedes the local one the moment it exists: an `action.upsert` carrying a non-null `cancel_request` retires that action's overlay, and only an upsert without one leaves it standing. Unsupported cancel restores the canonical running display and explains the safe reason. Cleanup pending/quarantined remains visible after the action terminal when resources are not yet safely released.
 
 ### D23. Confirmation decisions
 
