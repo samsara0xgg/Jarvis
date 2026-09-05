@@ -111,6 +111,7 @@ from jarvis.runtime import (
     _positive_int,
     _wait_for_next_trigger,
     drive_turn,
+    make_barge_in_interrupt_callable,
     make_response_cancel_callable,
 )
 from jarvis.runtime.inherent_hub import start_inherent_view
@@ -2134,6 +2135,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0915 - each pre/po
             output_active=(tts.is_output_active if tts is not None else None),
             wake_threshold=_DEFAULT_WAKE_THRESHOLD,
             config=session_config,
+            barge_in_interrupt=make_barge_in_interrupt_callable(runtime),
         )
     except Exception:
         LOGGER.exception(
@@ -3023,6 +3025,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
             submit_callable=submit_callable,
             broadcaster=broadcaster,
             voice_pipeline_callable=voice_pipeline_callable,
+            barge_in_confirm_callable=(
+                duplex_voice_session.confirm_ptt_barge_in
+                if duplex_voice_session is not None and duplex_voice_session.barge_in_armed
+                else None
+            ),
             cancel_response_callable=cancel_response_callable,
             v2=InherentV2Deps(
                 token_matches=functools.partial(inherent_v2_token_matches, v2_token),

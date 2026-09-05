@@ -273,9 +273,17 @@ realtime:
     # exact accepted profile key (the seven D9 fields) and the list ships empty.
     route_observer:
       enabled: false
+    # ADR-0006 D8. The two spoken stages themselves, off by default: with
+    # enabled false a wake hit during output is suppressed exactly as before.
+    # candidate_window_ms bounds wake hit → interrupt keyword and
+    # confirm_timeout_ms bounds the interrupt callable; D8/D9 candidates.
     barge_in:
       detection_mode: ptt
       accepted_natural_profiles: []
+      enabled: false
+      candidate_window_ms: 1200
+      confirm_timeout_ms: 800
+      interrupt_keywords: ["停", "别说了", "stop"]
   # ADR-0014 D8/D9 (sequencer-and-snapshot card).  v2_sequencer runs the one
   # ordered InherentViewSequencer and the v2 client hub: committed Event Log
   # rows become cursor-carrying view.delta frames, and every new

@@ -10,7 +10,7 @@ import textwrap
 from typing import TYPE_CHECKING
 
 from jarvis.runtime import inherent_loop
-from jarvis.surface import voice_audio, voice_backend, voice_session
+from jarvis.surface import voice_audio, voice_backend, voice_interrupt, voice_session
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -80,13 +80,23 @@ def test_realtime_input_production_path_is_callback_only_and_has_no_stream_read(
     assert "RawInputStream" in backend_module_source
 
 
-def test_wave3_input_session_has_no_hard_cancel_or_system_mute_authority() -> None:
-    """Step 5 cannot cross into ADR-0006 Step 6 or reintroduce capture mute."""
-    source = inspect.getsource(voice_session)
+def test_input_session_can_only_stop_speech_through_a_confirmed_barge_in() -> None:
+    """The input side holds no cancel, flush, duck, or system-mute authority.
+
+    ADR-0006 D8/D9 gave the session exactly one way to stop speech: emit a
+    confirmed ``BargeInSignal`` into the injected interrupt callable, which a
+    run's own ``ResponseInterruptPolicy`` may still refuse.  ``output_active``
+    alone, a wake hit alone, and any VAD verdict alone still cancel nothing —
+    so both L5 modules must stay free of every direct stop entry point, and
+    the off/``ptt`` suppression path must keep emitting today's trace.
+    """
+    source = inspect.getsource(voice_session) + inspect.getsource(voice_interrupt)
     forbidden = {
         "ActionRunner",
         "ResponseCancelRequest",
         "SystemAudioDucker",
+        "request_response_cancel",
+        "_interrupt_active",
         "interrupt_generation(",
         "interrupt_playback(",
         ".flush(",
@@ -95,3 +105,6 @@ def test_wave3_input_session_has_no_hard_cancel_or_system_mute_authority() -> No
     assert not {token for token in forbidden if token in source}
     assert "hard_cancel_performed=False" in source
     assert "wave3_no_interrupt_policy_during_output" in source
+    # The only stop path, and the second spoken signal it requires.
+    assert 'phase="confirmed"' in inspect.getsource(voice_interrupt)
+    assert "self._interrupt(source)" in inspect.getsource(voice_interrupt)

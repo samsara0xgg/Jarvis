@@ -21,7 +21,7 @@ LLMUsageStatus = Literal["provider_final", "partial", "unavailable"]
 ResponseCancelScope = Literal["foreground_output", "generation"]
 
 RESPONSE_CANCEL_REASONS: Final[frozenset[str]] = frozenset(
-    {"user_stop", "superseded", "shutdown", "operator_request"},
+    {"user_stop", "superseded", "shutdown", "operator_request", "barge_in"},
 )
 """Closed ``response.cancelled`` reason vocabulary (ADR-0008 D10, Q7).
 
@@ -199,7 +199,10 @@ class ResponseInterruptPolicy:
     response_id: str
     policy_hash: str
     candidate_playback: Literal["duck", "ignore"] = "ignore"
-    confirmed_playback: Literal["interrupt_expected_playback_generation", "ignore"] = "ignore"
+    confirmed_playback: Literal[
+        "interrupt_expected_playback_generation",
+        "ignore",
+    ] = "interrupt_expected_playback_generation"
     generation_action: Literal["cancel", "continue"] = "cancel"
     action_action: Literal["never"] = "never"
 

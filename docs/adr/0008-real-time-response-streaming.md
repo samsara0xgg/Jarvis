@@ -605,6 +605,16 @@ CancelActionRequest
   authorization_lease?
 ```
 
+The `response.cancelled` reason vocabulary is closed
+(`jarvis/shared/realtime.py`): `user_stop`, `superseded`, `shutdown`,
+`operator_request`, and — since `keyword-ptt-safe-barge-in` — `barge_in`, so a
+confirmed barge-in is distinguishable in the Event Log from a panel Stop
+press. `confirmed_playback` now defaults to
+`interrupt_expected_playback_generation` rather than `ignore`; a run may still
+be started with `ignore`, and the runtime cancels nothing in that case. The
+scope table is unchanged: `generation` is reused, `foreground_output` and its
+playback lease are still absent, and that remains the stop-speech card's work.
+
 L3 issues the interrupt policy when a ResponseRun starts. Runtime may only apply that policy mechanically; it cannot invent a cancel scope.
 
 `expected_playback_generation_id` is required for `foreground_output` and

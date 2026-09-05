@@ -632,6 +632,10 @@ def start_response_run(  # noqa: PLR0913 — the ADR-0008 §4.2 response.started
     committed_event_bus: CommittedEventBus | None = None,
     corrects_response_id: str | None = None,
     route: str | None = None,
+    confirmed_playback: Literal[
+        "interrupt_expected_playback_generation",
+        "ignore",
+    ] = ResponseInterruptPolicy.confirmed_playback,
 ) -> ResponseRun:
     """Open one durable ResponseRun and return it already generating.
 
@@ -683,6 +687,7 @@ def start_response_run(  # noqa: PLR0913 — the ADR-0008 §4.2 response.started
         interrupt_policy=ResponseInterruptPolicy(
             response_id=response_id,
             policy_hash=policy.policy_hash,
+            confirmed_playback=confirmed_playback,
         ),
         request_client=request_client,
     )

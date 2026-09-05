@@ -1708,6 +1708,48 @@ def make_response_cancel_callable(
     return _cancel
 
 
+def make_barge_in_interrupt_callable(
+    runtime: JarvisRuntime,
+) -> Callable[[str], str]:
+    """Build the injectable ``(confirm_source) -> outcome`` barge-in seam.
+
+    ADR-0006 D8: the runtime is a mechanical applier of the interrupt policy
+    the run was started with, never its author.  The target is resolved from
+    the live-run index rather than supplied by L5 — the voice session never
+    learns a response id — and a confirmed barge-in cancels only when that
+    run's own ``ResponseInterruptPolicy`` permits it.
+
+    Returned strings beyond ``make_response_cancel_callable``'s own outcomes:
+    ``"no_open_run"``, ``"ambiguous_open_runs"``, ``"policy_ignore"``,
+    ``"policy_generation_continue"``.
+    """
+    cancel = make_response_cancel_callable(runtime)
+    registry = runtime.response_runs
+
+    def _interrupt(confirm_source: str) -> str:
+        if registry is None:  # pragma: no cover - wiring pairs the two flags
+            return "no_open_run"
+        open_runs = registry.open_runs()
+        if not open_runs:
+            return "no_open_run"
+        if len(open_runs) > 1:
+            return "ambiguous_open_runs"
+        run = open_runs[0]
+        policy = run.interrupt_policy
+        if policy.confirmed_playback != "interrupt_expected_playback_generation":
+            return "policy_ignore"
+        if policy.generation_action != "cancel":
+            return "policy_generation_continue"
+        LOGGER.info(
+            "barge-in confirmed via %s; cancelling response %s generation",
+            confirm_source,
+            run.response_id,
+        )
+        return cancel(run.response_id, "generation", "barge_in")
+
+    return _interrupt
+
+
 # --- run_turn ---------------------------------------------------------------
 
 
