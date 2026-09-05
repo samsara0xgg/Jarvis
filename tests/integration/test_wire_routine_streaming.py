@@ -426,6 +426,25 @@ def test_consequential_segment_buffers_seals_and_suffix_is_regenerated_once(tmp_
     assert len(_rows(conn, "response.completed")) == 1
 
 
+def test_regenerated_suffix_repeating_the_committed_prefix_keeps_it_once(
+    tmp_path: Path,
+) -> None:
+    """A3(b): the regeneration restates the exposed sentence; the plan says it once."""
+    consequential = "我已经删除了文件。"
+    repeat = "冰从周围吸收热量，所以冰会变成水。"  # noqa: RUF001 — the prefix restated without its 。
+    with _Provider([_SENTENCES[0] + consequential + _SENTENCES[2], repeat]) as provider:
+        runtime = _runtime(tmp_path, provider.url)
+        result = _drive(runtime, _intent(runtime.conn, "turn-dedup"))
+        assert len(provider.requests) == 2
+    conn = runtime.conn
+    assert [row[2]["text"] for row in _rows(conn, "surface.response_chunk")] == [_SENTENCES[0]]
+    assert result.response_plan.text == _SENTENCES[0] + _SENTENCES[2]
+    assert result.response_plan.text.count(_SENTENCES[0]) == 1
+    assert _payloads(conn, "surface.response_emitted")[0]["voice_text"].count(_SENTENCES[0]) == 1
+    assert not _rows(conn, "response.failed")
+    assert len(_rows(conn, "response.completed")) == 1
+
+
 def test_cancel_mid_stream_records_prefix_hash_and_one_cost(tmp_path: Path) -> None:
     """Cancel after the first sentence: no later chunk, one cancelled disposition."""
     with _Provider([_ANSWER], pause_after_chars=len(_SENTENCES[0])) as provider:

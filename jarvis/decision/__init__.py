@@ -50,6 +50,7 @@ import logging
 import math
 import re
 import time
+import unicodedata
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -3082,6 +3083,39 @@ def _stream_routine_text(  # noqa: C901 - one provider stream feeding one gate l
     )
 
 
+def _comparable(text: str) -> str:
+    """The text's identity for prefix comparison: no case folding, no punctuation."""
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFKC", text)
+        if not char.isspace() and not unicodedata.category(char).startswith("P")
+    )
+
+
+def _without_repeated_prefix(prefix: str, suffix: str) -> str:
+    """Drop a regenerated tail's restatement of the prefix already committed.
+
+    A3(b): the one ``gate_segments=False`` regeneration is prompted with the
+    exposed prefix as the model's own prior turn, and a model that repeats it
+    would make ``ResponsePlan.text`` say the same sentence twice. The scan is
+    bounded by the prefix: it stops at the first character that cannot extend
+    it.
+    """
+    target = _comparable(prefix)
+    if not target:
+        return suffix
+    for index in range(1, len(suffix) + 1):
+        seen = _comparable(suffix[:index])
+        if seen == target:
+            cut = index
+            while cut < len(suffix) and not _comparable(suffix[cut]):
+                cut += 1
+            return suffix[cut:]
+        if not target.startswith(seen):
+            break
+    return suffix
+
+
 def _run_routine_stream(
     packet: SituationPacket,
     ctx: DecideContext,
@@ -3147,7 +3181,7 @@ def _run_routine_stream(
             outcome = finalize_stream(
                 ctx.conn,
                 committed_prefix=streamed.prefix,
-                uncommitted_suffix=again.suffix,
+                uncommitted_suffix=_without_repeated_prefix(streamed.prefix, again.suffix),
                 policy=route.policy,
                 context=route.context,
             )
