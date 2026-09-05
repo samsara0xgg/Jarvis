@@ -638,7 +638,7 @@ action.dispatched with action_id=A
 
 The same fold pass records each open action's admission — `action_id → {dispatched_event_uid, admission_gate_uid, lease_id?, run_id?}` — where `run_id` is joined only from `run.started` (matched by its `source_event_id`, the action's `action.running` uid, or its correlation `action_id`); `action.running` carries no `run_id` and is never read for one.
 
-This does not make an action cancellable merely because its ID is known. L3's `resolve_cancellable_action()` reads the canonical ActionRun fold, rejects ambiguous, unknown, terminal, or cleanup-only targets, and returns an `ActionRef("action:<id>")`. The same fold entry is present in the `EntityRegistry` snapshot given to `pre_action_gate()`. L4 performs a final current-state check before signaling the handle. Thus entity trust proves durable provenance; the ActionRun FSM proves current cancellability.
+This does not make an action cancellable merely because its ID is known. L3's `resolve_cancellable_action()` reads the canonical ActionRun fold and returns an `ActionRef("action:<id>")` only for the single open action, or for the open action a qualified request names; several open actions are ambiguous (a clarifying question, never a confirmation), none is a plain answer, and a raw id that names no open action never resolves to itself. The same fold entry is present in the `EntityRegistry` snapshot given to `pre_action_gate()`. L4 performs a final current-state check before signaling the handle. Thus entity trust proves durable provenance; the ActionRun FSM proves current cancellability.
 
 L3 then constructs a fully registered `cancel_action` gate candidate. The definition uses the current `ToolDefinition` shape exactly; it does not invent `internal_control`, `mutating`, or a target-derived definition:
 
@@ -651,7 +651,7 @@ ActionRequest
   caller_principal=CallerPrincipal.JARVIS_LLM
   risk_level="L2"
   authorization_lease=<lease when active policy requires one, else None>
-  run_id?, turn_id, payload=None
+  run_id?, turn_id, payload=<CancelActionRequest, flattened>
 
 ToolDefinition(
   name="cancel_action",
