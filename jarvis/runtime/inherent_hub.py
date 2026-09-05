@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from jarvis.runtime import JarvisRuntime
+    from jarvis.surface.inherent_server import V2Session
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_hub")
 
@@ -288,18 +289,13 @@ class InherentHub:
         self._adoption_deadline_s = adoption_deadline_s
         self._clock = clock
 
-    async def attach(
-        self,
-        connection_id: str,
-        send_text: Callable[[str], Awaitable[None]],
-        close: Callable[[int, str], Awaitable[None]],
-    ) -> InherentClient:
+    async def attach(self, session: V2Session) -> InherentClient:
         """Take over a hello-completed socket and start its snapshot handoff."""
         client = InherentClient(
             sequencer=self._sequencer,
-            connection_id=connection_id,
-            send_text=send_text,
-            close=close,
+            connection_id=session.connection_id,
+            send_text=session.send_text,
+            close=session.close,
             log_epoch=self._log_epoch,
             boot_id=self._boot_id,
             adoption_deadline_s=self._adoption_deadline_s,
@@ -316,6 +312,11 @@ class InherentViewWiring:
     hub: InherentHub
     sequencer: InherentViewSequencer
     tasks: tuple[asyncio.Task[None], ...]
+
+    @property
+    def attach_client(self) -> Callable[[V2Session], Awaitable[InherentClient]]:
+        """The ``InherentV2Deps.attach_client`` binding."""
+        return self.hub.attach
 
 
 def inherent_v2_sequencer_enabled(config: Mapping[str, Any]) -> bool:

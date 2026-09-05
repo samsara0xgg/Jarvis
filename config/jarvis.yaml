@@ -272,3 +272,14 @@ realtime:
     barge_in:
       detection_mode: ptt
       accepted_natural_profiles: []
+  # ADR-0014 D8/D9 (sequencer-and-snapshot card).  v2_sequencer runs the one
+  # ordered InherentViewSequencer and the v2 client hub: committed Event Log
+  # rows become cursor-carrying view.delta frames, and every new
+  # /inherent/ws/v2 client receives a hashed, paged snapshot it must ACK
+  # before the catch-up hands it to the live stream.  It additionally
+  # requires realtime.enabled; an invalid combination downgrades once, with
+  # one warning, to the v1-only wire.  Off means the sequencer and hub are
+  # never constructed and the v1 wire is byte-identical.
+  inherent:
+    v2_sequencer:
+      enabled: false

@@ -10,12 +10,23 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
+import socket as socket_module
 from typing import TYPE_CHECKING, Any
 
 import pytest
+import uvicorn
+from websockets.asyncio.client import connect
 
-from jarvis.runtime.inherent_hub import SNAPSHOT_ADOPTION_DEADLINE_S, InherentClient, InherentHub
+from jarvis.deployment import inherent_v2_token_matches, rotate_inherent_v2_token
+from jarvis.runtime.inherent_hub import (
+    SNAPSHOT_ADOPTION_DEADLINE_S,
+    InherentClient,
+    InherentHub,
+    inherent_v2_sequencer_enabled,
+)
 from jarvis.runtime.inherent_view_sequencer import InherentViewSequencer
+from jarvis.shared.realtime import new_connection_id
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log, read_log_epoch
 from jarvis.state.inherent_view import (
@@ -23,6 +34,7 @@ from jarvis.state.inherent_view import (
     RECENT_TERMINAL_GROUP_LIMIT,
     InherentView,
 )
+from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_presenter import (
     SNAPSHOT_PAGE_MAX_BYTES,
     SnapshotPlan,
@@ -35,12 +47,14 @@ from jarvis.surface.inherent_protocol import (
     ResponseGroupSnapshotItem,
     ResponseOpened,
     ResponseSegment,
+    RuntimeCapabilities,
     ServerEnvelope,
     SnapshotBeginPayload,
     SnapshotEndPayload,
     SnapshotPagePayload,
     ViewDeltaPayload,
 )
+from jarvis.surface.inherent_server import InherentDeps, InherentV2Deps, V2Session, create_app
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -350,6 +364,16 @@ def test_snapshot_item_carries_the_preview_and_reference_for_an_over_budget_body
 # --- sequencer + hub -----------------------------------------------------------
 
 _BOOT_ID = "Btest00000000000000000000000001"
+_CAPABILITIES = RuntimeCapabilities(
+    text_input=True,
+    image_input=False,
+    voice_input=False,
+    response_interrupt=False,
+    action_cancel=False,
+    confirmation_actions=False,
+    natural_barge_in=False,
+    aec_profile="headphones_only",
+)
 
 
 class _Socket:
@@ -445,7 +469,10 @@ class _Rig:
 
     async def connect(self, connection_id: str = "C1") -> tuple[_Socket, InherentClient]:
         socket = _Socket()
-        client = await self.hub.attach(connection_id, socket.send_text, socket.close)
+        session = V2Session(
+            connection_id=connection_id, send_text=socket.send_text, close=socket.close,
+        )
+        client = await self.hub.attach(session)
         await _settle()
         return socket, client
 
@@ -672,6 +699,149 @@ def test_no_ack_within_the_adoption_deadline_closes_with_resync_required(tmp_pat
             live_socket, _live, _high = await rig.adopt("C2")
             assert live_socket.close_state() is None
         finally:
+            await rig.stop()
+
+    asyncio.run(_body())
+
+
+# --- wiring: flag, route, log epoch --------------------------------------------
+
+
+def test_the_flag_needs_realtime_enabled_and_downgrades_once_with_one_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """realtime.inherent.v2_sequencer.enabled is off by default and off without its parent."""
+    assert inherent_v2_sequencer_enabled({}) is False
+    assert inherent_v2_sequencer_enabled({"realtime": {"enabled": True}}) is False
+    on = {"inherent": {"v2_sequencer": {"enabled": True}}}
+    with caplog.at_level(logging.WARNING):
+        assert inherent_v2_sequencer_enabled({"realtime": {"enabled": False, **on}}) is False
+    downgrades = [r for r in caplog.records if "v2_sequencer downgraded" in r.getMessage()]
+    assert len(downgrades) == 1
+    assert "realtime_parent_disabled" in downgrades[0].getMessage()
+    assert inherent_v2_sequencer_enabled({"realtime": {"enabled": True, **on}}) is True
+
+
+def _free_port() -> int:
+    with socket_module.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+async def _serve_v2(
+    rig: _Rig, tmp_path: Path,
+) -> tuple[str, int, uvicorn.Server, asyncio.Task[None]]:
+    """Serve the real app in-process with the rig's hub attached to the v2 route."""
+    token = rotate_inherent_v2_token(tmp_path / "inherent-v2.token")
+    deps = InherentDeps(
+        submit_callable=lambda _text: None,
+        broadcaster=InherentBroadcaster(),
+        v2=InherentV2Deps(
+            token_matches=lambda presented: inherent_v2_token_matches(token, presented),
+            mint_connection_id=new_connection_id,
+            boot_id=_BOOT_ID,
+            log_epoch=rig.epoch,
+            high_water_cursor=rig.high_water,
+            runtime_capabilities=lambda: _CAPABILITIES,
+            attach_client=rig.hub.attach,
+        ),
+    )
+    port = _free_port()
+    config = uvicorn.Config(
+        create_app(deps), host="127.0.0.1", port=port, log_level="warning", lifespan="off",
+    )
+    server = uvicorn.Server(config)
+    serving = asyncio.create_task(server.serve())
+    for _ in range(500):
+        if server.started:
+            break
+        await asyncio.sleep(0.01)
+    return token, port, server, serving
+
+
+def _stale_hello() -> dict[str, Any]:
+    """A hello claiming complete state from another log epoch and a high cursor."""
+    return {
+        "protocol_version": 2,
+        "message_type": "client.hello",
+        "message_id": "Rhello0001",
+        "client_instance_id": "Ifixture0001",
+        "connection_id": None,
+        "sent_at_ms": 1_788_200_000_000,
+        "payload": {
+            "supported_versions": [2],
+            "client_build": "fixture",
+            "view_schema_versions": [1],
+            "capabilities": ["paged_snapshot", "transport_ack"],
+            "last_log_epoch": "Lstale0000000000000000000000001",
+            "last_applied_cursor": 999_999,
+            "has_complete_local_state": True,
+        },
+    }
+
+
+def test_the_v2_route_serves_snapshot_ack_and_live_delta_and_a_changed_epoch_resnapshots(
+    tmp_path: Path,
+) -> None:
+    """End to end through /inherent/ws/v2: hello, hashed snapshot, ACK, catch-up, live delta.
+
+    The hello claims another log epoch with a high cursor; the server still
+    chooses a full snapshot at its own H and nothing before H is replayed.
+    """
+
+    async def _body() -> None:
+        rig = _Rig(tmp_path)
+        await rig.start()
+        rig.turn(0)
+        token, port, server, serving = await _serve_v2(rig, tmp_path)
+        try:
+            url = f"ws://127.0.0.1:{port}/inherent/ws/v2"
+            headers = {"Authorization": f"Bearer {token}"}
+            async with connect(url, additional_headers=headers) as ws:
+                await ws.send(json.dumps(_stale_hello()))
+                hello = json.loads(await ws.recv())
+                assert hello["message_type"] == "server.hello"
+                assert hello["payload"]["resume_mode"] == "snapshot"
+                assert hello["log_epoch"] == rig.epoch != "Lstale0000000000000000000000001"
+                connection_id = hello["connection_id"]
+                begin = json.loads(await ws.recv())
+                assert begin["message_type"] == "snapshot.begin"
+                high = begin["payload"]["through_cursor"]
+                assert high == rig.high_water() < 999_999
+                page_count = begin["payload"]["counts"]["response_groups"]
+                pages = [await ws.recv() for _ in range(page_count)]
+                end = json.loads(await ws.recv())
+                assert end["message_type"] == "snapshot.end"
+                digest = hashlib.sha256()
+                for page in pages:
+                    assert isinstance(page, str)
+                    digest.update(page.encode("utf-8"))
+                assert end["payload"]["content_hash"] == digest.hexdigest()
+                assert end["payload"]["through_cursor"] == high
+                during = rig.turn(1)
+                await ws.send(json.dumps({
+                    "protocol_version": 2,
+                    "message_type": "transport.ack",
+                    "message_id": "Rack0001",
+                    "client_instance_id": "Ifixture0001",
+                    "connection_id": connection_id,
+                    "sent_at_ms": 1_788_200_000_001,
+                    "payload": {
+                        "snapshot_id": end["payload"]["snapshot_id"],
+                        "through_cursor": high,
+                    },
+                }))
+                caught_up = [json.loads(await ws.recv()) for _ in during]
+                assert [d["event_cursor"] for d in caught_up] == during
+                live = rig.turn(2, close=False)
+                arrived = [json.loads(await ws.recv()) for _ in live]
+                assert [d["event_cursor"] for d in arrived] == live
+                assert all(d["message_type"] == "view.delta" for d in caught_up + arrived)
+                assert all(d["connection_id"] == connection_id for d in caught_up + arrived)
+                assert min(d["event_cursor"] for d in caught_up) > high
+        finally:
+            server.should_exit = True
+            await serving
             await rig.stop()
 
     asyncio.run(_body())

@@ -44,7 +44,11 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
   on the upgrade, typed :mod:`jarvis.surface.inherent_protocol` envelopes, and a
   ``client.hello`` / ``server.hello`` handshake. Registered only when
   ``InherentDeps.v2`` is injected, so a v1-only deployment's route table is
-  byte-identical to what it was.
+  byte-identical to what it was. With ``InherentV2Deps.attach_client``
+  injected (ADR-0014 D8/D11), the hello-completed socket is handed to the
+  runtime's client hub as a :class:`V2Session` and every vetted post-hello
+  frame is routed to the returned :class:`V2ClientHandle`; without it the
+  socket says hello and then only listens, as card 1 left it.
 - ``GET /api/health``            — liveness; ``{"status": "ok"}``
 - ``POST /inherent/image-submit`` — Step 2 / ADR-0004 stub (501)
 - ``POST /inherent/asr-submit``   — ADR-0005 §5.2; multipart WAV in, transcript out.
@@ -55,13 +59,15 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import functools
 import io
 import logging
 import secrets
 import time
 import wave
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Protocol
 
 import numpy as np
 import soxr
@@ -83,7 +89,7 @@ from jarvis.surface.inherent_protocol import (
 from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmptyError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from jarvis.shared import Event
     from jarvis.surface.inherent_output import InherentBroadcaster
@@ -171,6 +177,30 @@ class CancelResponseRequest(BaseModel):
 
 
 @dataclass(frozen=True)
+class V2Session:
+    """One hello-completed v2 socket, handed to the runtime's client hub.
+
+    Only the connection id and two callables cross this boundary: the hub
+    sends through ``send_text`` and closes through ``close``; the socket
+    object itself never leaves this module.
+    """
+
+    connection_id: str
+    send_text: Callable[[str], Awaitable[None]]
+    close: Callable[[int, str], Awaitable[None]]
+
+
+class V2ClientHandle(Protocol):
+    """What the hub returns for an attached session (ADR-0014 D8/D11)."""
+
+    async def on_frame(self, envelope: ClientEnvelope) -> None:
+        """Receive one vetted post-hello client frame."""
+
+    async def detach(self) -> None:
+        """Release the connection once its socket is gone."""
+
+
+@dataclass(frozen=True)
 class InherentV2Deps:
     """Injectable dependencies for the ADR-0014 ``/inherent/ws/v2`` route.
 
@@ -198,6 +228,11 @@ class InherentV2Deps:
             socket closes with ``hello_timeout``.
         max_frames_per_s: D5 initial per-connection frame budget; a
             breach closes with ``protocol_error``.
+        attach_client: ADR-0014 D8/D11 — the runtime hub's entry point.
+            Called once per hello-completed socket with its
+            :class:`V2Session`; the returned handle receives every vetted
+            post-hello frame and is detached when the socket ends. ``None``
+            (the default) keeps card 1's behavior: hello, then listen.
     """
 
     token_matches: Callable[[str], bool]
@@ -208,6 +243,7 @@ class InherentV2Deps:
     runtime_capabilities: Callable[[], RuntimeCapabilities]
     hello_timeout_s: float = HELLO_TIMEOUT_S
     max_frames_per_s: int = INITIAL_MAX_FRAMES_PER_S
+    attach_client: Callable[[V2Session], Awaitable[V2ClientHandle]] | None = None
 
 
 @dataclass(frozen=True)
@@ -316,6 +352,12 @@ def _v2_presented_token(header: str | None) -> str | None:
     return token
 
 
+async def _v2_close(ws: WebSocket, code: int, reason: str) -> None:
+    """Close the socket once; a second close (route racing the hub) is a no-op."""
+    with contextlib.suppress(RuntimeError):
+        await ws.close(code=code, reason=reason)
+
+
 async def _v2_receive_text_frame(ws: WebSocket) -> str | None:
     """Receive one client frame, closing on the two transport-level rejects.
 
@@ -334,10 +376,10 @@ async def _v2_receive_text_frame(ws: WebSocket) -> str | None:
         raise WebSocketDisconnect(int(message.get("code", 1000)))
     text = message.get("text")
     if text is None:
-        await ws.close(code=1002, reason="protocol_error")
+        await _v2_close(ws, 1002, "protocol_error")
         return None
     if len(text.encode("utf-8")) > MAX_CLIENT_FRAME_BYTES:
-        await ws.close(code=1009, reason="frame_too_large")
+        await _v2_close(ws, 1009, "frame_too_large")
         return None
     return str(text)
 
@@ -399,13 +441,16 @@ def _v2_server_hello(
     )
 
 
-async def _v2_drain_after_hello(deps: InherentV2Deps, ws: WebSocket) -> None:
-    """Keep the socket open, vetting every further client frame (D5/D7).
+async def _v2_drain_after_hello(
+    deps: InherentV2Deps,
+    ws: WebSocket,
+    on_frame: Callable[[ClientEnvelope], Awaitable[None]] | None,
+) -> None:
+    """Vet every further client frame and route it to the hub, if any (D5/D7/D11).
 
-    Nothing is routed here — this card's contract is that the server sends
-    exactly one frame, the hello, and then listens. Vetting still happens
-    so a client that goes wrong is closed on the same terms it will be
-    once routing lands: size, then budget, then shape.
+    A client that goes wrong is closed on the same terms whether or not a
+    hub is attached: size, then budget, then shape.  With ``on_frame`` None
+    nothing is routed — the card 1 contract of hello, then listening.
     """
     limiter = _FrameRateLimiter(deps.max_frames_per_s)
     while True:
@@ -413,16 +458,18 @@ async def _v2_drain_after_hello(deps: InherentV2Deps, ws: WebSocket) -> None:
         if frame is None:
             return
         if not limiter.admit():
-            await ws.close(code=1002, reason="protocol_error")
+            await _v2_close(ws, 1002, "protocol_error")
             return
         try:
             envelope = ClientEnvelope.model_validate_json(frame)
         except ValidationError:
-            await ws.close(code=1002, reason="protocol_error")
+            await _v2_close(ws, 1002, "protocol_error")
             return
         if envelope.message_type == "client.hello":
-            await ws.close(code=1002, reason="protocol_error")
+            await _v2_close(ws, 1002, "protocol_error")
             return
+        if on_frame is not None:
+            await on_frame(envelope)
 
 
 async def _run_v2_session(deps: InherentV2Deps, ws: WebSocket) -> None:
@@ -447,7 +494,20 @@ async def _run_v2_session(deps: InherentV2Deps, ws: WebSocket) -> None:
         if hello is None:
             return
         await ws.send_text(_v2_server_hello(deps, hello, connection_id).model_dump_json())
-        await _v2_drain_after_hello(deps, ws)
+        if deps.attach_client is None:
+            await _v2_drain_after_hello(deps, ws, None)
+            return
+        handle = await deps.attach_client(
+            V2Session(
+                connection_id=connection_id,
+                send_text=ws.send_text,
+                close=functools.partial(_v2_close, ws),
+            ),
+        )
+        try:
+            await _v2_drain_after_hello(deps, ws, handle.on_frame)
+        finally:
+            await handle.detach()
     except WebSocketDisconnect:
         return
 
@@ -677,5 +737,7 @@ __all__ = [
     "InherentDeps",
     "InherentV2Deps",
     "SubmitRequest",
+    "V2ClientHandle",
+    "V2Session",
     "create_app",
 ]
