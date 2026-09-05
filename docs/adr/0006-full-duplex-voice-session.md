@@ -513,7 +513,7 @@ DeviceProfileSnapshot
 
 Legacy's stricter VAD threshold is not AEC. A single word such as “停” is also unsafe without AEC because Jarvis may say that word itself. Speaker/no-AEC mode requires PTT or wake-phrase-plus-keyword confirmation, checks the candidate transcript against current far-end speech as an exclusion signal, and is validated against synchronized far-end/mic recordings.
 
-Natural speakerphone barge-in remains disabled until `VoiceProcessingIOBackend` or a hardware path such as XVF3800 proves residual echo, near-end recall, double-talk, and false-cancel targets. This ADR does not silently add a media framework or choose hardware.
+Natural speakerphone barge-in remains disabled until `VoiceProcessingIOBackend` or a hardware path such as XVF3800 proves residual echo, near-end recall, double-talk, and false-cancel targets. This ADR does not silently add a media framework or choose hardware. The 2026-09-05 spike measured that path on this MacBook and came back inconclusive — `VoiceProcessingIO` cuts absolute far-end echo by 7.5 dB but leaves `record`-profile false candidates 15× over target, and the near-end and double-talk gates still need a human trial (`docs/live-burn-2026-09-05-voiceprocessingio-aec.md`).
 
 Initial per-device acceptance thresholds, measured separately for built-in speaker/mic and each external profile at three volume/distance settings, are: near-end interrupt recall ≥95%, double-talk near-end recall ≥90%, false hard cancel ≤0.1/hour over at least 10 aggregate hours, false candidate ≤0.5/minute, and physical loopback interrupt silence p95 ≤350 ms. Failing any profile keeps that profile in PTT/two-stage-keyword mode.
 
