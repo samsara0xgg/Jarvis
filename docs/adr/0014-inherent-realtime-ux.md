@@ -1,6 +1,7 @@
 # ADR-0014 — Inherent Realtime UX and Recoverable Swift Contract
 
 **Status:** Approved (2026-08-31, Allen)
+Approved means the design is approved for implementation; implementation completeness is tracked only by §18 Definition of done.
 **Date:** 2026-08-31
 **Depends on:** ADR-0003 (Inherent text surface), ADR-0005 (voice foundation), ADR-0006 (full-duplex media and playback truth), ADR-0008 (ResponseRun and real-time response streaming), ADR-0009 (resident runtime), ADR-0012 (durable confirmation flow).
 **Completes:** the physical Inherent/Swift client, recoverable panel delivery, and user-control contract intentionally left underspecified by ADR-0006 and ADR-0008.
@@ -1688,6 +1689,8 @@ subtracted.
 
 ## 12. File-level change map
 
+This section is a historical seed for goal cards under `docs/goals/`, not an acceptance contract; §15 Verification and §18 Definition of done remain binding.
+
 ### New repository-owned Swift files
 
 Under `desktop/inherent-swift/InherentCard/`:
@@ -1841,6 +1844,8 @@ v1_retired:
 Rollback changes the Swift launcher/config back to v1 and disables the v2 endpoint. It does not require reverting Event Log data or ADR-0006/0008 response events.
 
 ## 14. Build order and dependency gates
+
+This section is a historical seed for goal cards under `docs/goals/`, not an acceptance contract; §15 Verification and §18 Definition of done remain binding.
 
 | Step | Work | Required proof |
 |---|---|---|

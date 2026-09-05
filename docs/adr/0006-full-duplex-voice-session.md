@@ -1,6 +1,7 @@
 # ADR-0006 — Full-duplex Voice Session
 
 **Status:** Approved (2026-08-31, Allen)
+Approved means the design is approved for implementation; implementation completeness is tracked only by §13 Definition of done.
 **Date:** 2026-08-31
 **Supersedes:** ADR-0005's explicit no-barge-in rule, wake-listener pause during TTS, whole-turn `VOICE_INPUT_LOCK` ownership, and the assumption that `spoken` means playback completed. The ADR-0005 PTT and whole-WAV paths remain supported as compatibility/fallback paths.
 **Depends on:** ADR-0003 (resident Inherent event/watcher surface), ADR-0005 (current wake/PTT/ASR/TTS foundation), ADR-0009 (resident daemon and lifecycle).
@@ -85,7 +86,7 @@ L4  ActionRunner / ActionHandle
         ↕
 L5  DuplexVoiceSession / AudioIngress / ASR / TTS / Playback
         ↑
-runtime.RealtimeSessionCoordinator
+runtime.inherent_loop (coordinator, inlined)
         coordinates L2/L3/L4/L5; owns no media or business policy
 ```
 
@@ -100,10 +101,10 @@ Module ownership is fixed:
 | `jarvis/surface/voice_interrupt.py` | L5 | speech candidate and barge-in evidence; never cancels an action |
 | `jarvis/surface/voice_tts.py` | L5 | `TTSSession`, bounded PCM flow, fallback rules |
 | `jarvis/surface/voice_ledger.py` | L5 | text-span to sample-span mapping and conservative heard boundary |
-| `jarvis/runtime/realtime_session.py` | runtime | foreground response, session generation, input arbitration, cross-layer cancellation wiring |
-| `jarvis/state/projections.py` | L2 | durable ResponseLedger / conversation heard-state fold |
+| `jarvis/runtime/inherent_loop.py` | runtime | the coordinator, inlined: foreground response, session generation, input arbitration, cross-layer cancellation wiring |
+| `jarvis/state/conversation.py` | L2 | durable ResponseLedger / conversation heard-state fold (`fold_conversation_history`), composing `conversation_playback.py`'s `PlaybackHistory.fold`; `projections.py` only carries the result into the `SituationPacket` |
 
-`serve_inherent` constructs and closes the coordinator. CLI, scenario, and high-risk fallback paths continue to call existing `VoicePipeline.run_turn`, `drive_turn`, and `render_response` until their individual migration steps are complete.
+The coordinator is inlined in `jarvis/runtime/inherent_loop.py`; the originally planned `jarvis/runtime/realtime_session.py` / `RealtimeSessionCoordinator` is not created, and ADR-0008 D8's foreground-arbitration API lands inline too unless a later ADR extracts a module. `serve_inherent` constructs and closes the coordinator. CLI, scenario, and high-risk fallback paths continue to call existing `VoicePipeline.run_turn`, `drive_turn`, and `render_response` until their individual migration steps are complete.
 
 ### D2. One logical capture owner, with a replaceable duplex backend
 
@@ -182,7 +183,9 @@ recovering ── retry budget exhausted ──> device_unavailable
 
 `dormant` does not necessarily mean the device is closed: the shared ingress may remain open for wake-word detection while utterance recognition is not armed.
 
-`AudioDuplexBackend` owns physical open/read/callback/permission/device-loss failures. `RealtimeSessionCoordinator` owns the cross-layer capability transition and user-visible degradation. Recovery uses bounded exponential backoff and always creates a new `stream_epoch`; subscribers never resume an old epoch. Capability states distinguish `wake_unavailable` (PTT upload may still work), `local_capture_unavailable` (text and remote/upload input may work), and `text_only`.
+The Input FSM did not ship as one enum. Device lifecycle is `BackendLifecycleState` (`jarvis/surface/voice_backend.py`: `closed | opening | open | closing | uncertain`); the capability surface is `InputCapabilityState` (`jarvis/surface/voice_audio.py`: `stopped | available | suspended | wake_unavailable | output_unavailable | local_capture_unavailable | close_uncertain`); `VadEvent` (`speech_active | silence`) is a per-frame label, not an utterance state. The `endpoint_pending`/`finalizing_asr` hold-and-commit semantics are D7's endpointing algorithm and are unbuilt; the diagram above records the target.
+
+`AudioDuplexBackend` owns physical open/read/callback/permission/device-loss failures. The runtime coordinator (D1) owns the cross-layer capability transition and user-visible degradation. Recovery uses bounded exponential backoff and always creates a new `stream_epoch`; subscribers never resume an old epoch. `InputCapabilityState` distinguishes `wake_unavailable` (PTT upload may still work) from `local_capture_unavailable` (text and remote/upload input may work); `text_only` did not ship as a value.
 
 #### Playback FSM — L5
 
@@ -197,12 +200,16 @@ drained/flushed/failed → idle
 
 `ducked` means Jarvis audio gain is temporarily lowered while speech is being classified. It is not yet a response cancellation.
 
+No playback phase enum shipped. Playback progress lives as cursor and flag fields on `PlaybackLedger` (`jarvis/surface/voice_ledger.py`) and the registration/tombstone sets of `ActivePlaybackRegistry` (`jarvis/surface/voice_media.py`); `ducked` is `AudioStreamPlayer.duck()`'s gain ramp, not a state. The diagram above records the target.
+
 #### ResponseRun FSM — L3, defined in ADR-0008
 
 ```text
 idle → generating ↔ waiting_action → finalizing → completed
   any non-terminal state → cancelled | failed
 ```
+
+Shipped verbatim as `ResponseRunState` in `jarvis/decision/response_run.py`.
 
 #### ActionLifecycle — L4 taxonomy, L2 canonical truth
 
@@ -412,7 +419,7 @@ Two phases:
    - ResponseRun, TTS session, and action continue;
    - the utterance continues accumulating, so a confirmed interruption becomes the next full question rather than losing its first words.
 2. **Confirmed barge-in**
-   - detector emits `BargeInSignal(phase="confirmed")` to `RealtimeSessionCoordinator` through an in-memory priority control queue;
+   - detector emits `BargeInSignal(phase="confirmed")` to the runtime coordinator (D1) through an in-memory priority control queue;
    - runtime mechanically applies the L3-issued `ResponseInterruptPolicy` for this active response;
    - L5 first calls `interrupt_playback(expected_playback_generation_id)` and returns a CAS snapshot or `AlreadyStale`;
    - runtime then submits the policy-bound `ResponseCancelRequest` to L3 and aborts the TTS network task; cloud LLM/TTS cancellation proceeds concurrently after new audio submission has stopped. Already-submitted device-buffer tail is tracked by the DAC/loopback silence SLO, not claimed to vanish at CAS return;
@@ -480,7 +487,7 @@ Registry lifecycle is fixed:
 6. Inside the startup barrier, TTS reads `SELECT COALESCE(MAX(id), 0) FROM events` and stores it as `boot_high_water_event_log_id`. Only rows with `events.id > boot_high_water_event_log_id` whose tuple is still in the active registry are eligible for same-process recovery; wall-clock time and `event_uid` are never ordering boundaries.
 7. Missing/terminal/tombstoned tuples are never reactivated by an event.
 
-The migration compatibility method is `is_output_active`, true for `prewarming | buffering | playing | ducked`. Old `is_speaking()` callers delegate to it according to rollout mode until removed; they may not infer silence solely from ring bytes during synthesis.
+The migration compatibility method is `is_output_active`, a single boolean over pending output work; D3's playback phases are unbuilt, so it discriminates none of them. Old `is_speaking()` callers delegate to it according to rollout mode until removed; they may not infer silence solely from ring bytes during synthesis.
 
 Required counters include stale-generation drops, stale-cancel no-ops, input discontinuities, callback deadline misses, ring starvation, WS reconnect-before-exposure, partial-prefix failures, cursor-quality distribution, and active-generation replay rejects.
 
@@ -488,7 +495,7 @@ Required counters include stale-generation drops, stale-cancel no-ops, input dis
 
 ### 4.1 Ephemeral shared messages
 
-These frozen contracts live in `jarvis/shared/realtime.py` and do not enter the Event Log:
+These frozen contracts are to live in `jarvis/shared/realtime.py` and do not enter the Event Log. None of the four is built yet; `PlaybackProgress.state` follows D3's unbuilt Playback FSM:
 
 ```text
 PartialTranscript
@@ -603,38 +610,18 @@ The projection does not keep raw PCM or per-callback progress.
 
 New configuration is parsed into a typed object; no realtime constant remains hard-coded in `inherent_loop.py`.
 
-```yaml
-voice:
-  realtime:
-    mode: legacy                 # legacy | streaming_output | keyword_barge_in | full_duplex
-    backend: sounddevice         # sounddevice | voice_processing_io | hardware_aec
-    input:
-      frame_ms: 32
-      pre_roll_ms: 500
-      post_roll_ms: 200
-      partial_interval_ms: 240
-      endpoint_candidate_ms: 256
-      endpoint_max_hold_ms: 900
-      max_utterance_s: 30
-    playback:
-      startup_buffer_ms: 40
-      steady_target_ms: 180
-      low_water_ms: 80
-      high_water_ms: 750
-      duck_gain: 0.25
-      duck_ramp_ms: 40
-      unduck_ramp_ms: 20
-    tts:
-      persistent_response_session: true
-      idle_close_s: 3.0
-    barge_in:
-      detection_mode: keyword    # off | keyword | natural; L5 capability, not L3 authorization
-      confirmation_timeout_ms: 900
-```
+Canonical configuration is the top-level `realtime:` block in `config/jarvis.yaml`, a sibling of `llm`/`supervisor`/`observer`/`tools`/`confirmation`; there is no `voice:` namespace, and the rollout modes below are cumulative capability levels, not a config value. Keys this ADR gates:
+
+- `realtime.enabled` — master switch; nothing below activates without it.
+- `realtime.concurrency_safety.{transactional_event_append,lifecycle_terminal_cas}` — Wave-1 durability primitives both switches below require.
+- `realtime.streaming_output.enabled` — streaming TTS/player/ledger (the `streaming_output` level).
+- `realtime.single_audio_ingress.enabled` — shared capture backend and subscriber ring (the `keyword_barge_in`/`full_duplex` levels).
+
+The two adoption switches are read in `jarvis/runtime/inherent_loop.py`. Per-field tuning (frame sizes, buffer targets, duck gains, timeouts) lives only in `config/jarvis.yaml`; this ADR does not restate it.
 
 Rollout modes are cumulative:
 
-- `legacy`: exact ADR-0005 behavior.
+- `legacy` (`realtime.enabled: false`): exact ADR-0005 behavior.
 - `streaming_output`: streaming TTS/player/ledger, no barge subscriber during playback.
 - `keyword_barge_in`: shared ingress, candidate duck, keyword/PTT hard cancel.
 - `full_duplex`: partial ASR, semantic endpoint, natural barge-in only for an accepted output profile.
@@ -670,25 +657,29 @@ Privacy/sleep/device lifecycle is explicit: privacy stop closes the capture back
 
 ## 7. File-level change map
 
+This section is a historical seed for goal cards under `docs/goals/`, not an acceptance contract; §10 Verification and SLOs and §13 Definition of done remain binding.
+
 ### New files
 
 - `jarvis/shared/realtime.py`
 - `jarvis/state/lifecycle_terminal.py` — created in Step 2; L2 atomic check+append terminal primitive later reused by ADR-0008.
-- `jarvis/runtime/realtime_session.py`
 - `jarvis/surface/voice_session.py`
 - `jarvis/surface/voice_backend.py`
-- `jarvis/surface/voice_interrupt.py`
+- `jarvis/surface/voice_interrupt.py` — not yet created.
 - `jarvis/surface/voice_ledger.py`
-- `scripts/bench_voice_realtime.py`
-- `scripts/bench_interrupt_latency.py`
+- `jarvis/surface/voice_media.py` — persistent L5 media owner; sole owner of TTS sessions and playback generations, wired from `inherent_loop.py`.
+- `jarvis/state/conversation.py` — conversation heard-state fold (D1).
+- `jarvis/state/conversation_playback.py` — `PlaybackHistory.fold`, the per-response playback-cursor fold that produces the conservative `heard_text` prefix.
+- `jarvis/decision/conversation.py` — builds the bounded spoken-heard/panel-available history context wired into the model prompt from `jarvis/decision/__init__.py`.
+- `scripts/bench_voice_realtime.py` — not yet created.
+- `scripts/bench_interrupt_latency.py` — not yet created.
 
 ### Existing files that must change
 
-- `jarvis/runtime/inherent_loop.py` — construct, start, and close the session; replace long-lived voice watcher assumptions.
+- `jarvis/runtime/inherent_loop.py` — construct, start, and close the session and the inlined coordinator (D1); replace long-lived voice watcher assumptions.
 - `jarvis/state/event_log.py` — event registry additions plus validated `append_event_in_transaction()` that never commits or publishes; public `emit_event()` remains the one-event compatibility wrapper.
-- `jarvis/state/projections.py` — ResponseLedger fold.
+- `jarvis/state/projections.py` — carries `conversation_history` into the `SituationPacket` by calling `conversation.py`'s fold; owns no fold logic.
 - `jarvis/decision/packet.py` — carry bounded structured spoken-heard, panel-available, and audit-only response context into the SituationPacket without conflating them.
-- `jarvis/decision/intent.py` (or the new ADR-0008 stream prompt builder) — consume spoken-heard context for follow-up coherence; never present panel-available text as heard.
 - `jarvis/surface/voice_audio.py` — one ingress, reset, real endpoint counters, pre/post-roll.
 - `jarvis/surface/voice_asr.py` — prewarm, serialized rolling partials, final authority.
 - `jarvis/surface/voice_wake.py` — subscribe to ingress; no pause-during-TTS and no second capture stream in realtime modes.
@@ -724,7 +715,9 @@ Privacy/sleep/device lifecycle is explicit: privacy stop closes the capture back
 
 ## 9. Build order
 
-Every step leaves `voice.realtime.mode: legacy` as a working fallback and keeps Tier 1 green. Per repository policy, Python verification uses canaries, data-driven regression checks, integration/replay harnesses, and required live burns; these steps do not recreate `tests/unit` or add new Python unit tests.
+This section is a historical seed for goal cards under `docs/goals/`, not an acceptance contract; §10 Verification and SLOs and §13 Definition of done remain binding.
+
+Every step leaves `realtime.enabled: false` (`config/jarvis.yaml`) as a working fallback and keeps Tier 1 green. Per repository policy, Python verification uses canaries, data-driven regression checks, integration/replay harnesses, and required live burns; these steps do not recreate `tests/unit` or add new Python unit tests.
 
 | Step | Change | Verification |
 |---:|---|---|
