@@ -124,3 +124,29 @@ Implement docs/goals/speaking-window-vad-profile.md on the current branch. The g
   have no test (the card caps this file at exactly two) and the `"tts"` default
   ships unexercised by any live run — both are owner decisions recorded in the
   burn document, not defects.
+- 2026-09-05 slice 4 (hub ruling, deviates from this card's Target behavior):
+  `output_active_vad_mode` now defaults to `"record"`, not `"tts"`. The card
+  specified `"tts"` on the assumption the burn would measure it; the burn
+  returned a structural null, so there is zero evidence either way. Shipping
+  `"tts"` would have made the -22 dB gate start applying silently the first time
+  natural barge-in could arm capture during output — an unmeasured behaviour
+  change that would surface inside a future barge-in card and be attributed to
+  it rather than to this one. The default is `"record"` BECAUSE the A/B was
+  null, not because `"tts"` was rejected on evidence; those are different claims
+  and only the first is true. The mechanism and the knob are unchanged, so
+  adoption stays an explicit, measured decision for whoever lands natural
+  barge-in. The two tests now pin `output_active_vad_mode="tts"` on their own
+  config rather than leaning on the shipped default, which is what they should
+  always have done — they are about the switch, not about which profile ships.
+  Gates after the flip: lint-imports KEPT (1 kept, 0 broken), ruff all checks
+  passed, mypy strict clean (242 files), 1049 passed / 64 deselected, and
+  `111 passed` across test_voice_vad_endpoint.py, test_wave3_single_audio_ingress.py
+  and test_endpointing_partial_asr.py.
+- Owner follow-ups carried out of this card, neither a blocker: (a) no human
+  voice was ever in the loop — the live stimulus was TTS clips over the real
+  acoustic path, because the implementation session cannot speak, so a run with
+  a person talking over the answer's tail is still owed; (b) the exception-path
+  semantics (a raising `output_active` keeps the current profile rather than
+  failing strict) have no test, because this card capped the file at exactly two
+  tests and forbade per-state tests — a card-level spec-vs-evidence gap for a
+  later card to close deliberately.

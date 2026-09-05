@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Self
 from unittest.mock import patch
 
@@ -168,7 +169,12 @@ def _armed_assembler(
     vad = voice_audio.SileroVad(mode="record")
     assembler = voice_session.UtteranceAssembler(
         vad=vad,
-        config=voice_session.RealtimeInputSessionConfig(),
+        # Pinned, not defaulted: the default is "record" and these tests are
+        # about the switch, not about which profile ships.
+        config=replace(
+            voice_session.RealtimeInputSessionConfig(),
+            output_active_vad_mode="tts",
+        ),
         sample_rate_hz=16_000,
         frame_samples=voice_audio.SILERO_CHUNK_SAMPLES,
         session_id="S-vad-profile",

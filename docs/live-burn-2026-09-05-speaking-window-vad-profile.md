@@ -66,17 +66,31 @@ Because the mode moves with the thresholds, `vad_mode` is a direct read-out of
 a null measurement of the thresholds but a positive measurement of the gate:
 zero frames were classified while output was active.
 
-## Verdict — not adopted as a measured improvement
+## Verdict — default is `"record"` because the A/B was null
 
-The strict profile is **not** adopted on the strength of this burn: it made
-nothing better and nothing worse because it never engaged. The stop condition
-did not fire — arm B missed no onset arm A caught, truncated no transcript, and
-lost no utterance; it captured one more utterance than arm A. No threshold,
-counter, or answer script was adjusted.
+The default ships as `"record"` **because this burn could not measure `"tts"` at
+all**, not because `"tts"` was rejected on evidence. Those are different claims
+and only the first is true: the strict profile made nothing better and nothing
+worse because it never engaged. The stop condition did not fire — arm B missed
+no onset arm A caught, truncated no transcript, and lost no utterance; it
+captured one more utterance than arm A. No threshold, counter, or answer script
+was adjusted.
 
-The code ships as specified, with `output_active_vad_mode` defaulting to `"tts"`
-and `"record"` reverting. What the default selects is unreachable today, so the
-default is inert on the shipped configuration; it becomes live the first time
-something arms capture during output — natural barge-in (D8/D9) being the
-obvious candidate. Re-run this burn then; the measurement is only meaningful
+`"record"` keeps today's classification behaviour exactly. Had the default
+shipped as `"tts"`, the −22 dB gate would have started applying silently the
+first time natural barge-in could arm capture during output — an unmeasured
+behaviour change that would have surfaced inside some future barge-in card and
+been attributed to it rather than to this one. The mechanism and the knob stay
+in place so that adoption is an explicit, measured decision by whoever lands
+that card: re-run this burn then, because the measurement is only meaningful
 once a frame can be classified while output is active.
+
+## Owner follow-ups (not blockers)
+
+- No human voice was ever in the loop. The stimulus was TTS clips over the real
+  acoustic path because the running session cannot speak. A run with a person
+  talking over the answer's tail is still worth having.
+- The exception path — a raising `output_active` keeps the current profile
+  rather than failing strict — has no test. The card capped this file at
+  exactly two tests and forbade per-state tests, so the gap is the card's, not
+  the implementation's; a later card can close it deliberately.

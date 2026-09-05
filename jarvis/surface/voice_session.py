@@ -73,7 +73,7 @@ class RealtimeInputSessionConfig:
     wake_failure_threshold: int = 3
     worker_poll_s: float = 0.005
     shutdown_timeout_s: float = 3.0
-    output_active_vad_mode: str = "tts"
+    output_active_vad_mode: str = "record"
     partial_asr: PartialAsrConfig = PartialAsrConfig()
     barge_in: voice_interrupt.BargeInConfig = field(
         default_factory=voice_interrupt.BargeInConfig,
