@@ -41,6 +41,7 @@ class PlaybackHistory:
     identity: tuple[str, int] | None = None
     activation_uid: str | None = None
     speech_hash: str | None = None
+    first_segment_hash: str | None = None
     generations: dict[str, int] = field(default_factory=dict)
     retired_sessions: set[str] = field(default_factory=set)
     generation_owners: dict[int, str] = field(default_factory=dict)
@@ -133,6 +134,7 @@ class PlaybackHistory:
         # An incremental lease commits only its first segment at activation;
         # the terminal binds the full hash to the prepared concatenation.
         self.speech_hash = None if incremental else digest
+        self.first_segment_hash = digest if incremental else None
         self.segments.clear()
         self.last_sequence, self.last_submitted, self.last_text = -1, 0, ""
         self.terminal = False
@@ -155,6 +157,11 @@ class PlaybackHistory:
             or text_hash(text) is None
             or text_hash(text) != payload.get("speech_text_hash")
             or sequence <= max(self.segments, default=-1)
+            or (
+                not self.segments
+                and self.first_segment_hash is not None
+                and text_hash(text) != self.first_segment_hash
+            )
         ):
             self.consistent = False
             return

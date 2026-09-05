@@ -251,6 +251,21 @@ def test_incremental_completion_hash_must_match_the_prepared_concatenation(
         conn.close()
 
 
+def test_incremental_activation_binds_the_first_prepared_segment(tmp_path: Path) -> None:
+    """The activation digest must be the first prepared segment's hash."""
+    conn = open_event_log(tmp_path / "first-hash.db")
+    try:
+        trail = _Trail(conn)
+        trail.chunk(_SEGMENTS[0])
+        trail.start(first_segment="not-the-first-segment")
+        trail.prepare(0)
+        trail.emitted(_SEGMENTS[0])
+        trail.terminal("surface.playback_completed", through=0)
+        assert _spoken(conn) == (False, None)
+    finally:
+        conn.close()
+
+
 def test_non_incremental_activation_keeps_exact_full_text_equality(tmp_path: Path) -> None:
     """Without ``incremental`` the activation hash must still equal the full speech hash."""
     conn = open_event_log(tmp_path / "legacy.db")
@@ -289,11 +304,11 @@ def test_voice_suffix_beyond_the_committed_chunks_is_one_more_prepared_segment(
         trail.start(first_segment=_SEGMENTS[0])
         trail.prepare(0)
         trail.checkpoint(0)
-        surface = trail.emitted(_SEGMENTS[0] + "这是没有被门放行的长尾巴。")
+        surface = trail.emitted(_SEGMENTS[0] + _SUFFIX)
         trail.prepare(1, source=surface)
-        assert trail.prepared[1] == "这是没有被门放行的长尾巴。"
+        assert trail.prepared[1] == _SUFFIX
         trail.terminal("surface.playback_completed", through=1)
-        assert _spoken(conn) == (True, _SEGMENTS[0] + "这是没有被门放行的长尾巴。")
+        assert _spoken(conn) == (True, _SEGMENTS[0] + _SUFFIX)
     finally:
         conn.close()
 
@@ -407,7 +422,12 @@ def _wait_for(conn: sqlite3.Connection, event_type: str, response_id: str, count
     pytest.fail(f"{event_type} x{count} for {response_id} never became durable")
 
 
-_SUFFIX = "这是没有被门放行的长尾巴。"
+_SUFFIX = (
+    "这是一条没有被流式门放行却在最终文本里出现的长句子。它超过了六十个码点的安全子句上限。"
+    "所以只能在响应发出之后作为最后一段被朗读。"
+)
+_SAFE_SUBCLAUSE_CAP = 60
+assert len(_SUFFIX) > _SAFE_SUBCLAUSE_CAP
 
 
 def test_stream_response_starts_speaking_from_its_first_permitted_segment(
@@ -515,6 +535,35 @@ def test_legacy_text_response_keeps_the_emitted_time_trail_with_the_flag_on(
         "第二句。",
     ]
     assert all(row[4] is None for row in on)
+
+
+def test_flag_off_stream_response_speaks_its_suffix_only_at_emitted_time(
+    tmp_path: Path,
+) -> None:
+    """A1 is ungated: with the flag off the suffix is still spoken, after emitted."""
+    db_path = tmp_path / "off-suffix.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    pipeline, player = _pipeline(db_path, provider, speak_from_segments=False)
+    try:
+        with _CallbackPump(player):
+            rows = [_open(conn, "ROFF"), _chunk(conn, "ROFF", 0, _SEGMENTS[0])]
+            emitted_row = _emitted(conn, "ROFF", _SEGMENTS[0] + _SUFFIX)
+            asyncio.run(_submit_response(pipeline, [*rows, emitted_row]))
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    conn = open_event_log(db_path)
+    try:
+        started = _rows(conn, "surface.playback_started", "ROFF")
+        prepared = _rows(conn, "surface.playback_segment_prepared", "ROFF")
+    finally:
+        conn.close()
+    assert len(started) == 1
+    assert started[0][0] > emitted_row[0]
+    assert "incremental" not in started[0][1]
+    assert [row[1]["speech_text"] for row in prepared] == [_SEGMENTS[0], _SUFFIX]
 
 
 def test_queue_review_open_never_starts_playback(tmp_path: Path) -> None:

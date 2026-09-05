@@ -2366,6 +2366,18 @@ class StreamingTTSPipeline:
                     while live and await self._await_segments(active, segments):
                         if active.response.tagged:
                             break
+                        if budget is not None:
+                            budget.reschedule(
+                                asyncio.get_running_loop().time()
+                                + self._config.response_timeout_s,
+                            )
+                    if live and active.response.tagged:
+                        await self._fail_active(
+                            active,
+                            reason="stream_chunk_tagged",
+                            retryable=False,
+                        )
+                        return False
                     remaining = segments[segment_index:]
                     return await self._run_macos_say(active, remaining)
                 if last_error is not None:
