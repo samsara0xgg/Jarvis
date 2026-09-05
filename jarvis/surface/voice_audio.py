@@ -1118,6 +1118,7 @@ class AudioIngress:
         self._pending_ingress_fault_code: str | None = None
         self._deferred_fault: voice_backend.BackendFault | None = None
         self._device_uid_misses = 0
+        self._late_recovery_attempts = 0
         self._device_profile: voice_backend.DeviceProfileSnapshot | None = None
         self._last_profile_key: voice_backend.DeviceProfileKey | None = None
         self._capability_publish_lock, self._capability_lock = threading.Lock(), threading.RLock()
@@ -1627,8 +1628,88 @@ class AudioIngress:
                     self._device_uid_misses = 0
                     if self._config.route_observer_enabled:
                         self._poll_output_route()
+            if timeline is None and now - last_fault_poll >= self._config.fault_poll_s:
+                last_fault_poll = now
+                self._recover_late_close()
             if not did_work:
                 self._worker_stop.wait(timeout=self._config.worker_poll_s)
+
+    def _recover_late_close(self) -> None:
+        """Reopen once a timed-out foreign open settles CLOSED after the fault path gave up.
+
+        F17 recovery previously ended at ``reopen_state_uncertain``: the helper
+        that outlived its bound later proved the device closed, but nothing
+        re-polled, so one slow CoreAudio open left the ingress ``close_uncertain``
+        until sleep/wake. Bounded by ``reopen_attempts`` per uncertain episode.
+        """
+        if (
+            self._closing
+            or self._suspended
+            or self._capability.state is not InputCapabilityState.CLOSE_UNCERTAIN
+            or self._late_recovery_attempts >= self._config.reopen_attempts
+            or self._backend.ownership_snapshot().state
+            is not voice_backend.BackendLifecycleState.CLOSED
+        ):
+            return
+        if not self._lifecycle_lock.acquire(blocking=False):
+            return
+        try:
+            with self._control_lock:
+                control_generation = self._control_generation
+                if not self._control_allows_running(control_generation):
+                    return
+            self._late_recovery_attempts += 1
+            self._reopen_attempts += 1
+            prior_epoch = self._last_epoch
+            record_realtime_trace(
+                "audio_input_reopen_started",
+                prior_stream_epoch=prior_epoch,
+                attempt=self._late_recovery_attempts,
+                reason="late_close_recovery",
+            )
+            result = self._open_new_epoch(
+                reason="recovery:late_close",
+                expected_control_generation=control_generation,
+            )
+            with self._control_lock:
+                control_current = self._control_allows_running(control_generation)
+            if not control_current:
+                self._revoke_publication()
+                self._stop_backend_debt()
+                return
+            if result.started:
+                self._reopen_successes += 1
+                self._late_recovery_attempts = 0
+                self._publish_capability_if_current(
+                    control_generation,
+                    InputCapabilityState.AVAILABLE,
+                    reason="late_close_recovered",
+                )
+                record_realtime_trace(
+                    "audio_input_reopen_succeeded",
+                    prior_stream_epoch=prior_epoch,
+                    stream_epoch=result.stream_epoch,
+                    attempt=self._late_recovery_attempts,
+                    reason="late_close_recovery",
+                )
+                return
+            if (
+                result.status is not voice_backend.BackendStartStatus.OPEN_UNCERTAIN
+                and self._late_recovery_attempts >= self._config.reopen_attempts
+            ):
+                self._publish_capability_if_current(
+                    control_generation,
+                    InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE,
+                    reason="late_recovery_budget_exhausted",
+                )
+                record_realtime_trace(
+                    "audio_input_reopen_failed",
+                    prior_stream_epoch=prior_epoch,
+                    attempts=self._config.reopen_attempts,
+                    outcome="late_recovery_budget_exhausted",
+                )
+        finally:
+            self._lifecycle_lock.release()
 
     def _poll_output_route(self) -> None:
         snapshot = self._device_profile
@@ -1795,6 +1876,7 @@ class AudioIngress:
             if timeline is None or timeline.stream_epoch != fault.stream_epoch:
                 return
             self._faults += 1
+            self._late_recovery_attempts = 0
             self._revoke_publication()
             # F18: the old profile's barge allowance is gone before any reopen.
             self._device_profile = None

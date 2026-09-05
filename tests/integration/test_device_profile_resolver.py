@@ -217,6 +217,9 @@ class _RouteBackend:
         self.active_epoch: int | None = None
         self.active_attempt_id: str | None = None
         self.version = 0
+        # When set, the next open behaves like a foreign open that outlives
+        # its bound: the device is claimed, but the typed result is uncertain.
+        self.next_start_status: voice_backend.BackendStartStatus | None = None
 
     def start(
         self,
@@ -232,6 +235,15 @@ class _RouteBackend:
         self.active_epoch = stream_epoch
         self.active_attempt_id = attempt_id
         self.version += 1
+        status, self.next_start_status = self.next_start_status, None
+        if status is not None:
+            return voice_backend.BackendStartResult(
+                status=status,
+                stream_epoch=stream_epoch,
+                profile=None,
+                reason="injected_open_timeout",
+                attempt_id=attempt_id,
+            )
         return voice_backend.BackendStartResult(
             status=voice_backend.BackendStartStatus.STARTED,
             stream_epoch=stream_epoch,
@@ -464,3 +476,31 @@ def test_file_replay_and_fake_backends_claim_no_aec(tmp_path: Path) -> None:
         assert capabilities.aec is False
         assert capabilities.natural_barge_in is False
     assert voice_backend.FileReplayBackend(wav_path).current_output_route() is None
+
+
+def test_late_settled_open_recovers_from_close_uncertain() -> None:
+    """A reopen that times out but later settles CLOSED is retried (F17)."""
+    backend = _RouteBackend()
+    with _started(backend, observer=True) as ingress:
+        backend.next_start_status = voice_backend.BackendStartStatus.OPEN_UNCERTAIN
+        backend.output_route = replace(_SPEAKERS, uid="BlackHole16ch_UID", transport_type="virt")
+        _wait_until(
+            lambda: ingress.capability.state is voice_audio.InputCapabilityState.CLOSE_UNCERTAIN,
+        )
+        assert ingress.capability.reason == "reopen_state_uncertain"
+        assert ingress.stream_epoch is None
+        assert backend.active_epoch == 2
+        # The foreign open settles late: the backend proves the device CLOSED.
+        assert backend.active_attempt_id is not None
+        backend.stop(stream_epoch=2, attempt_id=backend.active_attempt_id)
+        _wait_until(
+            lambda: ingress.capability.state is voice_audio.InputCapabilityState.AVAILABLE
+            and ingress.stream_epoch == 3,
+        )
+        assert ingress.capability.reason == "late_close_recovered"
+        profile = ingress.device_profile
+        assert profile is not None
+        assert profile.stream_epoch == 3
+        assert profile.key.output_uid == "BlackHole16ch_UID"
+        reopens = _traces("audio_input_reopen_succeeded")
+        assert reopens[-1]["reason"] == "late_close_recovery"
