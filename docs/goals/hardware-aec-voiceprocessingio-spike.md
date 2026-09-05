@@ -136,3 +136,39 @@ Implement docs/goals/hardware-aec-voiceprocessingio-spike.md on the current bran
   run is bound to the device names and CoreAudio uids, not the indices.
   Likewise the card cites ADR-0006 D9 at `:472`; after the integration merge
   the blocker sentence is at `:516`.
+- Slice 4 verifier corrections — the `verifier` agent (fresh context, opus)
+  over `15192fc..HEAD` confirmed four defects, all fixed here. (a) The burn
+  document called `tts` "the profile that actually runs while Jarvis is
+  speaking"; it is the opposite — see the production finding below. (b) The
+  claim that the −22 dB gate sits 15 dB above the loudest echo compared the
+  gate to the window *mean*: the loudest 32 ms frame is −30.45 dBFS (AEC off)
+  and −20.45 dBFS (AEC on), the latter already **over** the −22 gate and held
+  to 0 crossings only by five-frame smoothing (peak smoothed −33.31). The
+  analysis script now prints both peaks so the corrected sentence is
+  reproducible from the committed tool, and `peak_levels` is pinned by two
+  hermetic cases. (c) The 7.5 dB drop was attributed to cancellation in both
+  the burn document and the ADR sentence, but `isVoiceProcessingAGCEnabled`
+  is true by default and the peak frame *rose* 10 dB — cancellation and AGC
+  are not separable in this run, and both documents now say so. (d)
+  `--silero`'s "using the library default" fallback was a lie:
+  `_load_silero_session` raises `ValueError` on `model_path=None`
+  (`jarvis/surface/voice_audio.py:100-102`), so the branch and the two
+  docstrings repeating it are gone; the path is now forwarded unconditionally
+  as `scripts/replay_endpointing.py:181` does.
+- Production finding, recorded not fixed (card boundary: "If the spike exposes
+  a defect in production code, record it in Progress and report; do not fix it
+  under this card"). **`_MODE_THRESHOLDS["tts"]` has no caller.** The only two
+  `SileroVad` construction sites in `jarvis/` are
+  `jarvis/runtime/inherent_loop.py:1467` and `:2128`, both `mode="record"`,
+  and `SileroVad.thresholds()` is called from nowhere in `jarvis/`. The
+  stricter prob ≥ 0.5 / dB ≥ −22 playback gate that ADR-0006 D9 leans on is
+  never installed, so the detector that runs while Jarvis speaks uses the
+  `record` gate — the profile this spike measures at 7.53/min against D9's
+  0.5/min target. That makes the false-candidate gap real rather than
+  academic, and it is a decision for the owner, not this card.
+- Verifier finding not fixed: 764ccbf is typed `test(scripts):` while its
+  larger artifact is the 309-line script, so `feat(scripts):` would have been
+  the better type, and its Tier 1 line writes `ruff clean (all checks passed)`
+  rather than the skill's `(N files)` and omits the `(< 30s budget)` note.
+  Rewriting three commits' history to relabel one of them buys nothing the
+  report cannot say, so the history stands and the mismatch is reported.

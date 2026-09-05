@@ -111,6 +111,36 @@ def test_residual_echo_is_playback_minus_silence(tmp_path: Path) -> None:
     assert spike.rms_dbfs(capture.pcm[silence.size :]) == pytest.approx(-20.0, abs=0.5)
     assert spike.residual_echo_db(capture) == pytest.approx(40.0, abs=0.5)
 
+    # A flat tone's loudest frame is its RMS; the peaks exist so a window mean
+    # cannot hide a frame that trips the VAD's energy gate.
+    peaks = spike.peak_levels(capture.pcm[silence.size :])
+    assert peaks.peak_frame_dbfs == pytest.approx(-20.0, abs=0.5)
+    assert peaks.peak_smoothed_dbfs == pytest.approx(-20.0, abs=0.5)
+
+
+def test_peak_frame_survives_a_window_mean_that_hides_it(tmp_path: Path) -> None:
+    """One loud frame in an otherwise quiet window shows up as the peak."""
+    quiet = _tone(99, -60.0)
+    loud = _tone(1, -20.0)
+    pcm = np.concatenate([_tone(10, -60.0), quiet, loud])
+    wav = tmp_path / "capture-spike.wav"
+    _write_capture(
+        wav,
+        pcm=pcm,
+        silence=(0, 10 * FRAME),
+        playback=(10 * FRAME, pcm.size),
+        facts={},
+    )
+
+    capture = spike.load_capture("spike", wav)
+    window = capture.pcm[10 * FRAME :]
+    peaks = spike.peak_levels(window)
+
+    assert spike.rms_dbfs(window) == pytest.approx(-40.0, abs=0.5)
+    assert peaks.peak_frame_dbfs == pytest.approx(-20.0, abs=0.5)
+    # Five-frame smoothing averages the dB values, not the power.
+    assert peaks.peak_smoothed_dbfs == pytest.approx((-20.0 + 4 * -60.0) / 5, abs=0.5)
+
 
 def test_vad_crossings_count_two_bursts_on_both_profiles(tmp_path: Path) -> None:
     """Two -20 dBFS bursts split by a 40-frame gap are two IDLE->ACTIVE edges."""

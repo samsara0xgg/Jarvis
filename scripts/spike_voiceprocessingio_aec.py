@@ -31,6 +31,7 @@ import argparse
 import json
 import sys
 import wave
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,14 @@ class Capture:
     silence: Window
     playback: Window
     facts: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PeakLevels:
+    """Loudest single frame and loudest smoothed run inside a window."""
+
+    peak_frame_dbfs: float
+    peak_smoothed_dbfs: float
 
 
 @dataclass(frozen=True)
@@ -190,6 +199,35 @@ def residual_echo_db(capture: Capture) -> float:
     return play - silence
 
 
+def peak_levels(pcm: np.ndarray) -> PeakLevels:
+    """Return the loudest 32 ms frame and the loudest 5-frame smoothed run.
+
+    The window RMS a residual figure is built from hides peaks, and it is a
+    peak that trips the VAD's energy gate. The smoothing width matches
+    ``VadThresholds.smoothing_window``, which is what the gate actually sees.
+
+    Args:
+        pcm: int16 samples at 16 kHz; a trailing partial frame is dropped.
+
+    Returns:
+        Peak raw-frame and peak smoothed dBFS.
+    """
+    usable = pcm.size - (pcm.size % SILERO_CHUNK_SAMPLES)
+    if usable == 0:
+        return PeakLevels(float("-inf"), float("-inf"))
+    scaled = pcm[:usable].astype(np.float32) / 32768.0
+    frames = [
+        _chunk_db(scaled[start : start + SILERO_CHUNK_SAMPLES])
+        for start in range(0, usable, SILERO_CHUNK_SAMPLES)
+    ]
+    window: deque[float] = deque(maxlen=SileroVad.thresholds("record").smoothing_window)
+    smoothed = []
+    for value in frames:
+        window.append(value)
+        smoothed.append(float(np.mean(window)))
+    return PeakLevels(max(frames), max(smoothed))
+
+
 def count_vad_crossings(pcm: np.ndarray, *, mode: str, model_path: Path | None) -> int:
     """Count IDLE->ACTIVE transitions of the shipped VAD over ``pcm``.
 
@@ -199,7 +237,9 @@ def count_vad_crossings(pcm: np.ndarray, *, mode: str, model_path: Path | None) 
     Args:
         pcm: int16 samples at 16 kHz; a trailing partial frame is dropped.
         mode: ``record`` or ``tts`` — the shipped threshold profiles.
-        model_path: Silero ONNX path, or ``None`` for the library default.
+        model_path: Silero ONNX path, forwarded verbatim to :class:`SileroVad`
+            (``None`` only works when the ONNX session is patched, which is
+            what the hermetic test does).
 
     Returns:
         Number of rising edges of ``is_speech_detected()``.
@@ -223,7 +263,7 @@ def profile_results(capture: Capture, *, model_path: Path | None) -> list[Profil
 
     Args:
         capture: A loaded capture.
-        model_path: Silero ONNX path, or ``None`` for the library default.
+        model_path: Silero ONNX path, forwarded verbatim to :class:`SileroVad`.
 
     Returns:
         One :class:`ProfileResult` per profile, in ``record``/``tts`` order.
@@ -260,6 +300,11 @@ def _write_capture_report(capture: Capture, results: list[ProfileResult]) -> Non
         f"  rms dBFS: playback {play:+.2f} · silence {silence:+.2f} · "
         f"residual echo {residual_echo_db(capture):+.2f} dB\n"
     )
+    peaks = peak_levels(capture.pcm[capture.playback.start : capture.playback.end])
+    out(
+        f"  playback peaks dBFS: loudest frame {peaks.peak_frame_dbfs:+.2f} · "
+        f"loudest 5-frame smoothed {peaks.peak_smoothed_dbfs:+.2f}\n"
+    )
     for result in results:
         out(
             f"  false candidates [{result.profile}: prob>={result.prob_threshold} "
@@ -285,17 +330,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--silero", type=Path, default=Path("data/silero_vad.onnx"))
     args = parser.parse_args(argv)
 
-    model_path: Path | None = args.silero if args.silero.exists() else None
-    if model_path is None:
-        sys.stdout.write(f"warning: {args.silero} missing; using the library default\n")
-
     captures = [
         load_capture("aec-off", args.aec_off),
         load_capture("aec-on", args.aec_on),
     ]
     residuals = {}
     for capture in captures:
-        results = profile_results(capture, model_path=model_path)
+        results = profile_results(capture, model_path=args.silero)
         _write_capture_report(capture, results)
         residuals[capture.label] = residual_echo_db(capture)
     delta = residuals["aec-on"] - residuals["aec-off"]

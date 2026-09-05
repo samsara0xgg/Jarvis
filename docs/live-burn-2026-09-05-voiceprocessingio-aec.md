@@ -56,6 +56,8 @@ lead-in `[0, 29710)` / `[0, 31076)`, playback `[29710, 285910)` / `[31076,
 | Playback-window RMS | −37.68 dBFS | −45.20 dBFS | **−7.52 dB** |
 | Silence-window RMS | −51.48 dBFS | −76.69 dBFS | −25.21 dB |
 | Residual echo (playback − silence) | **+13.81 dB** | **+31.49 dB** | **+17.69 dB** |
+| Loudest 32 ms playback frame | −30.45 dBFS | **−20.45 dBFS** | **+10.00 dB** |
+| Loudest 5-frame smoothed run | −32.98 dBFS | −33.31 dBFS | −0.33 dB |
 | False candidates, `record` (prob ≥ 0.4, dB ≥ −45) | 6 over 16.01 s = **22.48/min** | 2 over 15.93 s = **7.53/min** | −14.95/min |
 | False candidates, `tts` (prob ≥ 0.5, dB ≥ −22) | 0 over 16.01 s = **0.00/min** | 0 over 15.93 s = **0.00/min** | 0 |
 
@@ -67,11 +69,37 @@ suppressed floor is not an echo-return-loss measurement. A future
 `VoiceProcessingIOBackend` card should score absolute far-end level in the mic
 against a fixed reference, not against the silence window.
 
-Against D9's ≤ 0.5/min false-candidate target (`docs/adr/0006-full-duplex-voice-session.md`
-§ D9 thresholds): the `record` profile misses it by 15× even with the canceller
-on. The `tts` profile — the one that actually runs while Jarvis is speaking —
-was already at 0/min *without* the canceller, because its −22 dB energy gate
-sits 15 dB above the loudest echo this run produced at 25% output volume.
+**Cancellation and AGC are not separated by this run.**
+`isVoiceProcessingAGCEnabled` is `true` by default; the spike recorded that
+state rather than forcing it. The window mean fell 7.52 dB with voice
+processing on, but the loudest single frame *rose* 10 dB, −30.45 → −20.45 dBFS.
+A canceller does not raise peaks; automatic gain riding the quiet stretches
+does. So −7.52 dB is what this configuration delivers end to end, not an
+echo-return-loss figure, and a backend card has to re-measure with AGC
+explicitly disabled before attributing any of it to cancellation.
+
+Against D9's ≤ 0.5/min false-candidate target
+(`docs/adr/0006-full-duplex-voice-session.md` § D9 thresholds): the `record`
+profile misses it by 15× even with the canceller on. The `tts` profile reads
+0.00/min on both captures, but that number carries less than it appears to —
+see the next section.
+
+## A production finding this spike turned up
+
+**The `tts` threshold profile has no caller.** Every VAD constructed in
+`jarvis/` is `mode="record"`: `jarvis/runtime/inherent_loop.py:1467` and
+`:2128` are the only two construction sites, and `SileroVad.thresholds()` is
+called from nowhere in `jarvis/`. `_MODE_THRESHOLDS["tts"]`
+(`jarvis/surface/voice_audio.py:80`) is dead configuration — the stricter
+prob ≥ 0.5 / dB ≥ −22 gate is never installed, so the detector running while
+Jarvis speaks uses the `record` gate, which is the one this spike measures at
+7.53/min against a 0.5/min target. Recorded, not fixed: the spike card's
+boundaries forbid touching production code.
+
+The 0.00/min `tts` figure is fragile on its own terms too. The AEC-on capture
+already contains one 32 ms frame at −20.45 dBFS, above the −22 gate; it scores
+zero only because five-frame smoothing averages that peak down to −33.31. At an
+output volume above the 25% this run was capped at, that margin disappears.
 
 ## Format facts
 
@@ -110,6 +138,8 @@ Two platform facts a backend card will need:
   one sitting by construction.
 - Only one volume/distance setting was covered (25% output, laptop at desk
   distance). D9 asks for three per profile.
+- **AGC was left at its default** — on with voice processing, off without — so
+  the two captures differ by more than the canceller.
 
 ## What a future card still owes
 
@@ -126,11 +156,13 @@ likewise a default-only field fixed to `"none"` with no writer anywhere in
 ## Recommendation
 
 **Inconclusive, needs the near-end trial.** macOS `VoiceProcessingIO` is
-usable on this machine — the engine starts, the capture stays 16 kHz mono int16,
-and the canceller cuts absolute far-end echo by 7.5 dB and `record`-profile
-false candidates by two thirds. That is not enough to unblock D9: the
-false-candidate rate is still 15× over target on the `record` profile, and the
-two remaining D9 gates (near-end interrupt recall, double-talk recall) need a
-human talking over playback and were not attempted. Nothing here argues for
-buying hardware, and nothing here argues for abandoning the software path; the
-next thing worth spending is Allen's voice, not a purchase.
+usable on this machine — the engine starts, the capture stays 16 kHz mono
+int16, and end to end the configuration drops the far-end window mean in the
+mic by 7.5 dB and cuts `record`-profile false candidates by two thirds. That is
+not enough to unblock D9. The false-candidate rate is still 15× over target on
+the profile that actually runs; the loudest frame got 10 dB *louder*, so
+cancellation and AGC are not separated by this run; and the two remaining D9
+gates, near-end interrupt recall and double-talk recall, need a human talking
+over playback and were not attempted. Nothing here argues for buying hardware,
+and nothing here argues for abandoning the software path; the next thing worth
+spending is Allen's voice, not a purchase.
