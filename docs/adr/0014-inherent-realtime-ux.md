@@ -774,6 +774,9 @@ For action cancel, `queued` means the authorized cancel request exists; it does 
 
 ### D11. Per-client flow control and ACK
 
+Built: `jarvis/runtime/inherent_hub.py` implements rules 1-5 and 9-12, and
+`realtime.inherent.v2_sequencer.flow_control` holds their limits.
+
 Each v2 client owns:
 
 - one control-ack queue, default 32 frames;

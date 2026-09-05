@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import socket as socket_module
+import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -20,6 +21,7 @@ from websockets.asyncio.client import connect
 
 from jarvis.deployment import inherent_v2_token_matches, rotate_inherent_v2_token
 from jarvis.runtime.inherent_hub import (
+    ACK_STALL_POLL_S,
     SNAPSHOT_ADOPTION_DEADLINE_S,
     InherentClient,
     InherentHub,
@@ -405,13 +407,15 @@ class _Socket:
 class _Rig:
     """A real Event Log, one sequencer and one hub on the running loop."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — one keyword per injectable the hub and sequencer take.
         self,
         tmp_path: Path,
         *,
         recovery_interval_s: float = 0.01,
         adoption_deadline_s: float = 5.0,
         bus: CommittedEventBus | None = None,
+        clock: Callable[[], float] = time.time,
+        ack_stall_poll_s: float = ACK_STALL_POLL_S,
     ) -> None:
         self.conn = open_event_log(tmp_path / "mac_events.db")
         self.bus = bus
@@ -427,6 +431,8 @@ class _Rig:
             log_epoch=self.epoch,
             boot_id=_BOOT_ID,
             adoption_deadline_s=adoption_deadline_s,
+            clock=clock,
+            ack_stall_poll_s=ack_stall_poll_s,
         )
         self.tasks: tuple[asyncio.Task[None], ...] = ()
 

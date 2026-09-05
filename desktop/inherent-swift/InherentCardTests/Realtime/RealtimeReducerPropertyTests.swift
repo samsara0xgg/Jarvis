@@ -130,15 +130,17 @@ final class RealtimeReducerPropertyTests: XCTestCase {
     return items
   }
 
-  /// The three fields a re-framing is allowed to differ in:
-  /// `recentMessageIDs` remembers which envelopes carried the mutations, so it
-  /// records the framing rather than the content; `resyncRequested` records
-  /// that a permutation opened a gap the client asked to repair; `connection`
-  /// records the inserted reconnect boundary.  Everything else — content,
-  /// identity, revisions, cursors, foreground, capabilities — must match.
+  /// The four fields a re-framing is allowed to differ in:
+  /// `recentMessageIDs` remembers which envelopes carried the mutations and
+  /// `unackedDurableCount` how many of them are still unACKed, so both record
+  /// the framing rather than the content; `resyncRequested` records that a
+  /// permutation opened a gap the client asked to repair; `connection` records
+  /// the inserted reconnect boundary.  Everything else — content, identity,
+  /// revisions, cursors, foreground, capabilities — must match.
   private func comparable(_ state: InherentUXState) -> InherentUXState {
     var state = state
     state.synchronization.recentMessageIDs = []
+    state.synchronization.unackedDurableCount = 0
     state.synchronization.resyncRequested = false
     state.connection = .live
     return state

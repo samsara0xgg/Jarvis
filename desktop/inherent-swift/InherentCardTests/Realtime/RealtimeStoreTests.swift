@@ -30,6 +30,9 @@ final class RealtimeStoreTests: XCTestCase {
       [
         .sendAck(snapshotID: "SNAP-1", throughCursor: 7),
         .requestResync(reason: .unknownResponse),
+        // The frame was applied, so it is ACKed on the D11 rule 8 cadence even
+        // though one of its mutations asked for a resync.
+        .scheduleAckFlush(after: .milliseconds(SynchronizationState.ackBatchMilliseconds)),
       ]
     )
   }

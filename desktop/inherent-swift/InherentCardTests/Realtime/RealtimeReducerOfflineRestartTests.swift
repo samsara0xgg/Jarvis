@@ -84,7 +84,8 @@ final class RealtimeReducerOfflineRestartTests: XCTestCase {
     // The vocabulary itself has no speech case: this switch is exhaustive.
     for effect in restart {
       switch effect {
-      case .sendAck, .requestResync, .scheduleLocalFade, .announceAccessibilityMilestone:
+      case .sendAck, .requestResync, .scheduleLocalFade, .scheduleAckFlush,
+        .announceAccessibilityMilestone:
         continue
       }
     }

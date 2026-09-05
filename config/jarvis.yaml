@@ -287,3 +287,17 @@ realtime:
   inherent:
     v2_sequencer:
       enabled: false
+      # ADR-0014 D11 (per-client-flow-control card).  Per-client bounds the
+      # hub enforces once the flag is on; an absent key keeps the D11
+      # default shown here.  ack_batch_messages / ack_batch_ms are the
+      # Swift client's ACK cadence (rule 8) recorded beside the ack_stall_s
+      # they make safe; the daemon never negotiates them.
+      flow_control:
+        control_frames: 32
+        durable_frames: 256
+        durable_bytes: 1048576
+        ephemeral_keys: 32
+        ack_batch_messages: 25
+        ack_batch_ms: 100
+        ack_stall_s: 5
+        control_fairness: 8
