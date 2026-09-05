@@ -22,13 +22,14 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
-from jarvis.state.projections import make_snapshot
+from jarvis.state.decision_snapshot import read_decision_snapshot
 
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Sequence
 
     from jarvis.shared import Event
+    from jarvis.state.authorization_snapshot import AuthorizationSnapshot
     from jarvis.state.conversation import ConversationHistory
     from jarvis.state.projections import (
         CommitObservation,
@@ -93,6 +94,8 @@ class SituationPacket:
     entity_registry: EntityRegistry
     pending_confirmation: PendingConfirmations
     conversation_history: ConversationHistory | None = None
+    authorization_snapshot: AuthorizationSnapshot | None = None
+    event_cursor: int | None = None
 
 
 # --- assemble_packet --------------------------------------------------------
@@ -118,11 +121,9 @@ def assemble_packet(
 ) -> SituationPacket:
     """Build a :class:`SituationPacket` from the live event log.
 
-    Reads the event log via ``jarvis.state.projections.make_snapshot``
-    (which reads the event log once and folds Task Ledger, Recent
-    Trace, Claim/Evidence, Status Board, and EntityRegistry via five
-    separate in-memory passes over that one materialized read), then
-    bundles the trigger + correlations into a frozen packet.
+    Reads the Event Log and confirmation/dispatch operational tables under one
+    SQLite read transaction, folds the materialized events into projections,
+    then bundles the exact cursor, trigger and correlations into a frozen packet.
 
     Args:
         trigger: The event that re-entered L3 (already appended to
@@ -140,7 +141,8 @@ def assemble_packet(
         Frozen :class:`SituationPacket` ready for the Intent Router,
         Resolver, Effective Policy resolver, and Gates.
     """
-    projections = make_snapshot(conn, entity_bookmarks=entity_bookmarks)
+    state = read_decision_snapshot(conn, entity_bookmarks=entity_bookmarks)
+    projections = state.projections
     snapshot = projections.task_ledger.snapshot()
 
     return SituationPacket(
@@ -154,6 +156,8 @@ def assemble_packet(
         entity_registry=projections.entity_registry,
         pending_confirmation=projections.pending_confirmations,
         conversation_history=projections.conversation_history,
+        authorization_snapshot=state.authorizations,
+        event_cursor=state.event_cursor,
     )
 
 

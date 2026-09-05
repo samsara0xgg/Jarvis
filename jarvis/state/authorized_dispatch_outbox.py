@@ -251,6 +251,30 @@ def ensure_authorized_dispatch_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def authorized_dispatch_schema_matches(conn: sqlite3.Connection) -> bool:
+    """Recognize the current owner-defined schema without issuing any DDL.
+
+    Unknown or partial definitions cannot establish absence of operational debt.
+    Equivalent but unrecognized custom schemas require explicit migration too.
+    """
+    expected = {
+        "confirmation_consumption_claims": _CREATE_CONSUMPTION_TABLE_SQL,
+        "authorized_dispatch_outbox": _CREATE_OUTBOX_TABLE_SQL,
+    }
+    actual = dict(conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN "
+        "('confirmation_consumption_claims', 'authorized_dispatch_outbox')",
+    ))
+
+    def normalized(sql: str) -> str:
+        return " ".join(sql.casefold().split()).replace(" if not exists", "")
+
+    return all(
+        isinstance(actual.get(name), str) and normalized(actual[name]) == normalized(sql)
+        for name, sql in expected.items()
+    )
+
+
 def _inject(injector: FailureInjector | None, stage: FailureStage) -> None:
     if injector is not None:
         injector(stage)

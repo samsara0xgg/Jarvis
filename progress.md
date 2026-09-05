@@ -8,7 +8,49 @@ Baseline: 86958ad2aa6c193743fb78d1181a6dc2ccfbcf30
 Verified ancestor code: 3a6856a6bb4aa7d7a612c4a98d963513a6f93eab
 Contract: GOAL.md; architecture: docs/spec.html and docs/adr.
 
-## Current work: typed heard context
+## Current work: consistent authorization snapshot
+
+The actual SituationPacket now reads its Event Log, cursor and confirmation/
+consumption/outbox tables under one SQLite read transaction. It borrows a caller
+transaction without ending it; an owned read transaction ends with rollback.
+No DDL, trigger-consumption helper or authorization mutation runs on this path.
+The existing projections fold the same materialized events through fold_projections.
+
+The new AuthorizationSnapshot retains old accepted-but-unconsumed requests even
+when expired or replaced by a new UI slot. It carries exact request/answer UIDs,
+independent turn fields, frozen scope JSON, supersession and validated dispatch
+identity/state. Existing get_authorized_dispatch checks stable IDs, claim/outbox,
+canonical request hash/scope and gate provenance; new checks cover orphan claims,
+unknown state/schema, full reverse gate/admission joins and atomic state/admission
+agreement. Missing/malformed tables or evidence produce explicit incomplete facts,
+not known absence. Only current owner-defined normalized DDL is recognized; custom
+schemas are not silently treated as equivalent. The 1,024-fact safety bound marks
+truncation/incompleteness; historical settled-debt pruning remains future work.
+
+Independent read-only counterexamples repaired: incomplete empty table schemas,
+foreign IDs borrowing a valid acceptance, wrong actions borrowing a valid gate,
+and malformed confirmation fields crashing the legacy slot projection. A malformed
+successor clears the actionable UI slot while typed debt preserves the old facts
+and errors. This collector grants no permission or semantic risk classification.
+Action quiescence/cleanup/resource/result debt and source-turn association still
+must be folded before the overall ResponseRiskContext can claim completeness.
+
+27 new authorization scenarios cover real two-connection consumption between
+reads, actual L3 packet assembly under a SQLite write-denying authorizer, borrowed
+transaction rollback, hidden acceptance, corruption/source/schema matrices, and
+malformed legacy rows. Focused authorization/transaction/history: 101 passed in
+1.09 s. Full current non-live regression: 712 passed / 63 deselected in 30.96 s,
+exit 0 (outer 31.811 s), 0.96 s over the 30 s budget. Evidence:
+/tmp/jarvis-realtime-authorization-snapshot-nonlive.log. Ruff clean (6 changed
+Python files), strict mypy199, six-layer84/236 kept; temporary .venv removed.
+No production defaults/data, live provider, real actions or physical audio changed.
+
+Next: collect action/resource/cleanup/result evidence and semantic associations
+in this same read view, then construct the pinned complete risk context, prepare
+routing before ResponseRun admission, finalize immutable prefixes and schedule
+truly incremental TTS. All overall GOAL/live/physical/Swift v2 gates remain open.
+
+## Typed heard context checkpoint (bf36327)
 
 L5 now commits playback activation and per-segment normalized speech mappings
 before provider/player work. Mappings bind source chunk UID/hash and canonical
