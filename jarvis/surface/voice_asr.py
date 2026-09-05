@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -384,6 +386,10 @@ class SenseVoiceRecognizer:
         # Empty string == auto-detect for sherpa-onnx; preserve that meaning.
         self._language = language or ""
         self._recognizer: Any | None = None
+        # ADR-0006 D7: one serialized ASR lane. Final and partial decodes
+        # share this lock so a rolling partial can delay the final by at most
+        # one bounded snapshot decode and never runs beside it.
+        self._decode_lock = threading.Lock()
 
     def recognize(self, audio_pcm: bytes) -> TranscriptionResult:
         """Transcribe PCM16 mono 16 kHz audio with SenseVoice."""
@@ -396,12 +402,7 @@ class SenseVoiceRecognizer:
                 emotion=None,
             )
 
-        recognizer = self._load()
-        stream = recognizer.create_stream()
-        stream.accept_waveform(_SAMPLE_RATE, audio)
-        recognizer.decode_stream(stream)
-
-        result = stream.result
+        result = self._decode(audio)
         text = _MISPLACED_PERIOD.sub(r"\1", result.text.strip())
 
         raw_lang = getattr(result, "lang", "") or ""
@@ -431,21 +432,36 @@ class SenseVoiceRecognizer:
             emotion=emotion,
         )
 
+    def partial_text(self, audio_pcm: bytes) -> str:
+        """Decode one bounded utterance snapshot for endpointing only (ADR-0006 D7).
+
+        The text is ephemeral L5 input to the semantic endpoint decision. It
+        carries no confidence, is never normalized for L3, and is never
+        persisted; :meth:`recognize` on the committed audio stays the only
+        authoritative transcript.
+        """
+        audio = _pcm16_to_float32(audio_pcm)
+        if audio.size == 0:
+            return ""
+        return _MISPLACED_PERIOD.sub(r"\1", self._decode(audio).text.strip())
+
     def prewarm(self) -> None:
         """Load SenseVoice and run one silent stream before capture is armed."""
-        recognizer = self._load()
-        stream = recognizer.create_stream()
-        stream.accept_waveform(
-            _SAMPLE_RATE,
-            np.zeros(_SAMPLE_RATE // 10, dtype=np.float32),
-        )
-        recognizer.decode_stream(stream)
+        self._decode(np.zeros(_SAMPLE_RATE // 10, dtype=np.float32))
         record_realtime_trace(
             "asr_prewarm_completed",
             provider="sensevoice",
             silence_samples=_SAMPLE_RATE // 10,
             measurement_boundary="software_model_and_stream_ready",
         )
+
+    def _decode(self, audio: np.ndarray) -> Any:  # noqa: ANN401 — sherpa_onnx result is dynamic
+        with self._decode_lock:
+            recognizer = self._load()
+            stream = recognizer.create_stream()
+            stream.accept_waveform(_SAMPLE_RATE, audio)
+            recognizer.decode_stream(stream)
+            return stream.result
 
     def _load(self) -> Any:  # noqa: ANN401 — sherpa_onnx typing is dynamic
         if self._recognizer is not None:
@@ -610,6 +626,87 @@ class LocalWhisperRecognizer:
 
 
 # ---------------------------------------------------------------------------
+# Partial-transcript helpers for the semantic endpoint — ADR-0006 D7
+# ---------------------------------------------------------------------------
+
+
+_TERMINAL_PUNCTUATION = frozenset("。！？!?.…")
+
+# A stable prefix ending in one of these is an open clause: the speaker has
+# announced a continuation and the endpoint must keep holding. Everything
+# else that is non-empty counts as complete. Local and deterministic by
+# design; never an LLM call and never prompt text.
+_DANGLING_SUFFIXES: tuple[str, ...] = (
+    "，",
+    ",",
+    "、",
+    "；",
+    ";",
+    "：",
+    ":",
+    "和",
+    "跟",
+    "与",
+    "或者",
+    "还是",
+    "但是",
+    "不过",
+    "然后",
+    "因为",
+    "所以",
+    "如果",
+    "的话",
+    "虽然",
+    "而且",
+    "就是",
+    "那个",
+    "这个",
+    "那么",
+    "还有",
+    "以及",
+    "帮我",
+    "把",
+    "被",
+    "给",
+    "让",
+    "呃",
+    "嗯",
+    " and",
+    " or",
+    " but",
+    " because",
+    " if",
+    " the",
+    " a",
+    " an",
+    " to",
+    " with",
+    " of",
+    " so",
+    " then",
+    " for",
+    " um",
+    " uh",
+)
+
+
+def normalize_partial_text(text: str) -> str:
+    """Return the code-point form used to compare consecutive partial revisions."""
+    folded = unicodedata.normalize("NFKC", text).casefold()
+    return " ".join(folded.split())
+
+
+def looks_complete(text: str) -> bool:
+    """Return whether a normalized stable prefix reads as a finished clause."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if stripped[-1] in _TERMINAL_PUNCTUATION:
+        return True
+    return not stripped.endswith(_DANGLING_SUFFIXES)
+
+
+# ---------------------------------------------------------------------------
 # Empty / too-short filter — ADR-0005 §8 fix #3
 # ---------------------------------------------------------------------------
 
@@ -659,4 +756,6 @@ __all__ = [
     "SenseVoiceRecognizer",
     "TranscriptionResult",
     "is_empty_or_too_short",
+    "looks_complete",
+    "normalize_partial_text",
 ]
