@@ -35,7 +35,7 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.state.inherent_view import InherentView, InherentViewCheckpoint
@@ -54,6 +54,8 @@ LOGGER = logging.getLogger("jarvis.runtime.inherent_view_sequencer")
 DEFAULT_RECOVERY_INTERVAL_S: Final[float] = 0.01
 CATCH_UP_FRAME_BUDGET: Final[int] = 256
 """D8 step 6: a post-ACK catch-up longer than this closes the client instead."""
+CATCH_UP_BYTE_BUDGET: Final[int] = 1_048_576
+"""D8 step 6: the same for the catch-up's total encoded UTF-8 bytes."""
 
 _SELECT_HIGH_WATER_SQL: Final[str] = "SELECT COALESCE(MAX(id), 0) FROM events"
 # The three Inherent-relevant types, bounded above so a drain projects exactly
@@ -79,6 +81,8 @@ class ClientLane:
 
     connection_id: str
     enqueue: Callable[[str, int], None]
+    #: Called with a detail when fan-out to this lane raised; the hub closes it.
+    fail: Callable[[str], None] = field(default=lambda _detail: None)
     live_frontier: int | None = None
 
 
@@ -92,7 +96,7 @@ class SnapshotStaging:
 
 
 class CatchUpBudgetExceededError(Exception):
-    """A catch-up would exceed :data:`CATCH_UP_FRAME_BUDGET`; never send part of it."""
+    """A catch-up would exceed the frame or byte budget; never send part of it."""
 
 
 class InherentViewSequencer:
@@ -180,10 +184,17 @@ class InherentViewSequencer:
                     continue
                 projected += 1
                 frame_payload = delta_payload(transition)
-                for lane in self._lanes.values():
-                    if lane.live_frontier is not None and cursor > lane.live_frontier:
+                # A copy: a lane that hits backpressure detaches itself mid-loop.
+                for lane in list(self._lanes.values()):
+                    if lane.live_frontier is None or cursor <= lane.live_frontier:
+                        continue
+                    try:
                         frame = self._durable_frame(lane, cursor, event_uid, frame_payload)
                         lane.enqueue(frame, cursor)
+                    except Exception:  # One lane's fault never stops the producer.
+                        LOGGER.exception("inherent v2 fan-out to %s raised", lane.connection_id)
+                        self.detach(lane)
+                        lane.fail("fan-out raised")
             self._scan_cursor = high
 
     def begin_snapshot(self, lane: ClientLane) -> SnapshotStaging:
@@ -214,13 +225,14 @@ class InherentViewSequencer:
             The number of catch-up frames enqueued.
 
         Raises:
-            CatchUpBudgetExceededError: The replay would exceed the frame budget.
+            CatchUpBudgetExceededError: The replay would exceed the frame or byte budget.
         """
         if self._lanes.get(lane.connection_id) is not lane:
             return 0
         high = self._high_water()
         replay = InherentView.from_checkpoint(staging.checkpoint)
         frames: list[tuple[str, int]] = []
+        total_bytes = 0
         for cursor, event_uid, event_type, ts_epoch_ms, payload in self._rows(
             staging.through_cursor, high,
         ):
@@ -233,15 +245,16 @@ class InherentViewSequencer:
             )
             if transition is None:
                 continue
-            if len(frames) >= CATCH_UP_FRAME_BUDGET:
+            frame = self._durable_frame(lane, cursor, event_uid, delta_payload(transition))
+            total_bytes += len(frame.encode("utf-8"))
+            if len(frames) >= CATCH_UP_FRAME_BUDGET or total_bytes > CATCH_UP_BYTE_BUDGET:
                 msg = (
-                    f"catch-up for {lane.connection_id} exceeds {CATCH_UP_FRAME_BUDGET} frames "
+                    f"catch-up for {lane.connection_id} exceeds the budget "
+                    f"({CATCH_UP_FRAME_BUDGET} frames / {CATCH_UP_BYTE_BUDGET} bytes) "
                     f"between cursors {staging.through_cursor} and {high}"
                 )
                 raise CatchUpBudgetExceededError(msg)
-            frames.append(
-                (self._durable_frame(lane, cursor, event_uid, delta_payload(transition)), cursor),
-            )
+            frames.append((frame, cursor))
         for frame, cursor in frames:
             lane.enqueue(frame, cursor)
         lane.live_frontier = high
@@ -337,6 +350,7 @@ class InherentViewSequencer:
 
 
 __all__ = [
+    "CATCH_UP_BYTE_BUDGET",
     "CATCH_UP_FRAME_BUDGET",
     "DEFAULT_RECOVERY_INTERVAL_S",
     "CatchUpBudgetExceededError",
