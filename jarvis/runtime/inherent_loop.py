@@ -394,7 +394,8 @@ def _drop_for_silent_channel(
     The L3 ``attention_channel`` verdict rides the ``surface.response_open``
     header only (ADR-0009 §4), so a suppressed turn id is remembered
     across its chunks and forgotten when its ``surface.response_emitted``
-    row arrives — the whole open/chunk*/emitted triple is dropped or
+    row (or the run's ``response.cancelled`` / ``response.failed``
+    terminal) arrives — the whole open/chunk*/emitted triple is dropped or
     none of it is.
 
     A missing (or non-string) ``attention_channel`` is deliberately NOT
@@ -417,7 +418,7 @@ def _drop_for_silent_channel(
         return True
     if turn_id not in silent_turns:
         return False
-    if event.type == "surface.response_emitted":
+    if event.type in {"surface.response_emitted", "response.cancelled", "response.failed"}:
         silent_turns.discard(turn_id)
     return True
 
@@ -1094,6 +1095,9 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
       back to the safe full-sentence path).
     - ``surface.response_chunk``   -> ``pipeline.handle_chunk(turn_id, text)``
     - ``surface.response_emitted`` -> ``pipeline.handle_emitted(turn_id)``
+    - ``response.cancelled`` / ``response.failed`` -> the streaming media
+      owner only, which stops or drops that response's playback; the legacy
+      pipeline has no cancel entry point and ignores them.
 
     Per-event dispatch is wrapped in a catch-all: a misbehaving TTS pipeline
     (e.g. MiniMax WebSocket drop, ``say`` subprocess error) must NOT crash
@@ -1132,6 +1136,8 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
                     "surface.response_open",
                     "surface.response_chunk",
                     "surface.response_emitted",
+                    "response.cancelled",
+                    "response.failed",
                 ),
             )
             for row_id, ev in new_events:

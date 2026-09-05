@@ -811,7 +811,10 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "session_id", "response_id", "turn_id", "playback_generation_id",
             "phase", "channel", "speech_text_hash",
         ),
-        optional_payload=(),
+        # ``incremental`` marks a lease minted from the first permitted
+        # segment: ``speech_text_hash`` is then the first segment's hash and
+        # the full speech hash is bound by ``surface.playback_completed``.
+        optional_payload=("incremental",),
         schema_version=1,
     ),
     EventTypeSchema(

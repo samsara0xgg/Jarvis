@@ -148,6 +148,23 @@ def _fold_chunk(response: _Response, event: Event) -> None:
     response.chunks[sequence] = (event.event_uid, text)
 
 
+def _fold_voice_suffix(response: _Response, event: Event) -> None:
+    """The voice text no chunk carried is one more segment sourced from the emitted row."""
+    voice = event.payload.get("voice_text")
+    sequences = sorted(response.chunks)
+    if not isinstance(voice, str) or sequences != list(range(len(sequences))):
+        return
+    committed = "".join(response.chunks[index][1] for index in sequences)
+    if len(voice) <= len(committed) or not voice.startswith(committed):
+        return
+    suffix = voice[len(committed) :]
+    response.text_chars += len(suffix)
+    if response.text_chars > MAX_RESPONSE_TEXT_CHARS:
+        response.truncated = True
+        return
+    response.chunks[len(sequences)] = (event.event_uid, suffix)
+
+
 def _fold_output(response: _Response, event: Event) -> None:  # noqa: C901 - closed event-type fold
     payload = event.payload
     if response.truncated:
@@ -169,6 +186,7 @@ def _fold_output(response: _Response, event: Event) -> None:  # noqa: C901 - clo
                 response.consistent = False
             response.panel_final = text[:MAX_RESPONSE_TEXT_CHARS]
             response.truncated |= len(text) > MAX_RESPONSE_TEXT_CHARS
+        _fold_voice_suffix(response, event)
     elif event.type == "response.completed":
         text = payload.get("generated_text")
         if text_hash(text) is not None and text_hash(text) == payload.get(

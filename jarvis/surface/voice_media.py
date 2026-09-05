@@ -65,8 +65,10 @@ _MAX_SHUTDOWN_TIMEOUT_S = 10.0
 _MAX_EVENT_DRAIN_BATCH = 1024
 _MAX_DURABILITY_RETRY_ATTEMPTS = 10
 _CHANNEL_TAG_RE = re.compile(r"</?(?:voice|document)>")
+_RESPONSE_TERMINAL_TYPES = frozenset({"response.cancelled", "response.failed"})
 _RESPONSE_EVENT_TYPES = frozenset(
-    {"surface.response_open", "surface.response_chunk", "surface.response_emitted"},
+    {"surface.response_open", "surface.response_chunk", "surface.response_emitted"}
+    | _RESPONSE_TERMINAL_TYPES,
 )
 _TTS_SILENT_CHANNELS = frozenset({"queue_review", "silent_log"})
 _SELECT_EVENT_ROWS_THROUGH = (
@@ -239,6 +241,7 @@ class StreamingMediaConfig:
     checkpoint_retry_attempts: int = 3
     durability_retry_s: float = 0.02
     enable_macos_say_fallback: bool = True
+    speak_from_segments: bool = False
 
     def __post_init__(self) -> None:
         """Reject unbounded or non-positive actor budgets."""
@@ -300,6 +303,27 @@ class _ResponseBuffer:
     gate_mode: str
     chunks: dict[int, _ResponseChunk] = field(default_factory=dict)
     emitted: bool = False
+    stream: bool = False
+    incremental: bool = False
+    scheduled: bool = False
+    tagged: bool = False
+    updated: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def append_voice_suffix(self, voice_text: object, *, source_event_uid: str) -> None:
+        """Speak the emitted voice text no chunk carried as one final segment."""
+        sequences = sorted(self.chunks)
+        if not isinstance(voice_text, str) or sequences != list(range(len(sequences))):
+            return
+        committed = "".join(self.chunks[index].raw_text for index in sequences)
+        if len(voice_text) <= len(committed) or not voice_text.startswith(committed):
+            return
+        suffix = voice_text[len(committed) :]
+        self.chunks[len(sequences)] = _ResponseChunk(
+            sequence=len(sequences),
+            raw_text=suffix,
+            segment_hash=hashlib.sha256(suffix.encode()).hexdigest(),
+            source_event_uid=source_event_uid,
+        )
 
     def speech_segments(self) -> list[tuple[int, str, str]]:
         """Map joined structured spans back to exact renderer identities."""
@@ -345,6 +369,7 @@ class _ActiveResponse:
     advance_after_cleanup: bool = False
     terminal_commit_pending: bool = False
     activation_event_uid: str | None = None
+    prepared_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -1856,6 +1881,11 @@ class StreamingTTSPipeline:
                 phase=str(payload.get("phase", "final")),
                 channel=str(payload.get("channel", "both")),
                 gate_mode=str(payload.get("required_gate_mode", "sentence")),
+                stream=payload.get("kind") == "stream",
+            )
+            # Only a stream open's chunks are single gate-permitted segments.
+            self._responses[response_id].incremental = (
+                self._config.speak_from_segments and self._responses[response_id].stream
             )
             return outcome
         response = self._responses.get(response_id)
@@ -1889,12 +1919,60 @@ class StreamingTTSPipeline:
                 segment_hash=segment_hash,
                 source_event_uid=event.event_uid,
             )
+            await self._chunk_buffered(response, text)
             return outcome
         if event.type == "surface.response_emitted":
-            response.emitted = True
-            response.source_event_id = event.event_uid
-            await self._schedule_response(response)
+            await self._response_emitted(response, event)
+        else:
+            await self._response_terminal(response, event)
         return outcome
+
+    async def _response_terminal(self, response: _ResponseBuffer, event: Event) -> None:
+        """L3 ended the run: stop an active playback, or drop a buffered one."""
+        reason = event.type.replace(".", "_")
+        active = self._active
+        if active is not None and active.response is response:
+            await self._interrupt_active(reason=reason)
+            while self._after_drain:
+                queued = self._after_drain.popleft()
+                self._registry.terminalize(queued.response_id)
+                self._responses.pop(queued.response_id, None)
+            self._output_active.clear()
+            return
+        self._unschedule(response)
+        self._responses.pop(response.response_id, None)
+        self._registry.terminalize(response.response_id)
+
+    async def _response_emitted(self, response: _ResponseBuffer, event: Event) -> None:
+        """Complete the buffer; a scheduled response finishes its own segment loop."""
+        response.emitted = True
+        response.source_event_id = event.event_uid
+        response.append_voice_suffix(
+            event.payload.get("voice_text"),
+            source_event_uid=event.event_uid,
+        )
+        response.updated.set()
+        if not response.scheduled:
+            await self._schedule_response(response)
+
+    async def _chunk_buffered(self, response: _ResponseBuffer, text: str) -> None:
+        """Wake the segment loop; a tag ends incremental speaking for this response."""
+        response.updated.set()
+        if response.stream and _CHANNEL_TAG_RE.search(text) is not None:
+            active = self._active
+            if active is not None and active.response is response:
+                response.tagged = True
+            else:
+                response.incremental = False
+                self._unschedule(response)
+        if response.incremental and not response.scheduled and response.speech_text():
+            response.scheduled = True
+            await self._schedule_response(response)
+
+    def _unschedule(self, response: _ResponseBuffer) -> None:
+        response.scheduled = False
+        if response in self._after_drain:
+            self._after_drain.remove(response)
 
     async def _schedule_response(  # noqa: PLR0911 - explicit lane disposition table
         self,
@@ -2001,8 +2079,10 @@ class StreamingTTSPipeline:
         active: _ActiveResponse,
     ) -> None:
         response = active.response
+        live = response.incremental and not response.emitted
         segments = response.speech_segments()
-        speech_hash = hashlib.sha256(response.speech_text().encode()).hexdigest()
+        committed = segments[0][1] if live and segments else response.speech_text()
+        speech_hash = hashlib.sha256(committed.encode()).hexdigest()
         if self._ducker is not None:
             active.output_lease = self._ducker.enter_output(timeout_s=0.0)
             if not active.output_lease:
@@ -2029,13 +2109,18 @@ class StreamingTTSPipeline:
                     "phase": response.phase,
                     "channel": response.channel,
                     "speech_text_hash": speech_hash,
+                    **({"incremental": True} if live else {}),
                 },
                 source_event_id=response.source_event_id,
                 correlation={"turn_id": response.turn_id},
             )
             active.activation_event_uid = activation.event_uid
-            async with asyncio.timeout(self._config.response_timeout_s):
-                completed = await self._stream_with_prefix_fallback(active, segments)
+            async with asyncio.timeout(self._config.response_timeout_s) as budget:
+                completed = await self._stream_with_prefix_fallback(
+                    active,
+                    segments,
+                    budget=budget if live else None,
+                )
                 if active.advance_after_cleanup or self._active is not active:
                     return
                 if not completed:
@@ -2045,6 +2130,8 @@ class StreamingTTSPipeline:
                         retryable=True,
                     )
                     return
+                if live:
+                    speech_hash = hashlib.sha256(active.prepared_text.encode()).hexdigest()
                 await self._drain_and_complete(active, segment_hash=speech_hash)
         except asyncio.CancelledError:
             raise
@@ -2101,7 +2188,10 @@ class StreamingTTSPipeline:
         self,
         active: _ActiveResponse,
         segments: list[tuple[int, str, str]],
+        *,
+        budget: asyncio.Timeout | None = None,
     ) -> bool:
+        """Walk ``segments``; with a ``budget`` the list grows until the buffer is emitted."""
         lease = active.lease
         accepted_total = 0
         last_error: BaseException | None = None
@@ -2109,7 +2199,23 @@ class StreamingTTSPipeline:
         session: TTSSession | None = None
         iterator: AsyncIterator[TTSAudioChunk | TTSSegmentFinished] | None = None
         provider_first = False
-        for segment_index, (sequence, text, segment_hash) in enumerate(segments):
+        live = budget is not None
+        segment_index = 0
+        while True:
+            if segment_index >= len(segments) and not (
+                live and await self._await_segments(active, segments)
+            ):
+                break
+            if live and active.response.tagged:
+                await self._fail_active(active, reason="stream_chunk_tagged", retryable=False)
+                return False
+            sequence, text, segment_hash = segments[segment_index]
+            if budget is not None:
+                # The bound covers one segment's wait plus its provider I/O,
+                # never the whole generation of a still-streaming response.
+                budget.reschedule(
+                    asyncio.get_running_loop().time() + self._config.response_timeout_s,
+                )
             emit_event(
                 self._require_conn(),
                 type="surface.playback_segment_prepared",
@@ -2127,6 +2233,7 @@ class StreamingTTSPipeline:
                 source_event_id=active.activation_event_uid,
                 correlation={"turn_id": active.response.turn_id},
             )
+            active.prepared_text += text
             opened = self._player.begin_generation_segment(
                 expected_playback_generation_id=lease.playback_generation_id,
                 sequence=sequence,
@@ -2256,11 +2363,27 @@ class StreamingTTSPipeline:
                     endpoint_index += 1
             else:
                 if self._config.enable_macos_say_fallback:
+                    while live and await self._await_segments(active, segments):
+                        if active.response.tagged:
+                            break
+                        if budget is not None:
+                            budget.reschedule(
+                                asyncio.get_running_loop().time()
+                                + self._config.response_timeout_s,
+                            )
+                    if live and active.response.tagged:
+                        await self._fail_active(
+                            active,
+                            reason="stream_chunk_tagged",
+                            retryable=False,
+                        )
+                        return False
                     remaining = segments[segment_index:]
                     return await self._run_macos_say(active, remaining)
                 if last_error is not None:
                     raise last_error
                 return False
+            segment_index += 1
         if not segments:
             return False
         record_realtime_trace(
@@ -2275,6 +2398,27 @@ class StreamingTTSPipeline:
                 await session.finish()
             active.session = None
         return True
+
+    async def _await_segments(
+        self,
+        active: _ActiveResponse,
+        segments: list[tuple[int, str, str]],
+    ) -> bool:
+        """Extend ``segments`` with newly durable ones; False once the buffer is complete."""
+        response = active.response
+        last = segments[-1][0] if segments else -1
+        while self._active is active:
+            if response.tagged:
+                return True
+            response.updated.clear()
+            fresh = [item for item in response.speech_segments() if item[0] > last]
+            if fresh:
+                segments.extend(fresh)
+                return True
+            if response.emitted:
+                return False
+            await response.updated.wait()
+        return False
 
     async def _write_all(
         self,
@@ -2989,12 +3133,14 @@ def streaming_media_config_from_mapping(
             raise ValueError(msg)
         return float(value)
 
-    macos_fallback = values.get("enable_macos_say_fallback")
-    if macos_fallback is None:
-        macos_fallback = defaults.enable_macos_say_fallback
-    elif not isinstance(macos_fallback, bool):
-        msg = "realtime.streaming_output.enable_macos_say_fallback must be boolean"
-        raise ValueError(msg)
+    def _boolean(key: str, fallback: bool) -> bool:  # noqa: FBT001 - config default
+        value = values.get(key)
+        if value is None:
+            return fallback
+        if not isinstance(value, bool):
+            msg = f"realtime.streaming_output.{key} must be boolean"
+            raise ValueError(msg)  # noqa: TRY004 - malformed config value, not a caller type
+        return value
 
     return StreamingMediaConfig(
         canonical_sample_rate_hz=_positive_int(
@@ -3054,7 +3200,11 @@ def streaming_media_config_from_mapping(
             "durability_retry_s",
             defaults.durability_retry_s,
         ),
-        enable_macos_say_fallback=macos_fallback,
+        enable_macos_say_fallback=_boolean(
+            "enable_macos_say_fallback",
+            defaults.enable_macos_say_fallback,
+        ),
+        speak_from_segments=_boolean("speak_from_segments", defaults.speak_from_segments),
     )
 
 
