@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 import time
 import wave
 from dataclasses import replace
@@ -213,7 +214,12 @@ class _RouteBackend:
         self.format = _INPUT_FORMAT
         self.device_uid = _INPUT_PROFILE.device_uid
         self.output_route: OutputRoute | None = _SPEAKERS
+        self.output_script: list[OutputRoute | None] = []
         self.output_queries = 0
+        # When set to the ingress control lock, every output query proves from
+        # a helper thread that the caller is not holding it.
+        self.lock_probe: threading.RLock | None = None
+        self.lock_free_observations: list[bool] = []
         self.active_epoch: int | None = None
         self.active_attempt_id: str | None = None
         self.version = 0
@@ -282,6 +288,20 @@ class _RouteBackend:
 
     def current_output_route(self) -> OutputRoute | None:
         self.output_queries += 1
+        if self.lock_probe is not None:
+            lock = self.lock_probe
+
+            def _probe() -> None:
+                acquired = lock.acquire(blocking=False)
+                self.lock_free_observations.append(acquired)
+                if acquired:
+                    lock.release()
+
+            probe = threading.Thread(target=_probe)
+            probe.start()
+            probe.join()
+        if self.output_script:
+            return self.output_script.pop(0)
         return self.output_route
 
     def input_format(self) -> voice_backend.AudioInputFormat:
@@ -419,6 +439,78 @@ def test_observer_off_never_queries_output_and_keeps_input_path() -> None:
         _wait_until(lambda: ingress.stream_epoch == 2)
         assert backend.output_queries == 0
         assert _traces("audio_route_changed") == []
+        assert ingress.close().definitively_closed
+
+
+def test_transient_output_misses_are_tolerated_and_three_misses_fault_once() -> None:
+    """A None query is a miss, not a change; three in a row re-resolve once."""
+    backend = _RouteBackend()
+    with _started(backend, observer=True) as ingress:
+        queries = backend.output_queries
+        backend.output_script = [None, None]
+        _wait_until(lambda: backend.output_queries >= queries + 4)
+        assert ingress.stream_epoch == 1
+        assert _traces("audio_input_fault") == []
+        backend.output_route = None
+        _wait_until(lambda: ingress.stream_epoch == 2)
+        _wait_until(lambda: ingress.device_profile is not None)
+        profile = ingress.device_profile
+        assert profile is not None
+        assert profile.key.output_uid is None
+        assert profile.key.route_kind is RouteKind.UNKNOWN
+        time.sleep(0.05)
+        assert ingress.stream_epoch == 2
+        assert [t["fault_code"] for t in _traces("audio_input_fault")] == ["output_route_changed"]
+
+
+def test_same_uid_data_source_flip_re_resolves_headphones() -> None:
+    """D9 watches transport/data-source, not only the device uid."""
+    backend = _RouteBackend()
+    with _started(backend, observer=True) as ingress:
+        backend.output_route = replace(_SPEAKERS, data_source="hdpn")
+        _wait_until(lambda: ingress.stream_epoch == 2)
+        _wait_until(lambda: ingress.device_profile is not None)
+        profile = ingress.device_profile
+        assert profile is not None
+        assert profile.key.output_uid == _SPEAKERS.uid
+        assert profile.key.route_kind is RouteKind.HEADPHONES
+        assert profile.allowed_barge_mode == "ptt"
+        assert [t["fault_code"] for t in _traces("audio_input_fault")] == ["output_route_changed"]
+
+
+def test_sleep_revokes_the_profile_and_publishes_unknown_ptt() -> None:
+    """The shared revocation point clears the snapshot for sleep, not only faults."""
+    backend = _RouteBackend()
+    reset_realtime_trace()
+    ingress = _ingress(backend, observer=True)
+    assert ingress.start().started
+    assert ingress.capability.route_kind == "speaker"
+    stopped = ingress.stop_for_sleep()
+    assert stopped is not None
+    assert stopped.definitively_closed
+    assert ingress.device_profile is None
+    assert ingress.capability.state is voice_audio.InputCapabilityState.SUSPENDED
+    assert ingress.capability.route_kind == "unknown"
+    assert ingress.capability.allowed_barge_mode == "ptt"
+    assert ingress.close().definitively_closed
+    assert ingress.capability.route_kind == "unknown"
+
+
+def test_output_route_query_never_runs_under_the_control_lock() -> None:
+    """The CoreAudio query is a foreign call; sleep/close must not wait on it."""
+    backend = _RouteBackend()
+    reset_realtime_trace()
+    ingress = _ingress(backend, observer=True)
+    backend.lock_probe = ingress._control_lock  # noqa: SLF001 - the pinned invariant
+    assert ingress.start().started
+    try:
+        assert backend.lock_free_observations == [True]
+        backend.output_route = replace(_SPEAKERS, uid="BlackHole16ch_UID", transport_type="virt")
+        _wait_until(lambda: ingress.stream_epoch == 2)
+        _wait_until(lambda: ingress.device_profile is not None)
+        assert backend.lock_free_observations
+        assert all(backend.lock_free_observations)
+    finally:
         assert ingress.close().definitively_closed
 
 

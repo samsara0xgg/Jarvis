@@ -514,6 +514,15 @@ class IngressMetrics:
     reopen_successes: int
 
 
+def _output_identity(
+    route: voice_backend.OutputRoute | None,
+) -> tuple[str, str, str | None] | None:
+    """Return the observed output identity D9 compares: uid, transport, data source."""
+    if route is None:
+        return None
+    return (route.uid, route.transport_type, route.data_source)
+
+
 class _CapabilitySink(Protocol):
     """Runtime-facing notification invoked only off the ADC callback."""
 
@@ -1117,10 +1126,10 @@ class AudioIngress:
         self._pending_ingress_fault_epoch: int | None = None
         self._pending_ingress_fault_code: str | None = None
         self._deferred_fault: voice_backend.BackendFault | None = None
-        self._device_uid_misses = 0
-        self._late_recovery_attempts = 0
         self._device_profile: voice_backend.DeviceProfileSnapshot | None = None
         self._last_profile_key: voice_backend.DeviceProfileKey | None = None
+        self._last_output_route: voice_backend.OutputRoute | None = None
+        self._output_route_misses = self._device_uid_misses = self._late_recovery_attempts = 0
         self._capability_publish_lock, self._capability_lock = threading.Lock(), threading.RLock()
         self._capability_version = 0
         self._capability = InputCapabilitySnapshot(
@@ -1420,6 +1429,13 @@ class AudioIngress:
                 reason="open_attempt_identity_mismatch",
                 attempt_id=attempt_id,
             )
+        # The CoreAudio route query is a foreign call: never hold the local
+        # control lock across it (same rule as the foreign close below).
+        output_route = (
+            self._backend.current_output_route()
+            if self._config.route_observer_enabled and result.profile is not None
+            else None
+        )
         with self._control_lock:
             commit_allowed = self._control_allows_running(control_generation)
             if commit_allowed:
@@ -1433,7 +1449,12 @@ class AudioIngress:
                         subscriber._ring.set_publication_token(timeline)  # noqa: SLF001
                 self._active_profile = result.profile
                 if result.profile is not None:
-                    self._resolve_device_profile(result.profile, epoch, reason=reason)
+                    self._resolve_device_profile(
+                        result.profile,
+                        epoch,
+                        output=output_route,
+                        reason=reason,
+                    )
                 record_realtime_trace(
                     "audio_input_epoch_opened",
                     stream_epoch=epoch,
@@ -1712,12 +1733,22 @@ class AudioIngress:
             self._lifecycle_lock.release()
 
     def _poll_output_route(self) -> None:
-        snapshot = self._device_profile
-        if snapshot is None:
+        if self._device_profile is None:
             return
-        output = self._backend.current_output_route()
-        current_uid = output.uid if output is not None else None
-        if current_uid != snapshot.key.output_uid:
+        observed = self._backend.current_output_route()
+        if observed is None:
+            # A transient HAL miss is not a route change; mirror the input poll.
+            self._output_route_misses += 1
+            if (
+                self._output_route_misses >= _DEFAULT_DEVICE_MISS_LIMIT
+                and self._last_output_route is not None
+            ):
+                self._output_route_misses = 0
+                self.notify_route_change(reason="output_route_changed")
+            return
+        self._output_route_misses = 0
+        # D9 watches data-source/transport too: a same-uid jack flip re-resolves.
+        if _output_identity(observed) != _output_identity(self._last_output_route):
             self.notify_route_change(reason="output_route_changed")
 
     def _resolve_device_profile(
@@ -1725,6 +1756,7 @@ class AudioIngress:
         profile: voice_backend.InputDeviceProfile,
         stream_epoch: int,
         *,
+        output: voice_backend.OutputRoute | None,
         reason: str,
     ) -> None:
         """Resolve the D9 snapshot for a committed epoch; trace when the key moves."""
@@ -1733,13 +1765,15 @@ class AudioIngress:
         previous = self._last_profile_key
         snapshot = voice_backend.resolve_device_profile(
             input_profile=profile,
-            output=self._backend.current_output_route() if observed else None,
+            output=output,
             stream_epoch=stream_epoch,
             detection_mode=self._config.barge_detection_mode,
             accepted_natural_profiles=self._config.accepted_natural_profiles,
         )
         self._device_profile = snapshot
         self._last_profile_key = snapshot.key
+        self._last_output_route = output
+        self._output_route_misses = 0
         if observed and previous != snapshot.key:
             record_realtime_trace(
                 "audio_route_changed",
@@ -1801,6 +1835,9 @@ class AudioIngress:
         self._active_timeline = None
         self._opening_timeline = None
         self._active_epoch = None
+        # F18: the old profile's barge allowance dies with its epoch, whether
+        # the revocation comes from a fault, sleep, or close.
+        self._device_profile = None
         if timeline is not None:
             timeline.native_ring.set_publication_token(None)
             if not timeline.retired_metrics_recorded:
@@ -1878,8 +1915,6 @@ class AudioIngress:
             self._faults += 1
             self._late_recovery_attempts = 0
             self._revoke_publication()
-            # F18: the old profile's barge allowance is gone before any reopen.
-            self._device_profile = None
             record_realtime_trace(
                 "audio_input_fault",
                 stream_epoch=fault.stream_epoch,
@@ -2143,7 +2178,9 @@ class AudioIngress:
         ownership = self._backend.ownership_snapshot()
         capability_epoch = self._active_epoch or ownership.stream_epoch
         self._capability_version += 1
-        profile = self._device_profile
+        # No local capture means no barge allowance: suspended/stopped/faulted
+        # snapshots always report unknown/ptt even before the epoch is revoked.
+        profile = self._device_profile if local_capture_available else None
         snapshot = InputCapabilitySnapshot(
             state=state,
             version=self._capability_version,
