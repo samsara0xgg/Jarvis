@@ -30,7 +30,8 @@ import logging
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import numpy as np
@@ -39,7 +40,7 @@ from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.surface import voice_backend
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable
     from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
@@ -436,6 +437,9 @@ class AudioIngressConfig:
     backend_open_timeout_s: float = 2.0
     backend_close_timeout_s: float = 2.0
     shutdown_timeout_s: float = 2.0
+    route_observer_enabled: bool = False
+    barge_detection_mode: str = "ptt"
+    accepted_natural_profiles: tuple[voice_backend.DeviceProfileKey, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2400,7 +2404,86 @@ def audio_ingress_config_from_mapping(  # noqa: C901 - strict parsing plus cross
     if config.reopen_initial_backoff_s > config.reopen_max_backoff_s:
         msg = "reopen_initial_backoff_s must not exceed reopen_max_backoff_s"
         raise ValueError(msg)
-    return config
+    return replace(
+        config,
+        route_observer_enabled=_route_observer_enabled(values.get("route_observer")),
+        **_barge_in_config(values.get("barge_in")),
+    )
+
+
+def _route_observer_enabled(raw: object) -> bool:
+    if raw is None:
+        return False
+    if not isinstance(raw, Mapping):
+        msg = "realtime.single_audio_ingress.route_observer must be a mapping"
+        raise ValueError(msg)  # noqa: TRY004 - config validation contract
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        msg = "realtime.single_audio_ingress.route_observer.enabled must be a boolean"
+        raise ValueError(msg)  # noqa: TRY004 - config validation contract
+    return enabled
+
+
+_PROFILE_KEY_FIELDS = (
+    "input_uid",
+    "output_uid",
+    "backend",
+    "route_kind",
+    "aec_mode",
+    "input_sample_rate",
+    "output_sample_rate",
+)
+
+
+def _accepted_profile(entry: object) -> voice_backend.DeviceProfileKey | None:
+    """Parse one exact D9 key; anything malformed or non-headphones is skipped."""
+    if not isinstance(entry, Mapping) or set(entry) != set(_PROFILE_KEY_FIELDS):
+        return None
+    strings = {name: entry[name] for name in ("input_uid", "output_uid", "backend", "aec_mode")}
+    rates = {name: entry[name] for name in ("input_sample_rate", "output_sample_rate")}
+    if (
+        not isinstance(strings["input_uid"], str)
+        or not isinstance(strings["output_uid"], str)
+        or not isinstance(strings["backend"], str)
+        or strings["aec_mode"] != "none"
+        or entry["route_kind"] != voice_backend.RouteKind.HEADPHONES.value
+        or any(isinstance(rate, bool) or not isinstance(rate, int) for rate in rates.values())
+    ):
+        return None
+    return voice_backend.DeviceProfileKey(
+        input_uid=strings["input_uid"],
+        output_uid=strings["output_uid"],
+        backend=strings["backend"],
+        route_kind=voice_backend.RouteKind.HEADPHONES,
+        input_sample_rate=int(rates["input_sample_rate"]),
+        output_sample_rate=int(rates["output_sample_rate"]),
+    )
+
+
+def _barge_in_config(raw: object) -> dict[str, Any]:
+    """Fail closed to ``ptt`` and an empty accepted list on any malformed value."""
+    values = raw if isinstance(raw, Mapping) else {}
+    if raw is not None and not isinstance(raw, Mapping):
+        LOGGER.warning("realtime.single_audio_ingress.barge_in is not a mapping; using ptt")
+    mode = values.get("detection_mode", "ptt")
+    if mode not in {"ptt", "keyword_two_stage"}:
+        LOGGER.warning(
+            "realtime.single_audio_ingress.barge_in.detection_mode=%r unsupported; using ptt",
+            mode,
+        )
+        mode = "ptt"
+    accepted_raw = values.get("accepted_natural_profiles", [])
+    if not isinstance(accepted_raw, list):
+        LOGGER.warning("barge_in.accepted_natural_profiles is not a list; accepting none")
+        accepted_raw = []
+    accepted: list[voice_backend.DeviceProfileKey] = []
+    for entry in accepted_raw:
+        key = _accepted_profile(entry)
+        if key is None:
+            LOGGER.warning("barge_in.accepted_natural_profiles entry skipped: %r", entry)
+            continue
+        accepted.append(key)
+    return {"barge_detection_mode": mode, "accepted_natural_profiles": tuple(accepted)}
 
 
 __all__ = [

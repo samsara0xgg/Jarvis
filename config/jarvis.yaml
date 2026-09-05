@@ -165,9 +165,9 @@ realtime:
   # waits for the handle.  It additionally requires realtime.enabled plus the
   # same two concurrency_safety switches as response_run_lifecycle.
   # max_concurrent_runs bounds runner threads AFTER resource leases are
-  # respected.  ADR-0008 §6's undeclared_mutation_mode knob is deliberately
-  # absent: the resolver implements exactly the fail-closed global_exclusive
-  # value, and a knob whose only legal setting is its default is a config lie.
+  # respected.  No undeclared_mutation_mode knob exists (ADR-0008 §6 errata):
+  # the resolver implements exactly the fail-closed global_exclusive value,
+  # and a knob whose only legal setting is its default is a config lie.
   actions:
     action_runner: false
     # ADR-0008 Step 4 (Wave 5).  true_async_workers stops the driver from
@@ -255,3 +255,12 @@ realtime:
       candidate_ms: 320
       max_hold_ms: 900
       post_roll_ms: 200
+    # ADR-0006 D9. The route observer polls the default output as well as the
+    # input on route_poll_s; off keeps today's input-only poll. detection_mode
+    # is the barge-in ceiling for speaker/unknown routes; natural needs an
+    # exact accepted profile key (the seven D9 fields) and the list ships empty.
+    route_observer:
+      enabled: false
+    barge_in:
+      detection_mode: ptt
+      accepted_natural_profiles: []

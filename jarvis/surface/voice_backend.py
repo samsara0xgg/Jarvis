@@ -14,18 +14,25 @@ default input stream in this wave.  It never creates a second output stream.
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import enum
+import functools
+import logging
+import struct
 import threading
 import time
 import wave
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from jarvis.shared.realtime_trace import record_realtime_trace
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from pathlib import Path
+
+LOGGER = logging.getLogger(__name__)
 
 
 class BackendStartStatus(enum.Enum):
@@ -93,6 +100,116 @@ class BackendCapabilities:
     natural_barge_in: bool
     reliable_adc_time: bool
     reliable_dac_time: bool
+
+
+class RouteKind(enum.Enum):
+    """ADR-0006 D9 output route class; ``hardware_aec`` is never produced here."""
+
+    HEADPHONES = "headphones"
+    SPEAKER = "speaker"
+    HARDWARE_AEC = "hardware_aec"
+    UNKNOWN = "unknown"
+
+
+BargeMode = Literal["ptt", "keyword_two_stage", "natural"]
+
+
+@dataclass(frozen=True)
+class OutputRoute:
+    """Default-output identity as observed from CoreAudio, never a name match."""
+
+    uid: str
+    name: str
+    transport_type: str
+    data_source: str | None
+    sample_rate_hz: int | None
+
+
+@dataclass(frozen=True)
+class DeviceProfileKey:
+    """ADR-0006 D9 exact profile identity; ``aec_mode`` is fixed to ``none``."""
+
+    input_uid: str
+    output_uid: str | None
+    backend: str
+    route_kind: RouteKind
+    input_sample_rate: int
+    output_sample_rate: int | None
+    aec_mode: str = "none"
+
+    def as_text(self) -> str:
+        """Return the seven fields joined for traces."""
+        return "|".join(
+            str(part)
+            for part in (
+                self.input_uid,
+                self.output_uid,
+                self.backend,
+                self.route_kind.value,
+                self.aec_mode,
+                self.input_sample_rate,
+                self.output_sample_rate,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class DeviceProfileSnapshot:
+    """Profile resolved for one stream epoch with its allowed barge-in ceiling."""
+
+    key: DeviceProfileKey
+    stream_epoch: int
+    allowed_barge_mode: BargeMode
+    validation_record_hash: str | None = None
+
+
+def route_kind_for(
+    *,
+    output_transport: str | None,
+    output_data_source: str | None,
+) -> RouteKind:
+    """Classify the output route by CoreAudio transport; names are never evidence."""
+    if output_transport != "bltn":
+        # Bluetooth/USB/DisplayPort/virtual/aggregate: a USB DAC speaker and a
+        # USB headset share one transport, so nothing external earns headphones.
+        return RouteKind.UNKNOWN
+    if output_data_source == "hdpn":
+        return RouteKind.HEADPHONES
+    return RouteKind.SPEAKER
+
+
+def resolve_device_profile(
+    *,
+    input_profile: InputDeviceProfile,
+    output: OutputRoute | None,
+    stream_epoch: int,
+    detection_mode: str,
+    accepted_natural_profiles: Sequence[DeviceProfileKey],
+) -> DeviceProfileSnapshot:
+    """Resolve the exact profile key and its barge ceiling; natural needs a listing."""
+    key = DeviceProfileKey(
+        input_uid=input_profile.device_uid,
+        output_uid=output.uid if output is not None else None,
+        backend=input_profile.backend,
+        route_kind=route_kind_for(
+            output_transport=output.transport_type if output is not None else None,
+            output_data_source=output.data_source if output is not None else None,
+        ),
+        input_sample_rate=input_profile.input_format.sample_rate_hz,
+        output_sample_rate=output.sample_rate_hz if output is not None else None,
+    )
+    for accepted in accepted_natural_profiles:
+        if accepted.route_kind is RouteKind.HEADPHONES and replace(
+            accepted,
+            route_kind=key.route_kind,
+        ) == key:
+            return DeviceProfileSnapshot(
+                key=replace(key, route_kind=RouteKind.HEADPHONES),
+                stream_epoch=stream_epoch,
+                allowed_barge_mode="natural",
+            )
+    mode: BargeMode = "keyword_two_stage" if detection_mode == "keyword_two_stage" else "ptt"
+    return DeviceProfileSnapshot(key=key, stream_epoch=stream_epoch, allowed_barge_mode=mode)
 
 
 @dataclass(frozen=True)
@@ -224,6 +341,10 @@ class AudioDuplexBackend(Protocol):
         """Return the currently selected default-input identity."""
         ...
 
+    def current_output_route(self) -> OutputRoute | None:
+        """Return the default-output identity, or ``None`` when unobservable."""
+        ...
+
     def input_format(self) -> AudioInputFormat:
         """Return the configured native input layout."""
         ...
@@ -263,6 +384,112 @@ class _DefaultInputOwnerRegistry:
         with cls._lock:
             if cls._owner_token is token:
                 cls._owner_token = None
+
+
+_CA_SYSTEM_OBJECT = 1
+_CA_GLOBAL_SCOPE = struct.unpack(">I", b"glob")[0]
+_CA_OUTPUT_SCOPE = struct.unpack(">I", b"outp")[0]
+_CF_UTF8 = 0x08000100
+
+
+class _CoreAudioPropertyAddress(ctypes.Structure):
+    _fields_ = (
+        ("selector", ctypes.c_uint32),
+        ("scope", ctypes.c_uint32),
+        ("element", ctypes.c_uint32),
+    )
+
+
+@functools.cache
+def _coreaudio_libraries() -> tuple[Any, Any] | None:
+    """Load CoreAudio/CoreFoundation once; ``None`` off macOS."""
+    core_audio = ctypes.util.find_library("CoreAudio")
+    core_foundation = ctypes.util.find_library("CoreFoundation")
+    if core_audio is None or core_foundation is None:
+        return None
+    ca = ctypes.cdll.LoadLibrary(core_audio)
+    cf = ctypes.cdll.LoadLibrary(core_foundation)
+    ca.AudioObjectGetPropertyData.argtypes = [
+        ctypes.c_uint32,
+        ctypes.POINTER(_CoreAudioPropertyAddress),
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_void_p,
+    ]
+    ca.AudioObjectGetPropertyData.restype = ctypes.c_int32
+    cf.CFStringGetCString.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_long,
+        ctypes.c_uint32,
+    ]
+    cf.CFStringGetCString.restype = ctypes.c_bool
+    cf.CFRelease.argtypes = [ctypes.c_void_p]
+    return ca, cf
+
+
+def _coreaudio_property(
+    ca: Any,  # noqa: ANN401 - ctypes CDLL
+    obj: int,
+    selector: bytes,
+    scope: int,
+    out: Any,  # noqa: ANN401 - ctypes value
+) -> bool:
+    address = _CoreAudioPropertyAddress(struct.unpack(">I", selector)[0], scope, 0)
+    size = ctypes.c_uint32(ctypes.sizeof(out))
+    status = ca.AudioObjectGetPropertyData(
+        obj,
+        ctypes.byref(address),
+        0,
+        None,
+        ctypes.byref(size),
+        ctypes.byref(out),
+    )
+    return bool(status == 0)
+
+
+def _coreaudio_string(ca: Any, cf: Any, obj: int, selector: bytes) -> str | None:  # noqa: ANN401
+    ref = ctypes.c_void_p(0)
+    if not _coreaudio_property(ca, obj, selector, _CA_GLOBAL_SCOPE, ref) or not ref.value:
+        return None
+    buffer = ctypes.create_string_buffer(512)
+    try:
+        if not cf.CFStringGetCString(ref, buffer, len(buffer), _CF_UTF8):
+            return None
+        return buffer.value.decode("utf-8", errors="replace")
+    finally:
+        cf.CFRelease(ref)
+
+
+def _coreaudio_default_output_route() -> OutputRoute | None:
+    """Read the default output's uid/name/transport/data-source/rate, or ``None``."""
+    libraries = _coreaudio_libraries()
+    if libraries is None:
+        return None
+    ca, cf = libraries
+    device = ctypes.c_uint32(0)
+    if not _coreaudio_property(ca, _CA_SYSTEM_OBJECT, b"dOut", _CA_GLOBAL_SCOPE, device):
+        return None
+    uid = _coreaudio_string(ca, cf, device.value, b"uid ")
+    transport = ctypes.c_uint32(0)
+    if uid is None or not _coreaudio_property(
+        ca, device.value, b"tran", _CA_GLOBAL_SCOPE, transport
+    ):
+        return None
+    source = ctypes.c_uint32(0)
+    has_source = _coreaudio_property(ca, device.value, b"ssrc", _CA_OUTPUT_SCOPE, source)
+    rate = ctypes.c_double(0.0)
+    has_rate = _coreaudio_property(ca, device.value, b"nsrt", _CA_GLOBAL_SCOPE, rate)
+    return OutputRoute(
+        uid=uid,
+        name=_coreaudio_string(ca, cf, device.value, b"lnam") or uid,
+        transport_type=struct.pack(">I", transport.value).decode("latin-1"),
+        data_source=(
+            struct.pack(">I", source.value).decode("latin-1") if has_source else None
+        ),
+        sample_rate_hz=int(rate.value) if has_rate and rate.value > 0 else None,
+    )
 
 
 def _default_input_device_profile(input_format: AudioInputFormat) -> InputDeviceProfile:
@@ -462,6 +689,14 @@ class SoundDeviceDuplexBackend:
             and self._state is BackendLifecycleState.OPENING
             and not attempt.cancel_requested
         )
+
+    def current_output_route(self) -> OutputRoute | None:
+        """Observe the default output through the L5 CoreAudio shim."""
+        try:
+            return _coreaudio_default_output_route()
+        except Exception:  # noqa: BLE001 - foreign framework boundary fails to unknown
+            LOGGER.debug("default output route query failed", exc_info=True)
+            return None
 
     def input_format(self) -> AudioInputFormat:
         """Return the fixed native callback format."""
@@ -1271,6 +1506,10 @@ class FileReplayBackend:
         """Identify the replayed file, never a physical device."""
         return f"file-replay:{self._path.name}"
 
+    def current_output_route(self) -> OutputRoute | None:
+        """Replay observes no output route, which resolves ``unknown``."""
+        return None
+
     def input_format(self) -> AudioInputFormat:
         """Return the fixed canonical replay layout."""
         return self._format
@@ -1319,10 +1558,17 @@ __all__ = [
     "BackendStartStatus",
     "BackendStopResult",
     "BackendStopStatus",
+    "BargeMode",
+    "DeviceProfileKey",
+    "DeviceProfileSnapshot",
     "FileReplayBackend",
     "InputClockMapping",
     "InputDeviceProfile",
     "InputFrameSink",
+    "OutputRoute",
     "RenderSource",
+    "RouteKind",
     "SoundDeviceDuplexBackend",
+    "resolve_device_profile",
+    "route_kind_for",
 ]
