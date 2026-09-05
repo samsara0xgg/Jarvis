@@ -30,7 +30,8 @@ enum Fx {
     channel: String = "document",
     lifecycle: String = "generating",
     question: String? = nil,
-    revision: Int = 1
+    revision: Int = 1,
+    sourceRequest: String? = nil
   ) -> [String: Any] {
     var mutation: [String: Any] = [
       "kind": "response.opened", "response_id": responseID, "response_group_id": group,
@@ -38,6 +39,7 @@ enum Fx {
       "created_at_ms": 1_788_200_000_000, "revision": revision,
     ]
     if let question { mutation["question"] = question }
+    if let sourceRequest { mutation["source_client_request_id"] = sourceRequest }
     return mutation
   }
 

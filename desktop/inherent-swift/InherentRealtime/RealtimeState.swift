@@ -500,6 +500,30 @@ public struct LocalPresentationState: Equatable, Sendable {
   }
 }
 
+// MARK: - Pending local input (D21)
+
+/// One submission this client sent and has not yet seen answered.
+///
+/// Purely local: the server's truth about the turn arrives as a
+/// `response.opened` carrying the same `source_client_request_id`, and that is
+/// what clears the entry.  It is not a second copy of the turn.
+public struct PendingInputState: Equatable, Sendable {
+  public var requestID: String
+  public var text: String
+  public var submittedAtMs: Int
+
+  public init(requestID: String, text: String, submittedAtMs: Int) {
+    self.requestID = requestID
+    self.text = text
+    self.submittedAtMs = submittedAtMs
+  }
+}
+
+/// How many unanswered submissions are kept.  A submission whose turn never
+/// opens a response — a refusal, a crash — would otherwise sit in the map for
+/// the life of the process; the oldest is evicted instead.
+public let pendingInputLimit = 32
+
 // MARK: - The root state
 
 /// The D3 root: orthogonal families and separate identities, no single phase label.
@@ -515,6 +539,8 @@ public struct InherentUXState: Equatable, Sendable {
   public var capabilities: InherentCapabilities
   public var foregroundGroupID: ResponseGroupID?
   public var presentation: LocalPresentationState
+  /// D21, keyed by `request_id`.
+  public var pendingInputs: [String: PendingInputState]
 
   public init(
     connection: ConnectionState = .disconnected,
@@ -526,7 +552,8 @@ public struct InherentUXState: Equatable, Sendable {
     pendingConfirmation: ConfirmationViewState? = nil,
     capabilities: InherentCapabilities = InherentCapabilities(),
     foregroundGroupID: ResponseGroupID? = nil,
-    presentation: LocalPresentationState = LocalPresentationState()
+    presentation: LocalPresentationState = LocalPresentationState(),
+    pendingInputs: [String: PendingInputState] = [:]
   ) {
     self.connection = connection
     self.synchronization = synchronization
@@ -538,6 +565,7 @@ public struct InherentUXState: Equatable, Sendable {
     self.capabilities = capabilities
     self.foregroundGroupID = foregroundGroupID
     self.presentation = presentation
+    self.pendingInputs = pendingInputs
   }
 }
 

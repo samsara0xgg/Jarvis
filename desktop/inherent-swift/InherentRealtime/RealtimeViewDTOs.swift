@@ -159,6 +159,9 @@ public struct ResponseOpened: Decodable, Equatable, Sendable {
   public var summary: String?
   public var createdAtMs: Int
   public var revision: Int
+  /// D21: the `request_id` of the v2 submission whose turn opened this group,
+  /// or nil for a turn that did not come through the authenticated inbox.
+  public var sourceClientRequestId: String?
 
   enum CodingKeys: String, CodingKey {
     case responseId = "response_id"
@@ -171,6 +174,7 @@ public struct ResponseOpened: Decodable, Equatable, Sendable {
     case summary
     case createdAtMs = "created_at_ms"
     case revision
+    case sourceClientRequestId = "source_client_request_id"
   }
 }
 
