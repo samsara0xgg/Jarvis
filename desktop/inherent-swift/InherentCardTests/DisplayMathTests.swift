@@ -142,9 +142,30 @@ final class DisplayMathTests: XCTestCase {
     )
   }
 
+  func test_inputTextSizingExpandsForWrappedQuestions() {
+    let short = NativeInputTextSizing.height(for: "短问题", width: 220)
+    let long = NativeInputTextSizing.height(
+      for: Array(repeating: "这是一个很长的问题", count: 12).joined(separator: "，"),
+      width: 220
+    )
+
+    XCTAssertEqual(short, NativeInputTextSizing.minHeight)
+    XCTAssertGreaterThan(long, short)
+    XCTAssertLessThanOrEqual(long, NativeInputTextSizing.maxHeight)
+  }
+
+  func test_selectionAutoCopyExtractsSelectedText() {
+    let textView = NSTextView()
+    textView.string = "alpha beta gamma"
+    textView.setSelectedRange(NSRange(location: 6, length: 4))
+
+    XCTAssertEqual(NativeSelectionAutoCopy.selectedText(in: textView), "beta")
+  }
+
   func test_dragPolicyExcludesInputAndStatePillRegions() {
     let idle = NativeCardDragPolicy.State(
       historyViewportHeight: 0,
+      inputRowHeight: 64,
       isSubmitted: false,
       isFollowupInput: false,
       isListening: false,
@@ -159,6 +180,7 @@ final class DisplayMathTests: XCTestCase {
   func test_dragPolicyKeepsSubmittedBreadcrumbNonDraggable() {
     let submitted = NativeCardDragPolicy.State(
       historyViewportHeight: 0,
+      inputRowHeight: 38,
       isSubmitted: true,
       isFollowupInput: false,
       isListening: false,
@@ -173,6 +195,7 @@ final class DisplayMathTests: XCTestCase {
   func test_dragPolicyExcludesHistoryChipViewport() {
     let withHistory = NativeCardDragPolicy.State(
       historyViewportHeight: 95.75,
+      inputRowHeight: 38,
       isSubmitted: true,
       isFollowupInput: false,
       isListening: false,
@@ -182,5 +205,19 @@ final class DisplayMathTests: XCTestCase {
     XCTAssertTrue(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 12, y: 20), state: withHistory))
     XCTAssertFalse(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 180, y: 20), state: withHistory))
     XCTAssertTrue(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 180, y: 155), state: withHistory))
+  }
+
+  func test_dragPolicyUsesDynamicInputHeight() {
+    let multiline = NativeCardDragPolicy.State(
+      historyViewportHeight: 0,
+      inputRowHeight: 120,
+      isSubmitted: false,
+      isFollowupInput: false,
+      isListening: false,
+      hasStatePill: true
+    )
+
+    XCTAssertFalse(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 80, y: 108), state: multiline))
+    XCTAssertTrue(NativeCardDragPolicy.shouldStartDrag(at: CGPoint(x: 80, y: 128), state: multiline))
   }
 }

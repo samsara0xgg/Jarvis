@@ -207,6 +207,10 @@ final class NativeCardModel: ObservableObject {
     requestLayout()
   }
 
+  func requestInputLayout(animatedFor duration: TimeInterval = 0.0) {
+    requestLayout(animatedFor: duration)
+  }
+
   func openInputFromHotkey() {
     enterInputMode()
   }

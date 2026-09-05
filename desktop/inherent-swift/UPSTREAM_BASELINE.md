@@ -58,11 +58,14 @@ and width-aware hit-testing, drag regions and history popover offset.
 `DisplayMathTests.test_clampWidth` moved its floor from 360 to `MIN_WIDTH`
 300 with that change.
 
-Not migrated from `jarvis-legacy`, and still awaiting an explicit decision:
-its 2026-05-11 stash adds an auto-growing input field
-(`NativeInputTextSizing`, 36–164 points) and a selectable NSTextView answer
-renderer (`NativeSelectableMarkdownText`). The same stash's
-`OutputSpeechPlayer` TTS wiring is rejected by ADR-0014.
+Also migrated from the `jarvis-legacy` 2026-05-11 stash, by Allen's
+decision: the auto-growing input field (`NativeInputTextSizing`, 36–164
+points, wrap-aware drag policy), the selectable NSTextView answer renderer
+with auto-copy on selection (`NativeSelectableMarkdownText`), per-line code
+block metrics, and the attributed history chip. The same stash's
+`OutputSpeechPlayer` TTS wiring (bridge op, controller player, dispatcher
+stub and its test) was left out: ADR-0014 keeps Python the sole response
+speech owner.
 
 Existing hotkey, top-right anchoring/display changes, passthrough, dragging,
 history, image input, voice recording and shutdown/watchdog behavior remain

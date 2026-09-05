@@ -688,6 +688,18 @@ final class NativeCardModelTests: XCTestCase {
     )
   }
 
+  func test_answerParserTreatsOpenStreamingFenceAsCodeBlock() {
+    let markdown = """
+    ```python
+    print("still streaming")
+    """
+
+    XCTAssertEqual(
+      NativeAnswerParser.parse(markdown),
+      [.code("print(\"still streaming\")", language: "python")]
+    )
+  }
+
   func test_answerParserRecognizesMarkdownItBulletAndFenceVariants() {
     let markdown = """
     intro
@@ -866,6 +878,14 @@ final class NativeCardModelTests: XCTestCase {
       NativeCodeText.renderedSource("raw fence\n  \n", language: nil),
       "raw fence\n  \n"
     )
+  }
+
+  func test_codeBlockHeightScalesOneLineAtATime() {
+    let oneLine = NativeCodeBlockMetrics.height(for: "print('ok')")
+    let threeLines = NativeCodeBlockMetrics.height(for: "a\nb\nc")
+
+    XCTAssertEqual(oneLine, ceil(NativeCodeBlockMetrics.lineHeight + NativeCodeBlockMetrics.verticalPadding))
+    XCTAssertEqual(threeLines - oneLine, ceil(2 * NativeCodeBlockMetrics.lineHeight))
   }
 
   private func settle(milliseconds: UInt64 = 20) async throws {

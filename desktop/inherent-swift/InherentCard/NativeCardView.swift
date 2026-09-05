@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct NativeCardView: View {
   private static let historyChipHeight: CGFloat = 29.25
   private static let resizeHandleWidth: CGFloat = 10
+  private static let answerScrollTopID = "answer-scroll-top"
 
   @ObservedObject var model: NativeCardModel
 
@@ -15,7 +16,7 @@ struct NativeCardView: View {
   @State private var resizeHovering = false
   @State private var resizeStartWidth: CGFloat?
   @State private var resizeStartMouseX: CGFloat?
-  @FocusState private var inputFocused: Bool
+  @State private var inputFocused = false
 
   var body: some View {
     ZStack(alignment: .topTrailing) {
@@ -148,26 +149,42 @@ struct NativeCardView: View {
         }
 
         if model.isSubmitted {
-          Text(model.questionText.isEmpty ? model.inputText : model.questionText)
-            .font(.system(size: 12.5, weight: .regular))
-            .foregroundStyle(Color.white.opacity(0.56))
-            .lineLimit(nil)
-            .fixedSize(horizontal: false, vertical: true)
+          NativeSelectableText(
+            attributed: NativeSelectableText.attributed(
+              model.questionText.isEmpty ? model.inputText : model.questionText,
+              font: .systemFont(ofSize: 12.5, weight: .regular),
+              color: NSColor.white.withAlphaComponent(0.56)
+            )
+          )
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 1)
         } else {
-          NativeCardTextField(
-            text: $model.inputText,
-            placeholder: model.inputPlaceholder,
-            isDisabled: model.inputDisabled,
-            onEnterDown: { model.handleEnterDown(shortAction: model.submitInputText) },
-            onEnterUp: { model.handleEnterUp() },
-            onEscape: { model.handleEscape() },
-            onPasteImage: { model.stageImageFromClipboard() },
-            onDropFileURLs: { model.stageDroppedFileURLs($0) }
-          )
-          .focused($inputFocused)
-          .frame(height: 36)
+          ZStack(alignment: .topLeading) {
+            NativeCardTextField(
+              text: $model.inputText,
+              isFocused: $inputFocused,
+              placeholder: model.inputPlaceholder,
+              isDisabled: model.inputDisabled,
+              onEnterDown: { model.handleEnterDown(shortAction: model.submitInputText) },
+              onEnterUp: { model.handleEnterUp() },
+              onEscape: { model.handleEscape() },
+              onPasteImage: { model.stageImageFromClipboard() },
+              onDropFileURLs: { model.stageDroppedFileURLs($0) }
+            )
+            if model.inputText.isEmpty {
+              Text(model.inputPlaceholder)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.54))
+                .lineLimit(1)
+                .padding(.top, 7)
+                .allowsHitTesting(false)
+            }
+          }
+          .frame(height: inputTextFieldHeight)
+          .onChange(of: model.inputText) { _, _ in
+            guard !model.isSubmitted, !model.inputDisabled else { return }
+            model.requestInputLayout(animatedFor: 0.18)
+          }
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -204,8 +221,29 @@ struct NativeCardView: View {
 
   private var inputRowMinHeight: CGFloat {
     if model.isSubmitted { return 38 }
-    if model.isFollowupInput { return 57 }
-    return 64
+    if model.isFollowupInput { return max(57, inputTextFieldHeight + 21) }
+    return max(64, inputTextFieldHeight + 28)
+  }
+
+  private var inputTextFieldHeight: CGFloat {
+    NativeInputTextSizing.height(
+      for: model.inputText.isEmpty ? model.inputPlaceholder : model.inputText,
+      width: inputTextAvailableWidth
+    )
+  }
+
+  private var inputTextAvailableWidth: CGFloat {
+    var width = model.cardWidth - inputRowLeadingPadding - (model.isSubmitted ? 92 : 24)
+    if !model.isSubmitted && !model.isFollowupInput {
+      width -= 6 + inputRowSpacing
+    }
+    if model.stagedImage != nil {
+      width -= 136 + 8
+    }
+    if !model.stateLabel.isEmpty && !model.isSubmitted {
+      width -= 76
+    }
+    return max(112, width)
   }
 
   private var statePill: some View {
@@ -267,22 +305,12 @@ struct NativeCardView: View {
   }
 
   private func historyChip(_ turn: NativeHistoryTurn) -> some View {
-    HStack(spacing: 6) {
-      Text(turn.question)
-        .foregroundStyle(Color.white.opacity(0.55))
-        .lineLimit(1)
-        .truncationMode(.tail)
-        .frame(width: chipQuestionWidth(turn.question), alignment: .leading)
-        .clipped()
-      Text("→")
-        .foregroundStyle(Color.white.opacity(0.35))
-      Text(turn.answer.components(separatedBy: .newlines).first ?? turn.answer)
-        .foregroundStyle(Color.white.opacity(0.78))
-        .lineLimit(1)
-        .truncationMode(.tail)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    .font(.system(size: 11, weight: .regular, design: .monospaced))
+    NativeSelectableText(
+      attributed: historyChipAttributed(turn),
+      maxLines: 1,
+      onClick: { model.showPopover(for: turn) }
+    )
+    .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.vertical, turn.fading ? 0 : 6)
     .padding(.horizontal, 12)
     .frame(maxWidth: .infinity, minHeight: turn.fading ? 0 : Self.historyChipHeight, maxHeight: turn.fading ? 0 : Self.historyChipHeight)
@@ -310,13 +338,22 @@ struct NativeCardView: View {
     .animation(.easeInOut(duration: 0.24), value: turn.fading)
   }
 
-  private func chipQuestionWidth(_ text: String) -> CGFloat {
+  private func historyChipAttributed(_ turn: NativeHistoryTurn) -> NSAttributedString {
     let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-    let width = ceil((text as NSString).size(withAttributes: [.font: font]).width)
-    // Question column cap scales with the card so wider cards show more of the
-    // question instead of dedicating all extra room to the answer preview.
-    let cap = 110 + max(0, (model.cardWidth - NativeCardModel.defaultCardWidth) * 0.4)
-    return min(max(width, 1), cap)
+    let output = NSMutableAttributedString()
+    output.append(NSAttributedString(string: turn.question, attributes: [
+      .font: font,
+      .foregroundColor: NSColor.white.withAlphaComponent(0.55),
+    ]))
+    output.append(NSAttributedString(string: " -> ", attributes: [
+      .font: font,
+      .foregroundColor: NSColor.white.withAlphaComponent(0.35),
+    ]))
+    output.append(NSAttributedString(string: turn.answer.components(separatedBy: .newlines).first ?? turn.answer, attributes: [
+      .font: font,
+      .foregroundColor: NSColor.white.withAlphaComponent(0.78),
+    ]))
+    return output
   }
 
   private var answerView: some View {
@@ -343,14 +380,55 @@ struct NativeCardView: View {
   @ViewBuilder
   private var answerContent: some View {
     if answerShouldScroll {
-      ScrollView(.vertical, showsIndicators: false) {
-        NativeMarkdownText(markdown: model.answerText, characterBirthTimes: model.answerCharacterBirthTimes)
-          .frame(maxWidth: .infinity, alignment: .leading)
+      ScrollViewReader { proxy in
+        ScrollView(.vertical, showsIndicators: false) {
+          VStack(alignment: .leading, spacing: 0) {
+            Color.clear
+              .frame(height: 1)
+              .id(Self.answerScrollTopID)
+            answerTextContent
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+        }
+        .defaultScrollAnchor(.top)
+        .id(answerRendererID)
+        .frame(maxHeight: 461, alignment: .top)
+        .onAppear {
+          DispatchQueue.main.async {
+            proxy.scrollTo(Self.answerScrollTopID, anchor: .top)
+          }
+        }
+        .onChange(of: answerRendererID) { _, _ in
+          DispatchQueue.main.async {
+            proxy.scrollTo(Self.answerScrollTopID, anchor: .top)
+          }
+        }
       }
-      .frame(maxHeight: 461, alignment: .top)
+    } else {
+      answerTextContent
+    }
+  }
+
+  @ViewBuilder
+  private var answerTextContent: some View {
+    if answerUsesSelectableRenderer {
+      NativeSelectableMarkdownText(markdown: model.answerText)
     } else {
       NativeMarkdownText(markdown: model.answerText, characterBirthTimes: model.answerCharacterBirthTimes)
     }
+  }
+
+  private var answerUsesSelectableRenderer: Bool {
+    (model.phase == .error || (model.phase == .done && model.stateVariant == .success))
+      && !answerContainsCodeFence
+  }
+
+  private var answerRendererID: String {
+    answerUsesSelectableRenderer ? "selectable" : "streaming"
+  }
+
+  private var answerContainsCodeFence: Bool {
+    model.answerText.contains("```") || model.answerText.contains("~~~")
   }
 
   private var answerShouldScroll: Bool {
@@ -434,22 +512,28 @@ struct NativeCardView: View {
       if model.popoverVisible, let turn = model.activeHistoryTurn {
         let answerViewportHeight = NativePopoverSizing.answerViewportHeight(for: turn)
         VStack(alignment: .leading, spacing: 12) {
-          Text(turn.question)
-            .font(.system(size: 11, weight: .regular, design: .monospaced))
-            .foregroundStyle(Color.white.opacity(0.55))
-            .lineSpacing(4)
-            .fixedSize(horizontal: false, vertical: true)
+          NativeSelectableText(
+            attributed: NativeSelectableText.attributed(
+              turn.question,
+              font: .monospacedSystemFont(ofSize: 11, weight: .regular),
+              color: NSColor.white.withAlphaComponent(0.55),
+              lineSpacing: 4
+            )
+          )
             .padding(.bottom, 12)
             .overlay(alignment: .bottom) {
               Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
             }
           ScrollView(.vertical, showsIndicators: false) {
-            Text(turn.answer)
-              .font(.system(size: 13))
-              .lineSpacing(4.5)
-              .foregroundStyle(Color.white.opacity(0.94))
+            NativeSelectableText(
+              attributed: NativeSelectableText.attributed(
+                turn.answer,
+                font: .systemFont(ofSize: 13),
+                color: NSColor.white.withAlphaComponent(0.94),
+                lineSpacing: 4.5
+              )
+            )
               .frame(maxWidth: .infinity, alignment: .leading)
-              .textSelection(.enabled)
           }
           .frame(height: answerViewportHeight)
         }
@@ -493,13 +577,6 @@ struct NativeCardView: View {
           .scaleEffect(0.98 + wave * 0.04)
         }
       }
-    }
-    .overlay(alignment: .top) {
-      Rectangle()
-        .fill(Color.white.opacity(0.14))
-        .frame(height: 1)
-        .padding(.horizontal, 30)
-        .blur(radius: 0.2)
     }
   }
 
@@ -591,6 +668,7 @@ struct NativeCardView: View {
       at: location,
       state: NativeCardDragPolicy.State(
         historyViewportHeight: historyViewportHeight,
+        inputRowHeight: inputRowMinHeight,
         isSubmitted: model.isSubmitted,
         isFollowupInput: model.isFollowupInput,
         isListening: model.isListening,
@@ -604,6 +682,7 @@ struct NativeCardView: View {
 enum NativeCardDragPolicy {
   struct State: Equatable {
     var historyViewportHeight: CGFloat
+    var inputRowHeight: CGFloat
     var isSubmitted: Bool
     var isFollowupInput: Bool
     var isListening: Bool
@@ -638,9 +717,7 @@ enum NativeCardDragPolicy {
   }
 
   private static func inputRowHeight(for state: State) -> CGFloat {
-    if state.isSubmitted { return 38 }
-    if state.isFollowupInput { return 57 }
-    return 64
+    state.inputRowHeight
   }
 
   private static func inputInteractiveStart(for state: State) -> CGFloat {
@@ -648,6 +725,24 @@ enum NativeCardDragPolicy {
     if state.isFollowupInput { return 40 }
     if state.isListening { return 100 }
     return 42
+  }
+}
+
+enum NativeInputTextSizing {
+  static let minHeight: CGFloat = 36
+  static let maxHeight: CGFloat = 164
+
+  static func height(for text: String, width: CGFloat) -> CGFloat {
+    let value = text.isEmpty ? " " : text
+    let font = NSFont.systemFont(ofSize: 15, weight: .medium)
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineBreakMode = .byWordWrapping
+    let rect = (value as NSString).boundingRect(
+      with: NSSize(width: max(1, width), height: .greatestFiniteMagnitude),
+      options: [.usesLineFragmentOrigin, .usesFontLeading],
+      attributes: [.font: font, .paragraphStyle: paragraph]
+    )
+    return min(maxHeight, max(minHeight, ceil(rect.height) + 12))
   }
 }
 
@@ -717,17 +812,16 @@ struct NativeMarkdownText: View {
       .foregroundStyle(Color.white.opacity(0.88))
     case .code(let code, let language):
       let renderedCode = NativeCodeText.renderedSource(code, language: language)
-      let lineCount = renderedCode.isEmpty ? 0 : renderedCode.components(separatedBy: .newlines).count
-      let codeBlockHeight = lineCount == 0 ? 24 : CGFloat(lineCount * 2 - 1) * 19.575 + 24
+      let codeBlockHeight = NativeCodeBlockMetrics.height(for: renderedCode)
       ScrollView(.horizontal, showsIndicators: false) {
         NativeCodeText(code: renderedCode, language: language)
           .font(.system(size: 12.5, weight: .regular, design: .monospaced))
-          .lineSpacing(20.5)
+          .lineSpacing(NativeCodeBlockMetrics.lineSpacing)
           .padding(.vertical, 12)
           .padding(.horizontal, 14)
-          .frame(maxWidth: .infinity, alignment: .leading)
+          .frame(maxWidth: .infinity, minHeight: codeBlockHeight, alignment: .topLeading)
       }
-      .frame(minHeight: codeBlockHeight, alignment: .topLeading)
+      .frame(height: codeBlockHeight, alignment: .topLeading)
       .background(
         RoundedRectangle(cornerRadius: 12, style: .continuous)
           .fill(Color.black.opacity(0.32))
@@ -920,6 +1014,363 @@ struct NativeMarkdownText: View {
       }
       .frame(height: 16)
     }
+  }
+}
+
+struct NativeSelectableMarkdownText: NSViewRepresentable {
+  let markdown: String
+
+  func makeNSView(context: Context) -> NativeSelectableAnswerTextView {
+    let textView = NativeSelectableAnswerTextView()
+    textView.configureForAnswer()
+    textView.linkTextAttributes = [
+      .foregroundColor: NSColor(srgbRed: 0.37, green: 0.78, blue: 1, alpha: 0.92),
+    ]
+    return textView
+  }
+
+  func updateNSView(_ textView: NativeSelectableAnswerTextView, context: Context) {
+    textView.configureForAnswer()
+    let attributed = Self.attributed(markdown)
+    if textView.attributedString() != attributed {
+      textView.textStorage?.setAttributedString(attributed)
+      textView.invalidateIntrinsicContentSize()
+    }
+  }
+
+  static func attributed(_ markdown: String) -> NSAttributedString {
+    let output = NSMutableAttributedString()
+    let blocks = NativeAnswerParser.timedBlocks(markdown)
+    for timed in blocks {
+      append(timed.block, to: output)
+    }
+    trimTrailingNewlines(output)
+    return output
+  }
+
+  private static func append(_ block: NativeAnswerBlock, to output: NSMutableAttributedString) {
+    switch block {
+    case .spacer:
+      appendPlain("\n", font: .systemFont(ofSize: 4), color: NSColor.clear, to: output)
+    case .heading1(let text):
+      appendInline(text, font: .systemFont(ofSize: 32, weight: .ultraLight), color: color(0xFFFFFF, 0.98), spacingAfter: 8, to: output)
+    case .heading2(let text):
+      appendInline(text, font: .systemFont(ofSize: 18, weight: .medium), color: color(0xFFFFFF, 0.98), spacingBefore: 8, spacingAfter: 4, to: output)
+    case .heading3(let text):
+      appendInline(text, font: .systemFont(ofSize: 16, weight: .medium), color: color(0xFFFFFF, 0.98), spacingBefore: 8, spacingAfter: 4, to: output)
+    case .heading4(let text):
+      appendInline(text, font: .systemFont(ofSize: 14, weight: .medium), color: color(0xFFFFFF, 0.55), spacingBefore: 8, spacingAfter: 4, to: output)
+    case .heading5(let text), .heading6(let text):
+      appendInline(text, font: .systemFont(ofSize: 13, weight: .medium), color: color(0xFFFFFF, 0.55), spacingBefore: 6, spacingAfter: 4, to: output)
+    case .bullet(let text):
+      appendInline("• \(text)", font: .systemFont(ofSize: 13.5), color: color(0xFFFFFF, 0.88), spacingAfter: 6, to: output)
+    case .numbered(let marker, let text):
+      appendInline("\(marker) \(text)", font: .systemFont(ofSize: 13.5), color: color(0xFFFFFF, 0.88), spacingAfter: 6, to: output)
+    case .code(let code, let language):
+      let rendered = NativeCodeText.renderedSource(code, language: language)
+      appendPlain(
+        rendered,
+        font: .monospacedSystemFont(ofSize: 12.5, weight: .regular),
+        color: color(0xE6EDF3),
+        backgroundColor: color(0x000000, 0.32),
+        lineSpacing: NativeCodeBlockMetrics.lineSpacing,
+        spacingBefore: 8,
+        spacingAfter: 8,
+        to: output
+      )
+    case .paragraph(let text):
+      appendInline(text, font: .systemFont(ofSize: 14.5), color: color(0xFFFFFF, 0.92), spacingAfter: 6, to: output)
+    case .display(let text):
+      appendPlain(text, font: .systemFont(ofSize: 56, weight: .ultraLight), color: color(0xFFFFFF, 0.99), spacingAfter: 6, to: output)
+    case .displayLabel(let text):
+      appendPlain(text, font: .systemFont(ofSize: 13), color: color(0xFFFFFF, 0.52), spacingBefore: 6, spacingAfter: 6, to: output)
+    case .muted(let text):
+      appendInline(text, font: .systemFont(ofSize: 12.5), color: color(0xFFFFFF, 0.55), spacingAfter: 6, to: output)
+    case .blockquote(let text):
+      appendInline("│ \(text)", font: .systemFont(ofSize: 14), color: color(0xFFFFFF, 0.55), spacingBefore: 4, spacingAfter: 4, to: output)
+    case .rule:
+      appendPlain("────────", font: .systemFont(ofSize: 12), color: color(0xFFFFFF, 0.22), spacingBefore: 6, spacingAfter: 6, to: output)
+    case .table(let headers, let rows):
+      appendPlain(([headers] + rows).map { $0.joined(separator: "    ") }.joined(separator: "\n"), font: .systemFont(ofSize: 13), color: color(0xFFFFFF, 0.88), lineSpacing: 5, spacingAfter: 8, to: output)
+    case .tool(let tool):
+      let status = tool.status.isEmpty ? "" : " \(tool.status)"
+      appendPlain("\(tool.tag.uppercased())  \(tool.name)\(status)", font: .monospacedSystemFont(ofSize: 12, weight: .regular), color: color(0xFFFFFF, 0.78), spacingAfter: 6, to: output)
+    case .choice(let options), .confirmGate(let options):
+      appendPlain(options.map(\.label).joined(separator: "  "), font: .systemFont(ofSize: 13, weight: .medium), color: color(0xFFFFFF, 0.78), spacingBefore: 8, spacingAfter: 8, to: output)
+    case .tts:
+      break
+    }
+  }
+
+  private static func appendInline(
+    _ text: String,
+    font: NSFont,
+    color: NSColor,
+    spacingBefore: CGFloat = 0,
+    spacingAfter: CGFloat = 0,
+    to output: NSMutableAttributedString
+  ) {
+    let inline = NativeInlineStyler.attributed(
+      markdown: text,
+      baseColor: Color(nsColor: color)
+    )
+    let attributed = NSMutableAttributedString(attributedString: NSAttributedString(inline))
+    let fullRange = NSRange(location: 0, length: attributed.length)
+    attributed.addAttribute(.font, value: font, range: fullRange)
+    attributed.addAttribute(.foregroundColor, value: color, range: fullRange)
+    applyParagraphStyle(lineSpacing: 3, spacingBefore: spacingBefore, spacingAfter: spacingAfter, to: attributed)
+    appendWithParagraphBreak(attributed, to: output)
+  }
+
+  private static func appendPlain(
+    _ text: String,
+    font: NSFont,
+    color: NSColor,
+    backgroundColor: NSColor? = nil,
+    lineSpacing: CGFloat = 3,
+    spacingBefore: CGFloat = 0,
+    spacingAfter: CGFloat = 0,
+    to output: NSMutableAttributedString
+  ) {
+    var attributes: [NSAttributedString.Key: Any] = [
+      .font: font,
+      .foregroundColor: color,
+    ]
+    if let backgroundColor {
+      attributes[.backgroundColor] = backgroundColor
+    }
+    let attributed = NSMutableAttributedString(string: text, attributes: attributes)
+    applyParagraphStyle(lineSpacing: lineSpacing, spacingBefore: spacingBefore, spacingAfter: spacingAfter, to: attributed)
+    appendWithParagraphBreak(attributed, to: output)
+  }
+
+  private static func applyParagraphStyle(
+    lineSpacing: CGFloat,
+    spacingBefore: CGFloat,
+    spacingAfter: CGFloat,
+    to attributed: NSMutableAttributedString
+  ) {
+    let style = NSMutableParagraphStyle()
+    style.lineSpacing = lineSpacing
+    style.paragraphSpacingBefore = spacingBefore
+    style.paragraphSpacing = spacingAfter
+    style.alignment = .left
+    attributed.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: attributed.length))
+  }
+
+  private static func appendWithParagraphBreak(_ attributed: NSAttributedString, to output: NSMutableAttributedString) {
+    if output.length > 0 {
+      output.append(NSAttributedString(string: "\n"))
+    }
+    output.append(attributed)
+  }
+
+  private static func trimTrailingNewlines(_ output: NSMutableAttributedString) {
+    while output.length > 0 {
+      let last = (output.string as NSString).substring(with: NSRange(location: output.length - 1, length: 1))
+      guard last == "\n" else { return }
+      output.deleteCharacters(in: NSRange(location: output.length - 1, length: 1))
+    }
+  }
+
+  private static func color(_ hex: Int, _ alpha: CGFloat = 1) -> NSColor {
+    NSColor(
+      srgbRed: CGFloat((hex >> 16) & 0xff) / 255,
+      green: CGFloat((hex >> 8) & 0xff) / 255,
+      blue: CGFloat(hex & 0xff) / 255,
+      alpha: alpha
+    )
+  }
+}
+
+struct NativeSelectableText: NSViewRepresentable {
+  let attributed: NSAttributedString
+  var maxLines: Int = 0
+  var onClick: (() -> Void)?
+
+  func makeNSView(context: Context) -> NativeSelectablePlainTextView {
+    let textView = NativeSelectablePlainTextView()
+    textView.configure(maxLines: maxLines)
+    textView.onPlainClick = onClick
+    return textView
+  }
+
+  func updateNSView(_ textView: NativeSelectablePlainTextView, context: Context) {
+    textView.configure(maxLines: maxLines)
+    textView.onPlainClick = onClick
+    if textView.attributedString() != attributed {
+      textView.textStorage?.setAttributedString(attributed)
+      textView.invalidateIntrinsicContentSize()
+    }
+  }
+
+  static func attributed(
+    _ text: String,
+    font: NSFont,
+    color: NSColor,
+    lineSpacing: CGFloat = 0
+  ) -> NSAttributedString {
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineSpacing = lineSpacing
+    paragraph.alignment = .left
+    return NSAttributedString(string: text, attributes: [
+      .font: font,
+      .foregroundColor: color,
+      .paragraphStyle: paragraph,
+    ])
+  }
+}
+
+enum NativeSelectionAutoCopy {
+  static func selectedText(in textView: NSTextView) -> String {
+    let source = textView.string as NSString
+    let pieces = textView.selectedRanges.compactMap { value -> String? in
+      let range = value.rangeValue
+      guard range.location != NSNotFound,
+            range.length > 0,
+            NSMaxRange(range) <= source.length else { return nil }
+      return source.substring(with: range)
+    }
+    return pieces.joined(separator: "\n")
+  }
+
+  static func copySelection(from textView: NSTextView) {
+    let selected = selectedText(in: textView)
+    guard !selected.isEmpty else { return }
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.setString(selected, forType: .string)
+  }
+}
+
+class NativeAutoCopyTextView: NSTextView {
+  private var autoCopyObserver: NSObjectProtocol?
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    if window == nil {
+      stopAutoCopySelection()
+    } else {
+      startAutoCopySelection()
+    }
+  }
+
+  deinit {
+    stopAutoCopySelection()
+  }
+
+  private func startAutoCopySelection() {
+    guard autoCopyObserver == nil else { return }
+    autoCopyObserver = NotificationCenter.default.addObserver(
+      forName: NSTextView.didChangeSelectionNotification,
+      object: self,
+      queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      NativeSelectionAutoCopy.copySelection(from: self)
+    }
+  }
+
+  private func stopAutoCopySelection() {
+    if let autoCopyObserver {
+      NotificationCenter.default.removeObserver(autoCopyObserver)
+      self.autoCopyObserver = nil
+    }
+  }
+}
+
+final class NativeSelectablePlainTextView: NativeAutoCopyTextView {
+  var onPlainClick: (() -> Void)?
+
+  func configure(maxLines: Int) {
+    isEditable = false
+    isSelectable = true
+    drawsBackground = false
+    backgroundColor = .clear
+    textContainerInset = .zero
+    textContainer?.lineFragmentPadding = 0
+    textContainer?.widthTracksTextView = true
+    textContainer?.heightTracksTextView = false
+    textContainer?.maximumNumberOfLines = maxLines
+    textContainer?.lineBreakMode = maxLines == 1 ? .byTruncatingTail : .byWordWrapping
+    isHorizontallyResizable = false
+    isVerticallyResizable = true
+    autoresizingMask = [.width]
+    allowsUndo = false
+    insertionPointColor = .clear
+  }
+
+  override var intrinsicContentSize: NSSize {
+    guard let layoutManager, let textContainer else {
+      return NSSize(width: NSView.noIntrinsicMetric, height: 1)
+    }
+    textContainer.containerSize = NSSize(width: max(1, bounds.width), height: .greatestFiniteMagnitude)
+    layoutManager.ensureLayout(for: textContainer)
+    let used = layoutManager.usedRect(for: textContainer)
+    return NSSize(width: NSView.noIntrinsicMetric, height: max(1, ceil(used.height) + textContainerInset.height * 2 + 2))
+  }
+
+  override func setFrameSize(_ newSize: NSSize) {
+    super.setFrameSize(newSize)
+    textContainer?.containerSize = NSSize(width: max(1, newSize.width), height: .greatestFiniteMagnitude)
+    invalidateIntrinsicContentSize()
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    let start = convert(event.locationInWindow, from: nil)
+    super.mouseDown(with: event)
+    guard let onPlainClick,
+          NativeSelectionAutoCopy.selectedText(in: self).isEmpty else { return }
+    let end = window.map { convert($0.mouseLocationOutsideOfEventStream, from: nil) } ?? start
+    let distance = hypot(end.x - start.x, end.y - start.y)
+    if distance < 3 {
+      onPlainClick()
+    }
+  }
+}
+
+final class NativeSelectableAnswerTextView: NativeAutoCopyTextView {
+  private static let fallbackWidth = NativeCardModel.defaultCardWidth - 38 - 34
+
+  func configureForAnswer() {
+    isEditable = false
+    isSelectable = true
+    drawsBackground = false
+    backgroundColor = .clear
+    textContainerInset = .zero
+    textContainer?.lineFragmentPadding = 0
+    textContainer?.widthTracksTextView = true
+    textContainer?.heightTracksTextView = false
+    textContainer?.containerSize = NSSize(
+      width: max(1, bounds.width, Self.fallbackWidth),
+      height: CGFloat.greatestFiniteMagnitude
+    )
+    isHorizontallyResizable = false
+    isVerticallyResizable = false
+    minSize = .zero
+    maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    autoresizingMask = [.width]
+    allowsUndo = false
+    insertionPointColor = .clear
+  }
+
+  override var intrinsicContentSize: NSSize {
+    guard let layoutManager, let textContainer else {
+      return NSSize(width: NSView.noIntrinsicMetric, height: 1)
+    }
+    textContainer.containerSize = NSSize(
+      width: max(1, bounds.width, Self.fallbackWidth),
+      height: .greatestFiniteMagnitude
+    )
+    layoutManager.ensureLayout(for: textContainer)
+    let used = layoutManager.usedRect(for: textContainer)
+    return NSSize(width: NSView.noIntrinsicMetric, height: max(1, ceil(used.height) + textContainerInset.height * 2 + 2))
+  }
+
+  override func setFrameSize(_ newSize: NSSize) {
+    super.setFrameSize(newSize)
+    textContainer?.containerSize = NSSize(width: max(1, newSize.width, Self.fallbackWidth), height: .greatestFiniteMagnitude)
+    invalidateIntrinsicContentSize()
   }
 }
 
@@ -1250,6 +1701,17 @@ struct NativeAnswerTTSStyle: Equatable {
   }
   var heights: [Double] {
     [0.22, 0.56, 0.88, 0.64, 1.00, 0.76, 0.50, 0.28, 0.64, 0.88, 0.36, 0.56]
+  }
+}
+
+enum NativeCodeBlockMetrics {
+  static let lineHeight: CGFloat = 18.5
+  static let lineSpacing: CGFloat = 3
+  static let verticalPadding: CGFloat = 24
+
+  static func height(for source: String) -> CGFloat {
+    let lineCount = max(1, source.components(separatedBy: .newlines).count)
+    return ceil(CGFloat(lineCount) * lineHeight + verticalPadding)
   }
 }
 
@@ -1656,6 +2118,7 @@ private extension String {
 
 struct NativeCardTextField: NSViewRepresentable {
   @Binding var text: String
+  @Binding var isFocused: Bool
   let placeholder: String
   let isDisabled: Bool
   let onEnterDown: () -> Void
@@ -1664,44 +2127,41 @@ struct NativeCardTextField: NSViewRepresentable {
   let onPasteImage: () -> Bool
   let onDropFileURLs: ([URL]) -> Bool
 
-  func makeNSView(context: Context) -> NativeTextField {
-    let field = NativeTextField()
-    field.delegate = context.coordinator
-    field.isBordered = false
-    field.isBezeled = false
-    field.drawsBackground = false
-    field.focusRingType = .none
-    field.font = NSFont.systemFont(ofSize: 15, weight: .medium)
-    field.textColor = NSColor.white.withAlphaComponent(0.96)
-    field.placeholderString = placeholder
-    field.target = context.coordinator
-    field.action = #selector(Coordinator.commitTextField(_:))
-    field.onEnterDown = onEnterDown
-    field.onEnterUp = onEnterUp
-    field.onEscape = onEscape
-    field.onPasteImage = onPasteImage
-    field.onDropFileURLs = onDropFileURLs
-    field.registerForDraggedTypes([
+  func makeNSView(context: Context) -> NativeTextView {
+    let textView = NativeTextView()
+    textView.delegate = context.coordinator
+    textView.configureForCardInput()
+    textView.setAccessibilityPlaceholderValue(placeholder)
+    textView.onTextSync = { context.coordinator.syncText($0) }
+    textView.onEnterDown = onEnterDown
+    textView.onEnterUp = onEnterUp
+    textView.onEscape = onEscape
+    textView.onPasteImage = onPasteImage
+    textView.onDropFileURLs = onDropFileURLs
+    textView.registerForDraggedTypes([
       .fileURL,
       NSPasteboard.PasteboardType("NSFilenamesPboardType"),
     ])
     context.coordinator.onEnterDown = onEnterDown
     context.coordinator.onEnterUp = onEnterUp
     context.coordinator.onEscape = onEscape
-    return field
+    return textView
   }
 
-  func updateNSView(_ nsView: NativeTextField, context: Context) {
-    if nsView.stringValue != text {
-      nsView.stringValue = text
+  func updateNSView(_ nsView: NativeTextView, context: Context) {
+    if nsView.string != text {
+      nsView.string = text
+      nsView.applyCardInputStyle()
     }
-    nsView.placeholderString = placeholder
-    nsView.isEnabled = !isDisabled
-    nsView.target = context.coordinator
-    nsView.action = #selector(Coordinator.commitTextField(_:))
+    nsView.setAccessibilityPlaceholderValue(placeholder)
+    nsView.isEditable = !isDisabled
+    nsView.isSelectable = !isDisabled
     if isDisabled {
       nsView.resignEditingIfNeeded()
+    } else if isFocused {
+      nsView.focusIfPossible()
     }
+    nsView.onTextSync = { context.coordinator.syncText($0) }
     nsView.onEnterDown = onEnterDown
     nsView.onEnterUp = onEnterUp
     nsView.onEscape = onEscape
@@ -1713,70 +2173,111 @@ struct NativeCardTextField: NSViewRepresentable {
   }
 
   func makeCoordinator() -> Coordinator {
-    Coordinator(text: $text)
+    Coordinator(text: $text, isFocused: $isFocused)
   }
 
-  final class Coordinator: NSObject, NSTextFieldDelegate {
+  final class Coordinator: NSObject, NSTextViewDelegate {
     @Binding var text: String
+    @Binding var isFocused: Bool
     var onEnterDown: (() -> Void)?
     var onEnterUp: (() -> Void)?
     var onEscape: (() -> Void)?
 
-    init(text: Binding<String>) {
+    init(text: Binding<String>, isFocused: Binding<Bool>) {
       _text = text
+      _isFocused = isFocused
     }
 
-    func controlTextDidChange(_ obj: Notification) {
-      guard let field = obj.object as? NSTextField else { return }
-      text = field.stringValue
+    func textDidChange(_ notification: Notification) {
+      guard let textView = notification.object as? NSTextView else { return }
+      text = textView.string
     }
 
-    @objc func commitTextField(_ sender: NSTextField) {
-      text = sender.stringValue
-      onEnterDown?()
-      onEnterUp?()
+    func textDidBeginEditing(_ notification: Notification) {
+      isFocused = true
     }
 
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-      switch commandSelector {
-      case #selector(NSResponder.insertNewline(_:)),
-           #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
-        text = control.stringValue
-        onEnterDown?()
-        onEnterUp?()
-        return true
-      case #selector(NSResponder.cancelOperation(_:)):
-        onEscape?()
-        return true
-      default:
-        return false
-      }
+    func textDidEndEditing(_ notification: Notification) {
+      isFocused = false
+    }
+
+    func syncText(_ value: String) {
+      text = value
     }
   }
 }
 
-final class NativeTextField: NSTextField {
+final class NativeTextView: NativeAutoCopyTextView {
   var onEnterDown: (() -> Void)?
   var onEnterUp: (() -> Void)?
   var onEscape: (() -> Void)?
   var onPasteImage: (() -> Bool)?
   var onDropFileURLs: (([URL]) -> Bool)?
+  var onTextSync: ((String) -> Void)?
   private var enterWasDown = false
+  private var pendingFocus = false
+
+  func configureForCardInput() {
+    drawsBackground = false
+    isRichText = false
+    importsGraphics = false
+    allowsUndo = true
+    isAutomaticQuoteSubstitutionEnabled = false
+    isAutomaticDashSubstitutionEnabled = false
+    isAutomaticTextReplacementEnabled = false
+    isHorizontallyResizable = false
+    isVerticallyResizable = true
+    textContainerInset = NSSize(width: 0, height: 7)
+    textContainer?.lineFragmentPadding = 0
+    textContainer?.widthTracksTextView = true
+    textContainer?.heightTracksTextView = false
+    textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+    maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    minSize = .zero
+    autoresizingMask = [.width]
+    focusRingType = .none
+    insertionPointColor = NSColor(calibratedRed: 0.56, green: 0.98, blue: 0.64, alpha: 1.0)
+    applyCardInputStyle()
+  }
+
+  func applyCardInputStyle() {
+    let inputFont = NSFont.systemFont(ofSize: 15, weight: .medium)
+    let color = NSColor.white.withAlphaComponent(0.96)
+    font = inputFont
+    textColor = color
+    typingAttributes = [
+      .font: inputFont,
+      .foregroundColor: color,
+    ]
+  }
+
+  func focusIfPossible() {
+    pendingFocus = true
+    guard let window else { return }
+    pendingFocus = false
+    if window.firstResponder !== self {
+      window.makeFirstResponder(self)
+    }
+  }
 
   func resignEditingIfNeeded() {
     enterWasDown = false
     guard let window else { return }
-
-    if let editor = currentEditor(), window.firstResponder === editor {
-      abortEditing()
-      window.makeFirstResponder(nil)
-    } else if window.firstResponder === self {
+    if window.firstResponder === self {
       window.makeFirstResponder(nil)
     }
   }
 
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    guard pendingFocus else { return }
+    DispatchQueue.main.async { [weak self] in
+      self?.focusIfPossible()
+    }
+  }
+
   override func keyDown(with event: NSEvent) {
-    if hasMarkedInputText {
+    if hasMarkedText() {
       super.keyDown(with: event)
       return
     }
@@ -1784,6 +2285,7 @@ final class NativeTextField: NSTextField {
     if event.keyCode == 36 || event.keyCode == 76 {
       if !enterWasDown {
         enterWasDown = true
+        onTextSync?(string)
         onEnterDown?()
       }
       return
@@ -1795,14 +2297,10 @@ final class NativeTextField: NSTextField {
     super.keyDown(with: event)
   }
 
-  private var hasMarkedInputText: Bool {
-    guard let editor = currentEditor() as? NSTextInputClient else { return false }
-    return editor.hasMarkedText()
-  }
-
   override func keyUp(with event: NSEvent) {
     if event.keyCode == 36 || event.keyCode == 76 {
       enterWasDown = false
+      onTextSync?(string)
       onEnterUp?()
       return
     }
@@ -1819,9 +2317,9 @@ final class NativeTextField: NSTextField {
     return super.performKeyEquivalent(with: event)
   }
 
-  @objc func paste(_ sender: Any?) {
+  override func paste(_ sender: Any?) {
     if onPasteImage?() == true { return }
-    currentEditor()?.paste(sender)
+    super.paste(sender)
   }
 
   override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -1855,3 +2353,5 @@ final class NativeTextField: NSTextField {
     return []
   }
 }
+
+typealias NativeTextField = NativeTextView
