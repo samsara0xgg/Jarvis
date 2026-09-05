@@ -1,0 +1,77 @@
+# Goal: crash-recovery-live-verification
+
+## Goal
+The `kill -9` recovery contract (ADR-0006 D10, ADR-0008 §4.4) is demonstrated by a repeatable live scenario against a real daemon process, not only by construction.
+
+## Why
+Every recovery property today is proven by rebuilding objects in-process: `tests/integration/test_wave4a_response_run.py:1065` calls the reconciler directly, `tests/integration/test_wave4b_action_runner.py:898` and `:1313` seed a database and call the boot helper, `tests/integration/test_wave2_streaming_media.py:823` constructs a registry with a chosen high-water. No test anywhere sends a signal to a real `jarvis serve` process — `grep -rn "SIGKILL" tests/` hits only Codex-worker kills in `tests/scenarios/test_real_codex_flagship.py:467` and `test_real_codex_sleep_during_turn.py:25`. So the one thing construction cannot show is untested: that a process killed mid-speech leaves an on-disk Event Log a fresh boot reads correctly.
+
+## Current behavior
+- `PlaybackHistory.fold` is a pure, hash-validated fold over the `surface.playback_*` rows (`jarvis/state/conversation_playback.py:55-218`); a checkpoint advances `heard` only when the new text extends the proven prefix (`:206-218`). It is invoked from `_fold_output` (`jarvis/state/conversation.py:183`) inside `fold_conversation_history` (`:191`), which `jarvis/state/projections.py:1532` carries into the `SituationPacket`.
+- `ActivePlaybackRegistry` (`jarvis/surface/voice_media.py:358-503`) is built once per boot with `boot_high_water_id` (`:366-369`); `classify()` returns `status="historical"` for any `row_id <= boot_high_water_id` (`:388-393`), and `StreamingTTSPipeline._handle_command` repeats the same rejection (`:1766-1772`).
+- The high-water is captured in `_build_tts_pipeline` from `_latest_id(runtime.conn)` = `SELECT COALESCE(MAX(id), 0) FROM events` (`jarvis/runtime/inherent_loop.py:1292`, helper at `:281-290`), and `_build_tts_pipeline` is called from `serve_inherent` at `:2888`.
+- `_tts_watcher` anchors its cursor at `streaming_pipeline.boot_high_water_event_log_id` (`jarvis/runtime/inherent_loop.py:1110-1114`, property at `jarvis/surface/voice_media.py:688`) and logs `tts_watcher started (after_id=%d)` (`:1116`). Pre-boot rows are therefore never fetched, so on a clean restart the `historical` branch is never *reached* — the boundary is proven by the anchor value, not by a rejection.
+- `media_owner_started` is traced with `boot_id` and `boot_high_water_id` (`jarvis/surface/voice_media.py:1723-1728`); the JSONL sink is enabled by `JARVIS_REALTIME_TRACE_JSONL` (`jarvis/runtime/__init__.py:1229-1245`).
+- Open response runs are abandoned, never re-armed: `reconcile_open_responses` (`jarvis/decision/response_run.py:735-745`) folds `open_response_runs` (`jarvis/state/response_runs.py:103-127`) and writes one `response.failed(reason="daemon_restart")` per open run; the CAS refuses a second. It runs from `_reconcile_open_responses_in_thread` (`jarvis/runtime/inherent_loop.py:440-467`) at `:2921-2933`, inside the startup barrier, guarded by `runtime.response_flags.response_run_lifecycle`, and logs `boot reconciliation closed %d open response run(s)`.
+- Startup order in `serve_inherent`: TTS pipeline build (`:2888`) -> response reconcile (`:2921-2933`) -> action-lease re-quarantine (`:2937-2954`) -> intent-pump boot scan (`:2981-2984`) -> `create_app` / watchers / uvicorn (`:2960-3020`). The watcher task that logs `tts_watcher started` therefore cannot run before the reconciler.
+- There is no boot-time playback reconciliation: `terminalize_playback` has exactly one caller, `jarvis/surface/voice_media.py:2826`, inside the live owner. Nothing in `serve_inherent` closes an abandoned playback.
+- The process lock is per runtime root (`jarvis/deployment/process_lock.py`, root resolution at `jarvis/cli/__init__.py:632-653`); `--port` is independent and defaults to 8006 (`jarvis/cli/__init__.py:672`). `tests/integration/test_serve_inherent_smoke.py:56-70` already spawns `python -m jarvis serve` on an ephemeral port with `--runtime-root`, and `docs/goals/speak-ordinary-answers.md` Progress slice 2 records a working live daemon on port 8007 with root `~/.jarvis-card-speak`.
+- An ordinary user utterance now routes to `voice_notify` (`docs/goals/speak-ordinary-answers.md` slices 1-3), which is not in `_TTS_SILENT_CHANNELS = {queue_review, silent_log}` (`jarvis/runtime/inherent_loop.py:173`, `jarvis/surface/voice_media.py:71`), so a plain question really produces `surface.playback_started` (`jarvis/surface/voice_media.py:2023`).
+- `SwitchAudioSource` is not installed on this machine (`command not found`); the BlackHole 16ch driver is (`/Library/Audio/Plug-Ins/HAL/BlackHole16ch.driver`, brew formula `blackhole-16ch`).
+
+## Target behavior
+- A scenario test under `tests/scenarios/` marked `live_llm` exists and, run from the lane worktree, does all of the following in one process:
+  1. Boots `.venv/bin/python -m jarvis serve --runtime-root <ROOT> --config <OVERLAY>/config/jarvis.yaml --port <FREE>` as a subprocess, with `<ROOT>` under `~/.jarvis-lane-b-test` and `<FREE>` an OS-assigned ephemeral port, never touching port 8006 or `~/.jarvis-realtime-test`.
+  2. Uses an overlay config with `realtime.enabled`, the four `realtime.concurrency_safety` switches, `realtime.response.response_run_lifecycle`, and `realtime.streaming_output.enabled` all true. `realtime.single_audio_ingress` stays false: the scenario submits text, so the daemon must not open the microphone.
+  3. Sets `JARVIS_REALTIME_TRACE_JSONL` to a path under `<ROOT>` for both boots.
+  4. POSTs a question to `/inherent/submit` (`jarvis/surface/inherent_server.py:315`) long enough that speech starts before the stream ends.
+  5. Polls the Event Log until a `surface.playback_started` row exists for that `response_id` and no `response.completed/failed/cancelled` row does, then sends `SIGKILL` to the daemon pid. If the response terminated before the window was caught, the test fails naming the window rather than asserting a weaker property.
+  6. Restarts the daemon on the same runtime root and port.
+- After the restart the test asserts, against the same on-disk Event Log:
+  - exactly one `response.failed` with `reason == "daemon_restart"` for that `response_id`, and none for any response that already had a terminal;
+  - no `surface.playback_started` row with `events.id` greater than the pre-kill `MAX(events.id)` carries the killed `(response_id, playback_generation_id)` — nothing re-speaks;
+  - `fold_conversation_history` over the post-restart log yields, for that response, either no `spoken_heard` (no pre-kill checkpoint) or a `spoken_heard.text` that is a prefix of the answer and no longer than the last pre-kill `surface.playback_checkpoint.heard_text`;
+  - the second boot's `media_owner_started` trace row carries `boot_high_water_id` equal to the pre-kill `MAX(events.id)`, and the second boot's log line `tts_watcher started (after_id=N)` carries the same N — this is the observable form of "pre-boot rows are outside this boot";
+  - in the second boot's log, `boot reconciliation closed 1 open response run(s)` appears before `tts_watcher started`, showing reconcile-before-watchers.
+- Household audio stays silent for the whole run: the default output device is switched to `BlackHole 16ch` before the first boot and restored afterwards, on failure paths too. The device to restore is captured with `SwitchAudioSource -c -t output` before switching, not hard-coded.
+- A burn document `docs/live-burn-<date>-crash-recovery.md` (implementer picks the date) quotes the real event trail: the pre-kill rows, the kill instant, the second boot's log header, and each asserted row.
+
+## Affected contracts and files
+- `tests/scenarios/` — one new `live_llm` scenario module; `tests/scenarios/conftest.py` only if an existing fixture is reused.
+- `docs/live-burn-<date>-crash-recovery.md` — new burn document.
+- `scripts/` — only if the audio-route guard genuinely needs to be shared; a `try/finally` fixture inside the scenario module is the expected shape.
+- `docs/goals/crash-recovery-live-verification.md` — Progress lines.
+
+## Boundaries and non-goals
+- Layers that may change: none. Only `tests/scenarios/`, `docs/`, and (if unavoidable) `scripts/`.
+- Must not change: any file under `jarvis/`, `config/jarvis.yaml`, `desktop/`, or any existing test. No production code change is expected.
+- Must not touch: the daemon on port 8006 with runtime root `~/.jarvis-realtime-test`, and the `~/.jarvis` default runtime root. Every artifact of this card lives under `~/.jarvis-lane-b-test`.
+- If the scenario reveals a defect — for example that no playback terminal is ever written for the killed generation, since `terminalize_playback` has no boot-time caller — stop, record it in Progress, and report to the hub. Do not fix it under this card.
+- Non-goals: barge-in, sleep/wake, action-run or intent-pump recovery (already covered by `tests/scenarios/test_live_wave5_realtime.py`), any change to the recovery contract itself, and any hermetic re-test of what the integration suite already proves by construction.
+
+## Rejected approaches
+- Asserting the `MediaSubmitOutcome(status="historical")` branch — unreachable on a clean restart, because `_tts_watcher` anchors at `boot_high_water_event_log_id` (`jarvis/runtime/inherent_loop.py:1110-1114`) and never fetches a pre-boot row. The anchor value is the evidence.
+- A hermetic fake crash (drop the runtime object, rebuild) — that is exactly what `tests/integration/test_wave4a_response_run.py:1065` already does; it cannot show that a SIGKILLed process leaves a readable WAL and a correctly-folded log.
+- `SIGTERM` instead of `SIGKILL` — the daemon owns a clean shutdown path (`jarvis/runtime/inherent_loop.py:2714-2723`); a graceful stop verifies shutdown, not crash recovery.
+- Reusing the 8006 daemon or `~/.jarvis-realtime-test` — killing it disturbs Allen's live card, and the per-runtime-root lock makes a separate root plus a free port fully independent anyway.
+- `osascript` volume mute instead of a device switch — it mutes the whole machine and a crashed run leaves it muted; routing to a virtual device leaves the physical output untouched.
+
+## Acceptance evidence
+- Positive (live, required): raw output of `PYTHONPATH=. .venv/bin/python -m pytest -q -s -m live_llm tests/scenarios/<new file>.py`, ending in a pass line, with the asserted values echoed: the `response_id`, the single `response.failed` `reason="daemon_restart"`, the pre-kill `MAX(events.id)` N, the second boot's `boot_high_water_id == N` and `tts_watcher started (after_id=N)`, the `spoken_heard` text (or `None`) with the last pre-kill checkpoint text next to it, and the two log lines in reconcile-before-watchers order.
+- Audio guard: the transcript shows `SwitchAudioSource -c -t output` before and after the run, with the same device name restored. If `brew install switchaudio-osx` fails or `BlackHole 16ch` is absent, say so explicitly, record it as an Allen follow-up in Progress with the exact command, and land the test so it skips cleanly rather than playing audio.
+- Regression: raw output of `PYTHONPATH=. .venv/bin/python -m pytest -q -m "not live_llm and not live_codex"` showing the passed count still 722 (baseline 722 passed / 63 deselected at `efe602b`); the deselected count grows by the number of new live tests and that delta is stated. Plus `lint-imports`, `ruff check .`, and `mypy --strict jarvis tests scripts tools`, each exit 0 with raw output.
+- `git diff --stat` shows no file under `jarvis/`, `config/`, or `desktop/`.
+
+## Docs to sync
+- `docs/live-burn-<date>-crash-recovery.md` — new; the event trail excerpts.
+- `docs/adr/0006-full-duplex-voice-session.md` D10 and §6 F14/F16 — judged unchanged unless the live trail contradicts them; say so explicitly.
+- `docs/adr/0008-real-time-response-streaming.md` §4.4 and §7 F14/F23 — judged unchanged unless the live trail contradicts them; say so explicitly. A contradiction is a report to the hub, not an edit under this card.
+- `docs/spec.html` — judged unchanged; state that.
+
+## Open questions
+(none)
+
+## /goal condition
+Implement docs/goals/crash-recovery-live-verification.md on the current branch. The goal is met when all of the following appear in the transcript: (1) the diff touches only tests/scenarios/, docs/, and at most scripts/, and `git diff --stat` is shown proving no file under jarvis/, config/, or desktop/ changed; (2) raw output of `PYTHONPATH=. .venv/bin/python -m pytest -q -s -m live_llm tests/scenarios/<new file>.py` ending in a pass line, in which a real `python -m jarvis serve` subprocess on a free port with runtime root under ~/.jarvis-lane-b-test was SIGKILLed while a `surface.playback_started` row existed for the response and no response terminal did, then restarted on the same root; (3) that output quotes, as concrete values: the response_id; exactly one `response.failed` with `reason="daemon_restart"` for it; the pre-kill `MAX(events.id)` N; the second boot's `media_owner_started` trace `boot_high_water_id == N` and its log line `tts_watcher started (after_id=N)`; that no post-restart `surface.playback_started` carries the killed (response_id, playback_generation_id); the `spoken_heard` value from `fold_conversation_history` shown next to the last pre-kill `surface.playback_checkpoint` text, proving the heard prefix is no longer; and the second boot's `boot reconciliation closed 1 open response run(s)` line appearing before `tts_watcher started`; (4) `SwitchAudioSource -c -t output` output shown before and after the run with the same device restored and `BlackHole 16ch` used during it — or, if the tool or device is unavailable, an explicit statement of that with the exact follow-up command recorded in Progress and the test skipping cleanly; (5) the daemon on port 8006 with root ~/.jarvis-realtime-test was never signalled or stopped, stated explicitly; (6) raw output of `PYTHONPATH=. .venv/bin/python -m pytest -q -m "not live_llm and not live_codex"` with the passed count still 722 and the deselected delta stated, plus `lint-imports`, `ruff check .`, and `mypy --strict jarvis tests scripts tools` each exit 0; (7) docs/live-burn-<date>-crash-recovery.md created with the real event trail, and ADR-0006 D10 + §6 F14/F16, ADR-0008 §4.4 + §7 F14/F23, and docs/spec.html each explicitly judged unchanged or updated, following the rule: update the canonical document that owns a changed contract, do not document what the code makes clear, do not duplicate a fact across documents; (8) if the run exposes a defect in production code, it is reported and recorded in Progress and NOT fixed; (9) each slice committed with the project commit skill and `git status` clean; (10) a Progress line per slice in the card. Or stop after 50 turns.
+
+## Progress
