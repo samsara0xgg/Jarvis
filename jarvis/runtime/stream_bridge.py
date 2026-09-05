@@ -73,12 +73,8 @@ class LoopBoundTokenStream:
                 loop.run_until_complete(aclose())
 
     def cancel(self, reason: str) -> None:
-        """Settle the handle as cancelled from the owning thread, once."""
-        loop = self._loop_for_thread()
-        if loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._handle.cancel(reason), loop)
-            return
-        loop.run_until_complete(self._handle.cancel(reason))
+        """Settle the handle as cancelled from the owning thread, between events."""
+        self._loop_for_thread().run_until_complete(self._handle.cancel(reason))
 
     def close(self) -> None:
         """Release the handle and the private loop; idempotent."""

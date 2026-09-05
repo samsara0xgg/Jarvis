@@ -12,24 +12,24 @@ from jarvis.decision.stream_envelope import StreamEnvelopeSplitter
 _CUES = load_tool_cues(Path(__file__).resolve().parents[2] / "config" / "tool_cues.yaml")
 
 
-@pytest.mark.parametrize(
-    ("utterance", "expected"),
-    [
-        ("帮我打开这个文件", "zh_imperative_opener"),
-        ("把刚才的邮件发给他", "zh_imperative_opener"),
-        ("删掉桌面上的截图", "zh_action_verb"),
-        ("查一下今天的日程", "zh_action_verb"),
-        ("这个仓库现在什么状态", "zh_tool_noun"),
-        ("please open the terminal", "en_imperative_opener"),
-        ("Run the tests again", "en_action_verb"),
-        ("what is in my clipboard", "en_tool_noun"),
-        ("冰为什么会融化？", None),  # noqa: RUF001 - CJK question mark is real input
-        ("你好", None),
-        ("为什么天空是蓝色的", None),
-        ("why is the sky blue", None),
-        ("给我讲个笑话", "zh_imperative_opener"),
-    ],
-)
+_CASES: list[tuple[str, str | None]] = [
+    ("帮我打开这个文件", "zh_imperative_opener"),
+    ("把刚才的邮件发给他", "zh_imperative_opener"),
+    ("删掉桌面上的截图", "zh_action_verb"),
+    ("查一下今天的日程", "zh_action_verb"),
+    ("这个仓库现在什么状态", "zh_tool_noun"),
+    ("please open the terminal", "en_imperative_opener"),
+    ("Run the tests again", "en_action_verb"),
+    ("what is in my clipboard", "en_tool_noun"),
+    ("冰为什么会融化？", None),  # noqa: RUF001 - CJK question mark is real input
+    ("你好", None),
+    ("为什么天空是蓝色的", None),
+    ("why is the sky blue", None),
+    ("给我讲个笑话", "zh_imperative_opener"),
+]
+
+
+@pytest.mark.parametrize(("utterance", "expected"), _CASES)
 def test_tool_cue_table_is_broad_and_conservative(utterance: str, expected: str | None) -> None:
     """Every shipped cue id is reachable and casual questions match nothing."""
     hit = match_tool_cue(utterance, _CUES)
@@ -37,15 +37,8 @@ def test_tool_cue_table_is_broad_and_conservative(utterance: str, expected: str 
 
 
 def test_every_shipped_cue_is_hit_by_the_table_test() -> None:
-    """A cue nobody can trigger is dead configuration."""
-    assert {cue.id for cue in _CUES} == {
-        "zh_imperative_opener",
-        "zh_action_verb",
-        "zh_tool_noun",
-        "en_imperative_opener",
-        "en_action_verb",
-        "en_tool_noun",
-    }
+    """A cue no case above can trigger is dead configuration."""
+    assert {cue.id for cue in _CUES} == {expected for _, expected in _CASES if expected}
 
 
 def _drive(deltas: tuple[str, ...]) -> tuple[list[str], str, str, bool]:

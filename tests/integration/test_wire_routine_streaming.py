@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Self
 import pytest
 
 from jarvis import decision as decision_module
+from jarvis.decision.gates import ResponsePlan
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.pre_route import load_tool_cues
@@ -38,7 +39,8 @@ from jarvis.runtime import (
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
-from jarvis.surface.cli import parse_response_channels
+from jarvis.surface.cli import SurfaceState, parse_response_channels, record_pre_emit_token
+from jarvis.surface.cli_render import render_response
 
 if TYPE_CHECKING:
     from jarvis.shared import Event
@@ -52,6 +54,18 @@ _DELTA_CHARS = 6
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _plan(text: str) -> ResponsePlan:
+    return ResponsePlan(
+        text=text,
+        permission="allow_completion_language",
+        downgrade_required=False,
+        active_claim_levels=(),
+        response_hash=_sha256(text),
+        output_risk_class="routine",
+        required_gate_mode="sentence",
+    )
 
 
 class _Provider:
@@ -307,7 +321,7 @@ def test_routine_turn_streams_chunks_before_completion_then_finalizes(tmp_path: 
     assert [row[3] for row in chunks] == [row[4] for row in gates]
     assert len(_rows(conn, "surface.response_open")) == 1
     assert result.response_plan.text == _ANSWER
-    assert result.response_plan.text == "".join(row[2]["text"] for row in chunks) + ""
+    assert result.response_plan.text == "".join(row[2]["text"] for row in chunks)
     completed, emitted = (
         _rows(conn, "response.completed")[0],
         _rows(conn, "surface.response_emitted")[0],
@@ -473,3 +487,61 @@ def test_flag_off_keeps_the_full_text_path_and_records_no_route(tmp_path: Path) 
     started = _payloads(runtime.conn, "response.started")[0]
     assert "route" not in started
     assert started["emission_mode"] == "full_text"
+
+
+_LONG_TAIL = (
+    "冰在温度升高时会慢慢从固体变成液体这个过程叫做融化它需要从周围吸收热量"
+    "因此冰块周围的空气会变凉一些这也是夏天冰饮让人觉得凉快的原因"
+)
+
+
+def test_blocked_routine_tail_is_the_approved_suffix(tmp_path: Path) -> None:
+    """A tail the assembler cannot bound is never a chunk; finalize still approves it."""
+    with _Provider([_SENTENCES[0] + _LONG_TAIL]) as provider:
+        runtime = _runtime(tmp_path, provider.url)
+        result = _drive(runtime, _intent(runtime.conn, "turn-tail"))
+        assert len(provider.requests) == 1
+    conn = runtime.conn
+    assert [row[2]["text"] for row in _rows(conn, "surface.response_chunk")] == [_SENTENCES[0]]
+    assert [row[2]["outcome"] for row in _rows(conn, "gate.evaluated")] == ["permit"]
+    assert result.response_plan.text == _SENTENCES[0] + _LONG_TAIL
+    emitted = _payloads(conn, "surface.response_emitted")[0]
+    assert emitted["voice_text"] == _SENTENCES[0] + _LONG_TAIL
+    assert len(_rows(conn, "response.completed")) == 1
+
+
+def test_delivery_terminal_only_binds_the_run_without_the_streaming_flag(tmp_path: Path) -> None:
+    """A CLI caller (streaming_enabled=False) still names the streamed run on emitted."""
+    with _Provider([_ANSWER]) as provider:
+        runtime = _runtime(tmp_path, provider.url)
+        _intent(runtime.conn, "turn-bind")
+    plan = _plan(_ANSWER)
+    state = record_pre_emit_token(SurfaceState(last_gate_response_hash=None), plan.response_hash)
+    _, event = render_response(
+        state,
+        plan,
+        conn=runtime.conn,
+        turn_id="turn-bind",
+        attention_channel="voice_notify",
+        available_surfaces=frozenset(),
+        streaming_enabled=False,
+        response_id="RESP-bind",
+        response_group_id="RGRP-bind",
+        delivery_terminal_only=True,
+    )
+    assert event.type == "surface.response_emitted"
+    assert (event.payload["response_id"], event.payload["response_group_id"]) == (
+        "RESP-bind",
+        "RGRP-bind",
+    )
+    assert not _rows(runtime.conn, "surface.response_open", "surface.response_chunk")
+    with pytest.raises(ValueError, match="response ids"):
+        render_response(
+            record_pre_emit_token(SurfaceState(last_gate_response_hash=None), plan.response_hash),
+            plan,
+            conn=runtime.conn,
+            turn_id="turn-bind",
+            attention_channel="voice_notify",
+            available_surfaces=frozenset(),
+            delivery_terminal_only=True,
+        )

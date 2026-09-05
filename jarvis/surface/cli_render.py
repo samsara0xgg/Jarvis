@@ -447,12 +447,17 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     #    open -> chunk(s) -> emitted so a downstream watcher with a single
     #    cursor over the three types sees the sequence per turn.
     binding: LegacyPresentationBinding | None = None
-    if streaming_enabled:
+    if delivery_terminal_only and (response_id is None or response_group_id is None):
+        msg = "render_response: delivery_terminal_only requires the run's response ids"
+        raise ValueError(msg)
+    if streaming_enabled or delivery_terminal_only:
         # ADR-0008 Wave 4A: when L3 opened an explicit ResponseRun it owns
         # the identity, and these L5 events must name the SAME response as
         # `response.started` (ADR-0014's never-reused rule). With no run —
         # every legacy caller — this falls back to the uuid5 derivation,
-        # byte-for-byte as before.
+        # byte-for-byte as before. A run whose chunks already streamed
+        # binds its audit event even for a caller that never asked for the
+        # three-event taxonomy: the chunks in the log carry its ids.
         binding = (
             LegacyPresentationBinding(
                 response_id=response_id,
@@ -464,10 +469,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
                 response_hash=response_plan.response_hash,
             )
         )
-        if delivery_terminal_only and response_id is None:
-            msg = "render_response: delivery_terminal_only requires the run's response_id"
-            raise ValueError(msg)
-        if not delivery_terminal_only:
+        if streaming_enabled and not delivery_terminal_only:
             _emit_response_open(
                 conn,
                 turn_id=turn_id,
