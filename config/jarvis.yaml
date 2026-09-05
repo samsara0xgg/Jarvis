@@ -289,6 +289,13 @@ realtime:
     backend_close_timeout_s: 2.0
     shutdown_timeout_s: 2.0
     session_shutdown_timeout_s: 3.0
+    # Capture VAD profile (_MODE_THRESHOLDS key) used while Jarvis is producing
+    # audio. "record" is the one profile that ran everywhere before and is the
+    # default because the 2026-09-05 A/B could not measure "tts" at all, not
+    # because "tts" lost: no frame is classified while output is active today,
+    # so the stricter prob+dB gate never engaged. Whoever makes capture arm
+    # during output measures "tts" then and adopts it deliberately.
+    output_active_vad_mode: record
     # ADR-0006 D7. Rolling partial SenseVoice decode plus a semantic endpoint
     # hold. Off by default (acoustic endpointing only); the values are the
     # D7 calibration candidates, not promises.
