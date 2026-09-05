@@ -1681,6 +1681,20 @@ def _hydrate_event_row(row: tuple[Any, ...]) -> Event:
     )
 
 
+def _absorbed_inline(lifecycle: ActionLifecycle, action_id: str | None) -> bool:
+    """True when this process already moved ``action_id`` past ``running``.
+
+    Sync tool handlers transition the FSM inline before ``dispatch`` returns,
+    so their ``action.result_observed`` row is history to the waiter, not a
+    trigger. ``None`` (unknown here — another process wrote it) is not
+    treated as absorbed.
+    """
+    if action_id is None:
+        return False
+    state = lifecycle.state_of(action_id)
+    return state is not None and state != "running"
+
+
 def _event_action_id(event: Event) -> str | None:
     """Return the action_id this event belongs to, or ``None``.
 
@@ -1710,6 +1724,7 @@ def _wait_for_next_trigger(  # noqa: PLR0913 — one defaulted cancel predicate 
     *,
     after_id: int,
     action_ids: frozenset[str],
+    lifecycle: ActionLifecycle,
     timeout: float,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
     cancelled: Callable[[], bool] | None = None,
@@ -1758,6 +1773,17 @@ def _wait_for_next_trigger(  # noqa: PLR0913 — one defaulted cancel predicate 
             action dispatched during the previous decide() iteration is
             already in scope. A row whose ``action_id`` is outside this
             set belongs to somebody else and is never returned.
+        lifecycle: The process-local action FSM. An
+            ``action.result_observed`` row is only a wake-up for an action
+            this process still holds at ``running``; a sync tool writes
+            the same row inline and moves its action past ``running``
+            before ``dispatch`` returns, so decide() has already absorbed
+            it. Without this check a turn that ran a sync tool and then
+            paused on ``spawn_worker`` in the same decide() iteration wakes
+            on the sync tool's row instead of ``worker.reported`` (found
+            live 2026-09-04: the worker never got its ``action.result_observed``
+            and the turn ended with ``verification_skipped``). An action
+            unknown to this process (crash recovery) is not filtered.
         timeout: Hard wall-clock cap in seconds; raise
             :class:`TriggerWaitTimeout` if exceeded.
         poll_interval_s: Sleep between polls (default 10 ms).
@@ -1791,6 +1817,10 @@ def _wait_for_next_trigger(  # noqa: PLR0913 — one defaulted cancel predicate 
             cursor_id = int(row[0])
             event = _hydrate_event_row(row)
             if _event_action_id(event) in action_ids:
+                if event.type == "action.result_observed" and _absorbed_inline(
+                    lifecycle, _event_action_id(event),
+                ):
+                    continue
                 return event, cursor_id
         if cancelled is not None and cancelled():
             msg = (
@@ -2173,6 +2203,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                     runtime.conn,
                     after_id=last_seen_id,
                     action_ids=owned_action_ids,
+                    lifecycle=runtime.lifecycle,
                     timeout=wait_timeout_s,
                     cancelled=_run_cancelled if run is not None else None,
                 )
