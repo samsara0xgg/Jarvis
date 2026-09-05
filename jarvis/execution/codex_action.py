@@ -53,6 +53,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from jarvis.execution.action_runner import current_execution_context
 from jarvis.execution.codex_client import CodexAppServerClient
 
 if TYPE_CHECKING:
@@ -81,6 +82,12 @@ _HEARTBEAT_INTERVAL_S: float = 30.0
 # heartbeat checks have <250 ms latency, long enough that the reader
 # thread isn't busy-spinning.
 _POLL_INTERVAL_S: float = 0.25
+
+# ADR-0008 D9 (Step 4): the canonical error tag for a turn the caller asked
+# us to stop. Deliberately distinct from ``codex_turn_timeout`` — a cancel is
+# an operator decision and a timeout is a budget overrun, and only the caller
+# that requested the cancel is allowed to write the resulting terminal.
+CODEX_CANCELLED_ERROR: str = "codex_cancelled"
 
 # Prefix for the per-spawn empty ``CODEX_HOME`` directory created in
 # :func:`run_codex_action`. The directory exists for the lifetime of a
@@ -462,9 +469,7 @@ def _extract_completed_mcp_tool(
     return (tool_name if isinstance(tool_name, str) else None, args)
 
 
-def _auto_respond_server_request(
-    client: CodexAppServerClient, req: Mapping[str, Any]
-) -> None:
+def _auto_respond_server_request(client: CodexAppServerClient, req: Mapping[str, Any]) -> None:
     """Auto-respond to Codex server-initiated JSON-RPC so the turn doesn't hang.
 
     Codex 0.130 sends ``mcpServer/elicitation/request`` for every
@@ -494,9 +499,7 @@ def _auto_respond_server_request(
     # a broken pipe here to mask the real timeout/crash error.
     with contextlib.suppress(Exception):
         if method == "mcpServer/elicitation/request":
-            client.respond(
-                req_id, {"action": "accept", "content": None, "_meta": None}
-            )
+            client.respond(req_id, {"action": "accept", "content": None, "_meta": None})
         elif "approval" in method:
             client.respond(req_id, {"decision": "approve"})
         else:
@@ -638,6 +641,7 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
     model: str = "gpt-5.5",
     reasoning_effort: str = "xhigh",
     env: dict[str, str] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> CodexActionResult:
     """Run one Codex turn and return a structured :class:`CodexActionResult`.
 
@@ -678,6 +682,16 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
             ``env`` mapping, so user-local or parent-process Codex config
             cannot contaminate the worker (P-0009). Pass
             ``env={"CODEX_HOME": ...}`` to override.
+        should_cancel: ADR-0008 D9 (Step 4) cancellation seam, polled once
+            per notification tick. When it returns True the driver sends
+            ``turn/interrupt`` and returns with
+            ``error=CODEX_CANCELLED_ERROR``; the finalizer then closes the
+            client, which terminates the ``codex app-server`` subprocess, so
+            the caller's ``CancelOutcome.cancelled`` really does mean the
+            child process is gone. Checked before the deadline so a stop
+            issued in the same tick as an expiring budget is reported as the
+            operator decision it was. ``None`` (the default, and every
+            pre-Step-4 caller) leaves the loop exactly as it was.
 
     Returns:
         :class:`CodexActionResult` with at least ``error`` and ``interrupted``
@@ -763,15 +777,21 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
     error: str | None = None
     interrupted = False
 
-    def _result(
-        *,
-        error: str | None,
-        interrupted: bool,
-        thread_id: str | None,
-    ) -> CodexActionResult:
-        # Close best-effort; never let close() failure clobber the real outcome.
-        with contextlib.suppress(Exception):
+    close_attempted = False
+
+    def _close() -> None:
+        nonlocal close_attempted
+        if close_attempted:
+            return
+        close_attempted = True
+        # A returned handler must not be mistaken for physical process exit.
+        try:
             client.close(timeout=3.0)
+        except BaseException:
+            context = current_execution_context()
+            if context is not None:
+                context.record_unconfirmed_quiescence()
+            raise
         # Remove the per-spawn empty CODEX_HOME if we created one.
         # ``ignore_errors=True`` ensures a stuck file (e.g. NFS lock) never
         # masks the real result; the dir is a few bytes empty in steady state.
@@ -788,6 +808,14 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
                 sys.stderr.write(f"[jarvis] preserved CODEX_HOME={codex_home_dir}\n")
             else:
                 shutil.rmtree(codex_home_dir, ignore_errors=True)
+
+    def _result(
+        *,
+        error: str | None,
+        interrupted: bool,
+        thread_id: str | None,
+    ) -> CodexActionResult:
+        _close()
         # ``thread_id`` is unused in the result but kept in the signature
         # so the closure is documented (Step 10 may want it for events).
         del thread_id
@@ -805,161 +833,174 @@ def run_codex_action(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one-shot driver
             submit_report_calls=tuple(submit_report_calls),
         )
 
-    # Step 2: initialize handshake.
     try:
-        client.initialize(timeout=5.0)
-    except Exception as exc:  # noqa: BLE001 - any failure here is fatal-but-recoverable
-        return _result(
-            error=f"codex_initialize_failed: {exc}",
-            interrupted=False,
-            thread_id=None,
-        )
+        # Step 2: initialize handshake.
+        try:
+            client.initialize(timeout=5.0)
+        except Exception as exc:  # noqa: BLE001 - any failure here is fatal-but-recoverable
+            return _result(
+                error=f"codex_initialize_failed: {exc}",
+                interrupted=False,
+                thread_id=None,
+            )
 
-    # Step 3: thread/start. The submit_report prompt-pressure layer is
-    # delivered via ``$CODEX_HOME/AGENTS.md`` (written above) -- the
-    # only working instruction-source channel in Codex 0.130
-    # (live-verified 2026-05-18). Passing ``developerInstructions`` /
-    # ``baseInstructions`` here is a no-op so we omit them.
-    try:
-        ts_result = client.request("thread/start", {"cwd": str(cwd)})
-        thread_id = _extract_thread_id(ts_result)
-    except Exception as exc:  # noqa: BLE001 - protocol failure surfaces as structured error
-        return _result(
-            error=f"codex_thread_start_failed: {exc}",
-            interrupted=False,
-            thread_id=None,
-        )
+        # Step 3: thread/start. The submit_report prompt-pressure layer is
+        # delivered via ``$CODEX_HOME/AGENTS.md`` (written above) -- the
+        # only working instruction-source channel in Codex 0.130
+        # (live-verified 2026-05-18). Passing ``developerInstructions`` /
+        # ``baseInstructions`` here is a no-op so we omit them.
+        try:
+            ts_result = client.request("thread/start", {"cwd": str(cwd)})
+            thread_id = _extract_thread_id(ts_result)
+        except Exception as exc:  # noqa: BLE001 - protocol failure surfaces as structured error
+            return _result(
+                error=f"codex_thread_start_failed: {exc}",
+                interrupted=False,
+                thread_id=None,
+            )
 
-    # Step 4: turn/start.
-    try:
-        client.request(
-            "turn/start",
-            {
-                "threadId": thread_id,
-                "input": [{"type": "text", "text": task_goal}],
-            },
-        )
-    except Exception as exc:  # noqa: BLE001 - protocol failure surfaces as structured error
-        return _result(
-            error=f"codex_turn_start_failed: {exc}",
-            interrupted=False,
-            thread_id=thread_id,
-        )
+        # Step 4: turn/start.
+        try:
+            client.request(
+                "turn/start",
+                {
+                    "threadId": thread_id,
+                    "input": [{"type": "text", "text": task_goal}],
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - protocol failure surfaces as structured error
+            return _result(
+                error=f"codex_turn_start_failed: {exc}",
+                interrupted=False,
+                thread_id=thread_id,
+            )
 
-    # Step 5: notification poll loop.
-    deadline = start_mono + timeout_s
-    last_heartbeat_at = start_mono
+        # Step 5: notification poll loop.
+        deadline = start_mono + timeout_s
+        last_heartbeat_at = start_mono
 
-    while True:
-        now = time.monotonic()
-        if now >= deadline:
-            # Timeout — interrupt the turn and bail.
-            with contextlib.suppress(Exception):
-                client.request("turn/interrupt", {"threadId": thread_id})
-            interrupted = True
-            error = "codex_turn_timeout"
-            break
-
-        # Drain pending server-initiated requests first so an
-        # outstanding mcpServer/elicitation/request can't block the next
-        # tool dispatch (B-0013). Non-blocking — we only act on what's
-        # already queued; if none, fall through to the notification poll.
         while True:
-            req = client.take_server_request(timeout=0.0)
-            if req is None:
+            now = time.monotonic()
+            if should_cancel is not None and should_cancel():
+                # Ask the server to stop the turn; `_result` then closes the
+                # client, which terminates and (if needed) kills the subprocess.
+                with contextlib.suppress(Exception):
+                    client.request("turn/interrupt", {"threadId": thread_id})
+                interrupted = True
+                error = CODEX_CANCELLED_ERROR
                 break
-            _auto_respond_server_request(client, req)
-
-        notif = client.take_notification(timeout=_POLL_INTERVAL_S)
-        if notif is None:
-            # The notification queue is drained this tick. If the
-            # subprocess has exited before emitting turn/completed, that
-            # is a crash, not a slow turn — surface the canonical
-            # codex_subprocess_crashed tag immediately (J8 / ADR-0002
-            # Negative-path appendix) instead of spinning out the full
-            # deadline and mislabelling it codex_turn_timeout. Checked
-            # AFTER take_notification so any buffered turn/completed is
-            # processed first (a clean turn whose proc then exits is not
-            # treated as a crash).
-            if not client.is_alive():
-                error = "codex_subprocess_crashed"
+            if now >= deadline:
+                # Timeout — interrupt the turn and bail.
+                with contextlib.suppress(Exception):
+                    client.request("turn/interrupt", {"threadId": thread_id})
+                interrupted = True
+                error = "codex_turn_timeout"
                 break
-            # No notification this tick — check heartbeat cadence.
-            if on_heartbeat is not None and (now - last_heartbeat_at) >= heartbeat_interval_s:
-                on_heartbeat(
-                    {
-                        "summary": "codex turn in progress",
-                        "elapsed_ms": int((now - start_mono) * 1000),
-                        "last_item_summary": last_item_summary,
-                    }
-                )
-                last_heartbeat_at = now
-            continue
 
-        method = notif.get("method", "") or ""
-        raw_params = notif.get("params") or {}
-        params: Mapping[str, Any] = raw_params if isinstance(raw_params, Mapping) else {}
+            # Drain pending server-initiated requests first so an
+            # outstanding mcpServer/elicitation/request can't block the next
+            # tool dispatch (B-0013). Non-blocking — we only act on what's
+            # already queued; if none, fall through to the notification poll.
+            while True:
+                req = client.take_server_request(timeout=0.0)
+                if req is None:
+                    break
+                _auto_respond_server_request(client, req)
 
-        if method.startswith("item/"):
-            # Any streamed item (started/completed/delta/tool_call) proves
-            # the model actually ran. A turn that completes with zero items
-            # is the dead-auth signature (Codex 0.130 folds an unrefreshable
-            # token into a ~2s task_complete with last_agent_message=null)
-            # and is classified ``codex_empty_turn`` below.
-            saw_any_item = True
+            notif = client.take_notification(timeout=_POLL_INTERVAL_S)
+            if notif is None:
+                # The notification queue is drained this tick. If the
+                # subprocess has exited before emitting turn/completed, that
+                # is a crash, not a slow turn — surface the canonical
+                # codex_subprocess_crashed tag immediately (J8 / ADR-0002
+                # Negative-path appendix) instead of spinning out the full
+                # deadline and mislabelling it codex_turn_timeout. Checked
+                # AFTER take_notification so any buffered turn/completed is
+                # processed first (a clean turn whose proc then exits is not
+                # treated as a crash).
+                if not client.is_alive():
+                    error = "codex_subprocess_crashed"
+                    break
+                # No notification this tick — check heartbeat cadence.
+                if on_heartbeat is not None and (now - last_heartbeat_at) >= heartbeat_interval_s:
+                    on_heartbeat(
+                        {
+                            "summary": "codex turn in progress",
+                            "elapsed_ms": int((now - start_mono) * 1000),
+                            "last_item_summary": last_item_summary,
+                        }
+                    )
+                    last_heartbeat_at = now
+                continue
 
-        if method == "item/tool_call":
-            # Legacy Codex 0.125-0.129 schema; kept as a back-compat fallback.
-            tool_name = _extract_tool_name(params)
-            if tool_name == "submit_report":
-                submit_report_calls.append(_extract_tool_arguments(params))
-            last_item_summary = f"tool_call:{tool_name or 'unknown'}"
+            method = notif.get("method", "") or ""
+            raw_params = notif.get("params") or {}
+            params: Mapping[str, Any] = raw_params if isinstance(raw_params, Mapping) else {}
 
-        elif method == "item/completed":
-            mcp = _extract_completed_mcp_tool(params)
-            if mcp is not None:
-                tool_name, args = mcp
+            if method.startswith("item/"):
+                # Any streamed item (started/completed/delta/tool_call) proves
+                # the model actually ran. A turn that completes with zero items
+                # is the dead-auth signature (Codex 0.130 folds an unrefreshable
+                # token into a ~2s task_complete with last_agent_message=null)
+                # and is classified ``codex_empty_turn`` below.
+                saw_any_item = True
+
+            if method == "item/tool_call":
+                # Legacy Codex 0.125-0.129 schema; kept as a back-compat fallback.
+                tool_name = _extract_tool_name(params)
                 if tool_name == "submit_report":
-                    submit_report_calls.append(args)
+                    submit_report_calls.append(_extract_tool_arguments(params))
                 last_item_summary = f"tool_call:{tool_name or 'unknown'}"
-            else:
+
+            elif method == "item/completed":
+                mcp = _extract_completed_mcp_tool(params)
+                if mcp is not None:
+                    tool_name, args = mcp
+                    if tool_name == "submit_report":
+                        submit_report_calls.append(args)
+                    last_item_summary = f"tool_call:{tool_name or 'unknown'}"
+                else:
+                    text = _extract_text_item(params)
+                    if text:
+                        final_text_parts.append(text)
+                    last_item_summary = method
+
+            elif method.startswith("item/"):
                 text = _extract_text_item(params)
                 if text:
                     final_text_parts.append(text)
                 last_item_summary = method
 
-        elif method.startswith("item/"):
-            text = _extract_text_item(params)
-            if text:
-                final_text_parts.append(text)
-            last_item_summary = method
+            elif method == "thread/tokenUsage/updated":
+                # Codex 0.130 streams cumulative usage here; turn/completed no
+                # longer carries a usage field. Each update overwrites the
+                # previous one (totals are cumulative), so the last update
+                # before turn/completed is the turn's final count.
+                usage_update = _extract_token_usage_update(params)
+                if usage_update is not None:
+                    tokens_in, tokens_out = usage_update
 
-        elif method == "thread/tokenUsage/updated":
-            # Codex 0.130 streams cumulative usage here; turn/completed no
-            # longer carries a usage field. Each update overwrites the
-            # previous one (totals are cumulative), so the last update
-            # before turn/completed is the turn's final count.
-            usage_update = _extract_token_usage_update(params)
-            if usage_update is not None:
-                tokens_in, tokens_out = usage_update
+            elif method == "turn/completed":
+                # Legacy (0.125-0.129) flat usage on turn/completed is
+                # authoritative when present; never clobber streamed
+                # tokenUsage totals with the 0.130 shape's missing field.
+                legacy_in, legacy_out = _extract_usage(params)
+                if legacy_in or legacy_out:
+                    tokens_in, tokens_out = legacy_in, legacy_out
+                turn_id_out = _extract_turn_id(params)
+                if not saw_any_item:
+                    # Zero-item turn — tool-level success is not goal evidence
+                    # (C5); surface a structured error so spawn_worker_handler
+                    # 7b folds it into action.failed + Limitation Claim instead
+                    # of the silent task.no_op + report_missing shape.
+                    error = "codex_empty_turn"
+                break
 
-        elif method == "turn/completed":
-            # Legacy (0.125-0.129) flat usage on turn/completed is
-            # authoritative when present; never clobber streamed
-            # tokenUsage totals with the 0.130 shape's missing field.
-            legacy_in, legacy_out = _extract_usage(params)
-            if legacy_in or legacy_out:
-                tokens_in, tokens_out = legacy_in, legacy_out
-            turn_id_out = _extract_turn_id(params)
-            if not saw_any_item:
-                # Zero-item turn — tool-level success is not goal evidence
-                # (C5); surface a structured error so spawn_worker_handler
-                # 7b folds it into action.failed + Limitation Claim instead
-                # of the silent task.no_op + report_missing shape.
-                error = "codex_empty_turn"
-            break
+            # Unknown notification methods are ignored on purpose; the
+            # server-request queue is drained at the top of every iteration.
 
-        # Unknown notification methods are ignored on purpose; the
-        # server-request queue is drained at the top of every iteration.
-
-    return _result(error=error, interrupted=interrupted, thread_id=thread_id)
+        return _result(error=error, interrupted=interrupted, thread_id=thread_id)
+    finally:
+        # Every exit after construction must settle physical ownership,
+        # including heartbeat, notification, and server-request failures.
+        _close()

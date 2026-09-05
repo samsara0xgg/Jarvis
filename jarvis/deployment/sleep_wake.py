@@ -87,6 +87,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from jarvis.state.event_log import emit_event, iter_events
+from jarvis.state.lifecycle_terminal import terminalize_action
 
 if TYPE_CHECKING:
     import asyncio
@@ -574,6 +575,8 @@ def install_power_observer(
     *,
     observer_factory: Callable[[], PowerObserver] | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
+    before_sleep_hook: Callable[[], object] | None = None,
+    on_wake_hook: Callable[[], object] | None = None,
 ) -> PowerObserver:
     """Register the macOS power observer; wire sleep/wake callbacks.
 
@@ -604,6 +607,10 @@ def install_power_observer(
             (default) the callbacks run inline on whatever thread fires
             them, which is the one-shot CLI's shape and the byte-for-byte
             K7/K8 stub contract.
+        before_sleep_hook: Optional runtime-owned bounded media shutdown
+            called before the durable sleep events are emitted.
+        on_wake_hook: Optional runtime-owned bounded media reopen called after
+            durable wake reconciliation.
 
     Returns:
         The registered observer. The caller may later call
@@ -625,6 +632,8 @@ def install_power_observer(
 
     def _before_sleep() -> None:
         """Emit mac.sleeping + per-action worker.suspended_by_sleep."""
+        if before_sleep_hook is not None:
+            before_sleep_hook()
         in_progress = _in_progress_actions(conn)
         emit_event(
             conn,
@@ -664,6 +673,8 @@ def install_power_observer(
             },
         )
         reconcile_after_wake(conn)
+        if on_wake_hook is not None:
+            on_wake_hook()
 
     before_sleep_cb: Callable[[], None] = _before_sleep
     on_wake_cb: Callable[[], None] = _on_wake
@@ -733,9 +744,13 @@ def reconcile_after_wake(event_log: sqlite3.Connection | None) -> int:
                 "action_id": action.action_id,
             },
         )
-        emit_event(
+        # ADR-0008 F8 — a supervisor terminal races L4's own result. The CAS
+        # picks one winner inside `BEGIN IMMEDIATE`; the loser gets
+        # `AlreadyTerminal` and appends nothing, so an action can never carry
+        # two canonical terminals.
+        terminalize_action(
             conn,
-            type="action.timeout_assumed",
+            event_type="action.timeout_assumed",
             payload={
                 "action_id": action.action_id,
                 "reason": "lost_to_sleep",
@@ -822,9 +837,12 @@ def sweep_overdue_actions(
         correlation = {"action_id": action.action_id}
         if action.run_id is not None:
             correlation["run_id"] = action.run_id
-        emit_event(
+        # ADR-0008 F8 — `_has_terminal_event` above is a cheap pre-filter,
+        # not the arbiter: it is a check-then-act that a concurrent L4 result
+        # can slip through. The CAS is what actually decides.
+        terminalize_action(
             conn,
-            type="action.timeout_assumed",
+            event_type="action.timeout_assumed",
             payload={
                 "action_id": action.action_id,
                 "reason": _SWEEP_TIMEOUT_REASON,

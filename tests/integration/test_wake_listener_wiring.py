@@ -3,6 +3,8 @@
 # ruff: noqa: SLF001 — module-private wiring is the surface under test here.
 from __future__ import annotations
 
+import asyncio
+import threading
 import time
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -36,6 +38,7 @@ def test_spawn_wake_listener_passes_real_frame_factory(tmp_path: Path) -> None:
 
     with patch.object(voice_wake.WakeListener, "__init__", _spy_init), \
          patch.object(voice_wake.WakeListener, "start"), \
+         patch.object(voice_wake.WakeEngine, "start") as model_start, \
          patch("jarvis.surface.voice_audio.SileroVad") as mock_silero, \
          patch.object(inherent_loop, "_open_wake_input_stream", return_value=fake_stream):
         mock_silero.return_value = MagicMock()
@@ -46,6 +49,7 @@ def test_spawn_wake_listener_passes_real_frame_factory(tmp_path: Path) -> None:
             tts=tts_pipeline,
         )
         assert listener is not None
+        model_start.assert_called_once()
         assert captured.get("frame_factory") is not None, (
             "_spawn_wake_listener must pass a real frame_factory (not the zero-frame default)"
         )
@@ -76,6 +80,7 @@ def test_spawn_wake_listener_forwards_ducker(tmp_path: Path) -> None:
 
     with patch.object(voice_wake.WakeListener, "__init__", _spy_init), \
          patch.object(voice_wake.WakeListener, "start"), \
+         patch.object(voice_wake.WakeEngine, "start") as model_start, \
          patch("jarvis.surface.voice_audio.SileroVad") as mock_silero, \
          patch.object(inherent_loop, "_open_wake_input_stream", return_value=fake_stream):
         mock_silero.return_value = MagicMock()
@@ -86,6 +91,7 @@ def test_spawn_wake_listener_forwards_ducker(tmp_path: Path) -> None:
             tts=tts_pipeline,
             ducker=shared_ducker,
         )
+        model_start.assert_called_once()
         assert captured.get("ducker") is shared_ducker, (
             "_spawn_wake_listener must forward `ducker` into WakeListener"
         )
@@ -169,12 +175,13 @@ def test_tts_pipeline_does_not_duck_around_speak() -> None:
     pipeline = voice_tts.TTSPipeline(
         provider=provider,
         player=player,
-        fallback=lambda _text: None,
+        fallback=None,
         ducker=fake_ducker,
     )
     pipeline.begin_turn("T1", gate_mode="sentence")
     pipeline.handle_chunk("T1", "<voice>你好</voice>")
     pipeline.end_turn("T1")
+    assert pipeline.wait_until_idle(timeout_s=1.0)
 
     # Synth must have happened (the smoke fix only dropped the ducker, not the synth).
     provider.synthesize.assert_awaited_once()
@@ -182,6 +189,138 @@ def test_tts_pipeline_does_not_duck_around_speak() -> None:
     # And the ducker MUST be untouched.
     fake_ducker.duck.assert_not_called()
     fake_ducker.restore.assert_not_called()
+    assert pipeline.close(wait_timeout_s=1.0)
+
+
+def test_wake_does_not_duck_while_tts_waits_for_first_pcm() -> None:
+    """Provider I/O is output-active before the player's first queued byte."""
+    synthesis_started = threading.Event()
+    release_synthesis = threading.Event()
+
+    async def _synthesize(_text: str) -> bytes:
+        synthesis_started.set()
+        assert release_synthesis.wait(timeout=2.0)
+        await asyncio.sleep(0)
+        return b"\x00" * 960
+
+    provider = MagicMock(spec=voice_tts.MiniMaxWSClient)
+    provider.synthesize = AsyncMock(side_effect=_synthesize)
+    player = MagicMock(spec=voice_tts.AudioStreamPlayer)
+    player.bytes_pending.return_value = 0
+    pipeline = voice_tts.TTSPipeline(
+        provider=provider,
+        player=player,
+        fallback=None,
+        ducker=voice_ducking.SystemAudioDucker(enabled=False),
+    )
+    pipeline.begin_turn("T-race", gate_mode="sentence")
+
+    synthesis_thread = threading.Thread(
+        target=pipeline.handle_chunk,
+        args=("T-race", "<voice>你好</voice>"),
+        daemon=True,
+    )
+    synthesis_thread.start()
+    assert synthesis_started.wait(timeout=1.0)
+
+    ducker = MagicMock(spec=voice_ducking.SystemAudioDucker)
+    capture = MagicMock(return_value=b"\x10\x00" * 16_000)
+    engine = MagicMock()
+    engine.predict.return_value = {"hey_jarvis_v0.1": 0.9}
+    listener = voice_wake.WakeListener(
+        engine=engine,
+        pipeline=MagicMock(),
+        broadcaster=MagicMock(),
+        capture_callable=capture,
+        threshold=0.5,
+        is_speaking_callable=pipeline.is_speaking,
+        ducker=ducker,
+    )
+
+    try:
+        assert pipeline.is_speaking(), (
+            "legacy is_speaking() must include synth-before-first-PCM activity"
+        )
+        assert pipeline.is_output_active()
+        listener._run_one_iter()
+        engine.predict.assert_not_called()
+        capture.assert_not_called()
+        ducker.duck.assert_not_called()
+    finally:
+        release_synthesis.set()
+        synthesis_thread.join(timeout=2.0)
+        assert pipeline.wait_until_idle(timeout_s=2.0)
+
+    assert not synthesis_thread.is_alive()
+    player.write.assert_called_once()
+    assert pipeline.close(wait_timeout_s=1.0)
+
+
+def test_shared_ducker_closes_check_then_duck_race() -> None:
+    """A TTS lease acquired after wake's first check still prevents OS mute."""
+    synthesis_started = threading.Event()
+    release_synthesis = threading.Event()
+
+    async def _synthesize(_text: str) -> bytes:
+        synthesis_started.set()
+        assert release_synthesis.wait(timeout=2.0)
+        await asyncio.sleep(0)
+        return b"\x00" * 960
+
+    shared_ducker = voice_ducking.SystemAudioDucker()
+    provider = MagicMock(spec=voice_tts.MiniMaxWSClient)
+    provider.synthesize = AsyncMock(side_effect=_synthesize)
+    player = MagicMock(spec=voice_tts.AudioStreamPlayer)
+    player.bytes_pending.return_value = 0
+    tts_pipeline = voice_tts.TTSPipeline(
+        provider=provider,
+        player=player,
+        fallback=None,
+        ducker=shared_ducker,
+    )
+    tts_pipeline.begin_turn("T-race-arbiter", gate_mode="sentence")
+
+    synthesis_thread: threading.Thread | None = None
+
+    def _predict_after_initial_output_check(_frame: bytes) -> dict[str, float]:
+        nonlocal synthesis_thread
+        synthesis_thread = threading.Thread(
+            target=tts_pipeline.handle_chunk,
+            args=("T-race-arbiter", "<voice>你好</voice>"),
+            daemon=True,
+        )
+        synthesis_thread.start()
+        assert synthesis_started.wait(timeout=1.0)
+        return {"hey_jarvis_v0.1": 0.9}
+
+    engine = MagicMock()
+    engine.predict.side_effect = _predict_after_initial_output_check
+    listener = voice_wake.WakeListener(
+        engine=engine,
+        pipeline=MagicMock(),
+        broadcaster=MagicMock(),
+        capture_callable=MagicMock(return_value=b""),
+        threshold=0.5,
+        is_speaking_callable=tts_pipeline.is_output_active,
+        ducker=shared_ducker,
+    )
+
+    try:
+        with (
+            patch.object(voice_ducking, "_available", return_value=True),
+            patch.object(voice_ducking, "_run_osascript") as osascript,
+        ):
+            listener._run_one_iter()
+            osascript.assert_not_called()
+    finally:
+        release_synthesis.set()
+        if synthesis_thread is not None:
+            synthesis_thread.join(timeout=2.0)
+        assert tts_pipeline.wait_until_idle(timeout_s=2.0)
+
+    assert synthesis_thread is not None
+    assert not synthesis_thread.is_alive()
+    assert tts_pipeline.close(wait_timeout_s=1.0)
 
 
 def test_serve_inherent_shutdown_joins_wake_thread_before_stream_close(
@@ -212,6 +351,7 @@ def test_serve_inherent_shutdown_joins_wake_thread_before_stream_close(
     tts_pipeline.is_speaking = lambda: False
 
     with patch.object(voice_wake.WakeListener, "start"), \
+         patch.object(voice_wake.WakeEngine, "start") as model_start, \
          patch("jarvis.surface.voice_audio.SileroVad") as mock_silero, \
          patch.object(inherent_loop, "_open_wake_input_stream", return_value=fake_stream):
         mock_silero.return_value = MagicMock()
@@ -222,6 +362,7 @@ def test_serve_inherent_shutdown_joins_wake_thread_before_stream_close(
             tts=tts_pipeline,
         )
         assert _result is not None
+        model_start.assert_called_once()
         listener, stream = _result
         assert stream is not None
 
@@ -258,7 +399,7 @@ def test_shutdown_tts_closes_player() -> None:
     tts_pipe = voice_tts.TTSPipeline(
         provider=MagicMock(spec=voice_tts.MiniMaxWSClient),
         player=player,
-        fallback=lambda _text: None,
+        fallback=None,
     )
     inherent_loop._shutdown_tts(tts_pipe)
     player.stop.assert_called_once()

@@ -46,6 +46,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from jarvis.shared import Claim, ClaimType, Evidence, EvidenceLevel
+from jarvis.state.conversation import ConversationHistory, fold_conversation_history
 from jarvis.state.event_log import iter_events
 
 if TYPE_CHECKING:
@@ -1354,6 +1355,22 @@ class PendingConfirmations:
         return _fold_pending_confirmations(events)
 
 
+def _pending_slot_from_requested(event: Event) -> PendingConfirmationSlot | None:
+    payload = event.payload
+    identity, snapshot = payload.get("confirmation_id"), payload.get("action_snapshot")
+    template, expiry = payload.get("template_line"), payload.get("expires_at_ms")
+    if (
+        not isinstance(identity, str) or not identity
+        or not isinstance(snapshot, dict) or not isinstance(template, str)
+        or type(expiry) is not int
+    ):
+        return None  # A malformed successor cannot leave an older ask executable.
+    return PendingConfirmationSlot(
+        confirmation_id=identity, snapshot=snapshot, template_line=template,
+        expires_at_ms=expiry, state="pending", accepted_event_uid=None,
+    )
+
+
 def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations:
     """Single-pass fold producing the PendingConfirmations projection.
 
@@ -1392,14 +1409,7 @@ def _fold_pending_confirmations(events: Iterable[Event]) -> PendingConfirmations
 
     for evt in events:
         if evt.type == "confirmation.requested":
-            slot = PendingConfirmationSlot(
-                confirmation_id=str(evt.payload["confirmation_id"]),
-                snapshot=evt.payload["action_snapshot"],
-                template_line=str(evt.payload["template_line"]),
-                expires_at_ms=int(evt.payload["expires_at_ms"]),
-                state="pending",
-                accepted_event_uid=None,
-            )
+            slot = _pending_slot_from_requested(evt)
         elif evt.type == "confirmation.accepted":
             if (
                 slot is not None
@@ -1449,6 +1459,7 @@ class ProjectionSet:
     status_board: StatusBoard
     entity_registry: EntityRegistry
     pending_confirmations: PendingConfirmations
+    conversation_history: ConversationHistory = field(default_factory=ConversationHistory)
 
 
 def rebuild_projections(
@@ -1486,7 +1497,20 @@ def rebuild_projections(
         `claim_evidence`, `status_board`, `entity_registry`, and
         `pending_confirmations` projections.
     """
-    materialized = list(iter_events(conn))
+    return fold_projections(
+        list(iter_events(conn)), recent_trace_size=recent_trace_size,
+        entity_bookmarks=entity_bookmarks,
+    )
+
+
+def fold_projections(
+    events: Iterable[Event],
+    *,
+    recent_trace_size: int = _RECENT_TRACE_DEFAULT_SIZE,
+    entity_bookmarks: Sequence[tuple[str, str]] = (),
+) -> ProjectionSet:
+    """Fold a caller's transaction-pinned Event Log without any further SQL."""
+    materialized = list(events)
     claim_evidence = _fold_claim_evidence(materialized)
     task_ledger = TaskLedger(
         records_by_task_id=_fold_task_ledger_records(materialized),
@@ -1505,6 +1529,7 @@ def rebuild_projections(
         status_board=_fold_status_board(materialized),
         entity_registry=entity_registry,
         pending_confirmations=_fold_pending_confirmations(materialized),
+        conversation_history=fold_conversation_history(materialized),
     )
 
 

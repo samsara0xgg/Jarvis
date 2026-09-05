@@ -17,6 +17,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Protocol
 
+from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import emit_event
 from jarvis.surface import voice_artifact_store, voice_asr
 
@@ -78,7 +79,15 @@ class VoicePipeline:
         self._artifacts_dir = artifacts_dir
         self._sample_rate_hz = sample_rate_hz
 
-    def run_turn(  # noqa: C901, PLR0913 — wake/PTT toggles widen the signature; splitting would shred the single locked critical section.
+    def prewarm_input_model(self) -> None:
+        """Prewarm the concrete local ASR provider for single-ingress activation."""
+        prewarm = getattr(self._recognizer, "prewarm", None)
+        if not callable(prewarm):
+            msg = "configured ASR recognizer does not expose prewarm()"
+            raise TypeError(msg)
+        prewarm()
+
+    def run_turn(  # noqa: C901, PLR0912, PLR0913 — wake/PTT toggles widen the signature; splitting would shred the single locked critical section.
         self,
         *,
         audio_bytes: bytes,
@@ -88,6 +97,9 @@ class VoicePipeline:
         lock_acquire_timeout_s: float = 2.0,
         lock_already_held: bool = False,
         broadcast: bool = True,
+        session_id: str | None = None,
+        utterance_id: str | None = None,
+        endpoint_reason: str | None = None,
     ) -> Event:
         """Execute one voice turn end-to-end. Returns the emitted Event row.
 
@@ -110,6 +122,11 @@ class VoicePipeline:
                 the HTTP response, not WS envelopes); wake path passes
                 True (default) so the WS-driven card sees the phase
                 transitions.
+            session_id: Optional realtime voice-session identity added to the
+                committed utterance payload.
+            utterance_id: Optional realtime utterance identity added to the
+                committed utterance payload.
+            endpoint_reason: Optional typed acoustic endpoint reason.
 
         Raises:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
@@ -126,8 +143,24 @@ class VoicePipeline:
                 )
                 raise VoiceInputBusyError(msg)
         try:
-            # 1. Recognize (sync ASR call).
+            # 1. Recognize (sync ASR call). The caller's endpoint/audio
+            # assembly is a distinct software milestone; this point is the
+            # authoritative SenseVoice result, not ADC or acoustic truth.
+            record_realtime_trace(
+                "asr_final_started",
+                turn_id=turn_id,
+                channel=channel,
+                audio_bytes=len(audio_bytes),
+                measurement_boundary="authoritative_asr_call_started",
+            )
             tr = self._recognizer.recognize(audio_bytes)
+            record_realtime_trace(
+                "asr_final",
+                turn_id=turn_id,
+                channel=channel,
+                transcript_characters=len(tr.text),
+                measurement_boundary="authoritative_sensevoice_result",
+            )
 
             # 2. Empty / too-short filter — ADR §8 fix #3 (unified).
             if voice_asr.is_empty_or_too_short(tr.text, audio_pcm=audio_bytes):
@@ -163,6 +196,12 @@ class VoicePipeline:
                 payload["emotion"] = tr.emotion
             if artifact_ref:
                 payload["audio_artifact_ref"] = artifact_ref
+            if session_id is not None:
+                payload["session_id"] = session_id
+            if utterance_id is not None:
+                payload["utterance_id"] = utterance_id
+            if endpoint_reason is not None:
+                payload["endpoint_reason"] = endpoint_reason
 
             with contextlib.closing(self._conn_factory()) as worker_conn:
                 ev = emit_event(
@@ -171,7 +210,16 @@ class VoicePipeline:
                     payload=payload,
                     correlation={"turn_id": turn_id},
                 )
-
+            record_realtime_trace(
+                "utterance_committed",
+                turn_id=turn_id,
+                channel=channel,
+                session_id=session_id,
+                utterance_id=utterance_id,
+                endpoint_reason=endpoint_reason,
+                event_uid=ev.event_uid,
+                measurement_boundary="durable_utterance_received_commit",
+            )
             # 6. Wake-path UI notify (PTT path passes broadcast=False so
             # Swift drives the card from the HTTP response, not WS).
             # Wire field is "text" to match the PTT HTTP contract

@@ -51,12 +51,14 @@ import math
 import re
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 from jarvis.decision.confirm_grammar import match_confirm_grammar
+from jarvis.decision.conversation import conversation_history_note
+from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.gates import (
     AttentionChannel,
     GateOutcome,
@@ -105,8 +107,17 @@ from jarvis.shared import (
     RawResultBundle,
 )
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
+from jarvis.shared.realtime import AlreadyConsumed, Wave1FeatureFlags, stable_authorization_identity
+from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
 from jarvis.shared.text import truncate_utf8
-from jarvis.state.event_log import emit_event
+from jarvis.state.authorized_dispatch_outbox import (
+    AuthorizedDispatchAlreadyStarted,
+    ConfirmationRevalidationError,
+    answer_confirmation_once,
+    authorize_confirmation_dispatch,
+)
+from jarvis.state.cost_accounting import record_run_cost_once
+from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.projections import make_snapshot
 
 if TYPE_CHECKING:
@@ -338,6 +349,19 @@ def _emit_cost_recorded(
             worker run; ``cost.recorded`` carries it as an optional
             correlation field so per-run cost rollups are possible).
     """
+    if ctx.wave1_features.exactly_once_cost_accounting:
+        outcome = CostRecorder(
+            ctx.conn,
+            pricing_table=_pricing_table(),
+        ).record_chat_result(
+            chat_result,
+            client=ctx.llm_client,
+            kind=kind,
+            turn_id=turn_id,
+            run_id=run_id,
+        )
+        return outcome.event
+
     cost_usd = compute_cost_usd(
         chat_result.model_used or None,
         chat_result.tokens_in,
@@ -370,6 +394,48 @@ def _emit_cost_recorded(
     )
 
 
+def _check_response_cancelled(ctx: DecideContext, where: str) -> None:
+    """Stop new response work while preserving already accepted actions."""
+    if ctx.cancellation_checkpoint is not None:
+        ctx.cancellation_checkpoint(where)
+
+
+def _run_llm_chat_with_cost_guard(  # noqa: PLR0913 - mirrors the provider call plus audit keys
+    ctx: DecideContext,
+    *,
+    messages: list[dict[str, Any]],
+    system: str,
+    tools: list[dict[str, Any]] | None,
+    kind: str,
+    turn_id: str | None,
+    tool_choice: str | None = "auto",
+) -> ChatResult:
+    """Use the exactly-once guard only when its Wave 1 flag is enabled."""
+    _check_response_cancelled(ctx, "before provider request")
+    cost_recorder = (
+        CostRecorder(ctx.conn, pricing_table=_pricing_table())
+        if ctx.wave1_features.exactly_once_cost_accounting else None
+    )
+    if ctx.request_admission is not None:
+        ctx.request_admission(kind)
+    if cost_recorder is None:
+        return ctx.llm_client.chat(
+            messages=messages,
+            system=system,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+    return cost_recorder.chat(
+        ctx.llm_client,
+        messages=messages,
+        system=system,
+        tools=tools,
+        tool_choice=tool_choice,
+        kind=kind,
+        turn_id=turn_id,
+    )
+
+
 def _emit_cost_recorded_from_metadata(
     ctx: DecideContext,
     raw_result: RawResult,
@@ -391,6 +457,59 @@ def _emit_cost_recorded_from_metadata(
     cost = metadata.get("cost")
     if not isinstance(cost, Mapping):
         return None
+    return _append_cost_recorded(ctx, cost, turn_id=turn_id)
+
+
+def _emit_cost_recorded_for_run(
+    ctx: DecideContext,
+    *,
+    run_id: str,
+    turn_id: str | None,
+) -> Event | None:
+    """Emit one ``cost.recorded`` for a run from its durable executor report.
+
+    ADR-0008 Step 4: a truly background `spawn_worker` hands its
+    ``RawResult`` to the ActionRunner, so ``metadata["cost"]`` never reaches
+    this layer. L4 instead stamps the run's tokens onto
+    ``task.executor_reported``, and L3 — still the only permitted emit-site —
+    reads them back here when the run re-enters ``decide``.
+
+    Idempotent by the durable fold: a run that already has a
+    ``cost.recorded`` row (the foreground path records it at dispatch) gets
+    nothing further, so the same re-entry is safe under either dispatch mode.
+    """
+    report: Mapping[str, Any] | None = None
+    for event in iter_events_of_types(
+        ctx.conn,
+        ("cost.recorded", "task.executor_reported"),
+    ):
+        if event.payload.get("run_id") != run_id:
+            continue
+        if event.type == "cost.recorded":
+            return None
+        report = event.payload
+    if report is None or not isinstance(report.get("model"), str):
+        return None
+    return _append_cost_recorded(
+        ctx,
+        {
+            "kind": report.get("executor", "codex"),
+            "model": report["model"],
+            "tokens_in": report.get("tokens_in", 0),
+            "tokens_out": report.get("tokens_out", 0),
+            "run_id": run_id,
+        },
+        turn_id=turn_id,
+    )
+
+
+def _append_cost_recorded(
+    ctx: DecideContext,
+    cost: Mapping[str, Any],
+    *,
+    turn_id: str | None,
+) -> Event | None:
+    """Price one cost mapping and append the single ``cost.recorded`` row."""
     model = cost.get("model")
     if not isinstance(model, str) or not model:
         # No model → cost.recorded would fail the required-field check.
@@ -427,6 +546,10 @@ def _emit_cost_recorded_from_metadata(
         correlation["turn_id"] = turn_id
     if run_id is not None:
         correlation["run_id"] = run_id
+    if run_id is not None:
+        return record_run_cost_once(
+            ctx.conn, run_id=run_id, payload=payload, correlation=correlation or None,
+        )
     return emit_event(
         ctx.conn,
         type="cost.recorded",
@@ -701,6 +824,10 @@ class DecideContext:
     write_entity_resolver: EntityResolverLike | None = None
     confirmation_ttl_ms: int = _DEFAULT_CONFIRMATION_TTL_MS
     confirm_grammar_table: ConfirmGrammarTable = ()
+    wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
+    cancellation_checkpoint: Callable[[str], None] | None = None
+    request_admission: Callable[[str], None] | None = None
+    typed_conversation_history: bool = False
 
 
 @dataclass(frozen=True)
@@ -812,9 +939,13 @@ def _insert_system_notes(
     about THIS turn's outstanding ask; spec §3.4.4, Phase 0 batch 4;
     ADR-0012 §3 D4).
 
-    All four share the §10.5 deviation: dynamic context sits at the
+    These notes share the §10.5 deviation: dynamic context sits at the
     head of the prompt, not the tail — flagged, not fixed, here.
     """
+    if ctx.typed_conversation_history:
+        history_note = conversation_history_note(packet)
+        if history_note is not None:
+            messages.insert(0, {"role": "user", "content": history_note})
     # ADR-0012 §3 D4: id-free note naming an outstanding confirmation
     # ask, if one is live. Lets an unrelated turn's LLM know an ask is
     # outstanding (C4) and a paraphrased-consent turn's LLM talk about
@@ -922,7 +1053,11 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
         return _handle_worker_reported(packet, policy, ctx, scratch)
     if trigger.type == "action.result_observed":
         return _handle_result_observed(packet, policy, ctx, scratch)
-    if trigger.type in ("action.timeout_assumed", "action.failed"):
+    if trigger.type in ("action.timeout_assumed", "action.failed", "action.cancelled"):
+        # ADR-0008 D9/D10 (Step 4): a cancelled ActionRun is a third terminal
+        # the paused turn has to be woken by. It is a limitation, not a
+        # failure of Jarvis, and it re-enters through the same arm because
+        # the Result Interpreter row it needs is identical.
         return _handle_action_terminal_failure(packet, policy, ctx, scratch)
 
     # Unknown trigger: emit nothing, return an empty plan. Stage 2 may
@@ -939,6 +1074,23 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
 # --- surface.user_intent branch --------------------------------------------
 
 
+def _claimed_turn_started(conn: sqlite3.Connection, trigger_event_uid: str) -> Event | None:
+    """Return the durable turn claim for this trigger, if the pump made one.
+
+    ADR-0008 D8's ``claim_input_once`` keys the claim by the trigger's
+    ``event_uid``, which is exactly what ``source_event_id`` holds, so the
+    lookup needs no new index or payload field.
+    """
+    return next(
+        (
+            event
+            for event in iter_events_of_types(conn, ("turn.started",))
+            if event.source_event_id == trigger_event_uid
+        ),
+        None,
+    )
+
+
 def _handle_utterance(
     packet: SituationPacket,
     policy: EffectivePolicy,
@@ -947,17 +1099,29 @@ def _handle_utterance(
 ) -> DecideResult:
     """Process a ``surface.user_intent`` trigger end-to-end (Day-1)."""
     trigger = packet.trigger_event
-    turn_id = packet.current_turn_id or _new_turn_id()
+    # ADR-0008 D8: when the runtime's intent pump durably claimed this
+    # trigger, the claim IS this turn's `turn.started` and its turn_id is
+    # authoritative. Hydrating it here rather than emitting a second one is
+    # what keeps one utterance to one turn row; with the pump off there is
+    # never a claim and this is the unchanged Day-1 path.
+    claimed = _claimed_turn_started(ctx.conn, trigger.event_uid)
+    turn_id = (
+        str(claimed.payload["turn_id"])
+        if claimed is not None
+        else (packet.current_turn_id or _new_turn_id())
+    )
     scratch.turn_id = turn_id
 
-    started_event = emit_event(
-        ctx.conn,
-        type="turn.started",
-        payload={"turn_id": turn_id, "trigger": trigger.event_uid},
-        source_event_id=trigger.event_uid,
-        correlation={"turn_id": turn_id},
-    )
-    scratch.events.append(started_event)
+    if claimed is None:
+        scratch.events.append(
+            emit_event(
+                ctx.conn,
+                type="turn.started",
+                payload={"turn_id": turn_id, "trigger": trigger.event_uid},
+                source_event_id=trigger.event_uid,
+                correlation={"turn_id": turn_id},
+            ),
+        )
 
     # ADR-0012 §3 D6 — the answer-path grammar hook, BEFORE
     # `tier_0_match`. THE LOAD-BEARING INVARIANT this ADR builds
@@ -1085,8 +1249,33 @@ def _run_tool_use_loop(
     iteration = 0
     while iteration < ctx.max_tool_iterations:
         iteration += 1
-        chat_result = ctx.llm_client.chat(
-            messages=messages, system=ctx.system_prompt, tools=tools,
+        record_realtime_trace(
+            "llm_chat_call_started_upper_bound",
+            turn_id=scratch.turn_id,
+            request_kind="decision",
+            iteration=iteration,
+            measurement_semantics="before_llm_client_call_not_transport_send",
+        )
+        with realtime_trace_context(
+            turn_id=scratch.turn_id,
+            request_kind="decision",
+            iteration=iteration,
+        ):
+            chat_result = _run_llm_chat_with_cost_guard(
+                ctx,
+                messages=messages,
+                system=ctx.system_prompt,
+                tools=tools,
+                kind="decision",
+                turn_id=scratch.turn_id,
+            )
+        record_realtime_trace(
+            "llm_batch_response_completed",
+            turn_id=scratch.turn_id,
+            request_kind="decision",
+            iteration=iteration,
+            candidate_kind="tool" if chat_result.tool_calls else "text",
+            text_characters=len(chat_result.text or ""),
         )
         # ADR-0002 Step 3: emit cost.recorded for the L3 decision turn.
         # L3 is the sole emit-site per spec §5.4.1; this is one of two
@@ -1098,6 +1287,7 @@ def _run_tool_use_loop(
             ),
         )
 
+        _check_response_cancelled(ctx, "after provider response")
         if chat_result.tool_calls:
             # Append the assistant turn (with tool_calls) so the next
             # iteration sees the LLM's tool requests in history.
@@ -1105,6 +1295,7 @@ def _run_tool_use_loop(
 
             dispatch_outcome: _DispatchOutcome = "continue"
             for tool_call in chat_result.tool_calls:
+                _check_response_cancelled(ctx, "before tool proposal")
                 dispatch_outcome = _dispatch_one_tool_call(
                     tool_call=tool_call,
                     packet=packet,
@@ -1353,8 +1544,29 @@ def _run_tier0_path(
     ctx.lifecycle.register(action_id)
     ctx.lifecycle.transition(action_id, "authorized")
 
+    record_realtime_trace(
+        "action_dispatch_started",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=hit.tool_name,
+    )
+    _check_response_cancelled(ctx, "before tool dispatch")
     bundle = ctx.tool_registry.dispatch(
         action_request, ctx.conn, ctx.runtime_paths, ctx.lifecycle,
+    )
+    record_realtime_trace(
+        "action_dispatch_returned",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=hit.tool_name,
+        result_slots=len(bundle.slots),
+    )
+    record_realtime_trace(
+        "action_result_available",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=hit.tool_name,
+        result_source="synchronous_dispatch_return",
     )
     result_observed_uid = _latest_event_uid_of_type(
         ctx.conn, event_type="action.result_observed",
@@ -1768,12 +1980,34 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0912, PLR0913, PLR0915 — single
     #    spawn_worker and action.result_observed for sync tools).
     #    Day-2 § RawResultBundle contract: dispatcher returns a bundle
     #    uniformly; single-slot tools are wrapped at the L4 boundary.
+    record_realtime_trace(
+        "action_dispatch_started",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=name,
+    )
+    _check_response_cancelled(ctx, "before tool dispatch")
     bundle = ctx.tool_registry.dispatch(
         action_request,
         ctx.conn,
         ctx.runtime_paths,
         ctx.lifecycle,
     )
+    record_realtime_trace(
+        "action_dispatch_returned",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=name,
+        result_slots=len(bundle.slots),
+    )
+    if not tool_def.is_async:
+        record_realtime_trace(
+            "action_result_available",
+            turn_id=scratch.turn_id,
+            action_id=action_id,
+            tool_name=name,
+            result_source="synchronous_dispatch_return",
+        )
     primary_slot = bundle.slots[0]
 
     # 6b. ADR-0002 Step 3: when L4 returns RawResult.metadata["cost"]
@@ -1995,10 +2229,19 @@ def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are 
         # ``review_diff`` itself wraps the ``.chat()`` call inside the
         # context manager (canary
         # ``test_canary_reviewer_fresh_context`` enforces).
+        reviewer_cost_recorder = (
+            CostRecorder(ctx.conn, pricing_table=_pricing_table())
+            if ctx.wave1_features.exactly_once_cost_accounting
+            else None
+        )
+        _check_response_cancelled(ctx, "before reviewer request")
         reviewer_verdict = review_diff(
             task_goal=task_goal,
             diff_text=diff_text,
             llm_client=ctx.llm_client,
+            cost_recorder=reviewer_cost_recorder,
+            turn_id=scratch.turn_id,
+            request_admission=ctx.request_admission,
         )
         # ADR-0002 § Reviewer contract line 743: the reviewer module
         # returns token counts on :class:`ReviewerVerdict`; this
@@ -2006,15 +2249,23 @@ def _route_verify_diff_bundle(  # noqa: PLR0913 - F2 ladder hand-off inputs are 
         # ``cost.recorded(kind="reviewer", ...)`` so the
         # per-LLM-call canary is satisfied without putting the emit
         # inside ``reviewer.py``.
-        scratch.events.append(
-            _emit_cost_recorded_from_verdict(
-                ctx,
-                verdict=reviewer_verdict,
-                turn_id=scratch.turn_id,
-                action_id=action_request.action_id,
-            ),
-        )
+        if reviewer_cost_recorder is not None:
+            accounting_outcome = reviewer_cost_recorder.last_outcome
+            if accounting_outcome is None:  # pragma: no cover - guarded chat always records
+                msg = "reviewer cost guard returned without a disposition"
+                raise RuntimeError(msg)
+            scratch.events.append(accounting_outcome.event)
+        else:
+            scratch.events.append(
+                _emit_cost_recorded_from_verdict(
+                    ctx,
+                    verdict=reviewer_verdict,
+                    turn_id=scratch.turn_id,
+                    action_id=action_request.action_id,
+                ),
+            )
 
+    _check_response_cancelled(ctx, "after reviewer response")
     emitted, verdict = interpret_verify_diff_bundle(
         bundle,
         source_event_ids_by_semantics=source_event_ids_by_semantics,
@@ -2185,6 +2436,16 @@ def _handle_worker_reported(
     scratch.turn_id = turn_id_from_corr if isinstance(turn_id_from_corr, str) else None
     if isinstance(run_id, str):
         scratch.last_run_id = run_id
+        # ADR-0008 Step 4: a background worker's cost never came back on a
+        # RawResult, so record it here from the run's durable executor
+        # report. A no-op when the foreground path already recorded it.
+        cost_event = _emit_cost_recorded_for_run(
+            ctx,
+            run_id=run_id,
+            turn_id=scratch.turn_id,
+        )
+        if cost_event is not None:
+            scratch.events.append(cost_event)
 
     if not isinstance(action_id, str):
         LOGGER.warning("worker.reported missing action_id payload — no-op")
@@ -2388,6 +2649,16 @@ def _handle_result_observed(
 # no LLM retry round-trip.
 _TIMEOUT_LIMITATION_TEXT: Final[str] = "Codex 超时，未完成"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
 _FAILED_LIMITATION_TEXT: Final[str] = "Codex 跑挂了，没新 diff"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+# ADR-0008 D9 (Step 4). A cancelled run is a limitation with a different
+# cause: nothing broke, somebody stopped it. Matched by the ``r"已停止"``
+# pattern added alongside the two above.
+_CANCELLED_LIMITATION_TEXT: Final[str] = "任务已停止，未完成"  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+
+_ACTION_TERMINAL_LIMITATION_TEXT: Final[Mapping[str, str]] = {
+    "action.timeout_assumed": _TIMEOUT_LIMITATION_TEXT,
+    "action.failed": _FAILED_LIMITATION_TEXT,
+    "action.cancelled": _CANCELLED_LIMITATION_TEXT,
+}
 
 
 def _handle_action_terminal_failure(
@@ -2434,6 +2705,16 @@ def _handle_action_terminal_failure(
     scratch.turn_id = turn_id_corr if isinstance(turn_id_corr, str) else None
     if isinstance(run_id_corr, str):
         scratch.last_run_id = run_id_corr
+        # Same reason as the worker.reported arm: a background worker that
+        # timed out, crashed or was cancelled still burned tokens, and this
+        # is the only layer allowed to say so.
+        cost_event = _emit_cost_recorded_for_run(
+            ctx,
+            run_id=run_id_corr,
+            turn_id=scratch.turn_id,
+        )
+        if cost_event is not None:
+            scratch.events.append(cost_event)
     if isinstance(task_id_corr, str):
         scratch.active_subject_ref = task_id_corr
 
@@ -2485,10 +2766,9 @@ def _handle_action_terminal_failure(
         )
         scratch.events.extend(interpreted)
 
-    canonical_text = (
-        _TIMEOUT_LIMITATION_TEXT
-        if trigger.type == "action.timeout_assumed"
-        else _FAILED_LIMITATION_TEXT
+    canonical_text = _ACTION_TERMINAL_LIMITATION_TEXT.get(
+        trigger.type,
+        _FAILED_LIMITATION_TEXT,
     )
 
     return _finalize_response(canonical_text, packet, ctx, scratch)
@@ -2557,6 +2837,23 @@ def _emit_pre_emit_gate_event(
         correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
     )
     scratch.events.append(gate_event)
+    permitted = not plan.downgrade_required
+    record_realtime_trace(
+        "response_candidate_gate_evaluated",
+        turn_id=scratch.turn_id,
+        gate_attempt=attempt,
+        permitted=permitted,
+        permission=plan.permission,
+        measurement_semantics="completed_batch_candidate_not_stream_delta",
+    )
+    if permitted:
+        record_realtime_trace(
+            "response_candidate_permitted",
+            turn_id=scratch.turn_id,
+            gate_attempt=attempt,
+            permission=plan.permission,
+            measurement_semantics="first_permitted_completed_candidate_not_stream_delta",
+        )
     return gate_event
 
 
@@ -2668,10 +2965,33 @@ def _finalize_response(
                 ),
             },
         ]
-        retry_result = ctx.llm_client.chat(
-            messages=retry_messages,
-            system=ctx.system_prompt,
-            tools=None,
+        record_realtime_trace(
+            "llm_chat_call_started_upper_bound",
+            turn_id=scratch.turn_id,
+            request_kind="pre_emit_retry",
+            iteration=1,
+            measurement_semantics="before_llm_client_call_not_transport_send",
+        )
+        with realtime_trace_context(
+            turn_id=scratch.turn_id,
+            request_kind="pre_emit_retry",
+            iteration=1,
+        ):
+            retry_result = _run_llm_chat_with_cost_guard(
+                ctx,
+                messages=retry_messages,
+                system=ctx.system_prompt,
+                tools=None,
+                kind="decision",
+                turn_id=scratch.turn_id,
+            )
+        record_realtime_trace(
+            "llm_batch_response_completed",
+            turn_id=scratch.turn_id,
+            request_kind="pre_emit_retry",
+            iteration=1,
+            candidate_kind="text",
+            text_characters=len(retry_result.text or ""),
         )
         # ADR-0002 Step 3: emit cost.recorded for the Pre-emit retry
         # LLM turn (the second of two L3 chat() sites in this module).
@@ -2680,6 +3000,7 @@ def _finalize_response(
                 ctx, retry_result, kind="decision", turn_id=scratch.turn_id,
             ),
         )
+        _check_response_cancelled(ctx, "after retry provider response")
         retry_text = retry_result.text or ""
         retry_plan = pre_emit_gate(retry_text, projections.claim_evidence, active_subject)
         last_gate_event = _emit_pre_emit_gate_event(
@@ -2757,7 +3078,11 @@ def _finalize_response(
         ended_event = emit_event(
             ctx.conn,
             type="turn.ended",
-            payload={"turn_id": scratch.turn_id, "final_response_hash": plan.response_hash},
+            payload={
+                "turn_id": scratch.turn_id,
+                "final_response_hash": plan.response_hash,
+                "consumed_trigger_event_uid": packet.trigger_event.event_uid,
+            },
             source_event_id=last_gate_event.event_uid,
             correlation={"turn_id": scratch.turn_id},
         )
@@ -3192,6 +3517,30 @@ def _new_lease_id() -> str:
     return "L" + uuid.uuid4().hex[:8]
 
 
+def _record_confirmation_answer(
+    slot: PendingConfirmationSlot,
+    grammar_hit: ConfirmGrammarHit,
+    transcript: str,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> Event:
+    correlation = {"turn_id": scratch.turn_id} if scratch.turn_id else None
+    if ctx.wave1_features.confirmation_dispatch_outbox:
+        return answer_confirmation_once(
+            ctx.conn, confirmation_id=slot.confirmation_id,
+            accepted=grammar_hit.decision == "yes", utterance_raw=transcript,
+            grammar_rule_id=grammar_hit.rule_id, correlation=correlation,
+        )
+    return emit_event(
+        ctx.conn,
+        type="confirmation.accepted" if grammar_hit.decision == "yes" else "confirmation.rejected",
+        payload={"confirmation_id": slot.confirmation_id, "utterance_raw": transcript,
+                 "grammar_rule_id": grammar_hit.rule_id},
+        source_event_id=_latest_event_uid_of_type(ctx.conn, event_type="confirmation.requested"),
+        correlation=correlation,
+    )
+
+
 def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answer-path input; each is load-bearing, splitting would only relocate the arg list.
     slot: PendingConfirmationSlot,
     grammar_hit: ConfirmGrammarHit,
@@ -3212,20 +3561,11 @@ def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answe
     again (a later 「可以」 either hits a NEWER slot or, with none
     pending, is an ordinary utterance).
     """
-    requested_event_uid = _latest_event_uid_of_type(
-        ctx.conn, event_type="confirmation.requested",
-    )
-    rejected_event = emit_event(
-        ctx.conn,
-        type="confirmation.rejected",
-        payload={
-            "confirmation_id": slot.confirmation_id,
-            "utterance_raw": transcript,
-            "grammar_rule_id": grammar_hit.rule_id,
-        },
-        source_event_id=requested_event_uid,
-        correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
-    )
+    try:
+        rejected_event = _record_confirmation_answer(slot, grammar_hit, transcript, ctx, scratch)
+    except ConfirmationRevalidationError:
+        scratch.confirmation_answered_this_turn = True
+        return _finalize_response("确认已被处理或失效。未接纳新的写入。", packet, ctx, scratch)
     scratch.events.append(rejected_event)
     scratch.confirmation_answered_this_turn = True
 
@@ -3233,7 +3573,7 @@ def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answe
     return _finalize_response(draft, packet, ctx, scratch)
 
 
-def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per D6 answer-path input (each load-bearing); single-pass mint+re-propose+gate+dispatch+interpret mirrors `_dispatch_one_tool_call`'s own noqa'd shape — splitting would only scatter the audit trace.
+def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one audited accept/gate/dispatch trace with explicit fail-closed exits.
     slot: PendingConfirmationSlot,
     grammar_hit: ConfirmGrammarHit,
     transcript: str,
@@ -3272,20 +3612,11 @@ def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per
        dispatch via the L4 registry, Result Interpreter on the
        returned slot, fixed broadcast.
     """
-    requested_event_uid = _latest_event_uid_of_type(
-        ctx.conn, event_type="confirmation.requested",
-    )
-    accepted_event = emit_event(
-        ctx.conn,
-        type="confirmation.accepted",
-        payload={
-            "confirmation_id": slot.confirmation_id,
-            "utterance_raw": transcript,
-            "grammar_rule_id": grammar_hit.rule_id,
-        },
-        source_event_id=requested_event_uid,
-        correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
-    )
+    try:
+        accepted_event = _record_confirmation_answer(slot, grammar_hit, transcript, ctx, scratch)
+    except ConfirmationRevalidationError:
+        scratch.confirmation_answered_this_turn = True
+        return _finalize_response("确认已被处理或失效。未接纳新的写入。", packet, ctx, scratch)
     scratch.events.append(accepted_event)
     scratch.confirmation_answered_this_turn = True
 
@@ -3331,8 +3662,10 @@ def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per
     }
     reproposal_arguments["content"] = content_text
 
+    identity = stable_authorization_identity(accepted_event.event_uid)
+    atomic_dispatch = ctx.wave1_features.confirmation_dispatch_outbox
     lease: AuthorizationLease = {
-        "lease_id": _new_lease_id(),
+        "lease_id": identity.lease_id if atomic_dispatch else _new_lease_id(),
         "granted_by": "allen",
         "granted_to": CallerPrincipal.JARVIS_LLM,
         "allowed_tools": frozenset({tool_name}),
@@ -3346,7 +3679,7 @@ def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per
     }
 
     # --- 4. Deterministic re-proposal ---------------------------------------
-    action_id = _new_action_id()
+    action_id = identity.action_id if atomic_dispatch else _new_action_id()
     action_request = ActionRequest(
         action_id=action_id,
         tool_name=tool_name,
@@ -3408,7 +3741,20 @@ def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per
         # scenario needs it on a `refuse` too for the audit trail.
         "lease_id": lease["lease_id"],
     }
-    gate_event = emit_event(
+    if atomic_dispatch and gate.outcome == "pass":
+        try:
+            authorization = authorize_confirmation_dispatch(
+                ctx.conn, source_confirmation_event_id=accepted_event.event_uid,
+                action_request=action_request, lease=lease, gate_payload=gate_payload,
+                correlation=_action_correlation(action_request),
+            )
+        except ConfirmationRevalidationError:
+            return _finalize_response("确认已被处理或失效。未接纳新的写入。", packet, ctx, scratch)
+        if isinstance(authorization, AlreadyConsumed):
+            return _finalize_response("该确认已接纳。执行状态请以结果为准。", packet, ctx, scratch)
+        gate_event = authorization.gate_event
+    else:
+        gate_event = emit_event(
         ctx.conn,
         type="gate.evaluated",
         payload=gate_payload,
@@ -3433,8 +3779,32 @@ def _handle_confirmation_accepted(  # noqa: PLR0913, PLR0915 — one keyword per
     ctx.lifecycle.register(action_id)
     ctx.lifecycle.transition(action_id, "authorized")
 
-    bundle = ctx.tool_registry.dispatch(
-        action_request, ctx.conn, ctx.runtime_paths, ctx.lifecycle,
+    record_realtime_trace(
+        "action_dispatch_started",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=tool_name,
+    )
+    _check_response_cancelled(ctx, "before tool dispatch")
+    try:
+        bundle = ctx.tool_registry.dispatch(
+            action_request, ctx.conn, ctx.runtime_paths, ctx.lifecycle,
+        )
+    except AuthorizedDispatchAlreadyStarted:
+        return _finalize_response("该确认已接纳。执行状态请以结果为准。", packet, ctx, scratch)
+    record_realtime_trace(
+        "action_dispatch_returned",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=tool_name,
+        result_slots=len(bundle.slots),
+    )
+    record_realtime_trace(
+        "action_result_available",
+        turn_id=scratch.turn_id,
+        action_id=action_id,
+        tool_name=tool_name,
+        result_source="synchronous_confirmation_dispatch_return",
     )
     primary_result_slot = bundle.slots[0]
 

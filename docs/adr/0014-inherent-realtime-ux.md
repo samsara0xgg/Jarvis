@@ -1,6 +1,6 @@
 # ADR-0014 — Inherent Realtime UX and Recoverable Swift Contract
 
-**Status:** Proposed (2026-08-31; awaiting Allen approval)
+**Status:** Approved (2026-08-31, Allen)
 **Date:** 2026-08-31
 **Depends on:** ADR-0003 (Inherent text surface), ADR-0005 (voice foundation), ADR-0006 (full-duplex media and playback truth), ADR-0008 (ResponseRun and real-time response streaming), ADR-0009 (resident runtime), ADR-0012 (durable confirmation flow).
 **Completes:** the physical Inherent/Swift client, recoverable panel delivery, and user-control contract intentionally left underspecified by ADR-0006 and ADR-0008.

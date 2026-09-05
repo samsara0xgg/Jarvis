@@ -3,27 +3,51 @@ llm:
   provider: openai
 
   # 运行时可切换的模型预设（"小月，快速模式" / "小月，深度模式"）
-  default_preset: deep
+  default_preset: fast
 
   presets:
+    # DeepSeek 直连（2026-09-04 定案，全套）。本机实测 fast：短答首 token
+    # 0.45s、总时长 0.72s，3k token 历史 0.43s，4 路并发最大 0.64s。
+    # v4 系列默认开思考；fast 关掉，deep 保留。
     fast:
-      model: gpt-5.4-mini
-      base_url: "https://openrouter.icu/v1"
-      api_key_env: OPENROUTER_PROXY_KEY
+      model: deepseek-v4-flash
+      base_url: "https://api.deepseek.com/v1"
+      api_key_env: DEEPSEEK_API_KEY
       max_tokens: 2048
+      extra_body:
+        thinking:
+          type: disabled
+    # 思考开：中等问题首个思考 token 约 1s、首个正文 2.6s；带工具调用 1.8s。
     deep:
-      model: gpt-5.5
-      base_url: "https://openrouter.icu/v1"
-      api_key_env: OPENROUTER_PROXY_KEY
+      model: deepseek-v4-pro
+      base_url: "https://api.deepseek.com/v1"
+      api_key_env: DEEPSEEK_API_KEY
       max_tokens: 32768
-    # screen_look 专用（ADR-0011 D7）：多模态模型，同一个代理、同一把
-    # key。决策 LLM（deep/fast 两档）从不切到这个预设——vision 只在
-    # jarvis.runtime 注入的独立 LLMClient 实例上用一次。
+    # screen_look 专用（ADR-0011 D7）：多模态模型。决策 LLM（deep/fast
+    # 两档）从不切到这个预设——vision 只在 jarvis.runtime 注入的独立
+    # LLMClient 实例上用一次。实验版模型，本机读图实测 1.3s。
     vision:
-      model: gpt-5.5
-      base_url: "https://openrouter.icu/v1"
-      api_key_env: OPENROUTER_PROXY_KEY
+      model: deepseek-v4-flash-vision-exp
+      base_url: "https://api.deepseek.com/v1"
+      api_key_env: DEEPSEEK_API_KEY
       max_tokens: 1024
+      extra_body:
+        thinking:
+          type: disabled
+    # xAI 直连。实测 2026-09-04：首 token 1.4s，思考约 50 token，V9 1.5T 底座。
+    grok-fast:
+      model: grok-4.5
+      base_url: "https://api.x.ai/v1"
+      api_key_env: XAI_API_KEY
+      max_tokens: 2048
+      reasoning_effort: minimal
+    # 严格零推理，首 token 0.6s，1M 上下文，$1.25/$2.5。
+    grok-instant:
+      model: grok-4.3
+      base_url: "https://api.x.ai/v1"
+      api_key_env: XAI_API_KEY
+      max_tokens: 2048
+      reasoning_effort: none
 
   # 流式回复的句子切分调优
   sentence_divider:
@@ -113,3 +137,112 @@ tools:
 # 不用碰代码。
 confirmation:
   ttl_ms: 600000
+
+# ADR-0006/0008 Wave 1 safety primitives.  All adoption switches remain
+# disabled: this wave proves transaction/CAS/accounting behavior without
+# enabling concurrent turns, model streaming, or streaming TTS/player work.
+realtime:
+  enabled: false
+  concurrency_safety:
+    transactional_event_append: false
+    lifecycle_terminal_cas: false
+    confirmation_dispatch_outbox: false
+    exactly_once_cost_accounting: false
+  # ADR-0008 Step 2 (Wave 4A).  Enabling response_run_lifecycle additionally
+  # requires realtime.enabled plus concurrency_safety.transactional_event_append
+  # and .lifecycle_terminal_cas; independent_response_cancel additionally
+  # requires response_run_lifecycle.  An invalid combination downgrades once,
+  # with one warning, to the complete legacy batch path.  cancel_timeout_ms is
+  # the cancel connection's SQLite busy_timeout: it bounds the terminal CAS,
+  # never an in-flight provider call.
+  response:
+    response_run_lifecycle: false
+    independent_response_cancel: false
+    cancel_timeout_ms: 500
+  # ADR-0008 Step 3 (Wave 4B).  action_runner routes ToolRegistry.dispatch
+  # through the L4 ActionRunner: the handler runs on the runner's own thread
+  # and connection under a resolved resource lease, while the driver still
+  # waits for the handle.  It additionally requires realtime.enabled plus the
+  # same two concurrency_safety switches as response_run_lifecycle.
+  # max_concurrent_runs bounds runner threads AFTER resource leases are
+  # respected.  ADR-0008 §6's undeclared_mutation_mode knob is deliberately
+  # absent: the resolver implements exactly the fail-closed global_exclusive
+  # value, and a knob whose only legal setting is its default is a config lie.
+  actions:
+    action_runner: false
+    # ADR-0008 Step 4 (Wave 5).  true_async_workers stops the driver from
+    # awaiting a declared-async tool: `dispatch` returns as soon as the
+    # ActionRun is accepted and the runner owns quiescence, verification,
+    # stash restore and lease release through its own finalizer.  Requires
+    # action_runner, and downgrades once with a warning without it.
+    true_async_workers: false
+    max_concurrent_runs: 1
+    lease_timeout_s: 900
+  # ADR-0008 D8 (Wave 5).  intent_pump replaces the daemon's "poll one
+  # event, await its whole turn" watcher with a durable-claim queue: each
+  # trigger is claimed once by an idempotent turn.started, the cursor
+  # advances only after the claim is accepted, and a bounded pool drives
+  # the turns.  First activation records one consumer.adopted watermark, so
+  # historical utterances are never replayed.  queue_capacity full means
+  # backpressure — the watcher leaves the row unconsumed rather than
+  # dropping a durable utterance.  ADR-0008 §6 names no key for this block;
+  # the shape mirrors realtime.actions.
+  input:
+    intent_pump: false
+    queue_capacity: 8
+    max_concurrent_turns: 2
+  # Wave 2 rollout.  Enabling this also requires realtime.enabled plus the
+  # transactional append and lifecycle terminal CAS switches above.  Invalid
+  # combinations downgrade once to the complete legacy batch path.
+  streaming_output:
+    enabled: false
+    canonical_sample_rate_hz: 48000
+    command_queue_capacity: 64
+    response_lane_capacity: 8
+    response_text_bytes: 262144
+    session_command_capacity: 2
+    session_audio_capacity: 16
+    session_idle_close_s: 10.0
+    response_timeout_s: 45.0
+    ring_retry_s: 0.002
+    presentation_poll_s: 0.005
+    shutdown_timeout_s: 3.0
+    event_drain_batch: 128
+    terminal_retry_attempts: 3
+    checkpoint_retry_attempts: 3
+    durability_retry_s: 0.02
+    enable_macos_say_fallback: true
+  # ADR-0006 Step 5. Disabled by default. When enabled it additionally
+  # requires the Wave-1 transactional/terminal switches above and a live
+  # Wave-2 StreamingTTSPipeline; failed validation happens before device open
+  # and uses legacy wake. A failed/uncertain device open keeps only text and
+  # whole-WAV PTT upload for that boot so no second input owner can appear.
+  single_audio_ingress:
+    enabled: false
+    backend: sounddevice
+    canonical_sample_rate_hz: 16000
+    canonical_frame_samples: 512
+    native_ring_capacity: 128
+    default_subscriber_capacity: 64
+    max_subscribers: 8
+    wake_subscriber_capacity: 64
+    capture_subscriber_capacity: 128
+    diagnostic_subscriber_capacity: 16
+    detection_queue_capacity: 2
+    commit_queue_capacity: 2
+    wake_failure_threshold: 3
+    pre_roll_ms: 500
+    min_voiced_s: 1.0
+    max_utterance_s: 30.0
+    armed_no_speech_timeout_s: 3.0
+    worker_poll_s: 0.002
+    session_worker_poll_s: 0.005
+    fault_poll_s: 0.02
+    route_poll_s: 1.0
+    reopen_attempts: 3
+    reopen_initial_backoff_s: 0.05
+    reopen_max_backoff_s: 0.5
+    backend_open_timeout_s: 2.0
+    backend_close_timeout_s: 2.0
+    shutdown_timeout_s: 2.0
+    session_shutdown_timeout_s: 3.0

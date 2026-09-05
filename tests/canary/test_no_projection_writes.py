@@ -1,10 +1,11 @@
-"""H1 — no direct INSERT/UPDATE/DELETE on projection tables.
+"""H1 — no direct INSERT/UPDATE/DELETE outside L2-owned tables.
 
 Per ADR 0001 § Acceptance criterion H1:
 
 > AST scan of ``jarvis/`` for direct INSERT/UPDATE/DELETE on projection
-> tables. Only ``jarvis/state/event_log.py`` may execute INSERT (and
-> only into ``events``). Projection module may only SELECT and rebuild.
+> tables. Canonical events may only be inserted by
+> ``jarvis/state/event_log.py``. Bounded operational idempotency/outbox
+> tables may only be inserted by their explicit L2 owner modules.
 
 Implementation: walk every ``.py`` under ``jarvis/`` with ``ast.parse``;
 for each :class:`ast.Constant` (string) in the module, regex-scan for
@@ -35,7 +36,7 @@ from tests.canary._helpers import iter_jarvis_py_files, parse, relative_to_repo
 # - DELETE FROM <table> must be followed by WHERE / ORDER / LIMIT /
 #   RETURNING / `;` / end-of-string / `)`.
 _SQL_WRITE_RE = re.compile(
-    r"\bINSERT\s+INTO\s+(?P<insert_table>\w+)\s*"
+    r"\bINSERT\s+(?:OR\s+IGNORE\s+)?INTO\s+(?P<insert_table>\w+)\s*"
     r"(?:\(|VALUES\b|SELECT\b|DEFAULT\b|SET\b|$)"
     r"|\bUPDATE\s+(?P<update_table>\w+)\s+SET\b"
     r"|\bDELETE\s+FROM\s+(?P<delete_table>\w+)\s*"
@@ -44,9 +45,21 @@ _SQL_WRITE_RE = re.compile(
 )
 
 
+_L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
+    "jarvis/state/authorized_dispatch_outbox.py": frozenset(
+        {"confirmation_consumption_claims", "authorized_dispatch_outbox"},
+    ),
+    "jarvis/state/cost_accounting.py": frozenset({"cost_accounting_dispositions"}),
+    "jarvis/state/trigger_consumption.py": frozenset({"decision_trigger_consumptions"}),
+}
+
+
 def _allowed_insert(rel_path: str, table: str) -> bool:
-    """Whitelist: only ``event_log.py`` may INSERT, and only into ``events``."""
-    return rel_path == "jarvis/state/event_log.py" and table.lower() == "events"
+    """Allow canonical events plus explicitly-owned L2 idempotency debt."""
+    normalized = table.lower()
+    if rel_path == "jarvis/state/event_log.py" and normalized == "events":
+        return True
+    return normalized in _L2_OPERATIONAL_INSERTS.get(rel_path, frozenset())
 
 
 # One-shot schema-migration backfills are the single sanctioned UPDATE:
@@ -59,7 +72,13 @@ _MIGRATION_MARKER = "/* L2 schema migration"
 
 
 def _allowed_migration_update(rel_path: str, source: str, table: str) -> bool:
-    """Whitelist: tagged migration backfill UPDATEs inside ``event_log.py``."""
+    """Allow tagged migrations and the L2 outbox's one-way admission CAS."""
+    if rel_path == "jarvis/state/authorized_dispatch_outbox.py":
+        return (
+            table.lower() == "authorized_dispatch_outbox"
+            and source == "UPDATE authorized_dispatch_outbox SET state = 'dispatched' "
+            "WHERE dispatch_id = ? AND state = 'pending'"
+        )
     return (
         rel_path == "jarvis/state/event_log.py"
         and table.lower() == "events"

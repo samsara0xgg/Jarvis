@@ -36,6 +36,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from jarvis.decision.cost_guard import CostRecorder
     from jarvis.decision.llm import LLMClient
 
 
@@ -137,12 +140,15 @@ if len(_REVIEWER_SYSTEM_PROMPT) > _REVIEWER_SYSTEM_PROMPT_MAX_CHARS:  # pragma: 
 _DIFF_TEXT_CHAR_CAP = 50_000
 
 
-def review_diff(
+def review_diff(  # noqa: PLR0913 - provider call plus optional Wave 1 accounting context
     *,
     task_goal: str,
     diff_text: str,
     llm_client: LLMClient,
     model: str = "gpt-5.5",
+    cost_recorder: CostRecorder | None = None,
+    turn_id: str | None = None,
+    request_admission: Callable[[str], None] | None = None,
 ) -> ReviewerVerdict:
     """Run the reviewer LLM on ``diff_text`` against ``task_goal``.
 
@@ -168,6 +174,11 @@ def review_diff(
             decision LLM (D9). Recorded on the returned
             :class:`ReviewerVerdict` for ``cost.recorded.model``
             attribution by Step 12.
+        cost_recorder: Optional Wave 1 L3 guard. When present it owns the
+            request's completion/error accounting transaction.
+        turn_id: Optional turn correlation supplied to ``cost_recorder``.
+        request_admission: Optional response fence that commits admission after
+            prompt/client setup and releases before the provider request.
 
     Returns:
         A :class:`ReviewerVerdict` with ``verdict``, ``reasons``,
@@ -194,12 +205,25 @@ def review_diff(
     # stateless so this is a structural marker today — see
     # :meth:`LLMClient.fresh_context` docstring for the rationale.
     with llm_client.fresh_context() as fresh:
-        chat_result = fresh.chat(
-            messages=[{"role": "user", "content": user_text}],
-            system=_REVIEWER_SYSTEM_PROMPT,
-            tools=None,
-            tool_choice=None,
-        )
+        if request_admission is not None:
+            request_admission("reviewer")
+        if cost_recorder is None:
+            chat_result = fresh.chat(
+                messages=[{"role": "user", "content": user_text}],
+                system=_REVIEWER_SYSTEM_PROMPT,
+                tools=None,
+                tool_choice=None,
+            )
+        else:
+            chat_result = cost_recorder.chat(
+                fresh,
+                messages=[{"role": "user", "content": user_text}],
+                system=_REVIEWER_SYSTEM_PROMPT,
+                tools=None,
+                tool_choice=None,
+                kind="reviewer",
+                turn_id=turn_id,
+            )
 
     # Parse the structured-output response. The system prompt instructs
     # the LLM to emit a single JSON object; if it does, ``json.loads``

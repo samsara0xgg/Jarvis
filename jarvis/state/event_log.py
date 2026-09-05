@@ -42,6 +42,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import Event
+from jarvis.state.committed_event_bus import CommittedEventBus
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
@@ -102,8 +103,8 @@ CREATE TABLE IF NOT EXISTS events (
 # Schema v1 adds the three spec §5.1 indexes: (type, ts_epoch_ms) and
 # (actor, ts_epoch_ms) composites plus (correlation_id). `idx_events_ts`
 # is an extra beyond spec §5.1's four — kept, it predates v1 and costs
-# little. Current hot reads filter by `id` cursors, so the v1 indexes are
-# spec-fidelity for the growing observer log, not a measured perf fix.
+# little. Wave 1's three expression indexes keep terminal arbitration from
+# scanning lifecycle history while holding ``BEGIN IMMEDIATE``'s writer lock.
 _CREATE_INDEXES_SQL: Final[tuple[str, ...]] = (
     "CREATE INDEX IF NOT EXISTS idx_events_type ON events(type)",
     "CREATE INDEX IF NOT EXISTS idx_events_source ON events(source_event_id)",
@@ -111,6 +112,15 @@ _CREATE_INDEXES_SQL: Final[tuple[str, ...]] = (
     "CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts_epoch_ms)",
     "CREATE INDEX IF NOT EXISTS idx_events_actor_ts ON events(actor, ts_epoch_ms)",
     "CREATE INDEX IF NOT EXISTS idx_events_correlation ON events(correlation_id)",
+    "CREATE INDEX IF NOT EXISTS idx_events_response_terminal "
+    "ON events(type, json_extract(payload_json, '$.response_id'))",
+    "CREATE INDEX IF NOT EXISTS idx_events_action_terminal "
+    "ON events(type, json_extract(payload_json, '$.action_id'))",
+    # New name is a deliberate migration: SQLite would retain Wave 1's
+    # original three-column definition under CREATE INDEX IF NOT EXISTS.
+    "CREATE INDEX IF NOT EXISTS idx_events_playback_terminal_v2 "
+    "ON events(type, json_extract(payload_json, '$.response_id'), "
+    "json_extract(payload_json, '$.playback_generation_id'))",
 )
 
 # Append-only enforcement (acceptance A6). RAISE(ABORT, ...) raises
@@ -154,6 +164,18 @@ class MissingPayloadFieldError(EventLogError):
 
 class DanglingSourceEventError(EventLogError):
     """Raised when `source_event_id` does not exist in `events.event_uid`."""
+
+
+class InvalidCorrelationError(EventLogError):
+    """Raised when a correlation key or stable identity is not a string."""
+
+
+class TransactionRequiredError(EventLogError):
+    """Raised when the no-commit append lacks a caller-owned transaction."""
+
+
+class NestedEventTransactionError(EventLogError):
+    """Raised when ``emit_event`` would commit a caller-owned transaction."""
 
 
 # --- EventTypeRegistry -------------------------------------------------------
@@ -229,7 +251,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L3",
         actor="jarvis_runtime",
         required_payload=("turn_id",),
-        optional_payload=("final_response_hash",),
+        optional_payload=("final_response_hash", "consumed_trigger_event_uid"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -292,6 +314,21 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "check_results",
             "attempt",
             "lease_id",
+            "authorization_id",
+            "dispatch_id",
+            "response_id",
+            "sequence",
+            "segment_hash",
+            "candidate_risk",
+            "policy_hash",
+            "evidence_snapshot_hash",
+            "risk_context_hash",
+            "classifier_rule_version",
+            "classification_elapsed_ms",
+            "attention_channel",
+            "required_gate_mode",
+            "phase",
+            "channel",
         ),
         schema_version=1,
     ),
@@ -321,7 +358,13 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="jarvis_runtime",
         required_payload=("action_id",),
-        optional_payload=(),
+        # ADR-0008 D9: `action.running` is emitted only after the runner
+        # holds the action's resource lease, so it is the one durable
+        # record of what a crashed process was holding. A later boot reads
+        # these two to re-establish quarantine for a write-exclusive action
+        # that reached a canonical terminal without a cleanup event.
+        # Optional so the legacy dispatcher's rows stay valid.
+        optional_payload=("resource_keys", "resource_mode"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -353,7 +396,13 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         required_payload=("action_id",),
         # `stash_ref` — the runtime stash-pop finalizer needs it to
         # restore the pre-task stash on failure paths.
-        optional_payload=("error", "reason", "stash_ref"),
+        # `run_id` / `task_id` ride with `stash_ref` (Step 4): the finalizer
+        # resolves the stash's repository from `task_id` and keys its conflict
+        # artifact on `run_id`.  Both terminals below are written by the
+        # ActionRunner, whose correlation is the canonical
+        # {action_id, run_id?, turn_id?} triple with no task slot, so the ids
+        # have to ride the payload.
+        optional_payload=("error", "reason", "stash_ref", "run_id", "task_id"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -361,7 +410,53 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="jarvis_runtime",
         required_payload=("action_id",),
-        optional_payload=("error", "reason"),
+        # ADR-0008 §4.2 additive fields on the existing type, plus
+        # `stash_ref` (Step 4).  A cancelled `spawn_worker` stashed Allen's
+        # pre-task tree before it started, and the runner — not the handler —
+        # owns this terminal, so the ref has to ride the terminal the same way
+        # `action.failed` / `action.timeout_assumed` already carry it.  The
+        # cleanup finalizer reads exactly one durable source.
+        optional_payload=(
+            "error",
+            "reason",
+            "requested_by_turn_id",
+            "cancel_scope",
+            "cancellation_mode",
+            "stash_ref",
+            "run_id",
+            "task_id",
+        ),
+        schema_version=1,
+    ),
+    # --- ADR-0008 D9 operational cleanup trio (Wave 4B) ---------------------
+    #
+    # These three are NOT ActionLifecycle terminals. The canonical terminal
+    # says what the action concluded; `worker.quiesced` says the owned worker
+    # stopped writing; the cleanup pair says the repository is safe to hand to
+    # the next action. Collapsing them would make a supervisor-declared
+    # `action.timeout_assumed` release a repo whose process is still alive.
+    EventTypeSchema(
+        event_type="worker.quiesced",
+        owner_layer="L4",
+        actor="jarvis_runtime",
+        required_payload=("action_id", "worker_epoch"),
+        optional_payload=("run_id", "exit_code", "reason"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="action.cleanup_completed",
+        owner_layer="L4",
+        actor="jarvis_runtime",
+        required_payload=("action_id", "worker_epoch", "verification_outcome"),
+        optional_payload=("stash_ref", "resource_keys"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="action.cleanup_failed",
+        owner_layer="L4",
+        actor="jarvis_runtime",
+        required_payload=("action_id", "worker_epoch", "reason"),
+        optional_payload=("stash_ref", "resource_keys", "quarantine_reason"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -560,7 +655,21 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="codex_worker",
         required_payload=("task_id", "run_id", "status"),
-        optional_payload=("summary", "diff_path"),
+        # ADR-0008 Step 4: `executor` / `model` / `tokens_in` / `tokens_out`
+        # are the run's accounting facts.  A truly background `spawn_worker`
+        # returns its RawResult to the runner, not to L3, so the cost that
+        # used to travel on `RawResult.metadata["cost"]` needs a durable home
+        # for L3 to read at re-entry.  This row is emitted on every path
+        # (report, timeout, crash), which is exactly the set of runs that
+        # burned tokens.  L3 remains the sole `cost.recorded` emit-site.
+        optional_payload=(
+            "summary",
+            "diff_path",
+            "executor",
+            "model",
+            "tokens_in",
+            "tokens_out",
+        ),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -582,7 +691,193 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "cache_write_in",
             "cost_usd",
             "run_id",
+            "llm_request_id",
+            "provider",
+            "provider_response_id",
+            "usage_status",
+            "disposition",
+            "error_code",
         ),
+        schema_version=1,
+    ),
+    # ADR-0008 §4.2 / D8 (Step 4) — the adoption watermark.  One row per
+    # named consumer, appended the first time it starts reading, recording
+    # `MAX(events.id)` at that instant.  Recovery considers only rows after
+    # it, which is what stops a freshly enabled realtime consumer from
+    # replaying every historical utterance in the log (F24).
+    EventTypeSchema(
+        event_type="consumer.adopted",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("name", "adoption_row_id"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    # ADR-0008 Wave 1 — L3 response lifecycle.  These registrations are
+    # inert until the corresponding feature flag routes callers through the
+    # shared lifecycle terminal owner.
+    EventTypeSchema(
+        event_type="response.request_admitted",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("response_id", "admission_id", "kind"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="response.started",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=(
+            "response_id",
+            "response_group_id",
+            "turn_id",
+            "phase",
+            "channel",
+            "emission_mode",
+            "output_risk_class",
+            "required_gate_mode",
+            "policy_hash",
+            "active_subject_ref",
+            "evidence_snapshot_hash",
+        ),
+        optional_payload=(
+            "provider",
+            "model",
+            "risk_context_hash",
+            "classifier_rule_version",
+        ),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="response.completed",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("response_id", "response_group_id", "turn_id", "response_hash"),
+        optional_payload=("provider_response_id", "generated_text_hash", "segment_count"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="response.cancelled",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("response_id", "response_group_id", "turn_id", "reason"),
+        optional_payload=(
+            "interrupted_by_utterance_id",
+            "interrupted_by_turn_id",
+            "generated_text_hash",
+            "committed_prefix_hash",
+            "cancel_scope",
+        ),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="response.failed",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("response_id", "response_group_id", "turn_id", "reason"),
+        optional_payload=("provider_response_id", "retryable", "committed_prefix_hash"),
+        schema_version=1,
+    ),
+    # ADR-0006 Wave 1 registered the playback terminal truth. Wave 2 starts
+    # emitting these milestones only behind realtime.streaming_output; the
+    # same response/generation CAS remains their sole terminal arbiter.
+    EventTypeSchema(
+        event_type="surface.playback_started",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=(
+            "session_id", "response_id", "turn_id", "playback_generation_id",
+            "phase", "channel", "speech_text_hash",
+        ),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="surface.playback_segment_prepared",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=(
+            "session_id", "response_id", "turn_id", "playback_generation_id",
+            "sequence", "speech_text", "speech_text_hash", "segment_hash",
+            "source_chunk_event_uid",
+        ),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="surface.playback_checkpoint",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=(
+            "session_id",
+            "response_id",
+            "turn_id",
+            "playback_generation_id",
+            "heard_through_sequence",
+            "submitted_samples",
+            "heard_text_hash",
+        ),
+        optional_payload=("cursor_quality", "heard_text"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="surface.playback_completed",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=(
+            "session_id",
+            "response_id",
+            "turn_id",
+            "playback_generation_id",
+            "heard_through_sequence",
+            "submitted_samples",
+            "speech_text_hash",
+        ),
+        optional_payload=(
+            "total_samples", "provider", "cursor_quality", "heard_text", "heard_text_hash",
+        ),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="surface.playback_interrupted",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=(
+            "session_id",
+            "response_id",
+            "turn_id",
+            "playback_generation_id",
+            "heard_through_sequence",
+            "submitted_samples",
+            "heard_text_hash",
+            "reason",
+        ),
+        optional_payload=(
+            "heard_text",
+            "total_samples",
+            "interrupted_by_utterance_id",
+            "interrupted_by_turn_id",
+            "provider",
+            "cursor_quality",
+        ),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="surface.playback_failed",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=(
+            "session_id",
+            "response_id",
+            "turn_id",
+            "playback_generation_id",
+            "heard_through_sequence",
+            "submitted_samples",
+            "heard_text_hash",
+            "reason",
+        ),
+        optional_payload=("heard_text", "provider", "cursor_quality", "retryable"),
         schema_version=1,
     ),
     # F6: surface.user_intent — spec.html §5.4 line 1442 canonical;
@@ -609,6 +904,10 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "voice_text",
             "document_text",
             "response_hash",
+            "response_id",
+            "response_group_id",
+            "phase",
+            "channel",
         ),
         schema_version=1,
     ),
@@ -629,7 +928,14 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # ADR-0009 D4: ``attention_channel`` rides the same header so
         # `_tts_watcher` / the WS broadcaster can drop `queue_review` /
         # `silent_log` turns before they speak (spec §3.2.5 安静优先).
-        optional_payload=("required_gate_mode", "attention_channel"),
+        optional_payload=(
+            "required_gate_mode",
+            "attention_channel",
+            "response_id",
+            "response_group_id",
+            "phase",
+            "channel",
+        ),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -637,7 +943,14 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L5",
         actor="jarvis_runtime",
         required_payload=("turn_id", "text"),
-        optional_payload=(),
+        optional_payload=(
+            "response_id",
+            "response_group_id",
+            "sequence",
+            "phase",
+            "channel",
+            "segment_hash",
+        ),
         schema_version=1,
     ),
     # Sleep/wake events per spec §3.7.8 — L6 owned (Deployment Domain).
@@ -954,7 +1267,13 @@ def open_event_log(path: Path) -> sqlite3.Connection:
     idempotent — schema is not recreated, triggers are not duplicated.
 
     Connection behavior:
-        - Default `isolation_level` (deferred transactions).
+        - Default `isolation_level`, but `emit_event` opens its write with
+          an explicit `BEGIN IMMEDIATE`: its `source_event_id` validation
+          SELECT would otherwise take a read snapshot first and turn the
+          INSERT into a read->write upgrade, which SQLite refuses with an
+          immediate `SQLITE_BUSY` without ever calling the busy handler.
+          Reserving the write lock up front keeps the `busy_timeout` below
+          in force for every contended write.
         - `PRAGMA journal_mode = WAL` enables reader/writer concurrency.
           The mode persists in the db file once set; reapplying on every
           open is a no-op. Required because the daemon touches the event
@@ -1008,6 +1327,37 @@ def open_event_log(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def open_runtime_event_log(
+    path: Path,
+    *,
+    deadline: float | None = None,
+) -> sqlite3.Connection:
+    """Connect to an already bootstrapped log without migrations or writes.
+
+    A monotonic deadline covers connection setup and the subsequent write
+    lock wait. Hot paths must not rerun boot migrations with a fresh timeout.
+    Missing or incompatible logs fail closed; only ``open_event_log`` may
+    create or migrate them.
+    """
+    remaining = 5.0 if deadline is None else max(0.0, deadline - time.monotonic())
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True, timeout=remaining)
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] != _SCHEMA_USER_VERSION:
+            message = "runtime Event Log requires bootstrap migration"
+            raise sqlite3.OperationalError(message)  # noqa: TRY301 - atomic transaction owns rollback
+        conn.execute("PRAGMA synchronous = NORMAL")
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                message = "runtime Event Log connection deadline exceeded"
+                raise sqlite3.OperationalError(message)  # noqa: TRY301 - atomic transaction owns rollback
+            conn.execute(f"PRAGMA busy_timeout = {int(remaining * 1000)}")
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
 # --- emit_event --------------------------------------------------------------
 
 
@@ -1027,7 +1377,7 @@ def _validate_source_event_id(conn: sqlite3.Connection, source_event_id: str) ->
         raise DanglingSourceEventError(msg)
 
 
-def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 shape is fixed.
+def append_event_in_transaction(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 shape is fixed.
     conn: sqlite3.Connection,
     *,
     type: str,  # noqa: A002 — matches `Event.type` field name from spec §5.1.
@@ -1040,7 +1390,12 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
     actor: str | None = None,
     ingestion_node: str = "mac",
 ) -> Event:
-    """Validate, INSERT, and return one Event (single L3/L4/L5 append API).
+    """Validate and INSERT one Event without committing or publishing.
+
+    The caller must already own an explicit transaction.  This is the only
+    append API used by multi-record CAS/outbox primitives: validation and row
+    construction are identical to :func:`emit_event`, while the caller keeps
+    sole authority over COMMIT/ROLLBACK and after-commit publication.
 
     Validation order (each step raises before any INSERT):
         1. `type` must be in `EventTypeRegistry`
@@ -1074,9 +1429,9 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
           `json.dumps`; payload mappings are normalized to `dict` first
           so non-dict `Mapping` implementations (e.g. `MappingProxyType`)
           serialize without surprise.
-        - INSERTs one row and commits the connection.
-        - Returns a frozen `jarvis.shared.Event` whose attributes round-trip
-          with the persisted row.
+        - INSERTs one row without committing the connection.
+        - Returns a frozen `jarvis.shared.Event` whose attributes will
+          round-trip after the caller commits.
 
     Args:
         conn: Open Event Log connection (use `open_event_log`).
@@ -1101,8 +1456,16 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
             `"mac"` (the only node in the Mac-only scope).
 
     Returns:
-        The persisted Event as a frozen dataclass.
+        The inserted, not-yet-committed Event as a frozen dataclass.
+
+    Raises:
+        TransactionRequiredError: If the caller does not already own a
+            transaction on ``conn``.
     """
+    if not conn.in_transaction:
+        msg = "append_event_in_transaction requires a caller-owned transaction"
+        raise TransactionRequiredError(msg)
+
     schema = EventTypeRegistry.get(type)
     if schema is None:
         msg = f"event type {type!r} is not registered"
@@ -1134,6 +1497,12 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
     # about Mapping protocol.
     payload_dict: dict[str, Any] = dict(payload)
     correlation_dict: dict[str, str] | None = None if correlation is None else dict(correlation)
+    if correlation_dict is not None and any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in correlation_dict.items()
+    ):
+        msg = "event correlation keys and values must be strings"
+        raise InvalidCorrelationError(msg)
 
     payload_json = json.dumps(payload_dict, sort_keys=True, separators=(",", ":"))
     correlation_json = (
@@ -1162,8 +1531,6 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
             ingestion_node,
         ),
     )
-    conn.commit()
-
     return Event(
         event_uid=effective_event_uid,
         type=type,
@@ -1173,6 +1540,59 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
         source_event_id=source_event_id,
         correlation=correlation_dict,
     )
+
+
+def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 shape is fixed.
+    conn: sqlite3.Connection,
+    *,
+    type: str,  # noqa: A002 — matches `Event.type` field name from spec §5.1.
+    payload: Mapping[str, Any],
+    source_event_id: str | None = None,
+    correlation: Mapping[str, str] | None = None,
+    ts_epoch_ms: int | None = None,
+    schema_version: int | None = None,
+    event_uid: str | None = None,
+    actor: str | None = None,
+    ingestion_node: str = "mac",
+    committed_event_bus: CommittedEventBus | None = None,
+) -> Event:
+    """Commit one validated Event and optionally publish it after COMMIT.
+
+    This remains the compatibility convenience API for a single event.  It
+    rejects a connection already inside a transaction: committing there
+    would prematurely commit unrelated caller-owned claim/outbox work.  Such
+    callers must use :func:`append_event_in_transaction` and publish only
+    after their outermost COMMIT succeeds.
+    """
+    if conn.in_transaction:
+        msg = (
+            "emit_event cannot run inside a caller-owned transaction; "
+            "use append_event_in_transaction"
+        )
+        raise NestedEventTransactionError(msg)
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        event = append_event_in_transaction(
+            conn,
+            type=type,
+            payload=payload,
+            source_event_id=source_event_id,
+            correlation=correlation,
+            ts_epoch_ms=ts_epoch_ms,
+            schema_version=schema_version,
+            event_uid=event_uid,
+            actor=actor,
+            ingestion_node=ingestion_node,
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+    if committed_event_bus is not None:
+        committed_event_bus.publish(event)
+    return event
 
 
 # --- Reading helpers ---------------------------------------------------------
@@ -1234,6 +1654,29 @@ def iter_events(conn: sqlite3.Connection) -> Iterator[Event]:
         yield _row_to_event(row)
 
 
+def iter_events_of_types(
+    conn: sqlite3.Connection,
+    event_types: Iterable[str],
+) -> Iterator[Event]:
+    """Yield selected event types in canonical append order.
+
+    Values remain bound parameters; only the placeholder count is composed.
+    CAS owners use this to avoid decoding unrelated history while holding a
+    SQLite writer reservation.
+    """
+    selected = tuple(dict.fromkeys(event_types))
+    if not selected:
+        return
+    cursor = conn.execute(
+        "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
+        "payload_json, source_event_id, correlation_json "
+        "FROM events WHERE type IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
+        (json.dumps(selected),),
+    )
+    for row in cursor:
+        yield _row_to_event(row)
+
+
 def get_event(conn: sqlite3.Connection, event_uid: str) -> Event | None:
     """Return the Event with this `event_uid`, or None if absent."""
     cursor = conn.execute(_SELECT_BY_UID_SQL, (event_uid,))
@@ -1244,15 +1687,21 @@ def get_event(conn: sqlite3.Connection, event_uid: str) -> Event | None:
 
 
 __all__ = [
+    "CommittedEventBus",
     "DanglingSourceEventError",
     "EventLogError",
     "EventTypeRegistry",
     "EventTypeSchema",
+    "InvalidCorrelationError",
     "MissingPayloadFieldError",
+    "NestedEventTransactionError",
     "SchemaVersionMismatchError",
+    "TransactionRequiredError",
     "UnregisteredEventTypeError",
+    "append_event_in_transaction",
     "emit_event",
     "get_event",
     "iter_events",
+    "iter_events_of_types",
     "open_event_log",
 ]

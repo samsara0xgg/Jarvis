@@ -101,7 +101,19 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
+from jarvis.execution.action_runner import (
+    GLOBAL_RESOURCE_KEY,
+    ActionJob,
+    ActionRunner,
+    ActionRunnerError,
+    ActionSubmission,
+    CancellationMode,
+    ResourceKeyResolutionError,
+    ToolConcurrency,
+    current_execution_context,
+)
 from jarvis.execution.codex_action import (
+    CODEX_CANCELLED_ERROR,
     CodexActionResult,
     CodexVersionTooLowError,
     ensure_codex_version_supported,
@@ -122,13 +134,19 @@ from jarvis.shared import (
     ResultSemantics,
     RiskLevel,
 )
+from jarvis.shared.action_admission import action_admission_guard
 from jarvis.shared.text import truncate_utf8
+from jarvis.state.authorized_dispatch_outbox import admit_authorized_dispatch
 from jarvis.state.event_log import emit_event, iter_events
+from jarvis.state.lifecycle_terminal import terminalize_action
 from jarvis.state.projections import make_snapshot
 
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Mapping, Sequence
+
+    from jarvis.execution.action_runner import ActionExecutionContext
+    from jarvis.shared import Event
 
 
 LOGGER = logging.getLogger(__name__)
@@ -523,6 +541,16 @@ class ToolDefinition:
     requires_confirmation: bool
     post_action_check: PostActionCheck | None = None
     result_budget_s: Callable[[], float] | None = None
+    cancellation_mode: CancellationMode = "unsupported"
+    """ADR-0008 D9 cancellation capability of this tool's handler.
+
+    Defaults to ``"unsupported"`` for every tool shipped today, and that is
+    the honest value: none of their handlers polls
+    :func:`jarvis.execution.action_runner.current_execution_context`, so a
+    cancel request could not stop them. F9 requires that such an action keeps
+    running and never gets a false ``action.cancelled`` — declaring the
+    capability here is what makes the runner refuse before it writes one.
+    """
 
 
 # --- JSON serializers (adapted from legacy tools_v2/helpers.py) -------------
@@ -629,6 +657,151 @@ def _emit_worker_heartbeat_factory(  # noqa: PLR0913 — all kwargs are immutabl
     return _emit
 
 
+def _emit_executor_reported(  # noqa: PLR0913 — one keyword per durable field of the run's end-of-run row.
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: str,
+    status: str,
+    summary: str,
+    source_event_id: str,
+    correlation: Mapping[str, str],
+    diff_path: str | None = None,
+    cost: Mapping[str, Any] | None = None,
+) -> None:
+    """Emit one ``task.executor_reported`` row for a finished Codex run.
+
+    ADR-0008 Step 4 makes this the durable home of the run's accounting
+    facts. A truly background `spawn_worker` hands its ``RawResult`` to the
+    runner, not to L3, so ``metadata["cost"]`` no longer reaches the only
+    layer allowed to emit ``cost.recorded``; L3 reads them back from here at
+    re-entry instead. L4 still never emits ``cost.recorded`` itself.
+    """
+    payload: dict[str, Any] = {
+        "task_id": task_id,
+        "run_id": run_id,
+        "status": status,
+        "summary": summary,
+    }
+    if diff_path is not None:
+        payload["diff_path"] = diff_path
+    if cost is not None:
+        model = cost.get("model")
+        if isinstance(model, str) and model:
+            payload["model"] = model
+        kind = cost.get("kind")
+        if isinstance(kind, str) and kind:
+            payload["executor"] = kind
+        payload["tokens_in"] = int(cost.get("tokens_in", 0) or 0)
+        payload["tokens_out"] = int(cost.get("tokens_out", 0) or 0)
+    emit_event(
+        conn,
+        type="task.executor_reported",
+        payload=payload,
+        source_event_id=source_event_id,
+        correlation=dict(correlation),
+    )
+
+
+def _spawn_worker_classify_failure(
+    codex_result: CodexActionResult,
+) -> tuple[Literal["action.failed", "action.timeout_assumed"], str, str] | None:
+    """Classify a finished Codex turn into its terminal, or ``None`` if it succeeded.
+
+    Returns ``(event_type, error_code, error_message)``. The two rows are the
+    ones ADR-0002's Negative-path appendix names: an interrupt or an expired
+    budget is ``action.timeout_assumed`` under the canonical
+    ``codex_turn_timeout`` tag, and every other structured error is
+    ``action.failed`` with the upstream tag preserved. A cancelled turn never
+    reaches here — the caller returns before this, because its terminal
+    belongs to whoever asked for the cancel (ADR-0008 D9).
+    """
+    if codex_result.interrupted or codex_result.error == "codex_turn_timeout":
+        return (
+            "action.timeout_assumed",
+            "codex_turn_timeout",
+            codex_result.error or "codex turn timed out",
+        )
+    if codex_result.error is not None:
+        return (
+            "action.failed",
+            codex_result.error.split(":", 1)[0],
+            codex_result.error,
+        )
+    return None
+
+
+def _spawn_worker_cancel_seam(
+    stash_ref: str | None,
+    *,
+    run_id: str,
+    task_id: str,
+) -> Callable[[], bool] | None:
+    """Record this run's stash and identity, and return its cancel poll.
+
+    ADR-0008 D9 (Step 4). All three need the same object, and all are no-ops
+    off the runner: `current_execution_context()` returns ``None`` on the
+    pre-Step-3 inline path, where the handler writes its own terminal and that
+    terminal already carries the stash ref and both ids.
+
+    The identity travels with the ref because the runner writes the cancel and
+    timeout terminals, and the cleanup finalizer needs ``task_id`` to find the
+    repository the stash belongs to and ``run_id`` to key its artifacts. Only
+    the handler knows them: ``run_id`` is minted at ``run.started``, after the
+    dispatcher built the context.
+    """
+    context = current_execution_context()
+    if context is None:
+        return None
+    context.record_stash_ref(stash_ref)
+    context.record_worker_identity(run_id=run_id, task_id=task_id)
+    return lambda: context.is_cancel_requested
+
+
+def _spawn_worker_cancelled_result(  # noqa: PLR0913 — one keyword per durable id the cancelled run still has to report.
+    *,
+    conn: sqlite3.Connection,
+    action_id: str,
+    task_id: str,
+    run_id: str,
+    source_event_id: str,
+    correlation: Mapping[str, str],
+    cost: Mapping[str, Any],
+    stash_ref: str | None,
+) -> RawResult:
+    """Report a Codex turn the caller stopped, without writing a terminal.
+
+    ADR-0008 D9 gives ``action.cancelled`` to the canceller, which may write
+    it only once the runner confirms quiescence. Racing a terminal in from
+    this thread would relabel an operator's stop as a timeout and make the
+    cancel answer ``already_terminal``. The run still owes the ledger an
+    end-of-run row and its token accounting, so those are emitted here; the
+    pre-task stash reached the runner through the execution context, so the
+    cleanup finalizer restores the tree either way.
+    """
+    _emit_executor_reported(
+        conn,
+        task_id=task_id,
+        run_id=run_id,
+        status="cancelled",
+        summary="codex turn cancelled on request",
+        source_event_id=source_event_id,
+        correlation=correlation,
+        cost=cost,
+    )
+    return RawResult(
+        action_id=action_id,
+        semantics="error",
+        payload={"run_id": run_id, "status": "cancelled", "error": CODEX_CANCELLED_ERROR},
+        tool_output=tool_error(
+            "codex turn cancelled on request",
+            code=CODEX_CANCELLED_ERROR,
+        ),
+        error=CODEX_CANCELLED_ERROR,
+        metadata={"cost": dict(cost), "stash_ref": stash_ref},
+    )
+
+
 def _spawn_worker_emit_terminal_failure(  # noqa: PLR0913 — Day-2 failure paths fold seven correlation ids + a typed event-type discriminator; combining them masks the action.failed / action.timeout_assumed split.
     *,
     conn: sqlite3.Connection,
@@ -670,31 +843,30 @@ def _spawn_worker_emit_terminal_failure(  # noqa: PLR0913 — Day-2 failure path
         # failure events too — carry the ref so timeout / crash paths
         # restore Allen's pre-task stash instead of orphaning it.
         failure_payload["stash_ref"] = stash_ref
-    emit_event(
-        conn,
-        type=event_type,
-        payload=failure_payload,
-        source_event_id=source_event_id,
-        correlation=correlation,
-    )
 
     executor_status = "failed" if event_type == "action.failed" else "timeout"
     if task_id is not None and run_id is not None:
         # The Task Ledger projection bridges through run.started for
         # task_id; emit task.executor_reported with a failure status so
         # the projection sees a terminal report on this run.
-        emit_event(
+        _emit_executor_reported(
             conn,
-            type="task.executor_reported",
-            payload={
-                "task_id": task_id,
-                "run_id": run_id,
-                "status": executor_status,
-                "summary": error_message,
-            },
+            task_id=task_id,
+            run_id=run_id,
+            status=executor_status,
+            summary=error_message,
             source_event_id=source_event_id,
             correlation=correlation,
+            cost=cost,
         )
+    terminalize_action(
+        conn,
+        event_type=event_type,
+        payload=failure_payload,
+        source_event_id=source_event_id,
+        correlation=correlation,
+    )
+
     terminal_state: LifecycleState = (
         "failed" if event_type == "action.failed" else "timeout_assumed"
     )
@@ -877,6 +1049,7 @@ def spawn_worker_handler(
     # RawResult.metadata; the runtime composition (Step 17) pops it
     # AFTER verify_diff exits (ADR-0002 Dirty-tree policy).
     stash_ref = isolate_pretask_changes(repo_path, run_id=run_id)
+    should_cancel = _spawn_worker_cancel_seam(stash_ref, run_id=run_id, task_id=task_id)
 
     # 6. Run Codex with the heartbeat closure.
     on_heartbeat = _emit_worker_heartbeat_factory(
@@ -901,6 +1074,7 @@ def spawn_worker_handler(
             timeout_s=_resolve_codex_turn_timeout_s(),
             on_heartbeat=on_heartbeat,
             heartbeat_interval_s=_resolve_codex_heartbeat_interval_s(),
+            should_cancel=should_cancel,
         )
     except Exception as exc:  # noqa: BLE001 — any Codex spawn failure folds into one action.failed.
         return _spawn_worker_emit_terminal_failure(
@@ -925,29 +1099,32 @@ def spawn_worker_handler(
         "run_id": run_id,
     }
 
-    # 7a. Timeout -- turn/interrupt was issued by the driver. Emit
-    # action.timeout_assumed and end here (no worker.reported).
-    if codex_result.interrupted or codex_result.error == "codex_turn_timeout":
-        return _spawn_worker_emit_terminal_failure(
+    # 7-. Cancelled -- somebody asked this action to stop and the Codex
+    # subprocess is being torn down. Deliberately NO terminal here: ADR-0008
+    # D9 gives `action.cancelled` to the canceller, which may write it only
+    # after the runner confirms quiescence. Racing a terminal in from this
+    # thread would label an operator's stop as a timeout and make the cancel
+    # answer `already_terminal`. The stash ref already reached the runner via
+    # the execution context, so the cleanup finalizer still restores the tree.
+    if codex_result.error == CODEX_CANCELLED_ERROR:
+        return _spawn_worker_cancelled_result(
             conn=conn,
-            lifecycle=lifecycle,
             action_id=action_request.action_id,
             task_id=task_id,
             run_id=run_id,
             source_event_id=running_event_uid,
-            error_code="codex_turn_timeout",
-            error_message=codex_result.error or "codex turn timed out",
-            event_type="action.timeout_assumed",
-            stash_ref=stash_ref,
+            correlation=correlation,
             cost=cost,
-            turn_id=action_request.turn_id,
+            stash_ref=stash_ref,
         )
 
-    # 7b. Crash (initialize / thread/start / turn/start / subprocess). The
-    # canonical tags are "codex_initialize_failed", "codex_thread_start_failed",
-    # "codex_turn_start_failed", "codex_subprocess_crashed". All map to
-    # action.failed with the upstream tag preserved.
-    if codex_result.error is not None:
+    # 7a/7b. Timeout (turn/interrupt was issued by the driver ->
+    # action.timeout_assumed) and crash (initialize / thread/start /
+    # turn/start / subprocess -> action.failed with the upstream tag
+    # preserved). Both end here, with no worker.reported.
+    classified = _spawn_worker_classify_failure(codex_result)
+    if classified is not None:
+        event_type, error_code, error_message = classified
         return _spawn_worker_emit_terminal_failure(
             conn=conn,
             lifecycle=lifecycle,
@@ -955,9 +1132,9 @@ def spawn_worker_handler(
             task_id=task_id,
             run_id=run_id,
             source_event_id=running_event_uid,
-            error_code=codex_result.error.split(":", 1)[0],
-            error_message=codex_result.error,
-            event_type="action.failed",
+            error_code=error_code,
+            error_message=error_message,
+            event_type=event_type,
             stash_ref=stash_ref,
             cost=cost,
             turn_id=action_request.turn_id,
@@ -1013,6 +1190,21 @@ def spawn_worker_handler(
         report_summary = "(no summary -- submit_report missing)"
     else:
         report_summary = ""
+    # 12. task.executor_reported -- projection-side terminal signal for
+    # this run, and the durable home of its token accounting.
+    _emit_executor_reported(
+        conn,
+        task_id=task_id,
+        run_id=run_id,
+        status=report_status,
+        summary=report_summary,
+        source_event_id=running_event_uid,
+        correlation=correlation,
+        diff_path=str(diff_artifact_path),
+        cost=cost,
+    )
+
+    # Publish the reentry trigger only after its accounting facts commit.
     emit_event(
         conn,
         type="worker.reported",
@@ -1024,22 +1216,6 @@ def spawn_worker_handler(
             "artifact_path": str(diff_artifact_path),
             "stash_ref": stash_ref,
             **_worker_report_extras(submit_report),
-        },
-        source_event_id=running_event_uid,
-        correlation=correlation,
-    )
-
-    # 12. task.executor_reported -- projection-side terminal signal for
-    # this run.
-    emit_event(
-        conn,
-        type="task.executor_reported",
-        payload={
-            "task_id": task_id,
-            "run_id": run_id,
-            "status": report_status,
-            "summary": report_summary,
-            "diff_path": str(diff_artifact_path),
         },
         source_event_id=running_event_uid,
         correlation=correlation,
@@ -1186,7 +1362,7 @@ def verify_diff_handler(
         )
         return RawResultBundle(slots=(observation_slot,))
 
-    repo_path = _resolve_repo_path(action_request)
+    repo_path = _resolve_repo_path(action_request, conn=conn)
     verification_slot = _build_verification_slot(
         action_id=action_request.action_id,
         verify_command=verify_command,
@@ -1233,14 +1409,15 @@ def _resolve_diff_artifact_path(
     raise KeyError(msg)
 
 
-def _resolve_repo_path(action_request: ActionRequest) -> Path:
+def _resolve_repo_path(
+    action_request: ActionRequest, *, conn: sqlite3.Connection | None = None,
+) -> Path:
     """Return the repo cwd for the verify_command subprocess.
 
     Order: ``action_request.payload["repo_path"]`` (preferred — L3 plumbs
     it from the Task Ledger), then ``arguments["repo_path"]`` (test /
-    direct call), then :func:`Path.cwd`. The cwd fallback keeps Day-2
-    unit tests using ``tmp_path`` for the artifact while letting the
-    verify_command runs in the same dir succeed.
+    direct call), then the verified run's task repository, then ``Path.cwd``.
+    Both the resource lease and the actual subprocess use this resolver.
     """
     payload_repo = (
         action_request.payload.get("repo_path")
@@ -1252,6 +1429,13 @@ def _resolve_repo_path(action_request: ActionRequest) -> Path:
     args_repo = action_request.arguments.get("repo_path")
     if isinstance(args_repo, str) and args_repo:
         return Path(args_repo)
+    if conn is not None:
+        provenance = _verify_diff_run_provenance(action_request, conn)
+        if provenance.task_id is not None:
+            record = _load_task_record(conn, provenance.task_id)
+            raw_repo = record.get("repo_path") if record is not None else None
+            if isinstance(raw_repo, str) and raw_repo:
+                return Path(raw_repo)
     return Path.cwd()
 
 
@@ -1422,9 +1606,9 @@ def _emit_verify_diff_result_event(
     layer. Day-2 unit tests assert the bundle shape directly; they do not
     rely on two L4-emitted events.
     """
-    emit_event(
+    terminalize_action(
         conn,
-        type="action.result_observed",
+        event_type="action.result_observed",
         payload={
             "action_id": action_id,
             "semantics": slot.semantics,
@@ -1584,9 +1768,9 @@ def create_task_handler(
         ack_payload["verify_command"] = verify_command
     tool_output_str = tool_result(ack_payload)
 
-    emit_event(
+    terminalize_action(
         conn,
-        type="action.result_observed",
+        event_type="action.result_observed",
         payload={
             "action_id": action_request.action_id,
             "semantics": "ack",
@@ -1704,9 +1888,9 @@ def list_tasks_handler(
         valid = sorted(_LIST_TASKS_VALID_STATUSES)
         error_msg = f"invalid 'status' (got {status_arg!r}); must be one of {valid!r}"
         tool_output_str = tool_error(error_msg, code="invalid_argument")
-        emit_event(
+        terminalize_action(
             conn,
-            type="action.result_observed",
+            event_type="action.result_observed",
             payload={
                 "action_id": action_request.action_id,
                 "semantics": "error",
@@ -1744,9 +1928,9 @@ def list_tasks_handler(
     payload: dict[str, Any] = {"tasks": out}
     tool_output_str = tool_result(payload)
 
-    emit_event(
+    terminalize_action(
         conn,
-        type="action.result_observed",
+        event_type="action.result_observed",
         payload={
             "action_id": action_request.action_id,
             "semantics": "observation",
@@ -1852,9 +2036,9 @@ def get_current_time_handler(
     }
     tool_output_str = tool_result(payload)
 
-    emit_event(
+    terminalize_action(
         conn,
-        type="action.result_observed",
+        event_type="action.result_observed",
         payload={
             "action_id": action_request.action_id,
             "semantics": "observation",
@@ -2074,9 +2258,9 @@ def open_path_handler(
     }
     tool_output_str = tool_result(payload)
 
-    emit_event(
+    terminalize_action(
         conn,
-        type="action.result_observed",
+        event_type="action.result_observed",
         payload={
             "action_id": action_request.action_id,
             "semantics": "observation",
@@ -2127,9 +2311,9 @@ def _emit_tool_observation(  # noqa: PLR0913 — all kwargs are the shared sync-
     shape instead of duplicating it.
     """
     tool_output_str = tool_result(payload)
-    emit_event(
+    terminalize_action(
         conn,
-        type="action.result_observed",
+        event_type="action.result_observed",
         payload={
             "action_id": action_id,
             "semantics": semantics,
@@ -2188,9 +2372,9 @@ def _emit_tool_error(  # noqa: PLR0913 — all kwargs are the shared sync-handle
         )
         message = f"{capped_text}…[truncated {undelivered_bytes} bytes]"
     tool_output_str = tool_error(message, code=code)
-    emit_event(
+    terminalize_action(
         conn,
-        type="action.result_observed",
+        event_type="action.result_observed",
         payload={
             "action_id": action_id,
             "semantics": "error",
@@ -4431,10 +4615,53 @@ class ToolRegistry:
     rationale as `ActionLifecycle`.
     """
 
-    def __init__(self) -> None:
-        """Construct an empty registry (no tools yet)."""
+    def __init__(
+        self,
+        *,
+        action_runner: ActionRunner | None = None,
+        resource_key_resolver: ResourceKeyResolver | None = None,
+        background_async: bool = False,
+        confirmation_dispatch_outbox: bool = False,
+    ) -> None:
+        """Construct an empty registry (no tools yet).
+
+        With ``action_runner=None`` — every caller before ADR-0008 Step 3 —
+        ``dispatch`` runs the handler inline on the calling thread, exactly as
+        it always has. With a runner installed, the same call submits an
+        ActionRun and waits on its handle: the events, the ordering and the
+        returned bundle are identical, but the handler executes on the
+        runner's thread under a resolved resource lease.
+
+        ``background_async`` is ADR-0008 Step 4: an ``is_async`` tool then
+        returns from ``dispatch`` as soon as it is accepted, and its result
+        reaches L3 the way the tool always claimed it would — through the
+        durable ``worker.reported`` / terminal row that re-enters ``decide``.
+        It requires a runner, because there is nothing to own the work
+        otherwise.
+        """
+        if background_async and action_runner is None:
+            msg = "background_async dispatch requires an ActionRunner"
+            raise ActionRunnerError(msg)
         self._tools: dict[str, ToolDefinition] = {}
         self._lock = threading.RLock()
+        self._action_runner = action_runner
+        self._background_async = background_async
+        self._confirmation_dispatch_outbox = confirmation_dispatch_outbox
+        self._resource_key_resolver = (
+            resource_key_resolver
+            if resource_key_resolver is not None
+            else default_resource_key_resolver
+        )
+
+    @property
+    def action_runner(self) -> ActionRunner | None:
+        """Return the installed ActionRunner, or ``None`` on the legacy path."""
+        return self._action_runner
+
+    @property
+    def background_async(self) -> bool:
+        """Return whether declared-async tools dispatch without being awaited."""
+        return self._background_async
 
     def register(self, tool_def: ToolDefinition) -> None:
         """Register a ToolDefinition. Raises DuplicateToolError on re-register.
@@ -4516,6 +4743,91 @@ class ToolRegistry:
         lifecycle transitions (sync tools terminal-transition before
         returning; async tools leave the lifecycle at `running`).
         """
+        tool_def = self._checked_tool_def(action_request, lifecycle)
+        dispatched_event = self._emit_dispatched(action_request, conn, tool_def, lifecycle)
+        if self._action_runner is None:
+            return self._run_inline(
+                action_request,
+                conn,
+                runtime_paths,
+                lifecycle,
+                tool_def=tool_def,
+                dispatched_event_uid=dispatched_event.event_uid,
+            )
+        submission = self._submit_to_runner(
+            action_request,
+            conn,
+            runtime_paths,
+            lifecycle,
+            tool_def=tool_def,
+            dispatched_event_uid=dispatched_event.event_uid,
+            runner=self._action_runner,
+        )
+        if self._background_async and tool_def.is_async:
+            # ADR-0008 D9: "submit returns after dispatch, not after the
+            # action finishes". L3 gets an acknowledgement and pauses on the
+            # durable trigger; the handle is owned by the runner, whose
+            # finalizer closes the cleanup debt when the worker really ends.
+            return RawResultBundle(
+                slots=(
+                    RawResult(
+                        action_id=action_request.action_id,
+                        semantics="ack",
+                        payload={
+                            "action_id": action_request.action_id,
+                            "dispatch": "background",
+                        },
+                        tool_output=tool_result(
+                            {
+                                "action_id": action_request.action_id,
+                                "dispatch": "background",
+                            },
+                        ),
+                        error=None,
+                        metadata=None,
+                    ),
+                ),
+            )
+        return submission.handle.result()
+
+    def submit(
+        self,
+        action_request: ActionRequest,
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,
+        lifecycle: ActionLifecycle,
+    ) -> ActionSubmission:
+        """Dispatch one ActionRequest and return its live handle.
+
+        ADR-0008 D9: this returns after dispatch, not after the action
+        finishes. Wave 4B's only caller is ``dispatch`` itself, which
+        immediately awaits the handle; Wave 5's background worker is what
+        stops awaiting it.
+
+        Raises:
+            ActionRunnerError: No ActionRunner is installed on this registry.
+        """
+        if self._action_runner is None:
+            msg = "ToolRegistry.submit requires an ActionRunner"
+            raise ActionRunnerError(msg)
+        tool_def = self._checked_tool_def(action_request, lifecycle)
+        dispatched_event = self._emit_dispatched(action_request, conn, tool_def, lifecycle)
+        return self._submit_to_runner(
+            action_request,
+            conn,
+            runtime_paths,
+            lifecycle,
+            tool_def=tool_def,
+            dispatched_event_uid=dispatched_event.event_uid,
+            runner=self._action_runner,
+        )
+
+    def _checked_tool_def(
+        self,
+        action_request: ActionRequest,
+        lifecycle: ActionLifecycle,
+    ) -> ToolDefinition:
+        """Validate the three dispatch preconditions and return the definition."""
         with self._lock:
             tool_def = self._tools.get(action_request.tool_name)
         if tool_def is None:
@@ -4539,7 +4851,16 @@ class ToolRegistry:
                 f"at dispatch (current={current!r})"
             )
             raise IllegalLifecycleTransition(msg)
+        return tool_def
 
+    def _emit_dispatched(
+        self,
+        action_request: ActionRequest,
+        conn: sqlite3.Connection,
+        tool_def: ToolDefinition,
+        lifecycle: ActionLifecycle,
+    ) -> Event:
+        """Register the action as live and commit its `action.dispatched`."""
         # ADR-0009 D4 — publish the action as live BEFORE the first event
         # lands, so a sweep tick that runs between the two never sees an
         # unprotected open action. `drive_turn` owns the release.
@@ -4553,19 +4874,41 @@ class ToolRegistry:
         result_expected_by_ms = _result_expected_by_ms(tool_def)
         if result_expected_by_ms is not None:
             dispatched_payload["result_expected_by_ms"] = result_expected_by_ms
-        dispatched_event = emit_event(
-            conn,
-            type="action.dispatched",
-            payload=dispatched_payload,
-            correlation=_action_correlation(action_request),
-        )
-        lifecycle.transition(action_request.action_id, "dispatched")
+        with action_admission_guard():
+            if (
+                self._confirmation_dispatch_outbox
+                and action_request.authorization_lease is not None
+            ):
+                dispatched_event = admit_authorized_dispatch(
+                    conn, action_request, payload=dispatched_payload,
+                    correlation=_action_correlation(action_request),
+                )
+            else:
+                dispatched_event = emit_event(
+                    conn,
+                    type="action.dispatched",
+                    payload=dispatched_payload,
+                    correlation=_action_correlation(action_request),
+                )
+            lifecycle.transition(action_request.action_id, "dispatched")
+        return dispatched_event
 
+    def _run_inline(  # noqa: PLR0913 — the four dispatch arguments plus the two values `dispatch` already computed.
+        self,
+        action_request: ActionRequest,
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,
+        lifecycle: ActionLifecycle,
+        *,
+        tool_def: ToolDefinition,
+        dispatched_event_uid: str,
+    ) -> RawResultBundle:
+        """Run the handler on the calling thread — the pre-Wave-4B path."""
         running_event = emit_event(
             conn,
             type="action.running",
             payload={"action_id": action_request.action_id},
-            source_event_id=dispatched_event.event_uid,
+            source_event_id=dispatched_event_uid,
             correlation=_action_correlation(action_request),
         )
         lifecycle.transition(action_request.action_id, "running")
@@ -4590,6 +4933,290 @@ class ToolRegistry:
         if isinstance(handler_result, RawResultBundle):
             return handler_result
         return RawResultBundle(slots=(handler_result,))
+
+    def _submit_to_runner(  # noqa: PLR0913 — the four dispatch arguments plus the three values `dispatch` already resolved.
+        self,
+        action_request: ActionRequest,
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,
+        lifecycle: ActionLifecycle,
+        *,
+        tool_def: ToolDefinition,
+        dispatched_event_uid: str,
+        runner: ActionRunner,
+    ) -> ActionSubmission:
+        """Resolve the resource keys, then hand the job to the runner.
+
+        Resolution runs after `action.dispatched` and before `action.running`,
+        which is where ADR-0008 D9 puts it: a request that is accepted but
+        whose resources cannot be named fails as an action rather than running
+        unlocked.
+        """
+        try:
+            concurrency = self._resource_key_resolver(action_request, tool_def, conn)
+        except ResourceKeyResolutionError as exc:
+            self._fail_before_running(
+                action_request,
+                conn,
+                lifecycle,
+                source_event_id=dispatched_event_uid,
+                error_code="resource_key_resolution",
+                message=str(exc),
+            )
+            raise
+
+        action_id = action_request.action_id
+
+        def _run(
+            worker_conn: sqlite3.Connection,
+            context: ActionExecutionContext,
+        ) -> RawResult | RawResultBundle:
+            """Run the handler on the runner's thread and its own connection."""
+            _set_running_event_uid(worker_conn, action_id, context.running_event_uid)
+            try:
+                return tool_def.handler(
+                    action_request, worker_conn, runtime_paths, lifecycle,
+                )
+            finally:
+                _clear_running_event_uid(worker_conn, action_id)
+
+        def _on_running(_running_event_uid: str) -> None:
+            """Advance the in-process lifecycle once `action.running` committed."""
+            lifecycle.transition(action_id, "running")
+
+        def _on_terminal(event_type: str) -> None:
+            """Advance the in-process lifecycle for a runner-written terminal.
+
+            A cancel or an assumed timeout is written by the runner, not by
+            the handler, so without this the FSM would keep calling a
+            cancelled action ``running``.
+            """
+            state: LifecycleState = (
+                "cancelled" if event_type == "action.cancelled" else "timeout_assumed"
+            )
+            if lifecycle.state_of(action_id) in ("dispatched", "running"):
+                lifecycle.transition(action_id, state)
+
+        def _on_dispatch_failure(
+            worker_conn: sqlite3.Connection,
+            exc: BaseException,
+        ) -> None:
+            """Terminalize a job that never reached its handler.
+
+            The lease could not be taken, so nothing downstream will ever
+            write this action's terminal. On the background path there is no
+            caller left holding the handle to notice, which is exactly why
+            this is the runner's hook rather than a `try` around `result()`.
+            The runner hands over its own connection: this runs on the worker
+            thread, and ``conn`` above belongs to the dispatching thread.
+            """
+            self._fail_before_running(
+                action_request,
+                worker_conn,
+                lifecycle,
+                source_event_id=dispatched_event_uid,
+                error_code="resource_lease",
+                message=str(exc),
+            )
+
+        def _on_finished() -> None:
+            """Un-publish the action once the runner is completely done with it."""
+            release_running_action(action_id)
+
+        # Published BEFORE `submit`, for the same reason `_emit_dispatched`
+        # publishes before `action.dispatched` lands: a sweep tick in
+        # between must never see the action unprotected.
+        register_running_action(action_id)
+        try:
+            return runner.submit(
+                ActionJob(
+                    action_id=action_id,
+                    turn_id=action_request.turn_id,
+                    run_id=action_request.run_id,
+                    concurrency=concurrency,
+                    cancellation_mode=tool_def.cancellation_mode,
+                    dispatched_event_uid=dispatched_event_uid,
+                    correlation=_action_correlation(action_request),
+                    run=_run,
+                    on_running=_on_running,
+                    # Only a mutating, turn-owned lease survives quiescence:
+                    # the turn's `drive_turn` finalizer is what releases it,
+                    # after verify-then-stash-restore. A read-shared or
+                    # untracked action has nothing left to clean up and frees
+                    # at quiescence.
+                    carries_cleanup_debt=(
+                        concurrency.carries_cleanup_debt
+                        and concurrency.parent_action_id is None
+                        and action_request.turn_id is not None
+                    ),
+                    on_terminal=_on_terminal,
+                    on_finished=_on_finished,
+                    on_dispatch_failure=_on_dispatch_failure,
+                ),
+            )
+        except BaseException:
+            # `submit` refused the job outright (shutdown), so no
+            # `on_finished` will ever fire for it.
+            release_running_action(action_id)
+            raise
+
+    def _fail_before_running(  # noqa: PLR0913 — one terminal payload per keyword.
+        self,
+        action_request: ActionRequest,
+        conn: sqlite3.Connection,
+        lifecycle: ActionLifecycle,
+        *,
+        source_event_id: str,
+        error_code: str,
+        message: str,
+    ) -> None:
+        """Write one `action.failed` for a job that never reached its handler."""
+        terminalize_action(
+            conn,
+            event_type="action.failed",
+            payload={
+                "action_id": action_request.action_id,
+                "error": error_code,
+                "reason": message,
+            },
+            source_event_id=source_event_id,
+            correlation=_action_correlation(action_request),
+        )
+        if lifecycle.state_of(action_request.action_id) in ("dispatched", "running"):
+            lifecycle.transition(action_request.action_id, "failed")
+
+
+# --- resource-key resolution (ADR-0008 D9) ----------------------------------
+
+_SPAWN_WORKER_TOOL_NAME: Final[str] = "spawn_worker"
+_VERIFY_DIFF_TOOL_NAME: Final[str] = "verify_diff"
+"""The two tools whose resource keys are resolved dynamically.
+
+Matched by name rather than by a new ``ToolDefinition`` field because these
+are the only two tools whose keys depend on runtime state (the Task Ledger's
+``repo_path`` and the run being verified). Every other tool is classified by
+``read_only`` alone, which the definition already carries. The literals are
+repeated at the two registration sites so the AST canaries that read those
+definitions keep seeing a plain string.
+"""
+
+
+type ResourceKeyResolver = Callable[
+    [ActionRequest, ToolDefinition, "sqlite3.Connection"],
+    ToolConcurrency,
+]
+"""Injectable seam that names the canonical resources one action will touch."""
+
+
+def canonical_resource_key(path: Path) -> str:
+    """Return the canonical lease key for a filesystem resource.
+
+    ``Path.resolve()`` is the realpath ADR-0008 D9 asks for: two requests that
+    name the same repository through different symlinks or relative paths must
+    produce the same key or they will not serialize.
+    """
+    return "repo:" + str(path.resolve())
+
+
+def _spawn_worker_resource_key(
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+) -> str:
+    """Return the canonical repo key `spawn_worker` will stash and mutate.
+
+    The fallback mirrors ``spawn_worker_handler`` exactly (``Path.cwd()`` when
+    the task record carries no ``repo_path``), so the lease always names the
+    tree the handler actually touches. A missing ``task_id`` is unresolvable,
+    not a fallback: the handler would raise anyway, and running unlocked is
+    the one outcome D9 forbids.
+
+    Raises:
+        ResourceKeyResolutionError: ``task_id`` is absent or not a string.
+    """
+    task_id = action_request.arguments.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        msg = (
+            f"spawn_worker action {action_request.action_id!r} carries no string "
+            f"'task_id'; its repository resource key cannot be resolved"
+        )
+        raise ResourceKeyResolutionError(msg)
+    record = _load_task_record(conn, task_id)
+    raw_repo = record.get("repo_path") if record is not None else None
+    repo = Path(raw_repo) if isinstance(raw_repo, str) and raw_repo else Path.cwd()
+    return canonical_resource_key(repo)
+
+
+@dataclass(frozen=True)
+class _VerifiedRun:
+    """The durable provenance of the run one `verify_diff` is checking."""
+
+    parent_action_id: str | None
+    task_id: str | None
+
+
+def _verify_diff_run_provenance(
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+) -> _VerifiedRun:
+    """Resolve the run this verification checks back to its creator.
+
+    Durable provenance, not a caller assertion: the child names a ``run_id``,
+    and ``run.started`` is what binds that run to both the action that created
+    it (through the correlation) and the task it belongs to (through the
+    payload). Empty fields mean no such run is on the log.
+    """
+    run_id = action_request.arguments.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        return _VerifiedRun(parent_action_id=None, task_id=None)
+    for event in iter_events(conn):
+        if event.type != "run.started" or event.payload.get("run_id") != run_id:
+            continue
+        parent = (event.correlation or {}).get("action_id")
+        task_id = event.payload.get("task_id")
+        return _VerifiedRun(
+            parent_action_id=parent if isinstance(parent, str) and parent else None,
+            task_id=task_id if isinstance(task_id, str) and task_id else None,
+        )
+    return _VerifiedRun(parent_action_id=None, task_id=None)
+
+
+def default_resource_key_resolver(
+    action_request: ActionRequest,
+    tool_def: ToolDefinition,
+    conn: sqlite3.Connection,
+) -> ToolConcurrency:
+    """Resolve one request's canonical resource keys and lease mode.
+
+    Four rules, in ADR-0008 D9's order:
+
+    1. ``spawn_worker`` takes ``realpath(repo)`` write-exclusively — it
+       stashes, runs Codex over the tree, and later restores.
+    2. ``verify_diff`` reads the same tree and borrows its parent run's scope
+       instead of contending with it.
+    3. a read-only tool needs no lease at all.
+    4. anything else that mutates and declares no resource semantics is
+       global-exclusive, which is the fail-closed default rather than a guess
+       about what it touches.
+    """
+    if tool_def.name == _SPAWN_WORKER_TOOL_NAME:
+        return ToolConcurrency(
+            resource_keys=(_spawn_worker_resource_key(action_request, conn),),
+            mode="write_exclusive",
+            carries_cleanup_debt=True,
+        )
+    if tool_def.name == _VERIFY_DIFF_TOOL_NAME:
+        provenance = _verify_diff_run_provenance(action_request, conn)
+        return ToolConcurrency(
+            resource_keys=(canonical_resource_key(_resolve_repo_path(action_request, conn=conn)),),
+            mode="read_shared",
+            parent_action_id=provenance.parent_action_id,
+        )
+    if tool_def.read_only:
+        return ToolConcurrency(resource_keys=(), mode="read_shared")
+    return ToolConcurrency(
+        resource_keys=(GLOBAL_RESOURCE_KEY,),
+        mode="global_exclusive",
+    )
 
 
 # --- running_event_uid handoff (dispatcher → handler) -----------------------
@@ -4681,6 +5308,20 @@ def _result_expected_by_ms(tool_def: ToolDefinition) -> int | None:
 _LIVE_ACTIONS_LOCK: Final[threading.Lock] = threading.Lock()
 _LIVE_ACTIONS_BY_TURN: Final[dict[str, set[str]]] = {}
 
+# The runner's half of the same question. ADR-0008 Step 4 gave actions a
+# SECOND owner: with `true_async_workers` on, `dispatch` returns an ack and
+# the ActionRunner keeps running the job after `drive_turn`'s `finally` has
+# dropped the turn's whole entry above. The turn table alone therefore
+# reports a live Codex worker as unowned the instant its turn unwinds, and
+# the supervisor sweep would `assume_timeout` it out from under L4.
+#
+# Keyed by action_id, not by turn: a runner job outlives its turn, and one
+# with no turn at all (`turn_id=None`) was never in the table above.
+# Registered by the dispatch path just before `submit`, dropped by the
+# runner's `on_finished` hook once the job — cleanup included — is done.
+_RUNNING_ACTIONS_LOCK: Final[threading.Lock] = threading.Lock()
+_RUNNING_ACTIONS: Final[set[str]] = set()
+
 
 def register_live_action(*, turn_id: str, action_id: str) -> None:
     """Publish ``action_id`` as driven by ``turn_id`` (idempotent)."""
@@ -4694,14 +5335,39 @@ def release_turn_actions(turn_id: str) -> None:
         _LIVE_ACTIONS_BY_TURN.pop(turn_id, None)
 
 
+def register_running_action(action_id: str) -> None:
+    """Publish ``action_id`` as owned by the ActionRunner (idempotent)."""
+    with _RUNNING_ACTIONS_LOCK:
+        _RUNNING_ACTIONS.add(action_id)
+
+
+def release_running_action(action_id: str) -> None:
+    """Drop the runner's claim on ``action_id``. No-op if unknown."""
+    with _RUNNING_ACTIONS_LOCK:
+        _RUNNING_ACTIONS.discard(action_id)
+
+
+def running_action_ids() -> frozenset[str]:
+    """Snapshot every action_id the ActionRunner has not finished."""
+    with _RUNNING_ACTIONS_LOCK:
+        return frozenset(_RUNNING_ACTIONS)
+
+
 def live_action_ids() -> frozenset[str]:
-    """Snapshot every action_id currently driven by some live turn."""
+    """Snapshot every action_id L4 still owns, from EITHER owner.
+
+    The union of the two claims: an action a live turn is driving, and an
+    action whose runner job has not finished. L6 must see both — since
+    ADR-0008 Step 4 a background worker outlives the turn that dispatched
+    it, so "no turn owns it" no longer implies "nothing is running".
+    """
     with _LIVE_ACTIONS_LOCK:
-        return frozenset(
+        turn_owned = frozenset(
             action_id
             for action_ids in _LIVE_ACTIONS_BY_TURN.values()
             for action_id in action_ids
         )
+    return turn_owned | running_action_ids()
 
 
 def turn_action_ids(turn_id: str) -> frozenset[str]:
@@ -5039,6 +5705,10 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     web_timeout_s: float = DEFAULT_WEB_TIMEOUT_S,
     vision_client: VisionClient | None = None,
     screen_max_width_px: int = DEFAULT_SCREEN_MAX_WIDTH_PX,
+    action_runner: ActionRunner | None = None,
+    resource_key_resolver: ResourceKeyResolver | None = None,
+    background_async: bool = False,
+    confirmation_dispatch_outbox: bool = False,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry (Day-1 six + ADR-0011 D5 seven).
 
@@ -5082,11 +5752,30 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             supplies a real client when `llm.presets.vision` parses.
         screen_max_width_px: `tools.screen.max_width_px` (ADR-0011 D7)
             — the `sips` downscale ceiling before the vision call.
+        action_runner: ADR-0008 Step 3 execution boundary. `None` (the
+            default, and every caller before Wave 4B) keeps `dispatch`
+            running handlers inline on the calling thread.
+        confirmation_dispatch_outbox: Require atomic L2 admission of
+            confirmation-backed authorized dispatch debt when enabled.
+        resource_key_resolver: Overrides
+            :func:`default_resource_key_resolver`. Only consulted when an
+            ActionRunner is installed; a test injects one to declare
+            resource semantics for a tool the default resolver would
+            classify by `read_only` alone.
+        background_async: ADR-0008 Step 4. `True` makes `dispatch` return
+            an acknowledgement for an `is_async` tool as soon as its
+            ActionRun is accepted, instead of blocking on the handle.
+            Requires `action_runner`.
     """
     vault_root = (
         obsidian_vault_root if obsidian_vault_root is not None else DEFAULT_OBSIDIAN_VAULT_ROOT
     )
-    registry = ToolRegistry()
+    registry = ToolRegistry(
+        action_runner=action_runner,
+        resource_key_resolver=resource_key_resolver,
+        background_async=background_async,
+        confirmation_dispatch_outbox=confirmation_dispatch_outbox,
+    )
     registry.register(
         ToolDefinition(
             name="spawn_worker",
@@ -5110,6 +5799,15 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             # `JARVIS_CODEX_TURN_TIMEOUT_S` moves the persisted deadline
             # in step with the in-process driver deadline.
             result_budget_s=_resolve_codex_turn_timeout_s,
+            # ADR-0008 D9 (Step 4). `spawn_worker_handler` polls its
+            # execution context and hands `run_codex_action` a
+            # `should_cancel`; the driver sends `turn/interrupt` and the
+            # finalizer closes the client, which terminates and if needed
+            # kills the `codex app-server` subprocess. "terminate_process"
+            # rather than "cooperative" because that is what actually
+            # happens to the child — the declaration has to survive being
+            # read as a promise about the OS process.
+            cancellation_mode="terminate_process",
         )
     )
     registry.register(VERIFY_DIFF_TOOL_DEF)
@@ -5392,6 +6090,7 @@ __all__ = [
     "PostActionCheck",
     "RawResult",
     "RawResultBundle",
+    "ResourceKeyResolver",
     "ResultSemantics",
     "RuntimePathsLike",
     "ToolDefinition",
@@ -5400,7 +6099,9 @@ __all__ = [
     "UnknownToolError",
     "VisionClient",
     "build_default_registry",
+    "canonical_resource_key",
     "create_task_handler",
+    "default_resource_key_resolver",
     "get_current_time_handler",
     "list_tasks_handler",
     "live_action_ids",

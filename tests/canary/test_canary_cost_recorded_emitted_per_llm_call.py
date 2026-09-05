@@ -1,41 +1,25 @@
-"""cost.recorded-per-LLM-call canary: every L3 ``chat()`` site is followed by an emit.
+"""Every production full, legacy-stream or typed-stream site has an L3 guard.
 
-Per ADR-0002 § Tier 1 canaries and spec §5.4.1 (``cost.recorded.owner_layer
-== L3``): every ``ctx.llm_client.chat(...)`` site in :mod:`jarvis.decision`
-must be followed by an ``emit_event(..., type="cost.recorded", ...)`` call
-in the same function body. Forgetting the emit on any site silently drops
-spend attribution for that turn — a regression the canary catches statically.
+Per ADR-0002 § Tier 1 canaries, ADR-0008 §4.1, and spec §5.4.1
+(``cost.recorded.owner_layer == L3``): every full or streamed provider call
+under :mod:`jarvis.decision` must share a function body with either the legacy
+cost emitter or the Wave 1 exactly-once ``CostRecorder`` guard. Forgetting the
+guard silently drops spend attribution or an explicit unavailable disposition.
 
-This canary AST-scans :mod:`jarvis.decision.__init__` and walks every
-function body. Inside each function it pairs every ``chat`` call site
-with the function's ``cost.recorded`` emit sites; if the function
-performs a chat call but has zero ``emit_event(..., type="cost.recorded", ...)``
-calls, the function is flagged.
+The scan recursively covers every Python module under ``jarvis/decision``,
+``jarvis/runtime`` and ``jarvis/surface`` — no file list is maintained.  Only
+the provider adapter implementation module is excluded; the CostRecorder
+implementation methods are checked against their exact internal commit seam.
+Adding a future ``response_stream.py`` with an unguarded ``chat_stream``
+therefore fails this canary, and so does a nested ``def`` that hides a raw
+call inside an otherwise-guarded outer function.
 
-:mod:`jarvis.decision.reviewer` is **exempt** by design: per ADR-0002
-§ Reviewer contract + Step 12, the reviewer module returns the chat's
-token counts on :class:`ReviewerVerdict` and the L3 Result Interpreter
-(``jarvis/decision/__init__.py``) emits ``cost.recorded(kind="reviewer",
-tokens_in=verdict.tokens_in, tokens_out=verdict.tokens_out, ...)``
-itself, in the same function that consumes the verdict. The cost-recorded
-emit therefore lives one frame up from the ``review_diff(...)`` chat —
-still in L3, still per-call — but not inside ``reviewer.py``. This split
-keeps the reviewer module a pure helper and lets it be reused later by
-non-Result-Interpreter call sites (the cost emit chases the caller, not
-the helper).
+The "same function body" pairing is conservative: the canary does not require
+strict adjacency, only a direct ``CostRecorder.chat``/``chat_stream`` branch in
+the same body as a raw call.  It deliberately does not accept broad helper
+names such as ``_commit`` or ``_emit_cost_recorded`` as exemptions.
 
-The "same function body" pairing is conservative: the canary does not
-require strict adjacency, only co-presence within the same function (or
-nested helper if a future refactor lifts the emit). Conservative because
-the actual sites in :mod:`jarvis.decision` interleave loop control flow
-between the chat call and the emit; a tighter adjacency rule would force
-brittle refactors. Co-presence is sufficient — once a function uses the
-LLM, the cost MUST be recorded somewhere in that function.
-
-Scope: production code under ``jarvis/decision/`` only. Test fixtures
-build ChatResult mocks that have no cost emit (they assert the emit
-elsewhere) — using :func:`iter_jarvis_py_files` keeps the canary off
-``tests/``.
+Scope: production code only; tests and provider SDK internals are excluded.
 """
 
 from __future__ import annotations
@@ -43,27 +27,40 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING
 
+import pytest
+
 from tests.canary._helpers import parse, relative_to_repo, repo_root
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-# Modules in scope: every Python file under ``jarvis/decision/`` that is
-# part of the L3 LLM caller surface. ``jarvis/decision/reviewer.py`` is
-# intentionally excluded — see module docstring for the contract that
-# Step 12 emits the reviewer's ``cost.recorded`` from the Result
-# Interpreter using :class:`ReviewerVerdict` token counts.
-_DECISION_LLM_CALLER_MODULES = ("jarvis/decision/__init__.py",)
+_PROVIDER_ADAPTER_MODULES = frozenset({"jarvis/decision/llm.py"})
+_COST_RECORDER_IMPLEMENTATION_METHODS = frozenset(
+    {
+        ("jarvis/decision/cost_guard.py", "CostRecorder.chat"),
+        ("jarvis/decision/cost_guard.py", "CostRecorder.chat_stream"),
+    },
+)
+_SCANNED_PACKAGES = ("jarvis/decision", "jarvis/runtime", "jarvis/surface")
+_LLM_METHODS = {"chat", "chat_stream", "stream_events"}
 
 
 def _modules_in_scope() -> list[Path]:
-    """Return absolute paths of decision-layer LLM-caller modules that exist."""
+    """Recursively discover every module in the scanned packages."""
     root = repo_root()
-    return [root / rel for rel in _DECISION_LLM_CALLER_MODULES if (root / rel).is_file()]
+    found: set[Path] = set()
+    for package in _SCANNED_PACKAGES:
+        for path in (root / package).rglob("*.py"):
+            if "__pycache__" in path.parts:
+                continue
+            if relative_to_repo(path) in _PROVIDER_ADAPTER_MODULES:
+                continue
+            found.add(path)
+    return sorted(found)
 
 
 def _is_chat_call(node: ast.AST) -> bool:
-    """Return True iff ``node`` is a call whose method name is ``chat``.
+    """Return True for full or streamed LLM adapter calls.
 
     Matches ``ctx.llm_client.chat(...)``, ``self._llm.chat(...)``,
     ``client.chat(...)``. Does NOT match bare ``chat(...)`` (would
@@ -73,89 +70,193 @@ def _is_chat_call(node: ast.AST) -> bool:
     if not isinstance(node, ast.Call):
         return False
     func = node.func
-    return isinstance(func, ast.Attribute) and func.attr == "chat"
+    return isinstance(func, ast.Attribute) and func.attr in _LLM_METHODS
 
 
-def _is_cost_recorded_emit(node: ast.AST) -> bool:
-    """Return True iff ``node`` is ``emit_event(..., type="cost.recorded", ...)``.
-
-    Also matches calls to the L3-local helpers ``_emit_cost_recorded``
-    and ``_emit_cost_recorded_from_metadata`` (which wrap ``emit_event``
-    with the ``type="cost.recorded"`` kwarg) so a function that delegates
-    its emit to one of those helpers still satisfies the canary.
-    """
+def _is_cost_recorder_call(node: ast.AST) -> bool:
+    """Match only a direct call through the concrete ``CostRecorder`` seam."""
     if not isinstance(node, ast.Call):
         return False
     func = node.func
-    name = None
-    if isinstance(func, ast.Name):
-        name = func.id
-    elif isinstance(func, ast.Attribute):
-        name = func.attr
-    if name in ("_emit_cost_recorded", "_emit_cost_recorded_from_metadata"):
-        return True
-    if name != "emit_event":
+    if not isinstance(func, ast.Attribute) or func.attr not in _LLM_METHODS:
         return False
-    for kw in node.keywords:
-        if kw.arg != "type":
+    owner = func.value
+    if isinstance(owner, ast.Name):
+        return owner.id in {"cost_recorder", "reviewer_cost_recorder"}
+    if isinstance(owner, ast.Attribute):
+        return owner.attr == "_cost_recorder"
+    return (
+        isinstance(owner, ast.Call)
+        and isinstance(owner.func, ast.Name)
+        and owner.func.id == "CostRecorder"
+    )
+
+
+def _is_cost_recorder_internal_commit(node: ast.AST) -> bool:
+    """Match ``self._commit`` only inside the two exact guard methods."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_commit"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+    )
+
+
+def _function_walks(
+    module: ast.Module,
+) -> list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
+    """Return every function scope, nested ones included, with a dotted name.
+
+    A nested ``def`` becomes its own scope named
+    ``outer.<locals>.inner`` so a raw ``chat`` call hidden inside a closure
+    cannot borrow its enclosing function's CostRecorder guard.
+    """
+    found: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+    _collect_function_walks(module.body, prefix="", found=found)
+    return found
+
+
+def _collect_function_walks(
+    body: list[ast.stmt],
+    *,
+    prefix: str,
+    found: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]],
+) -> None:
+    """Append every function scope in ``body`` under ``prefix`` to ``found``."""
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            qualified = f"{prefix}{node.name}"
+            found.append((qualified, node))
+            _collect_function_walks(
+                node.body,
+                prefix=f"{qualified}.<locals>.",
+                found=found,
+            )
+        elif isinstance(node, ast.ClassDef):
+            _collect_function_walks(
+                node.body,
+                prefix=f"{prefix}{node.name}.",
+                found=found,
+            )
+
+
+def _calls(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Call]:
+    """Collect direct-body calls without inheriting nested-function guards."""
+    collector = _DirectCallCollector()
+    for stmt in func.body:
+        collector.visit(stmt)
+    return collector.calls
+
+
+class _DirectCallCollector(ast.NodeVisitor):
+    """Visit one function body while pruning nested definitions."""
+
+    def __init__(self) -> None:
+        self.calls: list[ast.Call] = []
+
+    def visit_Call(self, node: ast.Call) -> None:
+        self.calls.append(node)
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_ClassDef(self, _node: ast.ClassDef) -> None:
+        return
+
+
+def _has_settlement_callback(
+    func: ast.FunctionDef | ast.AsyncFunctionDef,
+    call: ast.Call,
+) -> bool:
+    """Typed guard binds its direct local committing callback before returning."""
+    if not isinstance(call.func, ast.Attribute) or call.func.attr != "stream_events":
+        return False
+    callback = next((arg.value for arg in call.keywords if arg.arg == "on_settled"), None)
+    if not isinstance(callback, ast.Name):
+        return False
+    return any(
+        isinstance(stmt, ast.FunctionDef)
+        and stmt.name == callback.id
+        and any(_is_cost_recorder_internal_commit(inner) for inner in _calls(stmt))
+        for stmt in func.body
+    )
+
+
+def _violations(module: ast.Module, rel: str) -> list[str]:
+    violations: list[str] = []
+    for qualified_name, func in _function_walks(module):
+        calls = _calls(func)
+        raw_chat_calls = [
+            call for call in calls if _is_chat_call(call) and not _is_cost_recorder_call(call)
+        ]
+        if not raw_chat_calls:
             continue
-        value = kw.value
-        if isinstance(value, ast.Constant) and value.value == "cost.recorded":
-            return True
-    return False
-
-
-def _function_walks(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
-    """Return every function definition in ``module`` (top-level + nested)."""
-    return [
-        node
-        for node in ast.walk(module)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
-
-
-def _has_chat_call(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """True iff ``func``'s body (excluding nested defs) contains a chat call."""
-    for stmt in func.body:
-        for node in ast.walk(stmt):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                # Skip into nested defs — they are checked independently.
-                continue
-            if _is_chat_call(node):
-                return True
-    return False
-
-
-def _has_cost_emit(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """True iff ``func``'s body (excluding nested defs) emits cost.recorded."""
-    for stmt in func.body:
-        for node in ast.walk(stmt):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if _is_cost_recorded_emit(node):
-                return True
-    return False
+        legacy_calls_only = all(
+            isinstance(call.func, ast.Attribute) and call.func.attr != "stream_events"
+            for call in raw_chat_calls
+        )
+        if legacy_calls_only and any(_is_cost_recorder_call(call) for call in calls):
+            continue
+        if (
+            legacy_calls_only
+            and (rel, qualified_name) in _COST_RECORDER_IMPLEMENTATION_METHODS
+            and any(_is_cost_recorder_internal_commit(call) for call in calls)
+        ):
+            continue
+        if (rel, qualified_name) == (
+            "jarvis/decision/cost_guard.py",
+            "CostRecorder.stream_events",
+        ) and all(_has_settlement_callback(func, call) for call in raw_chat_calls):
+            continue
+        violations.append(
+            f"{rel}:{func.lineno}: function {qualified_name!r} calls chat/stream "
+            "without a direct CostRecorder guard in the same body"
+        )
+    return violations
 
 
 def test_canary_cost_recorded_emitted_per_llm_call() -> None:
     """Fail if any L3 LLM-caller function lacks a cost.recorded emit."""
-    violations: list[str] = []
-    for path in _modules_in_scope():
-        module = parse(path)
-        rel = relative_to_repo(path)
-        for func in _function_walks(module):
-            if not _has_chat_call(func):
-                continue
-            if _has_cost_emit(func):
-                continue
-            violations.append(
-                f"{rel}:{func.lineno}: function {func.name!r} calls .chat(...) but "
-                "does not emit cost.recorded in the same body — L3 is the sole "
-                "emit-site per spec §5.4.1; every LLM turn must be billed"
-            )
-
+    violations = [
+        violation
+        for path in _modules_in_scope()
+        for violation in _violations(parse(path), relative_to_repo(path))
+    ]
     assert not violations, (
-        "cost-recorded-per-llm-call canary — every L3 chat() site must be "
-        "followed by a cost.recorded emit in the same function:\n  "
-        + "\n  ".join(violations)
+        "cost-recorded-per-llm-call canary — every production chat/stream site "
+        "must use the L3 CostRecorder seam:\n  " + "\n  ".join(violations)
     )
+
+
+@pytest.mark.parametrize(
+    ("body", "accepted"),
+    [
+        ("return client.stream_events(on_settled=lambda _: None)", False),
+        ("self._commit(result)\nreturn client.stream_events()", False),
+        ("cost_recorder.chat(client)\nreturn client.stream_events()", False),
+        ("def done(result):\n    self._commit(result)\nreturn client.stream_events()", False),
+        ("def done(result):\n    pass\nreturn client.stream_events(on_settled=done)", False),
+        (
+            "def done(result):\n    def hidden():\n        self._commit(result)\n"
+            "return client.stream_events(on_settled=done)",
+            False,
+        ),
+        (
+            "def done(result):\n    self._commit(result)\n"
+            "return client.stream_events(on_settled=done)",
+            True,
+        ),
+    ],
+)
+def test_typed_guard_requires_bound_local_accounting(body: str, *, accepted: bool) -> None:
+    """A missing/no-op/unbound callback cannot borrow another function's guard."""
+    indented = "\n".join("        " + line for line in body.splitlines())
+    module = ast.parse("class CostRecorder:\n    def stream_events(self, client):\n" + indented)
+    assert (not _violations(module, "jarvis/decision/cost_guard.py")) == accepted
+    # The internal callback exception is not a production caller exemption.
+    assert _violations(module, "jarvis/decision/new_response_stream.py")

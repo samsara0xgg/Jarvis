@@ -39,11 +39,10 @@ def test_tts_watcher_drives_real_tts_pipeline_without_asyncio_run_crash(
         provider.synthesize = AsyncMock(return_value=b"\x00" * 1920)
         player = MagicMock(spec=voice_tts.AudioStreamPlayer)
         player.bytes_pending.return_value = 0
-        fallback_calls: list[str] = []
         pipeline = voice_tts.TTSPipeline(
             provider=provider,
             player=player,
-            fallback=fallback_calls.append,
+            fallback=None,
         )
 
         task = asyncio.create_task(
@@ -81,19 +80,15 @@ def test_tts_watcher_drives_real_tts_pipeline_without_asyncio_run_crash(
             payload={"turn_id": "T1", "text": "你好。"},
             correlation={"turn_id": "T1"},
         )
-        await asyncio.sleep(0.3)  # generous; allow to_thread + synth + write
+        await asyncio.sleep(0.3)  # generous; allow owned daemon synth + write
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-        # If the bug exists: provider.synthesize.await_count == 0, fallback_calls == ['你好。']
-        # After fix: synthesize was awaited once, no fallback.
         assert provider.synthesize.await_count == 1, (
             f"synthesize was awaited {provider.synthesize.await_count} times; "
-            f"fallback_calls={fallback_calls} — TTSPipeline._speak hit asyncio.run-from-loop bug"
+            "TTSPipeline daemon worker did not own provider execution"
         )
-        assert fallback_calls == [], (
-            f"fallback fired unexpectedly: {fallback_calls} — likely asyncio.run-from-loop bug"
-        )
+        assert pipeline.close(wait_timeout_s=1.0)
 
     asyncio.run(_body())

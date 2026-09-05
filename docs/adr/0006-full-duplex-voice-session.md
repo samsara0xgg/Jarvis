@@ -1,6 +1,6 @@
 # ADR-0006 — Full-duplex Voice Session
 
-**Status:** Proposed (2026-08-31; awaiting Allen approval)
+**Status:** Approved (2026-08-31, Allen)
 **Date:** 2026-08-31
 **Supersedes:** ADR-0005's explicit no-barge-in rule, wake-listener pause during TTS, whole-turn `VOICE_INPUT_LOCK` ownership, and the assumption that `spoken` means playback completed. The ADR-0005 PTT and whole-WAV paths remain supported as compatibility/fallback paths.
 **Depends on:** ADR-0003 (resident Inherent event/watcher surface), ADR-0005 (current wake/PTT/ASR/TTS foundation), ADR-0009 (resident daemon and lifecycle).
@@ -347,6 +347,14 @@ V1 heard-text rule:
 - no character-ratio estimate and no forward punctuation snapping are allowed.
 
 `text_start/text_end` are Unicode code-point offsets into the exact normalized speech string. Speech segments have a separate safe-subclause limit (initially 60 characters or roughly 2.5 seconds, whichever boundary is reached first); every split subclause goes through its own stream gate and permit. An arbitrary buffer cut is never spoken.
+
+Durable replay uses L5-owned content mappings, not a self-hash of claimed heard text:
+
+- `surface.playback_started` binds a playback lease to its committed surface source, response/turn, phase/channel, session, and normalized speech hash.
+- Before provider submission or player segment activation, `surface.playback_segment_prepared` binds the exact normalized speech text and hash to its original surface chunk UID, raw segment hash, sequence, and playback activation UID. L5 owns normalization; L2 validates these facts without reimplementing speech extraction.
+- Checkpoints and playback terminals reference the activation and carry the explicit conservative `heard_text` plus hash. L2 accepts only the exact concatenation of prepared segments through the cursor, with monotonic sequence/sample counts. A self-consistent hash alone is insufficient. Older rows without these mappings remain unknown.
+- The canonical terminal key remains `response_id + playback_generation_id`; its session cannot be rebound. Only the current activation can advance the cursor. Starting another lease preserves previously proven heard words, and late callbacks cannot extend them.
+- Typed conversation context keeps `spoken_heard` and `panel_available` separate. Audit drafts remain excluded from the conversational prompt. The projection retains at most 20 turns and 8 responses per turn, with 65,536 text characters and 1,024 facts per response. The L3 prompt limits each text excerpt to 2,048 characters and its serialized history JSON to 12,000 characters, marking omissions explicitly.
 
 This may under-count a few words Allen actually heard. That is preferable to contaminating future context with words he did not hear.
 

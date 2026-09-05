@@ -26,6 +26,10 @@ LIMITATION_REGEXES: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"还没验"),
     re.compile(r"超时.{0,4}未完成"),
     re.compile(r"跑挂"),
+    # ADR-0008 D9 (Step 4): a cancelled ActionRun. Nothing broke and nothing
+    # was verified — the operator stopped it — so the Pre-emit Gate must read
+    # the answer as a limitation, not as a completion.
+    re.compile(r"已停止"),
 )
 
 COMPLETION_REGEXES: Final[tuple[re.Pattern[str], ...]] = (
