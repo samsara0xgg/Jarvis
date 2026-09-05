@@ -62,10 +62,18 @@ _SILENT_DEVICE = "BlackHole 16ch"
 _SWITCH_AUDIO = "SwitchAudioSource"
 _INSTALL_HINT = "brew install switchaudio-osx blackhole-16ch"
 
-_WARMUP_QUESTION = "用一句话说明天空为什么是蓝色的"
-_LONG_QUESTION = (
-    "请详细介绍长城的历史 分成至少十五个要点 每个要点用一两句完整的话说明 "
-    "不要用列表符号 不要用编号 直接连续地说"
+# Every question takes the routine stream route (ADR-0008 Step 8): a plain
+# "introduce X" request whose first sentence is a "<X>是..." explanation the
+# ``routine-zh-en-v1`` classifier permits, so speech starts from the first
+# permitted segment while the model is still generating. The model sometimes
+# opens with a preamble instead ("好的 我用十句话..."), which the classifier
+# buffers, and the run then seals before any permit; the long questions are
+# tried in order until one opens the window.
+_WARMUP_QUESTION = "用两句话介绍一下温哥华"
+_LONG_QUESTIONS = (
+    "用十句话介绍一下温哥华的气候和地理",
+    "温哥华的气候和地理是什么样的 请详细讲讲 至少十句话 不要开场白 第一句就从事实开始",
+    "为什么温哥华的冬天比加拿大大多数城市温暖 请详细解释 至少十句话 不要开场白",
 )
 _RESPONSE_TERMINALS = ("response.completed", "response.failed", "response.cancelled")
 _PLAYBACK_TERMINALS = (
@@ -82,6 +90,8 @@ _CHECKPOINT_GRACE_S = 1.5
 """After playback starts, how long to wait for a first checkpoint before killing."""
 _POLL_S = 0.02
 _STOP_WAIT_S = 20.0
+_SEALED_QUIET_S = 2.0
+"""After a sealed answer is emitted, how long with no playback before the next question."""
 
 _RECONCILE_LINE = "boot reconciliation closed 1 open response run(s)"
 _WATCHER_LINE = "tts_watcher started (after_id="
@@ -193,10 +203,13 @@ def _build_overlay(root: Path) -> Path:
     ``bootstrap_runtime_app`` derives the Tier-0, grammar, cue, prompt and
     pricing paths from the config file's parent and grandparent, so the
     overlay mirrors that shape byte-for-byte except for ``jarvis.yaml``.
-    ``realtime.single_audio_ingress`` and ``realtime.input.intent_pump`` stay
-    at their shipped values: the first would open the microphone, the second
-    would re-adopt the killed turn's input and answer it a second time, and
-    neither is the contract under test.
+    ``routine_streaming`` plus ``speak_from_segments`` make a ``kind="stream"``
+    answer start speaking from its first permitted segment, which is what
+    opens the kill window (``surface.playback_started`` before the response
+    terminal). ``realtime.single_audio_ingress`` and
+    ``realtime.input.intent_pump`` stay at their shipped values: the first
+    would open the microphone, the second would re-adopt the killed turn's
+    input and answer it a second time, and neither is the contract under test.
     """
     source = repo_root()
     overlay = root / "overlay"
@@ -222,7 +235,9 @@ def _build_overlay(root: Path) -> Path:
     ):
         realtime["concurrency_safety"][switch] = True
     realtime["response"]["response_run_lifecycle"] = True
+    realtime["response"]["routine_streaming"]["enabled"] = True
     realtime["streaming_output"]["enabled"] = True
+    realtime["streaming_output"]["speak_from_segments"] = True
     assert realtime["single_audio_ingress"]["enabled"] is False
     path = overlay / "config" / "jarvis.yaml"
     path.write_text(yaml.safe_dump(shipped, allow_unicode=True), encoding="utf-8")
@@ -236,20 +251,28 @@ def _install_runtime_env(root: Path) -> None:
     whole session so hermetic tests never build TTS. The subprocess still
     needs it, and ``load_env_file`` reads it from the runtime root exactly as
     the 8006 daemon does from ``~/.jarvis-realtime-test/env``. Values are
-    never read into this process or printed.
+    never printed. The owner file is shell syntax (``KEY="value"``) while
+    ``load_env_file`` takes quotes literally (ADR-0009 D1), so a verbatim
+    copy hands MiniMax a key wrapped in ``"`` and every playback silently
+    falls back to macOS ``say``; the copy therefore drops one pair of
+    matching outer quotes, exactly what ``source`` would do.
     """
     if not _OWNER_ENV.is_file():
         pytest.fail(f"{_OWNER_ENV} missing; the daemon needs MINIMAX_API_KEY from it")
-    names = {
-        line.split("=", 1)[0].removeprefix("export ").strip()
-        for line in _OWNER_ENV.read_text(encoding="utf-8").splitlines()
-        if "=" in line and not line.lstrip().startswith("#")
-    }
-    if "MINIMAX_API_KEY" not in names:
+    lines: list[str] = []
+    for line in _OWNER_ENV.read_text(encoding="utf-8").splitlines():
+        if "=" not in line or line.lstrip().startswith("#"):
+            continue
+        key, _, value = line.strip().removeprefix("export ").partition("=")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        lines.append(f"{key.strip()}={value}")
+    if not any(line.startswith("MINIMAX_API_KEY=") for line in lines):
         pytest.fail(f"{_OWNER_ENV} has no MINIMAX_API_KEY line; the daemon would run text-only")
     target = root / "env"
-    shutil.copyfile(_OWNER_ENV, target)
-    target.chmod(0o600)
+    target.touch(mode=0o600)
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _boot(root: Path, config_path: Path, port: int, log_path: Path) -> subprocess.Popen[bytes]:
@@ -368,25 +391,43 @@ def burn_root() -> Path:
 # --- the burn ---------------------------------------------------------------
 
 
-def _wait_for_warmup(db: Path, turn_id: str) -> str:
-    """Let one ordinary answer complete and finish speaking before the real turn."""
+def _wait_for_spoken_completion(db: Path, turn_id: str, label: str) -> str:
+    """Let one ordinary answer complete and finish speaking before the next turn."""
     deadline = time.monotonic() + _WARMUP_WAIT_S
     while time.monotonic() < deadline:
         response_id = _response_id_for_turn(db, turn_id)
         if response_id is not None:
             types = {event.type for event in _events_for_response(db, response_id)}
             if types & set(_RESPONSE_TERMINALS) and types & set(_PLAYBACK_TERMINALS):
+                provider = next(
+                    (
+                        event.payload.get("provider")
+                        for event in _events_for_response(db, response_id)
+                        if event.type in _PLAYBACK_TERMINALS
+                    ),
+                    None,
+                )
+                _echo(f"{label}: playback provider={provider!r}")
                 return response_id
         time.sleep(0.1)
-    pytest.fail(f"warm-up turn {turn_id} did not complete and finish speaking in {_WARMUP_WAIT_S}s")
+    pytest.fail(f"{label} turn {turn_id} did not complete and finish speaking in {_WARMUP_WAIT_S}s")
 
 
-def _wait_for_kill_window(db: Path, turn_id: str) -> tuple[str, bool]:
+class _Sealed(NamedTuple):
+    """The run reached a terminal without ever opening the stream (no first permit)."""
+
+    response_id: str
+    gate_reasons: tuple[str, ...]
+
+
+def _wait_for_kill_window(db: Path, turn_id: str) -> tuple[str, bool] | _Sealed:
     """Block until playback has started and no response terminal exists.
 
-    Returns ``(response_id, saw_checkpoint)``. Fails, naming the window, when
-    the response reaches a terminal before playback started or during the
-    checkpoint grace period.
+    Returns ``(response_id, saw_checkpoint)``. Returns ``_Sealed`` when the
+    run terminated without a ``surface.response_open`` row, i.e. the first
+    sentence was never permitted and the caller should try another question.
+    Fails, naming the window, when an opened stream reaches a terminal before
+    playback started or during the checkpoint grace period.
     """
     deadline = time.monotonic() + _SPEECH_WAIT_S
     grace_until: float | None = None
@@ -401,6 +442,16 @@ def _wait_for_kill_window(db: Path, turn_id: str) -> tuple[str, bool]:
         terminal = next((t for t in types if t in _RESPONSE_TERMINALS), None)
         started = "surface.playback_started" in types
         if terminal is not None:
+            if "surface.response_open" not in types:
+                reasons = next(
+                    (
+                        tuple(str(r) for r in event.payload.get("reasons", ()))
+                        for event in _events_for_response(db, response_id)
+                        if event.type == "gate.evaluated"
+                    ),
+                    (),
+                )
+                return _Sealed(response_id, reasons)
             phase = "before playback started" if not started else "during the checkpoint grace"
             pytest.fail(
                 f"kill window missed: {response_id} reached {terminal} {phase}; "
@@ -415,6 +466,56 @@ def _wait_for_kill_window(db: Path, turn_id: str) -> tuple[str, bool]:
                 return response_id, False
         time.sleep(_POLL_S)
     pytest.fail(f"turn {turn_id} never reached surface.playback_started within {_SPEECH_WAIT_S}s")
+
+
+def _wait_for_sealed_answer(db: Path, response_id: str) -> None:
+    """Let a sealed answer settle before the next question goes in.
+
+    A zero-permit seal writes no ``surface.response_open``, so the media
+    owner has nothing to schedule and the answer is silent
+    (``docs/goals/sealed-stream-full-text-fallback.md``): the wait ends once
+    ``surface.response_emitted`` has landed and no playback started in the
+    quiet window. Once that card lands the sealed answer speaks, and a next
+    response would queue behind it and complete before it speaks, so an
+    observed playback is waited to its terminal instead.
+    """
+    deadline = time.monotonic() + _WARMUP_WAIT_S
+    quiet_from: float | None = None
+    while time.monotonic() < deadline:
+        types = {event.type for event in _events_for_response(db, response_id)}
+        if "surface.playback_started" in types:
+            quiet_from = None
+            if types & set(_PLAYBACK_TERMINALS):
+                _echo(f"sealed answer {response_id}: emitted and spoken to a playback terminal")
+                return
+        elif "surface.response_emitted" in types:
+            if quiet_from is None:
+                quiet_from = time.monotonic()
+            elif time.monotonic() - quiet_from >= _SEALED_QUIET_S:
+                _echo(f"sealed answer {response_id}: emitted, no playback in {_SEALED_QUIET_S}s")
+                return
+        time.sleep(0.1)
+    pytest.fail(f"sealed answer {response_id} never settled in {_WARMUP_WAIT_S}s")
+
+
+def _open_kill_window(db: Path, port: int) -> tuple[str, str, bool]:
+    """Submit long questions in order until one opens the window.
+
+    Returns ``(turn_id, response_id, saw_checkpoint)``.
+    """
+    for attempt, question in enumerate(_LONG_QUESTIONS, start=1):
+        turn_id = _submit(port, question)
+        window = _wait_for_kill_window(db, turn_id)
+        if not isinstance(window, _Sealed):
+            _echo(f"kill window: question {attempt}/{len(_LONG_QUESTIONS)} {question!r} opened it")
+            return turn_id, window[0], window[1]
+        _echo(
+            f"retry: question {attempt}/{len(_LONG_QUESTIONS)} {question!r} sealed before "
+            f"the first permit (no surface.response_open) as {window.response_id}; "
+            f"gate reasons={window.gate_reasons}",
+        )
+        _wait_for_sealed_answer(db, window.response_id)
+    pytest.fail(f"every long question sealed before the first permit: {_LONG_QUESTIONS}")
 
 
 def _record_for(db: Path, turn_id: str, response_id: str) -> PresentationRecord:
@@ -598,11 +699,10 @@ def test_live_sigkill_mid_speech_recovers_without_respeaking(
         assert "downgraded" not in boot1_text, boot1_text[-2000:]
 
         warm_turn = _submit(port, _WARMUP_QUESTION)
-        warm_response = _wait_for_warmup(db, warm_turn)
+        warm_response = _wait_for_spoken_completion(db, warm_turn, "warm-up")
         _echo(f"warm-up: turn_id={warm_turn} response_id={warm_response} (completed and spoken)")
 
-        turn_id = _submit(port, _LONG_QUESTION)
-        response_id, saw_checkpoint = _wait_for_kill_window(db, turn_id)
+        turn_id, response_id, saw_checkpoint = _open_kill_window(db, port)
         os.kill(proc.pid, signal.SIGKILL)
         kill_instant = datetime.now(UTC).isoformat(timespec="milliseconds")
         proc.wait(timeout=10)
