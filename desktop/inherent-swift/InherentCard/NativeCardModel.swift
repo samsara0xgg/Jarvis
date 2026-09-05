@@ -53,11 +53,19 @@ private struct NativeFollowupSnapshot {
 
 @MainActor
 final class NativeCardModel: ObservableObject {
-  nonisolated static let cardWidth: CGFloat = 360
+  nonisolated static let defaultCardWidth: CGFloat = 360
   nonisolated static let popoverWidth: CGFloat = 300
   nonisolated static let popoverGap: CGFloat = 18
-  nonisolated static let panelWidth: CGFloat = 678
   nonisolated static let pillReservedTop: CGFloat = 38
+  nonisolated static let cardWidthDefaultsKey = "InherentCardWidth"
+
+  /// User-resizable card width, persisted across launches. Default 360.
+  /// All width consumers (view frames, hit test, drag policy, popover offset)
+  /// read this instance value — the static is only the factory default.
+  @Published var cardWidth: CGFloat = NativeCardModel.defaultCardWidth
+
+  /// Panel = popover slot + gap + card. Right-anchored; grows leftward.
+  var panelWidth: CGFloat { cardWidth + Self.popoverGap + Self.popoverWidth }
 
   @Published var inputText = ""
   @Published var inputPlaceholder = "问点什么…"
@@ -92,6 +100,9 @@ final class NativeCardModel: ObservableObject {
   var onRequestBeginPanelDrag: (() -> Void)?
   var onRequestEndPanelDrag: (() -> Void)?
   var onRequestResetPosition: (() -> Void)?
+  /// Applies a proposed card width to the panel frame (right edge pinned) and
+  /// returns the width actually applied after screen clamping.
+  var onRequestApplyCardWidth: ((CGFloat) -> CGFloat)?
 
   private let backend: any NativeBackendSubmitting
   private let audioDucker: any NativeAudioDucking
@@ -138,6 +149,10 @@ final class NativeCardModel: ObservableObject {
     self.backend = backend
     self.audioDucker = audioDucker
     self.voiceRecorder = voiceRecorder
+    let savedWidth = CGFloat(UserDefaults.standard.double(forKey: Self.cardWidthDefaultsKey))
+    if savedWidth > 0 {
+      self.cardWidth = DisplayManager.clampWidth(savedWidth)
+    }
   }
 
   var popoverVisible: Bool { activeHistoryID != nil }
@@ -224,6 +239,31 @@ final class NativeCardModel: ObservableObject {
 
   func resetPosition() {
     onRequestResetPosition?()
+  }
+
+  func beginResize() {
+    beginDrag()
+  }
+
+  func resizeCard(to width: CGFloat) {
+    let applied = onRequestApplyCardWidth?(width) ?? DisplayManager.clampWidth(width)
+    guard abs(applied - cardWidth) >= 0.5 else { return }
+    cardWidth = applied
+    requestLayout()
+  }
+
+  func endResize() {
+    endDrag()
+    persistCardWidth()
+  }
+
+  func resetCardWidth() {
+    resizeCard(to: Self.defaultCardWidth)
+    persistCardWidth()
+  }
+
+  private func persistCardWidth() {
+    UserDefaults.standard.set(Double(cardWidth), forKey: Self.cardWidthDefaultsKey)
   }
 
   func setDropTarget(_ value: Bool) {

@@ -6,10 +6,18 @@ enum DisplayManager {
   static let PILL_RESERVED_TOP: CGFloat = 38
   static let MIN_HEIGHT: CGFloat = 60
   static let MAX_HEIGHT: CGFloat = 800
+  static let MIN_WIDTH: CGFloat = 300
   static let MAX_WIDTH: CGFloat = 900
 
   static func clampHeight(_ h: CGFloat) -> CGFloat { min(max(MIN_HEIGHT, ceil(h)), MAX_HEIGHT) }
-  static func clampWidth(_ w: CGFloat) -> CGFloat { min(max(CARD_WIDTH, ceil(w)), MAX_WIDTH) }
+  static func clampWidth(_ w: CGFloat) -> CGFloat { min(max(MIN_WIDTH, ceil(w)), MAX_WIDTH) }
+
+  /// Largest card width that still fits the screen once the fixed non-card
+  /// panel span (popover slot + gap) and margins are accounted for.
+  static func maxCardWidth(on screen: NSScreen?, nonCardWidth: CGFloat) -> CGFloat {
+    guard let visible = (screen ?? NSScreen.main)?.visibleFrame else { return MAX_WIDTH }
+    return max(MIN_WIDTH, min(MAX_WIDTH, floor(visible.width - CARD_MARGIN * 2 - nonCardWidth)))
+  }
 
   static func clampPanelHeight(_ h: CGFloat, on screen: NSScreen?) -> CGFloat {
     guard let visibleFrame = (screen ?? NSScreen.main)?.visibleFrame else {

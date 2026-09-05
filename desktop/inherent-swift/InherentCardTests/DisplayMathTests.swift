@@ -30,7 +30,7 @@ final class DisplayMathTests: XCTestCase {
   }
 
   func test_clampWidth() {
-    XCTAssertEqual(DisplayManager.clampWidth(100), 360)  // floor (CARD_WIDTH)
+    XCTAssertEqual(DisplayManager.clampWidth(100), 300)  // floor (MIN_WIDTH)
     XCTAssertEqual(DisplayManager.clampWidth(1000), 900) // ceil
     XCTAssertEqual(DisplayManager.clampWidth(500), 500)
   }
@@ -42,6 +42,23 @@ final class DisplayMathTests: XCTestCase {
     XCTAssertEqual(regions.card, NSRect(x: 418, y: 200, width: 360, height: 166))
     XCTAssertEqual(regions.popover, NSRect(x: 100, y: 200, width: 300, height: 166))
     XCTAssertEqual(regions.pill, NSRect(x: 530, y: 366, width: 136, height: 35))
+  }
+
+  func test_hitRegionsFollowResizedCardWidth() {
+    // Panel = 300 popover slot + 18 gap + 500 card; the card grows leftward
+    // from the pinned right edge, so the popover slot never moves.
+    let panel = NSRect(x: 100, y: 200, width: 818, height: 204)
+    let regions = NativeCardHitTest.regions(for: panel, cardWidth: 500)
+
+    XCTAssertEqual(regions.card, NSRect(x: 418, y: 200, width: 500, height: 166))
+    XCTAssertEqual(regions.popover, NSRect(x: 100, y: 200, width: 300, height: 166))
+    XCTAssertEqual(regions.pill, NSRect(x: 600, y: 366, width: 136, height: 35))
+    XCTAssertFalse(NativeCardHitTest.shouldIgnoreMouse(
+      at: NSPoint(x: 450, y: 250),
+      panelFrame: panel,
+      popoverVisible: false,
+      cardWidth: 500
+    ))
   }
 
   func test_hitTestKeepsTransparentPopoverSlotClickThrough() {

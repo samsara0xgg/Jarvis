@@ -20,9 +20,11 @@ import AppKit
 //     path may set this.
 //
 //   frame.size.width
-//     Owner: this init only. Width is FIXED at 678 for the panel's lifetime.
-//     popover visibility is now a NativeCardModel flag in NativeCardController,
-//     not a setFrame call.
+//     Owners: this init + NativeCardController.applyCardWidth (user resize
+//     drag on the card's left edge; right edge stays pinned). Popover
+//     visibility NEVER changes width — it is a NativeCardModel flag in
+//     NativeCardController, not a setFrame call, and the panel is always wide
+//     enough to host the popover slot.
 //
 //   frame.size.height
 //     Owner: NativeCardController.updatePanelHeight via DisplayManager.applyHeight
@@ -58,18 +60,19 @@ final class CardPanel: NSPanel {
     NSLog("[panel] resignKey: appActive=\(NSApp.isActive)")
   }
 
-  init() {
-    // Width is FIXED at 678 (= 360 card + 18 gap + 300 popover slot) for the
-    // panel's lifetime. Right-anchored layout means the visible card sits at
-    // panel.x + 318, so card visual position is identical to a 360-wide panel
-    // anchored at the same right edge. The popover slot to the left of the
-    // card is transparent and click-through (passthrough monitor excludes it
-    // when popoverActive=false). Why fixed: any setFrame width change forced
-    // an instant panel jump that webview-internal CSS layout could not
-    // synchronize with → the long-running "popover hide flash". Keeping width
-    // constant eliminates that flash class entirely.
+  init(panelWidth: CGFloat) {
+    // Panel width = card width + 18 gap + 300 popover slot (678 at the 360
+    // default). Right-anchored layout means the visible card sits at
+    // panel.maxX - cardWidth, so the card's visual position is identical to a
+    // card-wide panel anchored at the same right edge. The popover slot to the
+    // left of the card is transparent and click-through (passthrough monitor
+    // excludes it when popoverActive=false). Width changes ONLY on explicit
+    // user resize (NativeCardController.applyCardWidth) — never on popover
+    // show/hide: the webview-era "popover hide flash" came from toggling
+    // width with visibility, and keeping visibility width-neutral still
+    // eliminates that flash class entirely.
     super.init(
-      contentRect: NSRect(x: 0, y: 0, width: 678, height: 120),
+      contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: 120),
       styleMask: [.borderless, .resizable],
       backing: .buffered,
       defer: false

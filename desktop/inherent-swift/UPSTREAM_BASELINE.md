@@ -48,11 +48,21 @@ bundle/Info.plist is not a release build and must not be deployed.
 ## Behavior disposition
 
 `jarvis-cc` has the same tracked subtree. The dirty `jarvis-legacy` copy is
-historical evidence only and was not imported. Its local resize behavior is
-accepted for reimplementation: left-edge resize with a fixed right edge,
-300–900-point/screen-bounded width, UserDefaults persistence, double-click
-reset to 360, and matching hit-testing, drag regions and history popover.
-This behavior is pending; choosing a clean baseline does not reject it.
+historical evidence only and was not imported as the baseline. Its committed
+Swift subtree is byte-identical to this baseline apart from the excluded
+`OutputSpeechPlayer.swift`, so its uncommitted resize work (dated 2026-08-26)
+was migrated by copying those six files on top of the import: left-edge
+resize with a fixed right edge, 300–900-point/screen-bounded width,
+UserDefaults persistence (`InherentCardWidth`), double-click reset to 360,
+and width-aware hit-testing, drag regions and history popover offset.
+`DisplayMathTests.test_clampWidth` moved its floor from 360 to `MIN_WIDTH`
+300 with that change.
+
+Not migrated from `jarvis-legacy`, and still awaiting an explicit decision:
+its 2026-05-11 stash adds an auto-growing input field
+(`NativeInputTextSizing`, 36–164 points) and a selectable NSTextView answer
+renderer (`NativeSelectableMarkdownText`). The same stash's
+`OutputSpeechPlayer` TTS wiring is rejected by ADR-0014.
 
 Existing hotkey, top-right anchoring/display changes, passthrough, dragging,
 history, image input, voice recording and shutdown/watchdog behavior remain

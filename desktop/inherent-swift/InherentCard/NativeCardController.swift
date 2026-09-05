@@ -26,10 +26,10 @@ final class NativeCardController: NSObject {
   private var panelDragActive = false
 
   override init() {
-    let panel = CardPanel()
     let model = NativeCardModel()
+    let panel = CardPanel(panelWidth: model.panelWidth)
     let view = NativeCardView(model: model)
-    let containerView = NSView(frame: NSRect(x: 0, y: 0, width: NativeCardModel.panelWidth, height: 120))
+    let containerView = NSView(frame: NSRect(x: 0, y: 0, width: model.panelWidth, height: 120))
     self.panel = panel
     self.model = model
     self.hostingView = NSHostingView(rootView: view)
@@ -61,6 +61,9 @@ final class NativeCardController: NSObject {
     model.onRequestBeginPanelDrag = { [weak self] in self?.beginPanelDrag() }
     model.onRequestEndPanelDrag = { [weak self] in self?.endPanelDrag() }
     model.onRequestResetPosition = { [weak self] in self?.resetPosition() }
+    model.onRequestApplyCardWidth = { [weak self] width in
+      self?.applyCardWidth(width) ?? DisplayManager.clampWidth(width)
+    }
 
     let dispatcher = NativeControllerBridge(controller: self)
     self.bridgeDispatcher = dispatcher
@@ -186,6 +189,23 @@ final class NativeCardController: NSObject {
     updatePassthrough()
   }
 
+  /// User-resize width path: pins the right edge, widens/narrows leftward,
+  /// then re-measures height (content re-wraps at the new width). Returns the
+  /// card width actually applied after static + screen clamping.
+  private func applyCardWidth(_ requested: CGFloat) -> CGFloat {
+    let nonCardWidth = NativeCardModel.popoverWidth + NativeCardModel.popoverGap
+    let card = min(
+      DisplayManager.clampWidth(requested),
+      DisplayManager.maxCardWidth(on: panel.screen, nonCardWidth: nonCardWidth)
+    )
+    let panelWidth = card + nonCardWidth
+    if abs(panelWidth - panel.frame.width) >= 0.5 {
+      let next = DisplayManager.applyWidth(to: panel.frame, newWidth: panelWidth)
+      panel.setFrame(next, display: true, animate: false)
+    }
+    return card
+  }
+
   private func updatePanelHeight() {
     heightAnimationGeneration += 1
     heightAnimationTask?.cancel()
@@ -300,7 +320,8 @@ final class NativeCardController: NSObject {
     let shouldIgnore = NativeCardHitTest.shouldIgnoreMouse(
       at: cursor,
       panelFrame: panel.frame,
-      popoverVisible: model.popoverVisible
+      popoverVisible: model.popoverVisible,
+      cardWidth: model.cardWidth
     )
     if panel.ignoresMouseEvents != shouldIgnore {
       panel.ignoresMouseEvents = shouldIgnore
@@ -787,18 +808,21 @@ enum NativeCardHitTest {
     let popover: NSRect
   }
 
-  static func regions(for panelFrame: NSRect) -> Regions {
+  static func regions(
+    for panelFrame: NSRect,
+    cardWidth: CGFloat = NativeCardModel.defaultCardWidth
+  ) -> Regions {
     let cardTop = panelFrame.maxY - NativeCardModel.pillReservedTop
-    let cardLeft = panelFrame.maxX - NativeCardModel.cardWidth
+    let cardLeft = panelFrame.maxX - cardWidth
     let cardRect = NSRect(
       x: cardLeft,
       y: panelFrame.minY,
-      width: NativeCardModel.cardWidth,
+      width: cardWidth,
       height: cardTop - panelFrame.minY
     )
     let pillWidth: CGFloat = 136
     let pillRect = NSRect(
-      x: cardLeft + NativeCardModel.cardWidth / 2 - pillWidth / 2,
+      x: cardLeft + cardWidth / 2 - pillWidth / 2,
       y: cardTop,
       width: pillWidth,
       height: 35
@@ -812,8 +836,13 @@ enum NativeCardHitTest {
     return Regions(card: cardRect, pill: pillRect, popover: popoverRect)
   }
 
-  static func shouldIgnoreMouse(at point: NSPoint, panelFrame: NSRect, popoverVisible: Bool) -> Bool {
-    let regions = regions(for: panelFrame)
+  static func shouldIgnoreMouse(
+    at point: NSPoint,
+    panelFrame: NSRect,
+    popoverVisible: Bool,
+    cardWidth: CGFloat = NativeCardModel.defaultCardWidth
+  ) -> Bool {
+    let regions = regions(for: panelFrame, cardWidth: cardWidth)
     let inCard = pointInRoundedRect(point, regions.card, 30)
     let inPill = pointInRoundedRect(point, regions.pill, regions.pill.height / 2)
     let inPopover = popoverVisible && pointInRoundedRect(point, regions.popover, 30)

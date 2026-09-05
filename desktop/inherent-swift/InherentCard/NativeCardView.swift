@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct NativeCardView: View {
   private static let historyChipHeight: CGFloat = 29.25
+  private static let resizeHandleWidth: CGFloat = 10
 
   @ObservedObject var model: NativeCardModel
 
@@ -11,19 +12,22 @@ struct NativeCardView: View {
   @State private var pillHovering = false
   @State private var dragBlocked = false
   @State private var lastDragScreenLocation: NSPoint?
+  @State private var resizeHovering = false
+  @State private var resizeStartWidth: CGFloat?
+  @State private var resizeStartMouseX: CGFloat?
   @FocusState private var inputFocused: Bool
 
   var body: some View {
     ZStack(alignment: .topTrailing) {
       popoverLayer
       cardColumn
-        .frame(width: NativeCardModel.cardWidth, alignment: .topTrailing)
+        .frame(width: model.cardWidth, alignment: .topTrailing)
         .onHover { value in
           hovering = value
           model.setHovering(value)
         }
     }
-    .frame(width: NativeCardModel.panelWidth, alignment: .topTrailing)
+    .frame(width: model.panelWidth, alignment: .topTrailing)
     .background(Color.clear)
     .onChange(of: model.focusNonce) { _, _ in
       inputFocused = true
@@ -65,7 +69,7 @@ struct NativeCardView: View {
       inputRow
       answerView
     }
-    .frame(width: NativeCardModel.cardWidth)
+    .frame(width: model.cardWidth)
     .background(cardBackground)
     .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
     .overlay(edgeStroke)
@@ -73,6 +77,59 @@ struct NativeCardView: View {
     .animation(.easeInOut(duration: 0.22), value: hovering)
     .contentShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
     .gesture(dragGesture)
+    .overlay(alignment: .leading) { resizeHandle }
+  }
+
+  /// Left-edge resize strip: drag left to widen, right to narrow (the panel's
+  /// right edge stays pinned). Double-click restores the default width. Sits
+  /// above cardShell's move gesture, so drags starting here never move the
+  /// panel.
+  private var resizeHandle: some View {
+    Rectangle()
+      .fill(Color.clear)
+      .frame(width: Self.resizeHandleWidth)
+      .frame(maxHeight: .infinity)
+      .contentShape(Rectangle())
+      .overlay {
+        Capsule()
+          .fill(Color.white.opacity(resizeHovering || isResizing ? 0.30 : 0))
+          .frame(width: 3, height: 36)
+          .animation(.easeInOut(duration: 0.15), value: resizeHovering || isResizing)
+      }
+      .onHover { inside in
+        resizeHovering = inside
+        if inside {
+          NSCursor.resizeLeftRight.push()
+        } else {
+          NSCursor.pop()
+        }
+      }
+      .onTapGesture(count: 2) { model.resetCardWidth() }
+      .gesture(resizeGesture)
+  }
+
+  private var isResizing: Bool { resizeStartWidth != nil }
+
+  private var resizeGesture: some Gesture {
+    DragGesture(minimumDistance: 1)
+      .onChanged { _ in
+        // Screen coords, same as the move drag: local coordinates shift as the
+        // card resizes under the cursor, which would feed back into the delta.
+        let mouseX = NSEvent.mouseLocation.x
+        if resizeStartWidth == nil {
+          resizeStartWidth = model.cardWidth
+          resizeStartMouseX = mouseX
+          model.beginResize()
+        }
+        guard let startWidth = resizeStartWidth, let startX = resizeStartMouseX else { return }
+        NSCursor.resizeLeftRight.set()
+        model.resizeCard(to: startWidth - (mouseX - startX))
+      }
+      .onEnded { _ in
+        resizeStartWidth = nil
+        resizeStartMouseX = nil
+        model.endResize()
+      }
   }
 
   private var inputRow: some View {
@@ -256,7 +313,10 @@ struct NativeCardView: View {
   private func chipQuestionWidth(_ text: String) -> CGFloat {
     let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
     let width = ceil((text as NSString).size(withAttributes: [.font: font]).width)
-    return min(max(width, 1), 110)
+    // Question column cap scales with the card so wider cards show more of the
+    // question instead of dedicating all extra room to the answer preview.
+    let cap = 110 + max(0, (model.cardWidth - NativeCardModel.defaultCardWidth) * 0.4)
+    return min(max(width, 1), cap)
   }
 
   private var answerView: some View {
@@ -401,7 +461,7 @@ struct NativeCardView: View {
         .background(cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).stroke(Color.white.opacity(0.06), lineWidth: 0.5))
-        .offset(x: -(NativeCardModel.cardWidth + NativeCardModel.popoverGap), y: NativeCardModel.pillReservedTop + model.selectedPopoverTop)
+        .offset(x: -(model.cardWidth + NativeCardModel.popoverGap), y: NativeCardModel.pillReservedTop + model.selectedPopoverTop)
         .transition(.opacity)
         .onHover { value in
           if value {
@@ -534,7 +594,8 @@ struct NativeCardView: View {
         isSubmitted: model.isSubmitted,
         isFollowupInput: model.isFollowupInput,
         isListening: model.isListening,
-        hasStatePill: !model.stateLabel.isEmpty
+        hasStatePill: !model.stateLabel.isEmpty,
+        cardWidth: model.cardWidth
       )
     )
   }
@@ -547,11 +608,12 @@ enum NativeCardDragPolicy {
     var isFollowupInput: Bool
     var isListening: Bool
     var hasStatePill: Bool
+    var cardWidth: CGFloat = NativeCardModel.defaultCardWidth
   }
 
   static func shouldStartDrag(at location: CGPoint, state: State) -> Bool {
     guard location.x >= 0,
-          location.x <= NativeCardModel.cardWidth,
+          location.x <= state.cardWidth,
           location.y >= 0 else { return false }
 
     let historyTotalHeight = state.historyViewportHeight > 0 ? state.historyViewportHeight + 14 : 0
@@ -559,7 +621,7 @@ enum NativeCardDragPolicy {
       let chipViewport = CGRect(
         x: 22,
         y: 8,
-        width: NativeCardModel.cardWidth - 44,
+        width: state.cardWidth - 44,
         height: state.historyViewportHeight
       )
       return !chipViewport.contains(location)
@@ -569,7 +631,7 @@ enum NativeCardDragPolicy {
     if rowY < inputRowHeight(for: state) {
       let interactiveStart = inputInteractiveStart(for: state)
       let trailingDragSliver: CGFloat = state.hasStatePill ? 0 : 12
-      return location.x < interactiveStart || location.x > NativeCardModel.cardWidth - trailingDragSliver
+      return location.x < interactiveStart || location.x > state.cardWidth - trailingDragSliver
     }
 
     return true
