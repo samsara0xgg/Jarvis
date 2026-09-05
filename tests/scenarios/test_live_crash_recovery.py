@@ -58,7 +58,15 @@ pytestmark = pytest.mark.live_llm
 _TEST_ROOT_BASE = Path.home() / ".jarvis-lane-b-test"
 _OWNER_ENV = Path.home() / ".jarvis" / "env"
 _FORBIDDEN_PORT = 8006
+_EVENT_LOG_NAME = "mac_events.db"
 _SILENT_DEVICE = "BlackHole 16ch"
+_FALLBACK_DEVICE = "MacBook Pro Speakers"
+"""Restore target when the captured route is ALREADY the loopback.
+
+Two overlapping lanes once left the owner with no speaker output: the
+second lane captured ``BlackHole 16ch`` as "before" and faithfully put it
+back. Restoring the loopback is never the right answer.
+"""
 _SWITCH_AUDIO = "SwitchAudioSource"
 _INSTALL_HINT = "brew install switchaudio-osx blackhole-16ch"
 
@@ -100,6 +108,8 @@ _SEALED_QUIET_S = 2.0
 """How long a sealed turn must append nothing, with nothing open, before the next question."""
 
 _RECONCILE_LINE = "boot reconciliation closed 1 open response run(s)"
+_PLAYBACK_RECONCILE_PREFIX = "boot reconciliation closed "
+_PLAYBACK_RECONCILE_SUFFIX = " open playback generation(s)"
 _WATCHER_LINE = "tts_watcher started (after_id="
 
 
@@ -358,6 +368,14 @@ def silent_output_device() -> Iterator[str]:
         text=True,
     ).stdout.strip()
     _echo(f"audio: `{_SWITCH_AUDIO} -c -t output` before = {before!r}")
+    restore = _FALLBACK_DEVICE if before == _SILENT_DEVICE else before
+    if restore != before:
+        if restore not in listed:
+            pytest.skip(f"{restore!r} absent and the captured route is the loopback")
+        _echo(
+            f"audio: captured route is already the loopback; "
+            f"restore target overridden to {restore!r}",
+        )
     subprocess.run(  # noqa: S603 - fixed argv
         [_SWITCH_AUDIO, "-s", _SILENT_DEVICE, "-t", "output"],
         check=True,
@@ -366,10 +384,10 @@ def silent_output_device() -> Iterator[str]:
     )
     _echo(f"audio: switched default output to {_SILENT_DEVICE!r}")
     try:
-        yield before
+        yield restore
     finally:
         subprocess.run(  # noqa: S603 - fixed argv
-            [_SWITCH_AUDIO, "-s", before, "-t", "output"],
+            [_SWITCH_AUDIO, "-s", restore, "-t", "output"],
             check=False,
             capture_output=True,
             text=True,
@@ -382,7 +400,7 @@ def silent_output_device() -> Iterator[str]:
         ).stdout.strip()
         _echo(
             f"audio: `{_SWITCH_AUDIO} -c -t output` after = {after!r} "
-            f"(restored={after == before})",
+            f"(restored={after == restore})",
         )
 
 
@@ -581,6 +599,8 @@ class _PreKill(NamedTuple):
     generation: int
     last_checkpoint_text: str | None
     answer_so_far: str
+    started_id: int
+    started_uid: str
 
 
 def _pre_kill_facts(db: Path, response_id: str) -> _PreKill:
@@ -604,16 +624,28 @@ def _pre_kill_facts(db: Path, response_id: str) -> _PreKill:
         (e for e in pre_kill if e.type == "surface.response_chunk"),
         key=lambda e: int(e.payload["sequence"]),
     )
+    generation = int(started[-1].payload["playback_generation_id"])
+    (started_uid,) = _rows(
+        db,
+        "SELECT event_uid FROM events WHERE id = ?",
+        (started[-1].id,),
+    )[0]
     facts = _PreKill(
         max_id=max_id,
-        generation=int(started[-1].payload["playback_generation_id"]),
+        generation=generation,
         last_checkpoint_text=str(checkpoints[-1].payload["heard_text"]) if checkpoints else None,
         answer_so_far="".join(str(e.payload["text"]) for e in chunks),
+        started_id=started[-1].id,
+        started_uid=str(started_uid),
     )
     _echo(
         f"pre-kill: MAX(events.id) N={facts.max_id} playback_generation_id={facts.generation} "
         f"chunk_chars={len(facts.answer_so_far)} "
         f"last_checkpoint_heard_text={facts.last_checkpoint_text!r}",
+    )
+    _echo(
+        f"pre-kill orphan pair=({response_id}, {facts.generation}) "
+        f"surface.playback_started id={facts.started_id} event_uid={facts.started_uid}",
     )
     return facts
 
@@ -686,6 +718,106 @@ def _assert_heard_prefix(db: Path, turn_id: str, response_id: str, facts: _PreKi
     )
 
 
+def _playback_terminals(db: Path, response_id: str, generation: int) -> list[tuple[object, ...]]:
+    """Every playback terminal naming the orphan's exact CAS identity, raw."""
+    return _rows(
+        db,
+        "SELECT id, event_uid, type, source_event_id, payload_json FROM events "
+        "WHERE type IN ('surface.playback_completed', 'surface.playback_interrupted', "
+        "'surface.playback_failed') "
+        "AND json_extract(payload_json, '$.response_id') = ? "
+        "AND json_extract(payload_json, '$.playback_generation_id') = ? ORDER BY id",
+        (response_id, generation),
+    )
+
+
+def _assert_playback_closed_once(
+    db: Path,
+    facts: _PreKill,
+    response_id: str,
+    boot2_text: str,
+) -> None:
+    """(f) ADR-0008 §4.4: boot writes exactly one daemon_restart playback terminal."""
+    reconciled = [
+        line
+        for line in boot2_text.splitlines()
+        if _PLAYBACK_RECONCILE_PREFIX in line and _PLAYBACK_RECONCILE_SUFFIX in line
+    ]
+    _echo(f"boot2 playback reconciliation log line(s) = {reconciled}")
+    assert reconciled, boot2_text[-2000:]
+    terminals = _playback_terminals(db, response_id, facts.generation)
+    for row_id, event_uid, kind, source_event_id, payload_json in terminals:
+        _echo(f"playback terminal id={row_id} event_uid={event_uid} type={kind}")
+        _echo(f"  source_event_id={source_event_id}")
+        _echo(f"  payload={payload_json}")
+    assert len(terminals) == 1, terminals
+    row_id, _uid, kind, source_event_id, payload_json = terminals[0]
+    assert kind == "surface.playback_interrupted", terminals
+    assert int(str(row_id)) > facts.max_id, (row_id, facts.max_id)
+    payload = json.loads(str(payload_json))
+    assert payload["reason"] == "daemon_restart", payload
+    assert payload["response_id"] == response_id, payload
+    assert payload["playback_generation_id"] == facts.generation, payload
+    # PlaybackHistory pins the activation by uid; any other source flips the
+    # replay fold to inconsistent.
+    assert source_event_id == facts.started_uid, (source_event_id, facts.started_uid)
+    assert "speech_text_hash" not in payload, payload
+    (count,) = _rows(
+        db,
+        "SELECT COUNT(*) FROM events WHERE type = 'surface.playback_interrupted' "
+        "AND json_extract(payload_json, '$.response_id') = ? "
+        "AND json_extract(payload_json, '$.playback_generation_id') = ?",
+        (response_id, facts.generation),
+    )[0]
+    _echo(f"SELECT COUNT(*) surface.playback_interrupted for the pair = {count}")
+    assert int(str(count)) == 1, count
+
+
+def _assert_second_restart_appends_nothing(
+    facts: _PreKill,
+    response_id: str,
+    root: Path,
+    config_path: Path,
+    port: int,
+) -> None:
+    """(g) The reconciler is idempotent across boots: no second terminal, no new row."""
+    db = root / _EVENT_LOG_NAME
+    high_water = _max_event_id(db)
+    boot3_log = root / "boot3.log"
+    proc3 = _boot(root, config_path, port, boot3_log)
+    try:
+        _wait_for_log_line(boot3_log, _WATCHER_LINE, deadline_s=_TTS_READY_WAIT_S)
+        _echo(f"restart 2: booted pid={proc3.pid}, high-water before it was {high_water}")
+    finally:
+        _stop(proc3)
+    appended = _rows(
+        db,
+        "SELECT id, type FROM events WHERE id > ? "
+        "AND json_extract(payload_json, '$.response_id') = ? "
+        "AND json_extract(payload_json, '$.playback_generation_id') = ? ORDER BY id",
+        (high_water, response_id, facts.generation),
+    )
+    _echo(f"restart 2: rows appended for the pair (id > {high_water}): {appended}")
+    assert appended == [], appended
+    (count,) = _rows(
+        db,
+        "SELECT COUNT(*) FROM events WHERE type = 'surface.playback_interrupted' "
+        "AND json_extract(payload_json, '$.response_id') = ? "
+        "AND json_extract(payload_json, '$.playback_generation_id') = ?",
+        (response_id, facts.generation),
+    )[0]
+    _echo(f"restart 2: SELECT COUNT(*) surface.playback_interrupted for the pair = {count}")
+    assert int(str(count)) == 1, count
+    boot3_text = boot3_log.read_text(encoding="utf-8", errors="replace")
+    reconciled = [
+        line
+        for line in boot3_text.splitlines()
+        if _PLAYBACK_RECONCILE_SUFFIX in line or _RECONCILE_LINE in line
+    ]
+    _echo(f"restart 2: boot reconciliation log lines = {reconciled}")
+    assert reconciled == [], reconciled
+
+
 def _assert_boot2_anchored(trace_path: Path, trace_offset: int, boot2_log: Path, n: int) -> None:
     """(d) boot 2 anchors at the pre-kill high-water N; (e) reconcile runs before the watcher."""
     owner_rows = [
@@ -716,7 +848,7 @@ def test_live_sigkill_mid_speech_recovers_without_respeaking(
 ) -> None:
     """SIGKILL the daemon mid-speech; the reboot closes the run once and re-speaks nothing."""
     root = burn_root
-    db = root / "mac_events.db"
+    db = root / _EVENT_LOG_NAME
     trace_path = root / "trace.jsonl"
     _install_runtime_env(root)
     config_path = _build_overlay(root)
@@ -756,8 +888,16 @@ def test_live_sigkill_mid_speech_recovers_without_respeaking(
         _echo("boot2 log header:\n  " + "\n  ".join(boot2_text.splitlines()[:12]))
 
         _assert_closed_once_and_silent(db, facts, response_id, warm_response)
+        _assert_playback_closed_once(db, facts, response_id, boot2_text)
         _assert_heard_prefix(db, turn_id, response_id, facts)
         _assert_boot2_anchored(trace_path, trace_offset, boot2_log, facts.max_id)
+
+        # ADR-0008 §4.4 is idempotent across boots, not merely within one:
+        # a SECOND restart over the same closed generation must append
+        # nothing at all for that pair.
+        _stop(proc2)
+        proc2 = None
+        _assert_second_restart_appends_nothing(facts, response_id, root, config_path, port)
     finally:
         if proc2 is not None:
             _stop(proc2)

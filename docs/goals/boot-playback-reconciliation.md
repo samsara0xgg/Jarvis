@@ -256,3 +256,21 @@ Or stop after 40 turns.
   `speech_text_hash`, and a dropped cursor each flip
   `fold_conversation_history(...).consistent` to False, while the
   reconciler's own output holds True in both cursor branches.
+- Live crash-recovery burn extended and run — root
+  `~/.jarvis-lane-b-test/crash-20260905T223601Z`, port 51658, `1 passed in
+  31.58s`. SIGKILL pid 65786; orphan pair
+  `(RESP89e7127f638d41c487df91bde0a7ccca, 2)`; `surface.playback_started`
+  id 26 `event_uid=84d7c945150949a68cffa14794c1a884`. Restart 1 logged
+  `boot reconciliation closed 1 open playback generation(s)` and appended
+  exactly one `surface.playback_interrupted` (id 29,
+  `source_event_id=84d7c945150949a68cffa14794c1a884`,
+  `"reason":"daemon_restart"`, no `speech_text_hash`), `COUNT(*)` for the
+  pair = 1, and the live fold reported `record.consistent=True`. Restart 2
+  appended zero rows for the pair, `COUNT(*)` still 1, and logged no
+  reconciliation line. Audio: before `'MacBook Pro Speakers'`, switched to
+  `'BlackHole 16ch'`, after `'MacBook Pro Speakers' (restored=True)` from
+  both the fixture and the shell guard.
+- Owner follow-up (not a blocker): the live run took the no-checkpoint
+  branch (`checkpoint_seen=False`), which is finding 3 of
+  `docs/live-burn-2026-09-05-crash-recovery.md` — lane B's live-heard-cursor
+  card. The checkpoint carry-forward branch is covered hermetically only.
