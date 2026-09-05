@@ -1,6 +1,7 @@
 # ADR-0008 — Real-time Response Streaming
 
 **Status:** Approved (2026-08-31, Allen)
+Approved means the design is approved for implementation; implementation completeness is tracked only by §13 Definition of done.
 **Date:** 2026-08-31
 **Supersedes:** ADR-0003 Step 2's post-hoc replay as the default realtime path. The old full-response `drive_turn → ResponsePlan → render_response` path remains the compatibility and high-risk fallback.
 **Depends on:** ADR-0001/0002 decision, evidence, and action foundations; ADR-0003 Inherent surface; ADR-0005 Voice foundation; ADR-0009 resident runtime.
@@ -362,7 +363,7 @@ Forbidden examples without corresponding evidence:
 - “已经查到了。” before `action.result_observed`.
 - timer-based fake progress when no lifecycle changed.
 
-Existing `PresentationIntent(acknowledge/progress/error)` remains an ephemeral L3→L5 contract. A commentary segment may be durable as a delivered response segment, but its truth derives from the durable action event. Repeated progress is coalesced; a timer may decide when to surface a new known state, but may not invent a new state.
+`PresentationIntent(acknowledge/progress/error)` is to be introduced by this D6 lifecycle-commentary work as an ephemeral L3→L5 contract; it does not exist in `jarvis/` yet. Its definition and field set live in spec §3.6.3, which ADR-0003 cites without defining; the table above is its v1 contract. A commentary segment may be durable as a delivered response segment, but its truth derives from the durable action event. Repeated progress is coalesced; a timer may decide when to surface a new known state, but may not invent a new state.
 
 Commentary is always routine, short, interruptible, and independently permitted. Final output follows its own policy. A deep model is never called only to generate “我在查.”
 
@@ -397,7 +398,7 @@ If Allen interrupts the speech run, the sibling document/action run may continue
 
 ### D8. Runtime consumes input concurrently and owns foreground arbitration
 
-`jarvis/runtime/realtime_session.py` provides `RealtimeSessionCoordinator`:
+The runtime coordinator, inlined in `jarvis/runtime/inherent_loop.py` (ADR-0006 D1; no `realtime_session.py`), provides:
 
 ```text
 accept_intent(trigger_event)
@@ -418,6 +419,8 @@ It owns:
 - task creation and shutdown order.
 
 It does not choose tools, output risk, or cancellation authorization.
+
+Of this API only `accept_intent` and `start_response` have inline equivalents in substance: `_user_intent_watcher`'s claim-and-enqueue flow, and `_start_drive_turn_response` opening one durable ResponseRun through `start_response_run`. `supersede_foreground`, `interrupt_response`, `request_action_cancel`, `handle_action_terminal`, and `shutdown` are unbuilt.
 
 `_user_intent_watcher` changes from “poll one event, await its complete turn” to:
 
@@ -932,12 +935,13 @@ On daemon restart, ownership remains in the layer that owns the truth:
 
 ## 5. File-level change map
 
+This section is a historical seed for goal cards under `docs/goals/`, not an acceptance contract; §9 Verification and SLOs and §13 Definition of done remain binding.
+
 ### New files
 
 - `jarvis/shared/realtime.py` — extends ADR-0006's base session IDs/messages with ResponseSegment, gate, interrupt, and cancel contracts; it does not create a competing file/schema.
 - `jarvis/decision/response_stream.py` — ResponseRun, route policy, incremental assembler, segment gate.
 - `jarvis/state/cost_accounting.py` — L2 idempotency claim and same-transaction Event Log append for one cost disposition per `llm_request_id`.
-- `jarvis/runtime/realtime_session.py` — cross-layer coordinator shared with ADR-0006.
 - `jarvis/execution/action_runner.py` — ActionRunner/ActionHandle and terminal arbitration.
 - `tests/fixtures/llm_streams/` — provider event fixtures.
 - `scripts/bench_realtime_turn.py` — deterministic/live stage trace and JSONL summaries.
@@ -948,16 +952,16 @@ On daemon restart, ownership remains in the layer that owns the truth:
 - `jarvis/decision/__init__.py` — route selection, no-tool stream entry, later tool loop migration, final ResponsePlan integration, and L3-owned `CostRecorder` invocation.
 - `jarvis/decision/gates.py` — explicit stream policy/permit gate; complete high-risk classification.
 - `jarvis/decision/packet.py` — add bounded spoken-heard, panel-available, and audit-only response context to `SituationPacket`.
-- `jarvis/decision/intent.py` and `jarvis/decision/response_stream.py` — build prompts from the typed context; never flatten panel-available into heard speech.
+- `jarvis/decision/conversation.py` (ADR-0006 §7) and `jarvis/decision/response_stream.py` — build prompts from the typed context; never flatten panel-available into heard speech.
 - `jarvis/decision/policy.py` — replace `interrupt_policy` placeholder with real response/action distinction.
 - `jarvis/execution/tools.py` — dispatch through ActionRunner; do not block on declared background work.
 - `jarvis/execution/codex_action.py` — expose a cancellable owned process/task handle.
 - `jarvis/execution/codex_client.py` — cancellation/progress seam where supported.
-- `jarvis/runtime/inherent_loop.py` — non-blocking intent pump, committed-event direct bus, coordinator lifecycle.
+- `jarvis/runtime/inherent_loop.py` — non-blocking intent pump, committed-event direct bus, the inlined coordinator (ADR-0006 D1).
 - `jarvis/runtime/__init__.py` — preserve old `drive_turn`; add realtime entry and action-result regrouping.
 - `jarvis/state/event_log.py` — response registry and additive optional fields.
 - `jarvis/state/lifecycle_terminal.py` — reuse/extend ADR-0006 Step 2's same-transaction terminal append primitive; do not create a second arbiter.
-- `jarvis/state/projections.py` — response/conversation fold plus ActionRun-derived canonical `action:` entries in `EntityRegistry`.
+- `jarvis/state/projections.py` — carries the conversation fold from `jarvis/state/conversation.py` (ADR-0006 §7) plus ActionRun-derived canonical `action:` entries in `EntityRegistry`.
 - `jarvis/surface/cli_render.py` — compatibility renderer plus response IDs/channels.
 - `jarvis/surface/sentence_splitter.py` — keep old full-text helper; expose/reuse shared boundary fixtures.
 - `jarvis/surface/inherent_output.py` — response/group/phase/channel envelopes and slow-client isolation.
@@ -966,34 +970,13 @@ On daemon restart, ownership remains in the layer that owns the truth:
 
 ## 6. Configuration
 
-```yaml
-realtime:
-  enabled: false
-  response:
-    routine_streaming: false
-    max_uncommitted_chars: 1200
-    max_document_segment_chars: 320
-    max_speech_segment_chars: 60
-    max_speech_segment_ms: 2500
-    cancel_timeout_ms: 500
-    max_foreground_speech_runs: 1
-    max_background_document_runs: 2
-  progress:
-    enabled: true
-    min_repeat_interval_s: 8
-    max_spoken_updates_per_action: 3
-  actions:
-    true_async_workers: false
-    max_concurrent_runs: 1       # raised only after resource-lease metadata is accepted
-    undeclared_mutation_mode: global_exclusive
-    ui_progress_debounce_ms: 120 # never an ActionGroup completeness barrier
-  routing:
-    routine_preset: fast
-    deep_preset: deep
-    fast_requires_eval_pass: true
-```
+Canonical configuration is the top-level `realtime:` block in `config/jarvis.yaml`; ADR-0006 §5 owns the master `realtime.enabled` gate and the Wave-1 `concurrency_safety` primitives. Keys this ADR owns:
 
-All defaults remain compatibility-safe until their build step is accepted. `routine_streaming` cannot enable unless stream gate, typed adapters, cancellation, and ADR-0006 streaming output capability pass startup checks.
+- `realtime.response.{response_run_lifecycle,independent_response_cancel,cancel_timeout_ms}`, plus `typed_conversation_history`, which the reader (`Wave4ResponseFlags` in `jarvis/shared/realtime.py`) supports but the yaml does not yet set — response lifecycle, cancellation, and typed heard/available history. `independent_response_cancel` and `typed_conversation_history` both require `response_run_lifecycle`; `jarvis/runtime/__init__.py` downgrades an invalid combination once, with one warning, to the legacy batch path.
+- `realtime.actions.{action_runner,true_async_workers,max_concurrent_runs,lease_timeout_s}` — ActionRunner dispatch and true-async workers; `true_async_workers` requires `action_runner`.
+- `realtime.input.{intent_pump,queue_capacity,max_concurrent_turns}` — D8's durable-claim intent queue.
+
+There is no `realtime.routing.*` or `realtime.progress.*` block and no `undeclared_mutation_mode` key, in config or code. `default_resource_key_resolver` in `jarvis/execution/tools.py` hardcodes the fail-closed `global_exclusive` mode for any mutating tool that declares no resource semantics; a knob whose only legal value is its default is not configuration. Preset routing and spoken-progress throttling remain unbuilt.
 
 ## 7. Failure modes
 
@@ -1028,6 +1011,8 @@ All defaults remain compatibility-safe until their build step is accepted. `rout
 | F27 | stream completes/cancels/fails without provider usage | L3 records one explicit `partial|unavailable` cost disposition for the stable `llm_request_id`; never omit accounting or silently record a known-zero cost |
 
 ## 8. Build order
+
+This section is a historical seed for goal cards under `docs/goals/`, not an acceptance contract; §9 Verification and SLOs and §13 Definition of done remain binding.
 
 This order is designed for one small commit per step, Tier 1 green at every commit, and feature flags off until acceptance. Per repository policy, Python verification uses canaries, data-driven regression checks, integration/scenario harnesses, fixtures, and required live burns; it does not recreate `tests/unit` or add new Python unit tests.
 
