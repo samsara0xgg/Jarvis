@@ -51,7 +51,7 @@ def ensure_app_built() -> None:
 
 
 def spawn() -> subprocess.Popen:
-    runtime_root = Path(os.environ.get("JARVIS_RUNTIME_ROOT") or "~/.jarvis").expanduser()
+    runtime_root = Path(os.environ.get("JARVIS_RUNTIME_ROOT") or "~/.jarvis").expanduser().resolve()
     env = {
         **os.environ,
         "JARVIS_PROJECT_ROOT": str(PROJECT_ROOT),
