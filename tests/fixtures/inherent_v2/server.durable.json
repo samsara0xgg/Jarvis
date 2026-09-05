@@ -1,0 +1,16 @@
+{
+  "protocol_version": 2,
+  "message_type": "view.delta",
+  "message_id": "Rfixture0001",
+  "delivery_class": "durable",
+  "connection_id": "Cfixture0001",
+  "log_epoch": "Lfixture0001",
+  "boot_id": "Bfixture0001",
+  "event_cursor": 1842,
+  "ephemeral_sequence": null,
+  "sent_at_ms": 1788200000001,
+  "payload": {
+    "source_event_uid": "Rfixture0001",
+    "changes": []
+  }
+}

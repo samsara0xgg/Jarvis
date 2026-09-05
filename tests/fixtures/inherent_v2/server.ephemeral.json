@@ -1,0 +1,15 @@
+{
+  "protocol_version": 2,
+  "message_type": "input.partial",
+  "message_id": "Rfixture0001",
+  "delivery_class": "ephemeral",
+  "connection_id": "Cfixture0001",
+  "log_epoch": "Lfixture0001",
+  "boot_id": "Bfixture0001",
+  "event_cursor": null,
+  "ephemeral_sequence": 7,
+  "sent_at_ms": 1788200000001,
+  "payload": {
+    "text": "你好"
+  }
+}

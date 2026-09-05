@@ -22,8 +22,9 @@ in Step 8, injecting an :class:`InherentDeps` with:
   here registers / unregisters connecting clients.
 
 Layer rules (L5): may import from stdlib, ``fastapi`` / ``pydantic`` /
-``starlette``, and the L5 siblings ``jarvis.surface.inherent_output``
-and ``jarvis.surface.voice_pipeline`` (intra-layer — the ASR endpoint
+``starlette``, and the L5 siblings ``jarvis.surface.inherent_output``,
+``jarvis.surface.inherent_protocol`` (the v2 wire DTOs) and
+``jarvis.surface.voice_pipeline`` (intra-layer — the ASR endpoint
 catches the pipeline's typed exceptions to map to HTTP status codes).
 Never names :mod:`jarvis.runtime`, :mod:`jarvis.decision`,
 :mod:`jarvis.execution`, or :mod:`jarvis.deployment`. The
@@ -39,6 +40,11 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
   ``turn_id``; additive, so the inherent-swift client that reads only
   ``status`` is unaffected)
 - ``WS  /inherent/ws``           — outbound-only; client receives ``{"op", "payload"}`` envelopes
+- ``WS  /inherent/ws/v2``        — ADR-0014 D5-D7; ``Authorization: Bearer <token>``
+  on the upgrade, typed :mod:`jarvis.surface.inherent_protocol` envelopes, and a
+  ``client.hello`` / ``server.hello`` handshake. Registered only when
+  ``InherentDeps.v2`` is injected, so a v1-only deployment's route table is
+  byte-identical to what it was.
 - ``GET /api/health``            — liveness; ``{"status": "ok"}``
 - ``POST /inherent/image-submit`` — Step 2 / ADR-0004 stub (501)
 - ``POST /inherent/asr-submit``   — ADR-0005 §5.2; multipart WAV in, transcript out.
@@ -52,6 +58,7 @@ import asyncio
 import io
 import logging
 import secrets
+import time
 import wave
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated
@@ -59,8 +66,20 @@ from typing import TYPE_CHECKING, Annotated
 import numpy as np
 import soxr
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
+from jarvis.surface.inherent_protocol import (
+    HELLO_TIMEOUT_S,
+    INITIAL_MAX_FRAMES_PER_S,
+    MAX_CLIENT_FRAME_BYTES,
+    REQUIRED_CLIENT_CAPABILITIES,
+    ClientEnvelope,
+    ClientHello,
+    RuntimeCapabilities,
+    ServerHello,
+    ServerHelloPayload,
+    hello_is_supported,
+)
 from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmptyError
 
 if TYPE_CHECKING:
@@ -152,6 +171,46 @@ class CancelResponseRequest(BaseModel):
 
 
 @dataclass(frozen=True)
+class InherentV2Deps:
+    """Injectable dependencies for the ADR-0014 ``/inherent/ws/v2`` route.
+
+    Every entry is a value or a callable the runtime binds. That is what
+    keeps the v2 route inside L5's import rules: this module mints no
+    identity, opens no database, and never reads the token file — it only
+    compares, echoes, and asks.
+
+    Attributes:
+        token_matches: Constant-time comparison of the token presented on
+            the upgrade against the one this boot rotated. The runtime
+            binds ``functools.partial(inherent_v2_token_matches, token)``
+            so the secret itself never reaches this layer.
+        mint_connection_id: One fresh ``connection_id`` per accepted
+            socket (``jarvis.shared.realtime.new_connection_id``).
+        boot_id: Minted once per daemon process; lets a client tell a
+            reconnect to the same process from a restart.
+        log_epoch: The Event Log's lineage id, read once at daemon start.
+            A client whose stored epoch differs must resnapshot.
+        high_water_cursor: ``MAX(events.id)`` at hello time — where the
+            durable stream stands when the connection opens.
+        runtime_capabilities: What this daemon can actually do right now,
+            computed from live wiring rather than declared.
+        hello_timeout_s: D7 deadline for the first frame; past it the
+            socket closes with ``hello_timeout``.
+        max_frames_per_s: D5 initial per-connection frame budget; a
+            breach closes with ``protocol_error``.
+    """
+
+    token_matches: Callable[[str], bool]
+    mint_connection_id: Callable[[], str]
+    boot_id: str
+    log_epoch: str
+    high_water_cursor: Callable[[], int]
+    runtime_capabilities: Callable[[], RuntimeCapabilities]
+    hello_timeout_s: float = HELLO_TIMEOUT_S
+    max_frames_per_s: int = INITIAL_MAX_FRAMES_PER_S
+
+
+@dataclass(frozen=True)
 class InherentDeps:
     """Injectable dependencies for the FastAPI app.
 
@@ -200,12 +259,197 @@ class InherentDeps:
             ``/inherent/cancel-response`` route is never registered, so
             the route table and OpenAPI schema stay exactly as they are
             today.
+        v2: ADR-0014 D5-D7 — the realtime v2 socket's dependencies.
+            ``None`` (the default) leaves ``/inherent/ws/v2`` unregistered
+            and the route table exactly as v1 deployments know it.
     """
 
     submit_callable: Callable[[str], str | None]
     broadcaster: InherentBroadcaster
     voice_pipeline_callable: Callable[[bytes, str, str, str], Event] | None = None
     cancel_response_callable: Callable[[str, str, str], str] | None = None
+    v2: InherentV2Deps | None = None
+
+
+class _FrameRateLimiter:
+    """Fixed one-second window admission counter for one v2 socket (D5).
+
+    A fixed window rather than a sliding one: the budget exists to stop a
+    runaway client, not to shape traffic, and a client that behaves never
+    comes near the edge where the two disagree.
+    """
+
+    def __init__(self, max_per_s: int, *, clock: Callable[[], float] = time.monotonic) -> None:
+        """Start the first window now.
+
+        Args:
+            max_per_s: Frames admitted per window before the breach.
+            clock: Monotonic time source; injectable for tests.
+        """
+        self._max_per_s = max_per_s
+        self._clock = clock
+        self._window_start = clock()
+        self._count = 0
+
+    def admit(self) -> bool:
+        """Count one frame and report whether it stays within the budget."""
+        now = self._clock()
+        if now - self._window_start >= 1.0:
+            self._window_start = now
+            self._count = 0
+        self._count += 1
+        return self._count <= self._max_per_s
+
+
+def _v2_presented_token(header: str | None) -> str | None:
+    """Extract the Bearer token from an ``Authorization`` header (D5).
+
+    Returns None for anything that is not exactly ``Bearer <token>``. The
+    header value is never logged — a malformed one is indistinguishable
+    from a wrong one to everything downstream, which is the point.
+    """
+    if header is None:
+        return None
+    scheme, separator, token = header.partition(" ")
+    if scheme != "Bearer" or not separator or not token:
+        return None
+    return token
+
+
+async def _v2_receive_text_frame(ws: WebSocket) -> str | None:
+    """Receive one client frame, closing on the two transport-level rejects.
+
+    Both checks are pre-decode by design (D5): a binary frame has no place
+    in a JSON protocol, and an oversized one must be refused before it is
+    parsed, not after.
+
+    Returns:
+        The frame's text, or None when the socket was closed here.
+
+    Raises:
+        WebSocketDisconnect: The client went away.
+    """
+    message = await ws.receive()
+    if message["type"] == "websocket.disconnect":
+        raise WebSocketDisconnect(int(message.get("code", 1000)))
+    text = message.get("text")
+    if text is None:
+        await ws.close(code=1002, reason="protocol_error")
+        return None
+    if len(text.encode("utf-8")) > MAX_CLIENT_FRAME_BYTES:
+        await ws.close(code=1009, reason="frame_too_large")
+        return None
+    return str(text)
+
+
+async def _v2_read_hello(deps: InherentV2Deps, ws: WebSocket) -> ClientHello | None:
+    """Await, decode, and vet the first frame on an accepted v2 socket (D7).
+
+    Returns:
+        The decoded hello, or None when the socket was closed here — on
+        the deadline (``hello_timeout``), a frame that is not a valid
+        ``client.hello`` (``protocol_error``), or a client this daemon
+        cannot serve (``upgrade_required``).
+    """
+    try:
+        frame = await asyncio.wait_for(_v2_receive_text_frame(ws), deps.hello_timeout_s)
+    except TimeoutError:
+        await ws.close(code=1008, reason="hello_timeout")
+        return None
+    if frame is None:
+        return None
+    try:
+        hello = ClientHello.model_validate_json(frame)
+    except ValidationError:
+        await ws.close(code=1002, reason="protocol_error")
+        return None
+    if not hello_is_supported(hello):
+        await ws.close(code=1008, reason="upgrade_required")
+        return None
+    return hello
+
+
+def _v2_server_hello(
+    deps: InherentV2Deps,
+    hello: ClientHello,
+    connection_id: str,
+) -> ServerHello:
+    """Build the D7 answer to a supported hello.
+
+    ``resume_mode`` is unconditionally ``snapshot``: this card sends no
+    deltas, so there is nothing a client could resume from yet.
+    """
+    return ServerHello(
+        protocol_version=2,
+        message_type="server.hello",
+        message_id=hello.message_id,
+        delivery_class="protocol",
+        connection_id=connection_id,
+        log_epoch=deps.log_epoch,
+        boot_id=deps.boot_id,
+        sent_at_ms=int(time.time() * 1000),
+        payload=ServerHelloPayload(
+            selected_version=2,
+            view_schema_version=1,
+            resume_mode="snapshot",
+            server_high_water_cursor=deps.high_water_cursor(),
+            required_client_capabilities=list(REQUIRED_CLIENT_CAPABILITIES),
+            runtime_capabilities=deps.runtime_capabilities(),
+        ),
+    )
+
+
+async def _v2_drain_after_hello(deps: InherentV2Deps, ws: WebSocket) -> None:
+    """Keep the socket open, vetting every further client frame (D5/D7).
+
+    Nothing is routed here — this card's contract is that the server sends
+    exactly one frame, the hello, and then listens. Vetting still happens
+    so a client that goes wrong is closed on the same terms it will be
+    once routing lands: size, then budget, then shape.
+    """
+    limiter = _FrameRateLimiter(deps.max_frames_per_s)
+    while True:
+        frame = await _v2_receive_text_frame(ws)
+        if frame is None:
+            return
+        if not limiter.admit():
+            await ws.close(code=1002, reason="protocol_error")
+            return
+        try:
+            envelope = ClientEnvelope.model_validate_json(frame)
+        except ValidationError:
+            await ws.close(code=1002, reason="protocol_error")
+            return
+        if envelope.message_type == "client.hello":
+            await ws.close(code=1002, reason="protocol_error")
+            return
+
+
+async def _run_v2_session(deps: InherentV2Deps, ws: WebSocket) -> None:
+    """Serve one ``/inherent/ws/v2`` connection end to end (ADR-0014 D5-D7).
+
+    Split out of ``create_app`` so the factory stays under ruff's
+    complexity cap, exactly as ``_run_asr_submit`` is.
+
+    The authorization check runs BEFORE ``accept``: closing a
+    still-connecting socket makes the ASGI server answer the upgrade with
+    HTTP 403, so an unauthenticated client never reaches a frame loop and
+    the daemon never allocates a ``connection_id`` for it (D5).
+    """
+    token = _v2_presented_token(ws.headers.get("authorization"))
+    if token is None or not deps.token_matches(token):
+        await ws.close(code=1008)
+        return
+    await ws.accept()
+    connection_id = deps.mint_connection_id()
+    try:
+        hello = await _v2_read_hello(deps, ws)
+        if hello is None:
+            return
+        await ws.send_text(_v2_server_hello(deps, hello, connection_id).model_dump_json())
+        await _v2_drain_after_hello(deps, ws)
+    except WebSocketDisconnect:
+        return
 
 
 async def _run_asr_submit(
@@ -388,6 +632,18 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901 — one closed rout
         finally:
             await deps.broadcaster.unregister(ws)
 
+    if deps.v2 is not None:
+        v2_deps = deps.v2
+
+        @app.websocket("/inherent/ws/v2")
+        async def ws_v2_endpoint(ws: WebSocket) -> None:
+            """ADR-0014 D5-D7 realtime socket. See :func:`_run_v2_session`.
+
+            Deliberately NOT registered with the v1 broadcaster: v1 pushes
+            ``{"op", "payload"}`` envelopes, which a v2 client would reject.
+            """
+            await _run_v2_session(v2_deps, ws)
+
     @app.get("/api/health")
     async def health() -> dict[str, str]:
         """Liveness probe — used by ops scripts to confirm the daemon is up."""
@@ -419,6 +675,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901 — one closed rout
 
 __all__ = [
     "InherentDeps",
+    "InherentV2Deps",
     "SubmitRequest",
     "create_app",
 ]
