@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import InherentRealtime
 
@@ -114,7 +115,10 @@ final class InputSubmissionClientTests: XCTestCase {
     XCTAssertEqual(sent[0], sent[1])
     XCTAssertEqual(sent[0].path, InputSubmissionClient.asrPath)
     let body = String(decoding: sent[0].body, as: UTF8.self)
-    XCTAssertTrue(body.contains("name=\"audio_sha256\""))
+    // The digest VALUE, not just the field name: hashing the wrong bytes has
+    // to fail here, since the server refuses a mismatch with 400.
+    let expected = SHA256.hash(data: wav).map { String(format: "%02x", $0) }.joined()
+    XCTAssertTrue(body.contains("name=\"audio_sha256\"\r\n\r\n\(expected)\r\n"))
     XCTAssertTrue(body.contains("name=\"audio\"; filename=\"u.wav\""))
     XCTAssertTrue(body.contains("R-1"))
   }

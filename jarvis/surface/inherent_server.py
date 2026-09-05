@@ -68,7 +68,7 @@ import secrets
 import time
 import wave
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Literal, Protocol
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol
 
 import numpy as np
 import soxr
@@ -82,6 +82,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
 from jarvis.surface.inherent_protocol import (
@@ -105,6 +106,10 @@ from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmpt
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from starlette.responses import Response
+
+    _CallNext = Callable[[Request], Awaitable[Response]]
+
     from jarvis.shared import Event
     from jarvis.surface.inherent_output import InherentBroadcaster
 
@@ -115,6 +120,11 @@ LOGGER = logging.getLogger("jarvis.surface.inherent_server")
 _ASR_MAX_BYTES = 5 * 1024 * 1024
 _ASR_ACCEPTED_CONTENT_TYPES = frozenset({"audio/wav", "audio/wave", "audio/x-wav"})
 _ASR_TARGET_SAMPLE_RATE_HZ = 16000
+# The two authenticated input routes, gated in middleware so the token is the
+# first thing checked — exactly where the v2 socket checks it.
+_V2_INPUT_PATHS: Final[frozenset[str]] = frozenset(
+    {"/inherent/submit/v2", "/inherent/asr-submit/v2"},
+)
 _PCM16_SAMPLE_WIDTH_BYTES = 2
 
 
@@ -562,16 +572,34 @@ async def _run_v2_session(deps: InherentV2Deps, ws: WebSocket) -> None:
         return
 
 
-def _v2_authorize(deps: InherentV2Deps, request: Request) -> None:
-    """Refuse an unauthenticated HTTP v2 request exactly as the socket does (D5).
-
-    ``/inherent/ws/v2`` closes a still-connecting socket, which the ASGI
-    server answers with HTTP 403; these routes raise the same status from the
-    same token check, so one credential gates the whole v2 surface.
-    """
+def _v2_authorized(deps: InherentV2Deps, request: Request) -> bool:
+    """Report whether this HTTP v2 request presented the boot token (D5)."""
     token = _v2_presented_token(request.headers.get("authorization"))
-    if token is None or not deps.token_matches(token):
-        raise HTTPException(status_code=403, detail="forbidden")
+    return token is not None and deps.token_matches(token)
+
+
+def _v2_input_auth_middleware(
+    deps: InherentV2Deps,
+) -> Callable[[Request, _CallNext], Awaitable[Response]]:
+    """Gate the v2 input routes before anything reads their body (D5).
+
+    ``/inherent/ws/v2`` checks the token before ``accept()``, so an
+    unauthenticated client never reaches a frame.  A route-handler check
+    cannot match that: FastAPI parses and validates the body *before* the
+    handler runs, so an anonymous caller would get 422 for a malformed body
+    and 403 only for a well-formed one — which reveals the request schema —
+    and a multipart upload would be buffered in full before being refused.
+    Refusing in middleware makes the token the first gate on both routes, and
+    it touches nothing else: any other path is passed straight through, so v1
+    behaves exactly as it did.
+    """
+
+    async def gate(request: Request, call_next: _CallNext) -> Response:
+        if request.url.path in _V2_INPUT_PATHS and not _v2_authorized(deps, request):
+            return JSONResponse({"detail": "forbidden"}, status_code=403)
+        return await call_next(request)
+
+    return gate
 
 
 def _v2_refusal(outcome: InputSubmissionOutcome) -> None:
@@ -891,6 +919,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901 — one closed rout
 
     if deps.v2 is not None:
         v2_deps = deps.v2
+        app.middleware("http")(_v2_input_auth_middleware(v2_deps))
 
         @app.websocket("/inherent/ws/v2")
         async def ws_v2_endpoint(ws: WebSocket) -> None:
@@ -902,18 +931,16 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901 — one closed rout
             await _run_v2_session(v2_deps, ws)
 
         @app.post("/inherent/submit/v2", status_code=200)
-        async def submit_v2(request: Request, req: SubmitV2Request) -> SubmitV2Response:
+        async def submit_v2(req: SubmitV2Request) -> SubmitV2Response:
             """ADR-0014 D21 authenticated idempotent text input.
 
             Registered beside the v2 socket and behind the same token, so a
             v1-only deployment's route table is byte-identical to what it was.
             """
-            _v2_authorize(v2_deps, request)
             return await _run_submit_v2(v2_deps, req)
 
         @app.post("/inherent/asr-submit/v2", status_code=200)
         async def asr_submit_v2(  # noqa: PLR0913 — one argument per multipart form field.
-            request: Request,
             audio: Annotated[UploadFile | None, File()] = None,
             request_id: Annotated[str, Form()] = "",
             client_instance_id: Annotated[str, Form()] = "",
@@ -922,7 +949,6 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901 — one closed rout
             language: Annotated[str, Form()] = "zh-CN",
         ) -> AsrSubmitV2Response:
             """ADR-0014 D21 authenticated idempotent PTT upload."""
-            _v2_authorize(v2_deps, request)
             fields = _asr_v2_fields(
                 request_id,
                 client_instance_id,

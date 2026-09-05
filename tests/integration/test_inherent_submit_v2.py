@@ -221,6 +221,40 @@ def test_v2_routes_refuse_an_unauthenticated_request(
     conn.close()
 
 
+@pytest.mark.parametrize(
+    "body",
+    [{}, {"request_id": 7}, {"text": "hello"}],
+    ids=["empty", "wrong_type", "missing_ids"],
+)
+def test_an_unauthenticated_request_is_403_before_the_body_is_validated(
+    tmp_path: Path,
+    body: dict[str, Any],
+) -> None:
+    """The token is the first gate, so a malformed body cannot reveal the schema.
+
+    A handler-level check would answer 422 here and 403 only for a well-formed
+    body, which tells an anonymous caller what the request looks like.
+    """
+    client = _app(tmp_path)
+    resp = client.post(
+        "/inherent/submit/v2", json=body, headers={"Authorization": "Bearer wrong"},
+    )
+    assert resp.status_code == 403
+
+
+def test_an_unauthenticated_oversize_upload_is_403_not_413(tmp_path: Path) -> None:
+    """The upload is refused on the token, before its bounds are even reached."""
+    client = _app(tmp_path, voice_pipeline_callable=_never_called)
+    big = b"R" * (6 * 1024 * 1024)
+    resp = client.post(
+        "/inherent/asr-submit/v2",
+        data=_asr_form("r1", big),
+        files={"audio": ("u.wav", big, "audio/wav")},
+        headers={},
+    )
+    assert resp.status_code == 403
+
+
 def test_a_bad_token_is_http_403_on_the_route_and_on_the_socket(tmp_path: Path) -> None:
     """The parity claim, on a real ASGI server rather than the test transport.
 

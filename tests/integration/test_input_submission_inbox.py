@@ -197,6 +197,7 @@ def test_asr_lease_claims_then_resolves_to_the_committed_utterance(tmp_path: Pat
         conn,
         key=_KEY,
         audio_sha256="a" * 64,
+        language="zh-CN",
         turn_id=claim.turn_id,
         input_event_uid=uid,
         utterance_id="U1",
@@ -228,7 +229,10 @@ def test_asr_retry_with_a_different_audio_hash_is_rejected(tmp_path: Path) -> No
 
 
 def test_asr_retry_under_a_live_lease_is_refused(tmp_path: Path) -> None:
-    """Two concurrent identical uploads: the second waits rather than doubling ASR."""
+    """Two concurrent identical uploads: the second is refused, not run twice.
+
+    The caller's own retry after the 503 is what joins the first run's result.
+    """
     conn = _log(tmp_path)
     claim_asr_request(conn, key=_KEY, audio_sha256="a" * 64, now_ms=1_000)
 
@@ -265,6 +269,10 @@ def test_a_crashed_run_that_committed_its_utterance_resolves_by_lookup(tmp_path:
     assert isinstance(recovered, InputReceipt)
     assert recovered.input_event_uid == uid
     assert recovered.turn_id == claim.turn_id
+    # "resolves the original result from it" means the transcript too, not
+    # just the row id: the client's retry must not get an empty answer.
+    assert recovered.text == "你好"
+    assert recovered.emotion == "HAPPY"
     rows = conn.execute(
         "SELECT COUNT(*) FROM events WHERE type = 'utterance.received'",
     ).fetchone()
@@ -282,6 +290,18 @@ def test_releasing_a_failed_lease_lets_the_retry_resume_at_once(tmp_path: Path) 
     retried = claim_asr_request(conn, key=_KEY, audio_sha256="a" * 64, now_ms=1_500)
     assert isinstance(retried, AsrProcessingLease)
     assert retried.turn_id == first.turn_id
+    conn.close()
+
+
+def test_the_same_audio_under_a_different_language_is_a_different_payload(
+    tmp_path: Path,
+) -> None:
+    """``language`` is part of the request, so it is part of the payload hash."""
+    conn = _log(tmp_path)
+    claim_asr_request(conn, key=_KEY, audio_sha256="a" * 64, language="zh-CN")
+
+    with pytest.raises(PayloadConflictError):
+        claim_asr_request(conn, key=_KEY, audio_sha256="a" * 64, language="en-US")
     conn.close()
 
 

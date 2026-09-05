@@ -89,7 +89,7 @@ WHERE authenticated_principal = ? AND client_instance_id = ? AND request_id = ?
 """
 
 _UTTERANCE_FOR_TURN_SQL: Final[str] = (
-    "SELECT event_uid FROM events WHERE type = 'utterance.received' "
+    "SELECT event_uid, payload_json FROM events WHERE type = 'utterance.received' "
     "AND json_extract(payload_json, '$.turn_id') = ? ORDER BY id ASC LIMIT 1"
 )
 
@@ -271,6 +271,7 @@ def claim_asr_request(  # noqa: PLR0913 — one keyword per lease field and its 
     *,
     key: SubmissionKey,
     audio_sha256: str,
+    language: str = "zh-CN",
     turn_id: str | None = None,
     now_ms: int | None = None,
     lease_ttl_ms: int = ASR_LEASE_TTL_MS,
@@ -292,7 +293,7 @@ def claim_asr_request(  # noqa: PLR0913 — one keyword per lease field and its 
         SubmissionInProgressError: An unexpired lease is still running.
     """
     ensure_input_submission_schema(conn)
-    digest = payload_hash("asr", {"audio_sha256": audio_sha256})
+    digest = payload_hash("asr", {"audio_sha256": audio_sha256, "language": language})
     stamp = int(time.time() * 1000) if now_ms is None else now_ms
 
     conn.execute("BEGIN IMMEDIATE")
@@ -332,6 +333,7 @@ def resolve_asr_request(  # noqa: PLR0913 — one keyword per stored receipt col
     *,
     key: SubmissionKey,
     audio_sha256: str,
+    language: str,
     turn_id: str,
     input_event_uid: str,
     session_id: str | None = None,
@@ -343,14 +345,16 @@ def resolve_asr_request(  # noqa: PLR0913 — one keyword per stored receipt col
     """Store the committed ``utterance.received`` ids against the lease (D21).
 
     The final ``BEGIN IMMEDIATE``: it verifies the same request and hash still
-    own the row before writing the result, so a lease that was stolen by a
-    resumed retry cannot be overwritten by the run that lost it.
+    own the row before writing the result.  What actually stops a losing run
+    from overwriting a resolved receipt is the ``accepted`` early return
+    below; the ``turn_id`` check after it is a guard against a caller that
+    passed a ``turn_id`` the lease never held, which no current caller does.
 
     Raises:
         PayloadConflictError: The row no longer matches this request/hash.
         InputSubmissionError: The lease disappeared.
     """
-    digest = payload_hash("asr", {"audio_sha256": audio_sha256})
+    digest = payload_hash("asr", {"audio_sha256": audio_sha256, "language": language})
     stamp = int(time.time() * 1000) if now_ms is None else now_ms
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -537,25 +541,38 @@ def _resolve_processing_lease(
     if committed is not None:
         # The crashed run had already committed its utterance; the receipt is
         # what was lost.  Resolve from the durable row instead of recognizing
-        # the same audio twice.
+        # the same audio twice — including its transcript, so the recovered
+        # receipt answers with the text the client would have received.
+        event_uid = str(committed[0])
+        payload: dict[str, Any] = json.loads(str(committed[1]))
+        recovered = InputReceipt(
+            request_id=key.request_id,
+            input_event_uid=event_uid,
+            turn_id=row.turn_id,
+            replayed=True,
+            utterance_id=_optional_str(payload.get("utterance_id")),
+            text=_optional_str(payload.get("transcript")),
+            emotion=_optional_str(payload.get("emotion")),
+        )
         conn.execute(
             "UPDATE input_submission_receipts SET state = 'accepted', "
-            "input_event_uid = ?, leased_at_ms = ? WHERE authenticated_principal = ? "
+            "input_event_uid = ?, utterance_id = ?, result_json = ?, leased_at_ms = ? "
+            "WHERE authenticated_principal = ? "
             "AND client_instance_id = ? AND request_id = ?",
             (
-                str(committed[0]),
+                event_uid,
+                recovered.utterance_id,
+                json.dumps(
+                    {"text": recovered.text, "emotion": recovered.emotion},
+                    ensure_ascii=False,
+                ),
                 now_ms,
                 key.authenticated_principal,
                 key.client_instance_id,
                 key.request_id,
             ),
         )
-        return InputReceipt(
-            request_id=key.request_id,
-            input_event_uid=str(committed[0]),
-            turn_id=row.turn_id,
-            replayed=True,
-        )
+        return recovered
     if row.state != "released" and now_ms - row.leased_at_ms < lease_ttl_ms:
         msg = f"request {key.request_id!r} is still being processed"
         raise SubmissionInProgressError(msg)
@@ -565,6 +582,11 @@ def _resolve_processing_lease(
         (now_ms, key.authenticated_principal, key.client_instance_id, key.request_id),
     )
     return AsrProcessingLease(turn_id=row.turn_id)
+
+
+def _optional_str(value: object) -> str | None:
+    """Keep a payload field only when it is a non-empty string."""
+    return value if isinstance(value, str) and value else None
 
 
 def _inject(injector: FailureInjector | None, stage: FailureStage) -> None:

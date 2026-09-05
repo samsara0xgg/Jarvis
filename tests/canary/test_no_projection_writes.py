@@ -61,13 +61,14 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
 
 # A receipt that could never move from `processing` to `accepted` would be a
 # write-once table that cannot record its own result, so the D21 lease resolves
-# in place. This is the same carve-out the outbox's admission CAS already has,
-# and it is a bounded operational table, never a projection.
+# in place. This allowlist is coarser than the outbox's rule below, which pins
+# one exact SQL string: the lease is written by four different statements
+# (claim, resolve, release, resume), so it is scoped by owning file plus table
+# instead. Any UPDATE from any other file, or on any other table, still trips
+# H1, and the table is bounded operational debt, never a projection.
 _L2_OPERATIONAL_UPDATES: dict[str, frozenset[str]] = {
     "jarvis/state/input_submission_inbox.py": frozenset({"input_submission_receipts"}),
 }
-
-
 
 
 

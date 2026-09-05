@@ -2847,7 +2847,9 @@ def _submit_asr_v2(  # noqa: PLR0913 — the bound path and pipeline plus the fo
     inner_conn = open_event_log(event_log_path)
     try:
         try:
-            claim = claim_asr_request(inner_conn, key=key, audio_sha256=audio_sha256)
+            claim = claim_asr_request(
+                inner_conn, key=key, audio_sha256=audio_sha256, language=language,
+            )
         except PayloadConflictError:
             return InputSubmissionOutcome(outcome="payload_conflict")
         except SubmissionInProgressError:
@@ -2865,6 +2867,7 @@ def _submit_asr_v2(  # noqa: PLR0913 — the bound path and pipeline plus the fo
                 inner_conn,
                 key=key,
                 audio_sha256=audio_sha256,
+                language=language,
                 turn_id=claim.turn_id,
                 input_event_uid=event.event_uid,
                 utterance_id=utterance_id if isinstance(utterance_id, str) else None,
