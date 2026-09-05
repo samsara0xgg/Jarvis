@@ -61,17 +61,27 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import hashlib
 import io
 import logging
 import secrets
 import time
 import wave
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Protocol
+from typing import TYPE_CHECKING, Annotated, Literal, Protocol
 
 import numpy as np
 import soxr
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import BaseModel, ValidationError
 
 from jarvis.surface.inherent_protocol import (
@@ -79,11 +89,15 @@ from jarvis.surface.inherent_protocol import (
     INITIAL_MAX_FRAMES_PER_S,
     MAX_CLIENT_FRAME_BYTES,
     REQUIRED_CLIENT_CAPABILITIES,
+    AsrSubmitV2Request,
+    AsrSubmitV2Response,
     ClientEnvelope,
     ClientHello,
     RuntimeCapabilities,
     ServerHello,
     ServerHelloPayload,
+    SubmitV2Request,
+    SubmitV2Response,
     hello_is_supported,
 )
 from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmptyError
@@ -201,6 +215,27 @@ class V2ClientHandle(Protocol):
 
 
 @dataclass(frozen=True)
+class InputSubmissionOutcome:
+    """What an injected v2 input callable answers with (ADR-0014 D21).
+
+    A plain value rather than an exception because the two refusals are not
+    faults: ``payload_conflict`` is the client reusing a ``request_id`` for
+    different content, ``in_progress`` is an identical upload still running.
+    Mapping them here keeps :mod:`jarvis.state` out of L5 — the runtime
+    translates the inbox's typed errors into this shape.
+    """
+
+    outcome: Literal["accepted", "payload_conflict", "in_progress"]
+    request_id: str = ""
+    input_event_uid: str = ""
+    turn_id: str = ""
+    session_id: str | None = None
+    utterance_id: str | None = None
+    text: str | None = None
+    emotion: str | None = None
+
+
+@dataclass(frozen=True)
 class InherentV2Deps:
     """Injectable dependencies for the ADR-0014 ``/inherent/ws/v2`` route.
 
@@ -233,6 +268,19 @@ class InherentV2Deps:
             :class:`V2Session`; the returned handle receives every vetted
             post-hello frame and is detached when the socket ends. ``None``
             (the default) keeps card 1's behavior: hello, then listen.
+        submit_text: ADR-0014 D21 — bound to the L2 input submission inbox.
+            Takes ``(request_id, client_instance_id, text)`` and returns the
+            durable receipt or a refusal. Sync (it owns a ``BEGIN
+            IMMEDIATE``) and offloaded via ``asyncio.to_thread`` exactly as
+            ``submit_callable`` is. ``None`` makes the route answer 501.
+        submit_asr: ADR-0014 D21 — the ASR half, bound to the inbox's
+            processing lease around ``voice_pipeline_callable``. Takes
+            ``(pcm, request_id, client_instance_id, audio_sha256,
+            language)``; the decode and the HTTP bounds stay here, the
+            lease/append/resolve sequence stays in the runtime. It raises
+            the same :mod:`jarvis.surface.voice_pipeline` exceptions the v1
+            handler maps, so 422 and 503 mean what they already mean.
+            ``None`` makes the route answer 501.
     """
 
     token_matches: Callable[[str], bool]
@@ -244,6 +292,8 @@ class InherentV2Deps:
     hello_timeout_s: float = HELLO_TIMEOUT_S
     max_frames_per_s: int = INITIAL_MAX_FRAMES_PER_S
     attach_client: Callable[[V2Session], Awaitable[V2ClientHandle]] | None = None
+    submit_text: Callable[[str, str, str], InputSubmissionOutcome] | None = None
+    submit_asr: Callable[[bytes, str, str, str, str], InputSubmissionOutcome] | None = None
 
 
 @dataclass(frozen=True)
@@ -512,6 +562,153 @@ async def _run_v2_session(deps: InherentV2Deps, ws: WebSocket) -> None:
         return
 
 
+def _v2_authorize(deps: InherentV2Deps, request: Request) -> None:
+    """Refuse an unauthenticated HTTP v2 request exactly as the socket does (D5).
+
+    ``/inherent/ws/v2`` closes a still-connecting socket, which the ASGI
+    server answers with HTTP 403; these routes raise the same status from the
+    same token check, so one credential gates the whole v2 surface.
+    """
+    token = _v2_presented_token(request.headers.get("authorization"))
+    if token is None or not deps.token_matches(token):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+def _v2_refusal(outcome: InputSubmissionOutcome) -> None:
+    """Map the inbox's two refusals to their status codes (D21)."""
+    if outcome.outcome == "payload_conflict":
+        raise HTTPException(
+            status_code=409,
+            detail="request_id already submitted with a different payload",
+        )
+    if outcome.outcome == "in_progress":
+        raise HTTPException(status_code=503, detail="request already being processed")
+
+
+async def _run_submit_v2(deps: InherentV2Deps, req: SubmitV2Request) -> SubmitV2Response:
+    """ADR-0014 D21 — body of ``POST /inherent/submit/v2``.
+
+    ``client_created_at_ms`` is decoded and then deliberately dropped: D21
+    calls it untrusted telemetry, so nothing downstream may order or identify
+    by it.
+    """
+    if deps.submit_text is None:
+        raise HTTPException(status_code=501, detail="v2 input inbox not wired (ADR-0014 D21)")
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    outcome = await asyncio.to_thread(
+        deps.submit_text,
+        req.request_id,
+        req.client_instance_id,
+        text,
+    )
+    _v2_refusal(outcome)
+    return SubmitV2Response(
+        request_id=outcome.request_id,
+        input_event_uid=outcome.input_event_uid,
+        turn_id=outcome.turn_id,
+        session_id=outcome.session_id,
+    )
+
+
+def _asr_v2_fields(
+    request_id: str,
+    client_instance_id: str,
+    client_created_at_ms: int,
+    audio_sha256: str,
+    language: str,
+) -> AsrSubmitV2Request:
+    """Validate the non-file half of the multipart body, or 400."""
+    try:
+        return AsrSubmitV2Request(
+            request_id=request_id,
+            client_instance_id=client_instance_id,
+            client_created_at_ms=client_created_at_ms,
+            audio_sha256=audio_sha256,
+            language=language,
+        )
+    except ValidationError:
+        raise HTTPException(status_code=400, detail="invalid submission fields") from None
+
+
+async def _asr_v2_audio(audio: UploadFile | None, expected_sha256: str) -> tuple[bytes, str]:
+    """Re-check ``_run_asr_submit``'s bounds and decode, in the same order.
+
+    Returns the decoded PCM16 mono 16 kHz frames and the digest of the exact
+    uploaded bytes, which is the receipt's payload hash.
+    """
+    if audio is None:
+        raise HTTPException(status_code=400, detail="audio file required")
+    if audio.content_type not in _ASR_ACCEPTED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"unsupported content type: {audio.content_type}",
+        )
+    body = await audio.read()
+    if len(body) > _ASR_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="audio too large (max 5MB)")
+    if not body:
+        raise HTTPException(status_code=400, detail="empty body")
+    digest = hashlib.sha256(body).hexdigest()
+    if digest != expected_sha256:
+        raise HTTPException(status_code=400, detail="audio_sha256 does not match the upload")
+    pcm = _decode_wav_to_pcm16_mono_16k(body)
+    if not pcm:
+        raise HTTPException(status_code=400, detail="empty audio after decode")
+    return pcm, digest
+
+
+async def _run_asr_submit_v2(
+    deps: InherentV2Deps,
+    audio: UploadFile | None,
+    fields: AsrSubmitV2Request,
+) -> AsrSubmitV2Response:
+    """ADR-0014 D21 — body of ``POST /inherent/asr-submit/v2``.
+
+    The bounds and status codes are ``_run_asr_submit``'s, re-checked in the
+    same order against the same module-level constants and decoder.  They are
+    duplicated rather than factored out on purpose: v1 is a byte-compatible
+    contract with a shipped Swift client, and rewriting its body to share a
+    validator would put that contract at risk for no behavior gained.
+
+    The one addition is the advertised ``audio_sha256`` — the receipt's
+    payload hash.  The server recomputes it and refuses a mismatch, so a
+    truncated upload cannot resolve a receipt against audio nobody heard.
+    """
+    if deps.submit_asr is None:
+        raise HTTPException(status_code=501, detail="asr voice pipeline not wired (ADR-0005)")
+    pcm, digest = await _asr_v2_audio(audio, fields.audio_sha256)
+
+    try:
+        outcome = await asyncio.to_thread(
+            deps.submit_asr,
+            pcm,
+            fields.request_id,
+            fields.client_instance_id,
+            digest,
+            fields.language,
+        )
+    except VoicePipelineEmptyError:
+        raise HTTPException(status_code=422, detail="empty") from None
+    except VoiceInputBusyError:
+        raise HTTPException(status_code=503, detail="busy") from None
+    except Exception:
+        LOGGER.exception("asr_submit_v2 failed for request_id=%s", fields.request_id)
+        raise HTTPException(status_code=500, detail="internal") from None
+
+    _v2_refusal(outcome)
+    return AsrSubmitV2Response(
+        request_id=outcome.request_id,
+        input_event_uid=outcome.input_event_uid,
+        turn_id=outcome.turn_id,
+        session_id=outcome.session_id,
+        utterance_id=outcome.utterance_id,
+        text=outcome.text or "",
+        emotion=outcome.emotion or "",
+    )
+
+
 async def _run_asr_submit(
     deps: InherentDeps,
     audio: UploadFile | None,
@@ -704,6 +901,37 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901 — one closed rout
             """
             await _run_v2_session(v2_deps, ws)
 
+        @app.post("/inherent/submit/v2", status_code=200)
+        async def submit_v2(request: Request, req: SubmitV2Request) -> SubmitV2Response:
+            """ADR-0014 D21 authenticated idempotent text input.
+
+            Registered beside the v2 socket and behind the same token, so a
+            v1-only deployment's route table is byte-identical to what it was.
+            """
+            _v2_authorize(v2_deps, request)
+            return await _run_submit_v2(v2_deps, req)
+
+        @app.post("/inherent/asr-submit/v2", status_code=200)
+        async def asr_submit_v2(  # noqa: PLR0913 — one argument per multipart form field.
+            request: Request,
+            audio: Annotated[UploadFile | None, File()] = None,
+            request_id: Annotated[str, Form()] = "",
+            client_instance_id: Annotated[str, Form()] = "",
+            client_created_at_ms: Annotated[int, Form()] = 0,
+            audio_sha256: Annotated[str, Form()] = "",
+            language: Annotated[str, Form()] = "zh-CN",
+        ) -> AsrSubmitV2Response:
+            """ADR-0014 D21 authenticated idempotent PTT upload."""
+            _v2_authorize(v2_deps, request)
+            fields = _asr_v2_fields(
+                request_id,
+                client_instance_id,
+                client_created_at_ms,
+                audio_sha256,
+                language,
+            )
+            return await _run_asr_submit_v2(v2_deps, audio, fields)
+
     @app.get("/api/health")
     async def health() -> dict[str, str]:
         """Liveness probe — used by ops scripts to confirm the daemon is up."""
@@ -736,6 +964,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901 — one closed rout
 __all__ = [
     "InherentDeps",
     "InherentV2Deps",
+    "InputSubmissionOutcome",
     "SubmitRequest",
     "V2ClientHandle",
     "V2Session",
