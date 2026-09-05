@@ -1,4 +1,5 @@
 import Foundation
+import InherentRealtime
 
 /// State of the v2 handshake, from `connect()` to a validated `server.hello`.
 enum RealtimeTransportV2State: Equatable, Sendable {

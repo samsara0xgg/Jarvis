@@ -19,21 +19,21 @@ import Foundation
 // MARK: - Errors
 
 /// A rule from the Python DTOs that this frame broke.
-enum RealtimeProtocolError: Error, Equatable, Sendable {
+public enum RealtimeProtocolError: Error, Equatable, Sendable {
   case invalidField(field: String, reason: String)
 }
 
 // MARK: - Shared vocabulary
 
 /// Which ordering key a server frame carries, per D6.
-enum DeliveryClass: String, Codable, Equatable, Sendable {
+public enum DeliveryClass: String, Codable, Equatable, Sendable {
   case durable
   case ephemeral
   case `protocol`
 }
 
 /// How the server decided the client should catch up, per D7.
-enum ResumeMode: String, Codable, Equatable, Sendable {
+public enum ResumeMode: String, Codable, Equatable, Sendable {
   case snapshot
   case incremental
 }
@@ -41,7 +41,7 @@ enum ResumeMode: String, Codable, Equatable, Sendable {
 /// An untyped JSON value, for payloads this card does not yet interpret.
 ///
 /// Object keys are preserved exactly as they arrive on the wire.
-enum JSONValue: Decodable, Equatable, Sendable {
+public enum JSONValue: Decodable, Equatable, Sendable {
   case null
   case bool(Bool)
   case int(Int)
@@ -50,7 +50,7 @@ enum JSONValue: Decodable, Equatable, Sendable {
   case array([JSONValue])
   case object([String: JSONValue])
 
-  init(from decoder: Decoder) throws {
+  public init(from decoder: Decoder) throws {
     let container = try decoder.singleValueContainer()
     if container.decodeNil() {
       self = .null
@@ -71,7 +71,7 @@ enum JSONValue: Decodable, Equatable, Sendable {
 }
 
 /// The shape of an uninterpreted `payload`, matching Python's `dict[str, Any]`.
-typealias JSONObject = [String: JSONValue]
+public typealias JSONObject = [String: JSONValue]
 
 // MARK: - Field rules (mirroring the Python annotated types)
 
@@ -138,14 +138,32 @@ private func decodeRequiredNullable<Key: CodingKey, Value: Decodable>(
 /// `protocolVersion` is a plain positive integer rather than a hard 2: an
 /// unsupported client must still decode far enough for hello to answer
 /// `upgrade_required`.
-struct ClientEnvelope<Payload: Codable & Equatable & Sendable>: Codable, Equatable, Sendable {
-  var protocolVersion: Int
-  var messageType: String
-  var messageId: String
-  var clientInstanceId: String
-  var connectionId: String?
-  var sentAtMs: Int
-  var payload: Payload
+public struct ClientEnvelope<Payload: Codable & Equatable & Sendable>: Codable, Equatable, Sendable {
+  public var protocolVersion: Int
+  public var messageType: String
+  public var messageId: String
+  public var clientInstanceId: String
+  public var connectionId: String?
+  public var sentAtMs: Int
+  public var payload: Payload
+
+  public init(
+    protocolVersion: Int,
+    messageType: String,
+    messageId: String,
+    clientInstanceId: String,
+    connectionId: String?,
+    sentAtMs: Int,
+    payload: Payload
+  ) {
+    self.protocolVersion = protocolVersion
+    self.messageType = messageType
+    self.messageId = messageId
+    self.clientInstanceId = clientInstanceId
+    self.connectionId = connectionId
+    self.sentAtMs = sentAtMs
+    self.payload = payload
+  }
 
   enum CodingKeys: String, CodingKey {
     case protocolVersion = "protocol_version"
@@ -159,7 +177,7 @@ struct ClientEnvelope<Payload: Codable & Equatable & Sendable>: Codable, Equatab
 }
 
 extension ClientEnvelope {
-  init(from decoder: Decoder) throws {
+  public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     let protocolVersion = try container.decode(Int.self, forKey: .protocolVersion)
     guard protocolVersion >= 1 else {
@@ -196,7 +214,7 @@ extension ClientEnvelope {
 
   /// Nullable keys are written as `null` rather than dropped: the Python models
   /// require `connection_id` to be present.
-  func encode(to encoder: Encoder) throws {
+  public func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
     try container.encode(protocolVersion, forKey: .protocolVersion)
     try container.encode(messageType, forKey: .messageType)
@@ -209,14 +227,32 @@ extension ClientEnvelope {
 }
 
 /// The D7 hello payload: what the client is and what it already holds.
-struct ClientHelloPayload: Codable, Equatable, Sendable {
-  var supportedVersions: [Int]
-  var clientBuild: String
-  var viewSchemaVersions: [Int]
-  var capabilities: [String]
-  var lastLogEpoch: String?
-  var lastAppliedCursor: Int?
-  var hasCompleteLocalState: Bool
+public struct ClientHelloPayload: Codable, Equatable, Sendable {
+  public var supportedVersions: [Int]
+  public var clientBuild: String
+  public var viewSchemaVersions: [Int]
+  public var capabilities: [String]
+  public var lastLogEpoch: String?
+  public var lastAppliedCursor: Int?
+  public var hasCompleteLocalState: Bool
+
+  public init(
+    supportedVersions: [Int],
+    clientBuild: String,
+    viewSchemaVersions: [Int],
+    capabilities: [String],
+    lastLogEpoch: String?,
+    lastAppliedCursor: Int?,
+    hasCompleteLocalState: Bool
+  ) {
+    self.supportedVersions = supportedVersions
+    self.clientBuild = clientBuild
+    self.viewSchemaVersions = viewSchemaVersions
+    self.capabilities = capabilities
+    self.lastLogEpoch = lastLogEpoch
+    self.lastAppliedCursor = lastAppliedCursor
+    self.hasCompleteLocalState = hasCompleteLocalState
+  }
 
   enum CodingKeys: String, CodingKey {
     case supportedVersions = "supported_versions"
@@ -230,7 +266,7 @@ struct ClientHelloPayload: Codable, Equatable, Sendable {
 }
 
 extension ClientHelloPayload {
-  init(from decoder: Decoder) throws {
+  public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     supportedVersions = try checkedVersionList(
       container.decode([Int].self, forKey: .supportedVersions), "supported_versions"
@@ -254,7 +290,7 @@ extension ClientHelloPayload {
     hasCompleteLocalState = try container.decode(Bool.self, forKey: .hasCompleteLocalState)
   }
 
-  func encode(to encoder: Encoder) throws {
+  public func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
     try container.encode(supportedVersions, forKey: .supportedVersions)
     try container.encode(clientBuild, forKey: .clientBuild)
@@ -267,7 +303,7 @@ extension ClientHelloPayload {
 }
 
 /// The first frame on every accepted v2 socket (D7).
-typealias ClientHello = ClientEnvelope<ClientHelloPayload>
+public typealias ClientHello = ClientEnvelope<ClientHelloPayload>
 
 // MARK: - Server frames
 
@@ -277,18 +313,18 @@ typealias ClientHello = ClientEnvelope<ClientHelloPayload>
 /// `event_cursor`, ephemeral updates by a connection-scoped
 /// `ephemeral_sequence`, and mixing the two would let a client ACK a cursor it
 /// never received.
-struct ServerEnvelope<Payload: Decodable & Equatable & Sendable>: Decodable, Equatable, Sendable {
-  var protocolVersion: Int
-  var messageType: String
-  var messageId: String
-  var deliveryClass: DeliveryClass
-  var connectionId: String
-  var logEpoch: String
-  var bootId: String
-  var eventCursor: Int?
-  var ephemeralSequence: Int?
-  var sentAtMs: Int
-  var payload: Payload
+public struct ServerEnvelope<Payload: Decodable & Equatable & Sendable>: Decodable, Equatable, Sendable {
+  public var protocolVersion: Int
+  public var messageType: String
+  public var messageId: String
+  public var deliveryClass: DeliveryClass
+  public var connectionId: String
+  public var logEpoch: String
+  public var bootId: String
+  public var eventCursor: Int?
+  public var ephemeralSequence: Int?
+  public var sentAtMs: Int
+  public var payload: Payload
 
   enum CodingKeys: String, CodingKey {
     case protocolVersion = "protocol_version"
@@ -306,7 +342,7 @@ struct ServerEnvelope<Payload: Decodable & Equatable & Sendable>: Decodable, Equ
 }
 
 extension ServerEnvelope {
-  init(from decoder: Decoder) throws {
+  public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     protocolVersion = try container.decode(Int.self, forKey: .protocolVersion)
     guard protocolVersion == RealtimeProtocol.protocolVersion else {
@@ -359,15 +395,15 @@ extension ServerEnvelope {
 }
 
 /// What this daemon can actually do right now, per D7.
-struct RuntimeCapabilities: Decodable, Equatable, Sendable {
-  var textInput: Bool
-  var imageInput: Bool
-  var voiceInput: Bool
-  var responseInterrupt: Bool
-  var actionCancel: Bool
-  var confirmationActions: Bool
-  var naturalBargeIn: Bool
-  var aecProfile: String
+public struct RuntimeCapabilities: Decodable, Equatable, Sendable {
+  public var textInput: Bool
+  public var imageInput: Bool
+  public var voiceInput: Bool
+  public var responseInterrupt: Bool
+  public var actionCancel: Bool
+  public var confirmationActions: Bool
+  public var naturalBargeIn: Bool
+  public var aecProfile: String
 
   enum CodingKeys: String, CodingKey {
     case textInput = "text_input"
@@ -382,7 +418,7 @@ struct RuntimeCapabilities: Decodable, Equatable, Sendable {
 }
 
 extension RuntimeCapabilities {
-  init(from decoder: Decoder) throws {
+  public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     textInput = try container.decode(Bool.self, forKey: .textInput)
     imageInput = try container.decode(Bool.self, forKey: .imageInput)
@@ -398,13 +434,13 @@ extension RuntimeCapabilities {
 }
 
 /// The D7 server answer: version, resume decision, and capabilities.
-struct ServerHelloPayload: Decodable, Equatable, Sendable {
-  var selectedVersion: Int
-  var viewSchemaVersion: Int
-  var resumeMode: ResumeMode
-  var serverHighWaterCursor: Int
-  var requiredClientCapabilities: [String]
-  var runtimeCapabilities: RuntimeCapabilities
+public struct ServerHelloPayload: Decodable, Equatable, Sendable {
+  public var selectedVersion: Int
+  public var viewSchemaVersion: Int
+  public var resumeMode: ResumeMode
+  public var serverHighWaterCursor: Int
+  public var requiredClientCapabilities: [String]
+  public var runtimeCapabilities: RuntimeCapabilities
 
   enum CodingKeys: String, CodingKey {
     case selectedVersion = "selected_version"
@@ -417,7 +453,7 @@ struct ServerHelloPayload: Decodable, Equatable, Sendable {
 }
 
 extension ServerHelloPayload {
-  init(from decoder: Decoder) throws {
+  public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     selectedVersion = try container.decode(Int.self, forKey: .selectedVersion)
     guard selectedVersion == RealtimeProtocol.protocolVersion else {
@@ -447,26 +483,26 @@ extension ServerHelloPayload {
 }
 
 /// The daemon's reply to a supported `client.hello` (D7).
-typealias ServerHello = ServerEnvelope<ServerHelloPayload>
+public typealias ServerHello = ServerEnvelope<ServerHelloPayload>
 
 // MARK: - Constants and decoders
 
 /// The wire constants and the entry points that decode a frame.
-enum RealtimeProtocol {
-  static let protocolVersion = 2
-  static let viewSchemaVersion = 1
-  static let maxClientFrameBytes = 64 * 1024
-  static let requiredClientCapabilities = ["paged_snapshot", "transport_ack"]
-  static let helloTimeoutSeconds: TimeInterval = 2.0
-  static let initialMaxFramesPerSecond = 50
+public enum RealtimeProtocol {
+  public static let protocolVersion = 2
+  public static let viewSchemaVersion = 1
+  public static let maxClientFrameBytes = 64 * 1024
+  public static let requiredClientCapabilities = ["paged_snapshot", "transport_ack"]
+  public static let helloTimeoutSeconds: TimeInterval = 2.0
+  public static let initialMaxFramesPerSecond = 50
 
-  static let clientHelloMessageType = "client.hello"
-  static let serverHelloMessageType = "server.hello"
+  public static let clientHelloMessageType = "client.hello"
+  public static let serverHelloMessageType = "server.hello"
 
-  static let identityMaxLength = 128
-  static let shortTextMaxLength = 256
+  public static let identityMaxLength = 128
+  public static let shortTextMaxLength = 256
 
-  static func decodeClientHello(_ data: Data) throws -> ClientHello {
+  public static func decodeClientHello(_ data: Data) throws -> ClientHello {
     let hello = try JSONDecoder().decode(ClientHello.self, from: data)
     guard hello.messageType == clientHelloMessageType else {
       throw RealtimeProtocolError.invalidField(
@@ -476,11 +512,11 @@ enum RealtimeProtocol {
     return hello
   }
 
-  static func decodeServerEnvelope(_ data: Data) throws -> ServerEnvelope<JSONObject> {
+  public static func decodeServerEnvelope(_ data: Data) throws -> ServerEnvelope<JSONObject> {
     try JSONDecoder().decode(ServerEnvelope<JSONObject>.self, from: data)
   }
 
-  static func decodeServerHello(_ data: Data) throws -> ServerHello {
+  public static func decodeServerHello(_ data: Data) throws -> ServerHello {
     let hello = try JSONDecoder().decode(ServerHello.self, from: data)
     guard hello.messageType == serverHelloMessageType else {
       throw RealtimeProtocolError.invalidField(
@@ -495,7 +531,7 @@ enum RealtimeProtocol {
     return hello
   }
 
-  static func encode(_ value: some Encodable) throws -> Data {
+  public static func encode(_ value: some Encodable) throws -> Data {
     let encoder = JSONEncoder()
     encoder.outputFormatting = .sortedKeys
     return try encoder.encode(value)
