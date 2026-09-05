@@ -2818,12 +2818,17 @@ def _run_supervisor_sweep(runtime: JarvisRuntime, *, default_budget_s: float) ->
 
 # --- ADR-0014 D14 durable confirmation expiry ---------------------------------
 
+# What the sweep's fold reads. `gate.evaluated` is deliberately ABSENT even
+# though `_fold_pending_confirmations` accepts it: its only effect on the slot
+# is `accepted_unconsumed` -> `consumed`, and the sweep skips both states
+# alike. Including it would make every tick re-scan the log's highest-volume
+# event type and re-accumulate an unbounded `consumed_lease_ids` set that
+# nothing here reads — a cost that grows with the log, on a timer.
 _CONFIRMATION_FOLD_TYPES: tuple[str, ...] = (
     "confirmation.requested",
     "confirmation.accepted",
     "confirmation.rejected",
     "confirmation.expired",
-    "gate.evaluated",
 )
 
 
@@ -2841,8 +2846,8 @@ def _run_confirmation_expiry_sweep(
     a task or a sleep to be exercised.
 
     Returns None when nothing was due (no slot, an answered slot, or a
-    deadline still in the future), so a quiet daemon opens no transaction at
-    all; otherwise the terminalizer's outcome, which may be
+    deadline still in the future), in which case no write transaction is
+    opened; otherwise the terminalizer's outcome, which may be
     :class:`AlreadyTerminal` or :class:`StaleConfirmation` when a real answer
     or a fresher ask won the CAS.
 
