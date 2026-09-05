@@ -8,8 +8,11 @@ routes ``voice_notify``. The ``worker.reported`` branches are unchanged
 supervisor sweep drives stay ``queue_review`` so a 3am system turn never
 speaks (ADR-0002 Limitation-routing amendment, B-0005).
 
-Drives :func:`jarvis.decision.gates.attention_policy` on a packet folded
-from an empty event log — no LLM, no daemon.
+The first test drives :func:`jarvis.decision.gates.attention_policy` on a
+packet folded from an empty event log; the second re-checks both verdicts
+one layer up, through the real :func:`jarvis.decision.decide`, so a future
+override inside ``_finalize_response`` cannot silently undo the routing.
+No daemon, no real LLM.
 """
 
 from __future__ import annotations
@@ -18,10 +21,16 @@ import contextlib
 import dataclasses
 from typing import TYPE_CHECKING
 
+from jarvis.decision import decide
 from jarvis.decision.gates import attention_policy
 from jarvis.decision.packet import assemble_packet
+from jarvis.runtime.inherent_loop import _system_trigger_event
 from jarvis.shared import Event
-from jarvis.state.event_log import open_event_log
+from jarvis.state.event_log import emit_event, open_event_log
+
+# The decide()-level test needs a DecideContext with a scripted LLM; the
+# conversational-turn regression already builds exactly that one.
+from tests.integration.test_conversational_turn_no_gate_downgrade import _build_ctx
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,3 +68,32 @@ def test_attention_policy_speaks_ordinary_answers_only(tmp_path: Path) -> None:
         assert attention_policy(system, evidence, limitation_emitted=True) == "queue_review"
         # A terminal without action_id emits no claim; the channel must not depend on it.
         assert attention_policy(system, evidence) == "queue_review"
+
+
+def test_decide_keeps_reconciliation_turns_in_queue_review(tmp_path: Path) -> None:
+    """Same two verdicts through the real decide(): system turn stays silent."""
+    ctx, conn, _llm = _build_ctx(tmp_path, draft_text="今天下午三点有一个会。")
+    try:
+        utterance = emit_event(
+            conn,
+            type="surface.user_intent",
+            payload={"transcript": "我今天有什么安排", "turn_id": "T_speak_001"},
+            correlation={"turn_id": "T_speak_001"},
+        )
+        assert decide(utterance, ctx).attention_channel == "voice_notify"
+
+        # Shaped exactly like the ADR-0009 D4 supervisor sweep's system
+        # turn: the orphan terminal row, re-stamped with a fresh turn_id.
+        terminal = emit_event(
+            conn,
+            type="action.timeout_assumed",
+            payload={"action_id": "A_orphan_001", "reason": "budget_exceeded"},
+            correlation={"turn_id": "T_orphan_000"},
+        )
+        result = decide(_system_trigger_event(terminal), ctx)
+        assert result.attention_channel == "queue_review", (
+            "A sweep-driven reconciliation turn routed to "
+            f"{result.attention_channel!r}: it would speak into an empty room."
+        )
+    finally:
+        conn.close()
