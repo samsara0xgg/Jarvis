@@ -36,6 +36,27 @@ class SegmentCommit:
     appended: bool
 
 
+@dataclass(frozen=True)
+class CommittedPrefix:
+    """The spoken prefix of one response, folded from its durable chunk chain.
+
+    ``next_segment_sequence`` counts exposed chunks, so it is the sequence the
+    next ``surface.response_chunk`` must carry. The gate chain may already be
+    one longer (a permit whose chunk never committed); that permit is replayed
+    or abandoned by the caller, never counted as spoken.
+    """
+
+    response_id: str
+    text: str
+    next_segment_sequence: int
+    policy_hash: str
+
+    @property
+    def prefix_hash(self) -> str:
+        """Return the sha256 of the committed text, the terminal-payload form."""
+        return hashlib.sha256(self.text.encode()).hexdigest()
+
+
 def _inject(injector: FailureInjector | None, stage: FailureStage) -> None:
     if injector is not None:
         injector(stage)
@@ -350,3 +371,35 @@ def append_permitted_segment(  # noqa: C901, PLR0913 - one atomic validation/app
         for notification in published:
             committed_event_bus.publish(notification)
     return SegmentCommit(event, appended=True)
+
+
+def committed_text_prefix(conn: sqlite3.Connection, response_id: str) -> CommittedPrefix:
+    """Reconstruct what was durably exposed, never what memory believes was spoken.
+
+    Only a ``surface.response_chunk`` caused by a committed permit counts. A
+    permit whose chunk never committed was never exposed, so it is not prefix;
+    a chunk whose bindings disagree with its permit is corruption, not prefix.
+    """
+    started = _started(conn, response_id)
+    policy_hash = str(started.payload["policy_hash"])
+    text = ""
+    chunks = _events(conn, response_id, "surface.response_chunk")
+    for sequence, chunk in enumerate(chunks):
+        segment = chunk.payload.get("text")
+        if not isinstance(segment, str):
+            _fail("committed chunk carries no text")
+        segment_hash = hashlib.sha256(segment.encode()).hexdigest()
+        _match(chunk.payload, {"sequence": sequence, "segment_hash": segment_hash})
+        _match(
+            _event(conn, chunk.source_event_id or "").payload,
+            {
+                "gate": "stream_emit",
+                "outcome": "permit",
+                "response_id": response_id,
+                "sequence": sequence,
+                "segment_hash": segment_hash,
+                "policy_hash": policy_hash,
+            },
+        )
+        text += segment
+    return CommittedPrefix(response_id, text, len(chunks), policy_hash)

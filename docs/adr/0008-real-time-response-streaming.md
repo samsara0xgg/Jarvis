@@ -234,11 +234,12 @@ finalize_stream(committed_prefix, uncommitted_suffix, policy)
   -> ResponsePlan | StreamFinalizationFailure
 ```
 
-- every permitted segment is appended to `committed_text_prefix`;
+- every permitted segment whose `surface.response_chunk` committed is appended to `committed_text_prefix`; a permit without its chunk was never exposed and is not prefix;
+- the `committed_text_prefix` a ResponseRun carries (D1) is a running copy, not the authority: at finalization it is validated against the prefix reconstructed from the Event Log under the policy the permits were issued with, and a mismatch on either is a typed failure;
 - the final gate may inspect the accumulated full answer, but a retry may regenerate only the uncommitted suffix;
 - the final `ResponsePlan.text` must be byte-for-byte `committed_prefix + approved_suffix`;
 - a retry or rewrite may not alter text already spoken;
-- if the finalizer finds the committed prefix itself invalid, it terminalizes the current response as failed/limited and creates a separate correction ResponseRun. It never performs an old whole-answer retry or silently resets voice history.
+- the finalizer writes no terminal. If it finds the committed prefix itself invalid, the caller terminalizes the current response as failed/limited with `committed_prefix_hash` populated and creates a separate correction ResponseRun linked by `corrects_response_id`. It never performs an old whole-answer retry or silently resets voice history.
 
 For `full_text/structured`, the existing gate/retry path remains unchanged and no prefix is committed early.
 
@@ -802,7 +803,7 @@ response.started
             phase, channel, emission_mode, output_risk_class,
             required_gate_mode, policy_hash, active_subject_ref,
             evidence_snapshot_hash
-  optional: provider, model
+  optional: provider, model, corrects_response_id
 
 response.completed
   required: response_id, response_group_id, turn_id, response_hash

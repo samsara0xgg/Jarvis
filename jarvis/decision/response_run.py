@@ -541,7 +541,7 @@ class ResponseTerminalizer:
             source_event_id=facts.started_event_uid,
         )
 
-    def cancel(
+    def cancel(  # noqa: PLR0913 - one keyword per optional response.cancelled payload field
         self,
         facts: ResponseRunFacts,
         *,
@@ -549,6 +549,7 @@ class ResponseTerminalizer:
         cancel_scope: ResponseCancelScope,
         interrupted_by_utterance_id: str | None = None,
         source_event_id: str | None = None,
+        committed_prefix_hash: str | None = None,
     ) -> TerminalOutcome:
         """Write ``response.cancelled`` for ``facts`` through the CAS."""
         payload: dict[str, object] = {
@@ -560,6 +561,8 @@ class ResponseTerminalizer:
         }
         if interrupted_by_utterance_id is not None:
             payload["interrupted_by_utterance_id"] = interrupted_by_utterance_id
+        if committed_prefix_hash is not None:
+            payload["committed_prefix_hash"] = committed_prefix_hash
         return self._write(
             facts,
             event_type="response.cancelled",
@@ -573,8 +576,13 @@ class ResponseTerminalizer:
         *,
         reason: str,
         retryable: bool | None = None,
+        committed_prefix_hash: str | None = None,
     ) -> TerminalOutcome:
-        """Write ``response.failed`` for ``facts`` through the CAS."""
+        """Write ``response.failed`` for ``facts`` through the CAS.
+
+        ``committed_prefix_hash`` names the text already spoken when a
+        streamed run fails, so a correction run can be audited against it.
+        """
         payload: dict[str, object] = {
             "response_id": facts.response_id,
             "response_group_id": facts.response_group_id,
@@ -583,6 +591,8 @@ class ResponseTerminalizer:
         }
         if retryable is not None:
             payload["retryable"] = retryable
+        if committed_prefix_hash is not None:
+            payload["committed_prefix_hash"] = committed_prefix_hash
         return self._write(
             facts,
             event_type="response.failed",
@@ -602,12 +612,14 @@ def start_response_run(  # noqa: PLR0913 — the ADR-0008 §4.2 response.started
     phase: ResponsePhase = "final",
     channel: ResponseChannel = "both",
     committed_event_bus: CommittedEventBus | None = None,
+    corrects_response_id: str | None = None,
 ) -> ResponseRun:
     """Open one durable ResponseRun and return it already generating.
 
     ``response_id`` is passed in rather than minted here so the caller can
     build the per-run request client under the same id before the durable row
-    exists.
+    exists.  ``corrects_response_id`` links a correction run to the failed
+    streamed response whose spoken prefix it must not repeat (ADR-0008 D3).
     """
     response_group_id = stable_response_group_id(turn_id)
     snapshot = request_client.preset_snapshot
@@ -628,6 +640,8 @@ def start_response_run(  # noqa: PLR0913 — the ADR-0008 §4.2 response.started
         "provider": snapshot.provider,
         "model": snapshot.model,
     }
+    if corrects_response_id is not None:
+        payload["corrects_response_id"] = corrects_response_id
     started = append_response_started(
         conn,
         payload=payload,
