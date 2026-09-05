@@ -959,14 +959,18 @@ user_action_required
 
 Built in `jarvis/state/inherent_view.py`: the ActionViewProjection is folded
 there, beside the response groups, from the registered action lifecycle, the
-quiescence/cleanup trio and the A5 cancel trail, bounded like the response
-groups by a recent-terminal limit. Four facts the build pinned:
+quiescence/cleanup trio and the A5 cancel trail. It is bounded twice: a
+recent-terminal limit like the response groups', and retirement of an action
+the Pre-action Gate refused, which L3 never dispatches and no terminal ever
+resolves. Four facts the build pinned:
 `cleanup_state` never reports `pending`, which has no committed source — no
 event marks cleanup as started; `freshness` is reported by *omitting* the
 wire's `freshness_ms`, which the client reads as fresh, because no clock
-reaches a pure fold; `cancellable_hint` is computed in that fold rather than
-in L3, which has no producer, using the same open set the cancel resolver
-reads; and `cancel_request`, `progress_label` and `user_action_required` have
+reaches a pure fold; `cancellable_hint` is computed in that fold, which
+supersedes "L3 computes `cancellable_hint`" above for this field — L3 has no
+producer, and the fold applies the same open set the cancel resolver reads
+(`user_action_required` keeps that sentence, having no producer at all yet);
+and `cancel_request`, `progress_label` and `user_action_required` have
 no key on the shipped `ActionUpsert`, so the first is folded and checkpointed
 but unsent, and the other two are unmodelled until a Swift card adds a slot.
 
@@ -1043,6 +1047,11 @@ one `view.delta` sourced by B's request contains ordered
 `confirmation.upsert(B)`. There is no unregistered
 `confirmation.superseded` event. A queued decision for A subsequently fails
 the exact terminalizer CAS as stale.
+
+The v2 presenter reads the confirmation slot the Inherent fold keeps, which
+mirrors `PendingConfirmations`' rules row for row rather than exporting that
+whole-log projection: its `args_meta`, staged content artifact and accepted
+event uid must not reach Swift.
 
 Not built yet: the `confirmation.expired` event, `ConfirmationTerminalizer`,
 the runtime expiry timer and boot reconciliation belong to the
