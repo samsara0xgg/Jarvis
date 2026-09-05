@@ -76,9 +76,10 @@ import os
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 import uvicorn
 
@@ -87,12 +88,23 @@ if TYPE_CHECKING:
 
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.execution.action_runner import ActionRunner
+    from jarvis.shared.realtime import PresentationIntent
     from jarvis.state.committed_event_bus import CommittedEventBus
+    from jarvis.state.projections import ClaimEvidenceProjection
 
+from jarvis.decision.commentary import COMMENTARY_ATTENTION_CHANNEL, commentary_intent_for
+from jarvis.decision.gates import pre_emit_gate
 from jarvis.decision.response_run import (
     ResponseCancelledError,
+    ResponseCancelRequest,
+    ResponseRun,
+    ResponseRunRegistry,
     ResponseTerminalizer,
+    deterministic_commentary_policy,
+    evidence_snapshot_hash,
     reconcile_open_responses,
+    request_response_cancel,
+    start_response_run,
 )
 from jarvis.deployment import inherent_v2_token_matches, rotate_inherent_v2_token
 from jarvis.deployment.process_lock import acquire_exclusive
@@ -115,10 +127,17 @@ from jarvis.runtime import (
 )
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.shared import Event
-from jarvis.shared.realtime import new_boot_id, new_connection_id
+from jarvis.shared.realtime import (
+    AlreadyTerminal,
+    new_boot_id,
+    new_connection_id,
+    new_response_id,
+)
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import (
     emit_event,
+    get_event,
+    iter_events_of_types,
     open_event_log,
     open_runtime_event_log,
     read_log_epoch,
@@ -132,6 +151,7 @@ from jarvis.state.input_claim import (
     claim_input_once,
     recoverable_inputs,
 )
+from jarvis.state.projections import rebuild_projections
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
     voice_asr,
@@ -144,7 +164,8 @@ from jarvis.surface import (
     voice_tts,
     voice_wake,
 )
-from jarvis.surface.cli import emit_surface_user_intent
+from jarvis.surface.cli import SurfaceState, emit_surface_user_intent, record_pre_emit_token
+from jarvis.surface.cli_render import render_response
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_protocol import RuntimeCapabilities
 from jarvis.surface.inherent_server import InherentDeps, InherentV2Deps, create_app
@@ -1200,6 +1221,356 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
     except asyncio.CancelledError:
         LOGGER.info("tts_watcher cancelled")
         raise
+
+
+# --- ADR-0008 D6 lifecycle commentary ---------------------------------------
+#
+# The observer below is the whole of the D6 wiring. It is deliberately a
+# durable-cursor watcher rather than a `CommittedEventBus` subscriber:
+# `jarvis/execution/tools.py` is never handed a bus, so `action.dispatched`
+# and every inline synchronous `action.result_observed` commit unpublished,
+# and a subscriber would silently lose the acknowledge row. The Event Log is
+# the only place all four rows are guaranteed to appear.
+#
+# Nothing here re-enters `decide()`: `_RUNTIME_TRIGGER_TYPES` is untouched and
+# no model is ever called to produce a phrase (ADR-0008 D6, "a deep model is
+# never called only to generate 我在查").
+
+_COMMENTARY_ACTION_TYPES: Final[tuple[str, ...]] = (
+    "action.dispatched",
+    "action.running",
+    "action.result_observed",
+    "action.failed",
+)
+
+_COMMENTARY_NON_TERMINAL_TYPES: Final[frozenset[str]] = frozenset(
+    {"action.dispatched", "action.running"},
+)
+"""The two rows that assert work is still in flight.
+
+Their commentary is only true while the action has no terminal, so it is
+checked against the `action:` EntityRegistry kind, which
+`_STATUS_BOARD_TERMINAL_ACTION_TYPES` evicts. The other two rows *are*
+terminals, and the registry has already dropped them by the time they are
+observed, so no such check applies to them.
+"""
+
+_COMMENTARY_ORIGIN_TRIGGER_TYPES: Final[frozenset[str]] = frozenset(
+    {"surface.user_intent", "utterance.received"},
+)
+"""What makes a turn user-originated — the predicate L2 already enforces for
+ordinary streaming (`jarvis/state/stream_emission.py`). A reconciliation or
+supervisor-sweep turn writes no `turn.started` at all, so "no claim row" and
+"not user-originated" are the same condition.
+"""
+
+
+@dataclasses.dataclass(frozen=True)
+class _OpenCommentary:
+    """One commentary ResponseRun that rendered but has not been heard yet.
+
+    It stays open on purpose. ``response.completed`` is written when the
+    phrase reaches the speaker (`surface.playback_started`); until then a
+    newer lifecycle row for the same action can still cancel it as
+    ``superseded``, which is what keeps stale progress out of the media lane.
+    A commentary already playing is past that point and finishes.
+    """
+
+    action_id: str
+    run: ResponseRun
+    terminalizer: ResponseTerminalizer
+    registry: ResponseRunRegistry
+    response_hash: str
+
+
+def _commentary_terminalizer(runtime: JarvisRuntime) -> ResponseTerminalizer:
+    """Build a terminalizer that owns its connection, like the cancel seam.
+
+    The run outlives the worker call that opened it, so the terminal owner
+    cannot close over that call's connection; ``close_after=True`` with a
+    per-call ``open_runtime_event_log`` is the established shape
+    (:func:`jarvis.runtime.make_response_cancel_callable`).
+    """
+    event_log_path = runtime.runtime_paths.event_log
+    return ResponseTerminalizer(
+        lambda: open_runtime_event_log(event_log_path),
+        close_after=True,
+        committed_event_bus=runtime.committed_event_bus,
+    )
+
+
+def _commentary_turn_id(conn: sqlite3.Connection, action_event: Event) -> str | None:
+    """Return the user-originated turn this action belongs to, or ``None``.
+
+    Two durable reads and no heuristics: the action's correlation names its
+    turn, that turn's ``turn.started`` names the trigger it was claimed from,
+    and the trigger's own type decides whether Allen asked for this.
+    """
+    correlation = action_event.correlation or {}
+    turn_id = correlation.get("turn_id")
+    if not isinstance(turn_id, str) or not turn_id:
+        return None
+    started = next(
+        (
+            event
+            for event in iter_events_of_types(conn, ("turn.started",))
+            if event.payload.get("turn_id") == turn_id
+        ),
+        None,
+    )
+    if started is None or started.source_event_id is None:
+        return None
+    trigger = get_event(conn, started.source_event_id)
+    if trigger is None or trigger.type not in _COMMENTARY_ORIGIN_TRIGGER_TYPES:
+        return None
+    return turn_id
+
+
+def _cancel_unheard_commentary(entry: _OpenCommentary, *, reason: str) -> None:
+    """Cancel a commentary run that never reached the speaker."""
+    request_response_cancel(
+        entry.registry,
+        entry.terminalizer,
+        ResponseCancelRequest(
+            request_id="CREQ" + uuid.uuid4().hex,
+            response_id=entry.run.response_id,
+            scope="generation",
+            reason=reason,
+        ),
+    )
+
+
+def _complete_commentary(entry: _OpenCommentary) -> None:
+    """Close a commentary run whose phrase reached the speaker."""
+    entry.run.mark("finalizing")
+    outcome = entry.terminalizer.complete(
+        entry.run.facts,
+        response_hash=entry.response_hash,
+    )
+    if isinstance(outcome, AlreadyTerminal):
+        return
+    entry.run.mark("completed")
+
+
+def _render_commentary(  # noqa: PLR0913 - the run's five independent inputs
+    runtime: JarvisRuntime,
+    conn: sqlite3.Connection,
+    *,
+    intent: PresentationIntent,
+    action_event: Event,
+    turn_id: str,
+    claim_evidence: ClaimEvidenceProjection,
+) -> _OpenCommentary:
+    """Open one ``phase="commentary"`` run and deliver its single segment.
+
+    ``turn_id`` is the action's own turn, so ``response_group_id`` derives to
+    that turn's group and voice_media appends the phrase to the lane instead
+    of interrupting whatever else that group is saying. The trigger is the
+    action event itself: D6's "truth derives from the durable action event"
+    is literally this run's ``source_event_id``.
+
+    A request client is built only because ``response.started`` carries the
+    preset snapshot. No request is ever issued, so the run has no cost
+    disposition to record.
+    """
+    factory = runtime.llm_session_factory
+    if factory is None:  # pragma: no cover - the flag graph pairs the two
+        msg = "lifecycle commentary requires the ResponseRun session factory"
+        raise RuntimeError(msg)
+    response_id = new_response_id()
+    snapshot = factory.snapshot(None)
+    run = start_response_run(
+        conn,
+        turn_id=turn_id,
+        trigger_event_uid=action_event.event_uid,
+        request_client=factory.create(snapshot, response_id=response_id),
+        policy=deterministic_commentary_policy(
+            active_subject_ref=intent.subject_ref,
+            evidence_snapshot_hash=evidence_snapshot_hash(conn),
+            preset_snapshot_hash=snapshot.snapshot_hash,
+        ),
+        response_id=response_id,
+        phase="commentary",
+        channel="speech",
+        committed_event_bus=runtime.committed_event_bus,
+    )
+    run.link_action(intent.subject_ref)
+    registry = ResponseRunRegistry()
+    registry.register(run)
+    # No subject is in scope for a fixed lifecycle phrase, so the Pre-emit
+    # Gate short-circuits to its routine pass-through and hands back the
+    # token `render_response` demands.
+    plan = pre_emit_gate(intent.content_hint, claim_evidence, None)
+    render_response(
+        record_pre_emit_token(
+            SurfaceState(last_gate_response_hash=None),
+            plan.response_hash,
+        ),
+        plan,
+        conn=conn,
+        turn_id=turn_id,
+        attention_channel=COMMENTARY_ATTENTION_CHANNEL,
+        available_surfaces=frozenset(),
+        streaming_enabled=True,
+        response_id=run.response_id,
+        response_group_id=run.response_group_id,
+        phase="commentary",
+    )
+    record_realtime_trace(
+        "lifecycle_commentary_rendered",
+        response_id=run.response_id,
+        response_group_id=run.response_group_id,
+        turn_id=turn_id,
+        action_id=intent.subject_ref,
+        intent_type=intent.intent_type,
+    )
+    return _OpenCommentary(
+        action_id=intent.subject_ref,
+        run=run,
+        terminalizer=_commentary_terminalizer(runtime),
+        registry=registry,
+        response_hash=plan.response_hash,
+    )
+
+
+def _open_commentary_in_worker_thread(
+    runtime: JarvisRuntime,
+    *,
+    action_event: Event,
+    previous: _OpenCommentary | None,
+) -> _OpenCommentary | None:
+    """Decide and deliver one action row's commentary on a worker thread.
+
+    Opens its own connection for the same ``check_same_thread`` reason
+    :func:`_drive_turn_in_worker_thread` does, and for a second one: the
+    projection rebuild and the four appends must not stall the event loop
+    the TTS watcher polls on.
+
+    Returns ``None`` — writing nothing at all — when the row maps to no D6
+    intent, when the turn is not user-originated, when a confirmation is
+    still awaiting an answer, or when a non-terminal row's action already
+    reached its terminal.
+    """
+    intent = commentary_intent_for(action_event)
+    if intent is None:
+        return None
+    conn = open_runtime_event_log(runtime.runtime_paths.event_log)
+    try:
+        turn_id = _commentary_turn_id(conn, action_event)
+        if turn_id is None:
+            return None
+        projections = rebuild_projections(
+            conn,
+            entity_bookmarks=runtime.entity_bookmarks,
+        )
+        slot = projections.pending_confirmations.slot
+        if slot is not None and slot.is_live(int(time.time() * 1000)):
+            # ADR-0014: new commentary never overwrites an unresolved
+            # confirmation. The slot is globally unique and its
+            # `action_snapshot` carries no `action_id`, so this is enforced
+            # at the only granularity the fold supports.
+            return None
+        if (
+            action_event.type in _COMMENTARY_NON_TERMINAL_TYPES
+            and f"action:{intent.subject_ref}" not in projections.entity_registry.entries_by_id
+        ):
+            return None
+        if previous is not None:
+            _cancel_unheard_commentary(previous, reason="superseded")
+        return _render_commentary(
+            runtime,
+            conn,
+            intent=intent,
+            action_event=action_event,
+            turn_id=turn_id,
+            claim_evidence=projections.claim_evidence,
+        )
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+
+async def _commentary_watcher(
+    runtime: JarvisRuntime,
+    *,
+    poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+) -> None:
+    """Background task: speak one deterministic phrase per action lifecycle row.
+
+    One cursor over the four D6 action types plus ``surface.playback_started``,
+    anchored at the boot high-water mark exactly like ``_tts_watcher`` — a
+    historical action from a previous session must never speak fake progress.
+    ``surface.playback_started`` shares the cursor because it is the signal
+    that a commentary is past the point of being superseded; a single
+    monotonic cursor makes "played" and "a newer row arrived" strictly
+    ordered rather than a race between two pollers.
+
+    Coalescing is one entry per ``(action_id, event type)``: a repeated row
+    for an action that already spoke that phrase writes nothing.
+
+    Per-event dispatch is wrapped in a catch-all for the same reason
+    ``_tts_watcher``'s is: commentary is a courtesy, and a failure to produce
+    it must never stall the watcher or the turn it is commenting on.
+    """
+    after_id = _latest_id(runtime.conn)
+    open_by_action: dict[str, _OpenCommentary] = {}
+    spoken: set[tuple[str, str]] = set()
+    LOGGER.info("commentary_watcher started (after_id=%d)", after_id)
+    try:
+        while True:
+            new_events = _fetch_events_after(
+                runtime.conn,
+                after_id=after_id,
+                event_types=(*_COMMENTARY_ACTION_TYPES, "surface.playback_started"),
+            )
+            for row_id, ev in new_events:
+                after_id = max(after_id, row_id)
+                try:
+                    if ev.type == "surface.playback_started":
+                        await _commentary_heard(open_by_action, ev)
+                        continue
+                    action_id = _event_action_id(ev)
+                    if action_id is None or (action_id, ev.type) in spoken:
+                        continue
+                    spoken.add((action_id, ev.type))
+                    opened = await asyncio.to_thread(
+                        _open_commentary_in_worker_thread,
+                        runtime,
+                        action_event=ev,
+                        previous=open_by_action.get(action_id),
+                    )
+                    if opened is not None:
+                        open_by_action[action_id] = opened
+                except Exception as exc:  # noqa: BLE001 — commentary must not crash the watcher.
+                    LOGGER.warning(
+                        "commentary_watcher: dispatch raised on %s action_id=%s: %r",
+                        ev.type,
+                        _event_action_id(ev),
+                        exc,
+                    )
+            await asyncio.sleep(poll_interval_s)
+    except asyncio.CancelledError:
+        for entry in open_by_action.values():
+            with contextlib.suppress(Exception):
+                _cancel_unheard_commentary(entry, reason="shutdown")
+        LOGGER.info("commentary_watcher cancelled")
+        raise
+
+
+async def _commentary_heard(
+    open_by_action: dict[str, _OpenCommentary],
+    event: Event,
+) -> None:
+    """Close the commentary run this playback belongs to, if it is ours."""
+    response_id = event.payload.get("response_id")
+    entry = next(
+        (item for item in open_by_action.values() if item.run.response_id == response_id),
+        None,
+    )
+    if entry is None:
+        return
+    del open_by_action[entry.action_id]
+    await asyncio.to_thread(_complete_commentary, entry)
 
 
 def _build_voice_pipeline(
@@ -3096,6 +3467,15 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
                         poll_interval_s=poll_interval_s,
                     ),
                     name="tts_watcher",
+                ),
+            )
+        if runtime.response_flags.lifecycle_commentary:
+            # ADR-0008 D6 (Step 5). Flag off, no task exists and the event log
+            # is byte-identical to a build without this observer.
+            watchers.append(
+                asyncio.create_task(
+                    _commentary_watcher(runtime, poll_interval_s=poll_interval_s),
+                    name="commentary_watcher",
                 ),
             )
 
