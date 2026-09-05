@@ -783,6 +783,29 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     # emitting these milestones only behind realtime.streaming_output; the
     # same response/generation CAS remains their sole terminal arbiter.
     EventTypeSchema(
+        event_type="surface.playback_started",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=(
+            "session_id", "response_id", "turn_id", "playback_generation_id",
+            "phase", "channel", "speech_text_hash",
+        ),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="surface.playback_segment_prepared",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=(
+            "session_id", "response_id", "turn_id", "playback_generation_id",
+            "sequence", "speech_text", "speech_text_hash", "segment_hash",
+            "source_chunk_event_uid",
+        ),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
         event_type="surface.playback_checkpoint",
         owner_layer="L5",
         actor="jarvis_runtime",
@@ -795,7 +818,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "submitted_samples",
             "heard_text_hash",
         ),
-        optional_payload=("cursor_quality",),
+        optional_payload=("cursor_quality", "heard_text"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -811,7 +834,9 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "submitted_samples",
             "speech_text_hash",
         ),
-        optional_payload=("total_samples", "provider", "cursor_quality"),
+        optional_payload=(
+            "total_samples", "provider", "cursor_quality", "heard_text", "heard_text_hash",
+        ),
         schema_version=1,
     ),
     EventTypeSchema(

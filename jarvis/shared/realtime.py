@@ -83,12 +83,14 @@ class Wave4ResponseFlags:
     ``response_run_lifecycle`` wraps ``drive_turn`` in a durable
     ResponseRun with an immutable per-run request client.
     ``independent_response_cancel`` additionally exposes the generation
-    cancel seam.  Both stay off in the shipped configuration, so the
-    default path remains the complete legacy batch turn.
+    cancel seam. ``typed_conversation_history`` adds explicit heard/available
+    history to L3 prompts under the same lifecycle parent. All stay off in the
+    shipped configuration, preserving the complete legacy batch prompt.
     """
 
     response_run_lifecycle: bool = False
     independent_response_cancel: bool = False
+    typed_conversation_history: bool = False
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object] | None) -> Wave4ResponseFlags:
@@ -101,12 +103,19 @@ class Wave4ResponseFlags:
         return cls(
             response_run_lifecycle=values.get("response_run_lifecycle") is True,
             independent_response_cancel=values.get("independent_response_cancel") is True,
+            typed_conversation_history=values.get("typed_conversation_history") is True,
         )
 
     @property
     def all_disabled(self) -> bool:
         """Return whether the runtime must retain the legacy batch path."""
-        return not any((self.response_run_lifecycle, self.independent_response_cancel))
+        return not any(
+            (
+                self.response_run_lifecycle,
+                self.independent_response_cancel,
+                self.typed_conversation_history,
+            )
+        )
 
 
 @dataclass(frozen=True)

@@ -8,7 +8,49 @@ Baseline: 86958ad2aa6c193743fb78d1181a6dc2ccfbcf30
 Verified ancestor code: 3a6856a6bb4aa7d7a612c4a98d963513a6f93eab
 Contract: GOAL.md; architecture: docs/spec.html and docs/adr.
 
-## Current work
+## Current work: typed heard context
+
+L5 now commits playback activation and per-segment normalized speech mappings
+before provider/player work. Mappings bind source chunk UID/hash and canonical
+response/turn/session/generation. Checkpoints and all terminals carry explicit
+heard text/hash and reference their activation. The existing response/generation
+terminal CAS identity is unchanged; generation session rebinding is rejected.
+
+L2 folds bounded typed history from the packet's materialized Event Log, with
+separate conservative spoken_heard, panel_available and audit-generated hash.
+It validates exact prepared-segment prefixes, source identities, hashes and
+monotonic cursors. Legacy unmapped playback remains unknown. New leases retain
+previous valid heard facts, while stale callbacks cannot extend them. Malformed
+Unicode and conflicting evidence fail closed without crashing packet replay.
+Projection bounds: 20 turns, 8 responses/turn, 65,536 text chars and 1,024 facts
+per response. The L3 note excludes audit draft text, clips each excerpt to 2,048
+chars and caps serialized history JSON at 12,000 chars with explicit truncation.
+
+Actual drive_turn -> decide -> message construction now receives this typed
+note only behind the validated, default-off typed_conversation_history flag.
+Shipped configuration and production DB/profile are unchanged. Real media actor
+scenarios (synthetic provider PCM/callback pump) carry a first checkpoint into
+the next model prompt while the second feed is blocked; structured voice-only
+prefixes remain distinct from the panel document. Mapping persistence faults
+issue no provider request and submit zero samples. These are local software
+cursor/prompt facts, not cloud-model, physical audibility or latency acceptance.
+
+Read-only counterexamples repaired: arbitrary self-hashed heard text, mismatched
+speech identity, document-only playback, regressing/conflicting cursors, old
+session/generation callback extension, invalid Unicode, audit draft prompt
+leakage, unbounded prompt content, and losing old proof on a new activation.
+Focused history/provenance: 47 passed in 0.55 s. Full current regression: 685
+passed / 63 deselected in 31.01 s, exit 0; outer wall 31.915 s. Evidence:
+/tmp/jarvis-realtime-typed-history-nonlive.log. The 1.01 s excess over the 30 s
+budget is recorded, not hidden by seeking a faster rerun. Ruff clean (13 changed
+Python files), strict mypy196, six-layer82/229 kept; temporary .venv link removed.
+
+Next: build complete read-only confirmation/outbox/action/recovery debt for the
+actual pinned risk context, then prepared routing, immutable-prefix finalization
+and genuinely incremental TTS scheduling. The generated streaming route is still
+unwired, and overall GOAL/live/physical/Swift v2 acceptance remains open.
+
+## Durable stream gate checkpoint (f7dd1ac)
 
 Added complete explicit ResponseRiskContext DTO and content hashing of actual
 SituationPacket dataclasses/maps. The new versioned Chinese/English classifier

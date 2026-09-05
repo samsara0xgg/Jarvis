@@ -46,6 +46,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from jarvis.shared import Claim, ClaimType, Evidence, EvidenceLevel
+from jarvis.state.conversation import ConversationHistory, fold_conversation_history
 from jarvis.state.event_log import iter_events
 
 if TYPE_CHECKING:
@@ -1449,6 +1450,7 @@ class ProjectionSet:
     status_board: StatusBoard
     entity_registry: EntityRegistry
     pending_confirmations: PendingConfirmations
+    conversation_history: ConversationHistory = field(default_factory=ConversationHistory)
 
 
 def rebuild_projections(
@@ -1505,6 +1507,7 @@ def rebuild_projections(
         status_board=_fold_status_board(materialized),
         entity_registry=entity_registry,
         pending_confirmations=_fold_pending_confirmations(materialized),
+        conversation_history=fold_conversation_history(materialized),
     )
 
 

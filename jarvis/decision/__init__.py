@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 from jarvis.decision.confirm_grammar import match_confirm_grammar
+from jarvis.decision.conversation import conversation_history_note
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.gates import (
     AttentionChannel,
@@ -826,6 +827,7 @@ class DecideContext:
     wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
     cancellation_checkpoint: Callable[[str], None] | None = None
     request_admission: Callable[[str], None] | None = None
+    typed_conversation_history: bool = False
 
 
 @dataclass(frozen=True)
@@ -937,9 +939,13 @@ def _insert_system_notes(
     about THIS turn's outstanding ask; spec §3.4.4, Phase 0 batch 4;
     ADR-0012 §3 D4).
 
-    All four share the §10.5 deviation: dynamic context sits at the
+    These notes share the §10.5 deviation: dynamic context sits at the
     head of the prompt, not the tail — flagged, not fixed, here.
     """
+    if ctx.typed_conversation_history:
+        history_note = conversation_history_note(packet)
+        if history_note is not None:
+            messages.insert(0, {"role": "user", "content": history_note})
     # ADR-0012 §3 D4: id-free note naming an outstanding confirmation
     # ask, if one is live. Lets an unrelated turn's LLM know an ask is
     # outstanding (C4) and a paraphrased-consent turn's LLM talk about

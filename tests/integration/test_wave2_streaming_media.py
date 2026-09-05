@@ -22,6 +22,8 @@ import numpy as np
 import pytest
 import yaml
 
+from jarvis.decision.conversation import conversation_history_note
+from jarvis.decision.packet import assemble_packet
 from jarvis.runtime import inherent_loop
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
@@ -1153,7 +1155,9 @@ def test_terminal_debt_blocks_every_successor_until_durable(
         assert terminal_index < ui_index < successor_index
 
 
-def test_checkpoint_persists_during_later_provider_feed_and_retries(tmp_path: Path) -> None:
+def test_checkpoint_persists_during_later_provider_feed_and_retries(  # noqa: PLR0915 - real actor/cursor/prompt round trip
+    tmp_path: Path,
+) -> None:
     """A whole heard segment checkpoints before the blocked next segment final."""
     db_path = tmp_path / "checkpoint-parallel.db"
     conn = open_event_log(db_path)
@@ -1171,6 +1175,15 @@ def test_checkpoint_persists_during_later_provider_feed_and_retries(tmp_path: Pa
     )
     original_emit = emit_event
     checkpoint_attempts = 0
+    emit_event(
+        conn,
+        type="utterance.received",
+        payload={
+            "turn_id": "TCP",
+            "transcript": "synthetic checkpoint question",
+            "channel": "voice",
+        },
+    )
 
     def _transient_checkpoint(*args: object, **kwargs: object) -> object:
         nonlocal checkpoint_attempts
@@ -1207,12 +1220,33 @@ def test_checkpoint_persists_during_later_provider_feed_and_retries(tmp_path: Pa
             assert checkpoint_row is not None
             payload = json.loads(str(checkpoint_row[0]))
             assert payload["heard_through_sequence"] == 0
+            assert payload["heard_text"] == "first checkpoint."
+            followup = emit_event(
+                conn,
+                type="utterance.received",
+                payload={
+                    "turn_id": "TCP-NEXT",
+                    "transcript": "continue from what I heard",
+                    "channel": "voice",
+                },
+            )
+            note = conversation_history_note(assemble_packet(followup, conn))
+            assert note is not None
+            view = json.loads(note.rsplit("\n", 1)[-1])["turns"][0]["responses"][0]
+            assert view["spoken_heard"]["text"] == "first checkpoint."
+            assert view["spoken_heard"]["cursor_quality"] in {"estimated", "measured_dac"}
+            assert view["panel_available"] == "first checkpoint. blocked second."
+            assert "audit_generated" not in view
             assert ("RCP", 1) in provider.sent
             assert ("RCP", 0) in provider.provider_finals
             assert ("RCP", 1) not in provider.provider_finals
             assert checkpoint_attempts >= 2
             second_gate.set()
             assert pipeline.wait_until_idle(timeout_s=2.0)
+            completed_note = conversation_history_note(assemble_packet(followup, conn))
+            assert completed_note is not None
+            completed = json.loads(completed_note.rsplit("\n", 1)[-1])["turns"][0]["responses"][0]
+            assert completed["spoken_heard"]["text"] == "first checkpoint.blocked second."
     finally:
         second_gate.set()
         assert pipeline.close()
@@ -1496,6 +1530,15 @@ def test_structured_chunks_preserve_heard_prefix_on_mid_second_interrupt(
         config=_config(),
         start_player=False,
     )
+    emit_event(
+        conn,
+        type="utterance.received",
+        payload={
+            "turn_id": "TSTRUCT",
+            "transcript": "synthetic structured question",
+            "channel": "voice",
+        },
+    )
     try:
         with _CallbackPump(player):
             structured = _emit_response(
@@ -1541,6 +1584,21 @@ def test_structured_chunks_preserve_heard_prefix_on_mid_second_interrupt(
             for kind, payload in _terminal_rows(terminal_conn)
             if kind == "surface.playback_interrupted" and payload["response_id"] == "RSTRUCT"
         )
+        followup = emit_event(
+            terminal_conn,
+            type="utterance.received",
+            payload={
+                "turn_id": "TSTRUCT-FOLLOWUP",
+                "transcript": "继续解释",
+                "channel": "voice",
+            },
+        )
+        note = conversation_history_note(assemble_packet(followup, terminal_conn))
+        assert note is not None
+        view = json.loads(note.rsplit("\n", 1)[-1])["turns"][0]["responses"][0]
+        assert view["spoken_heard"]["text"] == "第一句。"
+        assert "第二句" in view["panel_available"]
+        assert "不可朗读" in view["panel_available"]
     finally:
         terminal_conn.close()
     assert old_payload["heard_through_sequence"] == 0

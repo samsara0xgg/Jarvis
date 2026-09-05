@@ -285,6 +285,7 @@ class _ResponseChunk:
     sequence: int
     raw_text: str
     segment_hash: str
+    source_event_uid: str = ""
 
 
 @dataclass
@@ -343,6 +344,7 @@ class _ActiveResponse:
     provider_label: str = "minimax_ws_streaming"
     advance_after_cleanup: bool = False
     terminal_commit_pending: bool = False
+    activation_event_uid: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1885,6 +1887,7 @@ class StreamingTTSPipeline:
                 sequence=sequence,
                 raw_text=text,
                 segment_hash=segment_hash,
+                source_event_uid=event.event_uid,
             )
             return outcome
         if event.type == "surface.response_emitted":
@@ -2015,6 +2018,22 @@ class StreamingTTSPipeline:
                     self._advance_after_drain()
                 return
         try:
+            activation = emit_event(
+                self._require_conn(),
+                type="surface.playback_started",
+                payload={
+                    "session_id": active.lease.session_id,
+                    "response_id": response.response_id,
+                    "turn_id": response.turn_id,
+                    "playback_generation_id": active.lease.playback_generation_id,
+                    "phase": response.phase,
+                    "channel": response.channel,
+                    "speech_text_hash": speech_hash,
+                },
+                source_event_id=response.source_event_id,
+                correlation={"turn_id": response.turn_id},
+            )
+            active.activation_event_uid = activation.event_uid
             async with asyncio.timeout(self._config.response_timeout_s):
                 completed = await self._stream_with_prefix_fallback(active, segments)
                 if active.advance_after_cleanup or self._active is not active:
@@ -2091,6 +2110,23 @@ class StreamingTTSPipeline:
         iterator: AsyncIterator[TTSAudioChunk | TTSSegmentFinished] | None = None
         provider_first = False
         for segment_index, (sequence, text, segment_hash) in enumerate(segments):
+            emit_event(
+                self._require_conn(),
+                type="surface.playback_segment_prepared",
+                payload={
+                    "session_id": lease.session_id,
+                    "response_id": active.response.response_id,
+                    "turn_id": active.response.turn_id,
+                    "playback_generation_id": lease.playback_generation_id,
+                    "sequence": sequence,
+                    "speech_text": text,
+                    "speech_text_hash": hashlib.sha256(text.encode()).hexdigest(),
+                    "segment_hash": segment_hash,
+                    "source_chunk_event_uid": active.response.chunks[sequence].source_event_uid,
+                },
+                source_event_id=active.activation_event_uid,
+                correlation={"turn_id": active.response.turn_id},
+            )
             opened = self._player.begin_generation_segment(
                 expected_playback_generation_id=lease.playback_generation_id,
                 sequence=sequence,
@@ -2610,10 +2646,12 @@ class StreamingTTSPipeline:
                 "SELECT 1 FROM events WHERE type = 'surface.playback_checkpoint' "
                 "AND json_extract(payload_json, '$.response_id') = ? "
                 "AND json_extract(payload_json, '$.playback_generation_id') = ? "
+                "AND json_extract(payload_json, '$.session_id') = ? "
                 "AND json_extract(payload_json, '$.heard_through_sequence') = ? LIMIT 1",
                 (
                     active.response.response_id,
                     active.lease.playback_generation_id,
+                    active.lease.session_id,
                     sequence,
                 ),
             ).fetchone()
@@ -2632,9 +2670,10 @@ class StreamingTTSPipeline:
                         "heard_through_sequence": sequence,
                         "submitted_samples": snapshot.submitted_samples,
                         "heard_text_hash": snapshot.heard_text_hash,
+                        "heard_text": snapshot.heard_text,
                         "cursor_quality": snapshot.cursor_quality,
                     },
-                    source_event_id=active.response.source_event_id,
+                    source_event_id=active.activation_event_uid or active.response.source_event_id,
                     correlation={"turn_id": active.response.turn_id},
                 )
             except Exception:
@@ -2775,21 +2814,20 @@ class StreamingTTSPipeline:
             "total_samples": snapshot.accepted_samples,
             "provider": active.provider_label,
             "cursor_quality": snapshot.cursor_quality,
+            "heard_text_hash": snapshot.heard_text_hash,
+            "heard_text": snapshot.heard_text,
         }
         if event_type == "surface.playback_completed":
             payload["speech_text_hash"] = speech_text_hash or hashlib.sha256(b"").hexdigest()
         else:
-            payload["heard_text_hash"] = snapshot.heard_text_hash
             payload["reason"] = reason or "unknown"
-            if snapshot.heard_text:
-                payload["heard_text"] = snapshot.heard_text
             if event_type == "surface.playback_failed" and retryable is not None:
                 payload["retryable"] = retryable
         terminalize_playback(
             self._require_conn(),
             event_type=event_type,
             payload=payload,
-            source_event_id=active.response.source_event_id,
+            source_event_id=active.activation_event_uid or active.response.source_event_id,
             correlation={"turn_id": active.response.turn_id},
         )
         self._registry.terminalize(active.response.response_id)

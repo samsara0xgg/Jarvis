@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from jarvis.shared import Event
+    from jarvis.state.conversation import ConversationHistory
     from jarvis.state.projections import (
         CommitObservation,
         EntityRegistry,
@@ -91,6 +92,7 @@ class SituationPacket:
     status_board: StatusBoard
     entity_registry: EntityRegistry
     pending_confirmation: PendingConfirmations
+    conversation_history: ConversationHistory | None = None
 
 
 # --- assemble_packet --------------------------------------------------------
@@ -151,6 +153,7 @@ def assemble_packet(
         status_board=projections.status_board,
         entity_registry=projections.entity_registry,
         pending_confirmation=projections.pending_confirmations,
+        conversation_history=projections.conversation_history,
     )
 
 

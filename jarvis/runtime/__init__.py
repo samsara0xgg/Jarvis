@@ -574,9 +574,9 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
     2. ``response_run_lifecycle`` requested without the Wave-1
        transactional-append and lifecycle-terminal-CAS primitives it writes
        through.
-    3. ``independent_response_cancel`` requested without a surviving
-       ``response_run_lifecycle`` — otherwise every cancel would route to a
-       registry no run was ever added to and return ``unknown_response``.
+    3. ``independent_response_cancel`` or ``typed_conversation_history``
+       requested without a surviving ``response_run_lifecycle``. Cancellation
+       and typed history both require stable response lifecycle identities.
     """
     realtime = config.get("realtime")
     if not isinstance(realtime, Mapping):
@@ -603,7 +603,9 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
         wave1.transactional_event_append and wave1.lifecycle_terminal_cas
     ):
         return _downgraded_response_activation(requested, "wave1_primitives_disabled")
-    if requested.independent_response_cancel and not requested.response_run_lifecycle:
+    if (
+        requested.independent_response_cancel or requested.typed_conversation_history
+    ) and not requested.response_run_lifecycle:
         return _downgraded_response_activation(requested, "lifecycle_flag_disabled")
     return _Wave4ResponseActivation(
         flags=requested,
@@ -633,20 +635,24 @@ def _downgraded_response_activation(
     )
     LOGGER.warning(
         "realtime.response downgraded (%s): requested response_run_lifecycle=%s "
-        "independent_response_cancel=%s; effective response_run_lifecycle=%s "
-        "independent_response_cancel=%s",
+        "independent_response_cancel=%s typed_conversation_history=%s; "
+        "effective response_run_lifecycle=%s independent_response_cancel=%s "
+        "typed_conversation_history=%s",
         reason,
         requested.response_run_lifecycle,
         requested.independent_response_cancel,
+        requested.typed_conversation_history,
         flags.response_run_lifecycle,
         flags.independent_response_cancel,
+        flags.typed_conversation_history,
     )
     record_realtime_trace(
         "response_activation_downgraded",
         reason=reason,
         requested=(
             f"response_run_lifecycle={requested.response_run_lifecycle},"
-            f"independent_response_cancel={requested.independent_response_cancel}"
+            f"independent_response_cancel={requested.independent_response_cancel},"
+            f"typed_conversation_history={requested.typed_conversation_history}"
         ),
     )
     return _Wave4ResponseActivation(flags=flags, requested=requested, reason=reason)
@@ -2088,6 +2094,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # way tier0_table is threaded.
             confirm_grammar_table=runtime.confirm_grammar_table,
             wave1_features=runtime.wave1_features,
+            typed_conversation_history=runtime.response_flags.typed_conversation_history,
             cancellation_checkpoint=run.check_cancelled if run is not None else None,
             request_admission=(
                 (lambda kind: run.admit_request(runtime.conn, kind))
