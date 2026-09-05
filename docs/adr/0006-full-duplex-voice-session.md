@@ -9,7 +9,7 @@
 
 **Naming amendment (ADR-0014):** this ADR's original `generation_id` name means only an L5 playback lease and is renamed everywhere on the v2 wire, shared contracts, registries, and new event payloads to `playback_generation_id`. A ResponseRun itself is keyed only by `response_id`; document-only responses have no playback generation. Any unmodified prose occurrence of “generation” below describes provider work, not a second ResponseRun identity.
 
-**D3 amendment (2026-09-05):** the built Input FSM slice is recorded under D3; D7 is unchanged.
+**D3 amendment (2026-09-05):** the built Input FSM slice is recorded under D3; D7 is unchanged; §4.1 `EndpointDecision` gains the `resume` verdict and `speech_resumed` reason.
 
 ---
 
@@ -507,8 +507,8 @@ PartialTranscript
 
 EndpointDecision
   utterance_id: str
-  verdict: hold | commit
-  reason: acoustic_pause | semantic_complete | max_hold | ptt_release | explicit_end
+  verdict: hold | resume | commit
+  reason: acoustic_pause | semantic_complete | max_hold | speech_resumed | ptt_release | explicit_end
   confidence: float | None
 
 BargeInSignal
