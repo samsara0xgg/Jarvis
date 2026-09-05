@@ -266,6 +266,9 @@ class LLMClient:
         self._max_tokens: int = int(cfg.get("max_tokens", 0) or 0)
         self._api_key: str | None = None
         self._reasoning_effort: str | None = cfg.get("reasoning_effort")
+        # Provider-specific request fields merged verbatim into the OpenAI
+        # request body (e.g. DeepSeek ``thinking: {type: disabled}``).
+        self._extra_body: dict[str, Any] = dict(cfg.get("extra_body") or {})
 
         # Transport-level knobs (MUST-FIX 2, ADR-0011 §12): opt-in, flat
         # top-level config only — no preset ever overrides these, so a
@@ -427,6 +430,7 @@ class LLMClient:
         if "max_tokens" in preset:
             self._max_tokens = int(preset["max_tokens"])
         self._reasoning_effort = preset.get("reasoning_effort")
+        self._extra_body = dict(preset.get("extra_body") or {})
 
         api_key_env = preset.get("api_key_env")
         if api_key_env:
@@ -547,6 +551,7 @@ class LLMClient:
                 body["tools"] = _tools_to_openai(copy.deepcopy(tools))
             if self._reasoning_effort:
                 body["reasoning_effort"] = self._reasoning_effort
+            body.update(copy.deepcopy(self._extra_body))
         else:
             body.update({
                 "max_tokens": self._max_tokens, "system": system,
@@ -675,6 +680,8 @@ class LLMClient:
                 kwargs["tool_choice"] = tool_choice
         if self._reasoning_effort:
             kwargs["reasoning_effort"] = self._reasoning_effort
+        if self._extra_body:
+            kwargs["extra_body"] = copy.deepcopy(self._extra_body)
 
         LOGGER.info("Sending request to OpenAI (model=%s base=%s)", self._model, self._base_url)
         record_realtime_trace(
@@ -781,6 +788,8 @@ class LLMClient:
             kwargs["tools"] = openai_tools
         if self._reasoning_effort:
             kwargs["reasoning_effort"] = self._reasoning_effort
+        if self._extra_body:
+            kwargs["extra_body"] = copy.deepcopy(self._extra_body)
 
         finish_reason: str | None = None
         record_realtime_trace(
