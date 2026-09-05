@@ -265,6 +265,7 @@ class LLMClient:
         self._base_url: str = ""
         self._max_tokens: int = int(cfg.get("max_tokens", 0) or 0)
         self._api_key: str | None = None
+        self._reasoning_effort: str | None = cfg.get("reasoning_effort")
 
         # Transport-level knobs (MUST-FIX 2, ADR-0011 §12): opt-in, flat
         # top-level config only — no preset ever overrides these, so a
@@ -425,6 +426,7 @@ class LLMClient:
         self._base_url = str(preset.get("base_url", "") or "")
         if "max_tokens" in preset:
             self._max_tokens = int(preset["max_tokens"])
+        self._reasoning_effort = preset.get("reasoning_effort")
 
         api_key_env = preset.get("api_key_env")
         if api_key_env:
@@ -543,6 +545,8 @@ class LLMClient:
             })
             if tools:
                 body["tools"] = _tools_to_openai(copy.deepcopy(tools))
+            if self._reasoning_effort:
+                body["reasoning_effort"] = self._reasoning_effort
         else:
             body.update({
                 "max_tokens": self._max_tokens, "system": system,
@@ -669,6 +673,8 @@ class LLMClient:
             kwargs["tools"] = openai_tools
             if tool_choice is not None:
                 kwargs["tool_choice"] = tool_choice
+        if self._reasoning_effort:
+            kwargs["reasoning_effort"] = self._reasoning_effort
 
         LOGGER.info("Sending request to OpenAI (model=%s base=%s)", self._model, self._base_url)
         record_realtime_trace(
@@ -773,6 +779,8 @@ class LLMClient:
         }
         if openai_tools:
             kwargs["tools"] = openai_tools
+        if self._reasoning_effort:
+            kwargs["reasoning_effort"] = self._reasoning_effort
 
         finish_reason: str | None = None
         record_realtime_trace(
