@@ -742,10 +742,11 @@ class AudioStreamPlayer:
                     and self._ownership_attempt_id == ownership_attempt_id
                 ):
                     self._lifecycle_state = "closed"
+            named_device = f" device={self._device!r}" if self._device is not None else ""
             return PlayerStartResult(
                 "failed_closed",
                 ownership_attempt_id,
-                f"open:{type(exc).__name__}",
+                f"open:{type(exc).__name__}{named_device}",
             )
         with self._lifecycle_lock:
             if (

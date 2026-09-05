@@ -143,6 +143,10 @@ confirmation:
 # enabling concurrent turns, model streaming, or streaming TTS/player work.
 realtime:
   enabled: false
+  # Output device name TTS playback opens, e.g. "BlackHole 16ch"; resolved by
+  # sounddevice.  Null means the CoreAudio system default output.  An
+  # unresolvable name fails the open closed rather than falling back.
+  output_device: null
   concurrency_safety:
     transactional_event_append: false
     lifecycle_terminal_cas: false

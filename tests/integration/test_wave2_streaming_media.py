@@ -2999,3 +2999,59 @@ def test_escape_hatch_quality_survives_a_later_audible_report() -> None:
     assert snapshot.cursor_quality == "unknown"
     assert snapshot.heard_through_sequence == 0
     assert snapshot.heard_text == "已经听到的部分"
+
+
+def test_realtime_output_device_reaches_both_builder_player_sites(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`realtime.output_device` routes the player; absent keeps the system default.
+
+    Both construction sites matter: the legacy fallback is not under
+    `realtime.streaming_output` and must honour the same setting. The real
+    player is still constructed; only `_open_output_stream` is faked, so no
+    audio device is opened.
+    """
+    db_path = tmp_path / "device.db"
+    conn = open_event_log(db_path)
+    runtime = SimpleNamespace(
+        config={},
+        wave1_features=Wave1FeatureFlags(
+            transactional_event_append=True,
+            lifecycle_terminal_cas=True,
+        ),
+        runtime_paths=SimpleNamespace(event_log=db_path),
+        conn=conn,
+    )
+    monkeypatch.setenv("MINIMAX_API_KEY", "integration-placeholder")
+    seen: list[object] = []
+    real_player = voice_tts.AudioStreamPlayer
+
+    def _recording_player(**kwargs: object) -> voice_tts.AudioStreamPlayer:
+        seen.append(kwargs.get("device"))
+        return real_player(**cast("Any", kwargs))
+
+    def _build(realtime: dict[str, object], expected: type) -> None:
+        runtime.config = {"realtime": realtime}
+        pipeline = inherent_loop._build_tts_pipeline(  # noqa: SLF001
+            cast("Any", runtime),
+            cast("Any", SimpleNamespace()),
+        )
+        assert pipeline is not None
+        assert isinstance(pipeline, expected)
+        assert pipeline.close()
+
+    streaming = {"enabled": True, "streaming_output": {"enabled": True}}
+    legacy = {"enabled": False}
+    with (
+        patch.object(voice_tts, "_open_output_stream", return_value=_FakeOutputStream()),
+        patch.object(voice_tts, "AudioStreamPlayer", _recording_player),
+    ):
+        _build({**streaming, "output_device": "BlackHole 16ch"}, voice_media.StreamingTTSPipeline)
+        _build({**legacy, "output_device": "BlackHole 16ch"}, voice_tts.TTSPipeline)
+        assert seen == ["BlackHole 16ch", "BlackHole 16ch"]
+        seen.clear()
+        _build(dict(streaming), voice_media.StreamingTTSPipeline)
+        _build(dict(legacy), voice_tts.TTSPipeline)
+        assert seen == [None, None]
+    conn.close()

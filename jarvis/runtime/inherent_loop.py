@@ -1813,6 +1813,10 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     provider = _new_provider()
     realtime_raw = runtime.config.get("realtime")
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
+    # Passed straight through to sd.OutputStream, which maps a name to a device
+    # index itself; an unresolvable name raises there and `start()` fails closed.
+    output_device_raw = realtime.get("output_device")
+    output_device = output_device_raw if isinstance(output_device_raw, str) else None
     streaming_raw = realtime.get("streaming_output")
     streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
     streaming_requested = realtime.get("enabled") is True and streaming.get("enabled") is True
@@ -1838,6 +1842,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             ring_seconds=2.0,
             lazy_open=True,
             generation_safe=True,
+            device=output_device,
         )
         try:
             return voice_media.StreamingTTSPipeline(
@@ -1889,6 +1894,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             # 10 s timeout, dropping the tail of any response > ~10 s.
             ring_seconds=30.0,
             lazy_open=False,
+            device=output_device,
         )
         return voice_tts.TTSPipeline(
             provider=provider,
