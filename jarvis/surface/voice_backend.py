@@ -17,6 +17,7 @@ from __future__ import annotations
 import enum
 import threading
 import time
+import wave
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -24,6 +25,7 @@ from jarvis.shared.realtime_trace import record_realtime_trace
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
 
 class BackendStartStatus(enum.Enum):
@@ -1093,6 +1095,219 @@ class SoundDeviceDuplexBackend:
         return self._callback_deadline_misses
 
 
+_REPLAY_SAMPLE_RATE_HZ = 16_000
+
+
+class FileReplayBackend:
+    """Replay one 16 kHz mono PCM16 WAV through the real ingress at real-time pace.
+
+    Seed of the ADR-0006 §10.3 Tier 2 corpus runner. It never touches the
+    default microphone or its owner registry, and after EOF it keeps
+    emitting silence like a still-open device until stopped (or until
+    ``tail_silence_s`` elapses when given).
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        frame_samples: int = 512,
+        tail_silence_s: float | None = None,
+    ) -> None:
+        """Validate the WAV layout now so a bad fixture fails before any start."""
+        with wave.open(str(path), "rb") as reader:
+            if reader.getframerate() != _REPLAY_SAMPLE_RATE_HZ:
+                msg = f"replay WAV sample rate must be 16000 Hz: {reader.getframerate()}"
+                raise ValueError(msg)
+            if reader.getnchannels() != 1:
+                msg = f"replay WAV must be mono: channels={reader.getnchannels()}"
+                raise ValueError(msg)
+            if reader.getsampwidth() != 2:  # noqa: PLR2004 - PCM16 byte width
+                msg = f"replay WAV must be 16-bit PCM: sample width={reader.getsampwidth()}"
+                raise ValueError(msg)
+            self._pcm = reader.readframes(reader.getnframes())
+        self._path = path
+        self._frame_samples = frame_samples
+        self._tail_silence_s = tail_silence_s
+        self._format = AudioInputFormat(
+            sample_rate_hz=_REPLAY_SAMPLE_RATE_HZ,
+            channels=1,
+            callback_frame_samples=frame_samples,
+        )
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._epoch: int | None = None
+        self._attempt_id: str | None = None
+        self._version = 0
+        self.frames_emitted = 0
+        self.eof_reached = False
+
+    def start(
+        self,
+        *,
+        stream_epoch: int,
+        attempt_id: str,
+        frame_sink: InputFrameSink,
+        render_source: RenderSource | None = None,
+        timeout_s: float | None = None,
+    ) -> BackendStartResult:
+        """Start the paced replay thread for one epoch."""
+        del render_source, timeout_s
+        with self._lock:
+            if self._thread is not None:
+                return BackendStartResult(
+                    status=BackendStartStatus.OWNER_BUSY,
+                    stream_epoch=stream_epoch,
+                    profile=None,
+                    reason="replay_already_running",
+                    attempt_id=attempt_id,
+                )
+            self._epoch = stream_epoch
+            self._attempt_id = attempt_id
+            self._version += 1
+            self._stop.clear()
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(stream_epoch, attempt_id, frame_sink),
+                name="jarvis-file-replay",
+                daemon=False,
+            )
+            self._thread.start()
+        return BackendStartResult(
+            status=BackendStartStatus.STARTED,
+            stream_epoch=stream_epoch,
+            profile=InputDeviceProfile(
+                device_uid=f"file-replay:{self._path.name}",
+                device_name=self._path.name,
+                backend="file_replay",
+                input_format=self._format,
+            ),
+            attempt_id=attempt_id,
+        )
+
+    def _run(self, stream_epoch: int, attempt_id: str, frame_sink: InputFrameSink) -> None:
+        frame_bytes = self._frame_samples * 2
+        period_s = self._frame_samples / _REPLAY_SAMPLE_RATE_HZ
+        silence = bytes(frame_bytes)
+        deadline = time.monotonic()
+        offset = 0
+        tail_deadline: float | None = None
+        while not self._stop.is_set():
+            if offset < len(self._pcm):
+                frame = self._pcm[offset : offset + frame_bytes]
+                offset += frame_bytes
+                if len(frame) < frame_bytes:
+                    frame = frame + bytes(frame_bytes - len(frame))
+            else:
+                if not self.eof_reached:
+                    self.eof_reached = True
+                    if self._tail_silence_s is not None:
+                        tail_deadline = time.monotonic() + self._tail_silence_s
+                if tail_deadline is not None and time.monotonic() >= tail_deadline:
+                    return
+                frame = silence
+            deadline += period_s
+            time.sleep(max(0.0, deadline - time.monotonic()))
+            if self._stop.is_set():
+                return
+            frame_sink(
+                stream_epoch=stream_epoch,
+                attempt_id=attempt_id,
+                callback_buffer=frame,
+                frame_count=self._frame_samples,
+                adc_time_s=None,
+                captured_monotonic_ns=time.monotonic_ns(),
+                discontinuity_before=False,
+            )
+            self.frames_emitted += 1
+
+    def stop(
+        self,
+        *,
+        stream_epoch: int,
+        attempt_id: str,
+        timeout_s: float | None = None,
+    ) -> BackendStopResult:
+        """Stop exactly the running epoch and join the replay thread."""
+        with self._lock:
+            thread = self._thread
+            if thread is None:
+                return BackendStopResult(
+                    status=BackendStopStatus.ALREADY_CLOSED,
+                    stream_epoch=stream_epoch,
+                    attempt_id=attempt_id,
+                )
+            if stream_epoch != self._epoch or attempt_id != self._attempt_id:
+                return BackendStopResult(
+                    status=BackendStopStatus.STALE_ATTEMPT,
+                    stream_epoch=stream_epoch,
+                    reason="epoch_or_attempt_mismatch",
+                    attempt_id=attempt_id,
+                )
+            self._stop.set()
+        thread.join(timeout=timeout_s)
+        alive = thread.is_alive()
+        with self._lock:
+            if not alive:
+                self._thread = None
+                self._epoch = None
+                self._attempt_id = None
+                self._version += 1
+        return BackendStopResult(
+            status=(BackendStopStatus.CLOSE_UNCERTAIN if alive else BackendStopStatus.CLOSED),
+            stream_epoch=stream_epoch,
+            reason="replay_thread_join_timeout" if alive else None,
+            helper_thread_alive=alive,
+            attempt_id=attempt_id,
+        )
+
+    def poll_fault(self, *, stream_epoch: int) -> BackendFault | None:
+        """A file never faults."""
+        del stream_epoch
+        return None
+
+    def current_device_uid(self) -> str | None:
+        """Identify the replayed file, never a physical device."""
+        return f"file-replay:{self._path.name}"
+
+    def input_format(self) -> AudioInputFormat:
+        """Return the fixed canonical replay layout."""
+        return self._format
+
+    def output_format(self) -> None:
+        """Replay owns no output."""
+        return
+
+    def capabilities(self) -> BackendCapabilities:
+        """Replay owns nothing physical and has no reliable clocks."""
+        return BackendCapabilities(
+            owns_default_input=False,
+            owns_render_clock=False,
+            aec=False,
+            natural_barge_in=False,
+            reliable_adc_time=False,
+            reliable_dac_time=False,
+        )
+
+    def ownership_snapshot(self) -> BackendOwnershipSnapshot:
+        """Report the replay thread as the only owner that can exist."""
+        with self._lock:
+            thread = self._thread
+            return BackendOwnershipSnapshot(
+                state=(
+                    BackendLifecycleState.OPEN
+                    if thread is not None
+                    else BackendLifecycleState.CLOSED
+                ),
+                stream_epoch=self._epoch,
+                attempt_id=self._attempt_id,
+                version=self._version,
+                physical_owner_possible=False,
+                helper_thread_alive=thread is not None and thread.is_alive(),
+            )
+
+
 __all__ = [
     "AudioDuplexBackend",
     "AudioInputFormat",
@@ -1104,6 +1319,7 @@ __all__ = [
     "BackendStartStatus",
     "BackendStopResult",
     "BackendStopStatus",
+    "FileReplayBackend",
     "InputClockMapping",
     "InputDeviceProfile",
     "InputFrameSink",

@@ -10,6 +10,8 @@ Approved means the design is approved for implementation; implementation complet
 
 **Naming amendment (ADR-0014):** this ADR's original `generation_id` name means only an L5 playback lease and is renamed everywhere on the v2 wire, shared contracts, registries, and new event payloads to `playback_generation_id`. A ResponseRun itself is keyed only by `response_id`; document-only responses have no playback generation. Any unmodified prose occurrence of “generation” below describes provider work, not a second ResponseRun identity.
 
+**D3 amendment (2026-09-05):** the built Input FSM slice is recorded under D3; D7 is unchanged; §4.1 `EndpointDecision` gains the `resume` verdict and `speech_resumed` reason.
+
 ---
 
 ## 1. Context
@@ -183,7 +185,7 @@ recovering ── retry budget exhausted ──> device_unavailable
 
 `dormant` does not necessarily mean the device is closed: the shared ingress may remain open for wake-word detection while utterance recognition is not armed.
 
-The Input FSM did not ship as one enum. Device lifecycle is `BackendLifecycleState` (`jarvis/surface/voice_backend.py`: `closed | opening | open | closing | uncertain`); the capability surface is `InputCapabilityState` (`jarvis/surface/voice_audio.py`: `stopped | available | suspended | wake_unavailable | output_unavailable | local_capture_unavailable | close_uncertain`); `VadEvent` (`speech_active | silence`) is a per-frame label, not an utterance state. The `endpoint_pending`/`finalizing_asr` hold-and-commit semantics are D7's endpointing algorithm and are unbuilt; the diagram above records the target.
+The Input FSM did not ship as one enum. Device lifecycle is `BackendLifecycleState` (`jarvis/surface/voice_backend.py`: `closed | opening | open | closing | uncertain`); the capability surface is `InputCapabilityState` (`jarvis/surface/voice_audio.py`: `stopped | available | suspended | wake_unavailable | output_unavailable | local_capture_unavailable | close_uncertain`); `VadEvent` (`speech_active | silence`) is a per-frame label, not an utterance state. The `endpoint_pending`/`finalizing_asr` hold-and-commit semantics are D7's endpointing algorithm; the built slice (goal endpointing-partial-asr, 2026-09-05) realises them as the assembler's `EndpointPhase` enum: `speech_active ⇄ endpoint_pending → finalizing_asr → committed` for the current utterance, speech resuming during `endpoint_pending` returns to `speech_active`, and `committed` is set only after the normalized `utterance.received` commit. `listening`, `dormant`, `device_unavailable`, and `recovering` remain expressed by the ingress capability states, not by that enum.
 
 `AudioDuplexBackend` owns physical open/read/callback/permission/device-loss failures. The runtime coordinator (D1) owns the cross-layer capability transition and user-visible degradation. Recovery uses bounded exponential backoff and always creates a new `stream_epoch`; subscribers never resume an old epoch. `InputCapabilityState` distinguishes `wake_unavailable` (PTT upload may still work) from `local_capture_unavailable` (text and remote/upload input may work); `text_only` did not ship as a value.
 
@@ -510,8 +512,8 @@ PartialTranscript
 
 EndpointDecision
   utterance_id: str
-  verdict: hold | commit
-  reason: acoustic_pause | semantic_complete | max_hold | ptt_release | explicit_end
+  verdict: hold | resume | commit
+  reason: acoustic_pause | semantic_complete | max_hold | speech_resumed | ptt_release | explicit_end
   confidence: float | None
 
 BargeInSignal

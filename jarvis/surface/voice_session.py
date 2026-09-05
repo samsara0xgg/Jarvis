@@ -15,25 +15,42 @@ from __future__ import annotations
 
 import enum
 import logging
+import os
 import queue
 import secrets
 import threading
 import time
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
-from jarvis.surface import voice_audio, voice_pipeline
+from jarvis.surface import voice_asr, voice_audio, voice_pipeline
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable
 
     from jarvis.shared import Event
 
 LOGGER = logging.getLogger("jarvis.surface.voice_session")
 
 _WAKE_WINDOW_SAMPLES = 1280
+# ADR-0006 D7 budget: this many consecutive coalesced (dropped) snapshots
+# means partial decode cannot keep pace; the utterance falls back to
+# acoustic endpointing instead of building a backlog.
+_PARTIAL_DROP_DEGRADE_THRESHOLD = 3
+
+
+@dataclass(frozen=True)
+class PartialAsrConfig:
+    """ADR-0006 D7 rolling-partial and semantic-hold bounds; off by default."""
+
+    enabled: bool = False
+    interval_ms: int = 240
+    candidate_ms: int = 320
+    max_hold_ms: int = 900
+    post_roll_ms: int = 200
 
 
 @dataclass(frozen=True)
@@ -52,6 +69,36 @@ class RealtimeInputSessionConfig:
     wake_failure_threshold: int = 3
     worker_poll_s: float = 0.005
     shutdown_timeout_s: float = 3.0
+    partial_asr: PartialAsrConfig = PartialAsrConfig()
+
+
+class EndpointPhase(enum.Enum):
+    """ADR-0006 D3 Input FSM slice owned by the assembler for one utterance."""
+
+    SPEECH_ACTIVE = "speech_active"
+    ENDPOINT_PENDING = "endpoint_pending"
+    FINALIZING_ASR = "finalizing_asr"
+    COMMITTED = "committed"
+
+
+@dataclass(frozen=True)
+class PartialSnapshot:
+    """Bounded utterance-so-far audio handed to the partial decode lane."""
+
+    utterance_id: str
+    revision: int
+    audio_bytes: bytes
+
+
+@dataclass(frozen=True)
+class PartialRevision:
+    """One ephemeral partial hypothesis; never persisted, never sent to L3."""
+
+    utterance_id: str
+    revision: int
+    text: str
+    decode_ms: float
+    failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -144,6 +191,17 @@ class VoiceSessionMetrics:
     diagnostic_last_cursor: int | None
     wake_prediction_failures: int
     armed_no_speech_timeouts: int
+    partial_decodes: int = 0
+    partial_snapshot_drops: int = 0
+    partial_late_revisions_discarded: int = 0
+
+
+class _PartialDecoderPort(Protocol):
+    """Bounded-snapshot decode entry on the sole authoritative recognizer."""
+
+    def partial_text(self, audio_bytes: bytes) -> str:
+        """Return an ephemeral partial hypothesis for one snapshot."""
+        ...
 
 
 class _WakeEnginePort(Protocol):
@@ -252,10 +310,91 @@ class WakeWindowFramer:
         return tuple(windows)
 
 
+class PartialAsrLane:
+    """Latest-only partial decode lane: one pending snapshot, one decode in flight."""
+
+    def __init__(self, decoder: _PartialDecoderPort) -> None:
+        """Bind the lane to the sole recognizer's partial entry."""
+        self._decoder = decoder
+        self._condition = threading.Condition()
+        self._pending: PartialSnapshot | None = None
+        self._latest: PartialRevision | None = None
+        self._cancelled_utterance_id = ""
+        self._consecutive_drops = 0
+        self.decodes = 0
+        self.drops = 0
+        self.late_revisions_discarded = 0
+
+    def submit(self, snapshot: PartialSnapshot) -> int:
+        """Replace any undecoded snapshot; return the consecutive drop count."""
+        with self._condition:
+            if self._pending is not None:
+                self._consecutive_drops += 1
+                self.drops += 1
+            else:
+                self._consecutive_drops = 0
+            self._pending = snapshot
+            self._condition.notify()
+            return self._consecutive_drops
+
+    def cancel(self, utterance_id: str) -> None:
+        """Endpoint commit: drop queued work and invalidate late revisions."""
+        with self._condition:
+            if self._pending is not None and self._pending.utterance_id == utterance_id:
+                self._pending = None
+            self._consecutive_drops = 0
+            if self._latest is not None and self._latest.utterance_id == utterance_id:
+                self._latest = None
+            self._cancelled_utterance_id = utterance_id
+
+    def run_once(self, *, timeout_s: float) -> bool:
+        """Decode the latest pending snapshot if any; return whether one ran."""
+        with self._condition:
+            if self._pending is None:
+                self._condition.wait(timeout=timeout_s)
+            snapshot = self._pending
+            self._pending = None
+        if snapshot is None:
+            return False
+        started = time.perf_counter()
+        text = ""
+        failed = False
+        try:
+            text = self._decoder.partial_text(snapshot.audio_bytes)
+        except Exception:  # noqa: BLE001 - a failed partial degrades, never kills the lane
+            failed = True
+            LOGGER.warning(
+                "partial decode failed utterance_id=%s revision=%s",
+                snapshot.utterance_id,
+                snapshot.revision,
+                exc_info=True,
+            )
+        decode_ms = (time.perf_counter() - started) * 1_000.0
+        with self._condition:
+            self.decodes += 1
+            if snapshot.utterance_id == self._cancelled_utterance_id:
+                self.late_revisions_discarded += 1
+                return True
+            self._latest = PartialRevision(
+                utterance_id=snapshot.utterance_id,
+                revision=snapshot.revision,
+                text=text,
+                decode_ms=decode_ms,
+                failed=failed,
+            )
+        return True
+
+    def take_revision(self) -> PartialRevision | None:
+        """Pop the newest unread revision."""
+        with self._condition:
+            revision, self._latest = self._latest, None
+            return revision
+
+
 class UtteranceAssembler:
     """Wake-armed VAD/pre-roll assembly with explicit gap failure."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - keyword-only composition boundary
         self,
         *,
         vad: voice_audio.SileroVad,
@@ -263,6 +402,7 @@ class UtteranceAssembler:
         sample_rate_hz: int,
         frame_samples: int,
         session_id: str,
+        lane: PartialAsrLane | None = None,
     ) -> None:
         """Create bounded idle/pre-roll/utterance storage around one VAD."""
         self._vad = vad
@@ -270,6 +410,20 @@ class UtteranceAssembler:
         self._sample_rate_hz = sample_rate_hz
         self._frame_samples = frame_samples
         self._session_id = session_id
+        self._lane = lane
+        self._partial = config.partial_asr
+        self._frame_ms = frame_samples * 1_000.0 / sample_rate_hz
+
+        def _frames(ms: int) -> int:
+            return max(1, int(ms * sample_rate_hz / 1_000 / frame_samples + 0.999))
+
+        self._interval_frames = _frames(self._partial.interval_ms)
+        self._candidate_frames = _frames(self._partial.candidate_ms)
+        self._max_hold_frames = _frames(self._partial.max_hold_ms)
+        self._post_roll_frames = _frames(self._partial.post_roll_ms)
+        self._acoustic_silence_frames = (
+            vad.endpoint_silence_frames if self._partial.enabled else 0
+        )
         pre_roll_frames = max(
             1,
             int(config.pre_roll_ms * sample_rate_hz / 1_000 / frame_samples + 0.999),
@@ -304,6 +458,44 @@ class UtteranceAssembler:
         self._audio_frames: list[bytes] = []
         self._start_cursor = 0
         self._voiced_frames = 0
+        self._consecutive_silence = 0
+        self._last_speech_index = -1
+        self._hold_frames = 0
+        self._frames_since_snapshot = 0
+        self._snapshot_count = 0
+        self._accepted_revision = 0
+        self._previous_partial: str | None = None
+        self._stable_prefix = ""
+        self._degraded = False
+        self._phase: EndpointPhase | None = None
+        self._phase_utterance_id = ""
+        # The commit thread marks COMMITTED while the capture thread may start
+        # the next utterance; the lock keeps that check-then-set atomic.
+        self._phase_lock = threading.Lock()
+
+    @property
+    def endpoint_phase(self) -> EndpointPhase | None:
+        """Return the D3 phase of the current or most recently finalized utterance."""
+        return self._phase
+
+    @property
+    def stable_prefix(self) -> str:
+        """Return the normalized prefix that survived two consecutive revisions."""
+        return self._stable_prefix
+
+    def _set_phase(self, phase: EndpointPhase | None, utterance_id: str) -> None:
+        with self._phase_lock:
+            self._phase = phase
+            self._phase_utterance_id = utterance_id
+
+    def mark_committed(self, utterance_id: str) -> None:
+        """Record the durable ``utterance.received`` commit for one utterance."""
+        with self._phase_lock:
+            if (
+                self._phase_utterance_id == utterance_id
+                and self._phase is EndpointPhase.FINALIZING_ASR
+            ):
+                self._phase = EndpointPhase.COMMITTED
 
     @property
     def active(self) -> bool:
@@ -429,17 +621,29 @@ class UtteranceAssembler:
             self._audio_frames = [item.pcm16_mono for item in self._speech_pre_roll]
             self._start_cursor = self._speech_pre_roll[0].sample_cursor
             self._speech_pre_roll.clear()
+            self._set_phase(EndpointPhase.SPEECH_ACTIVE, self._utterance_id)
         else:
             self._audio_frames.append(frame.pcm16_mono)
         if event is voice_audio.VadEvent.SPEECH_ACTIVE:
             self._voiced_frames += 1
         endpoint_reason: str | None = None
-        if self._voiced_frames >= self._min_voiced_frames and self._vad.empty():
+        if self._partial.enabled:
+            endpoint_reason = self._semantic_endpoint(
+                speech=event is voice_audio.VadEvent.SPEECH_ACTIVE,
+            )
+        elif self._voiced_frames >= self._min_voiced_frames and self._vad.empty():
             endpoint_reason = "acoustic_pause"
         elif len(self._audio_frames) >= self._max_frames:
             endpoint_reason = "max_duration"
         if endpoint_reason is None:
             return None
+        return self._commit(frame, endpoint_reason)
+
+    def _commit(
+        self,
+        frame: voice_audio.CanonicalAudioFrame,
+        endpoint_reason: str,
+    ) -> CapturedUtterance:
         record_realtime_trace(
             "endpoint_candidate",
             session_id=self._session_id,
@@ -450,19 +654,164 @@ class UtteranceAssembler:
             endpoint_reason=endpoint_reason,
             measurement_boundary="software_correlated_vad_assembler",
         )
-        audio_bytes = b"".join(self._audio_frames)
+        frames = self._audio_frames
+        end_sample_cursor = frame.sample_cursor + frame.frame_count
+        if (
+            self._partial.enabled
+            and endpoint_reason != "max_duration"
+            and self._last_speech_index >= 0
+        ):
+            # Post-roll: keep a bounded silence tail after the last speech
+            # frame instead of the whole hold window.
+            frames = frames[: self._last_speech_index + 1 + self._post_roll_frames]
+            end_sample_cursor = self._start_cursor + len(frames) * self._frame_samples
         utterance = CapturedUtterance(
             session_id=self._session_id,
             utterance_id=self._utterance_id,
             turn_id=self._turn_id,
             stream_epoch=frame.stream_epoch,
             start_sample_cursor=self._start_cursor,
-            end_sample_cursor=frame.sample_cursor + frame.frame_count,
+            end_sample_cursor=end_sample_cursor,
             endpoint_reason=endpoint_reason,
-            audio_bytes=audio_bytes,
+            audio_bytes=b"".join(frames),
         )
         self.reset_to_idle()
+        self._set_phase(EndpointPhase.FINALIZING_ASR, utterance.utterance_id)
         return utterance
+
+    def _semantic_endpoint(self, *, speech: bool) -> str | None:
+        """ADR-0006 D7: acoustic candidate opens a hold; a stable prefix or bound closes it."""
+        if speech:
+            self._consecutive_silence = 0
+            self._last_speech_index = len(self._audio_frames) - 1
+        else:
+            self._consecutive_silence += 1
+        if not self._degraded:
+            self._pull_revisions()
+        if len(self._audio_frames) >= self._max_frames:
+            return "max_duration"
+        self._advance_hold(speech=speech)
+        if self._phase is not EndpointPhase.ENDPOINT_PENDING:
+            return None
+        return self._hold_verdict()
+
+    def _advance_hold(self, *, speech: bool) -> None:
+        if self._phase is EndpointPhase.ENDPOINT_PENDING:
+            if speech:
+                self._decide("resume", "speech_resumed")
+                self._set_phase(EndpointPhase.SPEECH_ACTIVE, self._utterance_id)
+            else:
+                self._hold_frames += 1
+        # D7 step 1 opens the hold on the pause alone; false onsets are rejected
+        # downstream by the final-ASR empty filter. Gating the hold on
+        # min_voiced merged a short first sentence into the next one.
+        hold_opens = (
+            self._phase is EndpointPhase.SPEECH_ACTIVE
+            and self._consecutive_silence >= self._candidate_frames
+        )
+        if hold_opens:
+            self._set_phase(EndpointPhase.ENDPOINT_PENDING, self._utterance_id)
+            self._hold_frames = 0
+            self._decide("hold", "acoustic_pause")
+        if not self._degraded:
+            self._frames_since_snapshot += 1
+            if hold_opens or self._frames_since_snapshot >= self._interval_frames:
+                self._submit_snapshot()
+
+    def _hold_verdict(self) -> str | None:
+        if self._degraded:
+            if self._consecutive_silence >= self._acoustic_silence_frames:
+                self._decide("commit", "acoustic_pause")
+                return "acoustic_pause"
+            return None
+        # The stable prefix lags the latest hypothesis by one revision, so a
+        # dangling connective can hide in the unstable suffix; judge
+        # completeness only once the hypothesis has converged onto the prefix.
+        if self._previous_partial == self._stable_prefix and voice_asr.looks_complete(
+            self._stable_prefix,
+        ):
+            self._decide("commit", "semantic_complete")
+            return "semantic_complete"
+        if self._hold_frames >= self._max_hold_frames:
+            self._decide("commit", "max_hold")
+            return "max_hold"
+        return None
+
+    def _decide(self, verdict: str, reason: str) -> None:
+        record_realtime_trace(
+            "endpoint_decision",
+            session_id=self._session_id,
+            utterance_id=self._utterance_id,
+            turn_id=self._turn_id,
+            verdict=verdict,
+            reason=reason,
+            held_ms=round(self._hold_frames * self._frame_ms, 3),
+            stable_prefix_len=len(self._stable_prefix),
+        )
+
+    def _submit_snapshot(self) -> None:
+        if self._lane is None:
+            return
+        self._frames_since_snapshot = 0
+        self._snapshot_count += 1
+        # ponytail: whole-utterance snapshot, bounded by max_utterance_s and the
+        # over-budget degrade (measured ~15 ms decode per audio second, so
+        # utterances beyond ~15 s fall back to acoustic endpointing); upgrade
+        # path is a suffix-anchored rolling window.
+        drops = self._lane.submit(
+            PartialSnapshot(
+                utterance_id=self._utterance_id,
+                revision=self._snapshot_count,
+                audio_bytes=b"".join(self._audio_frames),
+            ),
+        )
+        if drops >= _PARTIAL_DROP_DEGRADE_THRESHOLD:
+            self._degrade("coalescing_queue_drops", consecutive_drops=drops)
+
+    def _pull_revisions(self) -> None:
+        if self._lane is None:
+            return
+        revision = self._lane.take_revision()
+        if (
+            revision is None
+            or revision.utterance_id != self._utterance_id
+            or revision.revision <= self._accepted_revision
+        ):
+            return
+        self._accepted_revision = revision.revision
+        if revision.failed:
+            self._degrade("partial_decode_failed", decode_ms=round(revision.decode_ms, 3))
+            return
+        normalized = voice_asr.normalize_partial_text(revision.text)
+        if self._previous_partial is not None:
+            common = os.path.commonprefix([self._previous_partial, normalized])
+            if len(common) >= len(self._stable_prefix):
+                self._stable_prefix = common
+        self._previous_partial = normalized
+        record_realtime_trace(
+            "asr_partial",
+            session_id=self._session_id,
+            utterance_id=self._utterance_id,
+            turn_id=self._turn_id,
+            revision=revision.revision,
+            stable_prefix_len=len(self._stable_prefix),
+            decode_ms=round(revision.decode_ms, 3),
+        )
+        if revision.decode_ms > self._partial.interval_ms:
+            self._degrade("partial_decode_over_budget", decode_ms=round(revision.decode_ms, 3))
+
+    def _degrade(self, reason: str, **attributes: float) -> None:
+        self._degraded = True
+        if self._lane is not None:
+            self._lane.cancel(self._utterance_id)
+        record_realtime_trace(
+            "partial_asr_degraded",
+            session_id=self._session_id,
+            utterance_id=self._utterance_id,
+            turn_id=self._turn_id,
+            reason=reason,
+            **attributes,
+        )
 
     def reset_to_idle(self) -> None:
         """Clear every utterance-local mutable field."""
@@ -477,6 +826,16 @@ class UtteranceAssembler:
         self._audio_frames.clear()
         self._speech_pre_roll.clear()
         self._voiced_frames = 0
+        self._consecutive_silence = 0
+        self._last_speech_index = -1
+        self._hold_frames = 0
+        self._frames_since_snapshot = 0
+        self._snapshot_count = 0
+        self._accepted_revision = 0
+        self._previous_partial = None
+        self._stable_prefix = ""
+        self._degraded = False
+        self._set_phase(None, "")
 
 
 class DuplexVoiceSession:
@@ -503,6 +862,12 @@ class DuplexVoiceSession:
         self._wake_threshold = wake_threshold
         self._config = config
         self._session_id = "S" + secrets.token_hex(8)
+        self._partial_lane: PartialAsrLane | None = None
+        if config.partial_asr.enabled:
+            if not callable(getattr(pipeline, "partial_text", None)):
+                msg = "partial_asr.enabled requires a pipeline exposing partial_text()"
+                raise TypeError(msg)
+            self._partial_lane = PartialAsrLane(pipeline)  # type: ignore[arg-type]
         self._wake_subscription = ingress.subscribe(
             name="wake",
             purpose=voice_audio.SubscriberPurpose.WAKE,
@@ -524,6 +889,7 @@ class DuplexVoiceSession:
             sample_rate_hz=16_000,
             frame_samples=voice_audio.SILERO_CHUNK_SAMPLES,
             session_id=self._session_id,
+            lane=self._partial_lane,
         )
         self._detections: queue.Queue[WakeDetection] = queue.Queue(
             maxsize=config.detection_queue_capacity,
@@ -586,6 +952,15 @@ class DuplexVoiceSession:
                 daemon=False,
             ),
         )
+        if self._partial_lane is not None:
+            self._threads = (
+                *self._threads,
+                threading.Thread(
+                    target=self._partial_loop,
+                    name="jarvis-partial-asr",
+                    daemon=False,
+                ),
+            )
         self._started_threads.clear()
         try:
             for thread in self._threads:
@@ -742,6 +1117,10 @@ class DuplexVoiceSession:
         self,
         outcome: CapturedUtterance | UtteranceCaptureFailure | WakeArmExpired,
     ) -> None:
+        if self._partial_lane is not None and not isinstance(outcome, WakeArmExpired):
+            # D7: the endpoint commit (or capture failure) cancels queued
+            # partial work before final ASR can be enqueued.
+            self._partial_lane.cancel(outcome.utterance_id)
         self._capture_subscription.set_active_utterance(active=False)
         if isinstance(outcome, WakeArmExpired):
             self._armed_no_speech_timeouts += 1
@@ -832,6 +1211,7 @@ class DuplexVoiceSession:
                         utterance_id=utterance.utterance_id,
                         endpoint_reason=utterance.endpoint_reason,
                     )
+                self._assembler.mark_committed(utterance.utterance_id)
             except voice_pipeline.VoicePipelineEmptyError:
                 LOGGER.info("realtime wake: empty utterance turn_id=%s", utterance.turn_id)
             except voice_pipeline.VoiceInputBusyError:
@@ -842,6 +1222,16 @@ class DuplexVoiceSession:
                 self._broadcast("error", turn_id=utterance.turn_id, reason="asr_error")
             finally:
                 self._commits.task_done()
+
+    def _partial_loop(self) -> None:
+        lane = self._partial_lane
+        if lane is None:
+            return
+        while not self._stop.is_set():
+            try:
+                lane.run_once(timeout_s=self._config.worker_poll_s)
+            except Exception:
+                LOGGER.exception("realtime wake: partial decode failed")
 
     def _diagnostic_loop(self) -> None:
         while not self._stop.is_set():
@@ -863,6 +1253,7 @@ class DuplexVoiceSession:
 
     def metrics(self) -> VoiceSessionMetrics:
         """Return raw counters for deterministic/live acceptance reports."""
+        lane = self._partial_lane
         return VoiceSessionMetrics(
             wake_windows=self._wake_windows,
             wake_detections=self._wake_detections,
@@ -875,6 +1266,11 @@ class DuplexVoiceSession:
             diagnostic_last_cursor=self._diagnostic_last_cursor,
             wake_prediction_failures=self._wake_prediction_failures,
             armed_no_speech_timeouts=self._armed_no_speech_timeouts,
+            partial_decodes=lane.decodes if lane is not None else 0,
+            partial_snapshot_drops=lane.drops if lane is not None else 0,
+            partial_late_revisions_discarded=(
+                lane.late_revisions_discarded if lane is not None else 0
+            ),
         )
 
     @property
@@ -976,12 +1372,49 @@ def realtime_input_session_config_from_mapping(
             "session_shutdown_timeout_s",
             defaults.shutdown_timeout_s,
         ),
+        partial_asr=_partial_asr_config_from_mapping(values.get("partial_asr")),
+    )
+
+
+def _partial_asr_config_from_mapping(raw: object) -> PartialAsrConfig:
+    """Parse the ADR-0006 D7 ``partial_asr`` block; absent means off."""
+    if raw is None:
+        return PartialAsrConfig()
+    if not isinstance(raw, Mapping):
+        msg = "realtime.single_audio_ingress.partial_asr must be a mapping"
+        raise ValueError(msg)  # noqa: TRY004 - runtime downgrades on ValueError
+    defaults = PartialAsrConfig()
+    enabled = raw.get("enabled", defaults.enabled)
+    if not isinstance(enabled, bool):
+        msg = "realtime.single_audio_ingress.partial_asr.enabled must be a boolean"
+        raise ValueError(msg)  # noqa: TRY004 - runtime downgrades on ValueError
+
+    def _positive_int(key: str, fallback: int) -> int:
+        value = raw.get(key)
+        if value is None:
+            return fallback
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            msg = f"realtime.single_audio_ingress.partial_asr.{key} must be a positive integer"
+            raise ValueError(msg)
+        return value
+
+    return PartialAsrConfig(
+        enabled=enabled,
+        interval_ms=_positive_int("interval_ms", defaults.interval_ms),
+        candidate_ms=_positive_int("candidate_ms", defaults.candidate_ms),
+        max_hold_ms=_positive_int("max_hold_ms", defaults.max_hold_ms),
+        post_roll_ms=_positive_int("post_roll_ms", defaults.post_roll_ms),
     )
 
 
 __all__ = [
     "CapturedUtterance",
     "DuplexVoiceSession",
+    "EndpointPhase",
+    "PartialAsrConfig",
+    "PartialAsrLane",
+    "PartialRevision",
+    "PartialSnapshot",
     "RealtimeInputSessionConfig",
     "UtteranceAssembler",
     "UtteranceCaptureFailure",
