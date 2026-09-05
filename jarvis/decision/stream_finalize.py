@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
     from jarvis.decision.response_run import ResponseEmissionPolicy
     from jarvis.decision.stream_risk import ResponseRiskContext
+    from jarvis.shared.stream_emission import SegmentRisk
 
 type StreamFinalizationReason = Literal[
     "suffix_rejected",
@@ -36,6 +37,7 @@ class StreamFinalizationFailure:
     reason: StreamFinalizationReason
     committed_prefix_hash: str
     gate_reasons: tuple[str, ...]
+    suffix_risk: SegmentRisk | None = None
 
 
 def finalize_stream(  # noqa: PLR0913 - explicit immutable finalizer inputs
@@ -85,6 +87,7 @@ def finalize_stream(  # noqa: PLR0913 - explicit immutable finalizer inputs
                 "suffix_rejected",
                 durable.prefix_hash,
                 (*result.reasons, "routine_ceiling_not_met"),
+                suffix_risk=result.risk,
             )
     text = committed_prefix + uncommitted_suffix
     return ResponsePlan(

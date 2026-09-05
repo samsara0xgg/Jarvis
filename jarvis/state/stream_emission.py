@@ -38,7 +38,13 @@ class SegmentCommit:
 
 @dataclass(frozen=True)
 class CommittedPrefix:
-    """The spoken prefix of one response, folded from its durable chunk chain."""
+    """The spoken prefix of one response, folded from its durable chunk chain.
+
+    ``next_segment_sequence`` counts exposed chunks, so it is the sequence the
+    next ``surface.response_chunk`` must carry. The gate chain may already be
+    one longer (a permit whose chunk never committed); that permit is replayed
+    or abandoned by the caller, never counted as spoken.
+    """
 
     response_id: str
     text: str

@@ -11,7 +11,7 @@ import pytest
 
 from jarvis.decision.gates import ResponsePlan
 from jarvis.decision.llm_stream import LLMResponseCompleted, LLMTextDelta
-from jarvis.decision.response_run import start_response_run
+from jarvis.decision.response_run import ResponseTerminalizer, start_response_run
 from jarvis.decision.stream_finalize import StreamFinalizationFailure, finalize_stream
 from jarvis.decision.stream_gate import routine_stream_policy
 from jarvis.decision.stream_risk import SegmentRiskClassifier
@@ -93,10 +93,19 @@ def test_restart_reconstructs_prefix_from_event_log_equal_to_memory(tmp_path: Pa
         assert dangling.permit is not None
     with contextlib.closing(open_event_log(tmp_path / "events.db")) as restarted:
         durable = committed_text_prefix(restarted, run.run.response_id)
-    assert durable.text == prefix
-    assert durable.next_segment_sequence == len(_SEGMENTS)
-    assert durable.policy_hash == run.policy.policy_hash
-    assert durable.prefix_hash == hashlib.sha256(prefix.encode()).hexdigest()
+        assert durable.text == prefix
+        assert durable.next_segment_sequence == len(_SEGMENTS)
+        assert durable.policy_hash == run.policy.policy_hash
+        assert durable.prefix_hash == _sha256(prefix)
+        cancelled = ResponseTerminalizer(lambda: restarted, close_after=False).cancel(
+            run.run.facts,
+            reason="daemon_restart",
+            cancel_scope="generation",
+            committed_prefix_hash=durable.prefix_hash,
+        )
+        assert isinstance(cancelled, TerminalCommitted)
+        assert cancelled.event.type == "response.cancelled"
+        assert cancelled.event.payload["committed_prefix_hash"] == _sha256(prefix)
 
 
 def test_chain_finalizes_byte_for_byte_and_completes_with_returned_hash(tmp_path: Path) -> None:
@@ -146,6 +155,7 @@ def test_rejected_suffix_leaves_prefix_and_a_second_suffix_finalizes(tmp_path: P
             "action_evidence_or_progress",
             "routine_ceiling_not_met",
         )
+        assert failure.suffix_risk == "consequential_claim"
         assert tuple(iter_events(conn)) == before
         assert committed_text_prefix(conn, run.run.response_id).text == prefix
         plan = finalize_stream(
