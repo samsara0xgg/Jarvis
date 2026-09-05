@@ -3054,4 +3054,9 @@ def test_realtime_output_device_reaches_both_builder_player_sites(
         _build(dict(streaming), voice_media.StreamingTTSPipeline)
         _build(dict(legacy), voice_tts.TTSPipeline)
         assert seen == [None, None]
+        seen.clear()
+        # sounddevice also takes an integer index. Nothing here validates the
+        # value, so a mistyped key cannot degrade to the system default.
+        _build({**legacy, "output_device": 3}, voice_tts.TTSPipeline)
+        assert seen == [3]
     conn.close()

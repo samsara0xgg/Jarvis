@@ -1814,9 +1814,10 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     realtime_raw = runtime.config.get("realtime")
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
     # Passed straight through to sd.OutputStream, which maps a name to a device
-    # index itself; an unresolvable name raises there and `start()` fails closed.
-    output_device_raw = realtime.get("output_device")
-    output_device = output_device_raw if isinstance(output_device_raw, str) else None
+    # index itself; an unresolvable value raises there and `start()` fails closed.
+    # Deliberately unvalidated: a type guard here would turn a mistyped key into
+    # a silent fall back to the system default, out of the owner's speakers.
+    output_device = realtime.get("output_device")
     streaming_raw = realtime.get("streaming_output")
     streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
     streaming_requested = realtime.get("enabled") is True and streaming.get("enabled") is True

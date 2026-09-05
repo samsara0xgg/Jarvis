@@ -789,8 +789,12 @@ def test_a_configured_device_that_will_not_resolve_fails_closed_by_name() -> Non
         voice_tts,
         "_open_output_stream",
         side_effect=ValueError("no output device matching 'No Such Device'"),
-    ):
+    ) as opener:
         named = voice_tts.AudioStreamPlayer(lazy_open=True, device="No Such Device").start()
+        # Exactly one open attempt, carrying the configured device: a retry with
+        # device=None would be the fallback this asserts does not happen.
+        assert opener.call_count == 1
+        assert opener.call_args.kwargs["device"] == "No Such Device"
         default = voice_tts.AudioStreamPlayer(lazy_open=True).start()
 
     assert named.status == "failed_closed"
