@@ -94,6 +94,7 @@ async def _three_inputs(  # noqa: C901, PLR0912, PLR0915 — complete barrier sc
             plan = None
         return SimpleNamespace(
             response_plan=plan, events_emitted=(), attention_channel="voice_notify",
+            stream_failure=None, route=None, last_gate_event_uid=None,
         )
 
     monkeypatch.setattr(runtime_module, "decide", decide)

@@ -291,6 +291,9 @@ def _final_result(plan: ResponsePlan | None = None) -> Callable[..., Any]:
         return SimpleNamespace(
             response_plan=plan if plan is not None else _plan(),
             events_emitted=(),
+            stream_failure=None,
+            route=None,
+            last_gate_event_uid=None,
             turn_id=None,
             attention_channel="voice_notify",
         )
@@ -663,6 +666,9 @@ def test_cancel_before_first_llm_call_produces_cancelled_and_no_surface_rows(
         return SimpleNamespace(
             response_plan=_plan(),
             events_emitted=(),
+            stream_failure=None,
+            route=None,
+            last_gate_event_uid=None,
             turn_id=None,
             attention_channel="voice_notify",
         )
@@ -737,12 +743,18 @@ def test_cancel_during_action_wait_leaves_action_alive(
             return SimpleNamespace(
                 response_plan=None,
                 events_emitted=(),
+                stream_failure=None,
+                route=None,
+                last_gate_event_uid=None,
                 turn_id="T-action",
                 attention_channel="queue_review",
             )
         return SimpleNamespace(
             response_plan=_plan(),
             events_emitted=(),
+            stream_failure=None,
+            route=None,
+            last_gate_event_uid=None,
             turn_id="T-action",
             attention_channel="voice_notify",
         )

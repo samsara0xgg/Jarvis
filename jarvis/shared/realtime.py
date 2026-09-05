@@ -8,12 +8,11 @@ Those responsibilities remain with their numbered layers.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from jarvis.shared import Event
 
 LifecycleOwner = Literal["playback", "response", "action"]
@@ -84,13 +83,17 @@ class Wave4ResponseFlags:
     ResponseRun with an immutable per-run request client.
     ``independent_response_cancel`` additionally exposes the generation
     cancel seam. ``typed_conversation_history`` adds explicit heard/available
-    history to L3 prompts under the same lifecycle parent. All stay off in the
-    shipped configuration, preserving the complete legacy batch prompt.
+    history to L3 prompts under the same lifecycle parent.
+    ``routine_streaming`` (ADR-0008 Step 8, ``routine_streaming.enabled``)
+    streams permitted sentences of a pre-routed casual answer while the model
+    is still generating. All stay off in the shipped configuration,
+    preserving the complete legacy batch prompt.
     """
 
     response_run_lifecycle: bool = False
     independent_response_cancel: bool = False
     typed_conversation_history: bool = False
+    routine_streaming: bool = False
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object] | None) -> Wave4ResponseFlags:
@@ -100,10 +103,12 @@ class Wave4ResponseFlags:
         non-boolean truthy value never enables a lifecycle-sensitive path.
         """
         values = {} if raw is None else raw
+        routine = values.get("routine_streaming")
         return cls(
             response_run_lifecycle=values.get("response_run_lifecycle") is True,
             independent_response_cancel=values.get("independent_response_cancel") is True,
             typed_conversation_history=values.get("typed_conversation_history") is True,
+            routine_streaming=isinstance(routine, Mapping) and routine.get("enabled") is True,
         )
 
     @property
@@ -114,6 +119,7 @@ class Wave4ResponseFlags:
                 self.response_run_lifecycle,
                 self.independent_response_cancel,
                 self.typed_conversation_history,
+                self.routine_streaming,
             )
         )
 

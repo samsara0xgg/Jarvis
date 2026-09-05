@@ -18,10 +18,17 @@ from jarvis.decision.intent import tier_0_match
 from jarvis.decision.stream_risk import ResponseRiskContext, snapshot_content_hash
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractContextManager
     from pathlib import Path
 
+    from jarvis.decision.llm_stream import LLMStreamHandle, SyncTokenStream
     from jarvis.decision.packet import SituationPacket
+    from jarvis.decision.response_run import ResponseEmissionPolicy
     from jarvis.decision.tier0 import Tier0Table
+    from jarvis.shared import Event
+    from jarvis.shared.stream_emission import EmissionPermit
+    from jarvis.state.committed_event_bus import CommittedEventBus
 
 type Route = Literal["casual_or_explanatory", "action", "unknown"]
 """``casual_or_explanatory`` streams; ``action`` matched a tool cue; ``unknown`` buffers."""
@@ -144,3 +151,29 @@ def routine_risk_context(
         unresolved_references=False,
         history_status="complete",
     )
+
+
+@dataclass(frozen=True)
+class RoutineStreamRoute:
+    """What ``decide()`` needs to stream one pre-routed casual turn.
+
+    The runtime binds the two seams: ``open_stream`` turns the run's typed
+    handle into a synchronous iterator on the worker's own loop, and
+    ``emit_segment`` is L5's permitted-segment admission for this run.
+    ``segment_guard`` linearizes each gate+emit pair with the cancel path.
+    """
+
+    policy: ResponseEmissionPolicy
+    context: ResponseRiskContext
+    open_stream: Callable[[LLMStreamHandle], SyncTokenStream]
+    emit_segment: Callable[[EmissionPermit, str], Event]
+    segment_guard: Callable[[], AbstractContextManager[None]]
+    committed_event_bus: CommittedEventBus | None = None
+
+
+@dataclass(frozen=True)
+class StreamCorrection:
+    """A full-text run that continues a failed stream's exposed prefix."""
+
+    corrects_response_id: str
+    committed_prefix: str

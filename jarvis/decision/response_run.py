@@ -40,6 +40,7 @@ from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import emit_event
 from jarvis.state.lifecycle_terminal import terminalize_response
 from jarvis.state.response_runs import append_response_started, open_response_runs
+from jarvis.state.stream_emission import committed_text_prefix
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -515,6 +516,23 @@ class ResponseTerminalizer:
         )
         return outcome
 
+    def committed_prefix_hash(self, run: ResponseRun) -> str | None:
+        """Hash of what a routine stream already exposed; ``None`` for other runs.
+
+        Read on this terminalizer's own connection so the cancel path can name
+        the spoken prefix on ``response.cancelled`` without a second seam.
+        """
+        if run.emission_policy.emission_mode != "routine_stream":
+            return None
+        conn = self._connect()
+        try:
+            prefix = committed_text_prefix(conn, run.response_id)
+        finally:
+            if self._close_after:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.close()
+        return prefix.prefix_hash if prefix.next_segment_sequence else None
+
     def complete(
         self,
         facts: ResponseRunFacts,
@@ -714,12 +732,15 @@ def request_response_cancel(  # noqa: PLR0911 — policy, timeout, and CAS outco
         return CancelTimedOut(response_id=request.response_id)
     try:
         try:
+            # Under the admission lock no new segment can commit, so the
+            # prefix read here is exactly what the CAS below closes over.
             outcome = terminalizer.cancel(
                 run.facts,
                 reason=request.reason,
                 cancel_scope=request.scope,
                 interrupted_by_utterance_id=request.source_utterance_id,
                 source_event_id=request.source_event_uid,
+                committed_prefix_hash=terminalizer.committed_prefix_hash(run),
             )
         except sqlite3.OperationalError:
             return CancelTimedOut(response_id=request.response_id)
