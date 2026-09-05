@@ -20,10 +20,12 @@ Three sections of truth are folded:
   never serialized, because the shipped ``ActionUpsert`` has no slot for it —
   the A5 :class:`CancelRequestView`;
 - the single globally unique **confirmation slot** (D14) from
-  ``confirmation.requested`` / ``.accepted`` / ``.rejected``.  Expiry is
-  judged lazily against the timestamp of the rows folded past the deadline,
-  which is ``PendingConfirmationSlot.is_live`` evaluated at fold time; the
-  durable ``confirmation.expired`` terminalizer is a later card.
+  ``confirmation.requested`` / ``.accepted`` / ``.rejected`` /
+  ``.expired``.  Expiry clears the slot two ways, and both report reason
+  ``expired``: lazily, against the timestamp of the rows folded past the
+  deadline (``PendingConfirmationSlot.is_live`` evaluated at fold time),
+  and durably, from the ``confirmation.expired`` row the D14 terminalizer
+  appends — the one an idle panel with no further traffic depends on.
 
 Three bounds live here because they bound the *truth kept*, not the bytes
 sent (D16, and D13's "bounded ActionViewProjection"):
@@ -98,6 +100,7 @@ CONFIRMATION_EVENT_TYPES: Final[tuple[str, ...]] = (
     "confirmation.requested",
     "confirmation.accepted",
     "confirmation.rejected",
+    "confirmation.expired",
 )
 INPUT_CORRELATION_TYPE: Final[str] = "surface.user_intent"
 GATE_EVENT_TYPE: Final[str] = "gate.evaluated"
@@ -135,6 +138,11 @@ CancelRequestState = Literal[
     "received", "authorized", "quiescing", "rejected", "failed", "resolved",
 ]
 ConfirmationClearReason = Literal["accepted", "rejected", "expired", "superseded"]
+_CLEAR_REASON_OF_TYPE: Final[Mapping[str, ConfirmationClearReason]] = {
+    "confirmation.accepted": "accepted",
+    "confirmation.rejected": "rejected",
+    "confirmation.expired": "expired",
+}
 ChangeKind = Literal[
     "response.opened",
     "response.segment",
@@ -998,9 +1006,7 @@ class InherentView:
         slot = self._confirmation
         if slot is None or _string(payload, "confirmation_id") != slot.confirmation_id:
             return []
-        reason: ConfirmationClearReason = (
-            "accepted" if event_type == "confirmation.accepted" else "rejected"
-        )
+        reason: ConfirmationClearReason = _CLEAR_REASON_OF_TYPE[event_type]
         return [self._clear_confirmation(slot, reason, cursor)]
 
     def _expire_confirmation(self, cursor: int, ts_epoch_ms: int) -> ViewChange | None:

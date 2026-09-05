@@ -1,7 +1,7 @@
 """ADR-0014 D14 acceptance: the durable ``confirmation.expired`` terminal.
 
-Covers the L2 primitive: one row per confirmation_id, and the two CAS races
-that keep it that way.
+Covers the L2 primitive (one row, its CAS races) and the two folds that read
+the durable row back.
 """
 
 from __future__ import annotations
@@ -12,8 +12,15 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis.shared.realtime import AlreadyTerminal, StaleConfirmation, TerminalCommitted
-from jarvis.state.event_log import _REGISTRY_MAP, emit_event, open_event_log
+from jarvis.state.event_log import (
+    _REGISTRY_MAP,
+    emit_event,
+    iter_events_of_types,
+    open_event_log,
+)
+from jarvis.state.inherent_view import InherentView
 from jarvis.state.lifecycle_terminal import terminalize_confirmation
+from jarvis.state.projections import PendingConfirmations
 
 if TYPE_CHECKING:
     import sqlite3
@@ -196,4 +203,112 @@ def test_a_second_expiry_call_returns_already_terminal_with_the_row_that_won(
     assert isinstance(second, AlreadyTerminal)
     assert second.event.event_uid == first.event.event_uid
     assert _terminal_count(conn, "CONF-twice") == 1
+
+
+# --- the PendingConfirmations fold (R12) -------------------------------------
+
+
+def test_folding_the_expired_row_moves_the_slot_out_of_pending(
+    conn: sqlite3.Connection,
+) -> None:
+    """A matching id expires the slot; is_live is False before the deadline."""
+    requested = _request(conn, "CONF-fold")
+    _expire(conn, requested)
+
+    events = list(
+        conn.execute("SELECT event_uid FROM events ORDER BY id"),
+    )
+    assert len(events) == 2
+
+    projection = PendingConfirmations.from_events(_all_events(conn))
+    slot = projection.slot
+    assert slot is not None
+    assert slot.confirmation_id == "CONF-fold"
+    assert slot.state == "expired"
+    # Well before the deadline, so only the new state can make this False.
+    assert slot.is_live(_REQUESTED_AT_MS) is False
+
+
+def test_an_expired_row_naming_a_superseded_id_leaves_the_current_slot_alone(
+    conn: sqlite3.Connection,
+) -> None:
+    """The non-matching branch behaves exactly like accepted/rejected."""
+    first = _request(conn, "CONF-old")
+    _request(conn, "CONF-new")
+    # Force the stale terminal in: the sweep could never write this, but a
+    # log carrying one from before the supersession must not move the slot.
+    emit_event(
+        conn,
+        type="confirmation.expired",
+        payload={"confirmation_id": "CONF-old", "expired_at_ms": _EXPIRES_AT_MS},
+        source_event_id=first.event_uid,
+    )
+
+    slot = PendingConfirmations.from_events(_all_events(conn)).slot
+    assert slot is not None
+    assert slot.confirmation_id == "CONF-new"
+    assert slot.state == "pending"
+    assert slot.is_live(_REQUESTED_AT_MS) is True
+
+
+def _all_events(conn: sqlite3.Connection) -> list[Event]:
+    return list(
+        iter_events_of_types(
+            conn,
+            (
+                "confirmation.requested",
+                "confirmation.accepted",
+                "confirmation.rejected",
+                "confirmation.expired",
+                "gate.evaluated",
+            ),
+        ),
+    )
+
+
+# --- the Inherent view clear (R11) -------------------------------------------
+
+
+def test_the_expired_row_clears_the_panel_with_reason_expired_at_its_cursor(
+    conn: sqlite3.Connection,
+) -> None:
+    """R11: one confirmation.cleared(reason="expired") at the row's cursor."""
+    requested = _request(conn, "CONF-view")
+    outcome = _expire(conn, requested)
+    assert isinstance(outcome, TerminalCommitted)
+
+    fold = InherentView()
+    upsert = fold.fold(
+        cursor=_revision_of(conn, requested.event_uid),
+        event_uid=requested.event_uid,
+        event_type="confirmation.requested",
+        ts_epoch_ms=_REQUESTED_AT_MS,
+        payload=requested.payload,
+        source_event_id=None,
+        correlation=None,
+    )
+    assert upsert is not None
+    assert [change.kind for change in upsert.changes] == ["confirmation.upsert"]
+
+    expired_cursor = _revision_of(conn, outcome.event.event_uid)
+    cleared = fold.fold(
+        cursor=expired_cursor,
+        event_uid=outcome.event.event_uid,
+        event_type="confirmation.expired",
+        # Strictly before the deadline, so the lazy read-time clear cannot
+        # fire and only the durable row can produce this change.
+        ts_epoch_ms=_REQUESTED_AT_MS + 1,
+        payload=outcome.event.payload,
+        source_event_id=requested.event_uid,
+        correlation=None,
+    )
+    assert cleared is not None
+    assert len(cleared.changes) == 1
+    change = cleared.changes[0]
+    assert change.kind == "confirmation.cleared"
+    assert change.cleared is not None
+    assert change.cleared.confirmation_id == "CONF-view"
+    assert change.cleared.reason == "expired"
+    assert change.cleared.revision == expired_cursor
+
 

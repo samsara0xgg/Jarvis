@@ -77,6 +77,7 @@ _SELECT_RESPONSE_ROWS_SQL: Final[str] = (
     "'action.result_observed', 'action.timeout_assumed', 'action.failed', 'action.cancelled', "
     "'worker.quiesced', 'action.cleanup_completed', 'action.cleanup_failed', "
     "'confirmation.requested', 'confirmation.accepted', 'confirmation.rejected', "
+    "'confirmation.expired', "
     "'surface.user_intent', 'gate.evaluated'"
     ") ORDER BY id ASC"
 )
