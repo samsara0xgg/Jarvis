@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import time
+import wave
 from dataclasses import replace
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.surface import voice_audio, voice_backend
+from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.voice_backend import DeviceProfileKey, OutputRoute, RouteKind
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
+    from pathlib import Path
 
 _INPUT_FORMAT = voice_backend.AudioInputFormat(16_000, 1, 512)
 _INPUT_PROFILE = voice_backend.InputDeviceProfile(
@@ -197,3 +204,263 @@ def test_profile_key_text_has_seven_fields() -> None:
         "headphones|none|16000|48000"
     )
 
+
+
+class _RouteBackend:
+    """Fake duplex backend with settable input uid and output route."""
+
+    def __init__(self) -> None:
+        self.format = _INPUT_FORMAT
+        self.device_uid = _INPUT_PROFILE.device_uid
+        self.output_route: OutputRoute | None = _SPEAKERS
+        self.output_queries = 0
+        self.active_epoch: int | None = None
+        self.active_attempt_id: str | None = None
+        self.version = 0
+
+    def start(
+        self,
+        *,
+        stream_epoch: int,
+        attempt_id: str,
+        frame_sink: voice_backend.InputFrameSink,
+        render_source: voice_backend.RenderSource | None = None,
+        timeout_s: float | None = None,
+    ) -> voice_backend.BackendStartResult:
+        del frame_sink, render_source, timeout_s
+        assert self.active_epoch is None
+        self.active_epoch = stream_epoch
+        self.active_attempt_id = attempt_id
+        self.version += 1
+        return voice_backend.BackendStartResult(
+            status=voice_backend.BackendStartStatus.STARTED,
+            stream_epoch=stream_epoch,
+            profile=replace(
+                _INPUT_PROFILE,
+                device_uid=self.device_uid,
+                device_name=self.device_uid,
+            ),
+            attempt_id=attempt_id,
+        )
+
+    def stop(
+        self,
+        *,
+        stream_epoch: int,
+        attempt_id: str,
+        timeout_s: float | None = None,
+    ) -> voice_backend.BackendStopResult:
+        del timeout_s
+        if self.active_epoch == stream_epoch and self.active_attempt_id == attempt_id:
+            self.active_epoch = None
+            self.active_attempt_id = None
+            self.version += 1
+        return voice_backend.BackendStopResult(
+            status=voice_backend.BackendStopStatus.CLOSED,
+            stream_epoch=stream_epoch,
+            attempt_id=attempt_id,
+        )
+
+    def poll_fault(self, *, stream_epoch: int) -> voice_backend.BackendFault | None:
+        del stream_epoch
+        return None
+
+    def current_device_uid(self) -> str | None:
+        return self.device_uid
+
+    def current_output_route(self) -> OutputRoute | None:
+        self.output_queries += 1
+        return self.output_route
+
+    def input_format(self) -> voice_backend.AudioInputFormat:
+        return self.format
+
+    def output_format(self) -> None:
+        return None
+
+    def capabilities(self) -> voice_backend.BackendCapabilities:
+        return voice_backend.BackendCapabilities(
+            owns_default_input=True,
+            owns_render_clock=False,
+            aec=False,
+            natural_barge_in=False,
+            reliable_adc_time=True,
+            reliable_dac_time=False,
+        )
+
+    def ownership_snapshot(self) -> voice_backend.BackendOwnershipSnapshot:
+        return voice_backend.BackendOwnershipSnapshot(
+            state=(
+                voice_backend.BackendLifecycleState.CLOSED
+                if self.active_epoch is None
+                else voice_backend.BackendLifecycleState.OPEN
+            ),
+            stream_epoch=self.active_epoch,
+            attempt_id=self.active_attempt_id,
+            version=self.version,
+            physical_owner_possible=self.active_epoch is not None,
+            helper_thread_alive=False,
+        )
+
+
+def _ingress(backend: _RouteBackend, *, observer: bool) -> voice_audio.AudioIngress:
+    return voice_audio.AudioIngress(
+        backend=backend,
+        config=replace(
+            voice_audio.AudioIngressConfig(),
+            worker_poll_s=0.0005,
+            fault_poll_s=0.001,
+            route_poll_s=0.01,
+            reopen_initial_backoff_s=0.001,
+            reopen_max_backoff_s=0.002,
+            shutdown_timeout_s=1.0,
+            route_observer_enabled=observer,
+        ),
+    )
+
+
+def _traces(name: str) -> list[dict[str, object]]:
+    return [dict(point.attributes) for point in realtime_trace_snapshot() if point.name == name]
+
+
+@contextlib.contextmanager
+def _started(backend: _RouteBackend, *, observer: bool) -> Iterator[voice_audio.AudioIngress]:
+    """Always close the ingress so a failed assertion cannot leak its worker."""
+    reset_realtime_trace()
+    ingress = _ingress(backend, observer=observer)
+    assert ingress.start().started
+    try:
+        yield ingress
+    finally:
+        assert ingress.close().definitively_closed
+
+
+def test_profile_resolves_at_open_and_re_resolves_on_output_only_change() -> None:
+    """An output-only route change reopens the epoch through _handle_fault."""
+    backend = _RouteBackend()
+    with _started(backend, observer=True) as ingress:
+        first = ingress.device_profile
+        assert first is not None
+        assert first.stream_epoch == 1
+        assert first.allowed_barge_mode == "ptt"
+        assert first.key == DeviceProfileKey(
+            input_uid=_INPUT_PROFILE.device_uid,
+            output_uid="BuiltInSpeakerDevice",
+            backend="sounddevice",
+            route_kind=RouteKind.SPEAKER,
+            input_sample_rate=16_000,
+            output_sample_rate=48_000,
+        )
+        assert ingress.capability.route_kind == "speaker"
+        assert ingress.capability.allowed_barge_mode == "ptt"
+
+        backend.output_route = replace(_SPEAKERS, uid="BlackHole16ch_UID", transport_type="virt")
+        _wait_until(lambda: ingress.stream_epoch == 2)
+        _wait_until(lambda: ingress.device_profile is not None)
+        second = ingress.device_profile
+        assert second is not None
+        assert second.stream_epoch == 2
+        assert second.key.input_uid == first.key.input_uid
+        assert second.key.output_uid == "BlackHole16ch_UID"
+        assert second.key.route_kind is RouteKind.UNKNOWN
+        faults = [t["fault_code"] for t in _traces("audio_input_fault")]
+        assert faults == ["output_route_changed"]
+        changes = _traces("audio_route_changed")
+        assert [c["previous_profile"] for c in changes] == [None, first.key.as_text()]
+        assert changes[1]["next_profile"] == second.key.as_text()
+        assert changes[1]["stream_epoch"] == 2
+        assert changes[1]["reason"] == "recovery:output_route_changed"
+        assert ingress.capability.route_kind == "unknown"
+        assert ingress.close().definitively_closed
+
+
+def test_input_change_re_resolves_through_the_existing_default_device_path() -> None:
+    """The input poll still owns default_device_changed; the snapshot follows."""
+    backend = _RouteBackend()
+    with _started(backend, observer=True) as ingress:
+        backend.device_uid = "sounddevice:0:allen Microphone"
+        _wait_until(lambda: ingress.stream_epoch == 2)
+        _wait_until(lambda: ingress.device_profile is not None)
+        snapshot = ingress.device_profile
+        assert snapshot is not None
+        assert snapshot.stream_epoch == 2
+        assert snapshot.key.input_uid == "sounddevice:0:allen Microphone"
+        assert snapshot.key.output_uid == "BuiltInSpeakerDevice"
+        assert [t["fault_code"] for t in _traces("audio_input_fault")] == ["default_device_changed"]
+        assert len(_traces("audio_route_changed")) == 2
+        assert ingress.close().definitively_closed
+
+
+def test_observer_off_never_queries_output_and_keeps_input_path() -> None:
+    """route_observer.enabled=false is today's input-only poll with ptt/unknown."""
+    backend = _RouteBackend()
+    with _started(backend, observer=False) as ingress:
+        snapshot = ingress.device_profile
+        assert snapshot is not None
+        assert snapshot.key.output_uid is None
+        assert snapshot.key.route_kind is RouteKind.UNKNOWN
+        assert snapshot.allowed_barge_mode == "ptt"
+        backend.output_route = replace(_SPEAKERS, uid="other")
+        time.sleep(0.05)
+        assert ingress.stream_epoch == 1
+        backend.device_uid = "sounddevice:0:allen Microphone"
+        _wait_until(lambda: ingress.stream_epoch == 2)
+        assert backend.output_queries == 0
+        assert _traces("audio_route_changed") == []
+        assert ingress.close().definitively_closed
+
+
+def test_voice_capability_payload_carries_route_fields() -> None:
+    """The v1 op gains two additive fields, also on the reconnect replay."""
+
+    async def _scenario() -> None:
+        broadcaster = InherentBroadcaster()
+        await broadcaster.broadcast_voice_capability(
+            version=1,
+            state="available",
+            stream_epoch=1,
+            reason="input_stream_started",
+            wake_available=True,
+            local_capture_available=True,
+            ptt_upload_available=True,
+            text_available=True,
+            route_kind="speaker",
+            allowed_barge_mode="keyword_two_stage",
+        )
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        await broadcaster.register(ws)
+        payload = ws.send_json.await_args.args[0]["payload"]
+        assert payload["route_kind"] == "speaker"
+        assert payload["allowed_barge_mode"] == "keyword_two_stage"
+        await broadcaster.broadcast_voice_capability(
+            version=2,
+            state="available",
+            stream_epoch=2,
+            reason="bounded_reopen_succeeded",
+            wake_available=True,
+            local_capture_available=True,
+            ptt_upload_available=True,
+            text_available=True,
+        )
+        payload = ws.send_json.await_args.args[0]["payload"]
+        assert (payload["route_kind"], payload["allowed_barge_mode"]) == ("unknown", "ptt")
+
+    asyncio.run(_scenario())
+
+
+def test_file_replay_and_fake_backends_claim_no_aec(tmp_path: Path) -> None:
+    """Regression pin across the non-production backends too."""
+    wav_path = tmp_path / "silence.wav"
+    with wave.open(str(wav_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16_000)
+        handle.writeframes(b"\x00" * 1024)
+    for capabilities in (
+        voice_backend.FileReplayBackend(wav_path).capabilities(),
+        _RouteBackend().capabilities(),
+    ):
+        assert capabilities.aec is False
+        assert capabilities.natural_barge_in is False
+    assert voice_backend.FileReplayBackend(wav_path).current_output_route() is None

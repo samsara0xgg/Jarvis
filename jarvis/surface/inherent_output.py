@@ -294,6 +294,8 @@ class InherentBroadcaster:
         local_capture_available: bool,
         ptt_upload_available: bool,
         text_available: bool,
+        route_kind: str = "unknown",
+        allowed_barge_mode: str = "ptt",
     ) -> None:
         """Publish and retain one versioned ephemeral input-capability snapshot."""
         payload: dict[str, object] = {
@@ -305,6 +307,8 @@ class InherentBroadcaster:
             "local_capture_available": local_capture_available,
             "ptt_upload_available": ptt_upload_available,
             "text_available": text_available,
+            "route_kind": route_kind,
+            "allowed_barge_mode": allowed_barge_mode,
         }
         async with self._send_lock:
             async with self._lock:
@@ -330,6 +334,8 @@ class InherentBroadcaster:
         local_capture_available: bool,
         ptt_upload_available: bool,
         text_available: bool,
+        route_kind: str = "unknown",
+        allowed_barge_mode: str = "ptt",
     ) -> None:
         """Schedule a capability snapshot from the ingress worker thread."""
         loop = self._loop
@@ -349,6 +355,8 @@ class InherentBroadcaster:
                 local_capture_available=local_capture_available,
                 ptt_upload_available=ptt_upload_available,
                 text_available=text_available,
+                route_kind=route_kind,
+                allowed_barge_mode=allowed_barge_mode,
             ),
             loop,
         )

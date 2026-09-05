@@ -470,6 +470,8 @@ class InputCapabilitySnapshot:
     local_capture_available: bool
     ptt_upload_available: bool = True
     text_available: bool = True
+    route_kind: str = "unknown"
+    allowed_barge_mode: str = "ptt"
 
 
 @dataclass(frozen=True)
@@ -1100,10 +1102,8 @@ class AudioIngress:
         self._last_epoch = 0
         self._attempt_sequence = 0
         self._active_profile: voice_backend.InputDeviceProfile | None = None
-        self._closing = False
-        self._suspended = False
-        self._callback_calls = 0
-        self._callback_frames = 0
+        self._closing = self._suspended = False
+        self._callback_calls = self._callback_frames = 0
         self._first_callback_monotonic_ns: int | None = None
         self._first_callback_adc_time_s: float | None = None
         self._reported_first_callback_epoch: int | None = None
@@ -1118,8 +1118,9 @@ class AudioIngress:
         self._pending_ingress_fault_code: str | None = None
         self._deferred_fault: voice_backend.BackendFault | None = None
         self._device_uid_misses = 0
-        self._capability_publish_lock = threading.Lock()
-        self._capability_lock = threading.RLock()
+        self._device_profile: voice_backend.DeviceProfileSnapshot | None = None
+        self._last_profile_key: voice_backend.DeviceProfileKey | None = None
+        self._capability_publish_lock, self._capability_lock = threading.Lock(), threading.RLock()
         self._capability_version = 0
         self._capability = InputCapabilitySnapshot(
             state=InputCapabilityState.STOPPED,
@@ -1430,6 +1431,8 @@ class AudioIngress:
                     for subscriber in self._subscriber_snapshot:
                         subscriber._ring.set_publication_token(timeline)  # noqa: SLF001
                 self._active_profile = result.profile
+                if result.profile is not None:
+                    self._resolve_device_profile(result.profile, epoch, reason=reason)
                 record_realtime_trace(
                     "audio_input_epoch_opened",
                     stream_epoch=epoch,
@@ -1622,8 +1625,50 @@ class AudioIngress:
                     )
                 else:
                     self._device_uid_misses = 0
+                    if self._config.route_observer_enabled:
+                        self._poll_output_route()
             if not did_work:
                 self._worker_stop.wait(timeout=self._config.worker_poll_s)
+
+    def _poll_output_route(self) -> None:
+        snapshot = self._device_profile
+        if snapshot is None:
+            return
+        output = self._backend.current_output_route()
+        current_uid = output.uid if output is not None else None
+        if current_uid != snapshot.key.output_uid:
+            self.notify_route_change(reason="output_route_changed")
+
+    def _resolve_device_profile(
+        self,
+        profile: voice_backend.InputDeviceProfile,
+        stream_epoch: int,
+        *,
+        reason: str,
+    ) -> None:
+        """Resolve the D9 snapshot for a committed epoch; trace when the key moves."""
+        observed = self._config.route_observer_enabled
+        # The revoked snapshot is already None here; the trace still names it.
+        previous = self._last_profile_key
+        snapshot = voice_backend.resolve_device_profile(
+            input_profile=profile,
+            output=self._backend.current_output_route() if observed else None,
+            stream_epoch=stream_epoch,
+            detection_mode=self._config.barge_detection_mode,
+            accepted_natural_profiles=self._config.accepted_natural_profiles,
+        )
+        self._device_profile = snapshot
+        self._last_profile_key = snapshot.key
+        if observed and previous != snapshot.key:
+            record_realtime_trace(
+                "audio_route_changed",
+                previous_profile=previous.as_text() if previous is not None else None,
+                next_profile=snapshot.key.as_text(),
+                route_kind=snapshot.key.route_kind.value,
+                allowed_barge_mode=snapshot.allowed_barge_mode,
+                stream_epoch=stream_epoch,
+                reason=reason,
+            )
 
     def _fan_out(self, frame: CanonicalAudioFrame) -> None:
         timeline = self._active_timeline
@@ -1751,6 +1796,8 @@ class AudioIngress:
                 return
             self._faults += 1
             self._revoke_publication()
+            # F18: the old profile's barge allowance is gone before any reopen.
+            self._device_profile = None
             record_realtime_trace(
                 "audio_input_fault",
                 stream_epoch=fault.stream_epoch,
@@ -2014,6 +2061,7 @@ class AudioIngress:
         ownership = self._backend.ownership_snapshot()
         capability_epoch = self._active_epoch or ownership.stream_epoch
         self._capability_version += 1
+        profile = self._device_profile
         snapshot = InputCapabilitySnapshot(
             state=state,
             version=self._capability_version,
@@ -2021,6 +2069,8 @@ class AudioIngress:
             reason=reason,
             wake_available=wake_available,
             local_capture_available=local_capture_available,
+            route_kind=profile.key.route_kind.value if profile is not None else "unknown",
+            allowed_barge_mode=profile.allowed_barge_mode if profile is not None else "ptt",
         )
         self._capability = snapshot
         return snapshot
@@ -2037,6 +2087,8 @@ class AudioIngress:
             local_capture_available=snapshot.local_capture_available,
             ptt_upload_available=snapshot.ptt_upload_available,
             text_available=snapshot.text_available,
+            route_kind=snapshot.route_kind,
+            allowed_barge_mode=snapshot.allowed_barge_mode,
         )
 
     def _publish_capability(
@@ -2222,6 +2274,11 @@ class AudioIngress:
         """Return the latest precise capability snapshot."""
         with self._capability_lock:
             return self._capability
+
+    @property
+    def device_profile(self) -> voice_backend.DeviceProfileSnapshot | None:
+        """Return the D9 snapshot of the active epoch, ``None`` while revoked."""
+        return self._device_profile
 
     @property
     def stream_epoch(self) -> int | None:
