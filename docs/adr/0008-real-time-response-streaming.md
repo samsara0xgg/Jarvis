@@ -621,20 +621,22 @@ Response cancel scope has exact semantics:
 
 Natural barge-in uses `generation` for the foreground speech ResponseRun. A deliberate “mute speech but keep writing the document” control uses `foreground_output` and requires sibling/continuing document semantics.
 
-Action cancellation reuses the existing gate without weakening its API. A raw LLM/string target is never trusted directly. L2 extends the existing `EntityRegistry` fold with a fourth durable namespace derived only from registered action lifecycle events:
+Action cancellation reuses the existing gate without weakening its API. A raw LLM/string target is never trusted directly. L2 extends the existing `EntityRegistry` fold with a fourth durable namespace derived only from registered action lifecycle events. The opener is `action.dispatched` — the first durable event that says the action was admitted, so a proposal the gate refused never becomes a cancel target — and any of the four action terminals (`action.result_observed`, `action.failed`, `action.timeout_assumed`, `action.cancelled`) evicts the entry, so the `action:` namespace is exactly the non-terminal set:
 
 ```text
-action.proposed/action.dispatched/action.running/... with action_id=A
+action.dispatched with action_id=A
 → EntityRegistryEntry(
      entity_id="action:A",
      entity_type="action",
      canonical="A",
      aliases=(),
      confidence="exact",
-     source_event_id=<first durable action event uid>,
+     source_event_id=<that action.dispatched uid>,
      last_seen_ms=<that event timestamp>,
    )
 ```
+
+The same fold pass records each open action's admission — `action_id → {dispatched_event_uid, admission_gate_uid, lease_id?, run_id?}` — where `run_id` is joined only from `run.started` (matched by its `source_event_id`, the action's `action.running` uid, or its correlation `action_id`); `action.running` carries no `run_id` and is never read for one.
 
 This does not make an action cancellable merely because its ID is known. L3's `resolve_cancellable_action()` reads the canonical ActionRun fold, rejects ambiguous, unknown, terminal, or cleanup-only targets, and returns an `ActionRef("action:<id>")`. The same fold entry is present in the `EntityRegistry` snapshot given to `pre_action_gate()`. L4 performs a final current-state check before signaling the handle. Thus entity trust proves durable provenance; the ActionRun FSM proves current cancellability.
 
@@ -679,7 +681,7 @@ ToolDefinition(
 
 L2 is the fixed risk for the cancellation command because stopping further effect is not assigned the target action's mutation risk dynamically. Under the default L3 confirmation threshold, Allen's explicit cancel utterance does not trigger a redundant second question. A deployment that puts L2 at/above its confirmation threshold must register the matching `requires_confirmation=True` variant at boot; existing policy validation rejects a mismatched definition. The target action's own risk and authorization never transfer to this new request.
 
-That complete `ActionRequest + ToolDefinition + policy + ledger + entity_registry + pending_confirmations` passes the existing `pre_action_gate()`. Only a durable `gate.evaluated` pass is frozen into `CancelActionRequest`, carrying `authorization_gate_event_uid`. Runtime exposes `dispatch_authorized_action_cancel`, validates that UID/lease, and never accepts an ungated shortcut. The control ActionRun may synchronously acknowledge “cancel requested”; the target ActionRun may emit `action.cancelled` only after process quiescence wins terminal arbitration.
+That complete `ActionRequest + ToolDefinition + policy + ledger + entity_registry + pending_confirmations + action_admissions` passes the existing `pre_action_gate()`. L3 fills `CancelActionRequest.authorization_gate_event_uid` from the L2 admission lookup: the uid of the last passing `gate.evaluated(gate="pre_action")` row that carries the target's `action_id`. It is read from `gate.evaluated`, not from `action.dispatched.source_event_id`, because only the confirmation-backed outbox dispatch sets that source; the ordinary dispatch path leaves it unset and every unleased action would otherwise fail the match. The gate's `cancel_action` arm is the single checker of that uid — absent, unknown or mismatched refuses, never `confirm_required`, since re-granting cannot repair a stale uid — and nothing downstream re-checks it. The shipped mechanism is the ordinary gated dispatch of the registered `cancel_action` tool; there is no separate `dispatch_authorized_action_cancel` runtime entry point and no ungated shortcut. The control ActionRun synchronously acknowledges the runner's `CancelOutcome` (accepted / already terminal / unconfirmed / unsupported — an unconfirmed cancel is reported as not stopped, never as a success); the target ActionRun may emit `action.cancelled` only after process quiescence wins terminal arbitration.
 
 ADR-0014 closes the remaining gate-to-dispatch crash window for every
 external-effecting ActionRequest, including a confirmation-approved

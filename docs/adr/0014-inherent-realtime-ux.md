@@ -1473,8 +1473,10 @@ uses the no-commit L2 append primitive, and no sequencer/direct-bus publish is
 allowed before the outer commit succeeds.
 
 Runtime claims the row with a boot/lease owner and routes it only through the
-typed L4 authorized-dispatch port; the cancel variant additionally requires
-`dispatch_authorized_action_cancel`. L4 atomically appends or resolves
+typed L4 authorized-dispatch port. There is no cancel variant: `cancel_action`
+is an ordinary L2 tool admitted by the Pre-action Gate's admission arm
+(ADR-0008 D10) and never confirmation-backed, so it never enters this outbox.
+L4 atomically appends or resolves
 `action.dispatched` for that same stable action ID while consuming the
 outbox; only then may an external-effecting handler start. Boot
 reconciliation reclaims expired outbox leases. If a durable dispatch exists
