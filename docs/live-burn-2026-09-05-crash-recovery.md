@@ -209,7 +209,17 @@ index 0 and 1, then `tts_macos_say_started`. Cause in finding 1.
    has one caller inside the live owner (`jarvis/surface/voice_media.py`),
    none in `serve_inherent`. The card anticipated this ("stop, record it in
    Progress, and report to the hub"); the trail confirms it in every run.
-   Not fixed under this card.
+   Not fixed under this card. **Closed** by
+   `docs/goals/boot-playback-reconciliation.md` (lane A): boot now runs an L5
+   reconciler third in the startup barrier. Proved by the run of
+   2026-09-05T22:36:01Z (root `~/.jarvis-lane-b-test/crash-20260905T223601Z`),
+   which SIGKILLed pid 65786 on the orphan pair
+   `(RESP89e7127f638d41c487df91bde0a7ccca, 2)` whose
+   `surface.playback_started` is id 26 / `event_uid`
+   `84d7c945150949a68cffa14794c1a884`: restart 1 appended exactly one
+   `surface.playback_interrupted` (id 29, `reason="daemon_restart"`,
+   `source_event_id` equal to that `event_uid`), restart 2 appended nothing
+   for the pair and logged no reconciliation line at all.
 3. **The heard cursor never advances in live streaming playback.** Run 5's
    warm-up played 956849 of 956849 samples through MiniMax
    (`cursor_quality=estimated`) yet wrote zero `surface.playback_checkpoint`
@@ -273,10 +283,12 @@ index 0 and 1, then `tts_macos_say_started`. Cause in finding 1.
   in runs 2, 5-7 and 10; unchanged. §6 F14 (shutdown mid-session) is not
   exercised by `SIGKILL`; F16 confirmed (0 re-speak rows); both unchanged.
 - ADR-0008 §4.4: reconcile-once confirmed; the "runtime asks L5 to close any
-  active playback state" bullet is contradicted by the trail (finding 2) and
+  active playback state" bullet was contradicted by the trail (finding 2) and
   the "reconstructs the last heard checkpoint" bullet has no checkpoint to
-  reconstruct (finding 3). Both are reports to the hub, not edits under this
-  card. §7 F14 confirmed; F23 not exercised; unchanged.
+  reconstruct (finding 3). Both were reports to the hub, not edits under this
+  card; finding 2 is now closed by the boot reconciler and the bullet holds
+  as written, so §4.4 still needs no edit. §7 F14 confirmed; F23 not
+  exercised; unchanged.
 - `docs/spec.html`: unchanged; its only high-water mentions are the
   projection snapshot semantics (`read_projection(name, high_water_mark?)`),
   which this run did not touch, and it carries no crash-recovery contract.

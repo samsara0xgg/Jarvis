@@ -189,6 +189,7 @@ from jarvis.surface.inherent_server import (
     InputSubmissionOutcome,
     create_app,
 )
+from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.repo_observer import RepoObserver
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
@@ -537,6 +538,25 @@ def _reconcile_action_quarantine_in_thread(
     finally:
         with contextlib.suppress(sqlite3.Error):
             conn.close()
+
+
+def _reconcile_open_playback_in_thread(
+    event_log_path: Path,
+    committed_event_bus: CommittedEventBus | None,
+) -> int:
+    """Close every playback generation a dead process abandoned (ADR-0008 §4.4).
+
+    Runs on an ``asyncio.to_thread`` worker with its OWN connection, for the
+    same ``check_same_thread`` reason as the two reconcilers above. Returns
+    the number of generations it closed.
+    """
+    conn = open_event_log(event_log_path)
+    try:
+        events = reconcile_open_playback(conn, committed_event_bus=committed_event_bus)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    return len(events)
 
 
 class TurnConnectionUnavailableError(Exception):
@@ -3615,6 +3635,22 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
                     "for action(s) that terminated without cleanup: %s",
                     len(quarantined),
                     ", ".join(quarantined),
+                )
+
+        # ADR-0008 §4.4 — the live playback actor is the only writer of a
+        # playback terminal, so a process killed mid-playback leaves its
+        # generation open forever. Close each one here, third and last, in
+        # the ADR's own bullet order (responses, actions, playback).
+        if runtime.response_flags.response_run_lifecycle:
+            closed_playback = await asyncio.to_thread(
+                _reconcile_open_playback_in_thread,
+                runtime.runtime_paths.event_log,
+                runtime.committed_event_bus,
+            )
+            if closed_playback:
+                LOGGER.info(
+                    "boot reconciliation closed %d open playback generation(s)",
+                    closed_playback,
                 )
 
         cancel_response_callable = (
