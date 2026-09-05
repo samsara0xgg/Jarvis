@@ -1379,6 +1379,11 @@ class DuplexVoiceSession:
             barge_in_confirmations=router.confirmations if router is not None else 0,
         )
 
+    @property
+    def barge_in_armed(self) -> bool:
+        """Return whether a barge-in router exists for this session at all."""
+        return self._barge_in is not None
+
     def confirm_ptt_barge_in(self) -> str:
         """Confirm a barge-in from a PTT upload; returns the router outcome.
 

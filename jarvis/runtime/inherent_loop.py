@@ -3026,9 +3026,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
             broadcaster=broadcaster,
             voice_pipeline_callable=voice_pipeline_callable,
             barge_in_confirm_callable=(
-                None
-                if duplex_voice_session is None
-                else duplex_voice_session.confirm_ptt_barge_in
+                duplex_voice_session.confirm_ptt_barge_in
+                if duplex_voice_session is not None and duplex_voice_session.barge_in_armed
+                else None
             ),
             cancel_response_callable=cancel_response_callable,
             v2=InherentV2Deps(

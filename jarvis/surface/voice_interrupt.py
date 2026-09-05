@@ -119,6 +119,10 @@ class BargeInRouter:
         """
         with self._lock:
             self._expire_locked()
+            if self._window_deadline_ns is not None:
+                # F11 counts every false candidate, including one a newer wake
+                # hit replaces before its own deadline.
+                self._drop_locked("superseded_by_candidate")
             self._window_id += 1
             self._candidates += 1
             self._window_deadline_ns = (
@@ -194,14 +198,16 @@ class BargeInRouter:
         deadline = self._window_deadline_ns
         if deadline is None or time.monotonic_ns() < deadline:
             return
+        self._drop_locked("candidate_window_elapsed")
+
+    def _drop_locked(self, reason: str) -> None:
         self._window_deadline_ns = None
         self._candidates_dropped += 1
-        window_id = self._window_id
         record_realtime_trace(
             "barge_in_candidate_dropped",
             session_id=self._session_id,
-            window_id=window_id,
-            reason="candidate_window_elapsed",
+            window_id=self._window_id,
+            reason=reason,
             candidate_window_ms=self._config.candidate_window_ms,
         )
 

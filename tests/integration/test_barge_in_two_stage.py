@@ -264,6 +264,22 @@ def test_a_window_that_elapses_without_a_keyword_is_dropped_as_telemetry() -> No
     assert interrupt.calls == []
 
 
+def test_a_second_wake_hit_supersedes_the_open_window_and_still_counts_it() -> None:
+    """F11 counts every false candidate, replaced ones included."""
+    reset_realtime_trace()
+    interrupt = _RecordingInterrupt()
+    router = _router(interrupt)
+    router.open_candidate(stream_epoch=1, input_sample_cursor=0, probability=0.9)
+    router.open_candidate(stream_epoch=1, input_sample_cursor=1280, probability=0.9)
+
+    dropped = _traces("barge_in_candidate_dropped")
+    assert len(dropped) == 1
+    assert dropped[0].attributes["reason"] == "superseded_by_candidate"
+    assert router.candidates == 2
+    assert router.candidates_dropped == 1
+    assert interrupt.calls == []
+
+
 def test_a_ptt_upload_during_output_confirms_with_no_prior_candidate() -> None:
     """Case 4: a button press is not echo, so it needs no first stage."""
     reset_realtime_trace()
@@ -702,6 +718,7 @@ def test_barge_in_disabled_builds_no_router_and_changes_nothing() -> None:
             backend.emit(epoch=epoch, value=value + 1)
         _wait_until(lambda: session.metrics().wake_suppressed_during_output > 0)
         metrics = session.metrics()
+        assert not session.barge_in_armed
         assert session.confirm_ptt_barge_in() == "disabled"
         assert session.close().definitively_closed
 

@@ -438,6 +438,25 @@ unbuilt and keeps its name. Phase 1's `duck_gain` ramp and F11's unduck are
 `interrupt_expected_playback_generation`, so the runtime's mechanical
 application of the L3-issued policy has an effect instead of always ignoring.
 
+Three boundaries of what shipped, all of them consequences of naming the
+target from `ResponseRunRegistry.open_runs()` rather than from a playback
+lease:
+
+- **A confirmed barge-in can only stop a run that is still open.** A run is
+  unregistered when generation ends, while its audio is still in the TTS
+  queue, so an interrupt spoken over that playback tail returns `no_open_run`
+  and the speech continues. Stopping the tail needs the `foreground_output`
+  scope and its playback lease, which is the stop-speech card's work.
+- **The target is the single open run, not the run that owns the current
+  playback generation.** With more than one open run the runtime cancels
+  nothing (`ambiguous_open_runs`); with exactly one it cancels that run even
+  if the audible speech belongs to a different, already-closed one.
+- **A candidate arms capture, so a dropped window still produces a turn.** The
+  speech that failed to confirm is committed as an ordinary
+  `utterance.received` and becomes the next question. Without AEC, speaker
+  self-wake can therefore start an echo-driven turn — which is why barge-in
+  ships off by default.
+
 Two phases:
 
 1. **Speech candidate**
