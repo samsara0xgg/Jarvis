@@ -306,4 +306,42 @@ Or stop after 30 turns.
 
 ## Progress
 
-- (none yet)
+- Slice 1 (the fix and its hermetic pin; 114ce9f) — `record_audible`'s per-chunk
+  merge gains `SpeechChunk.cursor_quality_observed`; first observation assigns
+  the ledger's accumulated quality (never more certain than what
+  `finish_segment` may already have written, so a gap-degraded `unknown` cannot
+  be upgraded), later observations merge through `_least_quality` unchanged.
+  `_least_quality`, `_QUALITY_RANK`, `record_submitted`, the `snapshot()` gate,
+  the ledger-level `_cursor_quality` logic and the escape hatch are unedited; no
+  caller special-cased, no config key, no flag. New test
+  `test_segment_closed_before_audible_horizon_still_becomes_heard` drives the
+  player with `estimated_output_latency_s=0.2` so `finish_segment` precedes the
+  deferred horizon: on the parent commit it fails with
+  `AssertionError: assert None == 0` (`heard_text=''`), with the fix it passes.
+  Escape hatch still pinned by `test_checkpoint_persists_during_later_provider_feed_and_retries`
+  and `test_structured_chunks_preserve_heard_prefix_on_mid_second_interrupt`,
+  both unedited and passing. Baseline 1018 passed / 64 deselected at 0f670d5 →
+  1019 passed / 64 deselected (delta +1, exactly the new test). lint-imports
+  KEPT (1 kept, 0 broken), ruff all checks passed, mypy strict clean (239
+  files). No `desktop/` file changed.
+- Slice 2 (live run and docs disposition) — real daemon from this worktree,
+  runtime root and port owned by the lane (`--port 8017`, keys sourced from
+  `~/.jarvis/env` into the shell so the quoted `MINIMAX_API_KEY` is unquoted
+  before the daemon reads it). Turn `Tccdd32bf` wrote 9
+  `surface.playback_checkpoint` rows, the last with
+  `heard_through_sequence: 3`, `cursor_quality: "estimated"` and a 125-char
+  `heard_text`; its terminal `surface.playback_completed` carries
+  `provider: "minimax_ws_streaming"`. Follow-up turn `T3f7be5d7` in the same
+  session renders `spoken_heard` non-`None` with `cursor_quality: "estimated"`
+  and `text` byte-equal to that checkpoint's `heard_text`
+  (`source_event_uid` resolves to the generation's terminal row), so the
+  crash-recovery heard-prefix branch is reachable live; nothing downstream was
+  changed. Audio: pre-run route `MacBook Pro Speakers`, no switch made by this
+  run; another lane left the system on `BlackHole 16ch` during it, and the
+  captured pre-run route was restored (`MacBook Pro Speakers`) with no capture
+  process running. The 8006 daemon (pid 53955, root `~/.jarvis-realtime-test`)
+  was never signalled or stopped. Docs: ADR-0006 `:347`/`:349` and ADR-0008
+  §4.4 judged unchanged — the fix restores them, no sentence is contradicted;
+  `docs/spec.html` has 0 occurrences of "heard", unchanged; the two historical
+  run records get a one-line pointer to this card and keep their own account of
+  what was observed.
