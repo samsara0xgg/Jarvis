@@ -245,4 +245,14 @@ the change turns out to need edits to `jarvis/surface/voice_media.py`, the folds
 Or stop after 40 turns.
 
 ## Progress
-- (empty)
+- Branch baseline recorded before any edit, on the merge of
+  `realtime-integration` into `lane/a` (fast-forward to 0f670d5):
+  `PYTHONPATH=. .venv/bin/python -m pytest -q -m "not live_llm and not live_codex"`
+  printed `1018 passed, 64 deselected, 4 warnings in 48.12s`.
+- L5 boot reconciler + runtime wiring + hermetic tests — 0b3c12d —
+  1021 passed / 64 deselected (1018 + 3); lint-imports KEPT (1/1); ruff
+  all checks passed; mypy strict clean (241 files). Fold safety proved
+  non-vacuous out of band: a wrong `source_event_id`, a stray
+  `speech_text_hash`, and a dropped cursor each flip
+  `fold_conversation_history(...).consistent` to False, while the
+  reconciler's own output holds True in both cursor branches.
