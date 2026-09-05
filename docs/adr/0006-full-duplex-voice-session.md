@@ -9,6 +9,8 @@
 
 **Naming amendment (ADR-0014):** this ADR's original `generation_id` name means only an L5 playback lease and is renamed everywhere on the v2 wire, shared contracts, registries, and new event payloads to `playback_generation_id`. A ResponseRun itself is keyed only by `response_id`; document-only responses have no playback generation. Any unmodified prose occurrence of “generation” below describes provider work, not a second ResponseRun identity.
 
+**D3 amendment (2026-09-05):** the built Input FSM slice is recorded under D3; D7 is unchanged.
+
 ---
 
 ## 1. Context
@@ -181,6 +183,8 @@ recovering ── retry budget exhausted ──> device_unavailable
 ```
 
 `dormant` does not necessarily mean the device is closed: the shared ingress may remain open for wake-word detection while utterance recognition is not armed.
+
+**Built slice (2026-09-05, goal endpointing-partial-asr):** the assembler's `EndpointPhase` enum realises `speech_active ⇄ endpoint_pending → finalizing_asr → committed` for the current utterance; speech resuming during `endpoint_pending` returns to `speech_active`, and `committed` is set only after the normalized `utterance.received` commit. `listening`, `dormant`, `device_unavailable`, and `recovering` remain expressed by the ingress capability states, not by that enum.
 
 `AudioDuplexBackend` owns physical open/read/callback/permission/device-loss failures. `RealtimeSessionCoordinator` owns the cross-layer capability transition and user-visible degradation. Recovery uses bounded exponential backoff and always creates a new `stream_epoch`; subscribers never resume an old epoch. Capability states distinguish `wake_unavailable` (PTT upload may still work), `local_capture_unavailable` (text and remote/upload input may work), and `text_only`.
 
