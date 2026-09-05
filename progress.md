@@ -10,33 +10,69 @@ Contract: GOAL.md; architecture: docs/spec.html and docs/adr.
 
 ## Current work
 
-Incremental SemanticAssembler now preserves the exact text prefix, uses a
-60-code-point speech cap, and splits only at stable sentence/subclause
-boundaries. Advancing one common character prefix makes results independent
-of provider chunking. Decimal/grouping punctuation, English abbreviations,
-quotations, code/Markdown, XML, URLs and email local-part punctuation are
-covered; unsupported syntax and unbounded fragments buffer instead of
-producing arbitrary cuts. Candidates are NOT permits and emit no surface event.
+Added complete explicit ResponseRiskContext DTO and content hashing of actual
+SituationPacket dataclasses/maps. The new versioned Chinese/English classifier
+uses context and user-request floors, action/sensitive-domain/evidence rules,
+and a conservative explanation/greeting form guard. Unknown context, rule
+versions, unsupported text, classifier failure or >=20 ms work buffer. This
+rule set is provisional until fixed quality/live coverage evaluation; none of
+these data tables proves arbitrary model prose safe.
 
-Current checks: 41 boundary tables plus 31 actual SDK/SSE/SQLite scenarios
-passed in 1.06 s. Two SDK scenarios prove a candidate exists before withheld
-provider completion, and cancellation stops both the socket and future
-candidates. Full regression: 528 passed / 63 deselected in 28.82 s, exit 0;
-ruff clean, strict mypy 183 files, layers 74 files / 203 dependencies kept.
-Evidence: /tmp/jarvis-realtime-semantic-assembly-nonlive-r2.log.
-Prior run: 527 passed / 63 deselected in 28.96 s, before the adjacent !? email
-counterexample was repaired. Evidence: same log name without -r2.
+L3 stream gate commits each verdict before issuing a frozen receipt. L2 pins
+response/sequence/phase/channel/policy/evidence/context/rule identity, requires
+contiguous sequences, rejects conflicting replays, and seals a buffered run
+against later permissions. L5 consumes by re-reading the gate, matching exact
+text hash and attention/query metadata, and atomically appending first open
+plus chunk. Top-level chunk source_event_id points to the committed gate.
+Cancelling between gate and surface prevents output; exact consumed retries
+return the original row without republishing. New policy fields are additive;
+legacy defaults remain full_text and all production switches remain unchanged.
 
-Next: complete L3 risk context and actual SituationPacket snapshot hash,
-versioned candidate classifier, durable source-bound emission permits and
-prefix-preserving finalizer; then connect the no-tool route to streaming TTS.
-The existing ResponseRun is opened before decide with immutable full_text:
-prepare the L3 route/packet before policy minting, never loosen it afterward.
-Reuse the prepared packet in decide so prompts and policy hash cannot read
-different snapshots. Keep confirmation/Tier0 precedence, request admission,
-L3 cost ownership, and separate legacy full-text fallback before the first
-permit. No whole-answer restart/replay after a committed prefix.
-Ordinary safe first-sentence/TTS production streaming remains unimplemented.
+Local actual SDK -> assembler -> gate -> SQLite -> L5 scenarios for OpenAI and
+Anthropic commit the safe first sentence while the HTTP peer withholds EOF.
+Cancellation then closes the peer and commits one immutable cost disposition.
+This is isolated socket/database/text evidence, not cloud model or TTS evidence.
+The generated user-facing route and incremental media scheduling are still
+unwired: voice_media currently schedules only at surface.response_emitted.
+
+Focused integration/risk/SDK run: 139 passed in 1.84 s before the owner and
+worst-case timing canaries were added. Initial full regression: 637 passed /
+63 deselected in 29.57 s, exit 0 (outer subprocess wall 30.453 s).
+Evidence: /tmp/jarvis-realtime-stream-gate-nonlive.log. Final regression after removing the quadratic regex: 638 passed / 63
+deselected in 30.10 s, exit 0 (outer wall 30.929 s), 0.10 s above the
+30 s test budget; recorded rather than rerun to seek a faster sample. Evidence:
+/tmp/jarvis-realtime-stream-gate-nonlive-r2.log. Ruff clean; strict mypy191;
+six-layer79/221 kept. Temporary .venv link removed after checks.
+
+Independent read-only counterexamples repaired: imperative/off-topic medical
+and action phrases; speech candidate >60 chars; unbound display query and
+conflicting metadata replay. The 8192-character repeated conditional token
+initially took p95 29.996 ms and safely buffered, but failed the latency target.
+After removing regex backtracking, 100 local repetitions give p95 3.917 ms,
+max 4.975 ms; three short sentence cases have p95 <=0.040 ms. Evidence:
+/tmp/jarvis-stream-classifier-timing.json and -timing-r2.json. These are only
+classifier CPU timings, not the assembly+commit 500 ms or end-to-end target.
+
+Next: construct the complete risk context from actual action/confirmation/
+recovery and typed-heard-history projections; prepare route/packet before
+ResponseRun policy minting, and reuse that exact packet in decide. Keep
+confirmation/Tier0 precedence, tools=None on the ordinary route, admission and
+cost fences, cancellation of the owning async stream, and no renderer replay.
+Add immutable-prefix finalization and direct streaming TTS scheduling. Do not
+use the old whole-answer retry after a committed prefix. Context schema alone
+is not complete production context plumbing; all overall Done items stay open.
+
+## Semantic assembly checkpoint (ea2bd36)
+
+Incremental SemanticAssembler preserves exact text prefixes, has a 60-code-point
+speech cap, and splits only at stable sentence/subclause boundaries. It waits
+for decimal/grouping punctuation, abbreviations, quotations and adjacent email
+punctuation; Markdown/XML/code/URLs/ambiguous boundaries buffer. Results are
+independent of provider chunk sizes. Candidates alone cannot write outputs.
+41 tables plus 31 SDK scenarios passed in 1.06 s. Full 528/63 regression passed
+in 28.82 s, exit 0; ruff, strict mypy183 and six-layer74/203 checks passed.
+Evidence: /tmp/jarvis-realtime-semantic-assembly-nonlive-r2.log (prior same-name
+log without -r2: 527/63, 28.96 s, before the final email !? counterexample fix).
 
 ## Typed transport checkpoint (aed2acf)
 
@@ -146,8 +182,9 @@ before _handle_utterance. Prepare route after confirmation/Tier0 branches and
 before _run_tool_use_loop model call. Current ResponseRun opens earlier with
 immutable full_text policy; move preparation before policy minting instead of
 loosening it later. Typed async tool/usage/error/cancel transport now exists.
-Missing ResponseRiskContext and actual packet snapshot hash, permit classifier/gate,
-and immutable-prefix finalizer. Semantic assembler now exists. Keep L3 cost/admission
+Risk context DTO/content hashing and durable stream gate now exist. Actual packet
+context construction and immutable-prefix finalizer remain missing; semantic
+assembler exists. Keep L3 cost/admission
 fences; no full-response retry or renderer replay after first permit. Details
 in ADR-0008 D2–D5; production streaming route remains disabled/unimplemented.
 Latest hub message authorizes goal-required live tests with synthetic payloads.

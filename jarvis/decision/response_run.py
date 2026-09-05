@@ -109,6 +109,8 @@ class ResponseEmissionPolicy:
     active_subject_ref: str
     evidence_snapshot_hash: str
     preset_snapshot_hash: str
+    risk_context_hash: str = "unknown"
+    classifier_rule_version: str = "unknown"
 
     @property
     def policy_hash(self) -> str:
@@ -621,6 +623,8 @@ def start_response_run(  # noqa: PLR0913 — the ADR-0008 §4.2 response.started
         "policy_hash": policy.policy_hash,
         "active_subject_ref": policy.active_subject_ref,
         "evidence_snapshot_hash": policy.evidence_snapshot_hash,
+        "risk_context_hash": policy.risk_context_hash,
+        "classifier_rule_version": policy.classifier_rule_version,
         "provider": snapshot.provider,
         "model": snapshot.model,
     }

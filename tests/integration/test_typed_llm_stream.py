@@ -25,6 +25,7 @@ from jarvis.decision.llm_stream import (
 )
 from jarvis.decision.stream_sentences import SemanticAssembler
 from jarvis.state.event_log import open_event_log
+from tests.integration.test_stream_emission_gate import _context, _Run
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -754,5 +755,98 @@ def test_failed_accounting_retries_same_disposition_without_reopening_provider(
                 assert _costs(conn)[0]["usage_status"] == "provider_final"
         finally:
             conn.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+def test_actual_sdk_commits_permitted_prefix_before_provider_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: Literal["openai", "anthropic"],
+) -> None:
+    """SSE socket -> assembler -> real risk gate -> L2 -> L5, while EOF is withheld."""
+    monkeypatch.setenv("TYPED_STREAM_FIXTURE_KEY", "synthetic")
+
+    async def scenario() -> None:
+        text = "冰从周围吸收热量。"
+        if provider == "openai":
+            frames = [_oai({"content": text + "这些热量"}), _oai({}, "stop")]
+            pause_after = 1
+        else:
+            frames = _frames("anthropic")[:4]
+            frames[2]["delta"]["text"] = text + "这些热量"
+            frames.extend(
+                [
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn"},
+                        "usage": {"output_tokens": 8},
+                    },
+                    {"type": "message_stop"},
+                ]
+            )
+            pause_after = 3
+        peer = _SSE(frames, pause_after=pause_after)
+        with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
+            async with peer.running() as url:
+                run = _Run(
+                    conn,
+                    _context(),
+                    {
+                        "provider": provider,
+                        "base_url": url if provider == "openai" else url.removesuffix("/v1"),
+                        "model": "fixture-model",
+                        "api_key_env": "TYPED_STREAM_FIXTURE_KEY",
+                        "max_tokens": 256,
+                        "timeout_s": 5,
+                        "max_retries": 0,
+                    },
+                )
+                cost_recorder = CostRecorder(conn)
+                handle = cost_recorder.stream_events(
+                    run.run.request_client,
+                    messages=[{"role": "user", "content": run.context.user_request}],
+                    system="Synthetic ice explanation.",
+                    kind="decision",
+                    turn_id=run.context.turn_id,
+                    tools=None,
+                )
+                assembler = SemanticAssembler()
+                emitted = asyncio.Event()
+                completed = False
+
+                async def consume() -> None:
+                    nonlocal completed
+                    async for event in handle.events():
+                        if isinstance(event, LLMTextDelta):
+                            for candidate in assembler.feed(event.text):
+                                outcome = run.gate(candidate.text)
+                                assert outcome.permit is not None
+                                chunk = run.emit(outcome.permit, text=candidate.text)
+                                assert chunk.source_event_id == outcome.event.event_uid
+                                emitted.set()
+                        elif isinstance(event, LLMResponseCompleted):
+                            completed = True
+
+                task = asyncio.create_task(consume())
+                try:
+                    await asyncio.wait_for(emitted.wait(), 2)
+                    assert not completed
+                    assert not peer.release.is_set()
+                    assert not _costs(conn)
+                    assert "tools" not in peer.body
+                    run.terminalizer.cancel(
+                        run.run.facts, reason="synthetic stop", cancel_scope="generation"
+                    )
+                    await handle.cancel("synthetic stop")
+                    await task
+                    await asyncio.wait_for(peer.peer_closed.wait(), 1)
+                    assert not completed
+                    assert len(_costs(conn)) == 1
+                    assert _costs(conn)[0]["disposition"] == "cancelled"
+                finally:
+                    await handle.aclose()
+                    await task
 
     asyncio.run(scenario())
