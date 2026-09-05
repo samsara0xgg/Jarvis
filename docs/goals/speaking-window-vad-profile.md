@@ -83,3 +83,28 @@ Implement docs/goals/speaking-window-vad-profile.md on the current branch. The g
 
 ## Progress
 - (empty until the implementation session starts)
+- 2026-09-05 slice 1 (858fed6, `feat(surface): run the strict VAD profile while
+  output is active`): `SileroVad.set_mode` rebinds `self._t` and `self._mode`
+  together and nothing else; the Wave-3 assembler consults the existing
+  `output_active` per classified frame; `output_active_vad_mode` parses through
+  the existing `thresholds()` lookup and ships in `config/jarvis.yaml`
+  defaulting to `tts`. No `runtime/` change was needed — `output_active` was
+  already wired at `inherent_loop.py:2673` and the value rides the session
+  config. Launch baseline measured by this session at 81a772d: 1047 passed / 64
+  deselected; after: 1049 passed / 64 deselected (+2, exactly the card's two
+  tests, no other delta). Gates: lint-imports KEPT (1 kept, 0 broken), ruff all
+  checks passed, mypy strict clean (242 files). No `desktop/` path in the diff,
+  so `scripts/test_inherent_swift.sh` was not run.
+- 2026-09-05 slice 2 (live burn, `docs/live-burn-2026-09-05-speaking-window-vad-profile.md`):
+  both arms run on lane B's own root/port with per-arm trace files. `vad_speech_started`
+  rows while output was active: 0 in arm A and 0 in arm B; arm B produced no
+  `vad_mode: "tts"` row at all. Answer durations 15.378 s (A, `playback_completed`)
+  and 45.002 s (B, `playback_failed` / `partial_tts_provider_failure`). Cause is
+  structural, not a wiring defect: the assembler feeds the VAD only between
+  wake-arm and commit, and a wake during output is suppressed by D8, so no frame
+  is classified while output is active. Stop condition did NOT fire — arm B lost
+  no onset, truncated no transcript, captured one utterance more than arm A — so
+  the code ships unchanged, but the profile is not adopted as a measured
+  improvement. Owner follow-up: a mic-in-the-loop run with a human speaking over
+  the answer's tail, and a re-run once natural barge-in can arm capture during
+  output, are the two ways to make this measurement non-vacuous.
