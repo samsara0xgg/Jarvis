@@ -5,10 +5,13 @@ the wake word is detected, and wake framing never stops while utterance VAD,
 ASR, or output playback is active.  Wake, capture, and diagnostics consume
 separate bounded SPSC subscribers on the same canonical cursor.
 
-Wave 3 deliberately has no barge-in cancellation path.  During assistant
-output the wake subscriber is still drained, but detections are suppressed as
-typed telemetry.  Neither echo nor ordinary speech can call Wave-2 playback
-flush/CAS, ResponseRun cancellation, or action cancellation.
+The session itself still holds no cancel authority.  A wake hit during
+assistant output is suppressed as typed telemetry unless ADR-0006 D8/D9
+barge-in is armed in ``keyword_two_stage``, and then it only opens a bounded
+candidate window on the injected :class:`voice_interrupt.BargeInRouter`.
+Cancellation is that router's injected callable, never a call from this
+module: neither echo, nor ordinary speech, nor any VAD verdict can reach
+Wave-2 playback flush/CAS, ResponseRun cancellation, or action cancellation.
 """
 
 from __future__ import annotations
@@ -22,11 +25,11 @@ import threading
 import time
 from collections import deque
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
-from jarvis.surface import voice_asr, voice_audio, voice_pipeline
+from jarvis.surface import voice_asr, voice_audio, voice_interrupt, voice_pipeline
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -71,6 +74,9 @@ class RealtimeInputSessionConfig:
     worker_poll_s: float = 0.005
     shutdown_timeout_s: float = 3.0
     partial_asr: PartialAsrConfig = PartialAsrConfig()
+    barge_in: voice_interrupt.BargeInConfig = field(
+        default_factory=voice_interrupt.BargeInConfig,
+    )
 
 
 class EndpointPhase(enum.Enum):
@@ -195,6 +201,9 @@ class VoiceSessionMetrics:
     partial_decodes: int = 0
     partial_snapshot_drops: int = 0
     partial_late_revisions_discarded: int = 0
+    barge_in_candidates: int = 0
+    barge_in_candidates_dropped: int = 0
+    barge_in_confirmations: int = 0
 
 
 class _PartialDecoderPort(Protocol):
@@ -404,6 +413,7 @@ class UtteranceAssembler:
         frame_samples: int,
         session_id: str,
         lane: PartialAsrLane | None = None,
+        barge_in: voice_interrupt.BargeInRouter | None = None,
     ) -> None:
         """Create bounded idle/pre-roll/utterance storage around one VAD."""
         self._vad = vad
@@ -412,6 +422,7 @@ class UtteranceAssembler:
         self._frame_samples = frame_samples
         self._session_id = session_id
         self._lane = lane
+        self._barge_in = barge_in
         self._partial = config.partial_asr
         self._frame_ms = frame_samples * 1_000.0 / sample_rate_hz
 
@@ -784,6 +795,11 @@ class UtteranceAssembler:
             self._degrade("partial_decode_failed", decode_ms=round(revision.decode_ms, 3))
             return
         normalized = voice_asr.normalize_partial_text(revision.text)
+        if self._barge_in is not None:
+            # D8 confirm stage: the router owns the window and the match; this
+            # module only hands over the text the partial path already
+            # normalized, and never learns whether anything was cancelled.
+            self._barge_in.offer_partial(normalized, utterance_id=self._utterance_id)
         if self._previous_partial is not None:
             common = os.path.commonprefix([self._previous_partial, normalized])
             if len(common) >= len(self._stable_prefix):
@@ -853,6 +869,7 @@ class DuplexVoiceSession:
         output_active: Callable[[], bool] | None,
         wake_threshold: float,
         config: RealtimeInputSessionConfig,
+        barge_in_interrupt: Callable[[str], str] | None = None,
     ) -> None:
         """Register all bounded subscribers before any hardware starts."""
         self._ingress = ingress
@@ -869,6 +886,14 @@ class DuplexVoiceSession:
                 msg = "partial_asr.enabled requires a pipeline exposing partial_text()"
                 raise TypeError(msg)
             self._partial_lane = PartialAsrLane(pipeline)  # type: ignore[arg-type]
+        self._barge_in: voice_interrupt.BargeInRouter | None = None
+        if config.barge_in.enabled and barge_in_interrupt is not None:
+            self._barge_in = voice_interrupt.BargeInRouter(
+                config=config.barge_in,
+                interrupt=barge_in_interrupt,
+                output_active=output_active if output_active is not None else lambda: False,
+                session_id=self._session_id,
+            )
         self._wake_subscription = ingress.subscribe(
             name="wake",
             purpose=voice_audio.SubscriberPurpose.WAKE,
@@ -891,6 +916,7 @@ class DuplexVoiceSession:
             frame_samples=voice_audio.SILERO_CHUNK_SAMPLES,
             session_id=self._session_id,
             lane=self._partial_lane,
+            barge_in=self._barge_in,
         )
         self._detections: queue.Queue[WakeDetection] = queue.Queue(
             maxsize=config.detection_queue_capacity,
@@ -913,6 +939,8 @@ class DuplexVoiceSession:
         self._diagnostic_last_cursor: int | None = None
         self._wake_prediction_failures = 0
         self._armed_no_speech_timeouts = 0
+        self._last_barge_mode: str | None = None
+        self._warned_partial_asr_unavailable = False
 
     def start(self) -> VoiceSessionStartResult:
         """Prewarm models, start ingress, then start bounded software owners."""
@@ -993,7 +1021,7 @@ class DuplexVoiceSession:
         )
         return VoiceSessionStartResult(started=True, ingress=ingress_result)
 
-    def _wake_loop(self) -> None:  # noqa: C901, PLR0912, PLR0915 - linear drain/decision/suppress/fault loop
+    def _wake_loop(self) -> None:  # noqa: C901, PLR0912 - linear drain/decision/suppress/fault loop
         framer = WakeWindowFramer()
         consecutive_prediction_failures = 0
         while not self._stop.is_set():
@@ -1043,7 +1071,11 @@ class DuplexVoiceSession:
                     output_active = True
                     suppress_reason = "wave3_output_activity_unknown"
                     LOGGER.warning("output activity query failed; wake suppressed", exc_info=True)
-                if output_active:
+                if output_active and not self._open_barge_in_candidate(
+                    frame,
+                    end_cursor=end_cursor,
+                    probability=probability,
+                ):
                     self._wake_suppressed_during_output += 1
                     record_realtime_trace(
                         "audio_input_wake_suppressed",
@@ -1054,38 +1086,102 @@ class DuplexVoiceSession:
                         hard_cancel_performed=False,
                     )
                 else:
-                    detection = WakeDetection(
-                        stream_epoch=frame.stream_epoch,
-                        input_sample_cursor=end_cursor,
-                        observed_monotonic_ns=frame.captured_monotonic_ns,
+                    self._enqueue_wake_detection(
+                        frame,
+                        end_cursor=end_cursor,
                         probability=probability,
                     )
-                    try:
-                        self._detections.put_nowait(detection)
-                    except queue.Full:
-                        record_realtime_trace(
-                            "audio_input_wake_detection_dropped",
-                            session_id=self._session_id,
-                            stream_epoch=frame.stream_epoch,
-                            reason="bounded_detection_queue_full",
-                        )
-                    else:
-                        record_realtime_trace(
-                            "audio_input_wake_detected",
-                            session_id=self._session_id,
-                            stream_epoch=frame.stream_epoch,
-                            input_sample_cursor=end_cursor,
-                            probability=probability,
-                            measurement_boundary="software_openwakeword_decision",
-                        )
                 try:
                     self._wake_engine.reset()
                 except Exception:  # noqa: BLE001 - reset best effort, stream drain wins
                     LOGGER.debug("wake engine reset failed after decision", exc_info=True)
 
+    def _open_barge_in_candidate(
+        self,
+        frame: voice_audio.CanonicalAudioFrame,
+        *,
+        end_cursor: int,
+        probability: float,
+    ) -> bool:
+        """Open a D8 candidate window for this wake hit, or refuse to.
+
+        Returns whether the caller may arm capture instead of suppressing the
+        detection.  The candidate itself ducks nothing, cancels nothing, and
+        writes no durable event: it only lets the partial-ASR lane run so the
+        interrupt keyword has a path to the router.
+        """
+        if self._barge_in is None:
+            return False
+        profile = self.device_profile
+        mode = profile.allowed_barge_mode if profile is not None else "ptt"
+        effective = mode
+        if mode == "natural":
+            # D9/F12: natural needs validated AEC, which no shipped profile
+            # has, so it is downgraded rather than honored.
+            if self._last_barge_mode != "natural":
+                LOGGER.warning(
+                    "allowed_barge_mode=natural is unreachable without validated AEC; "
+                    "using keyword_two_stage",
+                )
+            effective = "keyword_two_stage"
+        self._last_barge_mode = mode
+        if effective != "keyword_two_stage":
+            return False
+        if self._partial_lane is None:
+            # Fail closed: with no partial lane the keyword confirm can never
+            # arrive, so arming capture during output would buy nothing.
+            if not self._warned_partial_asr_unavailable:
+                LOGGER.warning(
+                    "allowed_barge_mode=keyword_two_stage needs partial_asr.enabled; "
+                    "accepting PTT barge-in confirms only",
+                )
+                self._warned_partial_asr_unavailable = True
+            return False
+        self._barge_in.open_candidate(
+            stream_epoch=frame.stream_epoch,
+            input_sample_cursor=end_cursor,
+            probability=probability,
+            allowed_barge_mode=mode,
+        )
+        return True
+
+    def _enqueue_wake_detection(
+        self,
+        frame: voice_audio.CanonicalAudioFrame,
+        *,
+        end_cursor: int,
+        probability: float,
+    ) -> None:
+        detection = WakeDetection(
+            stream_epoch=frame.stream_epoch,
+            input_sample_cursor=end_cursor,
+            observed_monotonic_ns=frame.captured_monotonic_ns,
+            probability=probability,
+        )
+        try:
+            self._detections.put_nowait(detection)
+        except queue.Full:
+            record_realtime_trace(
+                "audio_input_wake_detection_dropped",
+                session_id=self._session_id,
+                stream_epoch=frame.stream_epoch,
+                reason="bounded_detection_queue_full",
+            )
+        else:
+            record_realtime_trace(
+                "audio_input_wake_detected",
+                session_id=self._session_id,
+                stream_epoch=frame.stream_epoch,
+                input_sample_cursor=end_cursor,
+                probability=probability,
+                measurement_boundary="software_openwakeword_decision",
+            )
+
     def _capture_loop(self) -> None:
         while not self._stop.is_set():
             self._drain_detection_commands()
+            if self._barge_in is not None:
+                self._barge_in.expire_due()
             frame = self._capture_subscription.read(timeout_s=self._config.worker_poll_s)
             if frame is None:
                 continue
@@ -1260,6 +1356,7 @@ class DuplexVoiceSession:
     def metrics(self) -> VoiceSessionMetrics:
         """Return raw counters for deterministic/live acceptance reports."""
         lane = self._partial_lane
+        router = self._barge_in
         return VoiceSessionMetrics(
             wake_windows=self._wake_windows,
             wake_detections=self._wake_detections,
@@ -1277,7 +1374,21 @@ class DuplexVoiceSession:
             partial_late_revisions_discarded=(
                 lane.late_revisions_discarded if lane is not None else 0
             ),
+            barge_in_candidates=router.candidates if router is not None else 0,
+            barge_in_candidates_dropped=router.candidates_dropped if router is not None else 0,
+            barge_in_confirmations=router.confirmations if router is not None else 0,
         )
+
+    def confirm_ptt_barge_in(self) -> str:
+        """Confirm a barge-in from a PTT upload; returns the router outcome.
+
+        Bound into ``InherentDeps.barge_in_confirm_callable`` so an
+        ``/inherent/asr-submit`` upload arriving while output is active can
+        confirm directly, in both D9 barge modes and with no prior candidate.
+        """
+        if self._barge_in is None:
+            return "disabled"
+        return self._barge_in.confirm_ptt()
 
     @property
     def device_profile(self) -> voice_backend.DeviceProfileSnapshot | None:
@@ -1384,6 +1495,7 @@ def realtime_input_session_config_from_mapping(
             defaults.shutdown_timeout_s,
         ),
         partial_asr=_partial_asr_config_from_mapping(values.get("partial_asr")),
+        barge_in=voice_interrupt.barge_in_config_from_mapping(values.get("barge_in")),
     )
 
 
