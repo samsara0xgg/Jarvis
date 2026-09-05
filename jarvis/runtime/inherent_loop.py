@@ -2097,6 +2097,8 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0915 - each pre/po
             local_capture_available=snapshot.local_capture_available,
             ptt_upload_available=snapshot.ptt_upload_available,
             text_available=snapshot.text_available,
+            route_kind=snapshot.route_kind,
+            allowed_barge_mode=snapshot.allowed_barge_mode,
         )
 
     ingress: voice_audio.AudioIngress | None = None

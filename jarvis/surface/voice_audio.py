@@ -30,7 +30,8 @@ import logging
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import numpy as np
@@ -39,7 +40,7 @@ from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.surface import voice_backend
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable
     from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
@@ -436,6 +437,9 @@ class AudioIngressConfig:
     backend_open_timeout_s: float = 2.0
     backend_close_timeout_s: float = 2.0
     shutdown_timeout_s: float = 2.0
+    route_observer_enabled: bool = False
+    barge_detection_mode: str = "ptt"
+    accepted_natural_profiles: tuple[voice_backend.DeviceProfileKey, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -466,6 +470,8 @@ class InputCapabilitySnapshot:
     local_capture_available: bool
     ptt_upload_available: bool = True
     text_available: bool = True
+    route_kind: str = "unknown"
+    allowed_barge_mode: str = "ptt"
 
 
 @dataclass(frozen=True)
@@ -506,6 +512,15 @@ class IngressMetrics:
     faults: int
     reopen_attempts: int
     reopen_successes: int
+
+
+def _output_identity(
+    route: voice_backend.OutputRoute | None,
+) -> tuple[str, str, str | None] | None:
+    """Return the observed output identity D9 compares: uid, transport, data source."""
+    if route is None:
+        return None
+    return (route.uid, route.transport_type, route.data_source)
 
 
 class _CapabilitySink(Protocol):
@@ -1096,10 +1111,8 @@ class AudioIngress:
         self._last_epoch = 0
         self._attempt_sequence = 0
         self._active_profile: voice_backend.InputDeviceProfile | None = None
-        self._closing = False
-        self._suspended = False
-        self._callback_calls = 0
-        self._callback_frames = 0
+        self._closing = self._suspended = False
+        self._callback_calls = self._callback_frames = 0
         self._first_callback_monotonic_ns: int | None = None
         self._first_callback_adc_time_s: float | None = None
         self._reported_first_callback_epoch: int | None = None
@@ -1113,9 +1126,11 @@ class AudioIngress:
         self._pending_ingress_fault_epoch: int | None = None
         self._pending_ingress_fault_code: str | None = None
         self._deferred_fault: voice_backend.BackendFault | None = None
-        self._device_uid_misses = 0
-        self._capability_publish_lock = threading.Lock()
-        self._capability_lock = threading.RLock()
+        self._device_profile: voice_backend.DeviceProfileSnapshot | None = None
+        self._last_profile_key: voice_backend.DeviceProfileKey | None = None
+        self._last_output_route: voice_backend.OutputRoute | None = None
+        self._output_route_misses = self._device_uid_misses = self._late_recovery_attempts = 0
+        self._capability_publish_lock, self._capability_lock = threading.Lock(), threading.RLock()
         self._capability_version = 0
         self._capability = InputCapabilitySnapshot(
             state=InputCapabilityState.STOPPED,
@@ -1414,6 +1429,13 @@ class AudioIngress:
                 reason="open_attempt_identity_mismatch",
                 attempt_id=attempt_id,
             )
+        # The CoreAudio route query is a foreign call: never hold the local
+        # control lock across it (same rule as the foreign close below).
+        output_route = (
+            self._backend.current_output_route()
+            if self._config.route_observer_enabled and result.profile is not None
+            else None
+        )
         with self._control_lock:
             commit_allowed = self._control_allows_running(control_generation)
             if commit_allowed:
@@ -1426,6 +1448,13 @@ class AudioIngress:
                     for subscriber in self._subscriber_snapshot:
                         subscriber._ring.set_publication_token(timeline)  # noqa: SLF001
                 self._active_profile = result.profile
+                if result.profile is not None:
+                    self._resolve_device_profile(
+                        result.profile,
+                        epoch,
+                        output=output_route,
+                        reason=reason,
+                    )
                 record_realtime_trace(
                     "audio_input_epoch_opened",
                     stream_epoch=epoch,
@@ -1618,8 +1647,143 @@ class AudioIngress:
                     )
                 else:
                     self._device_uid_misses = 0
+                    if self._config.route_observer_enabled:
+                        self._poll_output_route()
+            if timeline is None and now - last_fault_poll >= self._config.fault_poll_s:
+                last_fault_poll = now
+                self._recover_late_close()
             if not did_work:
                 self._worker_stop.wait(timeout=self._config.worker_poll_s)
+
+    def _recover_late_close(self) -> None:
+        """Reopen once a timed-out foreign open settles CLOSED after the fault path gave up.
+
+        F17 recovery previously ended at ``reopen_state_uncertain``: the helper
+        that outlived its bound later proved the device closed, but nothing
+        re-polled, so one slow CoreAudio open left the ingress ``close_uncertain``
+        until sleep/wake. Bounded by ``reopen_attempts`` per uncertain episode.
+        """
+        if (
+            self._closing
+            or self._suspended
+            or self._capability.state is not InputCapabilityState.CLOSE_UNCERTAIN
+            or self._late_recovery_attempts >= self._config.reopen_attempts
+            or self._backend.ownership_snapshot().state
+            is not voice_backend.BackendLifecycleState.CLOSED
+        ):
+            return
+        if not self._lifecycle_lock.acquire(blocking=False):
+            return
+        try:
+            with self._control_lock:
+                control_generation = self._control_generation
+                if not self._control_allows_running(control_generation):
+                    return
+            self._late_recovery_attempts += 1
+            self._reopen_attempts += 1
+            prior_epoch = self._last_epoch
+            record_realtime_trace(
+                "audio_input_reopen_started",
+                prior_stream_epoch=prior_epoch,
+                attempt=self._late_recovery_attempts,
+                reason="late_close_recovery",
+            )
+            result = self._open_new_epoch(
+                reason="recovery:late_close",
+                expected_control_generation=control_generation,
+            )
+            with self._control_lock:
+                control_current = self._control_allows_running(control_generation)
+            if not control_current:
+                self._revoke_publication()
+                self._stop_backend_debt()
+                return
+            if result.started:
+                self._reopen_successes += 1
+                self._late_recovery_attempts = 0
+                self._publish_capability_if_current(
+                    control_generation,
+                    InputCapabilityState.AVAILABLE,
+                    reason="late_close_recovered",
+                )
+                record_realtime_trace(
+                    "audio_input_reopen_succeeded",
+                    prior_stream_epoch=prior_epoch,
+                    stream_epoch=result.stream_epoch,
+                    attempt=self._late_recovery_attempts,
+                    reason="late_close_recovery",
+                )
+                return
+            if (
+                result.status is not voice_backend.BackendStartStatus.OPEN_UNCERTAIN
+                and self._late_recovery_attempts >= self._config.reopen_attempts
+            ):
+                self._publish_capability_if_current(
+                    control_generation,
+                    InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE,
+                    reason="late_recovery_budget_exhausted",
+                )
+                record_realtime_trace(
+                    "audio_input_reopen_failed",
+                    prior_stream_epoch=prior_epoch,
+                    attempts=self._config.reopen_attempts,
+                    outcome="late_recovery_budget_exhausted",
+                )
+        finally:
+            self._lifecycle_lock.release()
+
+    def _poll_output_route(self) -> None:
+        if self._device_profile is None:
+            return
+        observed = self._backend.current_output_route()
+        if observed is None:
+            # A transient HAL miss is not a route change; mirror the input poll.
+            self._output_route_misses += 1
+            if (
+                self._output_route_misses >= _DEFAULT_DEVICE_MISS_LIMIT
+                and self._last_output_route is not None
+            ):
+                self._output_route_misses = 0
+                self.notify_route_change(reason="output_route_changed")
+            return
+        self._output_route_misses = 0
+        # D9 watches data-source/transport too: a same-uid jack flip re-resolves.
+        if _output_identity(observed) != _output_identity(self._last_output_route):
+            self.notify_route_change(reason="output_route_changed")
+
+    def _resolve_device_profile(
+        self,
+        profile: voice_backend.InputDeviceProfile,
+        stream_epoch: int,
+        *,
+        output: voice_backend.OutputRoute | None,
+        reason: str,
+    ) -> None:
+        """Resolve the D9 snapshot for a committed epoch; trace when the key moves."""
+        observed = self._config.route_observer_enabled
+        # The revoked snapshot is already None here; the trace still names it.
+        previous = self._last_profile_key
+        snapshot = voice_backend.resolve_device_profile(
+            input_profile=profile,
+            output=output,
+            stream_epoch=stream_epoch,
+            detection_mode=self._config.barge_detection_mode,
+            accepted_natural_profiles=self._config.accepted_natural_profiles,
+        )
+        self._device_profile = snapshot
+        self._last_profile_key = snapshot.key
+        self._last_output_route = output
+        self._output_route_misses = 0
+        if observed and previous != snapshot.key:
+            record_realtime_trace(
+                "audio_route_changed",
+                previous_profile=previous.as_text() if previous is not None else None,
+                next_profile=snapshot.key.as_text(),
+                route_kind=snapshot.key.route_kind.value,
+                allowed_barge_mode=snapshot.allowed_barge_mode,
+                stream_epoch=stream_epoch,
+                reason=reason,
+            )
 
     def _fan_out(self, frame: CanonicalAudioFrame) -> None:
         timeline = self._active_timeline
@@ -1671,6 +1835,9 @@ class AudioIngress:
         self._active_timeline = None
         self._opening_timeline = None
         self._active_epoch = None
+        # F18: the old profile's barge allowance dies with its epoch, whether
+        # the revocation comes from a fault, sleep, or close.
+        self._device_profile = None
         if timeline is not None:
             timeline.native_ring.set_publication_token(None)
             if not timeline.retired_metrics_recorded:
@@ -1746,6 +1913,7 @@ class AudioIngress:
             if timeline is None or timeline.stream_epoch != fault.stream_epoch:
                 return
             self._faults += 1
+            self._late_recovery_attempts = 0
             self._revoke_publication()
             record_realtime_trace(
                 "audio_input_fault",
@@ -2010,6 +2178,9 @@ class AudioIngress:
         ownership = self._backend.ownership_snapshot()
         capability_epoch = self._active_epoch or ownership.stream_epoch
         self._capability_version += 1
+        # No local capture means no barge allowance: suspended/stopped/faulted
+        # snapshots always report unknown/ptt even before the epoch is revoked.
+        profile = self._device_profile if local_capture_available else None
         snapshot = InputCapabilitySnapshot(
             state=state,
             version=self._capability_version,
@@ -2017,6 +2188,8 @@ class AudioIngress:
             reason=reason,
             wake_available=wake_available,
             local_capture_available=local_capture_available,
+            route_kind=profile.key.route_kind.value if profile is not None else "unknown",
+            allowed_barge_mode=profile.allowed_barge_mode if profile is not None else "ptt",
         )
         self._capability = snapshot
         return snapshot
@@ -2033,6 +2206,8 @@ class AudioIngress:
             local_capture_available=snapshot.local_capture_available,
             ptt_upload_available=snapshot.ptt_upload_available,
             text_available=snapshot.text_available,
+            route_kind=snapshot.route_kind,
+            allowed_barge_mode=snapshot.allowed_barge_mode,
         )
 
     def _publish_capability(
@@ -2220,6 +2395,11 @@ class AudioIngress:
             return self._capability
 
     @property
+    def device_profile(self) -> voice_backend.DeviceProfileSnapshot | None:
+        """Return the D9 snapshot of the active epoch, ``None`` while revoked."""
+        return self._device_profile
+
+    @property
     def stream_epoch(self) -> int | None:
         """Return the active epoch, if any."""
         return self._active_epoch
@@ -2400,7 +2580,86 @@ def audio_ingress_config_from_mapping(  # noqa: C901 - strict parsing plus cross
     if config.reopen_initial_backoff_s > config.reopen_max_backoff_s:
         msg = "reopen_initial_backoff_s must not exceed reopen_max_backoff_s"
         raise ValueError(msg)
-    return config
+    return replace(
+        config,
+        route_observer_enabled=_route_observer_enabled(values.get("route_observer")),
+        **_barge_in_config(values.get("barge_in")),
+    )
+
+
+def _route_observer_enabled(raw: object) -> bool:
+    if raw is None:
+        return False
+    if not isinstance(raw, Mapping):
+        msg = "realtime.single_audio_ingress.route_observer must be a mapping"
+        raise ValueError(msg)  # noqa: TRY004 - config validation contract
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        msg = "realtime.single_audio_ingress.route_observer.enabled must be a boolean"
+        raise ValueError(msg)  # noqa: TRY004 - config validation contract
+    return enabled
+
+
+_PROFILE_KEY_FIELDS = (
+    "input_uid",
+    "output_uid",
+    "backend",
+    "route_kind",
+    "aec_mode",
+    "input_sample_rate",
+    "output_sample_rate",
+)
+
+
+def _accepted_profile(entry: object) -> voice_backend.DeviceProfileKey | None:
+    """Parse one exact D9 key; anything malformed or non-headphones is skipped."""
+    if not isinstance(entry, Mapping) or set(entry) != set(_PROFILE_KEY_FIELDS):
+        return None
+    strings = {name: entry[name] for name in ("input_uid", "output_uid", "backend", "aec_mode")}
+    rates = {name: entry[name] for name in ("input_sample_rate", "output_sample_rate")}
+    if (
+        not isinstance(strings["input_uid"], str)
+        or not isinstance(strings["output_uid"], str)
+        or not isinstance(strings["backend"], str)
+        or strings["aec_mode"] != "none"
+        or entry["route_kind"] != voice_backend.RouteKind.HEADPHONES.value
+        or any(isinstance(rate, bool) or not isinstance(rate, int) for rate in rates.values())
+    ):
+        return None
+    return voice_backend.DeviceProfileKey(
+        input_uid=strings["input_uid"],
+        output_uid=strings["output_uid"],
+        backend=strings["backend"],
+        route_kind=voice_backend.RouteKind.HEADPHONES,
+        input_sample_rate=int(rates["input_sample_rate"]),
+        output_sample_rate=int(rates["output_sample_rate"]),
+    )
+
+
+def _barge_in_config(raw: object) -> dict[str, Any]:
+    """Fail closed to ``ptt`` and an empty accepted list on any malformed value."""
+    values = raw if isinstance(raw, Mapping) else {}
+    if raw is not None and not isinstance(raw, Mapping):
+        LOGGER.warning("realtime.single_audio_ingress.barge_in is not a mapping; using ptt")
+    mode = values.get("detection_mode", "ptt")
+    if mode not in {"ptt", "keyword_two_stage"}:
+        LOGGER.warning(
+            "realtime.single_audio_ingress.barge_in.detection_mode=%r unsupported; using ptt",
+            mode,
+        )
+        mode = "ptt"
+    accepted_raw = values.get("accepted_natural_profiles", [])
+    if not isinstance(accepted_raw, list):
+        LOGGER.warning("barge_in.accepted_natural_profiles is not a list; accepting none")
+        accepted_raw = []
+    accepted: list[voice_backend.DeviceProfileKey] = []
+    for entry in accepted_raw:
+        key = _accepted_profile(entry)
+        if key is None:
+            LOGGER.warning("barge_in.accepted_natural_profiles entry skipped: %r", entry)
+            continue
+        accepted.append(key)
+    return {"barge_detection_mode": mode, "accepted_natural_profiles": tuple(accepted)}
 
 
 __all__ = [
