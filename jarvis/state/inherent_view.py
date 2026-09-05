@@ -32,7 +32,10 @@ sent (D16, and D13's "bounded ActionViewProjection"):
   oldest evicted first, so a snapshot carries every open group plus a bounded
   recent history and the fold never grows with the log;
 - at most :data:`RECENT_TERMINAL_ACTION_LIMIT` actions in a canonical terminal
-  are retained, oldest evicted first, for the same reason;
+  are retained, oldest evicted first, for the same reason, and an action the
+  Pre-action Gate refused is retired at its verdict — L3 dispatches nothing
+  after a non-``pass`` outcome, so it would otherwise sit in every snapshot
+  as ``proposed`` for the life of the log;
 - a closed response whose segments exceed :data:`INLINE_DOCUMENT_BUDGET_BYTES`
   of UTF-8 keeps a whole-segment prefix as its preview plus a
   :class:`DocumentReference` naming the durable row that carries the complete
@@ -172,6 +175,7 @@ _CANCEL_RESOLUTION_OF_STATE: Final[dict[str, str]] = {
     "timeout_assumed": "failed",
 }
 _CANCEL_SETTLED_STATES: Final[frozenset[str]] = frozenset({"rejected", "resolved"})
+_CANCEL_LIVE_STATES: Final[frozenset[str]] = frozenset({"received", "authorized", "quiescing"})
 _DEFAULT_RISK: Final[str] = "unknown"
 _CLEANUP_STATE_OF_TYPE: Final[dict[str, CleanupState]] = {
     "worker.quiesced": "quiesced",
@@ -645,7 +649,7 @@ class InherentView:
         elif event_type in CONFIRMATION_EVENT_TYPES:
             return self._fold_confirmation(cursor, event_type, payload, correlation) or None
         elif event_type == GATE_EVENT_TYPE:
-            self._fold_cancel_gate(cursor, payload, source_event_id)
+            self._fold_gate(cursor, payload, source_event_id)
         elif event_type == INPUT_CORRELATION_TYPE:
             self._remember_request(payload)
         return None
@@ -845,12 +849,16 @@ class InherentView:
             return
         arguments = payload.get("arguments")
         target = _string(arguments, "target_action_id") if isinstance(arguments, dict) else None
-        if target is None:
+        if target is None or target not in self._actions:
+            # The trail is only reachable through its target's view, so a
+            # target this fold does not hold is nothing to attach it to; that
+            # also keeps the trail bounded by the actions it hangs off.
             return
         live = self._cancels.get(self._cancel_of_target.get(target, ""))
-        if live is not None and live.state not in _CANCEL_SETTLED_STATES:
-            # D13: a second request while one is in flight resolves to the
-            # existing request rather than creating a second cancel state.
+        if live is not None and live.state in _CANCEL_LIVE_STATES:
+            # D13: a second request while one is received / authorized /
+            # quiescing resolves to the existing request rather than creating
+            # a second cancel state.
             return
         self._cancels[request_id] = CancelRequestView(
             request_id=request_id,
@@ -871,16 +879,44 @@ class InherentView:
             cancel, state=state, revision_cursor=cursor, reason_code=reason or cancel.reason_code,
         )
 
-    def _fold_cancel_gate(
+    def _fold_gate(
         self, cursor: int, payload: Mapping[str, Any], source_event_id: str | None,
     ) -> None:
-        """Move a received request on its Pre-action Gate verdict."""
+        """Apply one Pre-action Gate verdict to the action it names.
+
+        It settles a cancel request and, when it does not pass, retires the
+        action it refused: L3 returns without dispatching on any non-``pass``
+        outcome, so no terminal will ever arrive for that ``action_id`` and no
+        wire state resolves a stuck ``proposed``.  An accepted confirmation re-proposes,
+        which folds a fresh view.
+        """
         if payload.get("gate") != "pre_action":
             return
+        passed = payload.get("outcome") == "pass"
+        self._settle_cancel_on_gate(cursor, payload, source_event_id, passed=passed)
+        action_id = _string(payload, "action_id")
+        if passed or action_id is None:
+            return
+        self._actions.pop(action_id, None)
+        self._dispatched.discard(action_id)
+
+    def _settle_cancel_on_gate(
+        self,
+        cursor: int,
+        payload: Mapping[str, Any],
+        source_event_id: str | None,
+        *,
+        passed: bool,
+    ) -> None:
+        """Move a received cancel request on its own verdict.
+
+        Its :class:`CancelRequestView` outlives the retirement above: D13 keeps
+        a rejected request visible against its target.
+        """
         cancel = self._cancel_of_gate(payload, source_event_id)
         if cancel is None or cancel.state != "received":
             return
-        if payload.get("outcome") == "pass":
+        if passed:
             self._move_cancel(cursor, cancel.request_id, "authorized")
             return
         reasons = payload.get("reasons")

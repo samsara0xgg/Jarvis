@@ -180,19 +180,23 @@ def _open_payload(response: str, group: str, turn: str) -> dict[str, Any]:
     }
 
 
-def _cancel_trail(fold: _Fold, target: str, *, outcome: str = "pass") -> None:
-    """Emit the A5 rows up to the request's dispatch, exactly as L3 writes them."""
+def _cancel_proposal(fold: _Fold) -> None:
+    """The A5 request row itself, as L3 writes it (target frozen into arguments)."""
     proposal = fold.row(
         "action.proposed",
         _proposed(
             "ACANCEL",
             "cancel_action",
-            target=f"action:{target}",
-            arguments={"target_action_id": target, "reason": "停下"},
+            target="action:ATARGET",
+            arguments={"target_action_id": "ATARGET", "reason": "停下"},
         ),
         uid="uid_proposal",
     )
     assert proposal is not None
+
+
+def _cancel_verdict(fold: _Fold, outcome: str = "pass") -> None:
+    """Its Pre-action Gate verdict, carrying both join keys the emitter sets."""
     fold.row(
         "gate.evaluated",
         {
@@ -203,6 +207,13 @@ def _cancel_trail(fold: _Fold, target: str, *, outcome: str = "pass") -> None:
         },
         source_event_id="uid_proposal",
     )
+
+
+def _cancel_trail(fold: _Fold, target: str, *, outcome: str = "pass") -> None:
+    """Emit the A5 rows up to the request's verdict, exactly as L3 writes them."""
+    assert target == "ATARGET"
+    _cancel_proposal(fold)
+    _cancel_verdict(fold, outcome)
 
 
 def _encoder(connection_id: str) -> Any:  # noqa: ANN401 — the presenter's FrameEncoder alias.
@@ -330,6 +341,39 @@ def test_cleanup_state_folds_the_trio_and_defaults_to_none() -> None:
     }
 
 
+def test_a_refused_proposal_is_retired_at_its_verdict() -> None:
+    """L3 dispatches nothing after a non-pass outcome, so `proposed` never resolves."""
+    fold = _Fold()
+    refused = []
+    for index, outcome in enumerate(("refuse", "confirm_required")):
+        refused.append(fold.changes("action.proposed", _proposed(f"AR{index}", "write_file"))[0])
+        fold.row(
+            "gate.evaluated",
+            {
+                "gate": "pre_action",
+                "outcome": outcome,
+                "reasons": [f"{outcome}_reason"],
+                "action_id": f"AR{index}",
+            },
+        )
+    fold.row("action.proposed", _proposed("AKEEP", "read_file"))
+    fold.row(
+        "gate.evaluated",
+        {"gate": "pre_action", "outcome": "pass", "reasons": [], "action_id": "AKEEP"},
+    )
+    fold.row("action.authorized", {"action_id": "AKEEP"})
+    kept = [action.action_id for action in fold.view.checkpoint(through_cursor=fold.cursor).actions]
+    # An accepted confirmation re-proposes; the fold rebuilds from that row.
+    reproposed = fold.changes("action.proposed", _proposed("AR1", "write_file"))[0]
+
+    assert [change["state"] for change in refused] == ["proposed", "proposed"]
+    assert kept == ["AKEEP"]
+    assert (reproposed["state"], reproposed["label"]) == ("proposed", "write_file")
+    assert [
+        action.action_id for action in fold.view.checkpoint(through_cursor=fold.cursor).actions
+    ] == ["AKEEP", "AR1"]
+
+
 def test_terminal_actions_are_bounded_and_open_ones_are_never_evicted() -> None:
     """D13's bounded projection: the fold never grows with the log."""
     fold = _Fold()
@@ -358,7 +402,9 @@ def test_the_cancel_request_walks_received_authorized_quiescing_resolved() -> No
     fold.row("action.running", {"action_id": "ATARGET"})
 
     walk = []
-    _cancel_trail(fold, "ATARGET")
+    _cancel_proposal(fold)
+    walk.append(fold.action("ATARGET").cancel_request)
+    _cancel_verdict(fold)
     walk.append(fold.action("ATARGET").cancel_request)
     fold.row("action.authorized", {"action_id": "ACANCEL"})
     fold.row("action.dispatched", {"action_id": "ACANCEL"})
@@ -369,9 +415,9 @@ def test_the_cancel_request_walks_received_authorized_quiescing_resolved() -> No
     walk.append(fold.action("ATARGET").cancel_request)
 
     assert [step.state for step in walk if step is not None] == [
-        "authorized", "quiescing", "quiescing", "resolved",
+        "received", "authorized", "quiescing", "quiescing", "resolved",
     ]
-    assert [step.revision_cursor for step in walk if step is not None] == [5, 7, 7, 9]
+    assert [step.revision_cursor for step in walk if step is not None] == [4, 5, 7, 7, 9]
     assert walk[-1] is not None
     assert (walk[-1].reason_code, walk[-1].request_id) == ("cancelled", "ACANCEL")
     assert [c["kind"] for c in cancelled] == ["action.upsert"]
@@ -429,6 +475,23 @@ def test_the_two_unhappy_ack_statuses_and_already_terminal_settle_the_request() 
         "unconfirmed": ("failed", "unconfirmed"),
         "already_terminal": ("resolved", "already_terminal"),
     }
+
+
+def test_the_requests_own_terminal_fails_it_with_its_reason_code() -> None:
+    """`failed` is a cancel handler or dispatch-debt failure with a safe reason (D13)."""
+    fold = _Fold()
+    fold.row("action.proposed", _proposed("ATARGET", "spawn_worker"))
+    fold.row("action.dispatched", {"action_id": "ATARGET"})
+    _cancel_trail(fold, "ATARGET")
+    fold.row("action.dispatched", {"action_id": "ACANCEL"})
+    fold.row(
+        "action.failed",
+        {"action_id": "ACANCEL", "reason": "handler_raised", "error": "Traceback ..."},
+    )
+    cancel = fold.action("ATARGET").cancel_request
+
+    assert cancel is not None
+    assert (cancel.state, cancel.reason_code) == ("failed", "handler_raised")
 
 
 def test_a_target_that_finishes_first_resolves_the_request_as_completed_before_cancel() -> None:
@@ -749,6 +812,7 @@ def test_the_catch_up_replays_action_and_confirmation_deltas_in_cursor_order(
         ["action.upsert"], ["confirmation.upsert"], ["confirmation.cleared"],
     ]
     assert payloads[0][0]["state"] == "dispatched"
+    assert payloads[0][0]["revision"] == 2  # the row's own events.id, not a fixture counter
     assert payloads[1][0]["action_id"] == "A0"
     assert payloads[2][0]["reason"] == "accepted"
     assert staging.checkpoint.actions[0].canonical_state == "proposed"
