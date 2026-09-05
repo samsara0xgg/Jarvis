@@ -648,7 +648,7 @@ def test_no_cursor_beyond_h_before_ack_then_catch_up_replays_exactly_h_to_b(tmp_
 
 
 def test_ack_validation_follows_d11_rule_7(tmp_path: Path) -> None:
-    """D11 rule 7: ack past last sent, regressing duplicate, and wrong snapshot id or H."""
+    """D11 rule 7: exact duplicate ignored; regression, past last sent, wrong id or H rejected."""
 
     async def _body() -> None:
         rig = _Rig(tmp_path)
@@ -660,12 +660,20 @@ def test_ack_validation_follows_d11_rule_7(tmp_path: Path) -> None:
             assert client.last_sent_cursor == ids[-1]
             await client.on_frame(_ack("C1", ids[-1]))
             assert client.last_acked_cursor == ids[-1]
-            await client.on_frame(_ack("C1", ids[0]))
+            await client.on_frame(_ack("C1", ids[-1]))
             assert client.last_acked_cursor == ids[-1]
             assert socket.close_state() is None
-            await client.on_frame(_ack("C1", ids[-1] + 1))
+            await client.on_frame(_ack("C1", ids[0]))
             assert socket.close_state() == (1002, "protocol_error")
             assert client.closed
+
+            past_socket, past, _ = await rig.adopt("C4")
+            more = rig.turn(1)
+            await _settle()
+            assert past.last_sent_cursor == more[-1]
+            await past.on_frame(_ack("C4", more[-1] + 1))
+            assert past_socket.close_state() == (1002, "protocol_error")
+            assert past.closed
 
             other_socket, other = await rig.connect("C2")
             end = other_socket.of_type("snapshot.end")[0]["payload"]

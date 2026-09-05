@@ -163,11 +163,12 @@ class InherentClient:
             self._ack_event.set()
         elif ack.snapshot_id is not None:
             return "snapshot ack with no active snapshot"
-        elif ack.through_cursor > self._last_sent_cursor:
-            return "ack past last sent cursor"
+        elif not (self._last_acked_cursor <= ack.through_cursor <= self._last_sent_cursor):
+            return "ack outside [last acked, last sent]"
         else:
-            # A regressing or repeated cumulative ACK carries nothing new (rule 7).
-            self._last_acked_cursor = max(self._last_acked_cursor, ack.through_cursor)
+            # Rule 7: only an exact duplicate of the last cumulative ACK is
+            # tolerated; it carries nothing new.
+            self._last_acked_cursor = ack.through_cursor
         return None
 
     async def detach(self) -> None:
