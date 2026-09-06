@@ -434,3 +434,13 @@ repository, stop and report; do not redesign. Or stop after 45 turns.
   mutated the fix twice (dropping the over-budget guard fails test 3 in 0.22s;
   dropping `_capacity.set()` fails test 1), so the cases are not vacuous. Only
   confirmed finding fixed: the module docstring's stale close vocabulary.
+- Hub ruling on the shared-`_enqueue` placement: ACCEPTED as implemented. The
+  lane placed the over-budget check in the shared `_enqueue`, so an
+  already-adopted client handed a single live frame over `durable_bytes` now
+  closes with `frame_over_budget` instead of `client_backpressure`. The card's
+  "post-adoption rule 3 unchanged" boundary was about not relaxing rule 3's
+  depth limit, which is untouched; this change only stops mislabelling a
+  different failure as backpressure. Narrowing it to the handoff would require
+  threading a flag into `_enqueue` to preserve a wrong label on a
+  near-unreachable path. Card boundary wording was imprecise; the
+  implementation is right.
