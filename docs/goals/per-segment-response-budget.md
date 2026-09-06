@@ -393,5 +393,99 @@ if the live run cannot produce a >45 s answer, or if BlackHole 16ch cannot be
 opened. Or stop after 30 turns.
 
 ## Progress
-- (empty)
+- Baseline before any edit — `realtime-integration` at 81c9a61 —
+  `pytest -q -m "not live_llm and not live_codex"` → **1044 passed, 64
+  deselected** in 51.48s. That is this branch's baseline.
+- Per-segment budget + acceptance — 0f81acd — `_stream_with_prefix_fallback`
+  now takes a non-optional `budget` and an explicit `live: bool`;
+  `live = budget is not None` is gone and both reschedules are unconditional,
+  so the caller no longer withholds the budget on the non-live path. One
+  `LOGGER.warning` at the `except TimeoutError` seam names the response id and
+  the expired `response_timeout_s`. Regression: **1047 passed, 64 deselected**
+  (baseline + 3), including
+  `test_tag_before_playback_started_falls_back_to_emitted_time_speaking` and
+  `test_tag_after_playback_started_fails_the_run_and_stops_segments`, which pin
+  both meanings of `live` from the outside. Gates: lint-imports `6-layer
+  architecture KEPT` (1 kept, 0 broken, 98 files / 309 dependencies), ruff `All
+  checks passed!`, mypy `Success: no issues found in 245 source files`.
+- Hermetic positive — 0f81acd —
+  `test_a_multi_segment_answer_longer_than_the_budget_still_completes`: four
+  0.4 s provider segments (1.6 s total) against `response_timeout_s=1.0` emit
+  exactly one `surface.playback_completed`, zero `surface.playback_failed`,
+  `submitted_samples == total_samples`, and `heard_through_sequence` equal to
+  the last prepared sequence. Control RUN with the fix reverted: the same test
+  fails with `surface.playback_failed`, `'reason': 'tts_response_timeout'`,
+  `'heard_through_sequence': 1` of 3 — i.e. truncated mid-answer, the owner's
+  defect reproduced hermetically.
+- Hermetic negative — 0f81acd —
+  `test_a_single_segment_over_the_budget_still_fails_the_run_and_is_logged`:
+  one 4.0 s segment against a 1.0 s budget still emits
+  `surface.playback_failed` / `reason: tts_response_timeout`, and `caplog`
+  carries the new warning naming that response id. The budget still bites.
+- Canary — 0f81acd — `tests/canary/test_canary_playback_budget_not_liveness.py`
+  pins by AST that `budget` is keyword-only, non-optional and undefaulted, that
+  `live: bool` is its own parameter, and that the body compares `budget` to
+  `None` nowhere. Verified to FAIL against the pre-fix file
+  (`assert 'live' in ['budget']`). A canary and not a behavioural test because
+  a leaked `live=True` has no observable consequence on the non-live path.
+- LIVE RUN, both directions — lane's own daemon on **127.0.0.1:8011**, runtime
+  root **~/.jarvis-lane-b-budget**, own overlay copy (`response_timeout_s: 45.0`
+  kept, `speak_from_segments` absent, `single_audio_ingress.enabled: false`,
+  `realtime.output_device: "BlackHole 16ch"`), key loaded with
+  `set -a; source ~/.jarvis/env; set +a`. Same prompt both directions (a 12+
+  sentence Chinese explanation of virtual memory).
+  - BEFORE (pre-fix file, turn `T61240e01`): `surface.playback_started`
+    03:37:42.539Z → `surface.playback_failed` 03:38:27.540Z = **45.001 s**,
+    `reason: tts_response_timeout`, `submitted_samples: 2101696 <
+    total_samples: 2232640` (2.728 s of prepared speech never spoken),
+    `heard_through_sequence: 3` while sequence 4 was already prepared,
+    `provider: "minimax_ws_streaming"`. The owner's ledger figure reproduced to
+    the millisecond.
+  - AFTER (turn `T35427691`, response `RESP7b099053a6b1473cb95a00ba1eb0c1d3`):
+    `surface.playback_completed`, zero `surface.playback_failed`,
+    `submitted_samples == total_samples == 8423624`,
+    `total_samples / 48000 = 175.49 s > 45`, `heard_through_sequence: 14`
+    equal to the highest prepared `sequence` (14 of 14 prepared),
+    `provider: "minimax_ws_streaming"`. Nearly four times the old cliff, spoken
+    end to end.
+  - Anti-false-PASS guard: both terminals carry `provider:
+    "minimax_ws_streaming"` and `submitted_samples > 0`, so neither is a
+    `macos_say` 0 == 0 pass.
+  - Owner's environment untouched: his daemon stayed up on 8009 (pid 45429,
+    root `~/.jarvis-allen-test`) across both runs, the `realtime-live-test`
+    worktree and the `~/.jarvis-realtime-test` / `~/.jarvis-audio-test` scripts
+    were only read, never written. No device switch was issued —
+    `realtime.output_device` opens BlackHole directly — and the macOS system
+    default output read back as `MacBook Pro Speakers`, unchanged. Lane daemon
+    stopped afterwards; 8011 free.
+- Docs to sync — **none**, as the card predicted, each re-verified: the only
+  `response_timeout` / `tts_response_timeout` hits outside this card are
+  `docs/live-burn-2026-09-05-crash-recovery.md:270` (a historical burn record)
+  and `docs/goals/incremental-tts-from-permitted-segments.md:43,89` (a prior
+  run record); `playback budget|tts budget|speech budget` has no hits outside
+  this card; `docs/spec.html` timeout hits are action-lifecycle and ASR only;
+  ADR-0006's `surface.playback_failed` payload shape and ADR-0008:807's L4
+  commit/delivery budget are both unchanged by this diff. The bound is owned by
+  the code comment at the reschedule, which this card rewrote.
+- Owner follow-up, not a blocker: the live runs were text-submitted, so
+  mic-in-the-loop was never exercised (`single_audio_ingress.enabled: false` by
+  card instruction, to avoid contending with the owner's microphone).
+- Verifier (fresh context, opus, `realtime-integration...HEAD`) — no confirmed
+  defect. It independently re-ran the reverted-fix control and re-derived the
+  live evidence from a read-only copy of the lane ledger, matching every field.
+  Two of its five minor observations were fixed in 518f56f:
+  - The comment claimed the window covered "this segment's wait". It does not:
+    `_await_segments` for the current segment runs before the reschedule, so a
+    window covers this segment's I/O and playback and runs into the *next*
+    segment's wait. Restated accordingly.
+  - The positive test pinned the non-live path only structurally. It now
+    asserts the activation carries no `incremental` flag.
+  Three observations were left alone as card-sanctioned or out of scope, and
+  are reported to the hub rather than fixed here: the macOS `say` fallback puts
+  the whole remaining answer in one window (a degraded path, and still strictly
+  better than the pre-fix anchor); the `elapsed` assertion spans pipeline
+  setup, with the discriminating power coming from the completed row and the
+  absent failure row as the card itself says; and non-live foreground occupancy
+  is now bounded only by `n_segments x response_timeout_s`, which is exactly
+  the "Total generation length is unbounded" contract this card creates.
 

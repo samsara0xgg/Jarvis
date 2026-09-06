@@ -2121,7 +2121,7 @@ class StreamingTTSPipeline:
             measurement_semantics="media_owner_started_provider_request",
         )
 
-    async def _play_response(  # noqa: C901, PLR0912 - bounded lifecycle cleanup FSM
+    async def _play_response(  # noqa: C901, PLR0912, PLR0915 - bounded lifecycle cleanup FSM
         self,
         active: _ActiveResponse,
     ) -> None:
@@ -2166,7 +2166,8 @@ class StreamingTTSPipeline:
                 completed = await self._stream_with_prefix_fallback(
                     active,
                     segments,
-                    budget=budget if live else None,
+                    budget=budget,
+                    live=live,
                 )
                 if active.advance_after_cleanup or self._active is not active:
                     return
@@ -2183,6 +2184,11 @@ class StreamingTTSPipeline:
         except asyncio.CancelledError:
             raise
         except TimeoutError:
+            LOGGER.warning(
+                "streaming TTS response %s exceeded response_timeout_s=%.3f for one segment",
+                response.response_id,
+                self._config.response_timeout_s,
+            )
             await self._fail_active(active, reason="tts_response_timeout", retryable=True)
         except Exception as exc:  # noqa: BLE001 - provider adapters fail heterogeneously
             LOGGER.warning("streaming TTS response failed: %r", exc)
@@ -2236,9 +2242,10 @@ class StreamingTTSPipeline:
         active: _ActiveResponse,
         segments: list[tuple[int, str, str]],
         *,
-        budget: asyncio.Timeout | None = None,
+        budget: asyncio.Timeout,
+        live: bool,
     ) -> bool:
-        """Walk ``segments``; with a ``budget`` the list grows until the buffer is emitted."""
+        """Walk ``segments``; while ``live`` the list grows until the buffer is emitted."""
         lease = active.lease
         accepted_total = 0
         last_error: BaseException | None = None
@@ -2246,7 +2253,6 @@ class StreamingTTSPipeline:
         session: TTSSession | None = None
         iterator: AsyncIterator[TTSAudioChunk | TTSSegmentFinished] | None = None
         provider_first = False
-        live = budget is not None
         segment_index = 0
         while True:
             if segment_index >= len(segments) and not (
@@ -2257,12 +2263,13 @@ class StreamingTTSPipeline:
                 await self._fail_active(active, reason="stream_chunk_tagged", retryable=False)
                 return False
             sequence, text, segment_hash = segments[segment_index]
-            if budget is not None:
-                # The bound covers one segment's wait plus its provider I/O,
-                # never the whole generation of a still-streaming response.
-                budget.reschedule(
-                    asyncio.get_running_loop().time() + self._config.response_timeout_s,
-                )
+            # Opened after this segment's wait and closed at the next segment's
+            # reschedule, so the bound covers one segment's provider I/O plus its
+            # backpressured playback - plus the drain, for the final segment -
+            # never the whole generation, whose length is deliberately unbounded.
+            budget.reschedule(
+                asyncio.get_running_loop().time() + self._config.response_timeout_s,
+            )
             emit_event(
                 self._require_conn(),
                 type="surface.playback_segment_prepared",
@@ -2413,11 +2420,10 @@ class StreamingTTSPipeline:
                     while live and await self._await_segments(active, segments):
                         if active.response.tagged:
                             break
-                        if budget is not None:
-                            budget.reschedule(
-                                asyncio.get_running_loop().time()
-                                + self._config.response_timeout_s,
-                            )
+                        budget.reschedule(
+                            asyncio.get_running_loop().time()
+                            + self._config.response_timeout_s,
+                        )
                     if live and active.response.tagged:
                         await self._fail_active(
                             active,
