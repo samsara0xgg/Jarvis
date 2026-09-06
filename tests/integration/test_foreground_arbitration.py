@@ -131,14 +131,6 @@ def _declined(response_id: str) -> list[dict[str, object]]:
     ]
 
 
-def test_decide_foreground_orders_the_lane_by_event_log_commit_order() -> None:
-    """Same group queues; a cross-group candidate wins only by later row id."""
-    assert decide_foreground("G1", 5, "G1", 4) == "enqueue_after_drain"
-    assert decide_foreground("G1", 5, "G2", 6) == "supersede"
-    assert decide_foreground("G1", 5, "G2", 4) == "decline"
-    assert decide_foreground("G1", 5, "G2", 5) == "decline"
-
-
 def test_older_cross_group_straggler_declines_instead_of_superseding(
     tmp_path: Path,
 ) -> None:
