@@ -400,3 +400,13 @@ Or stop after 30 turns.
   fail-closed `is True` rule, and `cancel_timeout_ms` is not read by
   `Wave4ResponseFlags.from_mapping`), and independently agreed with the
   ADR-0008 D6 unchanged judgement.
+- Hub ruling on verifier finding D2: ACCEPTED as implemented, no change.
+  `_cancel_unheard_commentary` unregisters after the cancel returns, so a
+  microsecond window answers `already_terminal` instead of
+  `unknown_response`, and the unregister is skipped if that call raises.
+  Both are safe here for a reason worth writing down: the `phase == "final"`
+  filter at the barge-in call site means a commentary entry left in
+  `runtime.response_runs` — open or terminal — can never make barge-in
+  ambiguous. What remains is a bounded dict entry on an exception path, and
+  the entry stays in `open_by_action` for the shutdown sweep. Tightening it
+  would be redesign against the card's own explicit wording, not a fix.
