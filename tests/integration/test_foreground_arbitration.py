@@ -19,7 +19,7 @@ from jarvis.decision.response_run import decide_foreground
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
-from jarvis.surface import voice_media
+from jarvis.surface import voice_media, voice_tts
 from tests.integration.test_wave2_streaming_media import (
     _Behavior,
     _CallbackPump,
@@ -32,6 +32,7 @@ from tests.integration.test_wave2_streaming_media import (
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Callable
     from pathlib import Path
     from typing import Any
 
@@ -103,6 +104,21 @@ def _emit_emitted(
         conn,
         event_type="surface.response_emitted",
         payload={**_identity(response_id, group_id, turn_id), "text": text},
+    )
+
+
+def _whole(
+    conn: sqlite3.Connection,
+    *,
+    response_id: str,
+    group_id: str,
+    turn_id: str,
+    text: str,
+) -> list[tuple[int, Event]]:
+    """Emit one complete response: open, chunk, emitted."""
+    identity = {"response_id": response_id, "group_id": group_id, "turn_id": turn_id}
+    return _emit_open(conn, text=text, **identity) + _emit_emitted(
+        conn, text=text, **identity,
     )
 
 
@@ -190,91 +206,152 @@ def test_older_cross_group_straggler_declines_instead_of_superseding(
     assert [attributes["verdict"] for attributes in _declined("ROLD")] == ["decline"]
 
 
-def test_tombstoned_incumbent_never_queues_a_cross_group_candidate(
+def _trace(name: str, response_id: str) -> list[dict[str, object]]:
+    return [
+        dict(point.attributes)
+        for point in realtime_trace_snapshot()
+        if point.name == name and point.attributes.get("response_id") == response_id
+    ]
+
+
+def _held_terminal(
+    response_id: str,
+    actions: list[str],
+) -> tuple[Callable[..., object], threading.Event]:
+    """Fault one terminal append so the incumbent stays tombstoned for a retry."""
+    original = terminalize_playback
+    tombstoned = threading.Event()
+
+    def _faulted(*args: object, **kwargs: object) -> object:
+        payload = cast("dict[str, object]", kwargs["payload"])
+        if payload["response_id"] == response_id and not tombstoned.is_set():
+            tombstoned.set()
+            msg = "injected playback terminal append fault"
+            raise RuntimeError(msg)
+        outcome = original(*cast("Any", args), **cast("Any", kwargs))
+        if payload["response_id"] == response_id:
+            actions.append(f"terminal-durable:{response_id}")
+        return outcome
+
+    return _faulted, tombstoned
+
+
+def _debt_pipeline(
+    db_path: Path,
+    provider: _FakeProvider,
+    player: voice_tts.AudioStreamPlayer,
+) -> voice_media.StreamingTTSPipeline:
+    return voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        # A first faulted terminal append leaves the incumbent tombstoned for a
+        # whole retry delay; that is the draining-lane branch under test.
+        config=replace(_config(), durability_retry_s=0.5),
+        foreground_decision_callable=decide_foreground,
+        start_player=False,
+    )
+
+
+def test_draining_lane_is_granted_to_a_cross_group_winner_and_purged(
     tmp_path: Path,
 ) -> None:
-    """A cross-group winner declines rather than entering the same-group drain lane."""
-    db_path = tmp_path / "foreground-debt.db"
+    """A tombstoned incumbent is draining, not occupying: the winner speaks."""
+    db_path = tmp_path / "foreground-grant.db"
     conn = open_event_log(db_path)
     provider = _FakeProvider(
         {("RDEBT", 0): _Behavior("success", final_delay_s=0.01)},
         candidate_count=1,
     )
     player = _player()
-    pipeline = voice_media.StreamingTTSPipeline(
-        provider=provider,
-        player=player,
-        conn_factory=lambda: open_event_log(db_path),
-        boot_high_water_id=0,
-        # A first faulted terminal append leaves the incumbent tombstoned for
-        # a whole retry delay; that is the branch the candidate must not queue on.
-        config=replace(_config(), durability_retry_s=0.5),
-        foreground_decision_callable=decide_foreground,
-        start_player=False,
-    )
-    original_terminalize = terminalize_playback
-    tombstoned = threading.Event()
-
-    def _faulted_terminalize(*args: object, **kwargs: object) -> object:
-        payload = cast("dict[str, object]", kwargs["payload"])
-        if payload["response_id"] == "RDEBT" and not tombstoned.is_set():
-            tombstoned.set()
-            msg = "injected playback terminal append fault"
-            raise RuntimeError(msg)
-        return original_terminalize(*cast("Any", args), **cast("Any", kwargs))
-
+    pipeline = _debt_pipeline(db_path, provider, player)
+    faulted, tombstoned = _held_terminal("RDEBT", provider.actions)
     reset_realtime_trace()
     try:
         with (
-            patch.object(
-                voice_media,
-                "terminalize_playback",
-                side_effect=_faulted_terminalize,
-            ),
+            patch.object(voice_media, "terminalize_playback", side_effect=faulted),
             _CallbackPump(player),
         ):
-            incumbent = _emit_open(
-                conn,
-                response_id="RDEBT",
-                group_id="GDEBT",
-                turn_id="TDEBT",
+            asyncio.run(_submit_response(pipeline, _whole(
+                conn, response_id="RDEBT", group_id="GDEBT", turn_id="TDEBT",
                 text="incumbent answer",
-            ) + _emit_emitted(
-                conn,
-                response_id="RDEBT",
-                group_id="GDEBT",
-                turn_id="TDEBT",
-                text="incumbent answer",
-            )
-            asyncio.run(_submit_response(pipeline, incumbent))
+            )))
             assert tombstoned.wait(timeout=2.0)
-            candidate = _emit_open(
-                conn,
-                response_id="RNEXT",
-                group_id="GNEXT",
-                turn_id="TNEXT",
+            # Same group: the incumbent's own continuation queues behind it.
+            asyncio.run(_submit_response(pipeline, _whole(
+                conn, response_id="RCONT", group_id="GDEBT", turn_id="TDEBT",
+                text="same group continuation",
+            )))
+            # Newer group with a later row id: takes the draining lane.
+            asyncio.run(_submit_response(pipeline, _whole(
+                conn, response_id="RNEXT", group_id="GNEXT", turn_id="TNEXT",
                 text="cross group answer",
-            ) + _emit_emitted(
-                conn,
-                response_id="RNEXT",
-                group_id="GNEXT",
-                turn_id="TNEXT",
-                text="cross group answer",
-            )
-            asyncio.run(_submit_response(pipeline, candidate))
-            assert pipeline.wait_until_idle(timeout_s=2.0)
+            )))
+            assert pipeline.wait_until_idle(timeout_s=3.0)
     finally:
         assert pipeline.close(wait_timeout_s=2.0)
         conn.close()
-    assert ("RNEXT", 0) not in provider.opened
+    assert ("RNEXT", 0) in provider.opened
+    assert ("RCONT", 0) not in provider.opened
+    terminals = _terminal_rows(open_event_log(db_path))
+    terminal_kind = {str(payload["response_id"]): kind for kind, payload in terminals}
+    assert terminal_kind == {
+        "RDEBT": "surface.playback_completed",
+        "RNEXT": "surface.playback_completed",
+    }
+    assert provider.actions.index("terminal-durable:RDEBT") < provider.actions.index(
+        "open:RNEXT",
+    )
+    granted = _trace("media_foreground_draining_lane_granted", "RNEXT")
+    assert [attributes["purged_lane_depth"] for attributes in granted] == [1]
+
+
+def test_draining_lane_still_declines_a_cross_group_loser(tmp_path: Path) -> None:
+    """The grant is policy, not a hole: an older group loses the draining lane too."""
+    db_path = tmp_path / "foreground-grant-loser.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(
+        {("RDEBT", 0): _Behavior("success", final_delay_s=0.01)},
+        candidate_count=1,
+    )
+    player = _player()
+    pipeline = _debt_pipeline(db_path, provider, player)
+    faulted, tombstoned = _held_terminal("RDEBT", provider.actions)
+    reset_realtime_trace()
+    try:
+        with (
+            patch.object(voice_media, "terminalize_playback", side_effect=faulted),
+            _CallbackPump(player),
+        ):
+            # The straggler opens FIRST (lower row id) and emits LAST.
+            _emit_open(
+                conn,
+                response_id="ROLD",
+                group_id="GOLD",
+                turn_id="TOLD",
+                text="stale answer",
+            )
+            asyncio.run(_submit_response(pipeline, _whole(
+                conn, response_id="RDEBT", group_id="GDEBT", turn_id="TDEBT",
+                text="incumbent answer",
+            )))
+            assert tombstoned.wait(timeout=2.0)
+            asyncio.run(_submit_response(pipeline, _emit_emitted(
+                conn,
+                response_id="ROLD",
+                group_id="GOLD",
+                turn_id="TOLD",
+                text="stale answer",
+            )))
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+    finally:
+        assert pipeline.close(wait_timeout_s=2.0)
+        conn.close()
+    assert ("ROLD", 0) not in provider.opened
     terminals = _terminal_rows(open_event_log(db_path))
     terminal_kind = {str(payload["response_id"]): kind for kind, payload in terminals}
     assert terminal_kind == {"RDEBT": "surface.playback_completed"}
-    assert not [
-        point
-        for point in realtime_trace_snapshot()
-        if point.name == "media_terminal_debt_wait_enqueued"
-    ]
-    declined = _declined("RNEXT")
-    assert [attributes["verdict"] for attributes in declined] == ["supersede"]
+    declined = _declined("ROLD")
+    assert [attributes["verdict"] for attributes in declined] == ["decline"]
     assert declined[0]["terminal_commit_pending"] is True

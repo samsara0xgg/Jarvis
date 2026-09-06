@@ -1971,6 +1971,13 @@ class StreamingTTSPipeline:
             response.scheduled = True
             await self._schedule_response(response)
 
+    def _purge_after_drain(self) -> None:
+        """Drop every queued successor a foreground grant has displaced."""
+        while self._after_drain:
+            old = self._after_drain.popleft()
+            self._registry.terminalize(old.response_id)
+            self._responses.pop(old.response_id, None)
+
     def _unschedule(self, response: _ResponseBuffer) -> None:
         response.scheduled = False
         if response in self._after_drain:
@@ -1994,21 +2001,15 @@ class StreamingTTSPipeline:
             self._foreground_decision is not None
             and active.response.response_group_id != response.response_group_id
         ):
-            # ADR-0008 D8: a cross-group candidate takes the lane only when L3
-            # policy says it wins, and ADR-0006 keeps the drain lane
-            # same-group, so it never queues either. A tombstoned incumbent
-            # still owns the lane until its terminal is durable, so even a
-            # winner cannot be handed the lane here; declining is the only
-            # cross-group disposition left until C7 lands foreground_output.
-            # Cost of that window: a winner arriving mid-cleanup is silenced
-            # rather than queued, which the drain lane would have spoken.
+            # ADR-0008 D8: a cross-group candidate takes the lane only when
+            # L3 policy selects it; arriving is not permission.
             verdict = self._foreground_decision(
                 active.response.response_group_id,
                 active.response.row_id,
                 response.response_group_id,
                 response.row_id,
             )
-            if verdict != "supersede" or active.terminal_commit_pending:
+            if verdict != "supersede":
                 self._registry.terminalize(response.response_id)
                 self._responses.pop(response.response_id, None)
                 record_realtime_trace(
@@ -2020,6 +2021,23 @@ class StreamingTTSPipeline:
                     terminal_commit_pending=active.terminal_commit_pending,
                 )
                 return
+            if active.terminal_commit_pending:
+                # A tombstoned incumbent is draining, not occupying: the
+                # player released its lease at complete/interrupt_generation,
+                # so the winner may take the lane and only has to wait for the
+                # terminal debt below. D8 displaces a GROUP, so the grant
+                # discards that group's queued continuation exactly as the
+                # live-incumbent branch does -- otherwise which meaning of
+                # "supersede" applies would turn on sub-millisecond timing.
+                purged = len(self._after_drain)
+                self._purge_after_drain()
+                record_realtime_trace(
+                    "media_foreground_draining_lane_granted",
+                    response_id=response.response_id,
+                    response_group_id=response.response_group_id,
+                    incumbent_response_id=active.response.response_id,
+                    purged_lane_depth=purged,
+                )
         if active.terminal_commit_pending:
             if len(self._after_drain) >= self._config.response_lane_capacity:
                 self._registry.terminalize(response.response_id)
@@ -2061,10 +2079,7 @@ class StreamingTTSPipeline:
             self._registry.terminalize(response.response_id)
             self._responses.pop(response.response_id, None)
             return
-        while self._after_drain:
-            old = self._after_drain.popleft()
-            self._registry.terminalize(old.response_id)
-            self._responses.pop(old.response_id, None)
+        self._purge_after_drain()
         self._start_response(response)
 
     def _start_response(self, response: _ResponseBuffer) -> None:
