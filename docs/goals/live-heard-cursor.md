@@ -69,11 +69,12 @@ so the whole downstream heard-state chain is dead on real hardware.
   `cursor_quality == "estimated"`; `snapshot()` then advances
   `heard_through_sequence` and returns a non-empty `heard_text`.
 - A chunk that closes carrying the birth sentinel before a callback-report gap
-  can still be assigned a reported quality by a later `record_audible`, so the
-  residue is a checkpoint row with a non-empty `heard_text` and
-  `cursor_quality` `"unknown"`; that residue cannot reach `spoken_heard`
-  because the fold's quality gate (`jarvis/state/conversation_playback.py:212-213`)
-  accepts only `"estimated"` and `"measured_dac"`.
+  does not ride along as heard residue: `snapshot()`'s heard-prefix scan breaks
+  at `chunk.cursor_quality == "unknown"` (`jarvis/surface/voice_ledger.py:302`)
+  before appending that chunk's text, so no checkpoint row can ever carry a
+  non-empty `heard_text` alongside `cursor_quality` `"unknown"`; the fold's
+  quality gate (`jarvis/state/conversation_playback.py:212-213`) is therefore a
+  second line of defence, not the only one.
 - `finish_segment`'s escape hatch stays and stays *reachable*: it covers the
   opposite ordering, where the horizon crosses while the chunk is still open and
   `output_end_cursor is None`, which the `record_audible` loop skips by its own
@@ -367,8 +368,25 @@ Or stop after 30 turns.
   no implementation can satisfy alongside "first observation assigns" and "the
   escape hatch stays unedited" — the three constraints are mutually
   unsatisfiable, so the card, not the code, needs the ruling. Downstream is
-  unaffected: the checkpoint payload's `cursor_quality` is the ledger-level
-  value (`jarvis/surface/voice_media.py:2818`), and
+  unaffected: the checkpoint payload's `cursor_quality` is the per-chunk
+  `heard_quality` aggregate, not the ledger-level `self._cursor_quality`
+  (`jarvis/surface/voice_media.py:2871`), and
   `jarvis/state/conversation_playback.py:212-213` accepts only
   `{"estimated", "measured_dac"}`, so `spoken_heard` cannot be polluted by it.
   Reported to the hub for a decision.
+
+- Hub ruling (docs-only; card amended, code untouched) — the "unknown residue"
+  premise behind the verifier's escalation above does not hold against the
+  shipped code: `snapshot()`'s heard-prefix loop breaks at
+  `chunk.cursor_quality == "unknown"` (`jarvis/surface/voice_ledger.py:302`)
+  before appending that chunk's text, so `heard_quality` is only ever composed
+  from non-`"unknown"` per-chunk values and `_least_quality` cannot promote two
+  non-`"unknown"` inputs to `"unknown"` (`:337-351`). A checkpoint row can
+  therefore never carry a non-empty `heard_text` alongside `cursor_quality`
+  `"unknown"` — no such residue row exists, so the three constraints the
+  verifier called mutually unsatisfiable were never actually in conflict. The
+  Target behavior passage above was corrected to state this, and the
+  Verifier's stale `:2818` citation was fixed to `:2871` and re-described as
+  the per-chunk `heard_quality` aggregate rather than the ledger-level
+  `self._cursor_quality`. The escalation is closed; the Verifier entry above is
+  left unedited otherwise as the record of how the false premise arose.
