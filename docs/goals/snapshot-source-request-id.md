@@ -233,3 +233,19 @@ Or stop after 12 turns and report what is proven and what is not.
   correlation chain. docs/spec.html unchanged: grep for
   `source_client_request_id`, `sourceClientRequestId`, `pendingInputs`,
   `pending_inputs` returns 0 — the spec does not own this fact.
+- Test strengthened — 5c7bb49 — the case asserted only `isEmpty`, which a
+  blanket `removeAll()` would also satisfy; the opened path had its selective
+  counterpart and the snapshot path did not. A second pending row now survives
+  the adoption. Re-proved by removing the reducer clear: `XCTAssertEqual
+  failed: ("["R-2", "R-1"]") is not equal to ("["R-2"]")` at
+  InputSubmissionClientTests.swift:194 — the stale row named in the failure.
+  Restored; Swift 177/177, still one new case.
+- Verifier (opus, fresh context, `realtime-integration...HEAD`) — no defects;
+  it independently re-ran the Swift suite, pytest, and all three gates and
+  reproduced every number in the commit bodies. Its one actionable note was
+  the test-strength point above. Two facts it recorded, neither a defect:
+  `pendingInputs` has no UI consumer yet (`grep -rn pendingInputs
+  desktop/InherentCard/` is empty), so this fix lands in the state layer and
+  the panel symptom is not yet visible; and a group that has rolled out of the
+  snapshot's bounded history still leaves its row to bounded eviction, which
+  is outside this card.
