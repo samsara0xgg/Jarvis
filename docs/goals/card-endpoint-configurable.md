@@ -98,5 +98,6 @@ Stop and report instead of redesigning if the repository contradicts this card. 
 
 ## Progress
 - (implementation session appends here)
+- Slice 1, resolver + five call sites + tests — 709d90e — `bash scripts/test_inherent_swift.sh`: `Executed 189 tests, with 0 failures (0 unexpected) in 11.046 (11.064) seconds` (178 baseline + 11 new); `git grep -n 8006 desktop/inherent-swift/InherentCard/` returns one line, `BridgeBackend.swift:56:  static let defaultPort = 8006`; `git grep -n 127\.0\.0\.1` there returns one line, the resolver's URL builder; the malformed values `abc`, ``, `0`, `70000`, `80 09` each logged `[bridge] JARVIS_INHERENT_BRIDGE_PORT=<value> is not a port in 1-65535; using 8006` and still resolved to `http://127.0.0.1:8006/inherent/submit`.
 - Owner follow-up, not blocking acceptance: after this lands, Allen sets `JARVIS_INHERENT_BRIDGE_PORT=8009` in his shell, relaunches the card from a fresh build, and confirms it reaches the 8009 daemon. Only after he confirms may the `launcher.py` staleness check be revisited.
 
