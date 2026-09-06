@@ -82,6 +82,7 @@ from jarvis.decision.pre_route import (
 from jarvis.decision.response_run import (
     CancelAccepted,
     CancelAlreadyTerminal,
+    CancelPlaybackAuthorized,
     CancelTimedOut,
     ResponseCancelledError,
     ResponseCancelRequest,
@@ -1718,13 +1719,20 @@ def _start_drive_turn_response(
     return run, terminalizer, seam
 
 
-def make_response_cancel_callable(
+def make_response_cancel_callable(  # noqa: C901 - one seam, two scopes' exact outcome words
     runtime: JarvisRuntime,
+    *,
+    stop_foreground_output: Callable[[str], str] | None = None,
 ) -> Callable[[str, str, str], str]:
     """Build the injectable ``(response_id, scope, reason) -> outcome`` seam.
 
-    Returned strings: ``"cancelled"``, ``"already_terminal"``,
-    ``"unknown_response"``, ``"unsupported_scope"``, ``"timeout"``.
+    Returned strings for ``scope="generation"``: ``"cancelled"``,
+    ``"already_terminal"``, ``"unknown_response"``, ``"unsupported_scope"``,
+    ``"timeout"``. ``scope="foreground_output"`` adds L5's own words
+    ``"applied"``, ``"stale"`` and ``"uncertain"``, plus
+    ``"policy_hash_mismatch"`` and ``"policy_ignore"`` from L3's policy
+    check. Without ``stop_foreground_output`` there is no playback actor to
+    reach, so that scope answers ``"unsupported_scope"``.
 
     The callable opens its OWN connection per call. That is mandatory, not
     stylistic: ``open_event_log`` uses ``check_same_thread=True`` and the
@@ -1739,7 +1747,11 @@ def make_response_cancel_callable(
     committed_event_bus = runtime.committed_event_bus
     registry = runtime.response_runs
 
-    def _cancel(response_id: str, scope: str, reason: str) -> str:
+    def _cancel(  # noqa: PLR0911 - policy, timeout, CAS and playback outcomes stay distinct
+        response_id: str,
+        scope: str,
+        reason: str,
+    ) -> str:
         deadline = time.monotonic() + cancel_timeout_ms / 1000
 
         def _connect() -> sqlite3.Connection:
@@ -1778,6 +1790,10 @@ def make_response_cancel_callable(
             return "already_terminal"
         if isinstance(outcome, CancelTimedOut):
             return "timeout"
+        if isinstance(outcome, CancelPlaybackAuthorized):
+            if stop_foreground_output is None:
+                return "unsupported_scope"
+            return stop_foreground_output(response_id)
         return outcome.reason
 
     return _cancel

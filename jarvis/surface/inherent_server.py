@@ -189,10 +189,11 @@ class SubmitRequest(BaseModel):
 class CancelResponseRequest(BaseModel):
     """Body of ``POST /inherent/cancel-response`` (ADR-0008 D10).
 
-    ``scope`` defaults to ``"generation"`` — the only scope implemented in
-    Wave 4A. ``"foreground_output"`` needs a playback lease that does not
-    exist yet and is answered with ``{"outcome": "unsupported_scope"}``,
-    as is any unrecognized string.
+    ``scope`` defaults to ``"generation"``, which cancels the run itself.
+    ``"foreground_output"`` stops only the speech that is audible now and
+    leaves the run to finish on its own; under that scope ``reason`` is
+    ignored, because such a stop is always recorded as ``user_stop``. Any
+    unrecognized string is answered with ``{"outcome": "unsupported_scope"}``.
     """
 
     response_id: str
@@ -359,7 +360,13 @@ class InherentDeps:
             ``realtime.response.independent_response_cancel`` is on.
             Takes ``(response_id, scope, reason)`` and returns one of
             ``cancelled`` / ``already_terminal`` / ``unknown_response``
-            / ``unsupported_scope`` / ``timeout``. The injected-callable
+            / ``unsupported_scope`` / ``timeout``, or, for
+            ``scope="foreground_output"``, ``applied`` / ``stale`` /
+            ``uncertain`` / ``policy_ignore`` /
+            ``policy_hash_mismatch`` -- where ``uncertain`` means the
+            durable terminal is owed OR the playback actor did not answer
+            in time, never that the audio is confirmed stopped. The
+            injected-callable
             shape is what keeps ``jarvis/surface`` free of any
             ``jarvis.decision`` import. ``None`` (the default) means the
             ``/inherent/cancel-response`` route is never registered, so

@@ -445,8 +445,8 @@ lease:
 - **A confirmed barge-in can only stop a run that is still open.** A run is
   unregistered when generation ends, while its audio is still in the TTS
   queue, so an interrupt spoken over that playback tail returns `no_open_run`
-  and the speech continues. Stopping the tail needs the `foreground_output`
-  scope and its playback lease, which is the stop-speech card's work.
+  and the speech continues. The `foreground_output` scope now stops that tail
+  against the playback lease without terminalizing the run.
 - **The target is the single open `final` run, not the run that owns the
   current playback generation.** An open `phase="commentary"` run is not
   counted: the final run of an action-dispatching turn is `waiting_action`

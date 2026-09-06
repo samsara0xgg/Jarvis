@@ -1749,6 +1749,188 @@ def test_after_drain_same_group_and_foreground_supersede(tmp_path: Path) -> None
     assert terminal_kind["RS"] == "surface.playback_completed"
 
 
+def _count_rows(conn: sqlite3.Connection, sql: str, *params: object) -> int:
+    row = conn.execute(sql, params).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _playback_rows_for(conn: sqlite3.Connection, response_id: str, kind: str) -> int:
+    return _count_rows(
+        conn,
+        "SELECT count(*) FROM events WHERE type = ? "
+        "AND json_extract(payload_json, '$.response_id') = ?",
+        kind,
+        response_id,
+    )
+
+
+def _await_playback_started(conn: sqlite3.Connection, response_id: str) -> None:
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if _playback_rows_for(conn, response_id, "surface.playback_started") == 1:
+            return
+        time.sleep(0.005)
+    pytest.fail(f"{response_id} never reached surface.playback_started")
+
+
+def test_stop_foreground_output_interrupts_only_the_named_response(
+    tmp_path: Path,
+) -> None:
+    """H2/H3: the stop commits one user_stop terminal for exactly its target."""
+    db_path = tmp_path / "stop-speaking.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    hold = threading.Event()
+    provider.final_gates[("RSTOP", 0)] = hold
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    try:
+        with _CallbackPump(player):
+            speaking = _emit_response(
+                conn,
+                response_id="RSTOP",
+                group_id="GSTOP",
+                turn_id="TSTOP",
+                text="这一句正在朗读。",
+            )
+            asyncio.run(_submit_response(pipeline, speaking))
+            _await_playback_started(conn, "RSTOP")
+
+            # H3: an id that is not the active response changes nothing.
+            # The count is quiescent at 2 (segment_prepared + started): the
+            # lone segment is held at its final gate, so no further
+            # segment_prepared and no checkpoint can land mid-window.
+            playback_before = _count_rows(
+                conn,
+                "SELECT count(*) FROM events WHERE type LIKE 'surface.playback_%'",
+            )
+            assert pipeline.stop_foreground_output("RSTOP-NOT-ACTIVE") == "stale"
+            playback_after = _count_rows(
+                conn,
+                "SELECT count(*) FROM events WHERE type LIKE 'surface.playback_%'",
+            )
+            assert (playback_before, playback_after) == (2, 2)
+
+            # H2: the named target stops.
+            assert pipeline.stop_foreground_output("RSTOP") == "applied"
+
+            # A later chunk of the same response cannot restart it.
+            late = emit_event(
+                conn,
+                type="surface.response_chunk",
+                payload={
+                    "turn_id": "TSTOP",
+                    "text": "被丢弃的续写。",
+                    "response_id": "RSTOP",
+                    "response_group_id": "GSTOP",
+                    "sequence": 1,
+                    "phase": "final",
+                    "channel": "speech",
+                    "segment_hash": hashlib.sha256(b"late").hexdigest(),
+                },
+            )
+            late_row = conn.execute(
+                "SELECT id FROM events WHERE event_uid = ?",
+                (late.event_uid,),
+            ).fetchone()
+            assert late_row is not None
+            asyncio.run(
+                pipeline.submit_event(row_id=int(late_row[0]), event=late, origin="direct"),
+            )
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        hold.set()
+        assert pipeline.close()
+        conn.close()
+
+    verdict = open_event_log(db_path)
+    try:
+        interrupted = verdict.execute(
+            "SELECT count(*) FROM events WHERE type = 'surface.playback_interrupted' "
+            "AND json_extract(payload_json, '$.response_id') = 'RSTOP' "
+            "AND json_extract(payload_json, '$.reason') = 'user_stop'",
+        ).fetchone()
+        assert interrupted is not None
+        assert int(interrupted[0]) == 1
+        assert _playback_rows_for(verdict, "RSTOP", "surface.playback_completed") == 0
+        assert _playback_rows_for(verdict, "RSTOP", "surface.playback_started") == 1
+    finally:
+        verdict.close()
+
+
+def test_stop_foreground_output_drops_the_queued_sibling_without_a_row(
+    tmp_path: Path,
+) -> None:
+    """H5: stopping A silences queued B, and nothing durable explains B."""
+    db_path = tmp_path / "stop-speaking-queued.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    hold = threading.Event()
+    provider.final_gates[("RA", 0)] = hold
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    try:
+        with _CallbackPump(player):
+            first = _emit_response(
+                conn,
+                response_id="RA",
+                group_id="GQ",
+                turn_id="TQ",
+                text="第一个回答。",
+                phase="commentary",
+            )
+            asyncio.run(_submit_response(pipeline, first))
+            _await_playback_started(conn, "RA")
+            queued = _emit_response(
+                conn,
+                response_id="RB",
+                group_id="GQ",
+                turn_id="TQ",
+                text="排队中的回答。",
+            )
+            asyncio.run(_submit_response(pipeline, queued))
+            assert _playback_rows_for(conn, "RB", "surface.playback_started") == 0
+
+            assert pipeline.stop_foreground_output("RA") == "applied"
+            assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        hold.set()
+        assert pipeline.close()
+        conn.close()
+
+    verdict = open_event_log(db_path)
+    try:
+        assert _playback_rows_for(verdict, "RA", "surface.playback_interrupted") == 1
+        # B never speaks, and -- the disclosed limitation of this card -- no
+        # durable row anywhere accounts for its silence. A future card that
+        # gives the purge a terminal must change this second count
+        # deliberately.
+        started_b = _playback_rows_for(verdict, "RB", "surface.playback_started")
+        any_playback_b = _count_rows(
+            verdict,
+            "SELECT count(*) FROM events WHERE type LIKE 'surface.playback_%' "
+            "AND json_extract(payload_json, '$.response_id') = 'RB'",
+        )
+        assert (started_b, any_playback_b) == (0, 0)
+    finally:
+        verdict.close()
+
+
 def test_macos_say_process_ownership_timeout_and_terminal_payload(  # noqa: PLR0915
     tmp_path: Path,
 ) -> None:

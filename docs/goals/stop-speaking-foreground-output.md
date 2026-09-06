@@ -492,5 +492,119 @@ Or stop after 45 turns.
 
 ## Progress
 
-- (none yet)
+- Baseline measured before the first edit at `b42ef7b` (this branch, after
+  merging `realtime-integration`): `1055 passed, 64 deselected`. One
+  intermittent flake seen once on
+  `test_typed_llm_stream.py::test_actual_sdk_commits_permitted_prefix_before_provider_completion[openai]`;
+  it passes alone and on re-run. Every `path:line` in the card was re-pinned
+  against this tree; all matched within a line or two, none contradicted.
+- Slice 1 `3c89488` `feat(decision,runtime): authorize the foreground_output
+  cancel scope`. H1
+  (`test_foreground_output_scope_authorizes_without_any_write`) and H4 green;
+  full suite `1055 passed, 64 deselected` (H1 replaces the old rejection test
+  1:1, H4 edits an existing one, so the count is unchanged). Gates:
+  lint-imports KEPT 1/1, ruff all checks passed, mypy strict 248 files clean.
+  One deviation from the card's letter, deliberate: L3's
+  `unsupported_scope` branch was deleted rather than kept behind the new
+  `foreground_output` branch, because `mypy --strict` proves it unreachable —
+  `ResponseCancelScope` is `Literal["foreground_output", "generation"]` and
+  the runtime seam normalizes every other string before constructing the
+  request. `CancelRejected.reason` keeps the member, which the runtime seam
+  still returns.
+- Slice 2 `201ce87` `feat(surface,runtime): stop one response's audible
+  output on request`. H2/H3 and H5 green, 5/5 repeat runs; full suite
+  `1057 passed, 64 deselected` = baseline 1055 + exactly the 2 tests this
+  card adds. Gates: lint-imports KEPT 1/1, ruff all checks passed, mypy
+  strict 248 files clean, canary
+  `test_canary_audio_ingress_realtime_safety.py` 3 passed.
+- Live run done from this worktree, daemon on port 8011, runtime root
+  `~/.jarvis-lane-a-liveA`; the owner's daemon (pid 45429, port 8009) and
+  InherentCard (pid 96300) were never touched, nothing under
+  `.claude/worktrees/realtime-live-test` was read, built or launched, and the
+  macOS default output device was never switched. Two live-only config
+  choices in MY overlay (no repo `config/` change):
+  `realtime.response.routine_streaming.enabled` and
+  `realtime.streaming_output.speak_from_segments` on — without both,
+  `response.completed` always precedes the first audible sample and Live A is
+  structurally untimeable.
+  - Live A `RESP287934b56f8a432687421556102067f3`: POST body
+    `{"outcome": "applied"}` with the run still open (`response.completed`
+    count 0 immediately before the POST); `surface.playback_interrupted`
+    `events.id=1879` `reason=user_stop` `provider=minimax_ws_streaming`
+    `submitted_samples=100288` `total_samples=231296`
+    `playback_generation_id=13`; `response.cancelled` count `0`;
+    `response.completed` `events.id=1989` > `1879`, so the run finished on
+    its own after the stop; `surface.playback_started` count `1`.
+    Took 3 attempts: the streaming suffix gate answers `suffix_rejected`
+    (`response.failed`) on roughly a third of runs on this branch, which is
+    pre-existing and independent of the stop (L3 wrote nothing).
+  - Live B `RESP0def351d3abe40d9b1d1e225cdbf6e35`: with `response.completed`
+    `events.id=2030` already written and the tail still playing,
+    `scope="generation"` returned `{"outcome": "unknown_response"}` and 1.5s
+    later the playback terminal count for that response was still `0` — the
+    speech continued. `scope="foreground_output"` then returned
+    `{"outcome": "applied"}` with `surface.playback_interrupted`
+    `events.id=2249` `reason=user_stop` `provider=minimax_ws_streaming`
+    `submitted_samples=56512`, and `response.cancelled` count `0`.
+  - Owner follow-up, not a blocker: the speaker-audibility half of Live A
+    item 6 ("the speaker went quiet on the POST and stayed quiet") needs the
+    operator's own ear. `submitted_samples=100288` at 48 kHz is ~2.1 s of
+    audio actually written to the device before the stop, which is the
+    machine-checkable half.
+- Docs to sync: ADR-0006 D8 and ADR-0008 sentences rewritten to state what
+  now exists (one sentence each); ADR-0014 D20 step 4's vocabulary gains
+  `uncertain` (one clause); the ADR-0008 scope table is untouched;
+  `docs/spec.html` judged unchanged and verified by grep (0 hits for
+  `foreground_output` / `cancel-response` / `stop_speaking`).
+- STOPPED AND REPORTED, not edited: `docs/adr/0008-real-time-response-streaming.md`
+  ~`:629-631` says "`expected_playback_generation_id` is required for
+  `foreground_output`". The shipped implementation does not require it, by the
+  card's own explicit rejection of that approach (no HTTP client can learn the
+  value; the exact-target CAS is preserved by matching `response_id` against
+  the actor's own `self._active` lease on the actor thread). That sentence is
+  not in Docs to sync, so per /goal condition (7) it is reported rather than
+  edited. It needs an owner decision.
+- Slice 3 `7be41e3` (docs, above) and slice 4 `51d9cf0`
+  `test(decision): scope H1's terminal counts to the response under test` —
+  H1's "L3 wrote nothing" now counts by `type` AND
+  `json_extract(payload_json,'$.response_id')`, which is what the /goal
+  condition asks a hermetic assertion to read. Full suite still
+  `1057 passed, 64 deselected`; gates green.
+- Verifier round (fresh context, opus, `realtime-integration...0f41461`):
+  confirmed the contract on every point it was asked to check — no
+  `jarvis.decision` import in L5, lint-imports KEPT, none of the forbidden
+  files or symbols touched, no fade, L3's branch returns before the
+  terminalizer and before any SQLite connection is opened, the deleted
+  `unsupported_scope` branch is genuinely unreachable (3 construction sites,
+  all literal), the new tests read committed rows, and it re-checked every
+  live canary value against `~/.jarvis-lane-a-liveA/mac_events.db`
+  independently. It also confirmed the owner's own event log was never
+  written (last row 2026-08-27, zero `user_stop` rows).
+  Acted on, `6fd2e15`: `uncertain` was documented more narrowly than the code
+  behaves (the caller-side timeout path cannot even know the tombstone
+  published); the `reason` field is dropped under this scope and nothing said
+  so; the `shutdown_timeout_s` budget choice was undocumented. All three are
+  docstring corrections in `voice_media.py` and `inherent_server.py`.
+  Reported, not changed, because the card is the contract and each would be
+  scope creep against it:
+  - `CancelRejected.reason` keeps `unsupported_scope`, which L3 can no longer
+    produce (only the L6 seam returns that bare string). The card specified
+    this Literal as "gains `policy_ignore`".
+  - `policy_hash_mismatch` on this path is production-unreachable and
+    untested, symmetric with the identical pre-existing dead branch on the
+    generation path. The card requires the branch.
+  - Residual concurrency risk, no test: a stop racing its own response's
+    `response.failed` calls `_interrupt_active` twice. The verifier traced it
+    to safety through the tombstone CAS and the `response_id:generation`
+    terminal CAS, but if `_callback_commit_generation` pins that generation
+    for the whole window the second call isolates terminal debt and the media
+    actor stops accepting speech until restart. Pre-existing machinery, first
+    reachable from a user action.
+  - `_purge_after_drain` clears the whole lane, not just the stopped group,
+    so a cross-group `supersede` that lands inside the ~1.5 s stop window is
+    silently dropped. ADR-0006 D4 authorizes stopping that group's queued
+    speech. Pre-existing shape (`_response_terminal` does the same inline).
+  - `docs/goals/keyword-ptt-safe-barge-in.md:13` now carries a false premise
+    ("rejects every scope but `generation`"). It is a different queued card,
+    pinned at `ca1b42f`, so this run did not edit it.
 

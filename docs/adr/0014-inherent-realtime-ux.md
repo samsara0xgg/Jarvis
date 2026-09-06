@@ -1216,7 +1216,8 @@ Server behavior:
 1. Authenticate and validate the exact active target.
 2. Check the L3-issued ResponseInterruptPolicy.
 3. Ask the L5 playback actor to CAS-interrupt that generation immediately.
-4. Return `applied`, `already_applied`, `stale`, or `rejected`.
+4. Return `applied`, `already_applied`, `stale`, `rejected`, or `uncertain`
+   (the audio is stopped but its durable terminal is owed).
 5. Let PlaybackTerminalizer append `surface.playback_interrupted`.
 6. Do not call ResponseTerminalizer and do not append
    `response.cancelled`.

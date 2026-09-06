@@ -467,7 +467,12 @@ class CancelRejected:
     """The request was refused before any write."""
 
     response_id: str | None
-    reason: Literal["unknown_response", "unsupported_scope", "policy_hash_mismatch"]
+    reason: Literal[
+        "unknown_response",
+        "unsupported_scope",
+        "policy_hash_mismatch",
+        "policy_ignore",
+    ]
 
 
 @dataclass(frozen=True)
@@ -482,7 +487,26 @@ class CancelTimedOut:
     response_id: str
 
 
-type CancelOutcome = CancelAccepted | CancelAlreadyTerminal | CancelRejected | CancelTimedOut
+@dataclass(frozen=True)
+class CancelPlaybackAuthorized:
+    """``scope="foreground_output"`` cleared policy; no terminal was written.
+
+    L3 owns only the authorization.  Stopping the audible speech is L5's
+    job against the playback lease, because a run is unregistered the
+    moment generation ends while its audio is still queued (ADR-0006 D8),
+    so an unregistered id is authorized here rather than rejected.
+    """
+
+    response_id: str
+
+
+type CancelOutcome = (
+    CancelAccepted
+    | CancelAlreadyTerminal
+    | CancelPlaybackAuthorized
+    | CancelRejected
+    | CancelTimedOut
+)
 
 
 @dataclass(frozen=True)
@@ -756,6 +780,33 @@ def decide_foreground(
     return "decline"
 
 
+def _authorize_foreground_output(
+    registry: ResponseRunRegistry,
+    request: ResponseCancelRequest,
+) -> CancelOutcome:
+    """Clear policy for a stop-speaking request without writing anything.
+
+    An unregistered ``response_id`` is authorized, not rejected: the run is
+    unregistered the instant generation ends while seconds of its audio are
+    still queued (ADR-0006 D8), and a run with no live policy left cannot
+    forbid stopping its own tail.  Target resolution happens in L5 against
+    the playback lease.
+    """
+    run = registry.get(request.response_id)
+    if run is not None:
+        if (
+            request.policy_hash is not None
+            and request.policy_hash != run.interrupt_policy.policy_hash
+        ):
+            return CancelRejected(
+                response_id=request.response_id,
+                reason="policy_hash_mismatch",
+            )
+        if run.interrupt_policy.confirmed_playback == "ignore":
+            return CancelRejected(response_id=request.response_id, reason="policy_ignore")
+    return CancelPlaybackAuthorized(response_id=request.response_id)
+
+
 def request_response_cancel(  # noqa: PLR0911 — policy, timeout, and CAS outcomes remain distinct.
     registry: ResponseRunRegistry,
     terminalizer: ResponseTerminalizer,
@@ -768,8 +819,8 @@ def request_response_cancel(  # noqa: PLR0911 — policy, timeout, and CAS outco
     The terminal CAS runs before the token is set, so a cancel that arrives
     after ``response.completed`` reports ``CancelAlreadyTerminal`` and leaves
     the delivered answer alone (ADR-0008 D10).  ``scope="foreground_output"``
-    is rejected until a playback lease exists to make its
-    ``expected_playback_generation_id`` meaningful.
+    never reaches the terminalizer at all: it clears policy and returns
+    ``CancelPlaybackAuthorized`` for L5 to apply against the playback lease.
     """
     record_realtime_trace(
         "response_cancel_requested",
@@ -777,8 +828,8 @@ def request_response_cancel(  # noqa: PLR0911 — policy, timeout, and CAS outco
         scope=request.scope,
         reason=request.reason,
     )
-    if request.scope != "generation":
-        return CancelRejected(response_id=request.response_id, reason="unsupported_scope")
+    if request.scope == "foreground_output":
+        return _authorize_foreground_output(registry, request)
     run = registry.get(request.response_id)
     if run is None:
         return CancelRejected(response_id=request.response_id, reason="unknown_response")
@@ -850,6 +901,7 @@ __all__ = [
     "CancelAccepted",
     "CancelAlreadyTerminal",
     "CancelOutcome",
+    "CancelPlaybackAuthorized",
     "CancelRejected",
     "CancelTimedOut",
     "IllegalResponseTransitionError",
