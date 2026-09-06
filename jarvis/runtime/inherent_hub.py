@@ -62,7 +62,7 @@ from jarvis.runtime.inherent_view_sequencer import (
     SnapshotStaging,
 )
 from jarvis.shared.realtime_trace import record_realtime_trace
-from jarvis.surface.inherent_presenter import build_snapshot_plan
+from jarvis.surface.inherent_presenter import SnapshotPlan, build_snapshot_plan
 from jarvis.surface.inherent_protocol import (
     VIEW_SCHEMA_VERSION,
     ClientEnvelope,
@@ -89,6 +89,8 @@ _CLOSE_RESYNC_REQUIRED: Final[int] = 1008
 _ACK_MESSAGE_TYPE: Final[str] = "transport.ack"
 _RESYNC_MESSAGE_TYPE: Final[str] = "server.resync_required"
 _EPHEMERAL_MESSAGE_TYPE: Final[str] = "ephemeral"
+_OVER_BUDGET_REASON: Final[str] = "frame_over_budget"
+"""A frame no lane depth can hold; names the frame because the client did nothing."""
 _NOTICE_FLUSH_GRACE_S: Final[float] = 0.25
 """Best effort for rule 3: how long the closer lets the sender flush the control lane."""
 
@@ -169,6 +171,7 @@ class InherentClient:
         self._window_bytes = 0
         self._ack_progress_at = clock()
         self._wake = asyncio.Event()
+        self._capacity = asyncio.Event()
         self._awaiting: SnapshotStaging | None = None
         self._ack_event = asyncio.Event()
         self._last_sent_cursor = 0
@@ -301,10 +304,16 @@ class InherentClient:
         if self._closed:
             return
         size = len(frame.encode("utf-8"))
-        if (
-            len(self._durable) >= self._limits.durable_frames
-            or self._durable_bytes + size > self._limits.durable_bytes
-        ):
+        if size > self._limits.durable_bytes:
+            # No lane depth can hold this one — an empty lane rejects it too —
+            # so waiting for capacity would wait for a level that never comes.
+            self._fail_now(
+                _OVER_BUDGET_REASON,
+                f"one {size} byte frame over the {self._limits.durable_bytes} byte lane",
+                notify=True,
+            )
+            return
+        if not self._durable_has_room(size):
             self._fail_now(
                 "client_backpressure",
                 f"durable lane at {len(self._durable)} frames / {self._durable_bytes} bytes",
@@ -315,6 +324,13 @@ class InherentClient:
         self._durable.append((frame, cursor, size))
         self._durable_bytes += size
         self._wake.set()
+
+    def _durable_has_room(self, size: int) -> bool:
+        """Whether one more frame of ``size`` bytes fits under both rule-3 bounds."""
+        return (
+            len(self._durable) < self._limits.durable_frames
+            and self._durable_bytes + size <= self._limits.durable_bytes
+        )
 
     def _enqueue_control(self, frame: str | _EphemeralSlot) -> bool:
         if len(self._control) >= self._limits.control_frames:
@@ -342,6 +358,7 @@ class InherentClient:
         if self._durable:
             frame, cursor, size = self._durable.popleft()
             self._durable_bytes -= size
+            self._capacity.set()
             if not self._window:
                 self._ack_progress_at = self._clock()
             self._window.append((cursor, size))
@@ -408,19 +425,12 @@ class InherentClient:
             encode=self._protocol_frame,
         )
         self._awaiting = staging
-        for frame in plan.frames:
-            self._enqueue(frame, staging.through_cursor)
-        record_realtime_trace(
-            "inherent_v2_snapshot_sent",
-            connection_id=self.connection_id,
-            snapshot_id=staging.snapshot_id,
-            through_cursor=staging.through_cursor,
-            pages=len(plan.page_frames),
-        )
         try:
-            await asyncio.wait_for(self._ack_event.wait(), self._adoption_deadline_s)
+            await asyncio.wait_for(self._deliver(plan, staging), self._adoption_deadline_s)
         except TimeoutError:
             await self._fail("resync_required", "no snapshot ack within the adoption deadline")
+            return False
+        if self._closed:
             return False
         self._awaiting = None
         self._last_sent_cursor = self._last_acked_cursor = staging.through_cursor
@@ -438,6 +448,41 @@ class InherentClient:
             catch_up_frames=replayed,
         )
         return not self._closed
+
+    async def _deliver(self, plan: SnapshotPlan, staging: SnapshotStaging) -> None:
+        """Enqueue the plan page by page, then await the one ACK for the whole of it.
+
+        Waiting for the sender to free lane depth is what lets a plan larger
+        than ``durable_bytes`` in total arrive at all: the burst used to fill
+        the lane before the sender ever got a turn and closed the client with
+        ``client_backpressure`` it had had no chance to apply.  The wait races
+        nothing — ``begin_snapshot`` cleared ``live_frontier``, so ``drain``
+        skips this lane for the whole snapshot phase — and it is bounded by
+        the caller's adoption deadline, the only budget the handoff gets.
+
+        Unlike the sequencer's catch-up, which must stay atomic, delivery here
+        is deliberately progressive.
+        """
+        for frame in plan.frames:
+            size = len(frame.encode("utf-8"))
+            while (
+                not self._closed
+                and size <= self._limits.durable_bytes
+                and not self._durable_has_room(size)
+            ):
+                self._capacity.clear()
+                await self._capacity.wait()
+            self._enqueue(frame, staging.through_cursor)
+            if self._closed:
+                return
+        record_realtime_trace(
+            "inherent_v2_snapshot_sent",
+            connection_id=self.connection_id,
+            snapshot_id=staging.snapshot_id,
+            through_cursor=staging.through_cursor,
+            pages=len(plan.page_frames),
+        )
+        await self._ack_event.wait()
 
     async def _watch_acks(self) -> None:
         """D11 rule 9 on the injected clock: a non-empty window must make ACK progress."""
@@ -504,6 +549,7 @@ class InherentClient:
             )
         code = _CLOSE_PROTOCOL_ERROR if reason == "protocol_error" else _CLOSE_RESYNC_REQUIRED
         self._wake.set()
+        self._capacity.set()
         self._closer = asyncio.create_task(
             self._close_after_flush(code, reason), name=f"inherent_v2_closer:{self.connection_id}",
         )

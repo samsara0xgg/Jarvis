@@ -198,6 +198,106 @@ def test_a_durable_enqueue_past_the_byte_limit_closes_with_the_frame_count_under
     asyncio.run(_body())
 
 
+# --- D8 handoff: a plan larger than the lane ---------------------------------------
+
+
+async def _open_response(rig: _Rig, index: int, size: int) -> None:
+    """One still-open response of ``size`` inline bytes; its group gets a page of its own."""
+    response, group, turn = f"RESPbig{index}", f"RGRPbig{index}", f"Tbig{index}"
+    rig.emit("surface.response_open", _open_payload(response, group, turn))
+    rig.emit("surface.response_chunk", _chunk_payload(response, group, turn, 0, "x" * size))
+    await _settle(0.01)
+
+
+async def _over_total_view(rig: _Rig) -> None:
+    """Three open responses: over ``durable_bytes`` in total, every page frame under it."""
+    for index in range(3):
+        await _open_response(rig, index, 400_000)
+    await _settle()
+
+
+def test_a_snapshot_over_the_lane_budget_in_total_is_delivered_and_the_client_adopts(
+    tmp_path: Path,
+) -> None:
+    """D8: the handoff waits for the sender instead of closing on its own burst."""
+
+    async def _body() -> None:
+        rig = _Rig(tmp_path)
+        await rig.start()
+        try:
+            await _over_total_view(rig)
+            socket = _Socket()
+            client = await _attach(rig, socket, "CB")
+            notice = [f["payload"]["reason"] for f in socket.of_type("server.resync_required")]
+            ends = socket.of_type("snapshot.end")
+            assert (notice, socket.close_state(), len(ends)) == ([], None, 1)
+            begin = socket.of_type("snapshot.begin")[0]["payload"]
+            pages = socket.of_type("snapshot.page")
+            assert sum(begin["counts"].values()) == len(pages)
+            sizes = [len(frame.encode("utf-8")) for frame in socket.raw]
+            # The whole delivery outgrew the lane; no single frame did.
+            assert sum(sizes) > _D11_DEFAULTS.durable_bytes
+            assert max(sizes) < _D11_DEFAULTS.durable_bytes
+            end = ends[0]["payload"]
+            await client.on_frame(_ack("CB", end["through_cursor"], end["snapshot_id"]))
+            await _settle()
+            assert socket.of_type("server.resync_required") == []
+            assert socket.close_state() is None
+        finally:
+            await rig.stop()
+
+    asyncio.run(_body())
+
+
+def test_a_handoff_to_a_client_that_never_drains_still_closes_at_the_adoption_deadline(
+    tmp_path: Path,
+) -> None:
+    """The capacity wait gets no budget of its own: rule 9's deadline still ends it."""
+
+    async def _body() -> None:
+        rig = _Rig(tmp_path, adoption_deadline_s=0.2)
+        await rig.start()
+        try:
+            socket = _SlowSocket()
+            await _over_total_view(rig)
+            socket.hold()
+            await _attach(rig, socket, "CB")
+            # 50ms into a 200ms deadline: still waiting, not closed.
+            assert socket.close_state() is None
+            await _settle(0.6)
+            assert socket.close_state() == (1008, "resync_required")
+            assert socket.of_type("snapshot.end") == []
+        finally:
+            socket.release.set()
+            await rig.stop()
+
+    asyncio.run(_body())
+
+
+def test_a_single_frame_larger_than_the_whole_lane_closes_at_once_with_its_own_reason(
+    tmp_path: Path,
+) -> None:
+    """No depth can hold it, so it fails now rather than spending the 5s deadline."""
+
+    async def _body() -> None:
+        rig = _Rig(tmp_path)
+        await rig.start()
+        try:
+            await _open_response(rig, 0, _D11_DEFAULTS.durable_bytes + 200_000)
+            await _settle()
+            socket = _Socket()
+            # One 50ms settle inside _attach, two orders below the untouched 5s deadline.
+            await _attach(rig, socket, "CB")
+            notice = [f["payload"]["reason"] for f in socket.of_type("server.resync_required")]
+            assert notice == ["frame_over_budget"]
+            assert socket.close_state() == (1008, "frame_over_budget")
+            assert socket.of_type("snapshot.end") == []
+        finally:
+            await rig.stop()
+
+    asyncio.run(_body())
+
+
 # --- rules 8 and 9: the ACK window ---------------------------------------------------
 
 
