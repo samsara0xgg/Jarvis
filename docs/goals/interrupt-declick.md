@@ -367,4 +367,23 @@ If the card contradicts the repository, stop and report; do not redesign. Or sto
 
 ## Progress
 
-(none yet)
+- 2026-09-06 lane A — Re-pinned every citation at `realtime-integration` tip
+  `a29b1e8`. Two moved: `_active_lease = None` is `voice_tts.py:1224` (card said
+  `:1227`) and `request_discard()` is `:1227` (card said `:1230`) — the ordering
+  claim the card rests on is unchanged; the legacy `_RingBuffer` branch is
+  `:1560-1562`, not `:1567-1578`; the named canary asserts are `:946`/`:947`, not
+  `:938`. Everything else resolved. `playback_recovery.py` read: boot-time
+  reconciler, no callback path, unaffected. Measured baselines before editing:
+  hermetic **1068 passed / 64 deselected** in 60.06s, Swift **191** — both match
+  the card exactly.
+- 2026-09-06 lane A — Declick landed at the shared callback site
+  (`_emit_declick`, covering the `actual <= 0` early return as well as the three
+  `view[:actual] = 0.0` race sites). Two acceptance tests added, driving the
+  interrupt through `pipeline.stop_foreground_output` (`user_stop`); all seven
+  degenerate-path forcings shown failing on the predicted assertion, then
+  reverted. Two existing assertions that pinned the hard cut were re-expressed,
+  not weakened: the post-CAS block and the 1000-cycle churn block now assert that
+  neither generation's PCM reaches the host and that what does is a monotone
+  decay. Hermetic **1070 passed / 64 deselected** (1068 + 2 new), Swift **191**.
+  No live run: the block handed to PortAudio is the signal, and nothing physical
+  intervenes before the DAC.

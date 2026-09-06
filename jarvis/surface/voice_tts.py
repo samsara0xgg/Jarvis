@@ -443,6 +443,16 @@ class _PCMCommitGate:
             return not self._closed and generation == self._generation
 
 
+# Every callback path that hands PortAudio silence after audio was playing goes
+# through `AudioStreamPlayer._emit_declick`.  Stepping from the last emitted
+# amplitude to 0.0 in one sample is an audible click (ADR-0006 D11), so the
+# callback synthesizes a short decay into that silence.  The table is
+# preallocated and ends at exactly 0.0; the length is a constant number of
+# samples, not a config key -- ~2 ms at the 32 kHz production rate.
+_DECLICK_SAMPLES = 64
+_DECLICK_RAMP = np.linspace(1.0, 0.0, _DECLICK_SAMPLES + 1, dtype=np.float32)[1:]
+
+
 class _GainRamp:
     """Linear gain ramp applied inside the PortAudio callback.
 
@@ -647,6 +657,11 @@ class AudioStreamPlayer:
         # classify-before-apply race without putting a lock on the hot path.
         self._gain_command: tuple[float, int] = (1.0, 0)
         self._gain_consumed_command = self._gain_command
+        # Declick state, owned by the callback thread: the last sample handed
+        # to PortAudio and how much of the synthesized decay is still owed.
+        self._declick_last_sample: float = 0.0
+        self._declick_amplitude: float = 0.0
+        self._declick_remaining: int = 0
         self._blocksize = int(blocksize)
         self._latency = latency
         self._device = device
@@ -993,6 +1008,8 @@ class AudioStreamPlayer:
         else:
             self._ring.reset()
         self._played_samples = 0
+        self._declick_last_sample = 0.0
+        self._declick_remaining = 0
         self._drained.set()
 
     def close(self, *, timeout_s: float | None = None) -> PlayerStopResult:
@@ -1539,6 +1556,34 @@ class AudioStreamPlayer:
     # Callback — runs on PortAudio thread, keep it tight
     # ------------------------------------------------------------------
 
+    def _emit_declick(self, view: np.ndarray, frames: int) -> None:
+        """Fill ``view[:frames]`` with a decay to silence, then exact zeros.
+
+        Shared by every callback path that hands PortAudio silence after audio
+        was playing.  The decay is *synthesized* from the last emitted
+        amplitude, not scaled out of the block: on the dominant interrupt path
+        ``_GenerationRingBuffer.read_into`` has already zeroed the whole block,
+        so multiplying it by a ramp would be a no-op.
+
+        Advances no ledger state -- no ``_CallbackReport``, no
+        ``_played_samples``, no ring cursor -- and sets no persistent gain, so
+        the next activated generation plays at full amplitude with no un-mute.
+        """
+        if self._declick_remaining == 0 and self._declick_last_sample != 0.0:
+            self._declick_amplitude = self._declick_last_sample
+            self._declick_remaining = _DECLICK_SAMPLES
+            self._declick_last_sample = 0.0
+        tail = min(self._declick_remaining, frames)
+        if tail > 0:
+            done = _DECLICK_SAMPLES - self._declick_remaining
+            np.multiply(
+                _DECLICK_RAMP[done : done + tail],
+                self._declick_amplitude,
+                out=view[:tail],
+            )
+            self._declick_remaining -= tail
+        view[tail:frames] = 0.0
+
     def _callback(  # noqa: C901, PLR0912, PLR0915 - realtime path stays inline
         self,
         outdata: np.ndarray,
@@ -1606,6 +1651,7 @@ class AudioStreamPlayer:
             if actual < frames and generation_before == self._callback_first_generation:
                 self._starvation_dry_generation = generation_before
         if actual <= 0:
+            self._emit_declick(view, frames)
             return
         active_after = self._active_lease
         if (
@@ -1613,7 +1659,7 @@ class AudioStreamPlayer:
             or active_after is None
             or active_before.playback_generation_id != active_after.playback_generation_id
         ):
-            view[:actual] = 0.0
+            self._emit_declick(view, actual)
             return
         generation = active_after.playback_generation_id
         valid = self._callback_valid[:actual]
@@ -1623,7 +1669,7 @@ class AudioStreamPlayer:
             out=valid,
         )
         if not bool(np.all(valid)):
-            view[:actual] = 0.0
+            self._emit_declick(view, actual)
             return
         gain_command = self._gain_command
         if gain_command is not self._gain_consumed_command:
@@ -1638,7 +1684,7 @@ class AudioStreamPlayer:
         try:
             active_final = self._active_lease
             if active_final is None or active_final.playback_generation_id != generation:
-                view[:actual] = 0.0
+                self._emit_declick(view, actual)
                 return
             start_cursor = int(self._callback_cursors[0])
             end_cursor = int(self._callback_cursors[actual - 1]) + 1
@@ -1655,6 +1701,8 @@ class AudioStreamPlayer:
                 presentation_delay_ns=self._estimated_output_latency_ns,
                 first_for_generation=first,
             )
+            self._declick_remaining = 0
+            self._declick_last_sample = float(view[frames - 1])
         finally:
             self._callback_commit_generation = -1
 
