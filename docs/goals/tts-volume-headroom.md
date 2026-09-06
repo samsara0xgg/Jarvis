@@ -75,9 +75,13 @@ anyone can derive; today tuning it means editing Python and redeploying.
 - `realtime.tts_volume` overrides it. Absent or null means the
   `MiniMaxWSClient` signature default, which stays the single place the number 3
   lives. A present value is passed straight through — no clamping, no type
-  guard: `int(volume)` at `voice_tts.py:1759` fails the boot on a bad value,
-  matching the deliberate no-validation stance already documented for
-  `realtime.output_device` at `inherent_loop.py:1842-1844`.
+  guard. A bad value does not fail the boot and does not behave like
+  `realtime.output_device`: `int(volume)` raises inside `_new_provider()`,
+  called at `inherent_loop.py:1848` outside the builder's own `try`, so it
+  escapes `_build_tts_pipeline` into the caller's broad `except` at `:3764`,
+  which nulls `voice_pipe`, `tts_pipe` and the wake listener together and
+  brings the daemon up text-only. A bad `output_device` is caught at
+  `:1941` and degrades TTS alone.
 - The key's accepted domain is the provider's, not a guess: MiniMax documents
   `vol` as a number in `(0, 10]`. Our parameter is annotated `int`
   (`voice_tts.py:1747`) and narrowed again by `int(volume)` at `:1759`; this
