@@ -1321,6 +1321,17 @@ def _open_run(
     return run
 
 
+def _response_terminals_for(conn: sqlite3.Connection, response_id: str) -> int:
+    """Count this response's own committed terminal rows, by type and payload."""
+    row = conn.execute(
+        "SELECT count(*) FROM events WHERE type IN (?, ?, ?) "
+        "AND json_extract(payload_json, '$.response_id') = ?",
+        (*_RESPONSE_TERMINALS, response_id),
+    ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
 def _cancel_foreground(runtime: JarvisRuntime, response_id: str) -> CancelOutcome:
     assert runtime.response_runs is not None
     return request_response_cancel(
@@ -1345,6 +1356,7 @@ def test_foreground_output_scope_authorizes_without_any_write(tmp_path: Path) ->
     assert isinstance(authorized, CancelPlaybackAuthorized)
     assert authorized.response_id == "RESP-live"
     assert sum(_event_count(runtime.conn, t) for t in _RESPONSE_TERMINALS) == 0
+    assert _response_terminals_for(runtime.conn, "RESP-live") == 0
     live_token_after_authorize = live.cancellation_token.is_cancelled
     assert live_token_after_authorize is False
 
@@ -1355,6 +1367,7 @@ def test_foreground_output_scope_authorizes_without_any_write(tmp_path: Path) ->
     unregistered = _cancel_foreground(runtime, live.response_id)
     assert isinstance(unregistered, CancelPlaybackAuthorized)
     assert sum(_event_count(runtime.conn, t) for t in _RESPONSE_TERMINALS) == 0
+    assert _response_terminals_for(runtime.conn, "RESP-live") == 0
 
     ignoring = _open_run(
         runtime,
@@ -1366,6 +1379,7 @@ def test_foreground_output_scope_authorizes_without_any_write(tmp_path: Path) ->
     assert isinstance(refused, CancelRejected)
     assert refused.reason == "policy_ignore"
     assert sum(_event_count(runtime.conn, t) for t in _RESPONSE_TERMINALS) == 0
+    assert _response_terminals_for(runtime.conn, "RESP-ignore") == 0
     ignore_token_after_reject = ignoring.cancellation_token.is_cancelled
     assert ignore_token_after_reject is False
     runtime.conn.close()
