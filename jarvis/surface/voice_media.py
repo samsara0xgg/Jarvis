@@ -370,6 +370,8 @@ class _ActiveResponse:
     terminal_commit_pending: bool = False
     activation_event_uid: str | None = None
     prepared_text: str = ""
+    starvation_gaps_at_start: int = 0
+    host_underflows_at_start: int = 0
 
 
 @dataclass(frozen=True)
@@ -2161,7 +2163,12 @@ class StreamingTTSPipeline:
         if isinstance(result, ForegroundBusy):
             msg = "media owner/player foreground state diverged"
             raise RuntimeError(msg)  # noqa: TRY004 - runtime state, not caller type
-        active = _ActiveResponse(response=response, lease=result)
+        active = _ActiveResponse(
+            response=response,
+            lease=result,
+            starvation_gaps_at_start=self._player.starvation_gaps,
+            host_underflows_at_start=self._player.underflow_count,
+        )
         self._active = active
         self._output_active.set()
         active.task = asyncio.create_task(
@@ -3074,6 +3081,8 @@ class StreamingTTSPipeline:
             "cursor_quality": snapshot.cursor_quality,
             "heard_text_hash": snapshot.heard_text_hash,
             "heard_text": snapshot.heard_text,
+            "starvation_gaps": (self._player.starvation_gaps - active.starvation_gaps_at_start),
+            "host_underflows": (self._player.underflow_count - active.host_underflows_at_start),
         }
         if event_type == "surface.playback_completed":
             payload["speech_text_hash"] = speech_text_hash or hashlib.sha256(b"").hexdigest()

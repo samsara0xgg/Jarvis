@@ -558,5 +558,11 @@ stop after 30 turns.
 
 ## Progress
 
-(empty)
+- Slice 1 (starvation counters) — `_callback` counts a dry window only after
+  the generation has committed a block and only when the *same* generation
+  resumes, so the end-of-generation tail is 0. `surface.playback_completed`
+  payload measured across 3 runs: gated mid-stream response
+  `starvation_gaps: 1, host_underflows: 0, provider: minimax_ws_streaming`;
+  clean single-segment response `starvation_gaps: 0`. Hermetic 1059 passed,
+  64 deselected (baseline 1057).
 

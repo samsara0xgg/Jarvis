@@ -692,6 +692,8 @@ class AudioStreamPlayer:
         )
         self._callback_first_generation = -1
         self._callback_commit_generation = -1
+        self._starvation_gaps = 0
+        self._starvation_dry_generation = -1
         self._callback_report_drop_seen = 0
         self._presentation_horizon_coalesced = 0
         self._presentation_horizon_coalesced_seen = 0
@@ -1456,6 +1458,11 @@ class AudioStreamPlayer:
         return self._underflow_count
 
     @property
+    def starvation_gaps(self) -> int:
+        """Lifetime generation-ring dry windows that a later block resumed."""
+        return self._starvation_gaps
+
+    @property
     def callback_calls(self) -> int:
         """Lifetime PortAudio callback invocations (liveness signal)."""
         return self._callback_calls
@@ -1544,6 +1551,19 @@ class AudioStreamPlayer:
             self._callback_cursors,
             frames,
         )
+        # ADR-0006:347 starvation clause.  A short read means the ring ran
+        # dry; PortAudio cannot see it because `read_into` already zero-padded
+        # a complete, on-time block.  It only broke a timeline once audio for
+        # that generation had been committed (before that it is prefill) and
+        # once the *same* generation resumes (otherwise it is the normal
+        # end-of-generation tail, which every clean response produces).
+        generation_before = -1 if active_before is None else active_before.playback_generation_id
+        if actual < frames:
+            if generation_before >= 0 and generation_before == self._callback_first_generation:
+                self._starvation_dry_generation = generation_before
+        elif generation_before >= 0 and generation_before == self._starvation_dry_generation:
+            self._starvation_gaps += 1
+            self._starvation_dry_generation = -1
         if actual <= 0:
             return
         active_after = self._active_lease
