@@ -11,7 +11,8 @@ growing a heap queue without limit or stalling anyone else:
 - a durable/snapshot lane bounded by ``durable_frames`` and
   ``durable_bytes`` of encoded UTF-8, which never drops or reorders (rule 1)
   and closes the client with ``client_backpressure`` when it would overflow
-  (rule 3);
+  (rule 3), or with ``frame_over_budget`` when one frame is larger than the
+  whole lane and no depth could ever hold it;
 - an ephemeral coalescing map of ``ephemeral_keys`` latest values, whose
   33rd key evicts the oldest only behind an ordered clear (rule 12).
 
@@ -27,8 +28,10 @@ The handoff follows D8 to the letter and none of it runs inside the
 sequencer actor: :meth:`InherentClient._run_snapshot` asks the sequencer for
 a checkpoint at ``H`` (one synchronous command), builds the plan through the
 presenter, records it as awaiting ACK, transmits begin / pages / end through
-the sender, waits for the exact ACK outside the actor, and only then posts
-the second command that folds ``(H, B]`` and switches the lane live.
+the sender — waiting for lane capacity between frames, so a plan larger than
+``durable_bytes`` in total is delivered rather than closed on its own burst —
+waits for the exact ACK outside the actor, and only then posts the second
+command that folds ``(H, B]`` and switches the lane live.
 
 No production ephemeral producer exists yet: :meth:`InherentClient.enqueue_ephemeral`
 is the hub's contract for the partial-transcript and progress cards and is
