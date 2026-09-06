@@ -672,10 +672,14 @@ re-admit while it is set, and the single owner construction site
 (`jarvis/runtime/inherent_loop.py`) is unsupervised and never recreated, so the
 process speaks nothing further until it restarts. `surface.playback_lane_isolated`
 is the durable evidence for that outcome. The orphaned `surface.playback_started`
-is separately terminalized by the next boot's reconciler as
-`surface.playback_interrupted` with `reason: "daemon_restart"`; that label
-describes the restart, not the isolation, and reading the isolation row is the
-only way to tell the two apart.
+is separately terminalized by the next boot's reconciler, which joins that row
+on `(response_id, playback_generation_id)` and writes
+`surface.playback_interrupted` with `reason: "media_lane_isolated"` when one
+exists and `reason: "daemon_restart"` when none does — so the ledger names the
+isolation as the cause rather than the restart it forced. Because the isolation
+append is best effort, an isolation whose own row failed to land reads as
+`daemon_restart`, which is what the log can honestly support. The isolation row
+remains the only place the specific `isolation_reason` can be read.
 
 The new `response.*` lifecycle and additive `surface.response_*` fields are owned by ADR-0008.
 

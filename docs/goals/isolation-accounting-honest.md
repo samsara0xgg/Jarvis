@@ -425,4 +425,19 @@ Or stop after 25 turns.
 
 ## Progress
 
-- (not started)
+- Slice 1 done. All citations re-pinned against the merged tree before any
+  edit; one drift found and it does not change the work:
+  `jarvis/state/event_log.py:895-906` names `surface.playback_failed`'s block,
+  not `surface.playback_interrupted`'s — the identical `reason`-required block
+  for `playback_interrupted` is at `:869-879`, so "already required, no schema
+  change" holds. Every other citation matched exactly.
+  `reconcile_open_playback` now selects `surface.playback_lane_isolated`,
+  collects the identities it names, and branches `reason`.  Acceptance:
+  `test_boot_playback_reconciliation.py` + `test_wave2_streaming_media.py`
+  51 passed; `RISO` reads back `media_lane_isolated`, `RISOF` (isolation row
+  provably absent) reads back `daemon_restart`; the four pre-existing
+  `daemon_restart` assertions unmodified and passing.  The pair is
+  discriminating by mutation: an unconditional `media_lane_isolated` fails 4
+  tests, an implementation that never reads the isolation row fails 1.
+  Tier 1 lint-imports KEPT 1/1, ruff clean 250 files, mypy strict clean
+  248 files.  ADR-0006:674-678 rewritten.

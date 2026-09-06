@@ -28,6 +28,7 @@ LOGGER = logging.getLogger("jarvis.surface.playback_recovery")
 _PLAYBACK_STARTED: Final[str] = "surface.playback_started"
 _PLAYBACK_CHECKPOINT: Final[str] = "surface.playback_checkpoint"
 _PLAYBACK_INTERRUPTED: Final[str] = "surface.playback_interrupted"
+_PLAYBACK_LANE_ISOLATED: Final[str] = "surface.playback_lane_isolated"
 _PLAYBACK_TERMINALS: Final[tuple[str, ...]] = (
     "surface.playback_completed",
     _PLAYBACK_INTERRUPTED,
@@ -75,7 +76,17 @@ def reconcile_open_playback(
     *,
     committed_event_bus: CommittedEventBus | None = None,
 ) -> tuple[Event, ...]:
-    """Close every open playback generation once as ``daemon_restart``.
+    """Close every open playback generation once, naming why it stayed open.
+
+    An orphan whose identity is also named by a ``surface.playback_lane_isolated``
+    row is closed as ``media_lane_isolated``: the lane went deaf first and the
+    restart is a consequence, not the cause.  Every other orphan is closed as
+    ``daemon_restart``.  The isolation append is best effort
+    (:meth:`~jarvis.surface.voice_media.StreamingTTSPipeline._emit_lane_isolated`),
+    so an isolation with no row reads as ``daemon_restart`` — the honest
+    reading of a log that holds no evidence of it.  The specific
+    ``isolation_reason`` is never copied here; it stays one join away on the
+    same ``(response_id, playback_generation_id)`` identity.
 
     Idempotent by construction: only starts with no terminal for their exact
     ``(response_id, playback_generation_id)`` pair are closed, and the
@@ -85,9 +96,15 @@ def reconcile_open_playback(
     started: dict[tuple[str, int], Event] = {}
     cursors: dict[tuple[str, int], dict[str, object]] = {}
     terminated: set[tuple[str, int]] = set()
+    isolated: set[tuple[str, int]] = set()
     for event in iter_events_of_types(
         conn,
-        (_PLAYBACK_STARTED, _PLAYBACK_CHECKPOINT, *_PLAYBACK_TERMINALS),
+        (
+            _PLAYBACK_STARTED,
+            _PLAYBACK_CHECKPOINT,
+            _PLAYBACK_LANE_ISOLATED,
+            *_PLAYBACK_TERMINALS,
+        ),
     ):
         identity = _cas_identity(event)
         if identity is None:
@@ -95,6 +112,8 @@ def reconcile_open_playback(
         if event.type == _PLAYBACK_STARTED:
             started[identity] = event
             cursors.pop(identity, None)
+        elif event.type == _PLAYBACK_LANE_ISOLATED:
+            isolated.add(identity)
         elif event.type == _PLAYBACK_CHECKPOINT:
             cursors[identity] = {
                 field: event.payload[field]
@@ -132,7 +151,7 @@ def reconcile_open_playback(
             "turn_id": turn_id,
             "playback_generation_id": generation,
             **cursors.get(identity, _UNHEARD_CURSOR),
-            "reason": "daemon_restart",
+            "reason": ("media_lane_isolated" if identity in isolated else "daemon_restart"),
         }
         outcome = terminalize_playback(
             conn,
