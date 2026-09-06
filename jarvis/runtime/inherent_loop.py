@@ -3882,7 +3882,16 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
             )
 
         cancel_response_callable = (
-            make_response_cancel_callable(runtime)
+            make_response_cancel_callable(
+                runtime,
+                # ADR-0006 D8: only a live playback actor can stop the tail
+                # of a run the registry has already released.
+                stop_foreground_output=(
+                    tts_pipe.stop_foreground_output
+                    if isinstance(tts_pipe, voice_media.StreamingTTSPipeline)
+                    else None
+                ),
+            )
             if runtime.response_flags.independent_response_cancel
             else None
         )

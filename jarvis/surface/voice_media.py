@@ -740,6 +740,33 @@ class StreamingTTSPipeline:
         )
         return await asyncio.wrap_future(future)
 
+    def stop_foreground_output(self, response_id: str) -> str:
+        """Stop the speech audible right now, leaving its ResponseRun alone.
+
+        ADR-0014 D20 step 4, callable from any non-actor thread. The target
+        is resolved on the actor against ``self._active``'s own playback
+        lease rather than against a caller-supplied generation id, which
+        cannot be stale by the time it is compared. Answers ``applied``,
+        ``stale`` (nothing matching was speaking) or ``uncertain`` (the
+        audio is stopped but its durable terminal is owed).
+        """
+        loop = self._loop
+        if loop is None or self._closed.is_set():
+            return "stale"
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._stop_foreground_output_owned(response_id),
+                loop,
+            )
+        except RuntimeError:
+            return "stale"
+        try:
+            return future.result(timeout=self._config.shutdown_timeout_s)
+        except (TimeoutError, asyncio.CancelledError):
+            # The actor took the request; whether the tombstone landed is
+            # exactly what this caller cannot know.
+            return "uncertain"
+
     def request_close(self) -> None:
         """Stop admission and publish shutdown outside the normal command lane."""
         self._accepting.clear()
@@ -1414,6 +1441,29 @@ class StreamingTTSPipeline:
         self._reject_queued_commands()
         self._output_active.clear()
         return not self._lane_isolated and self._active is None
+
+    async def _stop_foreground_output_owned(self, response_id: str) -> str:
+        """Actor-owned stop of one named response's audible output."""
+        active = self._active
+        if (
+            active is None
+            or active.response.response_id != response_id
+            or active.terminal_commit_pending
+        ):
+            record_realtime_trace(
+                "media_stop_foreground_stale",
+                response_id=response_id,
+                active_response_id=None if active is None else active.response.response_id,
+                terminal_commit_pending=active is not None and active.terminal_commit_pending,
+            )
+            return "stale"
+        if not await self._interrupt_active(reason="user_stop"):
+            return "uncertain"
+        # ADR-0006 D4: a user stop covers the queued speech of that group
+        # too, and `_release_active(start_successor=False)` never advances
+        # the lane, so an unpurged successor would sit unstartable.
+        self._purge_after_drain()
+        return "applied"
 
     async def _resume_after_wake_owned(
         self,
