@@ -1832,8 +1832,10 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
     # MiniMax `voice_setting.vol`.  Absent or null keeps the MiniMaxWSClient
     # signature default, the single place the calibrated value lives.
-    # Deliberately unvalidated, like `output_device` below: an out-of-domain
-    # value is the provider's to reject.
+    # Deliberately unvalidated like `output_device` below, but with a wider
+    # blast radius: this is read before the builder's own try, so a non-numeric
+    # value raises out of `_build_tts_pipeline` and the caller drops voice input
+    # with it, where a bad `output_device` only degrades TTS to text-only.
     tts_volume = realtime.get("tts_volume")
     volume_kwargs: dict[str, Any] = {} if tts_volume is None else {"volume": tts_volume}
 
