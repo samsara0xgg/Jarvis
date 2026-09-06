@@ -387,3 +387,12 @@ If the card contradicts the repository, stop and report; do not redesign. Or sto
   decay. Hermetic **1070 passed / 64 deselected** (1068 + 2 new), Swift **191**.
   No live run: the block handed to PortAudio is the signal, and nothing physical
   intervenes before the DAC.
+- 2026-09-06 lane A — Docs to sync settled. ADR-0006 gains a **new** D11 (next
+  free number; the file stopped at D10), placed before §4 and explicitly not
+  filed under D8, which stays deferred and unbuilt. `docs/spec.html` judged
+  **unchanged**: it contains no occurrence of "playback", "audio output" or
+  "PortAudio" and owns no fact about the output amplitude edge, so the invariant
+  belongs to ADR-0006 alone and duplicating it into the spec would violate the
+  one-owner rule. Errata reported, not fixed: ADR-0006:261 still cites
+  `voice_tts.py:1255` / `:1208` for `complete_generation` / `interrupt_generation`;
+  at this tip they are `:1256` and `:1209`.
