@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import secrets
 import threading
 from typing import TYPE_CHECKING, Protocol
 
@@ -133,8 +134,10 @@ class VoicePipeline:
                 transitions.
             session_id: Optional realtime voice-session identity added to the
                 committed utterance payload.
-            utterance_id: Optional realtime utterance identity added to the
-                committed utterance payload.
+            utterance_id: Realtime utterance identity added to the committed
+                utterance payload. The wake path supplies its own (one per
+                endpointed utterance); the PTT path does not, so an unsupplied
+                id is minted here — one press-to-release is one utterance.
             endpoint_reason: Optional typed acoustic endpoint reason.
 
         Raises:
@@ -143,6 +146,7 @@ class VoicePipeline:
             VoicePipelineEmptyError: transcript empty / too short / silent.
             Exception: any unexpected ASR failure (caller decides reaction).
         """
+        utterance_id = utterance_id or "U" + secrets.token_hex(8)
         if not lock_already_held:
             acquired = VOICE_INPUT_LOCK.acquire(timeout=lock_acquire_timeout_s)
             if not acquired:
@@ -207,8 +211,7 @@ class VoicePipeline:
                 payload["audio_artifact_ref"] = artifact_ref
             if session_id is not None:
                 payload["session_id"] = session_id
-            if utterance_id is not None:
-                payload["utterance_id"] = utterance_id
+            payload["utterance_id"] = utterance_id
             if endpoint_reason is not None:
                 payload["endpoint_reason"] = endpoint_reason
 

@@ -26,9 +26,14 @@ from websockets.exceptions import InvalidStatus
 from websockets.sync.client import connect as ws_connect
 
 from jarvis.deployment import inherent_v2_token_matches
-from jarvis.runtime.inherent_loop import _submit_asr_v2, _submit_text_v2
+from jarvis.runtime.inherent_loop import (
+    _build_voice_pipeline_callable,
+    _submit_asr_v2,
+    _submit_text_v2,
+)
 from jarvis.shared.realtime import new_connection_id
 from jarvis.state.event_log import open_event_log
+from jarvis.surface import voice_asr, voice_pipeline
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_protocol import RuntimeCapabilities
 from jarvis.surface.inherent_server import InherentDeps, InherentV2Deps, create_app
@@ -539,3 +544,75 @@ def _raising(error: Exception) -> Callable[[bytes, str, str, str], Event]:
         raise error
 
     return pipeline
+
+
+class _StubRecognizer:
+    """Structural :class:`voice_asr.AsrRecognizer`; ASR quality is not under test."""
+
+    def recognize(self, audio_pcm: bytes) -> voice_asr.TranscriptionResult:
+        _ = audio_pcm
+        return voice_asr.TranscriptionResult(
+            text="你好",
+            confidence=0.9,
+            language_detected="zh-CN",
+            emotion=None,
+        )
+
+
+def _real_pipeline_callable(tmp_path: Path) -> Callable[[bytes, str, str, str], Event]:
+    """The daemon's own PTT adapter over a real ``VoicePipeline``.
+
+    ``_transcribing_pipeline`` above hand-builds its payload and never enters
+    ``VoicePipeline.run_turn``, so it cannot observe what run_turn puts on the
+    committed utterance. This wiring is the daemon's own — the same
+    ``_build_voice_pipeline_callable`` the composition root binds.
+    """
+    log_path = tmp_path / "mac_events.db"
+    return _build_voice_pipeline_callable(
+        voice_pipeline.VoicePipeline(
+            conn_factory=lambda: open_event_log(log_path),
+            recognizer=_StubRecognizer(),
+            normalizer=voice_asr.AsrNormalizer(
+                corrections=[], aliases={}, fuzzy_enabled=False,
+            ),
+            broadcaster=None,
+            artifacts_dir=tmp_path,
+        ),
+    )
+
+
+def test_asr_submit_v2_receipt_carries_one_utterance_id_across_the_retry(
+    tmp_path: Path,
+) -> None:
+    """A press mints one utterance id on the receipt, and its retry replays it."""
+    client = _app(tmp_path, voice_pipeline_callable=_real_pipeline_callable(tmp_path))
+    wav = _wav()
+    form = _asr_form("r1", wav)
+
+    resp = client.post(
+        "/inherent/asr-submit/v2",
+        data=form,
+        files={"audio": ("u.wav", wav, "audio/wav")},
+        headers=_auth(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "accepted"
+    utterance_id = body["utterance_id"]
+    assert isinstance(utterance_id, str), body
+    assert utterance_id.startswith("U")
+
+    conn = _log(tmp_path)
+    rows = _rows(conn, "utterance.received")
+    conn.close()
+    assert len(rows) == 1
+    assert rows[0]["utterance_id"] == utterance_id
+
+    again = client.post(
+        "/inherent/asr-submit/v2",
+        data=form,
+        files={"audio": ("u.wav", wav, "audio/wav")},
+        headers=_auth(),
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["utterance_id"] == utterance_id
