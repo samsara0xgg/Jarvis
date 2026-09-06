@@ -566,7 +566,8 @@ public enum InherentReducer {
       target: upsert.target,
       revision: upsert.revision,
       cancellable: upsert.cancellable,
-      freshnessMs: upsert.freshnessMs
+      freshnessMs: upsert.freshnessMs,
+      cancelRequest: upsert.cancelRequest
     )
   }
 
@@ -595,9 +596,16 @@ public enum InherentReducer {
     // Rule 5.
     guard upsert.revision >= existing.revision else { return [] }
     var updated = viewState(of: upsert)
-    // The command overlay and the progress hint are local and ephemeral truth;
-    // a canonical upsert never carries them and never erases them.
-    updated.commandOverlay = existing.commandOverlay
+    // The progress hint is local and ephemeral truth; a canonical upsert never
+    // carries it and never erases it.  The command overlay is local truth a
+    // canonical upsert erases exactly when it supersedes it: a non-null
+    // `cancel_request` is the server's acknowledgement of the request the
+    // overlay guessed at, so the guess retires and the durable value stands
+    // alone.  Without one the overlay is still the pre-acknowledgement state
+    // and survives untouched.
+    if upsert.cancelRequest == nil {
+      updated.commandOverlay = existing.commandOverlay
+    }
     updated.progressHint = existing.progressHint
     if upsert.revision == existing.revision {
       guard updated != existing else { return [] }

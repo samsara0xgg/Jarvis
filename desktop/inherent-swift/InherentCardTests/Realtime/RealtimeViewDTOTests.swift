@@ -33,7 +33,9 @@ final class RealtimeViewDTOTests: XCTestCase {
           {"kind": "action.upsert", "action_id": "A-1", "response_group_id": "G-1",
            "task_id": "TASK-1", "state": "running", "label": "turn on the light",
            "target": "kitchen", "revision": 4, "cancellable": true,
-           "freshness_ms": 250},
+           "freshness_ms": 250,
+           "cancel_request": {"request_id": "ACANCEL", "state": "quiescing",
+                              "revision_cursor": 4, "reason_code": null}},
           {"kind": "confirmation.upsert", "confirmation_id": "C-1",
            "response_group_id": "G-1", "action_id": "A-1", "summary": "unlock",
            "target": "front door", "risk": "high", "options": ["accept", "reject"],
@@ -98,6 +100,10 @@ final class RealtimeViewDTOTests: XCTestCase {
     XCTAssertEqual(action.taskId, "TASK-1")
     XCTAssertTrue(action.cancellable)
     XCTAssertEqual(action.freshnessMs, 250)
+    XCTAssertEqual(action.cancelRequest?.requestId, "ACANCEL")
+    XCTAssertEqual(action.cancelRequest?.state, .quiescing)
+    XCTAssertEqual(action.cancelRequest?.revisionCursor, 4)
+    XCTAssertNil(action.cancelRequest?.reasonCode)
 
     guard case .confirmationUpsert(let confirmation) = delta.changes[6] else {
       return XCTFail("expected confirmation.upsert")

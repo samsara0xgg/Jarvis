@@ -96,11 +96,13 @@ enum Fx {
     state: String,
     label: String = "run the task",
     revision: Int,
-    cancellable: Bool = true
+    cancellable: Bool = true,
+    cancel: [String: Any]? = nil
   ) -> [String: Any] {
     var mutation: [String: Any] = [
       "kind": "action.upsert", "action_id": actionID, "state": state, "label": label,
       "revision": revision, "cancellable": cancellable,
+      "cancel_request": cancel ?? NSNull(),
     ]
     if let group { mutation["response_group_id"] = group }
     return mutation

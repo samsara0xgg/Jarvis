@@ -149,6 +149,68 @@ def _emit_action_head(event_log: Path, action_id: str) -> list[str]:
         conn.close()
 
 
+def _emit_cancel_trail(event_log: Path, target_action_id: str) -> str:
+    """Write the A5 cancel request against a live target, as L3 writes it.
+
+    The request is its own action: a ``cancel_action`` proposal freezing the
+    target into ``arguments``, the Pre-action Gate verdict that authorizes it
+    (joined to the proposal by ``source_event_id``), then its authorize and
+    dispatch, which move the request to ``quiescing``.  The target's own next
+    upsert is the frame that carries the trail.
+    """
+    cancel_id = "ACANCEL" + uuid.uuid4().hex
+    conn = open_event_log(event_log)
+    try:
+        proposal = emit_event(
+            conn,
+            type="action.proposed",
+            payload={
+                "action_id": cancel_id,
+                "tool_name": "cancel_action",
+                "caller_principal": "jarvis_llm",
+                "risk_level": "low",
+                "target_entity_ref": f"action:{target_action_id}",
+                "turn_id": "Tsmoke",
+                "arguments": {"target_action_id": target_action_id, "reason": "smoke"},
+            },
+            correlation={"action_id": cancel_id, "turn_id": "Tsmoke"},
+        )
+        emit_event(
+            conn,
+            type="gate.evaluated",
+            payload={
+                "gate": "pre_action",
+                "outcome": "pass",
+                "reasons": [],
+                "action_id": cancel_id,
+            },
+            source_event_id=proposal.event_uid,
+            correlation={"action_id": cancel_id, "turn_id": "Tsmoke"},
+        )
+        emit_event(conn, type="action.authorized", payload={"action_id": cancel_id})
+        emit_event(conn, type="action.dispatched", payload={"action_id": cancel_id})
+    finally:
+        conn.close()
+    return cancel_id
+
+
+def _actions_settled(seen: list[tuple[int, dict[str, Any]]]) -> bool:
+    """Report whether the target terminalized and the live ask was accepted.
+
+    The rows are appended in bursts and one delta carries whatever a
+    sequencer tick found, so the run reads to its end conditions rather than
+    to a fixed frame count.
+    """
+    changes = [change for _, change in seen]
+    return any(
+        change["kind"] == "action.upsert" and change["state"] == "result_observed"
+        for change in changes
+    ) and any(
+        change["kind"] == "confirmation.cleared" and change["reason"] == "accepted"
+        for change in changes
+    )
+
+
 def _emit_action_tail(event_log: Path, action_id: str) -> list[str]:
     """Run the action to its canonical terminal."""
     conn = open_event_log(event_log)
@@ -367,6 +429,46 @@ def _run_two_clients(url: str, token: str, root: Path) -> int:
     return 0
 
 
+def _verify_actions(sections: list[str], seen: list[tuple[int, dict[str, Any]]]) -> int:
+    """Check the D8 sections, the action's terminal, its cancel trail and the ask."""
+    upserts = [(c, change) for c, change in seen if change["kind"] == "action.upsert"]
+    asks = [(c, change) for c, change in seen if change["kind"] == "confirmation.upsert"]
+    cleared = [
+        (c, change)
+        for c, change in seen
+        if change["kind"] == "confirmation.cleared" and change["reason"] == "accepted"
+    ]
+    if sections != ["response_groups", "actions", "pending_confirmation"]:
+        _out(f"unexpected section_order: {sections}")
+        return 1
+    if not upserts or upserts[-1][1]["state"] != "result_observed":
+        _out(f"unexpected final action state: {upserts[-1][1] if upserts else None}")
+        return 1
+    carrying = [
+        (cursor, change)
+        for cursor, change in upserts
+        if change["cancel_request"] is not None
+    ]
+    if not carrying:
+        _out("no action.upsert carried the durable cancel_request")
+        return 1
+    if not asks or not cleared:
+        _out(f"missing a live confirmation upsert or its acceptance: {seen}")
+        return 1
+    if cleared[-1][0] <= asks[-1][0]:
+        _out(f"clear cursor {cleared[-1][0]} did not follow the upsert at {asks[-1][0]}")
+        return 1
+    trail = carrying[-1][1]["cancel_request"]
+    _out(
+        f"actions smoke ok (result_observed revision={upserts[-1][1]['revision']}, "
+        f"cancel_request request_id={trail['request_id']} state={trail['state']} "
+        f"on {len(carrying)} upserts, "
+        f"confirmation.upsert at event_cursor={asks[-1][0]} cleared accepted at "
+        f"event_cursor={cleared[-1][0]})",
+    )
+    return 0
+
+
 def _run_actions(url: str, token: str, root: Path) -> int:
     """Seed the three sections, adopt them, then drive the action and the ask."""
     event_log = root / "mac_events.db"
@@ -420,16 +522,25 @@ def _run_actions(url: str, token: str, root: Path) -> int:
         )
         _out(f"transport.ack through_cursor={end['payload']['through_cursor']}")
 
+        cancel_id = _emit_cancel_trail(event_log, action_id)
         _emit_action_tail(event_log, action_id)
         # A second ask supersedes the adopted one inside its own delta (D14),
         # then this one is accepted: the live wire shows both mutations.
         successor = "CONF" + uuid.uuid4().hex
         successor_uid = _emit_confirmation_request(event_log, successor, action_id)
         _emit_confirmation_answer(event_log, successor, successor_uid)
-        _out(f"emitted the action tail, a successor ask {successor} and its acceptance")
+        _out(
+            f"emitted the A5 cancel request {cancel_id}, the action tail, "
+            f"a successor ask {successor} and its acceptance",
+        )
         seen: list[tuple[int, dict[str, Any]]] = []
-        for _ in range(4):
-            _, delta = _recv(ws, "view.delta")
+        # A read that runs dry falls through to the verification, which names
+        # what never arrived, rather than surfacing the deadline as a traceback.
+        while not _actions_settled(seen):
+            try:
+                _, delta = _recv(ws, "view.delta")
+            except TimeoutError:
+                break
             for change in delta["payload"]["changes"]:
                 seen.append((delta["event_cursor"], change))
                 _out(
@@ -438,36 +549,11 @@ def _run_actions(url: str, token: str, root: Path) -> int:
                     + " ".join(
                         f"{key}={change[key]!r}"
                         for key in ("state", "revision", "cancellable", "reason",
-                                    "confirmation_id", "action_id")
+                                    "confirmation_id", "action_id", "cancel_request")
                         if key in change
                     ),
                 )
-    sections = payload["section_order"]
-    upserts = [(c, change) for c, change in seen if change["kind"] == "action.upsert"]
-    asks = [(c, change) for c, change in seen if change["kind"] == "confirmation.upsert"]
-    cleared = [
-        (c, change)
-        for c, change in seen
-        if change["kind"] == "confirmation.cleared" and change["reason"] == "accepted"
-    ]
-    if sections != ["response_groups", "actions", "pending_confirmation"]:
-        _out(f"unexpected section_order: {sections}")
-        return 1
-    if not upserts or upserts[-1][1]["state"] != "result_observed":
-        _out(f"unexpected final action state: {upserts[-1][1] if upserts else None}")
-        return 1
-    if not asks or not cleared:
-        _out(f"missing a live confirmation upsert or its acceptance: {seen}")
-        return 1
-    if cleared[-1][0] <= asks[-1][0]:
-        _out(f"clear cursor {cleared[-1][0]} did not follow the upsert at {asks[-1][0]}")
-        return 1
-    _out(
-        f"actions smoke ok (result_observed revision={upserts[-1][1]['revision']}, "
-        f"confirmation.upsert at event_cursor={asks[-1][0]} cleared accepted at "
-        f"event_cursor={cleared[-1][0]})",
-    )
-    return 0
+    return _verify_actions(payload["section_order"], seen)
 
 
 def main(argv: list[str]) -> int:

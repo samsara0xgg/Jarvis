@@ -52,6 +52,7 @@ ACTION_WIRE_KEYS = {
     "target",
     "revision",
     "cancellable",
+    "cancel_request",
 }
 CONFIRMATION_WIRE_KEYS = {
     "confirmation_id",
@@ -264,6 +265,7 @@ def test_every_reachable_action_state_upserts_once_at_its_own_cursor() -> None:
     assert {u["response_group_id"] for u in upserts} == {stable_response_group_id("T1")}
     assert set(upserts[0]) == {"kind", *ACTION_WIRE_KEYS}
     assert "freshness_ms" not in upserts[0]
+    assert all(u["cancel_request"] is None for u in upserts)
     assert fold.action("A1").result_available is True
 
 
@@ -422,7 +424,12 @@ def test_the_cancel_request_walks_received_authorized_quiescing_resolved() -> No
     assert (walk[-1].reason_code, walk[-1].request_id) == ("cancelled", "ACANCEL")
     assert [c["kind"] for c in cancelled] == ["action.upsert"]
     assert (cancelled[0]["state"], cancelled[0]["action_id"]) == ("cancelled", "ATARGET")
-    assert "cancel_request" not in cancelled[0]
+    assert cancelled[0]["cancel_request"] == {
+        "request_id": "ACANCEL",
+        "state": "resolved",
+        "revision_cursor": 9,
+        "reason_code": "cancelled",
+    }
     cancel_action = fold.action("ACANCEL")
     assert (cancel_action.action_type, cancel_action.safe_target_ref) == (
         "cancel_action", "action:ATARGET",
