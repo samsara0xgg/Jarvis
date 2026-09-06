@@ -96,6 +96,17 @@ public enum ActionCanonicalState: String, Decodable, Equatable, Sendable {
   }
 }
 
+/// D13 `CancelRequestState`: the A5 request's own state machine, which never
+/// enters the canonical `ActionCanonicalState`.
+public enum CancelRequestState: String, Decodable, Equatable, Sendable {
+  case received
+  case authorized
+  case quiescing
+  case rejected
+  case failed
+  case resolved
+}
+
 /// Why the globally unique confirmation slot was cleared (D10).
 public enum ConfirmationClearReason: String, Decodable, Equatable, Sendable {
   case accepted
@@ -253,17 +264,6 @@ public struct PlaybackStateChange: Decodable, Equatable, Sendable {
     case heardThroughSequence = "heard_through_sequence"
     case revision
   }
-}
-
-/// D13 `CancelRequestState`: the A5 request's own state machine, which never
-/// enters the canonical `ActionCanonicalState`.
-public enum CancelRequestState: String, Decodable, Equatable, Sendable {
-  case received
-  case authorized
-  case quiescing
-  case rejected
-  case failed
-  case resolved
 }
 
 /// The durable cancel request held against its target action (D13).

@@ -534,8 +534,13 @@ def _run_actions(url: str, token: str, root: Path) -> int:
             f"a successor ask {successor} and its acceptance",
         )
         seen: list[tuple[int, dict[str, Any]]] = []
+        # A read that runs dry falls through to the verification, which names
+        # what never arrived, rather than surfacing the deadline as a traceback.
         while not _actions_settled(seen):
-            _, delta = _recv(ws, "view.delta")
+            try:
+                _, delta = _recv(ws, "view.delta")
+            except TimeoutError:
+                break
             for change in delta["payload"]["changes"]:
                 seen.append((delta["event_cursor"], change))
                 _out(
