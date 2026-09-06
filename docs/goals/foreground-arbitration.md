@@ -129,4 +129,13 @@ Implement docs/goals/foreground-arbitration.md on the current branch. Read the c
 Or stop after 40 turns.
 
 ## Progress
-- (none yet)
+- Arbitration slice — 8a93c65 — `decide_foreground` (L3) + `make_foreground_decision_callable`
+  (runtime) + `foreground_decision_callable` on `StreamingTTSPipeline`, wired at
+  `jarvis/runtime/inherent_loop.py:1863`. Both cross-group paths of
+  `_schedule_response` route through the verdict. New
+  `tests/integration/test_foreground_arbitration.py` 3 passed; the two behavioral
+  cases fail with the callable set to `None` (`('ROLD', 0) in provider.opened`,
+  `('RNEXT', 0) in provider.opened`). Suite 1068 passed / 64 deselected (baseline
+  1065 + 3 new); lint-imports KEPT 1/1; ruff clean; mypy strict clean (244 files).
+  `test_after_drain_same_group_and_foreground_supersede` 1 passed, its file diff
+  against `realtime-integration` is empty.
