@@ -305,4 +305,124 @@ summaries.
 Or stop after 30 turns.
 
 ## Progress
-- (empty)
+- Slice 1 — the mint. `jarvis/surface/voice_pipeline.py`: `run_turn` mints
+  `"U" + secrets.token_hex(8)` when the caller supplied no `utterance_id`, and
+  `payload["utterance_id"]` is now set unconditionally. No signature changed;
+  the PTT adapter keeps its four-positional shape.
+- R1 pre-check, run BEFORE the production edit. No reader anywhere depends on
+  the key being ABSENT. A repo-wide grep for a membership test
+  (`"utterance_id" in` / `not in` / `keys()` / `hasattr`) over all `*.py`
+  returned nothing. The four payload readers all tolerate or want presence:
+  `jarvis/runtime/inherent_loop.py:3535` (`payload.get`, the defect site, wants
+  presence), `jarvis/state/input_submission_inbox.py:553` (`_optional_str`,
+  absence-tolerant), `scripts/replay_endpointing.py:109` (display only),
+  `tests/integration/test_endpointing_partial_asr.py:627` (wake path; the trace
+  attribute at voice_pipeline.py:227 was already unconditional). Two readers the
+  card did not list were checked and are unaffected:
+  `tests/integration/test_inherent_flow_control.py:362,375` builds its own
+  `input.partial` payloads by hand, and
+  `tests/integration/test_wave3_single_audio_ingress.py:1631` /
+  `tests/integration/test_voice_file_replay.py:204` assert distinct ids on a
+  fake pipeline driven by the wake path, which still supplies its own id. So
+  the mint went inside `run_turn`; the Target-behavior-3 fallback was NOT taken.
+- The proving test. ONE new case,
+  `test_asr_submit_v2_receipt_carries_one_utterance_id_across_the_retry`
+  (tests/integration/test_inherent_submit_v2.py), asserts both properties: the
+  receipt's `utterance_id` is a `U`-prefixed string equal to the committed
+  `utterance.received` payload's, and the documented retry of the same
+  `request_id` returns that same value. It drives a real `VoicePipeline` (stub
+  recognizer, real normalizer, real event log) through the daemon's own
+  `_build_voice_pipeline_callable`, not the hand-built `_transcribing_pipeline`
+  fake, which never enters `run_turn`. Before the production edit it failed at
+  `assert isinstance(utterance_id, str)` with `isinstance(None, str)`; after,
+  it passes.
+- Regression. Own baseline before any edit: `1069 passed, 64 deselected` in
+  50.23s. After: `1070 passed, 64 deselected` in 49.90s — baseline plus the one
+  new case, zero failures. Gates each exit 0: lint-imports `KEPT (1/1)`, ruff
+  `All checks passed!`, mypy strict `no issues found in 244 source files`.
+- R3 — the Swift consumer, answered by evidence, not assumption. The Swift PTT
+  client DOES decode the field:
+  `desktop/inherent-swift/InherentRealtime/InputSubmissionClient.swift:62`
+  declares `public var utteranceID: String?` with the coding key at `:72`, and
+  `decode` (:207-215) builds the `InputSubmissionReceipt` that `submitAudio`
+  (:153-178) returns. But NO reader of `receipt.utteranceID` exists. The only
+  call site of `submitAudio` outside the client is
+  `desktop/inherent-swift/InherentCardTests/Realtime/InputSubmissionClientTests.swift:111`,
+  which discards the tuple with `_ =`, and the app target
+  `desktop/inherent-swift/InherentCard/` never references
+  `InputSubmissionClient` at all (grep across `desktop/` for `submitAudio` /
+  `InputSubmissionClient` / `utteranceID` returns hits only under
+  `InherentRealtime/` and `InherentCardTests/`). The reducer's
+  `state.input.utteranceID` (RealtimeReducer.swift:675,730-742,792) is fed
+  exclusively by the WS view DTOs (`input.committed` / `input.state` /
+  `input.partial`, RealtimeViewDTOs.swift:361,444,457), never by the HTTP
+  receipt — which is exactly what ADR-0005 §6 describes. A populated value
+  therefore changes nothing on the Swift side: no rendering, no state, no
+  equality, no fixture. Swift was NOT touched, so
+  `bash scripts/test_inherent_swift.sh` was not run.
+- Docs to sync. `docs/adr/0014-inherent-realtime-ux.md:1292-1301` — UNCHANGED:
+  the ASR response block already lists `utterance_id`; the ADR was right and the
+  code was out of contract, and restating it would duplicate a fact.
+  `docs/spec.html` — UNCHANGED: no layer boundary, ownership, invariant, or
+  externally relevant behavior moved; the field was already declared at every
+  layer and only its value changed from null to real.
+- Boundaries held, with one correction below. The wake mint at
+  `jarvis/surface/voice_session.py:550` and its threading at `:1337` are
+  untouched. The `InputReceipt` shape, its DB
+  column, and everything else in the inbox are untouched. `_v2_accepted`'s 1:1
+  copy is untouched. Nothing about `turn_id` changed. `VoicePipeline` turn_id
+  idempotency was NOT started and the acceptance test did not surface it. Every
+  `jarvis/runtime/inherent_loop.py` line number was re-pinned by grepping the
+  symbol name: `_build_voice_pipeline_callable` 1920, `_v2_accepted` 3464,
+  `_submit_asr_v2` 3500.
+- Live run: not required and not performed. No audio device was touched and the
+  system default output was not switched — the id is fully observable on the
+  HTTP receipt.
+- CORRECTION, raised by the independent verifier and confirmed here. `run_turn`
+  has THREE production callers, not two, and the card's premise that "the wake
+  path is untouched because it already passes an id explicitly" is only true of
+  the duplex path. The legacy `WakeListener` at
+  `jarvis/surface/voice_wake.py:412-418` calls `run_turn` with NO
+  `utterance_id=`, and it is the path that ships today:
+  `config/jarvis.yaml:264` sets `single_audio_ingress.enabled: false`, so
+  `_single_ingress_activation` returns `requested=False`
+  (jarvis/runtime/inherent_loop.py:2519-2525), `_spawn_single_ingress_session`
+  returns `(None, False)` (:2594-2595), and `_spawn_voice_input_owners` takes
+  `_spawn_wake_listener` (:2765-2776). So this change DOES alter the shipping
+  wake path: its `utterance.received` payload previously had no `utterance_id`
+  key and now always carries a minted one, and the `utterance_committed` trace
+  attribute (voice_pipeline.py:230) goes from None to a real value. The claim
+  in commit b29d87e's body that "the mint never fires there" was wrong; the
+  amended body states this instead.
+  The effect is additive and no reader breaks: no reader tests for absence
+  (R1 above), `emit_event` validates only required payload fields
+  (jarvis/state/event_log.py:1561-1564) so an extra key is legal, nothing
+  consumes the legacy wake path's utterance id, and the full suite is green.
+  A legacy wake utterance having an identity is more correct, not less, so no
+  code change was made for it — only the record was corrected. This is a gap in
+  the card's model of the wake path, not a redesign of what the card asked for.
+- Verifier disposition (fresh-context, opus, over `realtime-integration..HEAD`).
+  It independently reproduced the reverted-production control (the new case
+  fails at `isinstance(None, str)` with only `voice_pipeline.py` rolled back),
+  re-derived the R1 absence check, re-ran the gates and the 1070-case suite, and
+  independently rebuilt the 1069 baseline. One confirmed defect: the wake-path
+  claim, corrected above. Its four speculative notes, none acted on:
+  - `or` rather than `is None` would also replace an explicitly-passed empty
+    string. Unreachable today — `voice_session.py:703-711` reads
+    `self._utterance_id` before `reset_to_idle()` blanks it at `:861` — and on
+    that path minting beats emitting `""`. Kept deliberately.
+  - The known lease-TTL double-write (two `utterance.received` rows for one
+    turn_id) now yields two DIFFERENT utterance ids, while crash recovery takes
+    the first row (`_UTTERANCE_FOR_TURN_SQL`,
+    jarvis/state/input_submission_inbox.py:91-94). That is the `VoicePipeline`
+    turn_id idempotency defect the card names as a non-goal; this change makes
+    the existing divergence observable, it does not create it. NOT started, per
+    the card.
+  - Pre-existing drift unrelated to this diff: the `utterance.received` schema's
+    `optional_payload` (jarvis/state/event_log.py:274-289) omits `session_id` /
+    `utterance_id` / `endpoint_reason`, which
+    `docs/adr/0006-full-duplex-voice-session.md:626-631` declares. No effect
+    (only required fields are validated) and the wake path already wrote those
+    keys. Out of this card's boundaries; left alone.
+  - `?? .venv` in `git status` is the pre-existing local symlink, present in the
+    session's opening snapshot and never staged. Tracked files are clean.
