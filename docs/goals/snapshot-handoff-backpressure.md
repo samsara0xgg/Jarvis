@@ -429,7 +429,7 @@ repository, stop and report; do not redesign. Or stop after 45 turns.
   and the progressive-snapshot / atomic-catch-up asymmetry in that one place;
   `docs/spec.html` unchanged (grep for `durable_bytes|client_backpressure|durable
   lane|snapshot handoff|frame_over_budget` returns 0).
-- Verifier pass (opus, fresh context, `realtime-integration...HEAD`) — 41d0efb —
+- Verifier pass (opus, fresh context, `realtime-integration...HEAD`) — 61c631c —
   no blocking defect; it reproduced the three fail arms on the pre-change hub and
   mutated the fix twice (dropping the over-budget guard fails test 3 in 0.22s;
   dropping `_capacity.set()` fails test 1), so the cases are not vacuous. Only
