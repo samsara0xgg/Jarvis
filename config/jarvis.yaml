@@ -188,9 +188,9 @@ realtime:
   # at most one short deterministic phrase, opened from the first committed
   # action lifecycle row that qualifies, in a `phase="commentary"`
   # ResponseRun sharing that turn's response_group_id; the final answer is
-  # never dropped or superseded by it.  It
-  # additionally requires realtime.enabled and response.response_run_lifecycle
-  # and downgrades once, with one warning, without them.
+  # never dropped or superseded by it.  It additionally requires
+  # realtime.enabled and response.response_run_lifecycle and downgrades once,
+  # with one warning, without them.
   commentary:
     enabled: false
   # ADR-0008 Step 3 (Wave 4B).  action_runner routes ToolRegistry.dispatch

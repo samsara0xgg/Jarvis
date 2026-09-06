@@ -354,10 +354,12 @@ V1 commentary is primarily deterministic and lifecycle-driven:
 | Observed truth | Permitted example |
 |---|---|
 | utterance accepted, route selected | “听到了。” |
-| `action.dispatched` committed | “我开始处理了。” |
+| `action.dispatched` committed | “我去查一下。” |
 | `action.running` first observed | “任务已经在运行。” |
 | `action.result_observed` committed | “结果回来了，我整理一下。” |
 | `action.failed` committed | “这一步失败了，我告诉你具体原因。” |
+
+Each action-row cell is one member of the set `jarvis/decision/commentary.py` declares for that row; which member a given action uses is a stable digest of its `action_id`. “我开始处理了。” was the original `action.dispatched` phrase and is retired: under the per-turn cap the acknowledge is the phrase actually heard, and it is the “one moment while I process that” shape the forbidden list below is about.
 
 Forbidden examples without corresponding evidence:
 
@@ -1196,7 +1198,7 @@ Fast preset adoption is a separate decision inside Step 12. Streaming the strong
 8. `surface.response_*` remain L5 delivery events; new `response.*` events represent L3 generation lifecycle.
 9. Action lifecycle taxonomy/validation stays in L4 while canonical terminal truth is the L2 fold. Response cancellation and action cancellation are formally separate.
 10. The existing `interrupt_policy` placeholder becomes `ResponseInterruptPolicy` before keyword/natural barge-in is enabled.
-11. The one-phrase-per-turn cap is the runtime observer's, not L3's and not L5's. `jarvis/decision/commentary.py` stays pure — no clock, no DB read, no LLM, no timer, no stored index — because that purity is what makes D6's three forbidden hallucinations unreachable by construction rather than merely discouraged, and a per-turn counter would be exactly the stored state that ends it. `PresentationIntent` cannot hold the state either: spec §3.6.3 makes it an ephemeral L3→L5 contract that is never an Event Log row, so a window or count on it would not survive a restart. The observer already performs the durable event-log read this needs (`_commentary_reached_the_speaker`), so the cap is one more query of the same kind — `response.started` with `phase="commentary"` for the turn — and it is durable, restart-safe, and correct across worker threads for free. Spec §3.6.12's two coalescing layers are untouched: neither is this path.
+11. The one-phrase-per-turn cap is the runtime observer's, not L3's and not L5's. `jarvis/decision/commentary.py` stays pure — no clock, no DB read, no LLM, no timer, no stored index — because that purity is what makes D6's three forbidden hallucinations unreachable by construction rather than merely discouraged, and a per-turn counter would be exactly the stored state that ends it. `PresentationIntent` cannot hold the state either: spec §3.6.3 makes it an ephemeral L3→L5 contract that is never an Event Log row, so a window or count on it would not survive a restart. The observer already performs the durable event-log read this needs (`_commentary_reached_the_speaker`), so the cap is one more query of the same kind — `response.started` with `phase="commentary"` for the turn — and it is durable and restart-safe. It is not atomic: the read and `start_response_run`'s append are separate statements, and what closes that window is the watcher awaiting each row's dispatch in turn, one at a time. Making that dispatch concurrent would reopen it and require a real transaction. Spec §3.6.12's two coalescing layers are untouched: neither is this path.
 
 ## 11. Consequences
 

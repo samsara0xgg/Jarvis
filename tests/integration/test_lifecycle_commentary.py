@@ -624,7 +624,8 @@ def test_live_pending_confirmation_silences_commentary(tmp_path: Path) -> None:
         )
         _action_row(runtime.conn, "action.running", action_id="ACT-c", turn_id="T-conf")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
-    assert _spoken(reader) == [_only_phrase(reader)]
+    # `_only_phrase` asserts there is exactly one; the running row spoke and
+    # the silenced dispatched row did not take the turn's slot with it.
     assert _only_phrase(reader) in _D6_ROWS["action.running"][1]
 
 

@@ -355,3 +355,22 @@ Progress line per slice in the card. Or stop after 35 turns.
   first action let the acknowledge win, which is the intended shape.
   Daemon stopped; the owner's pid 45429 / pid 96300 and the system output
   route (MacBook Pro Speakers) were untouched throughout.
+- Verifier pass (opus, fresh context, `realtime-integration..HEAD`): all eight
+  checks confirmed, control / gates / live DB independently reproduced. Two
+  confirmed defects fixed here: (D1) ADR-0008's D6 phrase table `:357` still
+  listed the retired `我开始处理了。` while `:368` declares that table the
+  authority for the mapping — the cell now carries a current phrase and one
+  sentence says the code owns the sets and why the old phrase went; (D2) §10
+  item 11 claimed the cap is "correct across worker threads for free" — the
+  SELECT and `start_response_run`'s append are not one transaction, so the
+  text now names the watcher's serial per-row await as what closes the window
+  and warns that a concurrent dispatch would reopen it. Also dropped a
+  tautological assertion the verifier flagged and reflowed the config comment.
+  Verifier's four speculative risks judged not-defects and not built for: a
+  mid-render exception would mute the capped turn (narrow, unobserved, and
+  guarding it is speculative complexity), an operator-cancelled commentary is
+  not re-spoken (that is "first opened one wins" as specified), the
+  freshness-suppression pin is timing-dependent but cannot pass vacuously, and
+  the remaining test redundancy is covered by the sha256 literal pin.
+  Final gates: lint-imports KEPT, ruff clean, mypy 247 files, 1052 passed / 64
+  deselected.
