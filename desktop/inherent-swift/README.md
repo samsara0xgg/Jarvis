@@ -17,8 +17,8 @@ builds the .app if missing, then spawns it with `JARVIS_PROJECT_ROOT` and
 
 The web backend (`ui/web/server.py`) must be running separately on port 8006.
 Set `JARVIS_INHERENT_BRIDGE_PORT` in the shell that starts the card to point it
-at a daemon on another port; unset, non-numeric or outside 1-65535 keeps 8006
-and logs the rejected value.
+at a daemon on another port. Unset means 8006, silently. A value that is not a
+number in 1-65535 also means 8006, and the card logs the rejected value.
 
 ## Run (Xcode)
 
