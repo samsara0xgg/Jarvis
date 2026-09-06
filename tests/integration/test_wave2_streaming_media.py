@@ -2703,9 +2703,16 @@ def test_shutdown_deadline_is_concurrent_monotonic_min(tmp_path: Path) -> None:
 
 
 class _FakeOutputStream:
-    def __init__(self, *, start_error: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        start_error: BaseException | None = None,
+        latency: float | None = None,
+    ) -> None:
         self.active = True
         self._start_error = start_error
+        if latency is not None:
+            self.latency = latency
 
     def start(self) -> None:
         if self._start_error is not None:
@@ -3677,3 +3684,69 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
     assert _emitted_vol({"enabled": False}) == 3
     assert _emitted_vol({"enabled": False, "tts_volume": 7}) == 7
     conn.close()
+
+
+@pytest.mark.parametrize(
+    ("reported_latency", "expected_ns"),
+    [
+        (0.035, 35_000_000),
+        (0.0, 120_000_000),
+        (None, 120_000_000),
+        (12.0, 120_000_000),
+    ],
+    ids=["host_reports_35ms", "degenerate_zero", "attribute_absent", "absurd_value"],
+)
+def test_playback_started_carries_the_host_output_latency_or_the_configured_one(
+    tmp_path: Path,
+    reported_latency: float | None,
+    expected_ns: int,
+) -> None:
+    """A degenerate 0.0 is not zero latency, and 12 s is not a slow device."""
+    db_path = tmp_path / f"latency-{reported_latency}.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    player = voice_tts.AudioStreamPlayer(
+        sample_rate_hz=8_000,
+        ring_seconds=0.25,
+        lazy_open=True,
+        generation_safe=True,
+        estimated_output_latency_s=0.12,
+    )
+    stream = _FakeOutputStream(latency=reported_latency)
+    with patch.object(voice_tts, "_open_output_stream", return_value=stream):
+        # The owner opens the device on its own startup, so the patched stream
+        # must be in place before the pipeline exists.
+        pipeline = voice_media.StreamingTTSPipeline(
+            provider=provider,
+            player=player,
+            conn_factory=lambda: open_event_log(db_path),
+            boot_high_water_id=0,
+            config=_config(),
+            start_player=True,
+        )
+    try:
+        with _CallbackPump(player):
+            rows = _emit_response(
+                conn,
+                response_id="RL",
+                group_id="GL",
+                turn_id="TL",
+                text="latency on the wire",
+            )
+            asyncio.run(_submit_response(pipeline, rows))
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+    finally:
+        assert pipeline.close(wait_timeout_s=2.0)
+        conn.close()
+
+    verdict = open_event_log(db_path)
+    try:
+        started = verdict.execute(
+            "SELECT payload_json FROM events WHERE type = 'surface.playback_started' "
+            "AND json_extract(payload_json, '$.response_id') = 'RL'",
+        ).fetchall()
+        assert len(started) == 1
+        payload = cast("dict[str, object]", json.loads(str(started[0][0])))
+        assert _payload_int(payload, "estimated_output_latency_ns") == expected_ns
+    finally:
+        verdict.close()

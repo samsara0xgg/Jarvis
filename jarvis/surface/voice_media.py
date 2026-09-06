@@ -2230,6 +2230,9 @@ class StreamingTTSPipeline:
                     "phase": response.phase,
                     "channel": response.channel,
                     "speech_text_hash": speech_hash,
+                    "estimated_output_latency_ns": (
+                        self._player.estimated_output_latency_ns
+                    ),
                     **({"incremental": True} if live else {}),
                 },
                 source_event_id=response.source_event_id,

@@ -590,4 +590,13 @@ stop after 30 turns.
   `['ui:spoken:T-RG:interrupted']` while the durable terminal is
   `surface.playback_failed`, i.e. the wire frame contradicts the Event Log.
   With the guard: `['ui:spoken:T-RG:failed']`, one terminal, no isolation row.
+- Slice 3 (host output latency) — read from the stream at open, before
+  `stream.start()`; plausibility bound `0.0 < s <= 1.0`. Measured
+  `surface.playback_started.estimated_output_latency_ns`: `0.035` ->
+  `35000000`; `0.0` -> `120000000`; no `latency` attribute -> `120000000`;
+  `12.0` -> `120000000`. Live run on this machine's real default output device
+  (MacBook Pro Speakers, 48 kHz mono, blocksize 0, latency "low", never
+  started, no audio, route unchanged before and after):
+  `raw stream.latency = 0.018708333333333334` -> `18708333` ns. The hardcoded
+  120 ms was overestimating this device by 6.4x.
 

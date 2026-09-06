@@ -814,7 +814,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # ``incremental`` marks a lease minted from the first permitted
         # segment: ``speech_text_hash`` is then the first segment's hash and
         # the full speech hash is bound by ``surface.playback_completed``.
-        optional_payload=("incremental",),
+        optional_payload=("incremental", "estimated_output_latency_ns"),
         schema_version=1,
     ),
     EventTypeSchema(
