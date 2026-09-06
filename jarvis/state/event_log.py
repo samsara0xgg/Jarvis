@@ -860,6 +860,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         ),
         optional_payload=(
             "total_samples", "provider", "cursor_quality", "heard_text", "heard_text_hash",
+            "starvation_gaps", "host_underflows",
         ),
         schema_version=1,
     ),
@@ -884,6 +885,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "interrupted_by_turn_id",
             "provider",
             "cursor_quality",
+            "starvation_gaps",
+            "host_underflows",
         ),
         schema_version=1,
     ),
@@ -901,7 +904,10 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "heard_text_hash",
             "reason",
         ),
-        optional_payload=("heard_text", "provider", "cursor_quality", "retryable"),
+        optional_payload=(
+            "heard_text", "provider", "cursor_quality", "retryable",
+            "starvation_gaps", "host_underflows",
+        ),
         schema_version=1,
     ),
     # ADR-0006 §4.2: the fourth exit from playback, which appends no terminal.

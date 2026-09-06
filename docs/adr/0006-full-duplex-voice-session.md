@@ -344,7 +344,9 @@ submitted output cursor        # handed to host callback
 estimated audible cursor       # DAC-time/monotonic mapping minus safety margin
 ```
 
-The backend uses `outputBufferDacTime` (or its native equivalent) to map the continuous output timeline to the monotonic clock. Starvation, inserted silence, device restart, the post-resample gain/kill envelope, and known system-output mute state advance or reset explicit timeline epochs; they are never hidden inside one cumulative counter. `cursor_quality` is `measured_dac`, `estimated`, or `unknown`, and all boundary calculations round backward. Ring empty is not completion: the audible horizon must conservatively pass the segment end.
+The backend uses `outputBufferDacTime` (or its native equivalent) to map the continuous output timeline to the monotonic clock. Starvation, inserted silence, device restart, the post-resample gain/kill envelope, and known system-output mute state advance or reset explicit timeline epochs; they are never hidden inside one cumulative counter.
+
+Of that clause, starvation is implemented: the generation ring zero-pads a dry read into a block the host cannot distinguish from legitimate silence, so it is counted where it happens — in the playback callback — and reported per generation as `starvation_gaps` on the playback terminal, alongside PortAudio's own `host_underflows`. Both are deltas against a snapshot taken at lease mint, so they are per `(response_id, playback_generation_id)` and never one cumulative counter. A gap is counted only when audio for the *same* generation resumes after a dry window: a dry ring before the first block is prefill, and a dry ring that never resumes is the end-of-generation tail that every clean response produces. The per-chunk `timeline_epoch` mechanism the same sentence describes remains unimplemented — `_timeline_epoch` is still copied from the lease at mint and never advanced mid-generation — as do the other four listed causes. `cursor_quality` is `measured_dac`, `estimated`, or `unknown`, and all boundary calculations round backward. Ring empty is not completion: the audible horizon must conservatively pass the segment end.
 
 The current `_played_samples` counter is explicitly forbidden as a heard-state input: it increments before playback gain is applied and before the device's DAC horizon. V1 advances heard state only through a complete segment whose final post-gain frames have crossed the conservative audible horizon with `audibility_class=normal`. Any interval that is muted, below the configured conservative intelligibility gain, affected by an unknown external/system gain, or killed mid-segment marks that segment `attenuated|muted|unknown` and does not advance `heard_through_sequence`. This deliberately under-counts ducked speech rather than claiming that quiet samples were heard.
 
@@ -613,18 +615,21 @@ surface.playback_checkpoint
 surface.playback_completed
   required: session_id, response_id, turn_id, playback_generation_id,
             heard_through_sequence, submitted_samples, speech_text_hash
-  optional: total_samples, provider, cursor_quality
+  optional: total_samples, provider, cursor_quality,
+            starvation_gaps, host_underflows
 
 surface.playback_interrupted
   required: session_id, response_id, turn_id, playback_generation_id,
             heard_through_sequence, submitted_samples, heard_text_hash, reason
   optional: heard_text, total_samples, interrupted_by_utterance_id,
-            interrupted_by_turn_id, provider, cursor_quality
+            interrupted_by_turn_id, provider, cursor_quality,
+            starvation_gaps, host_underflows
 
 surface.playback_failed
   required: session_id, response_id, turn_id, playback_generation_id,
             heard_through_sequence, submitted_samples, heard_text_hash, reason
-  optional: heard_text, provider, cursor_quality, retryable
+  optional: heard_text, provider, cursor_quality, retryable,
+            starvation_gaps, host_underflows
 
 surface.playback_lane_isolated
   required: session_id, response_id, turn_id, playback_generation_id,

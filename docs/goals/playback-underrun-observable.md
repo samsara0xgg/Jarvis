@@ -599,4 +599,12 @@ stop after 30 turns.
   started, no audio, route unchanged before and after):
   `raw stream.latency = 0.018708333333333334` -> `18708333` ns. The hardcoded
   120 ms was overestimating this device by 6.4x.
+- Docs to sync — ADR-0006 §4.2 optional lists, the new event, the "sole exit"
+  qualification, the §362 latency note and the §347 starvation clause all
+  updated. `docs/spec.html`: judged UNCHANGED and verified, not assumed — it
+  owns no playback payload fact (grep for `submitted_samples`,
+  `surface.playback`, `starvation`, `host_underflow`,
+  `estimated_output_latency` over `docs/spec.html` returns 0 hits). Its §5.4
+  does own the rule that every `emit_event` type must be registered first, and
+  that rule was followed rather than changed.
 
