@@ -1744,7 +1744,7 @@ class MiniMaxWSClient:
         primary_endpoint: str = "https://api-uw.minimax.io",
         fallback_endpoint: str = "https://api.minimax.chat",
         model: str = "speech-2.8-turbo",
-        volume: int = 5,
+        volume: int = 3,
         sample_rate_in: int = 32000,
         sample_rate_out: int = 32000,
         connect_timeout_s: float = 3.0,

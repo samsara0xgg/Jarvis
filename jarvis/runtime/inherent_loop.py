@@ -1828,16 +1828,24 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     # the device at the system-native rate prevents CoreAudio from
     # forcing a hardware-rate switch on every play, which was producing
     # audible pops/clicks for any other app sharing the speaker.
+    realtime_raw = runtime.config.get("realtime")
+    realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
+    # MiniMax `voice_setting.vol`.  Absent or null keeps the MiniMaxWSClient
+    # signature default, the single place the calibrated value lives.
+    # Deliberately unvalidated, like `output_device` below: an out-of-domain
+    # value is the provider's to reject.
+    tts_volume = realtime.get("tts_volume")
+    volume_kwargs: dict[str, Any] = {} if tts_volume is None else {"volume": tts_volume}
+
     def _new_provider() -> voice_tts.MiniMaxWSClient:
         return voice_tts.MiniMaxWSClient(
             api_key=api_key,
             sample_rate_in=32000,
             sample_rate_out=_DEFAULT_TTS_SAMPLE_RATE_HZ,
+            **volume_kwargs,
         )
 
     provider = _new_provider()
-    realtime_raw = runtime.config.get("realtime")
-    realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
     # Passed straight through to sd.OutputStream, which maps a name to a device
     # index itself; an unresolvable value raises there and `start()` fails closed.
     # Deliberately unvalidated: a type guard here would turn a mistyped key into
