@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 import pytest
 import yaml
+from fastapi.testclient import TestClient
 
 from jarvis import runtime as runtime_module
 from jarvis.decision.commentary import COMMENTARY_ATTENTION_CHANNEL, commentary_intent_for
@@ -28,17 +29,35 @@ from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.packet import assemble_packet
 from jarvis.decision.pre_route import pre_route
+from jarvis.decision.response_run import (
+    ResponseRunRegistry,
+    legacy_full_text_policy,
+    start_response_run,
+)
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, _wave4_response_activation, drive_turn, inherent_loop
+from jarvis.runtime import (
+    JarvisRuntime,
+    _wave4_response_activation,
+    drive_turn,
+    inherent_loop,
+    make_barge_in_interrupt_callable,
+    make_response_cancel_callable,
+)
 from jarvis.shared import Event
-from jarvis.shared.realtime import Wave1FeatureFlags, stable_response_group_id
+from jarvis.shared.realtime import (
+    Wave1FeatureFlags,
+    new_response_id,
+    stable_response_group_id,
+)
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
 from jarvis.surface import voice_media
 from jarvis.surface.cli import parse_response_channels
+from jarvis.surface.inherent_output import InherentBroadcaster
+from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
 from tests.integration.test_wave2_streaming_media import (
     _CallbackPump,
@@ -212,7 +231,7 @@ def test_non_boolean_truthy_never_enables_commentary() -> None:
 # --- observer harness ------------------------------------------------------
 
 
-def _observer_config(*, commentary: bool) -> dict[str, Any]:
+def _observer_config(*, commentary: bool, cancel: bool = False) -> dict[str, Any]:
     """Config for a runtime with the ResponseRun lifecycle and D6 commentary."""
     return {
         "realtime": {
@@ -221,7 +240,11 @@ def _observer_config(*, commentary: bool) -> dict[str, Any]:
                 "transactional_event_append": True,
                 "lifecycle_terminal_cas": True,
             },
-            "response": {"response_run_lifecycle": True},
+            "response": {
+                "response_run_lifecycle": True,
+                "independent_response_cancel": cancel,
+                "cancel_timeout_ms": 500,
+            },
             "commentary": {"enabled": commentary},
         },
     }
@@ -241,10 +264,15 @@ _LLM_CONFIG: dict[str, Any] = {
 }
 
 
-def _make_runtime(tmp_path: Path, *, commentary: bool = True) -> JarvisRuntime:
+def _make_runtime(
+    tmp_path: Path,
+    *,
+    commentary: bool = True,
+    cancel: bool = False,
+) -> JarvisRuntime:
     """Assemble the runtime the daemon's watchers receive."""
     paths = bootstrap_runtime(tmp_path)
-    config = _observer_config(commentary=commentary)
+    config = _observer_config(commentary=commentary, cancel=cancel)
     flags = _wave4_response_activation(config).flags
     return JarvisRuntime(
         config=config,
@@ -260,6 +288,7 @@ def _make_runtime(tmp_path: Path, *, commentary: bool = True) -> JarvisRuntime:
         ),
         response_flags=flags,
         llm_session_factory=LLMSessionFactory(_LLM_CONFIG),
+        response_runs=ResponseRunRegistry() if flags.independent_response_cancel else None,
         committed_event_bus=CommittedEventBus(),
     )
 
@@ -1055,3 +1084,186 @@ def test_a_playing_commentary_is_completed_not_cut_off(tmp_path: Path) -> None:
     ]
     assert completed == [first.run.response_id]
     assert _spoken(reader) == ["我开始处理了。", "任务已经在运行。"]
+
+
+# --- observer: the operator cancel seam reaches a commentary ----------------
+
+
+def _cancel_over_http(
+    runtime: JarvisRuntime,
+    response_id: str,
+    *,
+    reason: str = "user_stop",
+) -> dict[str, Any]:
+    """POST ``/inherent/cancel-response`` over the real app and return the body."""
+    app = create_app(
+        InherentDeps(
+            submit_callable=lambda _text: "T-http",
+            broadcaster=InherentBroadcaster(),
+            cancel_response_callable=make_response_cancel_callable(runtime),
+        ),
+    )
+    with TestClient(app) as client:
+        reply = client.post(
+            "/inherent/cancel-response",
+            json={"response_id": response_id, "scope": "generation", "reason": reason},
+        )
+    assert reply.status_code == 200
+    body = reply.json()
+    assert isinstance(body, dict)
+    return body
+
+
+def _open_commentary_id(runtime: JarvisRuntime, reader: sqlite3.Connection) -> str:
+    """Wait for the observer's newest commentary run and return its id."""
+    registry = runtime.response_runs
+    assert registry is not None
+    _wait_until(lambda: len(registry.open_runs()) >= 1)
+    started = _typed_payloads(reader, "response.started")
+    return str(started[-1]["response_id"])
+
+
+def test_an_unheard_commentary_answers_cancel_response_and_writes_its_row(
+    tmp_path: Path,
+) -> None:
+    """The operator seam can close a phrase that never reached the speaker.
+
+    Before this change ``runtime.response_runs`` never held a commentary run,
+    so this exact POST answered ``unknown_response`` and wrote nothing.
+    """
+    runtime = _make_runtime(tmp_path, cancel=True)
+    reader = _reader(runtime)
+    _user_turn(runtime.conn, "T-opcancel")
+    with _Observer(runtime):
+        _action_row(
+            runtime.conn, "action.dispatched", action_id="ACT-op", turn_id="T-opcancel",
+        )
+        _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
+        response_id = _open_commentary_id(runtime, reader)
+
+        assert _cancel_over_http(runtime, response_id) == {"outcome": "cancelled"}
+
+    cancelled = _typed_payloads(reader, "response.cancelled")
+    assert len(cancelled) == 1
+    assert cancelled[0]["response_id"] == response_id
+    assert cancelled[0]["reason"] == "user_stop"
+    assert cancelled[0]["cancel_scope"] == "generation"
+    assert _count(reader, "response.completed") == 0
+
+
+def test_barge_in_while_a_commentary_is_open_still_cancels_the_final_run(
+    tmp_path: Path,
+) -> None:
+    """R1: a concurrently open commentary is not a barge-in target, nor noise.
+
+    The final run of an action-dispatching turn is ``waiting_action`` — open —
+    at the exact moment the commentary watcher opens its own run off the same
+    action row.  Without the ``phase == "final"`` filter in ``_interrupt`` the
+    registry holds two open runs and the barge-in returns
+    ``ambiguous_open_runs``, cancelling nothing.
+    """
+    runtime = _make_runtime(tmp_path, cancel=True)
+    reader = _reader(runtime)
+    registry = runtime.response_runs
+    assert registry is not None
+    factory = runtime.llm_session_factory
+    assert factory is not None
+
+    _user_turn(runtime.conn, "T-comm")
+    with _Observer(runtime):
+        _action_row(
+            runtime.conn, "action.dispatched", action_id="ACT-bi", turn_id="T-comm",
+        )
+        _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
+        commentary_id = _open_commentary_id(runtime, reader)
+
+        trigger = _user_turn(runtime.conn, "T-final", transcript="讲个长故事")
+        final_id = new_response_id()
+        final_run = start_response_run(
+            runtime.conn,
+            turn_id="T-final",
+            trigger_event_uid=trigger.event_uid,
+            request_client=factory.create(factory.snapshot(None), response_id=final_id),
+            policy=legacy_full_text_policy(
+                evidence_snapshot_hash="a" * 64,
+                preset_snapshot_hash="b" * 64,
+            ),
+            response_id=final_id,
+            committed_event_bus=runtime.committed_event_bus,
+        )
+        final_run.mark("waiting_action")
+        registry.register(final_run)
+        assert {run.phase for run in registry.open_runs()} == {"commentary", "final"}
+
+        outcome = make_barge_in_interrupt_callable(runtime)("keyword")
+
+        # The row is the observable; the outcome rides along as the failure
+        # message so an unfiltered `open_runs()` reports itself.
+        cancelled = _typed_payloads(reader, "response.cancelled")
+        assert [payload["response_id"] for payload in cancelled] == [final_id], outcome
+        assert outcome == "cancelled"
+        assert cancelled[0]["reason"] == "barge_in"
+        assert cancelled[0]["cancel_scope"] == "generation"
+        assert all(payload["response_id"] != commentary_id for payload in cancelled)
+
+
+def test_a_closed_commentary_is_no_longer_a_cancel_target(tmp_path: Path) -> None:
+    """R4: both watcher release paths unregister, so a later POST finds nothing.
+
+    ``already_terminal`` would mean the entry is still registered, so
+    ``unknown_response`` is exactly the proof of unregistration.
+    """
+    runtime = _make_runtime(tmp_path, cancel=True)
+    reader = _reader(runtime)
+    _user_turn(runtime.conn, "T-closed")
+    with _Observer(runtime):
+        # Close path 1: the phrase reached the speaker.
+        dispatched = _action_row(
+            runtime.conn, "action.dispatched", action_id="ACT-cl", turn_id="T-closed",
+        )
+        _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
+        heard_id = _open_commentary_id(runtime, reader)
+        emit_event(
+            runtime.conn,
+            type="surface.playback_started",
+            payload={
+                "session_id": "SESS-cl",
+                "response_id": heard_id,
+                "turn_id": "T-closed",
+                "playback_generation_id": 1,
+                "phase": "commentary",
+                "channel": "speech",
+                "speech_text_hash": "deadbeef",
+            },
+            correlation={"turn_id": "T-closed"},
+        )
+        _wait_until(lambda: _count(reader, "response.completed") == 1)
+
+        assert _cancel_over_http(runtime, heard_id) == {"outcome": "unknown_response"}
+
+        # Close path 2: a newer lifecycle row supersedes an unheard phrase.
+        _action_row(
+            runtime.conn, "action.running", action_id="ACT-cl", turn_id="T-closed",
+            source_event_id=dispatched.event_uid,
+        )
+        _wait_until(lambda: _count(reader, "surface.response_emitted") == 2)
+        superseded_id = _open_commentary_id(runtime, reader)
+        _action_row(
+            runtime.conn, "action.result_observed", action_id="ACT-cl", turn_id="T-closed",
+            source_event_id=dispatched.event_uid,
+        )
+        _wait_until(
+            lambda: any(
+                payload["reason"] == "superseded"
+                for payload in _typed_payloads(reader, "response.cancelled")
+            ),
+        )
+
+        assert _cancel_over_http(runtime, superseded_id) == {"outcome": "unknown_response"}
+
+    superseded = [
+        payload
+        for payload in _typed_payloads(reader, "response.cancelled")
+        if payload["reason"] == "superseded"
+    ]
+    assert [payload["response_id"] for payload in superseded] == [superseded_id]

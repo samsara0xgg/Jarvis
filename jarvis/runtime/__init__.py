@@ -1819,7 +1819,10 @@ def make_barge_in_interrupt_callable(
     def _interrupt(confirm_source: str) -> str:
         if registry is None:  # pragma: no cover - wiring pairs the two flags
             return "no_open_run"
-        open_runs = registry.open_runs()
+        # A commentary run for the same turn is legitimately open while the
+        # final run waits on its action (ADR-0006 D8): counting it would make
+        # every action-dispatching turn read as `ambiguous_open_runs`.
+        open_runs = tuple(run for run in registry.open_runs() if run.phase == "final")
         if not open_runs:
             return "no_open_run"
         if len(open_runs) > 1:

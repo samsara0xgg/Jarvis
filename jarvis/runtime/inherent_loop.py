@@ -1502,10 +1502,15 @@ def _cancel_unheard_commentary(
             reason=reason,
         ),
     )
+    # Unconditional: whatever outcome came back, the watcher is done with this
+    # entry, so the operator seam must stop seeing it.
+    entry.registry.unregister(entry.run.response_id)
 
 
 def _complete_commentary(runtime: JarvisRuntime, entry: _OpenCommentary) -> None:
     """Close a commentary run whose phrase reached the speaker."""
+    # Before any early return: this entry is being released either way.
+    entry.registry.unregister(entry.run.response_id)
     if not entry.run.is_open:
         # A cancel already won the CAS — playback of a superseded phrase that
         # started anyway is not a reason to raise out of the watcher.
@@ -1563,7 +1568,17 @@ def _render_commentary(  # noqa: PLR0913 - the run's five independent inputs
         committed_event_bus=runtime.committed_event_bus,
     )
     run.link_action(intent.subject_ref)
-    registry = ResponseRunRegistry()
+    # Same condition the normal response path registers under
+    # (`jarvis/runtime/__init__.py`): with the operator cancel seam live the
+    # commentary run is reachable by id like any final run; without it no run
+    # of any phase is registered and the private registry keeps today's
+    # behaviour.
+    runtime_registry = runtime.response_runs
+    registry = (
+        runtime_registry
+        if runtime.response_flags.independent_response_cancel and runtime_registry is not None
+        else ResponseRunRegistry()
+    )
     registry.register(run)
     # No subject is in scope for a fixed lifecycle phrase, so the Pre-emit
     # Gate short-circuits to its routine pass-through and hands back the
