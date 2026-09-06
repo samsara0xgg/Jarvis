@@ -937,7 +937,7 @@ Future L3 context distinguishes:
 
 V1 may expose a panel-available artifact/reference to L3 as such, but it must not label it user-seen or spoken.
 
-This is wired, not merely projected. `SituationPacket` carries three bounded, typed collections—`spoken_heard`, `panel_available`, and `audit_only`—and the ordinary/stream prompt builders consume those labels without flattening them into one assistant-history string. `spoken_heard` advances only from ADR-0006 playback checkpoints; `panel_available` is explicitly described as available on screen but not known-seen; `audit_only` is excluded from conversational prompt history.
+This is wired, not merely projected. `SituationPacket` carries three bounded, typed collections—`spoken_heard`, `panel_available`, and `audit_only`—and the ordinary/stream prompt builders consume those labels without flattening them into one assistant-history string. `spoken_heard` advances only from ADR-0006 playback checkpoints; a later inconsistent playback event on the same response invalidates that response's heard evidence entirely, discarding the already-earned prefix rather than keeping it. `panel_available` is explicitly described as available on screen but not known-seen; `audit_only` is excluded from conversational prompt history.
 
 No fabricated `[Interrupted by user]` user message is inserted. The interruption is represented by `response.cancelled` and `surface.playback_interrupted` metadata linked to the real new utterance.
 
