@@ -470,4 +470,22 @@ opened. Or stop after 30 turns.
 - Owner follow-up, not a blocker: the live runs were text-submitted, so
   mic-in-the-loop was never exercised (`single_audio_ingress.enabled: false` by
   card instruction, to avoid contending with the owner's microphone).
+- Verifier (fresh context, opus, `realtime-integration...HEAD`) — no confirmed
+  defect. It independently re-ran the reverted-fix control and re-derived the
+  live evidence from a read-only copy of the lane ledger, matching every field.
+  Two of its five minor observations were fixed in 518f56f:
+  - The comment claimed the window covered "this segment's wait". It does not:
+    `_await_segments` for the current segment runs before the reschedule, so a
+    window covers this segment's I/O and playback and runs into the *next*
+    segment's wait. Restated accordingly.
+  - The positive test pinned the non-live path only structurally. It now
+    asserts the activation carries no `incremental` flag.
+  Three observations were left alone as card-sanctioned or out of scope, and
+  are reported to the hub rather than fixed here: the macOS `say` fallback puts
+  the whole remaining answer in one window (a degraded path, and still strictly
+  better than the pre-fix anchor); the `elapsed` assertion spans pipeline
+  setup, with the discriminating power coming from the completed row and the
+  absent failure row as the card itself says; and non-live foreground occupancy
+  is now bounded only by `n_segments x response_timeout_s`, which is exactly
+  the "Total generation length is unbounded" contract this card creates.
 
