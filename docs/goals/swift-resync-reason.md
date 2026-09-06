@@ -260,3 +260,22 @@ Implement docs/goals/swift-resync-reason.md on the current branch. Read it fully
 If the repository contradicts the card, stop and report instead of redesigning. Or stop after 30 turns.
 
 ## Progress
+- Swift decode path — e1327be — `server.resync_required` routed by
+  `message_type` into `ResyncRequired`, reason passed to `.socketFailed`
+  verbatim; `test_aResyncRequiredFrameCarriesTheServersReason` passed
+  (`client_backpressure`, `frame_over_budget`, then `protocol_error` for the
+  reason-less frame), `test_anUndecodableFrameFailsTheSocket` still passed;
+  Swift 178/178, 0 failures, baseline 177 + 1 added test.
+- Server payload pinned — dc07b0b — both wire tests now compare the whole
+  parsed payload against `{"reason": "client_backpressure"}` and `{"reason":
+  "frame_over_budget"}`, so no `kind` key can appear unnoticed; the
+  `(1008, ...)` close assertions untouched. 13/13 in
+  test_inherent_flow_control.py; full suite 1040 passed, 64 deselected
+  (baseline 1040); lint-imports KEPT (1/1), ruff clean, mypy strict clean
+  (244 files). No live run: the change is a frame-decode contract with both
+  sides observable hermetically, so no audio route was touched.
+- Docs to sync — judged unchanged. `grep -n "resync_required" docs/spec.html`
+  exits 1 with no output; the same grep over
+  `docs/adr/0014-inherent-realtime-ux.md` returns only `:802` and `:803`,
+  where D11 rule 3 already specifies this frame and both reasons. The server
+  is unchanged byte for byte, so no documentation edit is made.
