@@ -283,4 +283,68 @@ the card contradicts the repository, stop and report; do not redesign. Or stop
 after 30 turns.
 
 ## Progress
-- (implementation session appends here)
+- 2026-09-05 lane B slice 1 (`ce98e57`): replaced
+  `test_heard_prefix_quality_survives_an_earlier_report_gap` with a
+  pipeline-level pin in the same commit. It drives a real
+  `StreamingTTSPipeline` over a real `AudioStreamPlayer`
+  (`estimated_output_latency_s=0.2`, so `finish_segment`'s escape hatch cannot
+  fire) and the real `PlaybackLedger`, reusing `_FakeProvider`,
+  `_CallbackPump`, `_config`, `_emit_response` and `_submit_response`. The
+  callback-report gap is produced by dropping the second segment's first
+  report exactly as `_CallbackReportRing.write` drops when full; the assertion
+  lands on the emitted `surface.playback_checkpoint` payload (`heard_text`,
+  `cursor_quality`). With `voice_ledger.py:324` temporarily reverted the test
+  fails on that payload (`assert 'unknown' == 'estimated'`); restored, it
+  passes and `git status` shows no diff under `jarvis/`.
+- 2026-09-05 lane B slice 2 (`d81acc6`) — bare-candidate dispositions, one per
+  candidate, judgment noted:
+  - `test_structured_lexer_carries_every_split_tag_without_losing_chunk_identity`
+    — **(a) rewritten**. Judgment, not heuristic compliance: no pipeline-level
+    test splits a chunk *inside* a tag, so the coverage is real and unique. It
+    now drives one pipeline over all 40 split offsets (every offset inside each
+    tag plus both boundaries) and asserts on the wire payload the provider is
+    sent: the segment sequence and text (`provider.sent_segments`). The
+    per-segment `segment_hash` is not observable at pipeline level and is
+    dropped; chunk identity is still pinned by the sequence.
+  - `test_structured_lexer_handles_adjacent_voice_document_transition` —
+    **(b) confirmed covered and deleted**. The boundary offsets added to the
+    rewritten split test above reproduce exactly its
+    `</voice>`-then-`<document>` cut, and
+    `test_structured_chunks_preserve_heard_prefix_on_mid_second_interrupt`
+    already pins the in-chunk adjacency on the emitted
+    `surface.playback_interrupted` payload and the history note.
+  - `test_bounded_smoke_uses_independent_gate_and_marks_ab_not_run` —
+    **(b) confirmed covered and deleted**. Judgment: the card flagged it as a
+    likely false positive, but it calls one pure function on a dict it built,
+    which the ruling makes a unit test. Its FAIL row is asserted on the JSON
+    artifact the bench writes by
+    `test_bounded_smoke_device_open_failure_still_writes_json`
+    (`software_streaming_output_gate == "NOT_RUN"`,
+    `bounded_real_streaming_smoke_gate == "FAIL"`), and the two `UNMEASURED`
+    gates come from the shared `_summary` and are asserted on a written
+    artifact by `test_voice_bench_provenance_fails_closed_before_provider_use`.
+    Only the PASS row is uncovered; reaching it at artifact level needs the
+    60-line `_BenchPlayer` fake lifted out of a neighbouring test, which is not
+    proportionate to a two-line mapping.
+  - `test_segment_closed_before_audible_horizon_still_becomes_heard` —
+    **(a) rewritten**. Not covered by slice 1: that test would still pass if
+    audibility were claimed prematurely. The rewrite drives the same ordering
+    through the pipeline and asserts on the emitted
+    `surface.playback_checkpoint` payload (`heard_text`, `cursor_quality`,
+    `submitted_samples`) plus the deferral itself — the row cannot appear
+    within half the latency estimate of the provider's `SegmentFinished`.
+    Proved live: with the player's latency estimate zeroed in a scratch copy
+    outside the repository, the checkpoint arrives 30 us after close and the
+    test fails.
+  - Count arithmetic: baseline 1069 -> 1035 (-32 lexer parametrizations, +1
+    loop test, -1 adjacent transition, -2 bounded-smoke parametrizations,
+    -1/+1 horizon rewrite). Deselected unchanged at 64.
+  - No bare candidate outside `tests/integration/test_wave2_streaming_media.py`
+    was touched.
+- Docs to sync: none, as the card predicted. The change is how an existing fact
+  is verified; no documented contract, invariant, ownership boundary or
+  externally relevant behavior moved, so neither `docs/spec.html` nor
+  `docs/adr/` owns a fact that changed.
+- Swift not run (`desktop/` untouched); no live run (no audio device is
+  involved — every test drives `_CallbackPump` over a lazy-open player, and the
+  system default output was never changed).
