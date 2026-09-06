@@ -1997,7 +1997,13 @@ class StreamingTTSPipeline:
         reason = event.type.replace(".", "_")
         active = self._active
         if active is not None and active.response is response:
-            await self._interrupt_active(reason=reason)
+            # A media-side terminal already in flight owns this response's
+            # exit. Re-entering `_interrupt_active` would cancel `_play_response`
+            # inside its own `finally`, skipping `leave_output()` and leaving
+            # the system output lease held, then emit a second contradictory
+            # `spoken` frame once the CAS answers `AlreadyTerminal`.
+            if not active.terminal_commit_pending:
+                await self._interrupt_active(reason=reason)
             while self._after_drain:
                 queued = self._after_drain.popleft()
                 self._registry.terminalize(queued.response_id)

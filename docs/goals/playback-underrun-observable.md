@@ -580,4 +580,14 @@ stop after 30 turns.
   turn_id: TISO, error_type: RuntimeError, session_id: BOOT34c5...}`; under an
   injected append fault the row is absent, the run does not raise, and the next
   three submits return `closed`.
+- Slice 2b (`terminal_commit_pending` guard) — the `speak_from_segments: true`
+  window IS drivable from the harness, so the guard is covered, not just
+  landed. `tests/integration/test_incremental_tts.py` gates the settle seam,
+  lets `_fail_active` publish `terminal_commit_pending`, then delivers
+  `response.failed` from a second thread inside that window. Observed with the
+  guard reverted, the defect is sharper than the card predicted: not two frames
+  but ONE frame with the wrong outcome —
+  `['ui:spoken:T-RG:interrupted']` while the durable terminal is
+  `surface.playback_failed`, i.e. the wire frame contradicts the Event Log.
+  With the guard: `['ui:spoken:T-RG:failed']`, one terminal, no isolation row.
 

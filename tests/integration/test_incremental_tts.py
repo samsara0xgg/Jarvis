@@ -7,9 +7,11 @@ import contextlib
 import hashlib
 import json
 import logging
+import threading
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
 
 import pytest
 
@@ -26,6 +28,7 @@ from tests.integration.test_wave2_streaming_media import (
     _emit_response,
     _FakeProvider,
     _player,
+    _RecordingBroadcaster,
     _submit_response,
 )
 
@@ -324,6 +327,7 @@ def _pipeline(
     *,
     speak_from_segments: bool,
     response_timeout_s: float | None = None,
+    broadcaster: _RecordingBroadcaster | None = None,
 ) -> tuple[voice_media.StreamingTTSPipeline, voice_tts.AudioStreamPlayer]:
     player = _player()
     config = replace(_config(), speak_from_segments=speak_from_segments)
@@ -335,6 +339,7 @@ def _pipeline(
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
         config=config,
+        broadcaster=broadcaster,
         start_player=False,
     )
     return pipeline, player
@@ -939,3 +944,113 @@ def test_a_single_segment_over_the_budget_still_fails_the_run_and_is_logged(
         record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING
     ]
     assert any("RB" in message and "response_timeout_s" in message for message in warnings)
+
+
+def test_a_late_response_terminal_cannot_double_release_a_committing_playback(
+    tmp_path: Path,
+) -> None:
+    """The owner's live window: L3's terminal lands while media is committing one.
+
+    With ``speak_from_segments: true`` playback runs while the L3 run is still
+    open, so a provider failure and an L3 ``response.failed`` can overlap.  The
+    second exit would cancel ``_play_response`` inside its own ``finally`` and
+    broadcast a contradictory ``spoken`` frame after the CAS said AlreadyTerminal.
+    """
+    db_path = tmp_path / "late-response-terminal.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(
+        {("RG", 0): _Behavior("fail_after", final_delay_s=0.01)},
+        candidate_count=1,
+    )
+    actions: list[str] = []
+    pipeline, player = _pipeline(
+        db_path,
+        provider,
+        speak_from_segments=True,
+        broadcaster=_RecordingBroadcaster(actions),
+    )
+    real_settle = player.settle_interrupted_generation
+    settle_allowed = threading.Event()
+
+    def _gated_settle(**kwargs: Any) -> Any:  # noqa: ANN401 - passthrough seam
+        if not settle_allowed.is_set():
+            return None
+        return real_settle(**kwargs)
+
+    submitted: list[str] = []
+    failed_row: list[tuple[int, Event]] = []
+
+    def _submit_late_terminal() -> None:
+        row_id, event = failed_row[0]
+        outcome = asyncio.run(
+            pipeline.submit_event(row_id=row_id, event=event, origin="direct"),
+        )
+        submitted.append(outcome.status)
+
+    late = threading.Thread(target=_submit_late_terminal, name="late-response-terminal")
+    try:
+        with (
+            _CallbackPump(player),
+            patch.object(player, "settle_interrupted_generation", side_effect=_gated_settle),
+        ):
+            first = [_open(conn, "RG"), _chunk(conn, "RG", 0, _SEGMENTS[0])]
+            asyncio.run(_submit_response(pipeline, first))
+            _wait_for(conn, "surface.playback_started", "RG", 1)
+            # L3 ends the run independently, after every row this response has
+            # already produced, so the actor sees it as a fresh command.
+            failed_row.append(
+                _row(
+                    conn,
+                    emit_event(
+                        conn,
+                        type="response.failed",
+                        payload={
+                            "response_id": "RG",
+                            "response_group_id": "G-RG",
+                            "turn_id": "T-RG",
+                            "reason": "l3_run_failed_in_the_same_window",
+                        },
+                    ),
+                ),
+            )
+            # The media side owns an exit already: `_fail_active` has published
+            # `terminal_commit_pending` and is spinning in `_interrupt_snapshot`.
+            _await_commit_pending(pipeline)
+            late.start()
+            # Give the actor's drain loop the `response.failed` command while
+            # that snapshot is still unsettled, then let the snapshot settle.
+            time.sleep(0.05)
+            settle_allowed.set()
+            late.join(timeout=3.0)
+            assert not late.is_alive()
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+    finally:
+        settle_allowed.set()
+        assert pipeline.close(wait_timeout_s=2.0)
+        conn.close()
+
+    assert submitted == ["accepted"]
+    spoken = [action for action in actions if action.startswith("ui:spoken:T-RG:")]
+    assert spoken == ["ui:spoken:T-RG:failed"]
+    verdict = open_event_log(db_path)
+    try:
+        terminals = [
+            kind
+            for kind in ("surface.playback_completed", "surface.playback_interrupted",
+                         "surface.playback_failed")
+            if _rows(verdict, kind, "RG")
+        ]
+        assert terminals == ["surface.playback_failed"]
+        assert _rows(verdict, "surface.playback_lane_isolated", "RG") == []
+    finally:
+        verdict.close()
+
+
+def _await_commit_pending(pipeline: voice_media.StreamingTTSPipeline) -> None:
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        active = pipeline._active  # noqa: SLF001
+        if active is not None and active.terminal_commit_pending:
+            return
+        time.sleep(0.001)
+    pytest.fail("media never reached its own terminal commit window")
