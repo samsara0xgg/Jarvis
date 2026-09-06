@@ -747,8 +747,19 @@ class StreamingTTSPipeline:
         is resolved on the actor against ``self._active``'s own playback
         lease rather than against a caller-supplied generation id, which
         cannot be stale by the time it is compared. Answers ``applied``,
-        ``stale`` (nothing matching was speaking) or ``uncertain`` (the
-        audio is stopped but its durable terminal is owed).
+        ``stale`` (nothing matching was speaking) or ``uncertain``.
+
+        ``uncertain`` covers two different unknowns. The actor reached the
+        stop and its durable terminal was owed, or this caller stopped
+        waiting first -- in which case even the tombstone may not have been
+        published yet. Neither tells the caller the audio is definitely
+        stopped, which is exactly why they share one word. The wait is
+        bounded by ``streaming_output.shutdown_timeout_s``, the actor's own
+        budget; ``realtime.response.cancel_timeout_ms`` bounds the SQLite
+        CAS of the ``generation`` scope and has nothing to bound here.
+
+        The caller's ``reason`` is not carried: a stop through this method
+        is a user stop, and its terminal always says ``user_stop``.
         """
         loop = self._loop
         if loop is None or self._closed.is_set():

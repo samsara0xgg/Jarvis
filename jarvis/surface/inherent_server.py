@@ -191,8 +191,9 @@ class CancelResponseRequest(BaseModel):
 
     ``scope`` defaults to ``"generation"``, which cancels the run itself.
     ``"foreground_output"`` stops only the speech that is audible now and
-    leaves the run to finish on its own. Any unrecognized string is
-    answered with ``{"outcome": "unsupported_scope"}``.
+    leaves the run to finish on its own; under that scope ``reason`` is
+    ignored, because such a stop is always recorded as ``user_stop``. Any
+    unrecognized string is answered with ``{"outcome": "unsupported_scope"}``.
     """
 
     response_id: str
@@ -362,7 +363,10 @@ class InherentDeps:
             / ``unsupported_scope`` / ``timeout``, or, for
             ``scope="foreground_output"``, ``applied`` / ``stale`` /
             ``uncertain`` / ``policy_ignore`` /
-            ``policy_hash_mismatch``. The injected-callable
+            ``policy_hash_mismatch`` -- where ``uncertain`` means the
+            durable terminal is owed OR the playback actor did not answer
+            in time, never that the audio is confirmed stopped. The
+            injected-callable
             shape is what keeps ``jarvis/surface`` free of any
             ``jarvis.decision`` import. ``None`` (the default) means the
             ``/inherent/cancel-response`` route is never registered, so
