@@ -1,5 +1,7 @@
 # Goal: inherent-history-tab-layout
 
+> SUPERSEDED by `docs/goals/popover-overflow-scrollable.md`. The mechanism recorded below was measured and disproved; the truncation is caused by the popover question having no height cap and no scroll region.
+
 ## Goal
 Opening a history chip shows the whole popover — nothing cut off at the bottom — and
 moving between chips no longer makes the card jump.
