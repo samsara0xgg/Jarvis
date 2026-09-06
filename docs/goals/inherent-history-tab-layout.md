@@ -38,7 +38,11 @@ both the clip and the jump.
   On any normal display this cap is not what the owner is hitting: with the 410pt answer
   cap below, a popover tops out near 500-600pt.
 
-### The clamp the owner sees is NOT a height cap — it is a position/height mismatch
+### DISPROVED — The clamp the owner sees is NOT a height cap — it is a position/height mismatch
+**This mechanism is DISPROVED by measurement — see "Measured disproof" at the end of this
+section.** The inference below is kept exactly as originally written so a reader can see what
+was tried, and why it looked right from source alone before anyone measured it.
+
 - `requiredPanelHeight` assumes the popover's top sits `pillReservedTop + selectedTop`
   below the **panel's** top edge. The popover is actually offset by exactly that amount
   from the **SwiftUI root ZStack's** top (`NativeCardView.swift:548`):
@@ -74,6 +78,21 @@ both the clip and the jump.
   pre-fix snapshot does NOT show the predicted downward shift and clipped tail, the central
   mechanism of this card is dead: **stop and report to the hub.** Do not re-diagnose in-lane and
   do not start editing layout code to see what happens.
+
+#### Measured disproof
+Three pre-fix snapshots, each after a full explicit xcodebuild, at selectedTop=70, 39 and
+39-with-overflow: the popover's top sits at EXACTLY pillReservedTop + selectedTop from the
+container top (108 = 38+70, 77 = 38+39). Surplus distributed above the content: 0pt. Card top
+measured 38-40pt against a predicted 23-56pt downward step — no shift. The bottom corner is
+INTACT: the opaque-span profile narrows 24.0pt symmetrically at the top and bottom edges in
+every image, with 2pt of transparent slack below. Nothing was cut.
+
+Why the inference failed, from source: `ZStack(alignment: .topTrailing)`
+(`NativeCardView.swift:22`) already top-aligns its children, and the card column is vertically
+flexible (the answer ScrollView, `.frame(maxHeight: 461)`, `NativeCardView.swift:399`), so it
+absorbs the surplus by stretching — measured at ~125pt and ~325pt in the taller snapshots. The
+ZStack fills the hosting bounds and its top stays at the panel top. There is no centering to
+correct, so the card's proposed fix would have been a NO-OP.
 
 ### The clamps that ARE deliberate — do not remove either
 - `NativePopoverSizing.maxAnswerViewportHeight: CGFloat = 410` (`NativeCardController.swift:745`),
@@ -153,6 +172,25 @@ the jump.
   `popoverLayer` are byte-identical.
 - Conclusion: the port dropped no layout modifier. This is a pre-existing defect carried in
   faithfully from the legacy WIP, so "restore what the port lost" is not available as a fix.
+
+## Replacement lead (UNCONFIRMED — not an established cause)
+The reference-frame mismatch above is dead. This is where the next card should start looking,
+not a diagnosis to build on directly.
+
+(a) **The harness could never have reproduced the bug.** The committed `runPopoverScenario`
+opens the popover on `history.last` — the same turn the card is already rendering — so the
+popover and the card always grow together and `requiredPanelHeight` never wins the `max()` in
+`targetPanelHeight`. Popover/card height divergence is inexpressible in that scenario. Any
+future work here must first extend the scenario to open an OLDER, TALLER turn than the one
+being rendered.
+
+(b) **The owner's observed behaviour**, gathered after the disproof above: the card sits at the
+TOP-RIGHT of the screen (so the screen-bottom clipping hypothesis is dead — it is not a low card
+running off the screen edge); with a current card about 700px tall, opening ANY history entry
+taller than that gets truncated at the current card's height; and the truncated text CANNOT be
+scrolled — the content is gone, not merely below a short viewport with `showsIndicators: false`.
+Together these say the popover's usable height is bound to the CURRENT CARD's height rather than
+to its own content, in exactly the divergent case the scenario cannot express.
 
 ## Target behavior
 - With a history popover open, the popover's bottom padding and its rounded bottom corner are
@@ -383,4 +421,5 @@ Done when the transcript shows ALL of the following:
 Or stop after 40 turns.
 
 ## Progress
-- (empty)
+- No layout code was changed by the lane that ran this card — this update is docs-only
+  (the disproof and replacement lead above); branch lane/c was left clean.
