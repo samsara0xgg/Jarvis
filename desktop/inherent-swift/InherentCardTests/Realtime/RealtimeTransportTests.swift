@@ -262,6 +262,37 @@ final class RealtimeTransportTests: XCTestCase {
     )
   }
 
+  /// D11 rule 3: the two reasons the server puts on this frame reach the
+  /// caller apart from each other, and a frame missing the reason is still a
+  /// protocol violation (D6).
+  func test_aResyncRequiredFrameCarriesTheServersReason() async throws {
+    func notice(_ payload: [String: Any], id: String) throws -> TransportInput {
+      .frame(socketEpoch: 9, try Frames.bytes(Frames.envelope(
+        "server.resync_required", payload: payload, id: id
+      )))
+    }
+
+    let recorder = ApplyRecorder()
+    _ = await drain(
+      [
+        try notice(["reason": "client_backpressure"], id: "RR-1"),
+        try notice(["reason": "frame_over_budget"], id: "RR-2"),
+        try notice([:], id: "RR-3"),
+      ],
+      sink: recordingSink(recorder)
+    )
+
+    let applied = await recorder.applied
+    XCTAssertEqual(
+      applied.map(\.event),
+      [
+        .socketFailed(socketEpoch: 9, reason: "client_backpressure"),
+        .socketFailed(socketEpoch: 9, reason: "frame_over_budget"),
+        .socketFailed(socketEpoch: 9, reason: "protocol_error"),
+      ]
+    )
+  }
+
   // MARK: - Snapshot staging (D8)
 
   @MainActor

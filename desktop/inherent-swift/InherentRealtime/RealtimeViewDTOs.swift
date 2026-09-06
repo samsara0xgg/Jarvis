@@ -729,6 +729,14 @@ public struct SnapshotEnd: Decodable, Equatable, Sendable {
   }
 }
 
+/// `server.resync_required`.
+///
+/// The reason stays a `String`: the server owns this vocabulary, and a reason
+/// added there must reach the caller without a client change.
+public struct ResyncRequired: Decodable, Equatable, Sendable {
+  public var reason: String
+}
+
 /// What the transport hands the reducer once staging matched the D8 end frame.
 ///
 /// It is not a wire type: it exists only after snapshot ID, counts, schema,
