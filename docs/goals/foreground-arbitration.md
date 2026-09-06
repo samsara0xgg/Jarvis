@@ -43,10 +43,10 @@ Supporting facts:
       different group otherwise                                 -> decline
 
 - Ordering is by `_ResponseBuffer.row_id` — the event log's monotonic commit order, already on the buffer at the displacement site. The question at the lane is "which response was admitted to the log later"; `row_id` answers exactly that.
-- Both cross-group entry points (branch 2 and branch 4 above) route through that verdict. A different-group candidate must never enter `_after_drain`: it takes the lane or it declines. The same-group behavior at branch 2 is unchanged; the lane chooses how to express the cross-group verdict there.
+- Both cross-group entry points (branch 2 and branch 4 above) route through that verdict. **Corrected:** this originally read "a different-group candidate must never enter `_after_drain`: it takes the lane or it declines", which left a selected winner nothing to do at branch 2 but decline. A selected winner DOES enter `_after_drain` at branch 2, because a tombstoned incumbent is draining rather than occupying the lane, and it purges the older group's queued continuation on the way in. Only a candidate the policy does not select declines. The same-group behavior at branch 2 is unchanged.
 - `decline` means the decline path that already exists (jarvis/surface/voice_media.py:2028-2031): `self._registry.terminalize(response.response_id)` plus pop from `self._responses`. No terminal event beyond that, no audio produced. This ships the **refusal** half of D8:451 and not its "degrades to document/silent delivery" half.
 - Response *text* is not voice_media-owned (`surface.response_open` / `surface.response_chunk` have their own consumers), so declining the lane silences audio only.
-- Ordinary answers are not at risk: the answer to the user's newest utterance always carries the highest `row_id` among live candidates, so it always supersedes. `decline` can only ever hit a straggler from an earlier turn arriving late — which today cuts off the newer answer. This strictly improves "ordinary answers get spoken".
+- **Card-authoring error, corrected after implementation.** This line originally argued that the newest answer "always supersedes" and therefore could never be silenced. That was wrong about the repository: `terminal_commit_pending` is set on every normal completion and stays set through the whole post-playback cleanup (`_release_active` keeps `_active`, cleared only in `_play_response`'s `finally` after an up-to-0.5 s provider session close), so a cross-group winner can land there. Measured exposure is 0.7 ms on the happy path, widening only when the provider close stalls, a terminal append retries, or playback failed. What is now true: a cross-group winner is never silenced by this card. The newest answer takes the lane whether the incumbent is live (supersede) or draining (queued for the draining lane, per the ADR-0006 amendment), and `decline` reaches only a candidate that loses the `row_id` comparison.
 - With the callable absent (`None`), behavior is byte-for-byte today's.
 
 ## Affected contracts and files
@@ -84,11 +84,13 @@ Contract gate: `.importlinter:20-30`. `decision` and `surface` are siblings (:26
 - **A `phase`/commentary row in the table** — unreachable. Commentary reuses the turn's group (`start_response_run`, jarvis/decision/response_run.py:679), so it is always a same-group input.
 - **A frozen input record for the callable** — one call site, and L5 cannot import L3 to construct one anyway. Pass four scalars.
 - **Building a document/silent delivery path** — no such path exists in `voice_media`, and the routing needs C7's `foreground_output` lease. `decline` reuses the existing terminalize-and-pop.
+- **Routing branch 2 through `_interrupt_active`** — forbidden, it kills the media actor. By that point the player has already released its lease (`complete_generation`, jarvis/surface/voice_tts.py:1255), so `_interrupt_snapshot` gets `StalePlaybackGeneration` back, maps it to `None`, and `_interrupt_active` calls `_isolate_terminal_debt`: `_lane_isolated = True`, `_accepting.clear()`, the drain lane and `_responses` purged, a shutdown deadline requested. TTS is dead for the rest of the boot.
 - **A new L3 module `jarvis/decision/foreground.py`** — `jarvis/decision/response_run.py` already owns `ResponseRun`, the registry, group derivation and `request_response_cancel`. A second module for one pure function is pure ceremony.
 
 ## Acceptance evidence
 - Positive 1 (hermetic integration, `tests/integration/`): a cross-group candidate whose `row_id` is LOWER than the incumbent's declines instead of superseding — the incumbent reaches `surface.playback_completed` and the candidate never opens playback.
-- Positive 2 (hermetic integration): a different-group candidate never enters `_after_drain` when the incumbent is tombstoned (`active.terminal_commit_pending` is set).
+- Positive 2 (hermetic integration) — **corrected with the Boundaries line above.** When the incumbent is tombstoned (`active.terminal_commit_pending` is set), a different-group candidate the policy SELECTS is granted the draining lane: it enters `_after_drain`, the incumbent group's queued continuation is purged and never opens playback, and the winner is spoken after the incumbent's terminal is durable.
+- Positive 2b (hermetic integration): in that same tombstone window a different-group candidate the policy does NOT select still declines — otherwise nothing distinguishes the grant from "the tombstoned branch ignores policy".
 - Positive 3 (optional): a direct table test of `decide_foreground` ONLY if it costs one test, not four. Allen's standing rule holds: no test per enum member, per branch, or per field.
 - Regression: `PYTHONPATH=. .venv/bin/python -m pytest -q -m "not live_llm and not live_codex"` — branch baseline is 1065 passed / 64 deselected; no new failure.
 - Regression: `PYTHONPATH=. .venv/bin/python -m pytest -q tests/integration/test_wave2_streaming_media.py::test_after_drain_same_group_and_foreground_supersede` passes with the test file's diff showing that test unedited.
@@ -167,3 +169,25 @@ Or stop after 40 turns.
   would isolate the lane; decline is the only expression left, so the newer
   answer is silenced where today it would be queued and spoken. Shipped as the
   card specifies and recorded in ADR-0008; needs the author's adjudication.
+- Hub ruling R11-R14 — 26bf772 — the deviation above is resolved in the card's
+  favour, not the implementation's: a policy-selected cross-group winner is now
+  granted the draining lane (queued behind the terminal debt) instead of
+  declined, and the grant purges the older group's queued continuation exactly
+  as the live-incumbent branch does (`_purge_after_drain`, now shared by both).
+  New trace `media_foreground_draining_lane_granted`. Tests: the tombstone case
+  inverted (winner spoken, `('RCONT', 0)` never opened, terminal-before-open
+  ordering asserted), the loser-in-the-same-window case added, the straggler case
+  untouched — 4 passed. Controls each kill exactly one assertion: old condition
+  restored -> grant fails; purge removed -> `('RCONT', 0) not in opened` fails;
+  constant-supersede policy -> both loser cases fail. Measured tombstone window
+  on a normal completion: 0.7 ms (fake provider, instant close).
+- Hub ruling R15-R16 — see commit below — ADR-0006:261 amended in place (the
+  same-group restriction governs continuation while a group OWNS the lane; a
+  drained lane is provably free, `_active_lease` already `None` at
+  voice_tts.py:1255); the ADR-0008 note rewritten to describe the grant and the
+  purge; this card corrected at its safety argument, its Boundaries line, its
+  Positive 2 evidence, and its Rejected approaches (routing branch 2 through
+  `_interrupt_active` kills the actor). Card-authoring errors, not implementation
+  deviations. Gates after the ruling: lint-imports KEPT 1/1, ruff clean, mypy
+  strict clean (244 files), 1069 passed / 64 deselected, 206 passed on the
+  force-wired media run, hard-constraint test 1 passed with an empty file diff.
