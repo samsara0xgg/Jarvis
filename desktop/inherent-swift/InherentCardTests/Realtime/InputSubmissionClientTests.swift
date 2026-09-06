@@ -177,7 +177,8 @@ final class InputSubmissionClientTests: XCTestCase {
     var run = Reducing()
     try run.goLive()
     run.apply(.local(.inputSubmitted(pending("R-1"))))
-    XCTAssertEqual(Set(run.state.pendingInputs.keys), ["R-1"])
+    run.apply(.local(.inputSubmitted(pending("R-2", at: 2))))
+    XCTAssertEqual(Set(run.state.pendingInputs.keys), ["R-1", "R-2"])
 
     try run.goLive(
       epoch: 2, through: 7,
@@ -189,7 +190,8 @@ final class InputSubmissionClientTests: XCTestCase {
       ]
     )
 
-    XCTAssertTrue(run.state.pendingInputs.isEmpty)
+    // Only the named row goes: a blanket clear would take R-2 with it.
+    XCTAssertEqual(Set(run.state.pendingInputs.keys), ["R-2"])
     XCTAssertNotNil(run.state.responseGroups[ResponseGroupID("G-1")])
     XCTAssertNotNil(run.state.responseGroups[ResponseGroupID("G-2")])
   }
