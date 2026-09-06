@@ -3,8 +3,14 @@
 ## Goal
 The heard-prefix cursor-quality bug is pinned by a test that drives the real
 `StreamingTTSPipeline` and asserts on the emitted `surface.playback_checkpoint`
-payload, and no test in `tests/integration/test_wave2_streaming_media.py` asserts
-only on an in-memory object it constructed itself.
+payload, and every one of this card's flagged candidate tests in
+`tests/integration/test_wave2_streaming_media.py` asserts on an observable
+artifact — an emitted event or a written artifact — instead of an in-memory
+object it constructed itself.
+`test_escape_hatch_quality_survives_a_later_audible_report` and
+`test_bounded_smoke_persists_player_counters_after_accept_and_deadline` remain
+pure in-memory ledger assertions; both are out of this card's scope and belong
+to a follow-up.
 
 ## Why
 This corrects a hub authoring error. The previous card's rulings said "ONE new
