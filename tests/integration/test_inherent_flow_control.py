@@ -134,7 +134,9 @@ def test_a_durable_enqueue_past_the_frame_limit_closes_only_the_blocked_client(
             slow_socket.release.set()
             await _settle()
             notice = slow_socket.of_type("server.resync_required")
-            assert [frame["payload"]["reason"] for frame in notice] == ["client_backpressure"]
+            # Exactly the reason, no `kind`: the client decodes this frame by
+            # `message_type` alone.
+            assert [frame["payload"] for frame in notice] == [{"reason": "client_backpressure"}]
             assert slow_socket.frames[-1] is notice[0]
             assert slow_socket.close_state() == (1008, "client_backpressure")
             # Rule 4: the other client never noticed.
@@ -288,8 +290,8 @@ def test_a_single_frame_larger_than_the_whole_lane_closes_at_once_with_its_own_r
             socket = _Socket()
             # One 50ms settle inside _attach, two orders below the untouched 5s deadline.
             await _attach(rig, socket, "CB")
-            notice = [f["payload"]["reason"] for f in socket.of_type("server.resync_required")]
-            assert notice == ["frame_over_budget"]
+            notice = [f["payload"] for f in socket.of_type("server.resync_required")]
+            assert notice == [{"reason": "frame_over_budget"}]
             assert socket.close_state() == (1008, "frame_over_budget")
             assert socket.of_type("snapshot.end") == []
         finally:

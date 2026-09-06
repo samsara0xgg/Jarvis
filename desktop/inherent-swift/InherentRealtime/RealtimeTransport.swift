@@ -268,6 +268,12 @@ public actor RealtimeTransport {
       case "snapshot.end":
         let frame = try decoder.decode(ServerEnvelope<SnapshotEnd>.self, from: data)
         return finish(frame, epoch: epoch)
+      case "server.resync_required":
+        // The server's own reason, verbatim: a caller that cannot tell
+        // `client_backpressure` from `frame_over_budget` cannot tell a slow
+        // reader from a frame no client could ever receive.
+        let frame = try decoder.decode(ServerEnvelope<ResyncRequired>.self, from: data)
+        return [.socketFailed(socketEpoch: epoch, reason: frame.payload.reason)]
       default:
         return [
           .ephemeral(
