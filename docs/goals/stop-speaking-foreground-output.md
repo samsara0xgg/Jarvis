@@ -564,4 +564,10 @@ Or stop after 45 turns.
   the actor's own `self._active` lease on the actor thread). That sentence is
   not in Docs to sync, so per /goal condition (7) it is reported rather than
   edited. It needs an owner decision.
+- Slice 3 `7be41e3` (docs, above) and slice 4 `51d9cf0`
+  `test(decision): scope H1's terminal counts to the response under test` —
+  H1's "L3 wrote nothing" now counts by `type` AND
+  `json_extract(payload_json,'$.response_id')`, which is what the /goal
+  condition asks a hermetic assertion to read. Full suite still
+  `1057 passed, 64 deselected`; gates green.
 
