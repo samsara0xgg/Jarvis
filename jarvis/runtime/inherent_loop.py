@@ -1472,6 +1472,27 @@ def _commentary_reached_the_speaker(conn: sqlite3.Connection, response_id: str) 
     return conn.execute(_SELECT_COMMENTARY_PLAYBACK_SQL, (response_id,)).fetchone() is not None
 
 
+_SELECT_COMMENTARY_IN_TURN_SQL = (
+    "SELECT 1 FROM events WHERE type = 'response.started' "
+    "AND json_extract(payload_json, '$.phase') = 'commentary' "
+    "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
+)
+
+
+def _turn_already_spoke_commentary(conn: sqlite3.Connection, turn_id: str) -> bool:
+    """Return whether this turn has already opened its one commentary run.
+
+    ``start_response_run`` writes ``response.started`` first, before the
+    Pre-emit Gate and the three surface rows, so it is the earliest durable
+    mark of "this turn already spoke" and the only one that beats a second
+    action row racing in on the next 10 ms poll. Reading the log rather than
+    in-memory observer state is what makes the cap survive a restart, and
+    what makes it hold when two actions of the same turn open on different
+    worker threads.
+    """
+    return conn.execute(_SELECT_COMMENTARY_IN_TURN_SQL, (turn_id,)).fetchone() is not None
+
+
 def _retire_superseded_commentary(
     runtime: JarvisRuntime,
     conn: sqlite3.Connection,
@@ -1633,9 +1654,10 @@ def _open_commentary_in_worker_thread(
     the TTS watcher polls on.
 
     Returns ``None`` — writing nothing at all — when the row maps to no D6
-    intent, when the turn is not user-originated, when a confirmation is
-    still awaiting an answer, or when a non-terminal row's action already
-    reached its terminal.
+    intent, when the turn is not user-originated, when this turn already
+    opened its one commentary, when a confirmation is still awaiting an
+    answer, or when a non-terminal row's action already reached its
+    terminal.
     """
     intent = commentary_intent_for(action_event)
     if intent is None:
@@ -1644,6 +1666,12 @@ def _open_commentary_in_worker_thread(
     try:
         turn_id = _commentary_turn_id(conn, action_event)
         if turn_id is None:
+            return None
+        if _turn_already_spoke_commentary(conn, turn_id):
+            # One phrase per turn. Checked here, after the origin filter and
+            # before every write, so that the three suppression paths below
+            # never consume the turn's only slot: a turn whose first
+            # qualifying row is silenced still speaks on a later row.
             return None
         projections = rebuild_projections(
             conn,
@@ -1691,8 +1719,14 @@ async def _commentary_watcher(
     monotonic cursor makes "played" and "a newer row arrived" strictly
     ordered rather than a race between two pollers.
 
-    Coalescing is one entry per ``(action_id, event type)``: a repeated row
-    for an action that already spoke that phrase writes nothing.
+    Audibility is decided by the per-turn cap in
+    :func:`_open_commentary_in_worker_thread`, not here: a turn speaks at
+    most one phrase, and the first row of that turn that actually opens one
+    wins. The ``spoken`` set below is the cheaper guard in front of it — one
+    entry per ``(action_id, event type)``, so a repeated row on a turn that
+    never opened anything (a system turn, a live confirmation slot, a stale
+    non-terminal) is dropped before the thread hop and the projection
+    rebuild. It decides work, not what is heard.
 
     Per-event dispatch is wrapped in a catch-all for the same reason
     ``_tts_watcher``'s is: commentary is a courtesy, and a failure to produce

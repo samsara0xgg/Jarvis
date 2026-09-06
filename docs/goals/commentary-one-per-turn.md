@@ -301,3 +301,14 @@ Progress line per slice in the card. Or stop after 35 turns.
 
 ## Progress
 
+
+- Slice 1 (per-turn cap): `_turn_already_spoke_commentary` reads
+  `response.started` with `phase='commentary'` for the turn and short-circuits
+  `_open_commentary_in_worker_thread` after `turn_id` resolves and before
+  `rebuild_projections`, so none of the three suppression paths consumes the
+  turn's slot. New `test_one_turn_with_three_actions_speaks_exactly_one_commentary`
+  passes at 1 emitted commentary row; with the cap deleted it fails
+  `assert 3 == 1`. Five existing tests reshaped, none deleted; per-action
+  supersession retained and now proven unreachable from the watcher
+  (`_cancel_reasons` shows only `shutdown`). Suite 1047 passed / 64 deselected
+  (baseline confirmed 1046/64). lint-imports KEPT, ruff clean, mypy 246 files.
