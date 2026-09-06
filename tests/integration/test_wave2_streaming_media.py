@@ -3001,41 +3001,76 @@ def test_escape_hatch_quality_survives_a_later_audible_report() -> None:
     assert snapshot.heard_text == "已经听到的部分"
 
 
-def test_heard_prefix_quality_survives_an_earlier_report_gap() -> None:
-    """The snapshot reports the quality of the prefix it is reporting."""
-    lease = GenerationLease(
-        session_id="S",
-        response_id="RPREFIX",
-        response_group_id="GPREFIX",
-        turn_id="TPREFIX",
-        playback_generation_id=1,
-        timeline_epoch=1,
+def test_heard_prefix_quality_survives_an_earlier_report_gap(tmp_path: Path) -> None:
+    """A report gap after a heard segment keeps the checkpoint quality real."""
+    db_path = tmp_path / "heard-prefix-gap.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    # `_player()` estimates zero output latency, so the presentation horizon
+    # advances inside the same poll that submits the samples: the escape hatch
+    # in `finish_segment` would then fire and the first segment would already
+    # be heard before the gap. A real latency estimate defers the horizon,
+    # which is the live ordering this bug lives in.
+    player = voice_tts.AudioStreamPlayer(
+        sample_rate_hz=8_000,
+        ring_seconds=0.25,
+        lazy_open=True,
+        generation_safe=True,
+        estimated_output_latency_s=0.2,
     )
-    ledger = PlaybackLedger(lease, sample_rate=8_000)
-    ledger.begin_segment(sequence=0, text="被听见的前缀", segment_hash="prefix-0")
-    ledger.accept_samples(sequence=0, sample_count=100)
-    ledger.record_submitted(
-        output_start_cursor=0,
-        output_end_cursor=100,
-        audibility_class="normal",
+    segment_samples = _Behavior().samples
+    dropped = threading.Event()
+    reports = player._callback_reports  # noqa: SLF001
+    real_write = reports.write
+
+    def _drop_second_segment_head(**report: Any) -> None:  # noqa: ANN401 - the ring's own kwargs
+        # Exactly what the ring itself does when it is full: the report never
+        # reaches the ledger, so the next one starts past `_submitted_cursor`.
+        if not dropped.is_set() and report["output_start_cursor"] == segment_samples:
+            dropped.set()
+            return
+        real_write(**report)
+
+    reports.write = _drop_second_segment_head  # type: ignore[method-assign]
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
     )
-    # The semantic boundary closes while the presentation horizon is still
-    # deferred, so `finish_segment`'s escape hatch cannot fire and the chunk
-    # keeps its birth sentinel.
-    ledger.finish_segment(sequence=0)
-    # A callback-report gap pins the LEDGER quality to an observed `unknown`
-    # for the rest of the lease; the chunk sits behind `_submitted_cursor`, so
-    # it stays audible-normal.
-    ledger.record_submitted(
-        output_start_cursor=150,
-        output_end_cursor=200,
-        audibility_class="normal",
-    )
-    # The horizon then crosses the chunk with a genuine `estimated` report.
-    ledger.record_audible(output_cursor=100, cursor_quality="estimated")
-    snapshot = ledger.snapshot()
-    assert snapshot.heard_text == "被听见的前缀"
-    assert snapshot.cursor_quality == "estimated"
+    try:
+        rows = _emit_response(
+            conn,
+            response_id="RGAP",
+            group_id="GGAP",
+            turn_id="TGAP",
+            text=["heard prefix. ", "gapped tail."],
+        )
+        with _CallbackPump(player):
+            asyncio.run(_submit_response(pipeline, rows))
+            deadline = time.monotonic() + 3.0
+            payload: dict[str, object] | None = None
+            while time.monotonic() < deadline:
+                row = conn.execute(
+                    "SELECT payload_json FROM events "
+                    "WHERE type = 'surface.playback_checkpoint' ORDER BY id LIMIT 1",
+                ).fetchone()
+                if row is not None:
+                    payload = json.loads(str(row[0]))
+                    break
+                time.sleep(0.005)
+            assert dropped.is_set()
+            assert payload is not None
+            assert payload["heard_through_sequence"] == 0
+            # The heard prefix is proven by an `estimated` report that lands
+            # after the gap; the lease watermark stays an observed `unknown`.
+            assert payload["heard_text"] == "heard prefix."
+            assert payload["cursor_quality"] == "estimated"
+    finally:
+        assert pipeline.close()
+        conn.close()
 
 
 def test_realtime_output_device_reaches_both_builder_player_sites(
