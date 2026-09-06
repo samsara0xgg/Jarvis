@@ -607,4 +607,31 @@ stop after 30 turns.
   `estimated_output_latency` over `docs/spec.html` returns 0 hits). Its §5.4
   does own the rule that every `emit_event` type must be registered first, and
   that rule was followed rather than changed.
+- Verifier round (opus, fresh context, `realtime-integration..HEAD`) — it
+  independently reproduced the starvation semantics and the live canary and
+  found no false implementation, plus 5 real issues. Fixed 4:
+  (1) the §362 ADR sentence was wrong — `presentation_delay_ns` gates
+  `record_audible` only, NOT `submitted_samples`; rewritten to name the heard
+  side, the ~101 ms direction on this machine, and why 120 ms was never a
+  safety margin (it under-stated any device slower than 120 ms, i.e. it broke
+  round-backward in the unsafe direction);
+  (2) **the prefill half of goal condition 1 had no covering evidence** — the
+  clean-tail case starts its pump after the ring is full, so deleting the
+  prefill guard left both starvation cases green. Added
+  `test_a_normal_response_reports_no_starvation_for_its_prefill`, which runs
+  the pump before the response exists (measured: 10 dry blocks with a live
+  lease). Counterfactual: with the guard removed it fails `assert 1 == 0`;
+  (3) a resume via a SHORT read was not counted (the branch required a full
+  block), so a dropout that recovered with a partial block wrote
+  `starvation_gaps: 0`. Any `actual > 0` now ends the dry window;
+  (4) the guard newly made `_output_active.clear()` reachable while playback
+  was still committing, so `is_speaking()` could go False with audio still
+  playing and let Jarvis's own tail trigger the wake word. The guard now
+  returns immediately and lets the in-flight terminal own the whole exit.
+  Not changed, referred to the hub: the `> 1.0 s` fallback direction (falling
+  back to 0.12 s is the least conservative option, but acceptance pins
+  `12.0 -> 120_000_000`, so changing it would contradict the card); an
+  over-count of at most 1 when an interrupt lands inside the callback (dry
+  window was real, the resumed block is dropped); a single isolation can write
+  two rows (both true); three of four `isolation_reason` values are uncovered.
 

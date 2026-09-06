@@ -1582,12 +1582,14 @@ class AudioStreamPlayer:
         # once the *same* generation resumes (otherwise it is the normal
         # end-of-generation tail, which every clean response produces).
         generation_before = -1 if active_before is None else active_before.playback_generation_id
-        if actual < frames:
-            if generation_before >= 0 and generation_before == self._callback_first_generation:
+        if generation_before >= 0:
+            if actual > 0 and generation_before == self._starvation_dry_generation:
+                # Any audio ends the dry window, including a short read: the
+                # gap was audible whether or not the ring refilled a whole block.
+                self._starvation_gaps += 1
+                self._starvation_dry_generation = -1
+            if actual < frames and generation_before == self._callback_first_generation:
                 self._starvation_dry_generation = generation_before
-        elif generation_before >= 0 and generation_before == self._starvation_dry_generation:
-            self._starvation_gaps += 1
-            self._starvation_dry_generation = -1
         if actual <= 0:
             return
         active_after = self._active_lease

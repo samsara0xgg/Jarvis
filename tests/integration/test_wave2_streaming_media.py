@@ -1880,6 +1880,51 @@ def _isolation_rows(conn: sqlite3.Connection) -> list[dict[str, object]]:
     return [cast("dict[str, object]", json.loads(str(row[0]))) for row in rows]
 
 
+def test_a_normal_response_reports_no_starvation_for_its_prefill(
+    tmp_path: Path,
+) -> None:
+    """The other false-pass guard: the host runs before the first sample exists.
+
+    The clean-tail case starts its pump only once the ring is full, so it never
+    exercises the prefill half of the rule. Here the host is already calling
+    into a dry ring before the provider has produced anything, which is every
+    real response's opening moment.
+    """
+    db_path = tmp_path / "prefill.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    try:
+        with _CallbackPump(player):
+            # The pump is already starved before the response exists.
+            _wait_until(lambda: player.callback_calls > 0)
+            rows = _emit_response(
+                conn,
+                response_id="RP0",
+                group_id="GP0",
+                turn_id="TP0",
+                text="prefill is not starvation",
+            )
+            asyncio.run(_submit_response(pipeline, rows))
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    kind, payload = _terminal_for(open_event_log(db_path), response_id="RP0")
+    assert kind == "surface.playback_completed"
+    assert payload["provider"] != "macos_say"
+    assert _payload_int(payload, "starvation_gaps") == 0
+    assert _payload_int(payload, "host_underflows") == 0
+
+
 def test_an_unsettled_callback_publication_writes_a_durable_lane_isolated_row(
     tmp_path: Path,
 ) -> None:

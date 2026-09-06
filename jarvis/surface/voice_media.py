@@ -1997,13 +1997,19 @@ class StreamingTTSPipeline:
         reason = event.type.replace(".", "_")
         active = self._active
         if active is not None and active.response is response:
-            # A media-side terminal already in flight owns this response's
-            # exit. Re-entering `_interrupt_active` would cancel `_play_response`
-            # inside its own `finally`, skipping `leave_output()` and leaving
-            # the system output lease held, then emit a second contradictory
-            # `spoken` frame once the CAS answers `AlreadyTerminal`.
-            if not active.terminal_commit_pending:
-                await self._interrupt_active(reason=reason)
+            if active.terminal_commit_pending:
+                # A media-side terminal is already in flight and owns this
+                # response's whole exit: it will release the lease, advance the
+                # queue and clear `_output_active` itself. Re-entering
+                # `_interrupt_active` would cancel `_play_response` inside its
+                # own `finally`, skipping `leave_output()` and leaving the
+                # system output lease held, then emit a contradictory `spoken`
+                # frame once the CAS answers `AlreadyTerminal`. Clearing
+                # `_output_active` here is just as wrong: audio is still
+                # playing until that terminal lands, and `is_speaking()` feeds
+                # the wake listener.
+                return
+            await self._interrupt_active(reason=reason)
             while self._after_drain:
                 queued = self._after_drain.popleft()
                 self._registry.terminalize(queued.response_id)
