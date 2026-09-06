@@ -418,3 +418,14 @@ Progress line per slice appended to the card. If the card contradicts the
 repository, stop and report; do not redesign. Or stop after 45 turns.
 
 ## Progress
+- Progressive snapshot delivery + the over-budget frame reason + 3 tests — efa5deb —
+  the over-total case fails on the pre-change tree with
+  `(['client_backpressure'], (1008, 'client_backpressure'), 0)` and passes after;
+  3 new cases pass, flow_control + sequencer 30 passed, full suite 1072 passed
+  (baseline 1069 + 3), lint-imports KEPT 1/1, ruff clean, mypy strict 244 files.
+- ADR-0014 D11 rule 3 amendment — 1869c5f — rule 3 now carries the handoff's
+  capacity wait inside the existing adoption deadline, the `frame_over_budget`
+  close, the residual single-group ceiling with its `DocumentReference` blocker,
+  and the progressive-snapshot / atomic-catch-up asymmetry in that one place;
+  `docs/spec.html` unchanged (grep for `durable_bytes|client_backpressure|durable
+  lane|snapshot handoff|frame_over_budget` returns 0).
