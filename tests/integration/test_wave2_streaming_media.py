@@ -89,9 +89,6 @@ class _FakeSession:
             await asyncio.sleep(0)
             await self._segments.put(segment)
             self._provider.sent.append((self._response_id, segment.sequence))
-            self._provider.sent_segments.append(
-                (self._response_id, segment.sequence, segment.text),
-            )
         finally:
             self._send_active = False
 
@@ -174,7 +171,6 @@ class _FakeProvider:
         self._candidate_count = candidate_count
         self.opened: list[tuple[str, int]] = []
         self.sent: list[tuple[str, int]] = []
-        self.sent_segments: list[tuple[str, int, str]] = []
         self.reader_claims: dict[str, int] = {}
         self.provider_finals: list[tuple[str, int]] = []
         self.aborted: list[tuple[str, str]] = []
@@ -1646,27 +1642,38 @@ def test_structured_lexer_carries_every_split_tag_without_losing_chunk_identity(
         with _CallbackPump(player):
             for index, cut in enumerate(cuts):
                 response_id = f"RLEX{index}"
+                parts = (raw[:cut], raw[cut:])
                 rows = _emit_response(
                     conn,
                     response_id=response_id,
                     group_id=f"GLEX{index}",
                     turn_id=f"TLEX{index}",
-                    text=[raw[:cut], raw[cut:]],
+                    text=list(parts),
                 )
                 asyncio.run(_submit_response(pipeline, rows))
                 assert pipeline.wait_until_idle(timeout_s=2.0), f"cut={cut}"
-                spoken = [
-                    (sequence, text)
-                    for sent_id, sequence, text in provider.sent_segments
-                    if sent_id == response_id
+                prepared = [
+                    json.loads(str(row[0]))
+                    for row in conn.execute(
+                        "SELECT payload_json FROM events "
+                        "WHERE type = 'surface.playback_segment_prepared' "
+                        "AND json_extract(payload_json, '$.response_id') = ? ORDER BY id",
+                        (response_id,),
+                    ).fetchall()
                 ]
                 expected = [
                     sequence
                     for sequence, (start, end) in enumerate(((0, cut), (cut, len(raw))))
                     if start < spoken_end and end > spoken_start
                 ]
-                assert [sequence for sequence, _text in spoken] == expected, f"cut={cut}"
-                assert "".join(text for _sequence, text in spoken) == "spoken", f"cut={cut}"
+                assert [row["sequence"] for row in prepared] == expected, f"cut={cut}"
+                assert "".join(str(row["speech_text"]) for row in prepared) == "spoken", (
+                    f"cut={cut}"
+                )
+                assert [row["segment_hash"] for row in prepared] == [
+                    hashlib.sha256(parts[sequence].encode()).hexdigest()
+                    for sequence in expected
+                ], f"cut={cut}"
     finally:
         assert pipeline.close()
         conn.close()
@@ -2733,6 +2740,53 @@ def test_voice_bench_provenance_fails_closed_before_provider_use(tmp_path: Path)
     reasons = payload["provenance"]["software_gate_ineligibility_reasons"]
     assert "git_revision_mismatch" in reasons
     assert "effective_config_source_mismatch" in reasons
+
+
+def test_bounded_smoke_pass_artifact_marks_ab_gate_not_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A passing bounded device smoke never masquerades as legacy-vs-streaming A/B."""
+    output = tmp_path / "bounded-smoke-pass.json"
+
+    def _eligible_provenance(
+        *,
+        config_path: Path,
+        text: str,
+        expected_revision: str,
+        media_config: voice_media.StreamingMediaConfig,
+    ) -> tuple[dict[str, object], list[str]]:
+        del config_path, text, expected_revision, media_config
+        return {"software_gate_eligible": True}, []
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "integration-placeholder")
+    monkeypatch.setattr(voice_bench, "_provenance", _eligible_provenance)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench_voice_streaming_output.py",
+            "--runs",
+            "1",
+            "--bounded-smoke-only",
+            "--expected-revision",
+            "integration-revision",
+            "--output",
+            str(output),
+        ],
+    )
+    with patch.object(
+        voice_bench,
+        "_bounded_real_streaming_smoke",
+        return_value={"status": "PASS", "failure": None},
+    ):
+        assert voice_bench.main() == 0
+    payload = json.loads(output.read_text())
+    assert payload["bounded_real_streaming_smoke"]["status"] == "PASS"
+    assert payload["summary"]["bounded_real_streaming_smoke_gate"] == "PASS"
+    assert payload["summary"]["software_streaming_output_gate"] == "NOT_RUN"
+    assert payload["summary"]["physical_dac_loopback_gate"] == "UNMEASURED"
+    assert payload["summary"]["true_end_to_end_latency_gate"] == "UNMEASURED"
 
 
 def test_bounded_smoke_device_open_failure_still_writes_json(
