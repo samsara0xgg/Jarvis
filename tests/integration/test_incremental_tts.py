@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -19,6 +20,7 @@ from jarvis.state.event_log import emit_event, iter_events, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback, terminalize_response
 from jarvis.surface import voice_media, voice_tts
 from tests.integration.test_wave2_streaming_media import (
+    _Behavior,
     _CallbackPump,
     _config,
     _emit_response,
@@ -321,14 +323,18 @@ def _pipeline(
     provider: _FakeProvider,
     *,
     speak_from_segments: bool,
+    response_timeout_s: float | None = None,
 ) -> tuple[voice_media.StreamingTTSPipeline, voice_tts.AudioStreamPlayer]:
     player = _player()
+    config = replace(_config(), speak_from_segments=speak_from_segments)
+    if response_timeout_s is not None:
+        config = replace(config, response_timeout_s=response_timeout_s)
     pipeline = voice_media.StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(_config(), speak_from_segments=speak_from_segments),
+        config=config,
         start_player=False,
     )
     return pipeline, player
@@ -814,3 +820,118 @@ def test_silent_turn_is_forgotten_on_the_run_terminal() -> None:
     assert silent == {"TQ"}
     assert inherent_loop._drop_for_silent_channel(cancelled, **kwargs)  # noqa: SLF001
     assert silent == set()
+
+
+# --- L5 media owner: the response budget is per segment, not per generation ---
+
+_BUDGET_S = 1.0
+_SEGMENT_DELAY_S = 0.4
+_BUDGET_SEGMENTS = ("第一句话。", "第二句话。", "第三句话。", "第四句话。")
+
+
+def _budget_pipeline(
+    db_path: Path,
+    *,
+    segment_delay_s: float,
+) -> tuple[voice_media.StreamingTTSPipeline, voice_tts.AudioStreamPlayer, _FakeProvider]:
+    """A non-live pipeline whose provider spends ``segment_delay_s`` on every segment."""
+    provider = _FakeProvider(candidate_count=1)
+    provider.behaviors[("RB", 0)] = _Behavior(final_delay_s=segment_delay_s)
+    pipeline, player = _pipeline(
+        db_path,
+        provider,
+        speak_from_segments=False,
+        response_timeout_s=_BUDGET_S,
+    )
+    return pipeline, player, provider
+
+
+def _run_budget_response(
+    db_path: Path,
+    conn: sqlite3.Connection,
+    *,
+    texts: tuple[str, ...],
+    segment_delay_s: float,
+) -> None:
+    """Submit open + chunks + emitted together, so playback runs the non-live path."""
+    pipeline, player, _ = _budget_pipeline(db_path, segment_delay_s=segment_delay_s)
+    try:
+        with _CallbackPump(player):
+            rows = [_open(conn, "RB")]
+            rows += [_chunk(conn, "RB", index, text) for index, text in enumerate(texts)]
+            rows.append(_emitted(conn, "RB", "".join(texts)))
+            asyncio.run(_submit_response(pipeline, rows))
+            assert pipeline.wait_until_idle(timeout_s=10.0)
+    finally:
+        assert pipeline.close()
+
+
+def test_a_multi_segment_answer_longer_than_the_budget_still_completes(
+    tmp_path: Path,
+) -> None:
+    """The budget bounds one segment, so four under-budget segments outlast it and finish.
+
+    Four segments at 0.4 s of provider I/O each spend 1.6 s against
+    ``response_timeout_s`` of 1.0 s: every individual segment is well under the
+    bound, the generation as a whole is well over it. ``submitted_samples ==
+    total_samples`` restates completion rather than adding an independent fact;
+    the discriminating assertions are the completed row and the absent failure row.
+    """
+    db_path = tmp_path / "budget-completes.db"
+    conn = open_event_log(db_path)
+    try:
+        started = time.monotonic()
+        _run_budget_response(
+            db_path,
+            conn,
+            texts=_BUDGET_SEGMENTS,
+            segment_delay_s=_SEGMENT_DELAY_S,
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        conn.close()
+    conn = open_event_log(db_path)
+    try:
+        completed = _rows(conn, "surface.playback_completed", "RB")
+        failed = _rows(conn, "surface.playback_failed", "RB")
+        prepared = _rows(conn, "surface.playback_segment_prepared", "RB")
+    finally:
+        conn.close()
+    assert elapsed > _BUDGET_S
+    assert failed == []
+    assert len(completed) == 1
+    payload = completed[0][1]
+    assert payload["submitted_samples"] == payload["total_samples"]
+    assert payload["heard_through_sequence"] == prepared[-1][1]["sequence"]
+    assert [row[1]["speech_text"] for row in prepared] == list(_BUDGET_SEGMENTS)
+
+
+def test_a_single_segment_over_the_budget_still_fails_the_run_and_is_logged(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One segment past the bound keeps failing with tts_response_timeout, now audibly."""
+    db_path = tmp_path / "budget-bites.db"
+    conn = open_event_log(db_path)
+    try:
+        with caplog.at_level(logging.WARNING, logger="jarvis.surface.voice_media"):
+            _run_budget_response(
+                db_path,
+                conn,
+                texts=(_BUDGET_SEGMENTS[0],),
+                segment_delay_s=_BUDGET_S * 4,
+            )
+    finally:
+        conn.close()
+    conn = open_event_log(db_path)
+    try:
+        failed = _rows(conn, "surface.playback_failed", "RB")
+        assert _rows(conn, "surface.playback_completed", "RB") == []
+    finally:
+        conn.close()
+    assert len(failed) == 1
+    assert failed[0][1]["reason"] == "tts_response_timeout"
+    warnings = [
+        record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING
+    ]
+    assert any("RB" in message and "response_timeout_s" in message for message in warnings)
