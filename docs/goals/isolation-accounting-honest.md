@@ -166,11 +166,15 @@ discovered — do not "fix" the implementation to keep the old expectation.
   change**: `reason` is already required on `surface.playback_interrupted`
   (`jarvis/state/event_log.py:895-906`) and the registry validates key presence,
   not value membership.
-- `tests/integration/test_boot_playback_reconciliation.py` — new coverage for
-  both branches; existing `daemon_restart` assertions at `:60` and `:145` are
-  the absence-path regression and must keep passing untouched.
+- `tests/integration/test_wave2_streaming_media.py:1928-2046` — new coverage
+  for both isolation branches (`RISO`, `RISOF`), running
+  `reconcile_open_playback` over the fixtures already shipped there and
+  asserting the `reason` payload field on each.
 - `tests/integration/test_wave2_streaming_media.py:3733-3796` — the parametrized
   latency pin changes as described above.
+- `tests/integration/test_boot_playback_reconciliation.py` — no new coverage;
+  its existing `daemon_restart` assertions at `:60` and `:145` are the
+  absence-path regression and are deliberately left unmodified.
 
 ## Boundaries and non-goals
 
@@ -474,3 +478,8 @@ Or stop after 25 turns.
   `.gitignore:7` says `.venv/`, which only matches a directory; it is lane
   environment, not lane work, and the hub's own instruction is never to stage
   it.
+- Hub ruling: "Affected contracts and files" naming
+  `test_boot_playback_reconciliation.py` as the home for slice 1's new
+  coverage was a card-authoring inconsistency, not a lane deviation — the
+  lane's placement in `test_wave2_streaming_media.py` was correct and is now
+  what the card names.
