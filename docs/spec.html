@@ -1171,6 +1171,8 @@ PresentationIntent.intent_type:
 
 <p>Layer 5 可以防刷屏和优化视觉更新，但不能改变“是否该提醒”的 decision 等级。</p>
 
+<div class="note"><strong>Deviation — D6 lifecycle commentary:</strong> commentary delivery 不走上面两层 coalescing。它由 runtime observer 在 durable Event Log 上按 turn 封顶为每 turn 最多一句，见 <a href="adr/0008-real-time-response-streaming.md">ADR-0008 §10</a>。</div>
+
 <h3 id="layer-deployment-domains">3.7 Phase 6: Deployment Domains</h3>
 
 <p>Deployment Domains 定义 Jarvis 的逻辑系统实际跑在哪里，谁拥有哪部分 state / action / hardware，以及跨 Mac、RPi、ESP32、cloud、worker 时谁是真相源。它不是产品层，也不是 state schema 层；它负责 physical ownership、process placement、local durability、cross-domain transport、offline behavior、artifact store、backup / replay / migration。</p>

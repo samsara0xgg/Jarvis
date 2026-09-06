@@ -184,10 +184,11 @@ realtime:
     # one warning, without it.
     routine_streaming:
       enabled: false
-  # ADR-0008 Step 5 (D6).  With commentary on, a committed action lifecycle
-  # row on a user-originated turn speaks one short deterministic phrase in a
-  # `phase="commentary"` ResponseRun sharing that turn's response_group_id;
-  # the final answer is never delayed, dropped or superseded by it.  It
+  # ADR-0008 Step 5 (D6).  With commentary on, a user-originated turn speaks
+  # at most one short deterministic phrase, opened from the first committed
+  # action lifecycle row that qualifies, in a `phase="commentary"`
+  # ResponseRun sharing that turn's response_group_id; the final answer is
+  # never dropped or superseded by it.  It
   # additionally requires realtime.enabled and response.response_run_lifecycle
   # and downgrades once, with one warning, without them.
   commentary:

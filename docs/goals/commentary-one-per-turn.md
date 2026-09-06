@@ -320,3 +320,16 @@ Progress line per slice in the card. Or stop after 35 turns.
   `time`/`random`/`secrets`/`datetime`/`os` import, no builtin `hash(`, no
   module-level mutable state. Suite 1052 passed / 64 deselected. lint-imports
   KEPT, ruff clean, mypy 247 files.
+- Slice 3 (docs sync): `docs/spec.html` §3.6.12 gains one `<div class="note">`
+  deviation marker, both existing bullets untouched (the diff is pure
+  addition). `docs/adr/0008-real-time-response-streaming.md:368` amended in
+  place — repeated-progress coalescing and the timer clause replaced by the
+  per-turn cap — plus the D1-exception paragraph corrected to stop claiming
+  supersession is reachable, and a new §10 item 11 recording ownership.
+  `config/jarvis.yaml` commentary comment: "delayed" dropped and the per-row
+  wording corrected to at most one phrase per turn.
+  `docs/adr/0006-full-duplex-voice-session.md` judged UNCHANGED — `:261`
+  (enqueue-after-drain, same `response_group_id`) and `:776` ("commentary→final
+  never self-interrupts") both still hold; the cap changes how many commentary
+  runs open, never the handoff between one and the final. Suite 1052 passed /
+  64 deselected after the edits.
