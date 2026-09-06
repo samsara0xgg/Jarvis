@@ -283,4 +283,89 @@ the card contradicts the repository, stop and report; do not redesign. Or stop
 after 30 turns.
 
 ## Progress
-- (implementation session appends here)
+- 2026-09-05 lane B slice 1 (`ce98e57`): replaced
+  `test_heard_prefix_quality_survives_an_earlier_report_gap` with a
+  pipeline-level pin in the same commit. It drives a real
+  `StreamingTTSPipeline` over a real `AudioStreamPlayer`
+  (`estimated_output_latency_s=0.2`, so `finish_segment`'s escape hatch cannot
+  fire) and the real `PlaybackLedger`, reusing `_FakeProvider`,
+  `_CallbackPump`, `_config`, `_emit_response` and `_submit_response`. The
+  callback-report gap is produced by dropping the second segment's first
+  report exactly as `_CallbackReportRing.write` drops when full; the assertion
+  lands on the emitted `surface.playback_checkpoint` payload (`heard_text`,
+  `cursor_quality`). With `voice_ledger.py:324` temporarily reverted the test
+  fails on that payload (`assert 'unknown' == 'estimated'`); restored, it
+  passes and `git status` shows no diff under `jarvis/`.
+- 2026-09-05 lane B slice 2 (`d81acc6`) — bare-candidate dispositions, one per
+  candidate, judgment noted:
+  - `test_structured_lexer_carries_every_split_tag_without_losing_chunk_identity`
+    — **(a) rewritten**. Judgment, not heuristic compliance: no pipeline-level
+    test splits a chunk *inside* a tag, so the coverage is real and unique. It
+    now drives one pipeline over all 40 split offsets (every offset inside each
+    tag plus both boundaries) and asserts on the emitted
+    `surface.playback_segment_prepared` rows: sequence, `speech_text` and
+    `segment_hash`, so the whole of the old chunk-identity assertion survives
+    on an artifact.
+  - `test_structured_lexer_handles_adjacent_voice_document_transition` —
+    **(b) confirmed covered and deleted**. The boundary offsets added to the
+    rewritten split test above reproduce exactly its
+    `</voice>`-then-`<document>` cut, and
+    `test_structured_chunks_preserve_heard_prefix_on_mid_second_interrupt`
+    already pins the in-chunk adjacency on the emitted
+    `surface.playback_interrupted` payload and the history note.
+  - `test_bounded_smoke_uses_independent_gate_and_marks_ab_not_run` —
+    **(a) rewritten**. Judgment: the card flagged it as a likely false
+    positive, but it calls one pure function on a dict it built, which the
+    ruling makes a unit test. Its FAIL row was already asserted on the JSON
+    artifact the bench writes by
+    `test_bounded_smoke_device_open_failure_still_writes_json`
+    (`software_streaming_output_gate == "NOT_RUN"`,
+    `bounded_real_streaming_smoke_gate == "FAIL"`), so the rewrite covers what
+    nothing else did: `test_bounded_smoke_pass_artifact_marks_ab_gate_not_run`
+    runs the bench through `main()` with `--bounded-smoke-only` over a passing
+    smoke and asserts all four gate rows of the JSON artifact it writes. No
+    `_BenchPlayer` fake is lifted out of its neighbouring test; the smoke
+    itself is the patched seam, exactly as the device-open test patches
+    `_provenance`.
+  - `test_segment_closed_before_audible_horizon_still_becomes_heard` —
+    **(a) rewritten**. Not covered by slice 1: that test would still pass if
+    audibility were claimed prematurely. The rewrite drives the same ordering
+    through the pipeline and asserts on the emitted
+    `surface.playback_checkpoint` payload (`heard_text`, `cursor_quality`,
+    `submitted_samples`) plus the deferral itself — the row cannot appear
+    within half the latency estimate of the provider's `SegmentFinished`.
+    Proved live: with the player's latency estimate zeroed in a scratch copy
+    outside the repository, the checkpoint arrives 30 us after close and the
+    test fails.
+  - Count arithmetic: baseline 1069 -> 1036 (-32 lexer parametrizations, +1
+    loop test, -1 adjacent transition, -2 bounded-smoke parametrizations, +1
+    bounded-smoke PASS artifact test, -1/+1 horizon rewrite, -1/+1 heard-prefix
+    replacement). Deselected unchanged at 64.
+  - No bare candidate outside `tests/integration/test_wave2_streaming_media.py`
+    was touched.
+- Docs to sync: none, as the card predicted. The change is how an existing fact
+  is verified; no documented contract, invariant, ownership boundary or
+  externally relevant behavior moved, so neither `docs/spec.html` nor
+  `docs/adr/` owns a fact that changed.
+- Swift not run (`desktop/` untouched); no live run (no audio device is
+  involved — every test drives `_CallbackPump` over a lazy-open player, and the
+  system default output was never changed).
+- 2026-09-05 lane B slice 3 (`34f507e`) — verifier pass (fresh context, opus,
+  range `realtime-integration..HEAD`). It found no blocking defect, reproduced
+  the falsification independently (`assert 'unknown' == 'estimated'`),
+  re-derived the count arithmetic, and traced the ledger at runtime to confirm
+  the test really walks the card's four-step sequence rather than a lookalike.
+  Two confirmed findings, both fixed here:
+  - The claim that `segment_hash` is not observable at pipeline level was
+    wrong — it is on the emitted `surface.playback_segment_prepared` payload
+    (`jarvis/surface/voice_media.py:2277`). The lexer test now asserts on those
+    rows and the `sent_segments` recorder added to `_FakeProvider` is gone, so
+    the shared machinery is back to untouched.
+  - Labelling the bounded-smoke deletion (b) was loose: the PASS row was
+    covered by nothing in the tree. It is now a real (a) rewrite, above.
+  Advisory notes not acted on: the flake direction of the two wall-clock
+  assertions is false-failure, not false-pass (`assert dropped.is_set()` also
+  fails loudly rather than passing if a callback ever straddles the segment
+  boundary); and the card's Goal sentence is unreachable as written because the
+  card itself puts `test_escape_hatch_quality_survives_a_later_audible_report`
+  out of scope — the `/goal condition` items are what this run satisfies.

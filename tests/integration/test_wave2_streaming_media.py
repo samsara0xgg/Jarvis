@@ -1612,75 +1612,71 @@ def test_structured_chunks_preserve_heard_prefix_on_mid_second_interrupt(
     assert "不可朗读" not in str(old_payload["heard_text"])
 
 
-@pytest.mark.parametrize(
-    ("tag", "tag_offset"),
-    [
-        (tag, offset)
-        for tag in ("<voice>", "</voice>", "<document>", "</document>")
-        for offset in range(1, len(tag))
-    ],
-)
 def test_structured_lexer_carries_every_split_tag_without_losing_chunk_identity(
-    tag: str,
-    tag_offset: int,
+    tmp_path: Path,
 ) -> None:
-    """Every lexical split keeps tags/documents silent and renderer ids exact."""
+    """Every lexical split keeps tags/documents off the wire and ids exact."""
     raw = "<voice>spoken</voice><document>hidden</document>"
-    cut = raw.index(tag) + tag_offset
-    parts = (raw[:cut], raw[cut:])
-    response = voice_media._ResponseBuffer(  # noqa: SLF001 - integration seam
-        row_id=1,
-        source_event_id="SOURCE",
-        response_id="RLEX",
-        response_group_id="GLEX",
-        turn_id="TLEX",
-        phase="final",
-        channel="speech",
-        gate_mode="sentence",
-        chunks={
-            sequence: voice_media._ResponseChunk(  # noqa: SLF001
-                sequence=sequence,
-                raw_text=text,
-                segment_hash=f"hash-{sequence}",
-            )
-            for sequence, text in enumerate(parts)
-        },
-    )
-    segments = response.speech_segments()
-    assert "".join(text for _sequence, text, _hash in segments) == "spoken"
-    assert all("hidden" not in text and "<" not in text for _, text, _ in segments)
     spoken_start = raw.index("spoken")
     spoken_end = spoken_start + len("spoken")
-    expected_sequences = [
-        sequence
-        for sequence, (start, end) in enumerate(((0, cut), (cut, len(raw))))
-        if start < spoken_end and end > spoken_start
+    # Every byte offset inside each tag, plus both of its boundaries: the
+    # boundary cuts are the adjacent `</voice><document>` transition.
+    cuts = [
+        raw.index(tag) + offset
+        for tag in ("<voice>", "</voice>", "<document>", "</document>")
+        for offset in range(len(tag) + 1)
     ]
-    assert [sequence for sequence, _text, _hash in segments] == expected_sequences
-    assert [segment_hash for _sequence, _text, segment_hash in segments] == [
-        f"hash-{sequence}" for sequence in expected_sequences
-    ]
-
-
-def test_structured_lexer_handles_adjacent_voice_document_transition() -> None:
-    """An adjacent close/open transition never leaks document text into speech."""
-    raw = "<voice>heard</voice><document>silent</document>"
-    cut = raw.index("</voice>") + len("</voice>")
-    response = voice_media._ResponseBuffer(  # noqa: SLF001 - integration seam
-        row_id=1,
-        source_event_id="SOURCE",
-        response_id="RSWITCH",
-        response_group_id="GSWITCH",
-        turn_id="TSWITCH",
-        phase="final",
-        channel="speech",
-        gate_mode="sentence",
-        chunks={
-            7: voice_media._ResponseChunk(7, raw[:cut], "hash-7"),  # noqa: SLF001
-            8: voice_media._ResponseChunk(8, raw[cut:], "hash-8"),  # noqa: SLF001
-        },
+    db_path = tmp_path / "lexer-splits.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
     )
-    assert response.speech_segments() == [(7, "heard", "hash-7")]
+    try:
+        with _CallbackPump(player):
+            for index, cut in enumerate(cuts):
+                response_id = f"RLEX{index}"
+                parts = (raw[:cut], raw[cut:])
+                rows = _emit_response(
+                    conn,
+                    response_id=response_id,
+                    group_id=f"GLEX{index}",
+                    turn_id=f"TLEX{index}",
+                    text=list(parts),
+                )
+                asyncio.run(_submit_response(pipeline, rows))
+                assert pipeline.wait_until_idle(timeout_s=2.0), f"cut={cut}"
+                prepared = [
+                    json.loads(str(row[0]))
+                    for row in conn.execute(
+                        "SELECT payload_json FROM events "
+                        "WHERE type = 'surface.playback_segment_prepared' "
+                        "AND json_extract(payload_json, '$.response_id') = ? ORDER BY id",
+                        (response_id,),
+                    ).fetchall()
+                ]
+                expected = [
+                    sequence
+                    for sequence, (start, end) in enumerate(((0, cut), (cut, len(raw))))
+                    if start < spoken_end and end > spoken_start
+                ]
+                assert [row["sequence"] for row in prepared] == expected, f"cut={cut}"
+                assert "".join(str(row["speech_text"]) for row in prepared) == "spoken", (
+                    f"cut={cut}"
+                )
+                assert [row["segment_hash"] for row in prepared] == [
+                    hashlib.sha256(parts[sequence].encode()).hexdigest()
+                    for sequence in expected
+                ], f"cut={cut}"
+    finally:
+        assert pipeline.close()
+        conn.close()
 
 
 def test_after_drain_same_group_and_foreground_supersede(tmp_path: Path) -> None:
@@ -2746,17 +2742,51 @@ def test_voice_bench_provenance_fails_closed_before_provider_use(tmp_path: Path)
     assert "effective_config_source_mismatch" in reasons
 
 
-@pytest.mark.parametrize(("status", "expected"), [("PASS", "PASS"), ("FAIL", "FAIL")])
-def test_bounded_smoke_uses_independent_gate_and_marks_ab_not_run(
-    status: str,
-    expected: str,
+def test_bounded_smoke_pass_artifact_marks_ab_gate_not_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bounded device smoke never masquerades as legacy-vs-streaming A/B."""
-    summary = voice_bench._bounded_smoke_summary({"status": status})  # noqa: SLF001
-    assert summary["software_streaming_output_gate"] == "NOT_RUN"
-    assert summary["bounded_real_streaming_smoke_gate"] == expected
-    assert summary["physical_dac_loopback_gate"] == "UNMEASURED"
-    assert summary["true_end_to_end_latency_gate"] == "UNMEASURED"
+    """A passing bounded device smoke never masquerades as legacy-vs-streaming A/B."""
+    output = tmp_path / "bounded-smoke-pass.json"
+
+    def _eligible_provenance(
+        *,
+        config_path: Path,
+        text: str,
+        expected_revision: str,
+        media_config: voice_media.StreamingMediaConfig,
+    ) -> tuple[dict[str, object], list[str]]:
+        del config_path, text, expected_revision, media_config
+        return {"software_gate_eligible": True}, []
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "integration-placeholder")
+    monkeypatch.setattr(voice_bench, "_provenance", _eligible_provenance)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench_voice_streaming_output.py",
+            "--runs",
+            "1",
+            "--bounded-smoke-only",
+            "--expected-revision",
+            "integration-revision",
+            "--output",
+            str(output),
+        ],
+    )
+    with patch.object(
+        voice_bench,
+        "_bounded_real_streaming_smoke",
+        return_value={"status": "PASS", "failure": None},
+    ):
+        assert voice_bench.main() == 0
+    payload = json.loads(output.read_text())
+    assert payload["bounded_real_streaming_smoke"]["status"] == "PASS"
+    assert payload["summary"]["bounded_real_streaming_smoke_gate"] == "PASS"
+    assert payload["summary"]["software_streaming_output_gate"] == "NOT_RUN"
+    assert payload["summary"]["physical_dac_loopback_gate"] == "UNMEASURED"
+    assert payload["summary"]["true_end_to_end_latency_gate"] == "UNMEASURED"
 
 
 def test_bounded_smoke_device_open_failure_still_writes_json(
@@ -2913,53 +2943,69 @@ def test_bounded_smoke_persists_player_counters_after_accept_and_deadline() -> N
     assert after_cleanup["is_running"] is False
 
 
-def test_segment_closed_before_audible_horizon_still_becomes_heard() -> None:
+def test_segment_closed_before_audible_horizon_still_becomes_heard(tmp_path: Path) -> None:
     """Live ordering: SegmentFinished precedes the deferred presentation horizon."""
+    db_path = tmp_path / "deferred-horizon.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    latency_s = 0.2
     player = voice_tts.AudioStreamPlayer(
         sample_rate_hz=8_000,
         ring_seconds=0.25,
         lazy_open=True,
         generation_safe=True,
-        estimated_output_latency_s=0.2,
+        estimated_output_latency_s=latency_s,
     )
-    lease = player.activate_generation(
-        session_id="S",
-        response_id="RHEARD",
-        response_group_id="GHEARD",
-        turn_id="THEARD",
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
     )
-    assert not isinstance(lease, ForegroundBusy)
-    player.begin_generation_segment(
-        expected_playback_generation_id=lease.playback_generation_id,
-        sequence=0,
-        text="第一句。",
-        segment_hash="heard-0",
-    )
-    player.write_generation(
-        np.ones(16, dtype=np.float32).tobytes(),
-        expected_playback_generation_id=lease.playback_generation_id,
-        segment_sequence=0,
-    )
-    output = np.zeros((16, 1), dtype=np.float32)
-    player._callback(output, 16, None, None)  # noqa: SLF001
-    # Network-paced generation closes the semantic boundary while the
-    # presentation horizon is still deferred by the output latency estimate,
-    # so `finish_segment`'s escape hatch cannot fire for this segment.
-    player.finish_generation_segment(
-        expected_playback_generation_id=lease.playback_generation_id,
-        sequence=0,
-    )
-    early = player.poll_generation(lease.playback_generation_id)
-    assert not isinstance(early, StalePlaybackGeneration)
-    assert early.estimated_audible_samples == 0
-    assert early.heard_through_sequence is None
-    time.sleep(0.3)
-    settled = player.poll_generation(lease.playback_generation_id)
-    assert not isinstance(settled, StalePlaybackGeneration)
-    assert settled.estimated_audible_samples == 16
-    assert settled.cursor_quality == "estimated"
-    assert settled.heard_through_sequence == 0
-    assert settled.heard_text == "第一句。"
+    try:
+        rows = _emit_response(
+            conn,
+            response_id="RHEARD",
+            group_id="GHEARD",
+            turn_id="THEARD",
+            text="第一句。",
+        )
+        with _CallbackPump(player):
+            asyncio.run(_submit_response(pipeline, rows))
+            deadline = time.monotonic() + 3.0
+            # Network-paced generation closes the semantic boundary while the
+            # presentation horizon is still deferred by the latency estimate.
+            while time.monotonic() < deadline:
+                if ("RHEARD", 0) in provider.provider_finals:
+                    break
+                time.sleep(0.001)
+            else:
+                pytest.fail("provider never finished the only segment")
+            closed_at = time.monotonic()
+            payload: dict[str, object] | None = None
+            while time.monotonic() < deadline:
+                row = conn.execute(
+                    "SELECT payload_json FROM events "
+                    "WHERE type = 'surface.playback_checkpoint' ORDER BY id LIMIT 1",
+                ).fetchone()
+                if row is not None:
+                    payload = json.loads(str(row[0]))
+                    break
+                time.sleep(0.002)
+            heard_at = time.monotonic()
+            assert payload is not None
+            # A closed segment must not be claimed heard before the estimated
+            # output latency has elapsed; only the horizon may promote it.
+            assert heard_at - closed_at >= latency_s / 2
+            assert payload["heard_through_sequence"] == 0
+            assert payload["heard_text"] == "第一句。"
+            assert payload["cursor_quality"] == "estimated"
+            assert payload["submitted_samples"] == _Behavior().samples
+    finally:
+        assert pipeline.close()
+        conn.close()
 
 
 def test_escape_hatch_quality_survives_a_later_audible_report() -> None:
@@ -3001,41 +3047,76 @@ def test_escape_hatch_quality_survives_a_later_audible_report() -> None:
     assert snapshot.heard_text == "已经听到的部分"
 
 
-def test_heard_prefix_quality_survives_an_earlier_report_gap() -> None:
-    """The snapshot reports the quality of the prefix it is reporting."""
-    lease = GenerationLease(
-        session_id="S",
-        response_id="RPREFIX",
-        response_group_id="GPREFIX",
-        turn_id="TPREFIX",
-        playback_generation_id=1,
-        timeline_epoch=1,
+def test_heard_prefix_quality_survives_an_earlier_report_gap(tmp_path: Path) -> None:
+    """A report gap after a heard segment keeps the checkpoint quality real."""
+    db_path = tmp_path / "heard-prefix-gap.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    # `_player()` estimates zero output latency, so the presentation horizon
+    # advances inside the same poll that submits the samples: the escape hatch
+    # in `finish_segment` would then fire and the first segment would already
+    # be heard before the gap. A real latency estimate defers the horizon,
+    # which is the live ordering this bug lives in.
+    player = voice_tts.AudioStreamPlayer(
+        sample_rate_hz=8_000,
+        ring_seconds=0.25,
+        lazy_open=True,
+        generation_safe=True,
+        estimated_output_latency_s=0.2,
     )
-    ledger = PlaybackLedger(lease, sample_rate=8_000)
-    ledger.begin_segment(sequence=0, text="被听见的前缀", segment_hash="prefix-0")
-    ledger.accept_samples(sequence=0, sample_count=100)
-    ledger.record_submitted(
-        output_start_cursor=0,
-        output_end_cursor=100,
-        audibility_class="normal",
+    segment_samples = _Behavior().samples
+    dropped = threading.Event()
+    reports = player._callback_reports  # noqa: SLF001
+    real_write = reports.write
+
+    def _drop_second_segment_head(**report: Any) -> None:  # noqa: ANN401 - the ring's own kwargs
+        # Exactly what the ring itself does when it is full: the report never
+        # reaches the ledger, so the next one starts past `_submitted_cursor`.
+        if not dropped.is_set() and report["output_start_cursor"] == segment_samples:
+            dropped.set()
+            return
+        real_write(**report)
+
+    reports.write = _drop_second_segment_head  # type: ignore[method-assign]
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
     )
-    # The semantic boundary closes while the presentation horizon is still
-    # deferred, so `finish_segment`'s escape hatch cannot fire and the chunk
-    # keeps its birth sentinel.
-    ledger.finish_segment(sequence=0)
-    # A callback-report gap pins the LEDGER quality to an observed `unknown`
-    # for the rest of the lease; the chunk sits behind `_submitted_cursor`, so
-    # it stays audible-normal.
-    ledger.record_submitted(
-        output_start_cursor=150,
-        output_end_cursor=200,
-        audibility_class="normal",
-    )
-    # The horizon then crosses the chunk with a genuine `estimated` report.
-    ledger.record_audible(output_cursor=100, cursor_quality="estimated")
-    snapshot = ledger.snapshot()
-    assert snapshot.heard_text == "被听见的前缀"
-    assert snapshot.cursor_quality == "estimated"
+    try:
+        rows = _emit_response(
+            conn,
+            response_id="RGAP",
+            group_id="GGAP",
+            turn_id="TGAP",
+            text=["heard prefix. ", "gapped tail."],
+        )
+        with _CallbackPump(player):
+            asyncio.run(_submit_response(pipeline, rows))
+            deadline = time.monotonic() + 3.0
+            payload: dict[str, object] | None = None
+            while time.monotonic() < deadline:
+                row = conn.execute(
+                    "SELECT payload_json FROM events "
+                    "WHERE type = 'surface.playback_checkpoint' ORDER BY id LIMIT 1",
+                ).fetchone()
+                if row is not None:
+                    payload = json.loads(str(row[0]))
+                    break
+                time.sleep(0.005)
+            assert dropped.is_set()
+            assert payload is not None
+            assert payload["heard_through_sequence"] == 0
+            # The heard prefix is proven by an `estimated` report that lands
+            # after the gap; the lease watermark stays an observed `unknown`.
+            assert payload["heard_text"] == "heard prefix."
+            assert payload["cursor_quality"] == "estimated"
+    finally:
+        assert pipeline.close()
+        conn.close()
 
 
 def test_realtime_output_device_reaches_both_builder_player_sites(
