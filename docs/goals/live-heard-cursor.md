@@ -109,10 +109,10 @@ so the whole downstream heard-state chain is dead on real hardware.
 
 - Layers that may change: L5 only (`jarvis/surface/voice_ledger.py`), plus tests
   and docs.
-- Must not change: the ledger-level `_cursor_quality` logic (`:256-261`);
+- Must not change: the ledger-level `_cursor_quality` logic (`:257-262`);
   `record_submitted` (`:212-242`); the `snapshot()` gate
-  `chunk.cursor_quality == "unknown"` (`:291`); `_least_quality` and
-  `_QUALITY_RANK` (`:318-332`); `finish_segment`'s escape hatch (`:206-210`),
+  `chunk.cursor_quality == "unknown"` (`:301`); `_least_quality` and
+  `_QUALITY_RANK` (`:328-342`); `finish_segment`'s escape hatch (`:207-211`),
   which stays; the two existing tests named under Acceptance, which must pass
   unedited; `tests/integration/test_wave2_streaming_media.py:819-820`, which
   asserts an *empty* heard prefix for a mid-segment interrupt — that is correct
