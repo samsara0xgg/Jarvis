@@ -372,5 +372,24 @@ Or stop after 12 turns and report what is blocking.
   `desktop/inherent-swift/` are untouched, and `cost_usd` remains an optional
   nullable payload field. No `data/` symlink was staged.
 - live run — not required by the card; none performed.
+- verifier (opus, fresh context, range `realtime-integration..HEAD`) — one
+  confirmed defect, fixed: the data commit's Tier 1 line quoted 245 mypy files
+  / 1045 tests, which were measured on a working tree that already carried the
+  then-uncommitted canary. Reworded after measuring that commit's own tree:
+  **244 files / 1044 passed** (`pytest --ignore` the two new test files, 50.6s).
+  The other three bodies were confirmed accurate. The verifier independently
+  reproduced `build_pricing()` against the upstream cache and found the
+  committed `data/pricing.json` byte-equal to generator output (so the rows are
+  provably generated, not hand-authored), proved the canary bites in three ways
+  (all five removed, one removed, and a null `input_per_1m` that the loader
+  drops silently), and proved the acceptance test fails when `cost_usd` is
+  null. Its non-defect observations are accepted as scoped-out: the acceptance
+  test derives its expected amount from the same table it loads (the card chose
+  row-diff reporting over rate pinning), the streaming path
+  (`CostRecorder.stream_events`) shares `_known_cost` and is not separately
+  covered, and the canary skips a preset with no explicit `model` key (no such
+  preset exists; `llm.presets.*.model` is what the card specifies). Borrowing
+  `repo_root()` from `tests.canary._helpers` is the established pattern —
+  seven existing integration and scenario files already do it.
 
 ---
