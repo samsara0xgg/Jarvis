@@ -2996,9 +2996,46 @@ def test_escape_hatch_quality_survives_a_later_audible_report() -> None:
     )
     ledger.record_audible(output_cursor=100, cursor_quality="estimated")
     snapshot = ledger.snapshot()
-    assert snapshot.cursor_quality == "unknown"
+    assert snapshot.cursor_quality == "estimated"
     assert snapshot.heard_through_sequence == 0
     assert snapshot.heard_text == "已经听到的部分"
+
+
+def test_heard_prefix_quality_survives_an_earlier_report_gap() -> None:
+    """The snapshot reports the quality of the prefix it is reporting."""
+    lease = GenerationLease(
+        session_id="S",
+        response_id="RPREFIX",
+        response_group_id="GPREFIX",
+        turn_id="TPREFIX",
+        playback_generation_id=1,
+        timeline_epoch=1,
+    )
+    ledger = PlaybackLedger(lease, sample_rate=8_000)
+    ledger.begin_segment(sequence=0, text="被听见的前缀", segment_hash="prefix-0")
+    ledger.accept_samples(sequence=0, sample_count=100)
+    ledger.record_submitted(
+        output_start_cursor=0,
+        output_end_cursor=100,
+        audibility_class="normal",
+    )
+    # The semantic boundary closes while the presentation horizon is still
+    # deferred, so `finish_segment`'s escape hatch cannot fire and the chunk
+    # keeps its birth sentinel.
+    ledger.finish_segment(sequence=0)
+    # A callback-report gap pins the LEDGER quality to an observed `unknown`
+    # for the rest of the lease; the chunk sits behind `_submitted_cursor`, so
+    # it stays audible-normal.
+    ledger.record_submitted(
+        output_start_cursor=150,
+        output_end_cursor=200,
+        audibility_class="normal",
+    )
+    # The horizon then crosses the chunk with a genuine `estimated` report.
+    ledger.record_audible(output_cursor=100, cursor_quality="estimated")
+    snapshot = ledger.snapshot()
+    assert snapshot.heard_text == "被听见的前缀"
+    assert snapshot.cursor_quality == "estimated"
 
 
 def test_realtime_output_device_reaches_both_builder_player_sites(
