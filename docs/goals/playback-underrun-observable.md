@@ -207,8 +207,9 @@ reasons, any one of which is sufficient:
 A distinct non-terminal row sidesteps all three: it is appended with plain
 `emit_event` (`jarvis/state/event_log.py:1624-1637`), it does not participate
 in the playback terminal CAS, and it can therefore coexist with whatever the
-boot reconciler later writes. `event_log.py` enforces no event-type allowlist,
-so the new type costs a string and a schema note.
+boot reconciler later writes. `event_log.py` enforces an event-type
+allowlist via `EventTypeRegistry`, so the new type requires one L2 registry
+entry — a string and a schema note.
 
 Payload: `session_id`, `response_id`, `turn_id`, `playback_generation_id`,
 `terminal_type` (the terminal it was attempting), `error_type`, and
@@ -290,12 +291,13 @@ lease and a contradictory UI frame are not.
 ## Boundaries and non-goals
 
 - Layers that may change: L5 (`jarvis/surface/`) only, plus
-  `docs/adr/0006-full-duplex-voice-session.md`. No L2 change:
-  `starvation_gaps`, `host_underflows`, and `estimated_output_latency_ns` are
-  optional payload fields on existing event types, and
-  `surface.playback_lane_isolated` goes through the existing `emit_event`
-  primitive. `terminalize_playback`, `emit_event`, and the schema are
-  untouched.
+  `docs/adr/0006-full-duplex-voice-session.md`, plus exactly one L2 registry
+  entry: `starvation_gaps`, `host_underflows`, and
+  `estimated_output_latency_ns` are optional payload fields on existing event
+  types, and `surface.playback_lane_isolated` requires one new
+  `EventTypeSchema` entry in `jarvis/state/event_log.py` with
+  `owner_layer="L5"`, matching every sibling `surface.playback_*` entry.
+  `terminalize_playback` and `emit_event` are otherwise untouched.
 - Must not change: `cursor_quality` semantics; `submitted_samples`,
   `total_samples`, `heard_through_sequence`, `heard_text`, `heard_text_hash`;
   the `_CallbackReport` / `_CallbackReportRing` shape; the tombstone/CAS
@@ -634,4 +636,9 @@ stop after 30 turns.
   over-count of at most 1 when an interrupt lands inside the callback (dry
   window was real, the resumed block is dropped); a single isolation can write
   two rows (both true); three of four `isolation_reason` values are uncovered.
+- Hub ruling on Slice 2a's flagged deviation — card-authoring error, not a
+  lane deviation: the card's "no event-type allowlist" / "schema untouched"
+  claim was false when written, and the lane reported it instead of silently
+  complying. Card corrected; the one `EventTypeSchema` registry entry
+  (`owner_layer="L5"`) stands as accepted.
 
