@@ -339,7 +339,7 @@ Or stop after 12 turns and report what is blocking.
 - baseline — `pytest -q -m "not live_llm and not live_codex"` on
   realtime-integration (5759479): **baseline=1044 passed, 64 deselected**,
   captured before the first edit.
-- data coverage — 4c0bf2e — `LLM_MAP` gains the five preset ids mapped to
+- data coverage — 7debc36 — `LLM_MAP` gains the five preset ids mapped to
   `deepseek/*` and `xai/*`; `scripts/refresh_pricing.py` re-run against 3818
   upstream entries wrote 25 LLM / 8 TTS rows. `load_pricing_table` now returns
   `deepseek-v4-flash {input 0.44, output 1.32, cache_read 0.014, cache_write
@@ -350,12 +350,12 @@ Or stop after 12 turns and report what is blocking.
   Row diff for already-mapped models: the six xAI rows moved upstream since
   April (`grok-4.20` 2.0/6.0 -> 1.25/2.5; `grok-4.1-fast-*` 0.2/0.5 ->
   1.25/2.5, cache_read 0.05 -> 0.2); nothing else changed, no test pins a rate.
-- canary — b0f9648 — `tests/canary/test_canary_preset_models_priced.py` bit on
+- canary — 5ba508f — `tests/canary/test_canary_preset_models_priced.py` bit on
   the pre-fix table, naming all five (`fast -> deepseek-v4-flash`, `deep ->
   deepseek-v4-pro`, `vision -> deepseek-v4-flash-vision-exp`, `grok-fast ->
   grok-4.5`, `grok-instant -> grok-4.3`) with the LLM_MAP remedy; passes on the
   regenerated table.
-- acceptance — 23f67e7 — `tests/integration/test_cost_recorded_pricing.py`
+- acceptance — 966d828 — `tests/integration/test_cost_recorded_pricing.py`
   drives a scripted provider socket (1000 prompt / 500 completion / 200 cached)
   through the real `CostRecorder` with the real committed `data/pricing.json`,
   then SELECTs `payload_json FROM events WHERE type = 'cost.recorded'`:
