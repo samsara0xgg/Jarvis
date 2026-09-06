@@ -333,3 +333,25 @@ Progress line per slice in the card. Or stop after 35 turns.
   never self-interrupts") both still hold; the cap changes how many commentary
   runs open, never the handoff between one and the final. Suite 1052 passed /
   64 deselected after the edits.
+- Live run (REQUIRED, done): daemon from this worktree, runtime root
+  `~/.jarvis-lane-c-test`, port 8011 (checked free with `lsof -nP -iTCP:8011
+  -sTCP:LISTEN` first), overlay with `realtime.enabled` /
+  `response.response_run_lifecycle` / `commentary.enabled` /
+  `streaming_output.enabled` true and `single_audio_ingress` off, key loaded
+  with `set -a; source ~/.jarvis/env; set +a` (the file's value IS quoted —
+  shell-sourcing strips them, len 126). Two questions, four and five
+  dispatched actions:
+
+      T7c1e5c6d|1|1
+      Taed640d2|1|1
+
+  TTS was MiniMax, not macOS `say`: `provider='minimax_ws_streaming'` with
+  `submitted_samples`/`total_samples` 177216 and 52385. The two phrases were
+  `拿到结果了，我看一下。` and `我去看看。` — both new variants, two distinct
+  rows, and no `response.cancelled` row of any reason exists. T7c1e5c6d's
+  first action terminalized inline so the non-terminal freshness check
+  silenced its dispatched row and the result phrase won, which is the case
+  the card's Rejected-approaches section says is correct; Taed640d2's slower
+  first action let the acknowledge win, which is the intended shape.
+  Daemon stopped; the owner's pid 45429 / pid 96300 and the system output
+  route (MacBook Pro Speakers) were untouched throughout.
