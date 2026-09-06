@@ -2263,9 +2263,10 @@ class StreamingTTSPipeline:
                 await self._fail_active(active, reason="stream_chunk_tagged", retryable=False)
                 return False
             sequence, text, segment_hash = segments[segment_index]
-            # The bound covers this segment's wait, its provider I/O and its
-            # backpressured playback - plus, for the final segment, the drain -
-            # never the whole generation. Total length is deliberately unbounded.
+            # Opened after this segment's wait and closed at the next segment's
+            # reschedule, so the bound covers one segment's provider I/O plus its
+            # backpressured playback - plus the drain, for the final segment -
+            # never the whole generation, whose length is deliberately unbounded.
             budget.reschedule(
                 asyncio.get_running_loop().time() + self._config.response_timeout_s,
             )

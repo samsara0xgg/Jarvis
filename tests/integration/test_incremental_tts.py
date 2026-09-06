@@ -892,12 +892,16 @@ def test_a_multi_segment_answer_longer_than_the_budget_still_completes(
         conn.close()
     conn = open_event_log(db_path)
     try:
+        activation = _rows(conn, "surface.playback_started", "RB")
         completed = _rows(conn, "surface.playback_completed", "RB")
         failed = _rows(conn, "surface.playback_failed", "RB")
         prepared = _rows(conn, "surface.playback_segment_prepared", "RB")
     finally:
         conn.close()
     assert elapsed > _BUDGET_S
+    # No `incremental` flag on the activation is the observable proof this ran
+    # the non-live path, the one the budget used to bound as a whole.
+    assert "incremental" not in activation[0][1]
     assert failed == []
     assert len(completed) == 1
     payload = completed[0][1]
