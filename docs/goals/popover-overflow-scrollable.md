@@ -337,6 +337,33 @@ Done when the transcript shows ALL of the following:
 Or stop after 30 turns.
 
 ## Progress
+- 49442de `fix(surface): cap and scroll the history popover question` —
+  baseline `Executed 178 tests, with 0 failures` before any edit; RED gate
+  taken on unmodified production code
+  (`DisplayMathTests.swift:154: error: ... XCTAssertEqual failed: ("800.0") is
+  not equal to ("1328.0")`, `Executed 179 tests, with 1 failure`); after the
+  fix `Executed 180 tests, with 0 failures` (M = N + 2) with
+  `test_popoverSizingCapsLongAnswerViewport`,
+  `test_popoverSizingUsesContentHeightForShortAnswer` and
+  `test_popoverSizingExtendsPanelBelowOffsetPopover` all passing unchanged.
+  Load-bearing proof in two parts: reverting BOTH production files does not
+  compile (`type 'NativePopoverSizing' has no member 'questionViewportHeight'`),
+  and reverting only the `popoverHeight` summing line reproduces the identical
+  `800.0 != 1328.0` failure. Cap chosen 200: fixed overhead 174 + answer 410 +
+  question 200 = 784 <= MAX_HEIGHT 800, 16pt of headroom.
+- Docs to sync: none, re-verified. `grep -c -i "popover" docs/spec.html` -> `0`;
+  `grep -rn -i "MAX_HEIGHT\|clampPanelHeight\|window height\|panel height"
+  docs/spec.html docs/adr/` -> no output; `grep -rn -i "popover" docs/adr/` ->
+  the single `docs/adr/0014-inherent-realtime-ux.md:2055` definition-of-done
+  line. No externally visible number is published — 200 is an internal layout
+  constant — so no canonical document changes.
+- Scope: nothing outside `desktop/inherent-swift/` modified, no Python touched.
+  `maxAnswerViewportHeight` 410, `answerViewportHeight(for:)`,
+  `DisplayManager.MAX_HEIGHT`, `clampPanelHeight` and the 3-row chip strip cap
+  are byte-identical. The daemon on port 8009, the running InherentCard and the
+  worktree `.claude/worktrees/realtime-live-test` were never touched: the only
+  builds were `scripts/test_inherent_swift.sh` into throwaway
+  `INHERENT_TEST_BUILD_DIR` paths under this job's tmp.
 - Owner follow-up (NOT a blocker, NOT an acceptance item): after a FORCED manual
   rebuild — `cd desktop/inherent-swift && xcodegen generate && xcodebuild -project
   InherentCard.xcodeproj -scheme InherentCard -configuration Debug -derivedDataPath

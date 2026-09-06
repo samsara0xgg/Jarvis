@@ -742,6 +742,7 @@ enum NativePopoverSizing {
   static let questionBottomPadding: CGFloat = 12
   static let questionAnswerSpacing: CGFloat = 12
   static let bottomPadding: CGFloat = 20
+  static let maxQuestionViewportHeight: CGFloat = 200
   static let maxAnswerViewportHeight: CGFloat = 410
   static let panelBottomSlack: CGFloat = 4
 
@@ -755,7 +756,7 @@ enum NativePopoverSizing {
 
   static func popoverHeight(for turn: NativeHistoryTurn) -> CGFloat {
     topPadding
-      + questionHeight(for: turn)
+      + questionViewportHeight(for: turn)
       + questionBottomPadding
       + questionAnswerSpacing
       + answerViewportHeight(for: turn)
@@ -764,6 +765,10 @@ enum NativePopoverSizing {
 
   static func answerViewportHeight(for turn: NativeHistoryTurn) -> CGFloat {
     min(maxAnswerViewportHeight, answerContentHeight(for: turn))
+  }
+
+  static func questionViewportHeight(for turn: NativeHistoryTurn) -> CGFloat {
+    min(maxQuestionViewportHeight, questionHeight(for: turn))
   }
 
   static func questionHeight(for turn: NativeHistoryTurn) -> CGFloat {

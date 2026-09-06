@@ -142,6 +142,31 @@ final class DisplayMathTests: XCTestCase {
     )
   }
 
+  func test_popoverSizingCapsLongQuestionViewport() {
+    let turn = NativeHistoryTurn(
+      question: Array(repeating: "这是一个很长的历史问题，需要换很多行才能显示完整。",
+                      count: 40).joined(),
+      answer: "short"
+    )
+
+    XCTAssertEqual(
+      NativePopoverSizing.questionViewportHeight(for: turn),
+      NativePopoverSizing.maxQuestionViewportHeight
+    )
+  }
+
+  func test_popoverSizingNeverAsksForMoreThanTheClampCanGrant() {
+    let turn = NativeHistoryTurn(
+      question: Array(repeating: "这是一个很长的历史问题，需要换很多行才能显示完整。",
+                      count: 40).joined(),
+      answer: Array(repeating: "这是一段用于撑高历史详情的内容。",
+                    count: 80).joined(separator: "\n")
+    )
+
+    let required = NativePopoverSizing.requiredPanelHeight(for: turn, selectedTop: 70)
+    XCTAssertEqual(DisplayManager.clampHeight(required), required)
+  }
+
   func test_inputTextSizingExpandsForWrappedQuestions() {
     let short = NativeInputTextSizing.height(for: "短问题", width: 220)
     let long = NativeInputTextSizing.height(

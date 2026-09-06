@@ -510,16 +510,21 @@ struct NativeCardView: View {
   private var popoverLayer: some View {
     Group {
       if model.popoverVisible, let turn = model.activeHistoryTurn {
+        let questionViewportHeight = NativePopoverSizing.questionViewportHeight(for: turn)
         let answerViewportHeight = NativePopoverSizing.answerViewportHeight(for: turn)
         VStack(alignment: .leading, spacing: 12) {
-          NativeSelectableText(
-            attributed: NativeSelectableText.attributed(
-              turn.question,
-              font: .monospacedSystemFont(ofSize: 11, weight: .regular),
-              color: NSColor.white.withAlphaComponent(0.55),
-              lineSpacing: 4
+          ScrollView(.vertical, showsIndicators: false) {
+            NativeSelectableText(
+              attributed: NativeSelectableText.attributed(
+                turn.question,
+                font: .monospacedSystemFont(ofSize: 11, weight: .regular),
+                color: NSColor.white.withAlphaComponent(0.55),
+                lineSpacing: 4
+              )
             )
-          )
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+            .frame(height: questionViewportHeight)
             .padding(.bottom, 12)
             .overlay(alignment: .bottom) {
               Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
