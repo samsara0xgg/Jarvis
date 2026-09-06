@@ -97,9 +97,7 @@ During the run:
   commit skill and append a line to Progress.
 - Intermediate gates may be delegated to subagents that report failures
   only. The final acceptance and regression commands are run by the main
-  session as `rtk proxy <command>`, so the judge sees the raw output. The
-  rtk hook compresses ordinary Bash output, and the judge cannot tell a
-  summary from the real thing.
+  session, so the judge sees the raw output.
 - If the card contradicts the repository, stop and report; do not redesign.
 
 ## Verification
