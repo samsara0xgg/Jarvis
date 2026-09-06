@@ -570,4 +570,41 @@ Or stop after 45 turns.
   `json_extract(payload_json,'$.response_id')`, which is what the /goal
   condition asks a hermetic assertion to read. Full suite still
   `1057 passed, 64 deselected`; gates green.
+- Verifier round (fresh context, opus, `realtime-integration...0f41461`):
+  confirmed the contract on every point it was asked to check — no
+  `jarvis.decision` import in L5, lint-imports KEPT, none of the forbidden
+  files or symbols touched, no fade, L3's branch returns before the
+  terminalizer and before any SQLite connection is opened, the deleted
+  `unsupported_scope` branch is genuinely unreachable (3 construction sites,
+  all literal), the new tests read committed rows, and it re-checked every
+  live canary value against `~/.jarvis-lane-a-liveA/mac_events.db`
+  independently. It also confirmed the owner's own event log was never
+  written (last row 2026-08-27, zero `user_stop` rows).
+  Acted on, `6fd2e15`: `uncertain` was documented more narrowly than the code
+  behaves (the caller-side timeout path cannot even know the tombstone
+  published); the `reason` field is dropped under this scope and nothing said
+  so; the `shutdown_timeout_s` budget choice was undocumented. All three are
+  docstring corrections in `voice_media.py` and `inherent_server.py`.
+  Reported, not changed, because the card is the contract and each would be
+  scope creep against it:
+  - `CancelRejected.reason` keeps `unsupported_scope`, which L3 can no longer
+    produce (only the L6 seam returns that bare string). The card specified
+    this Literal as "gains `policy_ignore`".
+  - `policy_hash_mismatch` on this path is production-unreachable and
+    untested, symmetric with the identical pre-existing dead branch on the
+    generation path. The card requires the branch.
+  - Residual concurrency risk, no test: a stop racing its own response's
+    `response.failed` calls `_interrupt_active` twice. The verifier traced it
+    to safety through the tombstone CAS and the `response_id:generation`
+    terminal CAS, but if `_callback_commit_generation` pins that generation
+    for the whole window the second call isolates terminal debt and the media
+    actor stops accepting speech until restart. Pre-existing machinery, first
+    reachable from a user action.
+  - `_purge_after_drain` clears the whole lane, not just the stopped group,
+    so a cross-group `supersede` that lands inside the ~1.5 s stop window is
+    silently dropped. ADR-0006 D4 authorizes stopping that group's queued
+    speech. Pre-existing shape (`_response_terminal` does the same inline).
+  - `docs/goals/keyword-ptt-safe-barge-in.md:13` now carries a false premise
+    ("rejects every scope but `generation`"). It is a different queued card,
+    pinned at `ca1b42f`, so this run did not edit it.
 
