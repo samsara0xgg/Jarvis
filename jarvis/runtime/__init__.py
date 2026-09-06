@@ -88,6 +88,7 @@ from jarvis.decision.response_run import (
     ResponseRun,
     ResponseRunRegistry,
     ResponseTerminalizer,
+    decide_foreground,
     evidence_snapshot_hash,
     legacy_full_text_policy,
     request_response_cancel,
@@ -1780,6 +1781,21 @@ def make_response_cancel_callable(
         return outcome.reason
 
     return _cancel
+
+
+def make_foreground_decision_callable() -> Callable[[str, int, str, int], str]:
+    """Build the injectable foreground-lane arbitration seam.
+
+    ``(incumbent_group, incumbent_row_id, candidate_group, candidate_row_id)
+    -> outcome``, where the outcome is ``"enqueue_after_drain"``,
+    ``"supersede"`` or ``"decline"``.
+
+    The policy is a pure L3 function with no clock and no IO, so there is
+    nothing to bind; the builder exists only because ``jarvis.decision`` and
+    ``jarvis.surface`` are siblings (``.importlinter``) and the runtime is the
+    only layer allowed to wire them together.
+    """
+    return decide_foreground
 
 
 def make_barge_in_interrupt_callable(

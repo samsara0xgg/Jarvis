@@ -727,6 +727,35 @@ def start_response_run(  # noqa: PLR0913 — the ADR-0008 §4.2 response.started
     return run
 
 
+def decide_foreground(
+    incumbent_group: str,
+    incumbent_row_id: int,
+    candidate_group: str,
+    candidate_row_id: int,
+) -> str:
+    """Decide whether a candidate response may take the foreground speech lane.
+
+    ADR-0008 D8: a cross-group response holds the lane only while explicit
+    foreground policy selects it; it cannot displace another group by merely
+    arriving.  ADR-0006 keeps the drain lane same-``response_group_id``, so a
+    cross-group candidate is always take-the-lane-or-decline, never queued.
+
+    Ordering is the Event Log's own commit order (the row id), the only total
+    order the two candidates share: ``turn_id`` is a random uuid4 prefix and
+    ``response_group_id`` is a one-way uuid5 of it.  The answer to the newest
+    utterance therefore always carries the highest row id and always wins;
+    only a straggler from an older turn is declined.
+
+    Returns ``"enqueue_after_drain"``, ``"supersede"`` or ``"decline"``.  The
+    lane-free case never reaches here: L5 activates an empty lane directly.
+    """
+    if incumbent_group == candidate_group:
+        return "enqueue_after_drain"
+    if candidate_row_id > incumbent_row_id:
+        return "supersede"
+    return "decline"
+
+
 def request_response_cancel(  # noqa: PLR0911 — policy, timeout, and CAS outcomes remain distinct.
     registry: ResponseRunRegistry,
     terminalizer: ResponseTerminalizer,
@@ -836,6 +865,7 @@ __all__ = [
     "ResponseRunRegistry",
     "ResponseRunState",
     "ResponseTerminalizer",
+    "decide_foreground",
     "evidence_snapshot_hash",
     "legacy_full_text_policy",
     "reconcile_open_responses",
