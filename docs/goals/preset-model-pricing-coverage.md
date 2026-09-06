@@ -336,6 +336,41 @@ as claims:
 Or stop after 12 turns and report what is blocking.
 
 ## Progress
-- (implementation session appends here)
+- baseline — `pytest -q -m "not live_llm and not live_codex"` on
+  realtime-integration (5759479): **baseline=1044 passed, 64 deselected**,
+  captured before the first edit.
+- data coverage — 4c0bf2e — `LLM_MAP` gains the five preset ids mapped to
+  `deepseek/*` and `xai/*`; `scripts/refresh_pricing.py` re-run against 3818
+  upstream entries wrote 25 LLM / 8 TTS rows. `load_pricing_table` now returns
+  `deepseek-v4-flash {input 0.44, output 1.32, cache_read 0.014, cache_write
+  0.0}`, `deepseek-v4-pro 1.32/3.96`, `deepseek-v4-flash-vision-exp 0.44/1.32`,
+  `grok-4.5 2.0/6.0`, `grok-4.3 1.25/2.5` — all matching the card's table.
+  Provenance kept (`source: litellm`, same `source_url`, `generated_at`
+  2026-09-06T03:17:48+00:00) plus the new `notes.deepseek` peak-rate entry.
+  Row diff for already-mapped models: the six xAI rows moved upstream since
+  April (`grok-4.20` 2.0/6.0 -> 1.25/2.5; `grok-4.1-fast-*` 0.2/0.5 ->
+  1.25/2.5, cache_read 0.05 -> 0.2); nothing else changed, no test pins a rate.
+- canary — b0f9648 — `tests/canary/test_canary_preset_models_priced.py` bit on
+  the pre-fix table, naming all five (`fast -> deepseek-v4-flash`, `deep ->
+  deepseek-v4-pro`, `vision -> deepseek-v4-flash-vision-exp`, `grok-fast ->
+  grok-4.5`, `grok-instant -> grok-4.3`) with the LLM_MAP remedy; passes on the
+  regenerated table.
+- acceptance — 23f67e7 — `tests/integration/test_cost_recorded_pricing.py`
+  drives a scripted provider socket (1000 prompt / 500 completion / 200 cached)
+  through the real `CostRecorder` with the real committed `data/pricing.json`,
+  then SELECTs `payload_json FROM events WHERE type = 'cost.recorded'`:
+  `cost_usd` is non-null, a float, `> 0`, and equals **0.001015** USD derived
+  from those tokens and the committed rates. `model_used == deepseek-v4-flash`.
+- gates — lint-imports KEPT (1 kept, 0 broken) · ruff "All checks passed!" ·
+  mypy strict "no issues found in 246 source files" · full suite **1046
+  passed** = baseline 1044 + 1 canary + 1 acceptance · wall 51.7s.
+- docs to sync — confirmed `none`: `grep -nic
+  "cost\.recorded\|cost_usd\|pricing" docs/spec.html` returns **0**.
+- boundaries — `git diff realtime-integration..HEAD --stat -- jarvis/ config/
+  desktop/` is empty: `jarvis/shared/pricing.py`, the `cost.recorded` registry
+  entry, `config/jarvis.yaml`, `jarvis/runtime/inherent_loop.py` and
+  `desktop/inherent-swift/` are untouched, and `cost_usd` remains an optional
+  nullable payload field. No `data/` symlink was staged.
+- live run — not required by the card; none performed.
 
 ---
