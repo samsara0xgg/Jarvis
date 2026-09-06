@@ -266,7 +266,7 @@ If the repository contradicts the card, stop and report instead of redesigning. 
   (`client_backpressure`, `frame_over_budget`, then `protocol_error` for the
   reason-less frame), `test_anUndecodableFrameFailsTheSocket` still passed;
   Swift 178/178, 0 failures, baseline 177 + 1 added test.
-- Server payload pinned — dc07b0b — both wire tests now compare the whole
+- Server payload pinned — f0be959 — both wire tests now compare the whole
   parsed payload against `{"reason": "client_backpressure"}` and `{"reason":
   "frame_over_budget"}`, so no `kind` key can appear unnoticed; the
   `(1008, ...)` close assertions untouched. 13/13 in
@@ -279,3 +279,14 @@ If the repository contradicts the card, stop and report instead of redesigning. 
   `docs/adr/0014-inherent-realtime-ux.md` returns only `:802` and `:803`,
   where D11 rule 3 already specifies this frame and both reasons. The server
   is unchanged byte for byte, so no documentation edit is made.
+- Verifier pass — opus, fresh context, range `realtime-integration..HEAD` —
+  no blocking defect. It proved the Swift test non-vacuous by mutation in a
+  throwaway copy of `desktop/`: with `case "server.resync_required":`
+  deleted, the new test fails with three `protocol_error` events, exactly
+  the old behavior. Its one low finding was a false causal claim in the
+  second commit's body (a `kind` key would decode fine, not break the
+  decode, since D6 ignores unknown fields); the unpushed commit was reworded
+  to state the real reason, tree unchanged, which is why that Progress line
+  names f0be959. Known, out of scope: `?? .venv` is a pre-existing worktree
+  symlink that `.gitignore:7` misses because the pattern matches directories
+  only.
