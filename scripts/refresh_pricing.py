@@ -57,6 +57,12 @@ LLM_MAP: dict[str, str] = {
     "grok-4.1-fast-non-reasoning": "xai/grok-4-1-fast-non-reasoning",
     "grok-4-1-fast": "xai/grok-4-1-fast-non-reasoning",
     "grok-4.1-fast-reasoning": "xai/grok-4-1-fast-reasoning",
+    "grok-4.5": "xai/grok-4.5",
+    "grok-4.3": "xai/grok-4.3",
+    # DeepSeek direct — the shipped fast/deep/vision presets (2026-09-04).
+    "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+    "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+    "deepseek-v4-flash-vision-exp": "deepseek/deepseek-v4-flash-vision-exp",
     # Anthropic
     "claude-opus-4-7": "claude-opus-4-7",
     "claude-sonnet-4-6": "claude-sonnet-4-6",
@@ -168,6 +174,14 @@ def build_pricing(src: dict[str, Any]) -> dict[str, Any]:
         "source_url": LITELLM_URL,
         "notes": {
             "unit": "All *_per_1m values are USD per 1,000,000 tokens or characters.",
+            "deepseek": (
+                "DeepSeek splits peak vs off-peak (off-peak is exactly half) and "
+                "prices cache-hit input separately. pricing.json has one flat rate "
+                "per field and no time dimension, so these rows carry the PEAK "
+                "(standard, undiscounted) rate, which never underestimates spend. "
+                "Verified 2026-09-05 against "
+                "https://api-docs.deepseek.com/quick_start/pricing."
+            ),
             "speech-2.8-turbo": (
                 "Not yet in LiteLLM; mapped to speech-2.6-turbo which shares the "
                 "same published rate ($0.06/1M chars). Re-verify when upstream lands."
