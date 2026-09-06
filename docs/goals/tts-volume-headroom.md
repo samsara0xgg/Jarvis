@@ -305,5 +305,31 @@ default is nonzero. Or stop after 30 turns.
   - Scope: no limiter, normalizer, or gain stage added; the resampling path,
     segment-join behavior, interrupt path, and player ring/callback are
     untouched (`git diff --name-only` is 4 files).
+- bd9ebb1 `docs(config,runtime): state the real tts_volume failure semantics` —
+  verifier finding, confirmed against the code before fixing. The card at
+  `:78-80` asserts a bad value "fails the boot", "matching the deliberate
+  no-validation stance already documented for `realtime.output_device`". The
+  repository falsifies both halves: `_new_provider()` is called at
+  `inherent_loop.py:1848`, outside the builder's own try, so `int("loud")`
+  escapes `_build_tts_pipeline` into the caller's broad `except Exception` at
+  `:3764`, which nulls `voice_pipe`, `tts_pipe` and the wake listener together
+  and lets the process run on text-only — while a bad `output_device` is caught
+  at `:1941` and degrades TTS alone. No clamp or type guard was added: the card
+  forbids one and the code keeps none. Only the two comments changed, so the
+  key's documentation names the observable outcome. Gates re-run after the fix:
+  lint-imports KEPT, ruff clean, mypy 244 files clean, 1044 passed / 64
+  deselected.
+- Verifier note, no change made: the new hermetic test drives the streaming emit
+  site (`voice_tts.py:2150`), not the legacy `synthesize()`/`_handshake` one
+  (`:1938`) that the shipped `realtime.enabled: false` config actually uses. The
+  verifier drove `_handshake` directly as a canary and got vol 3 absent / 7
+  configured, so the behavior is right; both sites read the same `self._volume`
+  assigned once at `voice_tts.py:1759`, and a second test would pin the same
+  value twice.
+- Verifier note on the loudness figure: this capture set measures the vol=5
+  baseline at RMS 0.2240-0.2349, so the ~0.23 quoted above is the measurement,
+  while the card's Why section cites ~0.21 from the earlier investigation's
+  capture set. The drop to 0.131-0.141 is ~4.6 dB against 0.23 and ~4.0 dB
+  against 0.21, either way inside the owner-accepted range.
 
 ---
