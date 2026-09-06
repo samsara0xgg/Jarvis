@@ -610,8 +610,10 @@ class AudioStreamPlayer:
     _RECENT_TOMBSTONE_LIMIT = 4096
     _PENDING_AUDIBLE_LIMIT = 8192
     _DEFAULT_LIFECYCLE_TIMEOUT_S = 2.0
-    # Above this a host-reported output latency is not a slow device, it is a
-    # field the host API never filled meaningfully; believe the configured one.
+    # The largest output latency this system will act on.  A host reporting
+    # more is clamped here, never replaced by something smaller: an unbounded
+    # value would push the audible horizon past every deadline so
+    # `fully_presented` never becomes true.
     _MAX_PLAUSIBLE_OUTPUT_LATENCY_S = 1.0
     _STOP_STAGE_WAIT_S = 0.05
 
@@ -757,8 +759,10 @@ class AudioStreamPlayer:
         # PortAudio fills `latency` from Pa_GetStreamInfo() at open, so this is
         # read before `stream.start()` and can never race the realtime callback
         # that consumes `_estimated_output_latency_ns`.  A foreign host API may
-        # report nothing, a degenerate 0.0, or an absurd value; each falls back
-        # to the configured estimate rather than being believed.
+        # report nothing or a degenerate 0.0; those carry no measurement and
+        # fall back to the configured estimate.  A real report is never
+        # replaced by a smaller number — an absurd one is clamped to the
+        # ceiling.
         self._estimated_output_latency_ns = self._host_output_latency_ns(stream)
         with self._lifecycle_lock:
             if (
@@ -1468,17 +1472,28 @@ class AudioStreamPlayer:
         return self._underflow_count
 
     def _host_output_latency_ns(self, stream: Any) -> int:  # noqa: ANN401 - foreign device handle
-        """Return the host's own output-latency estimate, or the configured one."""
+        """Return the host's output-latency estimate, clamped to the ceiling.
+
+        Never smaller than a positive number the host reported.  This value
+        becomes `presentation_delay_ns`, the horizon gating `record_audible`,
+        so under-stating it over-claims what Allen heard — the direction
+        ADR-0006 §3 D6 forbids.  Only the three inputs that carry no
+        measurement at all fall back to the configured estimate: no attribute,
+        not a real number, and a `0.0`-or-negative report, where `0.0` is
+        PortAudio's "not available" sentinel and believing it literally would
+        claim samples audible the instant they cross the callback boundary.
+        """
         reported = getattr(stream, "latency", None)
         if isinstance(reported, (int, float)) and not isinstance(reported, bool):
             seconds = float(reported)
-            if 0.0 < seconds <= self._MAX_PLAUSIBLE_OUTPUT_LATENCY_S:
-                return int(seconds * 1_000_000_000)
+            if seconds > 0.0:
+                capped = min(seconds, self._MAX_PLAUSIBLE_OUTPUT_LATENCY_S)
+                return int(capped * 1_000_000_000)
         return self._default_output_latency_ns
 
     @property
     def estimated_output_latency_ns(self) -> int:
-        """Output latency in ns: host-reported when plausible, configured otherwise."""
+        """Output latency in ns: host-reported and clamped, configured otherwise."""
         return self._estimated_output_latency_ns
 
     @property

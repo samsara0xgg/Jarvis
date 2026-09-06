@@ -441,3 +441,36 @@ Or stop after 25 turns.
   tests, an implementation that never reads the isolation row fails 1.
   Tier 1 lint-imports KEPT 1/1, ruff clean 250 files, mypy strict clean
   248 files.  ADR-0006:674-678 rewritten.
+- Slice 2 done. `_host_output_latency_ns` clamps instead of discarding: a
+  positive report is never replaced by a smaller number, and only the three
+  no-measurement inputs (absent attribute, non-real number, `<= 0.0`) fall
+  back.  The latency table now reads `0.035 -> 35_000_000`,
+  `0.0 -> 120_000_000`, `None -> 120_000_000`, `1.5 -> 1_000_000_000` (new),
+  `12.0 -> 1_000_000_000` (**changed from `120_000_000`**, the deliberate
+  supersession of the pin the previous card left, not a contradiction).  Five
+  named cases pass individually.  No conservative margin was added on top of
+  the host measurement and nothing was relabelled `measured_dac`.  Full
+  hermetic run 1068 passed / 64 deselected in 60.58s vs the 1067/64 baseline;
+  the +1 is exactly the new `slow_device_clamped` parametrization.  Tier 1
+  lint-imports KEPT 1/1, ruff clean 250 files, mypy strict clean 248 files.
+  ADR-0006:364 rewritten.  Judged unchanged and left alone: ADR-0006:366 and
+  :349 (§3 D6), ADR-0008 §4.4 (a different lifecycle's reconciler),
+  `docs/spec.html` (`grep -c 'daemon_restart\|estimated_output_latency'` = 0).
+  Old goal cards under `docs/goals/` restate the superseded rule; they are the
+  record of what those runs decided, not canonical contract documents, so they
+  are left as written.
+- Verifier (fresh context, opus, `realtime-integration..HEAD`) found no
+  blocking defect and independently reproduced every gate number and both
+  mutation results.  Two of its three low findings are fixed here: the slice 2
+  commit body mislabelled the rewritten latency sentence as §4.2 when
+  `:364` is inside §3 D6 (`:317-375`; §4.2 starts at `:607` — slice 1's own
+  "§4.2" is correct), and ADR-0006:364 listed a proper subset of the code's
+  fallback set, now "a missing attribute, a value that is not a real number,
+  or a degenerate `0.0`".  Left alone deliberately: the catch-all `else` at
+  `playback_recovery.py:123` (the verifier's own recommendation is not to
+  touch it inside this card's boundary; behaviour is correct today), the
+  pre-existing sub-nanosecond truncation at `voice_tts.py:1491` (unreachable),
+  and the `?? .venv` entry — the worktree's `.venv` is a symlink and
+  `.gitignore:7` says `.venv/`, which only matches a directory; it is lane
+  environment, not lane work, and the hub's own instruction is never to stage
+  it.

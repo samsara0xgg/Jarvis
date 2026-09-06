@@ -3759,16 +3759,30 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
         (0.035, 35_000_000),
         (0.0, 120_000_000),
         (None, 120_000_000),
-        (12.0, 120_000_000),
+        (1.5, 1_000_000_000),
+        (12.0, 1_000_000_000),
     ],
-    ids=["host_reports_35ms", "degenerate_zero", "attribute_absent", "absurd_value"],
+    ids=[
+        "host_reports_35ms",
+        "degenerate_zero",
+        "attribute_absent",
+        "slow_device_clamped",
+        "absurd_value_clamped",
+    ],
 )
 def test_playback_started_carries_the_host_output_latency_or_the_configured_one(
     tmp_path: Path,
     reported_latency: float | None,
     expected_ns: int,
 ) -> None:
-    """A degenerate 0.0 is not zero latency, and 12 s is not a slow device."""
+    """A degenerate 0.0 is not zero latency, and a real report is never shrunk.
+
+    ``absurd_value`` deliberately supersedes the pin the previous card left
+    here (``12.0 -> 120_000_000``).  This value gates ``record_audible``, so
+    replacing a host report with a smaller number over-claims what was heard;
+    above the ceiling it is clamped, not discarded.  ``1.5`` is the realistic
+    Bluetooth figure that motivates the change and rides the same branch.
+    """
     db_path = tmp_path / f"latency-{reported_latency}.db"
     conn = open_event_log(db_path)
     provider = _FakeProvider(candidate_count=1)
