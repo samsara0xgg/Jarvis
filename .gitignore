@@ -4,7 +4,7 @@ __pycache__/
 *.so
 
 # Virtual env
-.venv/
+.venv
 venv/
 
 # Test / lint caches
