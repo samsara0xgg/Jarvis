@@ -912,8 +912,11 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     ),
     # ADR-0006 §4.2: the fourth exit from playback, which appends no terminal.
     # The media lane fails closed and speaks nothing further until the process
-    # restarts; without this row that outcome is unprovable after the fact and
-    # the next boot's reconciler mislabels the orphan `daemon_restart`.
+    # restarts; without this row that outcome is unprovable after the fact.
+    # `reconcile_open_playback` joins this row on
+    # `(response_id, playback_generation_id)` to close the orphan it left as
+    # `media_lane_isolated` rather than `daemon_restart`; the specific
+    # `isolation_reason` is readable only here.
     # `terminal_type`/`error_type` are null at the fallback-cleanup site, where
     # no terminal was being attempted and no exception reached the isolator.
     EventTypeSchema(

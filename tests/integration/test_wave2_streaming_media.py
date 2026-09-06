@@ -30,6 +30,7 @@ from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
 from jarvis.surface import voice_media, voice_tts
+from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.voice_ledger import (
     ForegroundBusy,
     GenerationLease,
@@ -1977,6 +1978,11 @@ def test_an_unsettled_callback_publication_writes_a_durable_lane_isolated_row(
         assert payload["session_id"]
         # No terminal could be written honestly: the snapshot never settled.
         assert _playback_rows_for(verdict, "RISO", "surface.playback_interrupted") == 0
+
+        # The next boot joins the isolation row on the same CAS identity and
+        # blames the isolation, not the restart it forced.
+        assert len(reconcile_open_playback(verdict)) == 1
+        assert _reason_of(verdict, "RISO") == "media_lane_isolated"
     finally:
         verdict.close()
 
@@ -2043,6 +2049,11 @@ def test_isolation_completes_even_when_its_own_durable_row_cannot_be_appended(
     try:
         assert _isolation_rows(verdict) == []
         assert _playback_rows_for(verdict, "RISOF-NEXT", "surface.playback_started") == 0
+
+        # The lane really was isolated, but the log holds no evidence of it.
+        # The reconciler reads what is written, so this orphan is a restart.
+        assert len(reconcile_open_playback(verdict)) == 1
+        assert _reason_of(verdict, "RISOF") == "daemon_restart"
     finally:
         verdict.close()
 
@@ -2051,6 +2062,17 @@ def _count_rows(conn: sqlite3.Connection, sql: str, *params: object) -> int:
     row = conn.execute(sql, params).fetchone()
     assert row is not None
     return int(row[0])
+
+
+def _reason_of(conn: sqlite3.Connection, response_id: str) -> str:
+    """The ``reason`` on the single ``surface.playback_interrupted`` row."""
+    rows = conn.execute(
+        "SELECT payload_json FROM events WHERE type = 'surface.playback_interrupted' "
+        "AND json_extract(payload_json, '$.response_id') = ?",
+        (response_id,),
+    ).fetchall()
+    assert len(rows) == 1
+    return str(cast("dict[str, object]", json.loads(str(rows[0][0])))["reason"])
 
 
 def _playback_rows_for(conn: sqlite3.Connection, response_id: str, kind: str) -> int:
@@ -3737,16 +3759,30 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
         (0.035, 35_000_000),
         (0.0, 120_000_000),
         (None, 120_000_000),
-        (12.0, 120_000_000),
+        (1.5, 1_000_000_000),
+        (12.0, 1_000_000_000),
     ],
-    ids=["host_reports_35ms", "degenerate_zero", "attribute_absent", "absurd_value"],
+    ids=[
+        "host_reports_35ms",
+        "degenerate_zero",
+        "attribute_absent",
+        "slow_device_clamped",
+        "absurd_value_clamped",
+    ],
 )
 def test_playback_started_carries_the_host_output_latency_or_the_configured_one(
     tmp_path: Path,
     reported_latency: float | None,
     expected_ns: int,
 ) -> None:
-    """A degenerate 0.0 is not zero latency, and 12 s is not a slow device."""
+    """A degenerate 0.0 is not zero latency, and a real report is never shrunk.
+
+    ``absurd_value`` deliberately supersedes the pin the previous card left
+    here (``12.0 -> 120_000_000``).  This value gates ``record_audible``, so
+    replacing a host report with a smaller number over-claims what was heard;
+    above the ceiling it is clamped, not discarded.  ``1.5`` is the realistic
+    Bluetooth figure that motivates the change and rides the same branch.
+    """
     db_path = tmp_path / f"latency-{reported_latency}.db"
     conn = open_event_log(db_path)
     provider = _FakeProvider(candidate_count=1)
