@@ -1579,7 +1579,6 @@ def _render_commentary(  # noqa: PLR0913 - the run's five independent inputs
         if runtime.response_flags.independent_response_cancel and runtime_registry is not None
         else ResponseRunRegistry()
     )
-    registry.register(run)
     # No subject is in scope for a fixed lifecycle phrase, so the Pre-emit
     # Gate short-circuits to its routine pass-through and hands back the
     # token `render_response` demands.
@@ -1608,6 +1607,10 @@ def _render_commentary(  # noqa: PLR0913 - the run's five independent inputs
         action_id=intent.subject_ref,
         intent_type=intent.intent_type,
     )
+    # Registered last, once nothing above can still raise: an entry the
+    # watcher never receives is an entry no close path can ever unregister,
+    # and in the runtime registry that would be a permanently open run.
+    registry.register(run)
     return _OpenCommentary(
         action_id=intent.subject_ref,
         run=run,
