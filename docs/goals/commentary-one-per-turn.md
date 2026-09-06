@@ -301,3 +301,76 @@ Progress line per slice in the card. Or stop after 35 turns.
 
 ## Progress
 
+
+- Slice 1 (per-turn cap): `_turn_already_spoke_commentary` reads
+  `response.started` with `phase='commentary'` for the turn and short-circuits
+  `_open_commentary_in_worker_thread` after `turn_id` resolves and before
+  `rebuild_projections`, so none of the three suppression paths consumes the
+  turn's slot. New `test_one_turn_with_three_actions_speaks_exactly_one_commentary`
+  passes at 1 emitted commentary row; with the cap deleted it fails
+  `assert 3 == 1`. Five existing tests reshaped, none deleted; per-action
+  supersession retained and now proven unreachable from the watcher
+  (`_cancel_reasons` shows only `shutdown`). Suite 1047 passed / 64 deselected
+  (baseline confirmed 1046/64). lint-imports KEPT, ruff clean, mypy 246 files.
+- Slice 2 (variant phrasings): each D6 row carries a 3-phrase tuple and
+  `_phrase_for` selects with `hashlib.sha256(action_id).digest()[0] % len`;
+  `我开始处理了。` is gone. `ACT-v1..ACT-v6` speak 这就去办。/我去查一下。/我去看看。
+  — 3 distinct, all declared. New purity canary
+  `tests/canary/test_canary_commentary_module_is_pure.py` (3 checks) pins no
+  `time`/`random`/`secrets`/`datetime`/`os` import, no builtin `hash(`, no
+  module-level mutable state. Suite 1052 passed / 64 deselected. lint-imports
+  KEPT, ruff clean, mypy 247 files.
+- Slice 3 (docs sync): `docs/spec.html` §3.6.12 gains one `<div class="note">`
+  deviation marker, both existing bullets untouched (the diff is pure
+  addition). `docs/adr/0008-real-time-response-streaming.md:368` amended in
+  place — repeated-progress coalescing and the timer clause replaced by the
+  per-turn cap — plus the D1-exception paragraph corrected to stop claiming
+  supersession is reachable, and a new §10 item 11 recording ownership.
+  `config/jarvis.yaml` commentary comment: "delayed" dropped and the per-row
+  wording corrected to at most one phrase per turn.
+  `docs/adr/0006-full-duplex-voice-session.md` judged UNCHANGED — `:261`
+  (enqueue-after-drain, same `response_group_id`) and `:776` ("commentary→final
+  never self-interrupts") both still hold; the cap changes how many commentary
+  runs open, never the handoff between one and the final. Suite 1052 passed /
+  64 deselected after the edits.
+- Live run (REQUIRED, done): daemon from this worktree, runtime root
+  `~/.jarvis-lane-c-test`, port 8011 (checked free with `lsof -nP -iTCP:8011
+  -sTCP:LISTEN` first), overlay with `realtime.enabled` /
+  `response.response_run_lifecycle` / `commentary.enabled` /
+  `streaming_output.enabled` true and `single_audio_ingress` off, key loaded
+  with `set -a; source ~/.jarvis/env; set +a` (the file's value IS quoted —
+  shell-sourcing strips them, len 126). Two questions, four and five
+  dispatched actions:
+
+      T7c1e5c6d|1|1
+      Taed640d2|1|1
+
+  TTS was MiniMax, not macOS `say`: `provider='minimax_ws_streaming'` with
+  `submitted_samples`/`total_samples` 177216 and 52385. The two phrases were
+  `拿到结果了，我看一下。` and `我去看看。` — both new variants, two distinct
+  rows, and no `response.cancelled` row of any reason exists. T7c1e5c6d's
+  first action terminalized inline so the non-terminal freshness check
+  silenced its dispatched row and the result phrase won, which is the case
+  the card's Rejected-approaches section says is correct; Taed640d2's slower
+  first action let the acknowledge win, which is the intended shape.
+  Daemon stopped; the owner's pid 45429 / pid 96300 and the system output
+  route (MacBook Pro Speakers) were untouched throughout.
+- Verifier pass (opus, fresh context, `realtime-integration..HEAD`): all eight
+  checks confirmed, control / gates / live DB independently reproduced. Two
+  confirmed defects fixed here: (D1) ADR-0008's D6 phrase table `:357` still
+  listed the retired `我开始处理了。` while `:368` declares that table the
+  authority for the mapping — the cell now carries a current phrase and one
+  sentence says the code owns the sets and why the old phrase went; (D2) §10
+  item 11 claimed the cap is "correct across worker threads for free" — the
+  SELECT and `start_response_run`'s append are not one transaction, so the
+  text now names the watcher's serial per-row await as what closes the window
+  and warns that a concurrent dispatch would reopen it. Also dropped a
+  tautological assertion the verifier flagged and reflowed the config comment.
+  Verifier's four speculative risks judged not-defects and not built for: a
+  mid-render exception would mute the capped turn (narrow, unobserved, and
+  guarding it is speculative complexity), an operator-cancelled commentary is
+  not re-spoken (that is "first opened one wins" as specified), the
+  freshness-suppression pin is timing-dependent but cannot pass vacuously, and
+  the remaining test redundancy is covered by the sha256 literal pin.
+  Final gates: lint-imports KEPT, ruff clean, mypy 247 files, 1052 passed / 64
+  deselected.

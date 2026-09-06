@@ -23,7 +23,11 @@ import yaml
 from fastapi.testclient import TestClient
 
 from jarvis import runtime as runtime_module
-from jarvis.decision.commentary import COMMENTARY_ATTENTION_CHANNEL, commentary_intent_for
+from jarvis.decision.commentary import (
+    _D6_ROWS,
+    COMMENTARY_ATTENTION_CHANNEL,
+    commentary_intent_for,
+)
 from jarvis.decision.gates import ResponsePlan
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
@@ -93,22 +97,42 @@ def _action_event(event_type: str, *, action_id: str = "ACT-1") -> Event:
 # --- D6 mapping ------------------------------------------------------------
 
 
-def test_four_d6_rows_map_to_their_exact_intent_and_phrase() -> None:
-    """ADR-0008 D6's action table, verbatim, with the action id as subject."""
-    expected = {
-        "action.dispatched": ("acknowledge", "我开始处理了。"),
-        "action.running": ("progress", "任务已经在运行。"),
-        "action.result_observed": ("progress", "结果回来了，我整理一下。"),  # noqa: RUF001 — intentional Chinese punctuation.
-        "action.failed": ("error", "这一步失败了，我告诉你具体原因。"),  # noqa: RUF001 — intentional Chinese punctuation.
+def test_four_d6_rows_map_to_their_declared_intent_and_variant_set() -> None:
+    """ADR-0008 D6's action table, with the action id as subject.
+
+    The phrase is no longer one literal per row, so the pin is membership in
+    the row's declared set plus the intent type it carries. Which member a
+    given id selects is pinned by
+    ``test_six_turns_speak_variants_from_the_acknowledge_set``.
+    """
+    expected_types = {
+        "action.dispatched": "acknowledge",
+        "action.running": "progress",
+        "action.result_observed": "progress",
+        "action.failed": "error",
     }
-    for event_type, (intent_type, phrase) in expected.items():
+    assert set(_D6_ROWS) == set(expected_types)
+    for event_type, intent_type in expected_types.items():
         intent = commentary_intent_for(_action_event(event_type, action_id="ACT-7"))
         assert intent is not None, event_type
         assert intent.intent_type == intent_type
-        assert intent.content_hint == phrase
+        assert intent.content_hint in _D6_ROWS[event_type][1], event_type
         assert intent.subject_ref == "ACT-7"
         assert intent.surface_hint == "speech"
         assert intent.freshness_required is True
+
+
+def test_a_phrase_is_stable_across_processes_for_one_action_id() -> None:
+    """sha256, not builtin `hash()`: the choice is the same on every run.
+
+    Builtin `hash()` is seeded per process by ``PYTHONHASHSEED``, so the same
+    action would say different things across daemon restarts and this literal
+    could not exist. A change to the acknowledge set is expected to fail this
+    line — update it deliberately.
+    """
+    intent = commentary_intent_for(_action_event("action.dispatched", action_id="ACT-7"))
+    assert intent is not None
+    assert intent.content_hint == "这就去办。"
 
 
 def test_non_mapped_event_types_return_none() -> None:
@@ -365,6 +389,13 @@ def _spoken(conn: sqlite3.Connection) -> list[str]:
     ]
 
 
+def _only_phrase(conn: sqlite3.Connection) -> str:
+    """The single commentary phrase this log holds, asserting there is one."""
+    spoken = _spoken(conn)
+    assert len(spoken) == 1, spoken
+    return spoken[0]
+
+
 def opens_chunks_emitted(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Return every `surface.response_*` payload in append order."""
     return [
@@ -488,7 +519,10 @@ def test_action_row_speaks_one_commentary_run_in_the_turn_group(tmp_path: Path) 
         assert payload["phase"] == "commentary"
         assert payload["response_id"] == started[0]["response_id"]
         assert payload["response_group_id"] == started[0]["response_group_id"]
-    assert _spoken(reader) == ["我开始处理了。"]
+    assert _spoken(reader) == [
+        commentary_intent_for(dispatched).content_hint,  # type: ignore[union-attr]
+    ]
+    assert _spoken(reader)[0] in _D6_ROWS["action.dispatched"][1]
     assert _typed_payloads(reader, "surface.response_open")[0]["attention_channel"] == (
         COMMENTARY_ATTENTION_CHANNEL
     )
@@ -552,7 +586,13 @@ def test_reconciliation_originated_turn_stays_silent(tmp_path: Path) -> None:
 
 
 def test_live_pending_confirmation_silences_commentary(tmp_path: Path) -> None:
-    """An unresolved ask owns the surface; commentary waits for its answer."""
+    """An unresolved ask owns the surface; commentary waits for its answer.
+
+    Also the pin for "a suppressed row does not consume the turn's one slot":
+    the dispatched row is silenced here, and the turn still speaks on the
+    later `action.running`. A cap recorded on suppression would mute the turn
+    entirely, which is a worse defect than the one it replaces.
+    """
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-conf")
@@ -584,16 +624,109 @@ def test_live_pending_confirmation_silences_commentary(tmp_path: Path) -> None:
         )
         _action_row(runtime.conn, "action.running", action_id="ACT-c", turn_id="T-conf")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
-    assert _spoken(reader) == ["任务已经在运行。"]
+    # `_only_phrase` asserts there is exactly one; the running row spoke and
+    # the silenced dispatched row did not take the turn's slot with it.
+    assert _only_phrase(reader) in _D6_ROWS["action.running"][1]
 
 
-# --- observer: coalescing and supersession ---------------------------------
+# --- observer: one phrase per turn -----------------------------------------
 
 
-def test_repeats_are_dropped_and_an_unheard_commentary_is_superseded(
+def _commentary_emitted(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:
+    """Every commentary phrase this turn actually put on a surface.
+
+    `surface.playback_started` is the live observable and is deliberately not
+    counted here: the hermetic harness runs no TTS actor and never emits one,
+    so a count over it would count only the rows a test wrote by hand and
+    would pass whatever the observer did.
+    """
+    return [
+        payload
+        for payload in _typed_payloads(conn, "surface.response_emitted")
+        if payload.get("phase") == "commentary" and payload.get("turn_id") == turn_id
+    ]
+
+
+def _wait_until_turn_spoke(conn: sqlite3.Connection, turn_id: str) -> None:
+    """Block until this turn has emitted its one commentary phrase."""
+    _wait_until(lambda: len(_commentary_emitted(conn, turn_id)) == 1)
+
+
+def _cancel_reasons(conn: sqlite3.Connection) -> list[str]:
+    """The reason of every cancelled response, in append order."""
+    return [str(payload["reason"]) for payload in _typed_payloads(conn, "response.cancelled")]
+
+
+def test_one_turn_with_three_actions_speaks_exactly_one_commentary(
     tmp_path: Path,
 ) -> None:
-    """One phrase per (action_id, D6 row); a newer row cancels an unheard one."""
+    """The owner's measured bug shape, capped: nine lifecycle rows, one phrase.
+
+    `Tceebc265` dispatched three actions, each emitting `action.dispatched` /
+    `action.running` / `action.result_observed`; seven commentary responses
+    were opened and four reached the speaker, three of them the identical
+    sentence. Supersession is keyed per action, so it could never see across
+    the three. The count is the whole assertion — not the phrase text — so a
+    regression reports the number it produced and nothing else.
+    """
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    _user_turn(runtime.conn, "T-cap")
+    with _Observer(runtime):
+        for action_id in ("ACT-c1", "ACT-c2", "ACT-c3"):
+            dispatched = _action_row(
+                runtime.conn, "action.dispatched", action_id=action_id, turn_id="T-cap",
+            )
+            _action_row(
+                runtime.conn, "action.running", action_id=action_id, turn_id="T-cap",
+                source_event_id=dispatched.event_uid,
+            )
+            _action_row(
+                runtime.conn, "action.result_observed", action_id=action_id,
+                turn_id="T-cap", source_event_id=dispatched.event_uid,
+            )
+        _wait_until(lambda: len(_commentary_emitted(reader, "T-cap")) >= 1)
+        _settle()
+
+    assert len(_commentary_emitted(reader, "T-cap")) == 1
+
+
+def test_six_turns_speak_variants_from_the_acknowledge_set(tmp_path: Path) -> None:
+    """Six turns, six action ids: every phrase is declared, and they differ.
+
+    Under the cap the acknowledge is the phrase actually heard, so one fixed
+    acknowledge would be the same sentence on every single turn. Selection is
+    a sha256 digest of the action id, so this is not a coin flip — it passes
+    always or fails always, on every process and platform. The six ids were
+    chosen for that reason: `ACT-v1..ACT-v6` land on three of the three
+    declared variants, and a change to the set is expected to move them.
+    """
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    action_ids = [f"ACT-v{index}" for index in range(1, 7)]
+    with _Observer(runtime):
+        for index, action_id in enumerate(action_ids):
+            turn_id = f"T-v{index}"
+            _user_turn(runtime.conn, turn_id)
+            _action_row(
+                runtime.conn, "action.dispatched", action_id=action_id, turn_id=turn_id,
+            )
+            _wait_until_turn_spoke(reader, turn_id)
+
+    spoken = _spoken(reader)
+    assert len(spoken) == len(action_ids)
+    variants = _D6_ROWS["action.dispatched"][1]
+    assert all(phrase in variants for phrase in spoken), spoken
+    assert len(set(spoken)) >= 2, spoken
+
+
+def test_a_second_row_in_the_same_turn_opens_nothing(tmp_path: Path) -> None:
+    """The cap wins before supersession, so no phrase is ever cut off for a newer one.
+
+    Per-action supersession is retained as the safety net if the cap is ever
+    loosened, but an action belongs to exactly one turn, so under the cap it
+    is unreachable from the watcher: no `superseded` row can appear.
+    """
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-coal")
@@ -606,26 +739,15 @@ def test_repeats_are_dropped_and_an_unheard_commentary_is_superseded(
             runtime.conn, "action.running", action_id="ACT-c", turn_id="T-coal",
             source_event_id=dispatched.event_uid,
         )
-        _wait_until(lambda: _count(reader, "surface.response_emitted") == 2)
-        _action_row(
-            runtime.conn, "action.running", action_id="ACT-c", turn_id="T-coal",
-            source_event_id=dispatched.event_uid,
-        )
         _settle()
 
-    started = _typed_payloads(reader, "response.started")
-    assert len(started) == 2
-    assert _spoken(reader) == ["我开始处理了。", "任务已经在运行。"]
-    superseded = [
-        payload
-        for payload in _typed_payloads(reader, "response.cancelled")
-        if payload["reason"] == "superseded"
-    ]
-    assert [payload["response_id"] for payload in superseded] == [started[0]["response_id"]]
+    assert len(_typed_payloads(reader, "response.started")) == 1
+    assert len(_commentary_emitted(reader, "T-coal")) == 1
+    assert _cancel_reasons(reader) == ["shutdown"]
 
 
 def test_a_commentary_that_reached_the_speaker_finishes(tmp_path: Path) -> None:
-    """Playback closes the run through `complete`; a later row cannot unspeak it."""
+    """Playback closes the run through `complete`; the turn then says nothing more."""
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-heard")
@@ -654,10 +776,20 @@ def test_a_commentary_that_reached_the_speaker_finishes(tmp_path: Path) -> None:
             runtime.conn, "action.running", action_id="ACT-h", turn_id="T-heard",
             source_event_id=dispatched.event_uid,
         )
-        _wait_until(lambda: _count(reader, "response.started") == 2)
+        _settle()
+        # Positive control: the observer is alive and the silence above is
+        # the cap, not a stalled watcher.
+        _user_turn(runtime.conn, "T-heard-2")
+        _action_row(
+            runtime.conn, "action.dispatched", action_id="ACT-h2", turn_id="T-heard-2",
+        )
+        _wait_until(lambda: len(_commentary_emitted(reader, "T-heard-2")) == 1)
 
+    assert len(_commentary_emitted(reader, "T-heard")) == 1
     completed = _typed_payloads(reader, "response.completed")
     assert [payload["response_id"] for payload in completed] == [first["response_id"]]
+    # Only the control turn's still-open phrase is released, at teardown.
+    assert _cancel_reasons(reader) == ["shutdown"]
     assert all(
         payload["response_id"] != first["response_id"]
         for payload in _typed_payloads(reader, "response.cancelled")
@@ -951,11 +1083,13 @@ def test_a_terminal_row_with_no_correlation_finds_its_turn_through_dispatch(
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-join")
+    # Emitted before the observer takes its boot anchor, so the only row that
+    # reaches the watcher is the correlation-less terminal below and the turn
+    # has to be recovered through this row.
+    dispatched = _action_row(
+        runtime.conn, "action.dispatched", action_id="ACT-j", turn_id="T-join",
+    )
     with _Observer(runtime):
-        dispatched = _action_row(
-            runtime.conn, "action.dispatched", action_id="ACT-j", turn_id="T-join",
-        )
-        _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
         emit_event(
             runtime.conn,
             type="action.result_observed",
@@ -963,11 +1097,11 @@ def test_a_terminal_row_with_no_correlation_finds_its_turn_through_dispatch(
             source_event_id=dispatched.event_uid,
             correlation=None,
         )
-        _wait_until(lambda: _count(reader, "surface.response_emitted") == 2)
+        _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
 
     started = _typed_payloads(reader, "response.started")
-    assert [payload["turn_id"] for payload in started] == ["T-join", "T-join"]
-    assert _spoken(reader) == ["我开始处理了。", "结果回来了，我整理一下。"]  # noqa: RUF001 — intentional Chinese punctuation.
+    assert [payload["turn_id"] for payload in started] == ["T-join"]
+    assert _only_phrase(reader) in _D6_ROWS["action.result_observed"][1]
 
 
 # --- the per-turn assumption the card asked the lane to prove ---------------
@@ -1040,10 +1174,14 @@ def test_a_playing_commentary_is_completed_not_cut_off(tmp_path: Path) -> None:
 
     Deterministic reconstruction of a race the live run hit. The action row
     that supersedes a phrase is written *before* that phrase's playback
-    begins, so it has the lower row id — an observer that judged "already
-    playing" from its own cursor position would always decide too early. Here
-    the two helper calls stand in for the two cursor positions, with the
-    `surface.playback_started` row landing between them.
+    begins, so it has the lower row id — a retirement that judged "already
+    playing" from the observer's own cursor position would always decide too
+    early, and cut off speech that was coming out of the speaker.
+
+    Under the per-turn cap the watcher no longer reaches that retirement at
+    all: the second call below returns `None` because the turn already spoke.
+    The safety net is kept for the day the cap is loosened, so it is driven
+    here through its own entry point rather than claimed to be exercised.
     """
     runtime = _make_runtime(tmp_path)
     reader = _reader(runtime)
@@ -1076,14 +1214,18 @@ def test_a_playing_commentary_is_completed_not_cut_off(tmp_path: Path) -> None:
     second = inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
         runtime, action_event=running, previous=first,
     )
-    assert second is not None
+    assert second is None
+    assert len(_commentary_emitted(reader, "T-cut")) == 1
+
+    # The retained safety net, driven directly: a phrase that reached the
+    # speaker is completed, never cancelled.
+    inherent_loop._retire_superseded_commentary(runtime, reader, first)  # noqa: SLF001
 
     assert _typed_payloads(reader, "response.cancelled") == []
     completed = [
         payload["response_id"] for payload in _typed_payloads(reader, "response.completed")
     ]
     assert completed == [first.run.response_id]
-    assert _spoken(reader) == ["我开始处理了。", "任务已经在运行。"]
 
 
 # --- observer: the operator cancel seam reaches a commentary ----------------
@@ -1218,7 +1360,7 @@ def test_a_closed_commentary_is_no_longer_a_cancel_target(tmp_path: Path) -> Non
     _user_turn(runtime.conn, "T-closed")
     with _Observer(runtime):
         # Close path 1: the phrase reached the speaker.
-        dispatched = _action_row(
+        _action_row(
             runtime.conn, "action.dispatched", action_id="ACT-cl", turn_id="T-closed",
         )
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
@@ -1241,29 +1383,27 @@ def test_a_closed_commentary_is_no_longer_a_cancel_target(tmp_path: Path) -> Non
 
         assert _cancel_over_http(runtime, heard_id) == {"outcome": "unknown_response"}
 
-        # Close path 2: a newer lifecycle row supersedes an unheard phrase.
+        # Close path 2: an unheard phrase is released at shutdown. Under the
+        # per-turn cap the watcher never supersedes, so this is the reachable
+        # `_cancel_unheard_commentary` caller, and it needs its own turn.
+        _user_turn(runtime.conn, "T-closed-2")
         _action_row(
-            runtime.conn, "action.running", action_id="ACT-cl", turn_id="T-closed",
-            source_event_id=dispatched.event_uid,
+            runtime.conn, "action.dispatched", action_id="ACT-cl2", turn_id="T-closed-2",
         )
-        _wait_until(lambda: _count(reader, "surface.response_emitted") == 2)
-        superseded_id = _open_commentary_id(runtime, reader)
-        _action_row(
-            runtime.conn, "action.result_observed", action_id="ACT-cl", turn_id="T-closed",
-            source_event_id=dispatched.event_uid,
-        )
-        _wait_until(
-            lambda: any(
-                payload["reason"] == "superseded"
-                for payload in _typed_payloads(reader, "response.cancelled")
-            ),
-        )
+        _wait_until(lambda: len(_commentary_emitted(reader, "T-closed-2")) == 1)
+        unheard_id = _open_commentary_id(runtime, reader)
 
-        assert _cancel_over_http(runtime, superseded_id) == {"outcome": "unknown_response"}
+    _wait_until(
+        lambda: any(
+            payload["reason"] == "shutdown"
+            for payload in _typed_payloads(reader, "response.cancelled")
+        ),
+    )
+    assert _cancel_over_http(runtime, unheard_id) == {"outcome": "unknown_response"}
 
-    superseded = [
+    cancelled = [
         payload
         for payload in _typed_payloads(reader, "response.cancelled")
-        if payload["reason"] == "superseded"
+        if payload["reason"] == "shutdown"
     ]
-    assert [payload["response_id"] for payload in superseded] == [superseded_id]
+    assert [payload["response_id"] for payload in cancelled] == [unheard_id]
