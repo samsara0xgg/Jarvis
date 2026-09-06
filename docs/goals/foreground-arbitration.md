@@ -131,7 +131,7 @@ Or stop after 40 turns.
 ## Progress
 - Arbitration slice — 8a93c65 — `decide_foreground` (L3) + `make_foreground_decision_callable`
   (runtime) + `foreground_decision_callable` on `StreamingTTSPipeline`, wired at
-  `jarvis/runtime/inherent_loop.py:1863`. Both cross-group paths of
+  `jarvis/runtime/inherent_loop.py:1864`. Both cross-group paths of
   `_schedule_response` route through the verdict. New
   `tests/integration/test_foreground_arbitration.py` 3 passed; the two behavioral
   cases fail with the callable set to `None` (`('ROLD', 0) in provider.opened`,
@@ -139,3 +139,31 @@ Or stop after 40 turns.
   1065 + 3 new); lint-imports KEPT 1/1; ruff clean; mypy strict clean (244 files).
   `test_after_drain_same_group_and_foreground_supersede` 1 passed, its file diff
   against `realtime-integration` is empty.
+- Docs slice — 8d8d373 — ADR-0008 `Built:` note added after the group-continuation
+  paragraph; its ":427 unbuilt API" sentence left alone (no `supersede_foreground`
+  or `interrupt_response` method was introduced). ADR-0006:261 judged unchanged:
+  after wiring, both `_after_drain.append` sites are same-group only, so the code
+  makes that sentence true instead of amending it. docs/spec.html judged
+  unchanged: §3.6.5 Voice boundaries (docs/spec.html:1064, boundary sentence
+  :1071) already owns "Voice 只执行 speak/suppress/duck/stop/resume"; this change
+  moves L5 toward that invariant and adds no contract the spec does not own, and
+  the built fact belongs to ADR-0008 alone.
+- Verification slice — no repo change — with `decide_foreground` force-wired into every
+  `StreamingTTSPipeline` fixture (pytest plugin, no repo file touched), all 7
+  media test files pass: 205 passed, including
+  `test_after_drain_same_group_and_foreground_supersede`. The hard-constraint test
+  itself constructs the pipeline without the callable, so that run is what
+  actually exercises the row_id rule against the existing media suite.
+- DEVIATION FOR THE CARD AUTHOR (not fixed in lane) — the card's safety argument
+  (:49-50, "the answer to the user's newest utterance ... always supersedes")
+  does not hold in the repository. `terminal_commit_pending` stays set through
+  the whole post-playback cleanup — `_release_active` keeps `_active` and the
+  marker (jarvis/surface/voice_media.py:3026-3031) until `_play_response`'s
+  `finally` clears it after an up-to-0.5 s provider session close
+  (:2178-2194) — and the command loop keeps accepting events throughout. So a
+  cross-group WINNER can land in that window on any normal completion. The card
+  forbids it entering `_after_drain`, forbids a `pending` outcome and forbids
+  re-evaluate-on-drain, and `_interrupt_active` on an already-committed terminal
+  would isolate the lane; decline is the only expression left, so the newer
+  answer is silenced where today it would be queued and spoken. Shipped as the
+  card specifies and recorded in ADR-0008; needs the author's adjudication.

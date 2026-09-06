@@ -2000,6 +2000,8 @@ class StreamingTTSPipeline:
             # still owns the lane until its terminal is durable, so even a
             # winner cannot be handed the lane here; declining is the only
             # cross-group disposition left until C7 lands foreground_output.
+            # Cost of that window: a winner arriving mid-cleanup is silenced
+            # rather than queued, which the drain lane would have spoken.
             verdict = self._foreground_decision(
                 active.response.response_group_id,
                 active.response.row_id,
