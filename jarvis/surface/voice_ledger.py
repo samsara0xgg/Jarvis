@@ -286,6 +286,7 @@ class PlaybackLedger:
         """Return a conservative immutable view without changing ownership."""
         sequences = sorted(self._chunks)
         heard_parts: list[str] = []
+        heard_quality: CursorQuality | None = None
         heard_through: int | None = None
         all_closed = bool(sequences)
         for sequence in sequences:
@@ -302,6 +303,14 @@ class PlaybackLedger:
             ):
                 break
             heard_parts.append(chunk.text)
+            # The reported quality describes the prefix this snapshot reports,
+            # not the lease-lifetime watermark: a report gap earlier in the
+            # lease must not disqualify heard evidence proven after it.
+            heard_quality = (
+                chunk.cursor_quality
+                if heard_quality is None
+                else _least_quality(heard_quality, chunk.cursor_quality)
+            )
             heard_through = sequence
         if any(not chunk.closed for chunk in self._chunks.values()):
             all_closed = False
@@ -312,7 +321,7 @@ class PlaybackLedger:
             estimated_audible_samples=self._estimated_audible_cursor,
             heard_through_sequence=heard_through,
             heard_text="".join(heard_parts),
-            cursor_quality=self._cursor_quality,
+            cursor_quality=self._cursor_quality if heard_quality is None else heard_quality,
             software_drained=self._software_drained,
             final_segment_sequence=sequences[-1] if sequences else None,
             all_segments_closed=all_closed,

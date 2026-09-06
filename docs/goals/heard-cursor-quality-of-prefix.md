@@ -238,4 +238,30 @@ Or stop after 20 turns.
 
 ## Progress
 
-- (empty)
+- `snapshot()` reports the admitted prefix's quality — 3260f6d — new test
+  `test_heard_prefix_quality_survives_an_earlier_report_gap` fails
+  `assert 'unknown' == 'estimated'` reverted and prints `1 passed` with the fix;
+  full hermetic run `1066 passed, 64 deselected` (baseline 1065 + 1);
+  lint-imports `1 kept, 0 broken`, ruff `All checks passed!`, mypy strict
+  `243 source files`; the four named regression tests pass, one of them edited
+  under the card's bounded test authority:
+  `test_escape_hatch_quality_survives_a_later_audible_report` moved
+  `assert snapshot.cursor_quality == "unknown"` to
+  `assert snapshot.cursor_quality == "estimated"` — a `cursor_quality`
+  expectation on a row whose `heard_text` (`"已经听到的部分"`) is non-empty and
+  is still asserted. No live run: the whole sequence is driveable in-process,
+  as the card states.
+- Verifier pass (fresh context, opus, `realtime-integration..HEAD`): no
+  production defect. Two observations recorded here rather than fixed, because
+  fixing either is outside this card:
+  - The fold's gate is now structurally satisfied for every checkpoint row
+    carrying a non-empty prefix: `jarvis/surface/voice_media.py:2785-2786`
+    writes a checkpoint only when `heard_through_sequence` is not None, which
+    implies at least one chunk passed the `!= "unknown"` gate at
+    `jarvis/surface/voice_ledger.py:302`. `conversation_playback.py:212-213`
+    still constrains empty-prefix rows and historical log rows (whose fold
+    behavior is unchanged), but it is no longer an independent fail-closed
+    check for non-empty prefixes. If anyone later relaxes the L5 gate, L2 is
+    no longer the backstop.
+  - The `heard_parts`-empty fallback branch carries no test of its own. The
+    card caps this work at one new test, so the gap is deliberate.
