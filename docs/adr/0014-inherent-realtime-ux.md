@@ -791,7 +791,7 @@ Each v2 client owns:
 - an outstanding cursor/byte window;
 - an ACK timer.
 
-Sender priority is control ACK, durable/snapshot, then ephemeral. Snapshot pages are capped so a large document cannot monopolize a single frame.
+Sender priority is control ACK, durable/snapshot, then ephemeral.
 
 Rules:
 
