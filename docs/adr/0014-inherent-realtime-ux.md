@@ -1373,6 +1373,10 @@ local pending input
 → response_group_id / response_id
 ```
 
+The response-group snapshot item carries the same source request ID, so a
+client that reconnects after its turn opened retires the optimistic row from
+the snapshot instead of waiting for a `response.opened` it already missed.
+
 An identical request-ID/payload-hash retry returns the original result.
 Different payload is rejected. A lost HTTP response therefore cannot
 duplicate a turn.

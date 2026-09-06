@@ -213,3 +213,23 @@ summaries.
 Or stop after 12 turns and report what is proven and what is not.
 
 ## Progress
+- Proving test — pre-change run of `bash scripts/test_inherent_swift.sh`:
+  `Executed 177 tests, with 1 failure`, raw failure
+  `InputSubmissionClientTests.swift:192: error: ... testAMatchingSnapshotGroupResolvesThePendingInput : XCTAssertTrue failed`
+  — the `pendingInputs` row survived a snapshot adoption whose group carried
+  the matching id. The hypothesis reproduced, so the reducer arm applies and
+  the DTO-only fork does not.
+- DTO + reducer + test — d36e917 — `ResponseGroupSnapshot` gains
+  `sourceClientRequestId` and its `CodingKeys` entry; the `adopt` group loop
+  clears `pendingInputs` for a carried id, mirroring `applyOpened` in place
+  (no shared helper: the card forbids editing `applyOpened`).
+  Swift 177/177 pass (176 baseline + 1 reducer case; no DTO decode case — the
+  reducer case decodes the field through the real DTO and every existing
+  snapshot test covers the absent-field path). pytest 1066 passed, 64
+  deselected — identical to the pre-change count, no Python file touched.
+  lint-imports KEPT (1/1), ruff, mypy strict (243 files) all exit 0.
+- Docs — ADR-0014: no errata section exists (18 `## ` headings, §16 "Spec
+  changes and explicit deviations" at :2096), so amended in place after the
+  correlation chain. docs/spec.html unchanged: grep for
+  `source_client_request_id`, `sourceClientRequestId`, `pendingInputs`,
+  `pending_inputs` returns 0 — the spec does not own this fact.
