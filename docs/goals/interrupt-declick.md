@@ -395,4 +395,28 @@ If the card contradicts the repository, stop and report; do not redesign. Or sto
   belongs to ADR-0006 alone and duplicating it into the spec would violate the
   one-owner rule. Errata reported, not fixed: ADR-0006:261 still cites
   `voice_tts.py:1255` / `:1208` for `complete_generation` / `interrupt_generation`;
-  at this tip they are `:1256` and `:1209`.
+  at this tip they were `:1256` and `:1209`, and this card's own change shifts
+  them again — report the errata by symbol, not by number.
+- 2026-09-06 lane A — Verifier pass (opus, fresh context) on
+  `realtime-integration...HEAD`; four findings, all accepted and fixed.
+  (1) Real latent race: `stop()` resets the declick state from the actor thread
+  while the callback may be inside `_emit_declick`, which read
+  `_declick_remaining` three times. Reproduced: the old body raises
+  `ValueError: operands could not be broadcast together with shapes (0,) () (32,)`
+  **on the realtime callback thread**, or drives the counter to `-32`, whose
+  negative slice leaves tombstoned PCM unzeroed. Now read and written once.
+  (2) ADR D11's opening claim was absolute and untrue: a short ring read
+  zero-pads inside its own success block and still steps in one sample there.
+  D11 now scopes itself to fully silent blocks and states the partial-block case
+  and why it is a separate decision. (3) Degenerate row "fade too short to
+  matter" did not actually bite — the step bound in (3) scales with the
+  constant, so shrinking `_DECLICK_SAMPLES` to 3 kept both new tests green. The
+  test now pins the decay length and an absolute 1 ms floor; re-forced at 3 it
+  fails `assert (3 / 48000) >= 0.001`. (4) The production rate is **48 kHz**
+  (`inherent_loop._DEFAULT_TTS_SAMPLE_RATE_HZ`, and `:1907` refuses streaming
+  unless `canonical_sample_rate_hz` equals it), not 32 kHz; 64 samples was
+  1.33 ms, below the card's "a few milliseconds". Constant is now 128 (2.67 ms)
+  and the comment is corrected. Also took the verifier's suggestion to pin the
+  post-CAS block to `_DECLICK_RAMP[:8]` exactly rather than merely "strictly
+  decreasing". Gates after: hermetic **1070 passed / 64 deselected** in 59.15s,
+  Swift **191**, ruff/lint-imports/mypy clean.

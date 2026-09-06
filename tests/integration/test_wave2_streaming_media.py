@@ -946,8 +946,7 @@ def test_callback_interrupt_linearization_and_gain_mailbox_barriers() -> None:  
     # No post-CAS generation sample reaches the host.  What the host does get
     # is the synthesized declick tail (ADR-0006 D11) decaying off the previous
     # block's amplitude, never the flat 1.0 the tombstoned generation wrote.
-    assert np.all(np.diff(post_output[:, 0]) < 0.0)
-    assert float(post_output[0, 0]) < 1.0
+    assert np.all(post_output[:, 0] == voice_tts._DECLICK_RAMP[:8])  # noqa: SLF001
     player.retire_generation(post_cas.playback_generation_id)
 
     gain_player = _player(ring_seconds=0.02)
@@ -3997,6 +3996,11 @@ def test_a_user_stop_fades_the_output_instead_of_stepping_to_silence(
     assert float(edge.max()) <= abs(pre_cut) / (voice_tts._DECLICK_SAMPLES - 1) * 1.05  # noqa: SLF001
     # (4) it terminates at exactly 0.0 and stays there
     assert np.all(signal[first_zero:] == 0.0)
+    # The bound in (3) scales with `_DECLICK_SAMPLES`, so it cannot catch a
+    # fade that is merely declared too short to be heard as anything but a
+    # click.  Pin the length itself, in samples and in real time.
+    assert len(decay) == voice_tts._DECLICK_SAMPLES - 1  # noqa: SLF001
+    assert voice_tts._DECLICK_SAMPLES / 48_000 >= 0.001  # noqa: SLF001
     # (5) the synthesized decay advanced no ledger state: no `_CallbackReport`
     # was written for it, so the audible horizon it feeds cannot have moved.
     assert played_before - played_at_cut_start == cut

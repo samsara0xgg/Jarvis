@@ -448,8 +448,9 @@ class _PCMCommitGate:
 # amplitude to 0.0 in one sample is an audible click (ADR-0006 D11), so the
 # callback synthesizes a short decay into that silence.  The table is
 # preallocated and ends at exactly 0.0; the length is a constant number of
-# samples, not a config key -- ~2 ms at the 32 kHz production rate.
-_DECLICK_SAMPLES = 64
+# samples, not a config key -- ~2.7 ms at the 48 kHz production rate
+# (`inherent_loop._DEFAULT_TTS_SAMPLE_RATE_HZ`, which streaming requires).
+_DECLICK_SAMPLES = 128
 _DECLICK_RAMP = np.linspace(1.0, 0.0, _DECLICK_SAMPLES + 1, dtype=np.float32)[1:]
 
 
@@ -1569,19 +1570,25 @@ class AudioStreamPlayer:
         ``_played_samples``, no ring cursor -- and sets no persistent gain, so
         the next activated generation plays at full amplitude with no un-mute.
         """
-        if self._declick_remaining == 0 and self._declick_last_sample != 0.0:
+        # `stop()` resets this state from the actor thread while a callback may
+        # be inside here, so `_declick_remaining` is read and written exactly
+        # once: a torn read could otherwise index past the ramp or drive the
+        # counter negative, and a negative `tail` would leave tombstoned PCM in
+        # the block instead of zeroing it.
+        remaining = self._declick_remaining
+        if remaining == 0 and self._declick_last_sample != 0.0:
             self._declick_amplitude = self._declick_last_sample
-            self._declick_remaining = _DECLICK_SAMPLES
+            remaining = _DECLICK_SAMPLES
             self._declick_last_sample = 0.0
-        tail = min(self._declick_remaining, frames)
+        tail = min(remaining, frames)
         if tail > 0:
-            done = _DECLICK_SAMPLES - self._declick_remaining
+            done = _DECLICK_SAMPLES - remaining
             np.multiply(
                 _DECLICK_RAMP[done : done + tail],
                 self._declick_amplitude,
                 out=view[:tail],
             )
-            self._declick_remaining -= tail
+        self._declick_remaining = remaining - tail
         view[tail:frames] = 0.0
 
     def _callback(  # noqa: C901, PLR0912, PLR0915 - realtime path stays inline
