@@ -44,10 +44,46 @@ enum BridgeMessageRouter {
   }
 }
 
+// MARK: - Endpoint
+
+/// The daemon endpoint every card request and socket points at.
+///
+/// The host stays the loopback literal the daemon binds to; only the port is
+/// configurable, through `JARVIS_INHERENT_BRIDGE_PORT`.  An unset, malformed
+/// or out-of-range value keeps the default and says so in the log.
+enum BridgeEndpoint {
+  static let portEnvironmentKey = "JARVIS_INHERENT_BRIDGE_PORT"
+  static let defaultPort = 8006
+
+  static func port(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> Int {
+    guard let raw = environment[portEnvironmentKey] else { return defaultPort }
+    guard let port = Int(raw), (1...65535).contains(port) else {
+      NSLog("[bridge] \(portEnvironmentKey)=\(raw) is not a port in 1-65535; using \(defaultPort)")
+      return defaultPort
+    }
+    return port
+  }
+
+  static func url(
+    scheme: String,
+    path: String,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> URL {
+    URL(string: "\(scheme)://127.0.0.1:\(port(environment: environment))\(path)")!
+  }
+}
+
 // MARK: - WebSocket client
 
 extension BridgeBackend {
-  static let WS_URL = URL(string: "ws://127.0.0.1:8006/inherent/ws")!
+  /// The socket URL handed to `URLSession.webSocketTask`.
+  static func wsURL(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> URL {
+    BridgeEndpoint.url(scheme: "ws", path: "/inherent/ws", environment: environment)
+  }
 }
 
 struct ReconnectBackoff {
@@ -116,7 +152,7 @@ final class WSClient {
 
   private func connectOnQueue() {
     if shutdown { return }
-    let task = session.webSocketTask(with: BridgeBackend.WS_URL)
+    let task = session.webSocketTask(with: BridgeBackend.wsURL())
     self.task = task
     task.resume()
     NSLog("[bridge] WS connecting")
@@ -249,10 +285,14 @@ final class WSClient {
 // MARK: - Submit
 
 enum SubmitRequest {
-  static let endpoint = URL(string: "http://127.0.0.1:8006/inherent/submit")!
-
-  static func build(text: String) -> URLRequest {
-    var req = URLRequest(url: endpoint)
+  static func build(
+    text: String,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> URLRequest {
+    let url = BridgeEndpoint.url(
+      scheme: "http", path: "/inherent/submit", environment: environment
+    )
+    var req = URLRequest(url: url)
     req.httpMethod = "POST"
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": text])
@@ -268,16 +308,18 @@ enum SubmitRequest {
 }
 
 enum ImageSubmitRequest {
-  static let endpoint = URL(string: "http://127.0.0.1:8006/inherent/image-submit")!
-
   static func build(
     text: String,
     imageData: Data,
     mime: String,
     name: String,
-    boundary: String = UUID().uuidString
+    boundary: String = UUID().uuidString,
+    environment: [String: String] = ProcessInfo.processInfo.environment
   ) -> URLRequest {
-    var req = URLRequest(url: endpoint)
+    let url = BridgeEndpoint.url(
+      scheme: "http", path: "/inherent/image-submit", environment: environment
+    )
+    var req = URLRequest(url: url)
     req.httpMethod = "POST"
     req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
@@ -310,10 +352,15 @@ enum ImageSubmitRequest {
 }
 
 enum VoiceSubmitRequest {
-  static let endpoint = URL(string: "http://127.0.0.1:8006/inherent/asr-submit")!
-
-  static func build(wavData: Data, boundary: String = UUID().uuidString) -> URLRequest {
-    var req = URLRequest(url: endpoint)
+  static func build(
+    wavData: Data,
+    boundary: String = UUID().uuidString,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> URLRequest {
+    let url = BridgeEndpoint.url(
+      scheme: "http", path: "/inherent/asr-submit", environment: environment
+    )
+    var req = URLRequest(url: url)
     req.httpMethod = "POST"
     req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
