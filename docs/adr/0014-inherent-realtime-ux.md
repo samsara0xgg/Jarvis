@@ -931,7 +931,7 @@ result_available
 failure_code?
 cleanup_state: none | pending | quiesced | completed | quarantined
 cancel_request: CancelRequestView?
-freshness_ms?
+freshness_ms?  (desktop DTO field only; L2's ActionView carries no freshness field)
 
 CancelRequestView
   request_id
