@@ -23,7 +23,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 import yaml
@@ -39,10 +39,13 @@ from jarvis.decision.llm_session import (
     UnknownRequestPresetError,
 )
 from jarvis.decision.response_run import (
+    CancelOutcome,
+    CancelPlaybackAuthorized,
     CancelRejected,
     IllegalResponseTransitionError,
     ResponseCancelledError,
     ResponseCancelRequest,
+    ResponseRun,
     ResponseRunFacts,
     ResponseRunRegistry,
     ResponseTerminalizer,
@@ -1243,6 +1246,8 @@ def test_cancel_endpoint_registered_only_when_wired() -> None:
 
     def _cancel(response_id: str, scope: str, reason: str) -> str:
         seen.append((response_id, scope, reason))
+        if scope == "foreground_output":
+            return "applied"
         if scope != "generation":
             return "unsupported_scope"
         return "cancelled" if response_id == "RESP-known" else "unknown_response"
@@ -1267,32 +1272,102 @@ def test_cancel_endpoint_registered_only_when_wired() -> None:
         assert missing.status_code == 200
         assert missing.json() == {"outcome": "unknown_response"}
 
-        for scope in ("foreground_output", "not-a-scope"):
-            reply = client.post(
-                "/inherent/cancel-response",
-                json={"response_id": "RESP-known", "scope": scope},
-            )
-            assert reply.status_code == 200
-            assert reply.json() == {"outcome": "unsupported_scope"}
+        unknown_scope = client.post(
+            "/inherent/cancel-response",
+            json={"response_id": "RESP-known", "scope": "not-a-scope"},
+        )
+        assert unknown_scope.status_code == 200
+        assert unknown_scope.json() == {"outcome": "unsupported_scope"}
+
+        # H4: the handler forwards ``foreground_output`` verbatim and answers
+        # with whatever the injected callable returned, not a fixed string.
+        foreground = client.post(
+            "/inherent/cancel-response",
+            json={"response_id": "RESP-known", "scope": "foreground_output"},
+        )
+        assert foreground.status_code == 200
+        assert seen[-1] == ("RESP-known", "foreground_output", "operator_request")
+        assert foreground.json() == {"outcome": "applied"}
 
 
-def test_unsupported_scope_is_rejected_before_any_write(tmp_path: Path) -> None:
-    """Q2: ``foreground_output`` is refused until a playback lease exists."""
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+def _open_run(
+    runtime: JarvisRuntime,
+    *,
+    response_id: str,
+    turn_id: str,
+    confirmed_playback: Literal[
+        "interrupt_expected_playback_generation",
+        "ignore",
+    ] = "interrupt_expected_playback_generation",
+) -> ResponseRun:
+    """Open and register one live ResponseRun with an explicit interrupt policy."""
+    facts = _seed_started(runtime.runtime_paths.event_log, response_id, turn_id)
     assert runtime.response_runs is not None
-    outcome = request_response_cancel(
+    factory = LLMSessionFactory(_LLM_CONFIG)
+    snapshot = factory.snapshot(None)
+    run = start_response_run(
+        runtime.conn,
+        turn_id=turn_id,
+        trigger_event_uid=facts.started_event_uid,
+        request_client=factory.create(snapshot, response_id=response_id),
+        policy=legacy_full_text_policy(
+            evidence_snapshot_hash="e",
+            preset_snapshot_hash=snapshot.snapshot_hash,
+        ),
+        response_id=response_id,
+        confirmed_playback=confirmed_playback,
+    )
+    runtime.response_runs.register(run)
+    return run
+
+
+def _cancel_foreground(runtime: JarvisRuntime, response_id: str) -> CancelOutcome:
+    assert runtime.response_runs is not None
+    return request_response_cancel(
         runtime.response_runs,
         ResponseTerminalizer(lambda: runtime.conn, close_after=False),
         ResponseCancelRequest(
-            request_id="CREQ-1",
-            response_id="RESP-any",
+            request_id="CREQ-" + response_id,
+            response_id=response_id,
             scope="foreground_output",
             reason="user_stop",
         ),
     )
-    assert isinstance(outcome, CancelRejected)
-    assert outcome.reason == "unsupported_scope"
+
+
+def test_foreground_output_scope_authorizes_without_any_write(tmp_path: Path) -> None:
+    """H1: ``foreground_output`` clears policy in L3 and writes no terminal."""
+    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    assert runtime.response_runs is not None
+
+    live = _open_run(runtime, response_id="RESP-live", turn_id="T-live")
+    authorized = _cancel_foreground(runtime, live.response_id)
+    assert isinstance(authorized, CancelPlaybackAuthorized)
+    assert authorized.response_id == "RESP-live"
     assert sum(_event_count(runtime.conn, t) for t in _RESPONSE_TERMINALS) == 0
+    live_token_after_authorize = live.cancellation_token.is_cancelled
+    assert live_token_after_authorize is False
+
+    # The D8 gap: the run is gone from the registry while its audio still
+    # plays, and that is authorized rather than rejected.
+    runtime.response_runs.unregister(live.response_id)
+    assert runtime.response_runs.get(live.response_id) is None
+    unregistered = _cancel_foreground(runtime, live.response_id)
+    assert isinstance(unregistered, CancelPlaybackAuthorized)
+    assert sum(_event_count(runtime.conn, t) for t in _RESPONSE_TERMINALS) == 0
+
+    ignoring = _open_run(
+        runtime,
+        response_id="RESP-ignore",
+        turn_id="T-ignore",
+        confirmed_playback="ignore",
+    )
+    refused = _cancel_foreground(runtime, ignoring.response_id)
+    assert isinstance(refused, CancelRejected)
+    assert refused.reason == "policy_ignore"
+    assert sum(_event_count(runtime.conn, t) for t in _RESPONSE_TERMINALS) == 0
+    ignore_token_after_reject = ignoring.cancellation_token.is_cancelled
+    assert ignore_token_after_reject is False
     runtime.conn.close()
 
 
