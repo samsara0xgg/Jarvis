@@ -1502,10 +1502,15 @@ def _cancel_unheard_commentary(
             reason=reason,
         ),
     )
+    # Unconditional: whatever outcome came back, the watcher is done with this
+    # entry, so the operator seam must stop seeing it.
+    entry.registry.unregister(entry.run.response_id)
 
 
 def _complete_commentary(runtime: JarvisRuntime, entry: _OpenCommentary) -> None:
     """Close a commentary run whose phrase reached the speaker."""
+    # Before any early return: this entry is being released either way.
+    entry.registry.unregister(entry.run.response_id)
     if not entry.run.is_open:
         # A cancel already won the CAS — playback of a superseded phrase that
         # started anyway is not a reason to raise out of the watcher.
@@ -1563,8 +1568,17 @@ def _render_commentary(  # noqa: PLR0913 - the run's five independent inputs
         committed_event_bus=runtime.committed_event_bus,
     )
     run.link_action(intent.subject_ref)
-    registry = ResponseRunRegistry()
-    registry.register(run)
+    # Same condition the normal response path registers under
+    # (`jarvis/runtime/__init__.py`): with the operator cancel seam live the
+    # commentary run is reachable by id like any final run; without it no run
+    # of any phase is registered and the private registry keeps today's
+    # behaviour.
+    runtime_registry = runtime.response_runs
+    registry = (
+        runtime_registry
+        if runtime.response_flags.independent_response_cancel and runtime_registry is not None
+        else ResponseRunRegistry()
+    )
     # No subject is in scope for a fixed lifecycle phrase, so the Pre-emit
     # Gate short-circuits to its routine pass-through and hands back the
     # token `render_response` demands.
@@ -1593,6 +1607,10 @@ def _render_commentary(  # noqa: PLR0913 - the run's five independent inputs
         action_id=intent.subject_ref,
         intent_type=intent.intent_type,
     )
+    # Registered last, once nothing above can still raise: an entry the
+    # watcher never receives is an entry no close path can ever unregister,
+    # and in the runtime registry that would be a permanently open run.
+    registry.register(run)
     return _OpenCommentary(
         action_id=intent.subject_ref,
         run=run,

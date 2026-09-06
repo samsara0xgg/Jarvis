@@ -447,10 +447,14 @@ lease:
   queue, so an interrupt spoken over that playback tail returns `no_open_run`
   and the speech continues. Stopping the tail needs the `foreground_output`
   scope and its playback lease, which is the stop-speech card's work.
-- **The target is the single open run, not the run that owns the current
-  playback generation.** With more than one open run the runtime cancels
-  nothing (`ambiguous_open_runs`); with exactly one it cancels that run even
-  if the audible speech belongs to a different, already-closed one.
+- **The target is the single open `final` run, not the run that owns the
+  current playback generation.** An open `phase="commentary"` run is not
+  counted: the final run of an action-dispatching turn is `waiting_action`
+  at the moment its commentary opens off the same action row, so counting
+  both would make every such turn `ambiguous_open_runs`. With more than one
+  open final run the runtime cancels nothing (`ambiguous_open_runs`); with
+  exactly one it cancels that run even if the audible speech belongs to a
+  different, already-closed one.
 - **A candidate arms capture, so a dropped window still produces a turn.** The
   speech that failed to confirm is committed as an ordinary
   `utterance.received` and becomes the next question. Without AEC, speaker

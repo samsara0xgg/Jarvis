@@ -330,3 +330,73 @@ Progress line per slice appended to the card.
 Or stop after 30 turns.
 
 ## Progress
+- Hermetic baseline before the first edit — `1040 passed, 64 deselected` on
+  realtime-integration (merged fast-forward into lane/a at 5ae0f98).
+- Slice 1, runtime + tests — 7e9f98b — `_render_commentary` registers in
+  `runtime.response_runs` under the normal response path's own condition with
+  the private registry as fallback; `_cancel_unheard_commentary` and
+  `_complete_commentary` unregister on every close path; `_interrupt` filters
+  `open_runs()` to `phase == "final"` at the call site. Evidence:
+  `-k cancel_response` 1 passed / 829 deselected;
+  `-k no_longer_a_cancel_target` 1 passed / 829 deselected;
+  `-k barge_in_while_a_commentary_is_open` run TWICE from one command — filter
+  removed it FAILS `AssertionError: ambiguous_open_runs` /
+  `assert [] == ['RESPf6d80afa972a4eda9b1d26a8bd5667c0']`, filter restored it
+  passes 1 / 829. The pre-change registration was probed directly: the same
+  POST returned `{'outcome': 'unknown_response'}` with `open_runs() == ()` and
+  zero `response.cancelled` rows. Shipped suites
+  (test_lifecycle_commentary, test_barge_in_two_stage, test_wave4a_response_run)
+  80 passed, no case deleted or weakened. Full hermetic `1043 passed,
+  64 deselected` = baseline + 3, k = 3, deselected unchanged. Tier 1:
+  lint-imports KEPT (1/1) · ruff all checks passed · mypy strict clean
+  (244 files).
+- Slice 2, docs — 70420e9 — ADR-0006 D8's second boundary bullet now names the
+  single open **final** run and says an open commentary is not counted.
+  ADR-0008 D6 (:370) judged UNCHANGED: it states the commentary run's terminal
+  condition against D1's, not an enumeration of close paths, so an added
+  operator cancel leaves it true. ADR-0008 D10, ADR-0014 D20-D24 and
+  docs/spec.html judged unchanged — `grep -c "ResponseRun\|open_runs\|
+  commentary" docs/spec.html` returns 0, and the only `ambiguous` hits inside
+  the two ADR ranges are ActionRun cancellation targets, none naming
+  `open_runs` or the response-run registry. (The card predicted zero hits in
+  ADR-0008 578-748; there are two, both about actions, so the conclusion holds
+  and only the proof grep was imprecise.)
+- No live run performed and none required — no LLM, TTS provider or external
+  runtime is touched; every added fact is a SQLite event-log row or an HTTP
+  body field. The system default audio output device was NOT changed. A
+  cancelled commentary still plays its already-committed PCM to the end: a
+  known limit owned by the separate `foreground_output` playback-lease card,
+  not a defect of this change.
+- Slice 3, verifier pass — 084c69d — `verifier` (opus, fresh context) over
+  the card and `realtime-integration..HEAD` re-ran every acceptance and gate
+  command and matched all reported numbers. It confirmed one real defect,
+  D1: `_render_commentary` registered above three fallible calls
+  (`pre_emit_gate`, `_emit_pre_emit_verdict`, `render_response`) with no
+  `finally`, so a raising render left an entry the watcher never receives
+  and no close path can unregister — harmless into the old throwaway
+  registry, a permanently open `generating` run in `runtime.response_runs`
+  after slice 1. Fixed by registering after the last fallible call. The
+  barge-in two-run control was re-run against the fixed code: filter removed
+  `AssertionError: ambiguous_open_runs` /
+  `assert [] == ['RESP84091df91d6445a1ae628a6c62ce3cc4']`, filter restored
+  1 passed / 829 deselected. Final: 1043 passed / 64 deselected, 80 passed
+  across the three shipped suites, lint-imports / ruff / mypy --strict each
+  exit 0.
+- Verifier findings accepted without a code change, recorded here:
+  (D2) `_cancel_unheard_commentary` unregisters after `request_response_cancel`
+  returns, leaving a microsecond window in which a concurrent POST answers
+  `already_terminal` rather than `unknown_response`, and skipping the
+  unregister if that call raises. Both follow the card's explicit
+  "unconditionally after the call" wording and the entry stays in
+  `open_by_action` for the shutdown sweep, so this is a card-design nit, not
+  an implementation deviation — changing it would be redesign.
+  (D3) "only commentary runs open → `no_open_run`" has no dedicated case.
+  Deliberately not added: /goal condition (6) fixes the suite at baseline + 3,
+  and the branch follows mechanically from the filter plus the existing
+  `if not open_runs`.
+  (D4) `git status` clean is satisfied by this commit.
+  The verifier also confirmed the harness change is behaviour-neutral
+  (`independent_response_cancel: False` is identical to absent under the
+  fail-closed `is True` rule, and `cancel_timeout_ms` is not read by
+  `Wave4ResponseFlags.from_mapping`), and independently agreed with the
+  ADR-0008 D6 unchanged judgement.
