@@ -24,7 +24,6 @@ actor RealtimeTransportV2 {
   /// The feature switch.  Stays false until the v2 socket carries real state.
   static let enabled = false
 
-  static let url = URL(string: "ws://127.0.0.1:8006/inherent/ws/v2")!
   static let tokenPathEnvironmentKey = "JARVIS_INHERENT_V2_TOKEN_PATH"
 
   /// The four D7 client capabilities this build implements.
@@ -45,6 +44,18 @@ actor RealtimeTransportV2 {
     environment: [String: String] = ProcessInfo.processInfo.environment
   ) -> String? {
     environment[tokenPathEnvironmentKey]
+  }
+
+  /// The request `connect()` hands to `URLSession`, token in the header only.
+  static func connectRequest(
+    token: String,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> URLRequest {
+    var request = URLRequest(
+      url: BridgeEndpoint.url(scheme: "ws", path: "/inherent/ws/v2", environment: environment)
+    )
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    return request
   }
 
   /// Read the token, trimming the trailing newline the writer appends.
@@ -144,8 +155,7 @@ actor RealtimeTransportV2 {
         )
       }
       let token = try RealtimeTransportV2.loadToken(atPath: tokenPath)
-      var request = URLRequest(url: RealtimeTransportV2.url)
-      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      let request = RealtimeTransportV2.connectRequest(token: token)
       let task = URLSession(configuration: .default).webSocketTask(with: request)
       task.resume()
       defer { task.cancel(with: .goingAway, reason: nil) }
