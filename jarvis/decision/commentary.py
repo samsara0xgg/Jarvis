@@ -21,6 +21,7 @@ say about this row".
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Final
 
 from jarvis.shared.realtime import PresentationIntent, PresentationIntentType
@@ -37,17 +38,50 @@ constant through to L5 rather than picking one itself.  It matches
 is routine by definition — short, interruptible, independently permitted.
 """
 
-_D6_ROWS: Final[dict[str, tuple[PresentationIntentType, str]]] = {
-    "action.dispatched": ("acknowledge", "我开始处理了。"),
-    "action.running": ("progress", "任务已经在运行。"),
-    "action.result_observed": ("progress", "结果回来了，我整理一下。"),  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
-    "action.failed": ("error", "这一步失败了，我告诉你具体原因。"),  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+_D6_ROWS: Final[dict[str, tuple[PresentationIntentType, tuple[str, ...]]]] = {
+    "action.dispatched": ("acknowledge", ("我去查一下。", "这就去办。", "我去看看。")),
+    "action.running": ("progress", ("任务已经在运行。", "这件事正在做。", "还在跑着。")),
+    "action.result_observed": (
+        "progress",
+        (
+            "结果回来了，我整理一下。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+            "拿到结果了，我看一下。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+            "数据回来了，我过一遍。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+        ),
+    ),
+    "action.failed": (
+        "error",
+        (
+            "这一步失败了，我告诉你具体原因。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+            "这一步没成，我说说原因。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+            "这里出错了，我讲一下怎么回事。",  # noqa: RUF001 — fullwidth comma is intentional Chinese punctuation.
+        ),
+    ),
 }
-"""ADR-0008 D6's four action rows, verbatim: observed truth -> permitted phrase.
+"""ADR-0008 D6's four action rows: observed truth -> the phrases it permits.
+
+Each row carries a small set rather than one sentence because the per-turn cap
+makes the acknowledge the phrase actually heard, and one fixed acknowledge
+repeated on every turn is the "one moment while I process that" shape OpenAI's
+Realtime preamble guidance names as the thing to avoid. Every member of a set
+says the same observed truth; only the wording differs, so the choice cannot
+make any of them less true.
 
 The "utterance accepted, route selected" row of the same D6 table is not here;
 it is not an action lifecycle event and is out of this slice's scope.
 """
+
+
+def _phrase_for(action_id: str, phrases: tuple[str, ...]) -> str:
+    """Pick this action's phrasing from its row's set, stably.
+
+    ``hashlib.sha256`` and not builtin ``hash()``: the latter is randomised
+    per process by ``PYTHONHASHSEED``, so the same action would say different
+    things across daemon restarts and no test could pin the choice. A digest
+    keeps the module pure — same action id, same sentence, on every machine
+    and every process.
+    """
+    return phrases[hashlib.sha256(action_id.encode("utf-8")).digest()[0] % len(phrases)]
 
 
 def commentary_intent_for(event: Event) -> PresentationIntent | None:
@@ -64,12 +98,12 @@ def commentary_intent_for(event: Event) -> PresentationIntent | None:
     action_id = event.payload.get("action_id")
     if not isinstance(action_id, str) or not action_id:
         return None
-    intent_type, phrase = row
+    intent_type, phrases = row
     return PresentationIntent(
         intent_type=intent_type,
         surface_hint="speech",
         subject_ref=action_id,
-        content_hint=phrase,
+        content_hint=_phrase_for(action_id, phrases),
         freshness_required=True,
     )
 

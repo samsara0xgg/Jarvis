@@ -312,3 +312,11 @@ Progress line per slice in the card. Or stop after 35 turns.
   supersession retained and now proven unreachable from the watcher
   (`_cancel_reasons` shows only `shutdown`). Suite 1047 passed / 64 deselected
   (baseline confirmed 1046/64). lint-imports KEPT, ruff clean, mypy 246 files.
+- Slice 2 (variant phrasings): each D6 row carries a 3-phrase tuple and
+  `_phrase_for` selects with `hashlib.sha256(action_id).digest()[0] % len`;
+  `我开始处理了。` is gone. `ACT-v1..ACT-v6` speak 这就去办。/我去查一下。/我去看看。
+  — 3 distinct, all declared. New purity canary
+  `tests/canary/test_canary_commentary_module_is_pure.py` (3 checks) pins no
+  `time`/`random`/`secrets`/`datetime`/`os` import, no builtin `hash(`, no
+  module-level mutable state. Suite 1052 passed / 64 deselected. lint-imports
+  KEPT, ruff clean, mypy 247 files.

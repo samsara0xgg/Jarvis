@@ -23,7 +23,11 @@ import yaml
 from fastapi.testclient import TestClient
 
 from jarvis import runtime as runtime_module
-from jarvis.decision.commentary import COMMENTARY_ATTENTION_CHANNEL, commentary_intent_for
+from jarvis.decision.commentary import (
+    _D6_ROWS,
+    COMMENTARY_ATTENTION_CHANNEL,
+    commentary_intent_for,
+)
 from jarvis.decision.gates import ResponsePlan
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
@@ -93,22 +97,42 @@ def _action_event(event_type: str, *, action_id: str = "ACT-1") -> Event:
 # --- D6 mapping ------------------------------------------------------------
 
 
-def test_four_d6_rows_map_to_their_exact_intent_and_phrase() -> None:
-    """ADR-0008 D6's action table, verbatim, with the action id as subject."""
-    expected = {
-        "action.dispatched": ("acknowledge", "我开始处理了。"),
-        "action.running": ("progress", "任务已经在运行。"),
-        "action.result_observed": ("progress", "结果回来了，我整理一下。"),  # noqa: RUF001 — intentional Chinese punctuation.
-        "action.failed": ("error", "这一步失败了，我告诉你具体原因。"),  # noqa: RUF001 — intentional Chinese punctuation.
+def test_four_d6_rows_map_to_their_declared_intent_and_variant_set() -> None:
+    """ADR-0008 D6's action table, with the action id as subject.
+
+    The phrase is no longer one literal per row, so the pin is membership in
+    the row's declared set plus the intent type it carries. Which member a
+    given id selects is pinned by
+    ``test_six_turns_speak_variants_from_the_acknowledge_set``.
+    """
+    expected_types = {
+        "action.dispatched": "acknowledge",
+        "action.running": "progress",
+        "action.result_observed": "progress",
+        "action.failed": "error",
     }
-    for event_type, (intent_type, phrase) in expected.items():
+    assert set(_D6_ROWS) == set(expected_types)
+    for event_type, intent_type in expected_types.items():
         intent = commentary_intent_for(_action_event(event_type, action_id="ACT-7"))
         assert intent is not None, event_type
         assert intent.intent_type == intent_type
-        assert intent.content_hint == phrase
+        assert intent.content_hint in _D6_ROWS[event_type][1], event_type
         assert intent.subject_ref == "ACT-7"
         assert intent.surface_hint == "speech"
         assert intent.freshness_required is True
+
+
+def test_a_phrase_is_stable_across_processes_for_one_action_id() -> None:
+    """sha256, not builtin `hash()`: the choice is the same on every run.
+
+    Builtin `hash()` is seeded per process by ``PYTHONHASHSEED``, so the same
+    action would say different things across daemon restarts and this literal
+    could not exist. A change to the acknowledge set is expected to fail this
+    line — update it deliberately.
+    """
+    intent = commentary_intent_for(_action_event("action.dispatched", action_id="ACT-7"))
+    assert intent is not None
+    assert intent.content_hint == "这就去办。"
 
 
 def test_non_mapped_event_types_return_none() -> None:
@@ -365,6 +389,13 @@ def _spoken(conn: sqlite3.Connection) -> list[str]:
     ]
 
 
+def _only_phrase(conn: sqlite3.Connection) -> str:
+    """The single commentary phrase this log holds, asserting there is one."""
+    spoken = _spoken(conn)
+    assert len(spoken) == 1, spoken
+    return spoken[0]
+
+
 def opens_chunks_emitted(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Return every `surface.response_*` payload in append order."""
     return [
@@ -488,7 +519,10 @@ def test_action_row_speaks_one_commentary_run_in_the_turn_group(tmp_path: Path) 
         assert payload["phase"] == "commentary"
         assert payload["response_id"] == started[0]["response_id"]
         assert payload["response_group_id"] == started[0]["response_group_id"]
-    assert _spoken(reader) == ["我开始处理了。"]
+    assert _spoken(reader) == [
+        commentary_intent_for(dispatched).content_hint,  # type: ignore[union-attr]
+    ]
+    assert _spoken(reader)[0] in _D6_ROWS["action.dispatched"][1]
     assert _typed_payloads(reader, "surface.response_open")[0]["attention_channel"] == (
         COMMENTARY_ATTENTION_CHANNEL
     )
@@ -590,7 +624,8 @@ def test_live_pending_confirmation_silences_commentary(tmp_path: Path) -> None:
         )
         _action_row(runtime.conn, "action.running", action_id="ACT-c", turn_id="T-conf")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
-    assert _spoken(reader) == ["任务已经在运行。"]
+    assert _spoken(reader) == [_only_phrase(reader)]
+    assert _only_phrase(reader) in _D6_ROWS["action.running"][1]
 
 
 # --- observer: one phrase per turn -----------------------------------------
@@ -609,6 +644,11 @@ def _commentary_emitted(conn: sqlite3.Connection, turn_id: str) -> list[dict[str
         for payload in _typed_payloads(conn, "surface.response_emitted")
         if payload.get("phase") == "commentary" and payload.get("turn_id") == turn_id
     ]
+
+
+def _wait_until_turn_spoke(conn: sqlite3.Connection, turn_id: str) -> None:
+    """Block until this turn has emitted its one commentary phrase."""
+    _wait_until(lambda: len(_commentary_emitted(conn, turn_id)) == 1)
 
 
 def _cancel_reasons(conn: sqlite3.Connection) -> list[str]:
@@ -648,6 +688,35 @@ def test_one_turn_with_three_actions_speaks_exactly_one_commentary(
         _settle()
 
     assert len(_commentary_emitted(reader, "T-cap")) == 1
+
+
+def test_six_turns_speak_variants_from_the_acknowledge_set(tmp_path: Path) -> None:
+    """Six turns, six action ids: every phrase is declared, and they differ.
+
+    Under the cap the acknowledge is the phrase actually heard, so one fixed
+    acknowledge would be the same sentence on every single turn. Selection is
+    a sha256 digest of the action id, so this is not a coin flip — it passes
+    always or fails always, on every process and platform. The six ids were
+    chosen for that reason: `ACT-v1..ACT-v6` land on three of the three
+    declared variants, and a change to the set is expected to move them.
+    """
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    action_ids = [f"ACT-v{index}" for index in range(1, 7)]
+    with _Observer(runtime):
+        for index, action_id in enumerate(action_ids):
+            turn_id = f"T-v{index}"
+            _user_turn(runtime.conn, turn_id)
+            _action_row(
+                runtime.conn, "action.dispatched", action_id=action_id, turn_id=turn_id,
+            )
+            _wait_until_turn_spoke(reader, turn_id)
+
+    spoken = _spoken(reader)
+    assert len(spoken) == len(action_ids)
+    variants = _D6_ROWS["action.dispatched"][1]
+    assert all(phrase in variants for phrase in spoken), spoken
+    assert len(set(spoken)) >= 2, spoken
 
 
 def test_a_second_row_in_the_same_turn_opens_nothing(tmp_path: Path) -> None:
@@ -1031,7 +1100,7 @@ def test_a_terminal_row_with_no_correlation_finds_its_turn_through_dispatch(
 
     started = _typed_payloads(reader, "response.started")
     assert [payload["turn_id"] for payload in started] == ["T-join"]
-    assert _spoken(reader) == ["结果回来了，我整理一下。"]  # noqa: RUF001 — intentional Chinese punctuation.
+    assert _only_phrase(reader) in _D6_ROWS["action.result_observed"][1]
 
 
 # --- the per-turn assumption the card asked the lane to prove ---------------
