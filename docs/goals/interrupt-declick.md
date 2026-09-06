@@ -367,4 +367,56 @@ If the card contradicts the repository, stop and report; do not redesign. Or sto
 
 ## Progress
 
-(none yet)
+- 2026-09-06 lane A — Re-pinned every citation at `realtime-integration` tip
+  `a29b1e8`. Two moved: `_active_lease = None` is `voice_tts.py:1224` (card said
+  `:1227`) and `request_discard()` is `:1227` (card said `:1230`) — the ordering
+  claim the card rests on is unchanged; the legacy `_RingBuffer` branch is
+  `:1560-1562`, not `:1567-1578`; the named canary asserts are `:946`/`:947`, not
+  `:938`. Everything else resolved. `playback_recovery.py` read: boot-time
+  reconciler, no callback path, unaffected. Measured baselines before editing:
+  hermetic **1068 passed / 64 deselected** in 60.06s, Swift **191** — both match
+  the card exactly.
+- 2026-09-06 lane A — Declick landed at the shared callback site
+  (`_emit_declick`, covering the `actual <= 0` early return as well as the three
+  `view[:actual] = 0.0` race sites). Two acceptance tests added, driving the
+  interrupt through `pipeline.stop_foreground_output` (`user_stop`); all seven
+  degenerate-path forcings shown failing on the predicted assertion, then
+  reverted. Two existing assertions that pinned the hard cut were re-expressed,
+  not weakened: the post-CAS block and the 1000-cycle churn block now assert that
+  neither generation's PCM reaches the host and that what does is a monotone
+  decay. Hermetic **1070 passed / 64 deselected** (1068 + 2 new), Swift **191**.
+  No live run: the block handed to PortAudio is the signal, and nothing physical
+  intervenes before the DAC.
+- 2026-09-06 lane A — Docs to sync settled. ADR-0006 gains a **new** D11 (next
+  free number; the file stopped at D10), placed before §4 and explicitly not
+  filed under D8, which stays deferred and unbuilt. `docs/spec.html` judged
+  **unchanged**: it contains no occurrence of "playback", "audio output" or
+  "PortAudio" and owns no fact about the output amplitude edge, so the invariant
+  belongs to ADR-0006 alone and duplicating it into the spec would violate the
+  one-owner rule. Errata reported, not fixed: ADR-0006:261 still cites
+  `voice_tts.py:1255` / `:1208` for `complete_generation` / `interrupt_generation`;
+  at this tip they were `:1256` and `:1209`, and this card's own change shifts
+  them again — report the errata by symbol, not by number.
+- 2026-09-06 lane A — Verifier pass (opus, fresh context) on
+  `realtime-integration...HEAD`; four findings, all accepted and fixed.
+  (1) Real latent race: `stop()` resets the declick state from the actor thread
+  while the callback may be inside `_emit_declick`, which read
+  `_declick_remaining` three times. Reproduced: the old body raises
+  `ValueError: operands could not be broadcast together with shapes (0,) () (32,)`
+  **on the realtime callback thread**, or drives the counter to `-32`, whose
+  negative slice leaves tombstoned PCM unzeroed. Now read and written once.
+  (2) ADR D11's opening claim was absolute and untrue: a short ring read
+  zero-pads inside its own success block and still steps in one sample there.
+  D11 now scopes itself to fully silent blocks and states the partial-block case
+  and why it is a separate decision. (3) Degenerate row "fade too short to
+  matter" did not actually bite — the step bound in (3) scales with the
+  constant, so shrinking `_DECLICK_SAMPLES` to 3 kept both new tests green. The
+  test now pins the decay length and an absolute 1 ms floor; re-forced at 3 it
+  fails `assert (3 / 48000) >= 0.001`. (4) The production rate is **48 kHz**
+  (`inherent_loop._DEFAULT_TTS_SAMPLE_RATE_HZ`, and `:1907` refuses streaming
+  unless `canonical_sample_rate_hz` equals it), not 32 kHz; 64 samples was
+  1.33 ms, below the card's "a few milliseconds". Constant is now 128 (2.67 ms)
+  and the comment is corrected. Also took the verifier's suggestion to pin the
+  post-CAS block to `_DECLICK_RAMP[:8]` exactly rather than merely "strictly
+  decreasing". Gates after: hermetic **1070 passed / 64 deselected** in 59.15s,
+  Swift **191**, ruff/lint-imports/mypy clean.

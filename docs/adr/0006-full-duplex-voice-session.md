@@ -545,6 +545,22 @@ The migration compatibility method is `is_output_active`, a single boolean over 
 
 Required counters include stale-generation drops, stale-cancel no-ops, input discontinuities, callback deadline misses, ring starvation, WS reconnect-before-exposure, partial-prefix failures, cursor-quality distribution, and active-generation replay rejects.
 
+### D11. The playback output edge to silence is ramped, not stepped
+
+Every callback that hands PortAudio a *fully silent block* after audio was playing decays the last emitted amplitude to exactly `0.0` over a bounded, preallocated ramp of `_DECLICK_SAMPLES` samples instead of stepping to zero in one sample. A one-sample step is an audible click on every interrupt.
+
+The decay is synthesized from the last sample the callback handed the host, not scaled out of the block. On the ordinary interrupt path the block is *already* all zeros before any zeroing site is reached: `interrupt_generation` clears `_active_lease` and then publishes the ring's discard boundary, so the next `_GenerationRingBuffer.read_into` finds nothing available and zero-pads the whole callback block itself. The callback then returns early on `actual <= 0` without touching any of the three `view[:actual] = 0.0` race sites. A ramp multiplied into that block would be a no-op, and a fix confined to those three sites would change nothing audible.
+
+The decay therefore lives at the one shared site all six interrupt entry points converge on — `_interrupt_snapshot`'s `interrupt_generation` seen from the callback's side — which means it covers user stop, system sleep, response-terminal, supersede, media-owner shutdown, and failure alike. It also covers natural end-of-generation and underrun whenever those produce a fully silent block. That widening is intended: it costs no audible content, because the decay is synthesized into a block that would otherwise be silence and never attenuates a sample that carries content. When audio ends on a block boundary the decay is appended *after* the last real sample rather than replacing it.
+
+D11 deliberately does **not** cover the partial block. A short ring read zero-pads inside its own block (`_GenerationRingBuffer.read_into`) and that block still takes the success path, so a response that ends mid-block, and a mid-stream underrun, still step to zero in one sample there; the latched last-emitted sample is then the pad's `0.0`, which makes the following silent block's decay a no-op. Covering that case means reshaping content the ledger has already accounted as submitted, which is a different decision from ramping the silence the interrupt produces, and it is not what was authorized here.
+
+The declick advances no ledger state — no `_CallbackReport`, no `_played_samples`, no ring cursor — so `estimated_audible_samples`, `heard_text`, `heard_through_sequence` and the `surface.playback_interrupted` / `surface.playback_failed` payloads are unchanged. It sets no persistent gain, so the next activated generation plays at full amplitude with no un-mute call.
+
+This is **not** D8's `duck_gain` ramp or F11's unduck. Those are barge-in ducking — attenuate while listening, then restore — and remain deferred and unbuilt; `_GainRamp`, `set_gain`, `duck` and `unduck` keep no production caller. D8 was always silent on the amplitude shape at the moment of the cut, which is what D11 fixes. `_GainRamp` is also structurally unusable here: `apply` multiplies the block, and driving it to zero would leave the device muted with no production caller able to restore it.
+
+The fade length is a module constant, not a config key: it is a property of human hearing, not of a deployment.
+
 ## 4. Contracts
 
 ### 4.1 Ephemeral shared messages

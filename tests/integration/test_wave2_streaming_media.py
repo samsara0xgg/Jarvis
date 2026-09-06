@@ -53,6 +53,7 @@ class _Behavior:
     samples: int = 160
     sample_rate_hz: int = 8_000
     late_after_abort: bool = False
+    amplitude: int = 2_000
 
 
 class _FakeSession:
@@ -112,7 +113,11 @@ class _FakeSession:
             gate = self._provider.segment_gates.get((self._response_id, segment.sequence))
             while gate is not None and not gate.is_set() and not self._closed:  # noqa: ASYNC110
                 await asyncio.sleep(0.001)
-            pcm = np.full(self._behavior.samples, 2000, dtype="<i2").tobytes()
+            pcm = np.full(
+                self._behavior.samples,
+                self._behavior.amplitude,
+                dtype="<i2",
+            ).tobytes()
             yield voice_tts.TTSAudioChunk(
                 sequence=segment.sequence,
                 pcm=pcm,
@@ -204,10 +209,20 @@ class _FakeProvider:
 
 
 class _CallbackPump:
-    def __init__(self, player: voice_tts.AudioStreamPlayer) -> None:
+    def __init__(
+        self,
+        player: voice_tts.AudioStreamPlayer,
+        *,
+        record: bool = False,
+    ) -> None:
         self._player = player
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="test-portaudio-pump")
+        self._record = record
+        # The blocks the production callback wrote are the signal PortAudio
+        # hands the device; retaining them is the only observable of the
+        # output amplitude edge.
+        self.blocks: list[np.ndarray] = []
 
     def __enter__(self) -> Self:
         self._thread.start()
@@ -218,10 +233,21 @@ class _CallbackPump:
         self._thread.join(timeout=1.0)
         assert not self._thread.is_alive()
 
+    def step(self, frames: int = 32) -> None:
+        """Drive one real callback, exactly as the pump thread would."""
+        out = np.zeros((frames, 1), dtype=np.float32)
+        self._player._callback(out, frames, None, None)  # noqa: SLF001
+        if self._record:
+            self.blocks.append(out[:, 0].copy())
+
+    @property
+    def signal(self) -> np.ndarray:
+        """Return every retained block concatenated, in emission order."""
+        return np.concatenate(self.blocks)
+
     def _run(self) -> None:
         while not self._stop.is_set():
-            out = np.zeros((32, 1), dtype=np.float32)
-            self._player._callback(out, 32, None, None)  # noqa: SLF001
+            self.step()
             time.sleep(0.0005)
 
 
@@ -409,6 +435,23 @@ def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 3.0) -> Non
             return
         time.sleep(0.0005)
     msg = "timed out waiting for the media fixture to reach its gate condition"
+    raise AssertionError(msg)
+
+
+def _pump_until(
+    pump: _CallbackPump,
+    predicate: Callable[[], bool],
+    *,
+    timeout_s: float = 3.0,
+) -> None:
+    """Drive real callbacks from the test thread until a condition holds."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        pump.step()
+        time.sleep(0.0005)
+    msg = "timed out driving the callback to the fixture's gate condition"
     raise AssertionError(msg)
 
 
@@ -681,6 +724,7 @@ def test_generation_cas_races_and_thousand_cycle_churn() -> None:  # noqa: C901,
     ):
         writer.start()
         callback.start()
+        previous_value = np.float32(0.0)
         for cycle in range(1_000):
             old_lease = player.activate_generation(
                 session_id="S",
@@ -733,10 +777,20 @@ def test_generation_cas_races_and_thousand_cycle_churn() -> None:  # noqa: C901,
             writer_release.set()
             callback_release.set()
             cycle_done.wait()
-            assert np.count_nonzero(callback_outputs[-1]) == 0
+            # The block that straddles the CAS carries neither generation's
+            # PCM.  What it does carry is the synthesized declick tail
+            # (ADR-0006 D11) decaying off the previous cycle's amplitude,
+            # monotonically toward zero.
+            straddling = callback_outputs[-1][:, 0]
+            assert not np.any(straddling == np.float32(-0.5))
+            assert not np.any(straddling == new_value)
+            assert np.all(np.abs(straddling) <= previous_value)
+            assert np.all(np.diff(np.abs(straddling)) <= 0.0)
             new_output = np.zeros((8, 1), dtype=np.float32)
             player._callback(new_output, 8, None, None)  # noqa: SLF001
+            # The next generation plays at full amplitude with no un-mute.
             assert np.all(new_output[:, 0] == new_value)
+            previous_value = new_value
             settled = player.settle_interrupted_generation(
                 expected_playback_generation_id=old_lease.playback_generation_id,
             )
@@ -759,7 +813,9 @@ def test_generation_cas_races_and_thousand_cycle_churn() -> None:  # noqa: C901,
     assert all(isinstance(result, StalePlaybackGeneration) for result in writer_results)
     stale_writer_results = cast("list[StalePlaybackGeneration]", writer_results)
     assert all(result.reason == "already_terminal" for result in stale_writer_results)
-    assert all(np.count_nonzero(output) == 0 for output in callback_outputs)
+    # No straddling block ever leaked the tombstoned generation's PCM; the
+    # per-cycle checks above cover the declick tail each one carries instead.
+    assert all(not np.any(output == np.float32(-0.5)) for output in callback_outputs)
     assert player.active_lease is None
     assert player.bytes_pending() == 0
     assert not player._ledgers  # noqa: SLF001
@@ -887,7 +943,10 @@ def test_callback_interrupt_linearization_and_gain_mailbox_barriers() -> None:  
     assert post_settled is not None
     assert not isinstance(post_settled, StalePlaybackGeneration)
     assert post_settled.submitted_samples == 0
-    assert np.count_nonzero(post_output) == 0
+    # No post-CAS generation sample reaches the host.  What the host does get
+    # is the synthesized declick tail (ADR-0006 D11) decaying off the previous
+    # block's amplitude, never the flat 1.0 the tombstoned generation wrote.
+    assert np.all(post_output[:, 0] == voice_tts._DECLICK_RAMP[:8])  # noqa: SLF001
     player.retire_generation(post_cas.playback_generation_id)
 
     gain_player = _player(ring_seconds=0.02)
@@ -3831,3 +3890,194 @@ def test_playback_started_carries_the_host_output_latency_or_the_configured_one(
         assert _payload_int(payload, "estimated_output_latency_ns") == expected_ns
     finally:
         verdict.close()
+
+
+_DECLICK_AMPLITUDE_INT16 = 24_000
+_DECLICK_AMPLITUDE = np.float32(_DECLICK_AMPLITUDE_INT16) / np.float32(32_768)
+_DECLICK_RESPONSE_SAMPLES = 1_600
+
+
+def _declick_pipeline(
+    db_path: Path,
+    *,
+    response_id: str,
+) -> tuple[
+    voice_media.StreamingTTSPipeline,
+    voice_tts.AudioStreamPlayer,
+    _FakeProvider,
+]:
+    """Build a real pipeline whose one segment is loud, constant-amplitude PCM."""
+    provider = _FakeProvider(
+        {
+            (response_id, 0): _Behavior(
+                samples=_DECLICK_RESPONSE_SAMPLES,
+                amplitude=_DECLICK_AMPLITUDE_INT16,
+            ),
+        },
+        candidate_count=1,
+    )
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    return pipeline, player, provider
+
+
+def test_a_user_stop_fades_the_output_instead_of_stepping_to_silence(
+    tmp_path: Path,
+) -> None:
+    """ADR-0006 D11: the interrupt amplitude edge is ramped, not a hard cut.
+
+    The interrupt is issued through the pipeline's public stop entry point, so
+    the signal asserted on below is what the production callback handed
+    PortAudio while the production actor tombstoned the generation.
+    """
+    db_path = tmp_path / "declick-interrupt.db"
+    conn = open_event_log(db_path)
+    pipeline, player, provider = _declick_pipeline(db_path, response_id="RCLICK")
+    hold = threading.Event()
+    provider.final_gates[("RCLICK", 0)] = hold
+    pump = _CallbackPump(player, record=True)
+    blocks_before_cut = 10
+    try:
+        rows = _emit_response(
+            conn,
+            response_id="RCLICK",
+            group_id="GCLICK",
+            turn_id="TCLICK",
+            text="这一句会被打断。",
+        )
+        asyncio.run(_submit_response(pipeline, rows))
+        _pump_until(
+            pump,
+            lambda: _playback_rows_for(conn, "RCLICK", "surface.playback_started") == 1,
+        )
+        _pump_until(
+            pump,
+            lambda: _generation_ring(player).available_read() >= 32 * blocks_before_cut,
+        )
+        # Only the window around the cut is asserted on; every block in it is
+        # a full read of committed PCM.
+        pump.blocks.clear()
+        played_at_cut_start = player.played_samples
+        for _ in range(blocks_before_cut):
+            pump.step()
+        played_before = player.played_samples
+
+        assert pipeline.stop_foreground_output("RCLICK") == "applied"
+
+        for _ in range(10):
+            pump.step()
+        played_after = player.played_samples
+    finally:
+        hold.set()
+        assert pipeline.close()
+        conn.close()
+
+    signal = pump.signal
+    cut = 32 * blocks_before_cut
+    pre_cut = float(signal[cut - 1])
+    # (1) the cut really is from full amplitude, not from an already-silent block
+    assert abs(pre_cut) >= 0.5
+    assert np.all(signal[:cut] == _DECLICK_AMPLITUDE)
+    # (2) a decay exists between the last audio sample and the first exact zero
+    first_zero = int(np.flatnonzero(signal[cut:] == 0.0)[0]) + cut
+    decay = np.abs(signal[cut:first_zero])
+    assert len(decay) >= 2
+    assert np.all((decay > 0.0) & (decay < abs(pre_cut)))
+    assert np.all(np.diff(decay) <= 0.0)
+    # (3) no residual step survives anywhere across the cut region
+    edge = np.abs(np.diff(signal[cut - 1 : first_zero + 1]))
+    assert float(edge.max()) <= abs(pre_cut) / (voice_tts._DECLICK_SAMPLES - 1) * 1.05  # noqa: SLF001
+    # (4) it terminates at exactly 0.0 and stays there
+    assert np.all(signal[first_zero:] == 0.0)
+    # The bound in (3) scales with `_DECLICK_SAMPLES`, so it cannot catch a
+    # fade that is merely declared too short to be heard as anything but a
+    # click.  Pin the length itself, in samples and in real time.
+    assert len(decay) == voice_tts._DECLICK_SAMPLES - 1  # noqa: SLF001
+    assert voice_tts._DECLICK_SAMPLES / 48_000 >= 0.001  # noqa: SLF001
+    # (5) the synthesized decay advanced no ledger state: no `_CallbackReport`
+    # was written for it, so the audible horizon it feeds cannot have moved.
+    assert played_before - played_at_cut_start == cut
+    assert played_after == played_before
+
+    verdict = open_event_log(db_path)
+    try:
+        # (6) the terminal is unchanged by the declick
+        assert _playback_rows_for(verdict, "RCLICK", "surface.playback_interrupted") == 1
+        assert _reason_of(verdict, "RCLICK") == "user_stop"
+    finally:
+        verdict.close()
+
+
+def test_natural_completion_keeps_every_audible_sample_and_its_counts(
+    tmp_path: Path,
+) -> None:
+    """The shared-site declick never eats content at end-of-generation.
+
+    Fixing at the one site all six interrupt entry points converge on also
+    covers natural completion; this is the row that proves the widening costs
+    no audible content and no accounting.
+    """
+    reset_realtime_trace()
+    db_path = tmp_path / "declick-completion.db"
+    conn = open_event_log(db_path)
+    pipeline, player, _provider = _declick_pipeline(db_path, response_id="RDONE")
+    pump = _CallbackPump(player, record=True)
+    try:
+        rows = _emit_response(
+            conn,
+            response_id="RDONE",
+            group_id="GDONE",
+            turn_id="TDONE",
+            text="这一句会读完。",
+        )
+        asyncio.run(_submit_response(pipeline, rows))
+        # Every sample reaches the ring before the first callback runs, so no
+        # block below is a mid-response underrun.
+        _wait_until(
+            lambda: _generation_ring(player).available_read() >= _DECLICK_RESPONSE_SAMPLES,
+        )
+        pump.blocks.clear()
+        _pump_until(
+            pump,
+            lambda: _playback_rows_for(conn, "RDONE", "surface.playback_completed") == 1,
+            timeout_s=5.0,
+        )
+        assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+
+    signal = pump.signal
+    # No sample carrying content is attenuated.
+    assert np.all(signal[:_DECLICK_RESPONSE_SAMPLES] == _DECLICK_AMPLITUDE)
+    tail = signal[_DECLICK_RESPONSE_SAMPLES:]
+    sounding = np.flatnonzero(tail)
+    decay_len = 0 if sounding.size == 0 else int(sounding[-1]) + 1
+    assert decay_len <= voice_tts._DECLICK_SAMPLES  # noqa: SLF001
+    assert np.all(np.diff(np.abs(tail[:decay_len])) <= 0.0)
+    assert np.all(tail[decay_len:] == 0.0)
+
+    verdict = open_event_log(db_path)
+    try:
+        kind, payload = _terminal_for(verdict, response_id="RDONE")
+        assert kind == "surface.playback_completed"
+        assert _payload_int(payload, "total_samples") == _DECLICK_RESPONSE_SAMPLES
+        assert payload["heard_through_sequence"] == 0
+    finally:
+        verdict.close()
+    # `tts_estimated_audible` is only recorded on a `fully_presented` snapshot.
+    audible = [
+        point
+        for point in realtime_trace_snapshot()
+        if point.name == "tts_estimated_audible"
+        and point.attributes.get("response_id") == "RDONE"
+    ]
+    assert len(audible) == 1
+    assert audible[0].attributes["estimated_audible_samples"] == _DECLICK_RESPONSE_SAMPLES
