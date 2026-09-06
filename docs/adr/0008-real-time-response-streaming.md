@@ -625,11 +625,14 @@ reaches the playback lease through L3 authorization plus an L5 actor stop.
 
 L3 issues the interrupt policy when a ResponseRun starts. Runtime may only apply that policy mechanically; it cannot invent a cancel scope.
 
-`expected_playback_generation_id` is required for `foreground_output` and
-whenever an active playback lease exists, so the L5 interrupt is exact CAS.
-It may be null only for a pure provider-generation cancel on a ResponseRun
-that has no playback lease. ADR-0014 Stop/PTT controls always target active
-speech and therefore require the non-null exact playback generation.
+The exact-target guarantee that `expected_playback_generation_id` was
+specified to provide is instead provided by resolving the target on the
+actor thread against the live lease, so the field is not required on this
+scope; a caller-supplied generation id is stale by construction the moment
+it is compared off-thread. It may be null only for a pure provider-generation
+cancel on a ResponseRun that has no playback lease. ADR-0014 Stop/PTT
+controls always target active speech and therefore require the non-null
+exact playback generation.
 
 Response cancel scope has exact semantics:
 
