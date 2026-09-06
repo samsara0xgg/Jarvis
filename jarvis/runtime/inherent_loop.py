@@ -130,6 +130,7 @@ from jarvis.runtime import (
     _wait_for_next_trigger,
     drive_turn,
     make_barge_in_interrupt_callable,
+    make_foreground_decision_callable,
     make_response_cancel_callable,
 )
 from jarvis.runtime.inherent_hub import start_inherent_view
@@ -1860,6 +1861,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
                 config=media_config,
                 broadcaster=broadcaster,
                 ducker=ducker,
+                foreground_decision_callable=make_foreground_decision_callable(),
             )
         except voice_media.StreamingMediaStartupError as exc:
             if not exc.legacy_fallback_safe:

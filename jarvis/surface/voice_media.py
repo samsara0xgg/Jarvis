@@ -592,6 +592,7 @@ class StreamingTTSPipeline:
         config: StreamingMediaConfig | None = None,
         broadcaster: object | None = None,
         ducker: SystemAudioDucker | None = None,
+        foreground_decision_callable: Callable[[str, int, str, int], str] | None = None,
         start_player: bool = True,
     ) -> None:
         """Start one persistent actor without letting stuck startup pin exit."""
@@ -601,6 +602,7 @@ class StreamingTTSPipeline:
         self._config = config or StreamingMediaConfig()
         self._broadcaster = broadcaster
         self._ducker = ducker
+        self._foreground_decision = foreground_decision_callable
         self._start_player = start_player
         self._registry = ActivePlaybackRegistry(
             boot_high_water_id=boot_high_water_id,
@@ -1974,7 +1976,7 @@ class StreamingTTSPipeline:
         if response in self._after_drain:
             self._after_drain.remove(response)
 
-    async def _schedule_response(  # noqa: PLR0911 - explicit lane disposition table
+    async def _schedule_response(  # noqa: C901, PLR0911 - explicit lane disposition table
         self,
         response: _ResponseBuffer,
     ) -> None:
@@ -1988,6 +1990,34 @@ class StreamingTTSPipeline:
         if active is None:
             self._start_response(response)
             return
+        if (
+            self._foreground_decision is not None
+            and active.response.response_group_id != response.response_group_id
+        ):
+            # ADR-0008 D8: a cross-group candidate takes the lane only when L3
+            # policy says it wins, and ADR-0006 keeps the drain lane
+            # same-group, so it never queues either. A tombstoned incumbent
+            # still owns the lane until its terminal is durable, so even a
+            # winner cannot be handed the lane here; declining is the only
+            # cross-group disposition left until C7 lands foreground_output.
+            verdict = self._foreground_decision(
+                active.response.response_group_id,
+                active.response.row_id,
+                response.response_group_id,
+                response.row_id,
+            )
+            if verdict != "supersede" or active.terminal_commit_pending:
+                self._registry.terminalize(response.response_id)
+                self._responses.pop(response.response_id, None)
+                record_realtime_trace(
+                    "media_foreground_declined",
+                    response_id=response.response_id,
+                    response_group_id=response.response_group_id,
+                    incumbent_response_id=active.response.response_id,
+                    verdict=verdict,
+                    terminal_commit_pending=active.terminal_commit_pending,
+                )
+                return
         if active.terminal_commit_pending:
             if len(self._after_drain) >= self._config.response_lane_capacity:
                 self._registry.terminalize(response.response_id)
