@@ -3,7 +3,7 @@ import XCTest
 
 final class SubmitRequestTests: XCTestCase {
   func test_buildRequest_url() {
-    let req = SubmitRequest.build(text: "hello")
+    let req = SubmitRequest.build(text: "hello", environment: [:])
     XCTAssertEqual(req.url?.absoluteString, "http://127.0.0.1:8006/inherent/submit")
     XCTAssertEqual(req.httpMethod, "POST")
     XCTAssertEqual(req.value(forHTTPHeaderField: "Content-Type"), "application/json")
@@ -47,7 +47,8 @@ final class SubmitRequestTests: XCTestCase {
       imageData: image,
       mime: "image/png",
       name: "screen.png",
-      boundary: "test-boundary"
+      boundary: "test-boundary",
+      environment: [:]
     )
     XCTAssertEqual(req.url?.absoluteString, "http://127.0.0.1:8006/inherent/image-submit")
     XCTAssertEqual(req.httpMethod, "POST")
@@ -75,7 +76,7 @@ final class SubmitRequestTests: XCTestCase {
 
   func test_voiceBuildRequest_urlAndMultipartHeaders() throws {
     let wav = Data([0, 1, 2, 3])
-    let req = VoiceSubmitRequest.build(wavData: wav, boundary: "test-boundary")
+    let req = VoiceSubmitRequest.build(wavData: wav, boundary: "test-boundary", environment: [:])
     XCTAssertEqual(req.url?.absoluteString, "http://127.0.0.1:8006/inherent/asr-submit")
     XCTAssertEqual(req.httpMethod, "POST")
     XCTAssertEqual(
