@@ -3178,3 +3178,67 @@ def test_realtime_output_device_reaches_both_builder_player_sites(
         _build({**legacy, "output_device": 3}, voice_tts.TTSPipeline)
         assert seen == [3]
     conn.close()
+
+
+def test_production_builder_puts_the_configured_request_volume_on_the_wire(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The emitted task_start carries vol 3 by default, the configured value otherwise."""
+    db_path = tmp_path / "tts-volume.db"
+    conn = open_event_log(db_path)
+    runtime = SimpleNamespace(
+        config={"realtime": {"enabled": False}},
+        wave1_features=Wave1FeatureFlags(
+            transactional_event_append=True,
+            lifecycle_terminal_cas=True,
+        ),
+        runtime_paths=SimpleNamespace(event_log=db_path),
+        conn=conn,
+    )
+    monkeypatch.setenv("MINIMAX_API_KEY", "integration-placeholder")
+
+    def _emitted_vol(realtime_config: dict[str, object]) -> object:
+        runtime.config = {"realtime": realtime_config}
+        ws = _FakeWebSocket()
+
+        async def _connect(
+            _url: str,
+            *,
+            additional_headers: dict[str, str],
+        ) -> _FakeWebSocket:
+            del additional_headers
+            return ws
+
+        with patch.object(
+            voice_tts,
+            "_open_output_stream",
+            return_value=_FakeOutputStream(),
+        ):
+            pipeline = inherent_loop._build_tts_pipeline(  # noqa: SLF001
+                cast("Any", runtime),
+                cast("Any", SimpleNamespace()),
+            )
+            assert isinstance(pipeline, voice_tts.TTSPipeline)
+            provider = pipeline._provider  # noqa: SLF001
+
+            async def _open_then_close() -> None:
+                session = provider.create_tts_session(
+                    endpoint_index=0,
+                    idle_close_s=5.0,
+                    command_queue_capacity=1,
+                    audio_queue_capacity=1,
+                )
+                await session.open("RVOL", 1)
+                await session.close()
+
+            with patch.object(voice_tts, "_ws_connect", side_effect=_connect):
+                asyncio.run(_open_then_close())
+            assert pipeline.close()
+
+        assert ws.sent[0]["event"] == "task_start"
+        return cast("dict[str, object]", ws.sent[0]["voice_setting"])["vol"]
+
+    assert _emitted_vol({"enabled": False}) == 3
+    assert _emitted_vol({"enabled": False, "tts_volume": 7}) == 7
+    conn.close()

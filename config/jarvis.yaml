@@ -153,6 +153,14 @@ realtime:
   # sounddevice.  Null means the CoreAudio system default output.  An
   # unresolvable name fails the open closed rather than falling back.
   output_device: null
+  # MiniMax `voice_setting.vol` on every TTS request; the provider documents
+  # the range as (0, 10] and we narrow it to an integer.  Null means the
+  # measured default of 3, the highest value whose returned int16 does not
+  # reach full scale.  Raising it clips inside MiniMax's own encoder, which
+  # no limiter on our side can undo.  Deliberately unvalidated: a non-numeric
+  # value raises out of the TTS builder, which skips the whole voice subsystem
+  # for that boot; the process keeps running text-only.
+  tts_volume: null
   concurrency_safety:
     transactional_event_append: false
     lifecycle_terminal_cas: false

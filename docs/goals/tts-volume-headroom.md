@@ -265,6 +265,71 @@ if the capture harness cannot be adapted, or if any full-scale count at the new
 default is nonzero. Or stop after 30 turns.
 
 ## Progress
-- (none yet)
+- 9609528 `fix(surface,runtime,config): drop the TTS request volume to 3` —
+  default 5 -> 3 at `voice_tts.py:1747`, `realtime.tts_volume` read above the
+  `_new_provider` closure in `inherent_loop.py`, the config key beside
+  `output_device`, and one hermetic wire-payload test.
+  - Branch baseline at launch (before any edit): **1043 passed / 64 deselected**.
+    After: **1044 passed / 64 deselected**, same deselected count.
+  - Gates: lint-imports `6-layer architecture KEPT`, `Contracts: 1 kept, 0
+    broken`; ruff `All checks passed!`; mypy `Success: no issues found in 244
+    source files`. `PYTHONPATH=.` on every one.
+  - Wire payload: the new test asserts the `task_start` frame captured from
+    `_FakeWebSocket` carries `voice_setting.vol == 3` with `realtime.tts_volume`
+    absent and `== 7` with it set. No test reads a config value back. Both
+    halves canary-checked: reverting the default to 5 fails with
+    `assert 5 == 3`, dropping `**volume_kwargs` fails with `assert 3 == 7`.
+  - LIVE capture at the new default, 4 utterances (u2 3 segments, u3 4, u4 5 —
+    three multi-sentence; u5 single-sentence), same texts as the vol=5 baseline,
+    module under test confirmed as this checkout with `effective vol: 3`:
+    u2 peak=29290 at_full_scale=0 rms=0.1354 · u3 peak=30821 at_full_scale=0
+    rms=0.1347 · u4 peak=27110 at_full_scale=0 rms=0.1314 · u5 peak=21307
+    at_full_scale=0 rms=0.1408. Every full-scale count is 0.
+  - Contrast, vol=5 baseline `u2`-`u5` only (`u1` excluded: it has no
+    `.raw32k.npy` and `report.py:8` substitutes zeros for a missing file, so a
+    `u1` line would print a false `at_full_scale=0` on a clipped baseline):
+    u2 32768/143 · u3 32768/100 · u4 32768/195 · u5 31467/0.
+  - Loudness cost: RMS 0.131-0.141 (mean ~0.136) at vol=3 against ~0.23 at
+    vol=5, about 4.6 dB quieter, in line with the card's ~4.1-4.5 dB estimate.
+  - Audio rule: no step changed the macOS system default output device. The rig
+    imports no `sounddevice` and opens no output stream; it captures provider
+    bytes. The owner's daemon on port 8009 and runtime root
+    `~/.jarvis-allen-test` were not stopped, restarted, or written to. Harness
+    scripts were copied and repointed into `~/.jarvis-audio-test/captures-vol3/`;
+    the shared `captures/` scripts and the vol=5 baseline files are untouched.
+  - Docs to sync: `config/jarvis.yaml` updated (the key's comment is its
+    documentation). `docs/spec.html` unchanged — `grep -n -i minimax` returns
+    only `:1058` (`voice_notify` may be carried by MiniMax TTS) and there is no
+    loudness contract or config-key inventory. `docs/adr/` unchanged — grep for
+    `voice_setting|"vol"|tts volume` returns no hits, so no ADR owns the level.
+  - Scope: no limiter, normalizer, or gain stage added; the resampling path,
+    segment-join behavior, interrupt path, and player ring/callback are
+    untouched (`git diff --name-only` is 4 files).
+- bd9ebb1 `docs(config,runtime): state the real tts_volume failure semantics` —
+  verifier finding, confirmed against the code before fixing. The card at
+  `:78-80` asserts a bad value "fails the boot", "matching the deliberate
+  no-validation stance already documented for `realtime.output_device`". The
+  repository falsifies both halves: `_new_provider()` is called at
+  `inherent_loop.py:1848`, outside the builder's own try, so `int("loud")`
+  escapes `_build_tts_pipeline` into the caller's broad `except Exception` at
+  `:3764`, which nulls `voice_pipe`, `tts_pipe` and the wake listener together
+  and lets the process run on text-only — while a bad `output_device` is caught
+  at `:1941` and degrades TTS alone. No clamp or type guard was added: the card
+  forbids one and the code keeps none. Only the two comments changed, so the
+  key's documentation names the observable outcome. Gates re-run after the fix:
+  lint-imports KEPT, ruff clean, mypy 244 files clean, 1044 passed / 64
+  deselected.
+- Verifier note, no change made: the new hermetic test drives the streaming emit
+  site (`voice_tts.py:2150`), not the legacy `synthesize()`/`_handshake` one
+  (`:1938`) that the shipped `realtime.enabled: false` config actually uses. The
+  verifier drove `_handshake` directly as a canary and got vol 3 absent / 7
+  configured, so the behavior is right; both sites read the same `self._volume`
+  assigned once at `voice_tts.py:1759`, and a second test would pin the same
+  value twice.
+- Verifier note on the loudness figure: this capture set measures the vol=5
+  baseline at RMS 0.2240-0.2349, so the ~0.23 quoted above is the measurement,
+  while the card's Why section cites ~0.21 from the earlier investigation's
+  capture set. The drop to 0.131-0.141 is ~4.6 dB against 0.23 and ~4.0 dB
+  against 0.21, either way inside the owner-accepted range.
 
 ---
