@@ -213,3 +213,39 @@ summaries.
 Or stop after 12 turns and report what is proven and what is not.
 
 ## Progress
+- Proving test — pre-change run of `bash scripts/test_inherent_swift.sh`:
+  `Executed 177 tests, with 1 failure`, raw failure
+  `InputSubmissionClientTests.swift:192: error: ... testAMatchingSnapshotGroupResolvesThePendingInput : XCTAssertTrue failed`
+  — the `pendingInputs` row survived a snapshot adoption whose group carried
+  the matching id. The hypothesis reproduced, so the reducer arm applies and
+  the DTO-only fork does not.
+- DTO + reducer + test — d36e917 — `ResponseGroupSnapshot` gains
+  `sourceClientRequestId` and its `CodingKeys` entry; the `adopt` group loop
+  clears `pendingInputs` for a carried id, mirroring `applyOpened` in place
+  (no shared helper: the card forbids editing `applyOpened`).
+  Swift 177/177 pass (176 baseline + 1 reducer case; no DTO decode case — the
+  reducer case decodes the field through the real DTO and every existing
+  snapshot test covers the absent-field path). pytest 1066 passed, 64
+  deselected — identical to the pre-change count, no Python file touched.
+  lint-imports KEPT (1/1), ruff, mypy strict (243 files) all exit 0.
+- Docs — ADR-0014: no errata section exists (18 `## ` headings, §16 "Spec
+  changes and explicit deviations" at :2096), so amended in place after the
+  correlation chain. docs/spec.html unchanged: grep for
+  `source_client_request_id`, `sourceClientRequestId`, `pendingInputs`,
+  `pending_inputs` returns 0 — the spec does not own this fact.
+- Test strengthened — 5c7bb49 — the case asserted only `isEmpty`, which a
+  blanket `removeAll()` would also satisfy; the opened path had its selective
+  counterpart and the snapshot path did not. A second pending row now survives
+  the adoption. Re-proved by removing the reducer clear: `XCTAssertEqual
+  failed: ("["R-2", "R-1"]") is not equal to ("["R-2"]")` at
+  InputSubmissionClientTests.swift:194 — the stale row named in the failure.
+  Restored; Swift 177/177, still one new case.
+- Verifier (opus, fresh context, `realtime-integration...HEAD`) — no defects;
+  it independently re-ran the Swift suite, pytest, and all three gates and
+  reproduced every number in the commit bodies. Its one actionable note was
+  the test-strength point above. Two facts it recorded, neither a defect:
+  `pendingInputs` has no UI consumer yet (`grep -rn pendingInputs
+  desktop/InherentCard/` is empty), so this fix lands in the state layer and
+  the panel symptom is not yet visible; and a group that has rolled out of the
+  snapshot's bounded history still leaves its row to bounded eviction, which
+  is outside this card.

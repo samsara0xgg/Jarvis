@@ -630,6 +630,9 @@ public struct ResponseGroupSnapshot: Decodable, Equatable, Sendable {
   public var question: String?
   public var createdAtMs: Int
   public var responses: [ResponseSnapshot]
+  /// D21: the `request_id` of the v2 submission whose turn opened this group,
+  /// or nil for a turn that did not come through the authenticated inbox.
+  public var sourceClientRequestId: String?
 
   enum CodingKeys: String, CodingKey {
     case responseGroupId = "response_group_id"
@@ -637,6 +640,7 @@ public struct ResponseGroupSnapshot: Decodable, Equatable, Sendable {
     case question
     case createdAtMs = "created_at_ms"
     case responses
+    case sourceClientRequestId = "source_client_request_id"
   }
 }
 

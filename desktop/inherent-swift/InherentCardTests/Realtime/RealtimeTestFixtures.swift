@@ -314,13 +314,15 @@ enum Fx {
     turn: String? = nil,
     question: String? = nil,
     createdAtMs: Int = 1_788_200_000_000,
-    responses: [[String: Any]] = []
+    responses: [[String: Any]] = [],
+    sourceRequest: String? = nil
   ) -> [String: Any] {
     var group: [String: Any] = [
       "response_group_id": groupID, "created_at_ms": createdAtMs, "responses": responses,
     ]
     if let turn { group["turn_id"] = turn }
     if let question { group["question"] = question }
+    if let sourceRequest { group["source_client_request_id"] = sourceRequest }
     return group
   }
 
