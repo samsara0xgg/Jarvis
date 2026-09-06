@@ -1873,6 +1873,135 @@ def test_after_drain_same_group_and_foreground_supersede(tmp_path: Path) -> None
     assert terminal_kind["RS"] == "surface.playback_completed"
 
 
+def _isolation_rows(conn: sqlite3.Connection) -> list[dict[str, object]]:
+    rows = conn.execute(
+        "SELECT payload_json FROM events WHERE type = 'surface.playback_lane_isolated' ORDER BY id",
+    ).fetchall()
+    return [cast("dict[str, object]", json.loads(str(row[0]))) for row in rows]
+
+
+def test_an_unsettled_callback_publication_writes_a_durable_lane_isolated_row(
+    tmp_path: Path,
+) -> None:
+    """Total silence until restart stops being unprovable after the fact."""
+    db_path = tmp_path / "lane-isolated.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    hold = threading.Event()
+    provider.final_gates[("RISO", 0)] = hold
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    try:
+        with (
+            _CallbackPump(player),
+            patch.object(player, "settle_interrupted_generation", return_value=None),
+        ):
+            rows = _emit_response(
+                conn,
+                response_id="RISO",
+                group_id="GISO",
+                turn_id="TISO",
+                text="this lane is about to go deaf",
+            )
+            asyncio.run(_submit_response(pipeline, rows))
+            _await_playback_started(conn, "RISO")
+            assert pipeline.stop_foreground_output("RISO") != "applied"
+    finally:
+        hold.set()
+        assert pipeline.close(wait_timeout_s=2.0)
+        conn.close()
+
+    verdict = open_event_log(db_path)
+    try:
+        isolated = _isolation_rows(verdict)
+        assert len(isolated) == 1
+        payload = isolated[0]
+        assert payload["isolation_reason"] == "callback_publication_unsettled"
+        assert payload["terminal_type"] == "surface.playback_interrupted"
+        assert payload["playback_generation_id"] == 1
+        assert payload["response_id"] == "RISO"
+        assert payload["turn_id"] == "TISO"
+        assert payload["error_type"] == "RuntimeError"
+        assert payload["session_id"]
+        # No terminal could be written honestly: the snapshot never settled.
+        assert _playback_rows_for(verdict, "RISO", "surface.playback_interrupted") == 0
+    finally:
+        verdict.close()
+
+
+def test_isolation_completes_even_when_its_own_durable_row_cannot_be_appended(
+    tmp_path: Path,
+) -> None:
+    """Record-keeping failure must never leave the lane un-isolated."""
+    db_path = tmp_path / "lane-isolated-append-fault.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    hold = threading.Event()
+    provider.final_gates[("RISOF", 0)] = hold
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    original_emit = emit_event
+
+    def _faulted_emit(*args: object, **kwargs: object) -> object:
+        if kwargs.get("type") == "surface.playback_lane_isolated":
+            msg = "injected lane isolation append fault"
+            raise RuntimeError(msg)
+        return original_emit(*cast("Any", args), **cast("Any", kwargs))
+
+    try:
+        with (
+            _CallbackPump(player),
+            patch.object(player, "settle_interrupted_generation", return_value=None),
+            patch.object(voice_media, "emit_event", side_effect=_faulted_emit),
+        ):
+            rows = _emit_response(
+                conn,
+                response_id="RISOF",
+                group_id="GISOF",
+                turn_id="TISOF",
+                text="the ledger fails too",
+            )
+            asyncio.run(_submit_response(pipeline, rows))
+            _await_playback_started(conn, "RISOF")
+            assert pipeline.stop_foreground_output("RISOF") != "applied"
+            # The lane is isolated: nothing further is admitted, and the
+            # injected append failure did not escape the actor.
+            successor = _emit_response(
+                conn,
+                response_id="RISOF-NEXT",
+                group_id="GISOF-NEXT",
+                turn_id="TISOF-NEXT",
+                text="never spoken",
+            )
+            outcomes = asyncio.run(_submit_response(pipeline, successor))
+            assert [outcome.status for outcome in outcomes] == ["closed"] * 3
+    finally:
+        hold.set()
+        assert pipeline.close(wait_timeout_s=2.0)
+        conn.close()
+
+    verdict = open_event_log(db_path)
+    try:
+        assert _isolation_rows(verdict) == []
+        assert _playback_rows_for(verdict, "RISOF-NEXT", "surface.playback_started") == 0
+    finally:
+        verdict.close()
+
+
 def _count_rows(conn: sqlite3.Connection, sql: str, *params: object) -> int:
     row = conn.execute(sql, params).fetchone()
     assert row is not None

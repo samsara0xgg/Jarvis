@@ -625,7 +625,20 @@ surface.playback_failed
   required: session_id, response_id, turn_id, playback_generation_id,
             heard_through_sequence, submitted_samples, heard_text_hash, reason
   optional: heard_text, provider, cursor_quality, retryable
+
+surface.playback_lane_isolated
+  required: session_id, response_id, turn_id, playback_generation_id,
+            terminal_type, error_type, isolation_reason
 ```
+
+`surface.playback_lane_isolated` is non-terminal and does not participate in
+the playback CAS: it records that the media lane failed closed. `terminal_type`
+is the terminal that was being attempted and `error_type` the exception that
+prevented it; both are null at the fallback-cleanup site, where no terminal was
+in flight. `isolation_reason` is one of `callback_publication_unsettled`,
+`terminal_append_exhausted`, `task_escaped`, or `fallback_cleanup_unproven`,
+which distinguishes the five isolation call sites. The append is best effort:
+isolation is never prevented by its own record-keeping failing.
 
 Additive optional fields on existing `utterance.received`:
 
@@ -640,7 +653,22 @@ interrupted_response_id
 
 `submitted_samples` is the generation-local count handed to the host output timeline, not an assertion that those samples are already acoustic. Heard state uses `heard_through_sequence` and cursor quality.
 
-The sole exit for `completed/interrupted/failed` playback is the L2 atomic append primitive `terminalize_playback` (`jarvis/state/lifecycle_terminal.py`), keyed by `(response_id, playback_generation_id)`: inside the same `BEGIN IMMEDIATE` transaction it verifies no terminal exists, appends the canonical terminal event, and commits, returning `Event | AlreadyTerminal`. There is no separate claim marker or post-claim emit window. Checkpoints are non-terminal. No class named `PlaybackTerminalizer` exists; L5 reaches this primitive through two callers today — `voice_media.py`'s `_commit_terminal` and the boot reconciler in `playback_recovery.py` — and the at-most-one-terminal-per-`(response_id, playback_generation_id)` invariant holds across both because they share the one CAS primitive.
+The sole exit that *appends a terminal* for `completed/interrupted/failed` playback is the L2 atomic append primitive `terminalize_playback` (`jarvis/state/lifecycle_terminal.py`), keyed by `(response_id, playback_generation_id)`: inside the same `BEGIN IMMEDIATE` transaction it verifies no terminal exists, appends the canonical terminal event, and commits, returning `Event | AlreadyTerminal`. There is no separate claim marker or post-claim emit window. Checkpoints are non-terminal. No class named `PlaybackTerminalizer` exists; L5 reaches this primitive through two callers today — `voice_media.py`'s `_commit_terminal` and the boot reconciler in `playback_recovery.py` — and the at-most-one-terminal-per-`(response_id, playback_generation_id)` invariant holds across both because they share the one CAS primitive.
+
+There is a fourth exit that appends no terminal at all: lane isolation. It
+cannot honestly write one — three of its call sites isolate precisely because
+the callback publication never settled, so the required `heard_through_sequence`
+and `submitted_samples` cannot be filled, and a fourth isolates because the
+terminal CAS itself exhausted its retries. Isolation is permanent within the
+process: `_lane_isolated` is never reset, `_resume_after_wake_owned` refuses to
+re-admit while it is set, and the single owner construction site
+(`jarvis/runtime/inherent_loop.py`) is unsupervised and never recreated, so the
+process speaks nothing further until it restarts. `surface.playback_lane_isolated`
+is the durable evidence for that outcome. The orphaned `surface.playback_started`
+is separately terminalized by the next boot's reconciler as
+`surface.playback_interrupted` with `reason: "daemon_restart"`; that label
+describes the restart, not the isolation, and reading the isolation row is the
+only way to tell the two apart.
 
 The new `response.*` lifecycle and additive `surface.response_*` fields are owned by ADR-0008.
 

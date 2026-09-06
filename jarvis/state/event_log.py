@@ -904,6 +904,28 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("heard_text", "provider", "cursor_quality", "retryable"),
         schema_version=1,
     ),
+    # ADR-0006 §4.2: the fourth exit from playback, which appends no terminal.
+    # The media lane fails closed and speaks nothing further until the process
+    # restarts; without this row that outcome is unprovable after the fact and
+    # the next boot's reconciler mislabels the orphan `daemon_restart`.
+    # `terminal_type`/`error_type` are null at the fallback-cleanup site, where
+    # no terminal was being attempted and no exception reached the isolator.
+    EventTypeSchema(
+        event_type="surface.playback_lane_isolated",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=(
+            "session_id",
+            "response_id",
+            "turn_id",
+            "playback_generation_id",
+            "terminal_type",
+            "error_type",
+            "isolation_reason",
+        ),
+        optional_payload=(),
+        schema_version=1,
+    ),
     # F6: surface.user_intent — spec.html §5.4 line 1442 canonical;
     # missing from Day-1 registry, restored here.
     EventTypeSchema(

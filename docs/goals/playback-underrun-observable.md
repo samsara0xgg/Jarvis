@@ -565,4 +565,19 @@ stop after 30 turns.
   `starvation_gaps: 1, host_underflows: 0, provider: minimax_ws_streaming`;
   clean single-segment response `starvation_gaps: 0`. Hermetic 1059 passed,
   64 deselected (baseline 1057).
+- Slice 2a (lane-isolation row) — **card deviation, please confirm**: the card
+  states `event_log.py` "enforces no event-type allowlist"; it does. A new type
+  is rejected with `UnregisteredEventTypeError`, canary
+  `tests/canary/test_emit_event_registered.py` enforces the same, and
+  `docs/spec.html` §5.4 states outright that every `emit_event` type must be
+  registered first. So the card's "No L2 change / the schema are untouched"
+  boundary is unachievable as written. Registered one `EventTypeSchema` entry
+  with `owner_layer="L5"` — the shape every existing `surface.playback_*` type
+  already uses, and exactly the "string and a schema note" the card itself
+  budgets. Nothing else in the card's design changed. Measured row:
+  `{isolation_reason: callback_publication_unsettled, terminal_type:
+  surface.playback_interrupted, playback_generation_id: 1, response_id: RISO,
+  turn_id: TISO, error_type: RuntimeError, session_id: BOOT34c5...}`; under an
+  injected append fault the row is absent, the run does not raise, and the next
+  three submits return `closed`.
 

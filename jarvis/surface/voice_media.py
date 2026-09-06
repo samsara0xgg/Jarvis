@@ -2738,6 +2738,14 @@ class StreamingTTSPipeline:
             response_id=active.response.response_id,
             playback_generation_id=active.lease.playback_generation_id,
         )
+        # No terminal was being attempted and no exception reached here: the
+        # janitor simply could not prove the `say` subprocess was quiescent.
+        self._emit_lane_isolated(
+            active,
+            terminal_type=None,
+            error_type=None,
+            isolation_reason="fallback_cleanup_unproven",
+        )
         self._request_shutdown_deadline(self._config.shutdown_timeout_s)
 
     async def _drain_and_complete(
@@ -2822,6 +2830,7 @@ class StreamingTTSPipeline:
                 active,
                 event_type="surface.playback_failed",
                 error=RuntimeError("callback publication did not settle"),
+                isolation_reason="callback_publication_unsettled",
             )
             return
         durable = await self._commit_terminal_durable(
@@ -2853,6 +2862,7 @@ class StreamingTTSPipeline:
                 active,
                 event_type="surface.playback_interrupted",
                 error=RuntimeError("callback publication did not settle"),
+                isolation_reason="callback_publication_unsettled",
             )
             return False
         durable = await self._commit_terminal_durable(
@@ -2997,6 +3007,7 @@ class StreamingTTSPipeline:
             active,
             event_type=event_type,
             error=last_error or RuntimeError("terminal append exhausted retries"),
+            isolation_reason="terminal_append_exhausted",
         )
         return False
 
@@ -3039,6 +3050,7 @@ class StreamingTTSPipeline:
                 active,
                 event_type="surface.playback_failed",
                 error=error,
+                isolation_reason="task_escaped",
             )
             return
         recovery = asyncio.create_task(
@@ -3146,12 +3158,54 @@ class StreamingTTSPipeline:
                     output_outcome=event_type.removeprefix("surface.playback_"),
                 )
 
+    def _emit_lane_isolated(
+        self,
+        active: _ActiveResponse,
+        *,
+        terminal_type: str | None,
+        error_type: str | None,
+        isolation_reason: str,
+    ) -> None:
+        """Append the durable record that this lane will speak nothing again.
+
+        Best effort by construction: ``_lane_isolated`` is never reset and no
+        supervisor recreates the owner, so the process is deaf until restart.
+        Isolation must never be prevented by its own record-keeping failing.
+        """
+        try:
+            emit_event(
+                self._require_conn(),
+                type="surface.playback_lane_isolated",
+                payload={
+                    "session_id": active.lease.session_id,
+                    "response_id": active.response.response_id,
+                    "turn_id": active.response.turn_id,
+                    "playback_generation_id": active.lease.playback_generation_id,
+                    "terminal_type": terminal_type,
+                    "error_type": error_type,
+                    "isolation_reason": isolation_reason,
+                },
+                source_event_id=(
+                    active.activation_event_uid or active.response.source_event_id
+                ),
+                correlation={"turn_id": active.response.turn_id},
+            )
+        except Exception:
+            LOGGER.exception(
+                "media lane isolation row could not be appended: "
+                "response_id=%s generation=%d reason=%s",
+                active.response.response_id,
+                active.lease.playback_generation_id,
+                isolation_reason,
+            )
+
     def _isolate_terminal_debt(
         self,
         active: _ActiveResponse,
         *,
         event_type: str,
         error: BaseException,
+        isolation_reason: str,
     ) -> None:
         """Fail closed: retain the ledger and forbid every successor generation."""
         self._lane_isolated = True
@@ -3173,6 +3227,12 @@ class StreamingTTSPipeline:
             playback_generation_id=active.lease.playback_generation_id,
             terminal_type=event_type,
             error_type=type(error).__name__,
+        )
+        self._emit_lane_isolated(
+            active,
+            terminal_type=event_type,
+            error_type=type(error).__name__,
+            isolation_reason=isolation_reason,
         )
         self._request_shutdown_deadline(self._config.shutdown_timeout_s)
 
