@@ -139,6 +139,12 @@ public enum InherentReducer {
     var groups: [ResponseGroupID: ResponseGroupState] = [:]
     var order: [ResponseGroupID] = []
     for group in snapshot.groups {
+      // D21: same correlation as `applyOpened` — a group the snapshot rebuilt
+      // for this client's submission retires its optimistic row, so a turn that
+      // opened while this client was away does not come back as still unsent.
+      if let requestID = group.sourceClientRequestId {
+        state.pendingInputs.removeValue(forKey: requestID)
+      }
       let groupID = ResponseGroupID(group.responseGroupId)
       var groupState = ResponseGroupState(
         id: groupID,

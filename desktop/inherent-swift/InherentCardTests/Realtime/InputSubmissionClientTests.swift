@@ -170,6 +170,30 @@ final class InputSubmissionClientTests: XCTestCase {
     XCTAssertNotNil(run.state.responseGroups[ResponseGroupID("G-3")])
   }
 
+  /// The same correlation across a reconnect: a submission whose turn opened
+  /// while this client was away comes back inside the snapshot, and the group
+  /// naming it retires the optimistic row exactly as `response.opened` would.
+  func testAMatchingSnapshotGroupResolvesThePendingInput() throws {
+    var run = Reducing()
+    try run.goLive()
+    run.apply(.local(.inputSubmitted(pending("R-1"))))
+    XCTAssertEqual(Set(run.state.pendingInputs.keys), ["R-1"])
+
+    try run.goLive(
+      epoch: 2, through: 7,
+      groups: [
+        Fx.snapshotGroup(
+          "G-1", responses: [Fx.snapshotResponse("RESP-1")], sourceRequest: "R-1"
+        ),
+        Fx.snapshotGroup("G-2", responses: [Fx.snapshotResponse("RESP-2")]),
+      ]
+    )
+
+    XCTAssertTrue(run.state.pendingInputs.isEmpty)
+    XCTAssertNotNil(run.state.responseGroups[ResponseGroupID("G-1")])
+    XCTAssertNotNil(run.state.responseGroups[ResponseGroupID("G-2")])
+  }
+
   /// A submission whose turn never opens a response cannot grow the map for the
   /// life of the process.
   func testThePendingMapIsBounded() throws {
