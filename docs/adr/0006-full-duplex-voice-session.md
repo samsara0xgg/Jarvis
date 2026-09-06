@@ -344,7 +344,9 @@ submitted output cursor        # handed to host callback
 estimated audible cursor       # DAC-time/monotonic mapping minus safety margin
 ```
 
-The backend uses `outputBufferDacTime` (or its native equivalent) to map the continuous output timeline to the monotonic clock. Starvation, inserted silence, device restart, the post-resample gain/kill envelope, and known system-output mute state advance or reset explicit timeline epochs; they are never hidden inside one cumulative counter. `cursor_quality` is `measured_dac`, `estimated`, or `unknown`, and all boundary calculations round backward. Ring empty is not completion: the audible horizon must conservatively pass the segment end.
+The backend uses `outputBufferDacTime` (or its native equivalent) to map the continuous output timeline to the monotonic clock. Starvation, inserted silence, device restart, the post-resample gain/kill envelope, and known system-output mute state advance or reset explicit timeline epochs; they are never hidden inside one cumulative counter.
+
+Of that clause, starvation is implemented: the generation ring zero-pads a dry read into a block the host cannot distinguish from legitimate silence, so it is counted where it happens — in the playback callback — and reported per generation as `starvation_gaps` on the playback terminal, alongside `host_underflows` — the pre-existing `_underflow_count`, which is PortAudio's own `output_underflow` status flag plus the oversized-host-block guard that fails a block silent, now persisted rather than only logged at close. Both are deltas against a snapshot taken at lease mint, so they are per `(response_id, playback_generation_id)` and never one cumulative counter. A gap is counted only when audio for the *same* generation resumes after a dry window: a dry ring before the first block is prefill, and a dry ring that never resumes is the end-of-generation tail that every clean response produces. The per-chunk `timeline_epoch` mechanism the same sentence describes remains unimplemented — `_timeline_epoch` is still copied from the lease at mint and never advanced mid-generation — as do the other four listed causes. `cursor_quality` is `measured_dac`, `estimated`, or `unknown`, and all boundary calculations round backward. Ring empty is not completion: the audible horizon must conservatively pass the segment end.
 
 The current `_played_samples` counter is explicitly forbidden as a heard-state input: it increments before playback gain is applied and before the device's DAC horizon. V1 advances heard state only through a complete segment whose final post-gain frames have crossed the conservative audible horizon with `audibility_class=normal`. Any interval that is muted, below the configured conservative intelligibility gain, affected by an unknown external/system gain, or killed mid-segment marks that segment `attenuated|muted|unknown` and does not advance `heard_through_sequence`. This deliberately under-counts ducked speech rather than claiming that quiet samples were heard.
 
@@ -359,7 +361,9 @@ V1 heard-text rule:
 
 Durable replay uses L5-owned content mappings, not a self-hash of claimed heard text:
 
-- `surface.playback_started` binds a playback lease to its committed surface source, response/turn, phase/channel, session, and normalized speech hash. An incremental lease (`incremental: true`, minted from the first permitted segment of a `kind="stream"` response) binds only its first segment's hash at activation; the full normalized speech hash is bound by `surface.playback_completed` against the concatenation of prepared segments.
+- `surface.playback_started` binds a playback lease to its committed surface source, response/turn, phase/channel, session, and normalized speech hash. An incremental lease (`incremental: true`, minted from the first permitted segment of a `kind="stream"` response) binds only its first segment's hash at activation; the full normalized speech hash is bound by `surface.playback_completed` against the concatenation of prepared segments. It also carries `estimated_output_latency_ns`, the host API's own output-latency estimate read from the stream at open when it is plausible, and the configured `estimated_output_latency_s` otherwise — a missing attribute, a degenerate `0.0`, or a value above one second are all treated as "the host did not fill this field". The value is device-dependent, so it is bound per lease rather than assumed.
+
+It sets `presentation_delay_ns` on every callback report of that generation, which is the audible horizon `due_ns = callback_monotonic_ns + presentation_delay_ns`. That horizon gates `record_audible` only: `submitted_samples` is recorded ungated and does not move. What does move is the heard side — `heard_through_sequence`, `heard_text`, and through `estimated_audible_samples` the `fully_presented` predicate that ends a generation. The previous hardcoded 120 ms is measured at 18.7 ms on the reference machine, so on that device the heard cursor now advances about 101 ms earlier than before. That is a deliberate correction, not a relaxation of the round-backward rule: 120 ms was never a safety margin anyone chose — it was the only value ever used, on every device, and on any output slower than 120 ms it claimed samples were heard *before* the DAC could have played them. Reading the host's own estimate makes the rule hold on slow devices at the cost of the accidental slack it had on fast ones. A conservative margin, if one is wanted, belongs on top of a real measurement as its own explicit term. A host-reported latency is still an estimate; `cursor_quality` stays `estimated` and nothing here is `measured_dac`.
 - Before provider submission or player segment activation, `surface.playback_segment_prepared` binds the exact normalized speech text and hash to its original surface chunk UID, raw segment hash, sequence, and playback activation UID. The voice text of `surface.response_emitted` that no chunk carried is one final segment sourced from that emitted row's UID. L5 owns normalization; L2 validates these facts without reimplementing speech extraction.
 - Checkpoints and playback terminals reference the activation and carry the explicit conservative `heard_text` plus hash. That row's `cursor_quality` describes the heard prefix reported in that row, not a lease-lifetime watermark, so an earlier report gap does not disqualify heard evidence proven after it. L2 accepts only the exact concatenation of prepared segments through the cursor, with monotonic sequence/sample counts. A self-consistent hash alone is insufficient. Older rows without these mappings remain unknown.
 - The canonical terminal key remains `response_id + playback_generation_id`; its session cannot be rebound. Only the current activation can advance the cursor. Starting another lease preserves previously proven heard words, and late callbacks cannot extend them.
@@ -613,19 +617,35 @@ surface.playback_checkpoint
 surface.playback_completed
   required: session_id, response_id, turn_id, playback_generation_id,
             heard_through_sequence, submitted_samples, speech_text_hash
-  optional: total_samples, provider, cursor_quality
+  optional: total_samples, provider, cursor_quality,
+            starvation_gaps, host_underflows
 
 surface.playback_interrupted
   required: session_id, response_id, turn_id, playback_generation_id,
             heard_through_sequence, submitted_samples, heard_text_hash, reason
   optional: heard_text, total_samples, interrupted_by_utterance_id,
-            interrupted_by_turn_id, provider, cursor_quality
+            interrupted_by_turn_id, provider, cursor_quality,
+            starvation_gaps, host_underflows
 
 surface.playback_failed
   required: session_id, response_id, turn_id, playback_generation_id,
             heard_through_sequence, submitted_samples, heard_text_hash, reason
-  optional: heard_text, provider, cursor_quality, retryable
+  optional: heard_text, provider, cursor_quality, retryable,
+            starvation_gaps, host_underflows
+
+surface.playback_lane_isolated
+  required: session_id, response_id, turn_id, playback_generation_id,
+            terminal_type, error_type, isolation_reason
 ```
+
+`surface.playback_lane_isolated` is non-terminal and does not participate in
+the playback CAS: it records that the media lane failed closed. `terminal_type`
+is the terminal that was being attempted and `error_type` the exception that
+prevented it; both are null at the fallback-cleanup site, where no terminal was
+in flight. `isolation_reason` is one of `callback_publication_unsettled`,
+`terminal_append_exhausted`, `task_escaped`, or `fallback_cleanup_unproven`,
+which distinguishes the six isolation call sites (two reach `_isolate_fallback_cleanup`, four reach `_isolate_terminal_debt`). The append is best effort:
+isolation is never prevented by its own record-keeping failing.
 
 Additive optional fields on existing `utterance.received`:
 
@@ -640,7 +660,22 @@ interrupted_response_id
 
 `submitted_samples` is the generation-local count handed to the host output timeline, not an assertion that those samples are already acoustic. Heard state uses `heard_through_sequence` and cursor quality.
 
-The sole exit for `completed/interrupted/failed` playback is the L2 atomic append primitive `terminalize_playback` (`jarvis/state/lifecycle_terminal.py`), keyed by `(response_id, playback_generation_id)`: inside the same `BEGIN IMMEDIATE` transaction it verifies no terminal exists, appends the canonical terminal event, and commits, returning `Event | AlreadyTerminal`. There is no separate claim marker or post-claim emit window. Checkpoints are non-terminal. No class named `PlaybackTerminalizer` exists; L5 reaches this primitive through two callers today — `voice_media.py`'s `_commit_terminal` and the boot reconciler in `playback_recovery.py` — and the at-most-one-terminal-per-`(response_id, playback_generation_id)` invariant holds across both because they share the one CAS primitive.
+The sole exit that *appends a terminal* for `completed/interrupted/failed` playback is the L2 atomic append primitive `terminalize_playback` (`jarvis/state/lifecycle_terminal.py`), keyed by `(response_id, playback_generation_id)`: inside the same `BEGIN IMMEDIATE` transaction it verifies no terminal exists, appends the canonical terminal event, and commits, returning `Event | AlreadyTerminal`. There is no separate claim marker or post-claim emit window. Checkpoints are non-terminal. No class named `PlaybackTerminalizer` exists; L5 reaches this primitive through two callers today — `voice_media.py`'s `_commit_terminal` and the boot reconciler in `playback_recovery.py` — and the at-most-one-terminal-per-`(response_id, playback_generation_id)` invariant holds across both because they share the one CAS primitive.
+
+There is a fourth exit that appends no terminal at all: lane isolation. It
+cannot honestly write one — three of its call sites isolate precisely because
+the callback publication never settled, so the required `heard_through_sequence`
+and `submitted_samples` cannot be filled, and a fourth isolates because the
+terminal CAS itself exhausted its retries. Isolation is permanent within the
+process: `_lane_isolated` is never reset, `_resume_after_wake_owned` refuses to
+re-admit while it is set, and the single owner construction site
+(`jarvis/runtime/inherent_loop.py`) is unsupervised and never recreated, so the
+process speaks nothing further until it restarts. `surface.playback_lane_isolated`
+is the durable evidence for that outcome. The orphaned `surface.playback_started`
+is separately terminalized by the next boot's reconciler as
+`surface.playback_interrupted` with `reason: "daemon_restart"`; that label
+describes the restart, not the isolation, and reading the isolation row is the
+only way to tell the two apart.
 
 The new `response.*` lifecycle and additive `surface.response_*` fields are owned by ADR-0008.
 

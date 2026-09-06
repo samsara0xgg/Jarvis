@@ -610,6 +610,9 @@ class AudioStreamPlayer:
     _RECENT_TOMBSTONE_LIMIT = 4096
     _PENDING_AUDIBLE_LIMIT = 8192
     _DEFAULT_LIFECYCLE_TIMEOUT_S = 2.0
+    # Above this a host-reported output latency is not a slow device, it is a
+    # field the host API never filled meaningfully; believe the configured one.
+    _MAX_PLAUSIBLE_OUTPUT_LATENCY_S = 1.0
     _STOP_STAGE_WAIT_S = 0.05
 
     def __init__(  # noqa: PLR0913, PLR0915 — explicit audio/lifecycle state
@@ -686,12 +689,15 @@ class AudioStreamPlayer:
         self._tombstoned_generations: set[int] = set()
         self._tombstone_order: deque[int] = deque()
         self._pending_audible: list[tuple[int, int, int]] = []
-        self._estimated_output_latency_ns = max(
+        self._default_output_latency_ns = max(
             0,
             int(estimated_output_latency_s * 1_000_000_000),
         )
+        self._estimated_output_latency_ns = self._default_output_latency_ns
         self._callback_first_generation = -1
         self._callback_commit_generation = -1
+        self._starvation_gaps = 0
+        self._starvation_dry_generation = -1
         self._callback_report_drop_seen = 0
         self._presentation_horizon_coalesced = 0
         self._presentation_horizon_coalesced_seen = 0
@@ -748,6 +754,12 @@ class AudioStreamPlayer:
                 ownership_attempt_id,
                 f"open:{type(exc).__name__}{named_device}",
             )
+        # PortAudio fills `latency` from Pa_GetStreamInfo() at open, so this is
+        # read before `stream.start()` and can never race the realtime callback
+        # that consumes `_estimated_output_latency_ns`.  A foreign host API may
+        # report nothing, a degenerate 0.0, or an absurd value; each falls back
+        # to the configured estimate rather than being believed.
+        self._estimated_output_latency_ns = self._host_output_latency_ns(stream)
         with self._lifecycle_lock:
             if (
                 self._lifecycle_state != "opening"
@@ -1455,6 +1467,25 @@ class AudioStreamPlayer:
         """Lifetime PortAudio output-underflow callbacks (watchdog signal)."""
         return self._underflow_count
 
+    def _host_output_latency_ns(self, stream: Any) -> int:  # noqa: ANN401 - foreign device handle
+        """Return the host's own output-latency estimate, or the configured one."""
+        reported = getattr(stream, "latency", None)
+        if isinstance(reported, (int, float)) and not isinstance(reported, bool):
+            seconds = float(reported)
+            if 0.0 < seconds <= self._MAX_PLAUSIBLE_OUTPUT_LATENCY_S:
+                return int(seconds * 1_000_000_000)
+        return self._default_output_latency_ns
+
+    @property
+    def estimated_output_latency_ns(self) -> int:
+        """Output latency in ns: host-reported when plausible, configured otherwise."""
+        return self._estimated_output_latency_ns
+
+    @property
+    def starvation_gaps(self) -> int:
+        """Lifetime generation-ring dry windows that a later block resumed."""
+        return self._starvation_gaps
+
     @property
     def callback_calls(self) -> int:
         """Lifetime PortAudio callback invocations (liveness signal)."""
@@ -1544,6 +1575,21 @@ class AudioStreamPlayer:
             self._callback_cursors,
             frames,
         )
+        # ADR-0006:347 starvation clause.  A short read means the ring ran
+        # dry; PortAudio cannot see it because `read_into` already zero-padded
+        # a complete, on-time block.  It only broke a timeline once audio for
+        # that generation had been committed (before that it is prefill) and
+        # once the *same* generation resumes (otherwise it is the normal
+        # end-of-generation tail, which every clean response produces).
+        generation_before = -1 if active_before is None else active_before.playback_generation_id
+        if generation_before >= 0:
+            if actual > 0 and generation_before == self._starvation_dry_generation:
+                # Any audio ends the dry window, including a short read: the
+                # gap was audible whether or not the ring refilled a whole block.
+                self._starvation_gaps += 1
+                self._starvation_dry_generation = -1
+            if actual < frames and generation_before == self._callback_first_generation:
+                self._starvation_dry_generation = generation_before
         if actual <= 0:
             return
         active_after = self._active_lease

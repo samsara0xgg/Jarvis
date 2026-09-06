@@ -558,5 +558,80 @@ stop after 30 turns.
 
 ## Progress
 
-(empty)
+- Slice 1 (starvation counters) — `_callback` counts a dry window only after
+  the generation has committed a block and only when the *same* generation
+  resumes, so the end-of-generation tail is 0. `surface.playback_completed`
+  payload measured across 3 runs: gated mid-stream response
+  `starvation_gaps: 1, host_underflows: 0, provider: minimax_ws_streaming`;
+  clean single-segment response `starvation_gaps: 0`. Hermetic 1059 passed,
+  64 deselected (baseline 1057).
+- Slice 2a (lane-isolation row) — **card deviation, please confirm**: the card
+  states `event_log.py` "enforces no event-type allowlist"; it does. A new type
+  is rejected with `UnregisteredEventTypeError`, canary
+  `tests/canary/test_emit_event_registered.py` enforces the same, and
+  `docs/spec.html` §5.4 states outright that every `emit_event` type must be
+  registered first. So the card's "No L2 change / the schema are untouched"
+  boundary is unachievable as written. Registered one `EventTypeSchema` entry
+  with `owner_layer="L5"` — the shape every existing `surface.playback_*` type
+  already uses, and exactly the "string and a schema note" the card itself
+  budgets. Nothing else in the card's design changed. Measured row:
+  `{isolation_reason: callback_publication_unsettled, terminal_type:
+  surface.playback_interrupted, playback_generation_id: 1, response_id: RISO,
+  turn_id: TISO, error_type: RuntimeError, session_id: BOOT34c5...}`; under an
+  injected append fault the row is absent, the run does not raise, and the next
+  three submits return `closed`.
+- Slice 2b (`terminal_commit_pending` guard) — the `speak_from_segments: true`
+  window IS drivable from the harness, so the guard is covered, not just
+  landed. `tests/integration/test_incremental_tts.py` gates the settle seam,
+  lets `_fail_active` publish `terminal_commit_pending`, then delivers
+  `response.failed` from a second thread inside that window. Observed with the
+  guard reverted, the defect is sharper than the card predicted: not two frames
+  but ONE frame with the wrong outcome —
+  `['ui:spoken:T-RG:interrupted']` while the durable terminal is
+  `surface.playback_failed`, i.e. the wire frame contradicts the Event Log.
+  With the guard: `['ui:spoken:T-RG:failed']`, one terminal, no isolation row.
+- Slice 3 (host output latency) — read from the stream at open, before
+  `stream.start()`; plausibility bound `0.0 < s <= 1.0`. Measured
+  `surface.playback_started.estimated_output_latency_ns`: `0.035` ->
+  `35000000`; `0.0` -> `120000000`; no `latency` attribute -> `120000000`;
+  `12.0` -> `120000000`. Live run on this machine's real default output device
+  (MacBook Pro Speakers, 48 kHz mono, blocksize 0, latency "low", never
+  started, no audio, route unchanged before and after):
+  `raw stream.latency = 0.018708333333333334` -> `18708333` ns. The hardcoded
+  120 ms was overestimating this device by 6.4x.
+- Docs to sync — ADR-0006 §4.2 optional lists, the new event, the "sole exit"
+  qualification, the §362 latency note and the §347 starvation clause all
+  updated. `docs/spec.html`: judged UNCHANGED and verified, not assumed — it
+  owns no playback payload fact (grep for `submitted_samples`,
+  `surface.playback`, `starvation`, `host_underflow`,
+  `estimated_output_latency` over `docs/spec.html` returns 0 hits). Its §5.4
+  does own the rule that every `emit_event` type must be registered first, and
+  that rule was followed rather than changed.
+- Verifier round (opus, fresh context, `realtime-integration..HEAD`) — it
+  independently reproduced the starvation semantics and the live canary and
+  found no false implementation, plus 5 real issues. Fixed 4:
+  (1) the §362 ADR sentence was wrong — `presentation_delay_ns` gates
+  `record_audible` only, NOT `submitted_samples`; rewritten to name the heard
+  side, the ~101 ms direction on this machine, and why 120 ms was never a
+  safety margin (it under-stated any device slower than 120 ms, i.e. it broke
+  round-backward in the unsafe direction);
+  (2) **the prefill half of goal condition 1 had no covering evidence** — the
+  clean-tail case starts its pump after the ring is full, so deleting the
+  prefill guard left both starvation cases green. Added
+  `test_a_normal_response_reports_no_starvation_for_its_prefill`, which runs
+  the pump before the response exists (measured: 10 dry blocks with a live
+  lease). Counterfactual: with the guard removed it fails `assert 1 == 0`;
+  (3) a resume via a SHORT read was not counted (the branch required a full
+  block), so a dropout that recovered with a partial block wrote
+  `starvation_gaps: 0`. Any `actual > 0` now ends the dry window;
+  (4) the guard newly made `_output_active.clear()` reachable while playback
+  was still committing, so `is_speaking()` could go False with audio still
+  playing and let Jarvis's own tail trigger the wake word. The guard now
+  returns immediately and lets the in-flight terminal own the whole exit.
+  Not changed, referred to the hub: the `> 1.0 s` fallback direction (falling
+  back to 0.12 s is the least conservative option, but acceptance pins
+  `12.0 -> 120_000_000`, so changing it would contradict the card); an
+  over-count of at most 1 when an interrupt lands inside the callback (dry
+  window was real, the resumed block is dropped); a single isolation can write
+  two rows (both true); three of four `isolation_reason` values are uncovered.
 

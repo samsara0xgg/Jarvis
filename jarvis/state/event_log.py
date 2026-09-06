@@ -814,7 +814,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # ``incremental`` marks a lease minted from the first permitted
         # segment: ``speech_text_hash`` is then the first segment's hash and
         # the full speech hash is bound by ``surface.playback_completed``.
-        optional_payload=("incremental",),
+        optional_payload=("incremental", "estimated_output_latency_ns"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -860,6 +860,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         ),
         optional_payload=(
             "total_samples", "provider", "cursor_quality", "heard_text", "heard_text_hash",
+            "starvation_gaps", "host_underflows",
         ),
         schema_version=1,
     ),
@@ -884,6 +885,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "interrupted_by_turn_id",
             "provider",
             "cursor_quality",
+            "starvation_gaps",
+            "host_underflows",
         ),
         schema_version=1,
     ),
@@ -901,7 +904,32 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "heard_text_hash",
             "reason",
         ),
-        optional_payload=("heard_text", "provider", "cursor_quality", "retryable"),
+        optional_payload=(
+            "heard_text", "provider", "cursor_quality", "retryable",
+            "starvation_gaps", "host_underflows",
+        ),
+        schema_version=1,
+    ),
+    # ADR-0006 §4.2: the fourth exit from playback, which appends no terminal.
+    # The media lane fails closed and speaks nothing further until the process
+    # restarts; without this row that outcome is unprovable after the fact and
+    # the next boot's reconciler mislabels the orphan `daemon_restart`.
+    # `terminal_type`/`error_type` are null at the fallback-cleanup site, where
+    # no terminal was being attempted and no exception reached the isolator.
+    EventTypeSchema(
+        event_type="surface.playback_lane_isolated",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=(
+            "session_id",
+            "response_id",
+            "turn_id",
+            "playback_generation_id",
+            "terminal_type",
+            "error_type",
+            "isolation_reason",
+        ),
+        optional_payload=(),
         schema_version=1,
     ),
     # F6: surface.user_intent — spec.html §5.4 line 1442 canonical;

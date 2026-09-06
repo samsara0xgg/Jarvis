@@ -39,7 +39,7 @@ from jarvis.surface.voice_ledger import (
 from scripts import bench_voice_streaming_output as voice_bench
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
     from typing import Any
 
     from jarvis.shared import Event
@@ -380,6 +380,130 @@ def _terminal_rows(conn: sqlite3.Connection) -> list[tuple[str, dict[str, object
         ),
     ).fetchall()
     return [(str(row[0]), json.loads(str(row[1]))) for row in rows]
+
+
+def _terminal_for(
+    conn: sqlite3.Connection,
+    *,
+    response_id: str,
+) -> tuple[str, dict[str, object]]:
+    return next(
+        (kind, payload)
+        for kind, payload in _terminal_rows(conn)
+        if payload["response_id"] == response_id
+    )
+
+
+def _payload_int(payload: dict[str, object], key: str) -> int:
+    value = payload[key]
+    assert isinstance(value, int)
+    return value
+
+
+def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 3.0) -> None:
+    """Block until a pump/actor-driven condition holds, without asserting on it."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.0005)
+    msg = "timed out waiting for the media fixture to reach its gate condition"
+    raise AssertionError(msg)
+
+
+def _generation_ring(player: voice_tts.AudioStreamPlayer) -> voice_tts._GenerationRingBuffer:
+    ring = player._generation_ring  # noqa: SLF001
+    assert ring is not None
+    return ring
+
+
+def test_mid_generation_ring_starvation_lands_on_the_playback_terminal(
+    tmp_path: Path,
+) -> None:
+    """A dry-then-resumed ring is durable as starvation_gaps on the terminal row."""
+    db_path = tmp_path / "starvation.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider()
+    second_segment = threading.Event()
+    provider.segment_gates[("RS", 1)] = second_segment
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    try:
+        with _CallbackPump(player):
+            rows = _emit_response(
+                conn,
+                response_id="RS",
+                group_id="GS",
+                turn_id="TS",
+                text=["first segment. ", "second segment."],
+            )
+            asyncio.run(_submit_response(pipeline, rows))
+            ring = _generation_ring(player)
+            # The host has consumed every sample of segment 0 while the
+            # provider is still gated: the generation is mid-stream and dry.
+            _wait_until(lambda: ring._write_idx > 0 and ring.available_read() <= 0)  # noqa: SLF001
+            second_segment.set()
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    kind, payload = _terminal_for(open_event_log(db_path), response_id="RS")
+    assert kind == "surface.playback_completed"
+    assert payload["provider"] != "macos_say"
+    assert payload["playback_generation_id"] == 1
+    assert _payload_int(payload, "starvation_gaps") >= 1
+    assert _payload_int(payload, "host_underflows") == 0
+
+
+def test_a_clean_response_reports_no_starvation_for_its_end_of_generation_tail(
+    tmp_path: Path,
+) -> None:
+    """The false-pass guard: the tail every clean response produces counts zero."""
+    db_path = tmp_path / "clean-tail.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider()
+    segment_final = threading.Event()
+    provider.final_gates[("RC", 0)] = segment_final
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    try:
+        rows = _emit_response(
+            conn,
+            response_id="RC",
+            group_id="GC",
+            turn_id="TC",
+            text="clean tail",
+        )
+        asyncio.run(_submit_response(pipeline, rows))
+        ring = _generation_ring(player)
+        # Every sample of the single segment is in the ring before the host
+        # ever runs, so the only dry window is the tail after the last block.
+        _wait_until(lambda: ring._write_idx >= _Behavior().samples)  # noqa: SLF001
+        with _CallbackPump(player):
+            segment_final.set()
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    kind, payload = _terminal_for(open_event_log(db_path), response_id="RC")
+    assert kind == "surface.playback_completed"
+    assert payload["provider"] != "macos_say"
+    assert _payload_int(payload, "starvation_gaps") == 0
+    assert _payload_int(payload, "host_underflows") == 0
 
 
 def test_generation_cas_races_and_thousand_cycle_churn() -> None:  # noqa: C901, PLR0915
@@ -1749,6 +1873,180 @@ def test_after_drain_same_group_and_foreground_supersede(tmp_path: Path) -> None
     assert terminal_kind["RS"] == "surface.playback_completed"
 
 
+def _isolation_rows(conn: sqlite3.Connection) -> list[dict[str, object]]:
+    rows = conn.execute(
+        "SELECT payload_json FROM events WHERE type = 'surface.playback_lane_isolated' ORDER BY id",
+    ).fetchall()
+    return [cast("dict[str, object]", json.loads(str(row[0]))) for row in rows]
+
+
+def test_a_normal_response_reports_no_starvation_for_its_prefill(
+    tmp_path: Path,
+) -> None:
+    """The other false-pass guard: the host runs before the first sample exists.
+
+    The clean-tail case starts its pump only once the ring is full, so it never
+    exercises the prefill half of the rule. Here the host is already calling
+    into a dry ring before the provider has produced anything, which is every
+    real response's opening moment.
+    """
+    db_path = tmp_path / "prefill.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    try:
+        with _CallbackPump(player):
+            # The pump is already starved before the response exists.
+            _wait_until(lambda: player.callback_calls > 0)
+            rows = _emit_response(
+                conn,
+                response_id="RP0",
+                group_id="GP0",
+                turn_id="TP0",
+                text="prefill is not starvation",
+            )
+            asyncio.run(_submit_response(pipeline, rows))
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+    kind, payload = _terminal_for(open_event_log(db_path), response_id="RP0")
+    assert kind == "surface.playback_completed"
+    assert payload["provider"] != "macos_say"
+    assert _payload_int(payload, "starvation_gaps") == 0
+    assert _payload_int(payload, "host_underflows") == 0
+
+
+def test_an_unsettled_callback_publication_writes_a_durable_lane_isolated_row(
+    tmp_path: Path,
+) -> None:
+    """Total silence until restart stops being unprovable after the fact."""
+    db_path = tmp_path / "lane-isolated.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    hold = threading.Event()
+    provider.final_gates[("RISO", 0)] = hold
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    try:
+        with (
+            _CallbackPump(player),
+            patch.object(player, "settle_interrupted_generation", return_value=None),
+        ):
+            rows = _emit_response(
+                conn,
+                response_id="RISO",
+                group_id="GISO",
+                turn_id="TISO",
+                text="this lane is about to go deaf",
+            )
+            asyncio.run(_submit_response(pipeline, rows))
+            _await_playback_started(conn, "RISO")
+            assert pipeline.stop_foreground_output("RISO") != "applied"
+    finally:
+        hold.set()
+        assert pipeline.close(wait_timeout_s=2.0)
+        conn.close()
+
+    verdict = open_event_log(db_path)
+    try:
+        isolated = _isolation_rows(verdict)
+        assert len(isolated) == 1
+        payload = isolated[0]
+        assert payload["isolation_reason"] == "callback_publication_unsettled"
+        assert payload["terminal_type"] == "surface.playback_interrupted"
+        assert payload["playback_generation_id"] == 1
+        assert payload["response_id"] == "RISO"
+        assert payload["turn_id"] == "TISO"
+        assert payload["error_type"] == "RuntimeError"
+        assert payload["session_id"]
+        # No terminal could be written honestly: the snapshot never settled.
+        assert _playback_rows_for(verdict, "RISO", "surface.playback_interrupted") == 0
+    finally:
+        verdict.close()
+
+
+def test_isolation_completes_even_when_its_own_durable_row_cannot_be_appended(
+    tmp_path: Path,
+) -> None:
+    """Record-keeping failure must never leave the lane un-isolated."""
+    db_path = tmp_path / "lane-isolated-append-fault.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    hold = threading.Event()
+    provider.final_gates[("RISOF", 0)] = hold
+    player = _player()
+    pipeline = voice_media.StreamingTTSPipeline(
+        provider=provider,
+        player=player,
+        conn_factory=lambda: open_event_log(db_path),
+        boot_high_water_id=0,
+        config=_config(),
+        start_player=False,
+    )
+    original_emit = emit_event
+
+    def _faulted_emit(*args: object, **kwargs: object) -> object:
+        if kwargs.get("type") == "surface.playback_lane_isolated":
+            msg = "injected lane isolation append fault"
+            raise RuntimeError(msg)
+        return original_emit(*cast("Any", args), **cast("Any", kwargs))
+
+    try:
+        with (
+            _CallbackPump(player),
+            patch.object(player, "settle_interrupted_generation", return_value=None),
+            patch.object(voice_media, "emit_event", side_effect=_faulted_emit),
+        ):
+            rows = _emit_response(
+                conn,
+                response_id="RISOF",
+                group_id="GISOF",
+                turn_id="TISOF",
+                text="the ledger fails too",
+            )
+            asyncio.run(_submit_response(pipeline, rows))
+            _await_playback_started(conn, "RISOF")
+            assert pipeline.stop_foreground_output("RISOF") != "applied"
+            # The lane is isolated: nothing further is admitted, and the
+            # injected append failure did not escape the actor.
+            successor = _emit_response(
+                conn,
+                response_id="RISOF-NEXT",
+                group_id="GISOF-NEXT",
+                turn_id="TISOF-NEXT",
+                text="never spoken",
+            )
+            outcomes = asyncio.run(_submit_response(pipeline, successor))
+            assert [outcome.status for outcome in outcomes] == ["closed"] * 3
+    finally:
+        hold.set()
+        assert pipeline.close(wait_timeout_s=2.0)
+        conn.close()
+
+    verdict = open_event_log(db_path)
+    try:
+        assert _isolation_rows(verdict) == []
+        assert _playback_rows_for(verdict, "RISOF-NEXT", "surface.playback_started") == 0
+    finally:
+        verdict.close()
+
+
 def _count_rows(conn: sqlite3.Connection, sql: str, *params: object) -> int:
     row = conn.execute(sql, params).fetchone()
     assert row is not None
@@ -2450,9 +2748,16 @@ def test_shutdown_deadline_is_concurrent_monotonic_min(tmp_path: Path) -> None:
 
 
 class _FakeOutputStream:
-    def __init__(self, *, start_error: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        start_error: BaseException | None = None,
+        latency: float | None = None,
+    ) -> None:
         self.active = True
         self._start_error = start_error
+        if latency is not None:
+            self.latency = latency
 
     def start(self) -> None:
         if self._start_error is not None:
@@ -3424,3 +3729,69 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
     assert _emitted_vol({"enabled": False}) == 3
     assert _emitted_vol({"enabled": False, "tts_volume": 7}) == 7
     conn.close()
+
+
+@pytest.mark.parametrize(
+    ("reported_latency", "expected_ns"),
+    [
+        (0.035, 35_000_000),
+        (0.0, 120_000_000),
+        (None, 120_000_000),
+        (12.0, 120_000_000),
+    ],
+    ids=["host_reports_35ms", "degenerate_zero", "attribute_absent", "absurd_value"],
+)
+def test_playback_started_carries_the_host_output_latency_or_the_configured_one(
+    tmp_path: Path,
+    reported_latency: float | None,
+    expected_ns: int,
+) -> None:
+    """A degenerate 0.0 is not zero latency, and 12 s is not a slow device."""
+    db_path = tmp_path / f"latency-{reported_latency}.db"
+    conn = open_event_log(db_path)
+    provider = _FakeProvider(candidate_count=1)
+    player = voice_tts.AudioStreamPlayer(
+        sample_rate_hz=8_000,
+        ring_seconds=0.25,
+        lazy_open=True,
+        generation_safe=True,
+        estimated_output_latency_s=0.12,
+    )
+    stream = _FakeOutputStream(latency=reported_latency)
+    with patch.object(voice_tts, "_open_output_stream", return_value=stream):
+        # The owner opens the device on its own startup, so the patched stream
+        # must be in place before the pipeline exists.
+        pipeline = voice_media.StreamingTTSPipeline(
+            provider=provider,
+            player=player,
+            conn_factory=lambda: open_event_log(db_path),
+            boot_high_water_id=0,
+            config=_config(),
+            start_player=True,
+        )
+    try:
+        with _CallbackPump(player):
+            rows = _emit_response(
+                conn,
+                response_id="RL",
+                group_id="GL",
+                turn_id="TL",
+                text="latency on the wire",
+            )
+            asyncio.run(_submit_response(pipeline, rows))
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+    finally:
+        assert pipeline.close(wait_timeout_s=2.0)
+        conn.close()
+
+    verdict = open_event_log(db_path)
+    try:
+        started = verdict.execute(
+            "SELECT payload_json FROM events WHERE type = 'surface.playback_started' "
+            "AND json_extract(payload_json, '$.response_id') = 'RL'",
+        ).fetchall()
+        assert len(started) == 1
+        payload = cast("dict[str, object]", json.loads(str(started[0][0])))
+        assert _payload_int(payload, "estimated_output_latency_ns") == expected_ns
+    finally:
+        verdict.close()

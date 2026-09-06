@@ -370,6 +370,8 @@ class _ActiveResponse:
     terminal_commit_pending: bool = False
     activation_event_uid: str | None = None
     prepared_text: str = ""
+    starvation_gaps_at_start: int = 0
+    host_underflows_at_start: int = 0
 
 
 @dataclass(frozen=True)
@@ -1995,6 +1997,18 @@ class StreamingTTSPipeline:
         reason = event.type.replace(".", "_")
         active = self._active
         if active is not None and active.response is response:
+            if active.terminal_commit_pending:
+                # A media-side terminal is already in flight and owns this
+                # response's whole exit: it will release the lease, advance the
+                # queue and clear `_output_active` itself. Re-entering
+                # `_interrupt_active` would cancel `_play_response` inside its
+                # own `finally`, skipping `leave_output()` and leaving the
+                # system output lease held, then emit a contradictory `spoken`
+                # frame once the CAS answers `AlreadyTerminal`. Clearing
+                # `_output_active` here is just as wrong: audio is still
+                # playing until that terminal lands, and `is_speaking()` feeds
+                # the wake listener.
+                return
             await self._interrupt_active(reason=reason)
             while self._after_drain:
                 queued = self._after_drain.popleft()
@@ -2161,7 +2175,12 @@ class StreamingTTSPipeline:
         if isinstance(result, ForegroundBusy):
             msg = "media owner/player foreground state diverged"
             raise RuntimeError(msg)  # noqa: TRY004 - runtime state, not caller type
-        active = _ActiveResponse(response=response, lease=result)
+        active = _ActiveResponse(
+            response=response,
+            lease=result,
+            starvation_gaps_at_start=self._player.starvation_gaps,
+            host_underflows_at_start=self._player.underflow_count,
+        )
         self._active = active
         self._output_active.set()
         active.task = asyncio.create_task(
@@ -2217,6 +2236,9 @@ class StreamingTTSPipeline:
                     "phase": response.phase,
                     "channel": response.channel,
                     "speech_text_hash": speech_hash,
+                    "estimated_output_latency_ns": (
+                        self._player.estimated_output_latency_ns
+                    ),
                     **({"incremental": True} if live else {}),
                 },
                 source_event_id=response.source_event_id,
@@ -2731,6 +2753,14 @@ class StreamingTTSPipeline:
             response_id=active.response.response_id,
             playback_generation_id=active.lease.playback_generation_id,
         )
+        # No terminal was being attempted and no exception reached here: the
+        # janitor simply could not prove the `say` subprocess was quiescent.
+        self._emit_lane_isolated(
+            active,
+            terminal_type=None,
+            error_type=None,
+            isolation_reason="fallback_cleanup_unproven",
+        )
         self._request_shutdown_deadline(self._config.shutdown_timeout_s)
 
     async def _drain_and_complete(
@@ -2815,6 +2845,7 @@ class StreamingTTSPipeline:
                 active,
                 event_type="surface.playback_failed",
                 error=RuntimeError("callback publication did not settle"),
+                isolation_reason="callback_publication_unsettled",
             )
             return
         durable = await self._commit_terminal_durable(
@@ -2846,6 +2877,7 @@ class StreamingTTSPipeline:
                 active,
                 event_type="surface.playback_interrupted",
                 error=RuntimeError("callback publication did not settle"),
+                isolation_reason="callback_publication_unsettled",
             )
             return False
         durable = await self._commit_terminal_durable(
@@ -2990,6 +3022,7 @@ class StreamingTTSPipeline:
             active,
             event_type=event_type,
             error=last_error or RuntimeError("terminal append exhausted retries"),
+            isolation_reason="terminal_append_exhausted",
         )
         return False
 
@@ -3032,6 +3065,7 @@ class StreamingTTSPipeline:
                 active,
                 event_type="surface.playback_failed",
                 error=error,
+                isolation_reason="task_escaped",
             )
             return
         recovery = asyncio.create_task(
@@ -3074,6 +3108,8 @@ class StreamingTTSPipeline:
             "cursor_quality": snapshot.cursor_quality,
             "heard_text_hash": snapshot.heard_text_hash,
             "heard_text": snapshot.heard_text,
+            "starvation_gaps": (self._player.starvation_gaps - active.starvation_gaps_at_start),
+            "host_underflows": (self._player.underflow_count - active.host_underflows_at_start),
         }
         if event_type == "surface.playback_completed":
             payload["speech_text_hash"] = speech_text_hash or hashlib.sha256(b"").hexdigest()
@@ -3137,12 +3173,54 @@ class StreamingTTSPipeline:
                     output_outcome=event_type.removeprefix("surface.playback_"),
                 )
 
+    def _emit_lane_isolated(
+        self,
+        active: _ActiveResponse,
+        *,
+        terminal_type: str | None,
+        error_type: str | None,
+        isolation_reason: str,
+    ) -> None:
+        """Append the durable record that this lane will speak nothing again.
+
+        Best effort by construction: ``_lane_isolated`` is never reset and no
+        supervisor recreates the owner, so the process is deaf until restart.
+        Isolation must never be prevented by its own record-keeping failing.
+        """
+        try:
+            emit_event(
+                self._require_conn(),
+                type="surface.playback_lane_isolated",
+                payload={
+                    "session_id": active.lease.session_id,
+                    "response_id": active.response.response_id,
+                    "turn_id": active.response.turn_id,
+                    "playback_generation_id": active.lease.playback_generation_id,
+                    "terminal_type": terminal_type,
+                    "error_type": error_type,
+                    "isolation_reason": isolation_reason,
+                },
+                source_event_id=(
+                    active.activation_event_uid or active.response.source_event_id
+                ),
+                correlation={"turn_id": active.response.turn_id},
+            )
+        except Exception:
+            LOGGER.exception(
+                "media lane isolation row could not be appended: "
+                "response_id=%s generation=%d reason=%s",
+                active.response.response_id,
+                active.lease.playback_generation_id,
+                isolation_reason,
+            )
+
     def _isolate_terminal_debt(
         self,
         active: _ActiveResponse,
         *,
         event_type: str,
         error: BaseException,
+        isolation_reason: str,
     ) -> None:
         """Fail closed: retain the ledger and forbid every successor generation."""
         self._lane_isolated = True
@@ -3164,6 +3242,12 @@ class StreamingTTSPipeline:
             playback_generation_id=active.lease.playback_generation_id,
             terminal_type=event_type,
             error_type=type(error).__name__,
+        )
+        self._emit_lane_isolated(
+            active,
+            terminal_type=event_type,
+            error_type=type(error).__name__,
+            isolation_reason=isolation_reason,
         )
         self._request_shutdown_deadline(self._config.shutdown_timeout_s)
 
