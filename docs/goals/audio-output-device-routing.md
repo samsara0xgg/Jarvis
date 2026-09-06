@@ -348,7 +348,8 @@ Or stop after 25 turns.
   and `--config` pointing at a directory that also holds a runtime root would
   make `replay_barge_in.py` copy that root into tmp (wasteful, not wrong).
 - Live burn re-run on the final tip (`4b669cd`, after the verifier fixes changed
-  the config read) — `1 passed in 32.19s`, root
+  the config read; intentionally not re-pinned to a later sha) — `1 passed in
+  32.19s`, root
   `~/.jarvis-lane-b-test/crash-20260905T232547Z`, port 56714. Warm-up spoke with
   `playback provider='minimax_ws_streaming'`; SIGKILL pid 59044; boot 2 logged
   `boot reconciliation closed 1 open playback generation(s)`, `COUNT(*)` = 1,

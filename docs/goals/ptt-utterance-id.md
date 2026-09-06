@@ -392,8 +392,9 @@ Or stop after 30 turns.
   wake path: its `utterance.received` payload previously had no `utterance_id`
   key and now always carries a minted one, and the `utterance_committed` trace
   attribute (voice_pipeline.py:230) goes from None to a real value. The claim
-  in commit b29d87e's body that "the mint never fires there" was wrong; the
-  amended body states this instead.
+  in commit b29d87e's body (intentionally kept as the pre-amend reference) that
+  "the mint never fires there" was wrong; the amended body states this
+  instead.
   The effect is additive and no reader breaks: no reader tests for absence
   (R1 above), `emit_event` validates only required payload fields
   (jarvis/state/event_log.py:1561-1564) so an extra key is legal, nothing
