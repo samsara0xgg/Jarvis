@@ -1243,7 +1243,14 @@ class DuplexVoiceSession:
                     # ADR-0006 §5: listening begins at arm, before speech onset.
                     # Emitted before the replayed frames' outcomes so the card
                     # surfaces while the owner is still speaking, not after.
-                    self._broadcast("listening", turn_id=self._assembler.turn_id)
+                    #
+                    # arm() replays buffered frames through feed(), and every
+                    # feed() that produces an outcome resets the assembler,
+                    # clearing _turn_id. Each outcome is built with the freshly
+                    # minted turn id just before that reset, so it is the
+                    # reliable reader whenever replay produced one.
+                    turn_id = outcomes[0].turn_id if outcomes else self._assembler.turn_id
+                    self._broadcast("listening", turn_id=turn_id)
                     for outcome in outcomes:
                         self._handle_capture_outcome(outcome)
             finally:

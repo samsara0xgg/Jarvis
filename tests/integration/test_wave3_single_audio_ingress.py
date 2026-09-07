@@ -4681,3 +4681,53 @@ def test_a_second_wake_while_already_armed_broadcasts_no_second_listening(
     assert close.definitively_closed
     listening_calls = [call for call in recorder.voice_calls if call[0] == "listening"]
     assert listening_calls == [("listening", listening_calls[0][1])]
+
+
+def test_listening_carries_the_armed_turn_id_when_arm_replay_itself_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`arm()` replay can reset the assembler; `listening` still carries that turn."""
+    monkeypatch.setitem(
+        voice_audio._MODE_THRESHOLDS,
+        "record",
+        voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2),
+    )
+    backend = _FakeBackend()
+    ingress = _ingress(backend)
+    recorder = _VoiceBroadcastRecorder()
+    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+        session = _listening_session(
+            recorder,
+            ingress,
+            _FakeWakeEngine(detections=set()),
+            armed_no_speech_timeout_s=0.032,
+        )
+        assembler = session._assembler
+        assembler.prepare()
+        # Buffered silence ahead of the wake cursor: arm() replays it through
+        # feed(), the armed deadline expires inside arm(), and the assembler
+        # resets before arm() ever returns.
+        for index in range(3):
+            assembler.observe_idle(
+                voice_audio.CanonicalAudioFrame(
+                    stream_epoch=1,
+                    sequence=index,
+                    sample_cursor=index * 512,
+                    sample_rate_hz=16_000,
+                    frame_count=512,
+                    adc_time_s=None,
+                    captured_monotonic_ns=index,
+                    discontinuity_before=False,
+                    pcm16_mono=_pcm(0),
+                ),
+            )
+        session._detections.put_nowait(voice_session.WakeDetection(1, 0, 0, 0.9))
+        session._drain_detection_commands()
+        assert not assembler.armed
+        # The assembler's own turn id is already cleared by the replay reset.
+        assert assembler.turn_id == ""
+
+    turn_id = recorder.voice_calls[0][1]
+    assert turn_id != ""
+    assert recorder.voice_calls == [("listening", turn_id), ("empty", turn_id)]
+    assert recorder.payloads[1] == {"reason": "armed_no_speech_timeout"}
