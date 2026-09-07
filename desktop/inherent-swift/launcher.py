@@ -24,6 +24,7 @@ PROJECT_ROOT = HERE.parent.parent                   # repo root
 XCODEPROJ = HERE / "InherentCard.xcodeproj"
 PROJECT_YML = HERE / "Project.yml"
 APP_BIN = HERE / "build/Build/Products/Debug/InherentCard.app/Contents/MacOS/InherentCard"
+SOURCE_DIRS = (HERE / "InherentCard", HERE / "InherentRealtime")   # the two targets `build` compiles
 
 
 def ensure_xcodeproj() -> None:
@@ -34,7 +35,11 @@ def ensure_xcodeproj() -> None:
 
 
 def ensure_app_built() -> None:
-    if APP_BIN.exists():
+    newest_source = max(
+        p.stat().st_mtime
+        for p in [PROJECT_YML, *(f for d in SOURCE_DIRS for f in d.rglob("*.swift"))]
+    )
+    if APP_BIN.exists() and APP_BIN.stat().st_mtime >= newest_source:
         return
     LOG.info("building InherentCard (Debug)")
     subprocess.check_call(
