@@ -322,6 +322,8 @@ New keys in `config/...` (matching the existing legacy config shape so secrets /
 | `voice.normalizer.aliases` | `{}` | structured `{canonical: [alias, ...]}` |
 | `voice.normalizer.fuzzy_enabled` | `false` | Levenshtein fallback |
 
+**Superseded.** The `voice.*` namespace is negated by ADR-0006 §5 ("there is no `voice:` namespace") and not one of these sixteen rows was ever implemented. The values that do exist live under `realtime:` — the artifact paths as `realtime.sensevoice_dir` / `realtime.silero_vad_path`, the wake threshold and the MiniMax voice/endpoints as flat `realtime.*` keys. The table stays as the record of what was once intended; do not add to it.
+
 Environment variables:
 
 | Var | Default | Notes |

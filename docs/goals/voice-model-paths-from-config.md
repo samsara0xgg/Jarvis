@@ -211,7 +211,7 @@ sixteen. Each is a fact that applies whatever wave is on:
 | `tts_model` | `speech-2.8-turbo` | `voice_tts.py:1862` |
 | `tts_primary_endpoint` | `https://api-uw.minimax.io` | `voice_tts.py:1860` |
 | `tts_fallback_endpoint` | `https://api.minimax.chat` | `voice_tts.py:1861` |
-| `tts_sample_rate_in_hz` | `32000` | literal at `inherent_loop.py:1878` |
+| `tts_sample_rate_in_hz` | `32000` | literal at `inherent_loop.py:1879` |
 | `tts_ring_seconds` | `30.0` | literal at `inherent_loop.py:1966` |
 | `tts_connect_timeout_s` | `3.0` | `voice_tts.py:1848` / `:1866` |
 | `tts_task_start_timeout_s` | `3.0` | `_TASK_START_TIMEOUT` `:1849` |
@@ -733,4 +733,54 @@ If the card contradicts the repository, stop and report; do not redesign.
 
 ## Progress
 
-- (not started)
+- Baseline at `68b8024`: 1069 passed, 1 skipped, 64 deselected — the card's
+  measured number, re-measured before the first edit.
+- Six slices landed: model paths (`b9bab6f`), `_VoiceKnobs` and the
+  twenty-four flat keys (`3c2b369`), the derived output rate (`a670b63`), the
+  two wave-scoped keys (`64cd4d4`), the startup record (`b2d5b61`),
+  `config/jarvis.yaml` (`74b3d29`).
+- Acceptance A (paths): positive from `cwd=/` resolved both configured
+  absolute paths with `models_ok=true` and no missing-models ERROR; the
+  negative control on the pre-change config from the same cwd showed
+  `models_ok=false` and the ERROR; a configured relative path resolved to the
+  same absolute path from `cwd=/`; `POST /inherent/asr-submit` returned
+  `"What time is it right now?"` and `"小月现在几点了？"` — real SenseVoice
+  decodes out of the configured directory.
+- Acceptance B (subset reaches its consumer): `wake_threshold` 0.87,
+  `tts_voice` GentleGirl, `tts_task_start_timeout_s` 7.5 and
+  `vad.record.prob_threshold` 0.61 all appeared in the record; the negative
+  control showed 0.5 / ExplorativeGirl / 3.0 / 0.4. A partial VAD override
+  left `vad_record_db_threshold` and the whole `tts` profile untouched. A
+  malformed `wake_threshold` warned, fell back to 0.5 and kept the daemon
+  serving. Two profiles with disagreeing debounce triples were refused whole.
+- Acceptance C: `streaming_output.ring_seconds: 0` produced
+  `realtime.streaming_output config invalid (realtime.streaming_output.
+  ring_seconds must be a positive number)`; `4.0` produced no such line.
+  `single_audio_ingress.device_miss_limit` has no device-free live
+  observable — see below.
+- Acceptance D: at `canonical_sample_rate_hz: 44100` the
+  `capability/config validation failed` line appears with the equality term
+  restored and is absent without it; at 48000 it appears in neither. Every
+  run used an unresolvable `output_device`, so no audio device was opened
+  (`open:ValueError device='jarvis-no-such-output-device'` on both paths).
+- Acceptance E: from the repo root with the pre-change config, all 27 record
+  fields equal their `68b8024` source constants (checked mechanically), the
+  missing-models ERROR appears exactly once, and `POST /inherent/submit`
+  returns a `turn_id`. The shipped config produces a byte-identical record.
+  `device_miss_limit` (3) and `ring_seconds` (2.0) match their pre-change
+  constants through their own parsers.
+- **Not verified live: `realtime.single_audio_ingress.device_miss_limit`.**
+  Its only consumer is `AudioIngress`, and the parse error that would name it
+  is only reachable through `_spawn_voice_input_owners`, which
+  `JARVIS_VOICE_DISABLE_WAKE=1` skips — and dropping that flag would open the
+  microphone the owner's daemon holds. Value and absent-key fallback are
+  verified through the shipped parser; the boot that exercises it needs a free
+  microphone and is the owner's to schedule.
+- Deviation from the card as written: every daemon run also sets
+  `JARVIS_LOG_LEVEL=INFO`. Without it `logging.basicConfig` is never called
+  (`jarvis/__main__.py:14-18`) and no INFO record reaches the log. The owner's
+  live daemon runs at INFO (347 INFO lines in its `daemon.log`), so the record
+  reaches production.
+- `sherpa-onnx` was missing from this worktree's venv and installed per
+  `pyproject.toml:159`, which names it an operator-installed voice wheel. The
+  ASR acceptance is unrunnable in a fresh worktree without it.
