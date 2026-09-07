@@ -553,13 +553,29 @@ The decay is synthesized from the last sample the callback handed the host, not 
 
 The decay therefore lives at the one shared site all six interrupt entry points converge on — `_interrupt_snapshot`'s `interrupt_generation` seen from the callback's side — which means it covers user stop, system sleep, response-terminal, supersede, media-owner shutdown, and failure alike. It also covers natural end-of-generation and underrun whenever those produce a fully silent block. That widening is intended: it costs no audible content, because the decay is synthesized into a block that would otherwise be silence and never attenuates a sample that carries content. When audio ends on a block boundary the decay is appended *after* the last real sample rather than replacing it.
 
-D11 deliberately does **not** cover the partial block. A short ring read zero-pads inside its own block (`_GenerationRingBuffer.read_into`) and that block still takes the success path, so a response that ends mid-block, and a mid-stream underrun, still step to zero in one sample there; the latched last-emitted sample is then the pad's `0.0`, which makes the following silent block's decay a no-op. Covering that case means reshaping content the ledger has already accounted as submitted, which is a different decision from ramping the silence the interrupt produces, and it is not what was authorized here.
+D11 covers only the *fully silent* block. A short ring read (`0 < actual < frames`) zero-pads inside its own block (`_GenerationRingBuffer.read_into`) and that block still takes the success path, so the step from the last real sample to the first pad sample happens there; the latched last-emitted sample is then the pad's `0.0`, which makes the following silent block's decay a no-op. That edge belongs to D12. The reason recorded here for deferring it — that covering it "means reshaping content the ledger has already accounted as submitted" — was wrong; D12 states why.
 
 The declick advances no ledger state — no `_CallbackReport`, no `_played_samples`, no ring cursor — so `estimated_audible_samples`, `heard_text`, `heard_through_sequence` and the `surface.playback_interrupted` / `surface.playback_failed` payloads are unchanged. It sets no persistent gain, so the next activated generation plays at full amplitude with no un-mute call.
 
 This is **not** D8's `duck_gain` ramp or F11's unduck. Those are barge-in ducking — attenuate while listening, then restore — and remain deferred and unbuilt; `_GainRamp`, `set_gain`, `duck` and `unduck` keep no production caller. D8 was always silent on the amplitude shape at the moment of the cut, which is what D11 fixes. `_GainRamp` is also structurally unusable here: `apply` multiplies the block, and driving it to zero would leave the device muted with no production caller able to restore it.
 
 The fade length is a module constant, not a config key: it is a property of human hearing, not of a deployment.
+
+### D12. The last real sample of a short ring read is ramped inside its own block
+
+When `_GenerationRingBuffer.read_into` returns `0 < actual < frames`, the callback attenuates that block's own last `min(actual, _DECLICK_SAMPLES)` real samples with a linear ramp that starts at unity and reaches exactly `0.0` on the block's last real sample, ahead of the zero pad `read_into` has already written. This is the one place a generation's audio meets silence that D11's decay cannot reach. D11 is armed from `_declick_last_sample`, which this same block sets from `view[frames - 1]` — the pad's `0.0` — so the following silent block decays from nothing. The discontinuity is inside the partial block, at the junction `read_into` created, and it has already been handed to PortAudio by the time the next callback runs.
+
+Whether that step is audible depends on the amplitude of the last real sample, which is why it presents as a rare, short click at the end of a spoken response rather than a defect on every response: a synthesized utterance usually trails off near zero. A generation that ends exactly on a host block boundary is already covered — it latches a real sample and D11 decays from it on the next block.
+
+The ramp is bounded by `actual`. It may not reach backwards: the preceding block was handed to the host and cannot be reshaped. When the final read is shorter than `_DECLICK_SAMPLES` the ramp is correspondingly shorter and still lands on exactly `0.0`. It is never a tail slice of `_DECLICK_RAMP`; that slice starts below unity and would reintroduce, at the ramp's first sample, the step the ramp exists to remove.
+
+**This does not reshape content the ledger has already accounted.** `PlaybackLedger.record_submitted` takes `output_start_cursor`, `output_end_cursor` and `audibility_class`; it never sees a sample value, and those cursors are read out of the ring's cursor array, not out of the PCM. It is reached only from `poll_presentation`'s drain of `_CallbackReportRing`, on the media actor thread, after `_callback` has returned — so at the moment the ramp is applied nothing has been accounted and no `_CallbackReport` has even been written. Amplitude shaping of an about-to-be-submitted block is already the established operation on this exact path: `_GainRamp.apply` multiplies the whole block immediately above, may classify it `muted`, and the ledger accounts the span as submitted regardless. D6's spans are therefore unchanged: `submitted_samples`, `total_samples` and `estimated_audible_samples` hold the same values with and without the ramp, and the block's `audibility_class` is not downgraded — a 2.7 ms fade at a generation's last sample is not attenuated presentation, and marking it so would degrade every response's heard-prefix conservatism for no gain.
+
+D12 does not reuse `_GainRamp`. That object carries persistent gain state (`_current`, `_target`, `_remaining`), so driving it to zero would leave the device muted with no production caller able to restore it — the same objection D11 recorded — and it ramps the block's *head* where D12 needs the block's *tail*. Chaining it onto a block `_gain.apply` has already touched would additionally entangle a shipped fix with D8's deferred barge-in ducking, which keeps no production caller. D12 reuses D11's constant instead: the same `_DECLICK_SAMPLES` length, because it is the same property of hearing.
+
+The ramp is not scoped to end-of-generation. A mid-stream short read produces the identical junction and the callback cannot tell the two apart; `starvation_gaps` already reports that case separately. Ramping there replaces two amplitude edges with one and is never worse than the step it removes.
+
+Playback terminals carry `tail_ramp_samples`: the length in samples of the ramp applied in the last short read of that generation, `0` when every read of that generation was full. Without it a terminal cannot distinguish a covered ending from an ending that never needed covering — `submitted_samples == total_samples`, `starvation_gaps == 0` and `host_underflows == 0` all hold in both cases, which is exactly why forensics over the owner's event log could not localise the click.
 
 ## 4. Contracts
 
@@ -634,20 +650,20 @@ surface.playback_completed
   required: session_id, response_id, turn_id, playback_generation_id,
             heard_through_sequence, submitted_samples, speech_text_hash
   optional: total_samples, provider, cursor_quality,
-            starvation_gaps, host_underflows
+            starvation_gaps, host_underflows, tail_ramp_samples
 
 surface.playback_interrupted
   required: session_id, response_id, turn_id, playback_generation_id,
             heard_through_sequence, submitted_samples, heard_text_hash, reason
   optional: heard_text, total_samples, interrupted_by_utterance_id,
             interrupted_by_turn_id, provider, cursor_quality,
-            starvation_gaps, host_underflows
+            starvation_gaps, host_underflows, tail_ramp_samples
 
 surface.playback_failed
   required: session_id, response_id, turn_id, playback_generation_id,
             heard_through_sequence, submitted_samples, heard_text_hash, reason
   optional: heard_text, provider, cursor_quality, retryable,
-            starvation_gaps, host_underflows
+            starvation_gaps, host_underflows, tail_ramp_samples
 
 surface.playback_lane_isolated
   required: session_id, response_id, turn_id, playback_generation_id,

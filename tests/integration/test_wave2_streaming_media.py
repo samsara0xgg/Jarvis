@@ -647,7 +647,11 @@ def test_generation_cas_races_and_thousand_cycle_churn() -> None:  # noqa: C901,
     )
     output = np.zeros((32, 1), dtype=np.float32)
     player._callback(output, 32, None, None)  # noqa: SLF001
-    assert np.all(output[:16, 0] == np.float32(0.75))
+    # A short read (`actual = 16 < frames = 32`) with a matching generation:
+    # ADR-0006 D12 ramps its own last real samples to zero inside the block, so
+    # the 16 samples are the second generation's 0.75 scaled by the descending
+    # tail ramp -- never the stale 1.0 or the first generation's -0.5.
+    assert np.allclose(output[:16, 0], np.float32(0.75) * np.linspace(1.0, 0.0, 16))
 
     player.interrupt_generation(
         expected_playback_generation_id=second.playback_generation_id,
@@ -3895,12 +3899,18 @@ def test_playback_started_carries_the_host_output_latency_or_the_configured_one(
 _DECLICK_AMPLITUDE_INT16 = 24_000
 _DECLICK_AMPLITUDE = np.float32(_DECLICK_AMPLITUDE_INT16) / np.float32(32_768)
 _DECLICK_RESPONSE_SAMPLES = 1_600
+# 1590 = 32 x 49 + 22, so the final pumped callback reads `actual = 22 < 32`.
+# 1600 = 32 x 50 is block-aligned and never produces a short read.
+_TAIL_RAMP_RESPONSE_SAMPLES = 1_590
+_TAIL_RAMP_LAST_BLOCK = 22
+_TAIL_RAMP_ALIGNED_SAMPLES = _TAIL_RAMP_RESPONSE_SAMPLES - _TAIL_RAMP_LAST_BLOCK
 
 
 def _declick_pipeline(
     db_path: Path,
     *,
     response_id: str,
+    samples: int = _DECLICK_RESPONSE_SAMPLES,
 ) -> tuple[
     voice_media.StreamingTTSPipeline,
     voice_tts.AudioStreamPlayer,
@@ -3910,7 +3920,7 @@ def _declick_pipeline(
     provider = _FakeProvider(
         {
             (response_id, 0): _Behavior(
-                samples=_DECLICK_RESPONSE_SAMPLES,
+                samples=samples,
                 amplitude=_DECLICK_AMPLITUDE_INT16,
             ),
         },
@@ -4070,6 +4080,9 @@ def test_natural_completion_keeps_every_audible_sample_and_its_counts(
         assert kind == "surface.playback_completed"
         assert _payload_int(payload, "total_samples") == _DECLICK_RESPONSE_SAMPLES
         assert payload["heard_through_sequence"] == 0
+        # ADR-0006 D12 discriminator: every read of this generation was full, so
+        # no tail ramp was applied.  The short-read sibling below reads 22.
+        assert _payload_int(payload, "tail_ramp_samples") == 0
     finally:
         verdict.close()
     # `tts_estimated_audible` is only recorded on a `fully_presented` snapshot.
@@ -4081,3 +4094,87 @@ def test_natural_completion_keeps_every_audible_sample_and_its_counts(
     ]
     assert len(audible) == 1
     assert audible[0].attributes["estimated_audible_samples"] == _DECLICK_RESPONSE_SAMPLES
+
+
+def test_end_of_generation_short_read_ramps_inside_its_own_block(
+    tmp_path: Path,
+) -> None:
+    """ADR-0006 D12: `0 < actual < frames` decays to zero, and says how far.
+
+    The response is driven end to end through the pipeline's public submit
+    path; the signal asserted on is what the production callback wrote into
+    `outdata` while the production actor drove it.
+    """
+    reset_realtime_trace()
+    db_path = tmp_path / "tail-ramp.db"
+    conn = open_event_log(db_path)
+    pipeline, player, _provider = _declick_pipeline(
+        db_path,
+        response_id="RTAIL",
+        samples=_TAIL_RAMP_RESPONSE_SAMPLES,
+    )
+    pump = _CallbackPump(player, record=True)
+    try:
+        rows = _emit_response(
+            conn,
+            response_id="RTAIL",
+            group_id="GTAIL",
+            turn_id="TTAIL",
+            text="这一句的末尾不对齐。",
+        )
+        asyncio.run(_submit_response(pipeline, rows))
+        # Every sample reaches the ring before the first callback runs, so the
+        # only short read below is the generation's last block.
+        _wait_until(
+            lambda: _generation_ring(player).available_read() >= _TAIL_RAMP_RESPONSE_SAMPLES,
+        )
+        pump.blocks.clear()
+        _pump_until(
+            pump,
+            lambda: _playback_rows_for(conn, "RTAIL", "surface.playback_completed") == 1,
+            timeout_s=5.0,
+        )
+        assert pipeline.wait_until_idle(timeout_s=2.0)
+    finally:
+        assert pipeline.close()
+        conn.close()
+
+    signal = pump.signal
+    aligned = _TAIL_RAMP_ALIGNED_SAMPLES
+    end = _TAIL_RAMP_RESPONSE_SAMPLES
+    ramp = _TAIL_RAMP_LAST_BLOCK
+    # (1) nothing before this block is touched: the ramp did not reach backwards
+    assert np.all(signal[:aligned] == _DECLICK_AMPLITUDE)
+    # (2) the ramp starts at unity, not at a tail slice of `_DECLICK_RAMP`
+    assert signal[aligned] == _DECLICK_AMPLITUDE
+    # (3) strictly descending across the 22 real samples
+    assert np.all(np.diff(signal[aligned:end]) < 0)
+    # (4) it lands on exactly 0.0 on the last real sample
+    assert signal[end - 1] == 0.0
+    # (5) no residual one-sample step survives anywhere across the junction
+    step = np.abs(np.diff(signal[aligned - 1 : end + 10]))
+    assert float(step.max()) <= float(_DECLICK_AMPLITUDE) / (ramp - 1) * 1.01
+    # (6) the pad and everything after stay exactly silent
+    assert np.all(signal[end:] == 0.0)
+
+    verdict = open_event_log(db_path)
+    try:
+        kind, payload = _terminal_for(verdict, response_id="RTAIL")
+        assert kind == "surface.playback_completed"
+        # The field the owner's forensics lacked: rows 1-6 are what it certifies.
+        assert _payload_int(payload, "tail_ramp_samples") == ramp
+        assert _payload_int(payload, "submitted_samples") == _TAIL_RAMP_RESPONSE_SAMPLES
+        assert _payload_int(payload, "total_samples") == _TAIL_RAMP_RESPONSE_SAMPLES
+        assert _payload_int(payload, "starvation_gaps") == 0
+        assert _payload_int(payload, "host_underflows") == 0
+    finally:
+        verdict.close()
+    # The ramp shaped a block, not a span: the ledger accounts every sample.
+    audible = [
+        point
+        for point in realtime_trace_snapshot()
+        if point.name == "tts_estimated_audible"
+        and point.attributes.get("response_id") == "RTAIL"
+    ]
+    assert len(audible) == 1
+    assert audible[0].attributes["estimated_audible_samples"] == _TAIL_RAMP_RESPONSE_SAMPLES

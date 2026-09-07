@@ -860,7 +860,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         ),
         optional_payload=(
             "total_samples", "provider", "cursor_quality", "heard_text", "heard_text_hash",
-            "starvation_gaps", "host_underflows",
+            "starvation_gaps", "host_underflows", "tail_ramp_samples",
         ),
         schema_version=1,
     ),
@@ -887,6 +887,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "cursor_quality",
             "starvation_gaps",
             "host_underflows",
+            "tail_ramp_samples",
         ),
         schema_version=1,
     ),
@@ -906,7 +907,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         ),
         optional_payload=(
             "heard_text", "provider", "cursor_quality", "retryable",
-            "starvation_gaps", "host_underflows",
+            "starvation_gaps", "host_underflows", "tail_ramp_samples",
         ),
         schema_version=1,
     ),
