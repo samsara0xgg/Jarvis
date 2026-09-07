@@ -359,8 +359,11 @@ Two postures, each inherited from the owner of the block, not chosen per key:
 
 ## Boundaries and non-goals
 
-- Layers that may change: L6 (`jarvis/runtime/`), plus `config/jarvis.yaml`.
-  L5 does not change; `jarvis/surface/voice_wake.py:193` stays exactly as it is.
+- Layers that may change: L6 (`jarvis/runtime/`), L5 (`voice_tts.py`,
+  `voice_audio.py`, `voice_media.py` — each gains parameters or config fields
+  for values it already owns; no L5 module reads YAML), plus
+  `config/jarvis.yaml`. `jarvis/surface/voice_wake.py:193` stays exactly as it
+  is: the record, not the wake line, is what discriminates the two owners.
 - **Must not change: what an absent key resolves to.** The owner's live config
   has neither key. Anything that makes the absent-key case resolve somewhere new
   — including the tempting `repo_root / "data" / ...` — silently relocates a
@@ -527,7 +530,7 @@ Every check below names the artifact it asserts on. None of them is a unit test.
 One `LOGGER.info` line per boot, prefixed `voice startup config:` and followed by
 one JSON object (`json.dumps(..., sort_keys=True)`) naming every resolved value
 `_VoiceKnobs` and the two paths hold, plus `models_ok`, `input_owner` and
-`reason`. JSON rather than `key=value` because there are twenty-seven fields and
+`reason`. JSON rather than `key=value` because there are twenty-nine fields and
 a `key=value` line of that width is not readable; and because every check below
 reads one field out of it with `jq`, which a flat line would not support.
 
@@ -650,6 +653,15 @@ closed and no audio device is opened. Config: `realtime.enabled: true`,
 `concurrency_safety.{transactional_event_append,lifecycle_terminal_cas}: true`,
 `streaming_output: {enabled: true, canonical_sample_rate_hz: 44100}`.
 
+Note the blast radius, which is wider than "streaming works now": the derived
+rate also feeds the LEGACY player and the provider's `sample_rate_out`. A config
+that sets `canonical_sample_rate_hz: 44100` while `realtime.enabled` is `false`
+gets a legacy player at 44100 where today it would get 48000. That follows from
+"one value, not two" and is the intended consequence, but it is the one way this
+card can change behavior for a config that sets none of the twenty-eight new
+keys. The shipped value is 48000, so nothing moves unless an operator already
+changed that key.
+
 Observable: the line
 `realtime.streaming_output capability/config validation failed; downgraded to
 legacy TTS.` — present before the change (the equality term at `:1907` fails),
@@ -663,7 +675,7 @@ Confirm no `OutputStream` opened: the run must log
 
 - **Backward compatibility — the mandate.** From the repo root (`cwd == <repo>`,
   the launchd shape) with the **unmodified** `config/jarvis.yaml`. Observable:
-  every one of the record's twenty-seven fields equals today's constant, the two
+  every one of the record's twenty-nine fields equals today's constant, the two
   paths are the cwd-relative `<repo>/data/...`, the missing-models ERROR appears
   exactly once (this worktree's `data/` holds only `pricing.json`), and
   `POST /inherent/submit` still returns a `turn_id`. That single ERROR plus a
@@ -682,6 +694,37 @@ Confirm no `OutputStream` opened: the run must log
   the owner's daemon holds and audio output he is using. **Do not stop, restart
   or contend with the owner's daemon.** If you believe a wake run is genuinely
   needed, STOP AND REPORT and let the owner schedule it.
+
+## Docs to sync
+
+- `docs/adr/0006-full-duplex-voice-session.md` §5 — ADR-0006 owns the `realtime:`
+  namespace, so it owns the facts this card creates. (a) Record that `:716` is
+  now implemented for twenty-eight values and name what it still owes (the two
+  legacy capture bounds; the two openwakeword frame constants, ruled out as
+  external contracts). (b) Add the naming convention as a namespace-wide rule —
+  flat child if the fact applies whatever wave is on, wave sub-block otherwise,
+  and a flat key must be wired into every owner that consumes it. (c) Add the
+  resolution rule for any path-valued `realtime.*` key. (d) Record that the TTS
+  output rate is `streaming_output.canonical_sample_rate_hz` and that no separate
+  player-rate constant exists. (e) Record the one-per-boot startup record. Do NOT
+  restate the twenty-eight key names or their values: `:725` already rules that
+  `config/jarvis.yaml` owns them.
+- `docs/adr/0005-inherent-voice.md` §9 — one paragraph under the table: the
+  `voice.*` namespace is superseded by ADR-0006 §5, none of its sixteen rows was
+  implemented, and the values that exist live under `realtime:`. Do not
+  restructure or delete the table — a superseded proposal is still the record of
+  what was once intended.
+- `docs/adr/0005-inherent-voice.md` §12 — the pre-flight sentence stays true as
+  written. Judge it explicitly and say so; do not duplicate the resolution rule
+  into it.
+- `docs/adr/0006-full-duplex-voice-session.md` D11 (`:562`) — the declick fade
+  length is "a property of human hearing, not of a deployment", and this card
+  deletes the constant that sentence's *code comment* cites. The ADR text stays
+  true; only the code comment moves. Judge the ADR unchanged and say so.
+- `docs/spec.html` — no section owns model-artifact resolution or realtime voice
+  tuning. Judge unchanged and say so. Add nothing.
+- No new ADR. This card is one slice of ADR-0006 §5 (`:716`); a second ADR
+  restating it would be the duplication the working contract forbids.
 
 ## Open questions
 
@@ -784,3 +827,12 @@ If the card contradicts the repository, stop and report; do not redesign.
 - `sherpa-onnx` was missing from this worktree's venv and installed per
   `pyproject.toml:159`, which names it an operator-installed voice wheel. The
   ASR acceptance is unrunnable in a fresh worktree without it.
+- Verifier pass found one real defect, fixed and re-verified:
+  `Path.expanduser()` RAISES on a `~` it cannot resolve (unlike
+  `os.path.expanduser`), so `silero_vad_path: ~models/x.onnx` — one missing
+  slash — took down `bootstrap_runtime_app` and with it every CLI command, not
+  just `serve`. Now degrades with one warning naming the key. Two smaller ones
+  with it: `_knob_number` accepted `.nan`/`.inf` (an `.inf`
+  `wake_join_timeout_s` would block shutdown's join forever), and the three
+  nested VAD debounce warnings named `realtime.smoothing_window` instead of
+  `realtime.vad.record.smoothing_window`.

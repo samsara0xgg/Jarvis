@@ -994,7 +994,21 @@ def _realtime_model_path(
             "realtime.%s must be a non-empty string; using %s.", key, fallback,
         )
         return fallback
-    candidate = Path(raw.strip()).expanduser()
+    try:
+        # `Path.expanduser` RAISES on a `~` it cannot resolve, unlike
+        # `os.path.expanduser`, which returns the string untouched. A missing
+        # slash -- `~models/silero.onnx` -- is enough, and this runs inside
+        # `bootstrap_runtime_app`, so an uncaught raise takes down every CLI
+        # command, not just `serve`.
+        candidate = Path(raw.strip()).expanduser()
+    except RuntimeError:
+        LOGGER.warning(
+            "realtime.%s (%r) has an unresolvable '~' prefix; using %s.",
+            key,
+            raw,
+            fallback,
+        )
+        return fallback
     if candidate.is_absolute():
         return candidate
     return (config_dir / candidate).resolve()

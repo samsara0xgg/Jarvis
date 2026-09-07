@@ -72,6 +72,7 @@ import dataclasses
 import functools
 import json
 import logging
+import math
 import os
 import sqlite3
 import threading
@@ -366,9 +367,14 @@ def _knob_number(values: Mapping[str, Any], key: str, fallback: float) -> float:
     raw = values.get(key)
     if raw is None:
         return fallback
-    if isinstance(raw, bool) or not isinstance(raw, int | float) or raw <= 0:
+    if (
+        isinstance(raw, bool)
+        or not isinstance(raw, int | float)
+        or not math.isfinite(raw)
+        or raw <= 0
+    ):
         LOGGER.warning(
-            "realtime.%s must be a positive number; using %s.", key, fallback,
+            "realtime.%s must be a positive finite number; using %s.", key, fallback,
         )
         return fallback
     return float(raw)
@@ -387,14 +393,27 @@ def _knob_text(values: Mapping[str, Any], key: str, fallback: str) -> str:
     return raw.strip()
 
 
-def _knob_count(values: Mapping[str, Any], key: str, fallback: int) -> int:
-    """Return a positive integer ``realtime.<key>``; ``fallback`` with a warning."""
+def _knob_count(
+    values: Mapping[str, Any],
+    key: str,
+    fallback: int,
+    *,
+    label: str | None = None,
+) -> int:
+    """Return a positive integer ``realtime.<key>``; ``fallback`` with a warning.
+
+    ``label`` names the key in the warning when it differs from the lookup —
+    a nested profile field is looked up as ``required_hits`` but must be
+    reported as ``realtime.vad.record.required_hits`` to be actionable.
+    """
     raw = values.get(key)
     if raw is None:
         return fallback
     if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
         LOGGER.warning(
-            "realtime.%s must be a positive integer; using %d.", key, fallback,
+            "realtime.%s must be a positive integer; using %d.",
+            key if label is None else label,
+            fallback,
         )
         return fallback
     return raw
@@ -431,11 +450,22 @@ def _vad_profile(raw: object, *, mode: str, fallback: voice_audio.VadThresholds,
         prob_threshold=fallback.prob_threshold if prob is None else float(prob),
         db_threshold=fallback.db_threshold if db is None else float(db),
         smoothing_window=_knob_count(
-            values, "smoothing_window", fallback.smoothing_window,
+            values,
+            "smoothing_window",
+            fallback.smoothing_window,
+            label=f"vad.{mode}.smoothing_window",
         ),
-        required_hits=_knob_count(values, "required_hits", fallback.required_hits),
+        required_hits=_knob_count(
+            values,
+            "required_hits",
+            fallback.required_hits,
+            label=f"vad.{mode}.required_hits",
+        ),
         required_misses=_knob_count(
-            values, "required_misses", fallback.required_misses,
+            values,
+            "required_misses",
+            fallback.required_misses,
+            label=f"vad.{mode}.required_misses",
         ),
     )
 
@@ -3719,7 +3749,7 @@ def _log_voice_startup(  # noqa: PLR0913 - the record's fields ARE its contract
 
     ADR-0006 §5 — the point of moving these values into config is that one file
     decides them, which is only checkable if the daemon says what it resolved.
-    JSON rather than ``key=value`` because there are twenty-seven fields.
+    JSON rather than ``key=value`` because there are twenty-nine fields.
 
     Also the only place startup distinguishes the two input owners:
     ``WakeEngine.start`` logs an identical line from either, which has already
