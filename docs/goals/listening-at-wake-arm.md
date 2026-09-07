@@ -283,4 +283,63 @@ If the card contradicts the repository, stop and report; do not redesign. Or sto
 
 ## Progress
 
-- (none yet)
+- **Re-pin at `03daafa`.** Every `path:line` re-checked. All resolve as cited
+  except one: the `WakeArmExpired` branch of `_handle_capture_outcome` is at
+  `voice_session.py:1251-1263`, not the cited `:1259-1276` (`:1259` lands mid-way
+  through the trace call's kwargs). `_handle_capture_outcome` itself begins at
+  `:1242`. Every other citation — `:1172`, `:1229`, `:405`, `:493`, `:517`,
+  `:522`, `:542`, `:547`, `:551`, `:1297`, `:1372` — is exact. The card's premise
+  gate holds: `grep -n 'self\._broadcast(' jarvis/surface/voice_session.py`
+  returned exactly the five predicted sites (`:1277`, `:1297`, `:1309`, `:1345`,
+  `:1348`), none reachable before the assembler commits.
+- **Pre-edit baseline.** `lint-imports` KEPT, 98 files / 309 dependencies,
+  1 contract kept 0 broken · `ruff check` all checks passed · `mypy --strict
+  jarvis tests tools` success, 234 source files · hermetic pytest
+  **1070 passed, 64 deselected in 62.60s**. (`mypy --strict jarvis runtime tests`
+  as the card implies cannot run: there is no top-level `runtime/`; the package
+  is `jarvis/runtime`.) Pre-existing and unrelated: `ruff format --check`
+  reports 148 files would be reformatted — unchanged by this work.
+- **Slice 1 — `cc79028`** `feat(surface): broadcast listening when a wake
+  detection arms capture`. `voice_session.py` gains the `turn_id` property, the
+  `listening` broadcast after `arm()`, and the `empty` terminal on
+  `WakeArmExpired`; `test_wave3_single_audio_ingress.py` gains the four
+  acceptance checks. `EndpointPhase` still has exactly four members.
+- **Slice 2 — `69c79f4`** `chore(tools): add a passive read-only /inherent/ws
+  envelope observer` (`tools/inherent_ws_observer.py`). Attached once to the
+  running daemon on port 8009 and received the retained `voice_capability`
+  snapshot, confirming a passive attach works; then disconnected. The daemon was
+  never started, stopped, restarted, or sent a frame.
+- **False-pass guard.** With `voice_session.py` reverted (`git stash push` of
+  that path alone, applied back and dropped), three of the four new checks fail:
+  `..._listening_before_transcribing...` fails
+  `assert [('transcribing', 'T3dd917b5')] == [('listening', ...)]`;
+  `..._listening_then_empty_never_transcribing` fails `IndexError` (no voice call
+  at all); `..._no_second_listening` fails its bounded deadline. The fourth,
+  `test_broadcast_voice_listening_puts_the_exact_voice_envelope_on_the_socket`,
+  passes with or without the change **by construction** — it pins
+  `InherentBroadcaster.broadcast_voice`, which this change deliberately does not
+  touch. The card's "each of those new checks shown FAILING" is unsatisfiable for
+  that row; it is a wire-contract pin, not a fix gate.
+- **Post-change gates.** `lint-imports` KEPT, 1 contract kept 0 broken · `ruff
+  check` all checks passed (250 files) · `mypy --strict jarvis tests tools`
+  success, 235 source files · hermetic pytest **1074 passed, 64 deselected in
+  59.22s** — exactly baseline + the 4 new checks, no regression.
+  `test_false_wake_armed_timeout_requires_a_fresh_wake_for_later_speech` green by
+  name. `git diff --stat 03daafa -- desktop/` prints nothing: the owner's card
+  binary needs no rebuild.
+- **Docs to sync — all four unchanged, with reasons.**
+  `docs/adr/0006-full-duplex-voice-session.md:172-173` already places `listening`
+  at `dormant ── arm/wake/PTT ──>`; the code now obeys that ruling instead of
+  creating a new one. Its `:188` claim is scoped to the internal `EndpointPhase`
+  enum, which gains no member, so it stays literally true; the user-visible
+  `listening` rides the ADR-0005 §6 `voice` wire phase, a fact ADR-0014 D25
+  already owns — restating it in ADR-0006 would duplicate a fact across
+  documents. `docs/adr/0014-inherent-realtime-ux.md` D25 (`:1583-1589`) already
+  names `listening` as the Input lane's first user-visible state and D27
+  (`:1616-1626`) already forbids auto-fading it, which the shipped client honors
+  via `cancelFade()`. `docs/spec.html` documents no `op:"voice"` phase set —
+  `grep -c 'transcribing' docs/spec.html` returns `0`. No ADR amendment was
+  wanted at any point.
+- **Live run — the owner's to trigger.** Command:
+  `cd /Users/alllllenshi/Projects/jarvis && ./.venv/bin/python -m tools.inherent_ws_observer`
+  (the change reaches the wire only after he restarts the daemon himself).
