@@ -449,7 +449,8 @@ class _PCMCommitGate:
 # callback synthesizes a short decay into that silence.  The table is
 # preallocated and ends at exactly 0.0; the length is a constant number of
 # samples, not a config key -- ~2.7 ms at the 48 kHz production rate
-# (`inherent_loop._DEFAULT_TTS_SAMPLE_RATE_HZ`, which streaming requires).
+# (`realtime.streaming_output.canonical_sample_rate_hz`, the one place the
+# output rate is written).
 _DECLICK_SAMPLES = 128
 _DECLICK_RAMP = np.linspace(1.0, 0.0, _DECLICK_SAMPLES + 1, dtype=np.float32)[1:]
 

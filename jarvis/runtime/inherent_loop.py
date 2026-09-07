@@ -296,11 +296,6 @@ _SELECT_RESPONSE_EVENTS_AFTER_ID_SQL = (
 # owner and ignored by the other.
 _DEFAULT_CAPTURE_MAX_DURATION_S: float = 5.0
 _DEFAULT_CAPTURE_MIN_VOICED_S: float = 1.0
-# macOS built-in default rate; MiniMax 32 kHz is resampled to 48 kHz via soxr
-# (see ``_build_tts_pipeline``) so the OutputStream runs at the device-native
-# rate and CoreAudio does not force a hardware-rate switch on every play.
-_DEFAULT_TTS_SAMPLE_RATE_HZ: int = 48000
-
 # Wake input stream params — ADR §5.1 (openwakeword expects 16 kHz mono PCM16
 # at 1280-sample / 80 ms blocks). A SEPARATE stream from the recorder's per
 # legacy ``core/inherent_wake_listener.py`` parity (the recorder's 32-ms VAD
@@ -2072,12 +2067,6 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             "MINIMAX_API_KEY unset; skipping TTS subsystem (text path only).",
         )
         return None
-    # OutputStream runs at the macOS native rate (48 kHz). MiniMax is
-    # asked for 32 kHz PCM in (highest it natively produces in our
-    # config) and resampled to 48 kHz on the way out via soxr — running
-    # the device at the system-native rate prevents CoreAudio from
-    # forcing a hardware-rate switch on every play, which was producing
-    # audible pops/clicks for any other app sharing the speaker.
     realtime_raw = runtime.config.get("realtime")
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
     # MiniMax `voice_setting.vol`.  Absent or null keeps the MiniMaxWSClient
@@ -2088,26 +2077,6 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     # with it, where a bad `output_device` only degrades TTS to text-only.
     tts_volume = realtime.get("tts_volume")
     volume_kwargs: dict[str, Any] = {} if tts_volume is None else {"volume": tts_volume}
-
-    def _new_provider() -> voice_tts.MiniMaxWSClient:
-        return voice_tts.MiniMaxWSClient(
-            api_key=api_key,
-            voice=knobs.tts_voice,
-            model=knobs.tts_model,
-            primary_endpoint=knobs.tts_primary_endpoint,
-            fallback_endpoint=knobs.tts_fallback_endpoint,
-            sample_rate_in=knobs.tts_sample_rate_in_hz,
-            sample_rate_out=_DEFAULT_TTS_SAMPLE_RATE_HZ,
-            connect_timeout_s=knobs.tts_connect_timeout_s,
-            task_start_timeout_s=knobs.tts_task_start_timeout_s,
-            first_chunk_timeout_s=knobs.tts_first_chunk_timeout_s,
-            between_chunk_timeout_s=knobs.tts_between_chunk_timeout_s,
-            total_timeout_s=knobs.tts_total_timeout_s,
-            session_close_timeout_s=knobs.tts_session_close_timeout_s,
-            **volume_kwargs,
-        )
-
-    provider = _new_provider()
     # Passed straight through to sd.OutputStream, which maps a name to a device
     # index itself; an unresolvable value raises there and `start()` fails closed.
     # Deliberately unvalidated: a type guard here would turn a mistyped key into
@@ -2125,16 +2094,46 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
                 "realtime.streaming_output config invalid (%s); downgraded to legacy TTS.",
                 exc,
             )
+    # THE output rate, for the provider's resampler and both players.
+    # ``realtime.streaming_output.canonical_sample_rate_hz`` is its only source:
+    # a second constant here could only ever agree with it or silently disable
+    # streaming. The default (48 kHz) is the macOS built-in device rate, so
+    # CoreAudio is not forced into a hardware-rate switch on every play — which
+    # was producing audible pops for any other app sharing the speaker.
+    output_sample_rate_hz = (
+        voice_media.StreamingMediaConfig().canonical_sample_rate_hz
+        if media_config is None
+        else media_config.canonical_sample_rate_hz
+    )
+
+    def _new_provider() -> voice_tts.MiniMaxWSClient:
+        return voice_tts.MiniMaxWSClient(
+            api_key=api_key,
+            voice=knobs.tts_voice,
+            model=knobs.tts_model,
+            primary_endpoint=knobs.tts_primary_endpoint,
+            fallback_endpoint=knobs.tts_fallback_endpoint,
+            sample_rate_in=knobs.tts_sample_rate_in_hz,
+            sample_rate_out=output_sample_rate_hz,
+            connect_timeout_s=knobs.tts_connect_timeout_s,
+            task_start_timeout_s=knobs.tts_task_start_timeout_s,
+            first_chunk_timeout_s=knobs.tts_first_chunk_timeout_s,
+            between_chunk_timeout_s=knobs.tts_between_chunk_timeout_s,
+            total_timeout_s=knobs.tts_total_timeout_s,
+            session_close_timeout_s=knobs.tts_session_close_timeout_s,
+            **volume_kwargs,
+        )
+
+    provider = _new_provider()
     streaming_capable = (
         runtime.wave1_features.transactional_event_append
         and runtime.wave1_features.lifecycle_terminal_cas
         and provider.streaming_candidate_count > 0
         and media_config is not None
-        and media_config.canonical_sample_rate_hz == _DEFAULT_TTS_SAMPLE_RATE_HZ
     )
     if streaming_requested and streaming_capable:
         player = voice_tts.AudioStreamPlayer(
-            sample_rate_hz=_DEFAULT_TTS_SAMPLE_RATE_HZ,
+            sample_rate_hz=output_sample_rate_hz,
             ring_seconds=2.0,
             lazy_open=True,
             generation_safe=True,
@@ -2184,7 +2183,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     # the wake listener.
     try:
         player = voice_tts.AudioStreamPlayer(
-            sample_rate_hz=_DEFAULT_TTS_SAMPLE_RATE_HZ,
+            sample_rate_hz=output_sample_rate_hz,
             ring_seconds=knobs.tts_ring_seconds,
             lazy_open=False,
             device=output_device,
