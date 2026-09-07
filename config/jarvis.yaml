@@ -161,6 +161,71 @@ realtime:
   # value raises out of the TTS builder, which skips the whole voice subsystem
   # for that boot; the process keeps running text-only.
   tts_volume: null
+  # ADR-0006 §5.  Where the daemon looks for its SenseVoice directory and its
+  # Silero ONNX.  Commented out on purpose: a value here is anchored at THIS
+  # file's directory, so `data/sensevoice-small-int8` would mean
+  # `<repo>/config/data/...`, which is not where the artifacts are.  Absent,
+  # both fall back to the module constants `data/sensevoice-small-int8` and
+  # `data/silero_vad.onnx`, still resolved against the daemon's working
+  # directory — today's behavior, unchanged.  Set them in the config you point
+  # `--config` at; an absolute path or a `~` path is anchored nowhere else, and
+  # a relative one is anchored at that file's own directory, never at cwd.
+  # A missing artifact stays soft: one ERROR and a live text path.
+  # sensevoice_dir: ~/Models/sensevoice-small-int8
+  # silero_vad_path: ~/Models/silero_vad.onnx
+  # openwakeword's detection probability gate.  Read by BOTH input owners --
+  # the legacy wake listener and the single-ingress duplex session -- so it
+  # lives here and not under single_audio_ingress, which the legacy owner
+  # cannot read.
+  wake_threshold: 0.5
+  # How long shutdown waits for the legacy wake thread before closing its
+  # PortAudio stream anyway.  Closing before the thread leaves its blocking
+  # read is the historical segfault; a slow machine can buy more room here.
+  wake_join_timeout_s: 2.0
+  # MiniMax request shape.  These reach MiniMaxWSClient whatever wave is on:
+  # the streaming and legacy TTS paths share one provider.
+  tts_voice: "Chinese (Mandarin)_ExplorativeGirl"
+  tts_model: speech-2.8-turbo
+  tts_primary_endpoint: https://api-uw.minimax.io
+  tts_fallback_endpoint: https://api.minimax.chat
+  # The rate MiniMax is asked to produce; resampled via soxr to the output rate,
+  # which is streaming_output.canonical_sample_rate_hz below and is written in
+  # exactly that one place.
+  tts_sample_rate_in_hz: 32000
+  # Ring depth of the LEGACY player only (streaming has its own, below).  30 s
+  # because the legacy path writes a whole response in one shot: at the 2 s
+  # player default that write blocks on the drain, times out at 10 s, and drops
+  # the tail of any response longer than about ten seconds.
+  tts_ring_seconds: 30.0
+  # MiniMax deadlines, in seconds.  Every one of them fails the request closed
+  # rather than hanging a response; raise them for a slow link, not to paper
+  # over a dead endpoint.
+  tts_connect_timeout_s: 3.0
+  tts_task_start_timeout_s: 3.0
+  tts_first_chunk_timeout_s: 8.0
+  tts_between_chunk_timeout_s: 5.0
+  tts_total_timeout_s: 30.0
+  tts_session_close_timeout_s: 1.0
+  # Silero VAD profiles, read by both input owners.  "record" is the profile
+  # every capture uses; "tts" is stricter so playback bleed cannot false-trigger
+  # a barge-in, and is inert until realtime.single_audio_ingress.barge_in is on.
+  # The session switches between them mid-utterance, which is only safe while
+  # both profiles agree on smoothing_window / required_hits / required_misses:
+  # a config where they disagree is refused whole, with one warning, and both
+  # profiles fall back to these values.
+  vad:
+    record:
+      prob_threshold: 0.4
+      db_threshold: -45.0
+      smoothing_window: 5
+      required_hits: 3
+      required_misses: 24
+    tts:
+      prob_threshold: 0.5
+      db_threshold: -22.0
+      smoothing_window: 5
+      required_hits: 3
+      required_misses: 24
   concurrency_safety:
     transactional_event_append: false
     lifecycle_terminal_cas: false
@@ -253,6 +318,9 @@ realtime:
     session_idle_close_s: 10.0
     response_timeout_s: 45.0
     ring_retry_s: 0.002
+    # Ring depth of the STREAMING player.  Small on purpose: this path writes
+    # as chunks arrive, so headroom buys nothing and costs interrupt latency.
+    ring_seconds: 2.0
     presentation_poll_s: 0.005
     shutdown_timeout_s: 3.0
     event_drain_batch: 128
@@ -291,6 +359,10 @@ realtime:
     session_worker_poll_s: 0.005
     fault_poll_s: 0.02
     route_poll_s: 1.0
+    # Consecutive failed default-device queries, at route_poll_s each, before a
+    # transient CoreAudio miss is treated as a fault.  Only AudioIngress reads
+    # it, which is why it belongs in this block.
+    device_miss_limit: 3
     reopen_attempts: 3
     reopen_initial_backoff_s: 0.05
     reopen_max_backoff_s: 0.5
