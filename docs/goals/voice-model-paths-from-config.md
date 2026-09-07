@@ -2,21 +2,45 @@
 
 ## Goal
 
-The daemon resolves its SenseVoice and Silero artifacts from two new keys,
-`realtime.sensevoice_dir` and `realtime.silero_vad_path`, anchored at the config
-file's own directory rather than the process's current working directory, and
-logs one startup record naming the resolved absolute paths, whether pre-flight
-passed, and which input owner it spawned and why.
+Twenty-eight realtime voice values that are hard-coded Python constants today
+become keys of the top-level `realtime:` block, parsed once into typed objects,
+and the daemon logs one startup record naming every resolved value plus which
+input owner it spawned and why. Setting nothing keeps today's behavior byte for
+byte.
 
-This is the first slice of ADR-0006 §5's unimplemented decision
+Two of the twenty-eight are artifact locations — `realtime.sensevoice_dir` and
+`realtime.silero_vad_path` — which additionally stop depending on the process's
+current working directory: a configured relative path is anchored at the config
+file's own directory.
+
+This is the largest slice of ADR-0006 §5's unimplemented decision
 (`docs/adr/0006-full-duplex-voice-session.md:716`): "New configuration is parsed
 into a typed object; no realtime constant remains hard-coded in
-`inherent_loop.py`." See Boundaries for the naming convention the next slice
-inherits and for the seven constants this card deliberately leaves alone.
+`inherent_loop.py`." It does not finish that decision — see
+"What `:716` still owes after this card" under Boundaries for exactly what is
+left and why.
 
 ## Why
 
-Two facts that only look unrelated.
+### The twenty-eight
+
+`:716` is a ruling, not an idea: it was approved and implemented zero times.
+The cost is not hypothetical. Every value below is one a deployment has a
+legitimate reason to move — a different microphone needs a different wake
+threshold, a noisier room needs a different VAD floor, a slower network needs
+longer MiniMax deadlines, a different region needs a different endpoint — and
+today moving any of them means editing Python and restarting from a checkout.
+The owner's own machine already needs a non-default value for two of them
+(the artifact paths), which is why those two go with a live consequence
+attached.
+
+The card ships them as one slice rather than twenty-eight because they share
+exactly one parser, one startup record, one YAML block and one set of expensive
+daemon restarts on a machine where a restart costs the owner his microphone.
+
+### The two paths, and the record
+
+Two further facts that only look unrelated.
 
 **The process's cwd is load-bearing and nothing can override it.** The two
 artifact locations are relative module constants, the one production caller never
@@ -26,10 +50,11 @@ subtree. The owner's live setup satisfies that with a symlink chain whose last
 link points into `Projects/jarvis-legacy/data/silero_vad.onnx` — a retired
 repository — through a disposable checkout.
 
-The general form of this defect was already decided against: ADR-0006 §5 (`:716`)
-rules that no realtime constant remains hard-coded in `inherent_loop.py`. Nine
-still are. These two are the slice with a live consequence, so they go first, and
-they establish the naming the rest inherit.
+These two are the only values in the set with a live consequence today, and the
+only ones whose resolution needs a fact — the config file's own directory — that
+exists nowhere but `bootstrap_runtime_app`. That is why they, alone of the
+twenty-eight, are resolved at the composition root and carried on
+`JarvisRuntime` rather than parsed inside the daemon module.
 
 **Startup does not say what it spawned.** The legacy wake path and the
 single-ingress path each construct a `voice_wake.WakeEngine`, which logs the same
@@ -83,6 +108,35 @@ without it.
   (`:1412`), which is cwd-independent. The composition root's own comment says
   "we never look at `os.getcwd()`" (`:1402-1404`) — true of everything it
   resolves, and false of the two paths it never resolves.
+- **The other twenty-six values have no reader at all.** They are module
+  constants and call-site literals, listed with their live sites under Target
+  behavior. Three sub-facts decide how each is wired:
+  - `MiniMaxWSClient.__init__` (`jarvis/surface/voice_tts.py:1855-1881`) already
+    takes `voice`, `model`, `primary_endpoint`, `fallback_endpoint`, `volume`,
+    `sample_rate_in`, `sample_rate_out`, `connect_timeout_s` and
+    `total_timeout_s` as keyword arguments; `_new_provider()`
+    (`jarvis/runtime/inherent_loop.py:1876-1882`) passes four of the nine. For
+    those the work is config → existing parameter, and `realtime.tts_volume`
+    (`:1873`) is the shipped template.
+  - The other four MiniMax timeouts are NOT constructor parameters. They are
+    class attributes read as `self._TASK_START_TIMEOUT` (`voice_tts.py:2065`),
+    `self._FIRST_CHUNK_TIMEOUT` / `self._BETWEEN_CHUNK_TIMEOUT` (`:1916-1917`,
+    `:2084`) and `self._SESSION_CLOSE_TIMEOUT` (`:2039`). Each needs a new
+    constructor parameter before a key can reach it.
+  - `_CONNECT_TIMEOUT` (`voice_tts.py:1848`) is **dead**. Nothing reads it:
+    `connect_timeout_s` defaults to a duplicated literal `3.0` (`:1866`) and the
+    live value is `self._connect_timeout` (`:1878`). See Rejected approaches.
+- **`_MODE_THRESHOLDS` is a module-global the constructor cannot bypass.**
+  `SileroVad.__init__` binds `self._t = _MODE_THRESHOLDS[mode]`
+  (`jarvis/surface/voice_audio.py:140`) and `set_mode` re-reads the same table
+  through the `thresholds` classmethod (`:190`), so a per-instance override that
+  did not also cover `set_mode` would be silently discarded the first time the
+  session switched profiles (`voice_session.py:1491` is the other reader).
+- **Both input owners construct the same two objects from the same constants.**
+  `SileroVad(mode="record", model_path=silero_path)` at
+  `jarvis/runtime/inherent_loop.py:2082` (legacy wake) and `:2743` (single
+  ingress); `_DEFAULT_WAKE_THRESHOLD` at `:2095` and `:2751`. A key that reaches
+  only one of them is the trap this card's Boundaries already names.
 - **Pre-flight is soft and stays soft.** `_voice_models_preflight`
   (`jarvis/runtime/inherent_loop.py:311-340`) checks
   `sensevoice_dir/model.int8.onnx`, `sensevoice_dir/tokens.txt` and
@@ -138,6 +192,108 @@ without it.
   the `JARVIS_VOICE_DISABLE_WAKE=1` skip (`:3787-3790`) and the missing-models
   skip.
 
+### The twenty-eight keys, as they appear in `config/jarvis.yaml`
+
+Every default below is today's constant, unchanged. **An absent key resolves to
+exactly that value**, so a config that sets none of them — the owner's — is
+byte-identical to today.
+
+**Flat children of `realtime:`** (siblings of `output_device` / `tts_volume`) —
+sixteen. Each is a fact that applies whatever wave is on:
+
+| key | default | today's site |
+| --- | --- | --- |
+| `sensevoice_dir` | `data/sensevoice-small-int8` | `inherent_loop.py:290` |
+| `silero_vad_path` | `data/silero_vad.onnx` | `:291` |
+| `wake_threshold` | `0.5` | `_DEFAULT_WAKE_THRESHOLD` `:294` |
+| `wake_join_timeout_s` | `2.0` | `_WAKE_JOIN_TIMEOUT_S` `:308` |
+| `tts_voice` | `Chinese (Mandarin)_ExplorativeGirl` | `voice_tts.py:1859` |
+| `tts_model` | `speech-2.8-turbo` | `voice_tts.py:1862` |
+| `tts_primary_endpoint` | `https://api-uw.minimax.io` | `voice_tts.py:1860` |
+| `tts_fallback_endpoint` | `https://api.minimax.chat` | `voice_tts.py:1861` |
+| `tts_sample_rate_in_hz` | `32000` | literal at `inherent_loop.py:1878` |
+| `tts_ring_seconds` | `30.0` | literal at `inherent_loop.py:1966` |
+| `tts_connect_timeout_s` | `3.0` | `voice_tts.py:1848` / `:1866` |
+| `tts_task_start_timeout_s` | `3.0` | `_TASK_START_TIMEOUT` `:1849` |
+| `tts_first_chunk_timeout_s` | `8.0` | `_FIRST_CHUNK_TIMEOUT` `:1850` |
+| `tts_between_chunk_timeout_s` | `5.0` | `_BETWEEN_CHUNK_TIMEOUT` `:1851` |
+| `tts_total_timeout_s` | `30.0` | `_TOTAL_TIMEOUT` `:1852` |
+| `tts_session_close_timeout_s` | `1.0` | `_SESSION_CLOSE_TIMEOUT` `:1853` |
+
+**`realtime.vad:`** — a flat child holding the two `_MODE_THRESHOLDS` profiles
+(`voice_audio.py:78-81`), ten keys. Both owners construct the `record` profile;
+`tts` is inert while `barge_in` is off and is exposed anyway, so the operator who
+turns barge-in on has one place to tune rather than a Python edit:
+
+    realtime:
+      vad:
+        record: {prob_threshold: 0.4, db_threshold: -45.0,
+                 smoothing_window: 5, required_hits: 3, required_misses: 24}
+        tts:    {prob_threshold: 0.5, db_threshold: -22.0,
+                 smoothing_window: 5, required_hits: 3, required_misses: 24}
+
+**`realtime.streaming_output.ring_seconds`** = `2.0` — the Wave-2 streaming
+player's ring (`inherent_loop.py:1912`). Wave-scoped, so it joins
+`StreamingMediaConfig` and its existing parser.
+
+**`realtime.single_audio_ingress.device_miss_limit`** = `3` —
+`_DEFAULT_DEVICE_MISS_LIMIT` (`voice_audio.py:53`), read only by `AudioIngress`
+(`:1645`, `:1762`), which exists only in that wave. It joins `AudioIngressConfig`
+and its existing parser. This is the one key legitimately placed inside
+`single_audio_ingress`, and it is legitimate for the exact reason the two model
+paths are not: its only consumer is the object that block configures.
+
+### `_DEFAULT_TTS_SAMPLE_RATE_HZ` gets no key; it is deleted
+
+`_DEFAULT_TTS_SAMPLE_RATE_HZ = 48000` (`inherent_loop.py:300`) and
+`realtime.streaming_output.canonical_sample_rate_hz` (default `48000`,
+`voice_media.py:228`, set explicitly to `48000` in the shipped config) are one
+value written twice. Today `_build_tts_pipeline` does not reconcile them — it
+*asserts* them equal at `:1907`:
+
+    and media_config.canonical_sample_rate_hz == _DEFAULT_TTS_SAMPLE_RATE_HZ
+
+**What breaks today if the two disagree:** nothing loudly. `streaming_capable`
+goes `False`, so a fully-enabled Wave-2 rollout silently downgrades to the legacy
+TTS path with one generic warning ("capability/config validation failed") that
+never names the sample rate as the cause. The operator who set
+`canonical_sample_rate_hz: 44100` gets a working daemon that has quietly turned
+off the feature they were enabling.
+
+The constant is deleted. The player rate, the MiniMax `sample_rate_out` and the
+streaming canonical rate all become `media_config.canonical_sample_rate_hz`
+(falling back to `StreamingMediaConfig()`'s own default when the streaming block
+failed to parse), and the equality term at `:1907` goes with it. One value, one
+source, and the disagreement it guarded against can no longer be constructed.
+
+### Where each value is parsed
+
+- The two paths: `bootstrap_runtime_app`, the only scope holding `config_path`.
+- `streaming_output.ring_seconds` and `single_audio_ingress.device_miss_limit`:
+  the existing L5 parsers that already own those blocks.
+- The other twenty-four: **one** frozen `_VoiceKnobs` object parsed once in
+  `serve_inherent` from `runtime.config["realtime"]` and threaded to
+  `_build_tts_pipeline`, `_shutdown_wake` and both input owners. This is
+  `:716`'s "typed object". It lives in `inherent_loop.py` rather than on
+  `JarvisRuntime` because it holds `voice_audio.VadThresholds`, and importing
+  `jarvis.surface.voice_audio` into `jarvis/runtime/__init__.py` would pull
+  numpy into every `jarvis` CLI invocation — measured: `import jarvis.runtime`
+  loads neither numpy nor `voice_audio` today.
+
+### Malformed values
+
+Two postures, each inherited from the owner of the block, not chosen per key:
+
+- Flat `realtime.*` and `realtime.vad.*` are read at the composition root,
+  outside any downgrade boundary. A malformed value degrades to the constant
+  with one warning and never fails boot — the `_obsidian_vault_root` /
+  `_positive_float` posture of `jarvis/runtime/__init__.py:528-536`.
+- `streaming_output.ring_seconds` and `single_audio_ingress.device_miss_limit`
+  join parsers that already `raise ValueError` naming the key, which the
+  existing callers already catch into a named downgrade
+  (`invalid_input_config:<msg>` / "realtime.streaming_output config invalid").
+  Changing that posture for one field would be the inconsistency.
+
 ## Affected contracts and files
 
 - L6/L3 boundary `jarvis/runtime/__init__.py` — a reader beside
@@ -157,6 +313,37 @@ without it.
 - L6 `jarvis/runtime/inherent_loop.py:2137-2144` (`_VoiceInputOwners`) and
   `:2809-2843` (`_spawn_voice_input_owners`) — carry the activation reason out so the record
   can name it.
+- L6 `jarvis/runtime/inherent_loop.py` — a new frozen `_VoiceKnobs` and its
+  reader; `_build_tts_pipeline` (`:1834`), `_shutdown_wake` (`:3422`),
+  `_spawn_wake_listener` (`:2036`), `_spawn_single_ingress_session` (`:2640`)
+  and `_spawn_voice_input_owners` (`:2809`) each gain **one defaulted
+  keyword-only parameter** carrying it. Defaulted, so every existing caller —
+  production and the eight tests under `tests/integration/` that construct these
+  helpers directly — compiles and behaves unchanged.
+- L6 `jarvis/runtime/inherent_loop.py:294`, `:300`, `:308` — `_DEFAULT_WAKE_THRESHOLD`
+  and `_WAKE_JOIN_TIMEOUT_S` keep their values as the absent-key fallback;
+  `_DEFAULT_TTS_SAMPLE_RATE_HZ` is deleted.
+- L5 `jarvis/surface/voice_tts.py:1855-1881` (`MiniMaxWSClient.__init__`) — four
+  new keyword-only timeout parameters for the four class attributes that are not
+  parameters today, and `connect_timeout_s`'s duplicated `3.0` literal repointed
+  at `_CONNECT_TIMEOUT` so that constant stops being dead. The five read sites
+  (`:1916-1917`, `:2039`, `:2065`, `:2084`) switch from `self._SCREAMING` to the
+  instance value.
+- L5 `jarvis/surface/voice_audio.py:109-190` (`SileroVad`) — one optional
+  `thresholds: Mapping[str, VadThresholds] | None` parameter, stored as a
+  per-instance table that `set_mode` also consults, so an override survives a
+  mid-utterance profile switch. `_MODE_THRESHOLDS` stays the default table and
+  the `thresholds` classmethod keeps its signature (`voice_session.py:1491` is
+  an unmodified caller).
+- L5 `jarvis/surface/voice_audio.py:441-461` (`AudioIngressConfig`) and
+  `:2522` (its parser) — one `device_miss_limit: int = 3` field; the two
+  `_DEFAULT_DEVICE_MISS_LIMIT` reads (`:1645`, `:1762`) become
+  `self._config.device_miss_limit` and the constant is deleted.
+- L5 `jarvis/surface/voice_media.py:225-237` (`StreamingMediaConfig`) and
+  `:3309` (its parser) — one `ring_seconds: float = 2.0` field.
+- L5 `jarvis/surface/voice_tts.py:447-452` — the `_DECLICK_SAMPLES` comment
+  cites `inherent_loop._DEFAULT_TTS_SAMPLE_RATE_HZ`, which this card deletes;
+  it must name the streaming canonical rate instead.
 - L6 `jarvis/runtime/inherent_loop.py` — the one new startup record, placed
   after the whole voice-construction block (which ends at `:3812`) so it is
   reached on every path.
@@ -191,25 +378,43 @@ without it.
   `bootstrap_runtime_app` and threaded to both owners from the single
   `_spawn_voice_input_owners` call site — but the placement must not invite the
   next reader to assume the block is a general home for voice config.
-- **Non-goal: the other seven hard-coded constants** covered by the same
-  ADR-0006 §5 (`:716`) decision. `_DEFAULT_WAKE_THRESHOLD` (`:294`),
-  `_DEFAULT_CAPTURE_MAX_DURATION_S` (`:295`), `_DEFAULT_CAPTURE_MIN_VOICED_S`
-  (`:296`), `_DEFAULT_TTS_SAMPLE_RATE_HZ` (`:300`), `_WAKE_JOIN_TIMEOUT_S`
-  (`:308`) and the two `ring_seconds` literals (`:1912`, `:1966`) stay exactly as
-  they are. The owner has a separate plan for them. **The convention this card
-  sets, which that plan should inherit rather than re-derive:** a fact that
-  applies whatever wave is on is a flat child of `realtime:` alongside
-  `output_device` / `tts_volume`; a fact that only means something inside one
-  wave belongs in that wave's sub-block (`streaming_output`,
-  `single_audio_ingress`), and must then be wired into every owner that consumes
-  it.
+- **The naming convention, applied throughout and inherited by the next
+  slice:** a fact that applies whatever wave is on is a flat child of `realtime:`
+  alongside `output_device` / `tts_volume`; a fact that only means something
+  inside one wave belongs in that wave's sub-block (`streaming_output`,
+  `single_audio_ingress`), **and must then be wired into every owner that
+  consumes it**. The second clause is what places `wake_threshold` and the VAD
+  profiles flat: both input owners construct them.
+- **Non-goal: the legacy wake path's capture bounds.**
+  `_DEFAULT_CAPTURE_MAX_DURATION_S` (`:295`) and `_DEFAULT_CAPTURE_MIN_VOICED_S`
+  (`:296`) stay hard-coded. The single-ingress owner already has
+  `max_utterance_s` / `min_voiced_s` (`RealtimeInputSessionConfig`), which is the
+  path the owner runs; a second pair of keys reaching only the legacy owner would
+  be the honoured-by-one-owner trap, in the direction the convention forbids.
+- **What `:716` still owes after this card.** Say it here so the next slice does
+  not rediscover it. `:716` says *no* realtime constant remains hard-coded in
+  `inherent_loop.py`. After this card three remain, each deliberately:
+  `_DEFAULT_CAPTURE_MAX_DURATION_S` and `_DEFAULT_CAPTURE_MIN_VOICED_S` (above),
+  and `_WAKE_SAMPLE_RATE_HZ` / `_WAKE_FRAME_SAMPLES` (`:306-307`), which are
+  external model input contracts and never become keys. So this card satisfies
+  `:716` **partially**: everything it leaves is either a ruled-out external
+  contract or the legacy capture pair, whose real fix is retiring the legacy wake
+  owner, not configuring it.
 - **Non-goal: exposing a knob whose only legal value is its default.** ADR-0008
   (`docs/adr/0008-real-time-response-streaming.md:1005`) — "a knob whose only
-  legal value is its default is not configuration." Both keys pass: any
-  filesystem path is legal, and the owner's own machine needs a non-default value
-  because his artifacts live outside every repo. The filter kills two adjacent
-  temptations — an "anchor mode" key and a "strict pre-flight" key — each of
-  which would have exactly one usable setting.
+  legal value is its default is not configuration." Applied to all thirty
+  candidates, the filter killed three:
+  - `_DEFAULT_TTS_SAMPLE_RATE_HZ` — not because its value is fixed but because
+    a *second* name for `streaming_output.canonical_sample_rate_hz` is not
+    configuration either. Deleted rather than exposed (see Target behavior).
+  - An "anchor mode" key for the two paths (cwd vs config-dir vs repo-root):
+    one usable setting.
+  - A "strict pre-flight" key turning a missing artifact into a boot failure:
+    one usable setting, and it contradicts ADR-0005 §12.
+  The filter did **not** kill `_CONNECT_TIMEOUT`, which fails a different test —
+  it is dead, not fixed. The key is wired to the live `connect_timeout_s`
+  parameter and the dead constant becomes that parameter's default. See Rejected
+  approaches.
 - Non-goal: reviving the `voice.*` namespace of ADR-0005 §9. It is superseded
   (see Rejected approaches) and none of its sixteen rows was ever implemented.
 - Non-goal: a CLI flag. Under the LaunchAgent the daemon's argv is pinned to
@@ -271,6 +476,42 @@ without it.
   family's success sibling is genuinely missing, but the log line is the
   acceptance observable and nothing consumes the JSONL sink today. Add it when a
   trace-reading harness needs it.
+- **A `realtime.tts:` sub-block for the eleven MiniMax keys.** Prettier, and
+  wrong: `realtime.tts_volume` is already shipped flat and read at
+  `inherent_loop.py:1873`. Moving it into a new block breaks a key an operator
+  may already set, which the additive mandate forbids; leaving it out gives TTS
+  config two homes and guarantees the next reader puts a key in the wrong one.
+  Eleven `tts_*` siblings of the existing `tts_volume` is one naming rule and no
+  migration.
+- **Expose `_CONNECT_TIMEOUT` as a key that sets the class attribute.** It would
+  be a key with no effect: nothing reads `_CONNECT_TIMEOUT`. The live value is
+  `self._connect_timeout`, assigned from the `connect_timeout_s` parameter whose
+  default is a separately-typed `3.0` literal. `realtime.tts_connect_timeout_s`
+  is wired to the parameter, and the parameter's default is repointed at the
+  constant so the two can no longer drift. Shipping the key without noticing
+  this would have produced the one thing worse than a hard-coded constant: a
+  documented knob that silently does nothing.
+- **Leave `_spawn_wake_listener`'s parameter list alone.** Tempting — it is the
+  legacy owner and the owner runs single ingress. But `wake_threshold` and the
+  VAD profiles are flat `realtime:` keys precisely because *both* owners
+  construct them, and a flat key honoured by one owner is the trap this card's
+  Boundaries names. Resolved by **adding** defaulted keyword-only parameters
+  rather than changing the existing ones: no existing caller changes, the
+  legacy owner honours the config, and the function still never receives
+  `runtime` — so the structural argument that `realtime.single_audio_ingress` is
+  unreachable from it survives intact, which is the property that matters.
+- **Hand `_spawn_wake_listener` the `JarvisRuntime` instead.** One parameter
+  instead of one object, and it would destroy that argument: the block would
+  become reachable, and the next reader would put a shared key there.
+- **Put `_VoiceKnobs` on `JarvisRuntime` beside the two paths.** One typed
+  object instead of two, but it holds `voice_audio.VadThresholds`, so
+  `jarvis/runtime/__init__.py` would import `jarvis.surface.voice_audio` and
+  pull numpy into every `jarvis` CLI invocation — measured absent today. The
+  paths cannot move the other way (they need `config_path`), so the seam is
+  forced; it is drawn where the import cost is.
+- **Validate that `streaming_output.canonical_sample_rate_hz` equals the player
+  rate.** That is what `:1907` does today, and the two values it compares are
+  the same fact written twice. Deleting one is smaller than validating both.
 - **Split the input-owner record into its own card.** Both defects are the same
   omission, both land on one new log statement at one site, and the cwd
   acceptance requires that statement to exist regardless. Two cards would edit
@@ -281,142 +522,166 @@ without it.
 
 Every check below names the artifact it asserts on. None of them is a unit test.
 
-**Setup, used by the positive checks.** Copy the real Silero artifact out of the
-retired repository first — severing that dependency is the point:
+### The startup record, which is most of the observable
 
-    mkdir -p ~/Models
-    cp /Users/alllllenshi/Projects/jarvis-legacy/data/silero_vad.onnx ~/Models/silero_vad.onnx
+One `LOGGER.info` line per boot, prefixed `voice startup config:` and followed by
+one JSON object (`json.dumps(..., sort_keys=True)`) naming every resolved value
+`_VoiceKnobs` and the two paths hold, plus `models_ok`, `input_owner` and
+`reason`. JSON rather than `key=value` because there are twenty-seven fields and
+a `key=value` line of that width is not readable; and because every check below
+reads one field out of it with `jq`, which a flat line would not support.
 
-Then write `<repo>/config/jarvis-cwdcheck.yaml` — a copy of `config/jarvis.yaml`
-plus:
+### Run constraints — every daemon start below
 
-    realtime:
-      sensevoice_dir: /Users/alllllenshi/Models/sensevoice-small-int8
-      silero_vad_path: /Users/alllllenshi/Models/silero_vad.onnx
+    env -u MINIMAX_API_KEY JARVIS_VOICE_DISABLE_WAKE=1 <interp> -m jarvis serve \
+      --config <scratch>.yaml --force-manual --port 8011 \
+      --runtime-root /tmp/jarvis-voicecfg-root
 
-(merged into the existing `realtime:` block, not appended as a second one —
-`yaml.safe_load` keeps only the last duplicate top-level key, which would drop
-every realtime flag the file already sets.)
+**`env -u MINIMAX_API_KEY` is a safety requirement, not a convenience.** With the
+key present `_build_tts_pipeline` opens a PortAudio `OutputStream` on the system
+default output — the owner's speakers, which he is listening to — and any turn
+that reaches `surface.response_emitted` speaks out loud. `--force-manual` does
+NOT prevent this: it only bypasses the launchd-installed guard
+(`jarvis/cli/__init__.py:714`). Without the key `_build_tts_pipeline` returns
+`None` at `:1857` before constructing anything, so no audio device is ever
+opened. The voice pipeline (ASR) is built at `:3776`, before TTS, so every ASR
+check below still runs. **Do not remove it, and do not change the system default
+output device for any check here — none of them needs a loopback.**
 
-Keeping it inside `<repo>/config/` means `repo_root` still resolves the prompt
-and `data/pricing.json`, so the model paths are the only variable under test.
-Delete the file before the final commit; it is scaffolding, not a deliverable.
+The port and runtime root keep this off the owner's daemon (pid 85617, port
+8009) and off his `daemon.lock`; `JARVIS_VOICE_DISABLE_WAKE=1` guarantees no
+second process opens the microphone he owns. **Do not remove any of the four.**
+Kill each daemon when its check is done.
 
-**Every daemon start below MUST use** `--force-manual`, `--port 8011`,
-`--runtime-root /tmp/jarvis-cwdcheck-root` and `JARVIS_VOICE_DISABLE_WAKE=1`.
-The port and runtime root keep it off the owner's daemon (pid 85617, port 8009)
-and off his `daemon.lock`; `JARVIS_VOICE_DISABLE_WAKE=1` guarantees no second
-process ever opens the microphone he owns. **Do not remove any of the four.**
+**Setup.** Copy the real Silero artifact out of the retired repository first —
+severing that dependency is the point:
 
-- **Positive — the actual goal. Resolution from an arbitrary cwd.**
-  Start the daemon with `cwd=/` (a directory with no `data/`):
+    cp /Users/alllllenshi/Projects/jarvis-legacy/data/silero_vad.onnx \
+       ~/Models/silero_vad.onnx
 
-      cd / && JARVIS_VOICE_DISABLE_WAKE=1 <interp> -m jarvis serve \
-        --config <repo>/config/jarvis-cwdcheck.yaml \
-        --force-manual --port 8011 --runtime-root /tmp/jarvis-cwdcheck-root
+Scratch configs go in `<repo>/config/` (so `repo_root` still resolves the prompt
+and `data/pricing.json`, leaving the keys under test as the only variable) and
+are **deleted before the final commit**. Each is a copy of `config/jarvis.yaml`
+with keys **merged into the existing `realtime:` block** — never appended as a
+second top-level `realtime:`, which `yaml.safe_load` would resolve by keeping
+only the last, silently dropping every flag the file sets.
 
-  Observable: the new startup record on stderr names
-  `sensevoice_dir=/Users/alllllenshi/Models/sensevoice-small-int8`,
-  `silero_vad_path=/Users/alllllenshi/Models/silero_vad.onnx`, `models_ok=true`,
-  `input_owner=none`, `reason=wake_disabled_env`. The line
-  `voice models missing; running text-only` must NOT appear. Paste the raw
-  startup lines.
+### A. The two paths
 
-- **Negative control for the same run.** Repeat it byte-for-byte against
-  `--config <repo>/config/jarvis.yaml` (neither key set), still from `cwd=/`.
-  Observable: `voice models missing; running text-only` DOES appear, the record
-  shows `models_ok=false` and the two paths as the cwd-relative
-  `/data/sensevoice-small-int8` / `/data/silero_vad.onnx`. Without this the
-  positive check proves nothing — it would pass identically if the keys were
-  ignored and some unrelated `data/` were reachable.
-
-- **Positive — a configured *relative* path is anchored at the config file, not
-  cwd.** Add a second scratch config in the same directory with
-  `sensevoice_dir: ../../../Models/sensevoice-small-int8` (relative,
-  reaching `~/Models` from `<repo>/config/`). Start from `cwd=/` again.
-  Observable: the record names the same resolved absolute path as the first
-  check and `models_ok=true`. Started from two different cwds, the record shows
-  the identical absolute path.
-
-- **Positive — the models actually load, not merely `exists()`.** Pre-flight is
-  only a stat. In the same `cwd=/` run as the first check, the voice pipeline is
-  constructed before the `JARVIS_VOICE_DISABLE_WAKE` branch
-  (`inherent_loop.py:3776` precedes `:3787`), so PTT ASR is live. Record a WAV
-  and post it:
+- **Positive — resolution from an arbitrary cwd.** `<repo>/config/jarvis-paths.yaml`
+  merges `sensevoice_dir: /Users/alllllenshi/Models/sensevoice-small-int8` and
+  `silero_vad_path: /Users/alllllenshi/Models/silero_vad.onnx`. Start from
+  `cwd=/`, a directory with no `data/`.
+  Observable: the record's `sensevoice_dir` / `silero_vad_path` are those two
+  absolute paths and `models_ok` is `true`; the line
+  `voice models missing; running text-only` does NOT appear. Paste raw stderr.
+- **Negative control.** Byte-identical run against the unmodified
+  `config/jarvis.yaml`, still `cwd=/`. Observable: `models_ok` is `false`, the
+  two paths are the cwd-relative `/data/...`, and the missing-models ERROR DOES
+  appear. Without this the positive proves nothing.
+- **Positive — a configured relative path anchors at the config file.** A second
+  scratch config with `sensevoice_dir: ../../../Models/sensevoice-small-int8`,
+  started from `cwd=/`. Observable: the record names the same absolute path as
+  the first check. Two different cwds, one absolute path.
+- **Positive — the models actually load, not merely `exists()`.** In the `cwd=/`
+  run of the first check, post a WAV to the live PTT ASR route:
 
       say -o /tmp/ptt.wav --data-format=LEI16@16000 "小月，现在几点了"
       curl -sS -F 'audio=@/tmp/ptt.wav' http://127.0.0.1:8011/inherent/asr-submit
 
   Observable: the HTTP response body carries a non-empty transcript — a real
   SenseVoice decode out of the configured directory, from a process whose cwd
-  contains no `data/`. Paste the raw response. If it 501s, the pipeline was
-  never constructed and the check has failed regardless of what the record said.
+  has no `data/`. A 501 means the pipeline was never constructed: failure, not
+  caveat.
 
-- **Input-owner discrimination.** Two runs, both from `cwd=/` with the scratch
-  config, differing only in `realtime.single_audio_ingress.enabled`:
-  with it `false`, the record reads `reason=feature_disabled`; with it `true`
-  while `realtime.enabled` is `false`, it reads
-  `reason=realtime_parent_disabled`. Both must show `input_owner=none` because
-  wake is disabled by env. This asserts the record carries the activation reason
-  and that two different configurations produce two different, correct reasons —
-  the discrimination the incident needed. Paste both lines.
+### B. The representative subset — a value set in YAML reaches its consumer
 
-- **Regression — backward compatibility, the mandate.** From the repo root
-  (`cwd == <repo>`, the launchd shape), start with the unmodified
-  `config/jarvis.yaml`. Observable: the record's two paths are
-  `<repo>/data/sensevoice-small-int8` and `<repo>/data/silero_vad.onnx` — the
-  literal cwd-relative resolution of today's constants — and the missing-models
-  ERROR appears exactly once (this worktree's `data/` holds only
-  `pricing.json`), with the daemon still serving. Confirm the text path survives
-  the ERROR: `curl -sS -X POST http://127.0.0.1:8011/inherent/submit -H
-  'content-type: application/json' -d '{"text":"hi"}'` returns a `turn_id`.
-  That single ERROR plus a live text path is the pre-flight semantic, preserved.
+Three keys, one from each wiring mechanism, each with its negative control. The
+record field named is the observable; it is written from the same `_VoiceKnobs`
+instance that is threaded to the consumer, so a field showing the configured
+value and a consumer receiving the default cannot both be true.
 
-- **Regression — hermetic suite.** `env -u MINIMAX_API_KEY uv run pytest -q -m
-  "not live_llm and not live_codex"`. Measured on this worktree at `508f863`:
-  **1069 passed, 1 skipped, 64 deselected**. Confirm your own baseline before the
-  first edit and paste the raw tail anyway; if yours differs, explain the delta
-  and work against your measured number. Never take a count from a card.
+- **`realtime.wake_threshold` — threaded to both input owners.**
+  Set `0.87`. Observable: record field `wake_threshold` is `0.87`.
+  **Negative control:** same run, key absent → `0.5`.
+- **`realtime.tts_voice` — a MiniMax knob wired to an existing parameter.**
+  Set `Chinese (Mandarin)_GentleGirl`. Observable: record field `tts_voice` is
+  that string. **Negative control:** key absent →
+  `Chinese (Mandarin)_ExplorativeGirl`.
+- **`realtime.vad.record.prob_threshold` — a nested profile field.**
+  Set `0.61`. Observable: record field `vad_record_prob_threshold` is `0.61`
+  AND `vad_record_db_threshold` is still `-45.0` and `vad_tts_prob_threshold`
+  still `0.5` — a partial profile override must not blank its siblings or the
+  other profile. **Negative control:** key absent → `0.4`.
+- **`realtime.tts_task_start_timeout_s` — one of the four that needed a new
+  constructor parameter.** Set `7.5`. Observable: record field
+  `tts_task_start_timeout_s` is `7.5`. **Negative control:** absent → `3.0`.
+- **Malformed degrades, never fails boot.** `wake_threshold: "loud"` in the same
+  config. Observable: one WARNING naming `realtime.wake_threshold`, the record
+  field back at `0.5`, and the daemon serving —
+  `POST /inherent/submit -d '{"text":"hi"}'` returns a `turn_id`.
 
-- **Regression — Tier 1 gates.** `lint-imports`, `ruff check`, `mypy --strict`,
-  each with its printed count pasted. A new `JarvisRuntime` field and a removed
-  `serve_inherent` kwarg are exactly the kind of change `mypy --strict` catches.
+### C. The two wave-scoped keys
 
-- **Live run: required, and the four checks above are it.** The daemon really
-  starts, really resolves, really decodes speech through SenseVoice from the
-  configured directory. There is nothing further a microphone would add that the
-  ASR round-trip does not already prove, and a wake run would need the
-  microphone the owner's daemon holds. **Do not stop, restart, or contend with
-  the owner's daemon to get a wake-path run.** If you believe one is genuinely
+Their consumers (`AudioIngress`, the streaming player) require a device open,
+which this window forbids, so the observable is that the key reaches the parser
+that owns it — which is where a wrong placement would fail.
+
+- **`realtime.single_audio_ingress.device_miss_limit`.** With
+  `realtime.enabled: true` and `single_audio_ingress.enabled: true`, set
+  `device_miss_limit: 0`. Observable: the record's `reason` is
+  `invalid_input_config:realtime.single_audio_ingress.device_miss_limit must be
+  a positive integer`. `_single_ingress_activation` returns this before
+  `engine.start()`, so no device is touched. **Negative control:** the same
+  config with the key absent → `reason` is `wave1_capability_missing` (the next
+  gate), i.e. the field parsed clean.
+- **`realtime.streaming_output.ring_seconds`.** Same shape against
+  `streaming_media_config_from_mapping`; observable is the same `reason` field
+  quoting `realtime.streaming_output.ring_seconds must be a positive number`.
+
+### D. The deleted `_DEFAULT_TTS_SAMPLE_RATE_HZ`
+
+The behavior change is that a `canonical_sample_rate_hz` other than 48000 no
+longer silently disables Wave-2 streaming. Proving it needs `MINIMAX_API_KEY`,
+which is exactly what section B forbids — so this one run additionally sets
+`realtime.output_device: jarvis-no-such-output-device`. sounddevice raises on an
+unresolvable device name before opening any hardware, so both players fail
+closed and no audio device is opened. Config: `realtime.enabled: true`,
+`concurrency_safety.{transactional_event_append,lifecycle_terminal_cas}: true`,
+`streaming_output: {enabled: true, canonical_sample_rate_hz: 44100}`.
+
+Observable: the line
+`realtime.streaming_output capability/config validation failed; downgraded to
+legacy TTS.` — present before the change (the equality term at `:1907` fails),
+absent after. Show both, by running the same config against `git stash`-free
+before/after builds or by quoting the removed line. **Negative control:** the
+same config with `canonical_sample_rate_hz: 48000` shows the line in neither.
+Confirm no `OutputStream` opened: the run must log
+`legacy TTS startup failed (...); downgraded to text-only`.
+
+### E. Regressions
+
+- **Backward compatibility — the mandate.** From the repo root (`cwd == <repo>`,
+  the launchd shape) with the **unmodified** `config/jarvis.yaml`. Observable:
+  every one of the record's twenty-seven fields equals today's constant, the two
+  paths are the cwd-relative `<repo>/data/...`, the missing-models ERROR appears
+  exactly once (this worktree's `data/` holds only `pricing.json`), and
+  `POST /inherent/submit` still returns a `turn_id`. That single ERROR plus a
+  live text path is the pre-flight semantic, preserved. If any field differs
+  from its constant, STOP AND REPORT.
+- **Hermetic suite.** `env -u MINIMAX_API_KEY uv run pytest -q -m "not live_llm
+  and not live_codex"`. Measured on this worktree at `68b8024`: **1069 passed,
+  1 skipped, 64 deselected**. Re-measure before the first edit; never take a
+  count from a card.
+- **Tier 1 gates.** `lint-imports`, `ruff check`, `mypy --strict`, each with its
+  printed count pasted. A deleted `serve_inherent` kwarg, a deleted module
+  constant and six new dataclass fields are exactly what `mypy --strict` catches.
+- **Live run: required, and A–D are it.** The daemon really starts, really
+  resolves twenty-eight values from one file, and really decodes speech through
+  SenseVoice from the configured directory. A wake run would need the microphone
+  the owner's daemon holds and audio output he is using. **Do not stop, restart
+  or contend with the owner's daemon.** If you believe a wake run is genuinely
   needed, STOP AND REPORT and let the owner schedule it.
-
-## Docs to sync
-
-- `docs/adr/0006-full-duplex-voice-session.md` §5 — ADR-0006 owns the `realtime:`
-  namespace, so it owns two facts this card creates. (a) Add the two keys to the
-  "Keys this ADR gates" list that opens at `:718` and runs `:720-723`, marked as
-  ungated artifact locations read whatever the rollout mode, unlike the four
-  switches above them. Note that `:725` ("Per-field tuning … this ADR does not
-  restate it") is why the list carries the key names but not their values. (b) Add
-  one sentence giving the resolution rule for any path-valued `realtime.*` key —
-  `~`-expanded, and if still relative anchored at the config file's directory,
-  never at cwd; an absent key falls back to the module constant, which stays
-  cwd-relative. Write (b) as a namespace-wide rule, not a per-key note: the
-  remaining `:716` slices will add more paths and should inherit it.
-- `docs/adr/0005-inherent-voice.md` §9 (`:302-322`) — **one line only**, under
-  the table: the `voice.*` namespace is superseded by ADR-0006 §5 (`:718`), none
-  of these sixteen rows was implemented, and the two artifact paths now live at
-  `realtime.sensevoice_dir` / `realtime.silero_vad_path`. This card's own first
-  draft was misled by that table; leaving it unmarked guarantees the next reader
-  repeats the mistake. Do not restructure or delete the table — a superseded
-  proposal is still the record of what was once intended.
-- `docs/adr/0005-inherent-voice.md` §12 (`:378`) — the pre-flight sentence stays
-  true as written. Judge it explicitly and say so; do not duplicate the
-  resolution rule into it.
-- `docs/spec.html` — no section owns model-artifact resolution (no `sensevoice`
-  or `silero` string appears in it). Judge unchanged and say so. Add nothing.
-- No new ADR. This card is one slice of ADR-0006 §5 (`:716`); a second ADR
-  restating it would be the duplication the working contract forbids.
 
 ## Open questions
 
@@ -427,62 +692,44 @@ process ever opens the microphone he owns. **Do not remove any of the four.**
 Implement `docs/goals/voice-model-paths-from-config.md`. Done when ALL of the
 following appear in this transcript as raw command output, not as claims:
 
-1. The re-pinned tip — `git rev-parse HEAD` and `git log -1 --oneline` shown
-   before any edit — and a statement of whether each `path:line` in the card
-   still resolves to the cited symbol. Report any that moved; never silently
-   follow a stale line number.
-2. The two keys as shipped are named `realtime.sensevoice_dir` and
-   `realtime.silero_vad_path`, flat children of the existing `realtime:` block.
-   Show the diff of `config/jarvis.yaml`. A `voice:` namespace is forbidden by
-   ADR-0006 §5 (`:718`); a placement under `realtime.single_audio_ingress` is
-   forbidden because `_spawn_wake_listener` cannot read that block. If you
-   believe either is nonetheless right, STOP AND REPORT — do not re-decide the
-   namespace mid-run.
-3. The measured hermetic baseline BEFORE any edit: the raw tail of
+1. The re-pinned tip — `git rev-parse HEAD` and `git log -1 --oneline` before any
+   edit — and a statement of whether each `path:line` in the card still resolves
+   to the cited symbol. Report any that moved; never silently follow a stale
+   line number.
+2. The measured hermetic baseline BEFORE any edit: the raw tail of
    `env -u MINIMAX_API_KEY uv run pytest -q -m "not live_llm and not live_codex"`.
-   Card measured 1069 passed / 1 skipped / 64 deselected at `508f863`. If yours
-   differs, EXPLAIN the delta and proceed against your own number.
-4. The raw stderr startup lines of the arbitrary-cwd positive run (`cd /`, the
-   scratch config), showing the new record with both absolute paths,
-   `models_ok=true`, and no `voice models missing` line.
-5. The raw startup lines of the negative control (`cd /`, the unmodified
-   `config/jarvis.yaml`), showing `models_ok=false` and the missing-models
-   ERROR. A positive without its negative control is not accepted.
-6. The raw startup lines of the relative-path run, showing the same resolved
-   absolute path as (3) from a different cwd.
-7. The raw HTTP response of `POST /inherent/asr-submit` with a `say`-generated
-   WAV, carrying a non-empty transcript, from the `cwd=/` daemon. A 501 is a
-   failure, not a caveat.
-8. Both input-owner runs' record lines, showing `reason=feature_disabled` and
-   `reason=realtime_parent_disabled` respectively.
-9. The backward-compatibility run from the repo root with the UNMODIFIED
-   `config/jarvis.yaml`, showing the two cwd-relative `<repo>/data/...` paths,
-   exactly one missing-models ERROR, and a `POST /inherent/submit` that still
-   returns a `turn_id`. If the absent-key case resolves anywhere other than
-   today's cwd-relative path, STOP AND REPORT — that is the one thing this card
-   forbids.
-10. The raw tail of the full hermetic suite after the change with no regression
-   against (2), plus the printed counts of `lint-imports`, `ruff check` and
-   `mypy --strict`. Report the counts; never infer them.
-11. Each entry under "Docs to sync" either updated or explicitly judged
-    unchanged, with the reason. When the change alters a documented contract,
-    invariant, ownership boundary, or externally relevant behavior, update the
-    canonical document that owns that fact; do not document what the code
-    already makes clear; do not duplicate a fact across documents.
-12. `git status` shows a clean tree, the scratch configs under `config/` are
-    deleted, and each slice is committed per the commit skill with a Progress
-    line appended.
+   Card measured 1069 / 1 / 64 at `68b8024`. If yours differs, EXPLAIN and
+   proceed against your own number.
+3. The `config/jarvis.yaml` diff, showing all twenty-eight keys in their decided
+   placement. A `voice:` namespace is forbidden by ADR-0006 §5 (`:718`);
+   `realtime.single_audio_ingress` is forbidden for anything but
+   `device_miss_limit`, whose sole consumer is that block's own object. If you
+   believe otherwise, STOP AND REPORT — do not re-decide the namespace mid-run.
+4. Section A: the four raw outputs — arbitrary-cwd positive, its negative
+   control, the relative-path run, and the `asr-submit` response body.
+5. Section B: the five raw record lines and their five negative controls, with
+   the asserted field quoted from each.
+6. Section C: the two `reason` values and their two negative controls.
+7. Section D: the presence and absence of the capability-validation line, and
+   the text-only downgrade line proving no device was opened.
+8. Section E: the backward-compatibility record with every field at its
+   constant; the post-change hermetic tail with no regression against (2); the
+   printed counts of `lint-imports`, `ruff check`, `mypy --strict`.
+9. Each entry under "Docs to sync" either updated or explicitly judged
+   unchanged, with the reason.
+10. `git status` clean, the scratch configs under `config/` deleted, and each
+    slice committed per the commit skill with a Progress line appended.
 
-Constraints: every daemon you start uses `--force-manual --port 8011
---runtime-root /tmp/jarvis-cwdcheck-root` and `JARVIS_VOICE_DISABLE_WAKE=1`, and
-you kill it when its check is done. Never start, stop, restart or otherwise
-interfere with the owner's daemon (pid 85617, port 8009). Never edit anything
-under `/Users/alllllenshi/.jarvis-allen-test/`. Never touch, build or delete
-anything under `.claude/worktrees/realtime-live-test`. Read config values from
-`config/jarvis.yaml` directly, never from this card.
+Constraints: every daemon you start uses `env -u MINIMAX_API_KEY`,
+`JARVIS_VOICE_DISABLE_WAKE=1`, `--force-manual`, `--port 8011` and
+`--runtime-root /tmp/jarvis-voicecfg-root`, and you kill it when its check is
+done. Never start, stop, restart or otherwise interfere with the owner's daemon
+(pid 85617, port 8009). Never change the system default output device. Never
+edit anything under `/Users/alllllenshi/.jarvis-allen-test/`. Never touch, build
+or delete anything under `.claude/worktrees/realtime-live-test`. Read config
+values from `config/jarvis.yaml` directly, never from this card.
 
-If the card contradicts the repository, stop and report; do not redesign. Or
-stop after 25 turns.
+If the card contradicts the repository, stop and report; do not redesign.
 
 ## Progress
 
