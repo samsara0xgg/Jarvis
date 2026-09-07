@@ -453,6 +453,16 @@ class _PCMCommitGate:
 _DECLICK_SAMPLES = 128
 _DECLICK_RAMP = np.linspace(1.0, 0.0, _DECLICK_SAMPLES + 1, dtype=np.float32)[1:]
 
+# ADR-0006 D12.  A short-but-nonzero ring read (`0 < actual < frames`) pads with
+# exact zeros inside its own block, so `view[actual - 1] -> view[actual]` is a
+# one-sample step -- and the next block's declick cannot see it, because
+# `_declick_last_sample` latches the pad's `0.0`.  The block's own last real
+# samples are multiplied down to exactly `0.0` instead.  Descending integer
+# steps divided by `k - 1` at use give a ramp of any length `k` that starts
+# at unity and lands on an exact `0.0`; a tail slice of `_DECLICK_RAMP` would
+# start below unity and move the step one sample earlier instead of removing it.
+_TAIL_RAMP_STEPS = np.arange(_DECLICK_SAMPLES - 1, -1, -1, dtype=np.float32)
+
 
 class _GainRamp:
     """Linear gain ramp applied inside the PortAudio callback.
@@ -663,6 +673,10 @@ class AudioStreamPlayer:
         self._declick_last_sample: float = 0.0
         self._declick_amplitude: float = 0.0
         self._declick_remaining: int = 0
+        # Tail-ramp state, owned by the callback thread: the ramp length applied
+        # in the active generation's last short read, and its scratch.
+        self._tail_ramp_scratch = np.empty(_DECLICK_SAMPLES, dtype=np.float32)
+        self._tail_ramp_samples: int = 0
         self._blocksize = int(blocksize)
         self._latency = latency
         self._device = device
@@ -1520,6 +1534,11 @@ class AudioStreamPlayer:
         return self._starvation_gaps
 
     @property
+    def tail_ramp_samples(self) -> int:
+        """Ramp length applied in the active generation's last short read."""
+        return self._tail_ramp_samples
+
+    @property
     def callback_calls(self) -> int:
         """Lifetime PortAudio callback invocations (liveness signal)."""
         return self._callback_calls
@@ -1698,6 +1717,27 @@ class AudioStreamPlayer:
             first = self._callback_first_generation != generation
             if first:
                 self._callback_first_generation = generation
+                self._tail_ramp_samples = 0
+            if actual < frames:
+                # ADR-0006 D12: `read_into` zero-padded this block, so decay its
+                # own last real samples to exactly 0.0 rather than step there.
+                # Bounded by `actual`, so it never reaches back into the
+                # preceding block, which is already with the host.  After
+                # `_gain.apply` above, so the exact-zero landing survives
+                # ducking; before `_callback_reports.write` below, so nothing is
+                # accounted yet.  Cursors and `_played_samples` are untouched.
+                ramp = min(actual, _DECLICK_SAMPLES)
+                scratch = self._tail_ramp_scratch[:ramp]
+                # Divide rather than scale by a reciprocal: `x / x` and `0 / x`
+                # are exact in IEEE arithmetic, so the ramp starts on exactly
+                # unity and lands on exactly `0.0` for every length.
+                np.divide(
+                    _TAIL_RAMP_STEPS[-ramp:],
+                    float(ramp - 1) if ramp > 1 else 1.0,
+                    out=scratch,
+                )
+                view[actual - ramp : actual] *= scratch
+                self._tail_ramp_samples = ramp
             self._played_samples += actual
             self._callback_reports.write(
                 generation=generation,

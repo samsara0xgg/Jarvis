@@ -650,20 +650,20 @@ surface.playback_completed
   required: session_id, response_id, turn_id, playback_generation_id,
             heard_through_sequence, submitted_samples, speech_text_hash
   optional: total_samples, provider, cursor_quality,
-            starvation_gaps, host_underflows
+            starvation_gaps, host_underflows, tail_ramp_samples
 
 surface.playback_interrupted
   required: session_id, response_id, turn_id, playback_generation_id,
             heard_through_sequence, submitted_samples, heard_text_hash, reason
   optional: heard_text, total_samples, interrupted_by_utterance_id,
             interrupted_by_turn_id, provider, cursor_quality,
-            starvation_gaps, host_underflows
+            starvation_gaps, host_underflows, tail_ramp_samples
 
 surface.playback_failed
   required: session_id, response_id, turn_id, playback_generation_id,
             heard_through_sequence, submitted_samples, heard_text_hash, reason
   optional: heard_text, provider, cursor_quality, retryable,
-            starvation_gaps, host_underflows
+            starvation_gaps, host_underflows, tail_ramp_samples
 
 surface.playback_lane_isolated
   required: session_id, response_id, turn_id, playback_generation_id,

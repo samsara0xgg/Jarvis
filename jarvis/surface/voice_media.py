@@ -3110,6 +3110,7 @@ class StreamingTTSPipeline:
             "heard_text": snapshot.heard_text,
             "starvation_gaps": (self._player.starvation_gaps - active.starvation_gaps_at_start),
             "host_underflows": (self._player.underflow_count - active.host_underflows_at_start),
+            "tail_ramp_samples": self._player.tail_ramp_samples,
         }
         if event_type == "surface.playback_completed":
             payload["speech_text_hash"] = speech_text_hash or hashlib.sha256(b"").hexdigest()

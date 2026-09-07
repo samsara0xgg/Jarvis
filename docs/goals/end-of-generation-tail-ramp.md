@@ -308,3 +308,33 @@ If the card contradicts the repository, stop and report; do not redesign. Or sto
 25 turns.
 
 ## Progress
+
+- 2026-09-06 (lane-c, worktree-agent-af76e3536469bef30): implemented. Gate
+  re-verified at tip `4c3dac0` before any edit — `_emit_declick`'s four call
+  sites are `voice_tts.py:1661` (guarded `if actual <= 0:` at `:1660`), `:1669`
+  (lease mismatch), `:1679` (block generation mismatch), `:1694` (CAS
+  tombstone); none can fire on `0 < actual < frames` with a matching
+  generation. `read_into` still hard zero-pads at `:311`. Every code citation
+  resolved except two off-by-small line numbers: `def _callback` is `:1594`
+  (card says the range starts `:1592`) and `_gain.apply` is `:1685` (card says
+  `:1684`, which is `_gain_consumed_command`).
+- Measured hermetic baseline before the first edit: `1070 passed, 64
+  deselected` in 63.86 s. After: `1071 passed, 64 deselected` in 58.98 s — the
+  delta is the one new test.
+- Two overrules of the card, both recorded in the commit body: the field is
+  declared in the L2 event-type registry (the card's boundary said L5 only),
+  and `test_generation_cas_races_and_thousand_cycle_churn:650` was updated
+  because it pinned the old hard cut at this exact site — contradicting the
+  card's claim that the site "has never been exercised".
+- All seven degenerate cases forced and shown failing, then reverted. Two
+  failed on a different assertion than the card predicted: a ramp longer than
+  `actual` cannot reach into a preceding block from inside `_callback`, so it
+  is caught by A2 (or a numpy broadcast error), not A1; and a reshaped span is
+  rejected by `PlaybackLedger` (`invalid submitted output span`) before B or D
+  assert.
+- `docs/spec.html` judged unchanged: it contains zero occurrences of
+  `declick`, `starvation`, `playback_completed`, `host_underflows` or
+  `tail_ramp`. The playback amplitude edge is owned by ADR-0006, and the
+  event-type registry in `jarvis/state/event_log.py` is the single source of
+  truth for payload schema (per `0c2d87c`). D12 verified to match what landed;
+  no D13 added.
