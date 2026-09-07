@@ -523,6 +523,11 @@ class UtteranceAssembler:
         """Return whether a wake decision is awaiting/recording speech."""
         return self._state in {_AssemblerState.ARMED, _AssemblerState.ACTIVE}
 
+    @property
+    def turn_id(self) -> str:
+        """Return the turn id minted by the most recent :meth:`arm`."""
+        return self._turn_id
+
     def prepare(self) -> None:
         """Reset and prewarm Silero outside the first-speech hot path."""
         self._vad.prepare_utterance()
@@ -1234,7 +1239,19 @@ class DuplexVoiceSession:
                 return
             try:
                 if not self._assembler.armed:
-                    for outcome in self._assembler.arm(detection):
+                    outcomes = self._assembler.arm(detection)
+                    # ADR-0006 §5: listening begins at arm, before speech onset.
+                    # Emitted before the replayed frames' outcomes so the card
+                    # surfaces while the owner is still speaking, not after.
+                    #
+                    # arm() replays buffered frames through feed(), and every
+                    # feed() that produces an outcome resets the assembler,
+                    # clearing _turn_id. Each outcome is built with the freshly
+                    # minted turn id just before that reset, so it is the
+                    # reliable reader whenever replay produced one.
+                    turn_id = outcomes[0].turn_id if outcomes else self._assembler.turn_id
+                    self._broadcast("listening", turn_id=turn_id)
+                    for outcome in outcomes:
                         self._handle_capture_outcome(outcome)
             finally:
                 self._detections.task_done()
@@ -1260,6 +1277,9 @@ class DuplexVoiceSession:
                 reason=outcome.reason,
                 measurement_boundary="software_armed_timeout",
             )
+            # ADR-0014 D27: `listening` never auto-fades, so the false wake
+            # must be terminalized or it strands the card on screen.
+            self._broadcast("empty", turn_id=outcome.turn_id, reason=outcome.reason)
             return
         if isinstance(outcome, UtteranceCaptureFailure):
             self._capture_discontinuities += 1

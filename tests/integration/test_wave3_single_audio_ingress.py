@@ -4496,3 +4496,243 @@ def test_broadcaster_registration_and_live_envelopes_share_one_sender_sequence()
         assert payload["version"] == 3
 
     asyncio.run(_scenario())
+
+
+class _VoiceBroadcastRecorder:
+    """Record ``broadcast_voice_sync`` calls and ``run_turn`` entries in one order.
+
+    Doubles as the ``broadcaster`` and the ``pipeline`` seam of
+    :class:`voice_session.DuplexVoiceSession`, so the acceptance can assert that
+    ``listening`` reaches the wire before the turn pipeline is ever entered.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, str]] = []
+        self.payloads: list[dict[str, object]] = []
+        self.calls: list[dict[str, Any]] = []
+
+    def broadcast_voice_sync(
+        self,
+        phase: str,
+        *,
+        turn_id: str,
+        **payload: object,
+    ) -> None:
+        self.events.append(("voice", phase, turn_id))
+        self.payloads.append(dict(payload))
+
+    def run_turn(self, **kwargs: Any) -> Any:  # noqa: ANN401
+        self.calls.append(dict(kwargs))
+        self.events.append(("run_turn", "", str(kwargs.get("turn_id", ""))))
+        return MagicMock()
+
+    @property
+    def voice_calls(self) -> list[tuple[str, str]]:
+        """Return the ``(phase, turn_id)`` sequence actually broadcast."""
+        return [(phase, turn_id) for kind, phase, turn_id in self.events if kind == "voice"]
+
+
+def _listening_session(
+    recorder: _VoiceBroadcastRecorder,
+    ingress: voice_audio.AudioIngress,
+    wake_engine: _FakeWakeEngine,
+    *,
+    armed_no_speech_timeout_s: float = 2.0,
+) -> voice_session.DuplexVoiceSession:
+    return voice_session.DuplexVoiceSession(
+        ingress=ingress,
+        wake_engine=wake_engine,
+        vad=voice_audio.SileroVad(mode="record"),
+        pipeline=recorder,
+        broadcaster=recorder,
+        output_active=lambda: False,
+        wake_threshold=0.5,
+        config=replace(
+            voice_session.RealtimeInputSessionConfig(),
+            pre_roll_ms=64,
+            min_voiced_s=0.032,
+            max_utterance_s=2.0,
+            worker_poll_s=0.001,
+            shutdown_timeout_s=1.0,
+            armed_no_speech_timeout_s=armed_no_speech_timeout_s,
+        ),
+    )
+
+
+def test_wake_arm_broadcasts_listening_before_transcribing_on_the_same_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0006 §5: `listening` is on the wire at arm, before the turn pipeline."""
+    monkeypatch.setitem(
+        voice_audio._MODE_THRESHOLDS,
+        "record",
+        voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2),
+    )
+    backend = _FakeBackend()
+    ingress = _ingress(backend)
+    recorder = _VoiceBroadcastRecorder()
+    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+        session = _listening_session(recorder, ingress, _FakeWakeEngine(detections={0}))
+        assert session.start().started
+        epoch = ingress.stream_epoch
+        assert epoch == 1
+        for value in [0, 0, 0, 0, 10_000, 11_000, 12_000, 0, 0, 0, 0, 0]:
+            backend.emit(epoch=epoch, value=value)
+            time.sleep(0.002)
+        _wait_until(lambda: len(recorder.calls) == 1)
+        close = session.close()
+    assert close.definitively_closed
+
+    # The recorded broadcast_voice_sync calls themselves, not a call count.
+    turn_id = recorder.voice_calls[0][1]
+    assert turn_id.startswith("T")
+    assert recorder.voice_calls == [("listening", turn_id), ("transcribing", turn_id)]
+    # The turn id the pipeline received for the CapturedUtterance is the same T.
+    assert recorder.calls[0]["turn_id"] == turn_id
+    # `listening` is recorded before run_turn is entered.
+    assert recorder.events[0] == ("voice", "listening", turn_id)
+    assert recorder.events.index(("voice", "listening", turn_id)) < recorder.events.index(
+        ("run_turn", "", turn_id),
+    )
+
+
+def test_broadcast_voice_listening_puts_the_exact_voice_envelope_on_the_socket() -> None:
+    """The `listening` wire envelope is `{"op": "voice", "payload": {...}}` verbatim."""
+
+    async def _scenario() -> None:
+        broadcaster = InherentBroadcaster()
+        messages: list[dict[str, object]] = []
+
+        async def _send_json(message: dict[str, object]) -> None:
+            messages.append(message)
+
+        ws = MagicMock()
+        ws.send_json = _send_json
+        await broadcaster.register(ws)
+        await broadcaster.broadcast_voice("listening", turn_id="T-listen")
+        assert messages == [
+            {"op": "voice", "payload": {"phase": "listening", "turn_id": "T-listen"}},
+        ]
+
+    asyncio.run(_scenario())
+
+
+def test_false_wake_armed_timeout_broadcasts_listening_then_empty_never_transcribing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0014 D27: a wake that never hears speech terminalizes so the card fades."""
+    monkeypatch.setitem(
+        voice_audio._MODE_THRESHOLDS,
+        "record",
+        voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2),
+    )
+    backend = _FakeBackend()
+    ingress = _ingress(backend)
+    recorder = _VoiceBroadcastRecorder()
+    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+        session = _listening_session(
+            recorder,
+            ingress,
+            _FakeWakeEngine(detections={0}),
+            armed_no_speech_timeout_s=0.064,
+        )
+        assert session.start().started
+        epoch = ingress.stream_epoch
+        assert epoch == 1
+        for _ in range(12):
+            backend.emit(epoch=epoch, value=0)
+            time.sleep(0.002)
+        _wait_until(lambda: session.metrics().armed_no_speech_timeouts == 1)
+        metrics = session.metrics()
+        close = session.close()
+    assert close.definitively_closed
+    assert metrics.armed_no_speech_timeouts == 1
+
+    turn_id = recorder.voice_calls[0][1]
+    assert recorder.voice_calls == [("listening", turn_id), ("empty", turn_id)]
+    assert "transcribing" not in [phase for phase, _ in recorder.voice_calls]
+    assert recorder.payloads[1] == {"reason": "armed_no_speech_timeout"}
+    assert recorder.calls == []
+
+
+def test_a_second_wake_while_already_armed_broadcasts_no_second_listening(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One armed capture is one visible turn; a redundant detection adds no call."""
+    monkeypatch.setitem(
+        voice_audio._MODE_THRESHOLDS,
+        "record",
+        voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2),
+    )
+    backend = _FakeBackend()
+    ingress = _ingress(backend)
+    recorder = _VoiceBroadcastRecorder()
+    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+        # Every wake window detects, so a second detection lands while ARMED.
+        session = _listening_session(recorder, ingress, _FakeWakeEngine())
+        assert session.start().started
+        epoch = ingress.stream_epoch
+        assert epoch == 1
+        for value in [0, 0, 0, 0, 10_000, 11_000, 12_000]:
+            backend.emit(epoch=epoch, value=value)
+            time.sleep(0.002)
+        _wait_until(lambda: recorder.voice_calls != [])
+        metrics = session.metrics()
+        close = session.close()
+    assert close.definitively_closed
+    # Pin the precondition: a second detection really did reach the drain while
+    # the first was still armed, so the single `listening` below is the gate
+    # doing its work rather than a scenario that never fired twice.
+    assert metrics.wake_detections == 2
+    listening_calls = [call for call in recorder.voice_calls if call[0] == "listening"]
+    assert listening_calls == [("listening", listening_calls[0][1])]
+
+
+def test_listening_carries_the_armed_turn_id_when_arm_replay_itself_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`arm()` replay can reset the assembler; `listening` still carries that turn."""
+    monkeypatch.setitem(
+        voice_audio._MODE_THRESHOLDS,
+        "record",
+        voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2),
+    )
+    backend = _FakeBackend()
+    ingress = _ingress(backend)
+    recorder = _VoiceBroadcastRecorder()
+    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+        session = _listening_session(
+            recorder,
+            ingress,
+            _FakeWakeEngine(detections=set()),
+            armed_no_speech_timeout_s=0.032,
+        )
+        assembler = session._assembler
+        assembler.prepare()
+        # Buffered silence ahead of the wake cursor: arm() replays it through
+        # feed(), the armed deadline expires inside arm(), and the assembler
+        # resets before arm() ever returns.
+        for index in range(3):
+            assembler.observe_idle(
+                voice_audio.CanonicalAudioFrame(
+                    stream_epoch=1,
+                    sequence=index,
+                    sample_cursor=index * 512,
+                    sample_rate_hz=16_000,
+                    frame_count=512,
+                    adc_time_s=None,
+                    captured_monotonic_ns=index,
+                    discontinuity_before=False,
+                    pcm16_mono=_pcm(0),
+                ),
+            )
+        session._detections.put_nowait(voice_session.WakeDetection(1, 0, 0, 0.9))
+        session._drain_detection_commands()
+        assert not assembler.armed
+        # The assembler's own turn id is already cleared by the replay reset.
+        assert assembler.turn_id == ""
+
+    turn_id = recorder.voice_calls[0][1]
+    assert turn_id != ""
+    assert recorder.voice_calls == [("listening", turn_id), ("empty", turn_id)]
+    assert recorder.payloads[1] == {"reason": "armed_no_speech_timeout"}
