@@ -360,6 +360,20 @@ If the card contradicts the repository, stop and report; do not redesign. Or sto
   `AssertionError: assert '' != ''`. Final gates: lint-imports KEPT · ruff clean
   · mypy strict clean (235 files) · hermetic **1075 passed, 64 deselected in
   58.66s** (baseline + 5) · the 6 targeted checks stable over 6 consecutive runs.
-- **Live run — the owner's to trigger.** Command:
-  `cd /Users/alllllenshi/Projects/jarvis && ./.venv/bin/python -m tools.inherent_ws_observer`
-  (the change reaches the wire only after he restarts the daemon himself).
+- **Live run — the owner's to trigger.** The observer is standalone and needs
+  only this worktree's venv; it does not touch the daemon's checkout:
+
+      cd /Users/alllllenshi/Projects/jarvis/.claude/worktrees/agent-adc1d8cedb5bb2d9f
+      ./.venv/bin/python -m tools.inherent_ws_observer
+
+  **Blocking precondition, discovered from `~/.jarvis-allen-test/start.sh`:** the
+  daemon runs from the worktree `.claude/worktrees/realtime-live-test` (branch
+  `realtime-live-test`, `20c55c3`), which this session is forbidden to touch.
+  These commits are on `worktree-agent-adc1d8cedb5bb2d9f` and are therefore NOT
+  in the code the daemon executes. The `listening` canary cannot fire until
+  someone lands this branch into the daemon's worktree and the owner restarts —
+  both outside this session's remit. The owner's active overlay does have
+  `realtime.single_audio_ingress.enabled: true`
+  (`~/.jarvis-allen-test/overlay/config/jarvis.yaml:264`), so the changed wake
+  path is the live one once the code is there; the repo default at
+  `config/jarvis.yaml:273` is `false` and would use the untouched legacy path.
