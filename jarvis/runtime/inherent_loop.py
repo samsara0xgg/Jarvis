@@ -2100,10 +2100,16 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     # streaming. The default (48 kHz) is the macOS built-in device rate, so
     # CoreAudio is not forced into a hardware-rate switch on every play — which
     # was producing audible pops for any other app sharing the speaker.
+    streaming_defaults = voice_media.StreamingMediaConfig()
     output_sample_rate_hz = (
-        voice_media.StreamingMediaConfig().canonical_sample_rate_hz
+        streaming_defaults.canonical_sample_rate_hz
         if media_config is None
         else media_config.canonical_sample_rate_hz
+    )
+    streaming_ring_seconds = (
+        streaming_defaults.ring_seconds
+        if media_config is None
+        else media_config.ring_seconds
     )
 
     def _new_provider() -> voice_tts.MiniMaxWSClient:
@@ -2134,7 +2140,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     if streaming_requested and streaming_capable:
         player = voice_tts.AudioStreamPlayer(
             sample_rate_hz=output_sample_rate_hz,
-            ring_seconds=2.0,
+            ring_seconds=streaming_ring_seconds,
             lazy_open=True,
             generation_safe=True,
             device=output_device,

@@ -50,7 +50,6 @@ _LSTM_SHAPE = (2, 1, 64)
 _SAMPLE_RATE = 16000
 _SILERO_FRAME_MS = SILERO_CHUNK_SAMPLES / _SAMPLE_RATE * 1000.0
 _PREWARM_FRAMES = 5
-_DEFAULT_DEVICE_MISS_LIMIT = 3
 _REQUIRED_SESSION_SUBSCRIBERS = 3
 _CAPABILITY_DISPATCH_CAPACITY = 32
 
@@ -472,6 +471,11 @@ class AudioIngressConfig:
     shutdown_timeout_s: float = 2.0
     route_observer_enabled: bool = False
     barge_detection_mode: str = "ptt"
+    # Consecutive failed default-device queries before the route poll calls it a
+    # fault rather than a transient HAL miss.  Only ``AudioIngress`` reads it,
+    # which is why it belongs in this block and not beside the flat realtime
+    # keys both input owners share.
+    device_miss_limit: int = 3
     accepted_natural_profiles: tuple[voice_backend.DeviceProfileKey, ...] = ()
 
 
@@ -1656,7 +1660,7 @@ class AudioIngress:
                 current_uid = self._backend.current_device_uid()
                 if current_uid is None:
                     self._device_uid_misses += 1
-                    if self._device_uid_misses >= _DEFAULT_DEVICE_MISS_LIMIT:
+                    if self._device_uid_misses >= self._config.device_miss_limit:
                         self._device_uid_misses = 0
                         self._handle_fault(
                             voice_backend.BackendFault(
@@ -1773,7 +1777,7 @@ class AudioIngress:
             # A transient HAL miss is not a route change; mirror the input poll.
             self._output_route_misses += 1
             if (
-                self._output_route_misses >= _DEFAULT_DEVICE_MISS_LIMIT
+                self._output_route_misses >= self._config.device_miss_limit
                 and self._last_output_route is not None
             ):
                 self._output_route_misses = 0
@@ -2599,6 +2603,10 @@ def audio_ingress_config_from_mapping(  # noqa: C901 - strict parsing plus cross
         shutdown_timeout_s=_positive_float(
             "shutdown_timeout_s",
             defaults.shutdown_timeout_s,
+        ),
+        device_miss_limit=_positive_int(
+            "device_miss_limit",
+            defaults.device_miss_limit,
         ),
     )
     if config.canonical_sample_rate_hz != _SAMPLE_RATE:
