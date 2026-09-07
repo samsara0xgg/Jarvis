@@ -12,7 +12,7 @@ prints before the ``"phase": "transcribing"`` line bearing the same
 
 Usage::
 
-    uv run python -m tools.inherent_ws_observer [ws://127.0.0.1:8009/inherent/ws]
+    ./.venv/bin/python -m tools.inherent_ws_observer [ws://127.0.0.1:8009/inherent/ws]
 """
 
 # Every line this tool emits is its operator-facing output; T201 is disabled

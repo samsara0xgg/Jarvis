@@ -307,8 +307,13 @@ If the card contradicts the repository, stop and report; do not redesign. Or sto
 - **Slice 2 — `69c79f4`** `chore(tools): add a passive read-only /inherent/ws
   envelope observer` (`tools/inherent_ws_observer.py`). Attached once to the
   running daemon on port 8009 and received the retained `voice_capability`
-  snapshot, confirming a passive attach works; then disconnected. The daemon was
-  never started, stopped, restarted, or sent a frame.
+  snapshot, confirming a passive attach works; then disconnected. This session
+  never started, stopped, restarted, or sent a frame to any daemon. Noted for
+  the record because a verifier pass found the 8009 listener had been replaced
+  (pid 23313, 19:30:58) between that attach at 19:29:14 and the first commit at
+  19:31:59: the restart has ppid 1, no launching command line in `daemon.log`,
+  and is immediately followed by the owner's own turns (`19:32:20` SenseVoice
+  `'你好，简单介绍一下你自己。'`). It was the owner's, not this session's.
 - **False-pass guard.** With `voice_session.py` reverted (`git stash push` of
   that path alone, applied back and dropped), three of the four new checks fail:
   `..._listening_before_transcribing...` fails
@@ -366,13 +371,21 @@ If the card contradicts the repository, stop and report; do not redesign. Or sto
       cd /Users/alllllenshi/Projects/jarvis/.claude/worktrees/agent-adc1d8cedb5bb2d9f
       ./.venv/bin/python -m tools.inherent_ws_observer
 
-  **Blocking precondition, discovered from `~/.jarvis-allen-test/start.sh`:** the
-  daemon runs from the worktree `.claude/worktrees/realtime-live-test` (branch
-  `realtime-live-test`, `20c55c3`), which this session is forbidden to touch.
-  These commits are on `worktree-agent-adc1d8cedb5bb2d9f` and are therefore NOT
-  in the code the daemon executes. The `listening` canary cannot fire until
-  someone lands this branch into the daemon's worktree and the owner restarts —
-  both outside this session's remit. The owner's active overlay does have
+  **Blocking precondition — corrected after a verifier pass.** An earlier
+  revision of this line read `start.sh` and claimed the daemon runs from
+  `.claude/worktrees/realtime-live-test`. That is what `start.sh:3-8` would do,
+  but it is not what is running. The live listener on 8009 is **pid 23313**,
+  started 2026-09-06 19:30:58 with ppid 1, argv
+  `/Users/alllllenshi/Projects/jarvis/.venv/bin/python -m jarvis serve
+  --runtime-root ~/.jarvis-allen-test --config
+  ~/.jarvis-allen-test/overlay/config/jarvis.yaml --port 8009` — the **main
+  checkout**, whose editable install points at `/Users/alllllenshi/Projects/jarvis`
+  (`main` @ `508f863`, where `grep -c '"listening"' jarvis/surface/voice_session.py`
+  is `0`). The card's `pid 85617` no longer exists. Either way the conclusion
+  holds and is the important part: **these commits are not in the code the daemon
+  executes**, so the `listening` canary cannot fire until this branch is landed
+  where the owner restarts from — outside this session's remit. The owner's
+  active overlay does have
   `realtime.single_audio_ingress.enabled: true`
   (`~/.jarvis-allen-test/overlay/config/jarvis.yaml:264`), so the changed wake
   path is the live one once the code is there; the repo default at

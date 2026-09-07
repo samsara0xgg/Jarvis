@@ -4677,8 +4677,13 @@ def test_a_second_wake_while_already_armed_broadcasts_no_second_listening(
             backend.emit(epoch=epoch, value=value)
             time.sleep(0.002)
         _wait_until(lambda: recorder.voice_calls != [])
+        metrics = session.metrics()
         close = session.close()
     assert close.definitively_closed
+    # Pin the precondition: a second detection really did reach the drain while
+    # the first was still armed, so the single `listening` below is the gate
+    # doing its work rather than a scenario that never fired twice.
+    assert metrics.wake_detections == 2
     listening_calls = [call for call in recorder.voice_calls if call[0] == "listening"]
     assert listening_calls == [("listening", listening_calls[0][1])]
 
