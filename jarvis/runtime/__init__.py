@@ -173,6 +173,13 @@ LOGGER = logging.getLogger("jarvis.runtime")
 _DEFAULT_CONFIG_FILENAME = Path("config") / "jarvis.yaml"
 _DEFAULT_PROMPT_FILENAME = Path("prompts") / "jarvis_v1.md"
 
+# ADR-0005 §12 pre-flight artifacts.  These two relative paths are the
+# absent-key fallback and stay cwd-relative on purpose: the owner's running
+# daemon resolves them against its working directory today, and moving the
+# default would silently relocate a live system's model lookup.
+DEFAULT_SENSEVOICE_DIR = Path("data/sensevoice-small-int8")
+DEFAULT_SILERO_VAD_PATH = Path("data/silero_vad.onnx")
+
 # Trigger event types the runtime loop expects from L4 async paths.
 # ``worker.reported`` is the spawn_worker happy-path Timer event.
 # ``action.result_observed`` is defensive — sync tools emit it inline
@@ -439,6 +446,12 @@ class JarvisRuntime:
     response_runs: ResponseRunRegistry | None = None
     committed_event_bus: CommittedEventBus | None = None
     input_flags: Wave5InputFlags = field(default_factory=Wave5InputFlags)
+    # ADR-0006 §5 — the two voice artifact locations, already resolved against
+    # the config file's own directory. The daemon reads these instead of
+    # interpreting a relative module constant against its working directory;
+    # the defaults keep a hand-assembled runtime byte-identical to today.
+    sensevoice_dir: Path = DEFAULT_SENSEVOICE_DIR
+    silero_vad_path: Path = DEFAULT_SILERO_VAD_PATH
     # ADR-0008 Step 8 — tool cues loaded from ``config/tool_cues.yaml``;
     # empty tuple = no cue can veto the routine route (the other pre-route
     # conditions still apply).
@@ -950,6 +963,43 @@ def _obsidian_vault_root(config: Mapping[str, Any]) -> Path:
     return DEFAULT_OBSIDIAN_VAULT_ROOT
 
 
+def _realtime_model_path(
+    config: Mapping[str, Any],
+    *,
+    key: str,
+    config_dir: Path,
+    fallback: Path,
+) -> Path:
+    """Return `realtime.<key>` as an absolute path, or ``fallback`` (ADR-0006 §5).
+
+    Resolution rule for every path-valued ``realtime.*`` key: ``~``-expanded,
+    and if still relative anchored at the directory holding the config file the
+    operator pointed at with ``--config`` — never at ``os.getcwd()``, which is
+    the defect this key exists to remove, and never at ``repo_root``, which is
+    itself the guess ``config_path.parent.parent``.
+
+    An absent or malformed value degrades to ``fallback`` with one warning and
+    never fails boot, matching :func:`_obsidian_vault_root`: a missing artifact
+    is already handled softly by the daemon's pre-flight, so a config typo must
+    not be harder to recover from than a missing file.
+    """
+    block = config.get("realtime")
+    if not isinstance(block, Mapping):
+        return fallback
+    raw = block.get(key)
+    if raw is None:
+        return fallback
+    if not isinstance(raw, str) or not raw.strip():
+        LOGGER.warning(
+            "realtime.%s must be a non-empty string; using %s.", key, fallback,
+        )
+        return fallback
+    candidate = Path(raw.strip()).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    return (config_dir / candidate).resolve()
+
+
 def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str, str | None]:
     """Return `(search_provider, api_key)` from `tools.web.*`.
 
@@ -1408,6 +1458,8 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     else:
         repo_root = config_path.resolve().parent.parent
 
+    config_dir = config_path.resolve().parent
+
     if prompt_path is None:
         prompt_path = repo_root / _DEFAULT_PROMPT_FILENAME
 
@@ -1616,6 +1668,18 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         response_runs=response_runs,
         committed_event_bus=committed_event_bus,
         input_flags=_wave5_input_flags(full_config),
+        sensevoice_dir=_realtime_model_path(
+            full_config,
+            key="sensevoice_dir",
+            config_dir=config_dir,
+            fallback=DEFAULT_SENSEVOICE_DIR,
+        ),
+        silero_vad_path=_realtime_model_path(
+            full_config,
+            key="silero_vad_path",
+            config_dir=config_dir,
+            fallback=DEFAULT_SILERO_VAD_PATH,
+        ),
         tool_cues=tool_cues,
     )
 

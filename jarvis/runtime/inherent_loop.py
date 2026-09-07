@@ -78,13 +78,13 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import uvicorn
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.execution.action_runner import ActionRunner
@@ -282,13 +282,13 @@ _SELECT_RESPONSE_EVENTS_AFTER_ID_SQL = (
 )
 
 
-# Default on-disk locations for the voice ASR / VAD model artifacts.
-# ADR-0005 §12 (pre-flight) — ``serve_inherent`` checks these BEFORE
-# spawning the WakeListener so a missing wheel surfaces as a single
-# log line instead of a crashed daemon thread on first wake. Tests pin
-# their own paths via :func:`_voice_models_preflight` kwargs.
-_DEFAULT_SENSEVOICE_DIR = Path("data/sensevoice-small-int8")
-_DEFAULT_SILERO_PATH = Path("data/silero_vad.onnx")
+# The voice ASR / VAD artifact locations come from ``runtime.sensevoice_dir``
+# / ``runtime.silero_vad_path`` (ADR-0006 §5), resolved once at the composition
+# root against the config file's own directory. ADR-0005 §12 (pre-flight) —
+# ``serve_inherent`` checks them BEFORE spawning the WakeListener so a missing
+# wheel surfaces as a single log line instead of a crashed daemon thread on
+# first wake. Tests pin their own paths via :func:`_voice_models_preflight`
+# kwargs.
 
 # Default voice ASR / capture knobs (ADR-0005 §5.1).
 _DEFAULT_WAKE_THRESHOLD: float = 0.5
@@ -3613,15 +3613,13 @@ def _submit_asr_v2(  # noqa: PLR0913 — the bound path and pipeline plus the fo
             inner_conn.close()
 
 
-async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring plus boot-reconciliation branches necessarily inflate body length + branch count.
+async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring plus boot-reconciliation branches necessarily inflate body length + branch count.
     runtime: JarvisRuntime,
     *,
     host: str = "127.0.0.1",
     port: int = _DEFAULT_PORT,
     lock_path: Path,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
-    sensevoice_dir: Path = _DEFAULT_SENSEVOICE_DIR,
-    silero_path: Path = _DEFAULT_SILERO_PATH,
 ) -> None:
     """Run the Inherent daemon (text + voice). Blocks until SIGINT / SIGTERM.
 
@@ -3762,6 +3760,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
             voice_ducking.SystemAudioDucker()
         )
 
+        sensevoice_dir = runtime.sensevoice_dir
+        silero_path = runtime.silero_vad_path
         models_ok, missing = _voice_models_preflight(
             sensevoice_dir=sensevoice_dir,
             silero_path=silero_path,
