@@ -130,14 +130,25 @@ class SileroVad:
         *,
         mode: str,
         model_path: Path | None = None,
+        profiles: Mapping[str, VadThresholds] | None = None,
     ) -> None:
-        """Construct a Silero VAD bound to ``mode`` ('record' | 'tts')."""
-        if mode not in _MODE_THRESHOLDS:
-            msg = f"unknown VAD mode {mode!r}; expected one of {list(_MODE_THRESHOLDS)}"
+        """Construct a Silero VAD bound to ``mode`` ('record' | 'tts').
+
+        ``profiles`` overlays :data:`_MODE_THRESHOLDS` per instance (ADR-0006
+        §5 — ``realtime.vad``). It is an overlay rather than a replacement so a
+        config that tunes one profile leaves the other at its shipped value,
+        and it is held on the instance rather than consulted once because
+        :meth:`set_mode` switches profiles mid-utterance.
+        """
+        self._profiles: Mapping[str, VadThresholds] = (
+            _MODE_THRESHOLDS if profiles is None else {**_MODE_THRESHOLDS, **profiles}
+        )
+        if mode not in self._profiles:
+            msg = f"unknown VAD mode {mode!r}; expected one of {list(self._profiles)}"
             raise ValueError(msg)
         self._mode = mode
         self._model_path = model_path
-        self._t = _MODE_THRESHOLDS[mode]
+        self._t = self._profiles[mode]
 
         # Lazy: session opened on first feed() call so tests can patch
         # _load_silero_session without an actual ONNX file present.
@@ -172,7 +183,7 @@ class SileroVad:
     # ------------------------------------------------------------------
 
     def set_mode(self, mode: str) -> None:
-        """Point the detector at another :data:`_MODE_THRESHOLDS` profile.
+        """Point the detector at another of this instance's profiles.
 
         Rebinds the thresholds and the ``vad_mode`` the traces report, and
         nothing else: the ONNX session, the LSTM state, the smoothing deques,
@@ -187,7 +198,10 @@ class SileroVad:
         """
         if mode == self._mode:
             return
-        self._t = self.thresholds(mode)
+        if mode not in self._profiles:
+            msg = f"unknown VAD mode {mode!r}; expected one of {list(self._profiles)}"
+            raise ValueError(msg)
+        self._t = self._profiles[mode]
         self._mode = mode
 
     def reset(self) -> None:

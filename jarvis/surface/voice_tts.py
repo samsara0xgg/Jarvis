@@ -1831,6 +1831,22 @@ def _base_to_ws_url(base_url: str) -> str:
     return cleaned + "/ws/v1/t2a_v2"
 
 
+# Shipped MiniMax defaults, from the legacy ``core/tts_minimax_ws.py``
+# constants.  Named once here because two readers need them: this client's own
+# signature and ``realtime:``'s composition-root reader (ADR-0006 §5), which
+# uses them as the absent-key fallback.
+DEFAULT_TTS_VOICE = "Chinese (Mandarin)_ExplorativeGirl"
+DEFAULT_TTS_MODEL = "speech-2.8-turbo"
+DEFAULT_TTS_PRIMARY_ENDPOINT = "https://api-uw.minimax.io"
+DEFAULT_TTS_FALLBACK_ENDPOINT = "https://api.minimax.chat"
+DEFAULT_TTS_CONNECT_TIMEOUT_S = 3.0
+DEFAULT_TTS_TASK_START_TIMEOUT_S = 3.0
+DEFAULT_TTS_FIRST_CHUNK_TIMEOUT_S = 8.0
+DEFAULT_TTS_BETWEEN_CHUNK_TIMEOUT_S = 5.0
+DEFAULT_TTS_TOTAL_TIMEOUT_S = 30.0
+DEFAULT_TTS_SESSION_CLOSE_TIMEOUT_S = 1.0
+
+
 class MiniMaxWSClient:
     """One-shot MiniMax TTS WebSocket client with primary/fallback endpoint.
 
@@ -1839,34 +1855,32 @@ class MiniMaxWSClient:
     * :meth:`synthesize` — text → concatenated float32 mono PCM bytes
     * :meth:`synthesize_stream` — async iterator yielding PCM chunks as bytes
 
-    Defaults match the legacy ``core/tts_minimax_ws.py`` constants. The
+    Defaults match the legacy ``core/tts_minimax_ws.py`` constants and are
+    named at module level so ``realtime:``'s reader shares them. The
     ``sample_rate_in`` / ``sample_rate_out`` pair stays equal (32 kHz) by
     default so no ``soxr`` resampling is needed; pass
     ``sample_rate_out=48000`` to engage the resampler.
     """
 
-    _CONNECT_TIMEOUT = 3.0
-    _TASK_START_TIMEOUT = 3.0
-    _FIRST_CHUNK_TIMEOUT = 8.0
-    _BETWEEN_CHUNK_TIMEOUT = 5.0
-    _TOTAL_TIMEOUT = 30.0
-    _SESSION_CLOSE_TIMEOUT = 1.0
-
     def __init__(  # noqa: PLR0913 — keyword-only audio + endpoint config
         self,
         *,
         api_key: str,
-        voice: str = "Chinese (Mandarin)_ExplorativeGirl",
-        primary_endpoint: str = "https://api-uw.minimax.io",
-        fallback_endpoint: str = "https://api.minimax.chat",
-        model: str = "speech-2.8-turbo",
+        voice: str = DEFAULT_TTS_VOICE,
+        primary_endpoint: str = DEFAULT_TTS_PRIMARY_ENDPOINT,
+        fallback_endpoint: str = DEFAULT_TTS_FALLBACK_ENDPOINT,
+        model: str = DEFAULT_TTS_MODEL,
         volume: int = 3,
         sample_rate_in: int = 32000,
         sample_rate_out: int = 32000,
-        connect_timeout_s: float = 3.0,
-        total_timeout_s: float = _TOTAL_TIMEOUT,
+        connect_timeout_s: float = DEFAULT_TTS_CONNECT_TIMEOUT_S,
+        task_start_timeout_s: float = DEFAULT_TTS_TASK_START_TIMEOUT_S,
+        first_chunk_timeout_s: float = DEFAULT_TTS_FIRST_CHUNK_TIMEOUT_S,
+        between_chunk_timeout_s: float = DEFAULT_TTS_BETWEEN_CHUNK_TIMEOUT_S,
+        total_timeout_s: float = DEFAULT_TTS_TOTAL_TIMEOUT_S,
+        session_close_timeout_s: float = DEFAULT_TTS_SESSION_CLOSE_TIMEOUT_S,
     ) -> None:
-        """Configure endpoints, voice and audio shape; does not connect yet."""
+        """Configure endpoints, voice, audio shape and deadlines; does not connect yet."""
         self._api_key = api_key
         self._voice = voice
         self._primary_endpoint = primary_endpoint
@@ -1876,7 +1890,11 @@ class MiniMaxWSClient:
         self._sr_in = int(sample_rate_in)
         self._sr_out = int(sample_rate_out)
         self._connect_timeout = float(connect_timeout_s)
+        self._task_start_timeout = float(task_start_timeout_s)
+        self._first_chunk_timeout = float(first_chunk_timeout_s)
+        self._between_chunk_timeout = float(between_chunk_timeout_s)
         self._total_timeout = float(total_timeout_s)
+        self._session_close_timeout = float(session_close_timeout_s)
         self._closed = threading.Event()
         self._sessions_lock = threading.Lock()
         self._active_sessions: set[tuple[asyncio.AbstractEventLoop, asyncio.Task[Any]]] = set()
@@ -1913,8 +1931,8 @@ class MiniMaxWSClient:
             volume=self._volume,
             sample_rate_hz=self._sr_in,
             connect_timeout_s=self._connect_timeout,
-            first_chunk_timeout_s=self._FIRST_CHUNK_TIMEOUT,
-            between_chunk_timeout_s=self._BETWEEN_CHUNK_TIMEOUT,
+            first_chunk_timeout_s=self._first_chunk_timeout,
+            between_chunk_timeout_s=self._between_chunk_timeout,
             idle_close_s=idle_close_s,
             command_queue_capacity=command_queue_capacity,
             audio_queue_capacity=audio_queue_capacity,
@@ -2036,7 +2054,7 @@ class MiniMaxWSClient:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(
                     conn.close(),
-                    timeout=self._SESSION_CLOSE_TIMEOUT,
+                    timeout=self._session_close_timeout,
                 )
 
     async def _handshake(self, conn: Any, text: str) -> None:  # noqa: ANN401
@@ -2062,7 +2080,7 @@ class MiniMaxWSClient:
             },
         }
         await conn.send(json.dumps(task_start))
-        ts = await asyncio.wait_for(conn.recv(), timeout=self._TASK_START_TIMEOUT)
+        ts = await asyncio.wait_for(conn.recv(), timeout=self._task_start_timeout)
         ts_obj = json.loads(ts)
         status = ts_obj.get("base_resp", {}).get("status_code", 0)
         if status != 0:
@@ -2081,7 +2099,7 @@ class MiniMaxWSClient:
         carry: bytes = b""
         first = True
         while True:
-            timeout = self._FIRST_CHUNK_TIMEOUT if first else self._BETWEEN_CHUNK_TIMEOUT
+            timeout = self._first_chunk_timeout if first else self._between_chunk_timeout
             msg_raw = await asyncio.wait_for(conn.recv(), timeout=timeout)
             obj = json.loads(msg_raw)
 
