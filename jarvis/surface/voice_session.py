@@ -523,6 +523,11 @@ class UtteranceAssembler:
         """Return whether a wake decision is awaiting/recording speech."""
         return self._state in {_AssemblerState.ARMED, _AssemblerState.ACTIVE}
 
+    @property
+    def turn_id(self) -> str:
+        """Return the turn id minted by the most recent :meth:`arm`."""
+        return self._turn_id
+
     def prepare(self) -> None:
         """Reset and prewarm Silero outside the first-speech hot path."""
         self._vad.prepare_utterance()
@@ -1234,7 +1239,12 @@ class DuplexVoiceSession:
                 return
             try:
                 if not self._assembler.armed:
-                    for outcome in self._assembler.arm(detection):
+                    outcomes = self._assembler.arm(detection)
+                    # ADR-0006 §5: listening begins at arm, before speech onset.
+                    # Emitted before the replayed frames' outcomes so the card
+                    # surfaces while the owner is still speaking, not after.
+                    self._broadcast("listening", turn_id=self._assembler.turn_id)
+                    for outcome in outcomes:
                         self._handle_capture_outcome(outcome)
             finally:
                 self._detections.task_done()
@@ -1260,6 +1270,9 @@ class DuplexVoiceSession:
                 reason=outcome.reason,
                 measurement_boundary="software_armed_timeout",
             )
+            # ADR-0014 D27: `listening` never auto-fades, so the false wake
+            # must be terminalized or it strands the card on screen.
+            self._broadcast("empty", turn_id=outcome.turn_id, reason=outcome.reason)
             return
         if isinstance(outcome, UtteranceCaptureFailure):
             self._capture_discontinuities += 1
