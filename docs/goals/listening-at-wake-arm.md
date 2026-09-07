@@ -340,6 +340,26 @@ If the card contradicts the repository, stop and report; do not redesign. Or sto
   via `cancelFade()`. `docs/spec.html` documents no `op:"voice"` phase set —
   `grep -c 'transcribing' docs/spec.html` returns `0`. No ADR amendment was
   wanted at any point.
+- **Slice 3 — `d50d0ed`** `fix(surface): read the armed turn id from the outcome
+  arm() replay produced`. **A hole the card did not anticipate.** The card
+  directs the broadcast to sit "after `arm()` returns and before iterating its
+  outcomes", which is right for wire *ordering* but wrong for reading the turn
+  id: `arm()` (`:547`, replaying at `:567-583`) feeds buffered idle frames
+  through `feed()`, and every `feed()` that yields an outcome calls
+  `reset_to_idle()` (`:626`, `:649`, `:718`), which clears `_turn_id` at `:867`.
+  So `self._assembler.turn_id` read
+  after `arm()` returns is `""` whenever replay itself endpointed, failed, or
+  expired the armed window — `listening` and `transcribing` would then disagree
+  on the turn, breaking the card's own "same `T`" acceptance. Each outcome is
+  built with the live turn id immediately before its reset (`:621`, `:645`,
+  `:711`), so `outcomes[0].turn_id` is the reliable reader when replay produced
+  one. New check
+  `test_listening_carries_the_armed_turn_id_when_arm_replay_itself_expires`
+  buffers silence ahead of the wake cursor so the deadline expires inside
+  `arm()`; against the previous revision it fails
+  `AssertionError: assert '' != ''`. Final gates: lint-imports KEPT · ruff clean
+  · mypy strict clean (235 files) · hermetic **1075 passed, 64 deselected in
+  58.66s** (baseline + 5) · the 6 targeted checks stable over 6 consecutive runs.
 - **Live run — the owner's to trigger.** Command:
   `cd /Users/alllllenshi/Projects/jarvis && ./.venv/bin/python -m tools.inherent_ws_observer`
   (the change reaches the wire only after he restarts the daemon himself).
