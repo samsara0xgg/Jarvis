@@ -2379,6 +2379,11 @@ class _VoiceInputOwners:
     wake_listener: voice_wake.WakeListener | None
     wake_stream: object | None
     single_ingress_attempted: bool
+    # Why this branch was taken. The failing paths already record it as an
+    # ``audio_input_activation_downgraded`` trace; carrying it out is what lets
+    # the startup record name the successful choice too, which the wake log
+    # line cannot: both owners construct an identical ``WakeEngine``.
+    reason: str = "unknown"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -3050,6 +3055,33 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     return session, True
 
 
+def _input_owner_reason(
+    runtime: JarvisRuntime,
+    *,
+    tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+    duplex_session: voice_session.DuplexVoiceSession | None,
+    attempted: bool,
+    wake_listener: voice_wake.WakeListener | None,
+) -> str:
+    """Name why this boot ended up with the input owner it has.
+
+    Re-runs :func:`_single_ingress_activation`, which is a pure read of
+    ``runtime.config`` and ``tts``: cheaper once per boot than threading a
+    third return value through a helper five tests construct directly.
+    """
+    reason = _single_ingress_activation(runtime, tts=tts).reason
+    if duplex_session is not None:
+        return reason
+    if attempted:
+        # A device open was tried and did not survive; the specific failure is
+        # already an ``audio_input_activation_downgraded`` trace.
+        return "single_ingress_start_failed"
+    if wake_listener is not None:
+        # Legacy wake owns the mic because single ingress declined for `reason`.
+        return reason
+    return f"{reason}:legacy_wake_unavailable"
+
+
 def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependencies
     *,
     runtime: JarvisRuntime,
@@ -3088,6 +3120,13 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
         wake_listener=wake_listener,
         wake_stream=wake_stream,
         single_ingress_attempted=attempted,
+        reason=_input_owner_reason(
+            runtime,
+            tts=tts,
+            duplex_session=duplex_session,
+            attempted=attempted,
+            wake_listener=wake_listener,
+        ),
     )
 
 
@@ -3667,6 +3706,55 @@ def _request_tts_close(
         LOGGER.debug("tts pipeline close request failed", exc_info=True)
 
 
+def _log_voice_startup(  # noqa: PLR0913 - the record's fields ARE its contract
+    *,
+    knobs: _VoiceKnobs,
+    sensevoice_dir: Path,
+    silero_vad_path: Path,
+    models_ok: bool,
+    owners: _VoiceInputOwners,
+    reason: str,
+) -> None:
+    """Emit the one per-boot record naming every resolved voice value.
+
+    ADR-0006 §5 — the point of moving these values into config is that one file
+    decides them, which is only checkable if the daemon says what it resolved.
+    JSON rather than ``key=value`` because there are twenty-seven fields.
+
+    Also the only place startup distinguishes the two input owners:
+    ``WakeEngine.start`` logs an identical line from either, which has already
+    cost one investigation a wrong conclusion.
+    """
+    if owners.duplex_session is not None:
+        input_owner = "single_ingress"
+    elif owners.wake_listener is not None:
+        input_owner = "legacy_wake"
+    else:
+        input_owner = "none"
+    payload: dict[str, Any] = {
+        "sensevoice_dir": str(sensevoice_dir),
+        "silero_vad_path": str(silero_vad_path),
+        "models_ok": models_ok,
+        "input_owner": input_owner,
+        "reason": reason,
+    }
+    payload.update(
+        {
+            field.name: getattr(knobs, field.name)
+            for field in dataclasses.fields(knobs)
+            if field.name != "vad_profiles"
+        },
+    )
+    for mode, profile in sorted(knobs.vad_profiles.items()):
+        payload.update(
+            {
+                f"vad_{mode}_{key}": value
+                for key, value in dataclasses.asdict(profile).items()
+            },
+        )
+    LOGGER.info("voice startup config: %s", json.dumps(payload, sort_keys=True))
+
+
 def _shutdown_wake(
     wake_listener: voice_wake.WakeListener | None,
     wake_stream: Any | None,  # noqa: ANN401 — sounddevice stream is untyped third-party API
@@ -3953,8 +4041,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         lock_path: Per-runtime-root daemon lock file. Resolved by
             ``jarvis.cli._main_serve`` to ``${runtime_root}/daemon.lock``.
         poll_interval_s: Watcher poll cadence (default 10 ms).
-        sensevoice_dir: SenseVoice INT8 model directory (pre-flight).
-        silero_path: Silero VAD ONNX path (pre-flight).
 
     Raises:
         jarvis.deployment.process_lock.ProcessLockHeld: Another daemon
@@ -4023,6 +4109,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             sensevoice_dir=sensevoice_dir,
             silero_path=silero_path,
         )
+        voice_startup_reason = "models_missing"
         if not models_ok:
             LOGGER.error(
                 "voice models missing; running text-only. Missing: %s",
@@ -4043,6 +4130,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     voice=voice_knobs,
                 )
                 if os.environ.get("JARVIS_VOICE_DISABLE_WAKE") == "1":
+                    voice_startup_reason = "wake_disabled_env"
                     LOGGER.info(
                         "JARVIS_VOICE_DISABLE_WAKE=1; skipping WakeListener spawn.",
                     )
@@ -4057,7 +4145,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         voice=voice_knobs,
                     )
                     duplex_voice_session = voice_input_owners.duplex_session
+                    voice_startup_reason = voice_input_owners.reason
             except Exception:
+                voice_startup_reason = "voice_construction_failed"
                 LOGGER.exception(
                     "voice subsystem construction failed; running text-only.",
                 )
@@ -4071,6 +4161,18 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     wake_stream=None,
                     single_ingress_attempted=False,
                 )
+
+        # One record per boot on EVERY path above — models present, models
+        # missing, construction failed — so "what did this daemon resolve, and
+        # which input owner does it have" never needs a grep again.
+        _log_voice_startup(
+            knobs=voice_knobs,
+            sensevoice_dir=sensevoice_dir,
+            silero_vad_path=silero_path,
+            models_ok=models_ok,
+            owners=voice_input_owners,
+            reason=voice_startup_reason,
+        )
 
         # ADR-0008 F14 / §4.4 — close ResponseRuns a previous process
         # abandoned, once, inside the startup barrier and before any
