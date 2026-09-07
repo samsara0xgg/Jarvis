@@ -72,19 +72,20 @@ import dataclasses
 import functools
 import json
 import logging
+import math
 import os
 import sqlite3
 import threading
 import time
 import uuid
 from collections.abc import Mapping
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import uvicorn
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.execution.action_runner import ActionRunner
@@ -282,30 +283,268 @@ _SELECT_RESPONSE_EVENTS_AFTER_ID_SQL = (
 )
 
 
-# Default on-disk locations for the voice ASR / VAD model artifacts.
-# ADR-0005 §12 (pre-flight) — ``serve_inherent`` checks these BEFORE
-# spawning the WakeListener so a missing wheel surfaces as a single
-# log line instead of a crashed daemon thread on first wake. Tests pin
-# their own paths via :func:`_voice_models_preflight` kwargs.
-_DEFAULT_SENSEVOICE_DIR = Path("data/sensevoice-small-int8")
-_DEFAULT_SILERO_PATH = Path("data/silero_vad.onnx")
+# The voice ASR / VAD artifact locations come from ``runtime.sensevoice_dir``
+# / ``runtime.silero_vad_path`` (ADR-0006 §5), resolved once at the composition
+# root against the config file's own directory. ADR-0005 §12 (pre-flight) —
+# ``serve_inherent`` checks them BEFORE spawning the WakeListener so a missing
+# wheel surfaces as a single log line instead of a crashed daemon thread on
+# first wake. Tests pin their own paths via :func:`_voice_models_preflight`
+# kwargs.
 
-# Default voice ASR / capture knobs (ADR-0005 §5.1).
-_DEFAULT_WAKE_THRESHOLD: float = 0.5
+# Legacy wake capture bounds (ADR-0005 §5.1).  Deliberately NOT configurable:
+# the single-ingress owner already has ``max_utterance_s`` / ``min_voiced_s``
+# and is the path in production, so a key here would be honoured by one input
+# owner and ignored by the other.
 _DEFAULT_CAPTURE_MAX_DURATION_S: float = 5.0
 _DEFAULT_CAPTURE_MIN_VOICED_S: float = 1.0
-# macOS built-in default rate; MiniMax 32 kHz is resampled to 48 kHz via soxr
-# (see ``_build_tts_pipeline``) so the OutputStream runs at the device-native
-# rate and CoreAudio does not force a hardware-rate switch on every play.
-_DEFAULT_TTS_SAMPLE_RATE_HZ: int = 48000
-
 # Wake input stream params — ADR §5.1 (openwakeword expects 16 kHz mono PCM16
 # at 1280-sample / 80 ms blocks). A SEPARATE stream from the recorder's per
 # legacy ``core/inherent_wake_listener.py`` parity (the recorder's 32-ms VAD
 # chunks would force openwakeword to buffer across reads).
 _WAKE_SAMPLE_RATE_HZ: int = 16000
 _WAKE_FRAME_SAMPLES: int = 1280
-_WAKE_JOIN_TIMEOUT_S: float = 2.0
+
+# The two ``SileroVad`` profiles the daemon can bind (``voice_audio``'s
+# ``_MODE_THRESHOLDS`` keys).  A closed set: ADR-0006 D8 names both and
+# ``realtime.single_audio_ingress.output_active_vad_mode`` selects between them.
+_VAD_MODES: Final[tuple[str, ...]] = ("record", "tts")
+
+
+def _default_vad_profiles() -> dict[str, voice_audio.VadThresholds]:
+    """Return the shipped per-mode thresholds — L5 stays their single source."""
+    return {mode: voice_audio.SileroVad.thresholds(mode) for mode in _VAD_MODES}
+
+
+@dataclasses.dataclass(frozen=True)
+class _VoiceKnobs:
+    """Every flat ``realtime:`` voice value, resolved once (ADR-0006 §5, :716).
+
+    The field defaults ARE the shipped constants, so a config that sets none of
+    these produces an instance indistinguishable from the hard-coded daemon —
+    the property the whole change is required to preserve.  Parsed once in
+    :func:`serve_inherent` and threaded from there; nothing below the
+    composition root reads ``realtime:`` for these values.
+    """
+
+    # openwakeword's detection probability gate.  BOTH input owners construct a
+    # listener with it, which is why it is a flat key and is threaded to both
+    # rather than living under ``realtime.single_audio_ingress``.
+    wake_threshold: float = 0.5
+    # Shutdown join deadline for the legacy wake thread.  The stream close that
+    # follows it is the historical segfault site (see :func:`_shutdown_wake`),
+    # so a machine that needs longer has a way to ask for it.
+    wake_join_timeout_s: float = 2.0
+    tts_voice: str = voice_tts.DEFAULT_TTS_VOICE
+    tts_model: str = voice_tts.DEFAULT_TTS_MODEL
+    tts_primary_endpoint: str = voice_tts.DEFAULT_TTS_PRIMARY_ENDPOINT
+    tts_fallback_endpoint: str = voice_tts.DEFAULT_TTS_FALLBACK_ENDPOINT
+    # MiniMax is asked for the highest rate it natively produces in our config
+    # and resampled to the device rate via soxr on the way out.
+    tts_sample_rate_in_hz: int = 32000
+    # 30 s of headroom so the full-buffer write() of a long response (typical
+    # 5-30 s of f32 PCM) lands in one shot; the player's own 2 s default forces
+    # write() to block on the drain and hit its 10 s timeout, dropping the tail
+    # of any response longer than ~10 s.
+    tts_ring_seconds: float = 30.0
+    tts_connect_timeout_s: float = voice_tts.DEFAULT_TTS_CONNECT_TIMEOUT_S
+    tts_task_start_timeout_s: float = voice_tts.DEFAULT_TTS_TASK_START_TIMEOUT_S
+    tts_first_chunk_timeout_s: float = voice_tts.DEFAULT_TTS_FIRST_CHUNK_TIMEOUT_S
+    tts_between_chunk_timeout_s: float = voice_tts.DEFAULT_TTS_BETWEEN_CHUNK_TIMEOUT_S
+    tts_total_timeout_s: float = voice_tts.DEFAULT_TTS_TOTAL_TIMEOUT_S
+    tts_session_close_timeout_s: float = voice_tts.DEFAULT_TTS_SESSION_CLOSE_TIMEOUT_S
+    vad_profiles: Mapping[str, voice_audio.VadThresholds] = dataclasses.field(
+        default_factory=_default_vad_profiles,
+    )
+
+
+def _knob_number(values: Mapping[str, Any], key: str, fallback: float) -> float:
+    """Return a positive numeric ``realtime.<key>``; ``fallback`` with a warning.
+
+    Degrade rather than raise: these are read at the composition root, outside
+    every downgrade boundary the daemon has, so a typo must not cost the boot.
+    ``bool`` is excluded explicitly because it is an ``int`` subclass.
+    """
+    raw = values.get(key)
+    if raw is None:
+        return fallback
+    if (
+        isinstance(raw, bool)
+        or not isinstance(raw, int | float)
+        or not math.isfinite(raw)
+        or raw <= 0
+    ):
+        LOGGER.warning(
+            "realtime.%s must be a positive finite number; using %s.", key, fallback,
+        )
+        return fallback
+    return float(raw)
+
+
+def _knob_text(values: Mapping[str, Any], key: str, fallback: str) -> str:
+    """Return a non-empty string ``realtime.<key>``; ``fallback`` with a warning."""
+    raw = values.get(key)
+    if raw is None:
+        return fallback
+    if not isinstance(raw, str) or not raw.strip():
+        LOGGER.warning(
+            "realtime.%s must be a non-empty string; using %r.", key, fallback,
+        )
+        return fallback
+    return raw.strip()
+
+
+def _knob_count(
+    values: Mapping[str, Any],
+    key: str,
+    fallback: int,
+    *,
+    label: str | None = None,
+) -> int:
+    """Return a positive integer ``realtime.<key>``; ``fallback`` with a warning.
+
+    ``label`` names the key in the warning when it differs from the lookup —
+    a nested profile field is looked up as ``required_hits`` but must be
+    reported as ``realtime.vad.record.required_hits`` to be actionable.
+    """
+    raw = values.get(key)
+    if raw is None:
+        return fallback
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        LOGGER.warning(
+            "realtime.%s must be a positive integer; using %d.",
+            key if label is None else label,
+            fallback,
+        )
+        return fallback
+    return raw
+
+
+def _vad_profile(raw: object, *, mode: str, fallback: voice_audio.VadThresholds,
+                 ) -> voice_audio.VadThresholds:
+    """Parse one ``realtime.vad.<mode>`` profile; each field degrades alone."""
+    if raw is None:
+        return fallback
+    if not isinstance(raw, Mapping):
+        LOGGER.warning("realtime.vad.%s must be a mapping; using defaults.", mode)
+        return fallback
+    values: Mapping[str, Any] = raw
+    prob = values.get("prob_threshold")
+    db = values.get("db_threshold")
+    if prob is not None and (
+        isinstance(prob, bool) or not isinstance(prob, int | float) or not 0.0 < prob <= 1.0
+    ):
+        LOGGER.warning(
+            "realtime.vad.%s.prob_threshold must be in (0, 1]; using %s.",
+            mode,
+            fallback.prob_threshold,
+        )
+        prob = None
+    if db is not None and (isinstance(db, bool) or not isinstance(db, int | float)):
+        LOGGER.warning(
+            "realtime.vad.%s.db_threshold must be a number; using %s.",
+            mode,
+            fallback.db_threshold,
+        )
+        db = None
+    return voice_audio.VadThresholds(
+        prob_threshold=fallback.prob_threshold if prob is None else float(prob),
+        db_threshold=fallback.db_threshold if db is None else float(db),
+        smoothing_window=_knob_count(
+            values,
+            "smoothing_window",
+            fallback.smoothing_window,
+            label=f"vad.{mode}.smoothing_window",
+        ),
+        required_hits=_knob_count(
+            values,
+            "required_hits",
+            fallback.required_hits,
+            label=f"vad.{mode}.required_hits",
+        ),
+        required_misses=_knob_count(
+            values,
+            "required_misses",
+            fallback.required_misses,
+            label=f"vad.{mode}.required_misses",
+        ),
+    )
+
+
+def _vad_profiles(raw: object) -> dict[str, voice_audio.VadThresholds]:
+    """Parse ``realtime.vad``; both profiles must share their debounce triple.
+
+    ``DuplexVoiceSession`` calls :meth:`SileroVad.set_mode` on every
+    output-active transition, i.e. mid-utterance.  That is only safe because
+    ``reset`` sizes the smoothing deques from ``smoothing_window`` and the
+    assembler snapshots ``required_misses`` once, so two profiles that disagree
+    on either would desynchronise both.  A config that breaks the invariant is
+    refused whole rather than half-applied.
+    """
+    defaults = _default_vad_profiles()
+    if raw is None:
+        return defaults
+    if not isinstance(raw, Mapping):
+        LOGGER.warning("realtime.vad must be a mapping; using defaults.")
+        return defaults
+    parsed = {
+        mode: _vad_profile(raw.get(mode), mode=mode, fallback=defaults[mode])
+        for mode in _VAD_MODES
+    }
+    debounce = {
+        (p.smoothing_window, p.required_hits, p.required_misses) for p in parsed.values()
+    }
+    if len(debounce) > 1:
+        LOGGER.warning(
+            "realtime.vad profiles disagree on smoothing_window/required_hits/"
+            "required_misses; the session switches profiles mid-utterance and "
+            "cannot resize its debounce state. Using defaults for both.",
+        )
+        return defaults
+    return parsed
+
+
+def _voice_knobs(config: Mapping[str, Any]) -> _VoiceKnobs:
+    """Resolve every flat ``realtime:`` voice value once (ADR-0006 §5)."""
+    block = config.get("realtime")
+    values: Mapping[str, Any] = block if isinstance(block, Mapping) else {}
+    d = _VoiceKnobs()
+    return _VoiceKnobs(
+        wake_threshold=_knob_number(values, "wake_threshold", d.wake_threshold),
+        wake_join_timeout_s=_knob_number(
+            values, "wake_join_timeout_s", d.wake_join_timeout_s,
+        ),
+        tts_voice=_knob_text(values, "tts_voice", d.tts_voice),
+        tts_model=_knob_text(values, "tts_model", d.tts_model),
+        tts_primary_endpoint=_knob_text(
+            values, "tts_primary_endpoint", d.tts_primary_endpoint,
+        ),
+        tts_fallback_endpoint=_knob_text(
+            values, "tts_fallback_endpoint", d.tts_fallback_endpoint,
+        ),
+        tts_sample_rate_in_hz=_knob_count(
+            values, "tts_sample_rate_in_hz", d.tts_sample_rate_in_hz,
+        ),
+        tts_ring_seconds=_knob_number(values, "tts_ring_seconds", d.tts_ring_seconds),
+        tts_connect_timeout_s=_knob_number(
+            values, "tts_connect_timeout_s", d.tts_connect_timeout_s,
+        ),
+        tts_task_start_timeout_s=_knob_number(
+            values, "tts_task_start_timeout_s", d.tts_task_start_timeout_s,
+        ),
+        tts_first_chunk_timeout_s=_knob_number(
+            values, "tts_first_chunk_timeout_s", d.tts_first_chunk_timeout_s,
+        ),
+        tts_between_chunk_timeout_s=_knob_number(
+            values, "tts_between_chunk_timeout_s", d.tts_between_chunk_timeout_s,
+        ),
+        tts_total_timeout_s=_knob_number(
+            values, "tts_total_timeout_s", d.tts_total_timeout_s,
+        ),
+        tts_session_close_timeout_s=_knob_number(
+            values, "tts_session_close_timeout_s", d.tts_session_close_timeout_s,
+        ),
+        vad_profiles=_vad_profiles(values.get("vad")),
+    )
 
 
 def _voice_models_preflight(
@@ -1836,6 +2075,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     broadcaster: InherentBroadcaster,
     *,
     ducker: voice_ducking.SystemAudioDucker | None = None,
+    voice: _VoiceKnobs | None = None,
 ) -> voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None:
     """Build the TTS subsystem when ``MINIMAX_API_KEY`` is present.
 
@@ -1850,18 +2090,13 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     instance shared with the WakeListener. TTS registers an output lease;
     wake capture refuses to mute while provider I/O or playback owns it.
     """
+    knobs = _VoiceKnobs() if voice is None else voice
     api_key = os.environ.get("MINIMAX_API_KEY")
     if not api_key:
         LOGGER.warning(
             "MINIMAX_API_KEY unset; skipping TTS subsystem (text path only).",
         )
         return None
-    # OutputStream runs at the macOS native rate (48 kHz). MiniMax is
-    # asked for 32 kHz PCM in (highest it natively produces in our
-    # config) and resampled to 48 kHz on the way out via soxr — running
-    # the device at the system-native rate prevents CoreAudio from
-    # forcing a hardware-rate switch on every play, which was producing
-    # audible pops/clicks for any other app sharing the speaker.
     realtime_raw = runtime.config.get("realtime")
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
     # MiniMax `voice_setting.vol`.  Absent or null keeps the MiniMaxWSClient
@@ -1872,16 +2107,6 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     # with it, where a bad `output_device` only degrades TTS to text-only.
     tts_volume = realtime.get("tts_volume")
     volume_kwargs: dict[str, Any] = {} if tts_volume is None else {"volume": tts_volume}
-
-    def _new_provider() -> voice_tts.MiniMaxWSClient:
-        return voice_tts.MiniMaxWSClient(
-            api_key=api_key,
-            sample_rate_in=32000,
-            sample_rate_out=_DEFAULT_TTS_SAMPLE_RATE_HZ,
-            **volume_kwargs,
-        )
-
-    provider = _new_provider()
     # Passed straight through to sd.OutputStream, which maps a name to a device
     # index itself; an unresolvable value raises there and `start()` fails closed.
     # Deliberately unvalidated: a type guard here would turn a mistyped key into
@@ -1899,17 +2124,53 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
                 "realtime.streaming_output config invalid (%s); downgraded to legacy TTS.",
                 exc,
             )
+    # THE output rate, for the provider's resampler and both players.
+    # ``realtime.streaming_output.canonical_sample_rate_hz`` is its only source:
+    # a second constant here could only ever agree with it or silently disable
+    # streaming. The default (48 kHz) is the macOS built-in device rate, so
+    # CoreAudio is not forced into a hardware-rate switch on every play — which
+    # was producing audible pops for any other app sharing the speaker.
+    streaming_defaults = voice_media.StreamingMediaConfig()
+    output_sample_rate_hz = (
+        streaming_defaults.canonical_sample_rate_hz
+        if media_config is None
+        else media_config.canonical_sample_rate_hz
+    )
+    streaming_ring_seconds = (
+        streaming_defaults.ring_seconds
+        if media_config is None
+        else media_config.ring_seconds
+    )
+
+    def _new_provider() -> voice_tts.MiniMaxWSClient:
+        return voice_tts.MiniMaxWSClient(
+            api_key=api_key,
+            voice=knobs.tts_voice,
+            model=knobs.tts_model,
+            primary_endpoint=knobs.tts_primary_endpoint,
+            fallback_endpoint=knobs.tts_fallback_endpoint,
+            sample_rate_in=knobs.tts_sample_rate_in_hz,
+            sample_rate_out=output_sample_rate_hz,
+            connect_timeout_s=knobs.tts_connect_timeout_s,
+            task_start_timeout_s=knobs.tts_task_start_timeout_s,
+            first_chunk_timeout_s=knobs.tts_first_chunk_timeout_s,
+            between_chunk_timeout_s=knobs.tts_between_chunk_timeout_s,
+            total_timeout_s=knobs.tts_total_timeout_s,
+            session_close_timeout_s=knobs.tts_session_close_timeout_s,
+            **volume_kwargs,
+        )
+
+    provider = _new_provider()
     streaming_capable = (
         runtime.wave1_features.transactional_event_append
         and runtime.wave1_features.lifecycle_terminal_cas
         and provider.streaming_candidate_count > 0
         and media_config is not None
-        and media_config.canonical_sample_rate_hz == _DEFAULT_TTS_SAMPLE_RATE_HZ
     )
     if streaming_requested and streaming_capable:
         player = voice_tts.AudioStreamPlayer(
-            sample_rate_hz=_DEFAULT_TTS_SAMPLE_RATE_HZ,
-            ring_seconds=2.0,
+            sample_rate_hz=output_sample_rate_hz,
+            ring_seconds=streaming_ring_seconds,
             lazy_open=True,
             generation_safe=True,
             device=output_device,
@@ -1958,12 +2219,8 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     # the wake listener.
     try:
         player = voice_tts.AudioStreamPlayer(
-            sample_rate_hz=_DEFAULT_TTS_SAMPLE_RATE_HZ,
-            # 30 s of headroom so the full-buffer write() of a long response
-            # (typical 5-30 s of f32 PCM at 48 kHz) lands in one shot — the
-            # 2 s default forces write() to block on the drain and hit its
-            # 10 s timeout, dropping the tail of any response > ~10 s.
-            ring_seconds=30.0,
+            sample_rate_hz=output_sample_rate_hz,
+            ring_seconds=knobs.tts_ring_seconds,
             lazy_open=False,
             device=output_device,
         )
@@ -2033,19 +2290,25 @@ def _open_wake_input_stream() -> Any:  # noqa: ANN401 — sounddevice stream is 
     return stream
 
 
-def _spawn_wake_listener(
+def _spawn_wake_listener(  # noqa: PLR0913 - composition boundary dependencies
     *,
     pipeline: voice_pipeline.VoicePipeline,
     broadcaster: InherentBroadcaster,
     silero_path: Path,
     tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
     ducker: voice_ducking.SystemAudioDucker | None = None,
+    voice: _VoiceKnobs | None = None,
 ) -> tuple[voice_wake.WakeListener, Any | None] | None:
     """Construct + start a :class:`WakeListener` daemon thread.
 
     ADR-0005 §5.1 — the listener owns its own SileroVad (record mode)
     and a partial-bound :func:`voice_audio.capture_utterance`; both
     are constructed here so the L5 modules stay free of L6 wiring.
+
+    ``voice`` carries the resolved ``realtime:`` knobs. It is a defaulted
+    parameter rather than a ``JarvisRuntime``: this function must stay unable
+    to read ``realtime.single_audio_ingress``, since a key placed there would
+    then be honoured by one input owner and silently ignored by the other.
 
     Also opens the 16 kHz / 80 ms PortAudio input stream that backs the
     listener's ``frame_factory``. Without this stream the listener
@@ -2060,6 +2323,7 @@ def _spawn_wake_listener(
     test-only callers that patch ``_open_wake_input_stream`` to return
     a mock stream, this still works because the mock answers ``read``.
     """
+    knobs = _VoiceKnobs() if voice is None else voice
     try:
         stream = _open_wake_input_stream()
     except Exception:
@@ -2079,7 +2343,11 @@ def _spawn_wake_listener(
         engine = voice_wake.WakeEngine(model_name="hey_jarvis_v0.1")
         # Without start(), predict() silently returns no detection.
         engine.start()
-        silero_vad = voice_audio.SileroVad(mode="record", model_path=silero_path)
+        silero_vad = voice_audio.SileroVad(
+            mode="record",
+            model_path=silero_path,
+            profiles=knobs.vad_profiles,
+        )
         silero_vad.prepare_utterance()
         capture_callable = functools.partial(
             voice_audio.capture_utterance,
@@ -2092,7 +2360,7 @@ def _spawn_wake_listener(
             pipeline=pipeline,
             broadcaster=broadcaster,
             capture_callable=capture_callable,
-            threshold=_DEFAULT_WAKE_THRESHOLD,
+            threshold=knobs.wake_threshold,
             is_speaking_callable=(tts.is_speaking if tts is not None else None),
             frame_factory=_read_wake_frame,
             ducker=ducker,
@@ -2103,7 +2371,7 @@ def _spawn_wake_listener(
             "wake: legacy listener construction/start failed; preserving PTT.",
         )
         if listener is not None:
-            _shutdown_wake(listener, stream)
+            _shutdown_wake(listener, stream, join_timeout_s=knobs.wake_join_timeout_s)
         else:
             try:
                 stream.stop()
@@ -2141,6 +2409,11 @@ class _VoiceInputOwners:
     wake_listener: voice_wake.WakeListener | None
     wake_stream: object | None
     single_ingress_attempted: bool
+    # Why this branch was taken. The failing paths already record it as an
+    # ``audio_input_activation_downgraded`` trace; carrying it out is what lets
+    # the startup record name the successful choice too, which the wake log
+    # line cannot: both owners construct an identical ``WakeEngine``.
+    reason: str = "unknown"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2637,13 +2910,14 @@ def _single_ingress_activation(  # noqa: PLR0911 - each fail-closed prerequisite
     )
 
 
-def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0915 - each pre/post-device downgrade has distinct ownership semantics
+def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - each pre/post-device downgrade has distinct ownership semantics
     *,
     runtime: JarvisRuntime,
     pipeline: voice_pipeline.VoicePipeline,
     broadcaster: InherentBroadcaster,
     silero_path: Path,
     tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+    voice: _VoiceKnobs | None = None,
 ) -> tuple[voice_session.DuplexVoiceSession | None, bool]:
     """Start Wave 3 or return whether a device-open attempt was made.
 
@@ -2652,6 +2926,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0915 - each pre/po
     default microphone.  ``attempted=False`` means no input owner was touched,
     so a failed prerequisite/config validation may explicitly use legacy wake.
     """
+    knobs = _VoiceKnobs() if voice is None else voice
     activation = _single_ingress_activation(runtime, tts=tts)
     if not activation.requested:
         return None, False
@@ -2740,7 +3015,11 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0915 - each pre/po
             config=ingress_config,
             capability_sink=_capability_changed,
         )
-        vad = voice_audio.SileroVad(mode="record", model_path=silero_path)
+        vad = voice_audio.SileroVad(
+            mode="record",
+            model_path=silero_path,
+            profiles=knobs.vad_profiles,
+        )
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
             wake_engine=engine,
@@ -2748,7 +3027,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0915 - each pre/po
             pipeline=pipeline,
             broadcaster=broadcaster,
             output_active=(tts.is_output_active if tts is not None else None),
-            wake_threshold=_DEFAULT_WAKE_THRESHOLD,
+            wake_threshold=knobs.wake_threshold,
             config=session_config,
             barge_in_interrupt=make_barge_in_interrupt_callable(runtime),
         )
@@ -2806,6 +3085,33 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0915 - each pre/po
     return session, True
 
 
+def _input_owner_reason(
+    runtime: JarvisRuntime,
+    *,
+    tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+    duplex_session: voice_session.DuplexVoiceSession | None,
+    attempted: bool,
+    wake_listener: voice_wake.WakeListener | None,
+) -> str:
+    """Name why this boot ended up with the input owner it has.
+
+    Re-runs :func:`_single_ingress_activation`, which is a pure read of
+    ``runtime.config`` and ``tts``: cheaper once per boot than threading a
+    third return value through a helper five tests construct directly.
+    """
+    reason = _single_ingress_activation(runtime, tts=tts).reason
+    if duplex_session is not None:
+        return reason
+    if attempted:
+        # A device open was tried and did not survive; the specific failure is
+        # already an ``audio_input_activation_downgraded`` trace.
+        return "single_ingress_start_failed"
+    if wake_listener is not None:
+        # Legacy wake owns the mic because single ingress declined for `reason`.
+        return reason
+    return f"{reason}:legacy_wake_unavailable"
+
+
 def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependencies
     *,
     runtime: JarvisRuntime,
@@ -2814,14 +3120,17 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
     silero_path: Path,
     tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
     ducker: voice_ducking.SystemAudioDucker,
+    voice: _VoiceKnobs | None = None,
 ) -> _VoiceInputOwners:
     """Select Wave 3 or legacy wake without ever opening both input owners."""
+    knobs = _VoiceKnobs() if voice is None else voice
     duplex_session, attempted = _spawn_single_ingress_session(
         runtime=runtime,
         pipeline=pipeline,
         broadcaster=broadcaster,
         silero_path=silero_path,
         tts=tts,
+        voice=knobs,
     )
     wake_listener: voice_wake.WakeListener | None = None
     wake_stream: object | None = None
@@ -2832,6 +3141,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
             silero_path=silero_path,
             tts=tts,
             ducker=ducker,
+            voice=knobs,
         )
         if legacy is not None:
             wake_listener, wake_stream = legacy
@@ -2840,6 +3150,13 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
         wake_listener=wake_listener,
         wake_stream=wake_stream,
         single_ingress_attempted=attempted,
+        reason=_input_owner_reason(
+            runtime,
+            tts=tts,
+            duplex_session=duplex_session,
+            attempted=attempted,
+            wake_listener=wake_listener,
+        ),
     )
 
 
@@ -3419,9 +3736,60 @@ def _request_tts_close(
         LOGGER.debug("tts pipeline close request failed", exc_info=True)
 
 
+def _log_voice_startup(  # noqa: PLR0913 - the record's fields ARE its contract
+    *,
+    knobs: _VoiceKnobs,
+    sensevoice_dir: Path,
+    silero_vad_path: Path,
+    models_ok: bool,
+    owners: _VoiceInputOwners,
+    reason: str,
+) -> None:
+    """Emit the one per-boot record naming every resolved voice value.
+
+    ADR-0006 §5 — the point of moving these values into config is that one file
+    decides them, which is only checkable if the daemon says what it resolved.
+    JSON rather than ``key=value`` because there are twenty-nine fields.
+
+    Also the only place startup distinguishes the two input owners:
+    ``WakeEngine.start`` logs an identical line from either, which has already
+    cost one investigation a wrong conclusion.
+    """
+    if owners.duplex_session is not None:
+        input_owner = "single_ingress"
+    elif owners.wake_listener is not None:
+        input_owner = "legacy_wake"
+    else:
+        input_owner = "none"
+    payload: dict[str, Any] = {
+        "sensevoice_dir": str(sensevoice_dir),
+        "silero_vad_path": str(silero_vad_path),
+        "models_ok": models_ok,
+        "input_owner": input_owner,
+        "reason": reason,
+    }
+    payload.update(
+        {
+            field.name: getattr(knobs, field.name)
+            for field in dataclasses.fields(knobs)
+            if field.name != "vad_profiles"
+        },
+    )
+    for mode, profile in sorted(knobs.vad_profiles.items()):
+        payload.update(
+            {
+                f"vad_{mode}_{key}": value
+                for key, value in dataclasses.asdict(profile).items()
+            },
+        )
+    LOGGER.info("voice startup config: %s", json.dumps(payload, sort_keys=True))
+
+
 def _shutdown_wake(
     wake_listener: voice_wake.WakeListener | None,
     wake_stream: Any | None,  # noqa: ANN401 — sounddevice stream is untyped third-party API
+    *,
+    join_timeout_s: float = _VoiceKnobs().wake_join_timeout_s,
 ) -> None:
     """Stop wake listener and close its input stream in the safe order.
 
@@ -3433,13 +3801,13 @@ def _shutdown_wake(
     if wake_listener is None:
         return
     wake_listener.request_stop()
-    wake_listener.join(timeout_s=_WAKE_JOIN_TIMEOUT_S)
+    wake_listener.join(timeout_s=join_timeout_s)
     if wake_listener.is_alive():
         LOGGER.warning(
             "wake listener thread did not exit within %.1f s; "
             "proceeding with stream close (segfault risk reduced "
             "but not eliminated)",
-            _WAKE_JOIN_TIMEOUT_S,
+            join_timeout_s,
         )
     if wake_stream is not None:
         try:
@@ -3478,6 +3846,8 @@ def _shutdown_duplex_voice_session(
 def _request_voice_input_branch_shutdown(
     owners: _VoiceInputOwners,
     tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+    *,
+    wake_join_timeout_s: float = _VoiceKnobs().wake_join_timeout_s,
 ) -> None:
     """Select the exact Wave-3 or legacy shutdown order used by serve."""
     if owners.duplex_session is not None:
@@ -3485,7 +3855,11 @@ def _request_voice_input_branch_shutdown(
         _request_tts_close(tts_pipe)
         return
     _request_tts_close(tts_pipe)
-    _shutdown_wake(owners.wake_listener, owners.wake_stream)
+    _shutdown_wake(
+        owners.wake_listener,
+        owners.wake_stream,
+        join_timeout_s=wake_join_timeout_s,
+    )
 
 
 def _v2_runtime_capabilities(
@@ -3613,15 +3987,13 @@ def _submit_asr_v2(  # noqa: PLR0913 — the bound path and pipeline plus the fo
             inner_conn.close()
 
 
-async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring plus boot-reconciliation branches necessarily inflate body length + branch count.
+async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring plus boot-reconciliation branches necessarily inflate body length + branch count.
     runtime: JarvisRuntime,
     *,
     host: str = "127.0.0.1",
     port: int = _DEFAULT_PORT,
     lock_path: Path,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
-    sensevoice_dir: Path = _DEFAULT_SENSEVOICE_DIR,
-    silero_path: Path = _DEFAULT_SILERO_PATH,
 ) -> None:
     """Run the Inherent daemon (text + voice). Blocks until SIGINT / SIGTERM.
 
@@ -3699,8 +4071,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
         lock_path: Per-runtime-root daemon lock file. Resolved by
             ``jarvis.cli._main_serve`` to ``${runtime_root}/daemon.lock``.
         poll_interval_s: Watcher poll cadence (default 10 ms).
-        sensevoice_dir: SenseVoice INT8 model directory (pre-flight).
-        silero_path: Silero VAD ONNX path (pre-flight).
 
     Raises:
         jarvis.deployment.process_lock.ProcessLockHeld: Another daemon
@@ -3762,10 +4132,14 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
             voice_ducking.SystemAudioDucker()
         )
 
+        voice_knobs = _voice_knobs(runtime.config)
+        sensevoice_dir = runtime.sensevoice_dir
+        silero_path = runtime.silero_vad_path
         models_ok, missing = _voice_models_preflight(
             sensevoice_dir=sensevoice_dir,
             silero_path=silero_path,
         )
+        voice_startup_reason = "models_missing"
         if not models_ok:
             LOGGER.error(
                 "voice models missing; running text-only. Missing: %s",
@@ -3783,8 +4157,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
                     runtime,
                     broadcaster,
                     ducker=shared_ducker,
+                    voice=voice_knobs,
                 )
                 if os.environ.get("JARVIS_VOICE_DISABLE_WAKE") == "1":
+                    voice_startup_reason = "wake_disabled_env"
                     LOGGER.info(
                         "JARVIS_VOICE_DISABLE_WAKE=1; skipping WakeListener spawn.",
                     )
@@ -3796,9 +4172,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
                         silero_path=silero_path,
                         tts=tts_pipe,
                         ducker=shared_ducker,
+                        voice=voice_knobs,
                     )
                     duplex_voice_session = voice_input_owners.duplex_session
+                    voice_startup_reason = voice_input_owners.reason
             except Exception:
+                voice_startup_reason = "voice_construction_failed"
                 LOGGER.exception(
                     "voice subsystem construction failed; running text-only.",
                 )
@@ -3812,6 +4191,18 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
                     wake_stream=None,
                     single_ingress_attempted=False,
                 )
+
+        # One record per boot on EVERY path above — models present, models
+        # missing, construction failed — so "what did this daemon resolve, and
+        # which input owner does it have" never needs a grep again.
+        _log_voice_startup(
+            knobs=voice_knobs,
+            sensevoice_dir=sensevoice_dir,
+            silero_vad_path=silero_path,
+            models_ok=models_ok,
+            owners=voice_input_owners,
+            reason=voice_startup_reason,
+        )
 
         # ADR-0008 F14 / §4.4 — close ResponseRuns a previous process
         # abandoned, once, inside the startup barrier and before any
@@ -4086,7 +4477,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
                 power_coordinator.close(timeout_s=0.1)
             # ADR-0006 F14: Wave 3 revokes input before output. Feature-off
             # retains the legacy output-gate-before-wake order.
-            _request_voice_input_branch_shutdown(voice_input_owners, tts_pipe)
+            _request_voice_input_branch_shutdown(
+                voice_input_owners,
+                tts_pipe,
+                wake_join_timeout_s=voice_knobs.wake_join_timeout_s,
+            )
             # Cancel/await watcher ownership before PortAudio teardown. A
             # provider thread may still exist, but the closed generation owns
             # no right to write or invoke fallback.

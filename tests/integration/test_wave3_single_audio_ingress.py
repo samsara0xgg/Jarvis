@@ -4358,7 +4358,9 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
         patch.object(
             inherent_loop,
             "_shutdown_wake",
-            side_effect=lambda _listener, _stream: actions.append("legacy_stop"),
+            side_effect=lambda _listener, _stream, **_kwargs: actions.append(
+                "legacy_stop",
+            ),
         ),
     ):
         inherent_loop._request_voice_input_branch_shutdown(wave3_owners, wave2)

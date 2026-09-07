@@ -715,6 +715,8 @@ The projection does not keep raw PCM or per-callback progress.
 
 New configuration is parsed into a typed object; no realtime constant remains hard-coded in `inherent_loop.py`.
 
+Implemented for twenty-eight values. Three constants remain in `inherent_loop.py` and are meant to: `_WAKE_SAMPLE_RATE_HZ` / `_WAKE_FRAME_SAMPLES` are openwakeword's input contract, not a deployment choice, and `_DEFAULT_CAPTURE_MAX_DURATION_S` / `_DEFAULT_CAPTURE_MIN_VOICED_S` belong to the legacy wake owner, which has no way to read config and whose replacement — `single_audio_ingress`'s `max_utterance_s` / `min_voiced_s` — already exists. Retiring that owner closes them; configuring it would not.
+
 Canonical configuration is the top-level `realtime:` block in `config/jarvis.yaml`, a sibling of `llm`/`supervisor`/`observer`/`tools`/`confirmation`; there is no `voice:` namespace, and the rollout modes below are cumulative capability levels, not a config value. Keys this ADR gates:
 
 - `realtime.enabled` — master switch; nothing below activates without it.
@@ -723,6 +725,14 @@ Canonical configuration is the top-level `realtime:` block in `config/jarvis.yam
 - `realtime.single_audio_ingress.enabled` — shared capture backend and subscriber ring (the `keyword_barge_in`/`full_duplex` levels).
 
 The two adoption switches are read in `jarvis/runtime/inherent_loop.py`. Per-field tuning (frame sizes, buffer targets, duck gains, timeouts) lives only in `config/jarvis.yaml`; this ADR does not restate it.
+
+Where a new key goes follows from who reads it, not from what it configures. A fact that applies whatever rollout mode is on is a flat child of `realtime:`, alongside `output_device` and `tts_volume`; a fact that only means something inside one mode belongs in that mode's sub-block. The second rule carries an obligation: a flat key must be wired into **every** owner that consumes it. The wake threshold and the Silero profiles are flat because both input owners construct them, and `_spawn_wake_listener` is deliberately never handed the `JarvisRuntime` — it receives resolved values — so a key placed under `realtime.single_audio_ingress` stays structurally unreachable from the legacy owner rather than being silently honoured by one of two.
+
+Any path-valued `realtime.*` key is `~`-expanded and, if still relative, anchored at the directory holding the config file the operator pointed `--config` at — never at the process's working directory, and never at the derived `repo_root`. An absent key falls back to its module constant, which stays working-directory-relative: the fallback's meaning is what a running deployment already depends on.
+
+The TTS output rate is `realtime.streaming_output.canonical_sample_rate_hz` and nothing else. The provider's resampler target and both players read that one value; there is no separate player-rate constant to disagree with it.
+
+One `LOGGER.info` record per boot names every resolved voice value, whether the model pre-flight passed, which input owner was spawned and why. It is the only place startup distinguishes the two input owners: both construct an identical `WakeEngine`, which logs the same line either way.
 
 Rollout modes are cumulative:
 

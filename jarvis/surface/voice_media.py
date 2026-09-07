@@ -234,6 +234,10 @@ class StreamingMediaConfig:
     session_idle_close_s: float = 10.0
     response_timeout_s: float = 45.0
     ring_retry_s: float = 0.002
+    # Seconds of PCM the streaming player's ring holds. Small on purpose: the
+    # streaming path writes as chunks arrive, so headroom buys nothing and
+    # costs interrupt latency, unlike the legacy player's whole-buffer write.
+    ring_seconds: float = 2.0
     presentation_poll_s: float = 0.005
     shutdown_timeout_s: float = 3.0
     event_drain_batch: int = 128
@@ -260,6 +264,7 @@ class StreamingMediaConfig:
             self.session_idle_close_s,
             self.response_timeout_s,
             self.ring_retry_s,
+            self.ring_seconds,
             self.presentation_poll_s,
             self.shutdown_timeout_s,
             self.durability_retry_s,
@@ -3374,6 +3379,7 @@ def streaming_media_config_from_mapping(
             defaults.response_timeout_s,
         ),
         ring_retry_s=_positive_float("ring_retry_s", defaults.ring_retry_s),
+        ring_seconds=_positive_float("ring_seconds", defaults.ring_seconds),
         presentation_poll_s=_positive_float(
             "presentation_poll_s",
             defaults.presentation_poll_s,
