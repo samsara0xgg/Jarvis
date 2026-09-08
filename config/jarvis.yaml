@@ -155,9 +155,12 @@ realtime:
   output_device: null
   # MiniMax `voice_setting.vol` on every TTS request; the provider documents
   # the range as (0, 10] and we narrow it to an integer.  Null means the
-  # measured default of 3, the highest value whose returned int16 does not
-  # reach full scale.  Raising it clips inside MiniMax's own encoder, which
-  # no limiter on our side can undo.  Deliberately unvalidated: a non-numeric
+  # default of 1.  Measured 2026-09-07 on the same sentences: RMS scales
+  # linearly 1 -> 2 -> 3, but the peak only reaches 2.8x at 3, so MiniMax's
+  # own limiter is already squashing loud syllables there (the audible
+  # crackle); 5 hard-clips its int16 encoder.  No limiter on our side can
+  # undo either.  1 is confirmed clean; raise the Mac output volume instead.
+  # Deliberately unvalidated: a non-numeric
   # value raises out of the TTS builder, which skips the whole voice subsystem
   # for that boot; the process keeps running text-only.
   tts_volume: null

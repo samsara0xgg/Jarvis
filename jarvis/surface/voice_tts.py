@@ -1911,7 +1911,7 @@ class MiniMaxWSClient:
         primary_endpoint: str = DEFAULT_TTS_PRIMARY_ENDPOINT,
         fallback_endpoint: str = DEFAULT_TTS_FALLBACK_ENDPOINT,
         model: str = DEFAULT_TTS_MODEL,
-        volume: int = 3,
+        volume: int = 1,
         sample_rate_in: int = 32000,
         sample_rate_out: int = 32000,
         connect_timeout_s: float = DEFAULT_TTS_CONNECT_TIMEOUT_S,

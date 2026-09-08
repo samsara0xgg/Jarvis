@@ -3811,7 +3811,7 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
         assert ws.sent[0]["event"] == "task_start"
         return cast("dict[str, object]", ws.sent[0]["voice_setting"])["vol"]
 
-    assert _emitted_vol({"enabled": False}) == 3
+    assert _emitted_vol({"enabled": False}) == 1
     assert _emitted_vol({"enabled": False, "tts_volume": 7}) == 7
     conn.close()
 
