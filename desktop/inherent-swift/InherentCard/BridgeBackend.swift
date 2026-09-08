@@ -16,7 +16,7 @@ struct VoiceSubmitResult {
 protocol NativeBackendSubmitting {
   func submit(text: String) async -> SubmitResult
   func submitImage(text: String, imageData: Data, mime: String, name: String) async -> SubmitResult
-  func submitVoice(wavData: Data) async -> VoiceSubmitResult
+  func submitVoice(wavData: Data, channel: String) async -> VoiceSubmitResult
 }
 
 // MARK: - Dispatch protocol + router
@@ -354,6 +354,7 @@ enum ImageSubmitRequest {
 enum VoiceSubmitRequest {
   static func build(
     wavData: Data,
+    channel: String = "inherent_ptt",
     boundary: String = UUID().uuidString,
     environment: [String: String] = ProcessInfo.processInfo.environment
   ) -> URLRequest {
@@ -369,6 +370,9 @@ enum VoiceSubmitRequest {
     body.appendUTF8("Content-Disposition: form-data; name=\"audio\"; filename=\"inherent.wav\"\r\n")
     body.appendUTF8("Content-Type: audio/wav\r\n\r\n")
     body.append(wavData)
+    body.appendUTF8("\r\n--\(boundary)\r\n")
+    body.appendUTF8("Content-Disposition: form-data; name=\"channel\"\r\n\r\n")
+    body.appendUTF8(channel)
     body.appendUTF8("\r\n--\(boundary)--\r\n")
     req.httpBody = body
     return req
@@ -423,11 +427,11 @@ final class BridgeBackend: NativeBackendSubmitting {
     }
   }
 
-  func submitVoice(wavData: Data) async -> VoiceSubmitResult {
+  func submitVoice(wavData: Data, channel: String) async -> VoiceSubmitResult {
     if wavData.count <= 44 {
       return VoiceSubmitResult(ok: false, reason: "empty_audio", status: nil, text: nil, emotion: nil)
     }
-    let req = VoiceSubmitRequest.build(wavData: wavData)
+    let req = VoiceSubmitRequest.build(wavData: wavData, channel: channel)
     do {
       let (data, response) = try await URLSession.shared.data(for: req)
       let status = (response as? HTTPURLResponse)?.statusCode

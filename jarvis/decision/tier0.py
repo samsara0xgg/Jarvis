@@ -48,6 +48,10 @@ class Tier0Pattern:
     tool_name: str
     arg_template: Mapping[str, str] = field(default_factory=dict)
     response_template: str = ""
+    max_spoken_bytes: int | None = None
+    """Optional ``max_spoken_bytes`` row key: overrides the L3 default cap on
+    each string payload value before it is rendered/spoken. Rows whose payload
+    IS the answer (``/notelist``) raise it; ``None`` keeps the default."""
 
 
 Tier0Table = tuple[Tier0Pattern, ...]
@@ -61,6 +65,7 @@ class Tier0Hit:
     tool_name: str
     tool_args: Mapping[str, str]
     response_template: str
+    max_spoken_bytes: int | None = None
 
 
 _GROUP_REF_RE = re.compile(r"^\$(\d+)$")
@@ -149,9 +154,20 @@ def load_tier0_table(path: Path) -> Tier0Table:  # noqa: C901, PLR0912 — one l
                 tool_name=entry["tool"],
                 arg_template=dict(args_raw),
                 response_template=entry["template"],
+                max_spoken_bytes=_parse_max_spoken_bytes(entry, pattern_id),
             )
         )
     return tuple(patterns)
+
+
+def _parse_max_spoken_bytes(entry: Mapping[str, Any], pattern_id: str) -> int | None:
+    value = entry.get("max_spoken_bytes")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        msg = f"tier0 patterns: {pattern_id!r} max_spoken_bytes must be a positive int"
+        raise Tier0ConfigError(msg)
+    return value
 
 
 def validate_tier0_table(
@@ -253,6 +269,7 @@ def match_tier0(transcript: str, table: Tier0Table) -> Tier0Hit | None:
             tool_name=pattern.tool_name,
             tool_args=args,
             response_template=pattern.response_template,
+            max_spoken_bytes=pattern.max_spoken_bytes,
         )
     return None
 

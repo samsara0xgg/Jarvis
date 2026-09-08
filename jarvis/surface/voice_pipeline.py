@@ -110,6 +110,7 @@ class VoicePipeline:
         session_id: str | None = None,
         utterance_id: str | None = None,
         endpoint_reason: str | None = None,
+        transcript_prefix: str = "",
     ) -> Event:
         """Execute one voice turn end-to-end. Returns the emitted Event row.
 
@@ -139,6 +140,9 @@ class VoicePipeline:
                 endpointed utterance); the PTT path does not, so an unsupplied
                 id is minted here — one press-to-release is one utterance.
             endpoint_reason: Optional typed acoustic endpoint reason.
+            transcript_prefix: Literal text prepended to the normalized
+                transcript before emit (the Shift+Return memo path sends
+                ``/note `` so Tier 0 routes it without the LLM).
 
         Raises:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
@@ -186,6 +190,8 @@ class VoicePipeline:
 
             # 3. Normalize BEFORE emit — ADR §8 fix #1 (spec §3.6.2).
             normalized = self._normalizer.normalize(tr.text)
+            if transcript_prefix:
+                normalized = transcript_prefix + normalized
 
             # 4. Optional raw-WAV artifact retention.
             artifact_ref = voice_artifact_store.persist(

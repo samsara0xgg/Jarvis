@@ -229,7 +229,7 @@ _DEFAULT_PORT: int = 8006
 # verdict ``attention_policy`` can return. Neither channel lists a voice
 # surface in ``ATTENTION_CHANNEL_TO_SURFACES``, so feeding their chunks
 # to TTS contradicts the routing table and spec §3.2.5 安静优先.
-_TTS_SILENT_CHANNELS: frozenset[str] = frozenset({"queue_review", "silent_log"})
+_TTS_SILENT_CHANNELS: frozenset[str] = frozenset({"queue_review", "silent_log", "badge_card"})
 
 # WS-broadcaster suppression set — deliberately NARROWER than the TTS
 # set, and this asymmetry is load-bearing:
@@ -2236,6 +2236,12 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
         return None
 
 
+# Shift+Return on the card records a memo instead of asking a question: the
+# ASR transcript gets the `/note ` prefix so the Tier 0 `note_capture` row
+# (config/tier0_patterns.yaml) routes it straight to `create_memo`.
+_TRANSCRIPT_PREFIX_BY_CHANNEL: Final[Mapping[str, str]] = {"inherent_note": "/note "}
+
+
 def _build_voice_pipeline_callable(
     pipeline: voice_pipeline.VoicePipeline,
 ) -> Callable[[bytes, str, str, str], Event]:
@@ -2261,6 +2267,7 @@ def _build_voice_pipeline_callable(
             channel=channel,
             language=language,
             broadcast=False,
+            transcript_prefix=_TRANSCRIPT_PREFIX_BY_CHANNEL.get(channel, ""),
         )
 
     return _call

@@ -141,7 +141,7 @@ from jarvis.shared import (
 from jarvis.shared.action_admission import action_admission_guard
 from jarvis.shared.text import truncate_utf8
 from jarvis.state.authorized_dispatch_outbox import admit_authorized_dispatch
-from jarvis.state.event_log import emit_event, iter_events
+from jarvis.state.event_log import emit_event, iter_events, iter_events_of_types
 from jarvis.state.lifecycle_terminal import terminalize_action
 from jarvis.state.projections import make_snapshot
 
@@ -2059,6 +2059,120 @@ def get_current_time_handler(
         payload=payload,
         tool_output=tool_output_str,
         error=None,
+    )
+
+
+# --- memo inbox (create_memo / list_memos) -----------------------------------
+
+_MEMO_MAX_CHARS: Final[int] = 2000
+
+
+def create_memo_handler(
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
+    lifecycle: ActionLifecycle,
+) -> RawResult:
+    """Append one memo to the event log (`memo.captured`), ack semantics.
+
+    Primary caller is the Tier 0 ``note_capture`` row (``/note ...``);
+    the L2 event IS the memo store — ``list_memos`` folds it back.
+    """
+    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+    text = str(action_request.arguments.get("text", "")).strip()[:_MEMO_MAX_CHARS]
+    if not text:
+        return _memo_error(action_request, conn, lifecycle, running_event_uid, "empty_text")
+
+    memo_event = emit_event(
+        conn,
+        type="memo.captured",
+        payload={"text": text, "action_id": action_request.action_id},
+        source_event_id=running_event_uid,
+        correlation={"action_id": action_request.action_id},
+    )
+    payload: dict[str, Any] = {"memo_event_uid": memo_event.event_uid, "text": text}
+    tool_output_str = tool_result(payload)
+    terminalize_action(
+        conn,
+        event_type="action.result_observed",
+        payload={
+            "action_id": action_request.action_id,
+            "semantics": "ack",
+            "tool_output": tool_output_str,
+        },
+        source_event_id=running_event_uid,
+        correlation={"action_id": action_request.action_id},
+    )
+    lifecycle.transition(action_request.action_id, "result_observed")
+    return RawResult(
+        action_id=action_request.action_id,
+        semantics="ack",
+        payload=payload,
+        tool_output=tool_output_str,
+        error=None,
+    )
+
+
+def list_memos_handler(
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
+    lifecycle: ActionLifecycle,
+) -> RawResult:
+    """Fold every `memo.captured` event into a numbered, dated list."""
+    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+    lines: list[str] = []
+    for event in iter_events_of_types(conn, ("memo.captured",)):
+        stamp = datetime.fromtimestamp(event.ts_epoch_ms / 1000).astimezone()
+        lines.append(f"{len(lines) + 1}. [{stamp:%m-%d %H:%M}] {event.payload.get('text', '')}")
+    payload: dict[str, Any] = {
+        "count": len(lines),
+        "rendered": "\n".join(lines) if lines else "还没有备忘录。",
+    }
+    tool_output_str = tool_result(payload)
+    terminalize_action(
+        conn,
+        event_type="action.result_observed",
+        payload={
+            "action_id": action_request.action_id,
+            "semantics": "observation",
+            "tool_output": tool_output_str,
+        },
+        source_event_id=running_event_uid,
+        correlation={"action_id": action_request.action_id},
+    )
+    lifecycle.transition(action_request.action_id, "result_observed")
+    return RawResult(
+        action_id=action_request.action_id,
+        semantics="observation",
+        payload=payload,
+        tool_output=tool_output_str,
+        error=None,
+    )
+
+
+def _memo_error(
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+    lifecycle: ActionLifecycle,
+    running_event_uid: str | None,
+    error: str,
+) -> RawResult:
+    tool_output_str = tool_error(error)
+    terminalize_action(
+        conn,
+        event_type="action.failed",
+        payload={"action_id": action_request.action_id, "error": error},
+        source_event_id=running_event_uid,
+        correlation={"action_id": action_request.action_id},
+    )
+    lifecycle.transition(action_request.action_id, "failed")
+    return RawResult(
+        action_id=action_request.action_id,
+        semantics="error",
+        payload={},
+        tool_output=tool_output_str,
+        error=error,
     )
 
 
@@ -6067,6 +6181,49 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             input_schema={"type": "object", "properties": {}, "required": []},
             handler=read_clipboard_handler,
             domain="clipboard",
+            read_only=True,
+            requires_entity=False,
+            requires_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="create_memo",
+            description=(
+                "Save a short memo to Allen's memo inbox for later review. "
+                "Use when Allen says '记一下 X' / '备忘 X'."
+            ),
+            allowed_callers=frozenset(
+                {CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM},
+            ),
+            risk_level="L1",
+            result_semantics="ack",
+            is_async=False,
+            input_schema={
+                "type": "object",
+                "properties": {"text": {"type": "string", "description": "Memo text."}},
+                "required": ["text"],
+            },
+            handler=create_memo_handler,
+            domain="memo",
+            read_only=False,
+            requires_entity=False,
+            requires_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="list_memos",
+            description="List every saved memo, oldest first, with capture time. No arguments.",
+            allowed_callers=frozenset(
+                {CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM},
+            ),
+            risk_level="L0",
+            result_semantics="observation",
+            is_async=False,
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=list_memos_handler,
+            domain="memo",
             read_only=True,
             requires_entity=False,
             requires_confirmation=False,

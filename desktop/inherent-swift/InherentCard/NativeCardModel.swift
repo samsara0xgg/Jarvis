@@ -130,6 +130,8 @@ final class NativeCardModel: ObservableObject {
   private var enterHoldFired = false
   private var enterHoldShortAction: (() -> Void)?
   private var enterHoldStarted = Date()
+  /// Shift+Return: the held voice capture is a memo (`/note …`), not a question.
+  private var voiceNoteMode = false
 
   private let imageMaxBytes = 15 * 1024 * 1024
   private let dripMs: TimeInterval = 0.030
@@ -383,8 +385,9 @@ final class NativeCardModel: ObservableObject {
     }
   }
 
-  func handleEnterDown(shortAction: (() -> Void)? = nil) {
+  func handleEnterDown(shortAction: (() -> Void)? = nil, noteMode: Bool = false) {
     if enterHoldWork != nil { return }
+    voiceNoteMode = noteMode
     enterHoldFired = false
     enterHoldShortAction = shortAction
     enterHoldStarted = Date()
@@ -422,11 +425,11 @@ final class NativeCardModel: ObservableObject {
     Task { await finishEnterVoiceCapture() }
   }
 
-  func handleGlobalEnterDown() {
+  func handleGlobalEnterDown(noteMode: Bool = false) {
     if canEnterFollowupInput() {
-      handleEnterDown { [weak self] in self?.enterInputMode(followup: true) }
+      handleEnterDown(shortAction: { [weak self] in self?.enterInputMode(followup: true) }, noteMode: noteMode)
     } else {
-      handleEnterDown()
+      handleEnterDown(noteMode: noteMode)
     }
   }
 
@@ -763,7 +766,7 @@ final class NativeCardModel: ObservableObject {
     voiceInputSnapshot = (inputText, inputPlaceholder)
     voiceListening = true
     inputText = ""
-    inputPlaceholder = "正在听…"
+    inputPlaceholder = voiceNoteMode ? "备忘录 · 正在听…" : "正在听…"
     inputDisabled = true
     isListening = true
     isThinking = false
@@ -812,7 +815,9 @@ final class NativeCardModel: ObservableObject {
     setState("transcribing", .neutral)
     requestLayout()
 
-    let result = await backend.submitVoice(wavData: wavData)
+    let noteMode = voiceNoteMode
+    voiceNoteMode = false
+    let result = await backend.submitVoice(wavData: wavData, channel: noteMode ? "inherent_note" : "inherent_ptt")
     if !result.ok {
       let reason = result.reason ?? "unknown"
       returnToVoiceRetryState(label: reason == "network" ? "offline" : "error · \(reason)", variant: .error)
@@ -826,9 +831,10 @@ final class NativeCardModel: ObservableObject {
 
     voiceInputSnapshot = nil
     clearFollowupDraft()
-    inFlightQuestion = text
-    inputText = text
-    questionText = text
+    let shown = noteMode ? "/note " + text : text
+    inFlightQuestion = shown
+    inputText = shown
+    questionText = shown
     inputPlaceholder = "问点什么…"
     inputDisabled = true
     isSubmitted = true

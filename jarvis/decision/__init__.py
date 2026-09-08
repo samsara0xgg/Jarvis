@@ -1488,7 +1488,10 @@ ADR §8 row T6 ("pbpaste content in observation") stays satisfied
 regardless of what gets spoken."""
 
 
-def _spoken_preview_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+def _spoken_preview_payload(
+    payload: Mapping[str, Any],
+    max_bytes: int = _TIER0_SPOKEN_PREVIEW_MAX_BYTES,
+) -> dict[str, Any]:
     """Cap every string value in ``payload`` to a short spoken preview.
 
     Non-string values (e.g. ``truncated: bool``, ``total_bytes: int``)
@@ -1502,7 +1505,7 @@ def _spoken_preview_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             continue
         value_bytes = value.encode("utf-8")
         text, undelivered, _lossy = truncate_utf8(
-            value_bytes[:_TIER0_SPOKEN_PREVIEW_MAX_BYTES], len(value_bytes),
+            value_bytes[:max_bytes], len(value_bytes),
         )
         preview[key] = f"{text}…[truncated {undelivered} bytes]" if undelivered > 0 else text
     return preview
@@ -1677,9 +1680,24 @@ def _run_tier0_path(
     # rationale. The FULL, uncapped payload already reached
     # `action.result_observed` via the L4 handler above; only what
     # gets SPOKEN and what gets GATED change here.
-    draft = render_tier0_response(hit, _spoken_preview_payload(primary_slot.payload))
+    draft = render_tier0_response(
+        hit,
+        _spoken_preview_payload(
+            primary_slot.payload,
+            hit.max_spoken_bytes or _TIER0_SPOKEN_PREVIEW_MAX_BYTES,
+        ),
+    )
+    # Form, not length, picks the channel (spec §18.3 voice = conclusion,
+    # panel = evidence): a multi-line render is material for the card.
+    # ponytail: line-count heuristic; upgrade to a per-tool output-form
+    # declaration if a one-line tool result ever needs the panel.
     return _finalize_response(
-        draft, packet, ctx, scratch, gate_text=hit.response_template,
+        draft,
+        packet,
+        ctx,
+        scratch,
+        gate_text=hit.response_template,
+        document_form="\n" in draft.strip(),
     )
 
 
@@ -3300,13 +3318,14 @@ def _emit_pre_emit_gate_event(
     return gate_event
 
 
-def _finalize_response(
+def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles + two keyword routing hints.
     draft_text: str,
     packet: SituationPacket,
     ctx: DecideContext,
     scratch: _Scratch,
     *,
     gate_text: str | None = None,
+    document_form: bool = False,
 ) -> DecideResult:
     """Apply the Pre-emit Gate to a draft, emit gate + turn.ended, return.
 
@@ -3551,6 +3570,7 @@ def _finalize_response(
         projections.claim_evidence,
         limitation_emitted=limitation_emitted,
         needs_human_review=needs_human_review,
+        document_form=document_form,
     )
     # The attention_policy verdict reflects evidence state at the trigger
     # event (worker.reported + no verified Postcondition → silent_log per
