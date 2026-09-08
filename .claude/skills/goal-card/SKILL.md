@@ -10,6 +10,21 @@ The card is the only thing the implementation session and the verifier
 receive from the design session. Exploration is compressed into it, not
 discarded.
 
+## Two kinds of card
+
+A **fix card** states what becomes true in the product. Its Current behavior
+must cite an already-observed measurement — an emitted field, a log line, a
+captured value — that separates the mechanism it fixes from the other
+candidates. A mechanism inferred from reading code alone is a hypothesis, and
+a hypothesis is not `ready`.
+
+A **diagnosis card** exists when that measurement does not exist yet. Its
+Goal is the measurement, not a behavior change; its Acceptance evidence is
+the evidence report and the discriminator value; `Docs to sync` is usually
+`none`. It may add an emitted field or a script whose only purpose is to
+measure. A lane runs it like any other card, and the fix card is written
+afterwards from what it returns.
+
 ## Handoff rule
 
 The card is ready only when "Open questions" is empty. The design session

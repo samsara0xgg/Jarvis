@@ -17,6 +17,7 @@ kept apart and named as such.
 | type | when |
 |---|---|
 | `user_feedback` | Allen corrects or judges architecture, workflow, priority, contract, or a behavior; record the rule in one English sentence, not the quote |
+| `report` | Allen reports a defect or an observation about the product; a symptom is not feedback about how you work |
 | `decision` | a default applied without Allen, or a manifest/reality disagreement that changed your next action |
 | `drift` | you notice you did work the card did not ask for; say what and why |
 | `failure` | a spawn, merge, gate, or verifier run failed |
