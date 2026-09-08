@@ -70,7 +70,7 @@ _RESPONSE_EVENT_TYPES = frozenset(
     {"surface.response_open", "surface.response_chunk", "surface.response_emitted"}
     | _RESPONSE_TERMINAL_TYPES,
 )
-_TTS_SILENT_CHANNELS = frozenset({"queue_review", "silent_log"})
+_TTS_SILENT_CHANNELS = frozenset({"queue_review", "silent_log", "badge_card"})
 _SELECT_EVENT_ROWS_THROUGH = (
     "SELECT id, event_uid, type, schema_version, ts_epoch_ms, payload_json, "
     "source_event_id, correlation_json FROM events "

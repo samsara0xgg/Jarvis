@@ -900,7 +900,9 @@ def _derive_output_risk(
 
 # --- Attention Policy (Day-1 minimal) ---------------------------------------
 
-AttentionChannel = Literal["voice_notify", "silent_log", "queue_review", "ask_confirm"]
+AttentionChannel = Literal[
+    "voice_notify", "silent_log", "queue_review", "ask_confirm", "badge_card",
+]
 """Day-1 attention-policy decisions, plus ``ask_confirm`` (ADR-0012 D5).
 
 ``ask_confirm`` is never returned by :func:`attention_policy` itself —
@@ -919,12 +921,13 @@ _RECONCILIATION_TRIGGER_TYPES: frozenset[str] = frozenset(
 )
 
 
-def attention_policy(  # noqa: C901 — small branch tree but ruff counts each ``if`` separately.
+def attention_policy(  # noqa: C901, PLR0912 — small branch tree but ruff counts each ``if`` separately.
     packet: SituationPacket,
     claim_evidence: ClaimEvidenceProjection,
     *,
     limitation_emitted: bool = False,
     needs_human_review: bool = False,
+    document_form: bool = False,
 ) -> AttentionChannel:
     """Decide where this L3 invocation should surface output.
 
@@ -952,6 +955,11 @@ def attention_policy(  # noqa: C901 — small branch tree but ruff counts each `
       until the Inherent cockpit exists. Keyed on the trigger, not on
       ``limitation_emitted`` — a terminal without ``action_id`` emits
       no claim, and a 3am system turn must never speak.
+    - If the answer to the user's own utterance is ``document_form``
+      (material to read, not a one-line conclusion) -> ``"badge_card"``
+      (spec §12.4: Inherent panel, 不出声; §18.3: voice = conclusion,
+      panel = evidence). The card still receives the text; only TTS
+      is skipped.
     - Default -> ``"voice_notify"``: everything left is a direct
       answer to the user's own utterance, and Jarvis is a voice
       assistant (docs/goals/speak-ordinary-answers.md).
@@ -971,10 +979,14 @@ def attention_policy(  # noqa: C901 — small branch tree but ruff counts each `
             the worker explicitly asked for a human look. Promotes
             the worker.reported ``silent_log`` fallthrough to
             ``queue_review``; never demotes a voice verdict.
+        document_form: ``True`` when the caller already holds the final
+            answer text and it is multi-line material (a list, a file,
+            a result table). Only meaningful for user-utterance
+            triggers; system triggers keep their own routing.
 
     Returns:
         One of ``"voice_notify"`` / ``"silent_log"`` /
-        ``"queue_review"``.
+        ``"queue_review"`` / ``"badge_card"``.
     """
     trigger_type = packet.trigger_event.type
 
@@ -1016,7 +1028,11 @@ def attention_policy(  # noqa: C901 — small branch tree but ruff counts each `
         # Placement below both voice branches makes this a promotion
         # only — never a voice demotion.
         return "queue_review" if needs_human_review else "silent_log"
-    return "queue_review" if trigger_type in _RECONCILIATION_TRIGGER_TYPES else "voice_notify"
+    if trigger_type in _RECONCILIATION_TRIGGER_TYPES:
+        return "queue_review"
+    if document_form and trigger_type in ("surface.user_intent", "utterance.received"):
+        return "badge_card"
+    return "voice_notify"
 
 
 __all__ = [

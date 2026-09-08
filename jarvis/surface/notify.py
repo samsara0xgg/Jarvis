@@ -21,7 +21,7 @@ from typing import Final
 ATTENTION_CHANNEL_TO_SURFACES: Final[dict[str, tuple[str, ...]]] = {
     "silent_log":     (),
     "queue_review":   ("cli_stdout",),
-    "badge_card":     ("osascript_banner_title_only",),  # banner is badge surrogate
+    "badge_card":     ("cli_stdout", "osascript_banner_title_only"),  # text, no audio
     "soft_suggest":   ("cli_stdout",),
     "voice_notify":   ("say", "osascript_banner", "cli_stdout"),
     "interrupt_now":  ("say_bell", "osascript_banner"),  # bell tone variant

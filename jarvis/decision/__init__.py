@@ -1687,8 +1687,17 @@ def _run_tier0_path(
             hit.max_spoken_bytes or _TIER0_SPOKEN_PREVIEW_MAX_BYTES,
         ),
     )
+    # Form, not length, picks the channel (spec §18.3 voice = conclusion,
+    # panel = evidence): a multi-line render is material for the card.
+    # ponytail: line-count heuristic; upgrade to a per-tool output-form
+    # declaration if a one-line tool result ever needs the panel.
     return _finalize_response(
-        draft, packet, ctx, scratch, gate_text=hit.response_template,
+        draft,
+        packet,
+        ctx,
+        scratch,
+        gate_text=hit.response_template,
+        document_form="\n" in draft.strip(),
     )
 
 
@@ -3309,13 +3318,14 @@ def _emit_pre_emit_gate_event(
     return gate_event
 
 
-def _finalize_response(
+def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles + two keyword routing hints.
     draft_text: str,
     packet: SituationPacket,
     ctx: DecideContext,
     scratch: _Scratch,
     *,
     gate_text: str | None = None,
+    document_form: bool = False,
 ) -> DecideResult:
     """Apply the Pre-emit Gate to a draft, emit gate + turn.ended, return.
 
@@ -3560,6 +3570,7 @@ def _finalize_response(
         projections.claim_evidence,
         limitation_emitted=limitation_emitted,
         needs_human_review=needs_human_review,
+        document_form=document_form,
     )
     # The attention_policy verdict reflects evidence state at the trigger
     # event (worker.reported + no verified Postcondition → silent_log per

@@ -229,7 +229,7 @@ _DEFAULT_PORT: int = 8006
 # verdict ``attention_policy`` can return. Neither channel lists a voice
 # surface in ``ATTENTION_CHANNEL_TO_SURFACES``, so feeding their chunks
 # to TTS contradicts the routing table and spec §3.2.5 安静优先.
-_TTS_SILENT_CHANNELS: frozenset[str] = frozenset({"queue_review", "silent_log"})
+_TTS_SILENT_CHANNELS: frozenset[str] = frozenset({"queue_review", "silent_log", "badge_card"})
 
 # WS-broadcaster suppression set — deliberately NARROWER than the TTS
 # set, and this asymmetry is load-bearing:
