@@ -61,12 +61,13 @@ Continuing a lane whose session is idle: prefer telling it the next card
 via SendMessage; the lane decides whether to continue or rotate. Only use
 `--resume` if the lane session is gone.
 
-Lane prompt, first line must be the /goal condition from the card:
+Lane prompt (`/goal` is not a command inside a `claude --bg` prompt; the
+lane protocol and the card are its stop condition):
 
-    /goal <condition>
+    /horizon lane <id>
 
-    Invoke the horizon skill with args `lane <id>` before anything else.
-    Card: docs/goals/<slug>.md. Integration branch: <branch>.
+    You are lane <id> generation 1. Card: docs/goals/<slug>.md.
+    Integration branch: <branch>.
 
 Everything else the lane needs is in lane.md, env.md, and the card.
 

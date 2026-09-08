@@ -62,6 +62,11 @@ def main() -> int:
         "transcript_path": snap.get("transcript_path"),
     }
     _harness.append_jsonl(sessions, entry)
+    if a.end == "complete":  # release the lease; a successor would take it anyway
+        key = "hub" if m["role"] == "hub" else f"lane-{m['lane']}"
+        lease = root / "lease" / key
+        if lease.exists() and lease.read_text().split()[0] == sid:
+            lease.unlink()
     if a.end == "planned_rotation":
         _harness.append_jsonl(
             root / "events.jsonl",

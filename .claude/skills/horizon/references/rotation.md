@@ -87,12 +87,17 @@ Hub:
 
     You are hub generation <N+1>. Bootstrap, then reconcile.
 
-Lane (the /goal line must be first; the skill is invoked by the agent):
+Lane (`/goal` is not a command in a `claude --bg` prompt; the lane's stop
+condition is lane.md plus the card):
 
-    /goal <condition from the card>
+    /horizon lane <id>
 
-    Invoke the horizon skill with args `lane <id>` before anything else.
-    Card: docs/goals/<slug>.md. Integration branch: <branch>.
+    You are lane <id> generation <N+1>. Card: docs/goals/<slug>.md.
+    Integration branch: <branch>.
+
+If `claude --bg -n` finds the name taken by a stale session, append a
+letter (`hub-g3b`). Names are cosmetic; the session UUID in
+sessions.jsonl is the only join key.
 
 ## Lease
 
