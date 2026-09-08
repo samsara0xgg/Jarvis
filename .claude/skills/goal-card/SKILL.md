@@ -16,6 +16,12 @@ The card is ready only when "Open questions" is empty. The design session
 does not edit canonical docs; it records design intent in the card. The
 implementation session updates canonical docs after the facts land in code.
 
+The frontmatter is the scheduling truth the horizon hub reads: `status`
+moves `draft → ready → in_progress → done → merged` (or `blocked`);
+`owner_lane` is the lane that owns the touched file region; `depends_on`
+lists cards that must be `merged` first. Cards without frontmatter predate
+this rule; add it when the card is next touched.
+
 The card names contracts, boundaries, and acceptance evidence. It does not
 contain an ordered step plan. Files listed under "Affected contracts and
 files" are a starting hint; the implementation session decides which files
@@ -23,6 +29,11 @@ change and in what order, and records that under Progress as it goes.
 
 ## Template
 
+    ---
+    status: ready
+    owner_lane: <lane id that owns the file region this card touches>
+    depends_on: [<slugs that must be merged before this card starts>]
+    ---
     # Goal: <slug>
 
     ## Goal

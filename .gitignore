@@ -45,6 +45,7 @@ dist/
 !.claude/rules/
 !.claude/skills/
 !.claude/agents/
+!.claude/settings.json
 Harness/
 evals/
 AGENTS.md
