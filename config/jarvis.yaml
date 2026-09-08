@@ -148,7 +148,7 @@ confirmation:
 # disabled: this wave proves transaction/CAS/accounting behavior without
 # enabling concurrent turns, model streaming, or streaming TTS/player work.
 realtime:
-  enabled: false
+  enabled: true
   # Output device name TTS playback opens, e.g. "BlackHole 16ch"; resolved by
   # sounddevice.  Null means the CoreAudio system default output.  An
   # unresolvable name fails the open closed rather than falling back.
@@ -230,10 +230,10 @@ realtime:
       required_hits: 3
       required_misses: 24
   concurrency_safety:
-    transactional_event_append: false
-    lifecycle_terminal_cas: false
-    confirmation_dispatch_outbox: false
-    exactly_once_cost_accounting: false
+    transactional_event_append: true
+    lifecycle_terminal_cas: true
+    confirmation_dispatch_outbox: true
+    exactly_once_cost_accounting: true
   # ADR-0008 Step 2 (Wave 4A).  Enabling response_run_lifecycle additionally
   # requires realtime.enabled plus concurrency_safety.transactional_event_append
   # and .lifecycle_terminal_cas; independent_response_cancel additionally
@@ -242,8 +242,8 @@ realtime:
   # the cancel connection's SQLite busy_timeout: it bounds the terminal CAS,
   # never an in-flight provider call.
   response:
-    response_run_lifecycle: false
-    independent_response_cancel: false
+    response_run_lifecycle: true
+    independent_response_cancel: true
     cancel_timeout_ms: 500
     # ADR-0008 Step 8.  routine_streaming lets a pre-routed casual, no-tool
     # answer stream its permitted sentences to the surface while the model is
@@ -272,13 +272,13 @@ realtime:
   # the fail-closed global_exclusive value, and a knob whose only legal
   # setting is its default is a config lie.
   actions:
-    action_runner: false
+    action_runner: true
     # ADR-0008 Step 4 (Wave 5).  true_async_workers stops the driver from
     # awaiting a declared-async tool: `dispatch` returns as soon as the
     # ActionRun is accepted and the runner owns quiescence, verification,
     # stash restore and lease release through its own finalizer.  Requires
     # action_runner, and downgrades once with a warning without it.
-    true_async_workers: false
+    true_async_workers: true
     max_concurrent_runs: 1
     lease_timeout_s: 900
   # ADR-0008 D8 (Wave 5).  intent_pump replaces the daemon's "poll one
@@ -291,7 +291,7 @@ realtime:
   # dropping a durable utterance.  ADR-0008 §6 names no key for this block;
   # the shape mirrors realtime.actions.
   input:
-    intent_pump: false
+    intent_pump: true
     queue_capacity: 8
     max_concurrent_turns: 2
   # ADR-0014 D14.  durable_expiry lets a runtime sweep and one boot
@@ -311,7 +311,7 @@ realtime:
   # transactional append and lifecycle terminal CAS switches above.  Invalid
   # combinations downgrade once to the complete legacy batch path.
   streaming_output:
-    enabled: false
+    enabled: true
     canonical_sample_rate_hz: 48000
     command_queue_capacity: 64
     response_lane_capacity: 8
@@ -341,7 +341,7 @@ realtime:
   # and uses legacy wake. A failed/uncertain device open keeps only text and
   # whole-WAV PTT upload for that boot so no second input owner can appear.
   single_audio_ingress:
-    enabled: false
+    enabled: true
     backend: sounddevice
     canonical_sample_rate_hz: 16000
     canonical_frame_samples: 512

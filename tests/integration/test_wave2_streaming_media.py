@@ -3042,14 +3042,14 @@ def test_minimax_session_single_reader_writer_backpressure_and_watchdog() -> Non
     asyncio.run(_body())
 
 
-def test_streaming_rollout_default_off_and_production_builder_gate(  # noqa: PLR0915
+def test_streaming_rollout_default_on_and_production_builder_gate(  # noqa: PLR0915
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Shipped config is off; valid flags select the real persistent actor."""
+    """Shipped config is on; valid flags select the real persistent actor."""
     config = yaml.safe_load(Path("config/jarvis.yaml").read_text())
-    assert config["realtime"]["enabled"] is False
-    assert config["realtime"]["streaming_output"]["enabled"] is False
+    assert config["realtime"]["enabled"] is True
+    assert config["realtime"]["streaming_output"]["enabled"] is True
     db_path = tmp_path / "builder.db"
     conn = open_event_log(db_path)
     runtime = SimpleNamespace(

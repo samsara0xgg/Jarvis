@@ -999,3 +999,35 @@ ADR-0006 is complete only when:
 6. Natural speaker mode is either independently accepted with AEC evidence or remains disabled.
 7. Tier 1, replay, and required live burns are recorded in project progress docs.
 8. Allen changes this ADR's status to Accepted/Approved.
+
+### 13.1 Adoption amendment — tier A, 2026-09-07
+
+Item 1 said "behind feature flags" and every flag shipped off, so the merged
+program never ran by default. Allen adopted **tier A** on 2026-09-07: the
+twelve switches that carry live-burn evidence now ship on, and the remaining
+eight ship off.
+
+Tier A (on): `realtime.enabled`, the four `concurrency_safety` switches,
+`response.response_run_lifecycle`, `response.independent_response_cancel`,
+`actions.action_runner`, `actions.true_async_workers`, `input.intent_pump`,
+`streaming_output.enabled`, `single_audio_ingress.enabled`. Evidence is
+`docs/live-burn-2026-09-03-realtime-wave4.md` (4/4),
+`-wave5.md` (3/3) and `docs/live-burn-2026-09-04-realtime-post6ed7280.md`
+(10/10), plus a 2026-09-07 boot recording `input_owner: single_ingress`,
+`models_ok: true` with `intent_pump` adopting the input stream and no
+downgrade warning.
+
+Tier B (off, each needs its own live run first): `response.routine_streaming`,
+`commentary`, `streaming_output.speak_from_segments`,
+`single_audio_ingress.partial_asr`, `single_audio_ingress.route_observer`.
+
+Tier C (off, each for a recorded reason): `single_audio_ingress.barge_in` —
+the 2026-09-05 VoiceProcessingIO burn measured 7.53 false candidates/min
+against D9's 0.5/min target, which hardware AEC did not close, so item 6 above
+resolves as "remains disabled"; `inherent.v2_sequencer` — the Swift
+`RealtimeTransportV2.enabled` is false and unreferenced, so the server would
+build a hub no client connects to; `confirmation.durable_expiry` — it writes
+durable rows and a row cannot be unwritten.
+
+`tests/canary/test_canary_realtime_adoption_tiers.py` pins both halves.
+Items 2 through 8 are unchanged and still open.

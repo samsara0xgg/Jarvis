@@ -197,7 +197,7 @@ them.
   not live_codex"` — the lane confirms the baseline first; the number reported
   at tip 99f306e was 1046 passed / 64 deselected, to be confirmed, not assumed.
   Run it in a shell WITHOUT `MINIMAX_API_KEY` exported: with that key present
-  `tests/integration/test_wave2_streaming_media.py::test_streaming_rollout_default_off_and_production_builder_gate`
+  `tests/integration/test_wave2_streaming_media.py::test_streaming_rollout_default_on_and_production_builder_gate`
   fails as `assert <TTSPipeline object> is None` (known flake).
 - Gates: `PYTHONPATH=. lint-imports`, `PYTHONPATH=. ruff check .`,
   `PYTHONPATH=. mypy --strict` (the project's invocation), each pass line or

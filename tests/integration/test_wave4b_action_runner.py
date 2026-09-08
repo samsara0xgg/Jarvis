@@ -1019,13 +1019,13 @@ def test_action_runner_flag_requires_the_wave1_primitives(
     assert _wave4_action_flags({}).all_disabled
 
 
-def test_wave4b_action_flag_ships_disabled() -> None:
-    """Rollout safety: the shipped config leaves the runner switch off."""
+def test_wave4b_action_flag_ships_enabled() -> None:
+    """Rollout state: the shipped config turns the runner switch on."""
     shipped = yaml.safe_load(
         (repo_root() / "config" / "jarvis.yaml").read_text(encoding="utf-8"),
     )
     actions = shipped["realtime"]["actions"]
-    assert Wave4ActionFlags.from_mapping(actions).all_disabled
+    assert Wave4ActionFlags.from_mapping(actions).all_disabled is False
     assert actions["max_concurrent_runs"] == 1
     assert actions["lease_timeout_s"] == 900
 

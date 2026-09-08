@@ -37,8 +37,10 @@ class Wave1FeatureFlags:
 
     The primitives themselves are always importable so deterministic
     integration and recovery checks can exercise them.  Runtime callers must
-    opt into each behavior explicitly; the shipped configuration leaves all
-    switches off and therefore retains the serial Wave-0 path.
+    opt into each behavior explicitly.  Since 2026-09-07 the shipped
+    configuration turns all four on (the tier-A adoption decision recorded
+    in ADR-0006 §13); the dataclass defaults stay off so an absent or
+    malformed block still degrades to the serial Wave-0 path.
     """
 
     transactional_event_append: bool = False

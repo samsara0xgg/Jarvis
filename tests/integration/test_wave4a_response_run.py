@@ -1446,14 +1446,14 @@ def test_realtime_parent_disabled_keeps_both_switches_off() -> None:
     assert _wave4_response_flags({}).all_disabled
 
 
-def test_wave4_response_flags_ship_disabled() -> None:
-    """Rollout safety: the shipped config leaves both Wave-4A switches off."""
+def test_wave4_response_flags_ship_enabled() -> None:
+    """Rollout state: the shipped config turns both Wave-4A switches on."""
     config_path = repo_root() / "config" / "jarvis.yaml"
     shipped = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     response_block = shipped["realtime"]["response"]
-    assert Wave4ResponseFlags.from_mapping(response_block).all_disabled
+    assert Wave4ResponseFlags.from_mapping(response_block).all_disabled is False
     assert response_block["cancel_timeout_ms"] == 500
-    assert _wave4_response_flags(shipped).all_disabled
+    assert _wave4_response_flags(shipped).all_disabled is False
     assert replace(Wave4ResponseFlags(), response_run_lifecycle=True).all_disabled is False
 
 

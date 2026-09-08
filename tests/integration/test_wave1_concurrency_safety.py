@@ -1215,10 +1215,14 @@ def test_vision_cost_guard_flag_on_success_error_and_flag_off_compatibility(
     conn.close()
 
 
-def test_wave1_feature_flags_ship_disabled() -> None:
-    """Shipped config cannot opt into concurrent turns or streaming paths."""
+def test_wave1_feature_flags_ship_enabled() -> None:
+    """Shipped config opts into all four Wave-1 safety primitives (tier A)."""
     raw = yaml.safe_load(Path("config/jarvis.yaml").read_text(encoding="utf-8"))
     realtime = raw["realtime"]
     flags = Wave1FeatureFlags.from_mapping(realtime["concurrency_safety"])
-    assert realtime["enabled"] is False
-    assert flags.all_disabled
+    assert realtime["enabled"] is True
+    assert flags.all_disabled is False
+    assert flags.transactional_event_append
+    assert flags.lifecycle_terminal_cas
+    assert flags.confirmation_dispatch_outbox
+    assert flags.exactly_once_cost_accounting
