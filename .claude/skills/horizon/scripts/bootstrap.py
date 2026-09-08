@@ -59,7 +59,9 @@ def main() -> int:
     lease = lease_path.read_text().split() if lease_path.exists() else []
     lease_gen = int(lease[1]) if len(lease) > 1 and lease[1].isdigit() else 0
     generation = max(int(fields.get("generation", 0) or 0), lease_gen + 1, 1)
-    predecessor = fields.get("predecessor") or (lease[0] if lease else None)
+    predecessor = fields.get("predecessor")
+    if predecessor in (None, "", "none", "null", "~"):  # writer misread the schema; the lease knows
+        predecessor = lease[0] if lease else None
 
     env_path = root / "env.md"
     if not env_path.exists():

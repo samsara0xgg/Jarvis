@@ -52,7 +52,10 @@ Writing a card is design work and stays in the hub:
 
 Fresh lane (no live session for that lane id), run from the lane worktree:
 
-    claude --bg -n lane-<id>-g1 --permission-mode auto "<lane prompt>"
+    claude --bg -n lane-<id>-g1 --model <session_model from env.md> --permission-mode auto "<lane prompt>"
+
+`--model` is mandatory; never inherit the global default. To list live
+sessions use `claude agents --json`; the plain form prints nothing here.
 
 Continuing a lane whose session is idle: prefer telling it the next card
 via SendMessage; the lane decides whether to continue or rotate. Only use

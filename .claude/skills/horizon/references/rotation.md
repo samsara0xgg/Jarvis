@@ -29,9 +29,11 @@ approaches, stale instructions) and record that in `drift`.
 
    `--mix` is an estimate and is stored as one. user_feedback events you
    logged during the session are merged in automatically.
-4. Spawn the successor from the correct working directory:
+4. Spawn the successor from the correct working directory. `--model` is
+   mandatory and comes from `session_model` in env.md; never inherit the
+   global default:
 
-       claude --bg -n <role>-g<N+1> --permission-mode auto "<prompt>"
+       claude --bg -n <role>-g<N+1> --model <session_model> --permission-mode auto "<prompt>"
 
 5. Wait with the Monitor tool on `claude-harness/lease/<role>` until its
    session id is no longer yours. Then end your turn with a one-line
@@ -42,9 +44,13 @@ end your turn; the hub or Allen will relaunch.
 
 ## Manifest: hub  (claude-harness/manifest/hub.yaml)
 
+The manifest describes the successor, written by you: `generation` is
+N+1 (yours plus one), `predecessor` is your own session id
+(`echo $CLAUDE_CODE_SESSION_ID`). Never write `none`.
+
     role: hub
     generation: 11
-    predecessor: <session id>
+    predecessor: <your own session id>
     written: 2026-09-07T10:00:00-07:00
     integration_branch: realtime-integration
     integration_head: 7c2df70   # verify: git rev-parse --short realtime-integration
@@ -61,8 +67,8 @@ protocol (this skill), history (sessions.jsonl).
 
     role: lane
     lane: a
-    generation: 3
-    predecessor: <session id>
+    generation: 3            # N+1, the successor's
+    predecessor: <your own session id>
     written: <ts>
     worktree: .claude/worktrees/lane-a
     branch: lane/a
