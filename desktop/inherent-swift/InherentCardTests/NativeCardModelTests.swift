@@ -968,7 +968,7 @@ private final class FakeNativeBackend: NativeBackendSubmitting {
     return imageResult
   }
 
-  func submitVoice(wavData: Data) async -> VoiceSubmitResult {
+  func submitVoice(wavData: Data, channel: String) async -> VoiceSubmitResult {
     voicePayloads.append(wavData)
     return voiceResult
   }

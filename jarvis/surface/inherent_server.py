@@ -770,10 +770,14 @@ async def _run_asr_submit_v2(
     )
 
 
+_ASR_CHANNELS: Final[frozenset[str]] = frozenset({"inherent_ptt", "inherent_note"})
+
+
 async def _run_asr_submit(
     deps: InherentDeps,
     audio: UploadFile | None,
     language: str,
+    channel: str = "inherent_ptt",
 ) -> dict[str, str]:
     """ADR-0005 §5.2 — body of ``POST /inherent/asr-submit``.
 
@@ -832,7 +836,7 @@ async def _run_asr_submit(
             deps.voice_pipeline_callable,
             pcm,
             turn_id,
-            "inherent_ptt",
+            channel,
             language,
         )
     except VoicePipelineEmptyError:
@@ -1010,14 +1014,20 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901 — one closed rout
     async def asr_submit(
         audio: Annotated[UploadFile | None, File()] = None,
         language: Annotated[str, Form()] = "zh-CN",
+        channel: Annotated[str, Form()] = "inherent_ptt",
     ) -> dict[str, str]:
         """ADR-0005 §5.2 — PTT WAV in, normalized transcript out.
+
+        ``channel`` is ``inherent_ptt`` (a question) or ``inherent_note``
+        (Shift+Return: the transcript becomes a ``/note`` memo).
 
         See :func:`_run_asr_submit` for the full status-code contract.
         Split out so ``create_app`` stays under the cyclomatic-complexity
         cap; the route handler only forwards to the helper.
         """
-        return await _run_asr_submit(deps, audio, language)
+        if channel not in _ASR_CHANNELS:
+            raise HTTPException(status_code=422, detail=f"unknown channel: {channel}")
+        return await _run_asr_submit(deps, audio, language, channel)
 
     return app
 

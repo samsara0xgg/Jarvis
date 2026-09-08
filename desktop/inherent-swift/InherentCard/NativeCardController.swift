@@ -637,10 +637,12 @@ final class NativeCardController: NSObject {
           self.userHidden = false
           self.fade.showInstant()
           self.panel.ignoresMouseEvents = false
+          let noteMode = event.modifierFlags.contains(.shift)
           if self.isTextFieldFirstResponder {
-            self.model.handleEnterDown { [weak self] in self?.model.submitInputText() }
+            self.model.handleEnterDown(
+              shortAction: { [weak self] in self?.model.submitInputText() }, noteMode: noteMode)
           } else {
-            self.model.handleGlobalEnterDown()
+            self.model.handleGlobalEnterDown(noteMode: noteMode)
           }
         }
         return nil

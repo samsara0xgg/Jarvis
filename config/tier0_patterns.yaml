@@ -9,6 +9,9 @@
 #   template: response text; {name} fills from tool payload keys + args.
 #             NEVER use completion-class words (完成/已完成/done/verified) —
 #             the Pre-emit Gate downgrades them.
+#   max_spoken_bytes: optional positive int; raises the 200-byte cap applied
+#             to each string payload value before it is rendered/spoken. Only
+#             for rows whose payload IS the answer (e.g. /notelist).
 - id: time_now
   pattern: "^现在几点了?[?？。.!！]?$"
   tool: get_current_time
@@ -56,3 +59,18 @@
     query: "jarvis"
     app: "vscode"
   template: "正在用 VS Code 打开{opened_name}。"
+# Memo inbox slash commands. Both skip the LLM: `/note` captures the
+# rest of the line verbatim (the Shift+Return voice path arrives already
+# prefixed by the daemon), `/notelist` renders the whole inbox — its
+# payload IS the answer, so the row raises the spoken-preview cap.
+- id: note_capture
+  pattern: "^/note\\s+(.+)$"
+  tool: create_memo
+  args:
+    text: "$1"
+  template: "已录入。"
+- id: note_list
+  pattern: "^/notelist$"
+  tool: list_memos
+  template: "{rendered}"
+  max_spoken_bytes: 20000
