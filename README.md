@@ -4,6 +4,10 @@ Allen's state-centric personal runtime.
 
 Canonical specification: [`docs/spec.html`](docs/spec.html).
 
+Interactive diagrams: [runtime architecture](docs/archify/jarvis.architecture.html)
+and [task execution / verification](docs/archify/task-run.sequence.html).
+See [Archify usage and source evidence](docs/archify/README.md) to update them.
+
 ## Layers
 
 ```

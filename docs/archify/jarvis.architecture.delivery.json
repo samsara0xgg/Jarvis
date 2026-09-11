@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/alllllenshi/Projects/jarvis/docs/archify/jarvis.architecture.json",
+  "output": "/Users/alllllenshi/Projects/jarvis/docs/archify/jarvis.architecture.html",
+  "specification": {
+    "sha256": "e35a55062e2ef48048a852b3f7dcd5dddd520ab7f06faba36fce5fbbe82334f8",
+    "bytes": 3627
+  },
+  "artifact": {
+    "sha256": "af6cfa129cdcb6f9ef1f3e181a1d0eebc512d6814afa9df890ce70cc0818f8b4",
+    "bytes": 713846
+  },
+  "validation": {
+    "checksPassed": 9,
+    "checkCount": 9,
+    "compositionProfile": "showcase",
+    "compositionStatus": "pass",
+    "errors": 0,
+    "warnings": 0
+  }
+}

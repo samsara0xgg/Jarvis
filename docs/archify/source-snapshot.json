@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "captured_on": "2026-09-05",
+  "basis": "local working tree including uncommitted changes",
+  "git_head": "8155e10e85338d9c9b14014c2655292a9a8fb577",
+  "archify": {
+    "schemaVersion": 1,
+    "skillId": "archify",
+    "channel": "development",
+    "version": "2.17.0-dev.1",
+    "source": {
+      "repository": "https://github.com/tt-a1i/archify"
+    },
+    "updateManifestUrl": "https://tt-a1i.github.io/archify/skill-updates/archify/stable.json"
+  },
+  "sources": [
+    {
+      "path": ".importlinter",
+      "sha256": "6a718e3fc769f5d0516e1a54592b4838bac81890adf768493cdb23c60f884361"
+    },
+    {
+      "path": "docs/spec.html",
+      "sha256": "8c67ad1b6a09275b07ed168dfc11bd5d825b0fb6bc752e3f1204934a67b68e25"
+    },
+    {
+      "path": "jarvis/constitution/__init__.py",
+      "sha256": "c100596ad8e3e1532240d438fb6998a09438302858d798b3bfa01a66d0b14c92"
+    },
+    {
+      "path": "jarvis/state/event_log.py",
+      "sha256": "7a0e70f988c96e8d656a512c719baeb0e6e2b79cea6ee74f6d2c3254921d5a38"
+    },
+    {
+      "path": "jarvis/state/projections.py",
+      "sha256": "7d54f22f86c2983fa0001d11a950e3b69de116125ee5de36bbb042f9f878c67e"
+    },
+    {
+      "path": "jarvis/runtime/__init__.py",
+      "sha256": "c37c57e3aa0865348e4a0bd41bec7710e3b4dc8b291a16c39db3a90b86287a41"
+    },
+    {
+      "path": "jarvis/runtime/inherent_loop.py",
+      "sha256": "01e38616489f7f990a83bfdefb2a71170749583454dca0cd665ef1a2c9cc4884"
+    },
+    {
+      "path": "jarvis/runtime/daemon.py",
+      "sha256": "9b5f79fae5e1204b0cff19c68403887913370dc6d095f515ac4ee3e8dab24337"
+    },
+    {
+      "path": "jarvis/decision/__init__.py",
+      "sha256": "76d5cbd082989f228bf35f4dd0562d9d6cfa6ad24377eae59547552224c3aca8"
+    },
+    {
+      "path": "jarvis/decision/gates.py",
+      "sha256": "482589f958ff5169564d595f1b25ccbf05be23cbe620c375c88d481ca4e6b960"
+    },
+    {
+      "path": "jarvis/decision/packet.py",
+      "sha256": "37fdf87dd4c4392e930bc79d0d15d666202f7e73c5115f59ad989335c455843f"
+    },
+    {
+      "path": "jarvis/decision/policy.py",
+      "sha256": "3d0d27ca5514978235dc396747566f592ead05c1c7794350aacf258c738a6e71"
+    },
+    {
+      "path": "jarvis/decision/result_interpreter.py",
+      "sha256": "e29f6789e0e1a4085dd51914456352061c5d83be4c61a3a50434efdc4edd1528"
+    },
+    {
+      "path": "jarvis/decision/reviewer.py",
+      "sha256": "73b609c4bff62d3c731b30dd18a6c9245de1ba07fe25b006c893633ca7268e65"
+    },
+    {
+      "path": "jarvis/execution/tools.py",
+      "sha256": "55e6f2c50618d06739670d239d4a9d9bdd68648e3fc796866f6901ff89375418"
+    },
+    {
+      "path": "jarvis/execution/codex_action.py",
+      "sha256": "611ecb73b08905f38a6da4d5b837a903bbbc09b38db414ffb4b5365993d34e5e"
+    },
+    {
+      "path": "jarvis/surface/inherent_server.py",
+      "sha256": "b7d8aef522ce8cfaaa2b8ece375b8614d6c8a66bc3f74f0a884a62af28d084d8"
+    },
+    {
+      "path": "jarvis/deployment/__init__.py",
+      "sha256": "29ce5894b6cc1b070fd6db37f77479c3e501e04c008a16f994361f25edea9ba8"
+    },
+    {
+      "path": "jarvis/deployment/launchd.py",
+      "sha256": "1b80e18b5fd95c464a3d9ce63f8db8c0fe36ed0aa98b1160ae005728f4a16f84"
+    },
+    {
+      "path": "jarvis/deployment/sleep_wake.py",
+      "sha256": "45b11d78516fa8cb240f7dfd9426eda46af8ff5b3d5af71fc8ebfdd9f2f66bfb"
+    }
+  ]
+}

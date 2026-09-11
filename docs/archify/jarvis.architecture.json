@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Jarvis · 运行架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1260, 670]
+  },
+  "components": [
+    { "id": "jarvis-surface", "type": "frontend", "label": "L5 · 交互入口", "sublabel": "Inherent / CLI / 语音", "pos": [50, 285], "size": [190, 84] },
+    { "id": "jarvis-runtime", "type": "backend", "label": "Runtime · 装配", "sublabel": "drive_turn / 事件观察", "pos": [380, 285], "size": [190, 84] },
+    { "id": "jarvis-decision", "type": "backend", "label": "L3 · 决策与门控", "sublabel": "decide / 策略 / 证据", "pos": [710, 285], "size": [190, 84] },
+    { "id": "jarvis-llm", "type": "cloud", "label": "LLM Provider", "sublabel": "推理与独立评审", "pos": [1040, 285], "size": [190, 84] },
+    { "id": "jarvis-deployment", "type": "backend", "label": "L6 · 本机部署", "sublabel": "launchd / 路径 / 唤醒", "pos": [380, 70], "size": [190, 84] },
+    { "id": "jarvis-constitution", "type": "security", "label": "L1 · 不变量", "sublabel": "Constitution 规范声明", "pos": [710, 70], "size": [190, 84] },
+    { "id": "jarvis-state", "type": "database", "label": "L2 · 状态与事实", "sublabel": "SQLite 事件 / 只读投影", "pos": [50, 500], "size": [190, 84] },
+    { "id": "jarvis-execution", "type": "backend", "label": "L4 · 工具执行", "sublabel": "ToolRegistry / 原始结果", "pos": [380, 500], "size": [190, 84] },
+    { "id": "jarvis-worker", "type": "external", "label": "Codex Worker", "sublabel": "本机子进程 / 工作区改动", "pos": [1040, 500], "size": [190, 84] }
+  ],
+  "connections": [
+    { "id": "surface-trigger", "from": "jarvis-surface", "to": "jarvis-runtime", "label": "事件触发", "variant": "emphasis" },
+    { "id": "runtime-decide", "from": "jarvis-runtime", "to": "jarvis-decision", "label": "decide()", "variant": "emphasis" },
+    { "id": "decision-model", "from": "jarvis-decision", "to": "jarvis-llm", "label": "模型请求", "variant": "emphasis" },
+    { "id": "deployment-bootstrap", "from": "jarvis-deployment", "to": "jarvis-runtime", "label": "启动与装配", "fromSide": "bottom", "toSide": "top", "labelDy": 76 },
+    { "id": "constitution-policy", "from": "jarvis-constitution", "to": "jarvis-decision", "label": "规范约束", "variant": "security", "fromSide": "bottom", "toSide": "top", "labelDy": 76 },
+    { "id": "surface-events", "from": "jarvis-surface", "to": "jarvis-state", "label": "输入输出事件", "fromSide": "bottom", "toSide": "top", "labelDy": 76 },
+    { "id": "runtime-registry", "from": "jarvis-runtime", "to": "jarvis-execution", "label": "注入工具接口", "fromSide": "bottom", "toSide": "top", "labelDy": 76 },
+    { "id": "execution-events", "from": "jarvis-execution", "to": "jarvis-state", "label": "追加动作事件", "fromSide": "left", "toSide": "right" },
+    { "id": "execution-worker", "from": "jarvis-execution", "to": "jarvis-worker", "label": "app-server / submit_report", "fromSide": "right", "toSide": "left" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "边界与装配", "items": ["L1 声明规范；门控实现在 L3。", "L3 经 Runtime 注入的协议调用 L4。"] },
+    { "dot": "emerald", "title": "状态是中心", "items": ["L3 读取投影；事实统一追加到 Event Log。", "任务状态由事件派生，Worker 汇报待验证。"] },
+    { "dot": "amber", "title": "当前代码快照", "items": ["Mac-only；文本、语音与后台观察共存。", "工作区快照 2026-09-05；代码索引见 README。"] }
+  ]
+}

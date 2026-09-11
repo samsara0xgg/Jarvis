@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Jarvis · 任务执行与验证",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [
+      1080,
+      520
+    ]
+  },
+  "participants": [
+    {
+      "id": "turn-surface",
+      "type": "frontend",
+      "label": "L5 交互",
+      "sublabel": "Inherent / CLI"
+    },
+    {
+      "id": "turn-state",
+      "type": "database",
+      "label": "L2 状态",
+      "sublabel": "事件与投影"
+    },
+    {
+      "id": "turn-runtime",
+      "type": "backend",
+      "label": "Runtime",
+      "sublabel": "多触发编排"
+    },
+    {
+      "id": "turn-decision",
+      "type": "security",
+      "label": "L3 决策",
+      "sublabel": "LLM / 门控 / 解释"
+    },
+    {
+      "id": "turn-tools",
+      "type": "backend",
+      "label": "L4 工具",
+      "sublabel": "执行与原始证据"
+    },
+    {
+      "id": "turn-worker",
+      "type": "external",
+      "label": "Codex",
+      "sublabel": "本机 Worker"
+    }
+  ],
+  "messages": [
+    {
+      "id": "persist-input",
+      "from": "turn-surface",
+      "to": "turn-state",
+      "y": 160,
+      "label": "surface.user_intent",
+      "variant": "emphasis"
+    },
+    {
+      "id": "invoke-decision",
+      "from": "turn-runtime",
+      "to": "turn-decision",
+      "y": 188,
+      "label": "观察输入后 decide",
+      "variant": "emphasis"
+    },
+    {
+      "id": "dispatch-worker",
+      "from": "turn-decision",
+      "to": "turn-tools",
+      "y": 216,
+      "label": "门控后 spawn_worker",
+      "variant": "security"
+    },
+    {
+      "id": "invoke-codex",
+      "from": "turn-tools",
+      "to": "turn-worker",
+      "y": 244,
+      "label": "app-server 执行任务",
+      "variant": "emphasis"
+    },
+    {
+      "id": "persist-report",
+      "from": "turn-tools",
+      "to": "turn-state",
+      "y": 272,
+      "label": "Worker 回报后追加 worker.reported"
+    },
+    {
+      "id": "resume-decision",
+      "from": "turn-runtime",
+      "to": "turn-decision",
+      "y": 300,
+      "label": "报告触发 decide",
+      "variant": "emphasis"
+    },
+    {
+      "id": "request-verification",
+      "from": "turn-decision",
+      "to": "turn-tools",
+      "y": 328,
+      "label": "门控后 verify_diff",
+      "variant": "security"
+    },
+    {
+      "id": "verification-evidence",
+      "from": "turn-tools",
+      "to": "turn-decision",
+      "y": 356,
+      "label": "diff / 验证命令结果",
+      "variant": "return"
+    },
+    {
+      "id": "persist-verdict",
+      "from": "turn-decision",
+      "to": "turn-state",
+      "y": 384,
+      "label": "解释证据；达标才追加 task.verified",
+      "variant": "security"
+    },
+    {
+      "id": "return-plan",
+      "from": "turn-decision",
+      "to": "turn-runtime",
+      "y": 412,
+      "label": "Pre-emit 后返回计划",
+      "variant": "return"
+    },
+    {
+      "id": "render-surface",
+      "from": "turn-runtime",
+      "to": "turn-surface",
+      "y": 436,
+      "label": "凭门控令牌输出；Inherent 经响应事件转发",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "场景范围",
+      "items": [
+        "L3 读取快照、组装 Packet，再执行工具门控。",
+        "已存在任务；L4 协议由 Runtime 注入。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "验证条件",
+      "items": [
+        "非空 diff + 验证命令成功，才可达 verified。",
+        "评审为 reported；空 diff 且命令成功为 no-op。"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "门控与失败",
+      "items": [
+        "需确认的动作先停在 confirmation.requested。",
+        "失败或超时进入限制说明；输出仍过 Pre-emit。"
+      ]
+    }
+  ]
+}

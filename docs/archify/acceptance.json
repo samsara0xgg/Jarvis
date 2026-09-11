@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "reviewed_on": "2026-09-05",
+  "diagrams": [
+    {
+      "diagram_type": "architecture",
+      "output": "jarvis.architecture.html",
+      "specification_sha256": "e35a55062e2ef48048a852b3f7dcd5dddd520ab7f06faba36fce5fbbe82334f8",
+      "artifact_sha256": "af6cfa129cdcb6f9ef1f3e181a1d0eebc512d6814afa9df890ce70cc0818f8b4",
+      "validation": {
+        "checksPassed": 9,
+        "checkCount": 9,
+        "compositionProfile": "showcase",
+        "compositionStatus": "pass",
+        "errors": 0,
+        "warnings": 0
+      },
+      "browser_evidence": "passed",
+      "browser_receipt": "jarvis.architecture.visual-check.json",
+      "visual_review": "passed",
+      "visual_review_scope": "Image-capable review of four Chrome screenshots: 1440x900 and 2048x1320, light and dark; node/card fit, readable labels, clear routes, legend and navigation containment.",
+      "correction_rounds": 1
+    },
+    {
+      "diagram_type": "sequence",
+      "output": "task-run.sequence.html",
+      "specification_sha256": "c096b5509ce1136432d72ec51e1fdb858072115483b9931b7986dadba71b0690",
+      "artifact_sha256": "5100e71f0a9e51ad7ccd3e0fc3703ccaefad61b168ef460d4f7a5736c225464a",
+      "validation": {
+        "checksPassed": 9,
+        "checkCount": 9,
+        "compositionProfile": "showcase",
+        "compositionStatus": "pass",
+        "errors": 0,
+        "warnings": 0
+      },
+      "browser_evidence": "passed",
+      "browser_receipt": "task-run.sequence.visual-check.json",
+      "visual_review": "passed",
+      "visual_review_scope": "Image-capable review of four Chrome screenshots: 1440x900 and 2048x1320, light and dark; node/card fit, readable labels, clear routes, legend and navigation containment.",
+      "correction_rounds": 2
+    }
+  ],
+  "repository_checks": {
+    "bash_syntax": "passed",
+    "lint_imports": "1 contract kept; 0 broken",
+    "git_diff_check": "passed"
+  },
+  "interactive_ui_smoke": {
+    "status": "not_run",
+    "reason": "In-app browser URL policy rejected file:// navigation. No alternate browser route attempted. Automated Chrome layout evidence and screenshot review are recorded separately."
+  },
+  "runtime_acceptance": "Not exercised; this change adds development documentation and installs an authoring skill."
+}

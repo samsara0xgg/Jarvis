@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "deliver",
+  "type": "sequence",
+  "input": "/Users/alllllenshi/Projects/jarvis/docs/archify/task-run.sequence.json",
+  "output": "/Users/alllllenshi/Projects/jarvis/docs/archify/task-run.sequence.html",
+  "specification": {
+    "sha256": "c096b5509ce1136432d72ec51e1fdb858072115483b9931b7986dadba71b0690",
+    "bytes": 3856
+  },
+  "artifact": {
+    "sha256": "5100e71f0a9e51ad7ccd3e0fc3703ccaefad61b168ef460d4f7a5736c225464a",
+    "bytes": 711631
+  },
+  "validation": {
+    "checksPassed": 9,
+    "checkCount": 9,
+    "compositionProfile": "showcase",
+    "compositionStatus": "pass",
+    "errors": 0,
+    "warnings": 0
+  }
+}
