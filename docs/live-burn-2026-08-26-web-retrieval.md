@@ -14,10 +14,10 @@ adds a live end-to-end section when one IS configured.
 
 ## What prompted this
 
-Production turn `Te3815a16` ("帮我查一下，明天从温哥华飞中国上海的机
-票"): five tool-loop iterations, none of which produced an answer, and
-the surface emitted the developer string `tool-use loop exhausted; turn
-incomplete.` Trace:
+Production turn `Te3815a16` (flight search request for a
+2026-08-27 Vancouver-to-Shanghai trip): five tool-loop iterations, none
+of which produced an answer, and the surface emitted the developer string
+`tool-use loop exhausted; turn incomplete.` Trace:
 
 | # | tool | outcome |
 |---|------|---------|
