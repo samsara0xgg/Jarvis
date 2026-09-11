@@ -6,8 +6,8 @@ stops.
 
 ## Thresholds (context used, from status.py)
 
-    prepare  60%   rotate at the next atomic boundary
-    hard     75%   take on nothing new; checkpoint and rotate immediately
+    prepare  40%   rotate at the next atomic boundary
+    hard     45%   take on nothing new; checkpoint and rotate immediately
 
 Rotate below the threshold when the context is polluted (rejected
 approaches, stale instructions) and record that in `drift`.
