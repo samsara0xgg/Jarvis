@@ -43,6 +43,7 @@ from __future__ import annotations
 import os
 import plistlib
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,11 @@ from jarvis.deployment import DEFAULT_RUNTIME_ROOT_LITERAL, process_lock
 # The launchd job label. Also the plist basename and the trailing
 # component of the service target ``gui/<uid>/<label>``.
 AGENT_LABEL = "com.allen.jarvis"
+
+# ADR-0015 D3: the desktop surface (Resonance) gets its own agent with the
+# same lifecycle rules, so a daemon restart never drops the window and a
+# surface crash never touches the daemon. Installed and removed together.
+RESONANCE_LABEL = "com.allen.jarvis.resonance"
 
 # Stamped into the plist's ``EnvironmentVariables`` and read back by
 # :func:`spawned_by_agent`. The D1 manual-serve guard keys on the plist
@@ -108,6 +114,14 @@ class GuiSessionUnavailableError(LaunchdError):
     """No launchd user domain for this uid — the SSH case (D1)."""
 
 
+class SurfaceInvalidError(LaunchdError):
+    """``node`` or the Resonance build inputs are missing (ADR-0015 D3)."""
+
+
+class ManualDaemonRunningError(LaunchdError):
+    """``daemon.lock`` is held by a process launchd did not spawn (ADR-0015 D3)."""
+
+
 @dataclass(frozen=True)
 class LaunchctlResult:
     """One ``launchctl`` invocation, captured for reporting and proofs."""
@@ -132,6 +146,9 @@ class InstallResult:
     interpreter: Path
     plist_changed: bool
     steps: tuple[LaunchctlResult, ...]
+    resonance_plist_path: Path | None = None
+    resonance_plist_changed: bool = False
+    node: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +158,8 @@ class UninstallResult:
     plist_path: Path
     plist_removed: bool
     steps: tuple[LaunchctlResult, ...]
+    resonance_plist_path: Path | None = None
+    resonance_plist_removed: bool = False
 
 
 @dataclass(frozen=True)
@@ -179,6 +198,23 @@ class DaemonStatus:
     interpreter: Path
     interpreter_ok: bool
     interpreter_detail: str
+    logs: tuple[LogFileStatus, ...]
+    resonance: SurfaceStatus | None = None
+
+
+@dataclass(frozen=True)
+class SurfaceStatus:
+    """The Resonance agent's half of ``jarvis daemon status`` (ADR-0015 D3)."""
+
+    installed: bool
+    plist_path: Path
+    service_target: str
+    loaded: bool
+    state: str | None
+    pid: int | None
+    last_exit: str | None
+    node_ok: bool
+    node_detail: str
     logs: tuple[LogFileStatus, ...]
 
 
@@ -242,6 +278,81 @@ def gui_domain() -> str:
 def service_target() -> str:
     """Fully-qualified service target (``gui/501/com.allen.jarvis``)."""
     return f"{gui_domain()}/{AGENT_LABEL}"
+
+
+def resonance_dir(working_directory: Path | None = None) -> Path:
+    """``<repo>/desktop/resonance`` — the surface agent's ``WorkingDirectory``."""
+    root = working_directory if working_directory is not None else repo_root()
+    return root / "desktop" / "resonance"
+
+
+def default_node() -> Path | None:
+    """``node`` as the installing shell resolves it; the plist gets the absolute path."""
+    found = shutil.which("node")
+    return Path(found).resolve() if found else None
+
+
+def resonance_plist_path(agents_dir: Path | None = None) -> Path:
+    """Absolute path of the surface agent's plist file."""
+    return launch_agents_dir(agents_dir) / f"{RESONANCE_LABEL}.plist"
+
+
+def resonance_service_target() -> str:
+    """Fully-qualified surface service target (``gui/501/com.allen.jarvis.resonance``)."""
+    return f"{gui_domain()}/{RESONANCE_LABEL}"
+
+
+def render_resonance_plist(
+    *,
+    node: Path,
+    working_directory: Path | None = None,
+    runtime_root: Path | None = None,
+) -> str:
+    """Render the surface agent's plist XML (ADR-0015 D3).
+
+    ``scripts/launch.mjs`` rebuilds Resonance when its sources are newer
+    than the build and then runs Electron attached, so launchd owns the
+    window's lifetime exactly as it owns the daemon's.
+
+    Args:
+        node: ``ProgramArguments[0]``; launchd's PATH has no node.
+        working_directory: Repo root override; the agent runs in
+            ``<repo>/desktop/resonance``.
+        runtime_root: Override the root whose ``logs/`` launchd writes.
+    """
+    logs = logs_dir(runtime_root)
+    spec: dict[str, object] = {
+        "Label": RESONANCE_LABEL,
+        "ProgramArguments": [str(node), "scripts/launch.mjs"],
+        "WorkingDirectory": str(resonance_dir(working_directory)),
+        # npm and every ``#!/usr/bin/env node`` shim need node's own bin dir.
+        "EnvironmentVariables": {"PATH": f"{node.parent}:/usr/bin:/bin:/usr/sbin:/sbin"},
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": _THROTTLE_INTERVAL_S,
+        "StandardOutPath": str(logs / "resonance.out.log"),
+        "StandardErrorPath": str(logs / "resonance.err.log"),
+    }
+    return plistlib.dumps(spec, sort_keys=True).decode("utf-8")
+
+
+def validate_surface(node: Path | None, *, working_directory: Path | None = None) -> Path:
+    """The surface agent's preconditions: a node binary and an installed Electron.
+
+    Returns:
+        The node path to pin into the plist.
+
+    Raises:
+        SurfaceInvalidError: With the exact fix (install node / run ``npm ci``).
+    """
+    if node is None or not node.is_file():
+        msg = "node not found; install it (mise) before `jarvis daemon install`"
+        raise SurfaceInvalidError(msg)
+    surface = resonance_dir(working_directory)
+    if not (surface / "node_modules" / "electron").is_dir():
+        msg = f"{surface}/node_modules/electron missing — run `npm ci` in {surface} first"
+        raise SurfaceInvalidError(msg)
+    return node
 
 
 def render_plist(
@@ -379,67 +490,22 @@ def _looks_like_missing_domain(result: LaunchctlResult) -> bool:
     return any(marker in blob for marker in _ERRNO_IO_MARKERS)
 
 
-def install(
-    *,
-    interpreter: Path | None = None,
-    working_directory: Path | None = None,
-    runtime_root: Path | None = None,
-    agents_dir: Path | None = None,
-) -> InstallResult:
-    """Validate, write the plist, and (re-)bootstrap the agent. Idempotent.
-
-    Order (D1): validate interpreter, confirm a GUI session, create the
-    logs dir, write the plist, ``bootout`` (tolerated: the job may not be
-    loaded), ``bootstrap gui/$UID``, ``enable``. Both refusals happen
-    BEFORE the plist is written, so a failed install leaves no
-    half-configured agent behind.
-
-    Re-running is a no-op in effect: an unchanged plist is not rewritten
-    (``plist_changed`` False) and the bootout / bootstrap pair reloads
-    the same job definition.
-
-    Args:
-        interpreter: Override ``ProgramArguments[0]``.
-        working_directory: Override ``WorkingDirectory``.
-        runtime_root: Override the root whose ``logs/`` launchd writes.
-        agents_dir: Override ``~/Library/LaunchAgents`` (tests / proofs).
-
-    Returns:
-        :class:`InstallResult` with the paths touched and every
-        ``launchctl`` step executed, in order.
-
-    Raises:
-        InterpreterInvalidError: The interpreter cannot import jarvis.
-        GuiSessionUnavailableError: No launchd user domain for this uid.
-        LaunchdError: ``bootstrap`` or ``enable`` failed for another reason.
-    """
-    interp = interpreter if interpreter is not None else default_interpreter()
-    workdir = working_directory if working_directory is not None else repo_root()
-
-    validate_interpreter(interp, working_directory=workdir)
-    if not gui_session_available():
-        raise GuiSessionUnavailableError(gui_session_message())
-
-    logs = logs_dir(runtime_root)
-    logs.mkdir(parents=True, exist_ok=True)
-
-    target = plist_path(agents_dir)
+def _write_plist(target: Path, rendered: str) -> bool:
+    """Write ``rendered`` at ``target`` (0644) unless identical; True when it changed."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    rendered = render_plist(
-        interpreter=interp,
-        working_directory=workdir,
-        runtime_root=runtime_root,
-    )
     current = target.read_text(encoding="utf-8") if target.is_file() else None
     changed = current != rendered
     if changed:
         target.write_text(rendered, encoding="utf-8")
     target.chmod(_PLIST_FILE_MODE)
+    return changed
 
-    steps: list[LaunchctlResult] = []
+
+def _bootstrap(target: Path, service: str, steps: list[LaunchctlResult]) -> None:
+    """``bootout`` (tolerated) → ``bootstrap gui/$UID`` → ``enable`` for one agent."""
     # Tolerated: exits non-zero ("No such process") when nothing is
     # loaded, which is the normal first-install case.
-    steps.append(_launchctl("bootout", service_target()))
+    steps.append(_launchctl("bootout", service))
 
     boot = _launchctl("bootstrap", gui_domain(), str(target))
     steps.append(boot)
@@ -452,14 +518,114 @@ def install(
         )
         raise LaunchdError(msg)
 
-    enable = _launchctl("enable", service_target())
+    enable = _launchctl("enable", service)
     steps.append(enable)
     if not enable.ok:
         msg = (
-            f"`launchctl enable {service_target()}` failed "
+            f"`launchctl enable {service}` failed "
             f"(exit {enable.returncode}): {enable.stderr.strip() or enable.stdout.strip()}"
         )
         raise LaunchdError(msg)
+
+
+def _printed(service: str) -> dict[str, str]:
+    """``launchctl print`` for one service, parsed; empty when not loaded."""
+    result = _launchctl("print", service)
+    return _parse_launchctl_print(result.stdout) if result.ok else {}
+
+
+def _refuse_manual_daemon(lock_path: Path) -> None:
+    """Refuse to install while a daemon launchd did not spawn holds the lock.
+
+    ``KeepAlive`` would otherwise respawn the agent against that process
+    every ``ThrottleInterval`` — the exact loop ADR-0009 D1 warns about.
+    A lock held by the agent's own pid (a re-install) is fine.
+    """
+    holder = process_lock.holder_pid(lock_path)
+    if holder is None or not process_lock.is_held(lock_path):
+        return
+    if _printed(service_target()).get(_PRINT_PID_KEY) == str(holder):
+        return
+    msg = (
+        f"daemon.lock ({lock_path}) is held by pid {holder}, a manual `jarvis serve`; "
+        f"stop it first (kill {holder}) or the agent will respawn-loop against it"
+    )
+    raise ManualDaemonRunningError(msg)
+
+
+def install(
+    *,
+    interpreter: Path | None = None,
+    node: Path | None = None,
+    working_directory: Path | None = None,
+    runtime_root: Path | None = None,
+    agents_dir: Path | None = None,
+) -> InstallResult:
+    """Validate, write both plists, and (re-)bootstrap both agents. Idempotent.
+
+    Order (D1, extended by ADR-0015 D3): validate interpreter and node /
+    Electron, confirm a GUI session, refuse a manual daemon holding the
+    lock, create the logs dir, write both plists, then per agent
+    ``bootout`` (tolerated: the job may not be loaded), ``bootstrap
+    gui/$UID``, ``enable`` — daemon first, surface second. Every refusal
+    happens BEFORE a plist is written, so a failed install leaves no
+    half-configured agent behind.
+
+    Re-running is a no-op in effect: an unchanged plist is not rewritten
+    and the bootout / bootstrap pair reloads the same job definition.
+
+    Args:
+        interpreter: Override the daemon's ``ProgramArguments[0]``.
+        node: Override the surface's ``ProgramArguments[0]``.
+        working_directory: Override the repo root.
+        runtime_root: Override the root whose ``logs/`` launchd writes.
+        agents_dir: Override ``~/Library/LaunchAgents`` (tests / proofs).
+
+    Returns:
+        :class:`InstallResult` with the paths touched and every
+        ``launchctl`` step executed, in order.
+
+    Raises:
+        InterpreterInvalidError: The interpreter cannot import jarvis.
+        SurfaceInvalidError: No node, or ``npm ci`` has not been run.
+        GuiSessionUnavailableError: No launchd user domain for this uid.
+        ManualDaemonRunningError: A hand-started daemon holds ``daemon.lock``.
+        LaunchdError: ``bootstrap`` or ``enable`` failed for another reason.
+    """
+    interp = interpreter if interpreter is not None else default_interpreter()
+    workdir = working_directory if working_directory is not None else repo_root()
+    root = runtime_root if runtime_root is not None else default_runtime_root()
+
+    validate_interpreter(interp, working_directory=workdir)
+    node_bin = validate_surface(
+        node if node is not None else default_node(),
+        working_directory=workdir,
+    )
+    if not gui_session_available():
+        raise GuiSessionUnavailableError(gui_session_message())
+    _refuse_manual_daemon(root / "daemon.lock")
+
+    logs = logs_dir(runtime_root)
+    logs.mkdir(parents=True, exist_ok=True)
+
+    target = plist_path(agents_dir)
+    changed = _write_plist(
+        target,
+        render_plist(interpreter=interp, working_directory=workdir, runtime_root=runtime_root),
+    )
+    surface_target = resonance_plist_path(agents_dir)
+    surface_changed = _write_plist(
+        surface_target,
+        render_resonance_plist(
+            node=node_bin,
+            working_directory=workdir,
+            runtime_root=runtime_root,
+        ),
+    )
+
+    steps: list[LaunchctlResult] = []
+    _bootstrap(target, service_target(), steps)
+    _bootstrap(surface_target, resonance_service_target(), steps)
 
     return InstallResult(
         plist_path=target,
@@ -467,32 +633,75 @@ def install(
         interpreter=interp,
         plist_changed=changed,
         steps=tuple(steps),
+        resonance_plist_path=surface_target,
+        resonance_plist_changed=surface_changed,
+        node=node_bin,
     )
 
 
 def uninstall(*, agents_dir: Path | None = None, remove_plist: bool = True) -> UninstallResult:
-    """``bootout`` the agent and (by default) delete its plist.
+    """``bootout`` both agents and (by default) delete both plists.
 
-    ``bootout`` stops the job regardless of ``KeepAlive`` — this is the
+    ``bootout`` stops a job regardless of ``KeepAlive`` — this is the
     documented off switch. A non-zero exit is tolerated: it means the job
     was not loaded, which is a successful uninstall too.
 
     Args:
         agents_dir: Override ``~/Library/LaunchAgents`` (tests / proofs).
-        remove_plist: Delete the plist file as well. False leaves the
-            definition on disk (the agent stays "installed" for D2's
-            fork-detach guard) while the job is stopped.
+        remove_plist: Delete the plist files as well. False leaves the
+            definitions on disk (the daemon agent stays "installed" for
+            D2's fork-detach guard) while the jobs are stopped.
 
     Returns:
         :class:`UninstallResult`.
     """
-    steps = (_launchctl("bootout", service_target()),)
+    steps = (
+        _launchctl("bootout", service_target()),
+        _launchctl("bootout", resonance_service_target()),
+    )
     target = plist_path(agents_dir)
-    removed = False
+    surface_target = resonance_plist_path(agents_dir)
+    removed = surface_removed = False
     if remove_plist and target.is_file():
         target.unlink()
         removed = True
-    return UninstallResult(plist_path=target, plist_removed=removed, steps=steps)
+    if remove_plist and surface_target.is_file():
+        surface_target.unlink()
+        surface_removed = True
+    return UninstallResult(
+        plist_path=target,
+        plist_removed=removed,
+        steps=steps,
+        resonance_plist_path=surface_target,
+        resonance_plist_removed=surface_removed,
+    )
+
+
+def restart(*, agents_dir: Path | None = None) -> tuple[LaunchctlResult, ...]:
+    """``launchctl kickstart -k`` both agents — the one command after a merge to main.
+
+    Both agents run from the checkout, so a restart is what picks up new
+    code: the daemon re-imports, ``launch.mjs`` rebuilds Resonance when
+    its sources are newer than the build.
+
+    Raises:
+        LaunchdError: The agent is not installed, or a kickstart failed.
+    """
+    if not is_agent_installed(agents_dir):
+        msg = "LaunchAgent not installed; run `jarvis daemon install` first"
+        raise LaunchdError(msg)
+    steps = tuple(
+        _launchctl("kickstart", "-k", service)
+        for service in (service_target(), resonance_service_target())
+    )
+    for step in steps:
+        if not step.ok:
+            msg = (
+                f"`launchctl {' '.join(step.argv)}` failed "
+                f"(exit {step.returncode}): {step.stderr.strip() or step.stdout.strip()}"
+            )
+            raise LaunchdError(msg)
+    return steps
 
 
 def _parse_launchctl_print(text: str) -> dict[str, str]:
@@ -547,16 +756,37 @@ def status(
 
     gui_ok = gui_session_available()
     printed: dict[str, str] = {}
-    loaded = False
+    surface_printed: dict[str, str] = {}
+    loaded = surface_loaded = False
     if gui_ok:
         result = _launchctl("print", service_target())
         loaded = result.ok
         if loaded:
             printed = _parse_launchctl_print(result.stdout)
+        surface_result = _launchctl("print", resonance_service_target())
+        surface_loaded = surface_result.ok
+        if surface_loaded:
+            surface_printed = _parse_launchctl_print(surface_result.stdout)
 
     pid_text = printed.get(_PRINT_PID_KEY)
     pid = int(pid_text) if pid_text is not None and pid_text.isdigit() else None
     last_exit = next((printed[key] for key in _PRINT_EXIT_KEYS if key in printed), None)
+    surface_pid_text = surface_printed.get(_PRINT_PID_KEY)
+    surface_pid = (
+        int(surface_pid_text)
+        if surface_pid_text is not None and surface_pid_text.isdigit()
+        else None
+    )
+    surface_last_exit = next(
+        (surface_printed[key] for key in _PRINT_EXIT_KEYS if key in surface_printed),
+        None,
+    )
+    node_ok = True
+    try:
+        node_detail = str(validate_surface(default_node(), working_directory=working_directory))
+    except SurfaceInvalidError as exc:
+        node_ok = False
+        node_detail = str(exc)
 
     lock_path = root / "daemon.lock"
     interpreter_ok = True
@@ -585,6 +815,21 @@ def status(
         logs=(
             _log_status(logs / "daemon.out.log"),
             _log_status(logs / "daemon.err.log"),
+        ),
+        resonance=SurfaceStatus(
+            installed=resonance_plist_path(agents_dir).is_file(),
+            plist_path=resonance_plist_path(agents_dir),
+            service_target=resonance_service_target(),
+            loaded=surface_loaded,
+            state=surface_printed.get(_PRINT_STATE_KEY),
+            pid=surface_pid,
+            last_exit=surface_last_exit,
+            node_ok=node_ok,
+            node_detail=node_detail,
+            logs=(
+                _log_status(logs / "resonance.out.log"),
+                _log_status(logs / "resonance.err.log"),
+            ),
         ),
     )
 
@@ -627,12 +872,35 @@ def format_status(report: DaemonStatus) -> str:
     ok_word = "ok" if report.interpreter_ok else "BROKEN"
     lines.append(f"interpreter : {ok_word} — {report.interpreter_detail}")
     lines.extend(_format_log_line(log) for log in report.logs)
+    if report.resonance is not None:
+        lines.extend(_format_surface_lines(report.resonance, gui_session=report.gui_session))
     return "\n".join(lines)
+
+
+def _format_surface_lines(surface: SurfaceStatus, *, gui_session: bool) -> list[str]:
+    """The Resonance agent's block of :func:`format_status` (ADR-0015 D3)."""
+    lines = [
+        f"surface     : {surface.service_target}",
+        f"plist       : {surface.plist_path} ({'installed' if surface.installed else 'absent'})",
+    ]
+    if gui_session:
+        lines.append(f"launchd     : {'loaded' if surface.loaded else 'not loaded'}")
+        if surface.state is not None:
+            lines.append(f"state       : {surface.state}")
+        if surface.pid is not None:
+            lines.append(f"pid         : {surface.pid}")
+        if surface.last_exit is not None:
+            lines.append(f"last exit   : {surface.last_exit}")
+    node_word = "ok" if surface.node_ok else "BROKEN"
+    lines.append(f"node        : {node_word} — {surface.node_detail}")
+    lines.extend(_format_log_line(log) for log in surface.logs)
+    return lines
 
 
 __all__ = [
     "AGENT_ENV_MARKER",
     "AGENT_LABEL",
+    "RESONANCE_LABEL",
     "DaemonStatus",
     "GuiSessionUnavailableError",
     "InstallResult",
@@ -640,7 +908,11 @@ __all__ = [
     "LaunchctlResult",
     "LaunchdError",
     "LogFileStatus",
+    "ManualDaemonRunningError",
+    "SurfaceInvalidError",
+    "SurfaceStatus",
     "UninstallResult",
+    "default_node",
     "format_status",
     "gui_domain",
     "gui_session_available",
@@ -650,9 +922,15 @@ __all__ = [
     "logs_dir",
     "plist_path",
     "render_plist",
+    "render_resonance_plist",
+    "resonance_dir",
+    "resonance_plist_path",
+    "resonance_service_target",
+    "restart",
     "service_target",
     "spawned_by_agent",
     "status",
     "uninstall",
     "validate_interpreter",
+    "validate_surface",
 ]

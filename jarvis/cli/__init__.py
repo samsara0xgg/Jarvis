@@ -769,10 +769,16 @@ def _daemon_install() -> str:
     """Run :func:`launchd.install` and render its result for the operator."""
     result = launchd.install()
     written = "written" if result.plist_changed else "unchanged (idempotent re-install)"
+    surface_written = (
+        "written" if result.resonance_plist_changed else "unchanged (idempotent re-install)"
+    )
     lines = [
-        f"jarvis daemon install: {launchd.service_target()} bootstrapped",
+        f"jarvis daemon install: {launchd.service_target()} and "
+        f"{launchd.resonance_service_target()} bootstrapped",
         f"  plist       : {result.plist_path} ({written})",
         f"  interpreter : {result.interpreter}",
+        f"  plist       : {result.resonance_plist_path} ({surface_written})",
+        f"  node        : {result.node}",
         f"  logs        : {result.logs_dir}",
     ]
     lines.extend(_render_launchctl_step(step) for step in result.steps)
@@ -783,11 +789,25 @@ def _daemon_uninstall(*, keep_plist: bool) -> str:
     """Run :func:`launchd.uninstall` and render its result for the operator."""
     result = launchd.uninstall(remove_plist=not keep_plist)
     fate = "removed" if result.plist_removed else "left in place"
+    surface_fate = "removed" if result.resonance_plist_removed else "left in place"
     lines = [
-        f"jarvis daemon uninstall: {launchd.service_target()} booted out",
+        f"jarvis daemon uninstall: {launchd.service_target()} and "
+        f"{launchd.resonance_service_target()} booted out",
         f"  plist       : {result.plist_path} ({fate})",
+        f"  plist       : {result.resonance_plist_path} ({surface_fate})",
     ]
     lines.extend(_render_launchctl_step(step) for step in result.steps)
+    return "\n".join(lines)
+
+
+def _daemon_restart() -> str:
+    """Run :func:`launchd.restart` and render its result for the operator."""
+    steps = launchd.restart()
+    lines = [
+        f"jarvis daemon restart: {launchd.service_target()} and "
+        f"{launchd.resonance_service_target()} kickstarted",
+    ]
+    lines.extend(_render_launchctl_step(step) for step in steps)
     return "\n".join(lines)
 
 
@@ -805,13 +825,15 @@ def _main_daemon(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog=f"{_PROG} daemon",
         description=(
-            "Manage the com.allen.jarvis LaunchAgent (ADR-0009 D1). "
-            "install is idempotent; uninstall stops the job regardless of "
-            "KeepAlive; status combines launchctl, the daemon lock, the "
-            "interpreter check, and log sizes."
+            "Manage the com.allen.jarvis daemon and com.allen.jarvis.resonance "
+            "surface LaunchAgents (ADR-0009 D1, ADR-0015 D3). install is "
+            "idempotent; uninstall stops both jobs regardless of KeepAlive; "
+            "restart kickstarts both so a merged checkout takes effect; status "
+            "combines launchctl, the daemon lock, the interpreter and node "
+            "checks, and log sizes."
         ),
     )
-    parser.add_argument("verb", choices=("install", "uninstall", "status"))
+    parser.add_argument("verb", choices=("install", "uninstall", "restart", "status"))
     parser.add_argument(
         "--keep-plist",
         action="store_true",
@@ -825,6 +847,8 @@ def _main_daemon(argv: list[str]) -> int:
             report = _daemon_install()
         elif args.verb == "uninstall":
             report = _daemon_uninstall(keep_plist=args.keep_plist)
+        elif args.verb == "restart":
+            report = _daemon_restart()
         else:
             report = launchd.format_status(launchd.status())
     except launchd.LaunchdError as exc:

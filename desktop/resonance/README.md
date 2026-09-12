@@ -1,14 +1,20 @@
 # Jarvis Resonance prototype
 
-独立 Electron + React + TypeScript 桌面交互原型。所有输入、语音、回复、任务结果均为本地模拟，不连接 Jarvis 核心，不录音，不保存对话，不派工。
+Jarvis 的桌面语音界面（Electron + React + TypeScript）。桌面模式连接本机 daemon 的 Inherent v1 线：声纹跟随 daemon 的语音阶段，回复文字流式进入胶囊，文字输入、停止播报、麦克风静音、播报静音都发给 daemon。本进程不录音、不放语音，麦克风和扬声器归 daemon（见 `HANDOFF.md` 与 ADR-0015）。`npm run lab` 与验收脚本仍是本地模拟。
 
 ## 运行
+
+常驻方式：仓库根目录 `jarvis daemon install` 会同时安装 daemon 和本界面两个 LaunchAgent，之后 `jarvis daemon restart` 让合并到 main 的代码生效。
+
+手动方式：
 
 ```sh
 cd desktop/resonance
 npm ci
 npm start
 ```
+
+端口沿用 `JARVIS_INHERENT_BRIDGE_PORT`，默认 8006。
 
 - `npm run lab`：独立开发预览，可切换模拟阶段、背景和示例通知。
 - `npm run package`：生成 `build/Jarvis Resonance.app`，用于本机打开；本地 ad-hoc 签名，未公证、未发布。
