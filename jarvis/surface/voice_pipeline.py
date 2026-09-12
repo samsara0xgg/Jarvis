@@ -69,7 +69,7 @@ class VoicePipeline:
         recognizer: voice_asr.AsrRecognizer,
         normalizer: voice_asr.AsrNormalizer,
         broadcaster: _BroadcasterProtocol | None,
-        artifacts_dir: Path,
+        artifacts_dir: Path | None,
         sample_rate_hz: int = 16000,
     ) -> None:
         """Wire together one VoicePipeline; see class docstring for semantics."""
@@ -193,7 +193,7 @@ class VoicePipeline:
             if transcript_prefix:
                 normalized = transcript_prefix + normalized
 
-            # 4. Optional raw-WAV artifact retention.
+            # 4. Audio retention for memory.db (None = off).
             artifact_ref = voice_artifact_store.persist(
                 audio_bytes,
                 turn_id=turn_id,

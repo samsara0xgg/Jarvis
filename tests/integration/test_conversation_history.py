@@ -4,28 +4,19 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import json
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.decision import decide
-from jarvis.decision.conversation import conversation_history_note
-from jarvis.decision.llm import LLMClient
 from jarvis.decision.packet import assemble_packet
-from jarvis.runtime import _wave4_response_activation, drive_turn
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
-from tests.integration.test_conversational_turn_no_gate_downgrade import _build_ctx, _StubLLMClient
-from tests.integration.test_wave4a_response_run import _make_runtime, _realtime_config
 
 if TYPE_CHECKING:
     import sqlite3
     from pathlib import Path
 
-    from jarvis.decision.llm import ChatResult
     from jarvis.shared import Event
 
 _PREFIX = "Ice absorbs heat."
@@ -147,73 +138,6 @@ def _playback(
     ).event
 
 
-@pytest.mark.parametrize(
-    ("kind", "fields", "expected"),
-    [
-        ("surface.playback_checkpoint", {}, _PREFIX),
-        ("surface.playback_interrupted", {}, _PREFIX),
-        ("surface.playback_failed", {}, _PREFIX),
-        ("surface.playback_completed", {}, _PREFIX),
-        ("surface.playback_completed", {"heard_text": None}, None),
-        ("surface.playback_completed", {"heard_text_hash": "wrong"}, None),
-        ("surface.playback_checkpoint", {"cursor_quality": "unknown"}, None),
-        ("surface.playback_interrupted", {"cursor_quality": "physical"}, None),
-        ("surface.playback_completed", {"heard_through_sequence": None}, None),
-        ("surface.playback_completed", {"submitted_samples": 0}, None),
-        (
-            "surface.playback_interrupted",
-            {
-                "heard_text": "",
-                "heard_text_hash": hashlib.sha256(b"").hexdigest(),
-                "heard_through_sequence": None,
-            },
-            "",
-        ),
-    ],
-)
-def test_playback_evidence_controls_heard_channel(
-    tmp_path: Path,
-    kind: str,
-    fields: dict[str, Any],
-    expected: str | None,
-) -> None:
-    """Completed/failed labels and available full text cannot replace explicit evidence."""
-    path = tmp_path / "events.db"
-    with contextlib.closing(open_event_log(path)) as conn:
-        _display(conn)
-        proof = _playback(conn, kind, fields)
-        trigger = _input(conn, "next")
-        packet = assemble_packet(trigger, conn)
-        note = conversation_history_note(packet)
-        assert note is not None
-        body = json.loads(note.rsplit("\n", 1)[-1])
-        output = body["turns"][0]["responses"][0]
-        assert output["panel_available"] == _FULL
-        assert "audit_generated" not in output
-        if expected is None:
-            assert output["spoken_heard"] is None
-        else:
-            assert output["spoken_heard"]["text"] == expected
-            assert output["spoken_heard"]["source_event_uid"] == proof.event_uid
-            assert output["spoken_heard"]["cursor_quality"] == "estimated"
-    with contextlib.closing(open_event_log(path)) as conn:
-        replay = assemble_packet(trigger, conn)
-        assert replay.conversation_history == packet.conversation_history
-        assert conversation_history_note(replay) == note
-
-
-def test_generation_and_display_without_playback_never_become_heard(tmp_path: Path) -> None:
-    """There is no inference from a surface final or response completion to audibility."""
-    with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
-        _display(conn)
-        trigger = _input(conn, "next")
-        note = conversation_history_note(assemble_packet(trigger, conn))
-        assert note is not None
-        output = json.loads(note.rsplit("\n", 1)[-1])["turns"][0]["responses"][0]
-        assert output["spoken_heard"] is None
-        assert output["panel_available"] == _FULL
-
-
 def test_late_checkpoint_cannot_extend_terminal_prefix(tmp_path: Path) -> None:
     """A stale callback after interruption cannot make the unheard suffix history."""
     with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
@@ -266,114 +190,6 @@ def test_inconsistent_chunk_history_cannot_be_a_spoken_transcript(tmp_path: Path
         history = fold_conversation_history(iter_events(conn))
         assert not history.consistent
         assert history.turns[0].responses[0].spoken_heard is None
-
-
-@pytest.mark.parametrize("enabled", [False, True])
-def test_typed_history_reaches_real_decide_prompt_only_when_enabled(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    enabled: bool,
-) -> None:
-    """The actual L3 message builder keeps heard/panel fields distinct at model input."""
-    ctx, conn, client = _build_ctx(tmp_path, draft_text="水分子更自由地运动。")
-    messages: list[dict[str, Any]] = []
-    original = client.chat
-
-    def capture(**kwargs: Any) -> Any:  # noqa: ANN401 - capture the scripted provider boundary
-        messages.extend(kwargs["messages"])
-        return original(**kwargs)
-
-    monkeypatch.setattr(client, "chat", capture)
-    try:
-        _display(conn)
-        _playback(conn, "surface.playback_interrupted", {})
-        trigger = _input(conn, "next")
-        result = decide(trigger, replace(ctx, typed_conversation_history=enabled))
-        assert result.response_plan is not None
-        assert client.chat_calls == 1
-        notes = [
-            item["content"]
-            for item in messages
-            if isinstance(item.get("content"), str)
-            and item["content"].startswith("[typed conversation history]")
-        ]
-        assert len(notes) == int(enabled)
-        if enabled:
-            output = json.loads(notes[0].rsplit("\n", 1)[-1])["turns"][0]["responses"][0]
-            assert output["spoken_heard"]["text"] == _PREFIX
-            assert output["panel_available"] == _FULL
-            assert not any(
-                item["role"] == "assistant" and item["content"] == _FULL for item in messages
-            )
-    finally:
-        conn.close()
-
-
-@pytest.mark.parametrize("enabled", [False, True])
-def test_runtime_threads_validated_history_flag_to_actual_model_prompt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    enabled: bool,
-) -> None:
-    """Run the real driver, decision, projections and renderer around a scripted LLM."""
-    runtime = _make_runtime(tmp_path, lifecycle=True)
-    config = _realtime_config(lifecycle=True, cancel=False)
-    config["realtime"]["response"]["typed_conversation_history"] = enabled
-    runtime = replace(
-        runtime, config=config, response_flags=_wave4_response_activation(config).flags
-    )
-    messages: list[dict[str, Any]] = []
-    fixture = _StubLLMClient("水分子更自由地运动。")
-
-    def capture(_client: LLMClient, **kwargs: Any) -> ChatResult:  # noqa: ANN401 - scripted provider boundary
-        messages.extend(kwargs["messages"])
-        return fixture.chat(**kwargs)
-
-    monkeypatch.setattr(LLMClient, "chat", capture)
-    try:
-        _display(runtime.conn)
-        _playback(runtime.conn, "surface.playback_interrupted", {})
-        trigger = _input(runtime.conn, "next")
-        result = drive_turn(runtime, user_intent_event=trigger, available_surfaces=frozenset())
-        assert result.response_plan is not None
-        notes = [
-            item["content"]
-            for item in messages
-            if "[typed conversation history]" in item["content"]
-        ]
-        assert len(notes) == int(enabled)
-        if enabled:
-            response = json.loads(notes[0].rsplit("\n", 1)[-1])["turns"][0]["responses"][0]
-            assert response["spoken_heard"]["text"] == _PREFIX
-            assert response["panel_available"] == _FULL
-    finally:
-        runtime.conn.close()
-
-
-@pytest.mark.parametrize(
-    ("value", "lifecycle", "parent", "expected"),
-    [
-        (True, True, True, True),
-        (False, True, True, False),
-        ("true", True, True, False),
-        (1, True, True, False),
-        (True, False, True, False),
-        (True, True, False, False),
-    ],
-)
-def test_typed_history_activation_is_explicit_and_lifecycle_bound(
-    value: object,
-    *,
-    lifecycle: bool,
-    parent: bool,
-    expected: bool,
-) -> None:
-    """Absent/non-boolean/unsupported activation cannot alter legacy prompt context."""
-    config = _realtime_config(lifecycle=lifecycle, cancel=False, enabled=parent)
-    config["realtime"]["response"]["typed_conversation_history"] = value
-    assert _wave4_response_activation(config).flags.typed_conversation_history is expected
 
 
 @pytest.mark.parametrize(
@@ -501,43 +317,11 @@ def test_generated_audit_text_never_enters_conversational_prompt(tmp_path: Path)
         )
         trigger = _input(conn, "next")
         packet = assemble_packet(trigger, conn)
-        note = conversation_history_note(packet)
-        assert note is not None
-        assert "AUDIT-ONLY-PRIVATE-DRAFT" not in note
-        assert len(note) < 13_000
         assert packet.conversation_history is not None
         assert (
             packet.conversation_history.turns[0].responses[0].audit_generated_hash
             == hashlib.sha256(draft.encode()).hexdigest()
         )
-
-
-def test_prompt_has_serialized_total_text_and_response_bounds(tmp_path: Path) -> None:
-    """Long panel/user payloads and many responses produce explicit bounded omissions."""
-    with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
-        for turn_index in range(22):
-            turn_id = str(turn_index)
-            emit_event(
-                conn,
-                type="utterance.received",
-                payload={"turn_id": turn_id, "transcript": "长问题" * 1000},
-            )
-            for response_index in range(10):
-                emit_event(
-                    conn,
-                    type="surface.response_emitted",
-                    payload={
-                        "turn_id": turn_id,
-                        "response_id": f"R{turn_id}-{response_index}",
-                        "text": "长文档" * 1000,
-                    },
-                )
-        trigger = _input(conn, "next")
-        note = conversation_history_note(assemble_packet(trigger, conn))
-        assert note is not None
-        encoded = note.rsplit("\n", 1)[-1]
-        assert len(encoded) <= 12_000
-        assert json.loads(encoded)["truncated"]
 
 
 @pytest.mark.parametrize("cursor", [None, "empty", "unknown"])

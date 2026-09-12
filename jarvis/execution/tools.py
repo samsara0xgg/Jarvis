@@ -143,6 +143,8 @@ from jarvis.shared.text import truncate_utf8
 from jarvis.state.authorized_dispatch_outbox import admit_authorized_dispatch
 from jarvis.state.event_log import emit_event, iter_events, iter_events_of_types
 from jarvis.state.lifecycle_terminal import terminalize_action
+from jarvis.state.memory_db import DEFAULT_SEARCH_LIMIT
+from jarvis.state.memory_db import search_records as search_memory_records
 from jarvis.state.projections import make_snapshot
 
 if TYPE_CHECKING:
@@ -2149,6 +2151,88 @@ def list_memos_handler(
         tool_output=tool_output_str,
         error=None,
     )
+
+
+_SEARCH_RECORDS_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "keyword": {
+            "type": "string",
+            "description": (
+                "Substring to match in the record text (case-insensitive; "
+                "Chinese works as-is). Omit to match every record."
+            ),
+        },
+        "from": {
+            "type": "string",
+            "description": (
+                "Earliest timestamp, ISO 8601 with UTC offset, "
+                "e.g. 2026-09-08T00:00:00-04:00."
+            ),
+        },
+        "to": {
+            "type": "string",
+            "description": "Latest timestamp, ISO 8601 with UTC offset.",
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum rows to return, newest first. Default 20.",
+        },
+    },
+    "required": [],
+}
+
+
+def _make_search_records_handler(db_path: Path) -> ToolHandler:
+    """Bind `search_records` to the memory.db path; observation semantics."""
+
+    def _handler(
+        action_request: ActionRequest,
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
+        lifecycle: ActionLifecycle,
+    ) -> RawResult:
+        running_event_uid = _get_running_event_uid(conn, action_request.action_id)
+        args = action_request.arguments
+        keyword = args.get("keyword")
+        from_ts = args.get("from")
+        to_ts = args.get("to")
+        limit = args.get("limit")
+        rows = search_memory_records(
+            db_path,
+            keyword=keyword.strip() if isinstance(keyword, str) and keyword.strip() else None,
+            from_ts=from_ts if isinstance(from_ts, str) and from_ts.strip() else None,
+            to_ts=to_ts if isinstance(to_ts, str) and to_ts.strip() else None,
+            limit=limit if isinstance(limit, int) and limit > 0 else DEFAULT_SEARCH_LIMIT,
+        )
+        lines = [f"[{ts}] {source}: {text}" for ts, source, text in rows]
+        payload: dict[str, Any] = {
+            "count": len(rows),
+            "rendered": "\n".join(lines) if lines else "没有找到匹配的记录。",
+        }
+        tool_output_str = tool_result(payload)
+        terminalize_action(
+            conn,
+            event_type="action.result_observed",
+            payload={
+                "action_id": action_request.action_id,
+                "semantics": "observation",
+                "tool_output": tool_output_str,
+            },
+            source_event_id=running_event_uid,
+            correlation={"action_id": action_request.action_id},
+        )
+        lifecycle.transition(action_request.action_id, "result_observed")
+        return RawResult(
+            action_id=action_request.action_id,
+            semantics="observation",
+            payload=payload,
+            tool_output=tool_output_str,
+            error=None,
+        )
+
+    return _handler
 
 
 def _memo_error(
@@ -5941,6 +6025,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     resource_key_resolver: ResourceKeyResolver | None = None,
     background_async: bool = False,
     confirmation_dispatch_outbox: bool = False,
+    memory_db_path: Path | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry (Day-1 six + ADR-0011 D5 seven).
 
@@ -5998,6 +6083,9 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             an acknowledgement for an `is_async` tool as soon as its
             ActionRun is accepted, instead of blocking on the handle.
             Requires `action_runner`.
+        memory_db_path: `memory.db_path` — registers `search_records`
+            over that memory.db. `None` (hand-built test registries)
+            registers no memory tool.
     """
     vault_root = (
         obsidian_vault_root if obsidian_vault_root is not None else DEFAULT_OBSIDIAN_VAULT_ROOT
@@ -6349,6 +6437,31 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             requires_confirmation=True,
         )
     )
+    if memory_db_path is not None:
+        registry.register(
+            ToolDefinition(
+                name="search_records",
+                description=(
+                    "Search the memory store of everything Allen said and every "
+                    "answer given, newest first, with timestamps. Call this whenever "
+                    "Allen asks what he said before (我之前说过什么 / 刚才说的 / "
+                    "昨天说的 / 上周二说的) or refers to an earlier conversation, and "
+                    "quote the original words and their time back to him. Filter by "
+                    "keyword substring and/or an ISO 8601 time range; every argument "
+                    "is optional."
+                ),
+                allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+                risk_level="L0",
+                result_semantics="observation",
+                is_async=False,
+                input_schema=_SEARCH_RECORDS_INPUT_SCHEMA,
+                handler=_make_search_records_handler(memory_db_path),
+                domain="memo",
+                read_only=True,
+                requires_entity=False,
+                requires_confirmation=False,
+            )
+        )
     if action_runner is not None:
         # ponytail: the cancel still takes one runner run slot, so with
         # `max_concurrent_runs=1` it waits behind its own target; skip the

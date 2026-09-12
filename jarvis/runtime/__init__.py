@@ -141,6 +141,7 @@ from jarvis.shared.realtime_trace import (
 )
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import iter_events, open_event_log, open_runtime_event_log
+from jarvis.state.memory_db import MemorySettings, append_record, context_note
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
 from jarvis.surface.cli import (
@@ -452,6 +453,9 @@ class JarvisRuntime:
     # the defaults keep a hand-assembled runtime byte-identical to today.
     sensevoice_dir: Path = DEFAULT_SENSEVOICE_DIR
     silero_vad_path: Path = DEFAULT_SILERO_VAD_PATH
+    # memory.db wiring (``memory:`` config block). None = no memory store:
+    # hand-assembled runtimes write no records and inject no note.
+    memory: MemorySettings | None = None
     # ADR-0008 Step 8 — tool cues loaded from ``config/tool_cues.yaml``;
     # empty tuple = no cue can veto the routine route (the other pre-route
     # conditions still apply).
@@ -675,9 +679,9 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
     2. ``response_run_lifecycle`` requested without the Wave-1
        transactional-append and lifecycle-terminal-CAS primitives it writes
        through.
-    3. ``independent_response_cancel``, ``typed_conversation_history``,
+    3. ``independent_response_cancel``,
        ``routine_streaming`` or ``lifecycle_commentary`` requested without a
-       surviving ``response_run_lifecycle``. Cancellation, typed history,
+       surviving ``response_run_lifecycle``. Cancellation,
        routine streaming and D6 commentary all require stable response
        lifecycle identities — without the lifecycle switch no ResponseRun,
        terminalizer or registry is constructed at all.
@@ -711,7 +715,6 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
         return _downgraded_response_activation(requested, "wave1_primitives_disabled")
     if (
         requested.independent_response_cancel
-        or requested.typed_conversation_history
         or requested.routine_streaming
         or requested.lifecycle_commentary
     ) and not requested.response_run_lifecycle:
@@ -744,20 +747,18 @@ def _downgraded_response_activation(
     )
     LOGGER.warning(
         "realtime.response downgraded (%s): requested response_run_lifecycle=%s "
-        "independent_response_cancel=%s typed_conversation_history=%s "
+        "independent_response_cancel=%s "
         "routine_streaming=%s lifecycle_commentary=%s; effective "
         "response_run_lifecycle=%s independent_response_cancel=%s "
-        "typed_conversation_history=%s routine_streaming=%s "
+        "routine_streaming=%s "
         "lifecycle_commentary=%s",
         reason,
         requested.response_run_lifecycle,
         requested.independent_response_cancel,
-        requested.typed_conversation_history,
         requested.routine_streaming,
         requested.lifecycle_commentary,
         flags.response_run_lifecycle,
         flags.independent_response_cancel,
-        flags.typed_conversation_history,
         flags.routine_streaming,
         flags.lifecycle_commentary,
     )
@@ -767,7 +768,6 @@ def _downgraded_response_activation(
         requested=(
             f"response_run_lifecycle={requested.response_run_lifecycle},"
             f"independent_response_cancel={requested.independent_response_cancel},"
-            f"typed_conversation_history={requested.typed_conversation_history},"
             f"routine_streaming={requested.routine_streaming},"
             f"lifecycle_commentary={requested.lifecycle_commentary}"
         ),
@@ -1538,8 +1538,10 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         if action_flags.action_runner
         else None
     )
+    memory = MemorySettings.from_config(full_config.get("memory"), runtime_root=paths.root)
     registry = build_default_registry(
         action_runner=action_runner,
+        memory_db_path=memory.db_path,
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         # ADR-0008 Step 4: with this on, `dispatch` returns as soon as an
         # is_async ActionRun is accepted and the runner owns the rest.
@@ -1682,6 +1684,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         response_runs=response_runs,
         committed_event_bus=committed_event_bus,
         input_flags=_wave5_input_flags(full_config),
+        memory=memory,
         sensevoice_dir=_realtime_model_path(
             full_config,
             key="sensevoice_dir",
@@ -2340,6 +2343,18 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         turn_id=effective_turn_id,
         source="runtime_drive_turn",
     )
+    # memory.db: Allen's utterance lands before any routing (Tier 0 included).
+    # The event uid is the record id, so a retried turn cannot double-write.
+    memory = runtime.memory
+    if memory is not None and continuation is None:
+        audio_ref = user_intent_event.payload.get("audio_artifact_ref")
+        append_record(
+            memory.db_path,
+            record_id=user_intent_event.event_uid,
+            source="allen",
+            text=str(user_intent_event.payload.get("transcript", "")),
+            audio_path=audio_ref if isinstance(audio_ref, str) else None,
+        )
     # ADR-0008 Step 2 (Wave 4A) — open the durable ResponseRun before the
     # decide loop so the per-run request client, the terminal owner and the
     # L5 ids all name the same response. Returns None with the flag off, and
@@ -2443,7 +2458,15 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # way tier0_table is threaded.
             confirm_grammar_table=runtime.confirm_grammar_table,
             wave1_features=runtime.wave1_features,
-            typed_conversation_history=runtime.response_flags.typed_conversation_history,
+            memory_note=(
+                context_note(
+                    memory.db_path,
+                    context_days=memory.context_days,
+                    exclude_id=user_intent_event.event_uid,
+                )
+                if memory is not None
+                else None
+            ),
             cancellation_checkpoint=run.check_cancelled if run is not None else None,
             request_admission=(
                 partial(run.admit_request, runtime.conn) if run is not None else None
@@ -2692,6 +2715,15 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         sys.stdout.write(rendered)
         sys.stdout.flush()
         collected_events.append(render_event)
+        if memory is not None:
+            # The full answer text, not the spoken cut; the audit event's
+            # uid is the record id.
+            append_record(
+                memory.db_path,
+                record_id=render_event.event_uid,
+                source="jarvis",
+                text=str(render_event.payload.get("text", "")),
+            )
         record_realtime_trace(
             "response_completed",
             turn_id=effective_turn_id,

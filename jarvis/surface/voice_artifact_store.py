@@ -1,18 +1,23 @@
-"""L5 voice artifact store — opt-in raw WAV retention (ADR-0005 §4.2).
+"""L5 voice artifact store — per-utterance audio retention for memory.db.
 
-Per spec §3.6.2: raw ASR audio MAY be retained as an artifact_ref for
-debug. Default disabled (privacy preserving); enabled by setting
-``JARVIS_VOICE_RETAIN_RAW=1``. The returned path is suitable for the
-``audio_artifact_ref`` field on ``utterance.received`` events.
+Every recognised utterance is written under ``artifacts_dir`` (the
+``memory.audio_dir`` config value) and transcoded to AAC with macOS's
+built-in ``afconvert``; when that fails the PCM16 WAV stays. The returned
+path lands on ``utterance.received.audio_artifact_ref`` and from there on
+``records.audio_path``. ``artifacts_dir=None`` disables retention.
 """
+
 from __future__ import annotations
 
-import os
+import subprocess
 import wave
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+_AAC_BITRATE: str = "32000"
+_TRANSCODE_TIMEOUT_S: float = 30.0
 
 
 def persist(
@@ -20,30 +25,42 @@ def persist(
     *,
     turn_id: str,
     sample_rate_hz: int,
-    artifacts_dir: Path,
+    artifacts_dir: Path | None,
 ) -> str | None:
-    """Write ``pcm_audio`` as a mono PCM16 WAV under ``artifacts_dir``.
+    """Write ``pcm_audio`` (mono PCM16 LE) under ``artifacts_dir``; return its path.
 
-    Args:
-        pcm_audio: raw PCM16 little-endian mono bytes.
-        turn_id: filename stem (``{turn_id}.wav``).
-        sample_rate_hz: typically 16000 for SenseVoice / Whisper input.
-        artifacts_dir: directory to write under.
-
-    Returns:
-        Absolute path to the WAV file as a string, or ``None`` when
-        retention is disabled.
+    Returns ``None`` when retention is disabled. The file is
+    ``{turn_id}.m4a`` after a successful AAC transcode, else ``{turn_id}.wav``.
     """
-    if os.environ.get("JARVIS_VOICE_RETAIN_RAW", "0") != "1":
+    if artifacts_dir is None:
         return None
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    out = artifacts_dir / f"{turn_id}.wav"
-    with wave.open(str(out), "wb") as w:
+    wav_path = artifacts_dir / f"{turn_id}.wav"
+    with wave.open(str(wav_path), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(sample_rate_hz)
         w.writeframes(pcm_audio)
-    return str(out)
+    m4a_path = wav_path.with_suffix(".m4a")
+    argv = [
+        "afconvert",
+        "-f",
+        "m4af",
+        "-d",
+        "aac",
+        "-b",
+        _AAC_BITRATE,
+        str(wav_path),
+        str(m4a_path),
+    ]
+    try:
+        # S603: fixed argv, no shell.
+        subprocess.run(argv, check=True, capture_output=True, timeout=_TRANSCODE_TIMEOUT_S)  # noqa: S603
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        # ponytail: no encoder → keep WAV (~21 GB/yr at 30 min/day); AAC is ~2.6 GB/yr.
+        return str(wav_path)
+    wav_path.unlink(missing_ok=True)
+    return str(m4a_path)
 
 
 __all__ = ["persist"]

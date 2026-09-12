@@ -84,8 +84,7 @@ class Wave4ResponseFlags:
     ``response_run_lifecycle`` wraps ``drive_turn`` in a durable
     ResponseRun with an immutable per-run request client.
     ``independent_response_cancel`` additionally exposes the generation
-    cancel seam. ``typed_conversation_history`` adds explicit heard/available
-    history to L3 prompts under the same lifecycle parent.
+    cancel seam.
     ``routine_streaming`` (ADR-0008 Step 8, ``routine_streaming.enabled``)
     streams permitted sentences of a pre-routed casual answer while the model
     is still generating. All stay off in the shipped configuration,
@@ -94,7 +93,6 @@ class Wave4ResponseFlags:
 
     response_run_lifecycle: bool = False
     independent_response_cancel: bool = False
-    typed_conversation_history: bool = False
     routine_streaming: bool = False
     lifecycle_commentary: bool = False
     """ADR-0008 D6 (Step 5, ``realtime.commentary.enabled``).
@@ -125,7 +123,6 @@ class Wave4ResponseFlags:
         return cls(
             response_run_lifecycle=values.get("response_run_lifecycle") is True,
             independent_response_cancel=values.get("independent_response_cancel") is True,
-            typed_conversation_history=values.get("typed_conversation_history") is True,
             routine_streaming=isinstance(routine, Mapping) and routine.get("enabled") is True,
             lifecycle_commentary=commentary is not None and commentary.get("enabled") is True,
         )
@@ -137,7 +134,6 @@ class Wave4ResponseFlags:
             (
                 self.response_run_lifecycle,
                 self.independent_response_cancel,
-                self.typed_conversation_history,
                 self.routine_streaming,
                 self.lifecycle_commentary,
             )

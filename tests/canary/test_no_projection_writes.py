@@ -57,6 +57,9 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # ADR-0014 D21: the authenticated v2 input receipt, written in the same
     # transaction as the canonical input event it names.
     "jarvis/state/input_submission_inbox.py": frozenset({"input_submission_receipts"}),
+    # memory.db (2026-09-12): a standalone SQLite file, not the event log —
+    # every utterance and answer, append-only. Not a projection of events.
+    "jarvis/state/memory_db.py": frozenset({"records"}),
 }
 
 # A receipt that could never move from `processing` to `accepted` would be a
