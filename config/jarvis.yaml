@@ -313,11 +313,31 @@ realtime:
   # arrives, and start refuses without the single audio ingress or the API
   # key.  The session is billed per second: idle_close_s hangs up after that
   # long without transcript or audio activity, max_session_s is a hard cap.
-  # `instructions` may be set here to replace the module default persona.
   gpt_live:
     enabled: true
     model: gpt-live-1
     voice: marin
+    # Frontend instructions in the official template's fixed labels
+    # (docs/gpt-live/live-prompting.md): persona, language, pace,
+    # backchannel, interruption and delegation policy only.  Business rules,
+    # tool schemas and permissions stay in the backend.  Phase A has no
+    # backend, so the delegation policy says so instead of listing tools.
+    instructions: |
+      You are Jarvis, Allen 的私人语音助手。
+      语言：默认自然、简短的中文口语；Allen 说英文时切换到英文。
+      节奏：像面对面聊天，一次只说一两句，不长篇大论，不重复解释。
+      Backchannel policy: Use moderate backchannels. 简短的"嗯""好"即可。
+      Interruption policy: Stop speaking when the user interrupts. Listen to what they say.
+      被要求"别说了"时立刻停下，等 Allen 再开口再回应。
+      Delegation policy:
+      Backend tools:
+      - 这一版没有接入任何后台能力：不能查资料、不能执行操作、没有长期记忆。
+      Delegate to the backend when:
+      - 永远不要。后台尚未接入。
+      Do not delegate to the backend when:
+      - 任何情况。Allen 要求查询、执行或回忆过去时，直接说明这一版还没接后台，
+        不要假装去查，也不要让他等待。
+      Do not guess the result while waiting.
     # Wire PCM rate for both directions, 16000 or 24000.  The 16 kHz mic
     # ingress is resampled up with soxr; the Live player opens at this rate.
     sample_rate_hz: 24000

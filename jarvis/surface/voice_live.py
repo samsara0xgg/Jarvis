@@ -169,6 +169,7 @@ class _LiveRun:
     speaking: bool = False
     hearing: bool = False
     subtitle_seq: int = 0
+    event_seq: int = 0
     usage_s: float | None = None
     usage_final: bool = False
     close_reason: str | None = None
@@ -325,12 +326,11 @@ class LiveVoice:
             run.cancel_write.set()
             _drain_queue(run.play)
             run.player.flush()
-            with contextlib.suppress(Exception):
-                await run.ws.send(json.dumps({
-                    "type": "session.instructions.append",
-                    "content": HUSH_INSTRUCTION,
-                    "delegation_id": None,
-                }))
+            await self._send_json(run, {
+                "type": "session.instructions.append",
+                "content": HUSH_INSTRUCTION,
+                "delegation_id": None,
+            })
             LOGGER.info("gpt_live hushed at %d ms", run.hush_at_ms)
             await self._broadcast("state")
             return self.status()
@@ -426,8 +426,7 @@ class LiveVoice:
         run.reader_stop.set()
         run.mic_muted = True
         if not run.closed.is_set():
-            with contextlib.suppress(Exception):
-                await run.ws.send(json.dumps({"type": "session.close"}))
+            await self._send_json(run, {"type": "session.close"})
             try:
                 await asyncio.wait_for(run.closed.wait(), timeout=cfg.close_timeout_s)
             except TimeoutError:
@@ -520,6 +519,12 @@ class LiveVoice:
                     if self._state == "active":
                         self._schedule_auto_stop(run, run.close_reason)
                     return
+                elif kind == "info" or str(kind).endswith(("muted", "appended", "updated")):
+                    # ACKs prove receipt only, never that speech stopped or content was used.
+                    LOGGER.info(
+                        "gpt_live ack %s for %s %s", kind, event.get("client_event_id"),
+                        event.get("message", ""),
+                    )
                 else:
                     LOGGER.debug("gpt_live event %s", kind)
         except ConnectionClosed as exc:
@@ -586,7 +591,7 @@ class LiveVoice:
 
     def _enqueue_out(self, run: _LiveRun, chunk: bytes) -> None:
         """Loop-thread side of the mic tee: bounded backlog, drop-oldest by clearing."""
-        if run.mic_muted or run.reader_stop.is_set():
+        if run.reader_stop.is_set():
             return
         limit = int(self._config.input_backlog_s * self._config.sample_rate_hz * 2)
         if run.out_bytes + len(chunk) > limit:
@@ -640,10 +645,14 @@ class LiveVoice:
                 )
             if frame.discontinuity_before:
                 LOGGER.debug("gpt_live mic discontinuity before frame %d", frame.sequence)
-            if run.mic_muted:
-                pending.clear()
-                continue
-            samples = np.frombuffer(frame.pcm16_mono, dtype="<i2").astype(np.float32) / 32768.0
+            # Muted: keep the frame clock running with silence. The session timeline
+            # advances on input frames and append ACKs stall when frames stop
+            # (docs/gpt-live/voice-websockets.md); real microphone content never leaves.
+            samples = (
+                np.zeros(frame.frame_count, dtype=np.float32)
+                if run.mic_muted
+                else np.frombuffer(frame.pcm16_mono, dtype="<i2").astype(np.float32) / 32768.0
+            )
             out = resampler.feed(samples)
             pending += np.clip(out * 32768.0, -32768, 32767).astype("<i2").tobytes()
             if len(pending) >= chunk_bytes:
@@ -684,10 +693,14 @@ class LiveVoice:
             )
 
     async def _send_json(self, run: _LiveRun, payload: dict[str, object]) -> None:
+        """Send one command with a fresh ``event_id`` so its ACK can be matched in the log."""
+        run.event_seq += 1
+        payload = {**payload, "event_id": f"jarvis-{run.event_seq}"}
         try:
             await run.ws.send(json.dumps(payload))
+            LOGGER.info("gpt_live sent %s as %s", payload["type"], payload["event_id"])
         except Exception as exc:  # noqa: BLE001 - the recv loop owns connection failure
-            LOGGER.debug("gpt_live send %s failed: %s", payload.get("type"), exc)
+            LOGGER.warning("gpt_live send %s failed: %s", payload.get("type"), exc)
 
     def _refused(self, reason: str) -> dict[str, object]:
         LOGGER.warning("gpt_live start refused: %s", reason)
