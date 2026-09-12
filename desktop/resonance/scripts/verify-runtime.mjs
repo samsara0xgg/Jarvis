@@ -65,6 +65,39 @@ try {
     check('waveform rests in standby after the spoken turn', await page.locator('.voice-presence').getAttribute('data-state') === 'standby');
   } else console.log('SKIP voice turn (set RESONANCE_TEST_WAV)');
 
+  // Mute controls live in the daemon: each click POSTs /inherent/controls and the answer drives the button.
+  const controls = async (patch = {}) => (await fetch(`${http}/inherent/controls`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })).json();
+  if (await page.locator('.voice-presence').count() === 0) await page.getByRole('button', { name: '收起文字，返回语音' }).click();
+  await page.getByRole('button', { name: '关闭麦克风', exact: true }).click();
+  await page.getByRole('button', { name: '开启麦克风', exact: true }).waitFor();
+  const afterMic = await controls();
+  check('microphone mute reaches the daemon', afterMic.mic_muted === true && afterMic.speech_muted === false);
+  check('muted microphone shows the muted waveform', await page.locator('.voice-presence').getAttribute('data-state') === 'muted');
+  await page.getByRole('button', { name: '关闭播报声音', exact: true }).click();
+  await page.getByRole('button', { name: '开启播报声音', exact: true }).waitFor();
+  const afterSpeech = await controls();
+  check('speech mute reaches the daemon independently of the microphone', afterSpeech.mic_muted === true && afterSpeech.speech_muted === true);
+  await page.reload();
+  await page.getByRole('button', { name: '开启麦克风', exact: true }).waitFor({ timeout: 15000 });
+  await page.getByRole('button', { name: '开启播报声音', exact: true }).waitFor();
+  check('a fresh window syncs both mute states from the daemon', true);
+  statuses.length = 0;
+  await fetch(`${http}/inherent/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '请只回答两个字：好的' }) });
+  await page.waitForSelector('.reply p', { timeout: 120000 });
+  await page.waitForFunction(() => document.querySelector('.reply p')?.textContent.trim().length > 0, null, { timeout: 60000 });
+  check('a speech-muted turn streams text without entering speaking', !statuses.includes('正在播报'));
+  await page.waitForSelector('.reply', { state: 'detached', timeout: 20000 });
+  await page.waitForTimeout(300); // let the capsule finish its collapse before clicking the edge buttons
+  const labels = () => page.evaluate(() => [...document.querySelectorAll('.edge-control')].map(b => b.getAttribute('aria-label')));
+  console.log(`before unmute: daemon=${JSON.stringify(await controls())} buttons=${JSON.stringify(await labels())}`);
+  await page.getByRole('button', { name: '开启麦克风', exact: true }).click();
+  await page.getByRole('button', { name: '关闭麦克风', exact: true }).waitFor();
+  console.log(`after mic click: daemon=${JSON.stringify(await controls())} buttons=${JSON.stringify(await labels())}`);
+  await page.getByRole('button', { name: '开启播报声音', exact: true }).click();
+  await page.getByRole('button', { name: '关闭播报声音', exact: true }).waitFor();
+  const restored = await controls();
+  check('unmuting restores both daemon switches', restored.mic_muted === false && restored.speech_muted === false);
+
   const pid = Number(process.env.RESONANCE_TEST_DAEMON_PID);
   if (pid) {
     process.kill(pid, 'SIGTERM');

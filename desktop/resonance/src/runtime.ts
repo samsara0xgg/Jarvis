@@ -2,7 +2,8 @@
 // outbound-only WebSocket envelopes `{op, payload}` in, HTTP POSTs out. Audio never crosses this link; the daemon owns mic and speaker.
 import type { Action } from './model';
 
-export interface Runtime { submit: (text: string) => Promise<void>; cancel: (responseId: string | null) => Promise<void>; reconnect: () => void; close: () => void }
+export interface Controls { mic_muted?: boolean; speech_muted?: boolean }
+export interface Runtime { submit: (text: string) => Promise<void>; cancel: (responseId: string | null) => Promise<void>; controls: (patch: Controls) => Promise<void>; reconnect: () => void; close: () => void }
 
 // Daemon `voice` phases → UI phases. Anything unlisted leaves the phase alone.
 const voicePhase: Record<string, Action> = {
@@ -16,9 +17,15 @@ const voicePhase: Record<string, Action> = {
 
 export function connect(port: string, dispatch: (a: Action) => void): Runtime {
   const http = `http://127.0.0.1:${port}`;
-  const post = async (path: string, body: unknown) => {
+  const post = async (path: string, body: unknown): Promise<Record<string, unknown>> => {
     const r = await fetch(`${http}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     if (!r.ok) throw new Error(`${path} ${r.status}`);
+    return r.json();
+  };
+  // The daemon owns mute state; every answer (including the `{}` sync on connect) is authoritative.
+  const controls = async (patch: Controls) => {
+    const c = await post('/inherent/controls', patch);
+    dispatch({ type: 'controls', micMuted: c.mic_muted === true, soundMuted: c.speech_muted === true });
   };
   let ws: WebSocket | null = null;
   let attempt = 0;
@@ -28,7 +35,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
     if (closed) return;
     if (retry) { clearTimeout(retry); retry = null; }
     ws = new WebSocket(`ws://127.0.0.1:${port}/inherent/ws`);
-    ws.onopen = () => { attempt = 0; dispatch({ type: 'phase', phase: 'listening' }); };
+    ws.onopen = () => { attempt = 0; dispatch({ type: 'phase', phase: 'listening' }); controls({}).catch(() => undefined); };
     ws.onmessage = e => {
       let msg: { op?: string; payload?: Record<string, unknown> };
       try { msg = JSON.parse(String(e.data)); } catch { return; }
@@ -49,9 +56,10 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
   };
   open();
   return {
-    submit: text => post('/inherent/submit', { text }),
+    submit: async text => { await post('/inherent/submit', { text }); },
     // foreground_output stops what is audible now and lets the run finish (ADR-0008 D10).
-    cancel: responseId => responseId ? post('/inherent/cancel-response', { response_id: responseId, scope: 'foreground_output' }) : Promise.resolve(),
+    cancel: async responseId => { if (responseId) await post('/inherent/cancel-response', { response_id: responseId, scope: 'foreground_output' }); },
+    controls,
     reconnect: () => { if (ws) ws.close(); else open(); },
     close: () => { closed = true; if (retry) clearTimeout(retry); ws?.close(); },
   };

@@ -181,11 +181,11 @@ function App() {
             </div>
           </div>
           <div className="voice-pill glass" data-glass="20" data-interactive>
-            <Button label={s.micMuted ? '开启麦克风（模拟）' : '关闭麦克风（模拟）'} aria-pressed={s.micMuted} aria-hidden={s.mode !== 'voice'} tabIndex={s.mode === 'voice' ? 0 : -1} className="edge-control" onClick={() => { feedback(s.micMuted ? 'mic-on' : 'mic-off'); dispatch({ type: 'mic' }); }}><CapsuleIcon name={s.micMuted ? 'microphone-off' : 'microphone'}/></Button>
+            <Button label={s.micMuted ? (live ? '开启麦克风' : '开启麦克风（模拟）') : (live ? '关闭麦克风' : '关闭麦克风（模拟）')} aria-pressed={s.micMuted} aria-hidden={s.mode !== 'voice'} tabIndex={s.mode === 'voice' ? 0 : -1} className="edge-control" onClick={() => { feedback(s.micMuted ? 'mic-on' : 'mic-off'); if (live) void runtime.current?.controls({ mic_muted: !s.micMuted }); else dispatch({ type: 'mic' }); }}><CapsuleIcon name={s.micMuted ? 'microphone-off' : 'microphone'}/></Button>
             <span className="divider"/>
             <Button label={s.mode === 'text' ? '收起文字，返回语音' : s.mode === 'idle' ? '开始语音演示' : '结束语音并隐藏胶囊'} className="wave-button" onClick={() => s.mode === 'voice' ? end() : mode('voice')}>{s.mode === 'voice' ? <><VoicePresence state={presence} color={themeColor}/><CapsuleIcon name="close" className="end-icon"/></> : <CapsuleIcon name="microphone"/>}</Button>
             <span className="divider"/>
-            <Button label={s.soundMuted ? '开启播报声音' : '关闭播报声音'} aria-pressed={s.soundMuted} aria-hidden={s.mode !== 'voice'} tabIndex={s.mode === 'voice' ? 0 : -1} className="edge-control" onClick={() => { feedback(s.soundMuted ? 'speaker-on' : 'speaker-off'); dispatch({ type: 'sound' }); }}><CapsuleIcon name={s.soundMuted ? 'speaker-off' : 'speaker'}/></Button>
+            <Button label={s.soundMuted ? '开启播报声音' : '关闭播报声音'} aria-pressed={s.soundMuted} aria-hidden={s.mode !== 'voice'} tabIndex={s.mode === 'voice' ? 0 : -1} className="edge-control" onClick={() => { feedback(s.soundMuted ? 'speaker-on' : 'speaker-off'); if (live) void runtime.current?.controls({ speech_muted: !s.soundMuted }); else dispatch({ type: 'sound' }); }}><CapsuleIcon name={s.soundMuted ? 'speaker-off' : 'speaker'}/></Button>
           </div>
           <Button label={s.inbox ? '收起通知' : `打开通知，${count} 条未读示例`} aria-expanded={s.inbox} className="glass detached notification" data-glass="20" data-interactive onClick={toggleInbox}><CapsuleIcon name={s.inbox ? 'collapse' : 'bell'}/>{count > 0 && !s.inbox && <span className="unread">{count > 9 ? '9+' : count}</span>}</Button>
         </div>

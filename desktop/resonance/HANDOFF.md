@@ -34,8 +34,10 @@ real 8006 daemon.
 - `src/model.ts`: reducer and examples. With a runtime, `open`/`append`/
   `settle` from `runtime.ts` own phase and reply; `hearing` is the daemon's
   `listening` (utterance capture) and maps to the `listening` presence. The
-  microphone and playback mute flags are still local UI state: the daemon has
-  no mute endpoint yet, so those two buttons do not change capture or speech.
+  microphone and playback mute buttons POST `/inherent/controls`; the daemon
+  owns that state (ADR-0015 D2) and every answer, including the `{}` sync on
+  connect, drives the buttons. Muted speech keeps the reply under
+  `processing`: nothing is audible, so there is nothing to stop.
 - `src/main.tsx`: mock text-send/reply timers and the speaking auto-timeout run
   only when `live` is false; the inline notification reply timer is still a
   mock. Reply text is shown with `<voice>`/`<document>` markup stripped.
