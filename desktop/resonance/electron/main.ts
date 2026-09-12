@@ -60,7 +60,8 @@ if (locked) app.whenReady().then(() => {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   if (verification) win.webContents.setAudioMuted(true);
   win.webContents.on('will-navigate', event => event.preventDefault());
-  win.loadFile(path.join(here, '../dist/index.html'), { query: lab ? { lab: '1' } : {} });
+  // Lab and verification stay simulated; the desktop build talks to the daemon (same port env as the Swift card).
+  win.loadFile(path.join(here, '../dist/index.html'), { query: lab ? { lab: '1' } : verification ? {} : { port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006' } });
   win.once('ready-to-show', () => restore(lab));
   win.on('close', event => { if (!quitting) { event.preventDefault(); win.hide(); } });
   win.on('moved', () => {

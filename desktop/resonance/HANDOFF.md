@@ -1,8 +1,13 @@
 # Resonance voice integration handoff
 
-This is a standalone Electron surface. It currently makes no network requests,
-does not record audio, does not connect to the Jarvis runtime, and does not
-persist conversations. Keep UI refinement and runtime wiring scoped separately.
+The desktop build talks to the Jarvis daemon over the Inherent v1 wire
+(`src/runtime.ts`): `voice` phases and `open`/`append`/`done` reply envelopes
+in over `ws://127.0.0.1:<port>/inherent/ws`, text (`/inherent/submit`) and
+stop-speaking (`/inherent/cancel-response`, `foreground_output`) out over HTTP.
+It records no audio and plays no speech; the daemon owns mic and speaker. The
+port comes from `JARVIS_INHERENT_BRIDGE_PORT` (default 8006, same as the Swift
+card) and reaches the renderer as the `port` query. `--lab` and `--verify` runs
+get no `port` and keep the simulation; the two sources never run together.
 
 ## Run and verify
 
@@ -17,16 +22,23 @@ Electron windows with isolated verification storage and muted output. The last
 UI iteration passed 45 + 17 + 16 checks. Reference recordings and generated
 evidence are intentionally local; they are not required to run these checks.
 
+Live link: start a daemon on a test port and run
+`JARVIS_INHERENT_BRIDGE_PORT=8016 RESONANCE_TEST_WAV=<16 kHz mono wav>
+RESONANCE_TEST_DAEMON_PID=<pid> node scripts/verify-runtime.mjs`. It types a
+turn through the real composer, uploads the utterance to `/inherent/asr-submit`,
+and SIGTERMs the daemon to prove the reconnect panel. Never point it at the
+real 8006 daemon.
+
 ## Current seams
 
-- `src/model.ts`: simulated reducer, examples, microphone/playback flags and
-  listening/processing/speaking/error phases. These are local UI state, not
-  acknowledgements from a backend. Replace simulated actions with confirmed
-  runtime state when wiring.
-- `src/main.tsx`: mock text-send/reply timers, inline notification reply timer,
-  phase-to-presence mapping, and a settings-only demonstration sequence.
-  Automatic presence rests quietly while waiting. Remove or gate mock timers
-  when real events own the corresponding state; do not run both sources.
+- `src/model.ts`: reducer and examples. With a runtime, `open`/`append`/
+  `settle` from `runtime.ts` own phase and reply; `hearing` is the daemon's
+  `listening` (utterance capture) and maps to the `listening` presence. The
+  microphone and playback mute flags are still local UI state: the daemon has
+  no mute endpoint yet, so those two buttons do not change capture or speech.
+- `src/main.tsx`: mock text-send/reply timers and the speaking auto-timeout run
+  only when `live` is false; the inline notification reply timer is still a
+  mock. Reply text is shown with `<voice>`/`<document>` markup stripped.
 - `src/VoicePresence.tsx`: receives a visual state and theme color. Geometry
   interpolates continuously; current phrase energy is synthetic. There is no
   real audio-level input yet. Add a measured level/envelope here when wiring

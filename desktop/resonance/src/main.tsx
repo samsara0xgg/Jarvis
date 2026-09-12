@@ -8,6 +8,7 @@ import { VoicePresence, presenceLabels, type Presence } from './VoicePresence';
 import { CapsuleIcon } from './CapsuleIcon';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
 import { defaultPreferences, usePreferences } from './preferences';
+import { connect, type Runtime } from './runtime';
 declare global { interface Window { jarvis?: {
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => void;
   copy: (text: string) => Promise<boolean>;
@@ -16,17 +17,28 @@ declare global { interface Window { jarvis?: {
   onCommand: (cb: (value: string) => void) => () => void;
 } } }
 const lab = new URLSearchParams(location.search).has('lab');
-const labels: Record<Phase, string> = { listening: '正在听取', processing: '正在处理', speaking: '正在播报', error: '连接失败' };
+// A `port` query means Electron wants the live daemon link; without it every timer below is the simulation.
+const runtimePort = new URLSearchParams(location.search).get('port');
+const live = runtimePort !== null;
+// The render layer wraps speech in <voice> and card text in <document> (voice_tts.py:99); show both, drop the markup and any half-streamed tag.
+const visible = (reply: string) => reply.replace(/<\/voice>/g, '\n').replace(/<\/?(voice|document)>/g, '').replace(/<\/?[a-z]*$/, '').trim();
+const labels: Record<Phase, string> = { listening: '正在听取', hearing: '正在听', processing: '正在处理', speaking: '正在播报', error: '连接失败' };
 function Button({ label, children, className = '', ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
   return <button {...props} className={`icon-button ${className}`} aria-label={label} title={label}><span className="button-glyph" key={label}>{children}</span></button>;
 }
 function App() {
-  const [s, dispatch] = useReducer(reducer, initialState);
+  const [s, dispatch] = useReducer(reducer, live ? { ...initialState, results: [] } : initialState);
   const [preferences, updatePreferences] = usePreferences();
   const { opacity, glassStrength, feedbackEnabled, feedbackVolume, themeColor } = preferences;
   const setOpacity = (value: number) => updatePreferences({ opacity: value });
   const feedback = (cue: FeedbackCue) => { if (feedbackEnabled) void playFeedback(cue, feedbackVolume); };
   useEffect(() => { warmFeedback(); return stopFeedback; }, []);
+  const runtime = useRef<Runtime | null>(null);
+  useEffect(() => {
+    if (runtimePort === null) return;
+    runtime.current = connect(runtimePort, dispatch);
+    return () => { runtime.current?.close(); runtime.current = null; };
+  }, []);
   const [background, setBackground] = useState('forest');
   const [scale, setScale] = useState(1.6);
   const [settings, setSettings] = useState(false);
@@ -41,7 +53,7 @@ function App() {
     return () => timers.forEach(clearTimeout);
   }, [presencePreview]);
   const presence: Presence = s.micMuted ? 'muted' : presencePreview === 'cycle' ? cyclePhase
-    : presencePreview !== 'auto' ? presencePreview : s.phase === 'processing' ? 'thinking'
+    : presencePreview !== 'auto' ? presencePreview : s.phase === 'hearing' ? 'listening' : s.phase === 'processing' ? 'thinking'
     : s.phase === 'speaking' ? 'speaking' : s.phase === 'error' ? 'muted' : 'standby';
   const [added, setAdded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -104,7 +116,7 @@ function App() {
   const closeDetail = () => { dispatch({ type: 'detail', id: null }); if (s.mode === 'text') void focusInput(); else if (!settings) void window.jarvis?.focus(false); };
   const closeSettings = () => { setSettings(false); if (s.mode === 'text') void focusInput(); else if (!s.detail) void window.jarvis?.focus(false); };
   const toggleInbox = () => { if (followupTimer.current) clearTimeout(followupTimer.current); if (!s.inbox) setInboxExpanded(false); setReplying(null); dispatch({ type: 'inbox' }); if (s.detail && s.mode !== 'text' && !settings) void window.jarvis?.focus(false); };
-  useEffect(() => { if (s.phase === 'speaking') { const t = setTimeout(() => dispatch({ type: 'interrupt' }), 6500); return () => clearTimeout(t); } }, [s.phase]);
+  useEffect(() => { if (!live && s.phase === 'speaking') { const t = setTimeout(() => dispatch({ type: 'interrupt' }), 6500); return () => clearTimeout(t); } }, [s.phase]);
   useLayoutEffect(() => {
     const el = shell.current;
     if (!el || lab) return;
@@ -130,9 +142,16 @@ function App() {
   useCapsuleDrag(!lab);
   const send = () => {
     if (!s.draft.trim() || s.phase === 'processing') return;
+    const text = s.draft.trim();
     dispatch({ type: 'send' });
+    if (live) { runtime.current?.submit(text).catch(() => dispatch({ type: 'phase', phase: 'error' })); return; }
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => { dispatch({ type: 'answer' }); timer.current = null; }, 1400);
+  };
+  const interrupt = () => { if (live) void runtime.current?.cancel(s.responseId); dispatch({ type: 'interrupt' }); };
+  const retry = () => {
+    if (live) { runtime.current?.reconnect(); return; }
+    dispatch({ type: 'phase', phase: 'processing' }); if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => dispatch({ type: 'phase', phase: 'listening' }), 1200);
   };
   const hide = () => { setPresencePreview('auto'); stopFeedback(); window.jarvis?.hide(); if (lab) setHidden(true); };
   const end = () => { if (timer.current) clearTimeout(timer.current); dispatch({ type: 'end' }); hide(); };
@@ -148,7 +167,7 @@ function App() {
       {lab && <header className="lab-header"><div><span>JARVIS</span><h1>Resonance</h1><p>交互原型 · 所有语音、回复与结果均为模拟</p></div><p className="lab-note">无色毛玻璃<br/>背景赋予玻璃颜色，声纹随状态舒展。</p></header>}
       <div className="stage">
       {(!hidden || !lab) && <div ref={shell} className={`shell mode-${s.mode}`}>
-        <div className="control-row" role="toolbar" aria-label="Jarvis 语音控制 · 演示，无真实录音" onContextMenu={e => {
+        <div className="control-row" role="toolbar" aria-label={live ? 'Jarvis 语音控制' : 'Jarvis 语音控制 · 演示，无真实录音'} onContextMenu={e => {
           if ((e.target as Element).closest('textarea')) return;
           e.preventDefault(); setSettings(true); void window.jarvis?.focus(true);
         }}>
@@ -158,7 +177,7 @@ function App() {
               <textarea ref={input} aria-label="文字输入" rows={1} placeholder="说不方便说的话…" value={s.draft} onChange={e => dispatch({ type: 'draft', value: e.target.value })} onKeyDown={e => {
                 if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
               }}/>
-              <Button label={s.phase === 'processing' ? '正在处理示例输入' : '发送示例输入'} className="send" disabled={!s.draft.trim() || s.phase === 'processing'} onClick={send}><CapsuleIcon name="send"/></Button>
+              <Button label={s.phase === 'processing' ? (live ? '正在处理' : '正在处理示例输入') : (live ? '发送' : '发送示例输入')} className="send" disabled={!s.draft.trim() || s.phase === 'processing'} onClick={send}><CapsuleIcon name="send"/></Button>
             </div>
           </div>
           <div className="voice-pill glass" data-glass="20" data-interactive>
@@ -170,8 +189,8 @@ function App() {
           </div>
           <Button label={s.inbox ? '收起通知' : `打开通知，${count} 条未读示例`} aria-expanded={s.inbox} className="glass detached notification" data-glass="20" data-interactive onClick={toggleInbox}><CapsuleIcon name={s.inbox ? 'collapse' : 'bell'}/>{count > 0 && !s.inbox && <span className="unread">{count > 9 ? '9+' : count}</span>}</Button>
         </div>
-        <div className="status-line" data-interactive><span role="status" className="sr-only">{s.mode === 'idle' ? '待机' : status}<span className="demo-label"> · 演示</span></span>
-          {s.phase === 'speaking' && <button className="text-action" onClick={() => dispatch({ type: 'interrupt' })}><Pause size={12}/>停止播报</button>}
+        <div className="status-line" data-interactive><span role="status" className="sr-only">{s.mode === 'idle' ? '待机' : status}{!live && <span className="demo-label"> · 演示</span>}</span>
+          {s.phase === 'speaking' && <button className="text-action" onClick={interrupt}><Pause size={12}/>停止播报</button>}
           <Button label="外观与窗口选项" className="options" aria-expanded={settings} onClick={() => { if (settings) closeSettings(); else { setSettings(true); void window.jarvis?.focus(true); } }}><DotsThree size={19}/></Button>
         </div>
         {settings && <section className="settings glass" data-glass="18" data-interactive aria-label="外观与窗口选项">
@@ -190,8 +209,8 @@ function App() {
         </section>}
         {added && <section className="addition glass" data-glass="18" data-interactive><button onClick={() => { dispatch({ type: 'attachment' }); setAdded(false); }}><Paperclip size={18}/>{s.attachment ? '移除示例附件' : '附加示例便笺'}</button><p>仅使用预置示例，不读取本地文件。</p></section>}
         {s.attachment && <div className="attachment" data-interactive><Paperclip size={13}/>示例便笺.txt<Button label="移除示例附件" onClick={() => dispatch({ type: 'attachment' })}><X size={12}/></Button></div>}
-        {s.phase === 'error' && <section className="error-panel glass" data-glass="18" data-interactive><div><strong>暂时没有连上</strong><p>演示连接失败。你可以重试或继续打字。</p></div><Button label="重试模拟连接" onClick={() => { dispatch({ type: 'phase', phase: 'processing' }); if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => dispatch({ type: 'phase', phase: 'listening' }), 1200); }}><ArrowCounterClockwise/></Button></section>}
-        {s.reply && !s.inbox && <section className="reply glass" data-glass="18" data-interactive><div className="section-heading"><span>示例回复</span><Button label="复制示例回复" onClick={() => void copy(s.reply)}>{copied ? <Check size={16}/> : <Copy size={16}/>}</Button></div><p>{s.reply}</p></section>}
+        {s.phase === 'error' && <section className="error-panel glass" data-glass="18" data-interactive><div><strong>暂时没有连上</strong><p>{live ? 'Jarvis 服务没有响应，正在重连。' : '演示连接失败。你可以重试或继续打字。'}</p></div><Button label={live ? '立即重连' : '重试模拟连接'} onClick={retry}><ArrowCounterClockwise/></Button></section>}
+        {s.reply && !s.inbox && <section className="reply glass" data-glass="18" data-interactive><div className="section-heading"><span>{live ? '回复' : '示例回复'}</span><Button label="复制示例回复" onClick={() => void copy(visible(s.reply))}>{copied ? <Check size={16}/> : <Copy size={16}/>}</Button></div><p>{visible(s.reply)}</p></section>}
         {showInbox && <section className={`inbox ${s.inbox ? 'is-open' : 'is-closing'} ${stacked ? 'is-stacked' : 'is-expanded'}`} inert={!s.inbox} aria-hidden={!s.inbox} aria-label="示例通知" data-interactive>
           {s.results.length === 0 && <div className="empty glass" data-glass="18"><Bell size={20}/><p>暂时没有待查看的事项</p><small>任务结果、待回应事项和你设定的提醒会出现在这里。</small></div>}
           {s.results.filter(r => !s.detail || r.id === s.detail).map((r, index) => <article key={r.id} style={{ '--card-index': index } as React.CSSProperties} className={`result glass ${dismissing.includes(r.id) ? 'is-dismissing' : ''} ${replying === r.id ? 'is-replying' : ''}`} inert={dismissing.includes(r.id) || (stacked && index > 0)} aria-hidden={stacked && index > 0} data-glass="28">
