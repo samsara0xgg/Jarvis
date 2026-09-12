@@ -6,7 +6,6 @@ import sqlite3
 import subprocess
 import sys
 import threading
-from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -14,11 +13,9 @@ import pytest
 from jarvis.execution import codex_action
 from jarvis.execution.action_runner import ActionRunner, ActionRunnerError, ToolConcurrency
 from jarvis.execution.codex_client import CodexAppServerClient
-from jarvis.execution.tools import build_default_registry
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.integration.test_wave4b_action_runner import (
     _ack,
-    _authorize,
     _fixed_resolver,
     _Fixture,
     _fixture_tool,
@@ -409,65 +406,3 @@ def test_restart_retains_overlapping_global_debt(tmp_path: Path) -> None:
     finally:
         runner.shutdown()
         conn.close()
-
-
-def test_default_short_mutation_releases_before_same_turn_reads(tmp_path: Path) -> None:
-    """Real create_task followed by time/list tools cannot self-wait on global debt."""
-    fixture = _Fixture(tmp_path, tools=(), max_concurrent_runs=1)
-    assert fixture.runner is not None
-    registry = build_default_registry(action_runner=fixture.runner)
-    try:
-        for name, arguments in (
-            ("create_task", {"goal": "isolated acceptance fixture"}),
-            ("get_current_time", {}),
-            ("list_tasks", {}),
-        ):
-            request = _request(name, name, turn_id="chain", arguments=arguments)
-            _authorize(fixture.lifecycle, request.action_id)
-            submission = registry.submit(request, fixture.conn, fixture.paths, fixture.lifecycle)
-            submission.handle.result(timeout=2)
-            assert fixture.runner.leases.live_scopes() == ()
-        assert len(_payloads(fixture.conn, "task.created")) == 1
-        assert len(_payloads(fixture.conn, "action.running")) == 3
-    finally:
-        fixture.close()
-
-
-def test_verification_lease_and_actual_subprocess_share_task_repo(tmp_path: Path) -> None:
-    """Missing explicit cwd resolves from durable run provenance for both boundaries."""
-    fixture = _Fixture(tmp_path, tools=())
-    repo = tmp_path / "verified-repo"
-    repo.mkdir()
-    artifact = tmp_path / "diff.txt"
-    artifact.write_text("fixture diff")
-    registry = build_default_registry(action_runner=fixture.runner)
-    emit_event(
-        fixture.conn,
-        type="task.created",
-        payload={
-            "task_id": "task",
-            "goal": "fixture",
-            "repo_path": str(repo),
-        },
-    )
-    emit_event(fixture.conn, type="run.started", payload={"run_id": "run", "task_id": "task"})
-    request = replace(
-        _request(
-            "verify_diff",
-            "verify",
-            arguments={
-                "run_id": "run",
-                "artifact_path": str(artifact),
-            },
-        ),
-        payload={"verify_command": "pwd"},
-    )
-    try:
-        _authorize(fixture.lifecycle, "verify")
-        result = registry.dispatch(request, fixture.conn, fixture.paths, fixture.lifecycle)
-        assert result.slots[1].payload["stdout_tail"].strip() == str(repo.resolve())
-        assert _payloads(fixture.conn, "action.running")[0]["resource_keys"] == "repo:" + str(
-            repo.resolve()
-        )
-    finally:
-        fixture.close()

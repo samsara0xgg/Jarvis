@@ -5844,7 +5844,8 @@ VERIFY_DIFF_TOOL_DEF: Final[ToolDefinition] = ToolDefinition(
         "slot 1 is the diff observation; slot 2 is the verify_command "
         "exit predicate when the bound task carries a verify_command."
     ),
-    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM, CallerPrincipal.OBSERVER}),
+    # frozen 2026-09-12: engineering is off the LLM menu; the observer keeps it.
+    allowed_callers=frozenset({CallerPrincipal.OBSERVER}),
     risk_level="L0",
     result_semantics="observation",
     is_async=False,
@@ -6014,7 +6015,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
                 "Spawn a worker (codex stub Day-1) for the given task_id; "
                 "writes diff.json artifact and reports completion asynchronously."
             ),
-            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            # frozen 2026-09-12: engineering is off the LLM menu; no caller may reach this.
+            allowed_callers=frozenset(),
             risk_level="L2",
             result_semantics="ack",
             is_async=True,
@@ -6049,7 +6051,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
                 "Record a new task in the Task Ledger. Use when Allen says "
                 "'帮我做 X' / '今天/明天给我 Y' / similar."
             ),
-            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            # frozen 2026-09-12: engineering is off the LLM menu; no caller may reach this.
+            allowed_callers=frozenset(),
             risk_level="L1",
             result_semantics="ack",
             is_async=False,
@@ -6070,7 +6073,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
                 "observation. Use when Allen asks 'what tasks do I have' "
                 "or 'show my open work'."
             ),
-            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            # frozen 2026-09-12: engineering is off the LLM menu; no caller may reach this.
+            allowed_callers=frozenset(),
             risk_level="L0",
             result_semantics="observation",
             is_async=False,
@@ -6332,7 +6336,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
                 "one. Risk L3 — every dispatch requires Allen's explicit "
                 "confirmation."
             ),
-            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            # frozen 2026-09-12: engineering is off the LLM menu; no caller may reach this.
+            allowed_callers=frozenset(),
             risk_level="L3",
             result_semantics="ack",
             is_async=False,
@@ -6356,7 +6361,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
                     "ActionRun. Use when Allen asks to stop, cancel or abort a "
                     "running action."
                 ),
-                allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+                # frozen 2026-09-12: engineering is off the LLM menu; no caller may reach this.
+                allowed_callers=frozenset(),
                 # ADR-0008 D10: L2 is the fixed risk of the cancellation
                 # command; the target's risk never transfers. Under the L3
                 # confirmation threshold that makes `requires_confirmation`

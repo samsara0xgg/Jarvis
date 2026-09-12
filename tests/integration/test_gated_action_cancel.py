@@ -14,22 +14,18 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast, get_type_hints
 
 import pytest
 
-from jarvis import decision
 from jarvis.decision import DecideContext, decide
-from jarvis.decision.action_cancel import (
-    build_cancel_action_request,
-    resolve_cancellable_action,
-)
+from jarvis.decision.action_cancel import resolve_cancellable_action
 from jarvis.decision.gates import pre_action_gate
 from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.decision.packet import assemble_packet
-from jarvis.decision.policy import effective_policy, validate_requires_confirmation
+from jarvis.decision.policy import effective_policy
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.action_runner import (
     ActionRunner,
@@ -40,7 +36,6 @@ from jarvis.execution.tools import (
     ActionLifecycle,
     RawResult,
     ToolDefinition,
-    ToolRegistry,
     build_default_registry,
     default_resource_key_resolver,
 )
@@ -383,64 +378,6 @@ def test_the_packet_carries_the_admission_lookup(tmp_path: Path) -> None:
         conn.close()
 
 
-# --- (10) the L4 tool: registered only with a runner, no resource key --------
-
-
-def _cancel_tool_def(registry: ToolRegistry) -> ToolDefinition:
-    """The registered `cancel_action` definition."""
-    return registry.for_caller(CallerPrincipal.JARVIS_LLM)[-1]
-
-
-def test_cancel_action_is_registered_only_when_a_runner_is_supplied(tmp_path: Path) -> None:
-    """Without an ActionRunner the LLM's tool list is byte-identical to today's."""
-    without = build_default_registry()
-    runner = ActionRunner(event_log_path=tmp_path / "events.db", max_concurrent_runs=1)
-    try:
-        with_runner = build_default_registry(action_runner=runner)
-        names_without = [t.name for t in without.for_caller(CallerPrincipal.JARVIS_LLM)]
-        names_with = [t.name for t in with_runner.for_caller(CallerPrincipal.JARVIS_LLM)]
-        assert "cancel_action" not in names_without
-        assert names_with == [*names_without, "cancel_action"]
-
-        tool = _cancel_tool_def(with_runner)
-        assert tool.name == "cancel_action"
-        assert tool.risk_level == "L2"
-        assert tool.requires_confirmation is False
-        assert tool.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
-        assert tool.result_semantics == "ack"
-        assert tool.is_async is False
-        assert tool.domain == "agent_control"
-        assert tool.read_only is False
-        assert tool.requires_entity is True
-        assert tool.post_action_check is None
-        assert tool.result_budget_s is None
-        assert tool.input_schema["required"] == ["target_action_id", "reason"]
-        assert tool.input_schema["additionalProperties"] is False
-        assert set(tool.input_schema["properties"]) == {"target_action_id", "reason"}
-        # Boot validation: L2 under the L3 threshold must declare False.
-        validate_requires_confirmation(
-            with_runner.for_caller(CallerPrincipal.JARVIS_LLM),
-            effective_policy().confirmation_threshold,
-        )
-    finally:
-        runner.shutdown(wait=False)
-
-
-def test_cancel_action_takes_no_resource_key(tmp_path: Path) -> None:
-    """The cancel signals a handle; it must not queue behind the target's lease."""
-    runner = ActionRunner(event_log_path=tmp_path / "events.db", max_concurrent_runs=1)
-    conn = open_event_log(tmp_path / "events.db")
-    try:
-        tool = _cancel_tool_def(build_default_registry(action_runner=runner))
-        request = _cancel_request("A1", claimed_gate_uid="evt-1")
-        concurrency = default_resource_key_resolver(request, tool, conn)
-        assert concurrency.resource_keys == ()
-        assert concurrency.mode == "read_shared"
-    finally:
-        conn.close()
-        runner.shutdown(wait=False)
-
-
 # --- the decide()-driven rig: real L3, real L4, real runner, scripted LLM ----
 
 _STASH_REF = "f" * 40
@@ -771,207 +708,6 @@ def test_resolve_cancellable_action_single_ambiguous_none(tmp_path: Path) -> Non
         assert gone.kind == "none"
     finally:
         conn.close()
-
-
-# --- (2) none → spoken answer, nothing proposed -------------------------------
-
-
-def test_no_open_action_answers_without_proposing(tmp_path: Path) -> None:
-    """`none` speaks a plain answer: no tool dispatch, no proposal, no gate."""
-    rig = _Rig(tmp_path, workers=(), keys={})
-    try:
-        result = rig.cancel()
-        assert _open_actions_notes(rig) == []
-        assert _spoken(result) == _NONE_ANSWER
-        assert result.attention_channel == "voice_notify"
-        assert rig.payloads("action.proposed") == []
-        assert [g for g in rig.payloads("gate.evaluated") if g["gate"] == "pre_action"] == []
-        _assert_no_confirmation_and_no_lease(rig)
-    finally:
-        rig.close()
-
-
-# --- (3) ambiguous → clarifying question, not a confirmation -----------------
-
-
-def test_two_open_actions_ask_which_one(tmp_path: Path) -> None:
-    """`ambiguous` names both candidates on voice_notify; no ask, no tool call."""
-    first = _Worker("worker_a")
-    second = _Worker("worker_b")
-    rig = _Rig(
-        tmp_path,
-        workers=(first, second),
-        keys={"worker_a": "repo:a", "worker_b": "repo:b"},
-    )
-    try:
-        id_a = rig.start(first)
-        id_b = rig.start(second)
-        result = rig.cancel()
-        text = _spoken(result)
-        assert text.startswith("哪一个")
-        assert id_a in text
-        assert id_b in text
-        assert result.attention_channel == "voice_notify"
-        cancels = [p for p in rig.payloads("action.proposed") if p["tool_name"] == "cancel_action"]
-        assert cancels == []
-        assert rig.terminals_of(id_a) == []
-        assert rig.terminals_of(id_b) == []
-        _assert_no_confirmation_and_no_lease(rig)
-    finally:
-        rig.close()
-
-
-# --- (4) the happy path -------------------------------------------------------
-
-
-def test_cancel_stops_the_one_running_action(tmp_path: Path) -> None:
-    """Dispatched → running → cancel_action passes at L2 → action.cancelled, once."""
-    worker = _Worker("worker_a")
-    rig = _Rig(tmp_path, workers=(worker,), keys={"worker_a": "repo:a"})
-    try:
-        target = rig.start(worker)
-        assert rig.payloads("action.dispatched", target)
-        assert rig.payloads("action.running", target)
-
-        result = rig.cancel()
-
-        # The LLM was shown the open action it can name.
-        notes = _open_actions_notes(rig)
-        assert len(notes) == 1
-        assert f"action_id={target!r}" in notes[0]
-        assert "cancel_action" in notes[0]
-        proposed = [p for p in rig.payloads("action.proposed") if p["tool_name"] == "cancel_action"]
-        assert len(proposed) == 1
-        assert proposed[0]["risk_level"] == "L2"
-        assert proposed[0]["target_entity_ref"] == f"action:{target}"
-        assert proposed[0]["arguments"]["target_action_id"] == target
-        gate = rig.cancel_gate()
-        assert gate["outcome"] == "pass", gate["reasons"]
-        assert gate["check_results"]["admission_matched"] is True
-        cancelled = rig.payloads("action.cancelled", target)
-        assert len(cancelled) == 1
-        assert cancelled[0]["cancellation_mode"] == "terminate_process"
-        assert cancelled[0]["reason"] == "user_stop"
-        assert rig.terminals_of(target) == ["action.cancelled"]
-        assert _spoken(result) == _STOPPED_ANSWER
-        assert result.attention_channel == "voice_notify"
-        assert rig.runner.context_of(target) is None
-        _assert_no_confirmation_and_no_lease(rig)
-    finally:
-        rig.close()
-
-
-# --- (5) dispatched but not yet running ---------------------------------------
-
-
-def test_a_queued_action_reports_not_stopped_and_still_runs(tmp_path: Path) -> None:
-    """No live context → `CancelUnconfirmed(no_live_context)`, no terminal, it runs on."""
-    holder = _Worker("worker_a")
-    queued = _Worker("worker_a2")
-    rig = _Rig(
-        tmp_path,
-        workers=(holder, queued),
-        keys={"worker_a": "repo:a", "worker_a2": "repo:a"},
-    )
-    try:
-        rig.start(holder)
-        target = rig.start(queued, wait_running=False)
-        assert rig.payloads("action.dispatched", target)
-        assert rig.payloads("action.running", target) == []
-        assert rig.runner.context_of(target) is None
-
-        result = rig.cancel(target)
-
-        assert rig.cancel_gate()["outcome"] == "pass"
-        observed = rig.payloads("action.result_observed")
-        acks = [p for p in observed if "target_action_id" in p["tool_output"]]
-        assert len(acks) == 1
-        ack = json.loads(acks[0]["tool_output"])
-        assert ack["status"] == "unconfirmed"
-        assert ack["reason"] == "no_live_context"
-        assert ack["target_action_id"] == target
-        assert _spoken(result) == _NOT_STARTED_ANSWER
-        assert rig.payloads("action.cancelled", target) == []
-        assert rig.terminals_of(target) == []
-
-        # Release the holder: the queued action runs to its own terminal.
-        holder.release.set()
-        assert queued.entered.wait(timeout=10)
-        queued.release.set()
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not rig.payloads("action.result_observed", target):
-            time.sleep(0.01)
-        assert rig.terminals_of(target) == ["action.result_observed"]
-        assert rig.payloads("action.cancelled", target) == []
-    finally:
-        rig.close()
-
-
-# --- (6) a stale gate uid is refused end to end -------------------------------
-
-
-def test_a_forged_gate_uid_is_refused_before_dispatch(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A stale `authorization_gate_event_uid` → refuse; nothing dispatched or cancelled."""
-    worker = _Worker("worker_a")
-    rig = _Rig(tmp_path, workers=(worker,), keys={"worker_a": "repo:a"})
-
-    def _forged(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401 — passthrough wrapper.
-        request = build_cancel_action_request(*args, **kwargs)
-        return replace(request, authorization_gate_event_uid="evt-stale")
-
-    monkeypatch.setattr(decision, "build_cancel_action_request", _forged)
-    try:
-        target = rig.start(worker)
-        rig.cancel()
-        gate = rig.cancel_gate()
-        assert gate["outcome"] == "refuse"
-        assert gate["check_results"]["admission_matched"] is False
-        cancel_ids = rig.cancel_ids()
-        assert cancel_ids
-        assert [p for p in rig.payloads("action.dispatched") if p["action_id"] in cancel_ids] == []
-        assert rig.payloads("action.cancelled") == []
-        assert rig.runner.context_of(target) is not None
-        _assert_no_confirmation_and_no_lease(rig)
-    finally:
-        rig.close()
-
-
-# --- (7) run_id: stash-bearing carries it, a non-stash target does not --------
-
-
-def test_run_id_on_action_cancelled_follows_the_stash(tmp_path: Path) -> None:
-    """Pins action_runner `_stamp_worker_identity`: run_id only with a stash_ref."""
-    stashing = _Worker("worker_stash", stash=True)
-    plain = _Worker("worker_plain")
-    rig = _Rig(
-        tmp_path,
-        workers=(stashing, plain),
-        keys={"worker_stash": "repo:a", "worker_plain": "repo:b"},
-    )
-    try:
-        target_stash = rig.start(stashing)
-        started = rig.payloads("run.started")
-        assert len(started) == 1
-        admission = read_decision_snapshot(rig.conn).projections.action_admissions.get(target_stash)
-        assert admission is not None
-        assert admission.run_id == started[0]["run_id"]
-        rig.cancel()
-        cancelled = rig.payloads("action.cancelled", target_stash)
-        assert len(cancelled) == 1
-        assert cancelled[0]["stash_ref"] == _STASH_REF
-        assert cancelled[0]["run_id"] == started[0]["run_id"]
-
-        target_plain = rig.start(plain)
-        rig.cancel()
-        plain_cancelled = rig.payloads("action.cancelled", target_plain)
-        assert len(plain_cancelled) == 1
-        assert "run_id" not in plain_cancelled[0]
-        assert "stash_ref" not in plain_cancelled[0]
-    finally:
-        rig.close()
 
 
 # --- (9) response cancellation never touches an action ------------------------
