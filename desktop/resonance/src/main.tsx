@@ -8,11 +8,12 @@ import { VoicePresence, presenceLabels, type Presence } from './VoicePresence';
 import { CapsuleIcon } from './CapsuleIcon';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
 import { defaultPreferences, usePreferences } from './preferences';
+import { clipStackGlass, type GlassOcclusion } from './stackGlass';
 declare global { interface Window { jarvis?: {
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => void;
   copy: (text: string) => Promise<boolean>;
   layout: (mode: string, height: number) => void; focus: (enabled: boolean) => Promise<void>; hide: () => void; passthrough: (enabled: boolean) => void;
-  material: (rects: {x:number;y:number;width:number;height:number;radius:number;opacity:number}[], strength: number) => void;
+  material: (rects: {x:number;y:number;width:number;height:number;radius:number;opacity:number;occlusion?:GlassOcclusion}[], strength: number) => void;
   onCommand: (cb: (value: string) => void) => () => void;
 } } }
 const lab = new URLSearchParams(location.search).has('lab');
@@ -107,15 +108,16 @@ function App() {
   useEffect(() => { if (s.phase === 'speaking') { const t = setTimeout(() => dispatch({ type: 'interrupt' }), 6500); return () => clearTimeout(t); } }, [s.phase]);
   useLayoutEffect(() => {
     const el = shell.current;
-    if (!el || lab) return;
+    if (!el) return;
     const update = () => {
-      window.jarvis?.layout(s.mode, Math.ceil(el.getBoundingClientRect().height + 32));
-      window.jarvis?.material([...el.querySelectorAll<HTMLElement>('[data-glass]')].map(e => {
+      if (!lab) window.jarvis?.layout(s.mode, Math.ceil(el.getBoundingClientRect().height + 32));
+      const rects = [...el.querySelectorAll<HTMLElement>('[data-glass]')].map(e => {
         const r = e.getBoundingClientRect();
         let visibleOpacity = 1;
         for (let node: HTMLElement | null = e; node && node !== el; node = node.parentElement) { const style = getComputedStyle(node); visibleOpacity *= style.visibility === 'hidden' || style.display === 'none' ? 0 : Number(style.opacity); }
-        return { x: r.x, y: r.y, width: r.width, height: r.height, radius: Number(e.dataset.glass), opacity: visibleOpacity };
-      }), glassStrength);
+        return { x: r.x, y: r.y, width: r.width, height: r.height, radius: Number(e.dataset.glass), opacity: visibleOpacity, occlusion: clipStackGlass(e) };
+      });
+      if (!lab) window.jarvis?.material(rects, glassStrength);
     };
     update(); const observer = new ResizeObserver(update); observer.observe(el);
     el.querySelectorAll('[data-glass]').forEach(e => observer.observe(e));

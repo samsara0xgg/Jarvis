@@ -9,11 +9,11 @@ export const examples: Result[] = [
   { id: 'reminder', kind: 'reminder', title: '你设定的提醒', summary: '起来走一走，休息一下。', body: '演示提醒\n\n这是预置示例，没有创建定时任务。只有用户明确设置的提醒才进入此类通知。', read: false },
 ];
 export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean }
-export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, inbox: false, detail: null, results: [examples[0]], reply: '', draft: '', attachment: false };
+export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, inbox: false, detail: null, results: [examples[0], examples[3]], reply: '', draft: '', attachment: false };
 export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' | 'reset' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer' } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string } | { type: 'example'; id: string };
 export function reducer(s: State, a: Action): State {
   switch (a.type) {
-    case 'reset': return { ...initialState, results: examples.slice(0, 1) };
+    case 'reset': return { ...initialState, results: [...initialState.results] };
     case 'mode': return { ...s, mode: a.mode };
     case 'phase': return { ...s, phase: a.phase, reply: a.phase === 'error' ? '' : s.reply };
     case 'mic': return { ...s, micMuted: !s.micMuted };
