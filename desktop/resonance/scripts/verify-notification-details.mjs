@@ -12,11 +12,11 @@ try {
   check('center is exactly 90 by 36, or 2.5:1', center.width === 90 && center.height === 36);
   check('side buttons and icons retain their original dimensions', await page.locator('.notification').evaluate(e => e.clientWidth === 38 && e.querySelector('svg').getBoundingClientRect().width === 20));
   await page.locator('.notification').hover(); await page.waitForTimeout(180);
-  const split = () => page.locator('.control-row').evaluate(e => ({ left: Number(getComputedStyle(e,'::before').opacity), right: Number(getComputedStyle(e,'::after').opacity) }));
-  check('notification hover leaves the far separator and clears the near separator', (await split()).left === 1 && (await split()).right === 0);
+  const split = () => page.locator('.control-row').evaluate(e => ({ left: getComputedStyle(e,'::before').content, right: getComputedStyle(e,'::after').content }));
+  check('notification hover has no separators in the outer gaps', (await split()).left === 'none' && (await split()).right === 'none');
   await page.screenshot({ path:'evidence/notification-v2/notice-hover.png', omitBackground:true });
   await page.locator('.entry-button').hover(); await page.waitForTimeout(180);
-  check('compose hover reverses the separators', (await split()).left === 0 && (await split()).right === 1);
+  check('compose hover has no separators in the outer gaps', (await split()).left === 'none' && (await split()).right === 'none');
   await page.locator('.wave-button').hover(); await page.waitForTimeout(180);
   check('wave hover clears both internal separators', await page.locator('.voice-pill > .divider').evaluateAll(es => es.every(e => getComputedStyle(e).opacity === '0')));
   await page.locator('.voice-pill').click({ button:'right' });

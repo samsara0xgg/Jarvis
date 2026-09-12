@@ -4,16 +4,19 @@ import { IconContext, Bell, X, ArrowUpRight, Copy, Check, ArrowCounterClockwise,
 import { initialState, reducer, examples, type Phase } from './model';
 import './style.css';
 import { useCapsuleDrag } from './useCapsuleDrag';
-import { VoicePresence, presenceLabels, type Presence } from './VoicePresence';
+import { presenceLabels, type Presence } from './VoicePresence';
+import { MotionPreview } from './MotionPreview';
+import { PresentationCapsule } from './PresentationCapsule';
 import { CapsuleIcon } from './CapsuleIcon';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
 import { defaultPreferences, usePreferences } from './preferences';
+import { clipStackGlass, type GlassOcclusion } from './stackGlass';
 import { connect, type Runtime } from './runtime';
 declare global { interface Window { jarvis?: {
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => void;
   copy: (text: string) => Promise<boolean>;
   layout: (mode: string, height: number) => void; focus: (enabled: boolean) => Promise<void>; hide: () => void; passthrough: (enabled: boolean) => void;
-  material: (rects: {x:number;y:number;width:number;height:number;radius:number;opacity:number}[], strength: number) => void;
+  material: (rects: {x:number;y:number;width:number;height:number;radius:number;opacity:number;occlusion?:GlassOcclusion}[], strength: number) => void;
   onCommand: (cb: (value: string) => void) => () => void;
 } } }
 const lab = new URLSearchParams(location.search).has('lab');
@@ -28,7 +31,7 @@ function Button({ label, children, className = '', ...props }: React.ButtonHTMLA
   return <button {...props} className={`icon-button ${className}`} aria-label={label} title={label}><span className="button-glyph" key={label}>{children}</span></button>;
 }
 function App() {
-  const [s, dispatch] = useReducer(reducer, live ? { ...initialState, results: [] } : initialState);
+  const [s, dispatch] = useReducer(reducer, live ? { ...initialState, mode: 'idle', results: [] } : { ...initialState, mode: 'idle' });
   const [preferences, updatePreferences] = usePreferences();
   const { opacity, glassStrength, feedbackEnabled, feedbackVolume, themeColor } = preferences;
   const setOpacity = (value: number) => updatePreferences({ opacity: value });
@@ -63,7 +66,6 @@ function App() {
   useEffect(() => { if (s.live.state !== 'active') return; const t = setInterval(tick, 1000); return () => clearInterval(t); }, [s.live.state]);
   const liveClock = s.live.since !== null ? mmss(Math.max(0, Math.floor((Date.now() - s.live.since) / 1000))) : '';
   const liveBusy = s.live.state === 'connecting' || s.live.state === 'closing';
-  const toggleLive = () => { if (!live || liveBusy) return; void runtime.current?.controls({ live: s.live.state === 'active' ? 'stop' : 'start' }); };
   const [added, setAdded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [hidden, setHidden] = useState(false);
@@ -94,7 +96,7 @@ function App() {
   const showInbox = s.inbox || retainInbox;
   useEffect(() => {
     if (s.inbox) { setRetainInbox(true); return; }
-    const t = setTimeout(() => setRetainInbox(false), matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180);
+    const t = setTimeout(() => setRetainInbox(false), 260);
     return () => clearTimeout(t);
   }, [s.inbox]);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -103,11 +105,14 @@ function App() {
   const count = s.results.filter(r => !r.read).length;
   const detail = s.results.find(r => r.id === s.detail);
   const focusInput = async () => { await window.jarvis?.focus(true); input.current?.focus(); };
-  const mode = (value: 'voice' | 'text' | 'idle') => { setPresencePreview('auto'); if (value === 'voice' && s.mode !== 'voice') feedback('voice-enter'); dispatch({ type: 'mode', mode: value }); setAdded(false); setSettings(false); if (value !== 'text') void window.jarvis?.focus(false); };
+  const composerReturn = useRef<'voice' | 'idle'>('idle');
+  const mode = (value: 'voice' | 'text' | 'idle') => { if (value === 'text' && s.mode !== 'text') composerReturn.current = s.mode; setPresencePreview('auto'); if (value === 'voice' && s.mode !== 'voice') feedback('voice-enter'); dispatch({ type: 'mode', mode: value }); setAdded(false); setSettings(false); if (value !== 'text') void window.jarvis?.focus(false); };
+  // Starting a GPT-Live session opens the capsule too, so the clock and subtitles have somewhere to live.
+  const toggleLive = () => { if (!live || liveBusy) return; if (s.live.state !== 'active' && s.mode === 'idle') mode('voice'); void runtime.current?.controls({ live: s.live.state === 'active' ? 'stop' : 'start' }); };
   useEffect(() => { if (s.mode !== 'text') return; const t = setTimeout(() => void focusInput(), 80); return () => clearTimeout(t); }, [s.mode]);
   useEffect(() => window.jarvis?.onCommand(command => {
     setHidden(false);
-    if (command === 'keyboard') document.querySelector<HTMLButtonElement>('.icon-button')?.focus();
+    if (command === 'keyboard') document.querySelector<HTMLButtonElement>('.control-row button:not([inert])')?.focus();
     else if (command === 'settings') { setSettings(true); void window.jarvis?.focus(true); }
     else if (command === 'voice' || command === 'text') mode(command);
   }), [s.mode, feedbackEnabled, feedbackVolume]);
@@ -120,33 +125,56 @@ function App() {
       dispatch({ type: 'dismiss', id });
       setDismissing(ids => ids.filter(value => value !== id));
       dismissTimers.current.delete(id);
-    }, matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180));
+    }, 340));
   };
-  const closeDetail = () => { dispatch({ type: 'detail', id: null }); if (s.mode === 'text') void focusInput(); else if (!settings) void window.jarvis?.focus(false); };
-  const closeSettings = () => { setSettings(false); if (s.mode === 'text') void focusInput(); else if (!s.detail) void window.jarvis?.focus(false); };
-  const toggleInbox = () => { if (followupTimer.current) clearTimeout(followupTimer.current); if (!s.inbox) setInboxExpanded(false); setReplying(null); dispatch({ type: 'inbox' }); if (s.detail && s.mode !== 'text' && !settings) void window.jarvis?.focus(false); };
+  const closeDetail = () => { dispatch({ type: 'detail', id: null }); if (s.mode === 'text') void focusInput(); else if (s.inbox) void focusInbox(); else if (!settings) void window.jarvis?.focus(false); };
+  const closeSettings = () => { setSettings(false); if (s.mode === 'text') void focusInput(); else if (s.inbox) void focusInbox(); else if (!s.detail) void window.jarvis?.focus(false); };
+  const focusInbox = async () => {
+    await window.jarvis?.focus(true);
+    requestAnimationFrame(() => shell.current?.querySelector<HTMLButtonElement>('.inbox .result-main')?.focus({ preventScroll: true }));
+  };
+  const expandInbox = () => { setInboxExpanded(true); void focusInbox(); };
+  const collapseInbox = () => {
+    if (followupTimer.current) clearTimeout(followupTimer.current);
+    setReplying(null); setInboxExpanded(false);
+    shell.current?.querySelector('.inbox')?.scrollTo({ top: 0, behavior: 'smooth' });
+    void focusInbox();
+  };
+  const toggleInbox = () => {
+    if (followupTimer.current) clearTimeout(followupTimer.current);
+    if (!s.inbox && !retainInbox) setInboxExpanded(false);
+    setReplying(null); dispatch({ type: 'inbox' });
+    if (!s.inbox) void focusInbox();
+    else if (s.mode === 'text') void focusInput();
+    else if (!settings) void window.jarvis?.focus(false);
+  };
   useEffect(() => { if (!live && s.phase === 'speaking') { const t = setTimeout(() => dispatch({ type: 'interrupt' }), 6500); return () => clearTimeout(t); } }, [s.phase]);
   useLayoutEffect(() => {
     const el = shell.current;
-    if (!el || lab) return;
+    if (!el) return;
     const update = () => {
-      window.jarvis?.layout(s.mode, Math.ceil(el.getBoundingClientRect().height + 32));
-      window.jarvis?.material([...el.querySelectorAll<HTMLElement>('[data-glass]')].map(e => {
+      if (!lab) window.jarvis?.layout(s.mode, Math.ceil(el.getBoundingClientRect().height + 32));
+      const rects = [...el.querySelectorAll<HTMLElement>('[data-glass]')].map(e => {
         const r = e.getBoundingClientRect();
         let visibleOpacity = 1;
         for (let node: HTMLElement | null = e; node && node !== el; node = node.parentElement) { const style = getComputedStyle(node); visibleOpacity *= style.visibility === 'hidden' || style.display === 'none' ? 0 : Number(style.opacity); }
-        return { x: r.x, y: r.y, width: r.width, height: r.height, radius: Number(e.dataset.glass), opacity: visibleOpacity };
-      }), glassStrength);
+        if (e.dataset.glassFade) visibleOpacity *= Number(getComputedStyle(e).getPropertyValue(e.dataset.glassFade));
+        return { x: r.x, y: r.y, width: r.width, height: r.height, radius: Number(e.dataset.glass), opacity: visibleOpacity, occlusion: clipStackGlass(e) };
+      });
+      if (!lab) window.jarvis?.material(rects.filter(r => r.width > 0 && r.height > 0), glassStrength);
     };
     update(); const observer = new ResizeObserver(update); observer.observe(el);
     el.querySelectorAll('[data-glass]').forEach(e => observer.observe(e));
-    let frame = 0; let deadline = performance.now() + (matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 280);
+    let frame = 0; let deadline = performance.now() + 650;
     const animate = () => { update(); if (performance.now() < deadline) frame = requestAnimationFrame(animate); };
     frame = requestAnimationFrame(animate);
-    const transition = () => { cancelAnimationFrame(frame); deadline = performance.now() + 280; frame = requestAnimationFrame(animate); };
+    const transition = () => { cancelAnimationFrame(frame); deadline = performance.now() + 650; frame = requestAnimationFrame(animate); };
     el.addEventListener('transitionrun', transition);
+    el.addEventListener('animationstart', transition);
+    el.addEventListener('scroll', update, true);
+    el.addEventListener('capsule-motion', update);
     window.addEventListener('resize', update);
-    return () => { el.removeEventListener('transitionrun', transition); cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener('resize', update); };
+    return () => { el.removeEventListener('animationstart', transition); el.removeEventListener('scroll', update, true); el.removeEventListener('capsule-motion', update); el.removeEventListener('transitionrun', transition); cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener('resize', update); };
   }, [s.mode, s.inbox, showInbox, s.detail, s.reply, s.phase, settings, added, opacity, glassStrength, s.results.length, s.attachment, dismissing.length, inboxExpanded, replying, followupMessage, s.subtitles.length, s.live.state, s.live.reason, s.live.notice]);
   useCapsuleDrag(!lab);
   const send = () => {
@@ -166,12 +194,22 @@ function App() {
   const hide = () => { setPresencePreview('auto'); stopFeedback(); window.jarvis?.hide(); if (lab) setHidden(true); };
   const end = () => { if (timer.current) clearTimeout(timer.current); dispatch({ type: 'end' }); hide(); };
   const copy = async (text: string) => { try { if (window.jarvis) setCopied(await window.jarvis.copy(text)); else { await navigator.clipboard.writeText(text); setCopied(true); } } catch { setCopied(false); } };
-  const escape = () => { if (settings) closeSettings(); else if (added) setAdded(false); else if (replying) { setReplying(null); void window.jarvis?.focus(false); } else if (s.detail) closeDetail(); else if (s.inbox) toggleInbox(); else if (s.mode === 'text') mode('voice'); else hide(); };
+  const escape = () => {
+    if (settings) closeSettings();
+    else if (added) setAdded(false);
+    else if (s.detail) closeDetail();
+    else if (s.inbox && inboxExpanded && s.results.length > 1) collapseInbox();
+    else if (replying) { setReplying(null); if (s.inbox) void focusInbox(); }
+    else if (s.inbox) toggleInbox();
+    else if (s.mode === 'text') mode(composerReturn.current);
+    else if (s.mode === 'voice') mode('idle');
+    else hide();
+  };
   const status = s.phase === 'error' ? '连接失败' : s.live.state === 'active' ? (s.live.hushed ? 'Live · 已停播，说话后恢复' : s.live.speaking ? 'Live · 正在播报' : s.live.hearing ? 'Live · 正在听' : 'Live · 通话中') : s.micMuted && s.phase === 'listening' ? '麦克风已关闭' : labels[s.phase];
   const surfaceStyle = { '--glass-opacity': opacity, '--glass-strength': glassStrength, '--preview-scale': lab ? scale : 1 } as React.CSSProperties;
   return <IconContext.Provider value={{ size: 20, weight: 'regular' }}>
     <main className={lab ? `lab ${background}` : 'desktop'} style={surfaceStyle} onKeyDown={e => {
-      if (e.key === 'Escape') { e.preventDefault(); escape(); }
+      if (e.key === 'Escape') { e.preventDefault(); if (!e.repeat) escape(); }
       if (e.key === '.' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); end(); }
     }}>
       {lab && <header className="lab-header"><div><span>JARVIS</span><h1>Resonance</h1><p>交互原型 · 所有语音、回复与结果均为模拟</p></div><p className="lab-note">无色毛玻璃<br/>背景赋予玻璃颜色，声纹随状态舒展。</p></header>}
@@ -181,23 +219,29 @@ function App() {
           if ((e.target as Element).closest('textarea')) return;
           e.preventDefault(); setSettings(true); void window.jarvis?.focus(true);
         }}>
-          <div className="entry-surface glass" data-glass="20" data-interactive>
-            <Button label={s.mode === 'text' ? '添加内容' : '展开文字输入'} className="entry-button" aria-expanded={s.mode === 'text' ? added : undefined} onClick={() => s.mode === 'text' ? setAdded(!added) : mode('text')}><CapsuleIcon name={s.mode === 'text' ? 'plus' : 'compose'}/></Button>
-            <div className="composer-fields" inert={s.mode !== 'text'}>
-              <textarea ref={input} aria-label="文字输入" rows={1} placeholder="说不方便说的话…" value={s.draft} onChange={e => dispatch({ type: 'draft', value: e.target.value })} onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
-              }}/>
-              <Button label={s.phase === 'processing' ? (live ? '正在处理' : '正在处理示例输入') : (live ? '发送' : '发送示例输入')} className="send" disabled={!s.draft.trim() || s.phase === 'processing'} onClick={send}><CapsuleIcon name="send"/></Button>
+          <div className="capsule-main-view" hidden={s.mode === 'text'}>
+            <PresentationCapsule presentation={s.mode === 'voice' ? 'expanded' : 'collapsed'} active={s.mode !== 'text'} nativeSurface
+              presence={presence} restState={s.phase === 'error' ? 'unavailable' : s.phase === 'processing' ? 'thinking' : count > 0 ? 'notification' : 'standby'}
+              color={themeColor} onActivate={() => mode('voice')} onCollapse={() => mode('idle')}
+              microphoneMuted={s.micMuted} speakerMuted={s.soundMuted}
+              onMicrophoneToggle={() => { feedback(s.micMuted ? 'mic-on' : 'mic-off'); if (live) void runtime.current?.controls({ mic_muted: !s.micMuted }); else dispatch({ type: 'mic' }); }}
+              onSpeakerToggle={() => { feedback(s.soundMuted ? 'speaker-on' : 'speaker-off'); if (live) void runtime.current?.controls({ speech_muted: !s.soundMuted }); else dispatch({ type: 'sound' }); }}
+              onCompose={() => mode('text')} onNotifications={toggleInbox} unreadCount={count} inboxOpen={s.inbox}/>
+          </div>
+          {s.mode === 'text' && <>
+            <div className="entry-surface glass" data-glass="20" data-interactive>
+              <Button label="添加内容" className="entry-button" aria-expanded={added} onClick={() => setAdded(!added)}><CapsuleIcon name="plus"/></Button>
+              <div className="composer-fields">
+                <textarea ref={input} aria-label="文字输入" rows={1} placeholder="说不方便说的话…" value={s.draft} onChange={e => dispatch({ type: 'draft', value: e.target.value })} onKeyDown={e => {
+                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
+                }}/>
+                <Button label={s.phase === 'processing' ? (live ? '正在处理' : '正在处理示例输入') : (live ? '发送' : '发送示例输入')} className="send" disabled={!s.draft.trim() || s.phase === 'processing'} onClick={send}><CapsuleIcon name="send"/></Button>
+              </div>
             </div>
-          </div>
-          <div className="voice-pill glass" data-glass="20" data-interactive>
-            <Button label={s.micMuted ? (live ? '开启麦克风' : '开启麦克风（模拟）') : (live ? '关闭麦克风' : '关闭麦克风（模拟）')} aria-pressed={s.micMuted} aria-hidden={s.mode !== 'voice'} tabIndex={s.mode === 'voice' ? 0 : -1} className="edge-control" onClick={() => { feedback(s.micMuted ? 'mic-on' : 'mic-off'); if (live) void runtime.current?.controls({ mic_muted: !s.micMuted }); else dispatch({ type: 'mic' }); }}><CapsuleIcon name={s.micMuted ? 'microphone-off' : 'microphone'}/></Button>
-            <span className="divider"/>
-            <Button label={s.mode === 'text' ? '收起文字，返回语音' : s.mode === 'idle' ? '开始语音演示' : '结束语音并隐藏胶囊'} className="wave-button" onClick={() => s.mode === 'voice' ? end() : mode('voice')}>{s.mode === 'voice' ? <><VoicePresence state={presence} color={themeColor}/><CapsuleIcon name="close" className="end-icon"/></> : <CapsuleIcon name="microphone"/>}</Button>
-            <span className="divider"/>
-            <Button label={s.soundMuted ? '开启播报声音' : '关闭播报声音'} aria-pressed={s.soundMuted} aria-hidden={s.mode !== 'voice'} tabIndex={s.mode === 'voice' ? 0 : -1} className="edge-control" onClick={() => { feedback(s.soundMuted ? 'speaker-on' : 'speaker-off'); if (live) void runtime.current?.controls({ speech_muted: !s.soundMuted }); else dispatch({ type: 'sound' }); }}><CapsuleIcon name={s.soundMuted ? 'speaker-off' : 'speaker'}/></Button>
-          </div>
-          <Button label={s.inbox ? '收起通知' : `打开通知，${count} 条未读示例`} aria-expanded={s.inbox} className="glass detached notification" data-glass="20" data-interactive onClick={toggleInbox}><CapsuleIcon name={s.inbox ? 'collapse' : 'bell'}/>{count > 0 && !s.inbox && <span className="unread">{count > 9 ? '9+' : count}</span>}</Button>
+            <Button label="收起文字输入" className="glass detached" data-glass="20" data-interactive onClick={() => mode(composerReturn.current)}><CapsuleIcon name="collapse"/></Button>
+            <Button label={s.inbox ? '收起通知' : '通知'} aria-expanded={s.inbox} className="glass detached notification" data-glass="20" data-interactive onClick={toggleInbox}><CapsuleIcon name={s.inbox ? 'collapse' : 'bell'}/>{count > 0 && !s.inbox && <span className="unread">{count > 9 ? '9+' : count}</span>}</Button>
+          </>}
+
         </div>
         <div className="status-line" data-interactive><span role="status" className="sr-only">{s.mode === 'idle' ? '待机' : status}{!live && <span className="demo-label"> · 演示</span>}</span>
           {(s.phase === 'speaking' || s.live.speaking) && <button className="text-action" onClick={interrupt}><Pause size={12}/>停止播报</button>}
@@ -229,17 +273,17 @@ function App() {
           {s.live.error && <p className="sub-meta">错误：{s.live.error}</p>}
           {s.live.state === 'idle' && s.live.reason && <p className="sub-meta">已挂断（{s.live.reason}）· 用量 {s.live.usageS !== null ? `${s.live.usageS.toFixed(1)} 秒` : '未知'}{s.live.usageFinal ? '' : '（最后已知，未确认）'}</p>}
         </section>}
-        {s.reply && !s.inbox && <section className="reply glass" data-glass="18" data-interactive><div className="section-heading"><span>{live ? '回复' : '示例回复'}</span><Button label="复制示例回复" onClick={() => void copy(visible(s.reply))}>{copied ? <Check size={16}/> : <Copy size={16}/>}</Button></div><p>{visible(s.reply)}</p></section>}
-        {showInbox && <section className={`inbox ${s.inbox ? 'is-open' : 'is-closing'} ${stacked ? 'is-stacked' : 'is-expanded'}`} inert={!s.inbox} aria-hidden={!s.inbox} aria-label="示例通知" data-interactive>
+        {s.reply && !s.inbox && <section className="reply glass" data-glass="18" data-interactive><div className="section-heading"><span>{live ? '回复' : '示例回复'}</span><Button label="复制回复" onClick={() => void copy(visible(s.reply))}>{copied ? <Check size={16}/> : <Copy size={16}/>}</Button></div><p>{visible(s.reply)}</p></section>}
+        {showInbox && <section className={`inbox ${s.inbox ? 'is-open' : 'is-closing'} ${stacked ? 'is-stacked' : 'is-expanded'} ${s.detail ? 'has-detail' : ''}`} inert={!s.inbox} aria-hidden={!s.inbox} aria-label="示例通知" data-interactive>
           {s.results.length === 0 && <div className="empty glass" data-glass="18"><Bell size={20}/><p>暂时没有待查看的事项</p><small>任务结果、待回应事项和你设定的提醒会出现在这里。</small></div>}
-          {s.results.filter(r => !s.detail || r.id === s.detail).map((r, index) => <article key={r.id} style={{ '--card-index': index } as React.CSSProperties} className={`result glass ${dismissing.includes(r.id) ? 'is-dismissing' : ''} ${replying === r.id ? 'is-replying' : ''}`} inert={dismissing.includes(r.id) || (stacked && index > 0)} aria-hidden={stacked && index > 0} data-glass="28">
-            <button className="result-main" aria-label={stacked && index === 0 ? `展开 ${s.results.length} 条通知` : undefined} onClick={() => { if (stacked) { setInboxExpanded(true); return; } dispatch({ type: 'detail', id: r.id }); setCopied(false); void window.jarvis?.focus(true); }}><span className="result-copy"><strong>{r.title}</strong><small> · 示例 · </small><span className="summary">{r.summary}</span></span></button>
+          {s.results.map((r, index) => <article key={r.id} style={{ '--card-index': index } as React.CSSProperties} className={`result glass ${s.detail && s.detail !== r.id ? 'is-detail-hidden' : ''} ${dismissing.includes(r.id) ? 'is-dismissing' : ''} ${replying === r.id ? 'is-replying' : ''}`} inert={dismissing.includes(r.id) || (stacked && index > 0) || (!!s.detail && s.detail !== r.id)} aria-hidden={(stacked && index > 0) || (!!s.detail && s.detail !== r.id)} data-glass="28">
+            <button className="result-main" aria-label={stacked && index === 0 ? `展开 ${s.results.length} 条通知` : undefined} onClick={() => { if (stacked) { expandInbox(); return; } dispatch({ type: 'detail', id: r.id }); setCopied(false); void window.jarvis?.focus(true); }}><span className="result-copy"><strong>{r.title}</strong><small> · 示例 · </small><span className="summary">{r.summary}</span></span></button>
             <Button label={r.kind === 'question' ? `回复${r.title}` : `标记${r.title}已查看`} className={`result-status kind-${r.kind}`} onClick={() => { if (r.kind === 'question') { openFollowup(r.id); } else dismissResult(r.id); }}>{r.kind === 'failure' ? <X size={18}/> : r.kind === 'question' ? <CapsuleIcon name="reply" width={16} height={16}/> : <Check size={19}/>}</Button>
             <Button label={`移除${r.title}`} className="result-dismiss" data-glass="10" onClick={() => dismissResult(r.id)}><X size={12}/></Button>
             <div className="result-actions"><Button label={`继续讨论${r.title}`} onClick={() => openFollowup(r.id)}><CapsuleIcon name="reply" width={16} height={16}/></Button></div>
             {replying === r.id && <>{followupMessage ? <p className="inline-reply-message" role="status">{followupMessage}</p> : <form className="inline-reply" onSubmit={e => { e.preventDefault(); sendFollowup(); }}><textarea ref={followupInput} rows={1} aria-label={`回复${r.title}的内容`} placeholder="继续回复…" value={followup} onChange={e => setFollowup(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); sendFollowup(); } }}/><Button label="发送通知回复（模拟）" type="submit" disabled={!followup.trim()}><CapsuleIcon name="send" width={15} height={15}/></Button></form>}</>}
           </article>)}
-          {inboxExpanded && s.results.length > 1 && <button className="stack-collapse" onClick={() => { setInboxExpanded(false); setReplying(null); void window.jarvis?.focus(false); }}>收起为叠层</button>}
+          {s.results.length > 1 && <button className="stack-collapse" inert={!inboxExpanded || !!s.detail} aria-hidden={!inboxExpanded || !!s.detail} onClick={collapseInbox}>收起为叠层 · Esc</button>}
         </section>}
         {detail && <section className="detail glass" data-glass="18" data-interactive aria-label="结果详情"><div className="section-heading"><span>{detail.title}</span><Button label="关闭结果详情" onClick={closeDetail}><X size={17}/></Button></div><div className="detail-body">{detail.body}</div><div className="detail-actions"><button onClick={() => void copy(detail.body)}>{copied ? <Check size={14}/> : <Copy size={14}/>} {copied ? '已复制' : '复制'}</button>{detail.kind === 'question' && <button onClick={() => { dispatch({ type: 'detail', id: null }); mode('text'); dispatch({ type: 'draft', value: '明天上午十点' }); }}>回复 <ArrowUpRight size={14}/></button>}</div></section>}
       </div>}
@@ -249,4 +293,4 @@ function App() {
     </main>
   </IconContext.Provider>;
 }
-createRoot(document.getElementById('root')!).render(<App/>);
+createRoot(document.getElementById('root')!).render(lab ? <MotionPreview/> : <App/>);

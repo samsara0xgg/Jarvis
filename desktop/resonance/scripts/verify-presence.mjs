@@ -36,7 +36,7 @@ try {
   check('response actually animates', movingA.image !== movingB.image);
   await page.emulateMedia({ reducedMotion: 'reduce' }); await page.waitForTimeout(100);
   const quietA = await pixels(); await page.waitForTimeout(250);
-  check('reduced motion holds a stable drawing', quietA.image === (await pixels()).image);
+  check('explicitly enabled voice animation continues under reduced motion', quietA.image !== (await pixels()).image);
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await settings();
   await page.getByLabel('声纹主题色').fill('#a8b5ff');

@@ -8,6 +8,13 @@ const check = (name, ok) => { assert.ok(ok, name); checks.push(name); console.lo
 const app = await electron.launch({ args: ['.', '--verify'], cwd: process.cwd() });
 try {
  const page = await app.firstWindow();
+ // Keep the existing single-card detail/dismissal checks; default-stack behavior has its own acceptance script.
+ const openSingleDemo = async () => {
+  await page.getByRole('button', { name: '打开通知，2 条未读示例' }).click();
+  await page.getByRole('button', { name: '展开 2 条通知' }).click();
+  await page.getByRole('button', { name: '标记你设定的提醒已查看' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.result').length === 1);
+ };
  await page.evaluate(() => localStorage.clear());
  await page.reload();
  const errors = []; page.on('pageerror', error => errors.push(error.message));
@@ -37,7 +44,7 @@ try {
  await page.waitForFunction(() => window.__feedbackEvents.at(-1)?.cue === 'mic-on');
  check('mute actions play distinct reference feedback cues', (await audioEvents()).map(e => e.cue).join(',') === 'mic-off,speaker-off,mic-on');
  check('enabling microphone preserves playback mute', await page.getByRole('button', { name: '开启播报声音' }).count() === 1);
- await page.getByRole('button', { name: '打开通知，1 条未读示例' }).click();
+ await openSingleDemo();
  await page.waitForSelector('.result');
  await page.waitForTimeout(220);
  const cardGap = await page.evaluate(() => document.querySelector('.result').getBoundingClientRect().top - document.querySelector('.voice-pill').getBoundingClientRect().bottom);
@@ -149,7 +156,7 @@ try {
  await page.getByRole('button', { name: '恢复默认' }).click();
  await page.getByRole('button', { name: '关闭外观设置' }).click();
  await page.emulateMedia({ reducedMotion: 'no-preference' });
- await page.getByRole('button', { name: '打开通知，1 条未读示例' }).click();
+ await openSingleDemo();
  await page.waitForTimeout(220);
  await page.getByRole('button', { name: '收起通知' }).click();
  await page.waitForTimeout(40);

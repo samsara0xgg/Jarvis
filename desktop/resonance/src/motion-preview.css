@@ -1,0 +1,34 @@
+.motion-preview { min-height: 100vh; padding: 30px 48px 24px; background: #141618; color: #eef0f2; }
+.motion-preview header > span { font-size: 10px; letter-spacing: .18em; color: #979ba5; }
+.motion-preview h1 { font-size: 28px; font-weight: 400; letter-spacing: -.03em; margin: 12px 0 8px; }
+.motion-preview header p, .motion-note { color: #9299a4; font-size: 12px; line-height: 1.7; }
+.orbit-stage { position: relative; margin: 22px 0 16px; height: 320px; padding: 18px 24px; border: 1px solid #ffffff12; border-radius: 16px; background: radial-gradient(ellipse at 50% 46%, #252c3b55, transparent 55%), #191d23; }
+.orbit-stage-caption { display: flex; justify-content: space-between; font-size: 10px; letter-spacing: .08em; color: #7e8797; }
+.orbit-hero { display: flex; justify-content: center; margin-top: 18px; }
+.orbit-presence { display: block; flex: none; }
+.orbit-description { text-align: center; margin-top: 8px; }
+.orbit-description h2 { font-weight: 400; font-size: 15px; margin: 0 0 7px; letter-spacing: .14em; }
+.orbit-description p { font-size: 11px; color: #969ead; margin: 0; }
+.orbit-actual { position: absolute; bottom: 20px; right: 24px; display: flex; align-items: center; gap: 10px; color: #838c9c; font-size: 10px; }
+.motion-preview nav { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.motion-preview nav button { display: flex; justify-content: center; align-items: center; gap: 7px; padding: 10px 8px; border: 1px solid #ffffff12; border-radius: 9px; background: #1b1e24; font-size: 12px; color: #9da4b1; }
+.motion-preview nav button[aria-pressed=true] { background: #252b3b; border-color: #a8b5ff60; color: #e2e7ff; }
+.motion-preview button:hover { border-color: #a8b5ff80; }
+.motion-preview button:focus-visible { outline: 2px solid #a8b5ff; outline-offset: 3px; }
+.motion-preview footer { display: flex; align-items: center; gap: 10px; margin-top: 18px; font-size: 11px; }
+.motion-preview footer button { border: 1px solid #ffffff20; border-radius: 7px; padding: 8px 12px; background: #20242b; color: #c4cad6; }
+.motion-preview footer button[aria-pressed=true] { background: #303a59; border-color: #a8b5ff70; color: #e2e7ff; }
+.motion-preview footer > span { margin-left: auto; color: #818a9a; font-size: 10px; }
+.motion-note { margin: 14px 0 0; font-size: 10px; }
+@media (max-width: 760px) { .motion-preview { padding: 24px; } .motion-preview nav { grid-template-columns: repeat(3, 1fr); } .motion-preview footer { flex-wrap: wrap; } .motion-preview footer > span { margin-left: 0; } }
+.live-stage { margin: 24px 0 20px; height: 320px; padding: 18px 24px; border: 1px solid #ffffff12; border-radius: 16px; background: radial-gradient(ellipse at 50% 45%, #2d374944, transparent 65%), #191d23; }
+.presentation-large-view { display: flex; align-items: center; justify-content: center; height: 155px; }
+.presentation-large-view > .presentation-capsule { zoom: 2.5; }
+.live-hint { text-align: center; color: #a2aab9; font-size: 11px; margin: 0 0 20px; }
+.presentation-actual-view { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.presentation-actual-view > span { font-size: 10px; color: #7f899a; }
+.live-state-label { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 11px; color: #bac0cc; }
+.live-state-label span { color: #7f899a; }
+.motion-preview nav.live-states { display: flex; }
+.motion-preview nav.live-states button { flex: 1; padding: 12px; }
+.preview-back { position: absolute; z-index: 2; top: 22px; right: 32px; border: 1px solid #ffffff24; border-radius: 8px; background: #20242b; padding: 8px 12px; color: #e0e4ec; font-size: 12px; }

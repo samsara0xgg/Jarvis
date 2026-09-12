@@ -1,0 +1,94 @@
+import { _electron as electron } from 'playwright';
+import assert from 'node:assert/strict';
+import { mkdirSync, writeFileSync } from 'node:fs';
+const dir = 'evidence/desktop-orbit'; mkdirSync(dir, { recursive: true });
+const app = await electron.launch({ ...(process.argv.includes('--packaged')
+  ? { executablePath: 'build/Jarvis Resonance.app/Contents/MacOS/Electron', args: ['--verify'] }
+  : { args: ['.', '--verify'] }), cwd: process.cwd() });
+const checks = [], check = (label, pass) => { assert.ok(pass, label); checks.push(label); };
+try {
+  const page = await app.firstWindow(); const errors = [];
+  page.on('pageerror', e => errors.push(e.message));
+  await app.evaluate(({ ipcMain }) => {
+    globalThis.surfaceFrames = [];
+    ipcMain.on('material', (_e, payload) => { globalThis.surfaceFrames.push(payload); });
+    ipcMain.on('passthrough', (_e, value) => { globalThis.lastPassthrough = value; });
+  });
+  await page.evaluate(() => localStorage.clear()); await page.reload();
+  await page.emulateMedia({ reducedMotion: 'no-override' });
+  const group = page.locator('.capsule-main-view .presentation-capsule'), canvas = group.locator('canvas');
+  await group.waitFor(); await page.waitForTimeout(180);
+  const native = () => app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; return { bounds: w.getBounds(), visible: w.isVisible(), focusable: w.isFocusable(), alwaysOnTop: w.isAlwaysOnTop(), allSpaces: w.isVisibleOnAllWorkspaces(), preferences: w.webContents.getLastWebPreferences() }; });
+  const settle = p => page.waitForFunction(p => +document.querySelector('.capsule-main-view canvas').dataset.progress === p, p, { timeout: 4000 });
+  const width = async () => (await group.boundingBox()).width;
+  const center = group.locator('.presentation-center');
+  const initialNative = await native();
+  check('starts non-Live at 120 × 40', await width() === 120 && (await group.boundingBox()).height === 40);
+  check('starts inactive, on top, and available across Spaces', !initialNative.focusable && initialNative.alwaysOnTop && initialNative.allSpaces);
+  check('renderer remains sandboxed and isolated', initialNative.preferences.sandbox && initialNative.preferences.contextIsolation && !initialNative.preferences.nodeIntegration);
+  check('rest exposes message and notification only', await group.getByRole('button', { name: '发消息', exact: true }).count() === 1 && await group.getByRole('button', { name: '通知', exact: true }).count() === 1 && await group.getByRole('button', { name: '麦克风静音' }).count() === 0);
+  await canvas.evaluate(c => { window.originalCanvas = c; });
+  await page.screenshot({ path: `${dir}/rest.png`, omitBackground: true });
+  await group.getByRole('button', { name: '通知', exact: true }).click();
+  await page.locator('.inbox.is-stacked').waitFor();
+  check('notification works without entering Live', await width() === 120 && await page.locator('.result').count() === 2);
+  await page.getByRole('button', { name: '展开 2 条通知' }).click();
+  await page.getByRole('button', { name: '继续讨论周末徒步路线' }).click();
+  await page.getByRole('textbox', { name: '回复周末徒步路线的内容' }).fill('测试 UI');
+  await page.getByRole('button', { name: '发送通知回复（模拟）' }).click();
+  await page.waitForFunction(() => document.querySelector('.inline-reply-message')?.textContent.includes('演示回复'));
+  check('existing inline notification reply remains local', (await page.locator('.inline-reply-message').textContent()).includes('未发送或执行真实任务'));
+  await page.getByRole('button', { name: '收起通知', exact: true }).click();
+  await group.getByRole('button', { name: '发消息', exact: true }).click();
+  const input = page.getByRole('textbox', { name: '文字输入', exact: true }); await input.waitFor();
+  await page.waitForTimeout(180);
+  check('message opens existing composer and focus', (await native()).focusable && await input.evaluate(e => document.activeElement === e));
+  check('concealed ring stops drawing', await canvas.getAttribute('data-motion') === 'paused');
+  await input.fill('验证新的胶囊 UI'); await page.getByRole('button', { name: '发送示例输入' }).click();
+  await page.locator('.reply').waitFor();
+  check('composer retains simulated reply', (await page.locator('.reply').textContent()).includes('没有保存或执行真实任务'));
+  await page.getByRole('button', { name: '停止播报', exact: true }).click();
+  await page.getByRole('button', { name: '收起文字输入', exact: true }).click(); await settle(0);
+  check('closing composer returns to non-Live with the same canvas', await width() === 120 && await canvas.evaluate(c => c === window.originalCanvas));
+  await app.evaluate(() => { globalThis.surfaceFrames = []; });
+  await center.click(); await settle(1);
+  check('center enters Live at 270 pixels without resizing the native width', await width() === 270 && (await native()).bounds.width === initialNative.bounds.width);
+  const materialFrames = await app.evaluate(() => globalThis.surfaceFrames);
+  const cores = materialFrames.flatMap(f => f.rects.filter(r => r.height === 40 && r.width > 100 && r.width < 175));
+  check('native glass receives intermediate widths', cores.filter(r => r.width > 122 && r.width < 172).length >= 8);
+  check('native side glass fades continuously', materialFrames.some(f => f.rects.some(r => r.width === 40 && r.opacity > .05 && r.opacity < .95)));
+  const first = await canvas.evaluate(c => c.toDataURL()); await page.waitForTimeout(160);
+  check('native reduced-motion preference does not freeze approved voice animation', await canvas.evaluate(c => c.toDataURL()) !== first);
+  await group.getByRole('button', { name: '麦克风静音' }).click();
+  check('microphone mutes independently', await group.getByRole('button', { name: '麦克风静音' }).getAttribute('aria-pressed') === 'true' && await group.getByRole('button', { name: '扬声器静音' }).getAttribute('aria-pressed') === 'false');
+  await group.getByRole('button', { name: '麦克风静音' }).click();
+  await group.getByRole('button', { name: '扬声器静音' }).click();
+  await page.screenshot({ path: `${dir}/live.png`, omitBackground: true });
+  await group.locator('.presentation-core').click({ button: 'right' });
+  await page.locator('.settings').waitFor();
+  const picker = page.getByLabel('声纹主题色');
+  if (await picker.count()) await picker.fill('#a8b5ff');
+  await page.getByRole('combobox', { name: '声纹状态', exact: true }).selectOption('thinking');
+  await page.waitForTimeout(200); check('voice state changes keep width fixed', await width() === 270);
+  await page.getByRole('button', { name: '关闭外观设置' }).click();
+  await center.click(); await settle(0);
+  check('exiting Live leaves a visible compact capsule', (await native()).visible && await width() === 120);
+  for (let i = 0; i < 5; i++) { await center.dispatchEvent('click'); await page.waitForTimeout(130); }
+  await settle(1); check('rapid reversal preserves the same canvas', await canvas.evaluate(c => c === window.originalCanvas));
+  // Use the real renderer gesture handlers and native IPC with controlled screen coordinates.
+  const beforeDrag = (await native()).bounds;
+  await center.evaluate(el => {
+    const b = el.getBoundingClientRect(), x = b.x + b.width / 2, y = b.y + b.height / 2;
+    el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, isPrimary: true, button: 0, clientX: x, clientY: y, screenX: 500, screenY: 300 }));
+    el.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 1, isPrimary: true, buttons: 1, clientX: x, clientY: y, screenX: 525, screenY: 320 }));
+    el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, isPrimary: true, button: 0, clientX: x, clientY: y, screenX: 525, screenY: 320 }));
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+  });
+  await page.waitForTimeout(160); const afterDrag = (await native()).bounds;
+  check('drag moves window and suppresses mode toggle', afterDrag.x - beforeDrag.x === 25 && afterDrag.y - beforeDrag.y === 20 && await center.getAttribute('aria-expanded') === 'true');
+  await page.mouse.move(1, 1); await page.waitForTimeout(80);
+  check('empty window area passes through', await app.evaluate(() => globalThis.lastPassthrough) === true);
+  check('no renderer errors', errors.length === 0);
+  writeFileSync(`${dir}/verification.json`, JSON.stringify({ checks, native: await native(), errors, materialSamples: cores.length }, null, 2));
+  console.log({ checks: checks.length, materialSamples: cores.length, errors });
+} finally { await app.close(); }

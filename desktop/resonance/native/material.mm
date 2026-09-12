@@ -11,7 +11,8 @@
 @end
 static double number(napi_env env, napi_value obj, const char *key) {
   napi_value value; double result = 0;
-  napi_get_named_property(env, obj, key, &value); napi_get_value_double(env, value, &result);
+  if (napi_get_named_property(env, obj, key, &value) != napi_ok ||
+      napi_get_value_double(env, value, &result) != napi_ok) return 0;
   return std::isfinite(result) ? result : 0;
 }
 static napi_value update(napi_env env, napi_callback_info info) {
@@ -47,6 +48,41 @@ static napi_value update(napi_env env, napi_callback_info info) {
     views[i].frame = [content convertRect:rect toView:host];
     views[i].layer.cornerRadius = MAX(0, number(env,r,"radius"));
     views[i].alphaValue = strength * MIN(1, MAX(0, number(env,r,"opacity")));
+    // Match the renderer's front-card cutout. CSS clipping alone cannot prevent
+    // two behind-window visual-effect views from compositing in the same pixels.
+    napi_value cover; bool hasCover = false;
+    napi_has_named_property(env, r, "occlusion", &hasCover);
+    if (hasCover) {
+      napi_valuetype type;
+      napi_get_named_property(env, r, "occlusion", &cover);
+      napi_typeof(env, cover, &type);
+      hasCover = type == napi_object;
+    }
+    double cw = hasCover ? number(env,cover,"width") : 0;
+    double ch = hasCover ? number(env,cover,"height") : 0;
+    if (cw > 0 && ch > 0) {
+      double cx = number(env,cover,"x"), cy = number(env,cover,"y");
+      double cr = MAX(0, MIN(number(env,cover,"radius"), MIN(cw, ch) / 2));
+      double radius = MAX(0, MIN(number(env,r,"radius"), MIN(w, h) / 2));
+      // Use the visual-effect view's own alpha mask so the backdrop itself is
+      // clipped, including the WindowServer-composited behind-window material.
+      views[i].maskImage = [NSImage imageWithSize:NSMakeSize(w, h) flipped:NO drawingHandler:^BOOL(NSRect bounds) {
+        CGContextRef context = NSGraphicsContext.currentContext.CGContext;
+        CGMutablePathRef surface = CGPathCreateMutable();
+        CGPathAddRoundedRect(surface, nullptr, CGRectMake(0, 0, w, h), radius, radius);
+        CGContextAddPath(context, surface);
+        CGContextSetRGBFillColor(context, 1, 1, 1, 1);
+        CGContextFillPath(context);
+        CGPathRelease(surface);
+        CGMutablePathRef cutout = CGPathCreateMutable();
+        CGPathAddRoundedRect(cutout, nullptr, CGRectMake(cx, h - cy - ch, cw, ch), cr, cr);
+        CGContextAddPath(context, cutout);
+        CGContextSetBlendMode(context, kCGBlendModeClear);
+        CGContextFillPath(context);
+        CGPathRelease(cutout);
+        return YES;
+      }];
+    } else views[i].maskImage = nil;
   }
   [CATransaction commit];
   napi_value result; napi_get_boolean(env, true, &result); return result;
