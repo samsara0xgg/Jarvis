@@ -147,16 +147,19 @@ class InherentBroadcaster:
         """
         query = event.payload.get("query", "") or ""
         turn_id = str(event.payload.get("turn_id", "<unknown>"))
-        msg: dict[str, object] = {
-            "op": "open",
-            "payload": {
-                "content": "",
-                "streaming": True,
-                "kind": "text",
-                "q": query,
-                "turn_id": turn_id,
-            },
+        payload: dict[str, object] = {
+            "content": "",
+            "streaming": True,
+            "kind": "text",
+            "q": query,
+            "turn_id": turn_id,
         }
+        # Additive: lets a v1 client target ``POST /inherent/cancel-response``
+        # (ADR-0008 D10) without the v2 wire. Absent on legacy events.
+        response_id = event.payload.get("response_id")
+        if isinstance(response_id, str):
+            payload["response_id"] = response_id
+        msg: dict[str, object] = {"op": "open", "payload": payload}
         await self._send_all(msg, turn_id=turn_id)
 
     async def broadcast_chunk(self, event: Event) -> None:
