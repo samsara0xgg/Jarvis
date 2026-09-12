@@ -898,6 +898,7 @@ class DuplexVoiceSession:
         wake_threshold: float,
         config: RealtimeInputSessionConfig,
         barge_in_interrupt: Callable[[str], str] | None = None,
+        mic_muted: Callable[[], bool] | None = None,
     ) -> None:
         """Register all bounded subscribers before any hardware starts."""
         self._ingress = ingress
@@ -905,6 +906,7 @@ class DuplexVoiceSession:
         self._pipeline = pipeline
         self._broadcaster = broadcaster
         self._output_active = output_active
+        self._mic_muted = mic_muted
         self._wake_threshold = wake_threshold
         self._config = config
         self._session_id = "S" + secrets.token_hex(8)
@@ -1238,6 +1240,12 @@ class DuplexVoiceSession:
             except queue.Empty:
                 return
             try:
+                # ADR-0015: a muted microphone drops the wake instead of arming.
+                # Barge-in never reaches this queue (see _open_barge_in_candidate),
+                # so Allen can still stop Jarvis mid-sentence while muted.
+                if self._mic_muted is not None and self._mic_muted():
+                    LOGGER.info("wake detection dropped: microphone muted")
+                    continue
                 if not self._assembler.armed:
                     outcomes = self._assembler.arm(detection)
                     # ADR-0006 §5: listening begins at arm, before speech onset.

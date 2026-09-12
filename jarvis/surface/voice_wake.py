@@ -284,6 +284,7 @@ class WakeListener:
         model_name: str = "hey_jarvis_v0.1",
         frame_factory: Callable[[], bytes] | None = None,
         ducker: voice_ducking.SystemAudioDucker | None = None,
+        mic_muted: Callable[[], bool] | None = None,
     ) -> None:
         """Wire one listener. See class docstring for semantics."""
         self._engine = engine
@@ -291,6 +292,7 @@ class WakeListener:
         self._broadcaster = broadcaster
         self._capture_callable = capture_callable
         self._threshold = threshold
+        self._mic_muted = mic_muted
         self._is_speaking_callable = is_speaking_callable
         self._model_name = model_name
         self._frame_factory = frame_factory or _zero_frame
@@ -380,6 +382,9 @@ class WakeListener:
         result = self._engine.predict(frame)
         prob = float(result.get(self._model_name, 0.0))
         if prob < self._threshold:
+            return
+        if self._mic_muted is not None and self._mic_muted():
+            LOGGER.info("wake: detection dropped, microphone muted (ADR-0015)")
             return
 
         LOGGER.info("wake: detection prob=%.3f", prob)

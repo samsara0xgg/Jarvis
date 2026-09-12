@@ -180,6 +180,7 @@ from jarvis.surface import (
     voice_asr,
     voice_audio,
     voice_backend,
+    voice_controls,
     voice_ducking,
     voice_media,
     voice_pipeline,
@@ -1376,6 +1377,7 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
     conn: sqlite3.Connection,
     pipeline: object,  # voice_tts.TTSPipeline protocol; loosely typed to avoid cycles
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+    speech_muted: Callable[[], bool] | None = None,
 ) -> None:
     """Background task: feed every surface.response_* row into the TTSPipeline.
 
@@ -1451,6 +1453,21 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
                 advance_cursor = True
                 try:
                     turn_id = str(ev.payload.get("turn_id", ""))
+                    # ADR-0015: speech muted at the turn's open ⇒ the whole
+                    # open/chunk*/emitted triple rides the same silent_turns
+                    # path as a silent channel — nothing is synthesized.
+                    if (
+                        ev.type == "surface.response_open"
+                        and speech_muted is not None
+                        and speech_muted()
+                    ):
+                        silent_turns.add(turn_id)
+                        LOGGER.info(
+                            "tts_watcher: turn_id=%s speech muted — not synthesized (ADR-0015).",
+                            turn_id,
+                        )
+                        after_id = max(after_id, row_id)
+                        continue
                     if _drop_for_silent_channel(
                         ev,
                         turn_id=turn_id,
@@ -2306,6 +2323,7 @@ def _spawn_wake_listener(  # noqa: PLR0913 - composition boundary dependencies
     tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
     ducker: voice_ducking.SystemAudioDucker | None = None,
     voice: _VoiceKnobs | None = None,
+    mic_muted: Callable[[], bool] | None = None,
 ) -> tuple[voice_wake.WakeListener, Any | None] | None:
     """Construct + start a :class:`WakeListener` daemon thread.
 
@@ -2372,6 +2390,7 @@ def _spawn_wake_listener(  # noqa: PLR0913 - composition boundary dependencies
             is_speaking_callable=(tts.is_speaking if tts is not None else None),
             frame_factory=_read_wake_frame,
             ducker=ducker,
+            mic_muted=mic_muted,
         )
         listener.start()
     except Exception:
@@ -2926,6 +2945,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     silero_path: Path,
     tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
     voice: _VoiceKnobs | None = None,
+    mic_muted: Callable[[], bool] | None = None,
 ) -> tuple[voice_session.DuplexVoiceSession | None, bool]:
     """Start Wave 3 or return whether a device-open attempt was made.
 
@@ -3038,6 +3058,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             wake_threshold=knobs.wake_threshold,
             config=session_config,
             barge_in_interrupt=make_barge_in_interrupt_callable(runtime),
+            mic_muted=mic_muted,
         )
     except Exception:
         LOGGER.exception(
@@ -3129,6 +3150,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
     tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
     ducker: voice_ducking.SystemAudioDucker,
     voice: _VoiceKnobs | None = None,
+    mic_muted: Callable[[], bool] | None = None,
 ) -> _VoiceInputOwners:
     """Select Wave 3 or legacy wake without ever opening both input owners."""
     knobs = _VoiceKnobs() if voice is None else voice
@@ -3139,6 +3161,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
         silero_path=silero_path,
         tts=tts,
         voice=knobs,
+        mic_muted=mic_muted,
     )
     wake_listener: voice_wake.WakeListener | None = None
     wake_stream: object | None = None
@@ -3150,6 +3173,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
             tts=tts,
             ducker=ducker,
             voice=knobs,
+            mic_muted=mic_muted,
         )
         if legacy is not None:
             wake_listener, wake_stream = legacy
@@ -4127,6 +4151,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         voice_pipe: voice_pipeline.VoicePipeline | None = None
         tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None = None
         duplex_voice_session: voice_session.DuplexVoiceSession | None = None
+        # ADR-0015: the two mute switches the desktop surface flips over
+        # POST /inherent/controls; the voice owners read them on their threads.
+        controls = voice_controls.VoiceControls()
         voice_input_owners = _VoiceInputOwners(
             duplex_session=None,
             wake_listener=None,
@@ -4181,6 +4208,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         tts=tts_pipe,
                         ducker=shared_ducker,
                         voice=voice_knobs,
+                        mic_muted=controls.mic_is_muted,
                     )
                     duplex_voice_session = voice_input_owners.duplex_session
                     voice_startup_reason = voice_input_owners.reason
@@ -4321,6 +4349,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else None
             ),
             cancel_response_callable=cancel_response_callable,
+            controls=controls,
             v2=InherentV2Deps(
                 token_matches=functools.partial(inherent_v2_token_matches, v2_token),
                 mint_connection_id=new_connection_id,
@@ -4403,6 +4432,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         conn=runtime.conn,
                         pipeline=tts_pipe,
                         poll_interval_s=poll_interval_s,
+                        speech_muted=controls.speech_is_muted,
                     ),
                     name="tts_watcher",
                 ),

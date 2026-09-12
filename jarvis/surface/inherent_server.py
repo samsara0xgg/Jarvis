@@ -108,6 +108,8 @@ if TYPE_CHECKING:
 
     from starlette.responses import Response
 
+    from jarvis.surface.voice_controls import VoiceControls
+
     _CallNext = Callable[[Request], Awaitable[Response]]
 
     from jarvis.shared import Event
@@ -199,6 +201,18 @@ class CancelResponseRequest(BaseModel):
     response_id: str
     scope: str = "generation"
     reason: str = "operator_request"
+
+
+class ControlsRequest(BaseModel):
+    """Body of ``POST /inherent/controls`` (ADR-0015).
+
+    Each field is optional; ``None`` leaves that switch untouched, so ``{}``
+    is a pure read the surface uses to sync on connect. The response is
+    always the full current state ``{"mic_muted": bool, "speech_muted": bool}``.
+    """
+
+    mic_muted: bool | None = None
+    speech_muted: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -383,6 +397,9 @@ class InherentDeps:
     barge_in_confirm_callable: Callable[[], str] | None = None
     cancel_response_callable: Callable[[str, str, str], str] | None = None
     v2: InherentV2Deps | None = None
+    # ADR-0015: the mute switches behind ``POST /inherent/controls``. ``None``
+    # (the default) leaves the route unregistered.
+    controls: VoiceControls | None = None
 
 
 class _FrameRateLimiter:
@@ -859,7 +876,7 @@ async def _run_asr_submit(
     }
 
 
-def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901 — one closed route table; the cancel route is registered only when injected.
+def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one closed route table; the cancel and controls routes are registered only when injected.
     """Build the FastAPI app with all 5 endpoints registered.
 
     The factory takes the injected deps once and closes over them in
@@ -923,6 +940,17 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901 — one closed rout
                 req.reason,
             )
             return {"outcome": outcome}
+
+    if deps.controls is not None:
+        controls = deps.controls
+
+        @app.post("/inherent/controls", status_code=200)
+        async def set_controls(req: ControlsRequest) -> dict[str, bool]:
+            """Flip the microphone / speech mute switches; answer with the full state."""
+            state = controls.update(mic_muted=req.mic_muted, speech_muted=req.speech_muted)
+            if req.mic_muted is not None or req.speech_muted is not None:
+                LOGGER.info("controls: mic_muted=%s speech_muted=%s", *state.values())
+            return state
 
     @app.websocket("/inherent/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
