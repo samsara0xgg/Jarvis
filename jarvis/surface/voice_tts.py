@@ -645,7 +645,14 @@ class AudioStreamPlayer:
         sample_rate_hz: int = 48000,
         channels: int = 1,
         ring_seconds: float = 2.0,
-        blocksize: int = 0,
+        # 1024 frames = 21 ms at 48 kHz.  With 0, PortAudio runs a "low"
+        # latency stream at 64 frames (1.33 ms), a deadline the Python callback
+        # misses whenever another thread holds the GIL; coreaudiod then logs
+        # "Overload possibly due to client timeout" ~25x/s for as long as the
+        # stream lives and exits once it crosses its 40 MB memory limit.
+        # Measured 2026-09-12 under CPU load, overloads per 40 s:
+        # 64 -> 12528, 512 -> 423, 1024 -> 41 (idle background 5 per 30 s).
+        blocksize: int = 1024,
         latency: str | float = "low",
         device: Any | None = None,  # noqa: ANN401
         on_first_chunk: Callable[[], None] | None = None,
