@@ -1,6 +1,7 @@
 # ADR 0015 — Resonance Surface, Mute Controls, Surface Residency
 
-**Status:** Approved (2026-09-12; Allen: "OK没问题" on the plan, "不要 inherent 的了，全部接到 Resonance … 你直接自己搞定就行" on scope)
+**Status:** Approved (2026-09-12; Allen: "OK没问题" on the plan, "不要 inherent 的了，全部接到 Resonance … 你直接自己搞定就行" on scope;
+mute-as-gain, TERM restart and `npm ci` on a stale lock decided 2026-09-12 after review)
 **Date:** 2026-09-12
 **Supersedes:** the Swift Inherent card (`desktop/inherent-swift/`, the client half of ADR-0003 and ADR-0014) as the Mac desktop surface. The `/inherent/*` wire the daemon serves is unchanged and keeps its name.
 **Depends on:** ADR-0003 (v1 wire), ADR-0005 §6 (`voice` envelope), ADR-0008 D10 (`cancel-response`), ADR-0009 D1 (launchd residency).
@@ -84,7 +85,8 @@
   and `EnvironmentVariables.PATH` = node's own bin directory plus the system
   directories, because launchd's PATH carries no node and npm's shims are
   `#!/usr/bin/env node`.
-- `launch.mjs` rebuilds when any source is newer than the build (the same
+- `launch.mjs` runs `npm ci` when `package-lock.json` is newer than
+  `node_modules`, rebuilds when any source is newer than the build (the same
   staleness rule the Swift launcher gained in 742bc2a), then runs Electron
   attached so launchd owns its lifetime. Both agents run from the checkout;
   there is no packaged app. After a merge to main the one command is
