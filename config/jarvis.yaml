@@ -307,6 +307,28 @@ realtime:
   confirmation:
     durable_expiry:
       enabled: false
+  # GPT-Live (docs/gpt-live-integration-planning.md, phase A).  `enabled`
+  # only registers the controller behind POST /inherent/controls
+  # {"live": "start"|"stop"|"hush"}; nothing connects until that request
+  # arrives, and start refuses without the single audio ingress or the API
+  # key.  The session is billed per second: idle_close_s hangs up after that
+  # long without transcript or audio activity, max_session_s is a hard cap.
+  # `instructions` may be set here to replace the module default persona.
+  gpt_live:
+    enabled: true
+    model: gpt-live-1
+    voice: marin
+    # Wire PCM rate for both directions, 16000 or 24000.  The 16 kHz mic
+    # ingress is resampled up with soxr; the Live player opens at this rate.
+    sample_rate_hz: 24000
+    api_key_env: OPENAI_API_KEY
+    idle_close_s: 180.0
+    max_session_s: 1800.0
+    connect_timeout_s: 10.0
+    close_timeout_s: 5.0
+    # Outbound mic backlog tolerated before stale audio is dropped wholesale.
+    input_backlog_s: 0.5
+    input_chunk_ms: 100
   # Wave 2 rollout.  Enabling this also requires realtime.enabled plus the
   # transactional append and lifecycle terminal CAS switches above.  Invalid
   # combinations downgrade once to the complete legacy batch path.

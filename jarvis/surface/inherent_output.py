@@ -364,6 +364,14 @@ class InherentBroadcaster:
             loop,
         )
 
+    async def broadcast_op(self, op: str, **payload: object) -> None:
+        """Push one ``{"op": op, "payload": payload}`` envelope with no turn correlation.
+
+        GPT-Live phase A uses ``live`` (session status) and ``subtitle``
+        (transcript deltas); the payload is sent verbatim.
+        """
+        await self._send_all({"op": op, "payload": dict(payload)}, turn_id="")
+
     async def _send_all(self, msg: dict[str, object], *, turn_id: str) -> None:
         """Serialize one envelope with registration snapshots and live sends."""
         async with self._send_lock:

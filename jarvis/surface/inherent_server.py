@@ -109,6 +109,7 @@ if TYPE_CHECKING:
     from starlette.responses import Response
 
     from jarvis.surface.voice_controls import VoiceControls
+    from jarvis.surface.voice_live import LiveVoice
 
     _CallNext = Callable[[Request], Awaitable[Response]]
 
@@ -213,6 +214,11 @@ class ControlsRequest(BaseModel):
 
     mic_muted: bool | None = None
     speech_muted: bool | None = None
+    # GPT-Live phase A: ``start`` opens a session (refused with a reason when
+    # the ingress or the API key is missing), ``stop`` hangs up, ``hush``
+    # silences playback until the user speaks again.  The response then also
+    # carries ``"live": {...}`` (``LiveVoice.status``), on every request.
+    live: Literal["start", "stop", "hush"] | None = None
 
 
 @dataclass(frozen=True)
@@ -400,6 +406,8 @@ class InherentDeps:
     # ADR-0015: the mute switches behind ``POST /inherent/controls``. ``None``
     # (the default) leaves the route unregistered.
     controls: VoiceControls | None = None
+    # GPT-Live phase A controller; ``None`` means ``live`` requests are refused.
+    live: LiveVoice | None = None
 
 
 class _FrameRateLimiter:
@@ -945,11 +953,28 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
         controls = deps.controls
 
         @app.post("/inherent/controls", status_code=200)
-        async def set_controls(req: ControlsRequest) -> dict[str, bool]:
-            """Flip the microphone / speech mute switches; answer with the full state."""
-            state = controls.update(mic_muted=req.mic_muted, speech_muted=req.speech_muted)
+        async def set_controls(req: ControlsRequest) -> dict[str, object]:
+            """Flip the mute switches and drive GPT-Live; answer with the full state."""
+            state: dict[str, object] = dict(
+                controls.update(mic_muted=req.mic_muted, speech_muted=req.speech_muted),
+            )
             if req.mic_muted is not None or req.speech_muted is not None:
-                LOGGER.info("controls: mic_muted=%s speech_muted=%s", *state.values())
+                LOGGER.info(
+                    "controls: mic_muted=%s speech_muted=%s",
+                    state["mic_muted"], state["speech_muted"],
+                )
+            if deps.live is None:
+                if req.live is not None:
+                    state["live"] = {"state": "unavailable", "reason": "gpt_live_disabled"}
+                return state
+            if req.live == "start":
+                state["live"] = await deps.live.start()
+            elif req.live == "stop":
+                state["live"] = await deps.live.stop(reason="user")
+            elif req.live == "hush":
+                state["live"] = await deps.live.hush()
+            else:
+                state["live"] = deps.live.status()
             return state
 
     @app.websocket("/inherent/ws")

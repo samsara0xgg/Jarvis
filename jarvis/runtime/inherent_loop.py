@@ -182,6 +182,7 @@ from jarvis.surface import (
     voice_backend,
     voice_controls,
     voice_ducking,
+    voice_live,
     voice_media,
     voice_pipeline,
     voice_session,
@@ -1370,21 +1371,6 @@ async def _response_watcher(
     except asyncio.CancelledError:
         LOGGER.info("response_watcher cancelled")
         raise
-
-
-def _speech_mute_to_gain(
-    pipeline: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline,
-) -> Callable[[bool], None]:
-    """ADR-0015 D2: speech mute is the player's output gain, 0.0 muted and 1.0 restored.
-
-    Synthesis, timing, phases and events run exactly as unmuted; only the
-    speaker is silent, so unmuting mid-sentence resumes audibly.
-    """
-
-    def _apply(muted: bool) -> None:  # noqa: FBT001 - Callable[[bool], None] shape
-        pipeline.set_output_gain(0.0 if muted else 1.0)
-
-    return _apply
 
 
 async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
@@ -4166,6 +4152,24 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             voice_ducking.SystemAudioDucker()
         )
 
+        live_voice: voice_live.LiveVoice | None = None
+
+        def _old_chain_input_blocked() -> bool:
+            # ADR-0015 mic mute, plus: while GPT-Live owns speech the local chain
+            # arms no new wake, so one utterance cannot be answered twice.
+            return controls.mic_is_muted() or (live_voice is not None and live_voice.owns_speech)
+
+        def _apply_speech_mute(muted: bool) -> None:  # noqa: FBT001 - Callable[[bool], None] shape
+            # ADR-0015 D2: speech mute is the player's output gain, 0.0 muted and
+            # 1.0 restored; synthesis, timing, phases and events run as unmuted.
+            # The local player is also silent while GPT-Live owns speech.
+            if tts_pipe is not None:
+                local_silent = muted or (live_voice is not None and live_voice.owns_speech)
+                tts_pipe.set_output_gain(0.0 if local_silent else 1.0)
+            if live_voice is not None:
+                live_voice.set_speech_muted(muted)
+
+        controls.on_speech_muted = _apply_speech_mute
         voice_knobs = _voice_knobs(runtime.config)
         sensevoice_dir = runtime.sensevoice_dir
         silero_path = runtime.silero_vad_path
@@ -4193,8 +4197,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     ducker=shared_ducker,
                     voice=voice_knobs,
                 )
-                if tts_pipe is not None:
-                    controls.on_speech_muted = _speech_mute_to_gain(tts_pipe)
                 if os.environ.get("JARVIS_VOICE_DISABLE_WAKE") == "1":
                     voice_startup_reason = "wake_disabled_env"
                     LOGGER.info(
@@ -4209,7 +4211,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         tts=tts_pipe,
                         ducker=shared_ducker,
                         voice=voice_knobs,
-                        mic_muted=controls.mic_is_muted,
+                        mic_muted=_old_chain_input_blocked,
                     )
                     duplex_voice_session = voice_input_owners.duplex_session
                     voice_startup_reason = voice_input_owners.reason
@@ -4227,6 +4229,42 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     wake_listener=None,
                     wake_stream=None,
                     single_ingress_attempted=False,
+                )
+
+        # GPT-Live phase A (docs/gpt-live-integration-planning.md §11). Building
+        # the controller opens nothing: a session starts only from
+        # POST /inherent/controls {"live": "start"}, which re-checks the single
+        # audio ingress and the API key at that moment. Billed per second, so
+        # the shutdown path below hangs up before the microphone goes away.
+        realtime_raw = runtime.config.get("realtime")
+        realtime_map = realtime_raw if isinstance(realtime_raw, Mapping) else {}
+        gpt_live_raw = realtime_map.get("gpt_live")
+        gpt_live_config: voice_live.GptLiveConfig | None = None
+        if isinstance(gpt_live_raw, Mapping):
+            try:
+                gpt_live_config = voice_live.gpt_live_config_from_mapping(gpt_live_raw)
+            except (TypeError, ValueError):
+                LOGGER.exception("realtime.gpt_live is malformed; GPT-Live stays off this boot")
+        if gpt_live_config is not None and gpt_live_config.enabled:
+
+            def _live_ingress() -> voice_audio.AudioIngress | None:
+                session = voice_input_owners.duplex_session
+                return session.ingress if session is not None else None
+
+            live_voice = voice_live.LiveVoice(
+                config=gpt_live_config,
+                broadcaster=broadcaster,
+                ingress=_live_ingress,
+                mic_muted=controls.mic_is_muted,
+                speech_muted=lambda: controls.speech_muted,
+                output_device=realtime_map.get("output_device"),
+                on_owns_speech=lambda _owns: _apply_speech_mute(controls.speech_muted),
+            )
+            controls.on_mic_muted = live_voice.set_mic_muted
+            if not os.environ.get(gpt_live_config.api_key_env):
+                LOGGER.warning(
+                    "realtime.gpt_live.enabled but %s is unset; start will be refused",
+                    gpt_live_config.api_key_env,
                 )
 
         # One record per boot on EVERY path above — models present, models
@@ -4351,6 +4389,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             ),
             cancel_response_callable=cancel_response_callable,
             controls=controls,
+            live=live_voice,
             v2=InherentV2Deps(
                 token_matches=functools.partial(inherent_v2_token_matches, v2_token),
                 mint_connection_id=new_connection_id,
@@ -4515,6 +4554,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 power_coordinator.close(timeout_s=0.1)
             # ADR-0006 F14: Wave 3 revokes input before output. Feature-off
             # retains the legacy output-gate-before-wake order.
+            # GPT-Live is billed per second: hang up before the microphone goes away.
+            if live_voice is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(live_voice.stop(reason="daemon_shutdown"), timeout=10.0)
             _request_voice_input_branch_shutdown(
                 voice_input_owners,
                 tts_pipe,

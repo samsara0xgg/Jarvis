@@ -25,6 +25,8 @@ class VoiceControls:
     speech_muted: bool = False
     # ``(muted) -> None``, bound by the runtime to the TTS player's gain.
     on_speech_muted: Callable[[bool], None] | None = None
+    # ``(muted) -> None``, bound by the runtime to the GPT-Live sender gate.
+    on_mic_muted: Callable[[bool], None] | None = None
 
     def mic_is_muted(self) -> bool:
         """Reader the wake owners hold instead of the object itself."""
@@ -37,8 +39,10 @@ class VoiceControls:
         speech_muted: bool | None = None,
     ) -> dict[str, bool]:
         """Apply the given switches (``None`` leaves one unchanged) and return the state."""
-        if mic_muted is not None:
+        if mic_muted is not None and mic_muted != self.mic_muted:
             self.mic_muted = mic_muted
+            if self.on_mic_muted is not None:
+                self.on_mic_muted(mic_muted)
         if speech_muted is not None and speech_muted != self.speech_muted:
             self.speech_muted = speech_muted
             if self.on_speech_muted is not None:
