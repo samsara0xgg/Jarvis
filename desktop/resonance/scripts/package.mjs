@@ -1,0 +1,15 @@
+import { cpSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+if (process.platform !== 'darwin') throw new Error('This local app packaging entry is macOS only. npm start works on other desktop platforms with fallback material.');
+const destination = path.resolve('build/Jarvis Resonance.app');
+if (existsSync(destination)) rmSync(destination, { recursive: true });
+cpSync('node_modules/electron/dist/Electron.app', destination, { recursive: true, verbatimSymlinks: true });
+const target = path.join(destination, 'Contents/Resources/app');
+mkdirSync(target, { recursive: true });
+for (const directory of ['dist', 'dist-electron', 'dist-native']) cpSync(directory, path.join(target, directory), { recursive: true });
+writeFileSync(path.join(target, 'package.json'), JSON.stringify({ name: 'jarvis-resonance', version: '0.1.0', type: 'module', main: 'dist-electron/main.js' }));
+const plist = path.join(destination, 'Contents/Info.plist');
+for (const [key, value] of Object.entries({ CFBundleIdentifier: 'dev.jarvis.resonance.prototype', CFBundleName: 'Jarvis Resonance', CFBundleDisplayName: 'Jarvis Resonance' })) execFileSync('/usr/libexec/PlistBuddy', ['-c', `Set :${key} ${value}`, plist]);
+execFileSync('codesign', ['--force', '--deep', '--sign', '-', destination], { stdio: 'inherit' });
+console.log(destination);

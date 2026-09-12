@@ -1,0 +1,21 @@
+# Dependencies, generated bundles, and per-machine Electron state.
+node_modules/
+dist/
+dist-electron/
+dist-native/
+build/
+.electron-profile/
+
+# User recordings and local visual/audio investigation are not source assets.
+references/
+evidence/
+design/analysis/
+design/voice-states-v1/
+design/width-options-v2/
+design/material-study-v1.png
+design/render-width-options.mjs
+
+# Local reference-processing utilities require the private recordings above.
+scripts/compare-icons.py
+scripts/prepare-feedback.py
+scripts/trace-reference-icons.py

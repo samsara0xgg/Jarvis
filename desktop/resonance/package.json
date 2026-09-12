@@ -1,0 +1,29 @@
+{
+  "name": "jarvis-resonance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build && tsc -p tsconfig.electron.json && node scripts/build-native.mjs",
+    "start": "npm run build && electron .",
+    "lab": "npm run build && electron . --lab",
+    "verify": "npm run build && node scripts/verify.mjs",
+    "package": "npm run build && node scripts/package.mjs"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "electron": "^44.3.0",
+    "playwright": "^1.63.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  }
+}
