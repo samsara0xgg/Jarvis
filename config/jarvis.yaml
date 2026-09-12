@@ -187,7 +187,7 @@ realtime:
   wake_join_timeout_s: 2.0
   # MiniMax request shape.  These reach MiniMaxWSClient whatever wave is on:
   # the streaming and legacy TTS paths share one provider.
-  tts_voice: "Chinese (Mandarin)_ExplorativeGirl"
+  tts_voice: "Chinese (Mandarin)_Warm_Bestie"
   tts_model: speech-2.8-turbo
   tts_primary_endpoint: https://api-uw.minimax.io
   tts_fallback_endpoint: https://api.minimax.chat
