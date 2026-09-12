@@ -431,3 +431,11 @@ realtime:
         ack_batch_ms: 100
         ack_stall_s: 5
         control_fairness: 8
+
+# memory.db — the append-only store of everything Allen said and every answer
+# given (jarvis/state/memory_db.py). Separate file from the event log.
+memory:
+  # db_path: ~/.jarvis/memory.db          # default: <runtime root>/memory.db
+  # audio_dir: ~/.jarvis/memory/audio     # default: <runtime root>/memory/audio
+  context_days: 7        # how many days of records the model sees every turn, in full
+  retain_audio: true     # keep each utterance's audio (AAC via afconvert, WAV fallback)

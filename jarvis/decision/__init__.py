@@ -65,7 +65,6 @@ from jarvis.decision.action_cancel import (
     resolve_cancellable_action,
 )
 from jarvis.decision.confirm_grammar import match_confirm_grammar
-from jarvis.decision.conversation import conversation_history_note
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.gates import (
     AttentionChannel,
@@ -848,7 +847,9 @@ class DecideContext:
     wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
     cancellation_checkpoint: Callable[[str], None] | None = None
     request_admission: Callable[[str], None] | None = None
-    typed_conversation_history: bool = False
+    # Per-turn memory note (profile + current time + recent records in
+    # full), rendered by the composition root from memory.db.
+    memory_note: str | None = None
     # ADR-0008 Step 8. ``routine_stream`` is the pre-routed streaming seam the
     # runtime bound for this run (None on every other turn, so decide() keeps
     # the batch tool loop). ``stream_correction`` marks a full-text run that
@@ -991,10 +992,8 @@ def _insert_system_notes(
     These notes share the §10.5 deviation: dynamic context sits at the
     head of the prompt, not the tail — flagged, not fixed, here.
     """
-    if ctx.typed_conversation_history:
-        history_note = conversation_history_note(packet)
-        if history_note is not None:
-            messages.insert(0, {"role": "user", "content": history_note})
+    if ctx.memory_note:
+        messages.insert(0, {"role": "user", "content": ctx.memory_note})
     # ADR-0012 §3 D4: id-free note naming an outstanding confirmation
     # ask, if one is live. Lets an unrelated turn's LLM know an ask is
     # outstanding (C4) and a paraphrased-consent turn's LLM talk about

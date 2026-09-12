@@ -2060,7 +2060,8 @@ def _build_voice_pipeline(
         fuzzy_enabled=False,
     )
     db_path = runtime.runtime_paths.event_log
-    artifacts_dir = runtime.runtime_paths.artifacts_root / "voice_artifacts"
+    memory = runtime.memory
+    artifacts_dir = memory.audio_dir if memory is not None and memory.retain_audio else None
     return voice_pipeline.VoicePipeline(
         conn_factory=lambda: open_event_log(db_path),
         recognizer=recognizer,
