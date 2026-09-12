@@ -117,7 +117,7 @@ def test_install_refuses_while_a_manual_daemon_holds_the_lock(
 
 
 def test_uninstall_and_restart_cover_both_agents(rig: dict[str, object]) -> None:
-    """Restart kickstarts both labels; uninstall boots out both and removes both plists."""
+    """Restart signals TERM to both labels, kickstart when one is down; uninstall boots out both."""
     _install(rig)
     calls = rig["calls"]
     assert isinstance(calls, list)
@@ -126,8 +126,28 @@ def test_uninstall_and_restart_cover_both_agents(rig: dict[str, object]) -> None
 
     steps = launchd.restart(agents_dir=rig["agents"])  # type: ignore[arg-type]
     assert [s.argv[1:] for s in steps] == [
-        ("kickstart", "-k", f"{gui}/com.allen.jarvis"),
-        ("kickstart", "-k", f"{gui}/com.allen.jarvis.resonance"),
+        ("kill", "TERM", f"{gui}/com.allen.jarvis"),
+        ("kill", "TERM", f"{gui}/com.allen.jarvis.resonance"),
+    ]
+    # A daemon that is not running cannot be signalled: it is kickstarted instead.
+    real = launchd._launchctl  # noqa: SLF001
+
+    def down_daemon(*args: str) -> launchd.LaunchctlResult:
+        if args[:2] == ("kill", "TERM") and args[2].endswith("com.allen.jarvis"):
+            return launchd.LaunchctlResult(
+                argv=("launchctl", *args), returncode=3, stdout="", stderr="No such process"
+            )
+        return real(*args)
+
+    launchd._launchctl = down_daemon  # noqa: SLF001
+    try:
+        steps = launchd.restart(agents_dir=rig["agents"])  # type: ignore[arg-type]
+    finally:
+        launchd._launchctl = real  # noqa: SLF001
+    assert [s.argv[1:] for s in steps] == [
+        ("kill", "TERM", f"{gui}/com.allen.jarvis"),
+        ("kickstart", f"{gui}/com.allen.jarvis"),
+        ("kill", "TERM", f"{gui}/com.allen.jarvis.resonance"),
     ]
 
     result = launchd.uninstall(agents_dir=rig["agents"])  # type: ignore[arg-type]

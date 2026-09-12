@@ -678,11 +678,14 @@ def uninstall(*, agents_dir: Path | None = None, remove_plist: bool = True) -> U
 
 
 def restart(*, agents_dir: Path | None = None) -> tuple[LaunchctlResult, ...]:
-    """``launchctl kickstart -k`` both agents — the one command after a merge to main.
+    """``launchctl kill TERM`` both agents — the one command after a merge to main.
 
-    Both agents run from the checkout, so a restart is what picks up new
-    code: the daemon re-imports, ``launch.mjs`` rebuilds Resonance when
-    its sources are newer than the build.
+    Each agent exits cleanly on SIGTERM (the daemon runs its shutdown, so a
+    spoken sentence is not cut mid-block) and ``KeepAlive`` respawns it at
+    once; an agent that is not running is ``kickstart``ed instead. Both run
+    from the checkout, so the respawn is what picks up new code: the daemon
+    re-imports, ``launch.mjs`` reinstalls / rebuilds Resonance when its
+    lockfile / sources are newer than ``node_modules`` / the build.
 
     Raises:
         LaunchdError: The agent is not installed, or a kickstart failed.
@@ -690,18 +693,22 @@ def restart(*, agents_dir: Path | None = None) -> tuple[LaunchctlResult, ...]:
     if not is_agent_installed(agents_dir):
         msg = "LaunchAgent not installed; run `jarvis daemon install` first"
         raise LaunchdError(msg)
-    steps = tuple(
-        _launchctl("kickstart", "-k", service)
-        for service in (service_target(), resonance_service_target())
-    )
-    for step in steps:
-        if not step.ok:
+    steps: list[LaunchctlResult] = []
+    for service in (service_target(), resonance_service_target()):
+        term = _launchctl("kill", "TERM", service)
+        steps.append(term)
+        if term.ok:
+            continue
+        # Not running (crashed, or inside its ThrottleInterval): start it.
+        start = _launchctl("kickstart", service)
+        steps.append(start)
+        if not start.ok:
             msg = (
-                f"`launchctl {' '.join(step.argv)}` failed "
-                f"(exit {step.returncode}): {step.stderr.strip() or step.stdout.strip()}"
+                f"`launchctl {' '.join(start.argv)}` failed "
+                f"(exit {start.returncode}): {start.stderr.strip() or start.stdout.strip()}"
             )
             raise LaunchdError(msg)
-    return steps
+    return tuple(steps)
 
 
 def _parse_launchctl_print(text: str) -> dict[str, str]:

@@ -805,7 +805,7 @@ def _daemon_restart() -> str:
     steps = launchd.restart()
     lines = [
         f"jarvis daemon restart: {launchd.service_target()} and "
-        f"{launchd.resonance_service_target()} kickstarted",
+        f"{launchd.resonance_service_target()} signalled TERM; KeepAlive respawns both",
     ]
     lines.extend(_render_launchctl_step(step) for step in steps)
     return "\n".join(lines)
@@ -828,7 +828,8 @@ def _main_daemon(argv: list[str]) -> int:
             "Manage the com.allen.jarvis daemon and com.allen.jarvis.resonance "
             "surface LaunchAgents (ADR-0009 D1, ADR-0015 D3). install is "
             "idempotent; uninstall stops both jobs regardless of KeepAlive; "
-            "restart kickstarts both so a merged checkout takes effect; status "
+            "restart signals TERM to both so KeepAlive respawns them on the merged "
+            "checkout; status "
             "combines launchctl, the daemon lock, the interpreter and node "
             "checks, and log sizes."
         ),

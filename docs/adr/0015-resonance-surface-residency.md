@@ -88,7 +88,8 @@
   staleness rule the Swift launcher gained in 742bc2a), then runs Electron
   attached so launchd owns its lifetime. Both agents run from the checkout;
   there is no packaged app. After a merge to main the one command is
-  `jarvis daemon restart` (`launchctl kickstart -k` on both).
+  `jarvis daemon restart`: `launchctl kill TERM` on both, each exits cleanly
+  and `KeepAlive` respawns it; an agent that is not running is `kickstart`ed.
 - `install` validates the interpreter (as before), `node`, and
   `desktop/resonance/node_modules/electron` (telling you to `npm ci`), and
   refuses while a manual daemon holds `daemon.lock`, since KeepAlive would
