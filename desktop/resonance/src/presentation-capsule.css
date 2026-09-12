@@ -1,0 +1,35 @@
+.presentation-capsule { --mode-progress: 0; --wing-reveal: 0; --control-reveal: 0; position: relative; display: inline-flex; align-items: center; justify-content: center; width: calc(120px + 150px * var(--mode-progress)); height: 40px; color: #e7eaee; }
+.presentation-core { width: calc(120px + 54px * var(--mode-progress)); height: 40px; flex-shrink: 0; display: flex; align-items: center; padding: 0 4px; background: linear-gradient(150deg, #252b31ed, #12171deb); border: 1px solid #ffffff30; border-radius: 20px; box-shadow: inset 0 1px 0 #ffffff0d, 0 5px 16px #00000018; }
+.presentation-wing { position: absolute; z-index: 1; top: 0; width: 40px; height: 40px; margin-left: -20px; }
+.presentation-wing:first-child { left: calc(50% - 37px - 78px * var(--mode-progress)); }
+.presentation-wing:last-child { left: calc(50% + 37px + 78px * var(--mode-progress)); }
+.presentation-wing-face { position: relative; width: 40px; height: 40px; padding: 0; border-radius: 50%; display: grid; place-items: center; isolation: isolate; }
+.presentation-wing-face::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; border: 1px solid #ffffff30; background: linear-gradient(150deg, #252b31ed, #12171deb); opacity: var(--wing-reveal); }
+.presentation-edge { width: 36px; height: 36px; padding: 0; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0; opacity: var(--control-reveal); }
+.presentation-edge[aria-pressed=true] { color: #8b919d; }
+.presentation-edge svg, .presentation-wing svg { width: 20px; height: 20px; flex-shrink: 0; }
+.presentation-divider { width: 1px; height: 20px; flex-shrink: 0; background: #ffffff20; }
+.presentation-center { position: relative; height: 36px; flex: 1; min-width: 0; padding: 0; display: grid; place-items: center; overflow: hidden; border-radius: 12px; }
+.presentation-center .live-presence { position: absolute; width: 90px; height: 36px; left: 50%; top: 0; margin-left: -45px; pointer-events: none; }
+.presentation-capsule button { transition: none !important; }
+.presentation-capsule button:hover { background-color: #ffffff0a; }
+.presentation-capsule button:focus-visible { outline: 1px solid #a8b5ff; outline-offset: -3px; }
+/* The installed capsule uses the existing native glass and appearance settings. */
+.desktop .presentation-core.glass { background: rgb(0 0 0 / var(--glass-opacity)); border-color: rgb(255 255 255 / .065); box-shadow: inset 0 .5px 0 rgb(255 255 255 / .025), 0 4px 10px -4px rgb(0 0 0 / .22); }
+.desktop .presentation-wing-face::before { background: rgb(0 0 0 / var(--glass-opacity)); border-color: rgb(255 255 255 / .065); box-shadow: inset 0 .5px 0 rgb(255 255 255 / .025), 0 4px 10px -4px rgb(0 0 0 / .22); }
+.capsule-main-view { display: flex; justify-content: center; }
+.capsule-main-view[hidden] { display: none; }
+
+.presentation-capsule.is-wave-only { --mode-progress: 1; --wing-reveal: 1; --control-reveal: 1; }
+.presentation-center .voice-presence { width: 90px; height: 36px; pointer-events: none; }
+
+.presentation-capsule.is-collapsed .presentation-center:hover .live-presence,
+.presentation-capsule.is-collapsed .presentation-center:focus-visible .live-presence { filter: brightness(1.15); }
+
+/* Keep the separators around the hovered control out of its highlight. */
+.presentation-divider { transition: opacity 100ms ease; }
+.presentation-core:has(> .presentation-edge:first-child:hover) > .presentation-divider:first-of-type,
+.presentation-core:has(> .presentation-edge:last-child:hover) > .presentation-divider:last-of-type,
+.presentation-core:has(> .presentation-center:hover) > .presentation-divider,
+.presentation-capsule.is-collapsed:has(> .presentation-wing:first-child > button:hover) > .presentation-core > .presentation-divider:first-of-type,
+.presentation-capsule.is-collapsed:has(> .presentation-wing:last-child > button:hover) > .presentation-core > .presentation-divider:last-of-type { opacity: 0; }

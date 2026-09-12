@@ -11,6 +11,8 @@ const material = process.platform === 'darwin' && !lab ? require('../dist-native
 app.setName('Jarvis Resonance');
 // Prototype storage stays isolated from the existing Jarvis runtime.
 app.setPath('userData', verification ? path.resolve(here, '../.electron-profile/verification') : app.isPackaged ? path.join(app.getPath('appData'), 'Jarvis Resonance Prototype') : path.resolve(here, '../.electron-profile'));
+// Let the animation preview coexist with the capsule and other design work.
+if (lab) app.setPath('userData', `${app.getPath('userData')}-motion-lab`);
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
 let win: BrowserWindow;
@@ -46,13 +48,15 @@ if (locked) app.whenReady().then(() => {
   const area = screen.getPrimaryDisplay().workArea;
   // Keep enough transparent room for the composer so its material can morph
   // without resizing/clipping the native window. Empty space passes through.
-  win = new BrowserWindow({ title: 'Jarvis Resonance', width: lab ? 1040 : 372, height: lab ? 740 : 100,
+  win = new BrowserWindow({ title: lab ? 'Jarvis · 声纹切换预览' : 'Jarvis Resonance', width: lab ? 1040 : 372, height: lab ? 740 : 100,
     x: Math.round(area.x + (area.width - (lab ? 1040 : 372)) / 2), y: area.y + Math.round(area.height * .32),
     frame: lab, transparent: !lab, backgroundColor: lab ? '#151c19' : '#00000000', hasShadow: lab,
     resizable: lab, maximizable: lab, fullscreenable: lab, show: false, focusable: lab,
     alwaysOnTop: !lab, skipTaskbar: !lab, roundedCorners: false,
     webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
+  // Ordinary floating windows can sit below other apps' panels and overlays.
+  if (!lab) win.setAlwaysOnTop(true, 'screen-saver', process.platform === 'darwin' ? 1 : 0);
   if (!lab && process.platform === 'darwin') {
     app.dock?.hide();
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
@@ -80,7 +84,7 @@ if (locked) app.whenReady().then(() => {
   ipcMain.handle('focus-input', (event, enabled) => {
     if (event.sender !== win.webContents || typeof enabled !== 'boolean') return;
     win.setFocusable(lab || enabled);
-    if (enabled) { win.focus(); win.webContents.focus(); } else if (!lab) win.blur();
+    if (enabled) { app.focus({ steal: true }); win.focus(); win.webContents.focus(); } else if (!lab) win.blur();
   });
   ipcMain.handle('copy', (event, text) => {
     if (event.sender !== win.webContents || typeof text !== 'string' || text.length > 100000) return false;

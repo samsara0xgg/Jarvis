@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build && tsc -p tsconfig.electron.json && node scripts/build-native.mjs",
     "start": "npm run build && electron .",
     "lab": "npm run build && electron . --lab",
-    "verify": "npm run build && node scripts/verify.mjs",
+    "verify": "npm run build && node scripts/verify-desktop-orbit.mjs",
     "package": "npm run build && node scripts/package.mjs"
   },
   "dependencies": {

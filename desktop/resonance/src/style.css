@@ -70,7 +70,8 @@ textarea:focus-visible { outline: none; }
 .inbox.is-closing { opacity: 0; transform: translateY(-4px); transition: opacity 180ms ease-out, transform 180ms ease-out; pointer-events: none; }
 .inbox .result { animation: none; }
 .result { interpolate-size: allow-keywords; border-radius: 28px; flex-shrink: 0; height: 55px; min-height: 55px; transition: opacity 180ms ease-out, transform 180ms ease-out, height 180ms ease-out, min-height 180ms ease-out, margin-bottom 180ms ease-out, margin-top 180ms ease-out; }
-.result-main { display: block; text-align: left; width: 100%; min-height: 53px; padding: 10px 55px 10px 14px; }
+.result-main { display: block; text-align: left; width: 100%; min-height: 53px; padding: 10px 55px 10px 14px; border-radius: inherit; }
+.result-main:focus-visible { outline: none; }
 .result-copy { display: block; white-space: nowrap; overflow: hidden; font-size: 12px; line-height: 16px; color: #b9c6cf; }
 .result strong { display: inline-block; max-width: calc(100% - 44px); overflow: hidden; text-overflow: ellipsis; vertical-align: top; color: #fff; font-size: 12.5px; font-weight: 600; }
 .result small { display: inline; font-size: 10px; font-weight: 400; }
@@ -161,7 +162,7 @@ textarea:focus-visible { outline: none; }
 .voice-pill:has(.wave-button:hover) > .divider { opacity: 0; }
 .inbox .result { z-index: calc(10 - var(--card-index)); }
 .inbox.is-stacked .result:not(:first-child) { margin-top: -55px; transform: scaleX(calc(1 - var(--card-index) * .04)); pointer-events: none; }
-.inbox.is-stacked .result:nth-child(n+4) { display: none; }
+.inbox.is-stacked .result:nth-child(n+4) { height: 0; min-height: 0; margin-top: -8px; opacity: 0; }
 .inbox.is-stacked .result:not(:first-child) > * { opacity: 0; }
 .inbox.is-stacked .result:first-child .result-main { padding-right: 14px; }
 .inbox.is-stacked .result .result-actions, .inbox.is-stacked .result .result-status, .inbox.is-stacked .result .result-dismiss { visibility: hidden; }
@@ -176,3 +177,24 @@ textarea:focus-visible { outline: none; }
 
 .settings-actions { flex-wrap: wrap; gap: 4px 12px; }
 .inbox.is-stacked .result .result-copy { mask-image: none; }
+
+/* Explicitly requested surface motion also runs under reduced motion.
+   Keep card geometry in layout, so native glass and following rows track it. */
+.inbox { overflow-anchor: none; transition: opacity 240ms ease, transform 340ms cubic-bezier(.22,1,.36,1) !important; }
+@starting-style { .inbox.is-open { opacity: 0; transform: translateY(-7px); } }
+.inbox.is-closing { transform: translateY(-5px); transition: opacity 220ms ease, transform 220ms cubic-bezier(.4,0,1,1) !important; }
+.inbox .result { transition: margin-top 420ms cubic-bezier(.22,1,.36,1), margin-bottom 420ms cubic-bezier(.22,1,.36,1), transform 420ms cubic-bezier(.22,1,.36,1), height 420ms cubic-bezier(.22,1,.36,1), min-height 420ms cubic-bezier(.22,1,.36,1), opacity 220ms ease !important; }
+.inbox .result-main { transition: opacity 170ms ease 90ms, padding-right 360ms cubic-bezier(.22,1,.36,1) !important; }
+.inbox .result-status { transition: opacity 170ms ease 100ms !important; }
+.inbox.is-stacked .result:not(:first-child) > .result-main,
+.inbox.is-stacked .result .result-status { opacity: 0; transition-delay: 0ms !important; }
+.inbox.is-expanded .result-main, .inbox.is-expanded .result-status { opacity: 1; }
+.inbox.is-stacked .result .result-status { visibility: visible; pointer-events: none; }
+.inbox .result.is-dismissing { transition: opacity 140ms ease, transform 180ms ease, height 240ms cubic-bezier(.22,1,.36,1) 80ms, min-height 240ms cubic-bezier(.22,1,.36,1) 80ms, margin-bottom 240ms cubic-bezier(.22,1,.36,1) 80ms, margin-top 240ms cubic-bezier(.22,1,.36,1) 80ms !important; }
+.stack-collapse { overflow: hidden; box-sizing: border-box; height: 24px; margin-top: 0; opacity: .7; transition: height 420ms cubic-bezier(.22,1,.36,1), margin-top 420ms cubic-bezier(.22,1,.36,1), opacity 170ms ease 120ms !important; }
+.inbox.is-stacked .stack-collapse { height: 0; padding-top: 0; padding-bottom: 0; margin-top: -8px; opacity: 0; transition-delay: 0ms !important; }
+.inline-reply, .inline-reply-message { animation: panel-arrive 220ms cubic-bezier(.22,1,.36,1) both !important; }
+.reply, .detail, .settings, .addition, .error-panel, .empty { animation: panel-arrive 240ms cubic-bezier(.22,1,.36,1) both !important; }
+
+.inbox .result.is-detail-hidden { height: 0; min-height: 0; margin-bottom: -8px; opacity: 0; overflow: hidden; pointer-events: none; }
+.inbox.has-detail .stack-collapse { height: 0; padding-top: 0; padding-bottom: 0; margin-top: -8px; opacity: 0; transition-delay: 0ms !important; }
