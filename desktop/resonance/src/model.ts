@@ -8,10 +8,16 @@ export const examples: Result[] = [
   { id: 'failure', kind: 'failure', title: '示例任务未完成', summary: '执行器暂时无法连接。', body: '演示失败\n\n原型没有连接执行器。重试只播放本地状态变化，不会提交或执行任何任务。', read: false },
   { id: 'reminder', kind: 'reminder', title: '你设定的提醒', summary: '起来走一走，休息一下。', body: '演示提醒\n\n这是预置示例，没有创建定时任务。只有用户明确设置的提醒才进入此类通知。', read: false },
 ];
-export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null }
-export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, inbox: false, detail: null, results: [examples[0]], reply: '', draft: '', attachment: false, turnId: null, responseId: null };
+// GPT-Live phase A. The daemon owns the session; every `live` op or controls answer replaces this whole record.
+export type LiveState = 'idle' | 'connecting' | 'active' | 'closing' | 'unavailable';
+export interface Live { state: LiveState; sessionId: string | null; since: number | null; usageS: number | null; usageFinal: boolean; reason: string | null; hushed: boolean; speaking: boolean; hearing: boolean; error: string | null; notice: string | null }
+export interface Subtitle { role: 'user' | 'assistant'; text: string; startMs: number; endMs: number }
+export const idleLive: Live = { state: 'idle', sessionId: null, since: null, usageS: null, usageFinal: false, reason: null, hushed: false, speaking: false, hearing: false, error: null, notice: null };
+export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; live: Live; subtitles: Subtitle[] }
+export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, inbox: false, detail: null, results: [examples[0]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, live: idleLive, subtitles: [] };
 export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' | 'reset' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer' } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string } | { type: 'example'; id: string }
-  | { type: 'open'; turnId: string; responseId: string | null } | { type: 'append'; token: string } | { type: 'settle'; turnId: string } | { type: 'controls'; micMuted: boolean; soundMuted: boolean };
+  | { type: 'open'; turnId: string; responseId: string | null } | { type: 'append'; token: string } | { type: 'settle'; turnId: string } | { type: 'controls'; micMuted: boolean; soundMuted: boolean }
+  | { type: 'live'; live: Live } | { type: 'subtitle'; sessionId: string; role: 'user' | 'assistant'; delta: string; startMs: number; endMs: number } | { type: 'live_dismiss' };
 export function reducer(s: State, a: Action): State {
   switch (a.type) {
     case 'reset': return { ...initialState, results: examples.slice(0, 1) };
@@ -31,6 +37,16 @@ export function reducer(s: State, a: Action): State {
     // The daemon's `done` carries fadeMs; runtime.ts turns it into this delayed settle for the same turn only.
     case 'settle': return s.turnId === a.turnId ? { ...s, reply: '', phase: s.phase === 'speaking' ? 'listening' : s.phase } : s;
     case 'controls': return { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted };
+    // A new session id starts a fresh transcript; a closed session keeps its lines on screen until dismissed.
+    case 'live': return { ...s, live: a.live, subtitles: a.live.sessionId && a.live.sessionId !== s.live.sessionId ? [] : s.subtitles };
+    case 'subtitle': {
+      if (a.sessionId !== s.live.sessionId) return s; // late delta from an earlier session
+      const last = s.subtitles[s.subtitles.length - 1];
+      // Same-role deltas merge for display only; the wire has no turn boundaries (transcripts carry start_ms/end_ms, not turns).
+      const merged = last && last.role === a.role ? [...s.subtitles.slice(0, -1), { ...last, text: last.text + a.delta, endMs: Math.max(last.endMs, a.endMs) }] : [...s.subtitles, { role: a.role, text: a.delta, startMs: a.startMs, endMs: a.endMs }];
+      return { ...s, subtitles: merged.slice(-40) };
+    }
+    case 'live_dismiss': return { ...s, subtitles: [], live: { ...s.live, reason: null, error: null, notice: null, usageS: null, usageFinal: false } };
     case 'detail': return { ...s, detail: a.id, results: s.results.map(r => r.id === a.id ? { ...r, read: true } : r) };
     case 'dismiss': return { ...s, detail: null, results: s.results.filter(r => r.id !== a.id) };
     case 'example': { const r = examples.find(r => r.id === a.id); return r ? { ...s, results: [...s.results.filter(i => i.id !== r.id), { ...r, read: false }] } : s; }

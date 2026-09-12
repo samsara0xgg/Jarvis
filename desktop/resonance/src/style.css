@@ -46,6 +46,12 @@ button { -webkit-tap-highlight-color: transparent; }
 .options { width: 20px; height: 18px; opacity: 0; }
 .shell:hover .options, .options:focus-visible, .options[aria-expanded=true] { opacity: .8; }
 .status-line .text-action { display: flex; gap: 3px; align-items: center; font-size: 10px; padding: 0; }
+.status-line .text-action:disabled { opacity: .5; }
+.status-line .live-toggle.is-active { color: #ffb3a4; font-variant-numeric: tabular-nums; }
+.subtitles p { margin: 6px 0 0; }
+.subtitles p b { font-weight: 500; margin-right: 6px; opacity: .55; }
+.subtitles .sub-user { color: #e8ecea; }
+.subtitles .sub-meta { opacity: .6; }
 .entry-surface { border-radius: 22px; display: flex; align-items: center; height: 40px; width: 40px; flex-shrink: 0; overflow: hidden; transition: width 80ms cubic-bezier(.16,1,.3,1); }
 .entry-button { width: 38px; height: 38px; flex-shrink: 0; }
 .composer-fields { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; opacity: 0; pointer-events: none; transition: opacity 80ms ease; }

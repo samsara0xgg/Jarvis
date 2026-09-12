@@ -1,8 +1,23 @@
 // Live link to the Jarvis daemon over the Inherent v1 wire (ADR-0003/0005):
 // outbound-only WebSocket envelopes `{op, payload}` in, HTTP POSTs out. Audio never crosses this link; the daemon owns mic and speaker.
-import type { Action } from './model';
+import type { Action, Live, LiveState } from './model';
 
-export interface Controls { mic_muted?: boolean; speech_muted?: boolean }
+export interface Controls { mic_muted?: boolean; speech_muted?: boolean; live?: 'start' | 'stop' | 'hush' }
+const liveStates: LiveState[] = ['idle', 'connecting', 'active', 'closing', 'unavailable'];
+// `LiveVoice.status()` as the daemon sends it, on the `live` op and inside every controls answer.
+const liveFrom = (p: Record<string, unknown>): Live => ({
+  state: liveStates.find(v => v === p.state) ?? 'idle',
+  sessionId: typeof p.session_id === 'string' ? p.session_id : null,
+  since: p.state === 'active' || p.state === 'closing' ? Date.now() - Number(p.elapsed_s ?? 0) * 1000 : null,
+  usageS: typeof p.usage_s === 'number' ? p.usage_s : null,
+  usageFinal: p.usage_final === true,
+  reason: typeof p.reason === 'string' ? p.reason : null,
+  hushed: p.hushed === true,
+  speaking: p.speaking === true,
+  hearing: p.hearing === true,
+  error: typeof p.error === 'string' ? p.error : null,
+  notice: typeof p.notice === 'string' ? p.notice : null,
+});
 export interface Runtime { submit: (text: string) => Promise<void>; cancel: (responseId: string | null) => Promise<void>; controls: (patch: Controls) => Promise<void>; reconnect: () => void; close: () => void }
 
 // Daemon `voice` phases → UI phases. Anything unlisted leaves the phase alone.
@@ -26,6 +41,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
   const controls = async (patch: Controls) => {
     const c = await post('/inherent/controls', patch);
     dispatch({ type: 'controls', micMuted: c.mic_muted === true, soundMuted: c.speech_muted === true });
+    if (c.live && typeof c.live === 'object') dispatch({ type: 'live', live: liveFrom(c.live as Record<string, unknown>) });
   };
   let ws: WebSocket | null = null;
   let attempt = 0;
@@ -46,6 +62,8 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
       // ponytail: text fades fadeMs after `done`; a long TTS tail can outlive it. Key the fade on `spoken` if that shows.
       else if (msg.op === 'done') setTimeout(() => dispatch({ type: 'settle', turnId }), Number(p.fadeMs ?? 5000));
       else if (msg.op === 'voice') { const a = voicePhase[String(p.phase)]; if (a) dispatch(a); }
+      else if (msg.op === 'live') dispatch({ type: 'live', live: liveFrom(p) });
+      else if (msg.op === 'subtitle') dispatch({ type: 'subtitle', sessionId: String(p.session_id ?? ''), role: p.role === 'user' ? 'user' : 'assistant', delta: String(p.delta ?? ''), startMs: Number(p.start_ms ?? 0), endMs: Number(p.end_ms ?? 0) });
     };
     ws.onclose = () => {
       ws = null;

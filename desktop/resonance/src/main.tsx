@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { IconContext, Bell, X, ArrowUpRight, Copy, Check, ArrowCounterClockwise, Pause, Paperclip, DotsThree, GearSix } from '@phosphor-icons/react';
+import { IconContext, Bell, X, ArrowUpRight, Copy, Check, ArrowCounterClockwise, Pause, Paperclip, DotsThree, GearSix, Phone, PhoneDisconnect } from '@phosphor-icons/react';
 import { initialState, reducer, examples, type Phase } from './model';
 import './style.css';
 import { useCapsuleDrag } from './useCapsuleDrag';
@@ -23,6 +23,7 @@ const live = runtimePort !== null;
 // The render layer wraps speech in <voice> and card text in <document> (voice_tts.py:99); show both, drop the markup and any half-streamed tag.
 const visible = (reply: string) => reply.replace(/<\/voice>/g, '\n').replace(/<\/?(voice|document)>/g, '').replace(/<\/?[a-z]*$/, '').trim();
 const labels: Record<Phase, string> = { listening: '正在听取', hearing: '正在听', processing: '正在处理', speaking: '正在播报', error: '连接失败' };
+const mmss = (sec: number) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
 function Button({ label, children, className = '', ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
   return <button {...props} className={`icon-button ${className}`} aria-label={label} title={label}><span className="button-glyph" key={label}>{children}</span></button>;
 }
@@ -52,9 +53,17 @@ function App() {
     timers.push(setTimeout(() => setPresencePreview('auto'), 20000));
     return () => timers.forEach(clearTimeout);
   }, [presencePreview]);
+  // Under GPT-Live, speaking is the local player draining and hearing is recent user transcript; both come from the daemon, never from subtitle timing.
   const presence: Presence = s.micMuted ? 'muted' : presencePreview === 'cycle' ? cyclePhase
-    : presencePreview !== 'auto' ? presencePreview : s.phase === 'hearing' ? 'listening' : s.phase === 'processing' ? 'thinking'
+    : presencePreview !== 'auto' ? presencePreview : s.live.state === 'active' ? (s.live.speaking ? 'speaking' : s.live.hearing ? 'listening' : 'standby')
+    : s.phase === 'hearing' ? 'listening' : s.phase === 'processing' ? 'thinking'
     : s.phase === 'speaking' ? 'speaking' : s.phase === 'error' ? 'muted' : 'standby';
+  // The session is billed per second, so the clock stays visible the whole time it is open.
+  const [, tick] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => { if (s.live.state !== 'active') return; const t = setInterval(tick, 1000); return () => clearInterval(t); }, [s.live.state]);
+  const liveClock = s.live.since !== null ? mmss(Math.max(0, Math.floor((Date.now() - s.live.since) / 1000))) : '';
+  const liveBusy = s.live.state === 'connecting' || s.live.state === 'closing';
+  const toggleLive = () => { if (!live || liveBusy) return; void runtime.current?.controls({ live: s.live.state === 'active' ? 'stop' : 'start' }); };
   const [added, setAdded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [hidden, setHidden] = useState(false);
@@ -138,7 +147,7 @@ function App() {
     el.addEventListener('transitionrun', transition);
     window.addEventListener('resize', update);
     return () => { el.removeEventListener('transitionrun', transition); cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener('resize', update); };
-  }, [s.mode, s.inbox, showInbox, s.detail, s.reply, s.phase, settings, added, opacity, glassStrength, s.results.length, s.attachment, dismissing.length, inboxExpanded, replying, followupMessage]);
+  }, [s.mode, s.inbox, showInbox, s.detail, s.reply, s.phase, settings, added, opacity, glassStrength, s.results.length, s.attachment, dismissing.length, inboxExpanded, replying, followupMessage, s.subtitles.length, s.live.state, s.live.reason, s.live.notice]);
   useCapsuleDrag(!lab);
   const send = () => {
     if (!s.draft.trim() || s.phase === 'processing') return;
@@ -148,7 +157,8 @@ function App() {
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => { dispatch({ type: 'answer' }); timer.current = null; }, 1400);
   };
-  const interrupt = () => { if (live) void runtime.current?.cancel(s.responseId); dispatch({ type: 'interrupt' }); };
+  // Live hush is a local playback gate that reopens when Allen speaks again; the daemon owns that rule.
+  const interrupt = () => { if (live && s.live.state === 'active') { void runtime.current?.controls({ live: 'hush' }); return; } if (live) void runtime.current?.cancel(s.responseId); dispatch({ type: 'interrupt' }); };
   const retry = () => {
     if (live) { runtime.current?.reconnect(); return; }
     dispatch({ type: 'phase', phase: 'processing' }); if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => dispatch({ type: 'phase', phase: 'listening' }), 1200);
@@ -157,7 +167,7 @@ function App() {
   const end = () => { if (timer.current) clearTimeout(timer.current); dispatch({ type: 'end' }); hide(); };
   const copy = async (text: string) => { try { if (window.jarvis) setCopied(await window.jarvis.copy(text)); else { await navigator.clipboard.writeText(text); setCopied(true); } } catch { setCopied(false); } };
   const escape = () => { if (settings) closeSettings(); else if (added) setAdded(false); else if (replying) { setReplying(null); void window.jarvis?.focus(false); } else if (s.detail) closeDetail(); else if (s.inbox) toggleInbox(); else if (s.mode === 'text') mode('voice'); else hide(); };
-  const status = s.phase === 'error' ? '连接失败' : s.micMuted && s.phase === 'listening' ? '麦克风已关闭' : labels[s.phase];
+  const status = s.phase === 'error' ? '连接失败' : s.live.state === 'active' ? (s.live.hushed ? 'Live · 已停播，说话后恢复' : s.live.speaking ? 'Live · 正在播报' : s.live.hearing ? 'Live · 正在听' : 'Live · 通话中') : s.micMuted && s.phase === 'listening' ? '麦克风已关闭' : labels[s.phase];
   const surfaceStyle = { '--glass-opacity': opacity, '--glass-strength': glassStrength, '--preview-scale': lab ? scale : 1 } as React.CSSProperties;
   return <IconContext.Provider value={{ size: 20, weight: 'regular' }}>
     <main className={lab ? `lab ${background}` : 'desktop'} style={surfaceStyle} onKeyDown={e => {
@@ -190,7 +200,8 @@ function App() {
           <Button label={s.inbox ? '收起通知' : `打开通知，${count} 条未读示例`} aria-expanded={s.inbox} className="glass detached notification" data-glass="20" data-interactive onClick={toggleInbox}><CapsuleIcon name={s.inbox ? 'collapse' : 'bell'}/>{count > 0 && !s.inbox && <span className="unread">{count > 9 ? '9+' : count}</span>}</Button>
         </div>
         <div className="status-line" data-interactive><span role="status" className="sr-only">{s.mode === 'idle' ? '待机' : status}{!live && <span className="demo-label"> · 演示</span>}</span>
-          {s.phase === 'speaking' && <button className="text-action" onClick={interrupt}><Pause size={12}/>停止播报</button>}
+          {(s.phase === 'speaking' || s.live.speaking) && <button className="text-action" onClick={interrupt}><Pause size={12}/>停止播报</button>}
+          {live && s.live.state !== 'unavailable' && <button className={`text-action live-toggle ${s.live.state === 'active' ? 'is-active' : ''}`} disabled={liveBusy} onClick={toggleLive}>{s.live.state === 'active' ? <><PhoneDisconnect size={12}/>挂断 {liveClock}</> : s.live.state === 'connecting' ? '连接中…' : s.live.state === 'closing' ? '挂断中…' : <><Phone size={12}/>开始 Live</>}</button>}
           <Button label="外观与窗口选项" className="options" aria-expanded={settings} onClick={() => { if (settings) closeSettings(); else { setSettings(true); void window.jarvis?.focus(true); } }}><DotsThree size={19}/></Button>
         </div>
         {settings && <section className="settings glass" data-glass="18" data-interactive aria-label="外观与窗口选项">
@@ -210,6 +221,14 @@ function App() {
         {added && <section className="addition glass" data-glass="18" data-interactive><button onClick={() => { dispatch({ type: 'attachment' }); setAdded(false); }}><Paperclip size={18}/>{s.attachment ? '移除示例附件' : '附加示例便笺'}</button><p>仅使用预置示例，不读取本地文件。</p></section>}
         {s.attachment && <div className="attachment" data-interactive><Paperclip size={13}/>示例便笺.txt<Button label="移除示例附件" onClick={() => dispatch({ type: 'attachment' })}><X size={12}/></Button></div>}
         {s.phase === 'error' && <section className="error-panel glass" data-glass="18" data-interactive><div><strong>暂时没有连上</strong><p>{live ? 'Jarvis 服务没有响应，正在重连。' : '演示连接失败。你可以重试或继续打字。'}</p></div><Button label={live ? '立即重连' : '重试模拟连接'} onClick={retry}><ArrowCounterClockwise/></Button></section>}
+        {live && !s.inbox && (s.live.state === 'active' || liveBusy || s.subtitles.length > 0 || s.live.reason) && <section className="reply subtitles glass" data-glass="18" data-interactive aria-live="polite">
+          <div className="section-heading"><span>Live 字幕</span>{s.live.state === 'idle' && <Button label="关闭 Live 字幕" onClick={() => dispatch({ type: 'live_dismiss' })}><X size={16}/></Button>}</div>
+          {s.subtitles.slice(-8).map((t, i) => <p key={`${t.startMs}-${i}`} className={`sub-${t.role}`}><b>{t.role === 'user' ? '你' : 'Jarvis'}</b>{t.text}</p>)}
+          {s.subtitles.length === 0 && s.live.state === 'active' && <p className="sub-meta">已连接，直接开口即可。</p>}
+          {s.live.notice === 'delegation_unsupported' && <p className="sub-meta">后台能力尚未接入：这一版不能查资料或执行操作。</p>}
+          {s.live.error && <p className="sub-meta">错误：{s.live.error}</p>}
+          {s.live.state === 'idle' && s.live.reason && <p className="sub-meta">已挂断（{s.live.reason}）· 用量 {s.live.usageS !== null ? `${s.live.usageS.toFixed(1)} 秒` : '未知'}{s.live.usageFinal ? '' : '（最后已知，未确认）'}</p>}
+        </section>}
         {s.reply && !s.inbox && <section className="reply glass" data-glass="18" data-interactive><div className="section-heading"><span>{live ? '回复' : '示例回复'}</span><Button label="复制示例回复" onClick={() => void copy(visible(s.reply))}>{copied ? <Check size={16}/> : <Copy size={16}/>}</Button></div><p>{visible(s.reply)}</p></section>}
         {showInbox && <section className={`inbox ${s.inbox ? 'is-open' : 'is-closing'} ${stacked ? 'is-stacked' : 'is-expanded'}`} inert={!s.inbox} aria-hidden={!s.inbox} aria-label="示例通知" data-interactive>
           {s.results.length === 0 && <div className="empty glass" data-glass="18"><Bell size={20}/><p>暂时没有待查看的事项</p><small>任务结果、待回应事项和你设定的提醒会出现在这里。</small></div>}
