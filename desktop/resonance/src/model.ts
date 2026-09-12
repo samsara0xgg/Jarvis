@@ -27,10 +27,9 @@ export function reducer(s: State, a: Action): State {
     case 'send': return s.draft.trim() && s.phase !== 'processing' ? { ...s, draft: '', attachment: false, phase: 'processing', reply: '' } : s;
     case 'answer': return { ...s, phase: 'speaking', reply: '演示回复：我接住了这段表达。正式连接后，可以从这里继续交流、保存和找回上下文。此处没有保存或执行真实任务。' };
     case 'open': return { ...s, phase: 'processing', reply: '', turnId: a.turnId, responseId: a.responseId };
-    // With speech muted nothing is audible, so the text streams under `processing` and there is nothing to stop.
-    case 'append': return { ...s, reply: s.reply + a.token, phase: s.soundMuted ? 'processing' : 'speaking' };
+    case 'append': return { ...s, reply: s.reply + a.token, phase: 'speaking' };
     // The daemon's `done` carries fadeMs; runtime.ts turns it into this delayed settle for the same turn only.
-    case 'settle': return s.turnId === a.turnId ? { ...s, reply: '', phase: s.phase === 'speaking' || s.phase === 'processing' ? 'listening' : s.phase } : s;
+    case 'settle': return s.turnId === a.turnId ? { ...s, reply: '', phase: s.phase === 'speaking' ? 'listening' : s.phase } : s;
     case 'controls': return { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted };
     case 'detail': return { ...s, detail: a.id, results: s.results.map(r => r.id === a.id ? { ...r, read: true } : r) };
     case 'dismiss': return { ...s, detail: null, results: s.results.filter(r => r.id !== a.id) };

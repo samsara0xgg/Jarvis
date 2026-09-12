@@ -1,16 +1,20 @@
 """Runtime mute switches shared by the Inherent HTTP surface and the voice code (ADR-0015).
 
-Two in-memory booleans the desktop surface flips over ``POST /inherent/controls``
-and the voice owners read on their own threads: ``mic_muted`` stops new wake
-arms (Jarvis stops taking commands; barge-in during its own speech stays),
-``speech_muted`` makes ``_tts_watcher`` treat every new response turn as
-silent (text still streams, nothing is synthesized). Not persisted: a daemon
-restart comes back unmuted, and the surface re-syncs on connect.
+Two in-memory booleans the desktop surface flips over ``POST /inherent/controls``.
+``mic_muted`` stops new wake arms (Jarvis stops taking commands; barge-in
+during its own speech stays). ``speech_muted`` is the TTS player's output
+gain: synthesis, timing, phases and events run exactly as unmuted, only the
+speaker is silent, so unmuting mid-sentence resumes audibly. Not persisted: a
+daemon restart comes back unmuted, and the surface re-syncs on connect.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @dataclass
@@ -19,14 +23,12 @@ class VoiceControls:
 
     mic_muted: bool = False
     speech_muted: bool = False
+    # ``(muted) -> None``, bound by the runtime to the TTS player's gain.
+    on_speech_muted: Callable[[bool], None] | None = None
 
     def mic_is_muted(self) -> bool:
         """Reader the wake owners hold instead of the object itself."""
         return self.mic_muted
-
-    def speech_is_muted(self) -> bool:
-        """Reader the TTS watcher holds instead of the object itself."""
-        return self.speech_muted
 
     def update(
         self,
@@ -37,8 +39,10 @@ class VoiceControls:
         """Apply the given switches (``None`` leaves one unchanged) and return the state."""
         if mic_muted is not None:
             self.mic_muted = mic_muted
-        if speech_muted is not None:
+        if speech_muted is not None and speech_muted != self.speech_muted:
             self.speech_muted = speech_muted
+            if self.on_speech_muted is not None:
+                self.on_speech_muted(speech_muted)
         return {"mic_muted": self.mic_muted, "speech_muted": self.speech_muted}
 
 

@@ -19,12 +19,14 @@ try {
   await page.exposeFunction('__status', s => statuses.push(s));
   await page.exposeFunction('__presence', s => presences.push(s));
   await page.waitForSelector('.voice-presence[data-state="standby"]', { timeout: 15000 });
-  await page.evaluate(() => {
+  // Observers live in the document, so a reload drops them: re-run this after every navigation.
+  const observe = () => page.evaluate(() => {
     const status = document.querySelector('.status-line [role=status]');
     new MutationObserver(() => window.__status(status.textContent)).observe(status, { childList: true, characterData: true, subtree: true });
     // The waveform is rebuilt when the mode switches, so watch the whole shell for its data-state.
     new MutationObserver(() => { const el = document.querySelector('.voice-presence'); if (el) window.__presence(el.getAttribute('data-state')); }).observe(document.querySelector('.shell'), { attributes: true, subtree: true, attributeFilter: ['data-state'] });
   });
+  await observe();
   await page.waitForTimeout(500);
   check('connects and rests in standby without the error panel', await page.locator('.error-panel').count() === 0);
   check('live mode ships no demo notification or demo label', await page.locator('.notification .unread').count() === 0 && await page.locator('.demo-label').count() === 0);
@@ -81,11 +83,12 @@ try {
   await page.getByRole('button', { name: '开启麦克风', exact: true }).waitFor({ timeout: 15000 });
   await page.getByRole('button', { name: '开启播报声音', exact: true }).waitFor();
   check('a fresh window syncs both mute states from the daemon', true);
+  await observe();
   statuses.length = 0;
   await fetch(`${http}/inherent/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '请只回答两个字：好的' }) });
   await page.waitForSelector('.reply p', { timeout: 120000 });
   await page.waitForFunction(() => document.querySelector('.reply p')?.textContent.trim().length > 0, null, { timeout: 60000 });
-  check('a speech-muted turn streams text without entering speaking', !statuses.includes('正在播报'));
+  check('a speech-muted turn still runs through speaking (mute is the player gain, not the turn)', statuses.includes('正在播报'));
   await page.waitForSelector('.reply', { state: 'detached', timeout: 20000 });
   await page.waitForTimeout(300); // let the capsule finish its collapse before clicking the edge buttons
   const labels = () => page.evaluate(() => [...document.querySelectorAll('.edge-control')].map(b => b.getAttribute('aria-label')));

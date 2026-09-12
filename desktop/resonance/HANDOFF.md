@@ -36,8 +36,8 @@ real 8006 daemon.
   `listening` (utterance capture) and maps to the `listening` presence. The
   microphone and playback mute buttons POST `/inherent/controls`; the daemon
   owns that state (ADR-0015 D2) and every answer, including the `{}` sync on
-  connect, drives the buttons. Muted speech keeps the reply under
-  `processing`: nothing is audible, so there is nothing to stop.
+  connect, drives the buttons. Muted speech is the daemon player's gain at
+  zero: the reply still runs through `speaking` and the stop button still works.
 - `src/main.tsx`: mock text-send/reply timers and the speaking auto-timeout run
   only when `live` is false; the inline notification reply timer is still a
   mock. Reply text is shown with `<voice>`/`<document>` markup stripped.

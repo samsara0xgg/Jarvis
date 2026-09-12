@@ -1372,12 +1372,26 @@ async def _response_watcher(
         raise
 
 
+def _speech_mute_to_gain(
+    pipeline: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline,
+) -> Callable[[bool], None]:
+    """ADR-0015 D2: speech mute is the player's output gain, 0.0 muted and 1.0 restored.
+
+    Synthesis, timing, phases and events run exactly as unmuted; only the
+    speaker is silent, so unmuting mid-sentence resumes audibly.
+    """
+
+    def _apply(muted: bool) -> None:  # noqa: FBT001 - Callable[[bool], None] shape
+        pipeline.set_output_gain(0.0 if muted else 1.0)
+
+    return _apply
+
+
 async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
     *,
     conn: sqlite3.Connection,
     pipeline: object,  # voice_tts.TTSPipeline protocol; loosely typed to avoid cycles
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
-    speech_muted: Callable[[], bool] | None = None,
 ) -> None:
     """Background task: feed every surface.response_* row into the TTSPipeline.
 
@@ -1453,21 +1467,6 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
                 advance_cursor = True
                 try:
                     turn_id = str(ev.payload.get("turn_id", ""))
-                    # ADR-0015: speech muted at the turn's open ⇒ the whole
-                    # open/chunk*/emitted triple rides the same silent_turns
-                    # path as a silent channel — nothing is synthesized.
-                    if (
-                        ev.type == "surface.response_open"
-                        and speech_muted is not None
-                        and speech_muted()
-                    ):
-                        silent_turns.add(turn_id)
-                        LOGGER.info(
-                            "tts_watcher: turn_id=%s speech muted — not synthesized (ADR-0015).",
-                            turn_id,
-                        )
-                        after_id = max(after_id, row_id)
-                        continue
                     if _drop_for_silent_channel(
                         ev,
                         turn_id=turn_id,
@@ -4152,7 +4151,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None = None
         duplex_voice_session: voice_session.DuplexVoiceSession | None = None
         # ADR-0015: the two mute switches the desktop surface flips over
-        # POST /inherent/controls; the voice owners read them on their threads.
+        # POST /inherent/controls: mic on the wake threads, speech as the player's gain.
         controls = voice_controls.VoiceControls()
         voice_input_owners = _VoiceInputOwners(
             duplex_session=None,
@@ -4194,6 +4193,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     ducker=shared_ducker,
                     voice=voice_knobs,
                 )
+                if tts_pipe is not None:
+                    controls.on_speech_muted = _speech_mute_to_gain(tts_pipe)
                 if os.environ.get("JARVIS_VOICE_DISABLE_WAKE") == "1":
                     voice_startup_reason = "wake_disabled_env"
                     LOGGER.info(
@@ -4432,7 +4433,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         conn=runtime.conn,
                         pipeline=tts_pipe,
                         poll_interval_s=poll_interval_s,
-                        speech_muted=controls.speech_is_muted,
                     ),
                     name="tts_watcher",
                 ),

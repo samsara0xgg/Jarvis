@@ -3049,6 +3049,10 @@ class TTSPipeline:
         """Compatibility alias for the unified output-active lifecycle."""
         return self.is_output_active()
 
+    def set_output_gain(self, gain: float, ramp_ms: float = 10.0) -> None:
+        """Ramp the player's output gain: 0.0 is the ADR-0015 D2 speech mute, 1.0 restores."""
+        self._player.set_gain(gain, ramp_ms)
+
     def _generation_is_current(self, generation: int) -> bool:
         with self._state:
             return not self._closed and self._generation == generation

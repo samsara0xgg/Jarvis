@@ -60,10 +60,16 @@
   `WakeListener`. Barge-in while Jarvis is speaking never reaches that queue,
   so Allen can still interrupt Jarvis mid-sentence while muted; the PTT upload
   route is untouched.
-- `speech_muted`: `_tts_watcher` marks a response turn opened while muted as
-  silent through the same `silent_turns` path as a silent attention channel:
-  nothing is synthesized or billed, text still streams to the surface. A turn
-  already being spoken is not cut; `cancel-response` is the stop button.
+- `speech_muted`: the TTS player's output gain goes to 0.0 over a 10 ms ramp
+  and back to 1.0 on unmute (`AudioStreamPlayer.set_gain`, reached through
+  `set_output_gain` on both pipelines). Synthesis, timing, phases and events
+  run exactly as unmuted; only the speaker is silent, so a mute lands within
+  one audio block and an unmute mid-sentence resumes audibly. The audibility
+  ledger classifies those blocks `muted`, so `heard_text` excludes them:
+  "heard" means audible, text read on screen is another channel.
+  Rejected the same day: not synthesizing a turn opened while muted (the
+  first cut). Allen: mute is the volume switch, not a synthesis switch, and
+  the TTS cost of a muted turn is accepted.
 - State lives in `jarvis/surface/voice_controls.VoiceControls`, in memory,
   outside the event log. It is operational UI state like `voice_capability`,
   not a durable fact about the world; a daemon restart comes back unmuted and
@@ -98,7 +104,8 @@
 
 - Hermetic: `tests/integration/test_inherent_controls.py` asserts the
   `/inherent/controls` wire (read, partial update, full state, route absent
-  without deps); `tests/integration/test_launchd_install.py` asserts both
+  without deps) and follows the speech switch to the PCM the player hands the
+  device (ones, a 10 ms ramp to exact zeros, ones again); `tests/integration/test_launchd_install.py` asserts both
   rendered plists and the `bootout → bootstrap → enable` sequence per label
   against a fake `launchctl`.
 - Live, against an isolated daemon (`--runtime-root ~/.jarvis-resonance-test
@@ -106,7 +113,7 @@
   `desktop/resonance/scripts/verify-runtime.mjs` types a turn through the real
   composer, uploads a synthesized utterance to `/inherent/asr-submit`, flips
   both mutes and reads them back from the daemon, reloads the window and sees
-  the state re-sync, streams a speech-muted turn without entering `speaking`,
+  the state re-sync, streams a speech-muted turn still through `speaking`,
   and shows the reconnect panel when the daemon is SIGTERMed.
 - Live, on Allen's Mac from the main checkout after merge: stop the manual
   daemon, `npm ci` in `desktop/resonance`, `jarvis daemon install`, speak to

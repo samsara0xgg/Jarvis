@@ -870,6 +870,10 @@ class StreamingTTSPipeline:
         """Compatibility alias used by the wake listener."""
         return self.is_output_active()
 
+    def set_output_gain(self, gain: float, ramp_ms: float = 10.0) -> None:
+        """Ramp the player's output gain: 0.0 is the ADR-0015 D2 speech mute, 1.0 restores."""
+        self._player.set_gain(gain, ramp_ms)
+
     def suspend_for_sleep(  # noqa: C901, PLR0912, PLR0915 - exact late-continuation FSM
         self,
         *,
