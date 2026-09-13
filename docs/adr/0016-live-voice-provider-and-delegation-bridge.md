@@ -40,14 +40,22 @@ its job for everything Jarvis itself asserts: backend answers still pass
 through L3 before they are handed to Live, and Live only paraphrases what the
 backend returned. Consequence accepted: the words Allen hears are the model's
 own; claims Live makes on its own are not Jarvis claims and are not recorded
-as such (see D3).
+as such (see D3). The phase A local playback gate on "别说了" is gone
+(2026-09-12): native barge-in already covers a spoken stop; an
+`instructions.append` accumulates and never expires, so a hushed model stayed
+silent 20 s after the stop and an early stop cut off a delegation's answer;
+and the local buffer the gate was to drain measured 0 ms both times. The
+player gain (ADR-0015) is the only local control left.
 
 **D2. Client delegation is the only bridge from Live to the backend.** The
 session is created in client delegation mode. On `session.delegation.created`
 the L5 session records a pending delegation keyed by
 `(session_id, delegation_id)`, waits a bounded settle window for user
 transcript fragments, builds the request from the user fragments in the
-session-timeline window `(previous delegation offset, this offset + settle]`,
+session-timeline window `(window start, this offset + settle]` — the window
+opens at the last assistant transcript end before Allen's latest burst of
+speech, never before the previous delegation's offset, and ten seconds back
+while the model has not spoken yet —
 and submits it through the ADR-0014 D21 inbox with `client_instance_id =
 Live session id` and `request_id = delegation_id`. The inbox is the durable
 receipt: a redelivered event replays the same `turn_id` and starts no second
@@ -57,7 +65,8 @@ Ordinary conversation never enters a ResponseRun.
 
 **D3. The Live conversation is persisted to memory.db, with provenance.**
 User fragments are merged on pauses and appended as `source=allen`; the
-model's spoken output as `source=jarvis_live`. The delegated request row is
+assistant transcript, all of it, merged the same way as `source=jarvis_live`.
+The delegated request row is
 written by L5 before submission and its `record_id` travels on the
 `surface.user_intent` payload; `drive_turn` then skips its own `allen` write
 and passes that id as `exclude_id` to `context_note`, so the request appears
@@ -73,23 +82,24 @@ delegation id, using `voice_text` (falling back to `text`), budgeted to about
 the commentary states the status and that the full result is on the UI.
 Before sending, the bridge checks that the pending record's `session_id` and
 epoch match the current run; otherwise the result stays in memory.db and the
-next session's brief. If speech is muted, the result goes as
-`thinking`, not `commentary`. The UI keeps the complete answer through the
-existing response stream; Live never receives it.
+next session's brief. Speech mute is local player gain (ADR-0015) and
+changes nothing on the wire: the result is `commentary` either way. The UI
+keeps the complete answer through the existing response stream; Live never
+receives it.
 
 **D5. Three-state outcome, one foreground query.** A `response.failed` or
 `turn.failed` terminal yields a "查询失败" commentary; no answer within
 `delegation_timeout_s` (default 90 s) yields "还没拿到结果"; an answer that
 arrives after the timeout is appended as `thinking` only. When a new
-delegation is registered, every older pending delegation is superseded: its
-turn still completes into memory.db and the UI, but its result is withheld
-from Live entirely. A quiet `thinking` append is not a secrecy boundary
-(live run 2026-09-12: a superseded "明天" forecast delivered as thinking was
-spoken as the "后天" answer). The superseding request is submitted next to
-the request it corrects (`此前请求：… / 用户修正：…`), because a lone
-correction such as "改成后天的" is unresolvable against a seven-day memory
-note; the memory row keeps only Allen's words. Semantic task revision
-(planning §6) is not attempted here.
+delegation is registered, every older delegation still running is superseded:
+its turn still completes into memory.db and the UI, but its result is withheld
+from Live entirely; one already delivered is left as it is. A quiet `thinking`
+append is not a secrecy boundary (live run 2026-09-12: a superseded "明天"
+forecast delivered as thinking was spoken as the "后天" answer). The new
+request is submitted next to the previous one, finished or not
+(`此前请求：… / 用户修正：…`), because a lone correction such as "改成后天的"
+is unresolvable against a seven-day memory note; the memory row keeps only
+Allen's words. Semantic task revision (planning §6) is not attempted here.
 
 **D6. Delegated turns see only read-only tools.** When
 `surface.user_intent.channel == "gpt_live"`, `drive_turn` hands `decide()` a
@@ -101,24 +111,37 @@ tools and the ADR-0012 confirmation flow are phase C.
 **D7. The session brief is the existing memory note, budgeted.** The
 `session.start` `input` carries one `developer` message rendered by a
 character-budgeted variant of `context_note`: the whole profile, then the
-most recent records selected from the newest backwards and emitted in time
+most recent records selected from the newest backwards, each cut to about
+200 characters so one long answer cannot end the brief, and emitted in time
 order, about 1 500 characters. No new schema, no separate memory service.
 
 **D8. The local speech chain stays silent for Live turns, by response.**
 A turn that originates from Live is marked silent for the TTS consumer at its
-`surface.response_open` header, the same per-response mechanism ADR-0009 D4
-uses for silent attention channels, so neither the answer nor the lifecycle
-commentary of that turn is synthesized. Muting the player gain (phase A) is
-kept as the last line, not the mechanism.
+`surface.response_open`, judged by the `channel` of the turn's
+`surface.user_intent` row (the open header's own `channel` is the presentation
+split), the same per-response verdict ADR-0009 D4 uses for silent attention
+channels, so the whole open/chunk/emitted triple is dropped; the lifecycle
+commentary run is not opened at all for such a turn. Resonance still shows
+the full answer. Muting the player gain (phase A) is kept as the last line,
+not the mechanism.
 
 **D9. Layering is unchanged.** `jarvis/surface/voice_live.py` is L5 and
 imports nothing from `state`, `decision` or `runtime`. The composition root
 injects four callables: `delegate(text, delegation_id, session_id,
 record_id) -> turn_id`, `record(source, text, record_id)`, `brief() -> str`
 and `lookup_result(turn_id)`; it also subscribes to the committed-event bus
-and wakes the pending delegation when a response terminal for its `turn_id`
-commits. The bus callback only enqueues; the Live session task reads the
-Event Log and owns the WebSocket. `lint-imports` remains the gate.
+and wakes the pending delegation when the answer row or a response terminal
+for its `turn_id` commits. The bus callback only enqueues; the Live session
+task reads the Event Log and owns the WebSocket. `lint-imports` remains the
+gate.
+
+**D10. A turn's speech has one owner, chosen by the intent channel.** The
+`channel` of the turn's `surface.user_intent` row decides who voices it. A
+`gpt_live` turn is voiced by the Live session alone: the local chain never
+synthesizes it (D8). A turn from any other channel is voiced by the local
+chain alone and never reaches Live; while a Live session holds the speaker
+that chain's player runs at gain 0, so such a turn is seen on Resonance, not
+heard.
 
 ## 3. Consequences
 
@@ -151,9 +174,10 @@ with, per decision: the daemon log lines for claim, submit, `turn_id`, ACK
 by `client_event_id` and delivery kind (D2, D4); a redelivered delegation
 producing one `surface.user_intent` row (D2); memory.db rows for `allen`,
 `jarvis_live` and the backend `jarvis` answer with no duplicated request
-(D3); a result delivered while speech is muted acknowledged as
-`session.thinking.appended` (D4); a late result logged as `thinking` only and
-two overlapping delegations speaking only the newest (D5); a mutating tool request logged as
-`UnknownToolError` with no `action.dispatched` (D6); `session.started`
-showing the `developer` brief in `input` (D7); zero MiniMax requests during
-the Live session (D8); `lint-imports` clean (D9).
+(D3); a result acknowledged as `session.commentary.appended` (D4); a late
+result logged as `thinking` only and two overlapping delegations speaking
+only the newest (D5); a mutating tool request logged as `UnknownToolError`
+with no `action.dispatched` (D6); `session.started` showing the `developer`
+brief in `input` (D7); zero MiniMax requests during the Live session and one
+`suppressed for this consumer` line per delegated turn (D8, D10);
+`lint-imports` clean (D9).
