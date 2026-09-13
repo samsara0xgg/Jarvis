@@ -174,11 +174,45 @@ def context_note(
     return "\n".join(lines)
 
 
+def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> str:
+    """Render a character-budgeted session brief (ADR-0016 D7).
+
+    The whole profile always fits first; then records are taken from the
+    newest backwards until the budget is spent, and emitted in time order.
+    Unlike :func:`context_note` there is no tool hint: the reader is the
+    Live model, which asks the backend instead of calling ``search_records``.
+    """
+    moment = now or local_now()
+    with closing(open_memory_db(path)) as conn:
+        profile = [
+            str(text)
+            for (text,) in conn.execute("SELECT text FROM profile ORDER BY rowid").fetchall()
+        ]
+        cursor = conn.execute("SELECT ts, source, text FROM records ORDER BY rowid DESC")
+        head = ["[关于 Allen]", *(f"- {text}" for text in profile)]
+        if not profile:
+            head.append("- (档案为空)")
+        head.append(f"[现在] {iso_seconds(moment)} 周{_WEEKDAYS[moment.weekday()]}")
+        head.append("[最近的对话记录, 时间正序]")
+        budget = max_chars - sum(len(line) + 1 for line in head)
+        newest_first: list[str] = []
+        for ts, source, text in cursor:
+            line = f"[{ts}] {source}: {text}"
+            if len(line) + 1 > budget:
+                break
+            budget -= len(line) + 1
+            newest_first.append(line)
+    if not newest_first:
+        head.append("(无)")
+    return "\n".join([*head, *reversed(newest_first)])
+
+
 __all__ = [
     "DEFAULT_CONTEXT_DAYS",
     "DEFAULT_SEARCH_LIMIT",
     "MemorySettings",
     "append_record",
+    "brief_note",
     "context_note",
     "iso_seconds",
     "local_now",

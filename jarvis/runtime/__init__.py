@@ -116,6 +116,7 @@ from jarvis.execution.tools import (
     DEFAULT_WEB_SEARCH_PROVIDER,
     DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
+    ReadOnlyToolRegistry,
     ToolRegistry,
     VisionClient,
     build_default_registry,
@@ -2345,8 +2346,18 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     )
     # memory.db: Allen's utterance lands before any routing (Tier 0 included).
     # The event uid is the record id, so a retried turn cannot double-write.
+    # ADR-0016 D3: a Live delegation arrives with ``record_id`` because the
+    # voice surface already wrote the row; that id is then what the prompt
+    # note excludes, so the request appears once.
     memory = runtime.memory
-    if memory is not None and continuation is None:
+    surface_record_id = user_intent_event.payload.get("record_id")
+    memory_exclude_id = (
+        surface_record_id
+        if isinstance(surface_record_id, str) and surface_record_id
+        else user_intent_event.event_uid
+    )
+    surface_wrote_row = memory_exclude_id != user_intent_event.event_uid
+    if memory is not None and continuation is None and not surface_wrote_row:
         audio_ref = user_intent_event.payload.get("audio_artifact_ref")
         append_record(
             memory.db_path,
@@ -2426,7 +2437,14 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # mypy's invariant generic stance over Protocol attribute
             # types treats the more-specific RawResult / LifecycleState
             # return types as a conflict.
-            tool_registry=cast("ToolRegistryLike", runtime.tool_registry),
+            # ADR-0016 D6 — a Live delegation sees only read-only tools; the
+            # shared registry is untouched, the view lives for this call.
+            tool_registry=cast(
+                "ToolRegistryLike",
+                ReadOnlyToolRegistry(runtime.tool_registry)
+                if user_intent_event.payload.get("channel") == "gpt_live"
+                else runtime.tool_registry,
+            ),
             lifecycle=cast("LifecycleLike", runtime.lifecycle),
             # ADR-0008 D4 — with the Wave-4A flag on, this turn's provider
             # identity is the run's own immutable client, so two overlapping
@@ -2462,7 +2480,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 context_note(
                     memory.db_path,
                     context_days=memory.context_days,
-                    exclude_id=user_intent_event.event_uid,
+                    exclude_id=memory_exclude_id,
                 )
                 if memory is not None
                 else None

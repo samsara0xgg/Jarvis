@@ -943,7 +943,9 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L5",
         actor="user",
         required_payload=("transcript", "turn_id"),
-        optional_payload=("channel", "language"),
+        # ADR-0016 D3: ``record_id`` names the memory.db row the submitting
+        # surface already wrote, so drive_turn skips its own write.
+        optional_payload=("channel", "language", "record_id"),
         schema_version=1,
     ),
     # F6: surface.response_emitted — NOT in spec §5.4 canonical list
@@ -1807,6 +1809,30 @@ def get_event(conn: sqlite3.Connection, event_uid: str) -> Event | None:
     return _row_to_event(row)
 
 
+def iter_events_for_turn(
+    conn: sqlite3.Connection,
+    turn_id: str,
+    event_types: Iterable[str],
+) -> Iterator[Event]:
+    """Yield the selected event types correlated to ``turn_id``, in append order.
+
+    Uses the indexed ``correlation_id`` column (the promoted ``turn_id``), so a
+    caller polling for one turn's outcome never scans unrelated history.
+    """
+    selected = tuple(dict.fromkeys(event_types))
+    if not selected:
+        return
+    cursor = conn.execute(
+        "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
+        "payload_json, source_event_id, correlation_json "
+        "FROM events WHERE correlation_id = ? "
+        "AND type IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
+        (turn_id, json.dumps(selected)),
+    )
+    for row in cursor:
+        yield _row_to_event(row)
+
+
 __all__ = [
     "CommittedEventBus",
     "DanglingSourceEventError",
@@ -1823,6 +1849,7 @@ __all__ = [
     "emit_event",
     "get_event",
     "iter_events",
+    "iter_events_for_turn",
     "iter_events_of_types",
     "open_event_log",
 ]

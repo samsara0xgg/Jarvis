@@ -6496,6 +6496,50 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     return registry
 
 
+class ReadOnlyToolRegistry:
+    """Read-only view of a :class:`ToolRegistry` for one turn (ADR-0016 D6).
+
+    Exposes only tools with ``read_only=True`` and never ``cancel_action``;
+    ``dispatch`` of anything else raises :class:`UnknownToolError` before the
+    inner registry emits ``action.dispatched``. The shared registry is not
+    mutated: the composition root hands this view to ``decide()`` for turns
+    whose ``surface.user_intent.channel`` is ``gpt_live``.
+    """
+
+    def __init__(self, inner: ToolRegistry) -> None:
+        """Wrap ``inner``; nothing is copied, filtering happens per call."""
+        self._inner = inner
+
+    @staticmethod
+    def _visible(tool_def: ToolDefinition) -> bool:
+        return tool_def.read_only and tool_def.name != _CANCEL_ACTION_TOOL_NAME
+
+    def get_definitions(self) -> tuple[ToolDefinition, ...]:
+        """Every read-only tool, in registration order."""
+        return tuple(t for t in self._inner.get_definitions() if self._visible(t))
+
+    def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolDefinition, ...]:
+        """The caller's tools narrowed to the read-only ones."""
+        return tuple(t for t in self._inner.for_caller(caller_principal) if self._visible(t))
+
+    def dispatch(
+        self,
+        action_request: ActionRequest,
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,
+        lifecycle: ActionLifecycle,
+    ) -> RawResultBundle:
+        """Forward a read-only dispatch; refuse everything else without a trace."""
+        if action_request.tool_name not in {t.name for t in self.get_definitions()}:
+            LOGGER.warning(
+                "read-only registry refused %r for action %s (ADR-0016 D6)",
+                action_request.tool_name, action_request.action_id,
+            )
+            msg = f"unknown tool: {action_request.tool_name!r} (read-only view)"
+            raise UnknownToolError(msg)
+        return self._inner.dispatch(action_request, conn, runtime_paths, lifecycle)
+
+
 __all__ = [
     "DEFAULT_OBSIDIAN_VAULT_ROOT",
     "DEFAULT_SCREEN_MAX_WIDTH_PX",
@@ -6513,6 +6557,7 @@ __all__ = [
     "PostActionCheck",
     "RawResult",
     "RawResultBundle",
+    "ReadOnlyToolRegistry",
     "ResourceKeyResolver",
     "ResultSemantics",
     "RuntimePathsLike",

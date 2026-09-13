@@ -192,6 +192,8 @@ def submit_text_once(  # noqa: PLR0913 — one keyword per canonical payload fie
     turn_id: str | None = None,
     now_ms: int | None = None,
     failure_injector: FailureInjector | None = None,
+    source_surface: str = SOURCE_SURFACE,
+    record_id: str | None = None,
 ) -> InputReceipt:
     """Append one canonical ``surface.user_intent`` and its receipt atomically.
 
@@ -205,6 +207,10 @@ def submit_text_once(  # noqa: PLR0913 — one keyword per canonical payload fie
         now_ms: Receipt timestamp; wall clock when omitted.
         failure_injector: Test hook fired between the append and the commit,
             used to prove no receipt survives without its input event.
+        source_surface: Audit label of the submitting surface.
+        record_id: ADR-0016 D3 — the memory.db row the surface already
+            wrote for this utterance, so ``drive_turn`` neither writes it
+            again nor shows it twice in the prompt.
 
     Returns:
         The accepted receipt, ``replayed=True`` when an identical earlier
@@ -229,17 +235,20 @@ def submit_text_once(  # noqa: PLR0913 — one keyword per canonical payload fie
             receipt = _receipt_from_row(key, existing, replayed=True)
             conn.commit()
             return receipt
+        payload: dict[str, object] = {
+            "transcript": transcript,
+            "turn_id": minted,
+            "channel": channel,
+            "language": language,
+            "source_client_request_id": key.request_id,
+            "source_surface": source_surface,
+        }
+        if record_id is not None:
+            payload["record_id"] = record_id
         event = append_event_in_transaction(
             conn,
             type="surface.user_intent",
-            payload={
-                "transcript": transcript,
-                "turn_id": minted,
-                "channel": channel,
-                "language": language,
-                "source_client_request_id": key.request_id,
-                "source_surface": SOURCE_SURFACE,
-            },
+            payload=payload,
             correlation={"turn_id": minted},
         )
         _inject(failure_injector, "after_input_append")

@@ -149,6 +149,7 @@ from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import (
     emit_event,
     get_event,
+    iter_events_for_turn,
     iter_events_of_types,
     open_event_log,
     open_runtime_event_log,
@@ -174,6 +175,7 @@ from jarvis.state.input_submission_inbox import (
     submit_text_once,
 )
 from jarvis.state.lifecycle_terminal import terminalize_confirmation
+from jarvis.state.memory_db import MemorySettings, append_record, brief_note
 from jarvis.state.projections import PendingConfirmations, rebuild_projections
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface import (
@@ -734,6 +736,8 @@ def _emit_turn_failed(
             "exception_repr": exception_repr,
             "trigger_event_id": intent_event.event_uid,
         },
+        # ADR-0016 D5: correlated so a Live delegation's lookup by turn finds it.
+        correlation={"turn_id": str(turn_id)},
         ts_epoch_ms=int(time.time() * 1000),
     )
 
@@ -3914,6 +3918,115 @@ arrives with a real identity mechanism.
 """
 
 
+LIVE_PRINCIPAL: Final[str] = "gpt_live"
+"""ADR-0016 D2: the D21 principal and ``channel`` of a Live delegation."""
+
+_LIVE_TERMINAL_TYPES: Final[frozenset[str]] = frozenset(
+    {"response.completed", "response.failed", "response.cancelled"},
+)
+"""ResponseRun terminals that reach the committed-event bus and wake a delegation."""
+
+_LIVE_OUTCOME_TYPES: Final[tuple[str, ...]] = (
+    "surface.response_emitted",
+    "response.failed",
+    "response.cancelled",
+    "turn.failed",
+)
+
+
+class _LiveBackend:
+    """ADR-0016 D9: the four blocking callables the composition root hands to LiveVoice.
+
+    Every method opens its own SQLite connection because LiveVoice calls them
+    through ``asyncio.to_thread``, never on the loop thread.
+    """
+
+    def __init__(self, *, event_log_path: Path, memory: MemorySettings | None) -> None:
+        self._event_log_path = event_log_path
+        self._memory = memory
+
+    def delegate(self, text: str, delegation_id: str, session_id: str, record_id: str) -> str:
+        """Submit one delegation through the D21 inbox; a replay returns the same turn."""
+        key = SubmissionKey(LIVE_PRINCIPAL, session_id, delegation_id)
+        conn = open_event_log(self._event_log_path)
+        try:
+            receipt = submit_text_once(
+                conn,
+                key=key,
+                transcript=text,
+                channel=LIVE_PRINCIPAL,
+                source_surface=LIVE_PRINCIPAL,
+                record_id=record_id,
+            )
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+        LOGGER.info(
+            "gpt_live delegate %s -> turn %s (replayed=%s)",
+            delegation_id, receipt.turn_id, receipt.replayed,
+        )
+        return receipt.turn_id
+
+    def record(self, source: str, text: str, record_id: str) -> None:
+        """One memory.db row; a repeated id is a no-op (D3)."""
+        if self._memory is None:
+            return
+        append_record(self._memory.db_path, record_id=record_id, source=source, text=text)
+
+    def brief(self) -> str:
+        """The budgeted startup history for ``session.start.input`` (D7)."""
+        if self._memory is None:
+            return ""
+        return brief_note(self._memory.db_path, max_chars=1500)
+
+    def lookup_result(self, turn_id: str) -> voice_live.DelegationResult | None:
+        """The turn's final answer, its failure, or None while it is still running (D4, D5).
+
+        Only the ``phase == "final"`` emission counts: the ADR-0008 D6
+        lifecycle commentary renders under the same ``turn_id`` with
+        ``phase == "commentary"``.
+        """
+        conn = open_event_log(self._event_log_path)
+        try:
+            events = list(iter_events_for_turn(conn, turn_id, _LIVE_OUTCOME_TYPES))
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+        for event in events:
+            if (
+                event.type == "surface.response_emitted"
+                and event.payload.get("phase", "final") == "final"
+            ):
+                voice_text = event.payload.get("voice_text")
+                return voice_live.DelegationResult(
+                    status="answered",
+                    text=str(event.payload.get("text", "")),
+                    voice_text=voice_text if isinstance(voice_text, str) and voice_text else None,
+                )
+        for event in events:
+            if event.type in ("response.failed", "response.cancelled", "turn.failed"):
+                reason = event.payload.get("reason") or event.payload.get("exception_repr")
+                return voice_live.DelegationResult(
+                    status="failed", reason=str(reason or event.type),
+                )
+        return None
+
+
+def _live_wake_subscriber(live_voice: voice_live.LiveVoice) -> Callable[[Event], None]:
+    """Bus subscriber: a response terminal wakes the delegation that owns its turn (D9).
+
+    Runs on the committing thread; ``deliver`` only schedules onto the loop.
+    """
+
+    def _wake(event: Event) -> None:
+        if event.type in _LIVE_TERMINAL_TYPES:
+            turn_id = event.payload.get("turn_id")
+            if isinstance(turn_id, str) and turn_id:
+                live_voice.deliver(turn_id)
+
+    return _wake
+
+
 def _v2_accepted(receipt: InputReceipt) -> InputSubmissionOutcome:
     """Carry a durable receipt across the L2 -> L5 boundary as a plain value."""
     return InputSubmissionOutcome(
@@ -4251,6 +4364,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 session = voice_input_owners.duplex_session
                 return session.ingress if session is not None else None
 
+            # ADR-0016 D9: the composition root is the only place that wires
+            # the L5 session to L2 (inbox, memory.db, Event Log) and to the bus.
+            live_backend = _LiveBackend(
+                event_log_path=runtime.runtime_paths.event_log, memory=runtime.memory,
+            )
             live_voice = voice_live.LiveVoice(
                 config=gpt_live_config,
                 broadcaster=broadcaster,
@@ -4259,8 +4377,16 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 speech_muted=lambda: controls.speech_muted,
                 output_device=realtime_map.get("output_device"),
                 on_owns_speech=lambda _owns: _apply_speech_mute(controls.speech_muted),
+                delegate=live_backend.delegate,
+                record=live_backend.record,
+                brief=live_backend.brief,
+                lookup_result=live_backend.lookup_result,
             )
             controls.on_mic_muted = live_voice.set_mic_muted
+            if runtime.committed_event_bus is not None:
+                runtime.committed_event_bus.subscribe(_live_wake_subscriber(live_voice))
+            else:
+                LOGGER.info("gpt_live: no committed-event bus; delegations rely on the poll")
             if not os.environ.get(gpt_live_config.api_key_env):
                 LOGGER.warning(
                     "realtime.gpt_live.enabled but %s is unset; start will be refused",
