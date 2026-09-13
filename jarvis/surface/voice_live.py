@@ -52,14 +52,14 @@ DEFAULT_INSTRUCTIONS = (
     "answers short."
 )
 
+# Appends are written in the language the model speaks (docs/gpt-live/live-prompting.md).
+# Commentary is a fact for the model to say in its own words, not an instruction to it.
 DELEGATION_UNSUPPORTED_COMMENTARY = (
-    "This build has no background lookup, tools or memory connected yet. "
-    "Tell the user briefly that you cannot do that here right now, then continue."
+    "这一版还没有接后台：查不了资料，做不了操作，也记不住以前的事。"  # noqa: RUF001 — intentional Chinese punctuation.
 )
 
 HUSH_INSTRUCTION = (
-    "The user asked you to stop talking. Stop immediately and stay silent until the "
-    "user speaks again."
+    "用户要求你停止说话。立刻停下，保持沉默，直到用户再次开口。"  # noqa: RUF001 — intentional Chinese punctuation.
 )
 
 LiveState = Literal["idle", "connecting", "active", "closing"]
