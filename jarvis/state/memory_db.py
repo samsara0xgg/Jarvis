@@ -174,11 +174,16 @@ def context_note(
     return "\n".join(lines)
 
 
+# Each record in a brief is cut to about this many characters (ADR-0016 D7).
+_BRIEF_RECORD_CHARS = 200
+
+
 def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> str:
     """Render a character-budgeted session brief (ADR-0016 D7).
 
     The whole profile always fits first; then records are taken from the
-    newest backwards until the budget is spent, and emitted in time order.
+    newest backwards, each cut to ``_BRIEF_RECORD_CHARS``, until the budget
+    is spent, and emitted in time order.
     Unlike :func:`context_note` there is no tool hint: the reader is the
     Live model, which asks the backend instead of calling ``search_records``.
     """
@@ -197,7 +202,12 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
         budget = max_chars - sum(len(line) + 1 for line in head)
         newest_first: list[str] = []
         for ts, source, text in cursor:
-            line = f"[{ts}] {source}: {text}"
+            # One long answer must not end the brief: cut the record and go on
+            # (2026-09-12: a 938-character row left a 286-character brief).
+            body = str(text)
+            if len(body) > _BRIEF_RECORD_CHARS:
+                body = body[:_BRIEF_RECORD_CHARS] + "..."
+            line = f"[{ts}] {source}: {body}"
             if len(line) + 1 > budget:
                 break
             budget -= len(line) + 1
