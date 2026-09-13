@@ -82,10 +82,15 @@ existing response stream; Live never receives it.
 `turn.failed` terminal yields a "查询失败" commentary; no answer within
 `delegation_timeout_s` (default 90 s) yields "还没拿到结果"; an answer that
 arrives after the timeout is appended as `thinking` only. When a new
-delegation is registered, every older pending delegation is demoted to
-`thinking` delivery: its turn still completes and the UI still shows it, but
-only the newest query is spoken. Semantic task revision (planning §6) is
-not attempted here.
+delegation is registered, every older pending delegation is superseded: its
+turn still completes into memory.db and the UI, but its result is withheld
+from Live entirely. A quiet `thinking` append is not a secrecy boundary
+(live run 2026-09-12: a superseded "明天" forecast delivered as thinking was
+spoken as the "后天" answer). The superseding request is submitted next to
+the request it corrects (`此前请求：… / 用户修正：…`), because a lone
+correction such as "改成后天的" is unresolvable against a seven-day memory
+note; the memory row keeps only Allen's words. Semantic task revision
+(planning §6) is not attempted here.
 
 **D6. Delegated turns see only read-only tools.** When
 `surface.user_intent.channel == "gpt_live"`, `drive_turn` hands `decide()` a

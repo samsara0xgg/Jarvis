@@ -106,6 +106,11 @@ _BRIEF_MAX_CHARS = 1500
 # The bus wake covers ResponseRun terminals; ``turn.failed`` and a missing bus
 # are covered by this slow safety poll of the Event Log.
 _RESULT_POLL_S = 5.0
+# ``response.completed`` commits before the renderer writes the
+# ``surface.response_emitted`` row (runtime/__init__.py, terminalizer.complete
+# precedes render_response), so a wake re-reads briefly instead of waiting a poll.
+_WAKE_RETRY_S = 0.2
+_WAKE_RETRIES = 15
 
 
 @dataclasses.dataclass(frozen=True)
@@ -234,6 +239,9 @@ class _Pending:
     record_id: str = ""
     created: float = dataclasses.field(default_factory=time.monotonic)
     request_text: str | None = None
+    # The request of the delegation this one superseded (D5): a lone correction
+    # such as "改成后天的" is only resolvable next to what it corrects.
+    prior_request: str | None = None
     window_end_ms: int = 0
     turn_id: str | None = None
     state: str = "settling"
@@ -840,12 +848,17 @@ class LiveVoice:
                 run, "commentary", NO_BACKEND_COMMENTARY, delegation_id=delegation_id,
             )
             return
-        # D5: one foreground query. Older delegations finish, but only silently.
+        # D5: one foreground query. An older delegation still completes into
+        # memory.db and the UI, but its result is withheld from Live: a quiet
+        # append can still shape later speech (live-tested 2026-09-12, the
+        # superseded "明天" forecast was spoken as "后天").
+        prior_request: str | None = None
         for older in run.pending.values():
             if older.foreground:
                 older.foreground = False
+                prior_request = older.request_text or prior_request
                 LOGGER.info(
-                    "gpt_live delegation %s demoted to thinking by %s",
+                    "gpt_live delegation %s superseded by %s; its result stays off Live",
                     older.delegation_id, delegation_id,
                 )
         pending = _Pending(
@@ -854,6 +867,7 @@ class LiveVoice:
             epoch=run.epoch,
             offset_ms=offset_ms,
             window_start_ms=run.last_delegation_offset_ms,
+            prior_request=prior_request,
         )
         run.last_delegation_offset_ms = offset_ms
         run.pending[delegation_id] = pending
@@ -896,9 +910,16 @@ class LiveVoice:
             return
         pending.request_text = text
         pending.record_id = _row_record_id(run, "allen", fragments[0])
+        # A correction that superseded a running lookup is sent next to the
+        # request it corrects; the memory row stays Allen's own words.
+        request = (
+            f"此前请求：{pending.prior_request}\n用户修正：{text}"  # noqa: RUF001 — Chinese punctuation.
+            if pending.prior_request
+            else text
+        )
         LOGGER.info(
             "gpt_live delegation %s request=%r window=(%d,%d] record_id=%s",
-            pending.delegation_id, text, pending.window_start_ms, pending.window_end_ms,
+            pending.delegation_id, request, pending.window_start_ms, pending.window_end_ms,
             pending.record_id,
         )
         # D3: the request row is written by L5 before submission; drive_turn
@@ -907,7 +928,7 @@ class LiveVoice:
             await asyncio.to_thread(self._record, "allen", text, pending.record_id)
         assert self._delegate is not None  # noqa: S101 - checked in _on_delegation
         turn_id = await asyncio.to_thread(
-            self._delegate, text, pending.delegation_id, pending.session_id, pending.record_id,
+            self._delegate, request, pending.delegation_id, pending.session_id, pending.record_id,
         )
         pending.turn_id = turn_id
         pending.state = "submitted"
@@ -920,23 +941,14 @@ class LiveVoice:
         # D4/D5: one lookup now, then bus wakes plus a slow safety poll until the
         # deadline; after the deadline a late result is only ever thinking.
         deadline = pending.created + cfg.delegation_timeout_s
-        result = await self._lookup(turn_id)
-        while result is None and time.monotonic() < deadline:
-            wait = min(_RESULT_POLL_S, max(0.0, deadline - time.monotonic()))
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(pending.wake.wait(), timeout=wait)
-            pending.wake.clear()
-            result = await self._lookup(turn_id)
+        result = await self._await_result(pending, turn_id, deadline)
         if result is None:
             pending.timed_out = True
             LOGGER.info("gpt_live delegation %s timed out after %.0fs (turn_id=%s)",
                         pending.delegation_id, cfg.delegation_timeout_s, turn_id)
             await self._deliver(run, pending, "commentary", TIMEOUT_COMMENTARY)
-            while result is None:
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(pending.wake.wait(), timeout=_RESULT_POLL_S)
-                pending.wake.clear()
-                result = await self._lookup(turn_id)
+            result = await self._await_result(pending, turn_id, None)
+            assert result is not None  # noqa: S101 - a None deadline only returns with a result
         pending.state = "answered" if result.status == "answered" else "failed"
         if result.status == "failed":
             LOGGER.info("gpt_live delegation %s failed: %s", pending.delegation_id, result.reason)
@@ -979,6 +991,33 @@ class LiveVoice:
             return None
         return await asyncio.to_thread(self._lookup_result, turn_id)
 
+    async def _await_result(
+        self, pending: _Pending, turn_id: str, deadline: float | None,
+    ) -> DelegationResult | None:
+        """Wait for the turn's outcome: bus wakes with short re-reads, plus the safety poll.
+
+        Returns ``None`` only when ``deadline`` passes; a ``None`` deadline
+        waits until the session task is cancelled.
+        """
+        result = await self._lookup(turn_id)
+        while result is None and (deadline is None or time.monotonic() < deadline):
+            wait = _RESULT_POLL_S
+            if deadline is not None:
+                wait = min(wait, max(0.0, deadline - time.monotonic()))
+            woke = True
+            try:
+                await asyncio.wait_for(pending.wake.wait(), timeout=wait)
+            except TimeoutError:
+                woke = False
+            pending.wake.clear()
+            result = await self._lookup(turn_id)
+            retries = _WAKE_RETRIES if woke else 0
+            while result is None and retries > 0:
+                await asyncio.sleep(_WAKE_RETRY_S)
+                result = await self._lookup(turn_id)
+                retries -= 1
+        return result
+
     async def _deliver(
         self, run: _LiveRun, pending: _Pending, kind: DeliveryKind, content: str,
     ) -> None:
@@ -990,10 +1029,17 @@ class LiveVoice:
                 pending.delegation_id,
             )
             return
-        if kind == "commentary" and (not run.output_gate or not pending.foreground):
-            reason = "hushed" if not run.output_gate else "not foreground"
-            LOGGER.info("gpt_live delegation %s commentary -> thinking (%s)",
-                        pending.delegation_id, reason)
+        if not pending.foreground:
+            # Superseded: memory.db and the UI keep the result, Live never hears
+            # of it. Even a quiet append can shape later speech.
+            LOGGER.info(
+                "gpt_live delegation %s result withheld from Live (superseded, %d chars)",
+                pending.delegation_id, len(content),
+            )
+            return
+        if kind == "commentary" and not run.output_gate:
+            LOGGER.info("gpt_live delegation %s commentary -> thinking (hushed)",
+                        pending.delegation_id)
             kind = "thinking"
         LOGGER.info(
             "gpt_live delegation %s delivered as %s (%d chars)",
