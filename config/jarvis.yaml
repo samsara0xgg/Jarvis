@@ -345,7 +345,10 @@ realtime:
     idle_close_s: 180.0
     max_session_s: 1800.0
     connect_timeout_s: 10.0
-    close_timeout_s: 5.0
+    # Wait for session.closed after session.close. Measured closes take ~3 s and
+    # the official client example allows 15 s. Daemon shutdown budgets this
+    # plus 6 s, which must stay under launchd's default 20 s ExitTimeOut.
+    close_timeout_s: 10.0
     # Outbound mic backlog tolerated before stale audio is dropped wholesale.
     input_backlog_s: 0.5
     input_chunk_ms: 100

@@ -82,7 +82,7 @@ class GptLiveConfig:
     idle_close_s: float = 180.0
     max_session_s: float = 1800.0
     connect_timeout_s: float = 10.0
-    close_timeout_s: float = 5.0
+    close_timeout_s: float = 10.0
     input_backlog_s: float = 0.5
     input_chunk_ms: int = 100
     player_ring_seconds: float = 30.0
@@ -222,6 +222,15 @@ class LiveVoice:
     def owns_speech(self) -> bool:
         """True while the local chain must stay silent and take no new wake."""
         return self._state in ("connecting", "active", "closing")
+
+    @property
+    def stop_budget_s(self) -> float:
+        """Upper bound on :meth:`stop`.
+
+        The ``session.closed`` wait plus the fixed socket-close (2 s) and
+        thread-join (3 s) bounds in :meth:`_teardown`, plus 1 s of slack.
+        """
+        return self._config.close_timeout_s + 6.0
 
     def status(self) -> dict[str, object]:
         """Snapshot for ``POST /inherent/controls`` and the ``live`` wire op."""

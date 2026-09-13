@@ -4555,9 +4555,14 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             # ADR-0006 F14: Wave 3 revokes input before output. Feature-off
             # retains the legacy output-gate-before-wake order.
             # GPT-Live is billed per second: hang up before the microphone goes away.
+            # The budget follows close_timeout_s and stays under launchd's default
+            # 20 s ExitTimeOut, after which the agent is killed mid-hangup.
             if live_voice is not None:
                 with contextlib.suppress(Exception):
-                    await asyncio.wait_for(live_voice.stop(reason="daemon_shutdown"), timeout=10.0)
+                    await asyncio.wait_for(
+                        live_voice.stop(reason="daemon_shutdown"),
+                        timeout=live_voice.stop_budget_s,
+                    )
             _request_voice_input_branch_shutdown(
                 voice_input_owners,
                 tts_pipe,
