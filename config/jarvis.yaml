@@ -350,7 +350,7 @@ realtime:
     # ingress is resampled up with soxr; the Live player opens at this rate.
     sample_rate_hz: 24000
     api_key_env: OPENAI_API_KEY
-    idle_close_s: 180.0
+    idle_close_s: 30.0
     max_session_s: 1800.0
     connect_timeout_s: 10.0
     # Wait for session.closed after session.close. Measured closes take ~3 s and

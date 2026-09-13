@@ -124,7 +124,7 @@ class GptLiveConfig:
     sample_rate_hz: int = 24000
     instructions: str = DEFAULT_INSTRUCTIONS
     api_key_env: str = "OPENAI_API_KEY"
-    idle_close_s: float = 180.0
+    idle_close_s: float = 30.0
     max_session_s: float = 1800.0
     connect_timeout_s: float = 10.0
     close_timeout_s: float = 10.0
