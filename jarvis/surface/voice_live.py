@@ -175,6 +175,7 @@ class _LiveRun:
     usage_s: float | None = None
     usage_final: bool = False
     close_reason: str | None = None
+    server_reason: str | None = None
     closed: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
     last_error: str | None = None
     notice: str | None = None
@@ -243,6 +244,7 @@ class LiveVoice:
             "usage_s": None,
             "usage_final": False,
             "reason": None,
+            "server_reason": None,
             "hushed": False,
             "speaking": False,
             "hearing": False,
@@ -254,7 +256,7 @@ class LiveVoice:
         }
         if run is None:
             # Keep the last session's accounting visible after it closed.
-            for key in ("usage_s", "usage_final", "reason", "error", "session_id"):
+            for key in ("usage_s", "usage_final", "reason", "server_reason", "error", "session_id"):
                 status[key] = self._last_status.get(key)
             status["usage_final"] = bool(status["usage_final"])
             return status
@@ -264,6 +266,7 @@ class LiveVoice:
             usage_s=run.usage_s,
             usage_final=run.usage_final,
             reason=run.close_reason,
+            server_reason=run.server_reason,
             hushed=not run.output_gate,
             speaking=run.speaking,
             hearing=run.hearing,
@@ -387,6 +390,9 @@ class LiveVoice:
         ws: Any = None
         try:
             player.start()
+            # DIAGNOSTIC: when this subscriber's ring overflows the newest frame is
+            # dropped (voice_audio.py) and the capture owner's active-discontinuity
+            # count is untouched; the reader polls every 50 ms, so overflow means a stall.
             subscription = ingress.subscribe(
                 name="gpt_live", purpose=voice_audio.SubscriberPurpose.DIAGNOSTIC,
             )
@@ -474,15 +480,17 @@ class LiveVoice:
         with contextlib.suppress(Exception):
             run.player.close()
         LOGGER.info(
-            "gpt_live session %s closed: reason=%s usage_s=%s final=%s dropped_input=%d",
-            run.session_id, run.close_reason, run.usage_s, run.usage_final,
-            run.dropped_backlog_events,
+            "gpt_live session %s closed: reason=%s server_reason=%s usage_s=%s final=%s "
+            "dropped_input=%d",
+            run.session_id, run.close_reason, run.server_reason, run.usage_s,
+            run.usage_final, run.dropped_backlog_events,
         )
         self._last_status = {
             "session_id": run.session_id,
             "usage_s": run.usage_s,
             "usage_final": run.usage_final,
             "reason": run.close_reason,
+            "server_reason": run.server_reason,
             "error": run.last_error,
         }
         self._run = None
@@ -525,13 +533,18 @@ class LiveVoice:
                 elif kind == "error":
                     err = event.get("error") or {}
                     run.last_error = f"{err.get('code')}: {err.get('message')}"
-                    LOGGER.warning("gpt_live error: %s", run.last_error)
+                    LOGGER.warning(
+                        "gpt_live error: %s (param=%s client_event_id=%s)",
+                        run.last_error, err.get("param"), err.get("client_event_id"),
+                    )
                     await self._broadcast("error")
                 elif kind == "session.closed":
                     run.usage_s = float(event["usage"]["seconds"])
                     run.usage_final = True
+                    # The server's own reason is kept even when Jarvis initiated the close.
+                    run.server_reason = str(event.get("reason"))
                     if run.close_reason is None:
-                        run.close_reason = str(event.get("reason"))
+                        run.close_reason = run.server_reason
                     run.closed.set()
                     if self._state == "active":
                         self._schedule_auto_stop(run, run.close_reason)
@@ -743,7 +756,13 @@ async def _await_started(ws: Any) -> str:  # noqa: ANN401 - websockets connectio
         event = json.loads(raw)
         kind = event.get("type")
         if kind == "session.started":
-            return str(event["session"]["id"])
+            session = event["session"]
+            # The resolved configuration is the evidence that format and voice took.
+            keys = ("id", "model", "audio", "delegation", "store")
+            LOGGER.info(
+                "gpt_live session.started %s", json.dumps({k: session.get(k) for k in keys}),
+            )
+            return str(session["id"])
         if kind == "error":
             err = event.get("error") or {}
             msg = f"session.start rejected: {err.get('code')}: {err.get('message')}"
