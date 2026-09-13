@@ -3994,9 +3994,19 @@ LIVE_PRINCIPAL: Final[str] = "gpt_live"
 """ADR-0016 D2: the D21 principal and ``channel`` of a Live delegation."""
 
 _LIVE_TERMINAL_TYPES: Final[frozenset[str]] = frozenset(
-    {"response.completed", "response.failed", "response.cancelled"},
+    {
+        "surface.response_emitted",
+        "response.completed",
+        "response.failed",
+        "response.cancelled",
+    },
 )
-"""ResponseRun terminals that reach the committed-event bus and wake a delegation."""
+"""Committed events that wake a delegation: the answer row and the run terminals.
+
+``response.completed`` commits before the renderer writes ``surface.response_emitted``,
+the only row ``lookup_result`` takes as an answer, so a wake on the terminal alone
+left the bridge to its 5 s safety poll (measured 5.06 s and 5.9 s, 2026-09-12).
+"""
 
 _LIVE_OUTCOME_TYPES: Final[tuple[str, ...]] = (
     "surface.response_emitted",

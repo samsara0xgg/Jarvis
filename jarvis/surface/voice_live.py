@@ -28,6 +28,7 @@ import base64
 import collections
 import contextlib
 import dataclasses
+import itertools
 import json
 import logging
 import os
@@ -94,6 +95,9 @@ _READER_POLL_S = 0.05
 _SETTLE_MAX_S = 2.0
 # A same-speaker pause this long closes a memory.db row (D3).
 _ROW_GAP_S = 1.5
+# No user speech older than this belongs to a delegation, and a first query
+# the model has not spoken before opens its window this far back (D2).
+_REQUEST_REACH_MS = 10_000
 # Speech-sized result budget (D4): about this many Chinese characters, cut at a
 # sentence end, so a 500-token append never fails on length.
 _COMMENTARY_BUDGET_CHARS = 300
@@ -104,7 +108,8 @@ _BRIEF_MAX_CHARS = 1500
 _RESULT_POLL_S = 5.0
 # ``response.completed`` commits before the renderer writes the
 # ``surface.response_emitted`` row (runtime/__init__.py, terminalizer.complete
-# precedes render_response), so a wake re-reads briefly instead of waiting a poll.
+# precedes render_response); the bus wakes on both, and a wake re-reads briefly
+# instead of waiting a poll.
 _WAKE_RETRY_S = 0.2
 _WAKE_RETRIES = 15
 
@@ -220,8 +225,9 @@ class _RowBuffer:
 class _Pending:
     """One client delegation, frozen at submission so a redelivery replays it (D2).
 
-    ``foreground`` is true only for the newest delegation (D5); older ones
-    still complete but deliver as ``thinking``.
+    ``foreground`` is true until a newer delegation supersedes this one while
+    it is still running (D5); a superseded turn completes into memory.db, but
+    its result is withheld from Live.
     """
 
     delegation_id: str
@@ -268,10 +274,12 @@ class _LiveRun:
     session_id: str | None = None
     tasks: list[asyncio.Task[None]] = dataclasses.field(default_factory=list)
     # ADR-0016 D2-D5: delegation bookkeeping. ``user_fragments`` keeps every
-    # user delta for request windows; the row buffers hold what memory.db has
-    # not seen yet; ``pending`` is keyed by delegation id; ``appends`` by the
-    # ``event_id`` of a sent append.
+    # user delta for request windows and ``assistant_end_ms`` where each
+    # assistant delta ended, for window starts; the row buffers hold what
+    # memory.db has not seen yet; ``pending`` is keyed by delegation id;
+    # ``appends`` by the ``event_id`` of a sent append.
     user_fragments: list[_Fragment] = dataclasses.field(default_factory=list)
+    assistant_end_ms: list[int] = dataclasses.field(default_factory=list)
     last_user_fragment_at: float = 0.0
     user_row: _RowBuffer = dataclasses.field(default_factory=_RowBuffer)
     assistant_row: _RowBuffer = dataclasses.field(default_factory=_RowBuffer)
@@ -555,12 +563,6 @@ class LiveVoice:
             })
         try:
             player.start()
-            # DIAGNOSTIC: when this subscriber's ring overflows the newest frame is
-            # dropped (voice_audio.py) and the capture owner's active-discontinuity
-            # count is untouched; the reader polls every 50 ms, so overflow means a stall.
-            subscription = ingress.subscribe(
-                name="gpt_live", purpose=voice_audio.SubscriberPurpose.DIAGNOSTIC,
-            )
             ws = await asyncio.wait_for(
                 connect(
                     LIVE_WS_URL,
@@ -586,6 +588,16 @@ class LiveVoice:
             LOGGER.info("gpt_live session.start sent with %d history chars", len(brief))
             session_id = await asyncio.wait_for(
                 _await_started(ws), timeout=cfg.connect_timeout_s,
+            )
+            # Subscribed only now: the ring keeps its oldest frames, so a lane
+            # opened before the handshake hands the reader a second of stale
+            # microphone and the first append backlog drops it (measured
+            # 2026-09-12: "dropping 24000 stale bytes" 5 ms after session.started).
+            # DIAGNOSTIC: when this subscriber's ring overflows the newest frame is
+            # dropped (voice_audio.py) and the capture owner's active-discontinuity
+            # count is untouched; the reader polls every 50 ms, so overflow means a stall.
+            subscription = ingress.subscribe(
+                name="gpt_live", purpose=voice_audio.SubscriberPurpose.DIAGNOSTIC,
             )
         except BaseException:
             if ws is not None:
@@ -762,6 +774,9 @@ class LiveVoice:
         role = "user" if event["type"] == "session.input_transcript.delta" else "assistant"
         fragment = _Fragment(start_ms=start_ms, end_ms=end_ms, text=str(event.get("delta", "")))
         if role == "user":
+            # Every user delta with its span: three sentence tails went missing
+            # right after a row flush (2026-09-12), and only this shows which.
+            LOGGER.info("gpt_live user fragment %d-%d %r", start_ms, end_ms, fragment.text)
             run.max_user_end_ms = max(run.max_user_end_ms, end_ms)
             run.hearing_until = now + _HEARING_HOLD_S
             run.user_fragments.append(fragment)
@@ -769,6 +784,7 @@ class LiveVoice:
             run.user_row.fragments.append(fragment)
             run.user_row.last_append = now
         else:
+            run.assistant_end_ms.append(end_ms)
             run.assistant_row.fragments.append(fragment)
             run.assistant_row.last_append = now
         run.subtitle_seq += 1
@@ -806,12 +822,13 @@ class LiveVoice:
         # D5: one foreground query. An older delegation still completes into
         # memory.db and the UI, but its result is withheld from Live: a quiet
         # append can still shape later speech (live-tested 2026-09-12, the
-        # superseded "明天" forecast was spoken as "后天").
+        # superseded "明天" forecast was spoken as "后天"). One already
+        # delivered is left as it is; only its request travels as 此前请求.
         prior_request: str | None = None
         for older in run.pending.values():
-            if older.foreground:
+            prior_request = older.request_text or prior_request
+            if older.foreground and older.state in ("settling", "submitted"):
                 older.foreground = False
-                prior_request = older.request_text or prior_request
                 LOGGER.info(
                     "gpt_live delegation %s superseded by %s; its result stays off Live",
                     older.delegation_id, delegation_id,
@@ -821,7 +838,7 @@ class LiveVoice:
             session_id=str(run.session_id),
             epoch=run.epoch,
             offset_ms=offset_ms,
-            window_start_ms=run.last_delegation_offset_ms,
+            window_start_ms=_window_start_ms(run, offset_ms),
             prior_request=prior_request,
         )
         run.last_delegation_offset_ms = offset_ms
@@ -1259,6 +1276,33 @@ def _drain_queue(items: queue.Queue[bytes | None]) -> None:
     with contextlib.suppress(queue.Empty):
         while True:
             items.get_nowait()
+
+
+def _window_start_ms(run: _LiveRun, offset_ms: int) -> int:
+    """Where this delegation's request window opens on the session timeline (D2).
+
+    The request is what Allen said since the model last finished speaking: the
+    window opens at the last assistant ``end_ms`` before his latest burst of
+    speech (fragments closer together than a row gap), never before the previous
+    delegation's offset, and ten seconds back while the model has not spoken.
+    The anchor is the burst, not the offset, so a barge-in stays whole:
+    assistant timestamps run ahead of local playback, and a model that says
+    "我来查" before delegating puts its own end_ms after the request.
+    """
+    fragments = run.user_fragments
+    burst_start = offset_ms
+    if fragments and offset_ms - fragments[-1].end_ms <= _REQUEST_REACH_MS:
+        burst_start = fragments[-1].start_ms
+        gap_ms = int(_ROW_GAP_S * 1000)
+        for later, earlier in itertools.pairwise(reversed(fragments)):
+            if later.start_ms - earlier.end_ms > gap_ms:
+                break
+            burst_start = earlier.start_ms
+    anchor = max(
+        (end for end in run.assistant_end_ms if end < burst_start),
+        default=offset_ms - _REQUEST_REACH_MS,
+    )
+    return max(run.last_delegation_offset_ms, anchor)
 
 
 def _row_record_id(run: _LiveRun, source: str, first: _Fragment) -> str:
