@@ -43,9 +43,10 @@ export function reducer(s: State, a: Action): State {
     case 'live': return { ...s, live: a.live, subtitles: a.live.sessionId && a.live.sessionId !== s.live.sessionId ? [] : s.subtitles };
     case 'subtitle': {
       if (a.sessionId !== s.live.sessionId) return s; // late delta from an earlier session
-      const last = s.subtitles[s.subtitles.length - 1];
-      // Same-role deltas merge for display only; the wire has no turn boundaries (transcripts carry start_ms/end_ms, not turns). Late fragments (startMs before the row's endMs) still merge.
-      const merged = last && last.role === a.role && a.startMs - last.endMs <= SUBTITLE_GAP_MS ? [...s.subtitles.slice(0, -1), { ...last, text: last.text + a.delta, endMs: Math.max(last.endMs, a.endMs) }] : [...s.subtitles, { role: a.role, text: a.delta, startMs: a.startMs, endMs: a.endMs }];
+      // Merge into the latest row of the SAME speaker (other speaker's rows may sit in between: full duplex overlaps and user fragments arrive late) when this fragment starts within SUBTITLE_GAP_MS of that row's end; the wire has no turn boundaries (transcripts carry start_ms/end_ms, not turns).
+      const i = s.subtitles.map(t => t.role).lastIndexOf(a.role);
+      const row = i >= 0 ? s.subtitles[i] : undefined;
+      const merged = row && a.startMs - row.endMs <= SUBTITLE_GAP_MS ? s.subtitles.map((t, j) => j === i ? { ...t, text: t.text + a.delta, endMs: Math.max(t.endMs, a.endMs) } : t) : [...s.subtitles, { role: a.role, text: a.delta, startMs: a.startMs, endMs: a.endMs }];
       return { ...s, subtitles: merged.slice(-40) };
     }
     case 'live_dismiss': return { ...s, subtitles: [], live: { ...s.live, reason: null, error: null, notice: null, usageS: null, usageFinal: false } };
