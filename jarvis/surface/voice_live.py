@@ -1,17 +1,25 @@
 """GPT-Live full-duplex voice session: mic tee → OpenAI Live WebSocket → local player.
 
-Phase A of ``docs/gpt-live-integration-planning.md``: the model listens and
-speaks on its own; Jarvis owns the microphone, the speaker and the session
-lifecycle.  Nothing here touches L3: no delegation, no ResponseRun, no TTS
-watcher.  The session is billed per second, so every exit path funnels
-through :meth:`LiveVoice.stop` and the daemon never opens one on its own.
+ADR-0016: the model listens and speaks on its own; Jarvis owns the
+microphone, the speaker and the session lifecycle.  Ordinary conversation
+never enters L3.  A ``session.delegation.created`` is the one bridge to the
+backend (D2): the request is built from the user transcript around the
+delegation's timeline offset, submitted through the callables the
+composition root injects, and the answer comes back as a ``commentary`` or
+``thinking`` append (D4, D5).  The conversation is persisted to memory.db
+through the injected ``record`` callable (D3).  This module imports nothing
+from ``state``, ``decision`` or ``runtime`` (D9).  The session is billed per
+second, so every exit path funnels through :meth:`LiveVoice.stop` and the
+daemon never opens one on its own.
 
 Wire facts come from the ``openai`` 3.13 ``types/live`` package: one
 ``session.start`` → ``session.started``; audio both ways as base64 PCM16 at
 the startup-selected rate; transcripts as ordered deltas without turn
 boundaries; ``session.close`` → terminal ``session.closed`` with cumulative
 ``usage.seconds``.  There is no server-side "stop speaking" event, so hush is
-a local playback gate plus a best-effort instruction.
+a local playback gate plus a best-effort instruction.  Appends carry an
+``event_id`` and are acknowledged by ``client_event_id``; the ACK proves
+receipt, never that the model consumed or spoke the content.
 """
 
 from __future__ import annotations
@@ -42,31 +50,62 @@ LOGGER = logging.getLogger(__name__)
 
 LIVE_WS_URL = "wss://api.openai.com/v1/live/sessions"
 
-DEFAULT_INSTRUCTIONS = (
-    "You are Jarvis, Allen's private voice assistant. Speak natural, brief, spoken "
-    "Mandarin Chinese; switch to English when Allen does. This build has no background "
-    "lookup, tools or long-term memory: if asked to look something up, take an action or "
-    "recall earlier events, say plainly that the backend is not connected yet, do not "
-    "pretend to check, and do not make Allen wait. When interrupted or told to stop, stop "
-    "immediately and stay silent until Allen speaks again. Do not repeat yourself; keep "
-    "answers short."
-)
+# The official template's fixed labels (docs/gpt-live/live-prompting.md); the
+# backend owns tool rules and permissions, so only the read-only capabilities
+# of ADR-0016 D6 are listed here.
+DEFAULT_INSTRUCTIONS = """\
+You are Jarvis, Allen 的私人语音助手。
+语言：默认自然、简短的中文口语；Allen 说英文时切换到英文。
+节奏：像面对面聊天，一次只说一两句，不长篇大论，不重复解释。
+Backchannel policy: Use moderate backchannels. 简短的"嗯""好"即可。
+Interruption policy: Stop speaking when the user interrupts. Listen to what they say.
+被要求"别说了"时立刻停下，等 Allen 再开口再回应。
+Delegation policy:
+Backend tools:
+- 后台只能查，不能做：搜网页、读网页、查笔记、查过去的对话记录、看当前时间。
+Delegate to the backend when:
+- Allen 要查资料、查最新或动态信息、回忆以前说过的事、要一个需要核实的事实。
+Do not delegate to the backend when:
+- 闲聊、寒暄、你自己就能答的常识；Allen 要执行操作时直接说明这一版后台只能查不能做。
+Do not guess the result while waiting.
+等后台结果时可以继续聊别的，但不要编造查询结果，也不要说已经查到了。
+"""  # noqa: RUF001 — intentional Chinese punctuation.
 
 # Appends are written in the language the model speaks (docs/gpt-live/live-prompting.md).
-# Commentary is a fact for the model to say in its own words, not an instruction to it.
-DELEGATION_UNSUPPORTED_COMMENTARY = (
-    "这一版还没有接后台：查不了资料，做不了操作，也记不住以前的事。"  # noqa: RUF001 — intentional Chinese punctuation.
-)
-
+# Commentary is a fact for the model to say in its own words, not an instruction to it;
+# thinking is a fact it may use later without speaking it now.
 HUSH_INSTRUCTION = (
     "用户要求你停止说话。立刻停下，保持沉默，直到用户再次开口。"  # noqa: RUF001 — intentional Chinese punctuation.
 )
+NO_REQUEST_THINKING = (
+    "后台没有捕获到要查的内容，请让用户再说一遍要查什么。"  # noqa: RUF001 — intentional Chinese punctuation.
+)
+FAILED_COMMENTARY = "刚才那个查询失败了，后台没有拿到结果。"  # noqa: RUF001 — intentional Chinese punctuation.
+NO_BACKEND_COMMENTARY = "这个会话没有接后台，查不了。"  # noqa: RUF001 — intentional Chinese punctuation.
+TIMEOUT_COMMENTARY = "刚才那个查询还没拿到结果，拿到后再说。"  # noqa: RUF001 — intentional Chinese punctuation.
+LONG_RESULT_COMMENTARY = (
+    "查到了，但结果太长不适合口述，完整结果在界面上。"  # noqa: RUF001 — intentional Chinese punctuation.
+)
 
 LiveState = Literal["idle", "connecting", "active", "closing"]
+DeliveryKind = Literal["commentary", "thinking"]
 
 _HEARING_HOLD_S = 1.5
 _MONITOR_PERIOD_S = 0.1
 _READER_POLL_S = 0.05
+# A delegation can arrive before the sentence that caused it is transcribed:
+# wait for fragments to stop for ``transcript_settle_ms``, at most this long.
+_SETTLE_MAX_S = 2.0
+# A same-speaker pause this long closes a memory.db row (D3).
+_ROW_GAP_S = 1.5
+# Speech-sized result budget (D4): about this many Chinese characters, cut at a
+# sentence end, so a 500-token append never fails on length.
+_COMMENTARY_BUDGET_CHARS = 300
+_SENTENCE_ENDS = "。！？!?；;\n"  # noqa: RUF001 — both scripts' sentence punctuation.
+_BRIEF_MAX_CHARS = 1500
+# The bus wake covers ResponseRun terminals; ``turn.failed`` and a missing bus
+# are covered by this slow safety poll of the Event Log.
+_RESULT_POLL_S = 5.0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -86,6 +125,11 @@ class GptLiveConfig:
     input_backlog_s: float = 0.5
     input_chunk_ms: int = 100
     player_ring_seconds: float = 30.0
+    # ADR-0016 D2/D5: how long user fragments must stop before a delegation's
+    # request is frozen, and how long a submitted turn may take before the
+    # session is told there is no result yet.
+    transcript_settle_ms: int = 600
+    delegation_timeout_s: float = 90.0
 
 
 _FIELD_CHECKS: dict[str, tuple[Callable[[object], bool], str]] = {
@@ -136,6 +180,78 @@ class _Resampler:
         return self._stream.resample_chunk(samples)
 
 
+@dataclasses.dataclass(frozen=True)
+class DelegationResult:
+    """What the composition root's ``lookup_result`` found for one ``turn_id``.
+
+    ``status`` is ``answered`` when a ``surface.response_emitted`` row exists,
+    ``failed`` when only a failure terminal does.  ``voice_text`` is the L3
+    spoken cut when the renderer produced one.
+    """
+
+    status: Literal["answered", "failed"]
+    text: str = ""
+    voice_text: str | None = None
+    reason: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class _Fragment:
+    """One transcript delta on the session timeline."""
+
+    start_ms: int
+    end_ms: int
+    text: str
+
+
+@dataclasses.dataclass
+class _RowBuffer:
+    """Unflushed same-speaker fragments; closed into one memory.db row on a pause."""
+
+    fragments: list[_Fragment] = dataclasses.field(default_factory=list)
+    last_append: float = 0.0
+
+    def text(self) -> str:
+        return "".join(f.text for f in self.fragments).strip()
+
+
+@dataclasses.dataclass
+class _Pending:
+    """One client delegation, frozen at submission so a redelivery replays it (D2).
+
+    ``foreground`` is true only for the newest delegation (D5); older ones
+    still complete but deliver as ``thinking``.
+    """
+
+    delegation_id: str
+    session_id: str
+    epoch: int
+    offset_ms: int
+    window_start_ms: int
+    # Set once the window is frozen: the same id the pause flusher would give a
+    # row starting at the first window fragment, so an already-flushed row is
+    # not written twice (append_record ignores a repeated id).
+    record_id: str = ""
+    created: float = dataclasses.field(default_factory=time.monotonic)
+    request_text: str | None = None
+    window_end_ms: int = 0
+    turn_id: str | None = None
+    state: str = "settling"
+    foreground: bool = True
+    timed_out: bool = False
+    wake: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
+
+
+@dataclasses.dataclass
+class _Append:
+    """A sent append awaiting its ACK, matched by ``client_event_id`` (D4)."""
+
+    delegation_id: str | None
+    kind: str
+    content: str
+    retried: bool = False
+
+
 @dataclasses.dataclass
 class _LiveRun:
     """Everything one session owns; dropped as a unit by :meth:`LiveVoice._teardown`."""
@@ -147,6 +263,18 @@ class _LiveRun:
     started_monotonic: float = dataclasses.field(default_factory=time.monotonic)
     session_id: str | None = None
     tasks: list[asyncio.Task[None]] = dataclasses.field(default_factory=list)
+    # ADR-0016 D2-D5: delegation bookkeeping. ``user_fragments`` keeps every
+    # user delta for request windows; the row buffers hold what memory.db has
+    # not seen yet; ``pending`` is keyed by delegation id; ``appends`` by the
+    # ``event_id`` of a sent append.
+    user_fragments: list[_Fragment] = dataclasses.field(default_factory=list)
+    last_user_fragment_at: float = 0.0
+    user_row: _RowBuffer = dataclasses.field(default_factory=_RowBuffer)
+    assistant_row: _RowBuffer = dataclasses.field(default_factory=_RowBuffer)
+    pending: dict[str, _Pending] = dataclasses.field(default_factory=dict)
+    last_delegation_offset_ms: int = 0
+    appends: dict[str, _Append] = dataclasses.field(default_factory=dict)
+    delegation_tasks: list[asyncio.Task[None]] = dataclasses.field(default_factory=list)
     # Mic → model. The reader thread fills ``out``; the send task drains it.
     out: collections.deque[bytes] = dataclasses.field(default_factory=collections.deque)
     out_bytes: int = 0
@@ -200,8 +328,22 @@ class LiveVoice:
         speech_muted: Callable[[], bool],
         output_device: object | None = None,
         on_owns_speech: Callable[[bool], None] | None = None,
+        delegate: Callable[[str, str, str, str], str] | None = None,
+        record: Callable[[str, str, str], None] | None = None,
+        brief: Callable[[], str] | None = None,
+        lookup_result: Callable[[str], DelegationResult | None] | None = None,
     ) -> None:
-        """Bind the daemon-owned pieces; nothing connects until :meth:`start`."""
+        """Bind the daemon-owned pieces; nothing connects until :meth:`start`.
+
+        The four ADR-0016 D9 callables are blocking (they touch SQLite) and
+        are always called through ``asyncio.to_thread``: ``delegate(text,
+        delegation_id, session_id, record_id) -> turn_id`` submits one
+        request through the idempotent inbox; ``record(source, text,
+        record_id)`` appends one memory.db row; ``brief()`` renders the
+        startup context; ``lookup_result(turn_id)`` reads the Event Log.
+        Without ``delegate`` a delegation is answered with a fact that the
+        backend is not connected.
+        """
         self._config = config
         self._broadcaster = broadcaster
         self._ingress = ingress
@@ -209,10 +351,15 @@ class LiveVoice:
         self._speech_muted = speech_muted
         self._output_device = output_device
         self._on_owns_speech = on_owns_speech
+        self._delegate = delegate
+        self._record = record
+        self._brief = brief
+        self._lookup_result = lookup_result
         self._lock = asyncio.Lock()
         self._state: LiveState = "idle"
         self._epoch = 0
         self._run: _LiveRun | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._last_status: dict[str, object] = {}
 
     # ------------------------------------------------------------------
@@ -253,6 +400,8 @@ class LiveVoice:
             "dropped_input_events": 0,
             "error": None,
             "notice": None,
+            "pending_delegations": 0,
+            "foreground_delegation": None,
         }
         if run is None:
             # Keep the last session's accounting visible after it closed.
@@ -273,8 +422,34 @@ class LiveVoice:
             dropped_input_events=run.dropped_backlog_events,
             error=run.last_error,
             notice=run.notice,
+            pending_delegations=sum(
+                1 for p in run.pending.values() if p.state in ("settling", "submitted")
+            ),
+            foreground_delegation=next(
+                (p.delegation_id for p in run.pending.values() if p.foreground), None,
+            ),
         )
         return status
+
+    def deliver(self, turn_id: str) -> None:
+        """Wake the delegation that owns ``turn_id``; safe from any thread (D9).
+
+        The composition root calls this from its committed-event-bus
+        subscriber when a response terminal commits.  Nothing is read here:
+        the delegation task re-queries the Event Log on the loop thread.
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(self._wake_turn, turn_id)
+
+    def _wake_turn(self, turn_id: str) -> None:
+        run = self._run
+        if run is None:
+            return
+        for pending in run.pending.values():
+            if pending.turn_id == turn_id:
+                pending.wake.set()
 
     # ------------------------------------------------------------------
     # Control entry points; the lock serializes them
@@ -292,6 +467,7 @@ class LiveVoice:
             if not api_key:
                 return self._refused(f"missing_{self._config.api_key_env}")
             self._epoch += 1
+            self._loop = asyncio.get_running_loop()
             self._state = "connecting"
             self._notify_owns_speech()
             await self._broadcast("connecting")
@@ -388,6 +564,21 @@ class LiveVoice:
         )
         subscription: voice_audio.AudioSubscription | None = None
         ws: Any = None
+        # D7: the brief is one developer message of startup history, rendered by
+        # the composition root from memory.db; SQLite work stays off the loop.
+        brief = ""
+        if self._brief is not None:
+            try:
+                brief = (await asyncio.to_thread(self._brief))[:_BRIEF_MAX_CHARS]
+            except Exception:
+                LOGGER.exception("gpt_live brief failed; starting without history")
+        history: list[dict[str, object]] = []
+        if brief:
+            history.append({
+                "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": brief}],
+            })
         try:
             player.start()
             # DIAGNOSTIC: when this subscriber's ring overflows the newest frame is
@@ -409,13 +600,16 @@ class LiveVoice:
                 "session": {
                     "model": cfg.model,
                     "instructions": cfg.instructions,
+                    "input": history,
                     "audio": {
                         "format": {"type": "audio/pcm", "rate": cfg.sample_rate_hz},
                         "output": {"voice": cfg.voice},
                     },
+                    "delegation": {"type": "client"},
                     "store": False,
                 },
             }))
+            LOGGER.info("gpt_live session.start sent with %d history chars", len(brief))
             session_id = await asyncio.wait_for(
                 _await_started(ws), timeout=cfg.connect_timeout_s,
             )
@@ -448,6 +642,7 @@ class LiveVoice:
             run.close_reason = reason
         run.reader_stop.set()
         run.mic_muted = True
+        await self._close_delegations(run)
         if not run.closed.is_set():
             await self._send_json(run, {"type": "session.close"})
             try:
@@ -498,6 +693,25 @@ class LiveVoice:
         self._notify_owns_speech()
         await self._broadcast("closed")
 
+    async def _close_delegations(self, run: _LiveRun) -> None:
+        """Cancel delegation tasks and flush the row buffers before the socket closes.
+
+        The turns keep running in the backend; their results land in
+        memory.db and the UI without this session (D4).
+        """
+        for task in run.delegation_tasks:
+            task.cancel()
+        for task in run.delegation_tasks:
+            with contextlib.suppress(BaseException):
+                await task
+        open_delegations = [
+            p.delegation_id for p in run.pending.values() if p.state in ("settling", "submitted")
+        ]
+        if open_delegations:
+            LOGGER.info("gpt_live closing with open delegations %s", open_delegations)
+        await self._flush_row(run, "user")
+        await self._flush_row(run, "assistant")
+
     async def _auto_stop(self, epoch: int, reason: str) -> None:
         async with self._lock:
             run = self._run
@@ -537,6 +751,7 @@ class LiveVoice:
                         "gpt_live error: %s (param=%s client_event_id=%s)",
                         run.last_error, err.get("param"), err.get("client_event_id"),
                     )
+                    await self._on_append_error(run, err)
                     await self._broadcast("error")
                 elif kind == "session.closed":
                     run.usage_s = float(event["usage"]["seconds"])
@@ -550,11 +765,7 @@ class LiveVoice:
                         self._schedule_auto_stop(run, run.close_reason)
                     return
                 elif kind == "info" or str(kind).endswith(("muted", "appended", "updated")):
-                    # ACKs prove receipt only, never that speech stopped or content was used.
-                    LOGGER.info(
-                        "gpt_live ack %s for %s %s", kind, event.get("client_event_id"),
-                        event.get("message", ""),
-                    )
+                    self._on_ack(run, str(kind), event)
                 else:
                     LOGGER.debug("gpt_live event %s", kind)
         except ConnectionClosed as exc:
@@ -576,6 +787,7 @@ class LiveVoice:
         start_ms = int(event.get("start_ms", 0))
         end_ms = int(event.get("end_ms", start_ms))
         role = "user" if event["type"] == "session.input_transcript.delta" else "assistant"
+        fragment = _Fragment(start_ms=start_ms, end_ms=end_ms, text=str(event.get("delta", "")))
         if role == "user":
             run.max_user_end_ms = max(run.max_user_end_ms, end_ms)
             run.hearing_until = now + _HEARING_HOLD_S
@@ -587,6 +799,15 @@ class LiveVoice:
                 run.cancel_write.clear()
                 LOGGER.info("gpt_live playback reopened by user speech at %d ms", start_ms)
                 await self._broadcast("state")
+            run.user_fragments.append(fragment)
+            run.last_user_fragment_at = now
+            run.user_row.fragments.append(fragment)
+            run.user_row.last_append = now
+        elif run.output_gate:
+            # D3: what the model says while hushed was never heard, so it is not
+            # part of the conversation of record.
+            run.assistant_row.fragments.append(fragment)
+            run.assistant_row.last_append = now
         run.subtitle_seq += 1
         await self._broadcaster.broadcast_op(
             "subtitle",
@@ -598,16 +819,251 @@ class LiveVoice:
             end_ms=end_ms,
         )
 
+    # ------------------------------------------------------------------
+    # Delegation bridge (ADR-0016 D2-D5)
+    # ------------------------------------------------------------------
+
     async def _on_delegation(self, run: _LiveRun, event: dict[str, Any]) -> None:
+        """Register the delegation and hand it to a task; the recv loop never waits."""
         delegation_id = str((event.get("delegation") or {}).get("id"))
-        run.notice = "delegation_unsupported"
-        LOGGER.info("gpt_live delegation %s refused: phase A has no backend", delegation_id)
-        await self._send_json(run, {
-            "type": "session.commentary.append",
-            "content": DELEGATION_UNSUPPORTED_COMMENTARY,
+        offset_ms = int(event.get("offset_ms", run.max_user_end_ms))
+        existing = run.pending.get(delegation_id)
+        if existing is not None:
+            LOGGER.info(
+                "gpt_live delegation %s redelivered; pending state=%s turn_id=%s",
+                delegation_id, existing.state, existing.turn_id,
+            )
+            return
+        if self._delegate is None:
+            LOGGER.info("gpt_live delegation %s refused: no backend injected", delegation_id)
+            await self._send_append(
+                run, "commentary", NO_BACKEND_COMMENTARY, delegation_id=delegation_id,
+            )
+            return
+        # D5: one foreground query. Older delegations finish, but only silently.
+        for older in run.pending.values():
+            if older.foreground:
+                older.foreground = False
+                LOGGER.info(
+                    "gpt_live delegation %s demoted to thinking by %s",
+                    older.delegation_id, delegation_id,
+                )
+        pending = _Pending(
+            delegation_id=delegation_id,
+            session_id=str(run.session_id),
+            epoch=run.epoch,
+            offset_ms=offset_ms,
+            window_start_ms=run.last_delegation_offset_ms,
+        )
+        run.last_delegation_offset_ms = offset_ms
+        run.pending[delegation_id] = pending
+        run.notice = None
+        LOGGER.info(
+            "gpt_live delegation %s registered offset_ms=%d window_start_ms=%d",
+            delegation_id, offset_ms, pending.window_start_ms,
+        )
+        task = asyncio.create_task(
+            self._delegation_task(run, pending), name=f"gpt_live.delegation.{delegation_id}",
+        )
+        run.delegation_tasks.append(task)
+        await self._broadcast("state")
+
+    async def _delegation_task(self, run: _LiveRun, pending: _Pending) -> None:
+        try:
+            await self._run_delegation(run, pending)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("gpt_live delegation %s task failed", pending.delegation_id)
+            pending.state = "failed"
+            await self._send_append(
+                run, "commentary", FAILED_COMMENTARY, delegation_id=pending.delegation_id,
+            )
+        finally:
+            run.delegation_tasks = [t for t in run.delegation_tasks if not t.done()]
+
+    async def _run_delegation(self, run: _LiveRun, pending: _Pending) -> None:
+        cfg = self._config
+        fragments = await self._settle_request(run, pending)
+        text = "".join(f.text for f in fragments).strip()
+        if not text:
+            pending.state = "dropped"
+            LOGGER.info("gpt_live delegation %s dropped: no user transcript in window",
+                        pending.delegation_id)
+            await self._send_append(
+                run, "thinking", NO_REQUEST_THINKING, delegation_id=pending.delegation_id,
+            )
+            return
+        pending.request_text = text
+        pending.record_id = _row_record_id(run, "allen", fragments[0])
+        LOGGER.info(
+            "gpt_live delegation %s request=%r window=(%d,%d] record_id=%s",
+            pending.delegation_id, text, pending.window_start_ms, pending.window_end_ms,
+            pending.record_id,
+        )
+        # D3: the request row is written by L5 before submission; drive_turn
+        # skips its own write when the payload carries this record_id.
+        if self._record is not None:
+            await asyncio.to_thread(self._record, "allen", text, pending.record_id)
+        assert self._delegate is not None  # noqa: S101 - checked in _on_delegation
+        turn_id = await asyncio.to_thread(
+            self._delegate, text, pending.delegation_id, pending.session_id, pending.record_id,
+        )
+        pending.turn_id = turn_id
+        pending.state = "submitted"
+        LOGGER.info("gpt_live delegation %s submitted turn_id=%s", pending.delegation_id, turn_id)
+        await self._send_append(
+            run, "thinking",
+            f"正在查：{text[:40]}。还没有结果，不要猜。",  # noqa: RUF001 — Chinese punctuation.
+            delegation_id=pending.delegation_id,
+        )
+        # D4/D5: one lookup now, then bus wakes plus a slow safety poll until the
+        # deadline; after the deadline a late result is only ever thinking.
+        deadline = pending.created + cfg.delegation_timeout_s
+        result = await self._lookup(turn_id)
+        while result is None and time.monotonic() < deadline:
+            wait = min(_RESULT_POLL_S, max(0.0, deadline - time.monotonic()))
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(pending.wake.wait(), timeout=wait)
+            pending.wake.clear()
+            result = await self._lookup(turn_id)
+        if result is None:
+            pending.timed_out = True
+            LOGGER.info("gpt_live delegation %s timed out after %.0fs (turn_id=%s)",
+                        pending.delegation_id, cfg.delegation_timeout_s, turn_id)
+            await self._deliver(run, pending, "commentary", TIMEOUT_COMMENTARY)
+            while result is None:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(pending.wake.wait(), timeout=_RESULT_POLL_S)
+                pending.wake.clear()
+                result = await self._lookup(turn_id)
+        pending.state = "answered" if result.status == "answered" else "failed"
+        if result.status == "failed":
+            LOGGER.info("gpt_live delegation %s failed: %s", pending.delegation_id, result.reason)
+            await self._deliver(run, pending, "commentary", FAILED_COMMENTARY)
+            return
+        content = _speech_cut(result.voice_text or result.text) or LONG_RESULT_COMMENTARY
+        if pending.timed_out:
+            LOGGER.info("gpt_live delegation %s late result -> thinking", pending.delegation_id)
+            await self._deliver(run, pending, "thinking", content)
+        else:
+            await self._deliver(run, pending, "commentary", content)
+
+    async def _settle_request(self, run: _LiveRun, pending: _Pending) -> list[_Fragment]:
+        """Wait for the user's fragments around the offset to stop, bounded (D2)."""
+        settle_s = self._config.transcript_settle_ms / 1000.0
+        window_end = pending.offset_ms + self._config.transcript_settle_ms
+        deadline = time.monotonic() + _SETTLE_MAX_S
+
+        def in_window() -> list[_Fragment]:
+            return [
+                f for f in run.user_fragments
+                if pending.window_start_ms < f.start_ms <= window_end
+            ]
+
+        while time.monotonic() < deadline:
+            idle = time.monotonic() - run.last_user_fragment_at
+            if in_window() and idle >= settle_s:
+                break
+            await asyncio.sleep(_MONITOR_PERIOD_S)
+        fragments = in_window()
+        pending.window_end_ms = window_end
+        # Those fragments become the request row; drop them from the user row
+        # buffer so the pause flusher does not write them a second time.
+        taken = {id(f) for f in fragments}
+        run.user_row.fragments = [f for f in run.user_row.fragments if id(f) not in taken]
+        return fragments
+
+    async def _lookup(self, turn_id: str) -> DelegationResult | None:
+        if self._lookup_result is None:
+            return None
+        return await asyncio.to_thread(self._lookup_result, turn_id)
+
+    async def _deliver(
+        self, run: _LiveRun, pending: _Pending, kind: DeliveryKind, content: str,
+    ) -> None:
+        """Send a result only into the session it belongs to; hush demotes it (D4, D5)."""
+        current = self._run
+        if current is not run or run.epoch != pending.epoch or run.session_id != pending.session_id:
+            LOGGER.info(
+                "gpt_live delegation %s result skipped: session mismatch (kept in memory)",
+                pending.delegation_id,
+            )
+            return
+        if kind == "commentary" and (not run.output_gate or not pending.foreground):
+            reason = "hushed" if not run.output_gate else "not foreground"
+            LOGGER.info("gpt_live delegation %s commentary -> thinking (%s)",
+                        pending.delegation_id, reason)
+            kind = "thinking"
+        LOGGER.info(
+            "gpt_live delegation %s delivered as %s (%d chars)",
+            pending.delegation_id, kind, len(content),
+        )
+        await self._send_append(run, kind, content, delegation_id=pending.delegation_id)
+        await self._broadcast("state")
+
+    async def _send_append(
+        self, run: _LiveRun, kind: str, content: str, *, delegation_id: str | None,
+    ) -> None:
+        event_id = await self._send_json(run, {
+            "type": f"session.{kind}.append",
+            "content": content,
             "delegation_id": delegation_id,
         })
-        await self._broadcast("state")
+        if event_id is not None:
+            run.appends[event_id] = _Append(delegation_id=delegation_id, kind=kind, content=content)
+
+    def _on_ack(self, run: _LiveRun, kind: str, event: dict[str, Any]) -> None:
+        """ACKs prove receipt only, never that speech stopped or content was used."""
+        client_event_id = str(event.get("client_event_id", ""))
+        sent = run.appends.pop(client_event_id, None)
+        if sent is not None:
+            LOGGER.info(
+                "gpt_live ack %s matched delegation %s kind=%s (%d chars)",
+                kind, sent.delegation_id, sent.kind, len(sent.content),
+            )
+            return
+        LOGGER.info("gpt_live ack %s for %s %s", kind, client_event_id, event.get("message", ""))
+
+    async def _on_append_error(self, run: _LiveRun, err: dict[str, Any]) -> None:
+        """Match an error to a sent append; an over-length append is halved and resent once."""
+        sent = run.appends.pop(str(err.get("client_event_id", "")), None)
+        if sent is None:
+            return
+        message = f"{err.get('code', '')} {err.get('message', '')}".lower()
+        if "token" in message and not sent.retried and len(sent.content) > 1:
+            shorter = _speech_cut(sent.content, budget=len(sent.content) // 2)
+            LOGGER.info(
+                "gpt_live append for delegation %s over length; resending %d -> %d chars",
+                sent.delegation_id, len(sent.content), len(shorter),
+            )
+            event_id = await self._send_json(run, {
+                "type": f"session.{sent.kind}.append",
+                "content": shorter,
+                "delegation_id": sent.delegation_id,
+            })
+            if event_id is not None:
+                run.appends[event_id] = dataclasses.replace(sent, content=shorter, retried=True)
+            return
+        LOGGER.warning(
+            "gpt_live append for delegation %s rejected: %s", sent.delegation_id, message.strip(),
+        )
+
+    async def _flush_row(self, run: _LiveRun, role: str) -> None:
+        """Close one speaker's buffered fragments into a memory.db row (D3)."""
+        row = run.user_row if role == "user" else run.assistant_row
+        if not row.fragments:
+            return
+        fragments, row.fragments = row.fragments, []
+        text = "".join(f.text for f in fragments).strip()
+        if not text or self._record is None:
+            return
+        source = "allen" if role == "user" else "jarvis_live"
+        record_id = _row_record_id(run, source, fragments[0])
+        try:
+            await asyncio.to_thread(self._record, source, text, record_id)
+        except Exception:
+            LOGGER.exception("gpt_live memory row %s failed", record_id)
 
     async def _send_loop(self, run: _LiveRun) -> None:
         while True:
@@ -650,6 +1106,18 @@ class LiveVoice:
                 if speaking:
                     run.last_activity = now
                 await self._broadcast("state")
+            # D3: a same-speaker pause closes the row. The assistant row waits for
+            # playback to drain so the row holds what was actually heard.
+            if run.user_row.fragments and now - run.user_row.last_append >= _ROW_GAP_S:
+                await self._flush_row(run, "user")
+            if (
+                run.assistant_row.fragments
+                and not speaking
+                and now - run.assistant_row.last_append >= _ROW_GAP_S
+            ):
+                await self._flush_row(run, "assistant")
+            if any(p.state == "submitted" and not p.timed_out for p in run.pending.values()):
+                run.last_activity = now  # a running lookup keeps the session open, until timeout
             if now - run.last_activity > cfg.idle_close_s:
                 self._schedule_auto_stop(run, "idle")
                 return
@@ -724,15 +1192,18 @@ class LiveVoice:
                 self._send_json(run, {"type": "session.input_audio.mute"}),
             )
 
-    async def _send_json(self, run: _LiveRun, payload: dict[str, object]) -> None:
-        """Send one command with a fresh ``event_id`` so its ACK can be matched in the log."""
+    async def _send_json(self, run: _LiveRun, payload: dict[str, object]) -> str | None:
+        """Send one command with a fresh ``event_id``; return it so the ACK can be matched."""
         run.event_seq += 1
-        payload = {**payload, "event_id": f"jarvis-{run.event_seq}"}
+        event_id = f"jarvis-{run.event_seq}"
+        payload = {**payload, "event_id": event_id}
         try:
             await run.ws.send(json.dumps(payload))
-            LOGGER.info("gpt_live sent %s as %s", payload["type"], payload["event_id"])
+            LOGGER.info("gpt_live sent %s as %s", payload["type"], event_id)
         except Exception as exc:  # noqa: BLE001 - the recv loop owns connection failure
             LOGGER.warning("gpt_live send %s failed: %s", payload.get("type"), exc)
+            return None
+        return event_id
 
     def _refused(self, reason: str) -> dict[str, object]:
         LOGGER.warning("gpt_live start refused: %s", reason)
@@ -783,8 +1254,31 @@ def _drain_queue(items: queue.Queue[bytes | None]) -> None:
             items.get_nowait()
 
 
+def _row_record_id(run: _LiveRun, source: str, first: _Fragment) -> str:
+    """memory.db id of the row that starts at ``first``; shared by flusher and request (D3)."""
+    return f"live:{run.session_id}:{source}:{first.start_ms}"
+
+
+def _speech_cut(text: str, *, budget: int = _COMMENTARY_BUDGET_CHARS) -> str:
+    """Speech-sized cut of a backend answer (D4): whole sentences within ``budget``.
+
+    Returns the text unchanged when it fits.  Otherwise the longest prefix that
+    ends at a sentence boundary; when no boundary falls inside the budget the
+    answer is not speakable in short form and the caller says so instead.
+    """
+    text = text.strip()
+    if len(text) <= budget:
+        return text
+    head = text[:budget]
+    cut = max(head.rfind(mark) for mark in _SENTENCE_ENDS)
+    if cut < 0:
+        return LONG_RESULT_COMMENTARY
+    return head[: cut + 1].strip()
+
+
 __all__ = [
     "DEFAULT_INSTRUCTIONS",
+    "DelegationResult",
     "GptLiveConfig",
     "LiveVoice",
     "gpt_live_config_from_mapping",

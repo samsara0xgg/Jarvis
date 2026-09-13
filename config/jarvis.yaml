@@ -320,8 +320,9 @@ realtime:
     # Frontend instructions in the official template's fixed labels
     # (docs/gpt-live/live-prompting.md): persona, language, pace,
     # backchannel, interruption and delegation policy only.  Business rules,
-    # tool schemas and permissions stay in the backend.  Phase A has no
-    # backend, so the delegation policy says so instead of listing tools.
+    # tool schemas and permissions stay in the backend.  ADR-0016 D6: the
+    # backend this build exposes to Live is read-only, so only lookups are
+    # listed; actions are declined by the model, never attempted.
     instructions: |
       You are Jarvis, Allen 的私人语音助手。
       语言：默认自然、简短的中文口语；Allen 说英文时切换到英文。
@@ -331,13 +332,18 @@ realtime:
       被要求"别说了"时立刻停下，等 Allen 再开口再回应。
       Delegation policy:
       Backend tools:
-      - 这一版没有接入任何后台能力：不能查资料、不能执行操作、没有长期记忆。
+      - 后台只能查，不能做：搜网页、读网页、查笔记、查过去的对话记录、看当前时间。
       Delegate to the backend when:
-      - 永远不要。后台尚未接入。
+      - Allen 要查资料、查最新或动态信息、回忆以前说过的事、要一个需要核实的事实。
       Do not delegate to the backend when:
-      - 任何情况。Allen 要求查询、执行或回忆过去时，直接说明这一版还没接后台，
-        不要假装去查，也不要让他等待。
-      Do not guess the result while waiting.
+      - 闲聊、寒暄、你自己就能答的常识；Allen 要执行操作时直接说明这一版后台只能查不能做。
+      Do not guess the result while waiting. 等后台结果时可以继续聊别的，
+      但不要编造查询结果，也不要说已经查到了。
+    # ADR-0016 D2/D5: user fragments must stop this long before a delegation's
+    # request is frozen (the wait is capped at 2 s in code), and a submitted
+    # lookup gets this long before Live is told there is no result yet.
+    transcript_settle_ms: 600
+    delegation_timeout_s: 90.0
     # Wire PCM rate for both directions, 16000 or 24000.  The 16 kHz mic
     # ingress is resampled up with soxr; the Live player opens at this rate.
     sample_rate_hz: 24000
