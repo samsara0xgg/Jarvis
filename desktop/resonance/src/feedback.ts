@@ -33,12 +33,14 @@ function prepare() {
   return context;
 }
 
-// A burst decays over 25 samples, not 25 ms — web-haptics hard-codes the sample
-// count, and that is what gives the click its character at any sample rate.
+// web-haptics decays a burst over 25 samples (~0.5 ms), sized for an actuator. On
+// speakers that is inaudible (measured -55 dBFS RMS at the default volume), so the
+// decay is 1.5 ms here and the buffer holds the tail.
 function burst(audio: AudioContext) {
-  const buffer = audio.createBuffer(1, Math.max(1, Math.round(audio.sampleRate * .004)), audio.sampleRate);
+  const buffer = audio.createBuffer(1, Math.max(1, Math.round(audio.sampleRate * .008)), audio.sampleRate);
   const samples = buffer.getChannelData(0);
-  for (let i = 0; i < samples.length; i++) samples[i] = (Math.random() * 2 - 1) * Math.exp(-i / 25);
+  const decay = audio.sampleRate * .0015;
+  for (let i = 0; i < samples.length; i++) samples[i] = (Math.random() * 2 - 1) * Math.exp(-i / decay);
   return buffer;
 }
 
@@ -60,7 +62,8 @@ function schedule(audio: AudioContext, pattern: Pulse[], volume: number) {
       filter.type = 'bandpass';
       filter.Q.value = 8;
       filter.frequency.value = (2000 + pulse.intensity * 2000) * (1 + (Math.random() - .5) * .3);
-      gain.gain.value = .5 * pulse.intensity * volume;
+      // 3 (not web-haptics' .5) lands the click's peak where the old sampled cues sat, about -24 dBFS at volume .35.
+      gain.gain.value = 3 * pulse.intensity * volume;
       source.connect(filter).connect(gain).connect(audio.destination);
       source.start(start + (at + offset) / 1000);
       sources.push(source);
