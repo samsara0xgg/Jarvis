@@ -1067,7 +1067,7 @@ PresentationIntent.intent_type:
 
 <ul>
 <li><strong>Input:</strong> audio -> VAD / ASR -> corrections -> <code>utterance.received</code>。Intent routing 不在 voice layer。</li>
-<li><strong>Output:</strong> TTS 只能播放经过 Layer 3 pre-emit gate 或 ResponsePlan 允许的文本。</li>
+<li><strong>Output:</strong> TTS 只能播放经过 Layer 3 pre-emit gate 或 ResponsePlan 允许的文本。例外：Live voice provider 的原生音频直接播放，不经 pre-emit gate；后台答案仍先过 Layer 3 再交给 Live（ADR-0016 D1）。</li>
 <li><strong>Interrupt:</strong> Voice 只执行 speak、suppress、duck、stop、resume；“该不该打断 Allen”属于 Attention Policy。</li>
 <li><strong>Fallback:</strong> TTS provider failure 必须走 surface fallback chain，不应吞掉 message。</li>
 </ul>
