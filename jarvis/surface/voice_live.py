@@ -898,7 +898,7 @@ class LiveVoice:
 
     async def _run_delegation(self, run: _LiveRun, pending: _Pending) -> None:
         cfg = self._config
-        fragments = await self._settle_request(run, pending)
+        fragments, unflushed = await self._settle_request(run, pending)
         text = "".join(f.text for f in fragments).strip()
         if not text:
             pending.state = "dropped"
@@ -909,7 +909,11 @@ class LiveVoice:
             )
             return
         pending.request_text = text
-        pending.record_id = _row_record_id(run, "allen", fragments[0])
+        # D3: only the fragments the pause flusher has not written yet become the
+        # request row (live run 2026-09-12: sharing the flushed row's id lost
+        # the rest of the sentence to INSERT OR IGNORE). An already-flushed
+        # window still names its row so drive_turn neither writes nor repeats it.
+        pending.record_id = _row_record_id(run, "allen", (unflushed or fragments)[0])
         # A correction that superseded a running lookup is sent next to the
         # request it corrects; the memory row stays Allen's own words.
         request = (
@@ -922,10 +926,9 @@ class LiveVoice:
             pending.delegation_id, request, pending.window_start_ms, pending.window_end_ms,
             pending.record_id,
         )
-        # D3: the request row is written by L5 before submission; drive_turn
-        # skips its own write when the payload carries this record_id.
-        if self._record is not None:
-            await asyncio.to_thread(self._record, "allen", text, pending.record_id)
+        row_text = "".join(f.text for f in unflushed).strip()
+        if self._record is not None and row_text:
+            await asyncio.to_thread(self._record, "allen", row_text, pending.record_id)
         assert self._delegate is not None  # noqa: S101 - checked in _on_delegation
         turn_id = await asyncio.to_thread(
             self._delegate, request, pending.delegation_id, pending.session_id, pending.record_id,
@@ -961,8 +964,14 @@ class LiveVoice:
         else:
             await self._deliver(run, pending, "commentary", content)
 
-    async def _settle_request(self, run: _LiveRun, pending: _Pending) -> list[_Fragment]:
-        """Wait for the user's fragments around the offset to stop, bounded (D2)."""
+    async def _settle_request(
+        self, run: _LiveRun, pending: _Pending,
+    ) -> tuple[list[_Fragment], list[_Fragment]]:
+        """Wait for the user's fragments around the offset to stop, bounded (D2).
+
+        Returns the window fragments and the subset the pause flusher had not
+        written yet; the latter is what becomes the request's memory row.
+        """
         settle_s = self._config.transcript_settle_ms / 1000.0
         window_end = pending.offset_ms + self._config.transcript_settle_ms
         deadline = time.monotonic() + _SETTLE_MAX_S
@@ -983,8 +992,9 @@ class LiveVoice:
         # Those fragments become the request row; drop them from the user row
         # buffer so the pause flusher does not write them a second time.
         taken = {id(f) for f in fragments}
+        unflushed = [f for f in run.user_row.fragments if id(f) in taken]
         run.user_row.fragments = [f for f in run.user_row.fragments if id(f) not in taken]
-        return fragments
+        return fragments, unflushed
 
     async def _lookup(self, turn_id: str) -> DelegationResult | None:
         if self._lookup_result is None:
