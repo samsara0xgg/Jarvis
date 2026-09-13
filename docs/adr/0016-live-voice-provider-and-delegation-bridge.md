@@ -57,12 +57,11 @@ Ordinary conversation never enters a ResponseRun.
 
 **D3. The Live conversation is persisted to memory.db, with provenance.**
 User fragments are merged on pauses and appended as `source=allen`; the
-model's spoken output as `source=jarvis_live`, and nothing the model says
-while playback is hushed is recorded, because Allen did not hear it. The
-delegated request row is written by L5 before submission and its `record_id`
-travels on the `surface.user_intent` payload; `drive_turn` then skips its own
-`allen` write and passes that id as `exclude_id` to `context_note`, so the
-request appears once in the prompt. The backend's full answer keeps its
+model's spoken output as `source=jarvis_live`. The delegated request row is
+written by L5 before submission and its `record_id` travels on the
+`surface.user_intent` payload; `drive_turn` then skips its own `allen` write
+and passes that id as `exclude_id` to `context_note`, so the request appears
+once in the prompt. The backend's full answer keeps its
 existing `source=jarvis` row. memory.db remains the conversation of record;
 the provider's own storage stays off (`store: false`).
 
@@ -74,7 +73,7 @@ delegation id, using `voice_text` (falling back to `text`), budgeted to about
 the commentary states the status and that the full result is on the UI.
 Before sending, the bridge checks that the pending record's `session_id` and
 epoch match the current run; otherwise the result stays in memory.db and the
-next session's brief. If playback is hushed, the result goes as
+next session's brief. If speech is muted, the result goes as
 `thinking`, not `commentary`. The UI keeps the complete answer through the
 existing response stream; Live never receives it.
 
@@ -124,7 +123,7 @@ Event Log and owns the WebSocket. `lint-imports` remains the gate.
 ## 3. Consequences
 
 - Allen can ask Live to look something up, keep talking while it runs, hear
-  the newest answer, hush it, and find the full result on the UI and in
+  the newest answer, and find the full result on the UI and in
   memory.db. Reconnecting starts a session that already knows what happened
   through the brief; cross-session delivery of a pending result to a new Live
   session is not provided.
@@ -152,9 +151,9 @@ with, per decision: the daemon log lines for claim, submit, `turn_id`, ACK
 by `client_event_id` and delivery kind (D2, D4); a redelivered delegation
 producing one `surface.user_intent` row (D2); memory.db rows for `allen`,
 `jarvis_live` and the backend `jarvis` answer with no duplicated request
-(D3); a hushed result acknowledged as `session.thinking.appended` (D4); a
-late result logged as `thinking` only and two overlapping delegations
-speaking only the newest (D5); a mutating tool request logged as
+(D3); a result delivered while speech is muted acknowledged as
+`session.thinking.appended` (D4); a late result logged as `thinking` only and
+two overlapping delegations speaking only the newest (D5); a mutating tool request logged as
 `UnknownToolError` with no `action.dispatched` (D6); `session.started`
 showing the `developer` brief in `input` (D7); zero MiniMax requests during
 the Live session (D8); `lint-imports` clean (D9).

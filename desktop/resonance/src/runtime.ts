@@ -2,7 +2,7 @@
 // outbound-only WebSocket envelopes `{op, payload}` in, HTTP POSTs out. Audio never crosses this link; the daemon owns mic and speaker.
 import type { Action, Live, LiveState } from './model';
 
-export interface Controls { mic_muted?: boolean; speech_muted?: boolean; live?: 'start' | 'stop' | 'hush' }
+export interface Controls { mic_muted?: boolean; speech_muted?: boolean; live?: 'start' | 'stop' }
 const liveStates: LiveState[] = ['idle', 'connecting', 'active', 'closing', 'unavailable'];
 // `LiveVoice.status()` as the daemon sends it, on the `live` op and inside every controls answer.
 const liveFrom = (p: Record<string, unknown>): Live => ({
@@ -12,7 +12,6 @@ const liveFrom = (p: Record<string, unknown>): Live => ({
   usageS: typeof p.usage_s === 'number' ? p.usage_s : null,
   usageFinal: p.usage_final === true,
   reason: typeof p.reason === 'string' ? p.reason : null,
-  hushed: p.hushed === true,
   speaking: p.speaking === true,
   hearing: p.hearing === true,
   error: typeof p.error === 'string' ? p.error : null,

@@ -185,8 +185,7 @@ function App() {
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => { dispatch({ type: 'answer' }); timer.current = null; }, 1400);
   };
-  // Live hush is a local playback gate that reopens when Allen speaks again; the daemon owns that rule.
-  const interrupt = () => { if (live && s.live.state === 'active') { void runtime.current?.controls({ live: 'hush' }); return; } if (live) void runtime.current?.cancel(s.responseId); dispatch({ type: 'interrupt' }); };
+  const interrupt = () => { if (live) void runtime.current?.cancel(s.responseId); dispatch({ type: 'interrupt' }); };
   const retry = () => {
     if (live) { runtime.current?.reconnect(); return; }
     dispatch({ type: 'phase', phase: 'processing' }); if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => dispatch({ type: 'phase', phase: 'listening' }), 1200);
@@ -205,7 +204,7 @@ function App() {
     else if (s.mode === 'voice') mode('idle');
     else hide();
   };
-  const status = s.phase === 'error' ? '连接失败' : s.live.state === 'active' ? (s.live.hushed ? 'Live · 已停播，说话后恢复' : s.live.speaking ? 'Live · 正在播报' : s.live.hearing ? 'Live · 正在听' : 'Live · 通话中') : s.micMuted && s.phase === 'listening' ? '麦克风已关闭' : labels[s.phase];
+  const status = s.phase === 'error' ? '连接失败' : s.live.state === 'active' ? (s.live.speaking ? 'Live · 正在播报' : s.live.hearing ? 'Live · 正在听' : 'Live · 通话中') : s.micMuted && s.phase === 'listening' ? '麦克风已关闭' : labels[s.phase];
   const surfaceStyle = { '--glass-opacity': opacity, '--glass-strength': glassStrength, '--preview-scale': lab ? scale : 1 } as React.CSSProperties;
   return <IconContext.Provider value={{ size: 20, weight: 'regular' }}>
     <main className={lab ? `lab ${background}` : 'desktop'} style={surfaceStyle} onKeyDown={e => {
@@ -244,7 +243,7 @@ function App() {
 
         </div>
         <div className="status-line" data-interactive><span role="status" className="sr-only">{s.mode === 'idle' ? '待机' : status}{!live && <span className="demo-label"> · 演示</span>}</span>
-          {(s.phase === 'speaking' || s.live.speaking) && <button className="text-action" onClick={interrupt}><Pause size={12}/>停止播报</button>}
+          {s.phase === 'speaking' && <button className="text-action" onClick={interrupt}><Pause size={12}/>停止播报</button>}
           {live && s.live.state !== 'unavailable' && <button className={`text-action live-toggle ${s.live.state === 'active' ? 'is-active' : ''}`} disabled={liveBusy} onClick={toggleLive}>{s.live.state === 'active' ? <><PhoneDisconnect size={12}/>挂断 {liveClock}</> : s.live.state === 'connecting' ? '连接中…' : s.live.state === 'closing' ? '挂断中…' : <><Phone size={12}/>开始 Live</>}</button>}
           <Button label="外观与窗口选项" className="options" aria-expanded={settings} onClick={() => { if (settings) closeSettings(); else { setSettings(true); void window.jarvis?.focus(true); } }}><DotsThree size={19}/></Button>
         </div>

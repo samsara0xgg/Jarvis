@@ -16,9 +16,8 @@ Wire facts come from the ``openai`` 3.13 ``types/live`` package: one
 ``session.start`` → ``session.started``; audio both ways as base64 PCM16 at
 the startup-selected rate; transcripts as ordered deltas without turn
 boundaries; ``session.close`` → terminal ``session.closed`` with cumulative
-``usage.seconds``.  There is no server-side "stop speaking" event, so hush is
-a local playback gate plus a best-effort instruction.  Appends carry an
-``event_id`` and are acknowledged by ``client_event_id``; the ACK proves
+``usage.seconds``.  Appends carry an ``event_id`` and are acknowledged by
+``client_event_id``; the ACK proves
 receipt, never that the model consumed or spoke the content.
 """
 
@@ -74,9 +73,6 @@ Do not guess the result while waiting.
 # Appends are written in the language the model speaks (docs/gpt-live/live-prompting.md).
 # Commentary is a fact for the model to say in its own words, not an instruction to it;
 # thinking is a fact it may use later without speaking it now.
-HUSH_INSTRUCTION = (
-    "用户要求你停止说话。立刻停下，保持沉默，直到用户再次开口。"  # noqa: RUF001 — intentional Chinese punctuation.
-)
 NO_REQUEST_THINKING = (
     "后台没有捕获到要查的内容，请让用户再说一遍要查什么。"  # noqa: RUF001 — intentional Chinese punctuation.
 )
@@ -296,8 +292,6 @@ class _LiveRun:
     writer: threading.Thread | None = None
     writer_busy: bool = False
     cancel_write: threading.Event = dataclasses.field(default_factory=threading.Event)
-    output_gate: bool = True
-    hush_at_ms: int = 0
     # Latest end_ms of USER speech. Assistant transcript timestamps run ahead of
     # local playback by whatever is buffered, so they must not move the boundary.
     max_user_end_ms: int = 0
@@ -400,7 +394,6 @@ class LiveVoice:
             "usage_final": False,
             "reason": None,
             "server_reason": None,
-            "hushed": False,
             "speaking": False,
             "hearing": False,
             "mic_muted": self._mic_muted(),
@@ -424,7 +417,6 @@ class LiveVoice:
             usage_final=run.usage_final,
             reason=run.close_reason,
             server_reason=run.server_reason,
-            hushed=not run.output_gate,
             speaking=run.speaking,
             hearing=run.hearing,
             dropped_input_events=run.dropped_backlog_events,
@@ -511,32 +503,6 @@ class LiveVoice:
             self._state = "closing"
             await self._broadcast("closing")
             await self._teardown(run, reason)
-            return self.status()
-
-    async def hush(self) -> dict[str, object]:
-        """Stop the speaker now; playback stays gated until the user speaks again."""
-        async with self._lock:
-            run = self._run
-            if run is None or self._state != "active":
-                return self.status()
-            run.output_gate = False
-            run.hush_at_ms = run.max_user_end_ms
-            run.cancel_write.set()
-            _drain_queue(run.play)
-            run.player.flush()
-            await self._send_json(run, {
-                "type": "session.instructions.append",
-                "content": HUSH_INSTRUCTION,
-                "delegation_id": None,
-            })
-            # buffered_ms: received audio not yet played, i.e. how far the assistant
-            # transcript was ahead of the speaker at this moment.
-            LOGGER.info(
-                "gpt_live hushed at %d ms (last user speech), buffered_ms=%d",
-                run.hush_at_ms,
-                run.player.bytes_pending() // 4 * 1000 // self._config.sample_rate_hz,
-            )
-            await self._broadcast("state")
             return self.status()
 
     def set_mic_muted(self, muted: bool) -> None:  # noqa: FBT001 - Callable[[bool], None] shape
@@ -744,8 +710,7 @@ class LiveVoice:
                 kind = event.get("type")
                 if kind == "session.output_audio.delta":
                     run.last_activity = time.monotonic()
-                    if run.output_gate:
-                        run.play.put(_pcm16_to_float32(base64.b64decode(event["delta"])))
+                    run.play.put(_pcm16_to_float32(base64.b64decode(event["delta"])))
                 elif kind in ("session.input_transcript.delta", "session.output_transcript.delta"):
                     await self._on_transcript(run, event)
                 elif kind == "session.usage.updated":
@@ -799,21 +764,11 @@ class LiveVoice:
         if role == "user":
             run.max_user_end_ms = max(run.max_user_end_ms, end_ms)
             run.hearing_until = now + _HEARING_HOLD_S
-            if not run.output_gate and start_ms >= run.hush_at_ms:
-                # The user spoke after the hush: that is the only thing that reopens playback.
-                # "After" is judged on user timestamps only; gating on the assistant's
-                # transcript swallowed a reply when the user spoke right after hushing.
-                run.output_gate = True
-                run.cancel_write.clear()
-                LOGGER.info("gpt_live playback reopened by user speech at %d ms", start_ms)
-                await self._broadcast("state")
             run.user_fragments.append(fragment)
             run.last_user_fragment_at = now
             run.user_row.fragments.append(fragment)
             run.user_row.last_append = now
-        elif run.output_gate:
-            # D3: what the model says while hushed was never heard, so it is not
-            # part of the conversation of record.
+        else:
             run.assistant_row.fragments.append(fragment)
             run.assistant_row.last_append = now
         run.subtitle_seq += 1
@@ -1031,7 +986,7 @@ class LiveVoice:
     async def _deliver(
         self, run: _LiveRun, pending: _Pending, kind: DeliveryKind, content: str,
     ) -> None:
-        """Send a result only into the session it belongs to; hush demotes it (D4, D5)."""
+        """Send a result only into the session it belongs to; speech mute demotes it (D4, D5)."""
         current = self._run
         if current is not run or run.epoch != pending.epoch or run.session_id != pending.session_id:
             LOGGER.info(
@@ -1047,8 +1002,8 @@ class LiveVoice:
                 pending.delegation_id, len(content),
             )
             return
-        if kind == "commentary" and not run.output_gate:
-            LOGGER.info("gpt_live delegation %s commentary -> thinking (hushed)",
+        if kind == "commentary" and self._speech_muted():
+            LOGGER.info("gpt_live delegation %s commentary -> thinking (speech muted)",
                         pending.delegation_id)
             kind = "thinking"
         LOGGER.info(
@@ -1217,7 +1172,7 @@ class LiveVoice:
                 loop.call_soon_threadsafe(self._enqueue_out, run, chunk)
 
     def _writer_main(self, run: _LiveRun) -> None:
-        """Speaker side: blocking ``player.write`` off the loop; hush cancels in flight."""
+        """Speaker side: blocking ``player.write`` off the loop; teardown cancels in flight."""
         while True:
             try:
                 item = run.play.get(timeout=0.2)

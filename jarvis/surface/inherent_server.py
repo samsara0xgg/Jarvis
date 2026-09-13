@@ -215,10 +215,9 @@ class ControlsRequest(BaseModel):
     mic_muted: bool | None = None
     speech_muted: bool | None = None
     # GPT-Live phase A: ``start`` opens a session (refused with a reason when
-    # the ingress or the API key is missing), ``stop`` hangs up, ``hush``
-    # silences playback until the user speaks again.  The response then also
-    # carries ``"live": {...}`` (``LiveVoice.status``), on every request.
-    live: Literal["start", "stop", "hush"] | None = None
+    # the ingress or the API key is missing), ``stop`` hangs up.  The response
+    # then also carries ``"live": {...}`` (``LiveVoice.status``), on every request.
+    live: Literal["start", "stop"] | None = None
 
 
 @dataclass(frozen=True)
@@ -971,8 +970,6 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
                 state["live"] = await deps.live.start()
             elif req.live == "stop":
                 state["live"] = await deps.live.stop(reason="user")
-            elif req.live == "hush":
-                state["live"] = await deps.live.hush()
             else:
                 state["live"] = deps.live.status()
             return state

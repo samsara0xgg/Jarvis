@@ -309,7 +309,7 @@ realtime:
       enabled: false
   # GPT-Live (docs/gpt-live-integration-planning.md, phase A).  `enabled`
   # only registers the controller behind POST /inherent/controls
-  # {"live": "start"|"stop"|"hush"}; nothing connects until that request
+  # {"live": "start"|"stop"}; nothing connects until that request
   # arrives, and start refuses without the single audio ingress or the API
   # key.  The session is billed per second: idle_close_s hangs up after that
   # long without transcript or audio activity, max_session_s is a hard cap.

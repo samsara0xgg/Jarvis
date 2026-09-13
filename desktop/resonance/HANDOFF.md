@@ -47,8 +47,7 @@ real 8006 daemon.
   mock. Reply text is shown with `<voice>`/`<document>` markup stripped.
   The UI starts collapsed; clicking the disc expands the capsule. Closing it
   returns to the disc without hiding or clearing existing results. The status
-  line carries the GPT-Live toggle (start / hang up with a per-second clock)
-  and, while Live audio plays, the stop button sends `live: hush`.
+  line carries the GPT-Live toggle (start / hang up with a per-second clock).
 - `src/PresentationCapsule.tsx` and `src/LivePresence.tsx`: controlled mode,
   non-Live status, voice presence, theme color, and UI callbacks. Ring/waveform
   energy remains synthetic. `nativeSurface` enables native-glass geometry updates

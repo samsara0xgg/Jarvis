@@ -10,11 +10,11 @@ export const examples: Result[] = [
 ];
 // GPT-Live phase A. The daemon owns the session; every `live` op or controls answer replaces this whole record.
 export type LiveState = 'idle' | 'connecting' | 'active' | 'closing' | 'unavailable';
-export interface Live { state: LiveState; sessionId: string | null; since: number | null; usageS: number | null; usageFinal: boolean; reason: string | null; hushed: boolean; speaking: boolean; hearing: boolean; error: string | null; notice: string | null }
+export interface Live { state: LiveState; sessionId: string | null; since: number | null; usageS: number | null; usageFinal: boolean; reason: string | null; speaking: boolean; hearing: boolean; error: string | null; notice: string | null }
 export interface Subtitle { role: 'user' | 'assistant'; text: string; startMs: number; endMs: number }
 // A same-speaker pause longer than this starts a new caption row (docs/gpt-live/live-conversations.md, Display captions): an assistant resuming after an interruption must not extend the cut-off line. Application choice; tune against recordings.
 const SUBTITLE_GAP_MS = 1500;
-export const idleLive: Live = { state: 'idle', sessionId: null, since: null, usageS: null, usageFinal: false, reason: null, hushed: false, speaking: false, hearing: false, error: null, notice: null };
+export const idleLive: Live = { state: 'idle', sessionId: null, since: null, usageS: null, usageFinal: false, reason: null, speaking: false, hearing: false, error: null, notice: null };
 export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; live: Live; subtitles: Subtitle[] }
 export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, inbox: false, detail: null, results: [examples[0], examples[3]], reply: '', draft: '', attachment: false, turnId: null, responseId: null, live: idleLive, subtitles: [] };
 export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' | 'reset' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer' } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string } | { type: 'example'; id: string }
