@@ -233,7 +233,16 @@ _DEFAULT_PORT: int = 8006
 # verdict ``attention_policy`` can return. Neither channel lists a voice
 # surface in ``ATTENTION_CHANNEL_TO_SURFACES``, so feeding their chunks
 # to TTS contradicts the routing table and spec §3.2.5 安静优先.
-_TTS_SILENT_CHANNELS: frozenset[str] = frozenset({"queue_review", "silent_log", "badge_card"})
+#
+# ``gpt_live`` is the odd one out: it is an INTENT channel (where the turn was
+# submitted from), not an attention channel, and it is matched against a
+# different payload field — see :func:`_drop_for_silent_channel`. ADR-0016 D8:
+# while a Live session owns the speaker, the local chain must not synthesize
+# that turn at all. It is deliberately absent from the broadcaster set below,
+# because Resonance still shows the full answer.
+_TTS_SILENT_CHANNELS: frozenset[str] = frozenset(
+    {"queue_review", "silent_log", "badge_card", "gpt_live"},
+)
 
 # WS-broadcaster suppression set — deliberately NARROWER than the TTS
 # set, and this asymmetry is load-bearing:
@@ -669,13 +678,42 @@ def _fetch_response_events_after(
     return [_row_to_id_event(row) for row in cursor]
 
 
-def _drop_for_silent_channel(
+_SELECT_TURN_INTENT_CHANNEL_SQL = (
+    "SELECT json_extract(payload_json, '$.channel') FROM events "
+    "WHERE type = 'surface.user_intent' "
+    "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
+)
+
+
+def _turn_intent_channel(conn: sqlite3.Connection, turn_id: str) -> str | None:
+    """The channel ``turn_id`` was submitted on, from its ``surface.user_intent``.
+
+    The intent channel (``gpt_live``, the v2 surface label, ...) never reaches
+    the ``surface.response_open`` header. That row carries its own ``channel``
+    key, but it holds the PRESENTATION split — ``both`` / ``speech`` /
+    ``document``, computed in ``cli_render`` from which text slices are
+    non-empty — so a consumer that must suppress a whole turn by where the turn
+    came from has to read the submission row instead.
+
+    ``None`` when the turn has no submission row at all (a reconciliation or
+    supervisor-sweep turn), which keeps :func:`_drop_for_silent_channel`'s
+    opt-in-by-explicit-label default: unknown origin is not silent.
+    """
+    if not turn_id:
+        return None
+    row = conn.execute(_SELECT_TURN_INTENT_CHANNEL_SQL, (turn_id,)).fetchone()
+    channel = row[0] if row is not None else None
+    return channel if isinstance(channel, str) else None
+
+
+def _drop_for_silent_channel(  # noqa: PLR0913 - two verdict sources, one bookkeeping set
     event: Event,
     *,
     turn_id: str,
     silent_turns: set[str],
     silent_channels: frozenset[str],
     consumer: str,
+    intent_channel: str | None = None,
 ) -> bool:
     """True when ``event`` belongs to a turn ``consumer`` must not deliver.
 
@@ -690,6 +728,13 @@ def _drop_for_silent_channel(
     terminal) arrives — the whole open/chunk*/emitted triple is dropped or
     none of it is.
 
+    ``intent_channel`` is the second, parallel source of that verdict: the
+    caller's :func:`_turn_intent_channel` lookup, supplied on the open only.
+    Either label matching ``silent_channels`` suppresses the turn, so a
+    consumer can silence a turn by its L3 routing verdict (ADR-0009 D4) or by
+    where it was submitted from (ADR-0016 D8) through one mechanism. Callers
+    that pass nothing keep the header-only behaviour exactly.
+
     A missing (or non-string) ``attention_channel`` is deliberately NOT
     silent: the pre-Step-8 behaviour — deliver and speak — stays the
     default, so an emitter that predates the field (legacy rows, direct
@@ -697,8 +742,15 @@ def _drop_for_silent_channel(
     opt-in by an explicit channel label.
     """
     if event.type == "surface.response_open":
-        channel = event.payload.get("attention_channel")
-        if not (isinstance(channel, str) and channel in silent_channels):
+        channel = next(
+            (
+                label
+                for label in (event.payload.get("attention_channel"), intent_channel)
+                if isinstance(label, str) and label in silent_channels
+            ),
+            None,
+        )
+        if channel is None:
             return False
         silent_turns.add(turn_id)
         LOGGER.info(
@@ -1420,12 +1472,13 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
 
     Channel filter (ADR-0009 D4 — "System turns are silent, enforced"):
     a turn whose ``surface.response_open`` header declares a channel in
-    :data:`_TTS_SILENT_CHANNELS` never reaches the pipeline at all —
+    :data:`_TTS_SILENT_CHANNELS`, or which was submitted on one (ADR-0016
+    D8 — a ``gpt_live`` delegation), never reaches the pipeline at all —
     ``begin_turn`` is not called, its chunks are dropped, and its
-    ``emitted`` only clears the bookkeeping. The channel is known ONLY
-    from the open header, so the suppressed turn ids are remembered
-    until their ``emitted`` row closes them. This is a filter, not a
-    switch: a ``voice_notify`` turn streams exactly as before.
+    ``emitted`` only clears the bookkeeping. Both labels are read once,
+    at the open, so the suppressed turn ids are remembered until their
+    ``emitted`` row closes them. This is a filter, not a switch: a
+    ``voice_notify`` turn streams exactly as before.
 
     Cancellation: re-raises :class:`asyncio.CancelledError` so the daemon
     shutdown path (Task 19) can await the watcher cleanly.
@@ -1463,6 +1516,11 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
                         silent_turns=silent_turns,
                         silent_channels=_TTS_SILENT_CHANNELS,
                         consumer="tts_watcher",
+                        intent_channel=(
+                            _turn_intent_channel(conn, turn_id)
+                            if ev.type == "surface.response_open"
+                            else None
+                        ),
                     ):
                         after_id = max(after_id, row_id)
                         continue
@@ -1885,7 +1943,7 @@ def _render_commentary(  # noqa: PLR0913 - the run's five independent inputs
     )
 
 
-def _open_commentary_in_worker_thread(
+def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per suppression rule
     runtime: JarvisRuntime,
     *,
     action_event: Event,
@@ -1899,10 +1957,10 @@ def _open_commentary_in_worker_thread(
     the TTS watcher polls on.
 
     Returns ``None`` — writing nothing at all — when the row maps to no D6
-    intent, when the turn is not user-originated, when this turn already
-    opened its one commentary, when a confirmation is still awaiting an
-    answer, or when a non-terminal row's action already reached its
-    terminal.
+    intent, when the turn is not user-originated, when the turn came from
+    GPT-Live, when this turn already opened its one commentary, when a
+    confirmation is still awaiting an answer, or when a non-terminal row's
+    action already reached its terminal.
     """
     intent = commentary_intent_for(action_event)
     if intent is None:
@@ -1911,6 +1969,20 @@ def _open_commentary_in_worker_thread(
     try:
         turn_id = _commentary_turn_id(conn, action_event)
         if turn_id is None:
+            return None
+        if _turn_intent_channel(conn, turn_id) == LIVE_PRINCIPAL:
+            # ADR-0016 D8. Suppressed at the source, not by the TTS filter:
+            # the run this would open hard-codes its own channel and attention
+            # channel, so nothing downstream could tell it came from Live.
+            # Live already narrates its own progress through a thinking
+            # append, so synthesizing "我去查一下" is a duplicate and a
+            # MiniMax request the local chain must not make.
+            LOGGER.info(
+                "commentary: turn_id=%s submitted on %s — no commentary run opened for %s.",
+                turn_id,
+                LIVE_PRINCIPAL,
+                action_event.type,
+            )
             return None
         if _turn_already_spoke_commentary(conn, turn_id):
             # One phrase per turn. Checked here, after the origin filter and
