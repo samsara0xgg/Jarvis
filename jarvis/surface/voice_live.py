@@ -162,7 +162,9 @@ class _LiveRun:
     cancel_write: threading.Event = dataclasses.field(default_factory=threading.Event)
     output_gate: bool = True
     hush_at_ms: int = 0
-    max_end_ms: int = 0
+    # Latest end_ms of USER speech. Assistant transcript timestamps run ahead of
+    # local playback by whatever is buffered, so they must not move the boundary.
+    max_user_end_ms: int = 0
     # Presence + accounting.
     last_activity: float = dataclasses.field(default_factory=time.monotonic)
     hearing_until: float = 0.0
@@ -322,7 +324,7 @@ class LiveVoice:
             if run is None or self._state != "active":
                 return self.status()
             run.output_gate = False
-            run.hush_at_ms = run.max_end_ms
+            run.hush_at_ms = run.max_user_end_ms
             run.cancel_write.set()
             _drain_queue(run.play)
             run.player.flush()
@@ -331,7 +333,13 @@ class LiveVoice:
                 "content": HUSH_INSTRUCTION,
                 "delegation_id": None,
             })
-            LOGGER.info("gpt_live hushed at %d ms", run.hush_at_ms)
+            # buffered_ms: received audio not yet played, i.e. how far the assistant
+            # transcript was ahead of the speaker at this moment.
+            LOGGER.info(
+                "gpt_live hushed at %d ms (last user speech), buffered_ms=%d",
+                run.hush_at_ms,
+                run.player.bytes_pending() // 4 * 1000 // self._config.sample_rate_hz,
+            )
             await self._broadcast("state")
             return self.status()
 
@@ -545,12 +553,14 @@ class LiveVoice:
         run.last_activity = now
         start_ms = int(event.get("start_ms", 0))
         end_ms = int(event.get("end_ms", start_ms))
-        run.max_end_ms = max(run.max_end_ms, end_ms)
         role = "user" if event["type"] == "session.input_transcript.delta" else "assistant"
         if role == "user":
+            run.max_user_end_ms = max(run.max_user_end_ms, end_ms)
             run.hearing_until = now + _HEARING_HOLD_S
             if not run.output_gate and start_ms >= run.hush_at_ms:
                 # The user spoke after the hush: that is the only thing that reopens playback.
+                # "After" is judged on user timestamps only; gating on the assistant's
+                # transcript swallowed a reply when the user spoke right after hushing.
                 run.output_gate = True
                 run.cancel_write.clear()
                 LOGGER.info("gpt_live playback reopened by user speech at %d ms", start_ms)
