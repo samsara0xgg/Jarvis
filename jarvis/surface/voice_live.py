@@ -986,7 +986,7 @@ class LiveVoice:
     async def _deliver(
         self, run: _LiveRun, pending: _Pending, kind: DeliveryKind, content: str,
     ) -> None:
-        """Send a result only into the session it belongs to; speech mute demotes it (D4, D5)."""
+        """Send a result only into the session it belongs to (D4, D5)."""
         current = self._run
         if current is not run or run.epoch != pending.epoch or run.session_id != pending.session_id:
             LOGGER.info(
@@ -1002,10 +1002,6 @@ class LiveVoice:
                 pending.delegation_id, len(content),
             )
             return
-        if kind == "commentary" and self._speech_muted():
-            LOGGER.info("gpt_live delegation %s commentary -> thinking (speech muted)",
-                        pending.delegation_id)
-            kind = "thinking"
         LOGGER.info(
             "gpt_live delegation %s delivered as %s (%d chars)",
             pending.delegation_id, kind, len(content),
