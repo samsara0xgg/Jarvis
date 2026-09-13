@@ -822,13 +822,17 @@ class LiveVoice:
         # D5: one foreground query. An older delegation still completes into
         # memory.db and the UI, but its result is withheld from Live: a quiet
         # append can still shape later speech (live-tested 2026-09-12, the
-        # superseded "明天" forecast was spoken as "后天"). One already
-        # delivered is left as it is; only its request travels as 此前请求.
+        # superseded "明天" forecast was spoken as "后天"). Only the request
+        # it displaces travels as 此前请求: its answer is not in memory.db yet.
+        # A finished exchange already closes context_note, and a prefix on
+        # an unrelated follow-up misreads it as a correction (live run
+        # 2026-09-12 21:32: "明天卡尔加里" answered as 后天). One still
+        # settling has no request text yet and lends none.
         prior_request: str | None = None
         for older in run.pending.values():
-            prior_request = older.request_text or prior_request
             if older.foreground and older.state in ("settling", "submitted"):
                 older.foreground = False
+                prior_request = older.request_text or prior_request
                 LOGGER.info(
                     "gpt_live delegation %s superseded by %s; its result stays off Live",
                     older.delegation_id, delegation_id,

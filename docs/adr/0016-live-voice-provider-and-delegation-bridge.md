@@ -95,11 +95,15 @@ delegation is registered, every older delegation still running is superseded:
 its turn still completes into memory.db and the UI, but its result is withheld
 from Live entirely; one already delivered is left as it is. A quiet `thinking`
 append is not a secrecy boundary (live run 2026-09-12: a superseded "明天"
-forecast delivered as thinking was spoken as the "后天" answer). The new
-request is submitted next to the previous one, finished or not
-(`此前请求：… / 用户修正：…`), because a lone correction such as "改成后天的"
-is unresolvable against a seven-day memory note; the memory row keeps only
-Allen's words. Semantic task revision (planning §6) is not attempted here.
+forecast delivered as thinking was spoken as the "后天" answer). The
+superseding request is submitted next to the request it displaces
+(`此前请求：… / 用户修正：…`): that answer is not in memory.db yet, so a lone
+correction such as "改成后天的" has nothing to resolve against (b86c36e:
+L3 asked which topic was meant). A request that follows a finished one goes
+bare — context_note already ends with that exchange, and a prefix there
+misreads an unrelated follow-up as a correction (live run 2026-09-12 21:32:
+"明天卡尔加里" answered as 后天). The memory row keeps only Allen's words.
+Semantic task revision (planning §6) is not attempted here.
 
 **D6. Delegated turns see only read-only tools.** When
 `surface.user_intent.channel == "gpt_live"`, `drive_turn` hands `decide()` a
