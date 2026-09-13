@@ -109,6 +109,7 @@ from jarvis.decision.reviewer import ReviewerVerdict, review_diff
 from jarvis.decision.stream_envelope import (
     StreamEnvelopeSplitter,
     compose_envelope,
+    envelope_only,
     split_envelope,
 )
 from jarvis.decision.stream_finalize import StreamFinalizationFailure, finalize_stream
@@ -3365,6 +3366,12 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     ``turn.ended.source_event_id`` references the LAST gate event in
     the chain regardless of which branch was taken.
     """
+    # A draft that thinks aloud before its envelope would carry that reasoning
+    # into ``ResponsePlan.text`` (2026-09-12, turn T7d3d8e48: "I have enough to
+    # answer. The user originally asked..." reached memory.db while voice_text
+    # was clean). Text outside the envelope has no channel; drop it before the
+    # gate hashes the draft.
+    draft_text = envelope_only(draft_text)
     hard_refusal_used = False
     active_subject = _active_subject_or_default(scratch, packet)
     if active_subject is None:

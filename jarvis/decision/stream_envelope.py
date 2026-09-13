@@ -50,6 +50,19 @@ def compose_envelope(voice: str, document: str) -> str:
     )
 
 
+def envelope_only(text: str) -> str:
+    """Return the envelope alone; a tag-less text, or one with nothing outside, as is.
+
+    A model that thinks aloud before ``<voice>`` puts that reasoning in
+    ``ResponsePlan.text`` (memory.db, the next brief) while the channels stay
+    clean; text outside both bodies has no channel and is dropped here.
+    """
+    voice, document, enveloped = split_envelope(text)
+    if not enveloped or not _ENVELOPE_RE.sub("", text).strip():
+        return text
+    return compose_envelope(voice, document)
+
+
 def _could_open_tag(lower: str) -> bool:
     return any(
         len(lower) < len(tag) and tag.startswith(lower) for tag in (_VOICE_OPEN, _DOCUMENT_OPEN)
