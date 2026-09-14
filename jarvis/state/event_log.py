@@ -1077,6 +1077,29 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     # `payload.by` already is for `task.verified`.
     # Neither type joins any trigger tuple: observations fold silently
     # (spec §3.4.1 / §3.2.5 安静优先).
+    # --- ADR-0018 usage observer (same observation conventions as ADR-0009) ---
+    EventTypeSchema(
+        # One row per *changed* service snapshot (claude / codex / openai /
+        # deepseek / minimax). `data` is the bounded service-specific
+        # snapshot; `status` is ok | error | unconfigured so a stale row
+        # explains itself. Never a decision trigger.
+        event_type="usage.state_observed",
+        owner_layer="L5",
+        actor="observer",
+        required_payload=("service", "status", "data", "observed_at_ms", "actor"),
+        optional_payload=("error",),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        # One row per finished TTS segment carrying the provider's own
+        # character count; the MiniMax balance estimate folds these.
+        event_type="tts.usage_observed",
+        owner_layer="L5",
+        actor="observer",
+        required_payload=("provider", "characters", "response_id", "sequence", "actor"),
+        optional_payload=("model",),
+        schema_version=1,
+    ),
     EventTypeSchema(
         event_type="repo.state_observed",
         owner_layer="L5",

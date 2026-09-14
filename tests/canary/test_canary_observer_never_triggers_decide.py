@@ -33,17 +33,25 @@ from __future__ import annotations
 
 import ast
 
+import pytest
+
 from tests.canary._helpers import iter_jarvis_py_files, parse, relative_to_repo, repo_root
 
-# The two types ADR-0009 §4 registers for the repo observer. Both are
-# ``evidence_semantics=observation``; neither is a trigger.
-_OBSERVER_EVENT_TYPES: frozenset[str] = frozenset(
-    {"repo.state_observed", "project.commit_seen"}
+# Observer modules and the observation types each may emit: the repo pair
+# ADR-0009 §4 registers, and the usage observer ADR-0018 adds. Every type
+# here is ``evidence_semantics=observation``; none is a trigger.
+_OBSERVER_MODULES: dict[str, frozenset[str]] = {
+    "jarvis/surface/repo_observer.py": frozenset({"repo.state_observed", "project.commit_seen"}),
+    "jarvis/surface/usage_observer.py": frozenset({"usage.state_observed"}),
+}
+
+# ``tts.usage_observed`` is emitted by the media owner, not an observer
+# module, but it is an observation too and must never wake a watcher.
+_OBSERVER_EVENT_TYPES: frozenset[str] = frozenset({"tts.usage_observed"}).union(
+    *_OBSERVER_MODULES.values()
 )
 
 _TRIGGER_TUPLE_SUFFIX = "_TRIGGER_TYPES"
-
-_OBSERVER_MODULE_REL = "jarvis/surface/repo_observer.py"
 
 
 def _assigned_names(node: ast.AST) -> list[str]:
@@ -122,29 +130,32 @@ def test_canary_observer_types_join_no_trigger_tuple() -> None:
     )
 
 
-def test_canary_observer_emits_only_observation_types() -> None:
-    """``repo_observer.py`` emits its two types and nothing a watcher wakes on."""
-    observer_path = repo_root() / _OBSERVER_MODULE_REL
+@pytest.mark.parametrize(("module_rel", "allowed"), sorted(_OBSERVER_MODULES.items()))
+def test_canary_observer_emits_only_observation_types(
+    module_rel: str, allowed: frozenset[str]
+) -> None:
+    """Each observer module emits only its registered types, none a watcher wakes on."""
+    observer_path = repo_root() / module_rel
     assert observer_path.is_file(), (
-        f"{_OBSERVER_MODULE_REL} is missing — ADR-0009 Step 9 module was moved "
-        "or deleted; this canary has nothing left to pin."
+        f"{module_rel} is missing — the observer module was moved or deleted; "
+        "this canary has nothing left to pin."
     )
 
     emitted = _emit_event_type_literals(parse(observer_path))
     assert emitted, (
-        f"{_OBSERVER_MODULE_REL} makes no emit_event(type=<literal>) call. The "
+        f"{module_rel} makes no emit_event(type=<literal>) call. The "
         "observer either stopped emitting or moved to a computed type name, "
         "which this static canary cannot follow."
     )
 
     unexpected = [
-        f"{_OBSERVER_MODULE_REL}:{line}: emits {literal!r}"
+        f"{module_rel}:{line}: emits {literal!r}"
         for line, literal in emitted
-        if literal not in _OBSERVER_EVENT_TYPES
+        if literal not in allowed
     ]
     assert not unexpected, (
-        "ADR-0009 D5: the repo observer emits a type outside its registered "
-        "observation pair:\n  " + "\n  ".join(unexpected)
+        f"{module_rel} emits a type outside its registered observation set "
+        f"{sorted(allowed)!r}:\n  " + "\n  ".join(unexpected)
     )
 
     trigger_types = {
@@ -152,7 +163,7 @@ def test_canary_observer_emits_only_observation_types() -> None:
     }
     overlap = {literal for _line, literal in emitted} & trigger_types
     assert not overlap, (
-        "ADR-0009 D5: the repo observer emits "
+        f"{module_rel} emits "
         f"{sorted(overlap)!r}, which some *_TRIGGER_TYPES tuple wakes on — "
         "every poll would start a turn."
     )

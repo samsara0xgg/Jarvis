@@ -68,7 +68,7 @@ import secrets
 import time
 import wave
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, Protocol
 
 import numpy as np
 import soxr
@@ -407,6 +407,12 @@ class InherentDeps:
     controls: VoiceControls | None = None
     # GPT-Live phase A controller; ``None`` means ``live`` requests are refused.
     live: LiveVoice | None = None
+    # ADR-0018: the quota dashboard's read model and its on-demand poll.
+    # ``usage_read`` runs a small SQLite fold on the loop thread; ``usage_refresh``
+    # awaits one full poll (network off-thread, emit on-thread) and returns
+    # the same read model. ``None`` leaves both routes unregistered.
+    usage_read: Callable[[], dict[str, Any]] | None = None
+    usage_refresh: Callable[[], Awaitable[dict[str, Any]]] | None = None
 
 
 class _FrameRateLimiter:
@@ -1051,6 +1057,19 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
     async def health() -> dict[str, str]:
         """Liveness probe — used by ops scripts to confirm the daemon is up."""
         return {"status": "ok"}
+
+    if deps.usage_read is not None and deps.usage_refresh is not None:
+        usage_read, usage_refresh = deps.usage_read, deps.usage_refresh
+
+        @app.get("/inherent/usage")
+        async def usage() -> dict[str, Any]:
+            """ADR-0018: latest quota / spend / balance snapshot per service."""
+            return usage_read()
+
+        @app.post("/inherent/usage/refresh", status_code=200)
+        async def usage_refresh_now() -> dict[str, Any]:
+            """ADR-0018: poll every source now, then answer like ``GET``."""
+            return await usage_refresh()
 
     @app.post("/inherent/image-submit", status_code=501)
     async def image_submit() -> None:

@@ -69,6 +69,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import datetime
 import functools
 import json
 import logging
@@ -203,6 +204,7 @@ from jarvis.surface.inherent_server import (
 )
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.repo_observer import RepoObserver
+from jarvis.surface.usage_observer import UsageConfig, UsageObserver, latest_usage
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
 
@@ -3749,6 +3751,108 @@ def _start_repo_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
     ]
 
 
+# --- ADR-0018 usage observer ---------------------------------------------------
+
+_FALLBACK_USAGE_POLL_INTERVAL_S: Final[float] = 300.0
+_FALLBACK_MINIMAX_USD_PER_MILLION_CHARS: Final[float] = 60.0
+
+
+def _usage_observer_block(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Return ``observer.usage`` when ``enabled: true``; None means off."""
+    block = config.get("observer")
+    usage = block.get("usage") if isinstance(block, Mapping) else None
+    if not isinstance(usage, Mapping) or usage.get("enabled") is not True:
+        return None
+    return usage
+
+
+def _usage_observer_config(usage: Mapping[str, Any]) -> UsageConfig:
+    """Translate the YAML block into :class:`UsageConfig` (bad values = unset)."""
+    anchor_at_ms: int | None = None
+    anchor_at = usage.get("minimax_anchor_at")
+    if isinstance(anchor_at, str) and anchor_at.strip():
+        try:
+            anchor_at_ms = int(datetime.datetime.fromisoformat(anchor_at).timestamp() * 1000)
+        except ValueError:
+            LOGGER.warning(
+                "usage_observer: unreadable minimax_anchor_at %r; estimate off", anchor_at
+            )
+    anchor_usd = usage.get("minimax_anchor_usd")
+    return UsageConfig(
+        minimax_anchor_usd=(
+            float(anchor_usd)
+            if isinstance(anchor_usd, int | float) and not isinstance(anchor_usd, bool)
+            else None
+        ),
+        minimax_anchor_at_ms=anchor_at_ms,
+        minimax_usd_per_million_chars=_positive_float(
+            usage.get("minimax_usd_per_million_chars"),
+            _FALLBACK_MINIMAX_USD_PER_MILLION_CHARS,
+        ),
+    )
+
+
+def _make_usage_observer(runtime: JarvisRuntime) -> UsageObserver | None:
+    """Build the observer with baselines recovered on the loop thread."""
+    usage = _usage_observer_block(runtime.config)
+    if usage is None:
+        LOGGER.info("usage_observer: observer.usage disabled; observer not started.")
+        return None
+    observer = UsageObserver(runtime.conn, _usage_observer_config(usage))
+    baselines = observer.recover_baselines()
+    LOGGER.info("usage_observer: %d baseline(s) recovered from the event log", len(baselines))
+    return observer
+
+
+async def _poll_usage_once(observer: UsageObserver) -> None:
+    """Collect off the loop thread, emit on it — the same split as the repo observer."""
+    try:
+        snapshots = await asyncio.to_thread(observer.collect)
+    except Exception:  # one bad cycle must not kill the observer task.
+        LOGGER.exception("usage_observer: collect failed; skipping cycle.")
+        return
+    try:
+        observer.emit(snapshots)
+    except Exception:  # an emit failure is logged, never fatal to the daemon.
+        LOGGER.exception("usage_observer: emit failed; baselines unchanged.")
+
+
+async def _refresh_usage_now(
+    observer: UsageObserver, conn: sqlite3.Connection
+) -> dict[str, Any]:
+    """``POST /inherent/usage/refresh``: one poll, then the read model."""
+    await _poll_usage_once(observer)
+    return latest_usage(conn)
+
+
+async def _usage_observer_task(observer: UsageObserver, *, interval_s: float) -> None:
+    """Background task: poll every source every ``interval_s`` seconds, poll first."""
+    LOGGER.info("usage_observer started (interval=%.0fs)", interval_s)
+    try:
+        while True:
+            await _poll_usage_once(observer)
+            await asyncio.sleep(interval_s)
+    except asyncio.CancelledError:
+        LOGGER.info("usage_observer cancelled")
+        raise
+
+
+def _start_usage_observer(
+    observer: UsageObserver | None, config: Mapping[str, Any]
+) -> list[asyncio.Task[None]]:
+    """Start the periodic task for an observer :func:`_make_usage_observer` built."""
+    usage = _usage_observer_block(config)
+    if observer is None or usage is None:
+        return []
+    interval_s = _positive_float(usage.get("poll_interval_s"), _FALLBACK_USAGE_POLL_INTERVAL_S)
+    return [
+        asyncio.create_task(
+            _usage_observer_task(observer, interval_s=interval_s),
+            name="usage_observer",
+        ),
+    ]
+
+
 def _install_power_observer_or_degrade(
     conn: sqlite3.Connection,
     loop: asyncio.AbstractEventLoop,
@@ -4586,10 +4690,22 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             log_epoch=log_epoch,
             poll_interval_s=poll_interval_s,
         )
+        # ADR-0018 — usage observer: constructed here (baselines recovered on
+        # the loop thread) so the dashboard routes can hold its read model
+        # and on-demand poll; its periodic task joins `watchers` below.
+        usage_observer = _make_usage_observer(runtime)
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
             voice_pipeline_callable=voice_pipeline_callable,
+            usage_read=(
+                None if usage_observer is None else functools.partial(latest_usage, runtime.conn)
+            ),
+            usage_refresh=(
+                None
+                if usage_observer is None
+                else functools.partial(_refresh_usage_now, usage_observer, runtime.conn)
+            ),
             barge_in_confirm_callable=(
                 duplex_voice_session.confirm_ptt_barge_in
                 if duplex_voice_session is not None and duplex_voice_session.barge_in_armed
@@ -4722,6 +4838,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # so it is wired after the sweep control plane without disturbing
         # that anchor-then-bootstrap ordering.
         watchers.extend(_start_repo_observer(runtime))
+        watchers.extend(_start_usage_observer(usage_observer, runtime.config))
 
         # ADR-0009 D3 — power observer, installed after the lock (which
         # stays the outermost scope) and immediately before the try/finally

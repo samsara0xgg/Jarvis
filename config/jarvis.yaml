@@ -76,6 +76,20 @@ observer:
   # 被观察的 repo（绝对路径，`~` 会展开）。空列表 = 不启动观察器任务。
   # Allen 自己维护这份清单：观察器只读，不 fetch，不写外部世界。
   repos: []
+  # ADR-0018 usage observer：AI 订阅额度 / API 花费 / 余额轮询，只在快照变化
+  # 时 emit usage.state_observed，供 Resonance「模型额度」模块读取。
+  # 凭证一律来自本机登录态和环境变量（Keychain、~/.codex/auth.json、
+  # OPENAI_ADMIN_KEY、DEEPSEEK_API_KEY），不写进这个文件。
+  usage:
+    enabled: true
+    # 轮询间隔（秒）。claude.ai 的用量端点轮询过快会 429 锁一小时，别低于 300。
+    poll_interval_s: 300
+    # MiniMax 没有余额 API：余额 = 锚点 − 锚点之后 tts.usage_observed 的字符数 × 单价。
+    # 每次充值后把后台显示的余额和时刻抄到这里。
+    minimax_anchor_usd: 17.82
+    minimax_anchor_at: "2026-09-13T20:24:00-07:00"
+    # speech-2.8-turbo 官方按量价（USD / 百万字符）。
+    minimax_usd_per_million_chars: 60
 
 # ADR-0011 D7 — L4 只读工具配置（tools.py 不自己读 YAML，composition
 # root 在 build_default_registry() 时把值传进去）。

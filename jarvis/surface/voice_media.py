@@ -2478,6 +2478,11 @@ class StreamingTTSPipeline:
                                 "provider_segment_final_received_not_playback_complete"
                             ),
                         )
+                        self._emit_tts_usage(
+                            event.usage,
+                            response_id=active.response.response_id,
+                            sequence=sequence,
+                        )
                         break
                     break
                 except asyncio.CancelledError:
@@ -3314,6 +3319,38 @@ class StreamingTTSPipeline:
             msg = "media owner Event Log connection is unavailable"
             raise RuntimeError(msg)
         return conn
+
+    def _emit_tts_usage(
+        self,
+        usage: Mapping[str, object] | None,
+        *,
+        response_id: str,
+        sequence: int,
+    ) -> None:
+        """ADR-0018: persist the provider's per-segment character count.
+
+        MiniMax has no balance API, so the dashboard's MiniMax figure is an
+        estimate folded from these rows. A segment without ``usage`` (or a
+        log write that fails) is skipped: playback must never depend on
+        bookkeeping.
+        """
+        raw = None if usage is None else usage.get("usage_characters")
+        if not isinstance(raw, int | float) or isinstance(raw, bool) or raw <= 0:
+            return
+        try:
+            emit_event(
+                self._require_conn(),
+                type="tts.usage_observed",
+                payload={
+                    "provider": "minimax",
+                    "characters": int(raw),
+                    "response_id": response_id,
+                    "sequence": sequence,
+                    "actor": "observer",
+                },
+            )
+        except Exception:  # bookkeeping never fails playback.
+            LOGGER.exception("tts usage: emit failed for %s#%d", response_id, sequence)
 
 
 def streaming_media_config_from_mapping(
