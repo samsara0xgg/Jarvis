@@ -31,7 +31,13 @@ from typing import TYPE_CHECKING
 from jarvis.execution.tools import ReadOnlyToolRegistry, UnknownToolError, build_default_registry
 from jarvis.runtime.inherent_loop import _LiveBackend
 from jarvis.state.event_log import emit_event, open_event_log
-from jarvis.state.memory_db import MemorySettings, append_record, brief_note, open_memory_db
+from jarvis.state.memory_db import (
+    MemorySettings,
+    SessionSettings,
+    append_record,
+    brief_note,
+    open_memory_db,
+)
 
 if TYPE_CHECKING:
     import sqlite3
@@ -177,7 +183,7 @@ def main() -> None:
         root = Path(tmp)
         event_log = root / "events.db"
         memory = MemorySettings(db_path=root / "memory.db", audio_dir=root / "audio")
-        backend = _LiveBackend(event_log_path=event_log, memory=memory)
+        backend = _LiveBackend(event_log_path=event_log, memory=memory, session=SessionSettings())
         _check_inbox_and_lookup(backend, event_log)
         _check_memory(memory)
         _check_registry_view(memory, event_log)
