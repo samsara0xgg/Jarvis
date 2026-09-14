@@ -1,5 +1,7 @@
 // Acceptance for the mic and speaker cues: they must be synthesized haptic click
 // patterns (Hermes' `selection` / `open` / `close` intents), not rendered samples.
+// Also for the Live pair: entering plays voice-enter.wav, leaving plays that same
+// buffer reversed and trimmed, so the two are one voice and no second asset ships.
 // The observable is the `jarvis:feedback` event each toggle emits — its `duration`
 // is what separates a 16-70 ms click pattern from the 0.33-0.55 s WAVs it replaced.
 import { _electron as electron } from 'playwright';
@@ -23,7 +25,9 @@ try {
  // The edge toggles are inert until the capsule opens.
  await page.getByRole('button', { name: '进入 Live' }).click();
  await page.waitForSelector('.presentation-capsule:not(.is-collapsed)');
+ await page.waitForFunction(() => window.__cues.at(-1)?.cue === 'voice-enter');
  await page.waitForTimeout(300);
+ const enter = (await cues()).at(-1);
  await page.evaluate(() => { window.__cues = []; });
 
  const press = async (label, expected) => {
@@ -43,6 +47,15 @@ try {
  check('mic uses one pattern for both directions, as Hermes does', fired[0].duration === fired[1].duration);
  check('speaker open and close are distinguishable', fired[2].duration !== fired[3].duration);
  check('cues honour the saved volume preference', fired.every(c => c.volume === .35));
+
+ await page.evaluate(() => { window.__cues = []; });
+ await page.getByRole('button', { name: '退出 Live', exact: true }).click();
+ await page.waitForFunction(() => window.__cues.at(-1)?.cue === 'voice-exit');
+ const exit = (await cues()).at(-1);
+ check('leaving Live is no longer silent', exit.cue === 'voice-exit');
+ // The whole enter buffer minus the 120 ms of its faded tail that reversal puts up front.
+ check('exit is the enter reversed and trimmed', Math.abs(exit.duration - (enter.duration - .12)) < .002);
+ check('exit honours the same volume preference', exit.volume === enter.volume);
 
  const shipped = readdirSync('dist/audio');
  check('only voice-enter still ships as an asset', shipped.join(',') === 'voice-enter.wav');

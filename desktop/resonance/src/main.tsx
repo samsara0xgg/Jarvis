@@ -115,7 +115,7 @@ function App() {
   const detail = s.results.find(r => r.id === s.detail);
   const focusInput = async () => { await window.jarvis?.focus(true); input.current?.focus(); };
   const composerReturn = useRef<'voice' | 'idle'>('idle');
-  const mode = (value: 'voice' | 'text' | 'idle') => { if (value === 'text' && s.mode !== 'text') composerReturn.current = s.mode; setPresencePreview('auto'); if (value === 'voice' && s.mode !== 'voice') feedback('voice-enter'); dispatch({ type: 'mode', mode: value }); setAdded(false); setSettings(false); if (value !== 'text') void window.jarvis?.focus(false); };
+  const mode = (value: 'voice' | 'text' | 'idle') => { if (value === 'text' && s.mode !== 'text') composerReturn.current = s.mode; setPresencePreview('auto'); if (value === 'voice' && s.mode !== 'voice') feedback('voice-enter'); if (value !== 'voice' && s.mode === 'voice') feedback('voice-exit'); dispatch({ type: 'mode', mode: value }); setAdded(false); setSettings(false); if (value !== 'text') void window.jarvis?.focus(false); };
   // Starting a GPT-Live session opens the capsule too, so the clock and subtitles have somewhere to live.
   const toggleLive = () => { if (!live || liveBusy) return; if (s.live.state !== 'active' && s.mode === 'idle') mode('voice'); void runtime.current?.controls({ live: s.live.state === 'active' ? 'stop' : 'start' }); };
   useEffect(() => { if (s.mode !== 'text') return; const t = setTimeout(() => void focusInput(), 80); return () => clearTimeout(t); }, [s.mode]);

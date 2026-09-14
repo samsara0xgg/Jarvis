@@ -97,7 +97,7 @@ export function DashboardPreview({ standalone = false, embedded = false, port = 
           <PresentationCapsule presentation={live ? 'expanded' : 'collapsed'} presence={presence} color={accent}
             microphoneMuted={microphoneMuted} speakerMuted={speakerMuted}
             onMicrophoneToggle={() => { feedback(microphoneMuted ? 'mic-on' : 'mic-off'); setMicrophoneMuted(value => !value); }} onSpeakerToggle={() => { feedback(speakerMuted ? 'speaker-on' : 'speaker-off'); setSpeakerMuted(value => !value); }}
-            onActivate={() => { feedback('voice-enter'); setLive(true); setOpen(true); }} onCollapse={() => { cancelDemo(); setLive(false); setPresence('standby'); setDemoPhase('等你开口'); }}
+            onActivate={() => { feedback('voice-enter'); setLive(true); setOpen(true); }} onCollapse={() => { feedback('voice-exit'); cancelDemo(); setLive(false); setPresence('standby'); setDemoPhase('等你开口'); }}
             onCompose={() => { setOpen(value => !value); }} onNotifications={() => { setOpen(true); setSelected(sensorOffline ? 3 : 1); }}/>
         </div>
         <section data-interactive className="dashboard-surface" inert={!open} aria-label="Resonance dashboard" aria-hidden={!open}>

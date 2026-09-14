@@ -1,5 +1,6 @@
-export type FeedbackCue = 'voice-enter' | 'mic-on' | 'mic-off' | 'speaker-on' | 'speaker-off';
-// Only voice-enter still ships as a rendered asset; the toggles are synthesized below.
+export type FeedbackCue = 'voice-enter' | 'voice-exit' | 'mic-on' | 'mic-off' | 'speaker-on' | 'speaker-off';
+// Only voice-enter still ships as a rendered asset; the toggles are synthesized below,
+// and voice-exit is that same asset played backwards.
 const sampled: FeedbackCue[] = ['voice-enter'];
 
 // Hermes desktop makes no tone for its mic and speaker toggles — it fires haptic
@@ -23,6 +24,21 @@ let playing: { sources: AudioBufferSourceNode[]; gain?: GainNode } | undefined;
 let sequence = 0;
 let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
+// Leaving Live is the enter cue backwards, so the pair is literally one voice: the
+// enter's ~400 ms decay becomes the swell, its 150 ms attack becomes the release, and
+// the glide runs E4 -> B3 instead of up. The first 120 ms of the reversed buffer is the
+// enter's own faded-out tail, so it is dropped and the cue lands at 0.66 s.
+const exitSkip = .12;
+function reversed(audio: AudioContext, buffer: AudioBuffer) {
+  const length = buffer.length - Math.round(buffer.sampleRate * exitSkip);
+  const copy = audio.createBuffer(buffer.numberOfChannels, length, buffer.sampleRate);
+  for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+    const from = buffer.getChannelData(channel), to = copy.getChannelData(channel);
+    for (let i = 0; i < length; i++) to[i] = from[length - 1 - i];
+  }
+  return copy;
+}
+
 function prepare() {
   context ??= new AudioContext({ latencyHint: 'interactive' });
   for (const cue of sampled) if (!buffers.has(cue)) buffers.set(cue,
@@ -30,6 +46,8 @@ function prepare() {
       if (!response.ok) throw new Error(`Feedback asset unavailable: ${cue}`);
       return response.arrayBuffer();
     }).then(bytes => context!.decodeAudioData(bytes)));
+  if (!buffers.has('voice-exit')) buffers.set('voice-exit',
+    buffers.get('voice-enter')!.then(buffer => reversed(context!, buffer)));
   return context;
 }
 
