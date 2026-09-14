@@ -14,8 +14,11 @@ The button to the right of notifications opens Dashboard. Dashboard and the
 manual transcript replace content inside the same 300px panel and native
 window. The tray and appearance menu also open that shared Dashboard. Input,
 notifications, and the existing feedback engine retain their original roles.
-Dashboard currently uses local demonstration data, not live quotas, tasks or
-sensor health. Its four cards expand in place; Back restores the overview.
+模型额度 is live (ADR-0018): `src/QuotaModule.tsx` reads `GET /inherent/usage`
+on open and every 60 s, and its 刷新 button posts `/inherent/usage/refresh`;
+without a daemon port (lab previews) it shows demo data. The other three
+cards still use local demonstration data. Cards expand in place; Back
+restores the overview.
 The overview retains its original summaries with compact reference spacing.
 
 `npm run dashboard` opens an isolated design preview; `npm run lab` includes

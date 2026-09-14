@@ -6,6 +6,7 @@ import type { Presence } from './VoicePresence';
 import { useDashboardMotion } from './useDashboardMotion';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
 import { usePreferences } from './preferences';
+import { QuotaDetail, QuotaSummary, useUsage } from './QuotaModule';
 import './dashboard-preview.css';
 
 const modules = [
@@ -25,8 +26,10 @@ export function PreviewLab({ initialDashboard = false }: { initialDashboard?: bo
   </div>;
 }
 
-export function DashboardPreview({ standalone = false, embedded = false, onClose }: { standalone?: boolean; embedded?: boolean; onClose?: () => void }) {
+export function DashboardPreview({ standalone = false, embedded = false, port = null, onClose }: { standalone?: boolean; embedded?: boolean; port?: string | null; onClose?: () => void }) {
   const [preferences] = usePreferences();
+  // ADR-0018: live quotas when Electron passes the daemon port; demo data in the lab.
+  const quota = useUsage(port);
   const feedback = (cue: FeedbackCue) => { if (preferences.feedbackEnabled) void playFeedback(cue, preferences.feedbackVolume); };
   useEffect(() => { if (embedded) return; warmFeedback(); return stopFeedback; }, [embedded]);
   const [open, setOpen] = useState(true);
@@ -112,7 +115,7 @@ export function DashboardPreview({ standalone = false, embedded = false, onClose
                 <span className="module-label"><Icon/>{name}<ArrowUpRight className="module-expand"/></span>
                 {index === 0 && <><span className={`module-conversation ${answered ? '' : 'is-processing'}`}>{cancelled ? '对话已暂停，随时可以继续。' : answered ? answer : '正在整理今天的安排…'}</span><span className="module-caption">{cancelled ? '已停止 · 可重新开始' : answered ? '刚刚 · 1 次委派' : '模型 A · 处理中'}</span></>}
                 {index === 1 && <><span className="module-count">{completed ? '1' : '2'}<small>件待办</small></span><span className="module-caption">{completed ? '下午查看语音测试结果' : '正在整理 Resonance 设计'}</span></>}
-                {index === 2 && <><span className="module-primary">3 个模型可用</span><span className="quota-segments" aria-label="主模型剩余 72%">{Array.from({ length: 12 }, (_, i) => <i key={i} className={i < 9 ? 'available' : ''}/>)}</span><span className="module-caption">主模型剩余 72%</span></>}
+                {index === 2 && <QuotaSummary usage={quota.usage}/>}
                 {index === 3 && <><span className={`module-primary ${sensorOffline ? 'needs-attention' : ''}`}>{status}</span><span className="module-caption">{sensorOffline ? '环境传感器暂时离线' : '语音、模型与传感器'}<br/>{sensorOffline ? '其余 3 项运行正常' : '4 / 4 已连接'}</span></>}
               </button>
               <div className="module-detail" inert={selected !== index} aria-hidden={selected !== index}>
@@ -120,7 +123,7 @@ export function DashboardPreview({ standalone = false, embedded = false, onClose
                 <div className="module-scroll">
                   {index === 0 && <><div className="transcript-label">你<span>14:32</span></div><p className="transcript-user">{message}</p><div className="transcript-label jarvis-label"><span className="jarvis-dot"/>Jarvis<span>刚刚</span></div><p className="transcript-answer" aria-live="polite">{cancelled ? '这次演示已停止，没有生成新的回复。' : answered ? `${answer} ${completed ? '' : '你可以先确认 Resonance dashboard 的方向，下午 4 点再查看语音连接测试结果。'}` : '正在整理今天的安排…'}</p><div className="delegation"><button className="delegation-toggle" aria-expanded={raw} aria-controls="delegate-original" onClick={() => setRaw(value => !value)}><GitBranch/><span>模型 A <small>· {cancelled ? '已停止' : answered ? '已完成' : '处理中'}</small></span><CaretDown className={raw ? 'rotated' : ''}/></button><div className={`delegation-reveal ${raw ? 'is-open' : ''}`} id="delegate-original" inert={!raw}><div><div className="delegate-output"><span>原始输出 · 示例</span><p>{cancelled ? '本次演示已停止，没有模型结果。' : answered ? '已检查当前待办：\n1. 确认 Resonance dashboard 设计方向，等待 Allen 选择。\n2. 今天 16:00 查看语音连接测试结果，提醒已安排。\n\n后台任务：整理两种 dashboard 布局。' : '等待模型返回…'}</p></div></div></div></div></>}
                   {index === 1 && <><div className="list-section-label">Jarvis 正在执行</div><div className="dashboard-list-row"><div>整理 Resonance 设计<small>布局与动效预览已就绪</small></div><span className="row-status">已完成</span></div><div className="list-section-label">等你处理</div><button className={`dashboard-list-row task-toggle ${completed ? 'completed' : ''}`} aria-pressed={completed} onClick={() => setCompleted(value => !value)}><span className="task-check">{completed ? <Check size={12}/> : <Circle size={14}/>}</span><span>确定 dashboard 方向<small>{completed ? '已确认 B 版' : '确认四模块展开方案'}</small></span></button><div className="dashboard-list-row"><div>查看语音测试结果<small>今天 16:00 提醒</small></div><span className="row-status">已安排</span></div></>}
-                  {index === 2 && <><div className="list-section-label">账户额度<span>示例数据</span></div>{[{ name: '模型 A', role: '主要对话', n: 72, reset: '2 小时后重置' }, { name: '模型 B', role: '复杂任务委派', n: 46, reset: '明天重置' }, { name: '模型 C', role: '轻量后台任务', n: 91, reset: '4 小时后重置' }].map(item => <div className="model-quota" key={item.name}><div><span>{item.name}<small>{item.role}</small></span><span>剩余 {item.n}%</span></div><div className="quota-track" role="meter" aria-label={`${item.name}剩余额度`} aria-valuenow={item.n} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${item.n}%` }}/></div><small>{item.reset}</small></div>)}</>}
+                  {index === 2 && <QuotaDetail usage={quota.usage} onRefresh={() => void quota.refresh()} refreshing={quota.refreshing}/>}
                   {index === 3 && <><div className={`health-summary ${sensorOffline ? 'needs-attention' : ''}`}><Pulse size={20}/><div>{status}<small>{sensorOffline ? '语音和文字对话仍然可用' : '所有通道均可用'}</small></div></div>{[['Jarvis runtime', '心跳正常 · 刚刚', '已连接'], ['语音链路', '麦克风与播放通道可用', '就绪'], ['模型连接', '3 个模型可响应', '正常'], ['环境传感器', sensorOffline ? '最近数据 · 5 分钟前' : '最近数据 · 8 秒前', sensorOffline ? '离线' : '正常']].map(([label, hint, status]) => <div className="dashboard-list-row" key={label}><div>{label}<small>{hint}</small></div><span className={status === '离线' ? 'row-status needs-attention' : 'row-status'}>{status}</span></div>)}</>}
                 </div>
               </div>
