@@ -1,10 +1,15 @@
-"""L2 memory store — every utterance and answer, plus Allen's profile.
+"""L2 memory store — utterances, answers, Allen's profile, and history summaries.
 
 One standalone SQLite file (``memory.db``), deliberately separate from the
 runtime Event Log so the runtime can be rewritten without touching it.
 Append-only: rows are never updated or deleted. Every writer opens its own
 short-lived connection, so callers on any thread can write without sharing
 state.
+
+``records`` is the transcript and is never flagged or rewritten. A
+``summaries`` row covers every record up to its anchor (``upto_record_id``);
+the prompt shows the current summary and then the records after the anchor
+verbatim. Before the first summary every record is in the prompt.
 
 Timestamps are ISO 8601 local time with UTC offset at second precision
 (``2026-09-12T09:30:00-04:00``). Recency ordering uses ``rowid`` (insertion
@@ -15,12 +20,12 @@ SQLite's ``datetime()``, which understands the offset.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Final
+from typing import Final, NamedTuple
 
 _SCHEMA: Final[str] = """
 CREATE TABLE IF NOT EXISTS records (
@@ -35,11 +40,25 @@ CREATE TABLE IF NOT EXISTS profile (
     ts   TEXT NOT NULL,
     text TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS summaries (
+    id             TEXT PRIMARY KEY,
+    ts             TEXT NOT NULL,
+    base_id        TEXT REFERENCES summaries(id),
+    upto_record_id TEXT NOT NULL REFERENCES records(id),
+    summary        TEXT NOT NULL,
+    model          TEXT,
+    input_chars    INTEGER NOT NULL,
+    output_chars   INTEGER NOT NULL
+);
 """
 
-DEFAULT_CONTEXT_DAYS: Final[int] = 7
 DEFAULT_SEARCH_LIMIT: Final[int] = 20
 _WEEKDAYS: Final[str] = "一二三四五六日"
+# The [现在] line carries a "距上次交流" suffix once the gap passes this.
+_GAP_NOTE_AFTER: Final[timedelta] = timedelta(minutes=30)
+
+# One transcript row: (id, ts, source, text).
+Record = tuple[str, str, str, str]
 
 
 @dataclass(frozen=True)
@@ -48,7 +67,6 @@ class MemorySettings:
 
     db_path: Path
     audio_dir: Path
-    context_days: int = DEFAULT_CONTEXT_DAYS
     retain_audio: bool = True
 
     @classmethod
@@ -62,13 +80,99 @@ class MemorySettings:
                 return Path(value).expanduser()
             return default
 
-        days = values.get("context_days")
         return cls(
             db_path=_path("db_path", runtime_root / "memory.db"),
             audio_dir=_path("audio_dir", runtime_root / "memory" / "audio"),
-            context_days=days if isinstance(days, int) and days > 0 else DEFAULT_CONTEXT_DAYS,
             retain_audio=values.get("retain_audio") is not False,
         )
+
+
+@dataclass(frozen=True)
+class SessionSettings:
+    """The ``session:`` block of ``config/jarvis.yaml``.
+
+    When the running conversation is compacted, what a compaction keeps
+    verbatim, which preset writes the summary, and how large the Live brief
+    may be. Every number is a knob; ``compact_prompt`` is the summariser's
+    whole system prompt, and an empty one means no compaction ever runs.
+    """
+
+    idle_before_compact_s: float = 3600.0
+    compact_at_context_ratio: float = 0.4
+    verbatim_window_days: int = 7
+    compact_preset: str = "deep"
+    summary_max_chars: int = 8000
+    live_brief_max_chars: int = 1500
+    compact_prompt: str = ""
+
+    @classmethod
+    def from_config(cls, raw: object) -> SessionSettings:
+        """Build settings from the raw config block; every key is optional."""
+        values: Mapping[str, object] = raw if isinstance(raw, Mapping) else {}
+        defaults = cls()
+
+        def _positive(key: str, default: float) -> float:
+            value = values.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                return float(value)
+            return default
+
+        preset = values.get("compact_preset")
+        prompt = values.get("compact_prompt")
+        return cls(
+            idle_before_compact_s=_positive(
+                "idle_before_compact_s", defaults.idle_before_compact_s,
+            ),
+            compact_at_context_ratio=_positive(
+                "compact_at_context_ratio", defaults.compact_at_context_ratio,
+            ),
+            verbatim_window_days=int(
+                _positive("verbatim_window_days", defaults.verbatim_window_days),
+            ),
+            compact_preset=(
+                preset if isinstance(preset, str) and preset else defaults.compact_preset
+            ),
+            summary_max_chars=int(_positive("summary_max_chars", defaults.summary_max_chars)),
+            live_brief_max_chars=int(
+                _positive("live_brief_max_chars", defaults.live_brief_max_chars),
+            ),
+            compact_prompt=prompt.strip() if isinstance(prompt, str) else "",
+        )
+
+
+class MemoryContext(NamedTuple):
+    """The two prompt blocks rendered from memory.db for one turn."""
+
+    history: str  # profile, current summary, verbatim records: stable between turns
+    now: str  # the [现在] line: changes every turn, so it goes after the history
+
+
+class VerbatimStats(NamedTuple):
+    """Size and span of the records the prompt currently shows verbatim."""
+
+    chars: int
+    oldest_ts: str | None
+    newest_ts: str | None
+
+
+class CompactionRange(NamedTuple):
+    """What one compaction job summarises.
+
+    The previous summary plus the records after its anchor that are older
+    than the verbatim window.
+    """
+
+    base_id: str | None
+    previous_summary: str | None
+    records: tuple[Record, ...]  # oldest first; the last one becomes the new anchor
+
+
+class _Summary(NamedTuple):
+    id: str
+    summary: str
+    upto_record_id: str
+    anchor_rowid: int
+    anchor_ts: str
 
 
 def local_now() -> datetime:
@@ -106,15 +210,19 @@ def append_record(
         )
 
 
-def search_records(
+def search_records(  # noqa: PLR0913 — one optional filter per tool argument.
     path: Path,
     *,
     keyword: str | None = None,
     from_ts: str | None = None,
     to_ts: str | None = None,
+    record_ids: Sequence[str] | None = None,
     limit: int = DEFAULT_SEARCH_LIMIT,
-) -> list[tuple[str, str, str]]:
-    """Return ``(ts, source, text)`` rows, newest first, matching every given filter."""
+) -> list[Record]:
+    """Return records, newest first, matching every given filter.
+
+    Only ``records`` is read: a summary is never a search result.
+    """
     clauses: list[str] = []
     params: list[object] = []
     if keyword:
@@ -128,104 +236,278 @@ def search_records(
     if to_ts:
         clauses.append("datetime(ts) <= datetime(?)")
         params.append(to_ts)
+    if record_ids:
+        ids = [str(record_id) for record_id in record_ids]
+        clauses.append(f"id IN ({', '.join('?' * len(ids))})")
+        params.extend(ids)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(max(1, limit))
     with closing(open_memory_db(path)) as conn:
         # S608: `where` is assembled from fixed literals; every value is bound.
-        sql = f"SELECT ts, source, text FROM records {where} ORDER BY rowid DESC LIMIT ?"  # noqa: S608
+        sql = f"SELECT id, ts, source, text FROM records {where} ORDER BY rowid DESC LIMIT ?"  # noqa: S608
         rows = conn.execute(sql, params).fetchall()
-    return [(str(ts), str(source), str(text)) for ts, source, text in rows]
+    return [(str(i), str(ts), str(source), str(text)) for i, ts, source, text in rows]
 
 
-def context_note(
-    path: Path,
-    *,
-    context_days: int,
-    exclude_id: str,
-    now: datetime | None = None,
-) -> str:
-    """Render the per-turn prompt note: profile, current time, recent records in full.
+def _current_summary(conn: sqlite3.Connection) -> _Summary | None:
+    """The latest summary with its anchor resolved inside this read.
 
-    ``exclude_id`` is the current turn's own utterance, which the prompt
-    already carries as the live user message.
+    The anchor is a record id, not a rowid: VACUUM may renumber rowids, so
+    the rowid is resolved fresh every time. A summary whose anchor record
+    is gone is an explicit error, never an empty history.
+    """
+    row = conn.execute(
+        "SELECT id, summary, upto_record_id FROM summaries ORDER BY rowid DESC LIMIT 1",
+    ).fetchone()
+    if row is None:
+        return None
+    summary_id, summary, upto = (str(value) for value in row)
+    anchor = conn.execute("SELECT rowid, ts FROM records WHERE id = ?", (upto,)).fetchone()
+    if anchor is None:
+        msg = f"summary {summary_id} anchors a missing record {upto}"
+        raise LookupError(msg)
+    return _Summary(summary_id, summary, upto, int(anchor[0]), str(anchor[1]))
+
+
+def _profile_lines(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("SELECT text FROM profile ORDER BY rowid").fetchall()
+    return [f"- {text}" for (text,) in rows] or ["- (档案为空)"]
+
+
+def _records_after(conn: sqlite3.Connection, anchor_rowid: int | None) -> list[Record]:
+    """Every record after the anchor (all of them when there is no summary)."""
+    if anchor_rowid is None:
+        rows = conn.execute("SELECT id, ts, source, text FROM records ORDER BY rowid").fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, ts, source, text FROM records WHERE rowid > ? ORDER BY rowid",
+            (anchor_rowid,),
+        ).fetchall()
+    return [(str(i), str(ts), str(source), str(text)) for i, ts, source, text in rows]
+
+
+def _now_line(moment: datetime, last_ts: str | None) -> str:
+    line = f"[现在] {iso_seconds(moment)} 周{_WEEKDAYS[moment.weekday()]}"
+    if last_ts is None:
+        return line
+    gap = moment - datetime.fromisoformat(last_ts)
+    if gap <= _GAP_NOTE_AFTER:
+        return line
+    minutes = int(gap.total_seconds() // 60)
+    days, minutes = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(minutes, 60)
+    parts = [f"{days} 天"] if days else []
+    if hours:
+        parts.append(f"{hours} 小时")
+    if minutes and not days:
+        parts.append(f"{minutes} 分")
+    return f"{line} · 距上次交流 {' '.join(parts)}"
+
+
+def render_context(path: Path, *, exclude_id: str, now: datetime | None = None) -> MemoryContext:
+    """Render the decision-path prompt blocks in one consistent read.
+
+    ``history`` is the profile, the current summary (if any) and every record
+    after its anchor in full; it only grows at its end between compactions,
+    so the provider's prefix cache covers it. ``now`` is the per-turn time
+    line. ``exclude_id`` is the current turn's own utterance, which the
+    prompt already carries as the live user message.
     """
     moment = now or local_now()
-    since = iso_seconds(moment - timedelta(days=context_days))
     with closing(open_memory_db(path)) as conn:
-        profile = [
-            str(text)
-            for (text,) in conn.execute("SELECT text FROM profile ORDER BY rowid").fetchall()
-        ]
-        records = conn.execute(
-            "SELECT ts, source, text FROM records "
-            "WHERE datetime(ts) >= datetime(?) AND id != ? ORDER BY rowid",
-            (since, exclude_id),
-        ).fetchall()
-    lines = ["[关于 Allen]", *(f"- {text}" for text in profile)]
-    if not profile:
-        lines.append("- (档案为空)")
-    lines.append(f"[现在] {iso_seconds(moment)} 周{_WEEKDAYS[moment.weekday()]}")
-    lines.append(
-        f"[最近 {context_days} 天的对话记录, 全文, 时间正序; 更早的用 search_records 查]",
-    )
-    if not records:
+        profile = _profile_lines(conn)
+        current = _current_summary(conn)
+        records = _records_after(conn, current.anchor_rowid if current else None)
+    lines = ["[关于 Allen]", *profile]
+    if current is not None:
+        lines.append(
+            f"[对话摘要 · 覆盖到 {current.anchor_ts} · "
+            "措辞、数字、是否同意 用 search_records 按 record_id 回查原话]",
+        )
+        lines.append(current.summary)
+    lines.append("[对话记录, 全文, 时间正序]")
+    shown = [record for record in records if record[0] != exclude_id]
+    if not shown:
         lines.append("(无)")
-    lines.extend(f"[{ts}] {source}: {text}" for ts, source, text in records)
-    return "\n".join(lines)
+    lines.extend(f"[{ts}] {source}: {text}" for _, ts, source, text in shown)
+    last_ts = shown[-1][1] if shown else (current.anchor_ts if current else None)
+    return MemoryContext("\n".join(lines), _now_line(moment, last_ts))
 
 
-# Each record in a brief is cut to about this many characters (ADR-0016 D7).
-_BRIEF_RECORD_CHARS = 200
+def _summary_sections(summary: str) -> list[str]:
+    """Split a summary at its ``### `` headings; the title block comes first."""
+    sections: list[str] = []
+    for line in summary.splitlines():
+        if line.startswith("### ") or not sections:
+            sections.append(line)
+        else:
+            sections[-1] = f"{sections[-1]}\n{line}"
+    return sections
 
 
 def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> str:
-    """Render a character-budgeted session brief (ADR-0016 D7).
+    """Render the Live startup brief under one character budget.
 
-    The whole profile always fits first; then records are taken from the
-    newest backwards, each cut to ``_BRIEF_RECORD_CHARS``, until the budget
-    is spent, and emitted in time order.
-    Unlike :func:`context_note` there is no tool hint: the reader is the
-    Live model, which asks the backend instead of calling ``search_records``.
+    Same content as :func:`render_context`. Trimming cuts whole items and
+    never the tail of a text: the oldest verbatim records go first, then
+    the summary's sections from the bottom up, and the profile lines last.
+    The retrieval line tells the Live model
+    to ask the backend, which it can, instead of naming ``search_records``,
+    which it cannot call.
     """
     moment = now or local_now()
     with closing(open_memory_db(path)) as conn:
-        profile = [
-            str(text)
-            for (text,) in conn.execute("SELECT text FROM profile ORDER BY rowid").fetchall()
-        ]
-        cursor = conn.execute("SELECT ts, source, text FROM records ORDER BY rowid DESC")
-        head = ["[关于 Allen]", *(f"- {text}" for text in profile)]
-        if not profile:
-            head.append("- (档案为空)")
-        head.append(f"[现在] {iso_seconds(moment)} 周{_WEEKDAYS[moment.weekday()]}")
-        head.append("[最近的对话记录, 时间正序]")
-        budget = max_chars - sum(len(line) + 1 for line in head)
-        newest_first: list[str] = []
-        for ts, source, text in cursor:
-            # One long answer must not end the brief: cut the record and go on
-            # (2026-09-12: a 938-character row left a 286-character brief).
-            body = str(text)
-            if len(body) > _BRIEF_RECORD_CHARS:
-                body = body[:_BRIEF_RECORD_CHARS] + "..."
-            line = f"[{ts}] {source}: {body}"
-            if len(line) + 1 > budget:
-                break
-            budget -= len(line) + 1
-            newest_first.append(line)
-    if not newest_first:
-        head.append("(无)")
-    return "\n".join([*head, *reversed(newest_first)])
+        profile = _profile_lines(conn)
+        current = _current_summary(conn)
+        records = _records_after(conn, current.anchor_rowid if current else None)
+    summary_head = (
+        [f"[对话摘要 · 覆盖到 {current.anchor_ts} · 原话细节请向后台查询]"] if current else []
+    )
+    sections = _summary_sections(current.summary) if current else []
+    record_lines = [f"[{ts}] {source}: {text}" for _, ts, source, text in records]
+    now_line = _now_line(moment, records[-1][1] if records else None)
+
+    def _assemble() -> str:
+        return "\n".join(
+            [
+                "[关于 Allen]",
+                *profile,
+                now_line,
+                *summary_head,
+                *sections,
+                "[对话记录, 时间正序]",
+                *(record_lines or ["(无)"]),
+            ],
+        )
+
+    while len(_assemble()) > max_chars:
+        if record_lines:
+            record_lines.pop(0)
+        elif sections:
+            sections.pop()
+        elif len(profile) > 1:
+            profile.pop()
+        else:
+            break
+    return _assemble()
+
+
+def verbatim_stats(path: Path) -> VerbatimStats:
+    """Size and time span of the records after the current anchor.
+
+    Aggregated in SQL: the sweep calls this on every tick, on the loop thread.
+    """
+    with closing(open_memory_db(path)) as conn:
+        current = _current_summary(conn)
+        anchor = current.anchor_rowid if current else -1
+        chars, oldest, newest = conn.execute(
+            "SELECT COALESCE(SUM(length(text)), 0), "
+            "(SELECT ts FROM records WHERE rowid > ? ORDER BY rowid LIMIT 1), "
+            "(SELECT ts FROM records WHERE rowid > ? ORDER BY rowid DESC LIMIT 1) "
+            "FROM records WHERE rowid > ?",
+            (anchor, anchor, anchor),
+        ).fetchone()
+    return VerbatimStats(
+        int(chars),
+        str(oldest) if oldest is not None else None,
+        str(newest) if newest is not None else None,
+    )
+
+
+def compaction_range(
+    path: Path, *, window_days: int, now: datetime | None = None,
+) -> CompactionRange | None:
+    """The records a compaction would fold, or None when there are none.
+
+    Those after the current anchor and older than ``window_days``, taken as
+    a prefix in insertion order so the new anchor leaves nothing older
+    behind it.
+    """
+    cutoff = (now or local_now()) - timedelta(days=window_days)
+    with closing(open_memory_db(path)) as conn:
+        current = _current_summary(conn)
+        records = _records_after(conn, current.anchor_rowid if current else None)
+    older: list[Record] = []
+    for record in records:
+        if datetime.fromisoformat(record[1]) >= cutoff:
+            break
+        older.append(record)
+    if not older:
+        return None
+    return CompactionRange(
+        current.id if current else None,
+        current.summary if current else None,
+        tuple(older),
+    )
+
+
+def append_summary(  # noqa: PLR0913 — the row's columns, all required.
+    path: Path,
+    *,
+    base_id: str | None,
+    upto_record_id: str,
+    summary: str,
+    model: str,
+    input_chars: int,
+    output_chars: int,
+) -> bool:
+    """Commit one summary row, or return False when the world moved.
+
+    The row lands only if ``base_id`` is still the current summary and the
+    new anchor exists and lies after the current one; a job that finished
+    against a stale base changes nothing.
+    """
+    with closing(open_memory_db(path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = _current_summary(conn)
+            if (current.id if current else None) != base_id:
+                conn.execute("ROLLBACK")
+                return False
+            anchor = conn.execute(
+                "SELECT rowid FROM records WHERE id = ?", (upto_record_id,),
+            ).fetchone()
+            if anchor is None or (current is not None and int(anchor[0]) <= current.anchor_rowid):
+                conn.execute("ROLLBACK")
+                return False
+            conn.execute(
+                "INSERT INTO summaries (id, ts, base_id, upto_record_id, summary, model, "
+                "input_chars, output_chars) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"summary:{upto_record_id}",
+                    iso_seconds(local_now()),
+                    base_id,
+                    upto_record_id,
+                    summary,
+                    model,
+                    input_chars,
+                    output_chars,
+                ),
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return True
 
 
 __all__ = [
-    "DEFAULT_CONTEXT_DAYS",
     "DEFAULT_SEARCH_LIMIT",
+    "CompactionRange",
+    "MemoryContext",
     "MemorySettings",
+    "Record",
+    "SessionSettings",
+    "VerbatimStats",
     "append_record",
+    "append_summary",
     "brief_note",
-    "context_note",
+    "compaction_range",
     "iso_seconds",
     "local_now",
     "open_memory_db",
+    "render_context",
     "search_records",
+    "verbatim_stats",
 ]

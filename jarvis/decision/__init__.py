@@ -848,9 +848,12 @@ class DecideContext:
     wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
     cancellation_checkpoint: Callable[[str], None] | None = None
     request_admission: Callable[[str], None] | None = None
-    # Per-turn memory note (profile + current time + recent records in
-    # full), rendered by the composition root from memory.db.
+    # The history block (profile, current summary, verbatim records) and
+    # the per-turn time line, rendered by the composition root from
+    # memory.db. The history goes first in the prompt and only grows at
+    # its end between compactions; the time line goes after it.
     memory_note: str | None = None
+    time_note: str | None = None
     # ADR-0008 Step 8. ``routine_stream`` is the pre-routed streaming seam the
     # runtime bound for this run (None on every other turn, so decide() keeps
     # the batch tool loop). ``stream_correction`` marks a full-text run that
@@ -990,11 +993,12 @@ def _insert_system_notes(
     about THIS turn's outstanding ask; spec §3.4.4, Phase 0 batch 4;
     ADR-0012 §3 D4).
 
-    These notes share the §10.5 deviation: dynamic context sits at the
-    head of the prompt, not the tail — flagged, not fixed, here.
+    The memory history block is inserted LAST so it sits at index 0,
+    ahead of every per-turn note: it is the one block that stays
+    byte-identical between turns, so the provider's prefix cache covers
+    it, and everything that changes per turn (the time line, the folded
+    state) follows it (spec §10.5).
     """
-    if ctx.memory_note:
-        messages.insert(0, {"role": "user", "content": ctx.memory_note})
     # ADR-0012 §3 D4: id-free note naming an outstanding confirmation
     # ask, if one is live. Lets an unrelated turn's LLM know an ask is
     # outstanding (C4) and a paraphrased-consent turn's LLM talk about
@@ -1030,6 +1034,10 @@ def _insert_system_notes(
     )
     if status_board_note is not None:
         messages.insert(0, {"role": "user", "content": status_board_note})
+    if ctx.time_note:
+        messages.insert(0, {"role": "user", "content": ctx.time_note})
+    if ctx.memory_note:
+        messages.insert(0, {"role": "user", "content": ctx.memory_note})
 
 
 def _refresh_evidence_note(

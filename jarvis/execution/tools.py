@@ -2179,6 +2179,14 @@ _SEARCH_RECORDS_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
             "minimum": 1,
             "description": "Maximum rows to return, newest first. Default 20.",
         },
+        "record_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Exact record ids to fetch, e.g. the ids the conversation "
+                "summary cites. Combines with the other filters."
+            ),
+        },
     },
     "required": [],
 }
@@ -2199,14 +2207,21 @@ def _make_search_records_handler(db_path: Path) -> ToolHandler:
         from_ts = args.get("from")
         to_ts = args.get("to")
         limit = args.get("limit")
+        raw_ids = args.get("record_ids")
+        record_ids = (
+            [item for item in raw_ids if isinstance(item, str) and item]
+            if isinstance(raw_ids, list)
+            else None
+        )
         rows = search_memory_records(
             db_path,
             keyword=keyword.strip() if isinstance(keyword, str) and keyword.strip() else None,
             from_ts=from_ts if isinstance(from_ts, str) and from_ts.strip() else None,
             to_ts=to_ts if isinstance(to_ts, str) and to_ts.strip() else None,
+            record_ids=record_ids or None,
             limit=limit if isinstance(limit, int) and limit > 0 else DEFAULT_SEARCH_LIMIT,
         )
-        lines = [f"[{ts}] {source}: {text}" for ts, source, text in rows]
+        lines = [f"[{ts}] {source} (record_id={rid}): {text}" for rid, ts, source, text in rows]
         payload: dict[str, Any] = {
             "count": len(rows),
             "rendered": "\n".join(lines) if lines else "没有找到匹配的记录。",
@@ -6447,8 +6462,10 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
                     "Allen asks what he said before (我之前说过什么 / 刚才说的 / "
                     "昨天说的 / 上周二说的) or refers to an earlier conversation, and "
                     "quote the original words and their time back to him. Filter by "
-                    "keyword substring and/or an ISO 8601 time range; every argument "
-                    "is optional."
+                    "keyword substring and/or an ISO 8601 time range, or fetch exact "
+                    "record_ids (the ids the conversation summary cites) when the "
+                    "question is about the wording, numbers or agreement of something "
+                    "the summary covers; every argument is optional."
                 ),
                 allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
                 risk_level="L0",
