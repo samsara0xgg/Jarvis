@@ -1,5 +1,6 @@
 ---
 name: goal-card
+disable-model-invocation: true
 description: Write, launch, or verify against a goal card in docs/goals/ for an autonomous /goal implementation run. Use when a settled design must be handed to a fresh implementation session, when starting a /goal run from a card, or when checking a finished run against its card.
 ---
 

@@ -1,5 +1,6 @@
 ---
 name: horizon
+disable-model-invocation: true
 description: Run the repository under the bounded-context long-horizon harness as a Hub or a Lane. Use when a session is explicitly acting as a Hub or Lane, continuing an existing generation after rotation, or recovering harness state. Invoke once per generation.
 argument-hint: "hub | lane <id>"
 ---
