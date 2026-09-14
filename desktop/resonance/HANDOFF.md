@@ -1,5 +1,31 @@
 # Resonance voice integration handoff
 
+## Desktop transcript and Dashboard
+
+The capsule's bottom 18% reserves a separate transcript hit area. Its light
+slit appears on hover and toggles the manual transcript without ending Live;
+the panel's minus button also closes it. The upper center still exits Live.
+Audible speech does not automatically show captions. Muted speech shows the
+latest assistant reply in a two-line scrolling caption. Manual history is
+independent of mute, takes precedence over that caption, and pauses following
+when the reader scrolls upward. The existing bounded history is unchanged.
+
+The button to the right of notifications opens Dashboard. Dashboard and the
+manual transcript replace content inside the same 300px panel and native
+window. The tray and appearance menu also open that shared Dashboard. Input,
+notifications, and the existing feedback engine retain their original roles.
+Dashboard currently uses local demonstration data, not live quotas, tasks or
+sensor health. Its four cards expand in place; Back restores the overview.
+The overview retains its original summaries with compact reference spacing.
+
+`npm run dashboard` opens an isolated design preview; `npm run lab` includes
+a Dashboard page. These previews receive no daemon port. Geometry springs
+respect reduced motion and stop when settled or hidden.
+
+The latest UI revision was compiled and reviewed interactively by the user.
+Automated acceptance was not rerun for the final layout and toggle revisions,
+as requested by the user.
+
 The desktop build talks to the Jarvis daemon over the Inherent v1 wire
 (`src/runtime.ts`): `voice` phases and `open`/`append`/`done` reply envelopes
 in over `ws://127.0.0.1:<port>/inherent/ws`, text (`/inherent/submit`) and

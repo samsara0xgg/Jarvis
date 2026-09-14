@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { clampBounds } from './geometry.js';
 const here = path.dirname(fileURLToPath(import.meta.url));
-const lab = process.argv.includes('--lab');
+const dashboard = process.argv.includes('--dashboard');
+const lab = process.argv.includes('--lab') || dashboard;
 const verification = process.argv.includes('--verify');
 const require = createRequire(import.meta.url);
 const material = process.platform === 'darwin' && !lab ? require('../dist-native/material.node') : null;
@@ -12,11 +13,15 @@ app.setName('Jarvis Resonance');
 // Prototype storage stays isolated from the existing Jarvis runtime.
 app.setPath('userData', verification ? path.resolve(here, '../.electron-profile/verification') : app.isPackaged ? path.join(app.getPath('appData'), 'Jarvis Resonance Prototype') : path.resolve(here, '../.electron-profile'));
 // Let the animation preview coexist with the capsule and other design work.
-if (lab) app.setPath('userData', `${app.getPath('userData')}-motion-lab`);
+if (lab) app.setPath('userData', `${app.getPath('userData')}-${dashboard ? 'dashboard' : 'motion'}-lab`);
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
 let win: BrowserWindow;
 let tray: Tray;
+function openDashboard() {
+  restore(true);
+  win.webContents.send('command', 'dashboard');
+}
 let quitting = false;
 let dragGesture: { origin: { x: number; y: number }; bounds: Electron.Rectangle; moved: boolean } | null = null;
 function moveDrag(point: { x: number; y: number }) {
@@ -48,7 +53,7 @@ if (locked) app.whenReady().then(() => {
   const area = screen.getPrimaryDisplay().workArea;
   // Keep enough transparent room for the composer so its material can morph
   // without resizing/clipping the native window. Empty space passes through.
-  win = new BrowserWindow({ title: lab ? 'Jarvis · 声纹切换预览' : 'Jarvis Resonance', width: lab ? 1040 : 372, height: lab ? 740 : 100,
+  win = new BrowserWindow({ title: dashboard ? 'Jarvis · Dashboard 设计预览' : lab ? 'Jarvis · 声纹切换预览' : 'Jarvis Resonance', width: lab ? 1040 : 372, height: dashboard ? 840 : lab ? 740 : 100,
     x: Math.round(area.x + (area.width - (lab ? 1040 : 372)) / 2), y: area.y + Math.round(area.height * .32),
     frame: lab, transparent: !lab, backgroundColor: lab ? '#151c19' : '#00000000', hasShadow: lab,
     resizable: lab, maximizable: lab, fullscreenable: lab, show: false, focusable: lab,
@@ -65,7 +70,7 @@ if (locked) app.whenReady().then(() => {
   if (verification) win.webContents.setAudioMuted(true);
   win.webContents.on('will-navigate', event => event.preventDefault());
   // Lab and verification stay simulated; the desktop build talks to the daemon (same port env as the Swift card).
-  win.loadFile(path.join(here, '../dist/index.html'), { query: lab ? { lab: '1' } : verification ? {} : { port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006' } });
+  win.loadFile(path.join(here, '../dist/index.html'), { query: dashboard ? { lab: '1', dashboard: '1' } : lab ? { lab: '1' } : verification ? {} : { port: process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006' } });
   win.once('ready-to-show', () => restore(lab));
   win.on('close', event => { if (!quitting) { event.preventDefault(); win.hide(); } });
   win.on('moved', () => {
@@ -92,6 +97,7 @@ if (locked) app.whenReady().then(() => {
     clipboard.writeText(text);
     return true;
   });
+  ipcMain.on('open-dashboard', event => { if (event.sender === win.webContents) openDashboard(); });
   ipcMain.on('hide', event => { if (event.sender === win.webContents) win.hide(); });
   ipcMain.on('drag', (event, payload) => {
     if (event.sender !== win.webContents || lab) return;
@@ -106,13 +112,14 @@ if (locked) app.whenReady().then(() => {
   win.webContents.on('render-process-gone', endDrag);
   ipcMain.on('passthrough', (event, enabled) => { if (event.sender === win.webContents && !lab && typeof enabled === 'boolean') win.setIgnoreMouseEvents(enabled, { forward: true }); });
   ipcMain.on('material', (event, payload) => {
-    if (event.sender !== win.webContents || !material || !Array.isArray(payload?.rects)) return;
-    const bounds = win.getBounds();
+    const owner = event.sender === win.webContents ? win : null;
+    if (!owner || !material || !Array.isArray(payload?.rects)) return;
+    const bounds = owner.getBounds();
     const rects = payload.rects.slice(0, 16).filter((r: Record<string, number>) =>
       r && ['x', 'y', 'width', 'height', 'radius'].every(k => Number.isFinite(r[k])) &&
       r.width > 0 && r.height > 0 && r.width <= bounds.width && r.height <= bounds.height);
     const strength = Number.isFinite(payload.strength) ? Math.min(1, Math.max(0, payload.strength)) : 1;
-    material.update(win.getNativeWindowHandle(), rects, strength);
+    material.update(owner.getNativeWindowHandle(), rects, strength);
   });
   tray = new Tray(nativeImage.createEmpty());
   tray.setTitle('J'); tray.setToolTip('Jarvis · 交互原型');
@@ -121,6 +128,7 @@ if (locked) app.whenReady().then(() => {
     { label: 'Jarvis · 交互原型（无录音）', enabled: false },
     { label: '显示胶囊', click: () => restore() }, { label: '开始语音演示', click: () => command('voice') },
     { label: '文字输入', click: () => command('text') }, { label: '键盘控制胶囊', click: () => restore(true) },
+    { label: 'Dashboard…', click: openDashboard },
     { label: '外观与提示音…', click: () => command('settings') },
     { label: '隐藏浮窗', click: () => win.hide() }, { type: 'separator' },
     { label: '退出 Jarvis', click: () => { quitting = true; app.quit(); } }

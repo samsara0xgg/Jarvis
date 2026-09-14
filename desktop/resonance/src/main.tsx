@@ -1,11 +1,12 @@
 import React, { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { IconContext, Bell, X, ArrowUpRight, Copy, Check, ArrowCounterClockwise, Pause, Paperclip, DotsThree, GearSix, Phone, PhoneDisconnect } from '@phosphor-icons/react';
+import { IconContext, SquaresFour, Bell, X, ArrowUpRight, Copy, Check, ArrowCounterClockwise, Pause, Paperclip, DotsThree, GearSix, Phone, PhoneDisconnect } from '@phosphor-icons/react';
 import { initialState, reducer, examples, type Phase } from './model';
 import './style.css';
 import { useCapsuleDrag } from './useCapsuleDrag';
 import { presenceLabels, type Presence } from './VoicePresence';
-import { MotionPreview } from './MotionPreview';
+import { PreviewLab, DashboardPreview } from './DashboardPreview';
+import { LiveTranscript, TranscriptTrigger } from './LiveTranscript';
 import { PresentationCapsule } from './PresentationCapsule';
 import { CapsuleIcon } from './CapsuleIcon';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
@@ -17,6 +18,7 @@ declare global { interface Window { jarvis?: {
   copy: (text: string) => Promise<boolean>;
   layout: (mode: string, height: number) => void; focus: (enabled: boolean) => Promise<void>; hide: () => void; passthrough: (enabled: boolean) => void;
   material: (rects: {x:number;y:number;width:number;height:number;radius:number;opacity:number;occlusion?:GlassOcclusion}[], strength: number) => void;
+  dashboard: () => void;
   onCommand: (cb: (value: string) => void) => () => void;
 } } }
 const lab = new URLSearchParams(location.search).has('lab');
@@ -46,6 +48,13 @@ function App() {
   const [background, setBackground] = useState('forest');
   const [scale, setScale] = useState(1.6);
   const [settings, setSettings] = useState(false);
+  const [panel, setPanel] = useState<'transcript' | 'dashboard' | null>(null);
+  const transcriptOpen = panel === 'transcript';
+  const setTranscriptOpen = (open: boolean) => setPanel(open ? 'transcript' : null);
+  const openDashboard = () => { setPanel('dashboard'); setSettings(false); if (s.inbox) dispatch({ type: 'inbox' }); void window.jarvis?.focus(true); };
+  const closePanel = () => { setPanel(null); void window.jarvis?.focus(false); };
+  const openTranscript = () => { setTranscriptOpen(true); setSettings(false); if (s.inbox) dispatch({ type: 'inbox' }); void window.jarvis?.focus(true); };
+  const closeTranscript = () => { setTranscriptOpen(false); void window.jarvis?.focus(false); };
   const [presencePreview, setPresencePreview] = useState<Presence | 'auto' | 'cycle'>('auto');
   const [cyclePhase, setCyclePhase] = useState<Presence>('standby');
   useEffect(() => {
@@ -113,6 +122,7 @@ function App() {
   useEffect(() => window.jarvis?.onCommand(command => {
     setHidden(false);
     if (command === 'keyboard') document.querySelector<HTMLButtonElement>('.control-row button:not([inert])')?.focus();
+    else if (command === 'dashboard') openDashboard();
     else if (command === 'settings') { setSettings(true); void window.jarvis?.focus(true); }
     else if (command === 'voice' || command === 'text') mode(command);
   }), [s.mode, feedbackEnabled, feedbackVolume]);
@@ -175,7 +185,7 @@ function App() {
     el.addEventListener('capsule-motion', update);
     window.addEventListener('resize', update);
     return () => { el.removeEventListener('animationstart', transition); el.removeEventListener('scroll', update, true); el.removeEventListener('capsule-motion', update); el.removeEventListener('transitionrun', transition); cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener('resize', update); };
-  }, [s.mode, s.inbox, showInbox, s.detail, s.reply, s.phase, settings, added, opacity, glassStrength, s.results.length, s.attachment, dismissing.length, inboxExpanded, replying, followupMessage, s.subtitles.length, s.live.state, s.live.reason, s.live.notice]);
+  }, [s.mode, s.inbox, showInbox, s.detail, s.reply, s.phase, settings, added, opacity, glassStrength, s.results.length, s.attachment, dismissing.length, inboxExpanded, replying, followupMessage, s.subtitles.length, s.live.state, s.live.reason, s.live.notice, panel, s.soundMuted]);
   useCapsuleDrag(!lab);
   const send = () => {
     if (!s.draft.trim() || s.phase === 'processing') return;
@@ -194,7 +204,8 @@ function App() {
   const end = () => { if (timer.current) clearTimeout(timer.current); dispatch({ type: 'end' }); hide(); };
   const copy = async (text: string) => { try { if (window.jarvis) setCopied(await window.jarvis.copy(text)); else { await navigator.clipboard.writeText(text); setCopied(true); } } catch { setCopied(false); } };
   const escape = () => {
-    if (settings) closeSettings();
+    if (panel) closePanel();
+    else if (settings) closeSettings();
     else if (added) setAdded(false);
     else if (s.detail) closeDetail();
     else if (s.inbox && inboxExpanded && s.results.length > 1) collapseInbox();
@@ -213,15 +224,16 @@ function App() {
     }}>
       {lab && <header className="lab-header"><div><span>JARVIS</span><h1>Resonance</h1><p>交互原型 · 所有语音、回复与结果均为模拟</p></div><p className="lab-note">无色毛玻璃<br/>背景赋予玻璃颜色，声纹随状态舒展。</p></header>}
       <div className="stage">
-      {(!hidden || !lab) && <div ref={shell} className={`shell mode-${s.mode}`}>
+      {(!hidden || !lab) && <div ref={shell} className={`shell mode-${s.mode} ${panel || (s.soundMuted && s.live.state === 'active') ? 'has-shared-panel' : ''}`}>
         <div className="control-row" role="toolbar" aria-label={live ? 'Jarvis 语音控制' : 'Jarvis 语音控制 · 演示，无真实录音'} onContextMenu={e => {
           if ((e.target as Element).closest('textarea')) return;
           e.preventDefault(); setSettings(true); void window.jarvis?.focus(true);
         }}>
           <div className="capsule-main-view" hidden={s.mode === 'text'}>
             <PresentationCapsule presentation={s.mode === 'voice' ? 'expanded' : 'collapsed'} active={s.mode !== 'text'} nativeSurface
+              transcriptEntry={s.mode === 'voice' ? <TranscriptTrigger open={transcriptOpen} onOpen={() => transcriptOpen ? closeTranscript() : openTranscript()}/> : undefined}
               presence={presence} restState={s.phase === 'error' ? 'unavailable' : s.phase === 'processing' ? 'thinking' : count > 0 ? 'notification' : 'standby'}
-              color={themeColor} onActivate={() => mode('voice')} onCollapse={() => mode('idle')}
+              color={themeColor} onActivate={() => mode('voice')} onCollapse={() => { if (s.live.state === 'active') void runtime.current?.controls({ live: 'stop' }); setTranscriptOpen(false); mode('idle'); }}
               microphoneMuted={s.micMuted} speakerMuted={s.soundMuted}
               onMicrophoneToggle={() => { feedback(s.micMuted ? 'mic-on' : 'mic-off'); if (live) void runtime.current?.controls({ mic_muted: !s.micMuted }); else dispatch({ type: 'mic' }); }}
               onSpeakerToggle={() => { feedback(s.soundMuted ? 'speaker-on' : 'speaker-off'); if (live) void runtime.current?.controls({ speech_muted: !s.soundMuted }); else dispatch({ type: 'sound' }); }}
@@ -240,7 +252,7 @@ function App() {
             <Button label="收起文字输入" className="glass detached" data-glass="20" data-interactive onClick={() => mode(composerReturn.current)}><CapsuleIcon name="collapse"/></Button>
             <Button label={s.inbox ? '收起通知' : '通知'} aria-expanded={s.inbox} className="glass detached notification" data-glass="20" data-interactive onClick={toggleInbox}><CapsuleIcon name={s.inbox ? 'collapse' : 'bell'}/>{count > 0 && !s.inbox && <span className="unread">{count > 9 ? '9+' : count}</span>}</Button>
           </>}
-
+          <Button label="Dashboard" aria-expanded={panel === 'dashboard'} className="glass detached dashboard-toggle" data-glass="20" data-interactive onClick={() => panel === 'dashboard' ? closePanel() : openDashboard()}><SquaresFour size={19}/></Button>
         </div>
         <div className="status-line" data-interactive><span role="status" className="sr-only">{s.mode === 'idle' ? '待机' : status}{!live && <span className="demo-label"> · 演示</span>}</span>
           {s.phase === 'speaking' && <button className="text-action" onClick={interrupt}><Pause size={12}/>停止播报</button>}
@@ -258,20 +270,13 @@ function App() {
           <label className="range-label">毛玻璃强度 <output>{Math.round(glassStrength * 100)}%</output><input aria-label="毛玻璃强度" aria-valuetext={`${Math.round(glassStrength * 100)}%`} type="range" min="0" max="1" step=".01" value={glassStrength} onChange={e => updatePreferences({ glassStrength: Number(e.target.value) })}/></label>
           <div className="feedback-setting"><span>操作提示音</span><button role="switch" aria-label="操作提示音" aria-checked={feedbackEnabled} onClick={() => { stopFeedback(); updatePreferences({ feedbackEnabled: !feedbackEnabled }); }}><span/></button></div>
           <label className="range-label">提示音音量 <output>{Math.round(feedbackVolume * 100)}%</output><input aria-label="提示音音量" aria-valuetext={`${Math.round(feedbackVolume * 100)}%`} type="range" min="0" max="1" step=".01" value={feedbackVolume} disabled={!feedbackEnabled} onChange={e => updatePreferences({ feedbackVolume: Number(e.target.value) })}/></label>
-          <div className="settings-actions"><button onClick={() => updatePreferences(defaultPreferences)}>恢复默认</button><button disabled={!feedbackEnabled} onClick={() => feedback('voice-enter')}>试听提示音</button><button onClick={() => { dispatch({ type: 'example', id: 'reminder' }); if (!s.inbox) dispatch({ type: 'inbox' }); setInboxExpanded(false); closeSettings(); }}>体验通知叠层</button><button onClick={hide}>隐藏浮窗</button><button onClick={end}>结束语音</button></div>
+          <div className="settings-actions"><button onClick={openDashboard}>打开 Dashboard</button><button onClick={() => { closeSettings(); openTranscript(); }}>完整对话记录</button><button onClick={() => updatePreferences(defaultPreferences)}>恢复默认</button><button disabled={!feedbackEnabled} onClick={() => feedback('voice-enter')}>试听提示音</button><button onClick={() => { dispatch({ type: 'example', id: 'reminder' }); if (!s.inbox) dispatch({ type: 'inbox' }); setInboxExpanded(false); closeSettings(); }}>体验通知叠层</button><button onClick={hide}>隐藏浮窗</button><button onClick={end}>结束语音</button></div>
           <p>声纹使用模拟节奏，未接入录音。主题色只影响声纹，外观与提示音设置自动保存。</p>
         </section>}
         {added && <section className="addition glass" data-glass="18" data-interactive><button onClick={() => { dispatch({ type: 'attachment' }); setAdded(false); }}><Paperclip size={18}/>{s.attachment ? '移除示例附件' : '附加示例便笺'}</button><p>仅使用预置示例，不读取本地文件。</p></section>}
         {s.attachment && <div className="attachment" data-interactive><Paperclip size={13}/>示例便笺.txt<Button label="移除示例附件" onClick={() => dispatch({ type: 'attachment' })}><X size={12}/></Button></div>}
         {s.phase === 'error' && <section className="error-panel glass" data-glass="18" data-interactive><div><strong>暂时没有连上</strong><p>{live ? 'Jarvis 服务没有响应，正在重连。' : '演示连接失败。你可以重试或继续打字。'}</p></div><Button label={live ? '立即重连' : '重试模拟连接'} onClick={retry}><ArrowCounterClockwise/></Button></section>}
-        {live && !s.inbox && (s.live.state === 'active' || liveBusy || s.subtitles.length > 0 || s.live.reason) && <section className="reply subtitles glass" data-glass="18" data-interactive aria-live="polite">
-          <div className="section-heading"><span>Live 字幕</span>{s.live.state === 'idle' && <Button label="关闭 Live 字幕" onClick={() => dispatch({ type: 'live_dismiss' })}><X size={16}/></Button>}</div>
-          {s.subtitles.slice(-8).map((t, i) => <p key={`${t.startMs}-${i}`} className={`sub-${t.role}`}><b>{t.role === 'user' ? '你' : 'Jarvis'}</b>{t.text}</p>)}
-          {s.subtitles.length === 0 && s.live.state === 'active' && <p className="sub-meta">已连接，直接开口即可。</p>}
-          {s.live.notice === 'delegation_unsupported' && <p className="sub-meta">后台能力尚未接入：这一版不能查资料或执行操作。</p>}
-          {s.live.error && <p className="sub-meta">错误：{s.live.error}</p>}
-          {s.live.state === 'idle' && s.live.reason && <p className="sub-meta">已挂断（{s.live.reason}）· 用量 {s.live.usageS !== null ? `${s.live.usageS.toFixed(1)} 秒` : '未知'}{s.live.usageFinal ? '' : '（最后已知，未确认）'}</p>}
-        </section>}
+        {!s.inbox && <div className={`shared-panel ${panel ? 'shared-panel-open glass' : ''}`} data-glass={panel ? "20" : undefined} data-interactive={panel ? true : undefined}>{panel === 'dashboard' ? <DashboardPreview embedded onClose={closePanel}/> : <LiveTranscript embedded={!!panel} lines={s.subtitles} open={transcriptOpen} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>}</div>}
         {s.reply && !s.inbox && <section className="reply glass" data-glass="18" data-interactive><div className="section-heading"><span>{live ? '回复' : '示例回复'}</span><Button label="复制回复" onClick={() => void copy(visible(s.reply))}>{copied ? <Check size={16}/> : <Copy size={16}/>}</Button></div><p>{visible(s.reply)}</p></section>}
         {showInbox && <section className={`inbox ${s.inbox ? 'is-open' : 'is-closing'} ${stacked ? 'is-stacked' : 'is-expanded'} ${s.detail ? 'has-detail' : ''}`} inert={!s.inbox} aria-hidden={!s.inbox} aria-label="示例通知" data-interactive>
           {s.results.length === 0 && <div className="empty glass" data-glass="18"><Bell size={20}/><p>暂时没有待查看的事项</p><small>任务结果、待回应事项和你设定的提醒会出现在这里。</small></div>}
@@ -292,4 +297,4 @@ function App() {
     </main>
   </IconContext.Provider>;
 }
-createRoot(document.getElementById('root')!).render(lab ? <MotionPreview/> : <App/>);
+createRoot(document.getElementById('root')!).render(new URLSearchParams(location.search).has('dashboard-window') ? <DashboardPreview standalone/> : lab ? <PreviewLab initialDashboard={new URLSearchParams(location.search).has('dashboard')}/> : <App/>);

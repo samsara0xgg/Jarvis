@@ -3,6 +3,7 @@ contextBridge.exposeInMainWorld('jarvis', {
   layout: (mode: string, height: number) => ipcRenderer.send('layout', { mode, height }),
   focus: (enabled: boolean) => ipcRenderer.invoke('focus-input', enabled),
   hide: () => ipcRenderer.send('hide'),
+  dashboard: () => ipcRenderer.send('open-dashboard'),
   copy: (text: string) => ipcRenderer.invoke('copy', text),
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => ipcRenderer.send('drag', { phase, point }),
   passthrough: (enabled: boolean) => ipcRenderer.send('passthrough', enabled),
