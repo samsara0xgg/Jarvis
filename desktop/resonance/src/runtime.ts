@@ -37,10 +37,13 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
     return r.json();
   };
   // The daemon owns mute state; every answer (including the `{}` sync on connect) is authoritative.
+  // Live state has exactly one writer, the `live` op below: the daemon pushes one on
+  // registration and one per transition, all ordered on this socket. The controls answer
+  // carries `live` too, but it is computed before it travels, so dispatching it here would
+  // let a slow HTTP response overwrite a newer push.
   const controls = async (patch: Controls) => {
     const c = await post('/inherent/controls', patch);
     dispatch({ type: 'controls', micMuted: c.mic_muted === true, soundMuted: c.speech_muted === true });
-    if (c.live && typeof c.live === 'object') dispatch({ type: 'live', live: liveFrom(c.live as Record<string, unknown>) });
   };
   let ws: WebSocket | null = null;
   let attempt = 0;

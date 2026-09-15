@@ -1004,6 +1004,12 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0915 — one cl
         """
         await ws.accept()
         await deps.broadcaster.register(ws)
+        # The `live` op is the client's only writer of live state (resonance
+        # src/runtime.ts), so a fresh client needs one snapshot; sending it
+        # through the broadcaster keeps it in the same order as the pushes.
+        if deps.live is not None:
+            with contextlib.suppress(Exception):
+                await deps.broadcaster.broadcast_op("live", phase="state", **deps.live.status())
         try:
             while True:
                 await ws.receive_text()
