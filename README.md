@@ -1,11 +1,13 @@
-# Jarvis
+<h1 align="center">Jarvis</h1>
+
+![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-Frontend-3178C6?logo=typescript&logoColor=white)
+![React](https://img.shields.io/badge/React-UI-61DAFB?logo=react&logoColor=white)
+![Electron](https://img.shields.io/badge/Electron-Desktop-47848F?logo=electron&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-Memory-003B57?logo=sqlite&logoColor=white)
 
 **A resident AI assistant for macOS, with real-time voice, persistent context, and asynchronous backend queries.**
-
-![macOS](https://img.shields.io/badge/platform-macOS-black)
-![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)
-![Desktop](https://img.shields.io/badge/desktop-Electron%20%2B%20React-47848F)
-![Status](https://img.shields.io/badge/status-active%20development-orange)
 
 Jarvis connects a real-time voice session to a Python runtime that owns conversation records, tools, permissions, and execution state. Ask a question, continue talking while a backend lookup runs, and receive the result in context. The Resonance desktop surface provides Live controls, transcripts, and a dashboard.
 
