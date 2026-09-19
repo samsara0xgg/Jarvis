@@ -49,6 +49,7 @@ from jarvis.execution.action_runner import (
 from jarvis.execution.tools import (
     ActionLifecycle,
     RawResult,
+    Tool,
     ToolDefinition,
     ToolRegistry,
     canonical_resource_key,
@@ -173,12 +174,12 @@ def _authorize(lifecycle: ActionLifecycle, action_id: str) -> None:
 
 def _fixed_resolver(
     mapping: dict[str, ToolConcurrency],
-) -> Callable[[ActionRequest, ToolDefinition, sqlite3.Connection], ToolConcurrency]:
+) -> Callable[[ActionRequest, ToolDefinition | Tool, sqlite3.Connection], ToolConcurrency]:
     """Return a resolver that answers from a per-tool-name table."""
 
     def _resolve(
         action_request: ActionRequest,
-        tool_def: ToolDefinition,
+        tool_def: ToolDefinition | Tool,
         conn: sqlite3.Connection,
     ) -> ToolConcurrency:
         declared = mapping.get(tool_def.name)
@@ -199,7 +200,7 @@ class _Fixture:
         *,
         tools: tuple[ToolDefinition, ...],
         resolver: Callable[
-            [ActionRequest, ToolDefinition, sqlite3.Connection],
+            [ActionRequest, ToolDefinition | Tool, sqlite3.Connection],
             ToolConcurrency,
         ]
         | None = None,

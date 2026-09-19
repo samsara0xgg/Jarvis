@@ -35,6 +35,7 @@ from jarvis.execution.action_runner import (
 from jarvis.execution.tools import (
     ActionLifecycle,
     RawResult,
+    Tool,
     ToolDefinition,
     build_default_registry,
     default_resource_key_resolver,
@@ -549,7 +550,7 @@ class _Rig:
 
         def _resolver(
             request: ActionRequest,
-            tool_def: ToolDefinition,
+            tool_def: ToolDefinition | Tool,
             conn: sqlite3.Connection,
         ) -> ToolConcurrency:
             key = keys.get(tool_def.name)

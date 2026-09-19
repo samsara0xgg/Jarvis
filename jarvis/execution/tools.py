@@ -559,6 +559,138 @@ class ToolDefinition:
     """
 
 
+# --- Tool (ADR 0019: the flat definition replacing ToolDefinition) ----------
+
+type FlatHandler = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+"""A tool is a function of its arguments; everything else is the dispatcher's."""
+
+
+class ToolError(Exception):
+    """A tool-level failure the model should read as ``{"error": ..., "code": ...}``."""
+
+    def __init__(self, message: str, *, code: str = "tool_error") -> None:
+        """Keep ``code`` as the short tag ``action.result_observed.error`` carries."""
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class Tool:
+    """One registered tool (ADR 0019).
+
+    ``handler`` takes the request's arguments and returns the result payload.
+    The dispatcher emits every event, moves the lifecycle and serializes the
+    payload: a return is an ``observation``, a raised :class:`ToolError` is an
+    ``error`` observation, any other exception propagates as it does today.
+    ``requires_entity`` and ``requires_confirmation`` feed the Pre-action Gate
+    arms that still exist; they leave with the audit chain.
+    """
+
+    name: str
+    description: str
+    input_schema: Mapping[str, Any]
+    handler: FlatHandler
+    allowed_callers: frozenset[CallerPrincipal]
+    risk_level: RiskLevel
+    read_only: bool
+    requires_entity: bool = False
+    requires_confirmation: bool = False
+
+    @property
+    def is_async(self) -> bool:
+        """A flat tool returns its result; nothing is scheduled (L3 ``ToolDefinitionLike``)."""
+        return False
+
+
+def tool(  # noqa: PLR0913 — one keyword per Tool field.
+    *,
+    description: str,
+    input_schema: Mapping[str, Any],
+    allowed_callers: frozenset[CallerPrincipal],
+    risk_level: RiskLevel,
+    read_only: bool,
+    requires_entity: bool = False,
+    requires_confirmation: bool = False,
+) -> Callable[[FlatHandler], Tool]:
+    """Build a :class:`Tool` from a handler; the function's name is the tool's."""
+
+    def wrap(fn: FlatHandler) -> Tool:
+        return Tool(
+            name=fn.__name__,
+            description=description,
+            input_schema=input_schema,
+            handler=fn,
+            allowed_callers=allowed_callers,
+            risk_level=risk_level,
+            read_only=read_only,
+            requires_entity=requires_entity,
+            requires_confirmation=requires_confirmation,
+        )
+
+    return wrap
+
+
+def _observe(
+    tool_def: Tool,
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+    lifecycle: ActionLifecycle,
+    *,
+    running_event_uid: str,
+) -> RawResult:
+    """Run a flat tool and write its one terminal, ``action.result_observed``."""
+    action_id = action_request.action_id
+    error: str | None = None
+    try:
+        payload: dict[str, Any] = dict(tool_def.handler(action_request.arguments))
+        semantics: ResultSemantics = "observation"
+        tool_output = tool_result(payload)
+    except ToolError as exc:
+        error = exc.code
+        payload = {"error": error}
+        semantics = "error"
+        tool_output = tool_error(str(exc), code=error)
+    event_payload: dict[str, Any] = {
+        "action_id": action_id,
+        "semantics": semantics,
+        "tool_output": tool_output,
+    }
+    if error is not None:
+        event_payload["error"] = error
+    terminalize_action(
+        conn,
+        event_type="action.result_observed",
+        payload=event_payload,
+        source_event_id=running_event_uid,
+        correlation={"action_id": action_id},
+    )
+    lifecycle.transition(action_id, "result_observed")
+    return RawResult(
+        action_id=action_id,
+        semantics=semantics,
+        payload=payload,
+        tool_output=tool_output,
+        error=error,
+    )
+
+
+def _run_handler(  # noqa: PLR0913 — the four handler arguments plus the definition and the uid the dispatcher holds.
+    tool_def: ToolDefinition | Tool,
+    action_request: ActionRequest,
+    conn: sqlite3.Connection,
+    runtime_paths: RuntimePathsLike,
+    lifecycle: ActionLifecycle,
+    *,
+    running_event_uid: str,
+) -> RawResult | RawResultBundle:
+    """Call the handler under its contract; a flat ``Tool`` gets the dispatcher's bookkeeping."""
+    if isinstance(tool_def, ToolDefinition):
+        return tool_def.handler(action_request, conn, runtime_paths, lifecycle)
+    return _observe(
+        tool_def, action_request, conn, lifecycle, running_event_uid=running_event_uid,
+    )
+
+
 # --- JSON serializers (adapted from legacy tools_v2/helpers.py) -------------
 
 
@@ -2012,27 +2144,23 @@ def _spoken_clock(hour: int, minute: int) -> str:
     return f"{period}{hour_label}点{minute}分"
 
 
-def get_current_time_handler(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
-    lifecycle: ActionLifecycle,
-) -> RawResult:
-    """Read the system clock; observation semantics only (spec §3.5.4).
+@tool(
+    description="Read the current local date and time (observation only).",
+    input_schema={"type": "object", "properties": {}, "required": []},
+    allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
+    risk_level="L0",
+    read_only=True,
+)
+def get_current_time(_args: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the system clock (spec §3.5.4); Tier 0's tool, jarvis_llm may call it too.
 
-    Zero arguments, zero side effects, risk L0. The Tier 0 regex path
-    (spec §17) is the primary caller; jarvis_llm may also call it.
-
-    Returns:
-        ``RawResult(semantics="observation")`` whose payload carries the
-        machine keys ``iso`` / ``date`` / ``time`` / ``weekday`` plus the
-        TTS-ready ``spoken_time`` / ``spoken_date`` the L5 templates read.
+    The payload carries the machine keys ``iso`` / ``date`` / ``time`` /
+    ``weekday`` plus the TTS-ready ``spoken_time`` / ``spoken_date`` the L5
+    templates read.
     """
-    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-
     now = datetime.now().astimezone()
     weekday = _WEEKDAYS_ZH[now.weekday()]
-    payload: dict[str, Any] = {
+    return {
         "iso": now.isoformat(timespec="seconds"),
         "date": now.strftime("%Y-%m-%d"),
         "time": now.strftime("%H:%M"),
@@ -2040,28 +2168,6 @@ def get_current_time_handler(
         "spoken_time": _spoken_clock(now.hour, now.minute),
         "spoken_date": f"{now.month}月{now.day}日{weekday}",
     }
-    tool_output_str = tool_result(payload)
-
-    terminalize_action(
-        conn,
-        event_type="action.result_observed",
-        payload={
-            "action_id": action_request.action_id,
-            "semantics": "observation",
-            "tool_output": tool_output_str,
-        },
-        source_event_id=running_event_uid,
-        correlation={"action_id": action_request.action_id},
-    )
-    lifecycle.transition(action_request.action_id, "result_observed")
-
-    return RawResult(
-        action_id=action_request.action_id,
-        semantics="observation",
-        payload=payload,
-        tool_output=tool_output_str,
-        error=None,
-    )
 
 
 # --- memo inbox (create_memo / list_memos) -----------------------------------
@@ -4844,7 +4950,7 @@ class ToolRegistry:
         if background_async and action_runner is None:
             msg = "background_async dispatch requires an ActionRunner"
             raise ActionRunnerError(msg)
-        self._tools: dict[str, ToolDefinition] = {}
+        self._tools: dict[str, ToolDefinition | Tool] = {}
         self._lock = threading.RLock()
         self._action_runner = action_runner
         self._background_async = background_async
@@ -4865,7 +4971,7 @@ class ToolRegistry:
         """Return whether declared-async tools dispatch without being awaited."""
         return self._background_async
 
-    def register(self, tool_def: ToolDefinition) -> None:
+    def register(self, tool_def: ToolDefinition | Tool) -> None:
         """Register a ToolDefinition. Raises DuplicateToolError on re-register.
 
         Unlike legacy `tools_v2/registry.py` (which logged and overwrote),
@@ -4878,12 +4984,12 @@ class ToolRegistry:
                 raise DuplicateToolError(msg)
             self._tools[tool_def.name] = tool_def
 
-    def get_definitions(self) -> tuple[ToolDefinition, ...]:
-        """Return every registered ToolDefinition, in registration order."""
+    def get_definitions(self) -> tuple[ToolDefinition | Tool, ...]:
+        """Return every registered tool, in registration order."""
         with self._lock:
             return tuple(self._tools.values())
 
-    def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolDefinition, ...]:
+    def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolDefinition | Tool, ...]:
         """Return only the tools `caller_principal` is allowed to dispatch.
 
         Used by L3 to assemble the LLM tool list — e.g. JARVIS_LLM sees
@@ -5028,7 +5134,7 @@ class ToolRegistry:
         self,
         action_request: ActionRequest,
         lifecycle: ActionLifecycle,
-    ) -> ToolDefinition:
+    ) -> ToolDefinition | Tool:
         """Validate the three dispatch preconditions and return the definition."""
         with self._lock:
             tool_def = self._tools.get(action_request.tool_name)
@@ -5059,7 +5165,7 @@ class ToolRegistry:
         self,
         action_request: ActionRequest,
         conn: sqlite3.Connection,
-        tool_def: ToolDefinition,
+        tool_def: ToolDefinition | Tool,
         lifecycle: ActionLifecycle,
     ) -> Event:
         """Register the action as live and commit its `action.dispatched`."""
@@ -5102,7 +5208,7 @@ class ToolRegistry:
         runtime_paths: RuntimePathsLike,
         lifecycle: ActionLifecycle,
         *,
-        tool_def: ToolDefinition,
+        tool_def: ToolDefinition | Tool,
         dispatched_event_uid: str,
     ) -> RawResultBundle:
         """Run the handler on the calling thread — the pre-Wave-4B path."""
@@ -5122,8 +5228,9 @@ class ToolRegistry:
         # synchronous handoff point between dispatch and the handler.
         _set_running_event_uid(conn, action_request.action_id, running_event.event_uid)
         try:
-            handler_result = tool_def.handler(
-                action_request, conn, runtime_paths, lifecycle,
+            handler_result = _run_handler(
+                tool_def, action_request, conn, runtime_paths, lifecycle,
+                running_event_uid=running_event.event_uid,
             )
         finally:
             _clear_running_event_uid(conn, action_request.action_id)
@@ -5143,7 +5250,7 @@ class ToolRegistry:
         runtime_paths: RuntimePathsLike,
         lifecycle: ActionLifecycle,
         *,
-        tool_def: ToolDefinition,
+        tool_def: ToolDefinition | Tool,
         dispatched_event_uid: str,
         runner: ActionRunner,
     ) -> ActionSubmission:
@@ -5176,8 +5283,9 @@ class ToolRegistry:
             """Run the handler on the runner's thread and its own connection."""
             _set_running_event_uid(worker_conn, action_id, context.running_event_uid)
             try:
-                return tool_def.handler(
-                    action_request, worker_conn, runtime_paths, lifecycle,
+                return _run_handler(
+                    tool_def, action_request, worker_conn, runtime_paths, lifecycle,
+                    running_event_uid=context.running_event_uid,
                 )
             finally:
                 _clear_running_event_uid(worker_conn, action_id)
@@ -5236,7 +5344,11 @@ class ToolRegistry:
                     turn_id=action_request.turn_id,
                     run_id=action_request.run_id,
                     concurrency=concurrency,
-                    cancellation_mode=tool_def.cancellation_mode,
+                    cancellation_mode=(
+                        tool_def.cancellation_mode
+                        if isinstance(tool_def, ToolDefinition)
+                        else "unsupported"
+                    ),
                     dispatched_event_uid=dispatched_event_uid,
                     correlation=_action_correlation(action_request),
                     run=_run,
@@ -5305,7 +5417,7 @@ definitions keep seeing a plain string.
 
 
 type ResourceKeyResolver = Callable[
-    [ActionRequest, ToolDefinition, "sqlite3.Connection"],
+    [ActionRequest, ToolDefinition | Tool, "sqlite3.Connection"],
     ToolConcurrency,
 ]
 """Injectable seam that names the canonical resources one action will touch."""
@@ -5385,7 +5497,7 @@ def _verify_diff_run_provenance(
 
 def default_resource_key_resolver(
     action_request: ActionRequest,
-    tool_def: ToolDefinition,
+    tool_def: ToolDefinition | Tool,
     conn: sqlite3.Connection,
 ) -> ToolConcurrency:
     """Resolve one request's canonical resource keys and lease mode.
@@ -5478,14 +5590,14 @@ def _clear_running_event_uid(
         _RUNNING_UID_TABLE.pop(action_id, None)
 
 
-def _result_expected_by_ms(tool_def: ToolDefinition) -> int | None:
+def _result_expected_by_ms(tool_def: ToolDefinition | Tool) -> int | None:
     """Return the epoch-ms deadline to stamp on `action.dispatched`, or None.
 
     ADR-0009 D4. `None` for every tool that declares no
     `result_budget_s`; the supervisor sweep then falls back to
     `dispatched ts + supervisor.default_budget_s` for that action.
     """
-    budget = tool_def.result_budget_s
+    budget = tool_def.result_budget_s if isinstance(tool_def, ToolDefinition) else None
     if budget is None:
         return None
     return int(time.time() * 1000) + int((budget() + _DISPATCH_DEADLINE_GRACE_S) * 1000)
@@ -6174,24 +6286,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             requires_confirmation=False,
         )
     )
-    registry.register(
-        ToolDefinition(
-            name="get_current_time",
-            description="Read the current local date and time (observation only).",
-            allowed_callers=frozenset(
-                {CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM},
-            ),
-            risk_level="L0",
-            result_semantics="observation",
-            is_async=False,
-            input_schema={"type": "object", "properties": {}, "required": []},
-            handler=get_current_time_handler,
-            domain="state_read",
-            read_only=True,
-            requires_entity=False,
-            requires_confirmation=False,
-        )
-    )
+    registry.register(get_current_time)
     registry.register(
         ToolDefinition(
             name="open_path",
@@ -6511,14 +6606,14 @@ class ReadOnlyToolRegistry:
         self._inner = inner
 
     @staticmethod
-    def _visible(tool_def: ToolDefinition) -> bool:
+    def _visible(tool_def: ToolDefinition | Tool) -> bool:
         return tool_def.read_only and tool_def.name != _CANCEL_ACTION_TOOL_NAME
 
-    def get_definitions(self) -> tuple[ToolDefinition, ...]:
+    def get_definitions(self) -> tuple[ToolDefinition | Tool, ...]:
         """Every read-only tool, in registration order."""
         return tuple(t for t in self._inner.get_definitions() if self._visible(t))
 
-    def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolDefinition, ...]:
+    def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolDefinition | Tool, ...]:
         """The caller's tools narrowed to the read-only ones."""
         return tuple(t for t in self._inner.for_caller(caller_principal) if self._visible(t))
 
@@ -6561,7 +6656,9 @@ __all__ = [
     "ResourceKeyResolver",
     "ResultSemantics",
     "RuntimePathsLike",
+    "Tool",
     "ToolDefinition",
+    "ToolError",
     "ToolRegistry",
     "ToolRegistryError",
     "UnknownToolError",
@@ -6570,7 +6667,7 @@ __all__ = [
     "canonical_resource_key",
     "create_task_handler",
     "default_resource_key_resolver",
-    "get_current_time_handler",
+    "get_current_time",
     "list_tasks_handler",
     "live_action_ids",
     "open_path_handler",
@@ -6580,6 +6677,7 @@ __all__ = [
     "register_live_action",
     "release_turn_actions",
     "spawn_worker_handler",
+    "tool",
     "tool_error",
     "tool_result",
     "turn_action_ids",
