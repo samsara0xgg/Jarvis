@@ -7,7 +7,9 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-Memory-003B57?logo=sqlite&logoColor=white)
 
-**A personal AI assistant that keeps track of your work and helps you pick up where you left off.**
+**A personal AI assistant that grows, understands, and acts—with you.**
+
+Built around persistent memory, full-duplex voice, and contextual awareness.
 
 ## What Jarvis Helps You Do
 
