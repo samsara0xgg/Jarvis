@@ -1,7 +1,7 @@
 r"""L4 file/folder target resolution for the `open_path` tool.
 
 Pure resolution logic — no event emission, no subprocess side effects
-beyond read-only `mdfind` calls, no lifecycle awareness. `open_path_handler`
+beyond read-only `mdfind` calls, no lifecycle awareness. `open_path`
 in :mod:`jarvis.execution.tools` is the only caller; it owns the
 `action.result_observed` emission + lifecycle transition + `open`
 subprocess call. This module owns only "given a spoken fragment, which
@@ -121,7 +121,7 @@ TargetSource = Literal["bookmark", "search"]
 
 @dataclass(frozen=True)
 class ResolvedTarget:
-    """One resolved file/folder result handed back to `open_path_handler`.
+    """One resolved file/folder result handed back to `open_path`.
 
     Attributes:
         path: Absolute path, guaranteed to be under `Path.home()` (see
@@ -477,7 +477,7 @@ def _open_frequencies(conn: sqlite3.Connection) -> dict[str, int]:
     candidates before this fix, and real logs only grow). Every
     `open_path` success emits `action.result_observed` whose
     `tool_output` is a JSON blob carrying `opened_path` (see
-    `jarvis.execution.tools.open_path_handler`). This is a ranking
+    `jarvis.execution.tools.open_path`). This is a ranking
     signal only — any read/parse failure (missing table, malformed
     JSON, closed connection, ...) degrades to an empty dict (every
     candidate's frequency becomes 0) rather than propagating.
@@ -541,7 +541,7 @@ def resolve(
 
     See the module docstring for the full normalization / matching /
     ranking rules. Never raises for a bad/empty query or an unresolvable
-    one — those simply return `None`; `open_path_handler` turns that into
+    one — those simply return `None`; `open_path` turns that into
     a `target_not_found` error result.
     """
     config = load_file_targets_config()

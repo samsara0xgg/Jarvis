@@ -568,6 +568,7 @@ class ToolContext:
 
     conn: sqlite3.Connection
     runtime_paths: RuntimePathsLike
+    action_id: str
 
 
 type FlatHandler = Callable[[Mapping[str, Any], ToolContext], Mapping[str, Any]]
@@ -712,7 +713,8 @@ def _observe(  # noqa: PLR0913 — the four handler arguments plus the definitio
     payload: dict[str, Any] = {}
     tool_output = ""
     try:
-        raw = tool_def.handler(action_request.arguments, ToolContext(conn, runtime_paths))
+        ctx = ToolContext(conn, runtime_paths, action_id)
+        raw = tool_def.handler(action_request.arguments, ctx)
         payload = _fit_result(dict(raw), cap)
         tool_output = tool_result(payload)
     except ToolError as exc:
@@ -2252,88 +2254,54 @@ def get_current_time(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, A
 _MEMO_MAX_CHARS: Final[int] = 2000
 
 
-def create_memo_handler(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
-    lifecycle: ActionLifecycle,
-) -> RawResult:
-    """Append one memo to the event log (`memo.captured`), ack semantics.
+@tool(
+    description=(
+        "Save a short memo to Allen's memo inbox for later review. "
+        "Use when Allen says '记一下 X' / '备忘 X'."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {"text": {"type": "string", "description": "Memo text."}},
+        "required": ["text"],
+    },
+    allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
+    risk_level="L1",
+    read_only=False,
+)
+def create_memo(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """Append one memo to the event log (`memo.captured`).
 
     Primary caller is the Tier 0 ``note_capture`` row (``/note ...``);
     the L2 event IS the memo store — ``list_memos`` folds it back.
     """
-    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-    text = str(action_request.arguments.get("text", "")).strip()[:_MEMO_MAX_CHARS]
+    text = str(args.get("text", "")).strip()[:_MEMO_MAX_CHARS]
     if not text:
-        return _memo_error(action_request, conn, lifecycle, running_event_uid, "empty_text")
-
+        msg = "create_memo: text is empty"
+        raise ToolError(msg, code="empty_text")
     memo_event = emit_event(
-        conn,
+        ctx.conn,
         type="memo.captured",
-        payload={"text": text, "action_id": action_request.action_id},
-        source_event_id=running_event_uid,
-        correlation={"action_id": action_request.action_id},
+        payload={"text": text, "action_id": ctx.action_id},
+        source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
+        correlation={"action_id": ctx.action_id},
     )
-    payload: dict[str, Any] = {"memo_event_uid": memo_event.event_uid, "text": text}
-    tool_output_str = tool_result(payload)
-    terminalize_action(
-        conn,
-        event_type="action.result_observed",
-        payload={
-            "action_id": action_request.action_id,
-            "semantics": "ack",
-            "tool_output": tool_output_str,
-        },
-        source_event_id=running_event_uid,
-        correlation={"action_id": action_request.action_id},
-    )
-    lifecycle.transition(action_request.action_id, "result_observed")
-    return RawResult(
-        action_id=action_request.action_id,
-        semantics="ack",
-        payload=payload,
-        tool_output=tool_output_str,
-        error=None,
-    )
+    return {"memo_event_uid": memo_event.event_uid, "text": text}
 
 
-def list_memos_handler(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
-    lifecycle: ActionLifecycle,
-) -> RawResult:
+@tool(
+    description="List every saved memo, oldest first, with capture time. No arguments.",
+    input_schema={"type": "object", "properties": {}, "required": []},
+    allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
+    risk_level="L0",
+    read_only=True,
+)
+def list_memos(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """Fold every `memo.captured` event into a numbered, dated list."""
-    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
     lines: list[str] = []
-    for event in iter_events_of_types(conn, ("memo.captured",)):
+    for event in iter_events_of_types(ctx.conn, ("memo.captured",)):
         stamp = datetime.fromtimestamp(event.ts_epoch_ms / 1000).astimezone()
         lines.append(f"{len(lines) + 1}. [{stamp:%m-%d %H:%M}] {event.payload.get('text', '')}")
-    payload: dict[str, Any] = {
-        "count": len(lines),
-        "rendered": "\n".join(lines) if lines else "还没有备忘录。",
-    }
-    tool_output_str = tool_result(payload)
-    terminalize_action(
-        conn,
-        event_type="action.result_observed",
-        payload={
-            "action_id": action_request.action_id,
-            "semantics": "observation",
-            "tool_output": tool_output_str,
-        },
-        source_event_id=running_event_uid,
-        correlation={"action_id": action_request.action_id},
-    )
-    lifecycle.transition(action_request.action_id, "result_observed")
-    return RawResult(
-        action_id=action_request.action_id,
-        semantics="observation",
-        payload=payload,
-        tool_output=tool_output_str,
-        error=None,
-    )
+    return {"count": len(lines), "rendered": "\n".join(lines) if lines else "还没有备忘录。"}
 
 
 _SEARCH_RECORDS_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
@@ -2367,17 +2335,10 @@ _SEARCH_RECORDS_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
 }
 
 
-def _make_search_records_handler(db_path: Path) -> ToolHandler:
-    """Bind `search_records` to the memory.db path; observation semantics."""
+def _make_search_records(db_path: Path) -> Tool:
+    """Bind `search_records` to the memory.db path."""
 
-    def _handler(
-        action_request: ActionRequest,
-        conn: sqlite3.Connection,
-        runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
-        lifecycle: ActionLifecycle,
-    ) -> RawResult:
-        running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-        args = action_request.arguments
+    def search_records(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         keyword = args.get("keyword")
         from_ts = args.get("from")
         to_ts = args.get("to")
@@ -2390,56 +2351,27 @@ def _make_search_records_handler(db_path: Path) -> ToolHandler:
             limit=limit if isinstance(limit, int) and limit > 0 else DEFAULT_SEARCH_LIMIT,
         )
         lines = [f"[{ts}] {source}: {text}" for ts, source, text in rows]
-        payload: dict[str, Any] = {
+        return {
             "count": len(rows),
             "rendered": "\n".join(lines) if lines else "没有找到匹配的记录。",
         }
-        tool_output_str = tool_result(payload)
-        terminalize_action(
-            conn,
-            event_type="action.result_observed",
-            payload={
-                "action_id": action_request.action_id,
-                "semantics": "observation",
-                "tool_output": tool_output_str,
-            },
-            source_event_id=running_event_uid,
-            correlation={"action_id": action_request.action_id},
-        )
-        lifecycle.transition(action_request.action_id, "result_observed")
-        return RawResult(
-            action_id=action_request.action_id,
-            semantics="observation",
-            payload=payload,
-            tool_output=tool_output_str,
-            error=None,
-        )
 
-    return _handler
-
-
-def _memo_error(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    lifecycle: ActionLifecycle,
-    running_event_uid: str | None,
-    error: str,
-) -> RawResult:
-    tool_output_str = tool_error(error)
-    terminalize_action(
-        conn,
-        event_type="action.failed",
-        payload={"action_id": action_request.action_id, "error": error},
-        source_event_id=running_event_uid,
-        correlation={"action_id": action_request.action_id},
-    )
-    lifecycle.transition(action_request.action_id, "failed")
-    return RawResult(
-        action_id=action_request.action_id,
-        semantics="error",
-        payload={},
-        tool_output=tool_output_str,
-        error=error,
+    return Tool(
+        name="search_records",
+        description=(
+            "Search the memory store of everything Allen said and every "
+            "answer given, newest first, with timestamps. Call this whenever "
+            "Allen asks what he said before (我之前说过什么 / 刚才说的 / "
+            "昨天说的 / 上周二说的) or refers to an earlier conversation, and "
+            "quote the original words and their time back to him. Filter by "
+            "keyword substring and/or an ISO 8601 time range; every argument "
+            "is optional."
+        ),
+        input_schema=_SEARCH_RECORDS_INPUT_SCHEMA,
+        handler=search_records,
+        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+        risk_level="L0",
+        read_only=True,
     )
 
 
@@ -2514,98 +2446,71 @@ def _build_open_argv(path: Path, app: Literal["default", "vscode"]) -> tuple[lis
     return ["open", str(path)], "default"
 
 
-def open_path_handler(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
-    lifecycle: ActionLifecycle,
-) -> RawResult:
+# open_path is L1 — a subprocess side effect (`open <path>`), so it sits
+# one rung above the L0 read-only observation tools even though it emits
+# no claim. `app` stays a plain default/vscode enum rather than an
+# arbitrary bundle-id string — the only Day-1 override is "force VS Code",
+# matching the two Tier 0 patterns in config/tier0_patterns.yaml.
+_OPEN_PATH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Spoken name or description of the file or folder to open.",
+        },
+        "target_kind": {
+            "type": "string",
+            "enum": ["file", "folder", "any"],
+            "description": "Restrict the match to a file, a folder, or either. Default 'any'.",
+        },
+        "app": {
+            "type": "string",
+            "enum": ["default", "vscode"],
+            "description": (
+                "'default' uses the macOS default handler (or the configured "
+                "editor for editor_extensions files); 'vscode' forces Visual "
+                "Studio Code regardless of extension. Default 'default'."
+            ),
+        },
+    },
+    "required": ["query"],
+}
+
+
+@tool(
+    description=(
+        "Open a file or folder on Allen's Mac by spoken name (bookmark "
+        "alias, partial filename, or description). Use for '打开 X' / "
+        "'用 VS Code 打开 X' requests."
+    ),
+    input_schema=_OPEN_PATH_INPUT_SCHEMA,
+    allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
+    risk_level="L1",
+    read_only=False,
+    # requires_entity stays False deliberately: open_path keeps its own
+    # resolve-then-act contract internally — it *is* a resolver caller.
+)
+def open_path(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """Open a file or folder on Allen's Mac by spoken name (spec §17 companion tool).
 
-    "打开 X" / "用 VS Code 打开 X" — Allen names a file or folder loosely
-    (an alias, a partial filename, a description); the handler resolves it
-    via :func:`jarvis.execution.path_resolver.resolve` (pure logic, no
-    event emission — see that module's docstring for the bookmark /
-    Spotlight / one-level-scan strategy and the ranking rule) and, on a
-    match, shells out to macOS `open`.
-
-    This handler owns exactly what `resolve()` deliberately does not:
-
-    - argv construction (`_build_open_argv`),
-    - the `open` subprocess call,
-    - the L4 event-emission + lifecycle-transition contract every sync
-      handler in this module follows — one `action.result_observed` +
-      one terminal `lifecycle.transition`, on EVERY exit path, success or
-      failure (see `create_task_handler` for the canonical success shape,
-      `list_tasks_handler` for the canonical failure shape this mirrors).
-
-    Arguments (`arguments` on `action_request`):
-        query: Required. Spoken name/description of the target.
-        target_kind: Optional `"file" | "folder" | "any"`, default `"any"`.
-        app: Optional `"default" | "vscode"`, default `"default"`.
-
-    Returns:
-        Success: `RawResult(semantics="observation", payload={"opened_name",
-        "opened_path", "app_used", "target_kind"})`.
-        Failure: `RawResult(semantics="error")` with `error` one of
-        `"invalid_argument"` (missing/empty `query` or an out-of-enum
-        `target_kind`/`app` — caught from `_parse_open_path_args`),
-        `"target_not_found"` (no candidate matched), or `"open_failed"`
-        (the `open` subprocess errored or exited non-zero). Every path,
-        success or failure, emits exactly one `action.result_observed`
-        and terminal-transitions the lifecycle before returning — no
-        exit leaves the lifecycle stranded at `running`.
+    "打开 X" / "用 VS Code 打开 X" — the query is resolved via
+    :func:`jarvis.execution.path_resolver.resolve` (pure, no events; see
+    that module for the bookmark / Spotlight / one-level-scan strategy),
+    then handed to macOS `open`. Errors: ``invalid_argument`` (bad
+    query / target_kind / app), ``target_not_found``, ``open_failed``.
     """
-    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-
     try:
-        args = _parse_open_path_args(action_request.arguments)
+        parsed = _parse_open_path_args(args)
     except (KeyError, TypeError) as exc:
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_request.action_id,
-            running_event_uid=running_event_uid,
-            code="invalid_argument",
-            message=f"open_path: {exc}",
-        )
+        msg = f"open_path: {exc}"
+        raise ToolError(msg, code="invalid_argument") from exc
 
-    target = resolve_path_target(args.query, args.target_kind, conn)
+    target = resolve_path_target(parsed.query, parsed.target_kind, ctx.conn)
     if target is None:
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_request.action_id,
-            running_event_uid=running_event_uid,
-            code="target_not_found",
-            message=f"open_path: no file/folder matched {args.query!r}",
-        )
+        msg = f"open_path: no file/folder matched {parsed.query!r}"
+        raise ToolError(msg, code="target_not_found")
 
-    # ADR-0011 D4: `open_path` is an `entity.resolved` EMITTER (it keeps
-    # its own resolve-then-act contract per D2's footnote rather than
-    # going through resolve-on-propose) — a successful resolution here
-    # feeds the EntityRegistry projection's `file:` route the same way a
-    # `read_file`-style pre-gate resolution would. `path_resolver` itself
-    # stays pure; this emission lives in the handler, same as the
-    # `action.result_observed` emission below.
-    emit_event(
-        conn,
-        type="entity.resolved",
-        payload={
-            "entity_type": "file",
-            "natural_ref": args.query,
-            "resolved_to": f"file:{target.path}",
-            "confidence": "bookmark" if target.source == "bookmark" else "fuzzy",
-            "candidates": [],
-            "match_basis": target.source,
-            "outcome": "resolved",
-        },
-        source_event_id=running_event_uid,
-        correlation={"action_id": action_request.action_id},
-    )
-
-    argv, app_used = _build_open_argv(target.path, args.app)
-
+    argv, app_used = _build_open_argv(target.path, parsed.app)
     try:
         proc = subprocess.run(  # noqa: S603 — argv list, no shell; path comes only from resolve()'s home-scoped candidates.
             argv,
@@ -2615,54 +2520,19 @@ def open_path_handler(
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_request.action_id,
-            running_event_uid=running_event_uid,
-            code="open_failed",
-            message=f"open_path: subprocess failed to start: {exc}",
-        )
-
+        msg = f"open_path: subprocess failed to start: {exc}"
+        raise ToolError(msg, code="open_failed") from exc
     if proc.returncode != 0:
         stderr_tail = (proc.stderr or "").strip()[-_OUTPUT_TAIL_BYTES:]
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_request.action_id,
-            running_event_uid=running_event_uid,
-            code="open_failed",
-            message=f"open_path: `open` exited {proc.returncode}: {stderr_tail}",
-        )
+        msg = f"open_path: `open` exited {proc.returncode}: {stderr_tail}"
+        raise ToolError(msg, code="open_failed")
 
-    payload: dict[str, Any] = {
+    return {
         "opened_name": target.display_name,
         "opened_path": str(target.path),
         "app_used": app_used,
-        "target_kind": args.target_kind,
+        "target_kind": parsed.target_kind,
     }
-    tool_output_str = tool_result(payload)
-
-    terminalize_action(
-        conn,
-        event_type="action.result_observed",
-        payload={
-            "action_id": action_request.action_id,
-            "semantics": "observation",
-            "tool_output": tool_output_str,
-        },
-        source_event_id=running_event_uid,
-        correlation={"action_id": action_request.action_id},
-    )
-    lifecycle.transition(action_request.action_id, "result_observed")
-
-    return RawResult(
-        action_id=action_request.action_id,
-        semantics="observation",
-        payload=payload,
-        tool_output=tool_output_str,
-        error=None,
-    )
 
 
 # --- ADR-0011 D5 read-only tools (search_notes / read_file / read_clipboard) -
@@ -2671,9 +2541,6 @@ def open_path_handler(
 # helpers below cover the "emit exactly one action.result_observed +
 # terminal-transition lifecycle" contract every sync handler in this
 # module follows (see `list_tasks_handler` for the observation shape).
-# `_emit_tool_error` also backs `open_path_handler`'s failure exits —
-# its body used to be duplicated there verbatim as `_open_path_error`;
-# that duplicate is gone, `open_path_handler` calls this one directly.
 
 
 def _emit_tool_observation(  # noqa: PLR0913 — all kwargs are the shared sync-handler success shape (conn/lifecycle/action_id/running_event_uid/payload/semantics); splitting them into a bundle defeats the point of a shared helper, same rationale as `_emit_tool_error`.
@@ -3131,25 +2998,18 @@ def read_file_handler(
 
 # --- read_clipboard --------------------------------------------------------------
 
-_CLIPBOARD_MAX_BYTES: Final[int] = 8192
 _CLIPBOARD_TIMEOUT_S: Final[float] = 5.0
 
 
-def read_clipboard_handler(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
-    lifecycle: ActionLifecycle,
-) -> RawResult:
-    """L0 `read_clipboard` — `pbpaste`, capped at 8 KiB (ADR-0011 D5).
-
-    Zero arguments. An empty clipboard is a VALID empty observation,
-    not an error — Allen's clipboard being empty is itself an answer,
-    not a tool failure.
-    """
-    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-    action_id = action_request.action_id
-
+@tool(
+    description="Read the current macOS clipboard's text contents. No arguments.",
+    input_schema={"type": "object", "properties": {}, "required": []},
+    allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
+    risk_level="L0",
+    read_only=True,
+)
+def read_clipboard(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+    """`pbpaste`. An empty clipboard is a valid empty observation, not an error."""
     try:
         proc = subprocess.run(
             ["pbpaste"],  # noqa: S607 — `pbpaste` resolved via PATH, matches mdfind/open precedent.
@@ -3159,44 +3019,14 @@ def read_clipboard_handler(
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            code="clipboard_read_failed",
-            message=f"read_clipboard: pbpaste failed to run: {exc}",
-        )
-
+        msg = f"read_clipboard: pbpaste failed to run: {exc}"
+        raise ToolError(msg, code="clipboard_read_failed") from exc
     if proc.returncode != 0:
         stderr_tail = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            code="clipboard_read_failed",
-            message=f"read_clipboard: pbpaste exited {proc.returncode}: {stderr_tail}",
-        )
-
+        msg = f"read_clipboard: pbpaste exited {proc.returncode}: {stderr_tail}"
+        raise ToolError(msg, code="clipboard_read_failed")
     raw = proc.stdout or b""
-    total_bytes = len(raw)
-    text, undelivered_bytes, _lossy = truncate_utf8(raw[:_CLIPBOARD_MAX_BYTES], total_bytes)
-    if undelivered_bytes > 0:
-        text += f"…[truncated {undelivered_bytes} bytes]"
-
-    payload: dict[str, Any] = {
-        "content": text,
-        "truncated": undelivered_bytes > 0,
-        "total_bytes": total_bytes,
-    }
-    return _emit_tool_observation(
-        conn=conn,
-        lifecycle=lifecycle,
-        action_id=action_id,
-        running_event_uid=running_event_uid,
-        payload=payload,
-    )
+    return {"content": raw.decode("utf-8", errors="replace"), "total_bytes": len(raw)}
 
 
 # --- SSRF egress guard (ADR-0011 D5) -----------------------------------------
@@ -4582,9 +4412,6 @@ accumulate on disk indefinitely."""
 _SCREEN_CAPTURE_TIMEOUT_S: Final[float] = 10.0
 _SIPS_TIMEOUT_S: Final[float] = 10.0
 
-_SCREEN_LOOK_TEXT_MAX_BYTES: Final[int] = 8192
-"""Same 8 KiB order as every other D5 tool's output cap."""
-
 _PNG_MAGIC: Final[bytes] = b"\x89PNG\r\n\x1a\n"
 
 
@@ -4674,196 +4501,105 @@ def _screen_recording_permission_message() -> str:
     return f"Screen Recording permission missing for {sys.executable} — System Settings → Privacy"
 
 
-def _make_screen_look_handler(  # noqa: C901 — one linear capture/downscale/vision/cap pass; each return is a distinct named terminal outcome, same rationale as the other D5 closure factories.
-    *,
-    vision_client: VisionClient | None,
-    max_width_px: int,
-) -> ToolHandler:
+def _make_screen_look(*, vision_client: VisionClient | None, max_width_px: int) -> Tool:
     """Bind the injected vision client + `tools.screen.max_width_px` (ADR-0011 D7).
 
-    Same shape as `_make_web_search_handler` — config/deps read once at
-    registry-build time, closed over here. `vision_client=None` means
-    `jarvis.runtime` found no usable `llm.presets.vision` block: the
-    tool still registers (the menu stays complete) but every call
-    degrades to a `vision_unconfigured` error observation — AFTER the
-    screenshot is captured and saved, so evidence survives a config
-    gap the same way it survives a live proxy outage (ADR-0011 §5).
+    `vision_client=None` means `jarvis.runtime` found no usable
+    `llm.presets.vision` block: the tool still registers (the menu stays
+    complete) but every call degrades to a `vision_unconfigured` error —
+    AFTER the screenshot is captured and saved, so evidence survives a
+    config gap the same way it survives a live proxy outage.
     """
 
-    def _handler(  # noqa: PLR0911 — one linear capture/downscale/vision/cap pass; each return is a distinct named terminal outcome via `_emit_tool_error`/`_emit_tool_observation`, same rationale as the other D5 handlers.
-        action_request: ActionRequest,
-        conn: sqlite3.Connection,
-        runtime_paths: RuntimePathsLike,
-        lifecycle: ActionLifecycle,
-    ) -> RawResult:
-        running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-        action_id = action_request.action_id
+    def screen_look(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        question_raw = args.get("question")
+        question = (
+            question_raw.strip() if isinstance(question_raw, str) and question_raw.strip() else None
+        )
+        artifacts_dir = ctx.runtime_paths.artifacts_root / _SCREEN_ARTIFACTS_DIRNAME
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        # `action_id` makes this collision-free; the timestamp prefix is for chronological `ls`.
+        image_path = artifacts_dir / f"{int(time.time() * 1000)}_{ctx.action_id}.png"
 
         try:
-            question_raw = action_request.arguments.get("question")
-            question = (
-                question_raw.strip()
-                if isinstance(question_raw, str) and question_raw.strip()
-                else None
+            capture_proc = _run_screencapture(image_path, timeout_s=_SCREEN_CAPTURE_TIMEOUT_S)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            msg = f"screen_look: screencapture failed to run: {exc}"
+            raise ToolError(msg, code="screen_capture_start_failed") from exc
+        if capture_proc.returncode != 0:
+            # The cause of a non-zero exit is not determinable from here (TCC
+            # denial, bad path, full disk...): report what happened and name
+            # Screen Recording only as the likely first-run cause.
+            stderr_tail = (capture_proc.stderr or b"").decode("utf-8", errors="replace").strip()
+            msg = (
+                f"screen_look: screencapture exited {capture_proc.returncode}"
+                f"{f': {stderr_tail}' if stderr_tail else ''}. If this is the "
+                f"first screen_look call, the likely cause is missing Screen "
+                f"Recording permission for {sys.executable} — System Settings → "
+                "Privacy; otherwise this is a genuine screencapture failure."
             )
+            raise ToolError(msg, code="screen_capture_failed")
+        if not image_path.is_file() or not _looks_like_png(image_path):
+            # On some macOS versions a TCC-denied screencapture exits 0 but
+            # writes nothing (or a truncated file): that shape IS specific
+            # enough to name Screen Recording as the cause.
+            msg = (
+                f"screen_look: {_screen_recording_permission_message()} "
+                "(screencapture produced no image data)"
+            )
+            raise ToolError(msg, code="screen_recording_permission_denied")
 
-            artifacts_dir = runtime_paths.artifacts_root / _SCREEN_ARTIFACTS_DIRNAME
-            artifacts_dir.mkdir(parents=True, exist_ok=True)
-            # `action_id` makes this collision-free (SHOULD-FIX 4, ADR-0011
-            # §12): the millisecond timestamp alone repeats across
-            # back-to-back dispatches, silently repointing an OLDER
-            # `action.result_observed` row's `artifact_path` at a
-            # DIFFERENT screenshot's bytes — undetectable after the fact,
-            # since the path IS the evidence (§3.3.9's whole design).
-            # The timestamp prefix is kept only for chronological `ls`.
-            image_path = artifacts_dir / f"{int(time.time() * 1000)}_{action_id}.png"
-
-            try:
-                capture_proc = _run_screencapture(image_path, timeout_s=_SCREEN_CAPTURE_TIMEOUT_S)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                return _emit_tool_error(
-                    conn=conn,
-                    lifecycle=lifecycle,
-                    action_id=action_id,
-                    running_event_uid=running_event_uid,
-                    code="screen_capture_start_failed",
-                    message=f"screen_look: screencapture failed to run: {exc}",
-                )
-
-            if capture_proc.returncode != 0:
-                # SHOULD-FIX 5, ADR-0011 §12: a non-zero exit's cause is
-                # NOT determinable from here — it could be a TCC denial,
-                # a bad path, a full disk, or anything else `screencapture`
-                # exits non-zero for. Unlike the "wrote nothing" branch
-                # below (a shape that genuinely IS specific to TCC denial
-                # on some macOS versions), asserting a permission cause
-                # here would send Allen to System Settings for e.g. a
-                # filesystem problem. Report what actually happened, and
-                # name Screen Recording only as the likely cause on a
-                # first run — actionable without claiming certainty.
-                stderr_tail = (capture_proc.stderr or b"").decode("utf-8", errors="replace").strip()
-                return _emit_tool_error(
-                    conn=conn,
-                    lifecycle=lifecycle,
-                    action_id=action_id,
-                    running_event_uid=running_event_uid,
-                    code="screen_capture_failed",
-                    message=(
-                        f"screen_look: screencapture exited {capture_proc.returncode}"
-                        f"{f': {stderr_tail}' if stderr_tail else ''}. If this is the "
-                        f"first screen_look call, the likely cause is missing Screen "
-                        f"Recording permission for {sys.executable} — System Settings → "
-                        "Privacy; otherwise this is a genuine screencapture failure."
-                    ),
-                )
-
-            if not image_path.is_file() or not _looks_like_png(image_path):
-                # ADR-0011 §5: on some macOS versions a TCC-denied
-                # screencapture exits 0 but writes nothing (or an empty
-                # /truncated file) instead of failing loudly. This
-                # branch — unlike the non-zero-exit one above — genuinely
-                # IS specific enough to name Screen Recording as the
-                # cause: a successful (exit-0) capture that produced no
-                # valid PNG is the documented TCC-denial shape on those
-                # macOS versions, not a generic failure. Checking the
-                # PNG magic (not just `st_size`) also catches a
-                # truncated/partial write (NIT-FIX 6) before it reaches
-                # the vision model. Detecting a FOURTH shape — an
-                # all-black image written by some macOS versions on
-                # TCC denial — would require decoding pixel data (a
-                # new imaging dependency); deliberately not attempted.
-                return _emit_tool_error(
-                    conn=conn,
-                    lifecycle=lifecycle,
-                    action_id=action_id,
-                    running_event_uid=running_event_uid,
-                    code="screen_recording_permission_denied",
-                    message=(
-                        f"screen_look: {_screen_recording_permission_message()} "
-                        "(screencapture produced no image data)"
-                    ),
-                )
-
-            try:
-                sips_proc = _run_sips_downscale(image_path, max_width_px, timeout_s=_SIPS_TIMEOUT_S)
-                if sips_proc.returncode != 0:
-                    LOGGER.warning(
-                        "screen_look: sips downscale failed (exit %s) for %s; "
-                        "continuing with the full-resolution screenshot",
-                        sips_proc.returncode,
-                        image_path,
-                    )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                # Downscaling is a cost/latency optimization for the
-                # vision call, not a correctness requirement — the
-                # call still works against the full-resolution PNG,
-                # and the artifact on disk is untouched either way.
+        try:
+            sips_proc = _run_sips_downscale(image_path, max_width_px, timeout_s=_SIPS_TIMEOUT_S)
+            if sips_proc.returncode != 0:
                 LOGGER.warning(
-                    "screen_look: sips failed to run (%s) for %s; "
+                    "screen_look: sips downscale failed (exit %s) for %s; "
                     "continuing with the full-resolution screenshot",
-                    exc,
+                    sips_proc.returncode,
                     image_path,
                 )
-
-            if vision_client is None:
-                return _emit_tool_error(
-                    conn=conn,
-                    lifecycle=lifecycle,
-                    action_id=action_id,
-                    running_event_uid=running_event_uid,
-                    code="vision_unconfigured",
-                    message=(
-                        "screen_look: no vision client configured "
-                        f"(llm.presets.vision missing or invalid); screenshot saved at {image_path}"
-                    ),
-                )
-
-            try:
-                description_raw = vision_client.describe_image(image_path, question=question)
-            except Exception as exc:  # noqa: BLE001 — vision preset / proxy failures degrade to an error observation (ADR-0011 §5); the screenshot artifact above already exists on disk regardless.
-                return _emit_tool_error(
-                    conn=conn,
-                    lifecycle=lifecycle,
-                    action_id=action_id,
-                    running_event_uid=running_event_uid,
-                    code="vision_call_failed",
-                    message=(
-                        f"screen_look: vision call failed: {type(exc).__name__}: {exc}; "
-                        f"screenshot saved at {image_path}"
-                    ),
-                )
-
-            description_bytes = description_raw.encode("utf-8")
-            text, undelivered_bytes, _lossy = truncate_utf8(
-                description_bytes[:_SCREEN_LOOK_TEXT_MAX_BYTES], len(description_bytes),
-            )
-            if undelivered_bytes > 0:
-                text += f"…[truncated {undelivered_bytes} bytes]"
-
-            payload: dict[str, Any] = {
-                "artifact_path": str(image_path),
-                "description": text,
-                "truncated": undelivered_bytes > 0,
-                "total_bytes": len(description_bytes),
-            }
-            return _emit_tool_observation(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_id,
-                running_event_uid=running_event_uid,
-                payload=payload,
-            )
-        except Exception as exc:  # noqa: BLE001 — handler-boundary catch-all (ADR-0011 §12 MUST-FIX 2 precedent): never strand the lifecycle at `running`, name the real exception type.
-            return _emit_tool_error(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_id,
-                running_event_uid=running_event_uid,
-                code="screen_look_unexpected_error",
-                message=f"screen_look: unexpected {type(exc).__name__}: {exc}",
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            # Downscaling is a cost/latency optimization, not a correctness
+            # requirement; the artifact on disk is untouched either way.
+            LOGGER.warning(
+                "screen_look: sips failed to run (%s) for %s; "
+                "continuing with the full-resolution screenshot",
+                exc,
+                image_path,
             )
 
-    return _handler
+        if vision_client is None:
+            msg = (
+                "screen_look: no vision client configured "
+                f"(llm.presets.vision missing or invalid); screenshot saved at {image_path}"
+            )
+            raise ToolError(msg, code="vision_unconfigured")
+        try:
+            description = vision_client.describe_image(image_path, question=question)
+        except Exception as exc:  # degrades to an error; the screenshot is on disk regardless.
+            msg = (
+                f"screen_look: vision call failed: {type(exc).__name__}: {exc}; "
+                f"screenshot saved at {image_path}"
+            )
+            raise ToolError(msg, code="vision_call_failed") from exc
+
+        return {"artifact_path": str(image_path), "description": description}
+
+    return Tool(
+        name="screen_look",
+        description=(
+            "Take a screenshot of Allen's screen and describe what's on "
+            "it via a vision model; an optional `question` focuses the "
+            "description on something specific. The decision LLM never "
+            "sees the screenshot pixels — only this tool's returned "
+            "text description."
+        ),
+        input_schema=_SCREEN_LOOK_INPUT_SCHEMA,
+        handler=screen_look,
+        allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
+        risk_level="L1",
+        read_only=True,
+    )
 
 
 # --- ToolRegistry ------------------------------------------------------------
@@ -6062,37 +5798,6 @@ _CREATE_TASK_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
     "required": ["goal"],
 }
 
-# open_path is L1 — a subprocess side effect (`open <path>`), so it sits
-# one rung above the L0 read-only observation tools even though it emits
-# no claim. `app` stays a plain default/vscode enum rather than an
-# arbitrary bundle-id string — the only Day-1 override is "force VS Code",
-# matching the two Tier 0 patterns in config/tier0_patterns.yaml.
-_OPEN_PATH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "properties": {
-        "query": {
-            "type": "string",
-            "description": "Spoken name or description of the file or folder to open.",
-        },
-        "target_kind": {
-            "type": "string",
-            "enum": ["file", "folder", "any"],
-            "description": "Restrict the match to a file, a folder, or either. Default 'any'.",
-        },
-        "app": {
-            "type": "string",
-            "enum": ["default", "vscode"],
-            "description": (
-                "'default' uses the macOS default handler (or the configured "
-                "editor for editor_extensions files); 'vscode' forces Visual "
-                "Studio Code regardless of extension. Default 'default'."
-            ),
-        },
-    },
-    "required": ["query"],
-}
-
-
 def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
     *,
     obsidian_vault_root: Path | None = None,
@@ -6258,33 +5963,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         )
     )
     registry.register(get_current_time)
-    registry.register(
-        ToolDefinition(
-            name="open_path",
-            description=(
-                "Open a file or folder on Allen's Mac by spoken name (bookmark "
-                "alias, partial filename, or description). Use for '打开 X' / "
-                "'用 VS Code 打开 X' requests."
-            ),
-            allowed_callers=frozenset(
-                {CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM},
-            ),
-            risk_level="L1",
-            result_semantics="observation",
-            is_async=False,
-            input_schema=_OPEN_PATH_INPUT_SCHEMA,
-            handler=open_path_handler,
-            domain="mac_gui",
-            read_only=False,
-            # requires_entity stays False deliberately (ADR-0011 D2
-            # footnote): open_path keeps its own resolve-then-act
-            # contract internally — it *is* a resolver caller — and
-            # participates in the EntityRegistry as an emitter, not a
-            # gate consumer. Do not "fix" this to True.
-            requires_entity=False,
-            requires_confirmation=False,
-        )
-    )
+    registry.register(open_path)
     registry.register(
         ToolDefinition(
             name="search_notes",
@@ -6326,67 +6005,9 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             requires_confirmation=False,
         )
     )
-    registry.register(
-        ToolDefinition(
-            name="read_clipboard",
-            description="Read the current macOS clipboard's text contents. No arguments.",
-            allowed_callers=frozenset(
-                {CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM},
-            ),
-            risk_level="L0",
-            result_semantics="observation",
-            is_async=False,
-            input_schema={"type": "object", "properties": {}, "required": []},
-            handler=read_clipboard_handler,
-            domain="clipboard",
-            read_only=True,
-            requires_entity=False,
-            requires_confirmation=False,
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="create_memo",
-            description=(
-                "Save a short memo to Allen's memo inbox for later review. "
-                "Use when Allen says '记一下 X' / '备忘 X'."
-            ),
-            allowed_callers=frozenset(
-                {CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM},
-            ),
-            risk_level="L1",
-            result_semantics="ack",
-            is_async=False,
-            input_schema={
-                "type": "object",
-                "properties": {"text": {"type": "string", "description": "Memo text."}},
-                "required": ["text"],
-            },
-            handler=create_memo_handler,
-            domain="memo",
-            read_only=False,
-            requires_entity=False,
-            requires_confirmation=False,
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="list_memos",
-            description="List every saved memo, oldest first, with capture time. No arguments.",
-            allowed_callers=frozenset(
-                {CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM},
-            ),
-            risk_level="L0",
-            result_semantics="observation",
-            is_async=False,
-            input_schema={"type": "object", "properties": {}, "required": []},
-            handler=list_memos_handler,
-            domain="memo",
-            read_only=True,
-            requires_entity=False,
-            requires_confirmation=False,
-        )
-    )
+    registry.register(read_clipboard)
+    registry.register(create_memo)
+    registry.register(list_memos)
     registry.register(
         _make_web_search(
             default_max_results=web_search_max_results,
@@ -6422,31 +6043,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         )
     )
     registry.register(
-        ToolDefinition(
-            name="screen_look",
-            description=(
-                "Take a screenshot of Allen's screen and describe what's on "
-                "it via a vision model; an optional `question` focuses the "
-                "description on something specific. The decision LLM never "
-                "sees the screenshot pixels — only this tool's returned "
-                "text description."
-            ),
-            allowed_callers=frozenset(
-                {CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM},
-            ),
-            risk_level="L1",
-            result_semantics="observation",
-            is_async=False,
-            input_schema=_SCREEN_LOOK_INPUT_SCHEMA,
-            handler=_make_screen_look_handler(
-                vision_client=vision_client,
-                max_width_px=screen_max_width_px,
-            ),
-            domain="screen",
-            read_only=True,
-            requires_entity=False,
-            requires_confirmation=False,
-        )
+        _make_screen_look(vision_client=vision_client, max_width_px=screen_max_width_px)
     )
     registry.register(
         ToolDefinition(
@@ -6473,30 +6070,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         )
     )
     if memory_db_path is not None:
-        registry.register(
-            ToolDefinition(
-                name="search_records",
-                description=(
-                    "Search the memory store of everything Allen said and every "
-                    "answer given, newest first, with timestamps. Call this whenever "
-                    "Allen asks what he said before (我之前说过什么 / 刚才说的 / "
-                    "昨天说的 / 上周二说的) or refers to an earlier conversation, and "
-                    "quote the original words and their time back to him. Filter by "
-                    "keyword substring and/or an ISO 8601 time range; every argument "
-                    "is optional."
-                ),
-                allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-                risk_level="L0",
-                result_semantics="observation",
-                is_async=False,
-                input_schema=_SEARCH_RECORDS_INPUT_SCHEMA,
-                handler=_make_search_records_handler(memory_db_path),
-                domain="memo",
-                read_only=True,
-                requires_entity=False,
-                requires_confirmation=False,
-            )
-        )
+        registry.register(_make_search_records(memory_db_path))
     if action_runner is not None:
         # ponytail: the cancel still takes one runner run slot, so with
         # `max_concurrent_runs=1` it waits behind its own target; skip the
@@ -6606,14 +6180,16 @@ __all__ = [
     "VisionClient",
     "build_default_registry",
     "canonical_resource_key",
+    "create_memo",
     "create_task_handler",
     "default_resource_key_resolver",
     "get_current_time",
+    "list_memos",
     "list_tasks_handler",
     "live_action_ids",
-    "open_path_handler",
+    "open_path",
     "open_url_handler",
-    "read_clipboard_handler",
+    "read_clipboard",
     "read_file_handler",
     "register_live_action",
     "release_turn_actions",
