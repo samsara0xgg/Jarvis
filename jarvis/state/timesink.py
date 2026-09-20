@@ -16,11 +16,14 @@ if TYPE_CHECKING:
 
 _REF = re.compile(r"timesink:([0-9a-f]{16}):([1-9][0-9]*):([0-9a-f]{32})")
 _CAPTURE_REF = re.compile(r"timesink-capture:([0-9a-f]{16}):([1-9][0-9]*):([0-9a-f]{32})")
-# The cited revision covers identity, time basis and text; image retention is not evidence.
+# The cited revision covers identity, text and the time basis actually reported (including
+# the interruption a legacy row is clipped to); image retention is not evidence.
 _CAPTURE_VERSION_KEYS = (
     "id",
     "at",
     "lastSeenAt",
+    "interruptedAt",
+    "displacedAt",
     "appBundleID",
     "appName",
     "windowID",
@@ -39,9 +42,11 @@ _CAPTURE_SELECT = (
     "FROM capture c"
 )
 # Independent state dimensions; the latest event of each before `from` is the starting state.
+# Lock and sleep are separate: a wake does not unlock the screen.
 _STATE_GROUPS = (
     ("start", "stop"),
-    ("lock", "sleep", "unlock", "wake"),
+    ("lock", "unlock"),
+    ("sleep", "wake"),
     ("idle", "active"),
     ("pause", "resume", "screen_denied"),
 )

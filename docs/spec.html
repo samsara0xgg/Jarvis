@@ -597,8 +597,8 @@ Title/URL excerpts are bounded; full values remain in the detail reader. Jarvis 
 screenshot or OCR itself. TimeSink's suppressed incognito fields remain suppressed.</p>
 <p>Screen captures are TimeSink's <code>capture</code> rows (ADR-0022): one row per distinct front-window
 content inside one continuous observation segment. TimeSink extends a row's lastSeenAt only while the same
-window stays in front and ticks keep arriving; leaving the window and coming back, pausing, an excluded
-app, a lock, sleep or a stopped tracker each start a new segment, so unchanged content seen again becomes a
+window stays in front; leaving the window and coming back, an excluded app, and every lock, sleep, stop,
+pause or resume signal (however short, with a 5 s tick silence as backstop) each start a new segment, so unchanged content seen again becomes a
 new row and the stretch in between is never attributed to the old one. Items carry kind screen.capture,
 provider timesink, time_basis=capture_overlap, occurred_at=at, ended_at and ended_at_basis: last_seen
 when ended_at is lastSeenAt, interrupted when a row written before segments existed crosses a recorded
@@ -614,8 +614,8 @@ results.</p>
 observed. Coverage includes latest_span_end, observations_in_window, time_basis=span_overlap and
 gap_reason=unknown for spans. Any query touching app or screen also returns TimeSink's own reasons
 (idle/active, lock/unlock, sleep/wake, pause/resume, start/stop, screen_denied): state_at_start is the
-latest event before from of each independent group (start/stop; lock/sleep/unlock/wake; idle/active;
-pause/resume/screen_denied), so a lock before from with no unlock inside explains an empty window;
+latest event before from of each independent group (start/stop; lock/unlock; sleep/wake; idle/active;
+pause/resume/screen_denied; a wake never implies an unlock), so a lock before from with no unlock inside explains an empty window;
 state_events are the events inside [from,to) in time order, paged with the items inside the same
 cursor and page budget, never truncated silently; state_coverage.status is partial with
 events_in_window when the stateEvent table is readable, unavailable when it is not, and unknown when
@@ -627,8 +627,8 @@ by observed_at and app spans and captures by occurred_at.</p>
 IDs for TimeSink), the item and state event offsets, and check a digest of the selected TimeSink span and
 capture revisions. Later inserts are omitted from continuation; changed/deleted rows or source replacement
 produce invalid_cursor and require restarting the query. TimeSink IDs bind database identity, row ID and
-content revision; a capture's revision covers its identity, time basis (at, lastSeenAt), app, window, title,
-span and OCR text but not image retention, so a reference saved into knowledge, todos or a briefing stays
+content revision; a capture's revision covers its identity, the time basis it reports (at, lastSeenAt and
+the interruption a legacy row is clipped to), app, window, title, span and OCR text but not image retention, so a reference saved into knowledge, todos or a briefing stays
 readable after the image aged out. Changed detail reads return source_changed,
 deleted rows return not_found. This is revision validation, not historical version archival: a saved reference
 can become unavailable after the independent source changes. Coverage freshness metadata may advance
