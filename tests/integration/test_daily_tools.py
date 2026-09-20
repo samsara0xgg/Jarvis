@@ -263,7 +263,7 @@ def test_activity_coverage_time_basis_and_details(daily: DailyHarness) -> None:
     assert result["coverage"]["git"]["status"] == "unknown"
     assert result["coverage"]["git"]["configured_now"] is False
     assert result["coverage"]["git"]["skipped_count"] == 3
-    assert result["coverage"]["screen"]["status"] == "not_implemented"
+    assert result["coverage"]["screen"]["status"] == "unavailable"
     activity = result["items"][0]
     assert activity["occurred_at"] == "1970-01-01T00:00:01.000+00:00"
     assert activity["source_refs"] == [f"event:{ev.event_uid}"]

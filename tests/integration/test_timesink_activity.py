@@ -30,6 +30,16 @@ def source(tmp_path: Path) -> Iterator[sqlite3.Connection]:
         "end DATETIME NOT NULL, appBundleID TEXT NOT NULL, appName TEXT NOT NULL, "
         "title TEXT, url TEXT, domain TEXT)"
     )
+    conn.execute(
+        "CREATE TABLE stateEvent (id INTEGER PRIMARY KEY AUTOINCREMENT, at DATETIME NOT NULL, "
+        "kind TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE capture (id INTEGER PRIMARY KEY AUTOINCREMENT, at DATETIME NOT NULL, "
+        "lastSeenAt DATETIME NOT NULL, appBundleID TEXT NOT NULL, appName TEXT NOT NULL, "
+        "windowID INTEGER NOT NULL, title TEXT, spanID INTEGER, text TEXT NOT NULL, "
+        "imagePath TEXT)"
+    )
     conn.commit()
     yield conn
     conn.close()
@@ -57,6 +67,20 @@ def add_span(conn: sqlite3.Connection, start: str, end: str, *, title: str = "Ja
             "https://example.test/docs",
             "example.test",
         ),
+    )
+    conn.commit()
+    assert cursor.lastrowid is not None
+    return cursor.lastrowid
+
+
+def add_capture(
+    conn: sqlite3.Connection, at: str, last_seen: str, *, text: str, image: str | None = "d/1.jpg"
+) -> int:
+    """Write a screen capture exactly as TimeSink's ScreenCollector does."""
+    cursor = conn.execute(
+        "INSERT INTO capture(at,lastSeenAt,appBundleID,appName,windowID,title,spanID,text,"
+        "imagePath) VALUES(?,?,?,?,?,?,?,?,?)",
+        (at, last_seen, "com.mitchellh.ghostty", "Ghostty", 13117, "cc | rules", None, text, image),
     )
     conn.commit()
     assert cursor.lastrowid is not None
@@ -139,7 +163,7 @@ def test_mixed_git_and_app_order_and_missing_source_isolation(
     args = {**QUERY, "sources": ["app", "git", "screen"], "limit": 1}
     page = connected.call("query_activity", args)
     assert page["items"][0]["source"] == "app"
-    assert page["coverage"]["screen"]["status"] == "not_implemented"
+    assert page["coverage"]["screen"]["status"] == "partial"
     following = connected.call("query_activity", {**args, "cursor": page["next_cursor"]})
     assert following["items"][0]["source"] == "git"
     assert following["items"][0]["occurred_at"].startswith("1970")
@@ -322,4 +346,99 @@ def test_codex_workers_coexist_with_local_activity_tools(
         assert h.call("read_activity", {"activity_id": result["items"][0]["id"]})["complete"]
     finally:
         workers.stop()
+        h.fx.close()
+
+
+SCREEN_QUERY = {**QUERY, "sources": ["app", "screen"]}
+
+
+def test_screen_captures_state_events_and_full_text(
+    connected: DailyHarness, source: sqlite3.Connection
+) -> None:
+    """A screen row is one content stretch; its full OCR text and the gap reasons are readable."""
+    long_text = "OCR line " * 2000
+    add_span(source, "2026-09-19 09:00:00.000", "2026-09-19 09:10:00.000")
+    capture_id = add_capture(
+        source, "2026-09-19 08:59:00.000", "2026-09-19 09:04:00.000", text=long_text
+    )
+    add_capture(
+        source, "2026-09-19 09:30:00.000", "2026-09-19 09:31:00.000", text="short", image=None
+    )
+    add_capture(source, "2026-09-19 10:00:00.000", "2026-09-19 10:05:00.000", text="later")
+    source.execute(
+        "INSERT INTO stateEvent(at,kind) VALUES(?,?)", ("2026-09-19 09:12:00.000", "idle")
+    )
+    source.execute(
+        "INSERT INTO stateEvent(at,kind) VALUES(?,?)", ("2026-09-19 09:40:00.000", "lock")
+    )
+    source.commit()
+
+    result = connected.call("query_activity", SCREEN_QUERY)
+    assert [item["source"] for item in result["items"]] == ["screen", "app", "screen"]
+    first = result["items"][0]
+    assert first["kind"] == "screen.capture"
+    assert first["occurred_at"] == "2026-09-19T08:59:00.000+00:00"
+    assert first["ended_at"] == "2026-09-19T09:04:00.000+00:00"
+    assert first["duration_seconds_in_window"] == 240
+    assert first["summary"].startswith("Ghostty: cc | rules — OCR line")
+    assert len(first["summary"]) == 300
+    assert first["image_available"] is True
+    assert result["items"][2]["image_available"] is False
+    assert result["coverage"]["screen"]["status"] == "partial"
+    assert result["coverage"]["screen"]["observations_in_window"] == 2
+    assert result["state_events"] == [
+        {"at": "2026-09-19T09:12:00.000+00:00", "kind": "idle"},
+        {"at": "2026-09-19T09:40:00.000+00:00", "kind": "lock"},
+    ]
+
+    args: dict[str, Any] = {"activity_id": first["id"]}
+    content = ""
+    while True:
+        page = connected.call("read_activity", args)
+        assert page["content_format"] == "text"
+        assert page["image_path"].endswith("/captures/d/1.jpg")
+        content += page["content"]
+        if page["next_cursor"] is None:
+            break
+        args["cursor"] = page["next_cursor"]
+    assert content == long_text
+
+    knowledge = connected.call(
+        "save_knowledge",
+        {
+            "statement": "Was editing capture rules",
+            "kind": "fact",
+            "basis": "observation",
+            "source_refs": first["source_refs"],
+            "request_id": "k1",
+        },
+    )
+    assert knowledge["version"] == 1
+    source.execute(
+        "UPDATE capture SET lastSeenAt='2026-09-19 09:06:00.000' WHERE id=?", (capture_id,)
+    )
+    source.commit()
+    assert connected.call("read_activity", {"activity_id": first["id"]})["code"] == "source_changed"
+    assert connected.call("query_activity", {**SCREEN_QUERY, "project": "/repos/x"})["items"] == []
+
+
+def test_screen_source_on_a_store_without_capture_tables(tmp_path: Path) -> None:
+    """A TimeSink build that predates screen capture reports screen=unavailable, app intact."""
+    conn = sqlite3.connect(tmp_path / "old.sqlite")
+    conn.execute(
+        "CREATE TABLE span (id INTEGER PRIMARY KEY AUTOINCREMENT, start DATETIME NOT NULL, "
+        "end DATETIME NOT NULL, appBundleID TEXT NOT NULL, appName TEXT NOT NULL, "
+        "title TEXT, url TEXT, domain TEXT)"
+    )
+    conn.commit()
+    add_span(conn, "2026-09-19 09:00:00.000", "2026-09-19 09:10:00.000")
+    conn.close()
+    h = DailyHarness(tmp_path, timesink_path=tmp_path / "old.sqlite")
+    try:
+        result = h.call("query_activity", SCREEN_QUERY)
+        assert result["count"] == 1
+        assert result["coverage"]["app"]["status"] == "partial"
+        assert result["coverage"]["screen"]["status"] == "unavailable"
+        assert result["state_events"] == []
+    finally:
         h.fx.close()

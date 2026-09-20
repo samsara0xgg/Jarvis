@@ -9,6 +9,7 @@ tool selection; the normal decision/attention pipeline is covered separately.
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -148,5 +149,144 @@ def test_live_daily_tool_selection(tmp_path: Path) -> None:
                 ).fetchone()[0]
                 == 1
             )
+    finally:
+        harness.fx.close()
+
+
+_SCREEN_SYSTEM = (
+    "You are a personal assistant on the user's Mac with read-only tools over their local "
+    "activity history. Times in tool arguments are ISO-8601 with an explicit offset. "
+    "Today is 2026-09-19 in America/Vancouver (UTC-7). Answer in the user's language with "
+    "what they were actually doing, citing concrete words seen on their screen. Never invent."
+)
+
+
+def test_live_what_was_i_doing_reads_screen_text(tmp_path: Path) -> None:
+    """'我下午三点在干什么' must be answered from the screen capture's OCR text."""
+    conn = sqlite3.connect(tmp_path / "timesink.sqlite")
+    conn.execute(
+        "CREATE TABLE span (id INTEGER PRIMARY KEY AUTOINCREMENT, start DATETIME NOT NULL, "
+        "end DATETIME NOT NULL, appBundleID TEXT NOT NULL, appName TEXT NOT NULL, "
+        "title TEXT, url TEXT, domain TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE stateEvent (id INTEGER PRIMARY KEY AUTOINCREMENT, at DATETIME NOT NULL, "
+        "kind TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE capture (id INTEGER PRIMARY KEY AUTOINCREMENT, at DATETIME NOT NULL, "
+        "lastSeenAt DATETIME NOT NULL, appBundleID TEXT NOT NULL, appName TEXT NOT NULL, "
+        "windowID INTEGER NOT NULL, title TEXT, spanID INTEGER, text TEXT NOT NULL, "
+        "imagePath TEXT)"
+    )
+    # 15:00 local on 2026-09-19 = 22:00Z.
+    conn.execute(
+        "INSERT INTO span(start,end,appBundleID,appName,title,url,domain) VALUES(?,?,?,?,?,?,?)",
+        (
+            "2026-09-19 21:50:00.000",
+            "2026-09-19 22:20:00.000",
+            "com.apple.dt.Xcode",
+            "Xcode",
+            "ScreenCollector.swift",
+            None,
+            None,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO capture(at,lastSeenAt,appBundleID,appName,windowID,title,spanID,text,"
+        "imagePath) VALUES(?,?,?,?,?,?,?,?,?)",
+        (
+            "2026-09-19 21:58:00.000",
+            "2026-09-19 22:07:00.000",
+            "com.apple.dt.Xcode",
+            "Xcode",
+            42,
+            "ScreenCollector.swift",
+            1,
+            "actor ScreenCollector {\n  // ZEBRA-7741 window recheck after screenshot\n"
+            "  guard await Self.frontWindowKey() == key else { return }\n}",
+            "2026-09-19/1.jpg",
+        ),
+    )
+    conn.execute("INSERT INTO stateEvent(at,kind) VALUES(?,?)", ("2026-09-19 22:30:00.000", "lock"))
+    conn.commit()
+    conn.close()
+    harness = DailyHarness(tmp_path, timesink_path=tmp_path / "timesink.sqlite")
+    client = LLMClient(
+        {
+            "provider": "openai",
+            "default_preset": "acceptance",
+            "presets": {
+                "acceptance": {
+                    "model": "deepseek-v4-flash",
+                    "base_url": "https://api.deepseek.com/v1",
+                    "api_key_env": "DEEPSEEK_API_KEY",
+                    "max_tokens": 4096,
+                    "extra_body": {"thinking": {"type": "disabled"}},
+                }
+            },
+        }
+    )
+    catalog = [
+        {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
+        for tool in harness.tools
+        if tool.name in SCHEMAS
+    ]
+    question = "我下午三点在干什么"
+    messages: list[dict[str, Any]] = [{"role": "user", "content": question}]
+    calls_made: list[dict[str, Any]] = []
+    final = ""
+    try:
+        for _ in range(10):
+            answer = client.chat(system=_SCREEN_SYSTEM, messages=messages, tools=catalog)
+            calls = answer.tool_calls
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": answer.text or "",
+                    **(
+                        {
+                            "tool_calls": [
+                                {
+                                    "id": call.call_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": call.name,
+                                        "arguments": call.arguments_json,
+                                    },
+                                }
+                                for call in calls
+                            ]
+                        }
+                        if calls
+                        else {}
+                    ),
+                }
+            )
+            if not calls:
+                final = answer.text or ""
+                break
+            for call in calls:
+                args = json.loads(call.arguments_json)
+                result = harness.call(call.name, args)
+                calls_made.append({"name": call.name, "args": args, "ok": "code" not in result})
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.call_id,
+                        "content": json.dumps(result, ensure_ascii=False),
+                    }
+                )
+        else:
+            pytest.fail("Model exceeded the bounded tool-call loop")
+        summary = {"calls": calls_made, "answer": final}
+        (tmp_path / "screen-acceptance.json").write_text(
+            json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        assert any(
+            c["name"] == "query_activity" and "screen" in c["args"].get("sources", [])
+            for c in calls_made
+        ), summary
+        assert "ZEBRA-7741" in final or "ScreenCollector" in final, summary
     finally:
         harness.fx.close()

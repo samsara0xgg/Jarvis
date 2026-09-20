@@ -572,12 +572,12 @@ Updating a todo cannot replace its sources and does not revalidate previously ac
 Knowledge requires at least one source; existence is provenance, not verification. Contradictory uncertain
 claims should be saved as needs_confirmation rather than replacing accepted user facts as verified truth.
 Malformed arguments, nonexistent entries and invalid sources return explicit tool errors.</p>
-<p>query_activity supports repo.state_observed, project.commit_seen and TimeSink app/window/Chrome spans.
-Screen/agent report not_implemented. Git coverage reports status=unknown, configured_now,
+<p>query_activity supports repo.state_observed, project.commit_seen, TimeSink app/window/Chrome spans and
+TimeSink screen captures (source=screen). Agent reports not_implemented. Git coverage reports status=unknown, configured_now,
 observations_in_window, last_observed_at_in_window and skipped_count; sparse change events cannot prove
 continuous collection. A disabled current Git configuration does not erase historical observations.
 Activity project keys are observed repository paths, not inferred basename aliases. A project filter excludes
-TimeSink spans and explicitly reports that they have no reliable repository mapping.</p>
+TimeSink spans and captures and explicitly reports that they have no reliable repository mapping.</p>
 <p>observer.timesink.enabled and db_path bind the local read-only adapter. The shipped configuration
 points to ~/Library/Application Support/TimeSink/timesink.sqlite; absent/disabled configuration never
 opens that store. Queries open an existing WAL-aware read transaction, never create/migrate the source,
@@ -588,15 +588,24 @@ occurred_at=start, ended_at=end, observed_at=null, and duration_seconds_in_windo
 interval. Results include app_name, app_bundle_id, summary (title excerpt), url_excerpt, domain,
 project=null, project_basis=not_inferred, and revision-pinned source_refs usable in knowledge/todos/briefings.
 read_activity returns the exact saved row as paged JSON; stored_timestamp_timezone=UTC.
-Title/URL excerpts are bounded; full values remain in the detail reader. No page contents, screenshot or OCR
-are collected. TimeSink's suppressed incognito fields remain suppressed.</p>
+Title/URL excerpts are bounded; full values remain in the detail reader. Jarvis collects no page contents,
+screenshot or OCR itself. TimeSink's suppressed incognito fields remain suppressed.</p>
+<p>Screen captures are TimeSink's <code>capture</code> rows (ADR-0022): one row per distinct front-window
+content, selected by overlap of occurred_at=at..ended_at=lastSeenAt with the requested interval, kind
+screen.capture, provider timesink, time_basis=capture_overlap, summary = app + window title + a bounded
+OCR excerpt, text_chars, image_available, project=null, project_basis=not_inferred, and revision-pinned
+timesink-capture: source_refs. read_activity returns the full OCR text as paged content_format=text with
+app/window identity, span_id and image_path (absolute, null once the image aged out). A store without the
+capture tables reports screen coverage=unavailable without affecting app results.</p>
 <p>App coverage=partial means saved spans are readable, not that the requested interval was continuously
 observed. Coverage includes latest_span_end, observations_in_window, time_basis=span_overlap and
-gap_reason=unknown. Idle/lock/sleep/collector health are not stored by TimeSink; gaps cannot prove rest,
-and tracked durations cannot prove attention or task completion. Mixed queries report
-time_basis=source_specific, ordering Git by observed_at and app spans by occurred_at.</p>
-<p>Activity cursors pin both append watermarks (snapshot for the event log; timesink_snapshot for span IDs)
-and check a digest of the selected TimeSink revisions. Later inserts are omitted from continuation;
+gap_reason=unknown for spans. Any query touching app or screen also returns state_events: TimeSink's own
+reasons inside the interval (idle/active, lock/unlock, sleep/wake, pause/resume, start/stop,
+screen_denied, bounded to 200). Gaps not explained by a state event remain unknown, and tracked durations
+cannot prove attention or task completion. Mixed queries report time_basis=source_specific, ordering Git
+by observed_at and app spans and captures by occurred_at.</p>
+<p>Activity cursors pin the append watermarks (snapshot for the event log; span and capture IDs for
+TimeSink) and check a digest of the selected TimeSink span and capture revisions. Later inserts are omitted from continuation;
 changed/deleted rows or source replacement produce invalid_cursor and require restarting the query.
 TimeSink IDs bind database identity, row ID and content revision; changed detail reads return source_changed,
 deleted rows return not_found. This is revision validation, not historical version archival: a saved reference

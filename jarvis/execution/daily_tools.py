@@ -28,16 +28,20 @@ _DESCRIPTIONS = {
     ),
     "query_activity": (
         "Query saved activity in [from,to): Git by observed time, TimeSink app/window/Chrome "
-        "spans by overlap. App durations are estimates, not attention. screen/agent are "
-        "not_implemented. project is a full repo path and excludes unmapped app spans. "
-        "Check coverage; gaps are unknown. Follow next_cursor with identical filters; "
-        "invalid_cursor means a mutable TimeSink row changed: restart the query."
+        "spans and screen captures (OCR text of the front window, summarized) by overlap. "
+        "For 'what was I doing at <time>' use sources=['app','screen'], then read_activity on "
+        "a screen item for its full text. App durations are estimates, not attention. agent is "
+        "not_implemented. project is a full repo path and excludes unmapped app/screen rows. "
+        "Check coverage and state_events (idle/lock/sleep/pause) before calling a gap rest. "
+        "Follow next_cursor with identical filters; invalid_cursor means a mutable TimeSink "
+        "row changed: restart the query."
     ),
     "read_activity": (
-        "Read a saved activity's original JSON in chunks by activity_id. Does not take a "
-        "screenshot or inspect today's diff. Follow next_cursor until null. TimeSink IDs pin "
-        "a revision; source_changed requires a fresh query. For saving evidence, copy the "
-        "returned source_refs, not the activity_id."
+        "Read a saved activity's original content in chunks by activity_id: JSON for Git and "
+        "app spans, the full OCR text for screen captures. Does not take a screenshot or "
+        "inspect today's diff. Follow next_cursor until null. TimeSink IDs pin a revision; "
+        "source_changed requires a fresh query. For saving evidence, copy the returned "
+        "source_refs, not the activity_id."
     ),
     "search_knowledge": (
         "Find saved reusable facts, decisions, lessons and preferences. Defaults to active; "

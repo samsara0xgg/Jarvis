@@ -22,6 +22,7 @@ from jarvis.state.event_log import read_log_epoch
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Callable
     from pathlib import Path
 
 _ACTIVITY_TYPES = ("repo.state_observed", "project.commit_seen")
@@ -49,8 +50,8 @@ def query_activity(
             {k: v for k, v in args.items() if k != "cursor"},
         ]
     )
-    snapshot, app_watermark, app_revision, offset = cursor_position(
-        args.get("cursor"), binding, [high_water(conn), 0, 0, 0]
+    snapshot, app_watermark, app_revision, screen_watermark, screen_revision, offset = (
+        cursor_position(args.get("cursor"), binding, [high_water(conn), 0, 0, 0, 0, 0])
     )
     rows = conn.execute(
         "SELECT event_uid,type,ts_epoch_ms,payload_json FROM events "
@@ -86,7 +87,9 @@ def query_activity(
         )
     sources = args.get("sources", ["git", "app", "screen", "agent"])
     coverage: dict[str, Any] = {
-        source: {"status": "not_implemented"} for source in sources if source not in {"git", "app"}
+        source: {"status": "not_implemented"}
+        for source in sources
+        if source not in {"git", "app", "screen"}
     }
     if "git" in sources:
         enabled = bool(repos) if "project" not in args else args["project"] in repos
@@ -101,43 +104,93 @@ def query_activity(
     else:
         items = []
     if "app" in sources:
-        if "project" in args:
-            app: dict[str, Any] = {
-                "items": [],
-                "watermark": 0,
-                "revision": 0,
-                "coverage": {
-                    "status": "unknown",
-                    "provider": "timesink",
-                    "reason": "TimeSink spans have no repository mapping; "
-                    "project filter excludes them.",
-                },
-            }
-        else:
-            app = timesink.query_spans(
-                timesink_path,
-                start,
-                end,
-                watermark=app_watermark if args.get("cursor") else None,
-            )
-        if args.get("cursor") and app_revision != app["revision"]:
-            message = "TimeSink results changed while paging; restart the query"
-            raise DailyError(message, "invalid_cursor")
-        app_watermark, app_revision = app["watermark"], app["revision"]
-        items.extend(app["items"])
-        coverage["app"] = app["coverage"]
+        app_watermark, app_revision = _timesink_source(
+            timesink.query_spans,
+            args,
+            start,
+            end,
+            timesink_path,
+            (app_watermark, app_revision),
+            items=items,
+            coverage=coverage,
+            name="app",
+            noun="TimeSink spans",
+        )
+    if "screen" in sources:
+        screen_watermark, screen_revision = _timesink_source(
+            timesink.query_captures,
+            args,
+            start,
+            end,
+            timesink_path,
+            (screen_watermark, screen_revision),
+            items=items,
+            coverage=coverage,
+            name="screen",
+            noun="Screen captures",
+        )
     items.sort(key=lambda item: (item["observed_at"] or item["occurred_at"], item["id"]))
     result = page_rows(items, args, binding, snapshot, offset)
     if result["next_cursor"]:
         result["next_cursor"] = make_cursor(
-            binding, [snapshot, app_watermark, app_revision, offset + result["count"]]
+            binding,
+            [
+                snapshot,
+                app_watermark,
+                app_revision,
+                screen_watermark,
+                screen_revision,
+                offset + result["count"],
+            ],
         )
+    uses_timesink = bool({"app", "screen"} & set(sources)) and timesink_path is not None
     result.update(
         coverage=coverage,
-        time_basis="source_specific" if "app" in sources and timesink_path else "observed_at",
+        time_basis="source_specific" if uses_timesink else "observed_at",
         timesink_snapshot=app_watermark,
+        # Why TimeSink stopped/resumed in the window: idle/active, lock/unlock,
+        # sleep/wake, pause/resume, start/stop, screen_denied.
+        state_events=timesink.state_events(timesink_path, start, end) if uses_timesink else [],
     )
     return result
+
+
+def _timesink_source(  # noqa: PLR0913 — one paging pin per source, threaded from the cursor.
+    query: Callable[..., dict[str, Any]],
+    args: dict[str, Any],
+    start: datetime,
+    end: datetime,
+    timesink_path: Path | None,
+    pinned: tuple[int, int],
+    *,
+    items: list[dict[str, Any]],
+    coverage: dict[str, Any],
+    name: str,
+    noun: str,
+) -> tuple[int, int]:
+    """Fold one TimeSink-backed source into the result, honouring the cursor's revision pin."""
+    watermark, revision = pinned
+    if "project" in args:
+        found: dict[str, Any] = {
+            "items": [],
+            "watermark": 0,
+            "revision": 0,
+            "coverage": {
+                "status": "unknown",
+                "provider": "timesink",
+                "reason": f"{noun} have no repository mapping; project filter excludes them.",
+            },
+        }
+    else:
+        found = query(
+            timesink_path, start, end, watermark=watermark if args.get("cursor") else None
+        )
+    if args.get("cursor") and revision != found["revision"]:
+        message = "TimeSink results changed while paging; restart the query"
+        raise DailyError(message, "invalid_cursor")
+    items.extend(found["items"])
+    coverage[name] = found["coverage"]
+    return found["watermark"], found["revision"]
 
 
 def read_activity(
@@ -147,6 +200,30 @@ def read_activity(
 ) -> dict[str, Any]:
     """Read only a saved observation, never capture the current screen or diff."""
     identity = args["activity_id"]
+    if identity.startswith("timesink-capture:"):
+        row = timesink.read_capture(timesink_path, identity)
+        text = str(row["text"] or "")
+        [offset] = cursor_position(args.get("cursor"), identity, [0])
+        chunk, end = text_chunk(text, offset)
+        return {
+            "id": identity,
+            "source_refs": [identity],
+            "kind": "screen.capture",
+            "observed_at": None,
+            "occurred_at": timesink.moment(row["at"]),
+            "ended_at": timesink.moment(row["lastSeenAt"]),
+            "app_name": row["appName"],
+            "app_bundle_id": row["appBundleID"],
+            "window_title": row["title"],
+            "span_id": row["spanID"],
+            "image_path": row["imagePath"],
+            "content": chunk,
+            "content_format": "text",
+            "offset": offset,
+            "total_chars": len(text),
+            "complete": end == len(text),
+            "next_cursor": make_cursor(identity, [end]) if end < len(text) else None,
+        }
     if identity.startswith("timesink:"):
         original = encoded(timesink.read_span(timesink_path, identity))
         [offset] = cursor_position(args.get("cursor"), identity, [0])

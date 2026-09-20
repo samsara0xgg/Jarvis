@@ -84,6 +84,9 @@ def check_refs(
         elif prefix == "timesink":
             timesink.read_span(timesink_path, ref)
             exists = True
+        elif prefix == "timesink-capture":
+            timesink.read_capture(timesink_path, ref)
+            exists = True
         if not exists:
             msg = f"Source does not exist: {ref}"
             raise DailyError(msg, "invalid_source")
