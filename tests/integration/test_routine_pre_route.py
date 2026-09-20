@@ -22,6 +22,10 @@ _CASES: list[tuple[str, str | None]] = [
     ("Run the tests again", "en_action_verb"),
     ("what is in my clipboard", "en_tool_noun"),
     ("冰为什么会融化？", None),  # noqa: RUF001 - CJK question mark is real input
+    ("今天有哪些待办", "zh_tool_noun"),
+    ("今天的早报呢", "zh_tool_noun"),
+    ("本地知识里有什么", "zh_tool_noun"),
+    ("my briefing for today", "en_tool_noun"),
     ("你好", None),
     ("为什么天空是蓝色的", None),
     ("why is the sky blue", None),

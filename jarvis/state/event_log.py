@@ -935,6 +935,30 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    EventTypeSchema(
+        event_type="todo.revised",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("request_id", "request_hash", "operation", "item", "action_id"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="knowledge.revised",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("request_id", "request_hash", "operation", "item", "action_id"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="briefing.revised",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("request_id", "request_hash", "operation", "item", "action_id"),
+        optional_payload=(),
+        schema_version=1,
+    ),
 )
 
 

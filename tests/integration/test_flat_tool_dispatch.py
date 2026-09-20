@@ -19,6 +19,7 @@ from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import (
     ActionLifecycle,
     Tool,
+    ToolDefinition,
     ToolError,
     ToolRegistry,
     get_current_time,
@@ -80,7 +81,7 @@ def long_tool(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
 class _Fixture:
     """One runtime root, registry and lifecycle wired together."""
 
-    def __init__(self, tmp_path: Path, *, tools: tuple[Tool, ...]) -> None:
+    def __init__(self, tmp_path: Path, *, tools: tuple[Tool | ToolDefinition, ...]) -> None:
         self.paths = bootstrap_runtime(tmp_path)
         self.conn = open_event_log(self.paths.event_log)
         self.registry = ToolRegistry()

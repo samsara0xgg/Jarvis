@@ -69,8 +69,6 @@ from jarvis.shared.text import truncate_utf8
 from jarvis.state.authorized_dispatch_outbox import admit_authorized_dispatch
 from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.lifecycle_terminal import terminalize_action
-from jarvis.state.memory_db import DEFAULT_SEARCH_LIMIT
-from jarvis.state.memory_db import search_records as search_memory_records
 
 if TYPE_CHECKING:
     import sqlite3
@@ -699,77 +697,6 @@ def list_memos(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         stamp = datetime.fromtimestamp(event.ts_epoch_ms / 1000).astimezone()
         lines.append(f"{len(lines) + 1}. [{stamp:%m-%d %H:%M}] {event.payload.get('text', '')}")
     return {"count": len(lines), "rendered": "\n".join(lines) if lines else "还没有备忘录。"}
-
-
-_SEARCH_RECORDS_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "properties": {
-        "keyword": {
-            "type": "string",
-            "description": (
-                "Substring to match in the record text (case-insensitive; "
-                "Chinese works as-is). Omit to match every record."
-            ),
-        },
-        "from": {
-            "type": "string",
-            "description": (
-                "Earliest timestamp, ISO 8601 with UTC offset, "
-                "e.g. 2026-09-08T00:00:00-04:00."
-            ),
-        },
-        "to": {
-            "type": "string",
-            "description": "Latest timestamp, ISO 8601 with UTC offset.",
-        },
-        "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "description": "Maximum rows to return, newest first. Default 20.",
-        },
-    },
-    "required": [],
-}
-
-
-def _make_search_records(db_path: Path) -> Tool:
-    """Bind `search_records` to the memory.db path."""
-
-    def search_records(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
-        keyword = args.get("keyword")
-        from_ts = args.get("from")
-        to_ts = args.get("to")
-        limit = args.get("limit")
-        rows = search_memory_records(
-            db_path,
-            keyword=keyword.strip() if isinstance(keyword, str) and keyword.strip() else None,
-            from_ts=from_ts if isinstance(from_ts, str) and from_ts.strip() else None,
-            to_ts=to_ts if isinstance(to_ts, str) and to_ts.strip() else None,
-            limit=limit if isinstance(limit, int) and limit > 0 else DEFAULT_SEARCH_LIMIT,
-        )
-        lines = [f"[{ts}] {source}: {text}" for ts, source, text in rows]
-        return {
-            "count": len(rows),
-            "rendered": "\n".join(lines) if lines else "没有找到匹配的记录。",
-        }
-
-    return Tool(
-        name="search_records",
-        description=(
-            "Search the memory store of everything Allen said and every "
-            "answer given, newest first, with timestamps. Call this whenever "
-            "Allen asks what he said before (我之前说过什么 / 刚才说的 / "
-            "昨天说的 / 上周二说的) or refers to an earlier conversation, and "
-            "quote the original words and their time back to him. Filter by "
-            "keyword substring and/or an ISO 8601 time range; every argument "
-            "is optional."
-        ),
-        input_schema=_SEARCH_RECORDS_INPUT_SCHEMA,
-        handler=search_records,
-        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-        risk_level="L0",
-        read_only=True,
-    )
 
 
 # --- open_path handler --------------------------------------------------------
@@ -3517,6 +3444,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     screen_max_width_px: int = DEFAULT_SCREEN_MAX_WIDTH_PX,
     confirmation_dispatch_outbox: bool = False,
     memory_db_path: Path | None = None,
+    observed_repos: tuple[str, ...] = (),
+    timesink_db_path: Path | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -3563,6 +3492,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         confirmation_dispatch_outbox: `realtime.concurrency_safety.
             confirmation_dispatch_outbox` — a lease-bearing dispatch
             admits through the outbox instead of a plain append.
+        observed_repos: Currently configured Git repositories for activity coverage metadata.
+        timesink_db_path: Optional existing TimeSink SQLite store, opened read-only.
         memory_db_path: `memory.db_path` — registers `search_records`
             over that memory.db. `None` (hand-built test registries)
             registers no memory tool.
@@ -3670,8 +3601,13 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             requires_confirmation=True,
         )
     )
-    if memory_db_path is not None:
-        registry.register(_make_search_records(memory_db_path))
+    # Local import avoids a cycle: daily adapters use this module's flat Tool type.
+    from jarvis.execution.daily_tools import build_daily_tools  # noqa: PLC0415
+
+    for daily_tool in build_daily_tools(
+        memory_db_path, repos=observed_repos, timesink_path=timesink_db_path
+    ):
+        registry.register(daily_tool)
     return registry
 
 
