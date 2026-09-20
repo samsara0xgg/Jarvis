@@ -137,7 +137,7 @@ def test_a_phrase_is_stable_across_processes_for_one_action_id() -> None:
 
 def test_non_mapped_event_types_return_none() -> None:
     """Only the four D6 action rows speak; every other row is silent."""
-    for event_type in ("run.started", "gate.evaluated", "action.cancelled",
+    for event_type in ("memo.captured", "gate.evaluated", "action.cancelled",
                        "action.timeout_assumed", "turn.started", "response.completed"):
         assert commentary_intent_for(_action_event(event_type)) is None, event_type
 
@@ -1159,7 +1159,7 @@ def test_commentary_leaves_the_next_turns_pre_route_alone(tmp_path: Path) -> Non
         source_event_id=dispatched.event_uid,
     )
     later = _user_turn(reader, "T-next", transcript="随便说点什么吧")
-    packet = assemble_packet(later, reader, entity_bookmarks=())
+    packet = assemble_packet(later, reader)
     assert fold_conversation_history(iter_events(reader)).consistent is True
     assert pre_route(
         packet,

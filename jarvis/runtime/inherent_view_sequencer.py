@@ -75,7 +75,6 @@ _SELECT_RESPONSE_ROWS_SQL: Final[str] = (
     "'response.started', 'response.completed', 'response.cancelled', 'response.failed', "
     "'action.proposed', 'action.authorized', 'action.dispatched', 'action.running', "
     "'action.result_observed', 'action.timeout_assumed', 'action.failed', 'action.cancelled', "
-    "'worker.quiesced', 'action.cleanup_completed', 'action.cleanup_failed', "
     "'confirmation.requested', 'confirmation.accepted', 'confirmation.rejected', "
     "'confirmation.expired', "
     "'surface.user_intent', 'gate.evaluated'"

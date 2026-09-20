@@ -11,7 +11,6 @@ from jarvis.state.projections import ProjectionSet, fold_projections
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Sequence
 
 
 @dataclass(frozen=True)
@@ -23,11 +22,7 @@ class DecisionStateSnapshot:
     authorizations: AuthorizationSnapshot
 
 
-def read_decision_snapshot(
-    conn: sqlite3.Connection,
-    *,
-    entity_bookmarks: Sequence[tuple[str, str]] = (),
-) -> DecisionStateSnapshot:
+def read_decision_snapshot(conn: sqlite3.Connection) -> DecisionStateSnapshot:
     """Borrow a caller's transaction or own a read-only one, never create tables."""
     owned = not conn.in_transaction
     if owned:
@@ -39,7 +34,7 @@ def read_decision_snapshot(
         authorizations = read_authorization_snapshot(conn, events)
         return DecisionStateSnapshot(
             event_cursor=cursor,
-            projections=fold_projections(events, entity_bookmarks=entity_bookmarks),
+            projections=fold_projections(events),
             authorizations=authorizations,
         )
     finally:

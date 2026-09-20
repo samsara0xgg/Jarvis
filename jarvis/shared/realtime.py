@@ -141,42 +141,6 @@ class Wave4ResponseFlags:
 
 
 @dataclass(frozen=True)
-class Wave4ActionFlags:
-    """Production adoption switch for ADR-0008 Step 3 (Wave 4B).
-
-    ``action_runner`` routes ``ToolRegistry.dispatch`` through the L4
-    ActionRunner: the handler runs on the runner's own thread and Event Log
-    connection under a resolved resource lease, and the driver waits on the
-    returned handle.  Off in the shipped configuration, so ``dispatch`` runs
-    handlers inline exactly as it did before.
-    """
-
-    action_runner: bool = False
-    true_async_workers: bool = False
-    """ADR-0008 §6 / Step 4: an ``is_async`` tool is no longer awaited.
-
-    ``dispatch`` returns an acknowledgement as soon as the ActionRun is
-    accepted, and the result reaches L3 through the durable trigger the
-    tool's async shape always promised. Requires ``action_runner``: without
-    a runner there is nothing to own the work after ``dispatch`` returns.
-    """
-
-    @classmethod
-    def from_mapping(cls, raw: Mapping[str, object] | None) -> Wave4ActionFlags:
-        """Parse exact booleans, treating absent values as disabled."""
-        values = {} if raw is None else raw
-        return cls(
-            action_runner=values.get("action_runner") is True,
-            true_async_workers=values.get("true_async_workers") is True,
-        )
-
-    @property
-    def all_disabled(self) -> bool:
-        """Return whether the runtime must retain the inline dispatch path."""
-        return not (self.action_runner or self.true_async_workers)
-
-
-@dataclass(frozen=True)
 class Wave5InputFlags:
     """Production adoption switch for ADR-0008 D8's intent pump (Step 4).
 
@@ -507,7 +471,6 @@ __all__ = [
     "TerminalCommitted",
     "TerminalOutcome",
     "Wave1FeatureFlags",
-    "Wave4ActionFlags",
     "Wave4ResponseFlags",
     "Wave5InputFlags",
     "new_boot_id",

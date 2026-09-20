@@ -36,8 +36,6 @@ _TIER_A_ENABLED = (
     "concurrency_safety.exactly_once_cost_accounting",
     "response.response_run_lifecycle",
     "response.independent_response_cancel",
-    "actions.action_runner",
-    "actions.true_async_workers",
     "input.intent_pump",
     "streaming_output.enabled",
     "single_audio_ingress.enabled",
@@ -70,7 +68,7 @@ def _lookup(block: dict[str, object], dotted: str) -> object:
 
 
 def test_canary_tier_a_switches_ship_enabled() -> None:
-    """The twelve live-burned switches are on in the shipped config."""
+    """The ten live-burned switches are on in the shipped config."""
     realtime = _shipped_realtime()
     off = [path for path in _TIER_A_ENABLED if _lookup(realtime, path) is not True]
     assert not off, f"tier-A switches unexpectedly off: {off}"

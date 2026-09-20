@@ -2,8 +2,8 @@
 
 Per ADR 0001 § Acceptance criterion H12:
 
-> AST scan: each gate module / function (``pre_action``,
-> ``result_interpreter``, ``pre_emit``) contains the MUST-check
+> AST scan: each gate function (``pre_action``, ``pre_emit``) contains
+> the MUST-check
 > primitives from § Gate contracts. Checked by presence of identifiers
 > (``caller_principal``, ``risk_level``, ``result_semantics``,
 > ``evidence`` / ``claim``) inside the function body. This is a soft
@@ -13,7 +13,6 @@ Per ADR 0001 § Acceptance criterion H12:
 Modules scanned:
 
 - ``jarvis/decision/gates.py``: ``pre_action_gate`` + ``pre_emit_gate``.
-- ``jarvis/decision/result_interpreter.py``: ``result_interpreter``.
 
 For each :class:`ast.FunctionDef`, collect every ``Name(id=...)``,
 ``Attribute(attr=...)``, and string-literal token inside the function
@@ -143,31 +142,5 @@ def test_pre_emit_gate_contains_must_check_primitives() -> None:
     )
     assert not violations, (
         "H12 — pre_emit_gate missing MUST-check primitives:\n  "
-        + "\n  ".join(violations)
-    )
-
-
-def test_result_interpreter_contains_must_check_primitives() -> None:
-    """``result_interpreter`` references semantics, claim, and evidence."""
-    interp_path = repo_root() / "jarvis" / "decision" / "result_interpreter.py"
-    module = parse(interp_path)
-    fn = _find_function_def(module, "result_interpreter")
-    assert fn is not None, (
-        "result_interpreter function not found in jarvis/decision/result_interpreter.py"
-    )
-    tokens = _identifier_tokens(fn)
-
-    violations = _assert_any_present(
-        "result_interpreter",
-        tokens,
-        required_any=(
-            ("semantics", "result_semantics"),
-            ("claim", "Claim", "claim_id"),
-            ("evidence", "Evidence", "evidence_id"),
-        ),
-        file_label="jarvis/decision/result_interpreter.py",
-    )
-    assert not violations, (
-        "H12 — result_interpreter missing MUST-check primitives:\n  "
         + "\n  ".join(violations)
     )

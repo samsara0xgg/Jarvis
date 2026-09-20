@@ -66,11 +66,6 @@ CONFIRMATION_WIRE_KEYS = {
     "revision",
 }
 TERMINAL_TYPES = ("action.result_observed", "action.failed", "action.timeout_assumed")
-CLEANUP_TRIO = {
-    "worker.quiesced": "quiesced",
-    "action.cleanup_completed": "completed",
-    "action.cleanup_failed": "quarantined",
-}
 
 
 class _Fold:
@@ -318,29 +313,6 @@ def test_cancellable_is_true_exactly_between_dispatch_and_the_first_terminal() -
         assert during == [True, True]
         assert after is False
 
-
-def test_cleanup_state_folds_the_trio_and_defaults_to_none() -> None:
-    """D9's cleanup trio is fold-internal truth: no wire key, so no envelope."""
-    seen = {}
-    for event_type in CLEANUP_TRIO:
-        fold = _Fold()
-        fold.row("action.proposed", _proposed("A5", "spawn_worker"))
-        fold.row("action.dispatched", {"action_id": "A5"})
-        default = fold.action("A5").cleanup_state
-        transition = fold.row(
-            event_type,
-            {
-                "action_id": "A5",
-                "worker_epoch": 1,
-                "verification_outcome": "clean",
-                "reason": "dirty_tree",
-            },
-        )
-        seen[event_type] = (default, fold.action("A5").cleanup_state, transition)
-
-    assert seen == {
-        event_type: ("none", expected, None) for event_type, expected in CLEANUP_TRIO.items()
-    }
 
 
 def test_a_refused_proposal_is_retired_at_its_verdict() -> None:

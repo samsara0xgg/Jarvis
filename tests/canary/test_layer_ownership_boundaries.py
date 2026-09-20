@@ -24,7 +24,6 @@ edges mentioned above.
 Day-2 ADR-0002 § Sleep/wake protocol (Step 16) introduces a narrow,
 file-scoped exception: ``jarvis/deployment/sleep_wake.py`` may import
 ``jarvis.state.event_log`` to emit ``mac.sleeping`` / ``mac.awake`` /
-``worker.suspended_by_sleep`` / ``worker.terminated_by_sleep`` /
 ``action.timeout_assumed`` per spec §3.7.8. The rest of
 ``jarvis/deployment/`` still respects the Day-1 ban.
 """
@@ -43,7 +42,7 @@ _FORBIDDEN_BY_LAYER: dict[str, frozenset[str]] = {
 }
 
 # Narrow per-file exceptions to the deployment-imports-jarvis.state ban.
-# Day-2 ADR-0002 Step 16: sleep_wake.py must emit mac.* + worker.* +
+# Day-2 ADR-0002 Step 16: sleep_wake.py must emit mac.* +
 # action.timeout_assumed events directly so the spec §3.7.8 fail-closed
 # reconciliation path stays self-contained inside L6. The rest of
 # jarvis/deployment/ still respects the Day-1 stricter rule.

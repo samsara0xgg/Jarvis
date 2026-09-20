@@ -35,9 +35,6 @@ spend. The default CI path (no flags) costs $0.
   duration of every live scenario test and records the paths opened.
   Acceptance H7 Part B / G4 — asserts no path containing ``cassette``
   or ``recording`` is opened during scenario execution.
-- ``seed_one_open_task`` — bootstraps a real :class:`JarvisRuntime`
-  against ``tmp_path`` and seeds exactly one open task created 26h
-  earlier (so "昨天那个 task" reads naturally to the LLM).
 - ``write_llm_use_artifact`` — fixture that, after the scenario run,
   writes ``tests/_artifacts/llm_use_<ts>.json`` with the per-run token
   usage / finish_reason summary (acceptance G5).
@@ -56,9 +53,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
-
-from jarvis.runtime import bootstrap_runtime_app
-from jarvis.state.event_log import emit_event
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -149,42 +143,6 @@ def open_audit_hook(
         "H7 Part B / G4: scenario opened recorded-LLM-style paths:\n  "
         + "\n  ".join(forbidden_hits)
     )
-
-
-# --- Seeded runtime -------------------------------------------------------
-
-
-@pytest.fixture
-def seed_one_open_task(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[JarvisRuntime]:
-    """Bootstrap a real runtime against ``tmp_path`` and seed one open task.
-
-    The seeded ``task.created`` event is timestamped 26h before now so
-    that the LLM's natural reading of "昨天那个 task" maps to this row
-    via the Resolver's single-open-task path.
-    """
-    monkeypatch.setenv("JARVIS_RUNTIME_ROOT", str(tmp_path))
-
-    runtime = bootstrap_runtime_app(runtime_root=tmp_path)
-
-    yesterday_ms = int(time.time() * 1000) - 26 * 3600 * 1000
-    emit_event(
-        runtime.conn,
-        type="task.created",
-        payload={
-            "task_id": "task_X",
-            "goal": "Implement Day-1 verify pipeline",
-            "source": "manual",
-        },
-        ts_epoch_ms=yesterday_ms,
-    )
-
-    try:
-        yield runtime
-    finally:
-        runtime.conn.close()
 
 
 # --- Token-use artifact writer (G5) ---------------------------------------

@@ -47,11 +47,6 @@ class _StubRuntimePaths:
     event_log: Path
     artifacts_root: Path
 
-    def artifact_dir_for_run(self, run_id: str) -> Path:
-        out = self.artifacts_root / run_id
-        out.mkdir(parents=True, exist_ok=True)
-        return out
-
 
 class _StubLLMClient:
     """Returns a parametrized draft. One chat per turn; never raises.

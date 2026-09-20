@@ -4,10 +4,8 @@
 
 from __future__ import annotations
 
-import contextlib
 import sqlite3
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from types import SimpleNamespace
@@ -19,8 +17,7 @@ from jarvis import decision
 from jarvis.decision.llm import ChatResult
 from jarvis.decision.llm_session import LLMRequestClient
 from jarvis.decision.response_run import ResponseCancelledError
-from jarvis.decision.reviewer import review_diff
-from jarvis.runtime import _start_drive_turn_response, make_response_cancel_callable
+from jarvis.runtime import make_response_cancel_callable
 from jarvis.shared.realtime import AuthorizedDispatch
 from jarvis.state import authorized_dispatch_outbox as outbox
 from jarvis.state.event_log import open_event_log
@@ -37,7 +34,6 @@ from tests.integration.test_wave4a_response_run import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
     from pathlib import Path
 
 
@@ -152,66 +148,3 @@ def _chat_result() -> ChatResult:
         input_tokens=10, output_tokens=5, raw={}, tokens_in=10, tokens_out=5,
         model_used="gpt-fast",
     )
-
-
-@pytest.mark.parametrize("already_admitted", [False, True])
-def test_reviewer_admission_orders_cancel_without_holding_network_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, already_admitted: bool,
-) -> None:
-    """Real reviewer fresh-context setup and chat straddle a ResponseRun cancel."""
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True, cancel_timeout_ms=50)
-    intent = _emit_intent(runtime.conn, "review-cancel", "fixture")
-    opened = _start_drive_turn_response(runtime, user_intent_event=intent, turn_id="review-cancel")
-    assert opened is not None
-    run, _terminalizer, _route = opened
-    entered, release = threading.Event(), threading.Event()
-    calls: list[int] = []
-
-    @contextlib.contextmanager
-    def fresh(self: LLMRequestClient) -> Iterator[LLMRequestClient]:
-        if not already_admitted:
-            entered.set()
-            assert release.wait(5)
-        yield self
-
-    def chat(_self: LLMRequestClient, **_kwargs: Any) -> ChatResult:
-        calls.append(1)
-        entered.set()
-        assert release.wait(5)
-        return _chat_result()
-
-    monkeypatch.setattr(LLMRequestClient, "fresh_context", fresh)
-    monkeypatch.setattr(LLMRequestClient, "chat", chat)
-
-    def reviewer() -> None:
-        conn = open_event_log(runtime.runtime_paths.event_log)
-        try:
-            review_diff(
-                task_goal="fixture", diff_text="+ fixture", llm_client=run.request_client,
-                request_admission=lambda kind: run.admit_request(conn, kind),
-            )
-        finally:
-            conn.close()
-
-    try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(reviewer)
-            try:
-                assert entered.wait(5)
-                start = time.monotonic()
-                outcome = make_response_cancel_callable(runtime)(
-                    run.response_id, "generation", "user_stop",
-                )
-                assert outcome == "cancelled"
-                assert time.monotonic() - start < .25
-            finally:
-                release.set()
-            if already_admitted:
-                future.result(timeout=5)
-            else:
-                with pytest.raises(ResponseCancelledError):
-                    future.result(timeout=5)
-        assert len(calls) == int(already_admitted)
-        assert _event_count(runtime.conn, "response.request_admitted") == int(already_admitted)
-    finally:
-        runtime.conn.close()

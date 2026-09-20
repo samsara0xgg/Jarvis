@@ -1,34 +1,19 @@
 """L4 Capability Execution — ToolRegistry + ActionLifecycle + handlers.
 
-This module is the SINGLE place in `jarvis/` allowed to:
-
-- dispatch L4 tool handlers,
-- write artifact files into `${runtime_paths.artifacts_root}/run_<run_id>/`.
+This module is the SINGLE place in `jarvis/` allowed to dispatch L4 tool
+handlers.
 
 Per spec.html §3.4 (`ActionRequest` / lifecycle / ToolRegistry) +
-spec.html §3.5 (CallerPrincipal scoping) + ADR 0001 § Stub strategy L4
-rows + § Canonical event trace evt 04..21 + § Acceptance B (lifecycle).
+spec.html §3.5 (CallerPrincipal scoping) + ADR 0001 § Acceptance B
+(lifecycle) + ADR 0019 (the flat `Tool` shape).
 
-Day-2 (post Step 10) ships three tools:
+Two handler shapes coexist while the old-shape tools remain:
 
-- `spawn_worker` — ASYNC-shaped L2 task action backed by a synchronous
-  Codex turn. The dispatcher emits `action.dispatched` → `action.running`;
-  the handler then runs the full Codex flow (pre-flight version check,
-  dirty-tree stash, `run_codex_action`, heartbeat loop, diff capture,
-  artifact persistence, `worker.*` event emission) and returns a
-  `RawResult(semantics="ack")`. The handler emits `worker.reported`
-  itself, on the SAME thread, but the lifecycle is intentionally left
-  at `running`. L3's `_handle_worker_reported` (the Day-1 re-entry
-  branch) consumes the `worker.reported` event on the next decide()
-  cycle and transitions lifecycle `running → result_observed` via the
-  synthetic-RawResult path — that flow is unchanged from Day-1, so
-  Day-2 keeps the same `result_semantics="ack"` on the ToolDefinition.
-- `verify_diff` — SYNC L0 read. Reads the artifact, checks predicate
-  `data["status"] == "ok"`, emits `action.result_observed` with
-  `semantics="verification"` (match) or `semantics="error"` (miss),
-  transitioning lifecycle `running → result_observed`.
-- `create_task` — SYNC L1. Records `task.created` with optional
-  `verify_command` auto-detection (Step 4).
+- `Tool` (ADR 0019) — a function of its arguments; the dispatcher emits
+  every event, moves the lifecycle and serializes the payload.
+- `ToolDefinition` — the handler writes its own `action.result_observed`
+  and transitions the lifecycle terminal before returning
+  (`search_notes` / `read_file` / `open_url` / `write_file`).
 
 `tool_result` / `tool_error` JSON serializers are adapted verbatim from
 `/Users/alllllenshi/Projects/jarvis-legacy/tools_v2/helpers.py` per
@@ -38,60 +23,28 @@ ADR § Reference sources.
 (see below) so this module does NOT import `jarvis.deployment` — that
 would violate the `.importlinter` middle-layer sibling rule (execution
 and deployment are independent siblings in `decision | execution |
-surface | deployment`). `jarvis.runtime` (the composition root, Step 17)
-passes a real `jarvis.deployment.RuntimePaths` into the registry; it
-structurally satisfies the Protocol.
+surface | deployment`). `jarvis.runtime` (the composition root) passes a
+real `jarvis.deployment.RuntimePaths` into the registry; it structurally
+satisfies the Protocol.
 
-Layer boundary (`.importlinter` + canary H13 in Step 11): stdlib only
-plus `jarvis.shared` and `jarvis.state`. No imports from
+Layer boundary (`.importlinter` + canary H13): stdlib only plus
+`jarvis.shared` and `jarvis.state`. No imports from
 `jarvis.constitution`, `jarvis.decision`, `jarvis.surface`,
 `jarvis.deployment`, `jarvis.runtime`, `jarvis.cli`.
-
-ToolHandler signature
-=====================
-
-A `ToolHandler` is::
-
-    Callable[
-        [ActionRequest, sqlite3.Connection, RuntimePathsLike, ActionLifecycle],
-        RawResult,
-    ]
-
-The handler MUST emit any async events itself; for sync handlers it
-also transitions the lifecycle to a terminal state before returning.
-For async-shaped handlers (`spawn_worker`) the lifecycle is left at
-`running` and L3's `_handle_worker_reported` branch transitions it
-terminal once it folds the worker.reported event into a synthetic
-RawResult.
-
-Dirty-tree stash ordering (ADR-0002 § Dirty-tree policy, lines 663-713)
-=====================================================================
-
-`spawn_worker_handler` calls `isolate_pretask_changes` BEFORE Codex
-runs and forwards the resulting `stash_ref` on the returned
-`RawResult.metadata["stash_ref"]`. It MUST NOT call
-`restore_pretask_changes` itself — the runtime composition (Step 17)
-pops the stash AFTER `verify_diff_handler` exits, so the verify path's
-working tree reflects only Codex's edits. Canary
-`test_canary_stash_pop_after_verify` AST-scans this file to enforce
-the no-call invariant.
 """
 
 from __future__ import annotations
 
 import codecs
-import hashlib
 import ipaddress
 import json
 import logging
 import math
-import os
 import socket
 import subprocess
 import sys
 import threading
 import time
-import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
@@ -101,35 +54,8 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
-from jarvis.execution.action_runner import (
-    GLOBAL_RESOURCE_KEY,
-    ActionJob,
-    ActionRunner,
-    ActionRunnerError,
-    ActionSubmission,
-    CancelAccepted,
-    CancelAlreadyTerminal,
-    CancellationMode,
-    CancelOutcome,
-    CancelUnconfirmed,
-    ResourceKeyResolutionError,
-    ToolConcurrency,
-    current_execution_context,
-)
-from jarvis.execution.codex_action import (
-    CODEX_CANCELLED_ERROR,
-    CodexActionResult,
-    CodexVersionTooLowError,
-    ensure_codex_version_supported,
-    run_codex_action,
-)
-from jarvis.execution.diff_capture import (
-    isolate_pretask_changes,
-    write_diff_artifact,
-)
 from jarvis.execution.path_resolver import TargetKind, load_file_targets_config
 from jarvis.execution.path_resolver import resolve as resolve_path_target
-from jarvis.execution.verify_command_detect import detect_verify_command
 from jarvis.shared import (
     ActionRequest,
     CallerPrincipal,
@@ -141,109 +67,19 @@ from jarvis.shared import (
 from jarvis.shared.action_admission import action_admission_guard
 from jarvis.shared.text import truncate_utf8
 from jarvis.state.authorized_dispatch_outbox import admit_authorized_dispatch
-from jarvis.state.event_log import emit_event, iter_events, iter_events_of_types
+from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.lifecycle_terminal import terminalize_action
 from jarvis.state.memory_db import DEFAULT_SEARCH_LIMIT
 from jarvis.state.memory_db import search_records as search_memory_records
-from jarvis.state.projections import make_snapshot
 
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Mapping, Sequence
 
-    from jarvis.execution.action_runner import ActionExecutionContext
     from jarvis.shared import Event
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-# --- Codex execution defaults ------------------------------------------------
-
-# Codex executor identity emitted on `task.executor_assigned`. Day-2 Mac-only
-# flagship targets `codex` (the OpenAI Codex app-server CLI) running the
-# `gpt-5.5` model per ADR-0002 § Codex contract. The literals appear on
-# events so trace consumers can filter by executor / model without crossing
-# back into L4.
-_CODEX_EXECUTOR_NAME: Final[str] = "codex"
-_CODEX_DEFAULT_MODEL: Final[str] = "gpt-5.5"
-
-# Per-turn Codex wall-clock budget (spec §3.4.8 timeout_policy backstop —
-# the synchronous driver deadline in `run_codex_action`, NOT the absent
-# supervisor sweep over `result_expected_by`). Defaults to 600s (the
-# canonical "Codex 10-min turn timeout"); `JARVIS_CODEX_TURN_TIMEOUT_S`
-# overrides it so the J9 timeout lifecycle is exercisable live in seconds
-# (and as an operator turn-length cap). Read at dispatch time, not import,
-# so a per-run override takes effect without re-importing the module.
-_CODEX_TURN_TIMEOUT_ENV: Final[str] = "JARVIS_CODEX_TURN_TIMEOUT_S"
-_CODEX_TURN_TIMEOUT_DEFAULT_S: Final[float] = 600.0
-
-# ADR-0009 D4 — grace added to a tool's own budget when the dispatcher
-# stamps `action.dispatched.result_expected_by_ms`. 100s is not a taste
-# call: 600s (Codex) + 100s = 700s = `supervisor.default_budget_s`, the
-# anchor the sweep falls back to for rows that predate the stamp. Keeping
-# them equal means a stamped row and a legacy row of the same age are
-# judged overdue at the same instant, so the fallback ladder is a true
-# reconstruction of the stamp rather than a second, disagreeing policy.
-# It also leaves the in-process driver deadline (600s) a clear 100s head
-# start to emit its own terminal event before the supervisor assumes the
-# worker is gone — the sweep is the backstop, not the primary closer.
-_DISPATCH_DEADLINE_GRACE_S: Final[float] = 100.0
-
-
-def _resolve_codex_turn_timeout_s() -> float:
-    """Return the per-turn Codex budget from the env override or the default.
-
-    A malformed ``JARVIS_CODEX_TURN_TIMEOUT_S`` falls back to the 600s
-    default rather than crashing the worker spawn — a bad ops knob must
-    not turn every task into an ``action.failed``.
-    """
-    raw = os.environ.get(_CODEX_TURN_TIMEOUT_ENV)
-    if raw is None:
-        return _CODEX_TURN_TIMEOUT_DEFAULT_S
-    try:
-        return float(raw)
-    except ValueError:
-        LOGGER.warning(
-            "%s=%r is not a number; using %.0fs default turn budget",
-            _CODEX_TURN_TIMEOUT_ENV,
-            raw,
-            _CODEX_TURN_TIMEOUT_DEFAULT_S,
-        )
-        return _CODEX_TURN_TIMEOUT_DEFAULT_S
-
-
-# Per-turn Codex heartbeat cadence (spec §3.5.8 ladder — the idle-poll
-# interval at which `run_codex_action` fires `on_heartbeat`, which this
-# module turns into `worker.heartbeat` events). Defaults to 30s (the
-# canonical "worker still alive" signal); `JARVIS_CODEX_HEARTBEAT_INTERVAL_S`
-# lowers it so the J4 heartbeat lifecycle is exercisable live in seconds
-# instead of needing a 30s real-Codex turn. Read at dispatch time, not
-# import, so a per-run override takes effect without re-importing the module.
-_CODEX_HEARTBEAT_INTERVAL_ENV: Final[str] = "JARVIS_CODEX_HEARTBEAT_INTERVAL_S"
-_CODEX_HEARTBEAT_INTERVAL_DEFAULT_S: Final[float] = 30.0
-
-
-def _resolve_codex_heartbeat_interval_s() -> float:
-    """Return the heartbeat cadence from the env override or the default.
-
-    A malformed ``JARVIS_CODEX_HEARTBEAT_INTERVAL_S`` falls back to the 30s
-    default rather than crashing the worker spawn — a bad ops knob must not
-    turn every task into an ``action.failed``.
-    """
-    raw = os.environ.get(_CODEX_HEARTBEAT_INTERVAL_ENV)
-    if raw is None:
-        return _CODEX_HEARTBEAT_INTERVAL_DEFAULT_S
-    try:
-        return float(raw)
-    except ValueError:
-        LOGGER.warning(
-            "%s=%r is not a number; using %.0fs default heartbeat cadence",
-            _CODEX_HEARTBEAT_INTERVAL_ENV,
-            raw,
-            _CODEX_HEARTBEAT_INTERVAL_DEFAULT_S,
-        )
-        return _CODEX_HEARTBEAT_INTERVAL_DEFAULT_S
 
 
 # --- Public type aliases -----------------------------------------------------
@@ -262,15 +98,9 @@ class RuntimePathsLike(Protocol):
     it satisfies this Protocol structurally.
 
     Surface:
-        - ``event_log`` — DB path (still consumed by the dispatcher's
-          source-event-uid handshake; Day-2 handlers also walk events
-          via :func:`iter_events` to find ``task.created`` records).
-        - ``artifacts_root`` — root artifact dir; Day-2 spawn_worker
-          passes this to :func:`write_diff_artifact` which builds the
-          ``run_<run_id>/diff.txt`` path itself.
-        - ``artifact_dir_for_run`` — convenience for sync tools
-          (``verify_diff``) that need the per-run dir without going
-          through :mod:`diff_capture`.
+        - ``event_log`` — DB path.
+        - ``artifacts_root`` — root artifact dir (`screen_look` saves its
+          screenshots under it; `write_file` stages pending writes there).
     """
 
     @property
@@ -281,10 +111,6 @@ class RuntimePathsLike(Protocol):
     @property
     def artifacts_root(self) -> Path:
         """Root artifact directory; per-run subdirs live underneath."""
-        ...
-
-    def artifact_dir_for_run(self, run_id: str) -> Path:
-        """Return (and create) the per-run artifact directory."""
         ...
 
 
@@ -440,43 +266,6 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class PostActionCheck:
-    """Per-tool inline post_action_check declaration (spec §3.5.7).
-
-    Day-2 uses one variant: the inline ``verify_command`` chained
-    predicate on ``verify_diff``. The handler runs an inline subprocess
-    after the primary observation slot and decides the chained slot's
-    ``result_semantics`` based on ``expected_predicate``. Mismatch slot
-    semantics defaults to ``"error"`` per spec §3.4.11.
-
-    Attributes:
-        mode: ``"inline"`` — chained in the same L4 invocation. Day-2's
-            only supported mode; future modes (e.g. ``"deferred"``) are
-            out of scope.
-        check_tool: Sentinel name for the inline subprocess; NOT a tool
-            reference (no dispatcher round-trip). Day-2 value:
-            ``"verify_command"``.
-        expected_predicate: Pass/fail expression evaluated against the
-            chained result. Day-2 value: ``"exit_code == 0"``. The
-            handler reads this string but the comparison logic is
-            hard-coded — the field exists for the AST canary and audit
-            trail, not for late-binding evaluation.
-        result_semantics_on_match: ``ResultSemantics`` tag the chained
-            slot carries when ``expected_predicate`` matches. Day-2:
-            ``"verification"``. Mismatch path: handler assigns
-            ``"error"`` per spec §3.4.11.
-        timeout_ms: Per-check wall-clock timeout in milliseconds. Day-2
-            default: ``600_000`` (10 minutes).
-    """
-
-    mode: Literal["inline"]
-    check_tool: str
-    expected_predicate: str
-    result_semantics_on_match: ResultSemantics
-    timeout_ms: int
-
-
-@dataclass(frozen=True)
 class ToolDefinition:
     """One registered tool (ADR § Module map L4 row).
 
@@ -491,19 +280,11 @@ class ToolDefinition:
         risk_level: One of L0..L4 (matches `RiskLevel` in shared types).
             Compared against `EffectivePolicy.autonomy_ceiling` at the
             Pre-action Gate.
-        result_semantics: How the Result Interpreter maps this tool's
-            result. See ADR § Gate contracts table.
-        is_async: True if the handler schedules a follow-up event (e.g.
-            `spawn_worker` schedules `worker.reported`). Used by the
-            dispatcher's documentation and by tests to know not to
-            expect `action.result_observed` immediately.
+        result_semantics: The ``semantics`` tag the handler stamps on
+            its ``action.result_observed`` row.
         input_schema: JSON schema describing the tool's arguments
             (Anthropic-style `{type, properties, required}` shape).
         handler: The callable that actually executes the tool.
-        domain: One of the spec §14.1 domains (e.g. ``"git"``,
-            ``"task_ledger"``, ``"agent_control"``, ``"state_read"``,
-            ``"mac_gui"``). Feeds audit payloads and future surface
-            filtering (ADR-0011 D2).
         read_only: True if the tool performs no durable-state mutation.
             Feeds ``surface_for`` grouping and the Pre-emit scrub
             context (ADR-0011 D2).
@@ -517,20 +298,6 @@ class ToolDefinition:
             risk_rank(confirmation_threshold)``; boot validation
             (``jarvis.decision.policy.validate_requires_confirmation``)
             enforces this so the two fields cannot drift.
-        post_action_check: Optional inline post-action chained check
-            (spec §3.5.7). ``None`` for Day-1 / single-slot tools;
-            Day-2 ``verify_diff`` declares one so the handler can chain
-            an inline ``verify_command`` subprocess into the second
-            ``RawResultBundle`` slot.
-        result_budget_s: Optional per-tool wall-clock budget, in seconds,
-            for the tool to produce a terminal event (ADR-0009 D4). A
-            zero-argument callable rather than a float because the Codex
-            budget is env-overridable per run
-            (``JARVIS_CODEX_TURN_TIMEOUT_S``) and must be read at
-            dispatch time, not at registry-build time. ``None`` (the
-            default, and every sync tool) means "no declared budget":
-            the dispatcher stamps no deadline and the supervisor sweep
-            falls back to ``dispatched ts + supervisor.default_budget_s``.
     """
 
     name: str
@@ -538,25 +305,11 @@ class ToolDefinition:
     allowed_callers: frozenset[CallerPrincipal]
     risk_level: RiskLevel
     result_semantics: ResultSemantics
-    is_async: bool
     input_schema: Mapping[str, Any]
     handler: ToolHandler
-    domain: str
     read_only: bool
     requires_entity: bool
     requires_confirmation: bool
-    post_action_check: PostActionCheck | None = None
-    result_budget_s: Callable[[], float] | None = None
-    cancellation_mode: CancellationMode = "unsupported"
-    """ADR-0008 D9 cancellation capability of this tool's handler.
-
-    Defaults to ``"unsupported"`` for every tool shipped today, and that is
-    the honest value: none of their handlers polls
-    :func:`jarvis.execution.action_runner.current_execution_context`, so a
-    cancel request could not stop them. F9 requires that such an action keeps
-    running and never gets a false ``action.cancelled`` — declaring the
-    capability here is what makes the runner refuse before it writes one.
-    """
 
 
 # --- Tool (ADR 0019: the flat definition replacing ToolDefinition) ----------
@@ -615,11 +368,6 @@ class Tool:
     requires_entity: bool = False
     requires_confirmation: bool = False
     max_result_chars: int = DEFAULT_MAX_RESULT_CHARS
-
-    @property
-    def is_async(self) -> bool:
-        """A flat tool returns its result; nothing is scheduled (L3 ``ToolDefinitionLike``)."""
-        return False
 
 
 def tool(  # noqa: PLR0913 — one keyword per Tool field.
@@ -812,1359 +560,8 @@ def tool_result(data: Mapping[str, Any] | None = None, **kwargs: object) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-# --- spawn_worker / verify_diff handlers ------------------------------------
-
-
-def _load_task_record(conn: sqlite3.Connection, task_id: str) -> Mapping[str, Any] | None:
-    """Return the most recent ``task.created`` payload for ``task_id``, or None.
-
-    L4 is allowed to read L2 (event_log) per `.importlinter`; this walk
-    is the L4-internal lookup for ``goal`` and ``repo_path`` that the
-    Codex spawn needs. The Task Ledger projection's TaskLedgerRecord
-    only carries ``goal``; ``repo_path`` lives on the raw event payload.
-    Walking the (small Day-2) event log here keeps the projection's
-    public surface minimal and avoids a write to Step 5's projection
-    contract from inside a Day-2 build step.
-    """
-    latest: Mapping[str, Any] | None = None
-    for evt in iter_events(conn):
-        if evt.type != "task.created":
-            continue
-        if evt.payload.get("task_id") == task_id:
-            latest = evt.payload
-    return latest
-
-
-def _emit_worker_heartbeat_factory(  # noqa: PLR0913 — all kwargs are immutable correlation ids; bundling them defeats the point of a closure factory.
-    *,
-    conn: sqlite3.Connection,
-    action_id: str,
-    run_id: str,
-    task_id: str,
-    source_event_id: str,
-    turn_id: str | None,
-) -> Callable[[dict[str, Any]], None]:
-    """Build the ``on_heartbeat`` closure for :func:`run_codex_action`.
-
-    The closure emits one ``worker.heartbeat`` event per call with the
-    payload Codex's poll loop already shapes (``summary``,
-    ``elapsed_ms``, ``last_item_summary``). Top-level (not nested in
-    the handler) for clarity; the closure captures only immutable
-    correlation ids plus the live ``conn`` (handler-thread bound).
-    """
-    correlation: dict[str, str] = {"action_id": action_id, "run_id": run_id, "task_id": task_id}
-    if turn_id is not None:
-        correlation["turn_id"] = turn_id
-
-    def _emit(payload: dict[str, Any]) -> None:
-        emit_event(
-            conn,
-            type="worker.heartbeat",
-            payload={
-                "run_id": run_id,
-                "action_id": action_id,
-                "elapsed_ms": int(payload.get("elapsed_ms", 0)),
-                "last_log_line": str(payload.get("last_item_summary", "")),
-                "summary": str(payload.get("summary", "codex turn in progress")),
-            },
-            source_event_id=source_event_id,
-            correlation=correlation,
-        )
-
-    return _emit
-
-
-def _emit_executor_reported(  # noqa: PLR0913 — one keyword per durable field of the run's end-of-run row.
-    conn: sqlite3.Connection,
-    *,
-    task_id: str,
-    run_id: str,
-    status: str,
-    summary: str,
-    source_event_id: str,
-    correlation: Mapping[str, str],
-    diff_path: str | None = None,
-    cost: Mapping[str, Any] | None = None,
-) -> None:
-    """Emit one ``task.executor_reported`` row for a finished Codex run.
-
-    ADR-0008 Step 4 makes this the durable home of the run's accounting
-    facts. A truly background `spawn_worker` hands its ``RawResult`` to the
-    runner, not to L3, so ``metadata["cost"]`` no longer reaches the only
-    layer allowed to emit ``cost.recorded``; L3 reads them back from here at
-    re-entry instead. L4 still never emits ``cost.recorded`` itself.
-    """
-    payload: dict[str, Any] = {
-        "task_id": task_id,
-        "run_id": run_id,
-        "status": status,
-        "summary": summary,
-    }
-    if diff_path is not None:
-        payload["diff_path"] = diff_path
-    if cost is not None:
-        model = cost.get("model")
-        if isinstance(model, str) and model:
-            payload["model"] = model
-        kind = cost.get("kind")
-        if isinstance(kind, str) and kind:
-            payload["executor"] = kind
-        payload["tokens_in"] = int(cost.get("tokens_in", 0) or 0)
-        payload["tokens_out"] = int(cost.get("tokens_out", 0) or 0)
-    emit_event(
-        conn,
-        type="task.executor_reported",
-        payload=payload,
-        source_event_id=source_event_id,
-        correlation=dict(correlation),
-    )
-
-
-def _spawn_worker_classify_failure(
-    codex_result: CodexActionResult,
-) -> tuple[Literal["action.failed", "action.timeout_assumed"], str, str] | None:
-    """Classify a finished Codex turn into its terminal, or ``None`` if it succeeded.
-
-    Returns ``(event_type, error_code, error_message)``. The two rows are the
-    ones ADR-0002's Negative-path appendix names: an interrupt or an expired
-    budget is ``action.timeout_assumed`` under the canonical
-    ``codex_turn_timeout`` tag, and every other structured error is
-    ``action.failed`` with the upstream tag preserved. A cancelled turn never
-    reaches here — the caller returns before this, because its terminal
-    belongs to whoever asked for the cancel (ADR-0008 D9).
-    """
-    if codex_result.interrupted or codex_result.error == "codex_turn_timeout":
-        return (
-            "action.timeout_assumed",
-            "codex_turn_timeout",
-            codex_result.error or "codex turn timed out",
-        )
-    if codex_result.error is not None:
-        return (
-            "action.failed",
-            codex_result.error.split(":", 1)[0],
-            codex_result.error,
-        )
-    return None
-
-
-def _spawn_worker_cancel_seam(
-    stash_ref: str | None,
-    *,
-    run_id: str,
-    task_id: str,
-) -> Callable[[], bool] | None:
-    """Record this run's stash and identity, and return its cancel poll.
-
-    ADR-0008 D9 (Step 4). All three need the same object, and all are no-ops
-    off the runner: `current_execution_context()` returns ``None`` on the
-    pre-Step-3 inline path, where the handler writes its own terminal and that
-    terminal already carries the stash ref and both ids.
-
-    The identity travels with the ref because the runner writes the cancel and
-    timeout terminals, and the cleanup finalizer needs ``task_id`` to find the
-    repository the stash belongs to and ``run_id`` to key its artifacts. Only
-    the handler knows them: ``run_id`` is minted at ``run.started``, after the
-    dispatcher built the context.
-    """
-    context = current_execution_context()
-    if context is None:
-        return None
-    context.record_stash_ref(stash_ref)
-    context.record_worker_identity(run_id=run_id, task_id=task_id)
-    return lambda: context.is_cancel_requested
-
-
-def _spawn_worker_cancelled_result(  # noqa: PLR0913 — one keyword per durable id the cancelled run still has to report.
-    *,
-    conn: sqlite3.Connection,
-    action_id: str,
-    task_id: str,
-    run_id: str,
-    source_event_id: str,
-    correlation: Mapping[str, str],
-    cost: Mapping[str, Any],
-    stash_ref: str | None,
-) -> RawResult:
-    """Report a Codex turn the caller stopped, without writing a terminal.
-
-    ADR-0008 D9 gives ``action.cancelled`` to the canceller, which may write
-    it only once the runner confirms quiescence. Racing a terminal in from
-    this thread would relabel an operator's stop as a timeout and make the
-    cancel answer ``already_terminal``. The run still owes the ledger an
-    end-of-run row and its token accounting, so those are emitted here; the
-    pre-task stash reached the runner through the execution context, so the
-    cleanup finalizer restores the tree either way.
-    """
-    _emit_executor_reported(
-        conn,
-        task_id=task_id,
-        run_id=run_id,
-        status="cancelled",
-        summary="codex turn cancelled on request",
-        source_event_id=source_event_id,
-        correlation=correlation,
-        cost=cost,
-    )
-    return RawResult(
-        action_id=action_id,
-        semantics="error",
-        payload={"run_id": run_id, "status": "cancelled", "error": CODEX_CANCELLED_ERROR},
-        tool_output=tool_error(
-            "codex turn cancelled on request",
-            code=CODEX_CANCELLED_ERROR,
-        ),
-        error=CODEX_CANCELLED_ERROR,
-        metadata={"cost": dict(cost), "stash_ref": stash_ref},
-    )
-
-
-def _spawn_worker_emit_terminal_failure(  # noqa: PLR0913 — Day-2 failure paths fold seven correlation ids + a typed event-type discriminator; combining them masks the action.failed / action.timeout_assumed split.
-    *,
-    conn: sqlite3.Connection,
-    lifecycle: ActionLifecycle,
-    action_id: str,
-    task_id: str | None,
-    run_id: str | None,
-    source_event_id: str,
-    error_code: str,
-    error_message: str,
-    event_type: Literal["action.failed", "action.timeout_assumed"],
-    stash_ref: str | None,
-    cost: Mapping[str, Any] | None,
-    turn_id: str | None,
-) -> RawResult:
-    """Emit the terminal failure event + transition lifecycle running -> terminal.
-
-    Also emits an end-of-run ``task.executor_reported`` so the Task
-    Ledger projection records a failed/timeout run, then assembles a
-    ``RawResult(semantics="error")`` with cost + stash_ref metadata
-    forwarded so the runtime composition can plumb them (cost recording
-    in L3, stash pop in Step 17 -- both unchanged by the failure path).
-    """
-    correlation: dict[str, str] = {"action_id": action_id}
-    if run_id is not None:
-        correlation["run_id"] = run_id
-    if task_id is not None:
-        correlation["task_id"] = task_id
-    if turn_id is not None:
-        correlation["turn_id"] = turn_id
-
-    failure_payload: dict[str, Any] = {
-        "action_id": action_id,
-        "error": error_code,
-        "reason": error_message,
-    }
-    if stash_ref is not None:
-        # Phase 0 batch 6: the runtime stash-pop finalizer scans terminal
-        # failure events too — carry the ref so timeout / crash paths
-        # restore Allen's pre-task stash instead of orphaning it.
-        failure_payload["stash_ref"] = stash_ref
-
-    executor_status = "failed" if event_type == "action.failed" else "timeout"
-    if task_id is not None and run_id is not None:
-        # The Task Ledger projection bridges through run.started for
-        # task_id; emit task.executor_reported with a failure status so
-        # the projection sees a terminal report on this run.
-        _emit_executor_reported(
-            conn,
-            task_id=task_id,
-            run_id=run_id,
-            status=executor_status,
-            summary=error_message,
-            source_event_id=source_event_id,
-            correlation=correlation,
-            cost=cost,
-        )
-    terminalize_action(
-        conn,
-        event_type=event_type,
-        payload=failure_payload,
-        source_event_id=source_event_id,
-        correlation=correlation,
-    )
-
-    terminal_state: LifecycleState = (
-        "failed" if event_type == "action.failed" else "timeout_assumed"
-    )
-    if lifecycle.state_of(action_id) == "running":
-        lifecycle.transition(action_id, terminal_state)
-
-    metadata: dict[str, Any] = {}
-    if cost is not None:
-        metadata["cost"] = dict(cost)
-    metadata["stash_ref"] = stash_ref
-
-    payload: dict[str, Any] = {
-        "run_id": run_id,
-        "status": executor_status,
-        "error": error_code,
-    }
-    return RawResult(
-        action_id=action_id,
-        semantics="error",
-        payload=payload,
-        tool_output=tool_error(error_message, code=error_code),
-        error=error_code,
-        metadata=metadata,
-    )
-
-
-def _worker_report_extras(submit_report: Mapping[str, Any]) -> dict[str, Any]:
-    """Optional WorkerReport fields for the ``worker.reported`` payload.
-
-    Phase 0 batch 5: reclaim the ``submit_report`` fields the payload
-    literal previously dropped (spec §5.4.2 registry entry). Strict
-    type guards — only well-typed values reach the log, lists are
-    shallow-copied with ``str()``-coerced elements capped at 20 items,
-    and the report_missing path (``submit_report == {}``) adds nothing.
-    """
-    extras: dict[str, Any] = {}
-    for list_key in ("changed_files", "commands_run", "tests_run"):
-        list_value = submit_report.get(list_key)
-        if isinstance(list_value, list):
-            extras[list_key] = [str(item) for item in list_value[:20]]
-    for str_key in ("remaining_risks", "next_recommended_action"):
-        str_value = submit_report.get(str_key)
-        if isinstance(str_value, str):
-            extras[str_key] = str_value
-    review_flag = submit_report.get("needs_human_review")
-    if isinstance(review_flag, bool):
-        extras["needs_human_review"] = review_flag
-    return extras
-
-
-def spawn_worker_handler(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    runtime_paths: RuntimePathsLike,
-    lifecycle: ActionLifecycle,
-) -> RawResult:
-    """L2 ``spawn_worker`` -- real Codex flow (ADR-0002 D-day step 3 + Codex contract).
-
-    Replaces the Day-1 ``threading.Timer`` + hardcoded
-    ``{"status":"ok"}`` stub with the full Codex flow:
-
-    1. Pre-flight: :func:`ensure_codex_version_supported` (>= 0.125.0).
-       On :class:`CodexVersionTooLowError` -> emit ``action.failed``,
-       lifecycle ``running -> failed``, return RawResult(semantics=error).
-    2. Mint ``run_id = "R" + uuid.hex[:8]``. Load the task record
-       (goal + repo_path) from the Event Log.
-    3. Emit ``task.executor_assigned(executor="codex", model="gpt-5.5")``.
-    4. Emit ``run.started(runner="codex")``.
-    5. Dirty-tree stash via :func:`isolate_pretask_changes` BEFORE
-       Codex runs; the resulting ``stash_ref`` (40-char commit SHA or
-       ``None``) travels back on ``RawResult.metadata["stash_ref"]``
-       for the runtime composition to pop AFTER verify_diff exits
-       (ADR-0002 Dirty-tree policy).
-    6. :func:`run_codex_action` with an ``on_heartbeat`` closure that
-       emits ``worker.heartbeat`` per 30s.
-    7. Branch on the :class:`CodexActionResult`:
-       - timeout/interrupted -> ``action.timeout_assumed`` +
-         ``task.executor_reported(status="timeout")``.
-       - crash (any other ``error``) -> ``action.failed`` +
-         ``task.executor_reported(status="failed")``.
-       - ``submit_report is None`` -> emit ``worker.report_missing``
-         (Limitation Claim signal per spec 3.5.8); fall through to a
-         degraded ``worker.reported`` with ``status="report_missing"``.
-       - Happy path: persist diff via :func:`write_diff_artifact`,
-         emit ``worker.artifact_observed`` (content_hash =
-         sha256(diff_text)), emit ``worker.reported`` using the
-         submit_report payload as authoritative, emit
-         ``task.executor_reported``.
-    8. Return ``RawResult(semantics="ack", ...)``. Lifecycle is left at
-       ``running`` on the happy + report-missing path so L3's
-       ``_handle_worker_reported`` re-entry (Day-1 mechanism) folds
-       worker.reported into a synthetic RawResult and transitions
-       ``running -> result_observed`` on the next decide() cycle.
-
-    ``RawResult.metadata`` carries:
-        - ``"cost"`` -- ``{kind, model, tokens_in, tokens_out, run_id}``
-          for L3 to emit ``cost.recorded`` (single emit-site per spec
-          5.4.1).
-        - ``"stash_ref"`` -- stash ref forwarded to runtime composition
-          (Step 17) so it can call ``restore_pretask_changes`` AFTER
-          verify_diff exits. ADR-0002 Dirty-tree policy: this handler
-          MUST NOT call ``restore_pretask_changes`` itself; canary
-          ``test_canary_stash_pop_after_verify`` AST-scans the body.
-    """
-    task_id = action_request.arguments["task_id"]
-    if not isinstance(task_id, str):
-        msg = f"spawn_worker: task_id must be a string (got {type(task_id).__name__})"
-        raise TypeError(msg)
-
-    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-
-    # 1. Pre-flight: codex --version >= 0.125.0. On failure the dispatcher
-    # has already transitioned lifecycle authorized -> dispatched -> running;
-    # we close the loop with action.failed + lifecycle running -> failed.
-    try:
-        ensure_codex_version_supported()
-    except CodexVersionTooLowError as exc:
-        return _spawn_worker_emit_terminal_failure(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_request.action_id,
-            task_id=None,
-            run_id=None,
-            source_event_id=running_event_uid,
-            error_code="codex_version_too_low",
-            error_message=str(exc),
-            event_type="action.failed",
-            stash_ref=None,
-            cost=None,
-            turn_id=action_request.turn_id,
-        )
-
-    # 2. Mint run_id + load task record.
-    run_id = "R" + uuid.uuid4().hex[:8]
-    task_record = _load_task_record(conn, task_id)
-    goal = (
-        str(task_record["goal"])
-        if task_record is not None and "goal" in task_record
-        else task_id
-    )
-    repo_path_str = (
-        str(task_record["repo_path"])
-        if task_record is not None and task_record.get("repo_path") is not None
-        else None
-    )
-    repo_path = Path(repo_path_str) if repo_path_str is not None else Path.cwd()
-
-    correlation: dict[str, str] = {
-        "action_id": action_request.action_id,
-        "run_id": run_id,
-        "task_id": task_id,
-    }
-    if action_request.turn_id is not None:
-        correlation["turn_id"] = action_request.turn_id
-
-    # 3. task.executor_assigned (executor=codex, model=gpt-5.5).
-    emit_event(
-        conn,
-        type="task.executor_assigned",
-        payload={
-            "task_id": task_id,
-            "executor": _CODEX_EXECUTOR_NAME,
-            "action_id": action_request.action_id,
-            "model": _CODEX_DEFAULT_MODEL,
-        },
-        source_event_id=running_event_uid,
-        correlation=correlation,
-    )
-
-    # 4. run.started(runner="codex"). The Day-1 "codex_stub" label is retired.
-    emit_event(
-        conn,
-        type="run.started",
-        payload={"run_id": run_id, "task_id": task_id, "runner": _CODEX_EXECUTOR_NAME},
-        source_event_id=running_event_uid,
-        correlation=correlation,
-    )
-
-    # 5. Dirty-tree stash BEFORE Codex. The stash_ref is forwarded on
-    # RawResult.metadata; the runtime composition (Step 17) pops it
-    # AFTER verify_diff exits (ADR-0002 Dirty-tree policy).
-    stash_ref = isolate_pretask_changes(repo_path, run_id=run_id)
-    should_cancel = _spawn_worker_cancel_seam(stash_ref, run_id=run_id, task_id=task_id)
-
-    # 6. Run Codex with the heartbeat closure.
-    on_heartbeat = _emit_worker_heartbeat_factory(
-        conn=conn,
-        action_id=action_request.action_id,
-        run_id=run_id,
-        task_id=task_id,
-        source_event_id=running_event_uid,
-        turn_id=action_request.turn_id,
-    )
-    # run_codex_action can raise PermissionError / OSError /
-    # FileNotFoundError after a08c4a2 (codex_home rmtree-then-raise on
-    # seed or client-init failure). Route those into action.failed
-    # explicitly — 7a/7b below only handle the `codex_result.error`
-    # branch, so an unhandled raise would leave the lifecycle stuck in
-    # `running` with zero terminal event on the log. `except Exception`
-    # so KeyboardInterrupt / SystemExit still propagate.
-    try:
-        codex_result: CodexActionResult = run_codex_action(
-            task_goal=goal,
-            cwd=repo_path,
-            timeout_s=_resolve_codex_turn_timeout_s(),
-            on_heartbeat=on_heartbeat,
-            heartbeat_interval_s=_resolve_codex_heartbeat_interval_s(),
-            should_cancel=should_cancel,
-        )
-    except Exception as exc:  # noqa: BLE001 — any Codex spawn failure folds into one action.failed.
-        return _spawn_worker_emit_terminal_failure(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_request.action_id,
-            task_id=task_id,
-            run_id=run_id,
-            source_event_id=running_event_uid,
-            error_code="codex_spawn_failed",
-            error_message=f"{type(exc).__name__}: {exc}",
-            event_type="action.failed",
-            stash_ref=stash_ref,
-            cost=None,
-            turn_id=action_request.turn_id,
-        )
-    cost: dict[str, Any] = {
-        "kind": _CODEX_EXECUTOR_NAME,
-        "model": _CODEX_DEFAULT_MODEL,
-        "tokens_in": int(codex_result.tokens_in),
-        "tokens_out": int(codex_result.tokens_out),
-        "run_id": run_id,
-    }
-
-    # 7-. Cancelled -- somebody asked this action to stop and the Codex
-    # subprocess is being torn down. Deliberately NO terminal here: ADR-0008
-    # D9 gives `action.cancelled` to the canceller, which may write it only
-    # after the runner confirms quiescence. Racing a terminal in from this
-    # thread would label an operator's stop as a timeout and make the cancel
-    # answer `already_terminal`. The stash ref already reached the runner via
-    # the execution context, so the cleanup finalizer still restores the tree.
-    if codex_result.error == CODEX_CANCELLED_ERROR:
-        return _spawn_worker_cancelled_result(
-            conn=conn,
-            action_id=action_request.action_id,
-            task_id=task_id,
-            run_id=run_id,
-            source_event_id=running_event_uid,
-            correlation=correlation,
-            cost=cost,
-            stash_ref=stash_ref,
-        )
-
-    # 7a/7b. Timeout (turn/interrupt was issued by the driver ->
-    # action.timeout_assumed) and crash (initialize / thread/start /
-    # turn/start / subprocess -> action.failed with the upstream tag
-    # preserved). Both end here, with no worker.reported.
-    classified = _spawn_worker_classify_failure(codex_result)
-    if classified is not None:
-        event_type, error_code, error_message = classified
-        return _spawn_worker_emit_terminal_failure(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_request.action_id,
-            task_id=task_id,
-            run_id=run_id,
-            source_event_id=running_event_uid,
-            error_code=error_code,
-            error_message=error_message,
-            event_type=event_type,
-            stash_ref=stash_ref,
-            cost=cost,
-            turn_id=action_request.turn_id,
-        )
-
-    # 8. Happy path (codex completed turn; submit_report may or may not
-    # be present). Persist the diff artifact.
-    diff_artifact_path = write_diff_artifact(
-        codex_result.diff_text,
-        artifact_dir=runtime_paths.artifacts_root,
-        run_id=run_id,
-    )
-    content_hash = hashlib.sha256(codex_result.diff_text.encode("utf-8")).hexdigest()
-
-    # 9. worker.artifact_observed for the diff.
-    emit_event(
-        conn,
-        type="worker.artifact_observed",
-        payload={
-            "run_id": run_id,
-            "action_id": action_request.action_id,
-            "artifact_path": str(diff_artifact_path),
-            "content_hash": content_hash,
-            "kind": "diff",
-        },
-        source_event_id=running_event_uid,
-        correlation=correlation,
-    )
-
-    # 10. worker.report_missing branch when Codex never called submit_report.
-    report_missing = codex_result.submit_report is None
-    if report_missing:
-        emit_event(
-            conn,
-            type="worker.report_missing",
-            payload={
-                "run_id": run_id,
-                "action_id": action_request.action_id,
-                "reason": "codex completed turn without calling submit_report tool",
-            },
-            source_event_id=running_event_uid,
-            correlation=correlation,
-        )
-
-    # 11. worker.reported -- use the submit_report payload as authoritative
-    # when present; otherwise emit a degraded report with status=report_missing.
-    submit_report = codex_result.submit_report or {}
-    report_status = str(submit_report.get("status", "report_missing"))
-    submit_summary = submit_report.get("summary")
-    if isinstance(submit_summary, str) and submit_summary:
-        report_summary = submit_summary
-    elif report_missing:
-        report_summary = "(no summary -- submit_report missing)"
-    else:
-        report_summary = ""
-    # 12. task.executor_reported -- projection-side terminal signal for
-    # this run, and the durable home of its token accounting.
-    _emit_executor_reported(
-        conn,
-        task_id=task_id,
-        run_id=run_id,
-        status=report_status,
-        summary=report_summary,
-        source_event_id=running_event_uid,
-        correlation=correlation,
-        diff_path=str(diff_artifact_path),
-        cost=cost,
-    )
-
-    # Publish the reentry trigger only after its accounting facts commit.
-    emit_event(
-        conn,
-        type="worker.reported",
-        payload={
-            "run_id": run_id,
-            "action_id": action_request.action_id,
-            "status": report_status,
-            "summary": report_summary,
-            "artifact_path": str(diff_artifact_path),
-            "stash_ref": stash_ref,
-            **_worker_report_extras(submit_report),
-        },
-        source_event_id=running_event_uid,
-        correlation=correlation,
-    )
-
-    # 13. Build the RawResult. Lifecycle stays at `running` per Day-1's
-    # async-shape pattern -- L3's _handle_worker_reported branch transitions
-    # to result_observed once it consumes the worker.reported row.
-    _ = lifecycle  # async-shape: lifecycle terminal-transition is L3's job.
-    payload: dict[str, Any] = {
-        "run_id": run_id,
-        "status": report_status,
-        "summary": report_summary,
-        "artifact_path": str(diff_artifact_path),
-        "stash_ref": stash_ref,
-    }
-    metadata: dict[str, Any] = {
-        "cost": cost,
-        "stash_ref": stash_ref,
-    }
-    return RawResult(
-        action_id=action_request.action_id,
-        semantics="ack",
-        payload=payload,
-        tool_output=tool_result(payload),
-        error=None,
-        metadata=metadata,
-    )
-
-
-_VERIFY_COMMAND_TIMEOUT_S: Final[float] = 600.0
-"""Per-check wall-clock timeout (seconds) for the inline verify_command
-subprocess. Mirrors :attr:`PostActionCheck.timeout_ms` (600_000ms) on
-:data:`VERIFY_DIFF_TOOL_DEF`. Module-level so unit tests can patch it
-without monkeypatching the standard library.
-"""
-
-_VERIFY_COMMAND_TIMEOUT_EXIT_CODE: Final[int] = 124
-"""Convention: exit_code=124 maps to GNU ``timeout(1)``'s timeout
-exit. The handler synthesizes this when ``subprocess.TimeoutExpired``
-fires so the chained slot's payload stays uniform with the happy /
-non-zero paths.
-"""
-
 _OUTPUT_TAIL_BYTES: Final[int] = 2048
-"""Maximum stdout/stderr tail to retain on the chained slot. Keeps the
-event payload bounded; the full output would balloon the SQLite row
-for `npm test`-style verify commands.
-"""
-
-_DIFF_PREVIEW_BYTES: Final[int] = 500
-"""Maximum prefix of diff text to embed on the observation slot.
-The full diff lives at ``artifact_ref``; the preview is for the LLM
-context window only.
-"""
-
-
-def verify_diff_handler(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    runtime_paths: RuntimePathsLike,
-    lifecycle: ActionLifecycle,
-) -> RawResultBundle:
-    """L4 observation handler with inline post_action_check chain.
-
-    Per ADR-0002 § Verify_diff contract (lines 763-913, spec §3.4.11 +
-    §3.5.7). Returns a :class:`RawResultBundle` with one or two slots:
-
-    Slot 1 (mandatory, ``result_semantics="observation"``)
-        The diff artifact capture — read the diff text from the path
-        on ``action_request.arguments["artifact_path"]`` (Day-2 L3
-        plumbs this from the worker's run); fall back to
-        ``runtime_paths.artifact_dir_for_run(run_id) / "diff.txt"``
-        when only ``run_id`` is supplied. The slot's payload carries
-        the full ``diff_text`` (in-memory only, for the L3 reviewer)
-        plus a bounded ``diff_text_preview``, a ``diff_nonempty`` flag
-        and the absolute ``artifact_ref``. NO ``git apply --check``:
-        Codex already applied the patch in place upstream
-        (``spawn_worker``).
-    Slot 2 (conditional, ``result_semantics="verification" | "error"``)
-        Only present when ``action_request.payload`` carries a
-        non-None ``verify_command`` string (L3 reads this from the
-        Task Ledger projection at Step 12). The handler runs the
-        command via ``subprocess.run(["/bin/sh", "-c", cmd],
-        cwd=repo_path, timeout=600, ...)`` and assigns the slot's
-        semantics based on the predicate ``exit_code == 0`` from
-        ``post_action_check.expected_predicate``. Non-zero exit / timeout
-        → ``"error"`` per spec §3.4.11. Timeout uses exit_code=124 by
-        convention (matches GNU ``timeout(1)``) and sets
-        ``timed_out=True`` on the payload.
-
-    Trust model: ``verify_command`` is Allen-authored at ``task.created``
-    time (D-1 session) via the natural-language ``create_task`` path;
-    Day-2 has no untrusted ingest path. ``/bin/sh -c`` is therefore
-    trusted-by-Allen, the same class as the repo's local test command
-    (ADR § Trust model).
-
-    Stash-pop ordering (CRITICAL, § Dirty-tree policy lines 663-713):
-    this handler runs with ``cwd=repo_path`` and the ``verify_command``
-    subprocess therefore reads the working tree exactly as Codex left
-    it. The runtime composition (Step 17) MUST pop the pre-task stash
-    AFTER this handler returns; calling early would layer Allen's
-    pre-task changes back onto the verify cwd mid-check and pollute
-    the exit code. Static guarantee: ``test_canary_stash_pop_after_verify``.
-
-    NO reviewer call inside this handler (L3 / Step 12 owns
-    :func:`jarvis.decision.reviewer.review_diff`). NO ``git apply
-    --check`` (Codex applied in place). NO ``restore_pretask_changes``
-    (runtime composition's job per Step 17).
-
-    Lifecycle terminal transition (``running -> result_observed``) is
-    emitted INSIDE this handler so the L4 sync-handler invariant
-    (`spec § Acceptance B`) still holds. The transition fires once the
-    bundle is fully built, just before return; this means a single
-    ``action.result_observed`` event is emitted here per slot pair,
-    carrying the slot 1 semantics for backward compat; Step 12's L3
-    Result Interpreter will fan out into one event per slot.
-    """
-    diff_path = _resolve_diff_artifact_path(
-        action_request=action_request,
-        runtime_paths=runtime_paths,
-    )
-    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-
-    observation_slot = _build_observation_slot(
-        action_id=action_request.action_id,
-        diff_path=diff_path,
-    )
-
-    verify_command_raw = (
-        action_request.payload.get("verify_command")
-        if action_request.payload is not None
-        else None
-    )
-    verify_command = verify_command_raw if isinstance(verify_command_raw, str) else None
-
-    if verify_command is None:
-        _emit_verify_diff_result_event(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_request.action_id,
-            source_event_id=running_event_uid,
-            slot=observation_slot,
-        )
-        return RawResultBundle(slots=(observation_slot,))
-
-    repo_path = _resolve_repo_path(action_request, conn=conn)
-    verification_slot = _build_verification_slot(
-        action_id=action_request.action_id,
-        verify_command=verify_command,
-        repo_path=repo_path,
-    )
-    _emit_verify_diff_result_event(
-        conn=conn,
-        lifecycle=lifecycle,
-        action_id=action_request.action_id,
-        source_event_id=running_event_uid,
-        slot=observation_slot,
-    )
-    return RawResultBundle(slots=(observation_slot, verification_slot))
-
-
-def _resolve_diff_artifact_path(
-    *,
-    action_request: ActionRequest,
-    runtime_paths: RuntimePathsLike,
-) -> Path:
-    """Pick the diff artifact path from ``arguments``.
-
-    Preference order:
-        1. ``arguments["artifact_path"]`` (Day-2 L3 plumbing) — used as-is.
-        2. ``arguments["run_id"]`` → ``runtime_paths.artifact_dir_for_run(
-           run_id) / "diff.txt"`` (legacy / unit-test path; matches
-           spawn_worker's :func:`write_diff_artifact` output).
-
-    Raises ``KeyError`` only if neither is present (the LLM tool schema
-    declares ``run_id`` required at Day-2 registration, so this is
-    defense-in-depth).
-    """
-    args = action_request.arguments
-    artifact_path_arg = args.get("artifact_path")
-    if isinstance(artifact_path_arg, str) and artifact_path_arg:
-        return Path(artifact_path_arg)
-    run_id = args.get("run_id")
-    if isinstance(run_id, str) and run_id:
-        return runtime_paths.artifact_dir_for_run(run_id) / "diff.txt"
-    msg = (
-        "verify_diff: arguments must carry either 'artifact_path' (Day-2) "
-        "or 'run_id' (legacy)"
-    )
-    raise KeyError(msg)
-
-
-def _resolve_repo_path(
-    action_request: ActionRequest, *, conn: sqlite3.Connection | None = None,
-) -> Path:
-    """Return the repo cwd for the verify_command subprocess.
-
-    Order: ``action_request.payload["repo_path"]`` (preferred — L3 plumbs
-    it from the Task Ledger), then ``arguments["repo_path"]`` (test /
-    direct call), then the verified run's task repository, then ``Path.cwd``.
-    Both the resource lease and the actual subprocess use this resolver.
-    """
-    payload_repo = (
-        action_request.payload.get("repo_path")
-        if action_request.payload is not None
-        else None
-    )
-    if isinstance(payload_repo, str) and payload_repo:
-        return Path(payload_repo)
-    args_repo = action_request.arguments.get("repo_path")
-    if isinstance(args_repo, str) and args_repo:
-        return Path(args_repo)
-    if conn is not None:
-        provenance = _verify_diff_run_provenance(action_request, conn)
-        if provenance.task_id is not None:
-            record = _load_task_record(conn, provenance.task_id)
-            raw_repo = record.get("repo_path") if record is not None else None
-            if isinstance(raw_repo, str) and raw_repo:
-                return Path(raw_repo)
-    return Path.cwd()
-
-
-def _build_observation_slot(*, action_id: str, diff_path: Path) -> RawResult:
-    """Read the diff artifact and shape slot 1 (``observation``).
-
-    Missing files fall through to ``diff_text=""`` /
-    ``diff_nonempty=False`` rather than raising — the spec treats a
-    no-op diff as a real Day-2 outcome (Codex completed but did not
-    edit), not an artifact-missing error. The C5 cross-task isolation
-    check from Day-1 is intentionally dropped (Day-2 L3 owns the
-    artifact-binding from spawn_worker's run_id correlation).
-
-    The payload carries BOTH the full ``diff_text`` (in-memory only —
-    the L3 reviewer reads it per ADR-0002 § Reviewer contract) and the
-    bounded ``diff_text_preview`` retained as fallback.
-    """
-    diff_text = diff_path.read_text(encoding="utf-8") if diff_path.exists() else ""
-    diff_nonempty = bool(diff_text.strip())
-    content_hash = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
-    payload: dict[str, Any] = {
-        # In-memory only: the L3 reviewer reads the full text off this
-        # slot. NEVER emitted into an event payload — the emitted
-        # ``action.result_observed`` carries ``tool_output`` (path +
-        # hash + flag), and the Evidence extras allowlist admits
-        # ``artifact_path`` / ``content_hash`` only.
-        "diff_text": diff_text,
-        "diff_text_preview": diff_text[:_DIFF_PREVIEW_BYTES],
-        "diff_nonempty": diff_nonempty,
-        "artifact_path": str(diff_path),
-        "artifact_ref": str(diff_path),
-        "content_hash": content_hash,
-    }
-    return RawResult(
-        action_id=action_id,
-        semantics="observation",
-        payload=payload,
-        tool_output=tool_result(
-            diff_path=str(diff_path),
-            diff_nonempty=diff_nonempty,
-            content_hash=content_hash,
-        ),
-        error=None,
-        metadata=None,
-    )
-
-
-def _build_verification_slot(
-    *,
-    action_id: str,
-    verify_command: str,
-    repo_path: Path,
-) -> RawResult:
-    """Run ``verify_command`` inline and shape slot 2.
-
-    ``cwd=repo_path`` MUST stay as Codex left the tree (see § Dirty-tree
-    policy stash-pop ordering on :func:`verify_diff_handler`). The
-    predicate ``exit_code == 0`` from :class:`PostActionCheck` is
-    evaluated HERE — the handler picks ``"verification"`` on match,
-    ``"error"`` otherwise.
-
-    Timeout: ``subprocess.TimeoutExpired`` synthesizes
-    ``exit_code=124`` (GNU ``timeout(1)`` convention) and
-    ``timed_out=True`` on the slot payload; the slot's
-    ``RawResult.error`` carries ``"verify_command_timeout"`` for the
-    Limitation Claim ladder (spec §3.4.11).
-    """
-    start_mono = time.monotonic()
-    try:
-        proc = subprocess.run(  # noqa: S603 — Allen-authored trust class per ADR § Trust model.
-            ["/bin/sh", "-c", verify_command],
-            cwd=str(repo_path),
-            timeout=_VERIFY_COMMAND_TIMEOUT_S,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        duration_ms = int((time.monotonic() - start_mono) * 1000)
-        stdout_tail = _decode_tail(exc.stdout)
-        stderr_tail = "timeout"
-        exit_code = _VERIFY_COMMAND_TIMEOUT_EXIT_CODE
-        payload: dict[str, Any] = {
-            "verify_command": verify_command,
-            "exit_code": exit_code,
-            "stdout_tail": stdout_tail,
-            "stderr_tail": stderr_tail,
-            "duration_ms": duration_ms,
-            "timed_out": True,
-        }
-        return RawResult(
-            action_id=action_id,
-            semantics="error",
-            payload=payload,
-            tool_output=tool_result(
-                verify_command=verify_command,
-                exit_code=exit_code,
-                duration_ms=duration_ms,
-                timed_out=True,
-            ),
-            error="verify_command_timeout",
-            metadata=None,
-        )
-
-    duration_ms = int((time.monotonic() - start_mono) * 1000)
-    stdout_tail = (proc.stdout or "")[-_OUTPUT_TAIL_BYTES:]
-    stderr_tail = (proc.stderr or "")[-_OUTPUT_TAIL_BYTES:]
-    exit_code = proc.returncode
-    semantics_on_chain: ResultSemantics = (
-        "verification" if exit_code == 0 else "error"
-    )
-    payload = {
-        "verify_command": verify_command,
-        "exit_code": exit_code,
-        "stdout_tail": stdout_tail,
-        "stderr_tail": stderr_tail,
-        "duration_ms": duration_ms,
-        "timed_out": False,
-    }
-    return RawResult(
-        action_id=action_id,
-        semantics=semantics_on_chain,
-        payload=payload,
-        tool_output=tool_result(
-            verify_command=verify_command,
-            exit_code=exit_code,
-            duration_ms=duration_ms,
-        ),
-        error=None if exit_code == 0 else f"verify_command_exit_{exit_code}",
-        metadata=None,
-    )
-
-
-def _decode_tail(stdout: object) -> str:
-    """Render a ``TimeoutExpired.stdout`` value as a bounded text tail.
-
-    ``subprocess.TimeoutExpired.stdout`` is ``bytes`` when ``text=False``
-    and ``str`` when ``text=True``; both shapes appear in the wild on
-    different Python versions. Coerce to ``str``, trim to
-    :data:`_OUTPUT_TAIL_BYTES`, and tolerate non-UTF-8 bytes via the
-    ``replace`` error handler.
-    """
-    if stdout is None:
-        return ""
-    if isinstance(stdout, bytes):
-        return stdout[-_OUTPUT_TAIL_BYTES:].decode("utf-8", errors="replace")
-    if isinstance(stdout, str):
-        return stdout[-_OUTPUT_TAIL_BYTES:]
-    return ""
-
-
-def _emit_verify_diff_result_event(
-    *,
-    conn: sqlite3.Connection,
-    lifecycle: ActionLifecycle,
-    action_id: str,
-    source_event_id: str,
-    slot: RawResult,
-) -> None:
-    """Emit a single ``action.result_observed`` event + transition lifecycle.
-
-    Day-2 Step 11 keeps the L4 sync-handler invariant (one
-    ``action.result_observed`` per dispatch + terminal lifecycle
-    transition before return) by emitting the event for the observation
-    slot only. Step 12's L3 Result Interpreter will fan out one
-    ``action.result_observed`` per :class:`RawResultBundle` slot when it
-    consumes the bundle, so the verification-slot event lands at that
-    layer. Day-2 unit tests assert the bundle shape directly; they do not
-    rely on two L4-emitted events.
-    """
-    terminalize_action(
-        conn,
-        event_type="action.result_observed",
-        payload={
-            "action_id": action_id,
-            "semantics": slot.semantics,
-            "tool_output": slot.tool_output,
-        },
-        source_event_id=source_event_id,
-        correlation={"action_id": action_id},
-    )
-    lifecycle.transition(action_id, "result_observed")
-
-
-# --- create_task handler (ADR-0002 Step 4) ----------------------------------
-
-
-def _new_task_id() -> str:
-    """Mint a fresh task id (`"T_" + 8-hex`).
-
-    Day-2 Step 4: task ids are LLM-visible and used as `target_entity_ref`
-    on follow-up actions (spawn_worker / verify_diff). Eight hex chars is
-    the same width as `run_id` / `action_id` for visual symmetry in the
-    event trace.
-    """
-    return "T_" + uuid.uuid4().hex[:8]
-
-
-@dataclass(frozen=True)
-class _CreateTaskArgs:
-    """Parsed + validated arguments for `create_task_handler`."""
-
-    goal: str
-    repo_path: str | None
-    deadline: str | None
-    source: str
-
-
-def _parse_create_task_args(arguments: Mapping[str, Any]) -> _CreateTaskArgs:
-    """Validate `create_task` arguments and return a typed bundle.
-
-    Raises ``KeyError`` if `goal` is absent (the registered tool schema
-    declares it required, but the handler defends in depth so the L3
-    Pre-action Gate is not the only place enforcing schema). Raises
-    ``TypeError`` if any provided field is the wrong type.
-    """
-    goal = arguments["goal"]
-    if not isinstance(goal, str):
-        msg = f"create_task: goal must be a string (got {type(goal).__name__})"
-        raise TypeError(msg)
-
-    repo_path_arg = arguments.get("repo_path")
-    if repo_path_arg is not None and not isinstance(repo_path_arg, str):
-        msg = (
-            f"create_task: repo_path must be a string or None "
-            f"(got {type(repo_path_arg).__name__})"
-        )
-        raise TypeError(msg)
-
-    deadline = arguments.get("deadline")
-    if deadline is not None and not isinstance(deadline, str):
-        msg = (
-            f"create_task: deadline must be a string or None "
-            f"(got {type(deadline).__name__})"
-        )
-        raise TypeError(msg)
-
-    source = arguments.get("source", "manual")
-    if not isinstance(source, str):
-        msg = f"create_task: source must be a string (got {type(source).__name__})"
-        raise TypeError(msg)
-
-    return _CreateTaskArgs(
-        goal=goal,
-        repo_path=repo_path_arg,
-        deadline=deadline,
-        source=source,
-    )
-
-
-def create_task_handler(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — kept for handler signature uniformity.
-    lifecycle: ActionLifecycle,
-) -> RawResult:
-    """L1 `create_task` stub — sync lifecycle, emits one `task.created`.
-
-    Per ADR-0002 § D14 ("Natural-language path through L3 calling the
-    new `create_task` L4 tool") + § Step 4 build order.
-
-    Steps:
-        1. Mint `task_id = _new_task_id()`.
-        2. Parse args via `_parse_create_task_args`:
-           - `goal` (required)
-           - `repo_path` (optional)
-           - `deadline` (optional)
-           - `source` (optional; defaults to `"manual"`)
-        3. If `repo_path` is provided, call `detect_verify_command(
-           Path(repo_path))` to pick the verify_command string per the
-           four pinned detection rules (or `None` if no framework matches
-           — Limitation-Claim downgrade path).
-        4. Emit `task.created` with required (`task_id`, `goal`) +
-           non-None optional (`source`, `deadline`, `repo_path`,
-           `verify_command`). Source defaults to `"manual"`.
-        5. Emit `action.result_observed(semantics="ack")` and transition
-           lifecycle `running → result_observed` (Day-1 sync-handler
-           pattern; see `verify_diff_handler` for the canonical sequence).
-        6. Return `RawResult(semantics="ack", payload={"task_id": ...,
-           "verify_command": ...})`.
-
-    No CLI side door: per D14 there is no `jarvis task add` subcommand;
-    task creation flows exclusively through the L3 LLM dispatching this
-    tool. The handler emits `task.created` itself — production code
-    elsewhere must NOT mint `task.created` rows (tests can seed the
-    event log directly).
-    """
-    args = _parse_create_task_args(action_request.arguments)
-
-    task_id = _new_task_id()
-    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-
-    verify_command: str | None = None
-    if args.repo_path is not None:
-        verify_command = detect_verify_command(Path(args.repo_path))
-
-    # Build the task.created payload with non-None optional fields only,
-    # so the registry's optional_payload contract stays tight (no None
-    # sentinel values masquerading as data).
-    task_created_payload: dict[str, Any] = {
-        "task_id": task_id,
-        "goal": args.goal,
-        "source": args.source,
-    }
-    if args.deadline is not None:
-        task_created_payload["deadline"] = args.deadline
-    if args.repo_path is not None:
-        task_created_payload["repo_path"] = args.repo_path
-    if verify_command is not None:
-        task_created_payload["verify_command"] = verify_command
-
-    task_correlation: dict[str, str] = {
-        "task_id": task_id,
-        "action_id": action_request.action_id,
-    }
-    if action_request.turn_id is not None:
-        task_correlation["turn_id"] = action_request.turn_id
-
-    emit_event(
-        conn,
-        type="task.created",
-        payload=task_created_payload,
-        source_event_id=running_event_uid,
-        correlation=task_correlation,
-    )
-
-    # Sync handler: emit action.result_observed(ack) + terminal-transition.
-    ack_payload: dict[str, Any] = {"task_id": task_id}
-    if verify_command is not None:
-        ack_payload["verify_command"] = verify_command
-    tool_output_str = tool_result(ack_payload)
-
-    terminalize_action(
-        conn,
-        event_type="action.result_observed",
-        payload={
-            "action_id": action_request.action_id,
-            "semantics": "ack",
-            "tool_output": tool_output_str,
-        },
-        source_event_id=running_event_uid,
-        correlation={
-            "action_id": action_request.action_id,
-            "task_id": task_id,
-        },
-    )
-    lifecycle.transition(action_request.action_id, "result_observed")
-
-    return RawResult(
-        action_id=action_request.action_id,
-        semantics="ack",
-        payload=ack_payload,
-        tool_output=tool_output_str,
-        error=None,
-    )
-
-
-# --- list_tasks handler (F6 — read-only L0 observation tool) ----------------
-
-
-_LIST_TASKS_VALID_STATUSES: Final[frozenset[str]] = frozenset({"open", "verified", "all"})
-"""Allowed ``status`` filter values for `list_tasks`.
-
-Mirrors the `enum` on `_LIST_TASKS_INPUT_SCHEMA` so the handler can
-defend in depth without re-listing the values inline. Internal triple
-(`open` / `reported_complete` / `verified_complete`) stays in
-`TaskLedgerSnapshot.derive_status`; the LLM only sees the collapsed
-binary `{open, verified}` plus the catch-all `all`.
-"""
-
-_LIST_TASKS_DEFAULT_LIMIT: Final[int] = 10
-"""Default maximum number of task rows the handler returns when the LLM
-does not specify `limit` in `arguments`.
-"""
-
-_LIST_TASKS_STATUS_TO_SURFACE: Final[Mapping[str, str]] = {
-    "open": "open",
-    "verified_complete": "verified",
-    "reported_complete": "reported",
-}
-"""Map the internal derived status triple onto the JSON `status` string
-the LLM sees. `reported_complete` is surfaced as `reported` so a future
-LLM-side prompt can distinguish a worker self-report from a verified
-completion; today's filter only branches on `open` vs `verified`.
-"""
-
-
-_LIST_TASKS_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "properties": {
-        "status": {
-            "type": "string",
-            "enum": ["open", "verified", "all"],
-            "description": (
-                "Filter by derived task status. 'open' = task.created with "
-                "no task.verified yet. 'verified' = task.verified + verified "
-                "Postcondition Claim. 'all' = no filter. Default 'open'."
-            ),
-        },
-        "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "description": "Maximum number of tasks to return. Default 10.",
-        },
-    },
-    "required": [],
-}
-
-
-def list_tasks_handler(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
-    lifecycle: ActionLifecycle,
-) -> RawResult:
-    """L0 read-only ``list_tasks`` — return Task Ledger filtered by derived status.
-
-    Answers Allen's "我有哪些 open task?" / "show my open work" via a
-    fold of the live Event Log into :class:`TaskLedgerSnapshot` plus a
-    derived-status filter. Read-only — no events emitted beyond the
-    mandatory single ``action.result_observed(semantics="observation")``.
-
-    Arguments (all optional):
-        status: ``"open"`` (default) | ``"verified"`` | ``"all"``.
-            Invalid values short-circuit to a ``semantics="error"``
-            slot with ``code="invalid_argument"`` — defense-in-depth
-            for the LLM's schema (the schema's ``enum`` should catch
-            this first).
-        limit: positive integer; default 10. The schema enforces
-            ``minimum: 1`` on the LLM side; the handler clamps to
-            ``max(1, limit)`` so a zero/negative slipped through is
-            normalized rather than silently yielding an empty list.
-
-    Returns:
-        ``RawResult(semantics="observation", payload={"tasks": [...]})``
-        where each entry is
-        ``{"task_id": str, "goal": str, "status": str}``. Status is
-        surfaced via :data:`_LIST_TASKS_STATUS_TO_SURFACE` so the LLM
-        only sees ``open``/``verified``/``reported`` rather than the
-        internal ``verified_complete``/``reported_complete`` triple.
-
-    Iteration order: ``records_by_task_id`` preserves insertion order
-    (Python 3.7+ dict guarantee), so tasks appear in the order their
-    originating ``task.created`` was emitted.
-    """
-    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-
-    status_arg = action_request.arguments.get("status", "open")
-    if not isinstance(status_arg, str) or status_arg not in _LIST_TASKS_VALID_STATUSES:
-        valid = sorted(_LIST_TASKS_VALID_STATUSES)
-        error_msg = f"invalid 'status' (got {status_arg!r}); must be one of {valid!r}"
-        tool_output_str = tool_error(error_msg, code="invalid_argument")
-        terminalize_action(
-            conn,
-            event_type="action.result_observed",
-            payload={
-                "action_id": action_request.action_id,
-                "semantics": "error",
-                "tool_output": tool_output_str,
-                "error": "invalid_argument",
-            },
-            source_event_id=running_event_uid,
-            correlation={"action_id": action_request.action_id},
-        )
-        lifecycle.transition(action_request.action_id, "result_observed")
-        return RawResult(
-            action_id=action_request.action_id,
-            semantics="error",
-            payload={"error": "invalid_argument"},
-            tool_output=tool_output_str,
-            error="invalid_argument",
-        )
-
-    limit_arg = action_request.arguments.get("limit", _LIST_TASKS_DEFAULT_LIMIT)
-    limit = max(1, int(limit_arg))
-
-    snapshot = make_snapshot(conn).task_ledger
-    out: list[dict[str, Any]] = []
-    for task_id, record in snapshot.records_by_task_id.items():
-        derived = snapshot.derive_status(task_id)
-        if status_arg == "open" and derived != "open":
-            continue
-        if status_arg == "verified" and derived != "verified_complete":
-            continue
-        status_str = _LIST_TASKS_STATUS_TO_SURFACE.get(derived, derived)
-        out.append({"task_id": record.task_id, "goal": record.goal, "status": status_str})
-        if len(out) >= limit:
-            break
-
-    payload: dict[str, Any] = {"tasks": out}
-    tool_output_str = tool_result(payload)
-
-    terminalize_action(
-        conn,
-        event_type="action.result_observed",
-        payload={
-            "action_id": action_request.action_id,
-            "semantics": "observation",
-            "tool_output": tool_output_str,
-        },
-        source_event_id=running_event_uid,
-        correlation={"action_id": action_request.action_id},
-    )
-    lifecycle.transition(action_request.action_id, "result_observed")
-
-    return RawResult(
-        action_id=action_request.action_id,
-        semantics="observation",
-        payload=payload,
-        tool_output=tool_output_str,
-        error=None,
-    )
+"""Maximum stderr tail `open_path` keeps on its error message."""
 
 
 # --- get_current_time (F-Tier0) ---------------------------------------------
@@ -2540,7 +937,7 @@ def open_path(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
 # All three are L0, sync, `result_semantics="observation"`. Two shared
 # helpers below cover the "emit exactly one action.result_observed +
 # terminal-transition lifecycle" contract every sync handler in this
-# module follows (see `list_tasks_handler` for the observation shape).
+# module follows.
 
 
 def _emit_tool_observation(  # noqa: PLR0913 — all kwargs are the shared sync-handler success shape (conn/lifecycle/action_id/running_event_uid/payload/semantics); splitting them into a bundle defeats the point of a shared helper, same rationale as `_emit_tool_error`.
@@ -4609,74 +3006,27 @@ class ToolRegistry:
     """L4 dispatch surface (ADR § Module map L4 row).
 
     Owns:
-        - The `name → ToolDefinition` table.
+        - The `name → ToolDefinition | Tool` table.
         - `for_caller(...)` — filtered list the L3 system-prompt assembler
-          renders into the LLM tool list. Per-caller filtering is the
-          Day-1 mechanism for caller_scope (`{JARVIS_LLM}` for
-          spawn_worker; `{JARVIS_LLM, OBSERVER}` for verify_diff).
+          renders into the LLM tool list.
         - `dispatch(...)` — the L3-facing entry point. Validates caller,
           lifecycle precondition, emits `action.dispatched` +
           `action.running`, calls the handler, returns its `RawResult`.
 
     Owns NOT:
         - Lifecycle FSM mutation outside `authorized → dispatched → running`
-          (the handler is responsible for the terminal transition on sync
-          tools; async tools leave lifecycle at `running`).
-        - Event emission outside the two dispatch events; the handler
-          emits run.started / worker.reported / action.result_observed as
-          its tool semantics dictate.
+          (a ``ToolDefinition`` handler writes its own terminal; a flat
+          ``Tool`` gets the dispatcher's).
 
     Thread-safe by `threading.RLock` around the internal dict; same
     rationale as `ActionLifecycle`.
     """
 
-    def __init__(
-        self,
-        *,
-        action_runner: ActionRunner | None = None,
-        resource_key_resolver: ResourceKeyResolver | None = None,
-        background_async: bool = False,
-        confirmation_dispatch_outbox: bool = False,
-    ) -> None:
-        """Construct an empty registry (no tools yet).
-
-        With ``action_runner=None`` — every caller before ADR-0008 Step 3 —
-        ``dispatch`` runs the handler inline on the calling thread, exactly as
-        it always has. With a runner installed, the same call submits an
-        ActionRun and waits on its handle: the events, the ordering and the
-        returned bundle are identical, but the handler executes on the
-        runner's thread under a resolved resource lease.
-
-        ``background_async`` is ADR-0008 Step 4: an ``is_async`` tool then
-        returns from ``dispatch`` as soon as it is accepted, and its result
-        reaches L3 the way the tool always claimed it would — through the
-        durable ``worker.reported`` / terminal row that re-enters ``decide``.
-        It requires a runner, because there is nothing to own the work
-        otherwise.
-        """
-        if background_async and action_runner is None:
-            msg = "background_async dispatch requires an ActionRunner"
-            raise ActionRunnerError(msg)
+    def __init__(self, *, confirmation_dispatch_outbox: bool = False) -> None:
+        """Construct an empty registry (no tools yet)."""
         self._tools: dict[str, ToolDefinition | Tool] = {}
         self._lock = threading.RLock()
-        self._action_runner = action_runner
-        self._background_async = background_async
         self._confirmation_dispatch_outbox = confirmation_dispatch_outbox
-        self._resource_key_resolver = (
-            resource_key_resolver
-            if resource_key_resolver is not None
-            else default_resource_key_resolver
-        )
-
-    @property
-    def action_runner(self) -> ActionRunner | None:
-        """Return the installed ActionRunner, or ``None`` on the legacy path."""
-        return self._action_runner
-
-    @property
-    def background_async(self) -> bool:
-        """Return whether declared-async tools dispatch without being awaited."""
-        return self._background_async
 
     def register(self, tool_def: ToolDefinition | Tool) -> None:
         """Register a ToolDefinition. Raises DuplicateToolError on re-register.
@@ -4697,12 +3047,7 @@ class ToolRegistry:
             return tuple(self._tools.values())
 
     def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolDefinition | Tool, ...]:
-        """Return only the tools `caller_principal` is allowed to dispatch.
-
-        Used by L3 to assemble the LLM tool list — e.g. JARVIS_LLM sees
-        both `spawn_worker` and `verify_diff`; an OBSERVER caller sees
-        only `verify_diff`.
-        """
+        """Return only the tools `caller_principal` is allowed to dispatch."""
         with self._lock:
             return tuple(
                 t for t in self._tools.values() if caller_principal in t.allowed_callers
@@ -4718,15 +3063,8 @@ class ToolRegistry:
         """Dispatch one ActionRequest and return its :class:`RawResultBundle`.
 
         Day-2 (ADR-0002 § RawResultBundle contract wrapping rule): the
-        dispatcher uniformly returns ``RawResultBundle`` to L3.
-        Single-slot tools (``spawn_worker``, ``create_task``) return a
-        bare :class:`RawResult` from their handler; the dispatcher wraps
-        them in ``RawResultBundle(slots=(result,))`` on return.
-        Multi-slot tools (``verify_diff`` per spec §3.5.7) return
-        :class:`RawResultBundle` directly and pass through. This keeps
-        the dispatcher signature uniform (``Callable[..., RawResultBundle]``)
-        and avoids a union return type at every L3 call site — narrows
-        once at this boundary.
+        dispatcher uniformly returns ``RawResultBundle`` to L3; a bare
+        :class:`RawResult` is wrapped in ``RawResultBundle(slots=(result,))``.
 
         Preconditions:
             - `action_request.tool_name` is registered → else `UnknownToolError`.
@@ -4743,98 +3081,23 @@ class ToolRegistry:
         `finally`), then emits:
             1. `action.dispatched(action_id)` → lifecycle authorized →
                dispatched. The event_uid is the `source_event_id` of
-               the next event. Carries `result_expected_by_ms` when
-               `tool_def.result_budget_s` is declared — the persisted
-               deadline the supervisor sweep reads (ADR-0009 D4,
-               spec §3.4.8).
+               the next event.
             2. `action.running(action_id)` → lifecycle dispatched →
-               running. The event_uid is stashed on `conn` under
-               `_jarvis_running_event_uid` so the handler can use it as
-               `source_event_id` for `run.started` /
-               `action.result_observed`.
+               running. The event_uid is stashed so the handler can use
+               it as `source_event_id` for `action.result_observed`.
 
-        The handler then runs and returns a `RawResult` or
-        `RawResultBundle`. The handler is responsible for any further
-        lifecycle transitions (sync tools terminal-transition before
-        returning; async tools leave the lifecycle at `running`).
+        The handler then runs on the calling thread and returns a
+        `RawResult` or `RawResultBundle`.
         """
         tool_def = self._checked_tool_def(action_request, lifecycle)
-        dispatched_event = self._emit_dispatched(action_request, conn, tool_def, lifecycle)
-        if self._action_runner is None:
-            return self._run_inline(
-                action_request,
-                conn,
-                runtime_paths,
-                lifecycle,
-                tool_def=tool_def,
-                dispatched_event_uid=dispatched_event.event_uid,
-            )
-        submission = self._submit_to_runner(
+        dispatched_event = self._emit_dispatched(action_request, conn, lifecycle)
+        return self._run_inline(
             action_request,
             conn,
             runtime_paths,
             lifecycle,
             tool_def=tool_def,
             dispatched_event_uid=dispatched_event.event_uid,
-            runner=self._action_runner,
-        )
-        if self._background_async and tool_def.is_async:
-            # ADR-0008 D9: "submit returns after dispatch, not after the
-            # action finishes". L3 gets an acknowledgement and pauses on the
-            # durable trigger; the handle is owned by the runner, whose
-            # finalizer closes the cleanup debt when the worker really ends.
-            return RawResultBundle(
-                slots=(
-                    RawResult(
-                        action_id=action_request.action_id,
-                        semantics="ack",
-                        payload={
-                            "action_id": action_request.action_id,
-                            "dispatch": "background",
-                        },
-                        tool_output=tool_result(
-                            {
-                                "action_id": action_request.action_id,
-                                "dispatch": "background",
-                            },
-                        ),
-                        error=None,
-                        metadata=None,
-                    ),
-                ),
-            )
-        return submission.handle.result()
-
-    def submit(
-        self,
-        action_request: ActionRequest,
-        conn: sqlite3.Connection,
-        runtime_paths: RuntimePathsLike,
-        lifecycle: ActionLifecycle,
-    ) -> ActionSubmission:
-        """Dispatch one ActionRequest and return its live handle.
-
-        ADR-0008 D9: this returns after dispatch, not after the action
-        finishes. Wave 4B's only caller is ``dispatch`` itself, which
-        immediately awaits the handle; Wave 5's background worker is what
-        stops awaiting it.
-
-        Raises:
-            ActionRunnerError: No ActionRunner is installed on this registry.
-        """
-        if self._action_runner is None:
-            msg = "ToolRegistry.submit requires an ActionRunner"
-            raise ActionRunnerError(msg)
-        tool_def = self._checked_tool_def(action_request, lifecycle)
-        dispatched_event = self._emit_dispatched(action_request, conn, tool_def, lifecycle)
-        return self._submit_to_runner(
-            action_request,
-            conn,
-            runtime_paths,
-            lifecycle,
-            tool_def=tool_def,
-            dispatched_event_uid=dispatched_event.event_uid,
-            runner=self._action_runner,
         )
 
     def _checked_tool_def(
@@ -4872,7 +3135,6 @@ class ToolRegistry:
         self,
         action_request: ActionRequest,
         conn: sqlite3.Connection,
-        tool_def: ToolDefinition | Tool,
         lifecycle: ActionLifecycle,
     ) -> Event:
         """Register the action as live and commit its `action.dispatched`."""
@@ -4886,9 +3148,6 @@ class ToolRegistry:
             )
 
         dispatched_payload: dict[str, Any] = {"action_id": action_request.action_id}
-        result_expected_by_ms = _result_expected_by_ms(tool_def)
-        if result_expected_by_ms is not None:
-            dispatched_payload["result_expected_by_ms"] = result_expected_by_ms
         with action_admission_guard():
             if (
                 self._confirmation_dispatch_outbox
@@ -4918,7 +3177,7 @@ class ToolRegistry:
         tool_def: ToolDefinition | Tool,
         dispatched_event_uid: str,
     ) -> RawResultBundle:
-        """Run the handler on the calling thread — the pre-Wave-4B path."""
+        """Run the handler on the calling thread."""
         running_event = emit_event(
             conn,
             type="action.running",
@@ -4928,11 +3187,8 @@ class ToolRegistry:
         )
         lifecycle.transition(action_request.action_id, "running")
 
-        # Stash the running event_uid on the connection so the handler
-        # can use it as the source_event_id for run.started /
-        # action.result_observed. Done via attribute set (not a
-        # contextvar / threadlocal) because the conn is the single
-        # synchronous handoff point between dispatch and the handler.
+        # Stash the running event_uid so the handler can use it as the
+        # source_event_id for action.result_observed.
         _set_running_event_uid(conn, action_request.action_id, running_event.event_uid)
         try:
             handler_result = _run_handler(
@@ -4942,306 +3198,17 @@ class ToolRegistry:
         finally:
             _clear_running_event_uid(conn, action_request.action_id)
 
-        # § RawResultBundle wrapping rule. Multi-slot tools
-        # (`verify_diff` Day-2) already return RawResultBundle; bare
-        # RawResult returns from single-slot tools get wrapped here so
-        # L3 always sees the bundle shape.
+        # § RawResultBundle wrapping rule: bare RawResult returns get
+        # wrapped here so L3 always sees the bundle shape.
         if isinstance(handler_result, RawResultBundle):
             return handler_result
         return RawResultBundle(slots=(handler_result,))
-
-    def _submit_to_runner(  # noqa: PLR0913 — the four dispatch arguments plus the three values `dispatch` already resolved.
-        self,
-        action_request: ActionRequest,
-        conn: sqlite3.Connection,
-        runtime_paths: RuntimePathsLike,
-        lifecycle: ActionLifecycle,
-        *,
-        tool_def: ToolDefinition | Tool,
-        dispatched_event_uid: str,
-        runner: ActionRunner,
-    ) -> ActionSubmission:
-        """Resolve the resource keys, then hand the job to the runner.
-
-        Resolution runs after `action.dispatched` and before `action.running`,
-        which is where ADR-0008 D9 puts it: a request that is accepted but
-        whose resources cannot be named fails as an action rather than running
-        unlocked.
-        """
-        try:
-            concurrency = self._resource_key_resolver(action_request, tool_def, conn)
-        except ResourceKeyResolutionError as exc:
-            self._fail_before_running(
-                action_request,
-                conn,
-                lifecycle,
-                source_event_id=dispatched_event_uid,
-                error_code="resource_key_resolution",
-                message=str(exc),
-            )
-            raise
-
-        action_id = action_request.action_id
-
-        def _run(
-            worker_conn: sqlite3.Connection,
-            context: ActionExecutionContext,
-        ) -> RawResult | RawResultBundle:
-            """Run the handler on the runner's thread and its own connection."""
-            _set_running_event_uid(worker_conn, action_id, context.running_event_uid)
-            try:
-                return _run_handler(
-                    tool_def, action_request, worker_conn, runtime_paths, lifecycle,
-                    running_event_uid=context.running_event_uid,
-                )
-            finally:
-                _clear_running_event_uid(worker_conn, action_id)
-
-        def _on_running(_running_event_uid: str) -> None:
-            """Advance the in-process lifecycle once `action.running` committed."""
-            lifecycle.transition(action_id, "running")
-
-        def _on_terminal(event_type: str) -> None:
-            """Advance the in-process lifecycle for a runner-written terminal.
-
-            A cancel or an assumed timeout is written by the runner, not by
-            the handler, so without this the FSM would keep calling a
-            cancelled action ``running``.
-            """
-            state: LifecycleState = (
-                "cancelled" if event_type == "action.cancelled" else "timeout_assumed"
-            )
-            if lifecycle.state_of(action_id) in ("dispatched", "running"):
-                lifecycle.transition(action_id, state)
-
-        def _on_dispatch_failure(
-            worker_conn: sqlite3.Connection,
-            exc: BaseException,
-        ) -> None:
-            """Terminalize a job that never reached its handler.
-
-            The lease could not be taken, so nothing downstream will ever
-            write this action's terminal. On the background path there is no
-            caller left holding the handle to notice, which is exactly why
-            this is the runner's hook rather than a `try` around `result()`.
-            The runner hands over its own connection: this runs on the worker
-            thread, and ``conn`` above belongs to the dispatching thread.
-            """
-            self._fail_before_running(
-                action_request,
-                worker_conn,
-                lifecycle,
-                source_event_id=dispatched_event_uid,
-                error_code="resource_lease",
-                message=str(exc),
-            )
-
-        def _on_finished() -> None:
-            """Un-publish the action once the runner is completely done with it."""
-            release_running_action(action_id)
-
-        # Published BEFORE `submit`, for the same reason `_emit_dispatched`
-        # publishes before `action.dispatched` lands: a sweep tick in
-        # between must never see the action unprotected.
-        register_running_action(action_id)
-        try:
-            return runner.submit(
-                ActionJob(
-                    action_id=action_id,
-                    turn_id=action_request.turn_id,
-                    run_id=action_request.run_id,
-                    concurrency=concurrency,
-                    cancellation_mode=(
-                        tool_def.cancellation_mode
-                        if isinstance(tool_def, ToolDefinition)
-                        else "unsupported"
-                    ),
-                    dispatched_event_uid=dispatched_event_uid,
-                    correlation=_action_correlation(action_request),
-                    run=_run,
-                    on_running=_on_running,
-                    # Only a mutating, turn-owned lease survives quiescence:
-                    # the turn's `drive_turn` finalizer is what releases it,
-                    # after verify-then-stash-restore. A read-shared or
-                    # untracked action has nothing left to clean up and frees
-                    # at quiescence.
-                    carries_cleanup_debt=(
-                        concurrency.carries_cleanup_debt
-                        and concurrency.parent_action_id is None
-                        and action_request.turn_id is not None
-                    ),
-                    on_terminal=_on_terminal,
-                    on_finished=_on_finished,
-                    on_dispatch_failure=_on_dispatch_failure,
-                ),
-            )
-        except BaseException:
-            # `submit` refused the job outright (shutdown), so no
-            # `on_finished` will ever fire for it.
-            release_running_action(action_id)
-            raise
-
-    def _fail_before_running(  # noqa: PLR0913 — one terminal payload per keyword.
-        self,
-        action_request: ActionRequest,
-        conn: sqlite3.Connection,
-        lifecycle: ActionLifecycle,
-        *,
-        source_event_id: str,
-        error_code: str,
-        message: str,
-    ) -> None:
-        """Write one `action.failed` for a job that never reached its handler."""
-        terminalize_action(
-            conn,
-            event_type="action.failed",
-            payload={
-                "action_id": action_request.action_id,
-                "error": error_code,
-                "reason": message,
-            },
-            source_event_id=source_event_id,
-            correlation=_action_correlation(action_request),
-        )
-        if lifecycle.state_of(action_request.action_id) in ("dispatched", "running"):
-            lifecycle.transition(action_request.action_id, "failed")
-
-
-# --- resource-key resolution (ADR-0008 D9) ----------------------------------
-
-_SPAWN_WORKER_TOOL_NAME: Final[str] = "spawn_worker"
-_VERIFY_DIFF_TOOL_NAME: Final[str] = "verify_diff"
-_CANCEL_ACTION_TOOL_NAME: Final[str] = "cancel_action"
-"""The tools whose resource keys are resolved by name.
-
-Matched by name rather than by a new ``ToolDefinition`` field because these
-are the only two tools whose keys depend on runtime state (the Task Ledger's
-``repo_path`` and the run being verified). Every other tool is classified by
-``read_only`` alone, which the definition already carries. The literals are
-repeated at the two registration sites so the AST canaries that read those
-definitions keep seeing a plain string.
-"""
-
-
-type ResourceKeyResolver = Callable[
-    [ActionRequest, ToolDefinition | Tool, "sqlite3.Connection"],
-    ToolConcurrency,
-]
-"""Injectable seam that names the canonical resources one action will touch."""
-
-
-def canonical_resource_key(path: Path) -> str:
-    """Return the canonical lease key for a filesystem resource.
-
-    ``Path.resolve()`` is the realpath ADR-0008 D9 asks for: two requests that
-    name the same repository through different symlinks or relative paths must
-    produce the same key or they will not serialize.
-    """
-    return "repo:" + str(path.resolve())
-
-
-def _spawn_worker_resource_key(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-) -> str:
-    """Return the canonical repo key `spawn_worker` will stash and mutate.
-
-    The fallback mirrors ``spawn_worker_handler`` exactly (``Path.cwd()`` when
-    the task record carries no ``repo_path``), so the lease always names the
-    tree the handler actually touches. A missing ``task_id`` is unresolvable,
-    not a fallback: the handler would raise anyway, and running unlocked is
-    the one outcome D9 forbids.
-
-    Raises:
-        ResourceKeyResolutionError: ``task_id`` is absent or not a string.
-    """
-    task_id = action_request.arguments.get("task_id")
-    if not isinstance(task_id, str) or not task_id:
-        msg = (
-            f"spawn_worker action {action_request.action_id!r} carries no string "
-            f"'task_id'; its repository resource key cannot be resolved"
-        )
-        raise ResourceKeyResolutionError(msg)
-    record = _load_task_record(conn, task_id)
-    raw_repo = record.get("repo_path") if record is not None else None
-    repo = Path(raw_repo) if isinstance(raw_repo, str) and raw_repo else Path.cwd()
-    return canonical_resource_key(repo)
-
-
-@dataclass(frozen=True)
-class _VerifiedRun:
-    """The durable provenance of the run one `verify_diff` is checking."""
-
-    parent_action_id: str | None
-    task_id: str | None
-
-
-def _verify_diff_run_provenance(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-) -> _VerifiedRun:
-    """Resolve the run this verification checks back to its creator.
-
-    Durable provenance, not a caller assertion: the child names a ``run_id``,
-    and ``run.started`` is what binds that run to both the action that created
-    it (through the correlation) and the task it belongs to (through the
-    payload). Empty fields mean no such run is on the log.
-    """
-    run_id = action_request.arguments.get("run_id")
-    if not isinstance(run_id, str) or not run_id:
-        return _VerifiedRun(parent_action_id=None, task_id=None)
-    for event in iter_events(conn):
-        if event.type != "run.started" or event.payload.get("run_id") != run_id:
-            continue
-        parent = (event.correlation or {}).get("action_id")
-        task_id = event.payload.get("task_id")
-        return _VerifiedRun(
-            parent_action_id=parent if isinstance(parent, str) and parent else None,
-            task_id=task_id if isinstance(task_id, str) and task_id else None,
-        )
-    return _VerifiedRun(parent_action_id=None, task_id=None)
-
-
-def default_resource_key_resolver(
-    action_request: ActionRequest,
-    tool_def: ToolDefinition | Tool,
-    conn: sqlite3.Connection,
-) -> ToolConcurrency:
-    """Resolve one request's canonical resource keys and lease mode.
-
-    Three rules, in ADR-0008 D9's order (the ``spawn_worker`` repo lease
-    left with ADR 0019: a worker is a Codex thread in its own sandbox):
-
-    2. ``verify_diff`` reads the same tree and borrows its parent run's scope
-       instead of contending with it.
-    3. a read-only tool needs no lease at all.
-    4. anything else that mutates and declares no resource semantics is
-       global-exclusive, which is the fail-closed default rather than a guess
-       about what it touches.
-    """
-    if tool_def.name == _VERIFY_DIFF_TOOL_NAME:
-        provenance = _verify_diff_run_provenance(action_request, conn)
-        return ToolConcurrency(
-            resource_keys=(canonical_resource_key(_resolve_repo_path(action_request, conn=conn)),),
-            mode="read_shared",
-            parent_action_id=provenance.parent_action_id,
-        )
-    if tool_def.read_only or tool_def.name == _CANCEL_ACTION_TOOL_NAME:
-        # ADR-0008 D10: `cancel_action` signals a handle and mutates no
-        # resource. Taking the target's key — in any mode — would queue the
-        # cancel behind the very `write_exclusive` lease it is releasing.
-        return ToolConcurrency(resource_keys=(), mode="read_shared")
-    return ToolConcurrency(
-        resource_keys=(GLOBAL_RESOURCE_KEY,),
-        mode="global_exclusive",
-    )
-
 
 # --- running_event_uid handoff (dispatcher → handler) -----------------------
 #
 # The handlers need to know the `event_uid` of the `action.running` event
 # the dispatcher just emitted, so they can set it as `source_event_id` on
-# the events they emit next (`run.started`, `action.result_observed`).
+# the events they emit next (`action.result_observed`).
 #
 # We cannot stash this on `sqlite3.Connection` (it forbids arbitrary
 # attribute assignment), and we cannot widen the ToolHandler signature
@@ -5290,19 +3257,6 @@ def _clear_running_event_uid(
         _RUNNING_UID_TABLE.pop(action_id, None)
 
 
-def _result_expected_by_ms(tool_def: ToolDefinition | Tool) -> int | None:
-    """Return the epoch-ms deadline to stamp on `action.dispatched`, or None.
-
-    ADR-0009 D4. `None` for every tool that declares no
-    `result_budget_s`; the supervisor sweep then falls back to
-    `dispatched ts + supervisor.default_budget_s` for that action.
-    """
-    budget = tool_def.result_budget_s if isinstance(tool_def, ToolDefinition) else None
-    if budget is None:
-        return None
-    return int(time.time() * 1000) + int((budget() + _DISPATCH_DEADLINE_GRACE_S) * 1000)
-
-
 # --- Live action-id set (ADR-0009 D4 active-turn exclusion) ------------------
 #
 # The supervisor sweep (`jarvis.deployment.sleep_wake`) closes open
@@ -5321,24 +3275,10 @@ def _result_expected_by_ms(tool_def: ToolDefinition | Tool) -> int | None:
 # Storage sits in L4 because L4 is where dispatch happens and L4 may not
 # import runtime; L6 reads it only through a value the composition root
 # passes down, so `deployment -> execution` never appears in the graph.
-# Same module-level + Lock shape as `_RUNNING_UID_TABLE` below.
+# Same module-level + Lock shape as `_RUNNING_UID_TABLE` above.
 
 _LIVE_ACTIONS_LOCK: Final[threading.Lock] = threading.Lock()
 _LIVE_ACTIONS_BY_TURN: Final[dict[str, set[str]]] = {}
-
-# The runner's half of the same question. ADR-0008 Step 4 gave actions a
-# SECOND owner: with `true_async_workers` on, `dispatch` returns an ack and
-# the ActionRunner keeps running the job after `drive_turn`'s `finally` has
-# dropped the turn's whole entry above. The turn table alone therefore
-# reports a live Codex worker as unowned the instant its turn unwinds, and
-# the supervisor sweep would `assume_timeout` it out from under L4.
-#
-# Keyed by action_id, not by turn: a runner job outlives its turn, and one
-# with no turn at all (`turn_id=None`) was never in the table above.
-# Registered by the dispatch path just before `submit`, dropped by the
-# runner's `on_finished` hook once the job — cleanup included — is done.
-_RUNNING_ACTIONS_LOCK: Final[threading.Lock] = threading.Lock()
-_RUNNING_ACTIONS: Final[set[str]] = set()
 
 
 def register_live_action(*, turn_id: str, action_id: str) -> None:
@@ -5353,39 +3293,14 @@ def release_turn_actions(turn_id: str) -> None:
         _LIVE_ACTIONS_BY_TURN.pop(turn_id, None)
 
 
-def register_running_action(action_id: str) -> None:
-    """Publish ``action_id`` as owned by the ActionRunner (idempotent)."""
-    with _RUNNING_ACTIONS_LOCK:
-        _RUNNING_ACTIONS.add(action_id)
-
-
-def release_running_action(action_id: str) -> None:
-    """Drop the runner's claim on ``action_id``. No-op if unknown."""
-    with _RUNNING_ACTIONS_LOCK:
-        _RUNNING_ACTIONS.discard(action_id)
-
-
-def running_action_ids() -> frozenset[str]:
-    """Snapshot every action_id the ActionRunner has not finished."""
-    with _RUNNING_ACTIONS_LOCK:
-        return frozenset(_RUNNING_ACTIONS)
-
-
 def live_action_ids() -> frozenset[str]:
-    """Snapshot every action_id L4 still owns, from EITHER owner.
-
-    The union of the two claims: an action a live turn is driving, and an
-    action whose runner job has not finished. L6 must see both — since
-    ADR-0008 Step 4 a background worker outlives the turn that dispatched
-    it, so "no turn owns it" no longer implies "nothing is running".
-    """
+    """Snapshot every action_id a live turn is driving."""
     with _LIVE_ACTIONS_LOCK:
-        turn_owned = frozenset(
+        return frozenset(
             action_id
             for action_ids in _LIVE_ACTIONS_BY_TURN.values()
             for action_id in action_ids
         )
-    return turn_owned | running_action_ids()
 
 
 def turn_action_ids(turn_id: str) -> frozenset[str]:
@@ -5410,115 +3325,6 @@ def _action_correlation(action_request: ActionRequest) -> dict[str, str]:
     if action_request.turn_id is not None:
         out["turn_id"] = action_request.turn_id
     return out
-
-
-# --- cancel_action (ADR-0008 D10) --------------------------------------------
-#
-# The L2 control command that stops one exact, currently cancellable
-# ActionRun. Registered only when an ActionRunner exists: without one there
-# is no background action to cancel, and the registry, the LLM's tool list
-# and every event trail stay byte-identical to the runner-less build.
-
-_CANCEL_ACTION_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "properties": {
-        "target_action_id": {
-            "type": "string",
-            "description": "action_id of the open action to stop, from the open actions list.",
-        },
-        "reason": {
-            "type": "string",
-            "description": "Why Allen wants it stopped, in a few words.",
-        },
-    },
-    "required": ["target_action_id", "reason"],
-    "additionalProperties": False,
-}
-
-_CANCEL_ACTION_QUIESCENCE_BUDGET_S: Final[float] = 30.0
-"""How long the handler waits for the target to quiesce.
-
-The same budget the runner gives its own shutdown cancel
-(:meth:`ActionRunner.shutdown`). A target that does not quiesce in time
-keeps running and gets no `action.cancelled` (ADR-0008 F9); the ack then
-says so.
-"""
-
-
-def _cancel_outcome_payload(outcome: CancelOutcome) -> dict[str, Any]:
-    """Serialize one :data:`CancelOutcome` variant as the tool's ack payload."""
-    payload: dict[str, Any] = {"target_action_id": outcome.action_id}
-    if isinstance(outcome, CancelAccepted):
-        payload.update(status="accepted", event_uid=outcome.event_uid)
-    elif isinstance(outcome, CancelAlreadyTerminal):
-        payload.update(
-            status="already_terminal",
-            terminal_type=outcome.terminal_type,
-            event_uid=outcome.event_uid,
-        )
-    elif isinstance(outcome, CancelUnconfirmed):
-        payload.update(status="unconfirmed", reason=outcome.reason)
-    else:
-        payload["status"] = "unsupported"
-    return payload
-
-
-def _make_cancel_action_handler(runner: ActionRunner) -> ToolHandler:
-    """Close the `cancel_action` handler over the live ActionRunner."""
-
-    def cancel_action_handler(
-        action_request: ActionRequest,
-        conn: sqlite3.Connection,
-        runtime_paths: RuntimePathsLike,  # noqa: ARG001 — handler signature uniformity.
-        lifecycle: ActionLifecycle,
-    ) -> RawResult:
-        """Ask the runner to cancel the target; ack with what it answered.
-
-        Writes no event about the target: `action.cancelled` stays the
-        runner's, written only after confirmed quiescence. The only row
-        this handler emits is this control action's own sync terminal.
-        """
-        target = action_request.arguments.get("target_action_id")
-        target_id = target if isinstance(target, str) else ""
-        reason = action_request.arguments.get("reason")
-        context = runner.context_of(target_id)
-        # The target's own declared mode, read from its live context. With
-        # no context (dispatched but not yet running, or already reaped)
-        # the runner answers from the durable fold whatever the mode, so
-        # any supported mode reaches that path — "unsupported" would
-        # short-circuit to `CancelUnsupported` before it.
-        mode: CancellationMode = (
-            context.cancellation_mode if context is not None else "cooperative"
-        )
-        outcome = runner.cancel_action(
-            target_id,
-            reason=reason if isinstance(reason, str) else "",
-            timeout_s=_CANCEL_ACTION_QUIESCENCE_BUDGET_S,
-            cancellation_mode=mode,
-        )
-        payload = _cancel_outcome_payload(outcome)
-        tool_output_str = tool_result(payload)
-        terminalize_action(
-            conn,
-            event_type="action.result_observed",
-            payload={
-                "action_id": action_request.action_id,
-                "semantics": "ack",
-                "tool_output": tool_output_str,
-            },
-            source_event_id=_get_running_event_uid(conn, action_request.action_id),
-            correlation=_action_correlation(action_request),
-        )
-        lifecycle.transition(action_request.action_id, "result_observed")
-        return RawResult(
-            action_id=action_request.action_id,
-            semantics="ack",
-            payload=payload,
-            tool_output=tool_output_str,
-            error=None,
-        )
-
-    return cancel_action_handler
 
 
 # --- write_file (ADR-0012 D1) ------------------------------------------------
@@ -5698,99 +3504,6 @@ def write_file_handler(  # noqa: PLR0911 — one linear resolve/validate/mode/wr
 
 # --- Default registry assembly ----------------------------------------------
 
-_SPAWN_WORKER_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "properties": {
-        "task_id": {
-            "type": "string",
-            "description": "task to spawn worker for",
-        },
-    },
-    "required": ["task_id"],
-}
-
-_VERIFY_DIFF_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "properties": {
-        "run_id": {
-            "type": "string",
-            "description": "run whose diff.txt to read (legacy / fallback)",
-        },
-        "artifact_path": {
-            "type": "string",
-            "description": (
-                "Absolute path to the worker's diff.txt artifact "
-                "(Day-2 L3 plumbs this directly; optional when run_id "
-                "is supplied)"
-            ),
-        },
-    },
-    "required": ["run_id"],
-}
-
-
-# `verify_diff`'s ToolDefinition is bound at module scope so the
-# Tier-1 canary `test_canary_verify_diff_post_action_check` can locate
-# the `post_action_check=...` kwarg statically (AST scan).
-VERIFY_DIFF_TOOL_DEF: Final[ToolDefinition] = ToolDefinition(
-    name="verify_diff",
-    description=(
-        "Read the worker's diff artifact and (optionally) run a verify "
-        "command to check postcondition. Dual-slot per spec §3.5.7: "
-        "slot 1 is the diff observation; slot 2 is the verify_command "
-        "exit predicate when the bound task carries a verify_command."
-    ),
-    # frozen 2026-09-12: engineering is off the LLM menu; the observer keeps it.
-    allowed_callers=frozenset({CallerPrincipal.OBSERVER}),
-    risk_level="L0",
-    result_semantics="observation",
-    is_async=False,
-    input_schema=_VERIFY_DIFF_INPUT_SCHEMA,
-    handler=verify_diff_handler,
-    domain="git",
-    read_only=True,
-    requires_entity=False,
-    requires_confirmation=False,
-    post_action_check=PostActionCheck(
-        mode="inline",
-        check_tool="verify_command",
-        expected_predicate="exit_code == 0",
-        result_semantics_on_match="verification",
-        timeout_ms=600_000,
-    ),
-)
-
-# create_task is L1 — risk floor for ledger writes per ADR-0002 Step 4
-# build-order row. The schema mirrors ADR-0002 § Step 4 ("required:
-# goal; optional: repo_path, deadline, source"). Source is enumerated
-# rather than free-form so the Task Ledger projection can index by it
-# without a separate normalization step.
-_CREATE_TASK_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "properties": {
-        "goal": {
-            "type": "string",
-            "description": "Plain-language task description",
-        },
-        "repo_path": {
-            "type": "string",
-            "description": "Absolute path to the target repo (optional)",
-        },
-        "deadline": {
-            "type": "string",
-            "description": "ISO date or natural-language deadline (optional)",
-        },
-        "source": {
-            "type": "string",
-            "description": (
-                "Origin of the task: manual|automated|imported "
-                "(optional, default 'manual')"
-            ),
-        },
-    },
-    "required": ["goal"],
-}
-
 def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
     *,
     obsidian_vault_root: Path | None = None,
@@ -5802,13 +3515,10 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     web_timeout_s: float = DEFAULT_WEB_TIMEOUT_S,
     vision_client: VisionClient | None = None,
     screen_max_width_px: int = DEFAULT_SCREEN_MAX_WIDTH_PX,
-    action_runner: ActionRunner | None = None,
-    resource_key_resolver: ResourceKeyResolver | None = None,
-    background_async: bool = False,
     confirmation_dispatch_outbox: bool = False,
     memory_db_path: Path | None = None,
 ) -> ToolRegistry:
-    """Assemble the default ToolRegistry (Day-1 six + ADR-0011 D5 seven).
+    """Assemble the default ToolRegistry.
 
     The composition root (`jarvis.runtime`, Step 10) calls this once at
     startup and passes the registry to L3 + L4.
@@ -5850,20 +3560,9 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             supplies a real client when `llm.presets.vision` parses.
         screen_max_width_px: `tools.screen.max_width_px` (ADR-0011 D7)
             — the `sips` downscale ceiling before the vision call.
-        action_runner: ADR-0008 Step 3 execution boundary. `None` (the
-            default, and every caller before Wave 4B) keeps `dispatch`
-            running handlers inline on the calling thread.
-        confirmation_dispatch_outbox: Require atomic L2 admission of
-            confirmation-backed authorized dispatch debt when enabled.
-        resource_key_resolver: Overrides
-            :func:`default_resource_key_resolver`. Only consulted when an
-            ActionRunner is installed; a test injects one to declare
-            resource semantics for a tool the default resolver would
-            classify by `read_only` alone.
-        background_async: ADR-0008 Step 4. `True` makes `dispatch` return
-            an acknowledgement for an `is_async` tool as soon as its
-            ActionRun is accepted, instead of blocking on the handle.
-            Requires `action_runner`.
+        confirmation_dispatch_outbox: `realtime.concurrency_safety.
+            confirmation_dispatch_outbox` — a lease-bearing dispatch
+            admits through the outbox instead of a plain append.
         memory_db_path: `memory.db_path` — registers `search_records`
             over that memory.db. `None` (hand-built test registries)
             registers no memory tool.
@@ -5871,55 +3570,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     vault_root = (
         obsidian_vault_root if obsidian_vault_root is not None else DEFAULT_OBSIDIAN_VAULT_ROOT
     )
-    registry = ToolRegistry(
-        action_runner=action_runner,
-        resource_key_resolver=resource_key_resolver,
-        background_async=background_async,
-        confirmation_dispatch_outbox=confirmation_dispatch_outbox,
-    )
-    registry.register(VERIFY_DIFF_TOOL_DEF)
-    registry.register(
-        ToolDefinition(
-            name="create_task",
-            description=(
-                "Record a new task in the Task Ledger. Use when Allen says "
-                "'帮我做 X' / '今天/明天给我 Y' / similar."
-            ),
-            # frozen 2026-09-12: engineering is off the LLM menu; no caller may reach this.
-            allowed_callers=frozenset(),
-            risk_level="L1",
-            result_semantics="ack",
-            is_async=False,
-            input_schema=_CREATE_TASK_INPUT_SCHEMA,
-            handler=create_task_handler,
-            domain="task_ledger",
-            read_only=False,
-            requires_entity=False,
-            requires_confirmation=False,
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="list_tasks",
-            description=(
-                "Return a list of tasks from the Task Ledger filtered by "
-                "derived status. Read-only — emits no claim, only "
-                "observation. Use when Allen asks 'what tasks do I have' "
-                "or 'show my open work'."
-            ),
-            # frozen 2026-09-12: engineering is off the LLM menu; no caller may reach this.
-            allowed_callers=frozenset(),
-            risk_level="L0",
-            result_semantics="observation",
-            is_async=False,
-            input_schema=_LIST_TASKS_INPUT_SCHEMA,
-            handler=list_tasks_handler,
-            domain="task_ledger",
-            read_only=True,
-            requires_entity=False,
-            requires_confirmation=False,
-        )
-    )
+    registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
     registry.register(get_current_time)
     registry.register(open_path)
     registry.register(
@@ -5933,10 +3584,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L0",
             result_semantics="observation",
-            is_async=False,
             input_schema=_SEARCH_NOTES_INPUT_SCHEMA,
             handler=_make_search_notes_handler(vault_root),
-            domain="obsidian",
             read_only=True,
             requires_entity=False,
             requires_confirmation=False,
@@ -5954,10 +3603,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L0",
             result_semantics="observation",
-            is_async=False,
             input_schema=_READ_FILE_INPUT_SCHEMA,
             handler=read_file_handler,
-            domain="file_read",
             read_only=True,
             requires_entity=True,
             requires_confirmation=False,
@@ -5991,10 +3638,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",
             result_semantics="ack",
-            is_async=False,
             input_schema=_OPEN_URL_INPUT_SCHEMA,
             handler=open_url_handler,
-            domain="mac_gui",
             read_only=False,
             requires_entity=False,
             requires_confirmation=False,
@@ -6018,10 +3663,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             allowed_callers=frozenset(),
             risk_level="L3",
             result_semantics="ack",
-            is_async=False,
             input_schema=_WRITE_FILE_INPUT_SCHEMA,
             handler=write_file_handler,
-            domain="file_write",
             read_only=False,
             requires_entity=True,
             requires_confirmation=True,
@@ -6029,44 +3672,13 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     )
     if memory_db_path is not None:
         registry.register(_make_search_records(memory_db_path))
-    if action_runner is not None:
-        # ponytail: the cancel still takes one runner run slot, so with
-        # `max_concurrent_runs=1` it waits behind its own target; skip the
-        # slot for resource-free control actions if that ever ships.
-        registry.register(
-            ToolDefinition(
-                name=_CANCEL_ACTION_TOOL_NAME,
-                description=(
-                    "Request cancellation of one exact, currently cancellable "
-                    "ActionRun. Use when Allen asks to stop, cancel or abort a "
-                    "running action."
-                ),
-                # frozen 2026-09-12: engineering is off the LLM menu; no caller may reach this.
-                allowed_callers=frozenset(),
-                # ADR-0008 D10: L2 is the fixed risk of the cancellation
-                # command; the target's risk never transfers. Under the L3
-                # confirmation threshold that makes `requires_confirmation`
-                # False, which boot validation requires at L2.
-                risk_level="L2",
-                result_semantics="ack",
-                is_async=False,
-                input_schema=_CANCEL_ACTION_INPUT_SCHEMA,
-                handler=_make_cancel_action_handler(action_runner),
-                domain="agent_control",
-                read_only=False,
-                requires_entity=True,
-                requires_confirmation=False,
-                post_action_check=None,
-                result_budget_s=None,
-            )
-        )
     return registry
 
 
 class ReadOnlyToolRegistry:
     """Read-only view of a :class:`ToolRegistry` for one turn (ADR-0016 D6).
 
-    Exposes only tools with ``read_only=True`` and never ``cancel_action``;
+    Exposes only tools with ``read_only=True``;
     ``dispatch`` of anything else raises :class:`UnknownToolError` before the
     inner registry emits ``action.dispatched``. The shared registry is not
     mutated: the composition root hands this view to ``decide()`` for turns
@@ -6079,7 +3691,7 @@ class ReadOnlyToolRegistry:
 
     @staticmethod
     def _visible(tool_def: ToolDefinition | Tool) -> bool:
-        return tool_def.read_only and tool_def.name != _CANCEL_ACTION_TOOL_NAME
+        return tool_def.read_only
 
     def get_definitions(self) -> tuple[ToolDefinition | Tool, ...]:
         """Every read-only tool, in registration order."""
@@ -6115,17 +3727,14 @@ __all__ = [
     "DEFAULT_WEB_SEARCH_MAX_RESULTS",
     "DEFAULT_WEB_SEARCH_PROVIDER",
     "DEFAULT_WEB_TIMEOUT_S",
-    "VERIFY_DIFF_TOOL_DEF",
     "ActionLifecycle",
     "CallerNotAllowedError",
     "DuplicateToolError",
     "IllegalLifecycleTransition",
     "LifecycleState",
-    "PostActionCheck",
     "RawResult",
     "RawResultBundle",
     "ReadOnlyToolRegistry",
-    "ResourceKeyResolver",
     "ResultSemantics",
     "RuntimePathsLike",
     "Tool",
@@ -6137,13 +3746,9 @@ __all__ = [
     "UnknownToolError",
     "VisionClient",
     "build_default_registry",
-    "canonical_resource_key",
     "create_memo",
-    "create_task_handler",
-    "default_resource_key_resolver",
     "get_current_time",
     "list_memos",
-    "list_tasks_handler",
     "live_action_ids",
     "open_path",
     "open_url_handler",
@@ -6151,12 +3756,10 @@ __all__ = [
     "read_file_handler",
     "register_live_action",
     "release_turn_actions",
-    "spawn_worker_handler",
     "tool",
     "tool_error",
     "tool_result",
     "turn_action_ids",
     "validate_egress_url",
-    "verify_diff_handler",
     "write_file_handler",
 ]
